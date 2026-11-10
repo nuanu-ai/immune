@@ -1,6 +1,7 @@
-//! Draft becomes live at the end of a run, for one reading that was read in full.
-//! Callers must not call this for partial or missing coverage: a missing reading
-//! is not evidence of absence, so nothing may be retracted on it.
+//! Draft becomes live at the end of a run, for one reading, by its coverage.
+//! Full: new assertions become live and those no longer made are retracted.
+//! Partial: new assertions become live and nothing is retracted.
+//! None: nothing changes. A missing reading is not evidence of absence.
 
 use crate::store::{Event, Reading};
 use rusqlite::{Transaction, params};
@@ -39,7 +40,22 @@ fn joined(objects: &BTreeMap<String, i64>) -> Option<String> {
 /// Compares this run's draft with live and returns the differences as events.
 /// A different set of objects for the same subject and predicate is one
 /// `changed` event, so a new version of a component is not a remove plus an add.
-pub fn promote(tx: &Transaction, r: &Reading) -> rusqlite::Result<Vec<Event>> {
+/// Under partial coverage only growth is seen: `added` and `changed`, never `removed`.
+pub fn promote(tx: &Transaction, r: &Reading, completeness: &str) -> rusqlite::Result<Vec<Event>> {
+    let mut events = Vec::new();
+    if completeness != "none" {
+        events = compare(tx, r, completeness == "full")?;
+    }
+    // What is still draft was already live, repeated within the run, or not read.
+    tx.execute(
+        "DELETE FROM assertion
+         WHERE layer = 'draft' AND reader = ?1 AND scope = ?2 AND kind = ?3",
+        params![r.reader, r.scope, r.kind],
+    )?;
+    Ok(events)
+}
+
+fn compare(tx: &Transaction, r: &Reading, full: bool) -> rusqlite::Result<Vec<Event>> {
     let draft = load(tx, r, "draft")?;
     let live = load(tx, r, "live")?;
     let empty = BTreeMap::new();
@@ -47,8 +63,15 @@ pub fn promote(tx: &Transaction, r: &Reading) -> rusqlite::Result<Vec<Event>> {
     let mut events = Vec::new();
 
     for key in keys {
-        let new = draft.get(&key).unwrap_or(&empty);
         let old = live.get(&key).unwrap_or(&empty);
+        let mut new = draft.get(&key).unwrap_or(&empty).clone();
+        if !full {
+            // What partial reading did not see stays as it was.
+            for (object, id) in old {
+                new.entry(object.clone()).or_insert(*id);
+            }
+        }
+        let new = &new;
         if new.keys().eq(old.keys()) {
             continue;
         }
@@ -79,12 +102,5 @@ pub fn promote(tx: &Transaction, r: &Reading) -> rusqlite::Result<Vec<Event>> {
             new: joined(new),
         });
     }
-
-    // What is still draft was already live, or repeated within the run.
-    tx.execute(
-        "DELETE FROM assertion
-         WHERE layer = 'draft' AND reader = ?1 AND scope = ?2 AND kind = ?3",
-        params![r.reader, r.scope, r.kind],
-    )?;
     Ok(events)
 }

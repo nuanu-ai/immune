@@ -1,6 +1,7 @@
-//! Promises of the first working whole: store, the brew reader, the lifecycle, the report
-//! and the view.
-//! Each test runs the real binary on a sample in the format `brew list --versions` prints.
+//! Promises of the walking skeleton: store, the readers, the lifecycle, the report and the view.
+//! Each test runs the real binary on samples in the formats the sources print: `brew list
+//! --versions`, the files the server sweep writes, and lockfiles in checkouts.
+//! Every sample is invented.
 
 use rusqlite::Connection;
 use rusqlite::types::ValueRef;
@@ -48,14 +49,31 @@ impl Drop for Dir {
     }
 }
 
-/// Runs soc and returns the report line.
+/// Runs soc with only the brew reader's input and returns the report line.
+/// The other readers are pointed at folders that do not exist.
 fn soc(store: &Path, input: &Path) -> String {
+    let absent = store.parent().unwrap().join("absent");
+    soc_all(store, input, &absent, &absent)
+}
+
+/// Runs soc with every reader's input and returns the report line.
+fn soc_all(store: &Path, brew: &Path, servers: &Path, checkouts: &Path) -> String {
+    soc_in(store.parent().unwrap(), store, brew, servers, checkouts)
+}
+
+/// The same, from a given working folder.
+fn soc_in(cwd: &Path, store: &Path, brew: &Path, servers: &Path, checkouts: &Path) -> String {
     let out = Command::new(env!("CARGO_BIN_EXE_soc"))
+        .current_dir(cwd)
         .arg("run")
         .arg("--store")
         .arg(store)
         .arg("--brew-input")
-        .arg(input)
+        .arg(brew)
+        .arg("--servers-input")
+        .arg(servers)
+        .arg("--checkouts-root")
+        .arg(checkouts)
         .output()
         .unwrap();
     assert!(
@@ -127,12 +145,14 @@ fn second_run_on_unchanged_input_reports_no_changes_and_writes_no_events() {
     let dir = Dir::new("unchanged");
     let input = dir.input("brew.txt", SAMPLE);
     let first = soc(&dir.store(), &input);
-    assert!(first.ends_with("First run."), "{first}");
+    assert!(first.contains("First run."), "{first}");
 
     let second = soc(&dir.store(), &input);
-    assert_eq!(
-        second,
-        "mac: 6 components (brew). Since last run: no changes."
+    assert!(
+        second.starts_with(
+            "1 reader, 1 machine, 0 checkouts, 6 components. Since last run: no changes."
+        ),
+        "{second}"
     );
     assert!(rows(&dir.store(), LAST_RUN_EVENTS).is_empty());
 }
@@ -171,7 +191,7 @@ fn package_gone_from_input_moves_to_retracted_and_stays_queryable() {
     let report = soc(&store, &dir.input("after.txt", &after));
 
     assert!(
-        report.ends_with("+0 added, 0 changed, 1 removed."),
+        report.contains("Since last run: +0 added, 0 changed, 1 removed."),
         "{report}"
     );
     let git = "component:machine:mac/brew/git";
@@ -201,7 +221,7 @@ fn version_change_is_one_changed_event() {
     let report = soc(&store, &dir.input("after.txt", &after));
 
     assert!(
-        report.ends_with("+0 added, 1 changed, 0 removed."),
+        report.contains("Since last run: +0 added, 1 changed, 0 removed."),
         "{report}"
     );
     assert_eq!(
@@ -358,4 +378,373 @@ fn removed_component_is_under_no_longer_there_and_not_on_the_machine() {
     assert!(gone.contains(git), "{gone}");
     assert!(gone.contains("2.47.0"), "{gone}");
     assert!(gone.contains("22.9.0"), "{gone}");
+}
+
+/// A server file as the sweep writes it: a web server with two running containers.
+const WEB_1: &str = "\
+##os
+Ubuntu 24.04.1 LTS
+##kernel
+6.8.0-45-generic
+##reboot_required
+no
+##pve
+##dpkg
+bash\t5.2.21-2ubuntu4
+openssl\t3.0.13-0ubuntu3.4
+##snap
+core22\t20240823
+##docker_access
+docker
+##docker_ps
+nginx:1.27.1\tshop\tUp 2 days
+wordpress:6.6-php8.2-apache\tblog\tUp 3 hours (healthy)
+##docker_images
+nginx:1.27.1
+wordpress:6.6-php8.2-apache
+##container_versions
+/shop\tNGINX_VERSION=1.27.1
+/blog\tPHP_VERSION=8.2.24
+##wp
+blog\twp_version=6.6.2
+##end
+";
+
+/// A sweep that stopped before it reached `##end`, in the middle of the package list.
+fn cut(file: &str) -> String {
+    file[..file.find("openssl").unwrap()].to_string()
+}
+
+/// Writes a file under the folder, creating the folders on the way.
+fn put(root: &Path, rel: &str, content: &str) -> PathBuf {
+    let path = root.join(rel);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, content).unwrap();
+    path
+}
+
+/// A checkout as git leaves it: `.git` with a branch that points at a commit.
+fn checkout(root: &Path, rel: &str) -> PathBuf {
+    put(root, &format!("{rel}/.git/HEAD"), "ref: refs/heads/main\n");
+    put(
+        root,
+        &format!("{rel}/.git/refs/heads/main"),
+        "0123456789abcdef0123456789abcdef01234567\n",
+    );
+    root.join(rel)
+}
+
+const PACKAGE_LOCK: &str = r#"{
+  "name": "shop",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": { "name": "shop", "version": "1.0.0" },
+    "node_modules/left-pad": { "version": "1.3.0" },
+    "node_modules/@types/node": { "version": "22.7.4" }
+  }
+}
+"#;
+
+const CARGO_LOCK: &str = r#"# This file is automatically @generated by Cargo.
+version = 4
+
+[[package]]
+name = "serde"
+version = "1.0.210"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#;
+
+#[test]
+fn under_partial_coverage_new_assertions_become_live_and_nothing_is_retracted() {
+    // Container contents are always read partially: a variable that is no longer seen
+    // may still be there, so it must not be reported as gone.
+    let dir = Dir::new("partial");
+    let store = dir.store();
+    let brew = dir.input("brew.txt", SAMPLE);
+    let servers = dir.0.join("servers");
+    let absent = dir.0.join("absent");
+    put(&servers, "web-1.txt", WEB_1);
+    soc_all(&store, &brew, &servers, &absent);
+
+    let next = WEB_1
+        .replace("/shop\tNGINX_VERSION=1.27.1", "/shop\tNGINX_VERSION=1.27.2")
+        .replace("/blog\tPHP_VERSION=8.2.24", "/shop\tLUA_VERSION=5.4.6");
+    put(&servers, "web-1.txt", &next);
+    let report = soc_all(&store, &brew, &servers, &absent);
+
+    let shop = "component:container:machine:web-1/shop/container-env";
+    let blog = "component:container:machine:web-1/blog/container-env";
+    let live = rows(&store, LIVE);
+    for expected in [
+        format!("{blog}/php|has_version|8.2.24"),
+        format!("{shop}/nginx|has_version|1.27.1"),
+        format!("{shop}/nginx|has_version|1.27.2"),
+        format!("{shop}/lua|has_version|5.4.6"),
+    ] {
+        assert!(live.contains(&expected), "{expected} is not live");
+    }
+    assert!(
+        rows(
+            &store,
+            "SELECT 1 FROM assertion WHERE layer = 'retracted' AND kind = 'container contents'"
+        )
+        .is_empty()
+    );
+    let events = rows(
+        &store,
+        &LAST_RUN_EVENTS.replace(
+            "WHERE entry IN",
+            "WHERE kind = 'container contents' AND entry IN",
+        ),
+    );
+    assert_eq!(
+        events,
+        [
+            format!("added|{shop}/lua|has_version|NULL|5.4.6"),
+            format!("added|{shop}/lua|part_of|NULL|container:machine:web-1/shop"),
+            format!("changed|{shop}/nginx|has_version|1.27.1|1.27.1, 1.27.2"),
+        ]
+    );
+    assert!(report.contains("1 reading was partial"), "{report}");
+    assert!(report.contains("removals unknown"), "{report}");
+
+    let page = view(&store);
+    let coverage = section(&page, "coverage");
+    let row = coverage
+        .split("<tr")
+        .find(|r| r.contains("container contents"))
+        .expect("no coverage row for container contents");
+    assert!(row.contains("partial, removals unknown"), "{row}");
+}
+
+#[test]
+fn server_file_without_end_is_a_machine_not_read_and_retracts_nothing() {
+    // A sweep that broke off says nothing about what is on the server.
+    let dir = Dir::new("cut");
+    let store = dir.store();
+    let brew = dir.input("brew.txt", SAMPLE);
+    let servers = dir.0.join("servers");
+    let absent = dir.0.join("absent");
+    put(&servers, "web-1.txt", WEB_1);
+    put(&servers, "db-1.txt", &cut(WEB_1));
+    soc_all(&store, &brew, &servers, &absent);
+    let live_before = rows(&store, LIVE);
+
+    put(&servers, "web-1.txt", &cut(WEB_1));
+    let report = soc_all(&store, &brew, &servers, &absent);
+
+    assert_eq!(rows(&store, LIVE), live_before);
+    assert!(rows(&store, "SELECT 1 FROM assertion WHERE layer = 'retracted'").is_empty());
+    assert!(rows(&store, LAST_RUN_EVENTS).is_empty());
+    assert!(report.contains("2 machines could not be read"), "{report}");
+    assert!(!report.contains("no changes"), "{report}");
+    assert_eq!(
+        rows(
+            &store,
+            "SELECT scope, kind, completeness, reason FROM coverage
+             WHERE run_id = (SELECT MAX(run_id) FROM coverage) AND reader = 'servers'
+             ORDER BY scope, kind"
+        ),
+        [
+            "machine:db-1|containers|none|the sweep of this server did not complete",
+            "machine:db-1|system packages|none|the sweep of this server did not complete",
+            "machine:web-1|containers|none|the sweep of this server did not complete",
+            "machine:web-1|system packages|none|the sweep of this server did not complete",
+        ]
+    );
+
+    // The machine that was never read is known, has nothing on it, and says so.
+    assert_eq!(
+        rows(&store, "SELECT id FROM entity WHERE id = 'machine:db-1'"),
+        ["machine:db-1"]
+    );
+    assert!(!live_before.iter().any(|r| r.contains("machine:db-1")));
+    let page = view(&store);
+    let machines = section(&page, "machines");
+    let db = machines
+        .split("<details class=\"machine\">")
+        .find(|m| m.contains("<strong>db-1</strong>"))
+        .expect("db-1 is not on the page");
+    assert!(db.contains("could not be read"), "{db}");
+    assert!(db.contains("0 components"), "{db}");
+}
+
+#[test]
+fn server_observed_at_is_when_the_file_was_written_not_when_it_was_read() {
+    // Server files can be weeks old; a fresh time on an old reading is false freshness.
+    let dir = Dir::new("observed");
+    let store = dir.store();
+    let servers = dir.0.join("servers");
+    let file = put(&servers, "web-1.txt", WEB_1);
+    let written = 1_767_323_045; // 2026-01-02 03:04:05 UTC
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(UNIX_EPOCH + std::time::Duration::from_secs(written))
+        .unwrap();
+    soc_all(
+        &store,
+        &dir.input("brew.txt", SAMPLE),
+        &servers,
+        &dir.0.join("absent"),
+    );
+
+    let times = |sql: &str| {
+        rows(&store, sql)
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let expected = [written.to_string()].into_iter().collect();
+    assert_eq!(
+        times("SELECT observed_at FROM assertion WHERE reader = 'servers'"),
+        expected
+    );
+    assert_eq!(
+        times("SELECT observed_at FROM coverage WHERE reader = 'servers'"),
+        expected
+    );
+    let page = view(&store);
+    let web = section(&page, "machines")
+        .split("<details class=\"machine\">")
+        .find(|m| m.contains("<strong>web-1</strong>"))
+        .unwrap()
+        .to_string();
+    assert!(web.contains("read 2026-01-02 03:04 UTC"), "{web}");
+}
+
+#[test]
+fn unsupported_lockfile_gives_partial_coverage_naming_it_and_supported_ones_are_still_read() {
+    // A lockfile the reader cannot read hides dependencies; the checkout must not look complete.
+    let dir = Dir::new("lockfiles");
+    let store = dir.store();
+    let root = dir.0.join("dev");
+    let shop = checkout(&root, "work/shop");
+    // The unsupported one comes first in the order the reader goes through them.
+    put(&shop, "api/yarn.lock", "# yarn lockfile v1\n");
+    put(&shop, "package-lock.json", PACKAGE_LOCK);
+    put(&shop, "web/Cargo.lock", CARGO_LOCK);
+    let tools = checkout(&root, "tools");
+    put(&tools, "Cargo.lock", CARGO_LOCK);
+    soc_all(
+        &store,
+        &dir.input("brew.txt", SAMPLE),
+        &dir.0.join("absent"),
+        &root,
+    );
+
+    assert_eq!(
+        rows(
+            &store,
+            "SELECT scope, completeness, COALESCE(reason, '') FROM coverage
+             WHERE reader = 'lockfiles' ORDER BY scope"
+        ),
+        [
+            "checkout:machine:mac/tools|full|",
+            "checkout:machine:mac/work/shop|partial|not supported yet: yarn.lock",
+        ]
+    );
+    let id = "component:checkout:machine:mac/work/shop";
+    let live = rows(&store, LIVE);
+    for expected in [
+        format!("{id}/npm/left-pad|has_version|1.3.0"),
+        format!("{id}/npm/@types/node|has_version|22.7.4"),
+        format!("{id}/crates.io/serde|has_version|1.0.210"),
+    ] {
+        assert!(live.contains(&expected), "{expected} is not live");
+    }
+}
+
+/// Every file under a folder with its size and modification time.
+fn snapshot(root: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let entry = entry.unwrap();
+            let meta = entry.metadata().unwrap();
+            out.push(format!(
+                "{}|{}|{:?}",
+                entry.path().display(),
+                meta.len(),
+                meta.modified().unwrap()
+            ));
+            if meta.is_dir() {
+                stack.push(entry.path());
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+#[test]
+fn readers_write_nothing_outside_the_store_folder() {
+    // The readers look at the owner's checkouts and sweep files; they must never change them.
+    let dir = Dir::new("outside");
+    let inputs = dir.0.join("inputs");
+    let brew = put(&inputs, "brew.txt", SAMPLE);
+    let servers = inputs.join("servers");
+    put(&servers, "web-1.txt", WEB_1);
+    put(
+        &servers,
+        "web-1.err",
+        "Warning: Permanently added 'web-1' to the list of known hosts.\n",
+    );
+    let root = dir.0.join("dev");
+    let shop = checkout(&root, "shop");
+    put(&shop, "package-lock.json", PACKAGE_LOCK);
+    put(&shop, "web/pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
+    let store = dir.0.join("store").join("store.db");
+    let (inputs_before, root_before) = (snapshot(&inputs), snapshot(&root));
+
+    // Run from the test folder, so that a write relative to the working folder shows too.
+    soc_in(&dir.0, &store, &brew, &servers, &root);
+    soc_in(&dir.0, &store, &brew, &servers, &root);
+    view(&store);
+
+    assert_eq!(snapshot(&inputs), inputs_before);
+    assert_eq!(snapshot(&root), root_before);
+    let top: Vec<String> = std::fs::read_dir(&dir.0)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    assert_eq!(top, ["dev", "inputs", "store"]);
+}
+
+#[test]
+fn unchanged_input_is_not_copied_again_as_raw_input() {
+    // Raw input is kept forever, so a copy per run of the same bytes would only grow.
+    let dir = Dir::new("copies");
+    let store = dir.store();
+    let brew = dir.input("brew.txt", SAMPLE);
+    let servers = dir.0.join("servers");
+    put(&servers, "web-1.txt", WEB_1);
+    let absent = dir.0.join("absent");
+    let copies = |name: &str| {
+        snapshot(&dir.0.join("raw"))
+            .iter()
+            .filter(|r| r.contains(&format!("/{name}|")))
+            .count()
+    };
+    soc_all(&store, &brew, &servers, &absent);
+    soc_all(&store, &brew, &servers, &absent);
+    assert_eq!((copies("brew.txt"), copies("web-1.txt")), (1, 1));
+
+    // Every assertion still points at a saved copy.
+    for source in rows(&store, "SELECT DISTINCT source_ref FROM assertion") {
+        let file = source.rsplit_once(':').unwrap().0;
+        assert!(dir.0.join(file).is_file(), "{source}");
+    }
+
+    put(
+        &dir.0,
+        "brew.txt",
+        &SAMPLE.replace("git 2.47.0", "git 2.47.1"),
+    );
+    soc_all(&store, &brew, &servers, &absent);
+    assert_eq!((copies("brew.txt"), copies("web-1.txt")), (2, 1));
 }

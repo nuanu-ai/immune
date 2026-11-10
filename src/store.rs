@@ -4,7 +4,7 @@
 use rusqlite::{Connection, OpenFlags, Transaction, params};
 use std::path::Path;
 
-pub const FORMAT_VERSION: &str = "1";
+pub const FORMAT_VERSION: &str = "2";
 
 const SCHEMA: &str = "
 CREATE TABLE meta (
@@ -81,6 +81,15 @@ CREATE TABLE journal (
     new_value TEXT,
     text      TEXT
 );
+-- The last saved copy of each raw input, so that unchanged input is not copied again.
+CREATE TABLE raw_input (
+    reader TEXT NOT NULL,
+    input  TEXT NOT NULL,
+    path   TEXT NOT NULL,  -- relative to the store's folder
+    run_id TEXT NOT NULL,
+    PRIMARY KEY (reader, input)
+);
+
 CREATE TRIGGER journal_no_update BEFORE UPDATE ON journal
     BEGIN SELECT RAISE(ABORT, 'journal is append-only'); END;
 CREATE TRIGGER journal_no_delete BEFORE DELETE ON journal
@@ -93,19 +102,38 @@ INSERT INTO entity_type (name, status) VALUES
 INSERT INTO predicate (name, object_kind, status) VALUES
     ('located_on', 'entity', 'used'), ('part_of', 'entity', 'used'),
     ('has_version', 'literal', 'used'), ('runs_os', 'literal', 'used'),
+    ('runs_kernel', 'literal', 'used'), ('runs_image', 'literal', 'used'),
     ('copy_of', NULL, 'reserved'), ('reachable_from', NULL, 'reserved'),
     ('relation_to_owner', NULL, 'reserved'), ('same_as', NULL, 'reserved');
 INSERT INTO basis_kind (name, strength) VALUES
     ('observed', 1), ('declared', 2), ('mentioned', 3);
 ";
 
+/// Format 1 had no raw copy table and two fewer predicates. Nothing else changed,
+/// so the journal and every layer are kept as they are.
+const MIGRATE_1_TO_2: &str = "
+CREATE TABLE raw_input (
+    reader TEXT NOT NULL,
+    input  TEXT NOT NULL,
+    path   TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    PRIMARY KEY (reader, input)
+);
+INSERT INTO predicate (name, object_kind, status) VALUES
+    ('runs_kernel', 'literal', 'used'), ('runs_image', 'literal', 'used');
+UPDATE meta SET value = '2' WHERE key = 'format_version';
+";
+
 /// One reading: which reader looked for which kind of thing in which scope.
+/// `at` is the time of the run; `observed_at` is when the source itself was read,
+/// which for a server file is when the sweep wrote it.
 pub struct Reading<'a> {
     pub reader: &'a str,
     pub scope: &'a str,
     pub kind: &'a str,
     pub run_id: &'a str,
     pub at: i64,
+    pub observed_at: i64,
 }
 
 /// A statement as a reader makes it, before it becomes a draft assertion.
@@ -125,7 +153,7 @@ pub struct Event {
     pub new: Option<String>,
 }
 
-pub fn open(path: &Path) -> rusqlite::Result<Connection> {
+pub fn open(path: &Path) -> Result<Connection, Box<dyn std::error::Error>> {
     let mut conn = Connection::open(path)?;
     conn.pragma_update(None, "foreign_keys", true)?;
     let created: bool = conn.query_row(
@@ -141,6 +169,20 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
             [FORMAT_VERSION],
         )?;
         tx.commit()?;
+    }
+    let version: String = conn.query_row(
+        "SELECT value FROM meta WHERE key = 'format_version'",
+        [],
+        |r| r.get(0),
+    )?;
+    match version.as_str() {
+        FORMAT_VERSION => {}
+        "1" => {
+            let tx = conn.transaction()?;
+            tx.execute_batch(MIGRATE_1_TO_2)?;
+            tx.commit()?;
+        }
+        other => return Err(format!("store format {other} is not supported").into()),
     }
     Ok(conn)
 }
@@ -160,6 +202,8 @@ pub fn put_entity(tx: &Transaction, id: &str) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Writes one draft assertion, and the entities it names: the subject, and the object
+/// when the vocabulary says the predicate points at an entity.
 pub fn put_draft(
     tx: &Transaction,
     r: &Reading,
@@ -167,6 +211,14 @@ pub fn put_draft(
     s: &Statement,
 ) -> rusqlite::Result<()> {
     put_entity(tx, &s.subject)?;
+    let points_at_entity: bool = tx.query_row(
+        "SELECT object_kind = 'entity' FROM predicate WHERE name = ?1",
+        [s.predicate],
+        |row| row.get(0),
+    )?;
+    if points_at_entity {
+        put_entity(tx, &s.object)?;
+    }
     tx.execute(
         "INSERT INTO assertion (layer, subject, predicate, object, reader, scope, kind,
                                 source_ref, basis, observed_at, run_id)
@@ -180,7 +232,7 @@ pub fn put_draft(
             r.kind,
             s.source_ref,
             basis,
-            r.at,
+            r.observed_at,
             r.run_id
         ],
     )?;
@@ -199,7 +251,7 @@ pub fn put_coverage(
         params![
             r.reader,
             r.run_id,
-            r.at,
+            r.observed_at,
             r.scope,
             r.kind,
             completeness,
@@ -209,23 +261,77 @@ pub fn put_coverage(
     Ok(())
 }
 
-/// Whether this scope and kind were read before. Call before writing this run's coverage.
-pub fn read_before(tx: &Transaction, r: &Reading) -> rusqlite::Result<bool> {
+/// Whether any run finished before this one.
+pub fn any_run_finished(tx: &Transaction) -> rusqlite::Result<bool> {
     tx.query_row(
-        "SELECT EXISTS (SELECT 1 FROM coverage WHERE reader = ?1 AND scope = ?2 AND kind = ?3)",
-        params![r.reader, r.scope, r.kind],
+        "SELECT EXISTS (SELECT 1 FROM journal WHERE entry = 'run_finished')",
+        [],
         |row| row.get(0),
     )
 }
 
-pub fn live_components(tx: &Transaction, r: &Reading) -> rusqlite::Result<i64> {
+/// What the report line says about the store after a run.
+pub struct Totals {
+    pub machines: i64,
+    pub checkouts: i64,
+    pub components: i64,
+    pub partial: i64,
+    pub none: i64,
+    /// Machines this run tried to read and could read nothing on.
+    pub machines_unread: i64,
+    /// Readings made by earlier runs whose scope this run did not read at all:
+    /// nothing is known about what changed in them.
+    pub not_repeated: i64,
+}
+
+pub fn totals(tx: &Transaction, run_id: &str) -> rusqlite::Result<Totals> {
+    let all = |sql: &str| tx.query_row(sql, [], |row| row.get::<_, i64>(0));
+    let one = |sql: &str| tx.query_row(sql, [run_id], |row| row.get::<_, i64>(0));
+    Ok(Totals {
+        machines: all("SELECT COUNT(*) FROM entity WHERE type = 'machine'")?,
+        checkouts: all("SELECT COUNT(*) FROM entity WHERE type = 'checkout'")?,
+        components: all("SELECT COUNT(DISTINCT subject) FROM assertion
+             WHERE layer = 'live' AND predicate = 'part_of'")?,
+        partial: one(
+            "SELECT COUNT(*) FROM coverage WHERE run_id = ?1 AND completeness = 'partial'",
+        )?,
+        none: one("SELECT COUNT(*) FROM coverage WHERE run_id = ?1 AND completeness = 'none'")?,
+        machines_unread: one("SELECT COUNT(*) FROM (SELECT scope FROM coverage
+             WHERE run_id = ?1 AND scope IN (SELECT id FROM entity WHERE type = 'machine')
+             GROUP BY scope HAVING MAX(completeness != 'none') = 0)")?,
+        not_repeated: one(
+            "SELECT COUNT(*) FROM (SELECT DISTINCT reader, scope, kind FROM coverage
+             WHERE scope NOT IN (SELECT scope FROM coverage WHERE run_id = ?1))",
+        )?,
+    })
+}
+
+/// The last saved raw copy of this input, relative to the store's folder.
+pub fn last_raw(tx: &Transaction, reader: &str, input: &str) -> rusqlite::Result<Option<String>> {
     tx.query_row(
-        "SELECT COUNT(DISTINCT subject) FROM assertion
-         WHERE layer = 'live' AND reader = ?1 AND scope = ?2 AND kind = ?3
-           AND predicate = 'part_of'",
-        params![r.reader, r.scope, r.kind],
+        "SELECT path FROM raw_input WHERE reader = ?1 AND input = ?2",
+        params![reader, input],
         |row| row.get(0),
     )
+    .map(Some)
+    .or_else(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Ok(None),
+        e => Err(e),
+    })
+}
+
+pub fn set_raw(
+    tx: &Transaction,
+    reader: &str,
+    input: &str,
+    path: &str,
+    run_id: &str,
+) -> rusqlite::Result<()> {
+    tx.execute(
+        "INSERT OR REPLACE INTO raw_input (reader, input, path, run_id) VALUES (?1, ?2, ?3, ?4)",
+        params![reader, input, path, run_id],
+    )?;
+    Ok(())
 }
 
 pub fn journal_note(
