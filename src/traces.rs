@@ -36,6 +36,9 @@ pub struct Host {
     pub known_as: Vec<(String, usize)>,
     /// The operating system, where the trace gives one.
     pub os: Option<(String, usize)>,
+    /// Whose it is, where the trace says it is not the owner's: one of the closed set of
+    /// `relation_to_owner` values.
+    pub relation: Option<(&'static str, usize)>,
 }
 
 /// What reading one trace found.
@@ -66,13 +69,18 @@ impl Seen {
             let facts = host
                 .known_as
                 .iter()
-                .map(|(v, n)| ("known_as", v, n))
-                .chain(host.os.iter().map(|(v, n)| ("runs_os", v, n)));
+                .map(|(v, n)| ("known_as", v.as_str(), n))
+                .chain(host.os.iter().map(|(v, n)| ("runs_os", v.as_str(), n)))
+                .chain(
+                    host.relation
+                        .iter()
+                        .map(|(v, n)| ("relation_to_owner", *v, n)),
+                );
             for (predicate, object, n) in facts {
                 out.push(Statement {
                     subject: subject.clone(),
                     predicate,
-                    object: object.clone(),
+                    object: object.to_string(),
                     source_ref: format!("{raw_file}:{n}"),
                 });
             }
@@ -111,6 +119,7 @@ pub fn note(hosts: &mut Vec<Host>, name: &str, known_as: &str, line: usize) {
                 name: name.to_string(),
                 known_as: Vec::new(),
                 os: None,
+                relation: None,
             });
             hosts.len() - 1
         }

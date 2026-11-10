@@ -31,6 +31,7 @@ pub fn page(conn: &Connection, store: &str, now: i64) -> Result<String, Box<dyn 
 }
 
 /// Makes text safe to put anywhere in the page, inside elements and inside quoted attributes.
+/// Characters that could reorder or hide text are shown escaped, as `shown` shows them.
 pub fn esc(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -40,10 +41,57 @@ pub fn esc(s: &str) -> String {
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
             '\'' => out.push_str("&#39;"),
+            c if hidden(c) => out.extend(c.escape_unicode()),
             _ => out.push(c),
         }
     }
     out
+}
+
+/// Text as the terminal may show it: every character that is hidden is written as
+/// `\u{…}`. The store keeps the text as it was read; only what is shown is escaped.
+pub fn shown(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if hidden(c) {
+            out.extend(c.escape_unicode());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Unicode's format characters: invisible, and some of them reorder the text around them,
+/// such as the bidirectional controls. With the line and paragraph separators.
+const FORMAT: [(char, char); 21] = [
+    ('\u{00AD}', '\u{00AD}'),
+    ('\u{0600}', '\u{0605}'),
+    ('\u{061C}', '\u{061C}'),
+    ('\u{06DD}', '\u{06DD}'),
+    ('\u{070F}', '\u{070F}'),
+    ('\u{0890}', '\u{0891}'),
+    ('\u{08E2}', '\u{08E2}'),
+    ('\u{180E}', '\u{180E}'),
+    ('\u{200B}', '\u{200F}'),
+    ('\u{2028}', '\u{202E}'),
+    ('\u{2060}', '\u{2064}'),
+    ('\u{2066}', '\u{206F}'),
+    ('\u{FEFF}', '\u{FEFF}'),
+    ('\u{FFF9}', '\u{FFFB}'),
+    ('\u{110BD}', '\u{110BD}'),
+    ('\u{110CD}', '\u{110CD}'),
+    ('\u{13430}', '\u{1343F}'),
+    ('\u{1BCA0}', '\u{1BCA3}'),
+    ('\u{1D173}', '\u{1D17A}'),
+    ('\u{E0001}', '\u{E0001}'),
+    ('\u{E0020}', '\u{E007F}'),
+];
+
+/// Whether a character, printed as it is, could rearrange or hide what is shown: a control
+/// character or an invisible format character.
+fn hidden(c: char) -> bool {
+    c.is_control() || FORMAT.iter().any(|(from, to)| (*from..=*to).contains(&c))
 }
 
 /// UTC seconds as `YYYY-MM-DD HH:MM UTC`, from the civil-from-days algorithm.
@@ -542,6 +590,11 @@ fn machines(conn: &Connection, out: &mut String, latest: &[Latest], now: i64) ->
     let (seen, never): (Vec<&Machine>, Vec<&Machine>) = all
         .iter()
         .partition(|m| m.members.iter().any(|id| read(id)));
+    // Another user's device known only from the tailnet is not a server never read.
+    let devices = crate::store::other_users_devices(conn)?;
+    let (theirs, never): (Vec<&Machine>, Vec<&Machine>) = never
+        .into_iter()
+        .partition(|m| crate::store::only_someone_elses(m.members, &devices));
     // A machine is unread when every latest reading of it read nothing.
     let unread = |m: &Machine| {
         m.members
@@ -563,6 +616,17 @@ fn machines(conn: &Connection, out: &mut String, latest: &[Latest], now: i64) ->
     }
     if !never.is_empty() {
         write!(out, "; {} known and never read", never.len())?;
+    }
+    if !theirs.is_empty() {
+        write!(
+            out,
+            "; {} on the tailnet",
+            plural(
+                theirs.len(),
+                "is another user's device",
+                "are other users' devices"
+            )
+        )?;
     }
     out.push_str(". Open one to see what is on it.</p>\n");
 
@@ -587,6 +651,23 @@ fn machines(conn: &Connection, out: &mut String, latest: &[Latest], now: i64) ->
             td(out, "mono", &m.label)?;
             td(out, "mono", &m.others.join(", "))?;
             td(out, "", &m.traces.join(", "))?;
+            out.push_str("</tr>\n");
+        }
+        out.push_str("</tbody></table></div>\n</div>\n</details>\n");
+    }
+
+    if !theirs.is_empty() {
+        write!(
+            out,
+            "<details class=\"machine\">\n<summary><strong>Other users' devices</strong> <span class=\"muted\">· {} · the tailnet says they belong to another user, and no other trace names them; not counted as servers</span></summary>\n<div class=\"inner\">\n",
+            plural(theirs.len(), "device", "devices")
+        )?;
+        out.push_str("<div class=\"scroll\"><table class=\"dense\">\n");
+        thead(out, &["Name", "Also known as"]);
+        for m in theirs {
+            out.push_str("<tr>");
+            td(out, "mono", &m.label)?;
+            td(out, "mono", &m.others.join(", "))?;
             out.push_str("</tr>\n");
         }
         out.push_str("</tbody></table></div>\n</div>\n</details>\n");
@@ -1127,7 +1208,64 @@ ul.readings li { margin: 2px 0; overflow-wrap: anywhere; }
 
 #[cfg(test)]
 mod tests {
-    use super::utc;
+    use super::{esc, shown, utc};
+
+    #[test]
+    fn every_character_that_could_reorder_or_hide_text_is_shown_escaped() {
+        // A name from a source is partly written by an attacker. Printed raw, a direction
+        // control reorders the rest of the line and an invisible character hides text.
+        let hidden = [
+            '\u{0}',
+            '\u{9}',
+            '\u{A}',
+            '\u{1B}',
+            '\u{7F}',
+            '\u{85}',
+            '\u{9F}',
+            '\u{AD}',
+            '\u{600}',
+            '\u{605}',
+            '\u{61C}',
+            '\u{6DD}',
+            '\u{70F}',
+            '\u{890}',
+            '\u{891}',
+            '\u{8E2}',
+            '\u{180E}',
+            '\u{200B}',
+            '\u{200F}',
+            '\u{2028}',
+            '\u{202E}',
+            '\u{2060}',
+            '\u{2064}',
+            '\u{2066}',
+            '\u{206F}',
+            '\u{FEFF}',
+            '\u{FFF9}',
+            '\u{FFFB}',
+            '\u{110BD}',
+            '\u{110CD}',
+            '\u{13430}',
+            '\u{1343F}',
+            '\u{1BCA0}',
+            '\u{1BCA3}',
+            '\u{1D173}',
+            '\u{1D17A}',
+            '\u{E0001}',
+            '\u{E0020}',
+            '\u{E007F}',
+        ];
+        for c in hidden {
+            let escaped: String = c.escape_unicode().collect();
+            let text = format!("a{c}b");
+            assert_eq!(shown(&text), format!("a{escaped}b"), "{escaped}");
+            assert_eq!(esc(&text), format!("a{escaped}b"), "{escaped}");
+        }
+        // Everything else is shown as it is, names in any script included.
+        let plain = "web-1 сервер 東京 café ✓ \u{2027}\u{2030}\u{FFFC}";
+        assert_eq!(shown(plain), plain);
+        assert_eq!(esc(plain), plain);
+    }
 
     #[test]
     fn times_are_shown_as_utc_calendar_dates() {

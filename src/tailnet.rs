@@ -2,6 +2,11 @@
 //! --json`. For each peer it takes the host name, the DNS name, the addresses and the
 //! operating system, and nothing else: no keys, no user names.
 //!
+//! A tailnet also holds other people's laptops and phones. A peer without tags that belongs
+//! to another user than this machine's is recorded as another user's device; the user ids
+//! are only compared, never kept. A tagged peer belongs to the tailnet, not to a person, and
+//! a peer whose user the status does not give is not taken to be anyone else's.
+//!
 //! Tailscale that is not installed has nothing to read. Tailscale that is installed and
 //! stopped or logged out could not be read, and says so. Tailscale whose command cannot
 //! reach the daemon could not be read either; the reason names each way that was tried.
@@ -23,6 +28,8 @@ pub const READER: &str = "tailnet";
 pub const KIND: &str = "tailnet peers";
 pub const BASIS: &str = "observed";
 pub const NOT_INSTALLED: &str = "Tailscale is not installed on this machine";
+/// The `relation_to_owner` of a peer of another user, without tags.
+pub const OTHER_USER: &str = "other user's device";
 
 /// Where the Tailscale app keeps its command, under `/Applications` or the user's own.
 const IN_APP: &str = "Applications/Tailscale.app/Contents/MacOS/Tailscale";
@@ -225,10 +232,19 @@ pub fn parse(json: &str) -> Result<Seen, String> {
         }
     };
     peers.sort_by_key(|p| name(p));
+    let me = v.get("Self").and_then(|s| s.get("UserID"));
+    let someone_elses = |p: &Value| {
+        p.get("Tags").is_none()
+            && matches!((me, p.get("UserID")), (Some(me), Some(user)) if me != user)
+    };
 
     let mut extract = Extract::default();
     let mut hosts = Vec::new();
     let mut third_party = 0;
+    // Names under which another user's device was seen, and names under which any other
+    // peer was: two peers may share a host name, and the name is someone else's only when
+    // every peer under it is.
+    let (mut others, mut not_others) = (Vec::new(), Vec::new());
     for peer in peers {
         let host = name(peer);
         if host.is_empty() {
@@ -245,7 +261,16 @@ pub fn parse(json: &str) -> Result<Seen, String> {
             .map(|a| a.iter().filter_map(Value::as_str).collect())
             .unwrap_or_default();
         let os = text(peer, "OS");
-        let n = extract.add(&format!("{host}\t{dns}\t{}\t{os}", addresses.join(",")));
+        let whose = if someone_elses(peer) { OTHER_USER } else { "" };
+        let n = extract.add(&format!(
+            "{host}\t{dns}\t{}\t{os}\t{whose}",
+            addresses.join(",")
+        ));
+        if whose.is_empty() {
+            not_others.push(host.clone());
+        } else {
+            others.push((host.clone(), n));
+        }
         note(&mut hosts, &host, &host, n);
         for value in std::iter::once(dns).chain(addresses) {
             if !value.is_empty() {
@@ -257,6 +282,14 @@ pub fn parse(json: &str) -> Result<Seen, String> {
             && h.os.is_none()
         {
             h.os = Some((os.to_string(), n));
+        }
+    }
+    for host in &mut hosts {
+        if !not_others.contains(&host.name) {
+            host.relation = others
+                .iter()
+                .find(|(name, _)| *name == host.name)
+                .map(|(_, n)| (OTHER_USER, *n));
         }
     }
     Ok(Seen {

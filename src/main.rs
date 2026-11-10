@@ -176,22 +176,28 @@ fn main() -> ExitCode {
     let cmd = match parse_args(std::env::args().skip(1)) {
         Ok(cmd) => cmd,
         Err(e) => {
-            eprintln!("soc: {e}\n{USAGE}");
+            eprintln!("soc: {}\n{USAGE}", view::shown(&e));
             return ExitCode::from(2);
         }
     };
     let result = match cmd {
-        Cmd::Run(args) => run(&args).map(|line| println!("{line}")),
+        Cmd::Run(args) => run(&args).map(|line| say(&line)),
         Cmd::Servers(args) => servers_cmd(&args),
         Cmd::View(args) => view(&args),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("soc: {e}");
+            eprintln!("soc: {}", view::shown(&e.to_string()));
             ExitCode::FAILURE
         }
     }
+}
+
+/// Prints one line. Text from a source never reaches the terminal raw: it could reorder or
+/// hide the text around it.
+fn say(line: &str) {
+    println!("{}", view::shown(line));
 }
 
 /// The store's folder: raw input and the view live next to the store.
@@ -268,6 +274,8 @@ fn servers_cmd(args: &ServersArgs) -> Result<(), Box<dyn Error>> {
     let mut known = Vec::new();
     let mut traces_of: BTreeMap<String, Vec<&'static str>> = BTreeMap::new();
     let mut names_of: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    // Entities a trace says are another user's device.
+    let mut someone_elses: BTreeSet<String> = BTreeSet::new();
     // Aliases in the order of the ssh configuration.
     let mut aliases: Vec<String> = Vec::new();
     let (mut said, mut third_party) = (Vec::new(), 0);
@@ -297,10 +305,16 @@ fn servers_cmd(args: &ServersArgs) -> Result<(), Box<dyn Error>> {
                 said.push(format!("{kind}: could not be read, {reason}"));
             }
             traces::Found::Read(seen) => {
-                let mut line = format!(
-                    "{kind}: {}",
-                    things(seen.hosts.len() as i64, "server", "servers")
-                );
+                let n = seen.hosts.len() as i64;
+                let mut line = if *kind == tailnet::KIND {
+                    format!("{kind}: {}", things(n, "peer", "peers"))
+                } else {
+                    format!("{kind}: {}", things(n, "server", "servers"))
+                };
+                let theirs = seen.hosts.iter().filter(|h| h.relation.is_some()).count();
+                if theirs > 0 {
+                    line.push_str(&format!(", {theirs} of them other users' devices"));
+                }
                 if let Some(partial) = &seen.partial {
                     line.push_str(&format!(", {partial}"));
                 }
@@ -311,6 +325,9 @@ fn servers_cmd(args: &ServersArgs) -> Result<(), Box<dyn Error>> {
                 third_party += seen.third_party;
                 for host in &seen.hosts {
                     let id = format!("machine:{}", host.name);
+                    if host.relation.is_some() {
+                        someone_elses.insert(id.clone());
+                    }
                     add(&id, reader, kind, basis, "");
                     for (value, _) in &host.known_as {
                         add(&id, reader, kind, basis, value);
@@ -349,7 +366,17 @@ fn servers_cmd(args: &ServersArgs) -> Result<(), Box<dyn Error>> {
         .into_iter()
         .map(|l| (l.a, l.b))
         .collect();
-    let groups = resolver::groups(traces_of.keys().cloned(), &pairs);
+    // Another user's device known from the tailnet alone is not a server. Known from any
+    // other trace as well, it is one the owner uses as a server.
+    let (devices, groups): (Vec<Vec<String>>, Vec<Vec<String>>) =
+        resolver::groups(traces_of.keys().cloned(), &pairs)
+            .into_iter()
+            .partition(|g| {
+                g.iter().all(|m| {
+                    someone_elses.contains(m)
+                        && traces_of.get(m).is_some_and(|t| *t == [tailnet::KIND])
+                })
+            });
     let skip = sweep::skip_list(&dir);
 
     let mut rows = Vec::new();
@@ -426,7 +453,7 @@ fn servers_cmd(args: &ServersArgs) -> Result<(), Box<dyn Error>> {
     let (offered, rest): (Vec<&ServerRow>, Vec<&ServerRow>) =
         rows.iter().partition(|r| !r.offered.is_empty());
     let table = |title: String, rows: &[&ServerRow]| {
-        println!("{title}");
+        say(&title);
         let cells: Vec<Vec<String>> = rows
             .iter()
             .map(|r| {
@@ -465,41 +492,63 @@ fn servers_cmd(args: &ServersArgs) -> Result<(), Box<dyn Error>> {
         ),
         &rest,
     );
+    // Shown with a count, so that nothing the tailnet holds disappears silently.
+    // Groups come sorted by their first member, which names the device.
+    let theirs: Vec<Vec<String>> = devices
+        .iter()
+        .map(|group| {
+            let name = group[0].strip_prefix("machine:").unwrap_or(&group[0]);
+            let mut others: BTreeSet<&String> = group
+                .iter()
+                .flat_map(|m| names_of.get(m).into_iter().flatten())
+                .collect();
+            others.retain(|o| *o != name);
+            let others: Vec<&str> = others.into_iter().map(String::as_str).collect();
+            vec![name.to_string(), others.join(", ")]
+        })
+        .collect();
+    say(&format!(
+        "Other users' devices on the tailnet, not counted as servers: {}",
+        things(theirs.len() as i64, "device", "devices")
+    ));
+    print_table(&["Device", "Also known as"], &theirs);
+    println!();
 
     let machines: Vec<Vec<String>> = offered.iter().map(|r| r.offered.clone()).collect();
     sweep::write(&dir, &machines)?;
     for line in &said {
-        println!("{}{}.", line[..1].to_uppercase(), &line[1..]);
+        say(&format!("{}{}.", line[..1].to_uppercase(), &line[1..]));
     }
-    println!(
-        "{} known, {} of them under several names, {} offered for the sweep, {} left out as code hosting, {} known and never read.",
+    say(&format!(
+        "{} known, {} of them under several names, {} offered for the sweep, {} left out as code hosting, {} as other users' devices, {} known and never read.",
         things(rows.len() as i64, "server", "servers"),
         groups.iter().filter(|g| g.len() > 1).count(),
         offered.len(),
         third_party,
+        theirs.len(),
         rows.iter().filter(|r| !r.read).count()
-    );
+    ));
     let spare: usize = machines.iter().map(|m| m.len() - 1).sum();
     if spare > 0 {
-        println!(
+        say(&format!(
             "The sweep visits each offered server once, through one alias; {} not visited.",
             things(
                 spare as i64,
                 "alias of the same machine is",
                 "aliases of the same machines are"
             )
-        );
+        ));
     }
-    println!(
+    say(&format!(
         "Wrote probe.sh and sweep.sh to {}. Nothing was run.",
         dir.display()
-    );
-    println!("To read the offered servers, run:");
-    println!("  sh {}", sweep::quoted(&dir.join("sweep.sh")));
-    println!(
+    ));
+    say("To read the offered servers, run:");
+    say(&format!("  sh {}", sweep::quoted(&dir.join("sweep.sh"))));
+    say(&format!(
         "To leave a server out, add its alias to {}, one per line. Then run `soc run`.",
         dir.join(sweep::SKIP).display()
-    );
+    ));
     Ok(())
 }
 
@@ -532,14 +581,18 @@ fn last_file(dir: &Path, names: &[&str]) -> (String, bool) {
     seen.unwrap_or(("never read".to_string(), false))
 }
 
-/// A plain text table with columns as wide as their widest cell.
+/// A plain text table with columns as wide as their widest cell, as the cells are shown.
 fn print_table(head: &[&str], rows: &[Vec<String>]) {
     if rows.is_empty() {
         println!("  none");
         return;
     }
+    let rows: Vec<Vec<String>> = rows
+        .iter()
+        .map(|row| row.iter().map(|cell| view::shown(cell)).collect())
+        .collect();
     let mut widths: Vec<usize> = head.iter().map(|h| h.chars().count()).collect();
-    for row in rows {
+    for row in &rows {
         for (w, cell) in widths.iter_mut().zip(row) {
             *w = (*w).max(cell.chars().count());
         }
@@ -553,7 +606,7 @@ fn print_table(head: &[&str], rows: &[Vec<String>]) {
         println!("  {}", parts.join("  ").trim_end());
     };
     line(head.to_vec());
-    for row in rows {
+    for row in &rows {
         line(row.iter().map(String::as_str).collect());
     }
 }
@@ -1075,7 +1128,8 @@ fn resolve(run: &mut Run) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Servers in the store, each counted once however many names it has.
+/// Servers in the store, each counted once however many names it has. Another user's
+/// device known only from the tailnet is not one.
 struct ServerCounts {
     known: usize,
     offered: usize,
@@ -1093,13 +1147,14 @@ fn server_counts(
         aliases.contains(id)
             && sweep::not_offered(id.strip_prefix("machine:").unwrap_or(id), skip).is_none()
     };
+    let devices = store::other_users_devices(conn)?;
     let mut counts = ServerCounts {
         known: 0,
         offered: 0,
         read: 0,
     };
     for group in store::machine_groups(conn)? {
-        if group.iter().any(|m| m == machine) {
+        if group.iter().any(|m| m == machine) || store::only_someone_elses(&group, &devices) {
             continue;
         }
         counts.known += 1;

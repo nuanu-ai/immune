@@ -125,8 +125,11 @@ INSERT OR IGNORE INTO predicate (name, object_kind, status) VALUES
     ('has_version', 'literal', 'used'), ('runs_os', 'literal', 'used'),
     ('runs_kernel', 'literal', 'used'), ('runs_image', 'literal', 'used'),
     ('known_as', 'literal', 'used'), ('same_as', 'entity', 'used'),
-    ('copy_of', NULL, 'reserved'), ('reachable_from', NULL, 'reserved'),
-    ('relation_to_owner', NULL, 'reserved');
+    ('relation_to_owner', 'literal', 'used'),
+    ('copy_of', NULL, 'reserved'), ('reachable_from', NULL, 'reserved');
+-- A reserved row comes into use: a store seeded before keeps the row and learns its use.
+UPDATE predicate SET object_kind = 'literal', status = 'used'
+    WHERE name = 'relation_to_owner' AND status = 'reserved';
 INSERT OR IGNORE INTO basis_kind (name, strength) VALUES
     ('observed', 1), ('declared', 2), ('mentioned', 3);
 INSERT OR IGNORE INTO coverage_kind (name) VALUES
@@ -383,6 +386,28 @@ pub fn machine_groups(conn: &Connection) -> rusqlite::Result<Vec<Vec<String>>> {
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
     Ok(resolver::groups(machines_known(conn)?, &links))
+}
+
+/// Machine entities known only as another user's device: the reader that says so is the
+/// only one that names them, besides the resolver, and nothing was ever read on them.
+pub fn other_users_devices(conn: &Connection) -> rusqlite::Result<BTreeSet<String>> {
+    conn.prepare(
+        "SELECT DISTINCT a.subject FROM assertion a
+         WHERE a.layer = 'live' AND a.predicate = 'relation_to_owner' AND a.object = ?1
+           AND NOT EXISTS (SELECT 1 FROM assertion o
+                           WHERE o.layer = 'live' AND o.subject = a.subject
+                             AND o.reader NOT IN (a.reader, ?2))
+           AND NOT EXISTS (SELECT 1 FROM coverage c WHERE c.scope = a.subject)",
+    )?
+    .query_map(params![crate::tailnet::OTHER_USER, resolver::READER], |r| {
+        r.get(0)
+    })?
+    .collect()
+}
+
+/// Whether a machine, as a group of entities, is another user's device and nothing more.
+pub fn only_someone_elses(group: &[String], devices: &BTreeSet<String>) -> bool {
+    group.iter().all(|m| devices.contains(m))
 }
 
 /// Live `known_as` assertions, which the resolver works from.

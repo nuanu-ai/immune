@@ -1254,11 +1254,16 @@ impl Home {
     }
 
     fn servers(&self) -> String {
+        self.servers_with(&self.dir.0.join("no-tailscale"))
+    }
+
+    /// `soc servers` with the given tailscale.
+    fn servers_with(&self, tailscale: &Path) -> String {
         ok(soc_cmd(&self.home)
             .args(["servers", "--store"])
             .arg(self.store())
             .arg("--tailscale")
-            .arg(self.dir.0.join("no-tailscale")))
+            .arg(tailscale))
     }
 }
 
@@ -1604,15 +1609,21 @@ const SAME_AS: &str = "SELECT subject, object FROM assertion
                        WHERE layer = 'live' AND predicate = 'same_as' ORDER BY subject";
 
 #[test]
-fn a_sweep_file_under_another_name_is_a_reading_of_the_machine_the_traces_know_by_its_address() {
+fn a_sweep_file_under_another_name_is_a_reading_of_the_machine_the_traces_know_by_its_tailnet_address()
+ {
     // A file named after an old name of a server must not leave the server "never read"
-    // and counted twice. The server says what it is, and the resolver links it.
-    let h = Home::new("identity", Some(SSH_CONFIG), None);
+    // and counted twice. The server says what it is, and the resolver links it. A tailnet
+    // address is unique inside the tailnet, so it names the one machine.
+    let h = Home::new(
+        "identity",
+        Some("Host web-1\n    HostName 100.64.0.5\n"),
+        None,
+    );
     let servers = h.dir.0.join("servers");
     put(
         &servers,
         "old-name.txt",
-        &with_identity("web-host", "10.0.0.5"),
+        &with_identity("web-host", "100.64.0.5"),
     );
     let report = h.run(&servers, &h.dir.0.join("no-tailscale"));
 
@@ -1628,13 +1639,13 @@ fn a_sweep_file_under_another_name_is_a_reading_of_the_machine_the_traces_know_b
              AND predicate = 'known_as' ORDER BY object"
         ),
         [
-            "10.0.0.5|observed",
+            "100.64.0.5|observed",
             "web-host|observed",
             "web-host.example.org|observed"
         ]
     );
     assert!(
-        report.contains("3 servers known, 3 offered for the sweep, 1 read."),
+        report.contains("1 server known, 1 offered for the sweep, 1 read."),
         "{report}"
     );
     // Tailscale that is not here has nothing to read and is no failure.
@@ -1808,6 +1819,382 @@ fn soc_servers_and_soc_run_count_the_same_servers() {
         web.contains("web-old") && web.contains("read, taken"),
         "{web}"
     );
+}
+
+/// `tailscale status --json` of a tailnet shared with other people, cut to the fields that
+/// matter. This machine is user 1. Peers: the owner's server; a tagged server another user
+/// added; a peer whose user the status does not give; and four devices of another user,
+/// of which a test may let the owner know three from other traces.
+const TAILNET_SHARED: &str = r#"{
+  "BackendState": "Running",
+  "Self": { "HostName": "mac", "DNSName": "mac.example-tail.ts.net.",
+            "TailscaleIPs": ["100.64.0.1"], "OS": "macOS", "UserID": 1 },
+  "Peer": {
+    "nodekey:invented1": { "HostName": "build-box", "DNSName": "build-box.example-tail.ts.net.",
+      "TailscaleIPs": ["100.64.0.7"], "OS": "linux", "UserID": 1 },
+    "nodekey:invented2": { "HostName": "ci-runner", "DNSName": "ci-runner.example-tail.ts.net.",
+      "TailscaleIPs": ["100.64.0.9"], "OS": "linux", "UserID": 2, "Tags": ["tag:ci"] },
+    "nodekey:invented3": { "HostName": "friends-laptop",
+      "DNSName": "friends-laptop.example-tail.ts.net.", "TailscaleIPs": ["100.64.0.20"],
+      "OS": "macOS", "UserID": 3 },
+    "nodekey:invented4": { "HostName": "shared-box", "DNSName": "shared-box.example-tail.ts.net.",
+      "TailscaleIPs": ["100.64.0.21"], "OS": "linux", "UserID": 3 },
+    "nodekey:invented5": { "HostName": "no-owner", "DNSName": "no-owner.example-tail.ts.net.",
+      "TailscaleIPs": ["100.64.0.22"], "OS": "linux" },
+    "nodekey:invented6": { "HostName": "lab-box", "DNSName": "lab-box.example-tail.ts.net.",
+      "TailscaleIPs": ["100.64.0.23"], "OS": "linux", "UserID": 3 },
+    "nodekey:invented7": { "HostName": "old-laptop", "DNSName": "old-laptop.example-tail.ts.net.",
+      "TailscaleIPs": ["100.64.0.24"], "OS": "linux", "UserID": 3 }
+  }
+}"#;
+
+/// The owner reaches the other user's box by ssh, through its tailnet address.
+const SSH_CONFIG_SHARED: &str = "\
+Host shared
+    HostName 100.64.0.21
+";
+
+const RELATION: &str = "SELECT subject, object, basis, reader FROM assertion
+                        WHERE layer = 'live' AND predicate = 'relation_to_owner'
+                        ORDER BY subject";
+
+#[test]
+fn another_users_device_known_only_from_the_tailnet_is_not_a_server_and_never_offered() {
+    // A tailnet holds other people's laptops and phones. Counted as servers they inflate
+    // "servers known" and "never read" with things the owner cannot and must not sweep. They
+    // are still shown, with a count, so that nothing disappears silently.
+    let h = Home::new("other-user", Some(SSH_CONFIG_SHARED), None);
+    let tailscale = fake(&h.dir.0.join("bin").join("tailscale"), TAILNET_SHARED);
+    let printed = h.servers_with(&tailscale);
+    let report = h.run(&h.dir.0.join("absent"), &tailscale);
+
+    assert_eq!(
+        rows(&h.store(), RELATION),
+        [
+            "machine:friends-laptop|other user's device|observed|tailnet",
+            "machine:lab-box|other user's device|observed|tailnet",
+            "machine:old-laptop|other user's device|observed|tailnet",
+            "machine:shared-box|other user's device|observed|tailnet",
+        ]
+    );
+    // The raw input says it too, so that the store can be rebuilt from it.
+    let source = rows(
+        &h.store(),
+        "SELECT source_ref FROM assertion WHERE predicate = 'relation_to_owner'
+         AND subject = 'machine:friends-laptop'",
+    );
+    let (file, line) = source[0].rsplit_once(':').unwrap();
+    let raw = std::fs::read_to_string(h.dir.0.join("store").join(file)).unwrap();
+    let line = raw.lines().nth(line.parse::<usize>().unwrap() - 1).unwrap();
+    assert!(
+        line.starts_with("friends-laptop\t") && line.ends_with("\tother user's device"),
+        "{line}"
+    );
+
+    let lines: Vec<&str> = printed.lines().collect();
+    let theirs = lines
+        .iter()
+        .position(|l| {
+            *l == "Other users' devices on the tailnet, not counted as servers: 3 devices"
+        })
+        .unwrap_or_else(|| panic!("no section of other users' devices: {printed}"));
+    assert_eq!(
+        lines[theirs + 2],
+        "  friends-laptop  100.64.0.20, friends-laptop.example-tail.ts.net.",
+        "{printed}"
+    );
+    assert_eq!(
+        printed.matches("friends-laptop  ").count(),
+        1,
+        "listed as a server too: {printed}"
+    );
+    assert!(
+        printed.contains("Tailnet peers: 7 peers, 4 of them other users' devices."),
+        "{printed}"
+    );
+    assert!(
+        printed.contains(
+            "\n4 servers known, 1 of them under several names, 1 offered for the sweep, \
+             0 left out as code hosting, 3 as other users' devices, 4 known and never read."
+        ),
+        "{printed}"
+    );
+    let script = std::fs::read_to_string(h.dir.0.join("store/sweep/sweep.sh")).unwrap();
+    assert_eq!(listed(&script), ["shared"]);
+    assert!(
+        report.contains(" 4 servers known, 1 offered for the sweep, 0 read."),
+        "{report}"
+    );
+
+    let machines = view(&h.store());
+    let machines = section(&machines, "machines");
+    let blocks: Vec<&str> = machines.split("<details class=\"machine\">").collect();
+    let never = blocks
+        .iter()
+        .find(|b| b.contains("Known and never read"))
+        .expect("no list of machines never read");
+    assert!(!never.contains("friends-laptop"), "{never}");
+    assert!(
+        blocks[0].contains("4 known and never read; 3 are other users' devices on the tailnet."),
+        "{}",
+        blocks[0]
+    );
+    let devices = blocks
+        .iter()
+        .find(|b| b.contains("Other users' devices</strong>"))
+        .expect("no list of other users' devices");
+    assert!(
+        devices.contains("3 devices ·") && devices.contains(">friends-laptop<"),
+        "{devices}"
+    );
+}
+
+#[test]
+fn another_users_device_also_known_from_the_ssh_configuration_known_hosts_or_a_sweep_file_stays_a_server()
+ {
+    // The owner keeps a way into it or has swept it: whoever's it is, the owner uses it as a
+    // server, and it must stay counted, and offered for the sweep when it has an alias.
+    let h = Home::new(
+        "other-user-traces",
+        Some(SSH_CONFIG_SHARED),
+        Some(&format!("lab-box ssh-ed25519 {KEY}\n")),
+    );
+    let sweep = h.dir.0.join("store").join("sweep");
+    put(&sweep, "old-laptop.txt", &cut(WEB_1));
+    let tailscale = fake(&h.dir.0.join("bin").join("tailscale"), TAILNET_SHARED);
+    let printed = h.servers_with(&tailscale);
+    let report = h.run(&sweep, &tailscale);
+
+    let shared = printed
+        .lines()
+        .find(|l| l.starts_with("  shared "))
+        .unwrap_or_else(|| panic!("shared is not listed as a server: {printed}"));
+    assert!(
+        shared.contains("visits shared") && shared.contains("shared-box"),
+        "{shared}"
+    );
+    for server in ["  lab-box ", "  old-laptop "] {
+        assert!(
+            printed.lines().any(|l| l.starts_with(server)),
+            "{server} is not listed as a server: {printed}"
+        );
+    }
+    assert!(
+        printed.contains("\n6 servers known,") && printed.contains(" 1 as other users' devices,"),
+        "{printed}"
+    );
+    assert_eq!(
+        rows(&h.store(), SAME_AS),
+        ["machine:shared|machine:shared-box"]
+    );
+    assert!(
+        report.contains(" 6 servers known, 1 offered for the sweep"),
+        "{report}"
+    );
+    let page = view(&h.store());
+    let devices = section(&page, "machines")
+        .split("<details class=\"machine\">")
+        .find(|b| b.contains("Other users' devices</strong>"))
+        .expect("no list of other users' devices");
+    assert!(devices.contains("1 device ·"), "{devices}");
+}
+
+#[test]
+fn a_peer_whose_owner_the_status_does_not_give_is_treated_as_before() {
+    // Absence of a user is not evidence that a device is someone else's. Nor is a name
+    // that one of the owner's own devices also has.
+    let h = Home::new("owner-unknown", None, None);
+    let bin = h.dir.0.join("bin");
+    let unstated = fake(
+        &bin.join("unstated"),
+        r#"{ "BackendState": "Running",
+             "Self": { "HostName": "mac", "UserID": 1 },
+             "Peer": {
+               "nodekey:invented1": { "HostName": "no-owner", "TailscaleIPs": ["100.64.0.22"] },
+               "nodekey:invented2": { "HostName": "iphone", "TailscaleIPs": ["100.64.0.30"],
+                                      "UserID": 1 },
+               "nodekey:invented3": { "HostName": "iphone", "TailscaleIPs": ["100.64.0.31"],
+                                      "UserID": 3 } } }"#,
+    );
+    let report = h.run(&h.dir.0.join("absent"), &unstated);
+    assert!(rows(&h.store(), RELATION).is_empty());
+    assert!(report.contains(" 2 servers known,"), "{report}");
+
+    let no_self = fake(
+        &bin.join("no-self"),
+        r#"{ "BackendState": "Running", "Self": { "HostName": "mac" },
+             "Peer": { "nodekey:invented1": { "HostName": "friends-laptop",
+                                              "TailscaleIPs": ["100.64.0.20"], "UserID": 3 } } }"#,
+    );
+    let report = h.run(&h.dir.0.join("absent"), &no_self);
+    assert!(rows(&h.store(), RELATION).is_empty());
+    assert!(report.contains(" 1 server known,"), "{report}");
+}
+
+#[test]
+fn a_store_seeded_before_relation_to_owner_was_used_takes_it_without_a_rebuild() {
+    // The vocabulary is data: the owner's store keeps its journal when a reserved word comes
+    // into use.
+    let h = Home::new("relation-seed", None, None);
+    let tailscale = fake(&h.dir.0.join("bin").join("tailscale"), TAILNET_SHARED);
+    h.run(&h.dir.0.join("absent"), &tailscale);
+    let conn = Connection::open(h.store()).unwrap();
+    conn.execute_batch(
+        "DELETE FROM assertion WHERE predicate = 'relation_to_owner';
+         UPDATE predicate SET object_kind = NULL, status = 'reserved'
+             WHERE name = 'relation_to_owner';",
+    )
+    .unwrap();
+    drop(conn);
+
+    h.run(&h.dir.0.join("absent"), &tailscale);
+
+    assert_eq!(rows(&h.store(), RELATION).len(), 4);
+    assert_eq!(
+        rows(
+            &h.store(),
+            "SELECT object_kind, status FROM predicate WHERE name = 'relation_to_owner'"
+        ),
+        ["literal|used"]
+    );
+}
+
+/// A sweep file of a server that says only this about itself.
+fn with_own(names: &str, addresses: &str) -> String {
+    format!("##names\n{names}\n##addresses\n{addresses}\n{WEB_1}")
+}
+
+#[test]
+fn a_bare_host_name_a_sweep_file_shares_with_an_unrelated_alias_does_not_merge_them() {
+    // Servers give themselves short names that the owner's aliases for other servers also
+    // use. Merged, the server never read would look read.
+    let h = Home::new(
+        "bare-name",
+        Some("Host web-1\n    HostName 203.0.113.5\n"),
+        None,
+    );
+    let servers = h.dir.0.join("servers");
+    put(
+        &servers,
+        "db-1.txt",
+        &with_own("web-1", "eth0\t203.0.113.20/24"),
+    );
+    let report = h.run(&servers, &h.dir.0.join("no-tailscale"));
+
+    assert!(rows(&h.store(), SAME_AS).is_empty());
+    assert_eq!(
+        rows(
+            &h.store(),
+            "SELECT object FROM assertion WHERE layer = 'live'
+             AND subject = 'machine:db-1' AND predicate = 'known_as' ORDER BY object"
+        ),
+        ["203.0.113.20", "web-1"]
+    );
+    assert!(
+        report.contains("2 servers known, 1 offered for the sweep, 1 read."),
+        "{report}"
+    );
+}
+
+#[test]
+fn a_private_address_a_sweep_file_shares_with_an_unrelated_known_host_does_not_merge_them() {
+    // The same private address is a different machine in every other network.
+    let h = Home::new(
+        "private-address",
+        None,
+        Some(&format!("10.0.0.9 ssh-ed25519 {KEY}\n")),
+    );
+    let servers = h.dir.0.join("servers");
+    put(
+        &servers,
+        "db-1.txt",
+        &with_own("db-host", "eth0\t10.0.0.9/24"),
+    );
+    let report = h.run(&servers, &h.dir.0.join("no-tailscale"));
+
+    assert!(rows(&h.store(), SAME_AS).is_empty());
+    assert!(
+        report.contains("2 servers known, 0 offered for the sweep, 1 read."),
+        "{report}"
+    );
+}
+
+/// A tailnet peer whose name holds direction controls that would show `soc` reversed.
+const TAILNET_HIDDEN: &str = r#"{ "BackendState": "Running",
+  "Peer": { "nodekey:invented1": { "HostName": "odd\u202Ecos\u2066x\u2069",
+                                   "TailscaleIPs": ["100.64.0.40"] } } }"#;
+
+#[test]
+fn a_name_with_direction_controls_is_printed_and_shown_escaped_and_kept_as_read() {
+    // Text from a source is partly written by an attacker: printed raw, it can reorder or
+    // hide the rest of a terminal line or of the page.
+    let h = Home::new("hidden", None, None);
+    let tailscale = fake(&h.dir.0.join("bin").join("tailscale"), TAILNET_HIDDEN);
+    let printed = h.servers_with(&tailscale);
+    h.run(&h.dir.0.join("absent"), &tailscale);
+    let page = view(&h.store());
+
+    let escaped = "odd\\u{202e}cos\\u{2066}x\\u{2069}";
+    for (what, text) in [("soc servers", &printed), ("the view", &page)] {
+        assert!(text.contains(escaped), "{what}: {text}");
+        for c in ['\u{202E}', '\u{2066}', '\u{2069}'] {
+            assert!(!text.contains(c), "{what} holds {c:?}");
+        }
+    }
+    assert_eq!(
+        rows(
+            &h.store(),
+            "SELECT DISTINCT subject FROM assertion WHERE reader = 'tailnet'"
+        ),
+        ["machine:odd\u{202E}cos\u{2066}x\u{2069}"]
+    );
+}
+
+#[test]
+fn a_reason_from_a_source_is_printed_escaped() {
+    // A failed reading quotes its source in the one report line.
+    let h = Home::new("hidden-reason", None, None);
+    let tailscale = fake(
+        &h.dir.0.join("bin").join("tailscale"),
+        r#"{ "BackendState": "Need\u202ELogin" }"#,
+    );
+    let printed = h.servers_with(&tailscale);
+    let report = h.run(&h.dir.0.join("absent"), &tailscale);
+
+    let escaped = "its state is Need\\u{202e}Login";
+    for (what, text) in [("soc servers", &printed), ("soc run", &report)] {
+        assert!(
+            text.contains(escaped) && !text.contains('\u{202E}'),
+            "{what}: {text}"
+        );
+    }
+    assert_eq!(
+        rows(
+            &h.store(),
+            "SELECT reason FROM coverage WHERE kind = 'tailnet peers'"
+        ),
+        ["tailscale is not running, its state is Need\u{202E}Login"]
+    );
+}
+
+#[test]
+fn an_error_is_printed_escaped() {
+    // An argument or a path can hold the same characters as anything read.
+    let dir = Dir::new("hidden-error");
+    let errors = [
+        soc_cmd(&dir.0).args(["view", "--no\u{202E}pen"]).output(),
+        soc_cmd(&dir.0)
+            .args(["view", "--no-open", "--store"])
+            .arg(dir.0.join("a\u{202E}b").join("store.db"))
+            .output(),
+    ];
+    for out in errors {
+        let stderr = String::from_utf8(out.unwrap().stderr).unwrap();
+        assert!(
+            stderr.contains("\\u{202e}") && !stderr.contains('\u{202E}'),
+            "{stderr}"
+        );
+    }
 }
 
 #[test]
