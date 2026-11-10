@@ -56,7 +56,7 @@ struct Args {
     checkouts_root: Option<PathBuf>,
     /// The folder of agent sessions instead of Claude Code's own.
     sessions_root: Option<PathBuf>,
-    /// The one place to look for tailscale instead of PATH and the app.
+    /// The one place to look for tailscale instead of the usual ones.
     tailscale: Option<PathBuf>,
 }
 
@@ -231,9 +231,14 @@ struct ServerRow {
     traces: Vec<&'static str>,
     sweep: String,
     file: String,
+    /// The aliases the sweep may use, in the order of the ssh configuration. It visits the
+    /// first of them that is not in `skip.txt` when it runs.
     offered: Vec<String>,
     read: bool,
 }
+
+/// Where `soc servers` says a machine known only from its sweep file is known from.
+const SWEEP_FILE: &str = "sweep file";
 
 /// Finds the servers this machine knows, prints them, and writes the probe and the sweep
 /// script next to the store. Reads local files only; never writes to the store and never
@@ -242,27 +247,50 @@ fn servers_cmd(args: &ServersArgs) -> Result<(), Box<dyn Error>> {
     let dir = home(&args.store).join("sweep");
     let traces = [
         (
+            ssh_config::READER,
             ssh_config::KIND,
             ssh_config::BASIS,
             ssh_config::read(&args.home),
         ),
         (
+            known_hosts::READER,
             known_hosts::KIND,
             known_hosts::BASIS,
             known_hosts::read(&args.home),
         ),
         (
+            tailnet::READER,
             tailnet::KIND,
             tailnet::BASIS,
-            tailnet::read(args.tailscale.as_deref()),
+            tailnet::read(args.tailscale.as_deref(), &args.home),
         ),
     ];
     let mut known = Vec::new();
     let mut traces_of: BTreeMap<String, Vec<&'static str>> = BTreeMap::new();
     let mut names_of: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    let mut aliases = BTreeSet::new();
+    // Aliases in the order of the ssh configuration.
+    let mut aliases: Vec<String> = Vec::new();
     let (mut said, mut third_party) = (Vec::new(), 0);
-    for (kind, basis, found) in &traces {
+    let mut add = |id: &str, reader: &str, kind: &'static str, basis: &str, value: &str| {
+        let list = traces_of.entry(id.to_string()).or_default();
+        if !list.contains(&kind) {
+            list.push(kind);
+        }
+        if value.is_empty() {
+            return;
+        }
+        known.push(resolver::Known {
+            entity: id.to_string(),
+            value: value.to_string(),
+            basis: basis.to_string(),
+            reader: reader.to_string(),
+        });
+        names_of
+            .entry(id.to_string())
+            .or_default()
+            .insert(value.to_string());
+    };
+    for (reader, kind, basis, found) in &traces {
         match found {
             traces::Found::Absent(note) => said.push(format!("{kind}: nothing to read, {note}")),
             traces::Found::Failed(reason) => {
@@ -283,23 +311,35 @@ fn servers_cmd(args: &ServersArgs) -> Result<(), Box<dyn Error>> {
                 third_party += seen.third_party;
                 for host in &seen.hosts {
                     let id = format!("machine:{}", host.name);
-                    let list = traces_of.entry(id.clone()).or_default();
-                    if !list.contains(kind) {
-                        list.push(kind);
-                    }
+                    add(&id, reader, kind, basis, "");
                     for (value, _) in &host.known_as {
-                        known.push(resolver::Known {
-                            entity: id.clone(),
-                            value: value.clone(),
-                            basis: basis.to_string(),
-                        });
-                        names_of
-                            .entry(id.clone())
-                            .or_default()
-                            .insert(value.clone());
+                        add(&id, reader, kind, basis, value);
                     }
                     if *kind == ssh_config::KIND {
-                        aliases.insert(host.name.clone());
+                        aliases.push(host.name.clone());
+                    }
+                }
+            }
+        }
+    }
+    // Servers the sweep has read, each under the name of its file, with the names and
+    // addresses it gives itself: the same machines `soc run` knows from these files.
+    if dir.is_dir() {
+        match servers::inputs(&dir) {
+            Err(e) => said.push(format!("{SWEEP_FILE}s: could not be read, {e}")),
+            Ok(inputs) => {
+                said.push(format!(
+                    "{SWEEP_FILE}s: {}",
+                    things(inputs.len() as i64, "server", "servers")
+                ));
+                for input in inputs {
+                    let id = format!("machine:{}", input.name);
+                    add(&id, servers::READER, SWEEP_FILE, servers::BASIS, "");
+                    let text = String::from_utf8_lossy(input.raw.as_deref().unwrap_or_default());
+                    for o in servers::readings(&id, &text, "") {
+                        for s in o.statements.iter().filter(|s| s.predicate == "known_as") {
+                            add(&id, servers::READER, SWEEP_FILE, servers::BASIS, &s.object);
+                        }
                     }
                 }
             }
@@ -318,18 +358,30 @@ fn servers_cmd(args: &ServersArgs) -> Result<(), Box<dyn Error>> {
             .iter()
             .map(|m| m.strip_prefix("machine:").unwrap_or(m))
             .collect();
-        let with_alias: Vec<&str> = members
+        let with_alias: Vec<&str> = aliases
             .iter()
-            .copied()
-            .filter(|m| aliases.contains(*m))
+            .map(String::as_str)
+            .filter(|a| members.contains(a))
             .collect();
         let offered: Vec<String> = with_alias
             .iter()
             .filter(|a| sweep::not_offered(a, &skip).is_none())
             .map(|a| a.to_string())
             .collect();
-        let sweep = if !offered.is_empty() {
-            format!("offered as {}", offered.join(", "))
+        let sweep = if let Some(first) = offered.first() {
+            let rest: Vec<String> = with_alias
+                .iter()
+                .filter(|a| *a != first)
+                .map(|a| match sweep::not_offered(a, &skip) {
+                    Some(why) => format!("{a} ({why})"),
+                    None => a.to_string(),
+                })
+                .collect();
+            let mut sweep = format!("visits {first}");
+            if !rest.is_empty() {
+                sweep.push_str(&format!("; same machine, not visited: {}", rest.join(", ")));
+            }
+            sweep
         } else if let Some(alias) = with_alias.first() {
             format!(
                 "not offered: {}",
@@ -414,8 +466,8 @@ fn servers_cmd(args: &ServersArgs) -> Result<(), Box<dyn Error>> {
         &rest,
     );
 
-    let aliases_offered: Vec<String> = rows.iter().flat_map(|r| r.offered.clone()).collect();
-    sweep::write(&dir, &aliases_offered)?;
+    let machines: Vec<Vec<String>> = offered.iter().map(|r| r.offered.clone()).collect();
+    sweep::write(&dir, &machines)?;
     for line in &said {
         println!("{}{}.", line[..1].to_uppercase(), &line[1..]);
     }
@@ -427,6 +479,17 @@ fn servers_cmd(args: &ServersArgs) -> Result<(), Box<dyn Error>> {
         third_party,
         rows.iter().filter(|r| !r.read).count()
     );
+    let spare: usize = machines.iter().map(|m| m.len() - 1).sum();
+    if spare > 0 {
+        println!(
+            "The sweep visits each offered server once, through one alias; {} not visited.",
+            things(
+                spare as i64,
+                "alias of the same machine is",
+                "aliases of the same machines are"
+            )
+        );
+    }
     println!(
         "Wrote probe.sh and sweep.sh to {}. Nothing was run.",
         dir.display()
@@ -935,7 +998,7 @@ fn read_traces(run: &mut Run, args: &Args) -> Result<(), Box<dyn Error>> {
             tailnet::READER,
             tailnet::KIND,
             tailnet::BASIS,
-            tailnet::read(args.tailscale.as_deref()),
+            tailnet::read(args.tailscale.as_deref(), &args.home),
         ),
     ];
     let (run_id, machine) = (run.run_id.to_string(), run.machine.to_string());

@@ -1444,16 +1444,7 @@ fn only_plain_ssh_aliases_are_offered_for_the_sweep() {
 
     let sweep = h.dir.0.join("store").join("sweep");
     let script = std::fs::read_to_string(sweep.join("sweep.sh")).unwrap();
-    let listed: Vec<&str> = script
-        .split("servers='\n")
-        .nth(1)
-        .unwrap()
-        .split('\'')
-        .next()
-        .unwrap()
-        .lines()
-        .collect();
-    assert_eq!(listed, ["build", "web-1"]);
+    assert_eq!(listed(&script), ["build", "web-1"]);
     for absent in [
         "lab-",
         "code-mirror",
@@ -1470,6 +1461,353 @@ fn only_plain_ssh_aliases_are_offered_for_the_sweep() {
         "{printed}"
     );
     assert!(printed.contains("skip.txt"), "{printed}");
+}
+
+/// The machines the sweep script lists, one line each: its aliases, comma separated.
+fn listed(script: &str) -> Vec<&str> {
+    script
+        .split("machines='\n")
+        .nth(1)
+        .unwrap()
+        .split('\'')
+        .next()
+        .unwrap()
+        .lines()
+        .collect()
+}
+
+/// Runs the sweep script as the owner does, with a fake ssh that notes the alias it was
+/// asked for and answers like a complete probe. PATH holds only that fake and the tools the
+/// script needs, so no real ssh can be reached. Returns the aliases visited, in order.
+fn sweep_with_fake_ssh(sweep: &Path, bin: &Path) -> Vec<String> {
+    std::fs::create_dir_all(bin).unwrap();
+    for tool in ["sed", "grep", "tr", "dirname"] {
+        let link = bin.join(tool);
+        if !link.exists() {
+            std::os::unix::fs::symlink(Path::new("/usr/bin").join(tool), &link).unwrap();
+        }
+    }
+    let log = bin.join("visited.log");
+    let _ = std::fs::remove_file(&log);
+    script(
+        &bin.join("ssh"),
+        &format!("printf '%s\\n' \"$5\" >> '{}'\necho '##end'", log.display()),
+    );
+    Command::new("/bin/sh")
+        .arg(sweep.join("sweep.sh"))
+        .env_clear()
+        .env("PATH", bin)
+        .output()
+        .unwrap();
+    std::fs::read_to_string(&log)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+/// One server under two aliases. The alias written first sorts last, so the order of the
+/// configuration and the order of names cannot be confused.
+const SSH_CONFIG_TWO_ALIASES: &str = "\
+Host web-new
+    HostName 10.0.0.5
+Host web-1
+    HostName 10.0.0.5
+Host db-1
+    HostName 10.0.0.6
+";
+
+#[test]
+fn a_machine_known_under_two_aliases_is_visited_once_through_its_first_alias() {
+    // A machine visited under each of its aliases is read twice and stored twice with all
+    // it holds. The sweep goes in once, by the alias written first in the ssh configuration.
+    let h = Home::new("once", Some(SSH_CONFIG_TWO_ALIASES), None);
+    let printed = h.servers();
+
+    let sweep = h.dir.0.join("store").join("sweep");
+    let script = std::fs::read_to_string(sweep.join("sweep.sh")).unwrap();
+    assert_eq!(listed(&script), ["db-1", "web-new,web-1"]);
+    assert!(
+        printed.contains("visits web-new; same machine, not visited: web-1"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("1 alias of the same machine is not visited."),
+        "{printed}"
+    );
+    assert_eq!(
+        sweep_with_fake_ssh(&sweep, &h.dir.0.join("bin")),
+        ["db-1", "web-new"]
+    );
+}
+
+#[test]
+fn an_alias_in_skip_txt_is_never_visited_even_when_added_after_the_script_was_written() {
+    // The owner keeps a server out of the sweep by listing it, and may do so after
+    // `soc servers` wrote the script. A listed alias is never visited; its machine is visited
+    // through its next alias, or not at all.
+    let h = Home::new("skip", Some(SSH_CONFIG_TWO_ALIASES), None);
+    let sweep = h.dir.0.join("store").join("sweep");
+    let bin = h.dir.0.join("bin");
+    put(&sweep, "skip.txt", "db-1\n");
+    let printed = h.servers();
+    let script = std::fs::read_to_string(sweep.join("sweep.sh")).unwrap();
+    assert_eq!(listed(&script), ["web-new,web-1"]);
+    assert!(!script.contains("db-1"), "{script}");
+    assert!(
+        printed.contains("not offered: listed in skip.txt"),
+        "{printed}"
+    );
+
+    // Added later, with the spaces and line ending an editor may leave around it.
+    put(&sweep, "skip.txt", "db-1\n  web-new \r\n");
+    assert_eq!(sweep_with_fake_ssh(&sweep, &bin), ["web-1"]);
+    put(&sweep, "skip.txt", "db-1\nweb-new\nweb-1\n");
+    assert!(sweep_with_fake_ssh(&sweep, &bin).is_empty());
+    // A list that cannot be read could name any alias.
+    put(&sweep, "skip.txt", "db-1\n");
+    let _locked = Locked::new(sweep.join("skip.txt"));
+    assert!(sweep_with_fake_ssh(&sweep, &bin).is_empty());
+}
+
+/// A server file whose probe also printed the server's own names and addresses, as
+/// `ip -o addr show` gives them: loopback, link-local, and a bridge of every kind the
+/// reader knows, next to the server's one real address.
+fn with_identity(name: &str, address: &str) -> String {
+    format!(
+        "\
+##names
+{name}
+{name}.example.org
+##addresses
+lo\t127.0.0.1/8
+lo\t::1/128
+eth0\t{address}/24
+eth0\tfe80::5054:ff:fe12:3456/64
+eth1\t169.254.10.20/16
+docker0\t172.17.0.1/16
+br-0a1b2c3d4e5f\t172.18.0.1/16
+virbr0\t192.168.122.1/24
+lxcbr0\t10.0.3.1/24
+lxdbr0\t10.10.10.1/24
+podman0\t10.88.0.1/16
+cni0\t10.244.0.1/24
+flannel.1\t10.244.0.0/32
+cali0a1b2c3d4e5\t10.250.0.1/32
+cilium_host\t10.0.0.120/32
+kube-ipvs0\t10.96.0.1/32
+{WEB_1}"
+    )
+}
+
+const SAME_AS: &str = "SELECT subject, object FROM assertion
+                       WHERE layer = 'live' AND predicate = 'same_as' ORDER BY subject";
+
+#[test]
+fn a_sweep_file_under_another_name_is_a_reading_of_the_machine_the_traces_know_by_its_address() {
+    // A file named after an old name of a server must not leave the server "never read"
+    // and counted twice. The server says what it is, and the resolver links it.
+    let h = Home::new("identity", Some(SSH_CONFIG), None);
+    let servers = h.dir.0.join("servers");
+    put(
+        &servers,
+        "old-name.txt",
+        &with_identity("web-host", "10.0.0.5"),
+    );
+    let report = h.run(&servers, &h.dir.0.join("no-tailscale"));
+
+    assert_eq!(
+        rows(&h.store(), SAME_AS),
+        ["machine:old-name|machine:web-1"]
+    );
+    assert_eq!(
+        rows(
+            &h.store(),
+            "SELECT object, basis FROM assertion WHERE layer = 'live'
+             AND subject = 'machine:old-name' AND kind = 'own names and addresses'
+             AND predicate = 'known_as' ORDER BY object"
+        ),
+        [
+            "10.0.0.5|observed",
+            "web-host|observed",
+            "web-host.example.org|observed"
+        ]
+    );
+    assert!(
+        report.contains("3 servers known, 3 offered for the sweep, 1 read."),
+        "{report}"
+    );
+    // Tailscale that is not here has nothing to read and is no failure.
+    assert_eq!(
+        rows(
+            &h.store(),
+            "SELECT completeness, reason FROM coverage WHERE kind = 'tailnet peers'"
+        ),
+        ["full|Tailscale is not installed on this machine"]
+    );
+    assert!(!report.contains("ailscale"), "{report}");
+}
+
+#[test]
+fn two_servers_that_share_only_loopback_link_local_bridge_addresses_or_a_default_name_stay_two() {
+    // Unrelated servers share 127.0.0.1, link-local addresses, the docker bridge and often
+    // a default host name. A link through them would silently fold one server into another.
+    let dir = Dir::new("not-same");
+    let servers = dir.0.join("servers");
+    put(&servers, "a.txt", &with_identity("ubuntu", "203.0.113.10"));
+    put(&servers, "b.txt", &with_identity("ubuntu", "203.0.113.20"));
+    let report = soc_all(
+        &dir.store(),
+        &dir.input("brew.txt", SAMPLE),
+        &servers,
+        &dir.0.join("absent"),
+    );
+
+    assert!(rows(&dir.store(), SAME_AS).is_empty());
+    assert_eq!(
+        rows(
+            &dir.store(),
+            "SELECT object FROM assertion WHERE layer = 'live'
+             AND subject = 'machine:a' AND predicate = 'known_as' ORDER BY object"
+        ),
+        ["203.0.113.10", "ubuntu", "ubuntu.example.org"]
+    );
+    assert!(report.contains("2 servers known"), "{report}");
+}
+
+#[test]
+fn one_server_swept_under_two_names_is_one_machine() {
+    // Two files that give exactly the same names and addresses are one server read twice.
+    let dir = Dir::new("same-server");
+    let servers = dir.0.join("servers");
+    put(
+        &servers,
+        "a.txt",
+        &with_identity("web-host", "203.0.113.10"),
+    );
+    put(
+        &servers,
+        "b.txt",
+        &with_identity("web-host", "203.0.113.10"),
+    );
+    let report = soc_all(
+        &dir.store(),
+        &dir.input("brew.txt", SAMPLE),
+        &servers,
+        &dir.0.join("absent"),
+    );
+
+    assert_eq!(rows(&dir.store(), SAME_AS), ["machine:a|machine:b"]);
+    assert!(report.contains("1 server known"), "{report}");
+}
+
+#[test]
+fn a_server_whose_addresses_could_not_be_listed_keeps_the_addresses_read_before() {
+    // A probe that found no tool to list addresses saw none, which is not a server without
+    // addresses: the links they make must not go, and the reading must not look complete.
+    let dir = Dir::new("no-addresses");
+    let servers = dir.0.join("servers");
+    let brew = dir.input("brew.txt", SAMPLE);
+    let absent = dir.0.join("absent");
+    put(
+        &servers,
+        "a.txt",
+        &with_identity("web-host", "203.0.113.10"),
+    );
+    soc_all(&dir.store(), &brew, &servers, &absent);
+    // No domain: `uname -n` and `hostname -f` print the same name, here with stray blanks.
+    put(
+        &servers,
+        "a.txt",
+        &format!("##names\nweb-host\n web-host \n\n##addresses\n{WEB_1}"),
+    );
+    soc_all(&dir.store(), &brew, &servers, &absent);
+
+    assert_eq!(
+        rows(
+            &dir.store(),
+            "SELECT object FROM assertion WHERE layer = 'live'
+             AND subject = 'machine:a' AND predicate = 'known_as' ORDER BY object"
+        ),
+        ["203.0.113.10", "web-host", "web-host.example.org"]
+    );
+    assert_eq!(
+        rows(
+            &dir.store(),
+            "SELECT completeness, reason FROM coverage WHERE kind = 'own names and addresses'
+             ORDER BY id DESC LIMIT 1"
+        ),
+        ["partial|the server's addresses could not be listed"]
+    );
+}
+
+#[test]
+fn a_file_from_an_older_probe_is_still_read_and_links_to_nothing() {
+    // Files the owner already has were written before the probe said who the server is.
+    let dir = Dir::new("older-probe");
+    let servers = dir.0.join("servers");
+    put(&servers, "a.txt", WEB_1);
+    put(&servers, "b.txt", WEB_1);
+    soc_all(
+        &dir.store(),
+        &dir.input("brew.txt", SAMPLE),
+        &servers,
+        &dir.0.join("absent"),
+    );
+
+    assert_eq!(
+        rows(
+            &dir.store(),
+            "SELECT scope, kind, completeness FROM coverage
+             WHERE reader = 'servers' AND scope LIKE 'machine:%' ORDER BY scope, kind"
+        ),
+        [
+            "machine:a|containers|full",
+            "machine:a|system packages|full",
+            "machine:b|containers|full",
+            "machine:b|system packages|full",
+        ]
+    );
+    assert!(rows(&dir.store(), SAME_AS).is_empty());
+}
+
+#[test]
+fn soc_servers_and_soc_run_count_the_same_servers() {
+    // Two commands that disagree on how many servers the owner has leave the owner unable
+    // to trust either. A server known only from its sweep file is listed as such.
+    let h = Home::new("counts", Some(SSH_CONFIG), Some(&known_hosts_file()));
+    let sweep = h.dir.0.join("store").join("sweep");
+    put(&sweep, "web-1.txt", &with_identity("web-host", "10.0.0.5"));
+    put(
+        &sweep,
+        "web-old.txt",
+        &with_identity("web-host", "10.0.0.5"),
+    );
+    put(&sweep, "old-db.txt", WEB_1);
+    let tailscale = fake(&h.dir.0.join("bin").join("tailscale"), TAILNET);
+
+    let printed = ok(soc_cmd(&h.home)
+        .args(["servers", "--store"])
+        .arg(h.store())
+        .arg("--tailscale")
+        .arg(&tailscale));
+    let report = h.run(&sweep, &tailscale);
+
+    assert!(printed.contains("\n7 servers known,"), "{printed}");
+    assert!(report.contains(" 7 servers known,"), "{report}");
+    let old = printed
+        .lines()
+        .find(|l| l.starts_with("  old-db "))
+        .expect("old-db is not listed");
+    assert!(old.contains("sweep file"), "{old}");
+    let web = printed
+        .lines()
+        .find(|l| l.starts_with("  web-1 "))
+        .expect("web-1 is not listed");
+    assert!(
+        web.contains("web-old") && web.contains("read, taken"),
+        "{web}"
+    );
 }
 
 #[test]

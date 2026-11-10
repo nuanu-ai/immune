@@ -21,6 +21,17 @@ pub const WORDPRESS: &str = "wordpress core version";
 /// What is inside a container as a whole. Only the two kinds above are read, so this
 /// reading is never full and makes no assertions: nothing may claim a container was read.
 pub const CONTENTS: &str = "container contents";
+/// The names and addresses the server gives itself. A file from a probe that did not print
+/// them has no such reading and links to nothing.
+pub const IDENTITY: &str = "own names and addresses";
+
+/// Interfaces of container networks and virtual bridges, by the prefixes Docker, libvirt,
+/// LXC, LXD, Podman and Kubernetes give them. Their addresses repeat from server to server,
+/// so they name no one machine.
+const BRIDGES: [&str; 11] = [
+    "docker", "br-", "virbr", "lxcbr", "lxdbr", "podman", "cni", "flannel", "cali", "cilium",
+    "kube",
+];
 
 const NOT_COMPLETE: &str = "the sweep of this server did not complete";
 const NO_RIGHTS: &str = "no rights to list containers";
@@ -149,6 +160,37 @@ pub fn readings(machine: &str, text: &str, raw_file: &str) -> Vec<Outcome> {
     };
     let mut out = Vec::new();
 
+    // The server's own names and addresses. Loopback, link-local and bridge addresses are
+    // the same on unrelated servers and are left out: they would join them into one.
+    // A name printed twice, as `uname -n` and `hostname -f` often are, is kept once by the
+    // lifecycle, which promotes one of the repeated statements.
+    if s.contains_key("names") {
+        let mut st: Vec<Statement> = Vec::new();
+        for (n, line) in s.get("names").map(Vec::as_slice).unwrap_or_default() {
+            let line = line.trim();
+            if !line.is_empty() {
+                say(&mut st, machine, "known_as", line, *n);
+            }
+        }
+        let addresses = pairs(&s, "addresses");
+        for (n, interface, address) in &addresses {
+            if let Some(address) = own_address(interface, address) {
+                say(&mut st, machine, "known_as", &address, *n);
+            }
+        }
+        out.push(if addresses.is_empty() {
+            Outcome {
+                scope: machine.to_string(),
+                kind: IDENTITY,
+                completeness: "partial",
+                reason: Some("the server's addresses could not be listed".to_string()),
+                statements: st,
+            }
+        } else {
+            full(machine, IDENTITY, st)
+        });
+    }
+
     // System packages, with the system itself.
     let dpkg = pairs(&s, "dpkg");
     if !s.contains_key("dpkg") {
@@ -273,6 +315,22 @@ pub fn readings(machine: &str, text: &str, raw_file: &str) -> Vec<Outcome> {
         });
     }
     out
+}
+
+/// An address the server has on one of its interfaces, as the resolver compares it, or
+/// `None` when it names no one machine: loopback, link-local, or the address of a
+/// container bridge.
+fn own_address(interface: &str, address: &str) -> Option<String> {
+    if BRIDGES.iter().any(|b| interface.starts_with(b)) {
+        return None;
+    }
+    let address = address.split(['/', '%']).next().unwrap_or(address);
+    let ip: std::net::IpAddr = address.parse().ok()?;
+    let local = match ip {
+        std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_link_local(),
+        std::net::IpAddr::V6(v6) => v6.is_loopback() || v6.segments()[0] & 0xffc0 == 0xfe80,
+    };
+    (!local).then(|| ip.to_string())
 }
 
 /// The readings of a file that could not be read at all.

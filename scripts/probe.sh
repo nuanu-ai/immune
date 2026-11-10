@@ -5,6 +5,13 @@
 echo "##taken_at"; date -u +%s
 echo "##os"; [ -r /etc/os-release ] && . /etc/os-release; echo "$PRETTY_NAME"
 echo "##kernel"; uname -r
+# The server's own names, one per line, and addresses, one `<interface>\t<address>` per
+# line, with `ip` or else `ifconfig`. They tie this file to the machine this Mac knows.
+echo "##names"; uname -n; command -v hostname >/dev/null 2>&1 && hostname -f 2>/dev/null
+echo "##addresses"; A=""
+command -v ip >/dev/null 2>&1 && A=$(ip -o addr show 2>/dev/null | awk '{print $2"\t"$4}')
+[ -z "$A" ] && command -v ifconfig >/dev/null 2>&1 && A=$(ifconfig -a 2>/dev/null | awk '/^[^ \t]/{i=$1; sub(/:$/,"",i)} $1=="inet"||$1=="inet6"{a=$2; if(a=="addr:")a=$3; sub(/^addr:/,"",a); print i"\t"a}')
+[ -n "$A" ] && printf '%s\n' "$A"
 echo "##reboot_required"; [ -f /var/run/reboot-required ] && echo yes || echo no
 echo "##pve"; command -v pveversion >/dev/null 2>&1 && pveversion 2>/dev/null
 echo "##dpkg"; dpkg-query -W -f='${Package}\t${Version}\n' 2>/dev/null

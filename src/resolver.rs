@@ -7,8 +7,13 @@
 //! known by the same name or address. Names compare without case, addresses exactly; a
 //! trailing dot and a port are ignored. Loopback says nothing about which machine is meant
 //! and is not evidence.
+//!
+//! A server names itself in its sweep file, and unrelated servers share default host names
+//! and private addresses. So a value that two sweep files report about themselves is
+//! evidence only when the two report exactly the same names and addresses; otherwise it
+//! links nothing at all.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 
 pub const READER: &str = "resolver";
@@ -19,6 +24,7 @@ pub struct Known {
     pub entity: String,
     pub value: String,
     pub basis: String,
+    pub reader: String,
 }
 
 /// Two entities that are one machine, with what they share.
@@ -69,10 +75,23 @@ fn rank(basis: &str) -> u8 {
 
 /// Every pair of entities that share a name or address, each pair once, `a` before `b`.
 pub fn links(known: &[Known]) -> Vec<Link> {
+    // What each sweep file says its server is.
+    let mut own: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
+    for k in known.iter().filter(|k| k.reader == crate::servers::READER) {
+        if let Some(key) = key(&k.value) {
+            own.entry(k.entity.as_str()).or_default().insert(key);
+        }
+    }
+    let ambiguous = |key: &str| {
+        let sets: Vec<&BTreeSet<String>> = own.values().filter(|s| s.contains(key)).collect();
+        sets.windows(2).any(|w| w[0] != w[1])
+    };
     // Key -> entity -> its strongest basis for that key.
     let mut by_key: BTreeMap<String, BTreeMap<&str, &str>> = BTreeMap::new();
     for k in known {
-        let Some(key) = key(&k.value) else { continue };
+        let Some(key) = key(&k.value).filter(|key| !ambiguous(key)) else {
+            continue;
+        };
         let basis = by_key
             .entry(key)
             .or_default()

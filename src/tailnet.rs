@@ -3,7 +3,14 @@
 //! operating system, and nothing else: no keys, no user names.
 //!
 //! Tailscale that is not installed has nothing to read. Tailscale that is installed and
-//! does not answer, or is logged out, could not be read.
+//! stopped or logged out could not be read, and says so. Tailscale whose command cannot
+//! reach the daemon could not be read either; the reason names each way that was tried.
+//!
+//! The command is looked for on PATH, in the app in `/Applications` and in the user's own
+//! `Applications`, and in the Homebrew prefixes. A daemon started by hand may listen on a
+//! socket of its own, given to it as `--socket=<path>`: when the command cannot reach the
+//! daemon on the default socket, the sockets of running `tailscaled` processes are tried.
+//! Of the process list only the value of `--socket` of a `tailscaled` process is taken.
 
 use crate::traces::{Extract, Found, Seen, code_hosting, note};
 use serde_json::Value;
@@ -17,55 +24,133 @@ pub const KIND: &str = "tailnet peers";
 pub const BASIS: &str = "observed";
 pub const NOT_INSTALLED: &str = "Tailscale is not installed on this machine";
 
-/// Where the Tailscale app keeps its command when it is not on PATH.
-const IN_APP: &str = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
+/// Where the Tailscale app keeps its command, under `/Applications` or the user's own.
+const IN_APP: &str = "Applications/Tailscale.app/Contents/MacOS/Tailscale";
+/// Where Homebrew puts commands on Apple Silicon and on Intel.
+const BREW: [&str; 2] = ["/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale"];
 const TIMEOUT: Duration = Duration::from_secs(10);
+/// How much of the tool's own error a reason keeps.
+const SHORT: usize = 80;
 
-/// `at` is the one place to look for the command instead of PATH and the app.
-pub fn read(at: Option<&Path>) -> Found {
-    let Some(cli) = find(at) else {
+/// `at` is the one place to look for the command instead of the usual ones.
+pub fn read(at: Option<&Path>, home: &Path) -> Found {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    read_from(&candidates(at, home, &path), processes)
+}
+
+/// Where to look for the command, in order.
+fn candidates(at: Option<&Path>, home: &Path, path: &std::ffi::OsStr) -> Vec<PathBuf> {
+    if let Some(at) = at {
+        return vec![at.to_path_buf()];
+    }
+    std::env::split_paths(path)
+        .map(|dir| dir.join("tailscale"))
+        .chain([Path::new("/").join(IN_APP), home.join(IN_APP)])
+        .chain(BREW.map(PathBuf::from))
+        .collect()
+}
+
+/// The command lines of running processes, or nothing when they cannot be listed.
+fn processes() -> String {
+    Command::new("/bin/ps")
+        .args(["-axww", "-o", "args="])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
+}
+
+/// The `--socket` values of `tailscaled` processes, and nothing else of the list.
+fn sockets(processes: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in processes.lines() {
+        let mut words = line.split_whitespace();
+        let program = words.next().unwrap_or("");
+        if program.rsplit('/').next() != Some("tailscaled") {
+            continue;
+        }
+        // Go flags: `--socket=<path>`, `-socket=<path>`, or the path as the next word.
+        let socket = |flag: &str| flag == "--socket" || flag == "-socket";
+        while let Some(word) = words.next() {
+            let value = match word.split_once('=') {
+                Some((flag, value)) if socket(flag) => Some(value),
+                None if socket(word) => words.next(),
+                _ => None,
+            };
+            if let Some(value) = value.filter(|v| !v.is_empty())
+                && !out.iter().any(|s| s == value)
+            {
+                out.push(value.to_string());
+            }
+        }
+    }
+    out
+}
+
+fn read_from(candidates: &[PathBuf], processes: impl Fn() -> String) -> Found {
+    let Some(cli) = candidates.iter().find(|path| path.is_file()) else {
         return Found::Absent(NOT_INSTALLED);
     };
-    let (status, stdout, stderr) = match run(&cli) {
-        Ok(out) => out,
-        Err(e) => return Found::Failed(e),
-    };
-    if !status {
-        let first = stderr.lines().next().unwrap_or("").trim().to_string();
-        return Found::Failed(format!("tailscale status failed: {first}"));
+    let mut tried = Vec::new();
+    let mut ways = vec![None];
+    let mut asked = false;
+    while let Some(socket) = ways.pop() {
+        match run(cli, socket.as_deref()) {
+            Ok((true, stdout, _)) => {
+                return match parse(&stdout) {
+                    Ok(seen) => Found::Read(seen),
+                    Err(e) => Found::Failed(e),
+                };
+            }
+            Ok((false, _, stderr)) => tried.push((socket, short(&stderr))),
+            Err(e) => tried.push((socket, e)),
+        }
+        if !asked {
+            asked = true;
+            ways = sockets(&processes()).into_iter().rev().map(Some).collect();
+        }
     }
-    match parse(&stdout) {
-        Ok(seen) => Found::Read(seen),
-        Err(e) => Found::Failed(e),
-    }
-}
-
-fn find(at: Option<&Path>) -> Option<PathBuf> {
-    if let Some(path) = at {
-        return path.is_file().then(|| path.to_path_buf());
-    }
-    let on_path: Vec<PathBuf> = std::env::var_os("PATH")
-        .map(|p| {
-            std::env::split_paths(&p)
-                .map(|dir| dir.join("tailscale"))
-                .collect()
-        })
-        .unwrap_or_default();
-    on_path
+    let ways: Vec<String> = tried
         .into_iter()
-        .chain([PathBuf::from(IN_APP)])
-        .find(|path| path.is_file())
+        .map(|(socket, why)| match socket {
+            None => format!("on the default socket ({why})"),
+            Some(socket) => format!("on the socket {socket} of a running tailscaled ({why})"),
+        })
+        .collect();
+    Found::Failed(format!(
+        "tailscale could not reach its daemon {}",
+        ways.join("; nor ")
+    ))
 }
 
-/// Runs `status --json` and gives up after the timeout: a stuck daemon must not stop a run.
-fn run(cli: &Path) -> Result<(bool, String, String), String> {
-    let mut child = Command::new(cli)
+/// The gist of a tool's error: the last part of its first line, cut short.
+fn short(stderr: &str) -> String {
+    let first = stderr.lines().map(str::trim).find(|l| !l.is_empty());
+    let Some(first) = first else {
+        return "no reason given".to_string();
+    };
+    let gist = first.rsplit(": ").next().unwrap_or(first).trim();
+    match gist.char_indices().nth(SHORT) {
+        Some((i, _)) => format!("{}…", &gist[..i]),
+        None => gist.to_string(),
+    }
+}
+
+/// Runs `status --json`, on the given socket if any, and gives up after the timeout: a
+/// stuck daemon must not stop a run.
+fn run(cli: &Path, socket: Option<&str>) -> Result<(bool, String, String), String> {
+    let mut command = Command::new(cli);
+    if let Some(socket) = socket {
+        command.arg(format!("--socket={socket}"));
+    }
+    let mut child = command
         .args(["status", "--json"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("cannot run {}: {e}", cli.display()))?;
+        .map_err(|e| format!("cannot run it: {e}"))?;
     let pipe = |r: Option<Box<dyn Read + Send>>| {
         std::thread::spawn(move || {
             let mut buf = Vec::new();
@@ -97,12 +182,9 @@ fn run(cli: &Path) -> Result<(bool, String, String), String> {
             Ok(None) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!(
-                    "tailscale status did not answer in {} seconds",
-                    TIMEOUT.as_secs()
-                ));
+                return Err(format!("no answer in {} seconds", TIMEOUT.as_secs()));
             }
-            Err(e) => return Err(format!("tailscale status: {e}")),
+            Err(e) => return Err(format!("cannot wait for it: {e}")),
         }
     };
     let (out, err) = (
@@ -183,4 +265,139 @@ pub fn parse(json: &str) -> Result<Seen, String> {
         partial: None,
         third_party,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    //! Tailscale as it is installed in different ways. The command is a fake shell script
+    //! and the process list an invented sample: no test asks the real tailscale or reads the
+    //! real process list.
+
+    use super::*;
+
+    const PEERS: &str = r#"{ "BackendState": "Running", "Peer": {
+        "nodekey:invented": { "HostName": "build-box", "DNSName": "build-box.example-tail.ts.net.",
+                              "TailscaleIPs": ["100.64.0.7"], "OS": "linux" } } }"#;
+
+    /// A folder of its own for one test.
+    fn folder(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("soc-tailnet-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A fake `tailscale` with this shell body.
+    fn command(dir: &Path, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("tailscale");
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    /// What the real command says when it finds no daemon on the socket it was given.
+    const UNREACHABLE: &str = "echo 'failed to connect to local tailscaled (which appears to be running as tailscaled, pid 4242). Got error: Failed to connect to local Tailscale daemon for /localapi/v0/status; not running? Error: dial unix /var/run/tailscaled.socket: connect: no such file or directory' >&2
+echo 'second line of noise' >&2
+exit 1";
+
+    #[test]
+    fn a_daemon_started_by_hand_on_its_own_socket_is_read() {
+        // The owner's tailnet must be read however the daemon was started; a daemon on its
+        // own socket looks to plain `tailscale status` like no daemon at all.
+        let dir = folder("socket");
+        let cli = command(
+            &dir,
+            &format!(
+                "if [ \"$1\" = --socket=/invented/run/tailscaled.sock ]; then cat <<'END'\n{PEERS}\nEND\nexit 0; fi\n{UNREACHABLE}"
+            ),
+        );
+        let ps = "/usr/sbin/invented-daemon --socket=/elsewhere.sock\n\
+                  /invented/bin/tailscaled --state=/invented/state/tailscaled.state --socket=/invented/run/tailscaled.sock --port=41641\n";
+        let Found::Read(seen) = read_from(&[cli], || ps.to_string()) else {
+            panic!("the tailnet was not read");
+        };
+        let names: Vec<&str> = seen.hosts.iter().map(|h| h.name.as_str()).collect();
+        assert_eq!(names, ["build-box"]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_daemon_that_cannot_be_reached_is_a_failed_reading_naming_each_way_tried_in_one_short_line()
+    {
+        // The reason goes into the one report line. It must say what was tried and why it
+        // failed without the tool's whole error, and nothing else from the process list.
+        let dir = folder("unreachable");
+        let cli = command(&dir, UNREACHABLE);
+        let ps = "/invented/bin/tailscaled -socket /invented/a.sock --state=/invented/secret-state\n\
+                  /usr/bin/invented-tool --socket=/invented/not-tailscale.sock\n\
+                  tailscaled --socket=/invented/b.sock\n\
+                  tailscaled --socket=/invented/b.sock\n";
+        let Found::Failed(reason) = read_from(&[cli], || ps.to_string()) else {
+            panic!("an unreachable daemon was not a failed reading");
+        };
+        assert_eq!(
+            reason,
+            "tailscale could not reach its daemon on the default socket (no such file or directory); \
+             nor on the socket /invented/a.sock of a running tailscaled (no such file or directory); \
+             nor on the socket /invented/b.sock of a running tailscaled (no such file or directory)"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_long_error_is_cut_short() {
+        // One report line, however much the tool says.
+        let long = format!("Error: {}", "x".repeat(200));
+        assert_eq!(short(&long), format!("{}…", "x".repeat(SHORT)));
+        assert_eq!(short(""), "no reason given");
+    }
+
+    #[test]
+    fn tailscale_that_is_stopped_or_logged_out_is_a_failed_reading_with_its_state() {
+        // A stopped tailnet is not an empty one: its peers are unknown, not gone.
+        let dir = folder("stopped");
+        let cli = command(
+            &dir,
+            "echo '{ \"BackendState\": \"NeedsLogin\", \"Peer\": {} }'",
+        );
+        let Found::Failed(reason) = read_from(&[cli], String::new) else {
+            panic!("a logged out tailnet was read");
+        };
+        assert_eq!(reason, "tailscale is not running, its state is NeedsLogin");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn tailscale_that_is_not_installed_is_not_applicable() {
+        // Not installed is not a failure; a running daemon without a command changes nothing.
+        let dir = folder("absent");
+        let found = read_from(&[dir.join("tailscale")], || {
+            "tailscaled --socket=/invented/a.sock\n".to_string()
+        });
+        assert!(matches!(found, Found::Absent(NOT_INSTALLED)));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_command_is_looked_for_wherever_tailscale_is_installed() {
+        // On PATH, in the app in either Applications folder, or from Homebrew; an explicit
+        // place replaces them all.
+        let home = Path::new("/Users/invented");
+        let path = std::ffi::OsString::from("/invented/bin:/invented/sbin");
+        assert_eq!(
+            candidates(None, home, &path),
+            [
+                "/invented/bin/tailscale",
+                "/invented/sbin/tailscale",
+                "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+                "/Users/invented/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+                "/opt/homebrew/bin/tailscale",
+                "/usr/local/bin/tailscale",
+            ]
+            .map(PathBuf::from)
+        );
+        let at = Path::new("/invented/tailscale");
+        assert_eq!(candidates(Some(at), home, &path), [at.to_path_buf()]);
+    }
 }

@@ -134,7 +134,8 @@ INSERT OR IGNORE INTO coverage_kind (name) VALUES
     ('system packages'), ('containers'), ('container version variables'),
     ('wordpress core version'), ('container contents'),
     ('ssh configuration'), ('known hosts'), ('tailnet peers'),
-    ('machines under several names'), ('checkouts in agent working folders');
+    ('machines under several names'), ('checkouts in agent working folders'),
+    ('own names and addresses');
 ";
 
 /// One reading: which reader looked for which kind of thing in which scope.
@@ -387,7 +388,7 @@ pub fn machine_groups(conn: &Connection) -> rusqlite::Result<Vec<Vec<String>>> {
 /// Live `known_as` assertions, which the resolver works from.
 pub fn live_known_as(conn: &Connection) -> rusqlite::Result<Vec<resolver::Known>> {
     conn.prepare(
-        "SELECT subject, object, basis FROM assertion
+        "SELECT subject, object, basis, reader FROM assertion
          WHERE layer = 'live' AND predicate = 'known_as' ORDER BY subject, object",
     )?
     .query_map([], |r| {
@@ -395,6 +396,7 @@ pub fn live_known_as(conn: &Connection) -> rusqlite::Result<Vec<resolver::Known>
             entity: r.get(0)?,
             value: r.get(1)?,
             basis: r.get(2)?,
+            reader: r.get(3)?,
         })
     })?
     .collect()

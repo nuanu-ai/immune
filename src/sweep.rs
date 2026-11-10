@@ -4,7 +4,10 @@
 //!
 //! Only servers with a current, explicit way in are offered: plain aliases of the ssh
 //! configuration, which has already left code hosting out. An alias listed in `skip.txt`
-//! is not offered.
+//! is not offered. A machine known under several aliases is visited once, through the
+//! first of them in the order of the ssh configuration that is not in `skip.txt`. The
+//! script checks `skip.txt` again when it runs, so an alias added there later is not
+//! visited either, and the machine's next alias is used instead.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -42,28 +45,37 @@ pub fn not_offered(alias: &str, skip: &BTreeSet<String>) -> Option<&'static str>
     None
 }
 
-/// The script that visits each alias. It never stops at a server that fails.
-pub fn script(aliases: &[String]) -> String {
+/// The script that visits each machine once. `machines` holds each machine's aliases in the
+/// order of the ssh configuration. It never stops at a server that fails.
+pub fn script(machines: &[Vec<String>]) -> String {
     let mut out = String::from(
         "#!/bin/sh
 # Written by `soc servers`. Run it yourself: it visits each server below over ssh and
 # runs probe.sh there, which only reads. Each server leaves <alias>.txt next to this
 # script for `soc run`. A server that fails is reported and the others go on.
-# Aliases listed in skip.txt next to this script, one per line, are not visited.
+# Each line below is one machine and its aliases, comma separated. The machine is visited
+# once, through the first of them that is not listed in skip.txt next to this script.
 cd \"$(dirname \"$0\")\" || exit 1
-servers='
+if [ -e skip.txt ] && ! [ -r skip.txt ]; then echo 'skip.txt cannot be read; nothing was visited.'; exit 1; fi
+machines='
 ",
     );
-    for alias in aliases {
-        out.push_str(alias);
+    for aliases in machines {
+        out.push_str(&aliases.join(","));
         out.push('\n');
     }
     out.push_str(
         "'
+skipped() {
+  [ -f skip.txt ] && sed 's/^[[:space:]]*//; s/[[:space:]]*$//' skip.txt | grep -qxF -- \"$1\"
+}
 todo=''
-for alias in $servers; do
-  if [ -f skip.txt ] && grep -qxF -- \"$alias\" skip.txt; then continue; fi
-  todo=\"$todo $alias\"
+for machine in $machines; do
+  for alias in $(echo \"$machine\" | tr ',' ' '); do
+    if skipped \"$alias\"; then continue; fi
+    todo=\"$todo $alias\"
+    break
+  done
 done
 echo \"Servers to visit:${todo:- none}\"
 for alias in $todo; do
@@ -81,12 +93,12 @@ exit 0
 }
 
 /// Writes the probe, the script and an empty `skip.txt` when there is none.
-pub fn write(dir: &Path, aliases: &[String]) -> std::io::Result<()> {
+pub fn write(dir: &Path, machines: &[Vec<String>]) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(dir)?;
     std::fs::write(dir.join("probe.sh"), PROBE)?;
     let script_path = dir.join("sweep.sh");
-    std::fs::write(&script_path, script(aliases))?;
+    std::fs::write(&script_path, script(machines))?;
     std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))?;
     let skip = dir.join(SKIP);
     if !skip.exists() {
