@@ -44,7 +44,7 @@ pub fn esc(s: &str) -> String {
             '>' => out.push_str("&gt;"),
             '"' => out.push_str("&quot;"),
             '\'' => out.push_str("&#39;"),
-            c if hidden(c) => out.extend(c.escape_unicode()),
+            c if crate::icu::hidden(c) => out.extend(c.escape_unicode()),
             _ => out.push(c),
         }
     }
@@ -56,45 +56,13 @@ pub fn esc(s: &str) -> String {
 pub fn shown(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
-        if hidden(c) {
+        if crate::icu::hidden(c) {
             out.extend(c.escape_unicode());
         } else {
             out.push(c);
         }
     }
     out
-}
-
-/// Unicode's format characters: invisible, and some of them reorder the text around them,
-/// such as the bidirectional controls. With the line and paragraph separators.
-const FORMAT: [(char, char); 21] = [
-    ('\u{00AD}', '\u{00AD}'),
-    ('\u{0600}', '\u{0605}'),
-    ('\u{061C}', '\u{061C}'),
-    ('\u{06DD}', '\u{06DD}'),
-    ('\u{070F}', '\u{070F}'),
-    ('\u{0890}', '\u{0891}'),
-    ('\u{08E2}', '\u{08E2}'),
-    ('\u{180E}', '\u{180E}'),
-    ('\u{200B}', '\u{200F}'),
-    ('\u{2028}', '\u{202E}'),
-    ('\u{2060}', '\u{2064}'),
-    ('\u{2066}', '\u{206F}'),
-    ('\u{FEFF}', '\u{FEFF}'),
-    ('\u{FFF9}', '\u{FFFB}'),
-    ('\u{110BD}', '\u{110BD}'),
-    ('\u{110CD}', '\u{110CD}'),
-    ('\u{13430}', '\u{1343F}'),
-    ('\u{1BCA0}', '\u{1BCA3}'),
-    ('\u{1D173}', '\u{1D17A}'),
-    ('\u{E0001}', '\u{E0001}'),
-    ('\u{E0020}', '\u{E007F}'),
-];
-
-/// Whether a character, printed as it is, could rearrange or hide what is shown: a control
-/// character or an invisible format character.
-fn hidden(c: char) -> bool {
-    c.is_control() || FORMAT.iter().any(|(from, to)| (*from..=*to).contains(&c))
 }
 
 /// UTC seconds as `YYYY-MM-DD HH:MM UTC`, from the civil-from-days algorithm.
@@ -121,15 +89,22 @@ fn utc_or(secs: Option<i64>, missing: &str) -> String {
 }
 
 /// Place, ecosystem and name from `component:<place>/<ecosystem>/<name>`. The place is
-/// an entity id and may hold slashes; a scoped npm name (`@scope/name`) holds one too.
+/// an entity id and may hold slashes; a scoped npm name (`@scope/name`) holds one too, and
+/// a Homebrew name from a tap other than core, `<user>/<tap>/<name>`, holds two.
 fn split_component(id: &str) -> Option<(&str, &str, &str)> {
     let rest = id.strip_prefix("component:")?;
     let (head, name) = rest.rsplit_once('/')?;
     let (place, ecosystem) = head.rsplit_once('/')?;
+    let whole = |place: &'_ str, ecosystem: &'_ str| &rest[place.len() + ecosystem.len() + 2..];
     if ecosystem.starts_with('@') {
         let (place, ecosystem) = place.rsplit_once('/')?;
-        let name = &rest[place.len() + ecosystem.len() + 2..];
-        return Some((place, ecosystem, name));
+        return Some((place, ecosystem, whole(place, ecosystem)));
+    }
+    if let Some((tapped, _user)) = place.rsplit_once('/')
+        && let Some((place, ecosystem)) = tapped.rsplit_once('/')
+        && matches!(ecosystem, "brew" | "brew-cask")
+    {
+        return Some((place, ecosystem, whole(place, ecosystem)));
     }
     Some((place, ecosystem, name))
 }
@@ -1538,6 +1513,7 @@ mod tests {
             '\u{200B}',
             '\u{200F}',
             '\u{2028}',
+            '\u{2029}',
             '\u{202E}',
             '\u{2060}',
             '\u{2064}',
@@ -1557,6 +1533,16 @@ mod tests {
             '\u{E0001}',
             '\u{E0020}',
             '\u{E007F}',
+            // Default-ignorable: drawn as nothing, though not format characters.
+            '\u{34F}',
+            '\u{115F}',
+            '\u{1160}',
+            '\u{3164}',
+            '\u{FE00}',
+            '\u{FE0F}',
+            '\u{FFA0}',
+            '\u{E0100}',
+            '\u{E01EF}',
         ];
         for c in hidden {
             let escaped: String = c.escape_unicode().collect();
@@ -1564,8 +1550,11 @@ mod tests {
             assert_eq!(shown(&text), format!("a{escaped}b"), "{escaped}");
             assert_eq!(esc(&text), format!("a{escaped}b"), "{escaped}");
         }
+        // A version carrying variation selectors is not shown as clean text.
+        assert_eq!(shown("1.2.3\u{FE0F}\u{E0100}"), "1.2.3\\u{fe0f}\\u{e0100}");
         // Everything else is shown as it is, names in any script included.
-        let plain = "web-1 сервер 東京 café ✓ \u{2027}\u{2030}\u{FFFC}";
+        let plain = "web-1 сервер 東京 café ✓ \u{2027}\u{2030}\u{FFFC} Ελλάδα مرحبا שלום \
+                     नमस्ते 한국어 ไทย ጤና Ꭰ 𝔘 😀";
         assert_eq!(shown(plain), plain);
         assert_eq!(esc(plain), plain);
     }

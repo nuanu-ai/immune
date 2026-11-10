@@ -528,15 +528,21 @@ fn kernel_packages<'a>(s: &Sections<'a>) -> Vec<(usize, &'a str)> {
 
 /// The release as `<ID> <VERSION_ID>`, and the code name when the system gives one. A
 /// system that does not give both is a reading that read nothing, never a guess.
+///
+/// The probe unquotes a value only when it is one quoted word. A value it left holding a
+/// quote, as with text after the closing quote, or holding a blank, which an unquoted shell
+/// value cannot, was not read the way the shell reads it: it is taken as not given.
 fn release(machine: &str, s: &Sections, raw_file: &str) -> Outcome {
     if !s.contains_key("os_release") {
         return not_read(machine, RELEASE, OLDER_PROBE);
     }
     let fields = pairs(s, "os_release");
+    let plain = |v: &str| !v.contains(['"', '\'']) && !v.contains(char::is_whitespace);
     let field = |key: &str| {
         fields
             .iter()
             .find(|(_, k, _)| *k == key)
+            .filter(|r| plain(r.2))
             .map(|r| (r.0, r.2))
     };
     let (id, version, codename) = (field("ID"), field("VERSION_ID"), field("VERSION_CODENAME"));
@@ -565,7 +571,7 @@ fn release(machine: &str, s: &Sections, raw_file: &str) -> Outcome {
     full(machine, RELEASE, st)
 }
 
-/// An address the server has on one of its interfaces, as the resolver compares it, or
+/// An address the server has on one of its interfaces, in its canonical form, or
 /// `None` when it names no one machine: loopback, link-local, or the address of a
 /// container bridge.
 fn own_address(interface: &str, address: &str) -> Option<String> {
@@ -573,10 +579,10 @@ fn own_address(interface: &str, address: &str) -> Option<String> {
         return None;
     }
     let address = address.split(['/', '%']).next().unwrap_or(address);
-    let ip: std::net::IpAddr = address.parse().ok()?;
+    let ip = address.parse::<std::net::IpAddr>().ok()?.to_canonical();
     let local = match ip {
         std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_link_local(),
-        std::net::IpAddr::V6(v6) => v6.is_loopback() || v6.segments()[0] & 0xffc0 == 0xfe80,
+        std::net::IpAddr::V6(v6) => v6.is_loopback() || v6.is_unicast_link_local(),
     };
     (!local).then(|| ip.to_string())
 }
@@ -644,7 +650,25 @@ fn full(scope: &str, kind: &'static str, statements: Vec<Statement>) -> Outcome 
 
 #[cfg(test)]
 mod tests {
-    use super::Failure;
+    use super::{Failure, own_address};
+
+    #[test]
+    fn an_address_a_server_gives_itself_is_judged_in_its_canonical_form() {
+        // Loopback and link-local addresses are on every server; written as IPv4 mapped into
+        // IPv6 they are still those, and would join unrelated servers into one.
+        assert_eq!(own_address("eth0", "::ffff:127.0.0.1/104"), None);
+        assert_eq!(own_address("eth0", "::ffff:169.254.10.1"), None);
+        assert_eq!(own_address("eth0", "fe80::1%eth0"), None);
+        assert_eq!(own_address("eth0", "febf::1/64"), None);
+        assert_eq!(
+            own_address("eth0", "::FFFF:203.0.113.10/96"),
+            Some("203.0.113.10".to_string())
+        );
+        assert_eq!(
+            own_address("eth0", "fec0::1/64"),
+            Some("fec0::1".to_string())
+        );
+    }
 
     #[test]
     fn a_failure_record_without_its_time_is_dated_by_the_file_and_one_without_a_reason_says_so() {

@@ -9,6 +9,7 @@
 mod agent_folders;
 mod brew;
 mod checkouts;
+mod icu;
 mod known_hosts;
 mod lifecycle;
 mod lockfiles;
@@ -21,6 +22,7 @@ mod store;
 mod sweep;
 mod tailnet;
 mod threats;
+mod tools;
 mod traces;
 mod view;
 
@@ -53,7 +55,7 @@ struct Args {
     store: PathBuf,
     /// The name of this machine in ids.
     machine: String,
-    /// The one place to look for brew instead of PATH and the standard places.
+    /// The one place to look for brew instead of the standard places and PATH.
     brew: Option<PathBuf>,
     brew_input: Option<PathBuf>,
     /// Files the owner's read-only sweep wrote, one per server. `None`: the `sweep`
@@ -227,8 +229,8 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
 /// The name this Mac gives itself on the local network, else its short host name.
 fn machine_name() -> String {
     let asks: [(&str, &[&str]); 2] = [
-        ("scutil", &["--get", "LocalHostName"]),
-        ("hostname", &["-s"]),
+        (tools::SCUTIL, &["--get", "LocalHostName"]),
+        (tools::HOSTNAME, &["-s"]),
     ];
     for (program, args) in asks {
         if let Ok(out) = Command::new(program).args(args).output()
@@ -298,7 +300,7 @@ fn view(args: &ViewArgs) -> Result<(), Box<dyn Error>> {
     std::fs::write(&path, html)?;
     println!("{}", path.display());
     if args.open {
-        let status = Command::new("open").arg(&path).status()?;
+        let status = Command::new(tools::OPEN).arg(&path).status()?;
         if !status.success() {
             return Err(format!("open failed, {status}").into());
         }
@@ -1075,9 +1077,16 @@ fn read_brew(run: &mut Run, args: &Args) -> Result<(), Box<dyn Error>> {
     match brew::read(args.brew_input.as_deref(), args.brew.as_deref()) {
         brew::Found::Output(raw) => {
             run.readers += 1;
-            let raw_file = run.keep_raw(brew::READER, "brew.txt", raw.as_bytes())?;
-            let statements = brew::statements(&raw, &machine, &raw_file);
-            run.apply(&reading, brew::BASIS, "full", None, &statements)?;
+            let raw_file = run.keep_raw(brew::READER, brew::RAW, raw.as_bytes())?;
+            let (statements, partial) = brew::statements(&raw, &machine, &raw_file);
+            let completeness = if partial.is_some() { "partial" } else { "full" };
+            run.apply(
+                &reading,
+                brew::BASIS,
+                completeness,
+                partial.as_deref(),
+                &statements,
+            )?;
         }
         // Read in full: there is nothing, so what was there before is gone.
         brew::Found::NotInstalled => {

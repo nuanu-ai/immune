@@ -4,8 +4,10 @@
 //! out again on every run, so a link goes when its evidence goes.
 //!
 //! The rule, kept here so that it can be replaced: two machines are the same when they are
-//! known by the same name or address. Names compare without case, addresses exactly; a
-//! trailing dot is ignored. A port, as known hosts write one other than 22, is part of the
+//! known by the same name or address. Names compare without ASCII case, as DNS compares
+//! them, so no other letter folds into an ASCII one. Addresses compare exactly once each is
+//! written in its canonical form, so an IPv4 address mapped into IPv6 is that IPv4 address.
+//! A trailing dot is ignored. A port, as known hosts write one other than 22, is part of the
 //! name, as ssh keys known hosts by host and port: machines behind one address with
 //! forwarded ports are different machines, and none of them is the machine on port 22.
 //! Loopback says nothing about which machine is meant and is not evidence.
@@ -58,12 +60,13 @@ pub fn key(value: &str) -> Option<String> {
         return None;
     }
     let host = if let Ok(ip) = v.parse::<IpAddr>() {
+        let ip = ip.to_canonical();
         if ip.is_loopback() || ip.is_unspecified() {
             return None;
         }
         ip.to_string()
     } else {
-        let name = v.to_lowercase();
+        let name = v.to_ascii_lowercase();
         if name == "localhost" || name.ends_with(".localhost") {
             return None;
         }
@@ -84,7 +87,7 @@ fn names_one_machine(value: &str) -> bool {
     };
     match key.parse::<IpAddr>() {
         Ok(IpAddr::V4(v4)) => !v4.is_private(),
-        Ok(IpAddr::V6(v6)) => v6.segments()[0] & 0xfe00 != 0xfc00,
+        Ok(IpAddr::V6(v6)) => !v6.is_unique_local(),
         Err(_) => {
             key.contains('.')
                 && !DEFAULT_DOMAINS
@@ -192,7 +195,7 @@ pub fn groups(
 
 #[cfg(test)]
 mod tests {
-    use super::names_one_machine;
+    use super::{key, names_one_machine};
 
     #[test]
     fn what_a_server_says_about_itself_names_it_only_when_no_unrelated_machine_says_the_same() {
@@ -212,6 +215,8 @@ mod tests {
             "fc00::1",
             "fdff:ffff::1",
             "127.0.0.1",
+            "::ffff:10.0.0.5",
+            "::ffff:192.168.1.10",
         ] {
             assert!(!names_one_machine(value), "{value} names one machine");
         }
@@ -233,5 +238,20 @@ mod tests {
                 "{value} does not name one machine"
             );
         }
+    }
+
+    #[test]
+    fn one_address_written_two_ways_is_one_address_and_names_compare_by_ascii_case_only() {
+        // An IPv4 address mapped into IPv6 is the same address: written that way it must
+        // neither pass loopback off as evidence nor keep one machine apart from itself.
+        assert_eq!(key("::ffff:127.0.0.1"), None);
+        assert_eq!(key("::FFFF:10.0.0.5"), key("10.0.0.5"));
+        assert_eq!(
+            key("[::ffff:203.0.113.10]:2222"),
+            key("[203.0.113.10]:2222")
+        );
+        // DNS folds ASCII case only: the Kelvin sign is not the letter k.
+        assert_eq!(key("Web-1.Example.ORG."), key("web-1.example.org"));
+        assert_ne!(key("\u{212A}ube.example.org"), key("kube.example.org"));
     }
 }

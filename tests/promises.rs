@@ -1,6 +1,6 @@
 //! Promises of the walking skeleton: store, the readers, the lifecycle, the report and the view.
-//! Each test runs the real binary on samples in the formats the sources print: `brew list
-//! --versions`, the files the server sweep writes, lockfiles in checkouts, the ssh files and
+//! Each test runs the real binary on samples in the formats the sources print: `brew info
+//! --json=v2 --installed`, the files the server sweep writes, lockfiles in checkouts, the ssh files and
 //! `tailscale status --json`. Every sample is invented, and the home folder is always a
 //! temporary one: no test reads the real ssh files or asks the real tailscale.
 
@@ -10,14 +10,56 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const SAMPLE: &str = "\
-ca-certificates 2024.09.24
-git 2.47.0
-node 22.9.0 23.1.0
-openssl@3 3.4.0
-python@3.12 3.12.7_1
-firefox 132.0.1
-";
+/// What `brew info --json=v2 --installed` prints, cut to a few of its fields, one package to
+/// a line so that a test can change one.
+const SAMPLE: &str = r#"{"formulae": [
+{"name": "ca-certificates", "full_name": "ca-certificates", "tap": "homebrew/core", "desc": "Mozilla CA certificate store", "versions": {"stable": "2024.09.24"}, "installed": [{"version": "2024.09.24", "installed_on_request": false}]},
+{"name": "git", "full_name": "git", "tap": "homebrew/core", "desc": "Distributed revision control system", "versions": {"stable": "2.47.0"}, "installed": [{"version": "2.47.0", "installed_on_request": true}]},
+{"name": "node", "full_name": "node", "tap": "homebrew/core", "desc": "Platform built on V8", "versions": {"stable": "23.1.0"}, "installed": [{"version": "22.9.0", "installed_on_request": true}, {"version": "23.1.0", "installed_on_request": true}]},
+{"name": "openssl@3", "full_name": "openssl@3", "tap": "homebrew/core", "desc": "Cryptography and SSL/TLS Toolkit", "versions": {"stable": "3.4.0"}, "installed": [{"version": "3.4.0", "installed_on_request": false}]},
+{"name": "python@3.12", "full_name": "python@3.12", "tap": "homebrew/core", "desc": "Interpreted, interactive, object-oriented programming language", "versions": {"stable": "3.12.7"}, "revision": 1, "installed": [{"version": "3.12.7_1", "installed_on_request": true}]}
+],
+"casks": [
+{"token": "firefox", "full_token": "firefox", "tap": "homebrew/cask", "name": ["Mozilla Firefox"], "version": "132.0.1", "installed": "132.0.1", "installed_time": 1730000000}
+]}
+"#;
+
+/// The sample without the line of the package with this full name.
+fn without(sample: &str, name: &str) -> String {
+    let field = format!("\"full_name\": \"{name}\"");
+    sample
+        .lines()
+        .filter(|l| !l.contains(&field))
+        .map(|l| format!("{l}\n"))
+        .collect()
+}
+
+/// The sample with one more package of this kind, `formula` or `cask`, from this tap.
+fn with_package(
+    sample: &str,
+    kind: &str,
+    full_name: &str,
+    tap: Option<&str>,
+    versions: &[&str],
+) -> String {
+    let entry = if kind == "cask" {
+        serde_json::json!({ "token": full_name.rsplit('/').next(), "full_token": full_name,
+                            "tap": tap, "installed": versions[0] })
+    } else {
+        let kegs: Vec<_> = versions
+            .iter()
+            .map(|v| serde_json::json!({ "version": v }))
+            .collect();
+        serde_json::json!({ "name": full_name.rsplit('/').next(), "full_name": full_name,
+                            "tap": tap, "installed": kegs })
+    };
+    let list = if kind == "cask" {
+        "\"casks\": [\n"
+    } else {
+        "{\"formulae\": [\n"
+    };
+    sample.replacen(list, &format!("{list}{entry},\n"), 1)
+}
 
 struct Dir(PathBuf);
 
@@ -232,7 +274,7 @@ fn package_gone_from_input_moves_to_retracted_and_stays_queryable() {
     let before = dir.input("before.txt", SAMPLE);
     soc(&store, &before);
     soc(&store, &before);
-    let after = SAMPLE.replace("git 2.47.0\n", "");
+    let after = without(SAMPLE, "git");
     let report = soc(&store, &dir.input("after.txt", &after));
 
     assert!(
@@ -262,7 +304,7 @@ fn version_change_is_one_changed_event() {
     let dir = Dir::new("version");
     let store = dir.store();
     soc(&store, &dir.input("before.txt", SAMPLE));
-    let after = SAMPLE.replace("git 2.47.0", "git 2.47.1");
+    let after = SAMPLE.replace("\"2.47.0\"", "\"2.47.1\"");
     let report = soc(&store, &dir.input("after.txt", &after));
 
     assert!(
@@ -305,16 +347,16 @@ fn raw_input_is_kept_as_read_and_every_assertion_points_at_its_line() {
         };
         let (file, line) = source_ref.rsplit_once(':').unwrap();
         let raw = std::fs::read_to_string(dir.0.join(file)).unwrap();
-        assert_eq!(raw, SAMPLE);
-        let words: Vec<&str> = raw
-            .lines()
-            .nth(line.parse::<usize>().unwrap() - 1)
+        // One package to a line: its kind, full name, tap and versions.
+        let line = raw.lines().nth(line.parse::<usize>().unwrap() - 1).unwrap();
+        let words: Vec<String> = serde_json::from_str::<Vec<serde_json::Value>>(line)
             .unwrap()
-            .split_whitespace()
+            .iter()
+            .map(|v| v.as_str().unwrap_or("").to_string())
             .collect();
-        assert_eq!(subject.rsplit('/').next(), Some(words[0]), "{row}");
+        assert_eq!(subject.rsplit('/').next(), Some(words[1].as_str()), "{row}");
         if predicate == "has_version" {
-            assert!(words[1..].contains(&object), "{row}");
+            assert!(words[3..].iter().any(|w| w == object), "{row}");
         }
     }
 }
@@ -338,8 +380,14 @@ fn text_from_the_store_never_becomes_markup() {
     // Package names and versions are partly written by an attacker.
     let dir = Dir::new("escape");
     let store = dir.store();
-    let evil = "<script>alert('x')</script>\"onload=\"x 1.0\"><b>bold</b>\n";
-    soc(&store, &dir.input("brew.txt", &format!("{SAMPLE}{evil}")));
+    let evil = with_package(
+        SAMPLE,
+        "formula",
+        "<script>alert('x')</script>\"onload=\"x",
+        Some("homebrew/core"),
+        &["1.0\"><b>bold</b>"],
+    );
+    soc(&store, &dir.input("brew.txt", &evil));
     let page = view(&store);
 
     assert!(!page.contains("<script"), "a script tag reached the page");
@@ -408,9 +456,10 @@ fn removed_component_is_under_no_longer_there_and_not_on_the_machine() {
     let dir = Dir::new("view-gone");
     let store = dir.store();
     soc(&store, &dir.input("before.txt", SAMPLE));
-    let after = SAMPLE
-        .replace("git 2.47.0\n", "")
-        .replace("node 22.9.0 23.1.0", "node 23.1.0");
+    let after = without(SAMPLE, "git").replace(
+        "{\"version\": \"22.9.0\", \"installed_on_request\": true}, ",
+        "",
+    );
     soc(&store, &dir.input("after.txt", &after));
     let page = view(&store);
 
@@ -423,6 +472,185 @@ fn removed_component_is_under_no_longer_there_and_not_on_the_machine() {
     assert!(gone.contains(git), "{gone}");
     assert!(gone.contains("2.47.0"), "{gone}");
     assert!(gone.contains("22.9.0"), "{gone}");
+}
+
+#[test]
+fn a_formula_and_a_cask_with_one_token_and_a_tap_package_with_a_core_name_are_different_components()
+{
+    // They are different software with different vulnerabilities: taken for one, a cask's
+    // version would stand for the formula's and a tap's package for the core one.
+    let dir = Dir::new("brew-kinds");
+    let store = dir.store();
+    let input = with_package(SAMPLE, "cask", "git", Some("homebrew/cask"), &["2.40.0"]);
+    let input = with_package(
+        &input,
+        "formula",
+        "someone/tools/git",
+        Some("someone/tools"),
+        &["9.0", "9.1"],
+    );
+    let input = with_package(
+        &input,
+        "cask",
+        "someone/tools/git",
+        Some("someone/tools"),
+        &["0.1"],
+    );
+    soc(&store, &dir.input("brew.txt", &input));
+
+    assert_eq!(
+        rows(
+            &store,
+            "SELECT subject, object FROM assertion WHERE layer = 'live'
+             AND predicate = 'has_version' AND subject LIKE '%/git' ORDER BY subject, object"
+        ),
+        [
+            "component:machine:mac/brew-cask/git|2.40.0",
+            "component:machine:mac/brew-cask/someone/tools/git|0.1",
+            "component:machine:mac/brew/git|2.47.0",
+            "component:machine:mac/brew/someone/tools/git|9.0",
+            "component:machine:mac/brew/someone/tools/git|9.1",
+        ]
+    );
+    // Shown on the machine by Homebrew's full name, with what kind of package it is.
+    let mac = machine_block(&view(&store), "mac");
+    assert!(mac.contains(">brew-cask</td>"), "{mac}");
+    assert!(mac.contains(">someone/tools/git</td>"), "{mac}");
+}
+
+#[test]
+fn a_package_homebrew_names_no_tap_for_is_not_taken_for_a_core_one_and_the_reading_is_partial() {
+    // Without a tap Homebrew gives a package its bare name, the name of a core package. It
+    // is not recorded as one, and what is not recorded is not known to be gone.
+    let dir = Dir::new("brew-untapped");
+    let store = dir.store();
+    soc(&store, &dir.input("brew.txt", SAMPLE));
+    let input = with_package(
+        &without(SAMPLE, "git"),
+        "formula",
+        "invented",
+        None,
+        &["1.0"],
+    );
+    let report = soc(&store, &dir.input("brew2.txt", &input));
+
+    assert_eq!(
+        rows(
+            &store,
+            "SELECT completeness, reason FROM coverage WHERE reader = 'brew' ORDER BY id DESC LIMIT 1"
+        ),
+        [
+            "partial|Homebrew names no tap for invented, so it cannot be told from a core package and is not recorded"
+        ]
+    );
+    let live = rows(&store, LIVE);
+    assert!(!live.iter().any(|r| r.contains("/invented|")), "{live:?}");
+    assert!(
+        live.iter()
+            .any(|r| r.starts_with("component:machine:mac/brew/git|")),
+        "{live:?}"
+    );
+    assert!(report.contains("1 reading was partial"), "{report}");
+}
+
+#[test]
+fn brew_is_asked_for_its_machine_form_without_updating_itself_or_sending_analytics() {
+    // Reading what is installed must change nothing and tell no one: brew updates itself and
+    // reports analytics unless told not to.
+    let dir = Dir::new("brew-quiet");
+    let store = dir.store();
+    let brew = script(
+        &dir.0.join("bin").join("brew"),
+        &format!(
+            "[ \"$*\" = 'info --json=v2 --installed' ] && [ \"$HOMEBREW_NO_AUTO_UPDATE\" = 1 ] \
+             && [ \"$HOMEBREW_NO_ANALYTICS\" = 1 ] || {{ echo \"asked as: $*\" >&2; exit 1; }}\n\
+             cat <<'END_OF_FAKE'\n{SAMPLE}\nEND_OF_FAKE"
+        ),
+    );
+    let absent = dir.0.join("absent");
+    let report = ok(soc_run(&dir.0, &store)
+        .arg("--brew")
+        .arg(&brew)
+        .arg("--servers-input")
+        .arg(&absent)
+        .arg("--checkouts-root")
+        .arg(&absent));
+    assert!(report.contains("6 components"), "{report}");
+    assert_eq!(
+        rows(
+            &store,
+            "SELECT completeness FROM coverage WHERE reader = 'brew' ORDER BY id DESC LIMIT 1"
+        ),
+        ["full"]
+    );
+}
+
+#[test]
+fn an_answer_of_brew_out_of_its_shape_fails_the_reading_and_retracts_nothing() {
+    // A package dropped from a reading taken as full would be marked gone.
+    let dir = Dir::new("brew-shape");
+    let store = dir.store();
+    soc(&store, &dir.input("brew.txt", SAMPLE));
+    let live = rows(&store, LIVE);
+    for bad in [
+        SAMPLE.replace("\"full_name\": \"git\", ", ""),
+        SAMPLE.replace("{\"version\": \"2.47.0\", ", "{"),
+        SAMPLE.replace(
+            "[{\"version\": \"2.47.0\", \"installed_on_request\": true}]",
+            "[]",
+        ),
+        SAMPLE.replace("\"installed\": \"132.0.1\", ", ""),
+        SAMPLE.replace("\"casks\"", "\"cask\""),
+        SAMPLE.replace("\"tap\": \"homebrew/core\"", "\"tap\": 1"),
+    ] {
+        soc(&store, &dir.input("bad.txt", &bad));
+        assert_eq!(rows(&store, LIVE), live, "{bad}");
+        assert_eq!(
+            rows(
+                &store,
+                "SELECT completeness FROM coverage WHERE reader = 'brew' ORDER BY id DESC LIMIT 1"
+            ),
+            ["none"],
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn a_program_in_the_current_folder_or_reached_through_a_relative_path_entry_is_never_run() {
+    // What a tool prints becomes facts about this Mac: the machine's own name comes from
+    // scutil or hostname. A look-alike in the folder the program was started in must never
+    // be what answers.
+    let dir = Dir::new("planted");
+    let store = dir.store();
+    let marker = dir.0.join("ran");
+    let body = format!("touch '{}'\necho planted", marker.display());
+    for tool in ["scutil", "hostname"] {
+        script(&dir.0.join("bin").join(tool), &body);
+        script(&dir.0.join(tool), &body);
+    }
+    let absent = dir.0.join("absent");
+    let report = ok(soc_cmd(&dir.0)
+        .env("PATH", "bin::.:/usr/bin:/bin")
+        .args(["run", "--store"])
+        .arg(&store)
+        .arg("--brew")
+        .arg(dir.0.join("nowhere").join("brew"))
+        .arg("--tailscale")
+        .arg(dir.0.join("nowhere").join("tailscale"))
+        .arg("--threats-input")
+        .arg(&absent)
+        .arg("--servers-input")
+        .arg(&absent)
+        .arg("--checkouts-root")
+        .arg(&absent));
+    assert!(!marker.exists(), "a planted program ran: {report}");
+    assert!(
+        !rows(&store, "SELECT id FROM entity")
+            .iter()
+            .any(|id| id.contains("planted")),
+        "a planted program named the machine"
+    );
 }
 
 /// A server file as the sweep writes it: a web server with two running containers, whose
@@ -800,7 +1028,7 @@ fn unchanged_input_is_not_copied_again_as_raw_input() {
     };
     soc_all(&store, &brew, &servers, &absent);
     soc_all(&store, &brew, &servers, &absent);
-    assert_eq!((copies("brew.txt"), copies("web-1.txt")), (1, 1));
+    assert_eq!((copies("brew.jsonl"), copies("web-1.txt")), (1, 1));
 
     // Every assertion still points at a saved copy.
     for source in rows(&store, "SELECT DISTINCT source_ref FROM assertion") {
@@ -811,10 +1039,10 @@ fn unchanged_input_is_not_copied_again_as_raw_input() {
     put(
         &dir.0,
         "brew.txt",
-        &SAMPLE.replace("git 2.47.0", "git 2.47.1"),
+        &SAMPLE.replace("\"2.47.0\"", "\"2.47.1\""),
     );
     soc_all(&store, &brew, &servers, &absent);
-    assert_eq!((copies("brew.txt"), copies("web-1.txt")), (2, 1));
+    assert_eq!((copies("brew.jsonl"), copies("web-1.txt")), (2, 1));
 }
 
 #[test]
@@ -834,7 +1062,7 @@ fn without_homebrew_the_brew_reading_has_nothing_to_read_and_earlier_brew_facts_
         .arg(&absent));
 
     assert!(
-        !rows(&store, LIVE).iter().any(|r| r.contains("/brew/")),
+        !rows(&store, LIVE).iter().any(|r| r.contains("/brew")),
         "brew facts are still live"
     );
     assert_eq!(
@@ -5241,6 +5469,166 @@ HOME_URL=`touch '{m}'`
     assert_eq!(printed, expected);
 }
 
+/// Real os-release files of five distributions, as published: Ubuntu 24.04, Debian 12,
+/// Alpine 3.20 and Fedora 40 from the collection at github.com/chef/os_release (commit
+/// b447b494), Arch from its `filesystem` package at gitlab.archlinux.org (commit d59abf01).
+const OS_RELEASE_UBUNTU: &str = r#"PRETTY_NAME="Ubuntu 24.04.3 LTS"
+NAME="Ubuntu"
+VERSION_ID="24.04"
+VERSION="24.04.3 LTS (Noble Numbat)"
+VERSION_CODENAME=noble
+ID=ubuntu
+ID_LIKE=debian
+HOME_URL="https://www.ubuntu.com/"
+SUPPORT_URL="https://help.ubuntu.com/"
+BUG_REPORT_URL="https://bugs.launchpad.net/ubuntu/"
+PRIVACY_POLICY_URL="https://www.ubuntu.com/legal/terms-and-policies/privacy-policy"
+UBUNTU_CODENAME=noble
+LOGO=ubuntu-logo
+"#;
+const OS_RELEASE_DEBIAN: &str = r#"PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"
+NAME="Debian GNU/Linux"
+VERSION_ID="12"
+VERSION="12 (bookworm)"
+VERSION_CODENAME=bookworm
+ID=debian
+HOME_URL="https://www.debian.org/"
+SUPPORT_URL="https://www.debian.org/support"
+BUG_REPORT_URL="https://bugs.debian.org/"
+"#;
+const OS_RELEASE_ALPINE: &str = r#"NAME="Alpine Linux"
+ID=alpine
+VERSION_ID=3.20.7
+PRETTY_NAME="Alpine Linux v3.20"
+HOME_URL="https://alpinelinux.org/"
+BUG_REPORT_URL="https://gitlab.alpinelinux.org/alpine/aports/-/issues"
+"#;
+const OS_RELEASE_FEDORA: &str = r#"NAME="Fedora Linux"
+VERSION="40 (Workstation Edition)"
+ID=fedora
+VERSION_ID=40
+VERSION_CODENAME=""
+PLATFORM_ID="platform:f40"
+PRETTY_NAME="Fedora Linux 40 (Workstation Edition)"
+ANSI_COLOR="0;38;2;60;110;180"
+LOGO=fedora-logo-icon
+CPE_NAME="cpe:/o:fedoraproject:fedora:40"
+DEFAULT_HOSTNAME="fedora"
+HOME_URL="https://fedoraproject.org/"
+DOCUMENTATION_URL="https://docs.fedoraproject.org/en-US/fedora/f40/system-administrators-guide/"
+SUPPORT_URL="https://ask.fedoraproject.org/"
+BUG_REPORT_URL="https://bugzilla.redhat.com/"
+REDHAT_BUGZILLA_PRODUCT="Fedora"
+REDHAT_BUGZILLA_PRODUCT_VERSION=40
+REDHAT_SUPPORT_PRODUCT="Fedora"
+REDHAT_SUPPORT_PRODUCT_VERSION=40
+SUPPORT_END=2025-05-13
+VARIANT="Workstation Edition"
+VARIANT_ID=workstation
+"#;
+const OS_RELEASE_ARCH: &str = r#"NAME="Arch Linux"
+PRETTY_NAME="Arch Linux"
+ID=arch
+BUILD_ID=rolling
+ANSI_COLOR="38;2;23;147;209"
+HOME_URL="https://archlinux.org/"
+DOCUMENTATION_URL="https://wiki.archlinux.org/"
+SUPPORT_URL="https://bbs.archlinux.org/"
+BUG_REPORT_URL="https://gitlab.archlinux.org/groups/archlinux/-/issues"
+PRIVACY_POLICY_URL="https://terms.archlinux.org/docs/privacy-policy/"
+LOGO=archlinux-logo
+"#;
+
+#[test]
+fn the_release_of_real_distributions_is_read_as_they_give_it_and_a_value_not_fully_unquoted_is_not_given()
+ {
+    // Security data is keyed by the release, so a wrong one is a wrong answer. The part of
+    // the probe that reads os-release is run on the real files of five distributions. A
+    // value the probe could not unquote as the shell would, such as one with a comment after
+    // its closing quote, is not given: the release is then unknown, never a guess.
+    let dir = Dir::new("os-release-real");
+    let part = probe_part("F=/etc/os-release", "echo \"##os_release\"");
+    let edited = |from: &str, to: &str| {
+        assert!(OS_RELEASE_UBUNTU.contains(from));
+        OS_RELEASE_UBUNTU.replace(from, to)
+    };
+    let files = [
+        ("ubuntu", OS_RELEASE_UBUNTU.to_string()),
+        ("debian", OS_RELEASE_DEBIAN.to_string()),
+        ("alpine", OS_RELEASE_ALPINE.to_string()),
+        ("fedora", OS_RELEASE_FEDORA.to_string()),
+        ("arch", OS_RELEASE_ARCH.to_string()),
+        (
+            "comment",
+            edited("VERSION_ID=\"24.04\"", "VERSION_ID=\"24.04\" # LTS"),
+        ),
+        (
+            "unquoted-comment",
+            edited("VERSION_ID=\"24.04\"", "VERSION_ID=24.04 # LTS"),
+        ),
+        (
+            "unclosed",
+            edited("VERSION_ID=\"24.04\"", "VERSION_ID=\"24.04"),
+        ),
+        (
+            "single",
+            edited("VERSION_ID=\"24.04\"", "VERSION_ID='24.04'.1"),
+        ),
+        ("joined", edited("ID=ubuntu\n", "ID=\"ubu\"'ntu'\n")),
+        (
+            "codename",
+            edited("VERSION_CODENAME=noble", "VERSION_CODENAME='noble' # x"),
+        ),
+    ];
+    let mut servers = Vec::new();
+    for (name, text) in &files {
+        let file = put(&dir.0, &format!("os-release-{name}"), text);
+        let printed = ok(Command::new("/bin/sh")
+            .arg("-c")
+            .arg(part.replace("/etc/os-release", &file.display().to_string())));
+        let fields = printed.split_once("##os_release\n").map_or("", |(_, f)| f);
+        servers.push((
+            *name,
+            server(
+                &format!("{fields}\n"),
+                "",
+                "dpkg\n",
+                "ii \tbash\t5.2\tbash\t5.2\n",
+            ),
+        ));
+    }
+    let servers: Vec<(&str, &str)> = servers.iter().map(|(n, s)| (*n, s.as_str())).collect();
+    run_servers(&dir, &servers);
+
+    assert_eq!(
+        rows(
+            &dir.store(),
+            "SELECT subject, predicate, object FROM assertion WHERE layer = 'live'
+             AND predicate IN ('runs_release', 'release_codename') ORDER BY subject, predicate"
+        ),
+        [
+            "machine:alpine|runs_release|alpine 3.20.7",
+            "machine:codename|runs_release|ubuntu 24.04",
+            "machine:debian|release_codename|bookworm",
+            "machine:debian|runs_release|debian 12",
+            "machine:fedora|runs_release|fedora 40",
+            "machine:ubuntu|release_codename|noble",
+            "machine:ubuntu|runs_release|ubuntu 24.04",
+        ]
+    );
+    for name in ["arch", "comment", "unquoted-comment", "unclosed", "single"] {
+        assert_eq!(
+            reading_of(&dir.store(), name, "system release"),
+            "none|the system does not give VERSION_ID",
+            "{name}"
+        );
+    }
+    assert_eq!(
+        reading_of(&dir.store(), "joined", "system release"),
+        "none|the system does not give ID"
+    );
+}
+
 #[test]
 fn the_probe_is_plain_posix_sh() {
     // The probe runs with whatever `sh` a server has, often dash. A syntax error there is a
@@ -5259,14 +5647,14 @@ fn the_release_the_source_and_the_kernel_package_are_shown_under_the_machine_esc
     let dir = Dir::new("view-new-facts");
     let store = dir.store();
     let dpkg = "ii \tlibexpat1\t2.5.0-1+b1\t<i>expat</i>\t2.5.0-1\n";
-    let release = "ID\t<b>x</b>\nVERSION_ID\t1\"2\nVERSION_CODENAME\t<u>c</u>\n";
+    let release = "ID\t<b>x</b>\nVERSION_ID\t1&2\nVERSION_CODENAME\t<u>c</u>\n";
     let kernel = "<script>k</script>: /boot/vmlinuz-6.8.0-45-generic\n";
     run_servers(&dir, &[("web", &server(release, kernel, "dpkg\n", dpkg))]);
     let page = view(&store);
     let web = machine_block(&page, "web");
 
     for shown in [
-        "&lt;b&gt;x&lt;/b&gt; 1&quot;2",
+        "&lt;b&gt;x&lt;/b&gt; 1&amp;2",
         "(&lt;u&gt;c&lt;/u&gt;)",
         "&lt;script&gt;k&lt;/script&gt;",
         "&lt;i&gt;expat&lt;/i&gt; 2.5.0-1",
