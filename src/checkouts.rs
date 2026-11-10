@@ -1,5 +1,6 @@
 //! The `checkouts` reader: which local checkouts exist on this machine. It walks the home
-//! folder, or the one folder it is given, and only lists folders: it opens no file.
+//! folder, or the one folder it is given, and only lists folders: it opens no file. A walk
+//! of a given folder is partial, since it did not look at the rest of the home folder.
 //!
 //! A checkout is a folder that holds `.git`. A checkout is not searched for further
 //! checkouts. Paths are relative to the home folder, so the same checkout has the same id
@@ -8,8 +9,10 @@
 use std::path::{Path, PathBuf};
 
 pub const READER: &str = "checkouts";
-pub const KIND: &str = "checkouts present";
+pub const KIND: &str = "checkouts under the home folder";
 pub const BASIS: &str = "observed";
+/// Why a walk of a folder given instead of the home folder is partial.
+pub const ONLY_GIVEN: &str = "only the given folder was walked";
 
 const MAX_DEPTH: usize = 5;
 /// Folders that are never descended into, wherever they are: tools keep copies of other

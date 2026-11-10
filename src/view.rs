@@ -112,6 +112,8 @@ fn what(predicate: &str) -> &str {
         "runs_os" => "operating system",
         "runs_kernel" => "kernel",
         "runs_image" => "image",
+        "known_as" => "known as",
+        "same_as" => "same machine as",
         other => other,
     }
 }
@@ -461,32 +463,95 @@ fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
+/// Which traces name each machine entity: the kinds of its live `known_as` assertions.
+fn traces(conn: &Connection) -> rusqlite::Result<BTreeMap<String, BTreeSet<String>>> {
+    let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT subject, kind FROM assertion
+         WHERE layer = 'live' AND predicate = 'known_as'",
+    )?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    for row in rows {
+        let (subject, kind) = row?;
+        out.entry(subject).or_default().insert(kind);
+    }
+    Ok(out)
+}
+
+/// One machine: the entities the resolver found to be it, and how the owner reads it.
+struct Machine<'a> {
+    members: &'a [String],
+    label: String,
+    /// Every other name and address it is known by.
+    others: Vec<String>,
+    traces: Vec<String>,
+}
+
+impl<'a> Machine<'a> {
+    fn new(
+        members: &'a [String],
+        estate: &Estate,
+        traces_of: &BTreeMap<String, BTreeSet<String>>,
+        read: impl Fn(&str) -> bool,
+    ) -> Machine<'a> {
+        let bare = |m: &'a String| m.strip_prefix("machine:").unwrap_or(m);
+        // The name it was read under, else the first.
+        let label = members
+            .iter()
+            .find(|m| read(m))
+            .or(members.first())
+            .map(bare)
+            .unwrap_or_default()
+            .to_string();
+        let mut others: BTreeSet<String> = members.iter().map(|m| bare(m).to_string()).collect();
+        let mut traces = BTreeSet::new();
+        for m in members {
+            if let Some(names) = estate.attrs.get(m).and_then(|p| p.get("known_as")) {
+                others.extend(names.iter().cloned());
+            }
+            traces.extend(traces_of.get(m).into_iter().flatten().cloned());
+        }
+        others.remove(&label);
+        Machine {
+            members,
+            label,
+            others: others.into_iter().collect(),
+            traces: traces.into_iter().collect(),
+        }
+    }
+}
+
 fn machines(conn: &Connection, out: &mut String, latest: &[Latest], now: i64) -> Out {
     out.push_str("<section id=\"machines\">\n<h2>Machines</h2>\n");
-    let ids = |kind: &str| -> rusqlite::Result<Vec<String>> {
-        conn.prepare("SELECT id FROM entity WHERE type = ?1 ORDER BY id")?
-            .query_map([kind], |r| r.get(0))?
-            .collect()
-    };
-    let machines = ids("machine")?;
-    if machines.is_empty() {
+    let groups = crate::store::machine_groups(conn)?;
+    if groups.is_empty() {
         out.push_str("<p>No machines known.</p>\n</section>\n");
         return Ok(());
     }
     let estate = Estate::load(conn)?;
+    let traces_of = traces(conn)?;
     let coverage_of =
         |scope: &str| -> Vec<&Latest> { latest.iter().filter(|r| r.scope == scope).collect() };
-    // A machine is unread when nothing was ever read on it in its latest readings.
-    let unread = |machine: &str| {
-        coverage_of(machine)
+    let read = |m: &str| !coverage_of(m).is_empty();
+    let all: Vec<Machine> = groups
+        .iter()
+        .map(|g| Machine::new(g, &estate, &traces_of, read))
+        .collect();
+    let (seen, never): (Vec<&Machine>, Vec<&Machine>) = all
+        .iter()
+        .partition(|m| m.members.iter().any(|id| read(id)));
+    // A machine is unread when every latest reading of it read nothing.
+    let unread = |m: &Machine| {
+        m.members
             .iter()
+            .flat_map(|id| coverage_of(id))
             .all(|r| r.completeness == "none")
     };
-    let unread_count = machines.iter().filter(|m| unread(m)).count();
+    let unread_count = seen.iter().filter(|m| unread(m)).count();
     write!(
         out,
         "<p class=\"muted\">{}",
-        plural(machines.len(), "machine", "machines")
+        plural(all.len(), "machine", "machines")
     )?;
     if unread_count > 0 {
         write!(
@@ -494,153 +559,236 @@ fn machines(conn: &Connection, out: &mut String, latest: &[Latest], now: i64) ->
             "; {unread_count} could not be read at their latest reading"
         )?;
     }
+    if !never.is_empty() {
+        write!(out, "; {} known and never read", never.len())?;
+    }
     out.push_str(". Open one to see what is on it.</p>\n");
 
-    for machine in &machines {
-        let label = machine.strip_prefix("machine:").unwrap_or(machine);
-        let own = estate.inside(machine);
-        let containers = estate
-            .containers
-            .get(machine)
-            .map(Vec::as_slice)
-            .unwrap_or_default();
-        let prefix = format!("checkout:{machine}/");
-        let mine: Vec<&String> = estate
-            .checkouts
-            .get(machine)
-            .map(|list| list.iter().collect())
-            .unwrap_or_default();
-        let read_at = coverage_of(machine).iter().map(|r| r.at).max();
-        let not_read = unread(machine);
+    let mut seen = seen;
+    seen.sort_by(|a, b| a.label.cmp(&b.label));
+    for machine in seen {
+        machine_block(out, machine, &estate, &coverage_of, unread(machine), now)?;
+    }
 
-        out.push_str("<details class=\"machine\">\n<summary>");
-        write!(out, "<strong>{}</strong>", esc(label))?;
-        if not_read {
-            out.push_str(" <span class=\"badge bad\">could not be read</span>");
-        }
-        let os = estate.attr(machine, "runs_os");
-        if !os.is_empty() {
-            write!(out, " · {}", esc(&os))?;
-        }
+    if !never.is_empty() {
+        let mut never = never;
+        never.sort_by(|a, b| a.label.cmp(&b.label));
         write!(
             out,
-            " <span class=\"muted\">· {}",
-            plural(own.len(), "component", "components")
+            "<details class=\"machine\">\n<summary><strong>Known and never read</strong> <span class=\"muted\">· {} · traces on this machine name them, and nothing was ever read on them</span></summary>\n<div class=\"inner\">\n",
+            plural(never.len(), "machine", "machines")
         )?;
-        if !containers.is_empty() {
-            write!(
-                out,
-                " · {}",
-                plural(containers.len(), "container", "containers")
-            )?;
+        out.push_str("<div class=\"scroll\"><table class=\"dense\">\n");
+        thead(out, &["Name", "Also known as", "Known from"]);
+        for m in never {
+            out.push_str("<tr>");
+            td(out, "mono", &m.label)?;
+            td(out, "mono", &m.others.join(", "))?;
+            td(out, "", &m.traces.join(", "))?;
+            out.push_str("</tr>\n");
         }
-        if !mine.is_empty() {
-            write!(out, " · {}", plural(mine.len(), "checkout", "checkouts"))?;
-        }
-        if let Some(at) = read_at {
-            write!(out, " · read {}", utc_age(at, now))?;
-        }
-        out.push_str("</span></summary>\n<div class=\"inner\">\n");
-
-        let kernel = estate.attr(machine, "runs_kernel");
-        write!(
-            out,
-            "<p class=\"muted\"><span class=\"mono\">{}</span>",
-            esc(machine)
-        )?;
-        if !kernel.is_empty() {
-            write!(
-                out,
-                " · kernel <span class=\"mono\">{}</span>",
-                esc(&kernel)
-            )?;
-        }
-        out.push_str("</p>\n");
-
-        // What was read here and how completely, so the lists below are read for what they are.
-        let readings = coverage_of(machine);
-        if readings.is_empty() {
-            out.push_str("<p class=\"alert\">Nothing was ever read on this machine itself.</p>\n");
-        } else {
-            out.push_str("<ul class=\"readings\">\n");
-            for r in readings {
-                write!(out, "<li>{} ", esc(&r.kind))?;
-                badge(out, &r.completeness, r.reason.as_deref())?;
-                if let Some(reason) = &r.reason {
-                    write!(out, " {}", esc(reason))?;
-                }
-                writeln!(
-                    out,
-                    " <span class=\"muted nowrap\">{}</span></li>",
-                    utc_age(r.at, now)
-                )?;
-            }
-            out.push_str("</ul>\n");
-        }
-
-        components_table(out, &estate, own)?;
-
-        if !containers.is_empty() {
-            out.push_str("<h3>Containers</h3>\n");
-        }
-        for container in containers {
-            let name = container.rsplit('/').next().unwrap_or(container);
-            let inside = estate.inside(container);
-            write!(
-                out,
-                "<details class=\"sub\">\n<summary>{} <span class=\"muted\">· <span class=\"mono\">{}</span> · {}</span></summary>\n",
-                esc(name),
-                esc(&estate.attr(container, "runs_image")),
-                plural(inside.len(), "component", "components")
-            )?;
-            components_table(out, &estate, inside)?;
-            out.push_str("</details>\n");
-        }
-
-        let (with, without): (Vec<&String>, Vec<&String>) =
-            mine.iter().partition(|c| !coverage_of(c).is_empty());
-        if !mine.is_empty() {
-            out.push_str("<h3>Checkouts</h3>\n");
-        }
-        for checkout in with {
-            let rel = &checkout[prefix.len()..];
-            let inside = estate.inside(checkout);
-            write!(
-                out,
-                "<details class=\"sub\">\n<summary><span class=\"mono\">{}</span> <span class=\"muted\">· {}</span>",
-                esc(rel),
-                plural(inside.len(), "component", "components")
-            )?;
-            for r in coverage_of(checkout) {
-                out.push(' ');
-                badge(out, &r.completeness, r.reason.as_deref())?;
-            }
-            out.push_str("</summary>\n");
-            for r in coverage_of(checkout) {
-                if let Some(reason) = &r.reason {
-                    writeln!(
-                        out,
-                        "<p class=\"alert\">{}: {}</p>",
-                        esc(&r.kind),
-                        esc(reason)
-                    )?;
-                }
-            }
-            components_table(out, &estate, inside)?;
-            out.push_str("</details>\n");
-        }
-        if !without.is_empty() {
-            let names: Vec<String> = without.iter().map(|c| esc(&c[prefix.len()..])).collect();
-            writeln!(
-                out,
-                "<p class=\"muted\">No lockfile found in {}: <span class=\"mono\">{}</span></p>",
-                plural(without.len(), "checkout", "checkouts"),
-                names.join(", ")
-            )?;
-        }
-        out.push_str("</div>\n</details>\n");
+        out.push_str("</tbody></table></div>\n</div>\n</details>\n");
     }
     out.push_str("</section>\n");
+    Ok(())
+}
+
+/// One machine that something was read on, with every entity it is known as.
+fn machine_block<'a>(
+    out: &mut String,
+    machine: &Machine,
+    estate: &Estate,
+    coverage_of: &dyn Fn(&str) -> Vec<&'a Latest>,
+    not_read: bool,
+    now: i64,
+) -> Out {
+    let members = machine.members;
+    let count = |f: &dyn Fn(&String) -> usize| members.iter().map(f).sum::<usize>();
+    let own = count(&|m| estate.inside(m).len());
+    let containers = count(&|m| estate.containers.get(m).map_or(0, Vec::len));
+    let checkouts = count(&|m| estate.checkouts.get(m).map_or(0, Vec::len));
+    let read_at = members
+        .iter()
+        .flat_map(|m| coverage_of(m))
+        .map(|r| r.at)
+        .max();
+
+    out.push_str("<details class=\"machine\">\n<summary>");
+    write!(out, "<strong>{}</strong>", esc(&machine.label))?;
+    if not_read {
+        out.push_str(" <span class=\"badge bad\">could not be read</span>");
+    }
+    let os: BTreeSet<String> = members
+        .iter()
+        .map(|m| estate.attr(m, "runs_os"))
+        .filter(|os| !os.is_empty())
+        .collect();
+    if !os.is_empty() {
+        write!(
+            out,
+            " · {}",
+            esc(&os.into_iter().collect::<Vec<_>>().join(", "))
+        )?;
+    }
+    write!(
+        out,
+        " <span class=\"muted\">· {}",
+        plural(own, "component", "components")
+    )?;
+    if containers > 0 {
+        write!(out, " · {}", plural(containers, "container", "containers"))?;
+    }
+    if checkouts > 0 {
+        write!(out, " · {}", plural(checkouts, "checkout", "checkouts"))?;
+    }
+    if let Some(at) = read_at {
+        write!(out, " · read {}", utc_age(at, now))?;
+    }
+    out.push_str("</span></summary>\n<div class=\"inner\">\n");
+    if !machine.others.is_empty() || !machine.traces.is_empty() {
+        out.push_str("<p class=\"muted\">");
+        if !machine.others.is_empty() {
+            write!(
+                out,
+                "Also known as <span class=\"mono\">{}</span>. ",
+                esc(&machine.others.join(", "))
+            )?;
+        }
+        if !machine.traces.is_empty() {
+            write!(out, "Known from {}.", esc(&machine.traces.join(", ")))?;
+        }
+        out.push_str("</p>\n");
+    }
+    for member in members {
+        let empty = coverage_of(member).is_empty()
+            && estate.inside(member).is_empty()
+            && !estate.containers.contains_key(member)
+            && !estate.checkouts.contains_key(member);
+        if !empty {
+            machine_body(out, member, estate, coverage_of, now)?;
+        }
+    }
+    out.push_str("</div>\n</details>\n");
+    Ok(())
+}
+
+/// What was read on one machine entity and what is on it.
+fn machine_body<'a>(
+    out: &mut String,
+    machine: &str,
+    estate: &Estate,
+    coverage_of: &dyn Fn(&str) -> Vec<&'a Latest>,
+    now: i64,
+) -> Out {
+    let own = estate.inside(machine);
+    let containers = estate
+        .containers
+        .get(machine)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let prefix = format!("checkout:{machine}/");
+    let mine: Vec<&String> = estate
+        .checkouts
+        .get(machine)
+        .map(|list| list.iter().collect())
+        .unwrap_or_default();
+
+    let kernel = estate.attr(machine, "runs_kernel");
+    write!(
+        out,
+        "<p class=\"muted\"><span class=\"mono\">{}</span>",
+        esc(machine)
+    )?;
+    if !kernel.is_empty() {
+        write!(
+            out,
+            " · kernel <span class=\"mono\">{}</span>",
+            esc(&kernel)
+        )?;
+    }
+    out.push_str("</p>\n");
+
+    // What was read here and how completely, so the lists below are read for what they are.
+    let readings = coverage_of(machine);
+    if readings.is_empty() {
+        out.push_str("<p class=\"alert\">Nothing was ever read on this machine itself.</p>\n");
+    } else {
+        out.push_str("<ul class=\"readings\">\n");
+        for r in readings {
+            write!(out, "<li>{} ", esc(&r.kind))?;
+            badge(out, &r.completeness, r.reason.as_deref())?;
+            if let Some(reason) = &r.reason {
+                write!(out, " {}", esc(reason))?;
+            }
+            writeln!(
+                out,
+                " <span class=\"muted nowrap\">{}</span></li>",
+                utc_age(r.at, now)
+            )?;
+        }
+        out.push_str("</ul>\n");
+    }
+
+    components_table(out, estate, own)?;
+
+    if !containers.is_empty() {
+        out.push_str("<h3>Containers</h3>\n");
+    }
+    for container in containers {
+        let name = container.rsplit('/').next().unwrap_or(container);
+        let inside = estate.inside(container);
+        write!(
+            out,
+            "<details class=\"sub\">\n<summary>{} <span class=\"muted\">· <span class=\"mono\">{}</span> · {}</span></summary>\n",
+            esc(name),
+            esc(&estate.attr(container, "runs_image")),
+            plural(inside.len(), "component", "components")
+        )?;
+        components_table(out, estate, inside)?;
+        out.push_str("</details>\n");
+    }
+
+    let (with, without): (Vec<&String>, Vec<&String>) =
+        mine.iter().partition(|c| !coverage_of(c).is_empty());
+    if !mine.is_empty() {
+        out.push_str("<h3>Checkouts</h3>\n");
+    }
+    for checkout in with {
+        let rel = &checkout[prefix.len()..];
+        let inside = estate.inside(checkout);
+        write!(
+            out,
+            "<details class=\"sub\">\n<summary><span class=\"mono\">{}</span> <span class=\"muted\">· {}</span>",
+            esc(rel),
+            plural(inside.len(), "component", "components")
+        )?;
+        for r in coverage_of(checkout) {
+            out.push(' ');
+            badge(out, &r.completeness, r.reason.as_deref())?;
+        }
+        out.push_str("</summary>\n");
+        for r in coverage_of(checkout) {
+            if let Some(reason) = &r.reason {
+                writeln!(
+                    out,
+                    "<p class=\"alert\">{}: {}</p>",
+                    esc(&r.kind),
+                    esc(reason)
+                )?;
+            }
+        }
+        components_table(out, estate, inside)?;
+        out.push_str("</details>\n");
+    }
+    if !without.is_empty() {
+        let names: Vec<String> = without.iter().map(|c| esc(&c[prefix.len()..])).collect();
+        writeln!(
+            out,
+            "<p class=\"muted\">No lockfile found in {}: <span class=\"mono\">{}</span></p>",
+            plural(without.len(), "checkout", "checkouts"),
+            names.join(", ")
+        )?;
+    }
     Ok(())
 }
 
@@ -668,8 +816,13 @@ fn changes(conn: &Connection, out: &mut String) -> Out {
         "SELECT entry, subject, predicate, old_value, new_value FROM journal
          WHERE run_id = ?1 AND entry IN ('added', 'changed', 'removed') ORDER BY seq",
     )?;
+    // Whether a partial reading ever made an assertion: one that never did has nothing
+    // that could be removed, so removals there are not unknown.
     let mut not_full_stmt = conn.prepare(
-        "SELECT scope, kind, completeness, reason FROM coverage
+        "SELECT scope, kind, completeness, reason,
+                EXISTS (SELECT 1 FROM assertion a WHERE a.layer IN ('live', 'retracted')
+                          AND a.reader = c.reader AND a.scope = c.scope AND a.kind = c.kind)
+         FROM coverage c
          WHERE run_id = ?1 AND completeness != 'full'
          ORDER BY completeness, scope, kind",
     )?;
@@ -687,13 +840,13 @@ fn changes(conn: &Connection, out: &mut String) -> Out {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
             })?
             .collect::<rusqlite::Result<_>>()?;
-        let not_full: Vec<(String, String, String, Option<String>)> = not_full_stmt
+        let not_full: Vec<(String, String, String, Option<String>, bool)> = not_full_stmt
             .query_map([run_id], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
             })?
             .collect::<rusqlite::Result<_>>()?;
         let not_repeated: i64 = not_repeated_stmt.query_row([run_id], |r| r.get(0))?;
-        let partial = not_full.iter().any(|r| r.2 == "partial");
+        let partial = not_full.iter().any(|r| r.2 == "partial" && r.4);
         let nothing = not_repeated > 0 || not_full.iter().any(|r| r.2 == "none");
 
         // Counts things, not assertions, as the report does.
@@ -753,7 +906,7 @@ fn changes(conn: &Connection, out: &mut String) -> Out {
         }
         if !not_full.is_empty() {
             out.push_str("<ul class=\"readings\">\n");
-            for (scope, kind, completeness, reason) in &not_full {
+            for (scope, kind, completeness, reason, _) in &not_full {
                 write!(
                     out,
                     "<li><span class=\"mono\">{}</span> · {} ",

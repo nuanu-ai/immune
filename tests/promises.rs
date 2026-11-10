@@ -1,7 +1,8 @@
 //! Promises of the walking skeleton: store, the readers, the lifecycle, the report and the view.
 //! Each test runs the real binary on samples in the formats the sources print: `brew list
-//! --versions`, the files the server sweep writes, and lockfiles in checkouts.
-//! Every sample is invented.
+//! --versions`, the files the server sweep writes, lockfiles in checkouts, the ssh files and
+//! `tailscale status --json`. Every sample is invented, and the home folder is always a
+//! temporary one: no test reads the real ssh files or asks the real tailscale.
 
 use rusqlite::Connection;
 use rusqlite::types::ValueRef;
@@ -63,12 +64,7 @@ fn soc_all(store: &Path, brew: &Path, servers: &Path, checkouts: &Path) -> Strin
 
 /// The same, from a given folder, which is also the home folder.
 fn soc_in(cwd: &Path, store: &Path, brew: &Path, servers: &Path, checkouts: &Path) -> String {
-    ok(soc_cmd(cwd)
-        .arg("run")
-        .arg("--store")
-        .arg(store)
-        .arg("--machine-name")
-        .arg("mac")
+    ok(soc_run(cwd, store)
         .arg("--brew-input")
         .arg(brew)
         .arg("--servers-input")
@@ -77,11 +73,32 @@ fn soc_in(cwd: &Path, store: &Path, brew: &Path, servers: &Path, checkouts: &Pat
         .arg(checkouts))
 }
 
+/// Runs soc with the brew and server inputs; checkouts are found by the walk of the home
+/// folder, which is the store's folder.
+fn soc_home(store: &Path, brew: &Path, servers: &Path) -> String {
+    ok(soc_run(store.parent().unwrap(), store)
+        .arg("--brew-input")
+        .arg(brew)
+        .arg("--servers-input")
+        .arg(servers))
+}
+
 /// The binary with `home` as both the home folder and the working folder, so that
 /// nothing a test runs can reach the real home folder.
 fn soc_cmd(home: &Path) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_soc"));
     cmd.env("HOME", home).current_dir(home);
+    cmd
+}
+
+/// `soc run` for the machine `mac`, with no tailscale, so that the real one is never asked.
+/// A later `--tailscale` replaces it.
+fn soc_run(home: &Path, store: &Path) -> Command {
+    let mut cmd = soc_cmd(home);
+    cmd.args(["run", "--machine-name", "mac", "--store"])
+        .arg(store)
+        .arg("--tailscale")
+        .arg(home.join("no-tailscale"));
     cmd
 }
 
@@ -162,7 +179,8 @@ fn second_run_on_unchanged_input_reports_no_changes_and_writes_no_events() {
     let second = soc(&dir.store(), &input);
     assert!(
         second.starts_with(
-            "1 reader, 1 machine, 0 checkouts, 6 components. Since last run: no changes."
+            "1 reader, 1 machine, 0 checkouts, 6 components. No servers known. \
+             Since last run: no changes."
         ),
         "{second}"
     );
@@ -185,7 +203,7 @@ fn reader_that_could_not_read_its_scope_retracts_nothing() {
     assert_eq!(
         rows(
             &store,
-            "SELECT completeness FROM coverage ORDER BY id DESC LIMIT 1"
+            "SELECT completeness FROM coverage WHERE reader = 'brew' ORDER BY id DESC LIMIT 1"
         ),
         ["none"]
     );
@@ -354,7 +372,7 @@ fn reading_that_failed_is_shown_with_its_reason_and_not_as_full() {
     soc(&store, &dir.0.join("missing.txt"));
     let reason = rows(
         &store,
-        "SELECT reason FROM coverage ORDER BY id DESC LIMIT 1",
+        "SELECT reason FROM coverage WHERE reader = 'brew' ORDER BY id DESC LIMIT 1",
     );
     let page = view(&store);
 
@@ -479,7 +497,7 @@ fn under_partial_coverage_new_assertions_become_live_and_nothing_is_retracted() 
     let shop = checkout(&root, "shop");
     put(&shop, "api/yarn.lock", "# yarn lockfile v1\n");
     put(&shop, "package-lock.json", PACKAGE_LOCK);
-    soc_all(&store, &brew, &absent, &root);
+    soc_home(&store, &brew, &absent);
 
     let next = PACKAGE_LOCK
         .replace(
@@ -488,7 +506,7 @@ fn under_partial_coverage_new_assertions_become_live_and_nothing_is_retracted() 
         )
         .replace("22.7.4", "22.7.5");
     put(&shop, "package-lock.json", &next);
-    let report = soc_all(&store, &brew, &absent, &root);
+    let report = soc_home(&store, &brew, &absent);
 
     let npm = "component:checkout:machine:mac/dev/shop/npm";
     let live = rows(&store, LIVE);
@@ -573,20 +591,33 @@ fn server_file_without_end_is_a_machine_not_read_and_retracts_nothing() {
     assert!(db.contains("0 components"), "{db}");
 }
 
+/// Sets a file's modification time.
+fn touch(file: &Path, secs: u64) {
+    std::fs::File::options()
+        .write(true)
+        .open(file)
+        .unwrap()
+        .set_modified(UNIX_EPOCH + std::time::Duration::from_secs(secs))
+        .unwrap();
+}
+
 #[test]
-fn server_observed_at_is_when_the_file_was_written_not_when_it_was_read() {
-    // Server files can be weeks old; a fresh time on an old reading is false freshness.
+fn time_of_a_server_reading_is_taken_at_from_the_file_not_its_time_on_disk() {
+    // Server files can be weeks old, and copying one changes its time on disk; a fresh time
+    // on an old reading is false freshness. A file from before `##taken_at` falls back to
+    // its time on disk, never to the time of the run.
     let dir = Dir::new("observed");
     let store = dir.store();
     let servers = dir.0.join("servers");
-    let file = put(&servers, "web-1.txt", WEB_1);
-    let written = 1_767_323_045; // 2026-01-02 03:04:05 UTC
-    std::fs::File::options()
-        .write(true)
-        .open(&file)
-        .unwrap()
-        .set_modified(UNIX_EPOCH + std::time::Duration::from_secs(written))
-        .unwrap();
+    let taken = 1_767_323_045; // 2026-01-02 03:04:05 UTC
+    let web = put(
+        &servers,
+        "web-1.txt",
+        &format!("##taken_at\n{taken}\n{WEB_1}"),
+    );
+    touch(&web, 1_700_000_000);
+    let written = 1_767_000_000;
+    touch(&put(&servers, "db-1.txt", WEB_1), written);
     soc_all(
         &store,
         &dir.input("brew.txt", SAMPLE),
@@ -594,20 +625,23 @@ fn server_observed_at_is_when_the_file_was_written_not_when_it_was_read() {
         &dir.0.join("absent"),
     );
 
-    let times = |sql: &str| {
-        rows(&store, sql)
-            .into_iter()
-            .collect::<std::collections::BTreeSet<_>>()
+    let times = |table: &str| {
+        rows(
+            &store,
+            &format!(
+                "SELECT DISTINCT substr(scope, 1, instr(scope || '/', '/') - 1), observed_at
+                 FROM {table} WHERE reader = 'servers' ORDER BY 1"
+            ),
+        )
     };
-    let expected = [written.to_string()].into_iter().collect();
-    assert_eq!(
-        times("SELECT observed_at FROM assertion WHERE reader = 'servers'"),
-        expected
-    );
-    assert_eq!(
-        times("SELECT observed_at FROM coverage WHERE reader = 'servers'"),
-        expected
-    );
+    let expected = [
+        format!("container:machine:db-1|{written}"),
+        format!("container:machine:web-1|{taken}"),
+        format!("machine:db-1|{written}"),
+        format!("machine:web-1|{taken}"),
+    ];
+    assert_eq!(times("coverage"), expected);
+    assert_eq!(times("assertion"), expected);
     let page = view(&store);
     let web = section(&page, "machines")
         .split("<details class=\"machine\">")
@@ -760,9 +794,7 @@ fn without_homebrew_the_brew_reading_has_nothing_to_read_and_earlier_brew_facts_
     let store = dir.store();
     soc(&store, &dir.input("brew.txt", SAMPLE));
     let absent = dir.0.join("absent");
-    let report = ok(soc_cmd(&dir.0)
-        .args(["run", "--machine-name", "mac", "--store"])
-        .arg(&store)
+    let report = ok(soc_run(&dir.0, &store)
         .arg("--brew")
         .arg(dir.0.join("nowhere").join("brew"))
         .arg("--servers-input")
@@ -777,7 +809,7 @@ fn without_homebrew_the_brew_reading_has_nothing_to_read_and_earlier_brew_facts_
     assert_eq!(
         rows(
             &store,
-            "SELECT completeness, reason FROM coverage ORDER BY id DESC LIMIT 1"
+            "SELECT completeness, reason FROM coverage WHERE reader = 'brew' ORDER BY id DESC LIMIT 1"
         ),
         ["full|Homebrew is not installed on this machine"]
     );
@@ -816,12 +848,12 @@ fn deleted_checkout_is_retracted_with_everything_inside_it_as_one_removed_event(
     // A partial reading inside it is retracted too: the place itself is gone.
     put(&shop, "api/yarn.lock", "# yarn lockfile v1\n");
     checkout(&root, "tools");
-    soc_all(&store, &brew, &absent, &root);
+    soc_home(&store, &brew, &absent);
     let id = "checkout:machine:mac/dev/shop";
     assert!(rows(&store, LIVE).iter().any(|r| r.contains("/dev/shop/")));
 
     std::fs::remove_dir_all(&shop).unwrap();
-    let report = soc_all(&store, &brew, &absent, &root);
+    let report = soc_home(&store, &brew, &absent);
 
     assert_eq!(
         rows(&store, LAST_RUN_EVENTS),
@@ -850,7 +882,7 @@ fn deleted_checkout_is_retracted_with_everything_inside_it_as_one_removed_event(
     );
 
     // Its readings no longer count: nothing is unknown about a place that is gone.
-    let next = soc_all(&store, &brew, &absent, &root);
+    let next = soc_home(&store, &brew, &absent);
     assert!(next.contains("Since last run: no changes."), "{next}");
     let page = view(&store);
     assert!(!section(&page, "coverage").contains(id));
@@ -887,19 +919,19 @@ fn folder_that_cannot_be_listed_gives_a_partial_checkouts_reading_naming_it_and_
     let app = checkout(&root, "archive/app");
     put(&app, "Cargo.lock", CARGO_LOCK);
     checkout(&root, "work/site");
-    soc_all(&store, &brew, &absent, &root);
+    soc_home(&store, &brew, &absent);
     let live_before = rows(&store, LIVE);
 
     // The walk goes on past the folder it cannot list.
     checkout(&root, "work/new");
     let _locked = Locked::new(root.join("archive"));
-    let report = soc_all(&store, &brew, &absent, &root);
+    let report = soc_home(&store, &brew, &absent);
 
     assert_eq!(
         rows(
             &store,
             "SELECT completeness, reason FROM coverage
-             WHERE kind = 'checkouts present' ORDER BY id DESC LIMIT 1"
+             WHERE kind = 'checkouts under the home folder' ORDER BY id DESC LIMIT 1"
         ),
         ["partial|could not be listed: dev/archive"]
     );
@@ -930,7 +962,12 @@ fn by_default_nothing_is_written_to_the_working_folder_and_the_store_is_in_the_u
         cmd.current_dir(&cwd).args(args);
         cmd
     };
-    let run = || ok(soc(&["run", "--machine-name", "mac", "--brew-input"]).arg(&brew));
+    let run = || {
+        ok(soc(&["run", "--machine-name", "mac", "--brew-input"])
+            .arg(&brew)
+            .arg("--tailscale")
+            .arg(dir.0.join("no-tailscale")))
+    };
 
     let report = run();
     let folder = home.join("Library/Application Support/personal-soc");
@@ -974,9 +1011,7 @@ fn store_from_an_older_format_is_refused_with_a_message_and_left_untouched() {
     let brew = dir.input("brew.txt", SAMPLE);
     let absent = dir.0.join("absent");
 
-    let run = soc_cmd(&dir.0)
-        .args(["run", "--machine-name", "mac", "--store"])
-        .arg(&store)
+    let run = soc_run(&dir.0, &store)
         .arg("--brew-input")
         .arg(&brew)
         .arg("--servers-input")
@@ -1087,9 +1122,7 @@ fn checkouts_are_found_anywhere_under_the_home_folder_except_where_none_belong()
     put(&home, ".git/HEAD", "ref: refs/heads/main\n");
     std::os::unix::fs::symlink(home.join("Code"), home.join("link")).unwrap();
 
-    ok(soc_cmd(&home)
-        .args(["run", "--machine-name", "mac", "--store"])
-        .arg(dir.store())
+    ok(soc_run(&home, &dir.store())
         .arg("--brew-input")
         .arg(dir.input("brew.txt", SAMPLE))
         .arg("--servers-input")
@@ -1106,5 +1139,396 @@ fn checkouts_are_found_anywhere_under_the_home_folder_except_where_none_belong()
              ORDER BY subject"
         ),
         expected
+    );
+}
+
+/// An ssh configuration as people write it: a plain alias with its address, a pattern,
+/// code hosting under an alias and by `User git`, an alias the owner skips, and an include.
+const SSH_CONFIG: &str = "\
+# Invented for tests.
+Host web-1
+    HostName 10.0.0.5
+    User deploy
+    IdentityFile ~/.ssh/id_invented
+Host lab-*
+    User admin
+Host code-mirror
+    HostName github.com
+Host forge
+    HostName git.example.org
+    User git
+Host retired-box
+    HostName 10.0.0.8
+Include config.d/*
+";
+
+const SSH_CONFIG_BUILD: &str = "\
+Host build
+    HostName build-box.example-tail.ts.net
+";
+
+/// Invented keys: none of them is a real key.
+const KEY: &str = "AAAAC3NzaC1lZDI1NTE5AAAAIInventedKeyForTestsOnly";
+const SALT: &str = "aW52ZW50ZWRzYWx0";
+
+fn known_hosts_file() -> String {
+    format!(
+        "\
+10.0.0.5 ssh-ed25519 {KEY}Web1
+[10.0.0.9]:2222,db-9 ecdsa-sha2-nistp256 {KEY}Db9
+|1|{SALT}MQ==|aW52ZW50ZWRoYXNoMQ== ssh-ed25519 {KEY}HashedOne
+|1|{SALT}Mg==|aW52ZW50ZWRoYXNoMg== ssh-rsa {KEY}HashedTwo
+github.com ssh-ed25519 {KEY}CodeHosting
+@cert-authority *.example.org ssh-ed25519 {KEY}Authority
+"
+    )
+}
+
+/// What `tailscale status --json` prints, cut to the fields that matter and a few that
+/// must not be kept.
+const TAILNET: &str = r#"{
+  "Version": "1.76.1",
+  "BackendState": "Running",
+  "Self": { "HostName": "mac", "DNSName": "mac.example-tail.ts.net.",
+            "TailscaleIPs": ["100.64.0.1"], "OS": "macOS" },
+  "Peer": {
+    "nodekey:invented1": { "PublicKey": "nodekey:invented1", "HostName": "build-box",
+      "DNSName": "Build-Box.example-tail.ts.net.",
+      "TailscaleIPs": ["100.64.0.7", "fd7a:115c:a1e0::7"], "OS": "linux" },
+    "nodekey:invented2": { "PublicKey": "nodekey:invented2", "HostName": "phone",
+      "DNSName": "phone.example-tail.ts.net.", "TailscaleIPs": ["100.64.0.8"], "OS": "iOS" }
+  }
+}"#;
+
+/// A shell script with this body, made executable.
+fn script(path: &Path, body: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path.to_path_buf()
+}
+
+/// A command that prints `out` whatever it is asked.
+fn fake(path: &Path, out: &str) -> PathBuf {
+    script(path, &format!("cat <<'END_OF_FAKE'\n{out}\nEND_OF_FAKE"))
+}
+
+/// A home folder with the given ssh files, and a store next to it.
+struct Home {
+    dir: Dir,
+    home: PathBuf,
+}
+
+impl Home {
+    fn new(tag: &str, config: Option<&str>, known_hosts: Option<&str>) -> Home {
+        let dir = Dir::new(tag);
+        let home = dir.0.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        if let Some(config) = config {
+            put(&home, ".ssh/config", config);
+            put(&home, ".ssh/config.d/build", SSH_CONFIG_BUILD);
+        }
+        if let Some(known) = known_hosts {
+            put(&home, ".ssh/known_hosts", known);
+        }
+        Home { dir, home }
+    }
+
+    fn store(&self) -> PathBuf {
+        self.dir.0.join("store").join("store.db")
+    }
+
+    /// `soc run` with the given server files and tailscale, and no checkouts.
+    fn run(&self, servers: &Path, tailscale: &Path) -> String {
+        let brew = put(&self.dir.0, "brew.txt", SAMPLE);
+        ok(soc_run(&self.home, &self.store())
+            .arg("--brew-input")
+            .arg(brew)
+            .arg("--servers-input")
+            .arg(servers)
+            .arg("--checkouts-root")
+            .arg(self.dir.0.join("absent"))
+            .arg("--tailscale")
+            .arg(tailscale))
+    }
+
+    fn servers(&self) -> String {
+        ok(soc_cmd(&self.home)
+            .args(["servers", "--store"])
+            .arg(self.store())
+            .arg("--tailscale")
+            .arg(self.dir.0.join("no-tailscale")))
+    }
+}
+
+#[test]
+fn the_program_never_runs_ssh() {
+    // Access to servers is the owner's: the program only reads local files and writes a
+    // script the owner runs.
+    let h = Home::new("no-ssh", Some(SSH_CONFIG), Some(&known_hosts_file()));
+    let marker = h.dir.0.join("ssh-was-called");
+    let bin = h.dir.0.join("bin");
+    script(&bin.join("ssh"), &format!("touch '{}'", marker.display()));
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let brew = put(&h.dir.0, "brew.txt", SAMPLE);
+    ok(soc_run(&h.home, &h.store())
+        .env("PATH", &path)
+        .arg("--brew-input")
+        .arg(brew)
+        .arg("--checkouts-root")
+        .arg(h.dir.0.join("absent")));
+    let printed = ok(soc_cmd(&h.home)
+        .env("PATH", &path)
+        .args(["servers", "--store"])
+        .arg(h.store())
+        .arg("--tailscale")
+        .arg(h.dir.0.join("no-tailscale")));
+
+    assert!(!marker.exists(), "ssh was called");
+    let sweep = h.dir.0.join("store").join("sweep");
+    assert!(sweep.join("sweep.sh").is_file());
+    assert!(!sweep.join("web-1.txt").exists(), "the sweep was run");
+    assert!(printed.contains("Nothing was run."), "{printed}");
+}
+
+#[test]
+fn hashed_known_hosts_make_the_reading_partial_with_their_count_and_no_key_is_stored() {
+    // A hashed entry hides a host we may have; the reading must not look complete. Keys are
+    // not ours to copy: neither a key nor its type is kept, in the store or next to it.
+    let h = Home::new("hashed", None, Some(&known_hosts_file()));
+    h.run(&h.dir.0.join("absent"), &h.dir.0.join("no-tailscale"));
+
+    assert_eq!(
+        rows(
+            &h.store(),
+            "SELECT completeness, reason FROM coverage WHERE kind = 'known hosts'"
+        ),
+        ["partial|2 hashed entries cannot be read"]
+    );
+    assert_eq!(
+        rows(
+            &h.store(),
+            "SELECT subject, object FROM assertion
+             WHERE layer = 'live' AND kind = 'known hosts' ORDER BY subject"
+        ),
+        [
+            "machine:10.0.0.5|10.0.0.5",
+            "machine:10.0.0.9|10.0.0.9",
+            "machine:db-9|db-9"
+        ]
+    );
+    let store_folder = h.dir.0.join("store");
+    let mut files = 0;
+    let mut stack = vec![store_folder];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            files += 1;
+            let bytes = std::fs::read(&path).unwrap();
+            let text = String::from_utf8_lossy(&bytes);
+            for secret in [KEY, SALT, "ssh-ed25519", "ecdsa-sha2", "ssh-rsa", "|1|"] {
+                assert!(!text.contains(secret), "{secret} is in {}", path.display());
+            }
+        }
+    }
+    assert!(files > 1, "nothing was written");
+}
+
+#[test]
+fn two_traces_that_name_the_same_address_are_one_machine_and_each_reader_keeps_what_it_wrote() {
+    // One server under an alias, an address and a tailnet name must not look like three
+    // servers, and the resolver must not rewrite what the readers saw.
+    let h = Home::new(
+        "same",
+        Some(SSH_CONFIG),
+        Some("10.0.0.5 ssh-ed25519 AAAA\n"),
+    );
+    let servers = h.dir.0.join("servers");
+    put(&servers, "web-1.txt", WEB_1);
+    let tailscale = fake(&h.dir.0.join("bin").join("tailscale"), TAILNET);
+    let report = h.run(&servers, &tailscale);
+
+    assert_eq!(
+        rows(
+            &h.store(),
+            "SELECT reader, subject, object FROM assertion
+             WHERE layer = 'live' AND predicate = 'known_as' ORDER BY reader, subject, object"
+        ),
+        [
+            "known-hosts|machine:10.0.0.5|10.0.0.5",
+            "ssh-config|machine:build|build",
+            "ssh-config|machine:build|build-box.example-tail.ts.net",
+            "ssh-config|machine:retired-box|10.0.0.8",
+            "ssh-config|machine:retired-box|retired-box",
+            "ssh-config|machine:web-1|10.0.0.5",
+            "ssh-config|machine:web-1|web-1",
+            "tailnet|machine:build-box|100.64.0.7",
+            "tailnet|machine:build-box|Build-Box.example-tail.ts.net.",
+            "tailnet|machine:build-box|build-box",
+            "tailnet|machine:build-box|fd7a:115c:a1e0::7",
+            "tailnet|machine:phone|100.64.0.8",
+            "tailnet|machine:phone|phone",
+            "tailnet|machine:phone|phone.example-tail.ts.net.",
+        ]
+    );
+    let links = "SELECT subject, object FROM assertion
+                 WHERE layer = 'live' AND predicate = 'same_as' AND reader = 'resolver'
+                 ORDER BY subject";
+    assert_eq!(
+        rows(&h.store(), links),
+        [
+            "machine:10.0.0.5|machine:web-1",
+            "machine:build|machine:build-box"
+        ]
+    );
+    assert!(
+        report.contains("5 machines,")
+            && report.contains("4 servers known, 3 offered for the sweep, 1 read."),
+        "{report}"
+    );
+
+    let page = view(&h.store());
+    let machines = section(&page, "machines");
+    let blocks: Vec<&str> = machines.split("<details class=\"machine\">").collect();
+    let web = blocks
+        .iter()
+        .find(|b| b.contains("<strong>web-1</strong>"))
+        .expect("web-1 is not on the page");
+    assert!(web.contains("10.0.0.5"), "{web}");
+    assert!(
+        !machines.contains("<strong>10.0.0.5</strong>"),
+        "{machines}"
+    );
+    let never = blocks
+        .iter()
+        .find(|b| b.contains("Known and never read"))
+        .expect("no list of machines never read");
+    let names: Vec<&str> = never
+        .split("<tr><td class=\"mono\">")
+        .skip(1)
+        .map(|r| r.split('<').next().unwrap())
+        .collect();
+    assert_eq!(names, ["build", "phone", "retired-box"], "{never}");
+    let build = never.split("<tr>").find(|r| r.contains(">build<")).unwrap();
+    assert!(
+        build.contains("build-box") && build.contains("tailnet peers"),
+        "{build}"
+    );
+
+    // The link goes when its evidence goes.
+    std::fs::remove_file(h.home.join(".ssh/known_hosts")).unwrap();
+    h.run(&servers, &tailscale);
+    assert_eq!(rows(&h.store(), links), ["machine:build|machine:build-box"]);
+}
+
+#[test]
+fn only_plain_ssh_aliases_are_offered_for_the_sweep() {
+    // The sweep is access to servers. It visits only what the owner has an explicit way
+    // into: not a host merely seen once, not code hosting, not what the owner skipped.
+    let h = Home::new("offered", Some(SSH_CONFIG), Some(&known_hosts_file()));
+    put(
+        &h.dir.0.join("store").join("sweep"),
+        "skip.txt",
+        "# not this one\nretired-box\n",
+    );
+    let printed = h.servers();
+
+    let sweep = h.dir.0.join("store").join("sweep");
+    let script = std::fs::read_to_string(sweep.join("sweep.sh")).unwrap();
+    let listed: Vec<&str> = script
+        .split("servers='\n")
+        .nth(1)
+        .unwrap()
+        .split('\'')
+        .next()
+        .unwrap()
+        .lines()
+        .collect();
+    assert_eq!(listed, ["build", "web-1"]);
+    for absent in [
+        "lab-",
+        "code-mirror",
+        "github.com",
+        "forge",
+        "retired-box",
+        "10.0.0.9",
+        "db-9",
+    ] {
+        assert!(!script.contains(absent), "{absent} is in the sweep");
+    }
+    assert!(
+        printed.contains(&format!("sh '{}'", sweep.join("sweep.sh").display())),
+        "{printed}"
+    );
+    assert!(printed.contains("skip.txt"), "{printed}");
+}
+
+#[test]
+fn an_explicit_checkouts_root_never_retracts_checkouts_found_by_the_home_walk() {
+    // A walk of one folder says nothing about the rest of the home folder.
+    let dir = Dir::new("given-root");
+    let store = dir.store();
+    let brew = dir.input("brew.txt", SAMPLE);
+    let absent = dir.0.join("absent");
+    checkout(&dir.0, "dev/shop");
+    checkout(&dir.0, "other/app");
+    soc_home(&store, &brew, &absent);
+    let live_before = rows(&store, LIVE);
+
+    let report = soc_all(&store, &brew, &absent, &dir.0.join("dev"));
+    assert_eq!(rows(&store, LIVE), live_before);
+    assert!(rows(&store, "SELECT 1 FROM assertion WHERE layer = 'retracted'").is_empty());
+    assert_eq!(
+        rows(
+            &store,
+            "SELECT completeness, reason FROM coverage
+             WHERE reader = 'checkouts' ORDER BY id DESC LIMIT 1"
+        ),
+        ["partial|only the given folder was walked"]
+    );
+    assert!(report.contains("0 removed"), "{report}");
+}
+
+#[test]
+fn a_standing_partial_reading_without_assertions_still_lets_the_report_say_no_changes() {
+    // What is inside a container is never read in full and never asserted: nothing there
+    // can disappear, so it must not keep the owner from hearing that nothing changed.
+    let dir = Dir::new("standing");
+    let store = dir.store();
+    let brew = dir.input("brew.txt", SAMPLE);
+    let servers = dir.0.join("servers");
+    let absent = dir.0.join("absent");
+    put(&servers, "web-1.txt", WEB_1);
+    soc_all(&store, &brew, &servers, &absent);
+    let report = soc_all(&store, &brew, &servers, &absent);
+
+    assert!(report.contains("Since last run: no changes."), "{report}");
+    assert!(!report.contains("partial"), "{report}");
+    let page = view(&store);
+    let latest = section(&page, "changes")
+        .split("<details")
+        .nth(1)
+        .unwrap()
+        .split("</summary>")
+        .next()
+        .unwrap()
+        .to_string();
+    assert!(latest.ends_with("· no changes"), "{latest}");
+    assert_eq!(
+        rows(
+            &store,
+            "SELECT COUNT(*) FROM coverage WHERE kind = 'container contents'
+             AND run_id = (SELECT MAX(run_id) FROM coverage)"
+        ),
+        ["2"]
     );
 }

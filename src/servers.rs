@@ -2,7 +2,8 @@
 //! read-only sweep leaves behind. It never connects anywhere; it only reads files.
 //!
 //! One file per server, `<name>.txt`, made of sections that start with a `##<section>`
-//! line. A file is a complete read only if it reaches `##end`.
+//! line, as `scripts/probe.sh` prints them. A file is a complete read only if it reaches
+//! `##end`. `##taken_at` is when the probe ran, in UTC seconds.
 
 use crate::store::Statement;
 use std::collections::BTreeMap;
@@ -24,16 +25,17 @@ pub const CONTENTS: &str = "container contents";
 const NOT_COMPLETE: &str = "the sweep of this server did not complete";
 const NO_RIGHTS: &str = "no rights to list containers";
 const CONTENTS_PARTIAL: &str = "only version variables and the WordPress core version are read";
-/// What the probe prints when docker refused, in the language it is written in.
-const REFUSED: [&str; 2] = ["нет прав", "no access"];
-const NOT_INSTALLED: [&str; 2] = ["docker не установлен", "docker not installed"];
+/// What the probe prints when docker refused, and when there is no docker.
+const REFUSED: &str = "no access";
+const NOT_INSTALLED: &str = "docker not installed";
 
 /// One server file as it was found.
 pub struct Input {
     pub name: String,
     /// `None` when the file could not be read.
     pub raw: Option<Vec<u8>>,
-    /// When the sweep wrote the file, UTC seconds.
+    /// When the file was last written, UTC seconds: the time of the reading when the file
+    /// does not say when the probe ran.
     pub modified: i64,
 }
 
@@ -47,8 +49,8 @@ pub struct Outcome {
     pub statements: Vec<Statement>,
 }
 
-/// Every `<name>.txt` in the folder, by name. An error if the folder cannot be listed;
-/// a file that cannot be read is still a server we know about.
+/// Every `<name>.txt` in the folder, by name, except the sweep's own `skip.txt`. An error
+/// if the folder cannot be listed; a file that cannot be read is still a server we know about.
 pub fn inputs(dir: &Path) -> Result<Vec<Input>, String> {
     let entries =
         std::fs::read_dir(dir).map_err(|e| format!("cannot list {}: {e}", dir.display()))?;
@@ -63,7 +65,10 @@ pub fn inputs(dir: &Path) -> Result<Vec<Input>, String> {
         else {
             continue;
         };
-        if name.is_empty() || !entry.file_type().is_ok_and(|t| t.is_file()) {
+        if name.is_empty()
+            || entry.file_name() == crate::sweep::SKIP
+            || !entry.file_type().is_ok_and(|t| t.is_file())
+        {
             continue;
         }
         let modified = entry
@@ -116,6 +121,11 @@ fn first_line<'a>(sections: &Sections<'a>, name: &str) -> Option<(usize, &'a str
     let (n, line) = sections.get(name)?.first()?;
     let line = line.trim();
     (!line.is_empty()).then_some((*n, line))
+}
+
+/// When the probe ran, from `##taken_at`, if the file says.
+pub fn taken_at(text: &str) -> Option<i64> {
+    first_line(&sections(text), "taken_at").and_then(|(_, t)| t.parse().ok())
 }
 
 /// The readings of one server file. `raw_file` is the saved copy, relative to the store's
@@ -176,8 +186,8 @@ pub fn readings(machine: &str, text: &str, raw_file: &str) -> Vec<Outcome> {
             CONTAINERS,
             "the sweep has no docker section",
         )),
-        Some(a) if REFUSED.contains(&a) => out.push(not_read(machine, CONTAINERS, NO_RIGHTS)),
-        Some(a) if NOT_INSTALLED.contains(&a) => out.push(full(machine, CONTAINERS, Vec::new())),
+        Some(REFUSED) => out.push(not_read(machine, CONTAINERS, NO_RIGHTS)),
+        Some(NOT_INSTALLED) => out.push(full(machine, CONTAINERS, Vec::new())),
         Some(_) if !s.contains_key("docker_ps") => out.push(not_read(
             machine,
             CONTAINERS,

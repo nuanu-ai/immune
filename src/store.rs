@@ -1,10 +1,12 @@
 //! The store: vocabulary, entities, the three assertion layers, coverage and the journal.
 //! The shape follows docs/facts.md.
 
+use crate::resolver;
 use rusqlite::{Connection, OpenFlags, Transaction, params};
+use std::collections::BTreeSet;
 use std::path::Path;
 
-pub const FORMAT_VERSION: &str = "3";
+pub const FORMAT_VERSION: &str = "4";
 
 const SCHEMA: &str = "
 CREATE TABLE meta (
@@ -118,14 +120,17 @@ INSERT INTO predicate (name, object_kind, status) VALUES
     ('located_on', 'entity', 'used'), ('part_of', 'entity', 'used'),
     ('has_version', 'literal', 'used'), ('runs_os', 'literal', 'used'),
     ('runs_kernel', 'literal', 'used'), ('runs_image', 'literal', 'used'),
+    ('known_as', 'literal', 'used'), ('same_as', 'entity', 'used'),
     ('copy_of', NULL, 'reserved'), ('reachable_from', NULL, 'reserved'),
-    ('relation_to_owner', NULL, 'reserved'), ('same_as', NULL, 'reserved');
+    ('relation_to_owner', NULL, 'reserved');
 INSERT INTO basis_kind (name, strength) VALUES
     ('observed', 1), ('declared', 2), ('mentioned', 3);
 INSERT INTO coverage_kind (name) VALUES
-    ('brew packages'), ('checkouts present'), ('lockfile dependencies'),
+    ('brew packages'), ('checkouts under the home folder'), ('lockfile dependencies'),
     ('system packages'), ('containers'), ('container version variables'),
-    ('wordpress core version'), ('container contents');
+    ('wordpress core version'), ('container contents'),
+    ('ssh configuration'), ('known hosts'), ('tailnet peers'),
+    ('machines under several names');
 ";
 
 /// One reading: which reader looked for which kind of thing in which scope.
@@ -305,6 +310,7 @@ pub fn any_run_finished(tx: &Transaction) -> rusqlite::Result<bool> {
 
 /// What the report line says about the store after a run.
 pub struct Totals {
+    /// Machines, each counted once however many names it has.
     pub machines: i64,
     pub checkouts: i64,
     pub components: i64,
@@ -321,14 +327,17 @@ pub fn totals(tx: &Transaction, run_id: &str) -> rusqlite::Result<Totals> {
     let all = |sql: &str| tx.query_row(sql, [], |row| row.get::<_, i64>(0));
     let one = |sql: &str| tx.query_row(sql, [run_id], |row| row.get::<_, i64>(0));
     Ok(Totals {
-        machines: all("SELECT COUNT(*) FROM entity WHERE type = 'machine'")?,
+        machines: machine_groups(tx)?.len() as i64,
         checkouts: all("SELECT COUNT(DISTINCT subject) FROM assertion
              WHERE layer = 'live' AND predicate = 'located_on' AND subject LIKE 'checkout:%'")?,
         components: all("SELECT COUNT(DISTINCT subject) FROM assertion
              WHERE layer = 'live' AND predicate = 'part_of'")?,
-        partial: one(
-            "SELECT COUNT(*) FROM coverage WHERE run_id = ?1 AND completeness = 'partial'",
-        )?,
+        // A partial reading that never made an assertion has nothing that could be removed.
+        partial: one("SELECT COUNT(*) FROM coverage c
+             WHERE run_id = ?1 AND completeness = 'partial'
+               AND EXISTS (SELECT 1 FROM assertion a WHERE a.layer IN ('live', 'retracted')
+                             AND a.reader = c.reader
+                             AND a.scope = c.scope AND a.kind = c.kind)")?,
         none: one("SELECT COUNT(*) FROM coverage WHERE run_id = ?1 AND completeness = 'none'")?,
         machines_unread: one("SELECT COUNT(*) FROM (SELECT scope FROM coverage
              WHERE run_id = ?1 AND scope IN (SELECT id FROM entity WHERE type = 'machine')
@@ -339,6 +348,69 @@ pub fn totals(tx: &Transaction, run_id: &str) -> rusqlite::Result<Totals> {
                AND scope NOT IN (SELECT id FROM gone_entity))",
         )?,
     })
+}
+
+/// The ids of machines the store knows now: something live names them, or a reading
+/// covered them. An entity whose every trace was retracted is no longer known.
+fn machines_known(conn: &Connection) -> rusqlite::Result<BTreeSet<String>> {
+    let column = |sql: &str| -> rusqlite::Result<BTreeSet<String>> {
+        conn.prepare(sql)?.query_map([], |r| r.get(0))?.collect()
+    };
+    let entities = column("SELECT id FROM entity WHERE type = 'machine'")?;
+    let mut named = column("SELECT DISTINCT scope FROM coverage")?;
+    named.extend(column(
+        "SELECT DISTINCT subject FROM assertion WHERE layer = 'live' AND subject LIKE 'machine:%'",
+    )?);
+    named.extend(column(
+        "SELECT DISTINCT object FROM assertion WHERE layer = 'live' AND object LIKE 'machine:%'",
+    )?);
+    Ok(entities.intersection(&named).cloned().collect())
+}
+
+/// The machines the store knows, as groups of entities the resolver found to be one
+/// machine. Each group and the list are sorted.
+pub fn machine_groups(conn: &Connection) -> rusqlite::Result<Vec<Vec<String>>> {
+    let links: Vec<(String, String)> = conn
+        .prepare(
+            "SELECT subject, object FROM assertion WHERE layer = 'live' AND predicate = 'same_as'",
+        )?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(resolver::groups(machines_known(conn)?, &links))
+}
+
+/// Live `known_as` assertions, which the resolver works from.
+pub fn live_known_as(conn: &Connection) -> rusqlite::Result<Vec<resolver::Known>> {
+    conn.prepare(
+        "SELECT subject, object, basis FROM assertion
+         WHERE layer = 'live' AND predicate = 'known_as' ORDER BY subject, object",
+    )?
+    .query_map([], |r| {
+        Ok(resolver::Known {
+            entity: r.get(0)?,
+            value: r.get(1)?,
+            basis: r.get(2)?,
+        })
+    })?
+    .collect()
+}
+
+/// The subjects one reader makes live assertions about.
+pub fn live_subjects(conn: &Connection, reader: &str) -> rusqlite::Result<BTreeSet<String>> {
+    conn.prepare("SELECT DISTINCT subject FROM assertion WHERE layer = 'live' AND reader = ?1")?
+        .query_map([reader], |r| r.get(0))?
+        .collect()
+}
+
+/// Scopes where the latest reading of some kind by this reader read something.
+pub fn scopes_read(conn: &Connection, reader: &str) -> rusqlite::Result<BTreeSet<String>> {
+    conn.prepare(
+        "SELECT DISTINCT scope FROM coverage
+         WHERE reader = ?1 AND completeness != 'none'
+           AND id IN (SELECT MAX(id) FROM coverage GROUP BY reader, scope, kind)",
+    )?
+    .query_map([reader], |r| r.get(0))?
+    .collect()
 }
 
 /// The last saved raw copy of this input, relative to the store's folder.

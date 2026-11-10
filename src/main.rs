@@ -1,15 +1,24 @@
 //! soc: read what is installed, keep it as facts, report what changed. One line.
-//! `soc view` writes a page that shows what is in the store.
+//! `soc view` writes a page that shows what is in the store. `soc servers` shows which
+//! servers this machine knows and writes the read-only sweep for the owner to run.
+//!
+//! The program never connects to a server and never runs ssh.
 
 mod brew;
 mod checkouts;
+mod known_hosts;
 mod lifecycle;
 mod lockfiles;
+mod resolver;
 mod servers;
+mod ssh_config;
 mod store;
+mod sweep;
+mod tailnet;
+mod traces;
 mod view;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -20,10 +29,13 @@ use store::{Event, Reading, Statement};
 const STORE_FOLDER: &str = "Library/Application Support/personal-soc";
 const USAGE: &str = "usage: soc run [--store <path>] [--machine-name <name>] [--brew <path>]
                [--brew-input <file>] [--servers-input <dir>] [--checkouts-root <dir>]
+               [--tailscale <path>]
+       soc servers [--store <path>] [--tailscale <path>]
        soc view [--store <path>] [--no-open]";
 
 enum Cmd {
     Run(Args),
+    Servers(ServersArgs),
     View(ViewArgs),
 }
 
@@ -37,10 +49,18 @@ struct Args {
     /// Files the owner's read-only sweep wrote, one per server. `None`: the `sweep`
     /// folder next to the store.
     servers_input: Option<PathBuf>,
-    /// The home folder: checkout ids are relative to it.
+    /// The home folder: checkout ids are relative to it, and the ssh files are in it.
     home: PathBuf,
-    /// Where checkouts are looked for; the home folder by default.
-    checkouts_root: PathBuf,
+    /// The one folder to look for checkouts in instead of the home folder.
+    checkouts_root: Option<PathBuf>,
+    /// The one place to look for tailscale instead of PATH and the app.
+    tailscale: Option<PathBuf>,
+}
+
+struct ServersArgs {
+    store: PathBuf,
+    home: PathBuf,
+    tailscale: Option<PathBuf>,
 }
 
 struct ViewArgs {
@@ -65,9 +85,10 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
     match cmd.as_str() {
         "run" => {
             let (mut machine, mut brew, mut brew_input) = (None, None, None);
-            let (mut servers_input, mut checkouts_root) = (None, None);
+            let (mut servers_input, mut checkouts_root, mut tailscale) = (None, None, None);
             while let Some(arg) = it.next() {
                 match arg.as_str() {
+                    "--tailscale" => tailscale = Some(value(&mut it, &arg)?.into()),
                     "--store" => store = Some(value(&mut it, &arg)?.into()),
                     "--machine-name" => machine = Some(value(&mut it, &arg)?),
                     "--brew" => brew = Some(value(&mut it, &arg)?.into()),
@@ -80,15 +101,30 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
             if machine.as_deref() == Some("") {
                 return Err("--machine-name needs a name".to_string());
             }
-            let home = user_home()?;
             Ok(Cmd::Run(Args {
                 store: store.map_or_else(default_store, Ok)?,
                 machine: machine.unwrap_or_else(machine_name),
                 brew,
                 brew_input,
                 servers_input,
-                checkouts_root: checkouts_root.unwrap_or_else(|| home.clone()),
-                home,
+                checkouts_root,
+                home: user_home()?,
+                tailscale,
+            }))
+        }
+        "servers" => {
+            let mut tailscale = None;
+            while let Some(arg) = it.next() {
+                match arg.as_str() {
+                    "--store" => store = Some(value(&mut it, &arg)?.into()),
+                    "--tailscale" => tailscale = Some(value(&mut it, &arg)?.into()),
+                    _ => return Err(format!("unexpected argument: {arg}")),
+                }
+            }
+            Ok(Cmd::Servers(ServersArgs {
+                store: store.map_or_else(default_store, Ok)?,
+                home: user_home()?,
+                tailscale,
             }))
         }
         "view" => {
@@ -140,6 +176,7 @@ fn main() -> ExitCode {
     };
     let result = match cmd {
         Cmd::Run(args) => run(&args).map(|line| println!("{line}")),
+        Cmd::Servers(args) => servers_cmd(&args),
         Cmd::View(args) => view(&args),
     };
     match result {
@@ -181,6 +218,277 @@ fn view(args: &ViewArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// One server as `soc servers` lists it.
+struct ServerRow {
+    name: String,
+    others: Vec<String>,
+    traces: Vec<&'static str>,
+    sweep: String,
+    file: String,
+    offered: Vec<String>,
+    read: bool,
+}
+
+/// Finds the servers this machine knows, prints them, and writes the probe and the sweep
+/// script next to the store. Reads local files only; never writes to the store and never
+/// runs ssh.
+fn servers_cmd(args: &ServersArgs) -> Result<(), Box<dyn Error>> {
+    let dir = home(&args.store).join("sweep");
+    let traces = [
+        (
+            ssh_config::KIND,
+            ssh_config::BASIS,
+            ssh_config::read(&args.home),
+        ),
+        (
+            known_hosts::KIND,
+            known_hosts::BASIS,
+            known_hosts::read(&args.home),
+        ),
+        (
+            tailnet::KIND,
+            tailnet::BASIS,
+            tailnet::read(args.tailscale.as_deref()),
+        ),
+    ];
+    let mut known = Vec::new();
+    let mut traces_of: BTreeMap<String, Vec<&'static str>> = BTreeMap::new();
+    let mut names_of: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut aliases = BTreeSet::new();
+    let (mut said, mut third_party) = (Vec::new(), 0);
+    for (kind, basis, found) in &traces {
+        match found {
+            traces::Found::Absent(note) => said.push(format!("{kind}: nothing to read, {note}")),
+            traces::Found::Failed(reason) => {
+                said.push(format!("{kind}: could not be read, {reason}"));
+            }
+            traces::Found::Read(seen) => {
+                let mut line = format!(
+                    "{kind}: {}",
+                    things(seen.hosts.len() as i64, "server", "servers")
+                );
+                if let Some(partial) = &seen.partial {
+                    line.push_str(&format!(", {partial}"));
+                }
+                if seen.third_party > 0 {
+                    line.push_str(&format!(", {} left out as code hosting", seen.third_party));
+                }
+                said.push(line);
+                third_party += seen.third_party;
+                for host in &seen.hosts {
+                    let id = format!("machine:{}", host.name);
+                    let list = traces_of.entry(id.clone()).or_default();
+                    if !list.contains(kind) {
+                        list.push(kind);
+                    }
+                    for (value, _) in &host.known_as {
+                        known.push(resolver::Known {
+                            entity: id.clone(),
+                            value: value.clone(),
+                            basis: basis.to_string(),
+                        });
+                        names_of
+                            .entry(id.clone())
+                            .or_default()
+                            .insert(value.clone());
+                    }
+                    if *kind == ssh_config::KIND {
+                        aliases.insert(host.name.clone());
+                    }
+                }
+            }
+        }
+    }
+    let pairs: Vec<(String, String)> = resolver::links(&known)
+        .into_iter()
+        .map(|l| (l.a, l.b))
+        .collect();
+    let groups = resolver::groups(traces_of.keys().cloned(), &pairs);
+    let skip = sweep::skip_list(&dir);
+
+    let mut rows = Vec::new();
+    for group in &groups {
+        let members: Vec<&str> = group
+            .iter()
+            .map(|m| m.strip_prefix("machine:").unwrap_or(m))
+            .collect();
+        let with_alias: Vec<&str> = members
+            .iter()
+            .copied()
+            .filter(|m| aliases.contains(*m))
+            .collect();
+        let offered: Vec<String> = with_alias
+            .iter()
+            .filter(|a| sweep::not_offered(a, &skip).is_none())
+            .map(|a| a.to_string())
+            .collect();
+        let sweep = if !offered.is_empty() {
+            format!("offered as {}", offered.join(", "))
+        } else if let Some(alias) = with_alias.first() {
+            format!(
+                "not offered: {}",
+                sweep::not_offered(alias, &skip).unwrap_or("")
+            )
+        } else {
+            "not offered: no ssh alias".to_string()
+        };
+        let name = offered
+            .first()
+            .map(String::as_str)
+            .or(with_alias.first().copied())
+            .unwrap_or(members[0])
+            .to_string();
+        let mut others: BTreeSet<String> = group
+            .iter()
+            .flat_map(|m| names_of.get(m).into_iter().flatten().cloned())
+            .collect();
+        others.extend(members.iter().map(|m| m.to_string()));
+        others.remove(&name);
+        let mut traces: Vec<&'static str> = Vec::new();
+        for m in group {
+            for t in traces_of.get(m).into_iter().flatten() {
+                if !traces.contains(t) {
+                    traces.push(t);
+                }
+            }
+        }
+        let (file, read) = last_file(&dir, &members);
+        rows.push(ServerRow {
+            name,
+            others: others.into_iter().collect(),
+            traces,
+            sweep,
+            file,
+            offered,
+            read,
+        });
+    }
+    rows.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let (offered, rest): (Vec<&ServerRow>, Vec<&ServerRow>) =
+        rows.iter().partition(|r| !r.offered.is_empty());
+    let table = |title: String, rows: &[&ServerRow]| {
+        println!("{title}");
+        let cells: Vec<Vec<String>> = rows
+            .iter()
+            .map(|r| {
+                vec![
+                    r.name.clone(),
+                    r.traces.join(", "),
+                    r.sweep.clone(),
+                    r.file.clone(),
+                    r.others.join(", "),
+                ]
+            })
+            .collect();
+        print_table(
+            &[
+                "Server",
+                "Known from",
+                "Sweep",
+                "Last file",
+                "Also known as",
+            ],
+            &cells,
+        );
+        println!();
+    };
+    table(
+        format!(
+            "Offered for the sweep: {}",
+            things(offered.len() as i64, "server", "servers")
+        ),
+        &offered,
+    );
+    table(
+        format!(
+            "Known and not offered: {}",
+            things(rest.len() as i64, "server", "servers")
+        ),
+        &rest,
+    );
+
+    let aliases_offered: Vec<String> = rows.iter().flat_map(|r| r.offered.clone()).collect();
+    sweep::write(&dir, &aliases_offered)?;
+    for line in &said {
+        println!("{}{}.", line[..1].to_uppercase(), &line[1..]);
+    }
+    println!(
+        "{} known, {} of them under several names, {} offered for the sweep, {} left out as code hosting, {} known and never read.",
+        things(rows.len() as i64, "server", "servers"),
+        groups.iter().filter(|g| g.len() > 1).count(),
+        offered.len(),
+        third_party,
+        rows.iter().filter(|r| !r.read).count()
+    );
+    println!(
+        "Wrote probe.sh and sweep.sh to {}. Nothing was run.",
+        dir.display()
+    );
+    println!("To read the offered servers, run:");
+    println!("  sh {}", sweep::quoted(&dir.join("sweep.sh")));
+    println!(
+        "To leave a server out, add its alias to {}, one per line. Then run `soc run`.",
+        dir.join(sweep::SKIP).display()
+    );
+    Ok(())
+}
+
+/// The sweep file of a server under any of its names: when it was taken, or that it is
+/// incomplete. And whether it was read.
+fn last_file(dir: &Path, names: &[&str]) -> (String, bool) {
+    let mut seen = None;
+    for name in names {
+        let path = dir.join(format!("{name}.txt"));
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(&bytes);
+        if !text.lines().any(|l| l.trim() == "##end") {
+            seen.get_or_insert(("incomplete".to_string(), false));
+            continue;
+        }
+        let at = servers::taken_at(&text).or_else(|| {
+            let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok()?;
+            Some(modified.duration_since(UNIX_EPOCH).ok()?.as_secs() as i64)
+        });
+        return (
+            format!(
+                "read, taken {}",
+                at.map_or("at an unknown time".to_string(), view::utc)
+            ),
+            true,
+        );
+    }
+    seen.unwrap_or(("never read".to_string(), false))
+}
+
+/// A plain text table with columns as wide as their widest cell.
+fn print_table(head: &[&str], rows: &[Vec<String>]) {
+    if rows.is_empty() {
+        println!("  none");
+        return;
+    }
+    let mut widths: Vec<usize> = head.iter().map(|h| h.chars().count()).collect();
+    for row in rows {
+        for (w, cell) in widths.iter_mut().zip(row) {
+            *w = (*w).max(cell.chars().count());
+        }
+    }
+    let line = |cells: Vec<&str>| {
+        let parts: Vec<String> = cells
+            .iter()
+            .zip(&widths)
+            .map(|(c, w)| format!("{c:<w$}"))
+            .collect();
+        println!("  {}", parts.join("  ").trim_end());
+    };
+    line(head.to_vec());
+    for row in rows {
+        line(row.iter().map(String::as_str).collect());
+    }
+}
+
 fn run(args: &Args) -> Result<String, Box<dyn Error>> {
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?;
     let at = now.as_secs() as i64;
@@ -209,13 +517,16 @@ fn run(args: &Args) -> Result<String, Box<dyn Error>> {
     read_brew(&mut run, args)?;
     let servers = args.servers_input.clone();
     read_servers(&mut run, servers.as_deref())?;
-    let found = read_checkouts(&mut run, &args.checkouts_root, &args.home)?;
+    let found = read_checkouts(&mut run, args)?;
     if let Some(found) = found {
         read_lockfiles(&mut run, &found)?;
     }
+    read_traces(&mut run, args)?;
+    resolve(&mut run)?;
 
     let totals = store::totals(&tx, &run_id)?;
-    let line = report(&run, &totals, first_run);
+    let counts = server_counts(&tx, &machine, &sweep::skip_list(&home.join("sweep")))?;
+    let line = report(&run, &totals, &counts, first_run);
     store::journal_note(&tx, at, &run_id, "report", &line)?;
     store::journal_note(&tx, at, &run_id, "run_finished", "")?;
     tx.commit()?;
@@ -247,8 +558,20 @@ impl Run<'_> {
         reason: Option<&str>,
         statements: &[Statement],
     ) -> rusqlite::Result<()> {
+        let with_basis: Vec<(&str, &Statement)> = statements.iter().map(|s| (basis, s)).collect();
+        self.apply_each(r, completeness, reason, &with_basis)
+    }
+
+    /// The same, for statements that each have their own basis.
+    fn apply_each(
+        &mut self,
+        r: &Reading,
+        completeness: &str,
+        reason: Option<&str>,
+        statements: &[(&str, &Statement)],
+    ) -> rusqlite::Result<()> {
         if completeness != "none" {
-            for s in statements {
+            for (basis, s) in statements {
                 store::put_draft(self.tx, r, basis, s)?;
             }
         }
@@ -354,7 +677,11 @@ fn read_servers(run: &mut Run, dir: Option<&Path>) -> Result<(), Box<dyn Error>>
                 kind: o.kind,
                 run_id: &run_id,
                 at: run.at,
-                observed_at: input.modified,
+                observed_at: input
+                    .raw
+                    .as_deref()
+                    .and_then(|b| servers::taken_at(&String::from_utf8_lossy(b)))
+                    .unwrap_or(input.modified),
             };
             run.apply(
                 &reading,
@@ -369,12 +696,16 @@ fn read_servers(run: &mut Run, dir: Option<&Path>) -> Result<(), Box<dyn Error>>
 }
 
 /// Which checkouts are on this machine. `None` when the root is not a folder: then
-/// nothing was looked at and nothing is said.
+/// nothing was looked at and nothing is said. A folder given instead of the home folder is
+/// read partially: what is outside it was not looked at and must not be retracted.
 fn read_checkouts(
     run: &mut Run,
-    root: &Path,
-    home: &Path,
+    args: &Args,
 ) -> Result<Option<Vec<checkouts::Checkout>>, Box<dyn Error>> {
+    let (root, home) = (
+        args.checkouts_root.as_ref().unwrap_or(&args.home),
+        &args.home,
+    );
     if !root.is_dir() {
         run.notes
             .push(format!("No checkouts: {} is not a folder.", root.display()));
@@ -402,11 +733,17 @@ fn read_checkouts(
             source_ref: format!("{raw_file}:{}", i + 1),
         })
         .collect();
-    let reason = (!walk.unlisted.is_empty())
+    let unlisted = (!walk.unlisted.is_empty())
         .then(|| format!("could not be listed: {}", walk.unlisted.join(", ")));
-    if let Some(reason) = &reason {
-        run.notes.push(format!("Folders that {reason}."));
+    if let Some(unlisted) = &unlisted {
+        run.notes.push(format!("Folders that {unlisted}."));
     }
+    let given = args
+        .checkouts_root
+        .is_some()
+        .then(|| checkouts::ONLY_GIVEN.to_string());
+    let reasons: Vec<String> = given.into_iter().chain(unlisted).collect();
+    let reason = (!reasons.is_empty()).then(|| reasons.join("; "));
     let run_id = run.run_id.to_string();
     let reading = Reading {
         reader: checkouts::READER,
@@ -425,6 +762,136 @@ fn read_checkouts(
         &statements,
     )?;
     Ok(Some(walk.checkouts))
+}
+
+/// The three local traces of servers, each its own reading of this machine.
+fn read_traces(run: &mut Run, args: &Args) -> Result<(), Box<dyn Error>> {
+    let traces = [
+        (
+            ssh_config::READER,
+            ssh_config::KIND,
+            ssh_config::BASIS,
+            ssh_config::read(&args.home),
+        ),
+        (
+            known_hosts::READER,
+            known_hosts::KIND,
+            known_hosts::BASIS,
+            known_hosts::read(&args.home),
+        ),
+        (
+            tailnet::READER,
+            tailnet::KIND,
+            tailnet::BASIS,
+            tailnet::read(args.tailscale.as_deref()),
+        ),
+    ];
+    let (run_id, machine) = (run.run_id.to_string(), run.machine.to_string());
+    for (reader, kind, basis, found) in traces {
+        let reading = Reading {
+            reader,
+            scope: &machine,
+            kind,
+            run_id: &run_id,
+            at: run.at,
+            observed_at: run.at,
+        };
+        match found {
+            // Read in full: there is nothing, so what was there before is gone.
+            traces::Found::Absent(note) => run.apply(&reading, basis, "full", Some(note), &[])?,
+            traces::Found::Read(seen) => {
+                run.readers += 1;
+                let input = format!("{reader}.txt");
+                let raw_file = run.keep_raw(reader, &input, seen.extract.as_bytes())?;
+                let statements = seen.statements(&raw_file);
+                let completeness = if seen.partial.is_some() {
+                    "partial"
+                } else {
+                    "full"
+                };
+                run.apply(
+                    &reading,
+                    basis,
+                    completeness,
+                    seen.partial.as_deref(),
+                    &statements,
+                )?;
+            }
+            traces::Found::Failed(reason) => {
+                run.readers += 1;
+                run.apply(&reading, basis, "none", Some(&reason), &[])?;
+                run.notes
+                    .push(format!("The {kind} could not be read: {reason}."));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Links machines that are one machine under several names. The links are a full reading
+/// of the live store on every run, so a link whose evidence is gone is retracted.
+fn resolve(run: &mut Run) -> Result<(), Box<dyn Error>> {
+    let links = resolver::links(&store::live_known_as(run.tx)?);
+    let statements: Vec<(&str, Statement)> = links
+        .iter()
+        .map(|l| {
+            (
+                l.basis.as_str(),
+                Statement {
+                    subject: l.a.clone(),
+                    predicate: "same_as",
+                    object: l.b.clone(),
+                    source_ref: format!("known_as {}", l.shared.join(", ")),
+                },
+            )
+        })
+        .collect();
+    let refs: Vec<(&str, &Statement)> = statements.iter().map(|(b, s)| (*b, s)).collect();
+    let (run_id, machine) = (run.run_id.to_string(), run.machine.to_string());
+    let reading = Reading {
+        reader: resolver::READER,
+        scope: &machine,
+        kind: resolver::KIND,
+        run_id: &run_id,
+        at: run.at,
+        observed_at: run.at,
+    };
+    run.apply_each(&reading, "full", None, &refs)?;
+    Ok(())
+}
+
+/// Servers in the store, each counted once however many names it has.
+struct ServerCounts {
+    known: usize,
+    offered: usize,
+    read: usize,
+}
+
+fn server_counts(
+    conn: &rusqlite::Connection,
+    machine: &str,
+    skip: &BTreeSet<String>,
+) -> rusqlite::Result<ServerCounts> {
+    let aliases = store::live_subjects(conn, ssh_config::READER)?;
+    let read = store::scopes_read(conn, servers::READER)?;
+    let offered = |id: &String| {
+        aliases.contains(id)
+            && sweep::not_offered(id.strip_prefix("machine:").unwrap_or(id), skip).is_none()
+    };
+    let mut counts = ServerCounts {
+        known: 0,
+        offered: 0,
+        read: 0,
+    };
+    for group in store::machine_groups(conn)? {
+        if group.iter().any(|m| m == machine) {
+            continue;
+        }
+        counts.known += 1;
+        counts.offered += usize::from(group.iter().any(offered));
+        counts.read += usize::from(group.iter().any(|m| read.contains(m)));
+    }
+    Ok(counts)
 }
 
 fn read_lockfiles(run: &mut Run, found: &[checkouts::Checkout]) -> Result<(), Box<dyn Error>> {
@@ -465,7 +932,7 @@ fn read_lockfiles(run: &mut Run, found: &[checkouts::Checkout]) -> Result<(), Bo
 
 /// The one line. It never says "no changes" unless every reading this run was full and
 /// every scope read before was read again.
-fn report(run: &Run, t: &store::Totals, first_run: bool) -> String {
+fn report(run: &Run, t: &store::Totals, s: &ServerCounts, first_run: bool) -> String {
     let mut line = format!(
         "{}, {}, {}, {}.",
         things(run.readers as i64, "reader", "readers"),
@@ -473,6 +940,16 @@ fn report(run: &Run, t: &store::Totals, first_run: bool) -> String {
         things(t.checkouts, "checkout", "checkouts"),
         things(t.components, "component", "components"),
     );
+    if s.known == 0 {
+        line.push_str(" No servers known.");
+    } else {
+        line.push_str(&format!(
+            " {} known, {} offered for the sweep, {} read.",
+            things(s.known as i64, "server", "servers"),
+            grouped(s.offered as i64),
+            grouped(s.read as i64)
+        ));
+    }
     let mut gaps = Vec::new();
     if t.machines_unread > 0 {
         gaps.push(format!(
