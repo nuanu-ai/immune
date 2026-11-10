@@ -10,6 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt::Write;
 
+use crate::servers::VISIT;
+
 const RUNS_SHOWN: i64 = 20;
 /// The latest run is shown open only when its changes fit on a screen or a few.
 const EVENTS_SHOWN_OPEN: usize = 500;
@@ -750,9 +752,11 @@ fn machine_block<'a>(
     let own = count(&|m| estate.inside(m).len());
     let containers = count(&|m| estate.containers.get(m).map_or(0, Vec::len));
     let checkouts = count(&|m| estate.checkouts.get(m).map_or(0, Vec::len));
+    // A failed visit read nothing: the machine was read when its readings say.
     let read_at = members
         .iter()
         .flat_map(|m| coverage_of(m))
+        .filter(|r| r.kind != VISIT)
         .map(|r| r.at)
         .max();
 
@@ -760,6 +764,13 @@ fn machine_block<'a>(
     write!(out, "<strong>{}</strong>", esc(&machine.label))?;
     if not_read {
         out.push_str(" <span class=\"badge bad\">could not be read</span>");
+    }
+    if members
+        .iter()
+        .flat_map(|m| coverage_of(m))
+        .any(|r| r.kind == VISIT && r.completeness == "none")
+    {
+        out.push_str(" <span class=\"badge bad\">latest visit failed</span>");
     }
     match word {
         Some(w) if w.seen.is_some() => {
@@ -863,7 +874,22 @@ fn machine_body<'a>(
     out.push_str("</p>\n");
 
     // What was read here and how completely, so the lists below are read for what they are.
-    let readings = coverage_of(machine);
+    let all = coverage_of(machine);
+    let last = all.iter().filter_map(|r| r.last_full).max();
+    let (visits, readings): (Vec<&Latest>, Vec<&Latest>) =
+        all.into_iter().partition(|r| r.kind == VISIT);
+    // A failed visit is told next to the reading it left as it was.
+    if let Some(v) = visits.iter().find(|v| v.completeness == "none") {
+        writeln!(
+            out,
+            "<p class=\"alert\">Last read {}; {}</p>",
+            utc_or(last, "never"),
+            esc(&crate::sweep::failed_visit(
+                v.at,
+                v.reason.as_deref().unwrap_or_default()
+            ))
+        )?;
+    }
     if readings.is_empty() {
         out.push_str("<p class=\"alert\">Nothing was ever read on this machine itself.</p>\n");
     } else {

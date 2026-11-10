@@ -9,6 +9,9 @@
 //! first of them in the order of the ssh configuration that is not in `skip.txt`. The
 //! script checks `skip.txt` again when it runs, so an alias added there later is not
 //! visited either, and the machine's next alias is used instead.
+//!
+//! A visit that fails never destroys the reading an earlier one left: it leaves
+//! `<alias>.failed` with its time and reason instead, which `soc run` reads.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -46,16 +49,28 @@ pub fn not_offered(alias: &str, skip: &BTreeSet<String>) -> Option<&'static str>
     None
 }
 
+/// How many machines the sweep visits at a time: enough that one slow server does not hold
+/// up the rest, few enough that a long list does not open dozens of connections at once.
+pub const AT_ONCE: usize = 4;
+/// What a failed visit leaves next to the script, `<alias>.failed`: the time in UTC seconds
+/// on the first line, then what ssh said.
+pub const FAILED: &str = "failed";
+
 /// The script that visits each machine once. `machines` holds each machine's aliases in the
-/// order of the ssh configuration. It never stops at a server that fails.
+/// order of the ssh configuration. It never stops at a server that fails, and a failed visit
+/// never replaces the reading an earlier one left.
 pub fn script(machines: &[Vec<String>]) -> String {
     let mut out = String::from(
         "#!/bin/sh
 # Written by `soc servers`. Run it yourself: it visits each server below over ssh and
 # runs probe.sh there, which only reads. Each server leaves <alias>.txt next to this
-# script for `soc run`. A server that fails is reported and the others go on.
+# script for `soc run`, replaced only by a complete reading. A visit that fails keeps the
+# earlier <alias>.txt, leaves <alias>.failed with its time and what ssh said, and is
+# reported while the others go on. A later visit that succeeds removes it.
 # Each line below is one machine and its aliases, comma separated. The machine is visited
 # once, through the first of them that is not listed in skip.txt next to this script.
+# Several machines are visited at a time. Name aliases as arguments to visit only their
+# machines; a name this script does not list is never visited.
 cd \"$(dirname \"$0\")\" || exit 1
 if [ -e skip.txt ] && ! [ -r skip.txt ]; then echo 'skip.txt cannot be read; nothing was visited.'; exit 1; fi
 machines='
@@ -65,31 +80,107 @@ machines='
         out.push_str(&aliases.join(","));
         out.push('\n');
     }
+    out.push_str(&format!("'\nat_once={AT_ONCE}\n"));
     out.push_str(
-        "'
-skipped() {
+        "skipped() {
   [ -f skip.txt ] && sed 's/^[[:space:]]*//; s/[[:space:]]*$//' skip.txt | grep -qxF -- \"$1\"
 }
+listed() {
+  for m in $machines; do
+    for a in $(echo \"$m\" | tr ',' ' '); do
+      [ \"$a\" = \"$1\" ] && return 0
+    done
+  done
+  return 1
+}
+chosen=''
+for arg in \"$@\"; do
+  if ! listed \"$arg\"; then
+    printf 'Not visited: %s is not a server this script visits.\\n' \"$arg\"
+  elif skipped \"$arg\"; then
+    printf 'Not visited: %s is listed in skip.txt.\\n' \"$arg\"
+  else
+    chosen=\"$chosen $arg\"
+  fi
+done
 todo=''
+names=''
 for machine in $machines; do
+  named=''
+  for alias in $(echo \"$machine\" | tr ',' ' '); do
+    for c in $chosen; do [ \"$alias\" = \"$c\" ] && named=yes; done
+  done
+  if [ $# -gt 0 ] && [ -z \"$named\" ]; then continue; fi
   for alias in $(echo \"$machine\" | tr ',' ' '); do
     if skipped \"$alias\"; then continue; fi
-    todo=\"$todo $alias\"
+    todo=\"$todo $alias/$machine\"
+    names=\"$names $alias\"
     break
   done
 done
-echo \"Servers to visit:${todo:- none}\"
-for alias in $todo; do
-  if ssh -o BatchMode=yes -o ConnectTimeout=12 \"$alias\" 'sh -s' < probe.sh > \"$alias.txt\" 2> \"$alias.err\" \\
-    && grep -qx '##end' \"$alias.txt\"; then
-    echo \"ok      $alias\"
+echo \"Servers to visit:${names:- none}\"
+# One visit: the reading goes to a temporary file and replaces <alias>.txt only when it is
+# complete. $1 is the alias, $2 every alias of its machine.
+visit() {
+  ssh -o BatchMode=yes -o ConnectTimeout=12 \"$1\" 'sh -s' < probe.sh > \"$1.txt.part\" 2> \"$1.err\"
+  status=$?
+  if grep -qx '##end' \"$1.txt.part\" && mv -f \"$1.txt.part\" \"$1.txt\"; then
+    for a in $(echo \"$2\" | tr ',' ' '); do rm -f \"$a.failed\"; done
+    printf 'ok      %s\\n' \"$1\"
   else
-    echo \"failed  $alias (see $alias.err)\"
+    rm -f \"$1.txt.part\"
+    {
+      date -u +%s
+      if [ -s \"$1.err\" ]; then cat \"$1.err\"
+      elif [ \"$status\" -ne 0 ]; then echo \"ssh exited with status $status\"
+      else echo 'the probe did not reach its end'
+      fi
+    } > \"$1.failed\"
+    printf 'failed  %s (see %s.failed)\\n' \"$1\" \"$1\"
   fi
+}
+# Each worker takes the next machine no other worker has taken: mkdir either claims it or
+# fails because another worker did. Once the script is stopped the claims are gone, so no
+# worker starts another visit.
+claims=\".visiting.$$\"
+mkdir \"$claims\" || exit 1
+trap 'rm -rf \"$claims\"' EXIT
+worker() {
+  for item in $todo; do
+    mkdir \"$claims/${item%%/*}\" 2>/dev/null || continue
+    visit \"${item%%/*}\" \"${item#*/}\"
+  done
+}
+n=0
+while [ \"$n\" -lt \"$at_once\" ]; do
+  worker &
+  n=$((n + 1))
 done
+wait
 exit 0
 ",
     );
+    out
+}
+
+/// The sentence the owner reads wherever a host key could not be verified. The program
+/// never accepts a key on the owner's behalf, and never suggests turning the check off.
+const HOST_KEY: &str = "Connect to this server once by hand and check its host key: the sweep never accepts a key for you.";
+
+/// A failed visit as the owner reads it: when, why, and what to do about a host key.
+pub fn failed_visit(at: i64, reason: &str) -> String {
+    let mut out = format!(
+        "the latest visit failed {}: {}.",
+        crate::view::utc(at),
+        reason.trim_end_matches('.')
+    );
+    if reason
+        .to_ascii_lowercase()
+        .contains("host key verification failed")
+    {
+        out.push(' ');
+        out.push_str(HOST_KEY);
+    }
     out
 }
 

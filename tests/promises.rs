@@ -569,8 +569,10 @@ fn server_file_without_end_is_a_machine_not_read_and_retracts_nothing() {
         ),
         [
             "machine:db-1|containers|none|the sweep of this server did not complete",
+            "machine:db-1|sweep visit|none|the sweep of this server did not complete",
             "machine:db-1|system packages|none|the sweep of this server did not complete",
             "machine:web-1|containers|none|the sweep of this server did not complete",
+            "machine:web-1|sweep visit|none|the sweep of this server did not complete",
             "machine:web-1|system packages|none|the sweep of this server did not complete",
         ]
     );
@@ -1483,32 +1485,59 @@ fn listed(script: &str) -> Vec<&str> {
 
 /// Runs the sweep script as the owner does, with a fake ssh that notes the alias it was
 /// asked for and answers like a complete probe. PATH holds only that fake and the tools the
-/// script needs, so no real ssh can be reached. Returns the aliases visited, in order.
+/// script needs, so no real ssh can be reached. Returns the aliases visited, sorted: the
+/// sweep visits several at a time.
 fn sweep_with_fake_ssh(sweep: &Path, bin: &Path) -> Vec<String> {
-    std::fs::create_dir_all(bin).unwrap();
-    for tool in ["sed", "grep", "tr", "dirname"] {
-        let link = bin.join(tool);
-        if !link.exists() {
-            std::os::unix::fs::symlink(Path::new("/usr/bin").join(tool), &link).unwrap();
-        }
-    }
+    visits(sweep, bin, &[]).0
+}
+
+/// The same, with arguments; also returns what the script printed.
+fn visits(sweep: &Path, bin: &Path, args: &[&str]) -> (Vec<String>, String) {
     let log = bin.join("visited.log");
     let _ = std::fs::remove_file(&log);
-    script(
-        &bin.join("ssh"),
+    fake_ssh(
+        bin,
         &format!("printf '%s\\n' \"$5\" >> '{}'\necho '##end'", log.display()),
     );
-    Command::new("/bin/sh")
+    let printed = run_sweep(sweep, bin, args);
+    let mut visited: Vec<String> = std::fs::read_to_string(&log)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    visited.sort();
+    (visited, printed)
+}
+
+/// Puts an ssh with this body in the folder, next to the tools the sweep script needs.
+fn fake_ssh(bin: &Path, body: &str) {
+    std::fs::create_dir_all(bin).unwrap();
+    for tool in [
+        "sed", "grep", "tr", "dirname", "mkdir", "mv", "rm", "date", "cat",
+    ] {
+        let link = bin.join(tool);
+        if !link.exists() {
+            let real = ["/usr/bin", "/bin"]
+                .iter()
+                .map(|d| Path::new(d).join(tool))
+                .find(|p| p.exists())
+                .unwrap();
+            std::os::unix::fs::symlink(real, &link).unwrap();
+        }
+    }
+    script(&bin.join("ssh"), body);
+}
+
+/// Runs the sweep script with only the folder on PATH, and returns what it printed.
+fn run_sweep(sweep: &Path, bin: &Path, args: &[&str]) -> String {
+    let out = Command::new("/bin/sh")
         .arg(sweep.join("sweep.sh"))
+        .args(args)
         .env_clear()
         .env("PATH", bin)
         .output()
         .unwrap();
-    std::fs::read_to_string(&log)
-        .unwrap_or_default()
-        .lines()
-        .map(str::to_string)
-        .collect()
+    String::from_utf8(out.stdout).unwrap()
 }
 
 /// One server under two aliases. The alias written first sorts last, so the order of the
@@ -1774,8 +1803,10 @@ fn a_file_from_an_older_probe_is_still_read_and_links_to_nothing() {
         ),
         [
             "machine:a|containers|full",
+            "machine:a|sweep visit|full",
             "machine:a|system packages|full",
             "machine:b|containers|full",
+            "machine:b|sweep visit|full",
             "machine:b|system packages|full",
         ]
     );
@@ -2958,7 +2989,11 @@ fn facts_about_a_retired_machine_are_not_retracted_and_its_readings_go_on() {
             "SELECT kind, completeness FROM coverage WHERE scope = 'machine:web-1'
              AND run_id = (SELECT run_id FROM coverage ORDER BY id DESC LIMIT 1) ORDER BY kind"
         ),
-        ["containers|full", "system packages|full"]
+        [
+            "containers|full",
+            "sweep visit|full",
+            "system packages|full"
+        ]
     );
     // The view still shows what was read on it, with the statement.
     let page = view(&h.store());
@@ -3420,4 +3455,441 @@ fn the_owners_reason_is_printed_and_shown_escaped_and_kept_as_typed() {
         rows(&h.store(), "SELECT reason FROM owner_statement"),
         [reason]
     );
+}
+
+/// The machine's block in the view's list of machines.
+fn machine_block(page: &str, name: &str) -> String {
+    section(page, "machines")
+        .split("<details class=\"machine\">")
+        .find(|b| b.contains(&format!("<strong>{name}</strong>")))
+        .unwrap_or_else(|| panic!("{name} is not on the page"))
+        .to_string()
+}
+
+/// The row `soc servers` prints for a server.
+fn server_row(printed: &str, name: &str) -> String {
+    printed
+        .lines()
+        .find(|l| l.starts_with(&format!("  {name} ")))
+        .unwrap_or_else(|| panic!("{name} is not listed: {printed}"))
+        .to_string()
+}
+
+#[test]
+fn a_failed_visit_never_replaces_the_reading_an_earlier_one_left_and_a_later_success_clears_it() {
+    // A visit that times out must not destroy a complete reading taken earlier. The failure
+    // is kept with its time and why, and a visit that succeeds removes it for the machine
+    // under every alias.
+    let h = Home::new("sweep-failed", Some(SSH_CONFIG_TWO_ALIASES), None);
+    h.servers();
+    let (sweep, bin) = (h.sweep(), h.dir.0.join("bin"));
+    let earlier = format!("##taken_at\n1767323045\n{WEB_1}");
+    put(&sweep, "web-new.txt", &earlier);
+    fake_ssh(
+        &bin,
+        "case \"$5\" in
+  web-new) echo '##taken_at'; echo 'Warning: invented' >&2
+           echo 'ssh: connect to host web-new port 22: Operation timed out' >&2; exit 255;;
+  db-1) exit 255;;
+esac",
+    );
+    let before = now();
+    let printed = run_sweep(&sweep, &bin, &[]);
+    let after = now();
+
+    assert_eq!(
+        std::fs::read_to_string(sweep.join("web-new.txt")).unwrap(),
+        earlier
+    );
+    assert!(!sweep.join("db-1.txt").exists());
+    let failed = |alias: &str| std::fs::read_to_string(sweep.join(format!("{alias}.failed")));
+    let web = failed("web-new").unwrap();
+    let at: i64 = web.lines().next().unwrap().parse().unwrap();
+    assert!((before..=after).contains(&at), "{web}");
+    assert!(
+        web.ends_with("\nssh: connect to host web-new port 22: Operation timed out\n"),
+        "{web}"
+    );
+    assert!(
+        failed("db-1")
+            .unwrap()
+            .ends_with("\nssh exited with status 255\n")
+    );
+    assert!(
+        printed.contains("failed  web-new (see web-new.failed)\n")
+            && printed.contains("failed  db-1 (see db-1.failed)\n"),
+        "{printed}"
+    );
+    let left: Vec<String> = std::fs::read_dir(&sweep)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".part") || n.starts_with('.'))
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+
+    // The probe broke off before its end; the machine succeeds, under its first alias,
+    // and a failure left earlier under its other alias goes too.
+    put(
+        &sweep,
+        "web-1.failed",
+        "1767323045\nHost key verification failed.\n",
+    );
+    fake_ssh(
+        &bin,
+        "case \"$5\" in db-1) echo '##taken_at';; *) echo '##end';; esac",
+    );
+    run_sweep(&sweep, &bin, &[]);
+    assert!(
+        failed("db-1")
+            .unwrap()
+            .ends_with("\nthe probe did not reach its end\n")
+    );
+    assert_eq!(
+        std::fs::read_to_string(sweep.join("web-new.txt")).unwrap(),
+        "##end\n"
+    );
+    assert!(failed("web-new").is_err() && failed("web-1").is_err());
+}
+
+#[test]
+fn a_failed_visit_is_reported_with_when_and_why_next_to_the_earlier_reading_which_keeps_its_coverage()
+ {
+    // An earlier full reading is still a full reading taken at that time, and nothing is
+    // retracted; the owner is told when it was read and that the latest attempt failed.
+    let h = Home::new("visit-failed", Some(SSH_CONFIG_TWO_ALIASES), None);
+    let servers = h.sweep();
+    let taken = 1_767_323_045; // 2026-01-02 03:04:05 UTC
+    put(
+        &servers,
+        "web-new.txt",
+        &format!("##taken_at\n{taken}\n{WEB_1}"),
+    );
+    h.run(&servers, &h.none());
+    let live = rows(&h.store(), LIVE);
+
+    let failed_at = 1_767_412_800; // 2026-01-03 04:00:00 UTC
+    put(
+        &servers,
+        "web-new.failed",
+        &format!(
+            "{failed_at}\nWarning: invented\nssh: connect to host web-new port 22: Operation timed out\u{202E}\n\n"
+        ),
+    );
+    put(
+        &servers,
+        "db-1.failed",
+        &format!("{failed_at}\nPermission denied (publickey).\n"),
+    );
+    let report = h.run(&servers, &h.none());
+
+    assert_eq!(rows(&h.store(), LIVE), live);
+    assert!(
+        rows(
+            &h.store(),
+            "SELECT 1 FROM assertion WHERE layer = 'retracted'"
+        )
+        .is_empty()
+    );
+    let latest = "SELECT scope, kind, completeness, observed_at, COALESCE(reason, '') FROM coverage
+                  WHERE scope LIKE 'machine:%' AND reader = 'servers'
+                    AND run_id = (SELECT run_id FROM coverage ORDER BY id DESC LIMIT 1)
+                  ORDER BY scope, kind";
+    assert_eq!(
+        rows(&h.store(), latest),
+        [
+            format!(
+                "machine:db-1|containers|none|{failed_at}|the latest visit failed: Permission denied (publickey)."
+            ),
+            format!("machine:db-1|sweep visit|none|{failed_at}|Permission denied (publickey)."),
+            format!(
+                "machine:db-1|system packages|none|{failed_at}|the latest visit failed: Permission denied (publickey)."
+            ),
+            format!("machine:web-new|containers|full|{taken}|"),
+            format!(
+                "machine:web-new|sweep visit|none|{failed_at}|ssh: connect to host web-new port 22: Operation timed out\u{202E}"
+            ),
+            format!("machine:web-new|system packages|full|{taken}|"),
+        ]
+    );
+    let web_said = "web-new was last read 2026-01-02 03:04 UTC; the latest visit failed 2026-01-03 04:00 UTC: ssh: connect to host web-new port 22: Operation timed out\\u{202e}.";
+    let db_said = "db-1 was never read; the latest visit failed 2026-01-03 04:00 UTC: Permission denied (publickey).";
+    assert!(
+        report.contains(web_said) && report.contains(db_said),
+        "{report}"
+    );
+    assert!(
+        !report.contains('\u{202E}') && !report.contains("host key"),
+        "{report}"
+    );
+
+    let printed = h.servers();
+    assert!(
+        server_row(&printed, "web-new").contains(
+            "read, taken 2026-01-02 03:04 UTC; the latest visit failed 2026-01-03 04:00 UTC: ssh: connect to host web-new port 22: Operation timed out\\u{202e}."
+        ),
+        "{printed}"
+    );
+    assert!(
+        server_row(&printed, "db-1").contains(
+            "never read; the latest visit failed 2026-01-03 04:00 UTC: Permission denied (publickey)."
+        ),
+        "{printed}"
+    );
+
+    let page = view(&h.store());
+    let web = machine_block(&page, "web-new");
+    assert!(
+        web.contains("<span class=\"badge bad\">latest visit failed</span>")
+            && web.contains("· read 2026-01-02 03:04 UTC")
+            && web.contains(
+                "<p class=\"alert\">Last read 2026-01-02 03:04 UTC; the latest visit failed 2026-01-03 04:00 UTC: ssh: connect to host web-new port 22: Operation timed out\\u{202e}.</p>"
+            )
+            && web.contains("openssl"),
+        "{web}"
+    );
+    assert!(
+        machine_block(&page, "db-1").contains(
+            "<p class=\"alert\">Last read never; the latest visit failed 2026-01-03 04:00 UTC: Permission denied (publickey).</p>"
+        ),
+        "{page}"
+    );
+
+    // A visit that succeeds removes the failure, and nothing is said about it any more.
+    std::fs::remove_file(servers.join("web-new.failed")).unwrap();
+    let report = h.run(&servers, &h.none());
+    assert!(!report.contains("web-new was"), "{report}");
+    assert!(
+        rows(&h.store(), latest).contains(&format!("machine:web-new|sweep visit|full|{taken}|"))
+    );
+    assert!(!server_row(&h.servers(), "web-new").contains("failed"));
+    assert!(!machine_block(&view(&h.store()), "web-new").contains("failed"));
+}
+
+#[test]
+fn a_host_key_that_could_not_be_verified_is_left_to_the_owner_to_check_by_hand() {
+    // The sweep never accepts a key on the owner's behalf: ssh runs in batch mode, and the
+    // owner is told to connect once by hand and check the key, never to turn the check off.
+    let h = Home::new("host-key", Some(SSH_CONFIG_TWO_ALIASES), None);
+    h.servers();
+    let (sweep, bin) = (h.sweep(), h.dir.0.join("bin"));
+    let log = bin.join("args.log");
+    fake_ssh(
+        &bin,
+        &format!(
+            "printf '%s\\n' \"$*\" >> '{}'
+echo 'No ED25519 host key is known for '\"$5\"' and you have requested strict checking.' >&2
+echo 'Host key verification failed.' >&2
+exit 255",
+            log.display()
+        ),
+    );
+    run_sweep(&sweep, &bin, &[]);
+    let args = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(args.lines().count(), 2, "{args}");
+    assert!(
+        args.lines()
+            .all(|l| l.starts_with("-o BatchMode=yes ") && l.ends_with(" sh -s")),
+        "{args}"
+    );
+
+    let failed_at = 1_767_412_800; // 2026-01-03 04:00:00 UTC
+    let failed = format!(
+        "{failed_at}\n{}",
+        std::fs::read_to_string(sweep.join("db-1.failed"))
+            .unwrap()
+            .split_once('\n')
+            .unwrap()
+            .1
+    );
+    put(&sweep, "db-1.failed", &failed);
+    let said = "the latest visit failed 2026-01-03 04:00 UTC: Host key verification failed. Connect to this server once by hand and check its host key: the sweep never accepts a key for you.";
+    let report = h.run(&sweep, &h.none());
+    let printed = h.servers();
+    let page = view(&h.store());
+    assert!(
+        report.contains(&format!("db-1 was never read; {said}")),
+        "{report}"
+    );
+    assert!(server_row(&printed, "db-1").contains(said), "{printed}");
+    assert!(machine_block(&page, "db-1").contains(said), "{page}");
+    let script = std::fs::read_to_string(sweep.join("sweep.sh")).unwrap();
+    for text in [&script, &report, &printed, &page] {
+        for option in ["StrictHostKeyChecking", "UserKnownHostsFile", "accept-new"] {
+            assert!(!text.contains(option), "{option}");
+        }
+    }
+}
+
+/// Seven machines for the sweep, one of them under two aliases. Invented.
+const SSH_CONFIG_SEVEN: &str = "\
+Host web-new
+    HostName 10.0.0.5
+Host web-1
+    HostName 10.0.0.5
+Host db-1
+    HostName 10.0.0.6
+Host cache-1
+    HostName 10.0.0.7
+Host mail-1
+    HostName 10.0.0.8
+Host queue-1
+    HostName 10.0.0.9
+Host search-1
+    HostName 10.0.0.10
+Host files-1
+    HostName 10.0.0.11
+";
+
+#[test]
+fn the_sweep_visits_several_machines_at_a_time_never_more_than_its_limit_and_each_gets_one_line() {
+    // One slow server must not hold up the rest, and a long list must not open dozens of
+    // connections at once. However the visits interleave, each machine is visited once and
+    // gets exactly one whole result line, and a failure stops no other visit.
+    let h = Home::new("at-once", Some(SSH_CONFIG_SEVEN), None);
+    h.servers();
+    let (sweep, bin) = (h.sweep(), h.dir.0.join("bin"));
+    // The limit the owner can count on: no more connections than this at once.
+    let limit = 4;
+    let (running, log) = (h.dir.0.join("running"), h.dir.0.join("running.log"));
+    std::fs::create_dir_all(&running).unwrap();
+    let (running, log) = (running.display(), log.display());
+    fake_ssh(
+        &bin,
+        &format!(
+            "alias=$5
+: > '{running}/'\"$alias\"
+set -- '{running}'/*
+echo \"$alias $#\" >> '{log}'
+/bin/sleep 1
+rm -f '{running}/'\"$alias\"
+if [ \"$alias\" = db-1 ]; then echo 'ssh: connect to host db-1 port 22: Connection refused' >&2; exit 255; fi
+echo '##end'"
+        ),
+    );
+    let printed = run_sweep(&sweep, &bin, &[]);
+
+    let log = std::fs::read_to_string(log.to_string()).unwrap();
+    let mut visited: Vec<&str> = log.lines().map(|l| l.split(' ').next().unwrap()).collect();
+    visited.sort();
+    let machines = [
+        "cache-1", "db-1", "files-1", "mail-1", "queue-1", "search-1", "web-new",
+    ];
+    assert_eq!(visited, machines, "{log}");
+    let most = log
+        .lines()
+        .map(|l| l.split(' ').nth(1).unwrap().parse::<usize>().unwrap())
+        .max()
+        .unwrap();
+    assert!(
+        most > 1 && most <= limit,
+        "{most} at once, limit {limit}: {log}"
+    );
+
+    let results: Vec<&str> = printed
+        .lines()
+        .filter(|l| l.starts_with("ok") || l.starts_with("failed"))
+        .collect();
+    let mut expected: Vec<String> = machines
+        .iter()
+        .map(|m| match *m {
+            "db-1" => "failed  db-1 (see db-1.failed)".to_string(),
+            m => format!("ok      {m}"),
+        })
+        .collect();
+    let mut got: Vec<String> = results.iter().map(|l| l.to_string()).collect();
+    expected.sort();
+    got.sort();
+    assert_eq!(got, expected, "{printed}");
+}
+
+#[test]
+fn named_aliases_restrict_the_sweep_and_a_name_the_script_does_not_list_or_skips_is_never_visited()
+{
+    // Retrying the servers that failed must not widen the sweep: an argument only chooses
+    // among the machines `soc servers` wrote into the script.
+    let h = Home::new("sweep-args", Some(SSH_CONFIG_TWO_ALIASES), None);
+    let printed = h.servers();
+    let (sweep, bin) = (h.sweep(), h.dir.0.join("bin"));
+    assert!(
+        printed.contains(&format!(
+            "name their aliases: sh '{}' <alias>...",
+            sweep.join("sweep.sh").display()
+        )),
+        "{printed}"
+    );
+
+    assert_eq!(visits(&sweep, &bin, &["db-1"]).0, ["db-1"]);
+    // Named by its other alias, the machine is still visited once, through its first.
+    assert_eq!(visits(&sweep, &bin, &["web-1"]).0, ["web-new"]);
+    let strangers = [
+        "mail-9",
+        "10.0.0.5",
+        "*",
+        "db-1 web-new",
+        "-oProxyCommand=x",
+    ];
+    let (visited, printed) = visits(&sweep, &bin, &strangers);
+    assert!(visited.is_empty(), "{visited:?}");
+    for name in strangers {
+        assert!(
+            printed.contains(&format!(
+                "Not visited: {name} is not a server this script visits.\n"
+            )),
+            "{printed}"
+        );
+    }
+    assert!(printed.contains("Servers to visit: none"), "{printed}");
+
+    put(&sweep, "skip.txt", "web-new\n");
+    let (visited, printed) = visits(&sweep, &bin, &["web-new"]);
+    assert!(visited.is_empty(), "{visited:?}");
+    assert!(
+        printed.contains("Not visited: web-new is listed in skip.txt.\n"),
+        "{printed}"
+    );
+    assert_eq!(visits(&sweep, &bin, &["web-1"]).0, ["web-1"]);
+}
+
+#[test]
+fn a_sweep_that_is_stopped_starts_no_further_visit() {
+    // Stopping the sweep stops access to servers: the visits under way end on their own,
+    // and no machine waiting its turn is visited after the script was told to stop.
+    let h = Home::new("sweep-stop", Some(SSH_CONFIG_SEVEN), None);
+    h.servers();
+    let (sweep, bin) = (h.sweep(), h.dir.0.join("bin"));
+    let log = h.dir.0.join("visited.log");
+    fake_ssh(
+        &bin,
+        &format!(
+            "echo \"$5\" >> '{}'\n/bin/sleep 1\necho '##end'",
+            log.display()
+        ),
+    );
+    let mut child = Command::new("/bin/sh")
+        .arg(sweep.join("sweep.sh"))
+        .env_clear()
+        .env("PATH", &bin)
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    // Stopped once the first visit is under way.
+    for _ in 0..200 {
+        if log.exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    ok(Command::new("/bin/kill").args(["-TERM", &child.id().to_string()]));
+    child.wait().unwrap();
+    // Long enough for the machines left to be visited, were anything still taking them.
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+
+    let visited = std::fs::read_to_string(&log).unwrap();
+    assert!(visited.lines().count() < 7, "{visited}");
+    let left: Vec<String> = std::fs::read_dir(&sweep)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with('.'))
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
 }

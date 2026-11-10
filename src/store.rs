@@ -156,7 +156,7 @@ INSERT OR IGNORE INTO coverage_kind (name) VALUES
     ('wordpress core version'), ('container contents'),
     ('ssh configuration'), ('known hosts'), ('tailnet peers'),
     ('machines under several names'), ('checkouts in agent working folders'),
-    ('own names and addresses');
+    ('own names and addresses'), ('sweep visit');
 ";
 
 /// One reading: which reader looked for which kind of thing in which scope.
@@ -491,6 +491,16 @@ pub fn scopes_read(conn: &Connection, reader: &str) -> rusqlite::Result<BTreeSet
     )?
     .query_map([reader], |r| r.get(0))?
     .collect()
+}
+
+/// When one reader last read a scope in full.
+pub fn last_read(conn: &Connection, reader: &str, scope: &str) -> rusqlite::Result<Option<i64>> {
+    conn.query_row(
+        "SELECT MAX(observed_at) FROM coverage
+         WHERE reader = ?1 AND scope = ?2 AND completeness = 'full'",
+        params![reader, scope],
+        |r| r.get(0),
+    )
 }
 
 /// The last saved raw copy of this input, relative to the store's folder.

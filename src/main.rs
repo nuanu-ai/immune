@@ -441,7 +441,8 @@ fn survey(args: &ServersArgs) -> Result<Survey, Box<dyn Error>> {
                 for input in inputs {
                     let id = format!("machine:{}", input.name);
                     add(&id, servers::READER, SWEEP_FILE, servers::BASIS, "");
-                    let text = String::from_utf8_lossy(input.raw.as_deref().unwrap_or_default());
+                    let raw = input.file.as_ref().and_then(|f| f.raw.as_deref());
+                    let text = String::from_utf8_lossy(raw.unwrap_or_default());
                     for o in servers::readings(&id, &text, "") {
                         for s in o.statements.iter().filter(|s| s.predicate == "known_as") {
                             add(&id, servers::READER, SWEEP_FILE, servers::BASIS, &s.object);
@@ -684,6 +685,10 @@ fn servers_cmd(args: &ServersArgs) -> Result<(), Box<dyn Error>> {
     say(&format!("  sh {}", sweep::quoted(&s.dir.join("sweep.sh"))));
     say("To say a server is retired or not yours, run `soc owner <name> retired --reason <text>`.");
     say(&format!(
+        "To visit only some of them again, such as those that failed, name their aliases: sh {} <alias>...",
+        sweep::quoted(&s.dir.join("sweep.sh"))
+    ));
+    say(&format!(
         "To choose which alias the sweep uses, add the others to {}, one per line. Then run `soc run`.",
         s.dir.join(sweep::SKIP).display()
     ));
@@ -856,8 +861,19 @@ fn rewrite_sweep(args: &ServersArgs) -> Result<usize, Box<dyn Error>> {
 }
 
 /// The sweep file of a server under any of its names: when it was taken, or that it is
-/// incomplete. And whether it was read.
+/// incomplete, and when and why its latest visit failed. And whether it was read.
 fn last_file(dir: &Path, names: &[&str]) -> (String, bool) {
+    let (said, read) = last_reading(dir, names);
+    match names.iter().find_map(|n| servers::failure(dir, n)) {
+        Some(f) => (
+            format!("{said}; {}", sweep::failed_visit(f.at, &f.reason)),
+            read,
+        ),
+        None => (said, read),
+    }
+}
+
+fn last_reading(dir: &Path, names: &[&str]) -> (String, bool) {
     let mut seen = None;
     for name in names {
         let path = dir.join(format!("{name}.txt"));
@@ -1088,18 +1104,43 @@ fn read_servers(run: &mut Run, dir: Option<&Path>) -> Result<(), Box<dyn Error>>
     for input in servers::inputs(dir)? {
         let machine = format!("machine:{}", input.name);
         store::put_entity(run.tx, &machine)?;
-        let readings = match &input.raw {
-            Some(bytes) => {
-                let raw_file = run.keep_raw(
-                    servers::READER,
-                    &format!("servers/{}.txt", input.name),
-                    bytes,
-                )?;
-                servers::readings(&machine, &String::from_utf8_lossy(bytes), &raw_file)
-            }
-            None => servers::unreadable(&machine),
+        let raw = input.file.as_ref().and_then(|f| f.raw.as_deref());
+        let text = raw.map(String::from_utf8_lossy);
+        let complete = text.as_deref().is_some_and(servers::complete);
+        let file_at = text
+            .as_deref()
+            .and_then(servers::taken_at)
+            .or(input.file.as_ref().map(|f| f.modified))
+            .unwrap_or_default();
+        let raw_file = match raw {
+            Some(bytes) => Some(run.keep_raw(
+                servers::READER,
+                &format!("servers/{}.txt", input.name),
+                bytes,
+            )?),
+            None => None,
         };
-        for o in readings {
+        // The visit goes first: the latest reading of the server is then what the probe
+        // read, which the owner's word takes as a sign of life. A complete reading stands
+        // whatever happened later; a failed visit is told beside it.
+        let failed = input.failed.as_ref();
+        let visit = match (failed, complete) {
+            (Some(f), _) => servers::visit(&machine, Some(&f.reason)),
+            (None, true) => servers::visit(&machine, None),
+            (None, false) => servers::visit(&machine, Some(servers::NOT_COMPLETE)),
+        };
+        let (found, found_at) = match (&text, failed) {
+            (Some(text), f) if complete || f.is_none() => (
+                servers::readings(&machine, text, raw_file.as_deref().unwrap_or("")),
+                file_at,
+            ),
+            (_, Some(f)) => (servers::visit_failed(&machine, &f.reason), f.at),
+            (_, None) => (servers::unreadable(&machine), file_at),
+        };
+        let visit_at = failed.map_or(file_at, |f| f.at);
+        let readings =
+            std::iter::once((visit, visit_at)).chain(found.into_iter().map(|o| (o, found_at)));
+        for (o, observed_at) in readings {
             store::put_entity(run.tx, &o.scope)?;
             let reading = Reading {
                 reader: servers::READER,
@@ -1107,11 +1148,7 @@ fn read_servers(run: &mut Run, dir: Option<&Path>) -> Result<(), Box<dyn Error>>
                 kind: o.kind,
                 run_id: &run_id,
                 at: run.at,
-                observed_at: input
-                    .raw
-                    .as_deref()
-                    .and_then(|b| servers::taken_at(&String::from_utf8_lossy(b)))
-                    .unwrap_or(input.modified),
+                observed_at,
             };
             run.apply(
                 &reading,
@@ -1120,6 +1157,18 @@ fn read_servers(run: &mut Run, dir: Option<&Path>) -> Result<(), Box<dyn Error>>
                 o.reason.as_deref(),
                 &o.statements,
             )?;
+        }
+        if let Some(f) = failed {
+            let last = store::last_read(run.tx, servers::READER, &machine)?;
+            run.notes.push(format!(
+                "{} {}; {}",
+                input.name,
+                last.map_or("was never read".to_string(), |t| format!(
+                    "was last read {}",
+                    view::utc(t)
+                )),
+                sweep::failed_visit(f.at, &f.reason)
+            ));
         }
     }
     Ok(())

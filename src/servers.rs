@@ -3,7 +3,8 @@
 //!
 //! One file per server, `<name>.txt`, made of sections that start with a `##<section>`
 //! line, as `scripts/probe.sh` prints them. A file is a complete read only if it reaches
-//! `##end`. `##taken_at` is when the probe ran, in UTC seconds.
+//! `##end`. `##taken_at` is when the probe ran, in UTC seconds. A visit that failed leaves
+//! `<name>.failed` next to it, and the earlier `<name>.txt` as it was.
 
 use crate::store::Statement;
 use std::collections::BTreeMap;
@@ -33,21 +34,74 @@ const BRIDGES: [&str; 11] = [
     "kube",
 ];
 
-const NOT_COMPLETE: &str = "the sweep of this server did not complete";
+pub const NOT_COMPLETE: &str = "the sweep of this server did not complete";
 const NO_RIGHTS: &str = "no rights to list containers";
 const CONTENTS_PARTIAL: &str = "only version variables and the WordPress core version are read";
 /// What the probe prints when docker refused, and when there is no docker.
 const REFUSED: &str = "no access";
 const NOT_INSTALLED: &str = "docker not installed";
 
-/// One server file as it was found.
+/// The sweep's latest visit to the server: whether it reached the server and the probe
+/// completed. The readings of what is on the server keep their own coverage and time; this
+/// one says when the latest attempt failed and why, next to them.
+pub const VISIT: &str = "sweep visit";
+
+/// What the sweep left for one server: its reading, its failed visit, or both.
 pub struct Input {
     pub name: String,
+    /// `<name>.txt`, the latest reading. `None` when there is none.
+    pub file: Option<File>,
+    /// `<name>.failed`, left when the latest visit failed.
+    pub failed: Option<Failure>,
+}
+
+/// One server file as it was found.
+pub struct File {
     /// `None` when the file could not be read.
     pub raw: Option<Vec<u8>>,
     /// When the file was last written, UTC seconds: the time of the reading when the file
     /// does not say when the probe ran.
     pub modified: i64,
+}
+
+/// A visit that failed: when, from the file's first line, and why, from the last line ssh
+/// printed, which is where it says what went wrong.
+pub struct Failure {
+    pub at: i64,
+    pub reason: String,
+}
+
+impl Failure {
+    pub fn parse(text: &str, modified: i64) -> Failure {
+        let mut lines = text.lines();
+        let at = lines.next().and_then(|l| l.trim().parse().ok());
+        let reason = lines.map(str::trim).rfind(|l| !l.is_empty());
+        Failure {
+            at: at.unwrap_or(modified),
+            reason: reason.unwrap_or("the visit left no reason").to_string(),
+        }
+    }
+}
+
+/// The failed visit left under this name in the folder, if any.
+pub fn failure(dir: &Path, name: &str) -> Option<Failure> {
+    let path = dir.join(format!("{name}.{}", crate::sweep::FAILED));
+    let meta = std::fs::metadata(&path).ok()?;
+    let text = std::fs::read(&path).unwrap_or_default();
+    Some(Failure::parse(
+        &String::from_utf8_lossy(&text),
+        seconds(meta.modified().ok()),
+    ))
+}
+
+fn seconds(t: Option<std::time::SystemTime>) -> i64 {
+    t.and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_secs() as i64)
+}
+
+/// Whether a server file is a complete reading.
+pub fn complete(text: &str) -> bool {
+    sections(text).contains_key("end")
 }
 
 /// What one reading of one server, or of one container on it, found.
@@ -60,21 +114,25 @@ pub struct Outcome {
     pub statements: Vec<Statement>,
 }
 
-/// Every `<name>.txt` in the folder, by name, except the sweep's own `skip.txt`. An error
-/// if the folder cannot be listed; a file that cannot be read is still a server we know about.
+/// Every server in the folder by name: each `<name>.txt`, except the sweep's own `skip.txt`,
+/// and each `<name>.failed`. An error if the folder cannot be listed; a file that cannot be
+/// read is still a server we know about.
 pub fn inputs(dir: &Path) -> Result<Vec<Input>, String> {
     let entries =
         std::fs::read_dir(dir).map_err(|e| format!("cannot list {}: {e}", dir.display()))?;
-    let mut out = Vec::new();
+    let failed = format!(".{}", crate::sweep::FAILED);
+    let mut out: BTreeMap<String, Input> = BTreeMap::new();
     for entry in entries {
         let entry = entry.map_err(|e| format!("cannot list {}: {e}", dir.display()))?;
         let path = entry.path();
-        let Some(name) = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .and_then(|n| n.strip_suffix(".txt"))
-        else {
-            continue;
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let (name, txt) = match (
+            file_name.strip_suffix(".txt"),
+            file_name.strip_suffix(failed.as_str()),
+        ) {
+            (Some(name), _) => (name, true),
+            (_, Some(name)) => (name, false),
+            _ => continue,
         };
         if name.is_empty()
             || entry.file_name() == crate::sweep::SKIP
@@ -82,20 +140,21 @@ pub fn inputs(dir: &Path) -> Result<Vec<Input>, String> {
         {
             continue;
         }
-        let modified = entry
-            .metadata()
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map_or(0, |d| d.as_secs() as i64);
-        out.push(Input {
+        let input = out.entry(name.to_string()).or_insert_with(|| Input {
             name: name.to_string(),
-            raw: std::fs::read(&path).ok(),
-            modified,
+            file: None,
+            failed: None,
         });
+        if txt {
+            input.file = Some(File {
+                raw: std::fs::read(&path).ok(),
+                modified: seconds(entry.metadata().and_then(|m| m.modified()).ok()),
+            });
+        } else {
+            input.failed = failure(dir, name);
+        }
     }
-    out.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(out)
+    Ok(out.into_values().collect())
 }
 
 /// Lines of each section, with their line numbers, counted from 1.
@@ -144,10 +203,7 @@ pub fn taken_at(text: &str) -> Option<i64> {
 pub fn readings(machine: &str, text: &str, raw_file: &str) -> Vec<Outcome> {
     let s = sections(text);
     if !s.contains_key("end") {
-        return vec![
-            not_read(machine, PACKAGES, NOT_COMPLETE),
-            not_read(machine, CONTAINERS, NOT_COMPLETE),
-        ];
+        return nothing_read(machine, NOT_COMPLETE);
     }
     let at = |n: usize| format!("{raw_file}:{n}");
     let say = |out: &mut Vec<Statement>, subject: &str, predicate, object: &str, n| {
@@ -335,11 +391,27 @@ fn own_address(interface: &str, address: &str) -> Option<String> {
 
 /// The readings of a file that could not be read at all.
 pub fn unreadable(machine: &str) -> Vec<Outcome> {
-    let reason = "the file of this server could not be read";
+    nothing_read(machine, "the file of this server could not be read")
+}
+
+/// The readings of a server with no complete file whose latest visit failed.
+pub fn visit_failed(machine: &str, reason: &str) -> Vec<Outcome> {
+    nothing_read(machine, &format!("the latest visit failed: {reason}"))
+}
+
+fn nothing_read(machine: &str, reason: &str) -> Vec<Outcome> {
     vec![
         not_read(machine, PACKAGES, reason),
         not_read(machine, CONTAINERS, reason),
     ]
+}
+
+/// The latest visit: full when it left a complete reading, else none with why it failed.
+pub fn visit(machine: &str, failed: Option<&str>) -> Outcome {
+    match failed {
+        Some(reason) => not_read(machine, VISIT, reason),
+        None => full(machine, VISIT, Vec::new()),
+    }
 }
 
 fn not_read(scope: &str, kind: &'static str, reason: &str) -> Outcome {
@@ -359,5 +431,18 @@ fn full(scope: &str, kind: &'static str, statements: Vec<Statement>) -> Outcome 
         completeness: "full",
         reason: None,
         statements,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Failure;
+
+    #[test]
+    fn a_failure_record_without_its_time_is_dated_by_the_file_and_one_without_a_reason_says_so() {
+        // A record cut short by copying must still be told as a failure, not lost or dated now.
+        let cut = Failure::parse("", 1_767_412_800);
+        assert_eq!(cut.at, 1_767_412_800);
+        assert_eq!(cut.reason, "the visit left no reason");
     }
 }
