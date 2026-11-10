@@ -1176,9 +1176,11 @@ fn checkouts_are_found_anywhere_under_the_home_folder_except_where_none_belong()
 }
 
 /// An ssh configuration as people write it: a plain alias with its address, a pattern,
-/// code hosting under an alias and by `User git`, an alias the owner skips, and an include.
+/// code hosting under an alias and by `User git`, an alias the owner skips, and an include,
+/// at the top where ssh reads it for every host.
 const SSH_CONFIG: &str = "\
 # Invented for tests.
+Include config.d/*
 Host web-1
     HostName 10.0.0.5
     User deploy
@@ -1192,7 +1194,6 @@ Host forge
     User git
 Host retired-box
     HostName 10.0.0.8
-Include config.d/*
 ";
 
 const SSH_CONFIG_BUILD: &str = "\
@@ -1213,6 +1214,8 @@ fn known_hosts_file() -> String {
 |1|{SALT}Mg==|aW52ZW50ZWRoYXNoMg== ssh-rsa {KEY}HashedTwo
 github.com ssh-ed25519 {KEY}CodeHosting
 @cert-authority *.example.org ssh-ed25519 {KEY}Authority
+@revoked * ssh-rsa {KEY}Revoked
+*.lab.example.org,!gw.lab.example.org ssh-ed25519 {KEY}Lab
 "
     )
 }
@@ -1335,9 +1338,11 @@ fn the_program_never_runs_ssh() {
 }
 
 #[test]
-fn hashed_known_hosts_make_the_reading_partial_with_their_count_and_no_key_is_stored() {
-    // A hashed entry hides a host we may have; the reading must not look complete. Keys are
-    // not ours to copy: neither a key nor its type is kept, in the store or next to it.
+fn known_hosts_that_hide_hosts_make_the_reading_partial_with_their_count_and_no_key_is_stored() {
+    // A hashed entry hides a host we may have, a pattern covers hosts it does not name, and
+    // ssh writes no key for a host a certificate authority vouches for: the reading must
+    // not look complete. A negated pattern and a revoked key name no host. Keys are not
+    // ours to copy: neither a key nor its type is kept, in the store or next to it.
     let h = Home::new("hashed", None, Some(&known_hosts_file()));
     h.run(&h.dir.0.join("absent"), &h.dir.0.join("no-tailscale"));
 
@@ -1346,7 +1351,10 @@ fn hashed_known_hosts_make_the_reading_partial_with_their_count_and_no_key_is_st
             &h.store(),
             "SELECT completeness, reason FROM coverage WHERE kind = 'known hosts'"
         ),
-        ["partial|2 hashed entries cannot be read"]
+        [
+            "partial|2 hashed entries cannot be read; 1 pattern covers hosts it does not name; \
+          1 certificate authority vouches for hosts whose keys are not written here"
+        ]
     );
     assert_eq!(
         rows(
@@ -1356,7 +1364,7 @@ fn hashed_known_hosts_make_the_reading_partial_with_their_count_and_no_key_is_st
         ),
         [
             "machine:10.0.0.5|10.0.0.5",
-            "machine:10.0.0.9|10.0.0.9",
+            "machine:[10.0.0.9]:2222|[10.0.0.9]:2222",
             "machine:db-9|db-9"
         ]
     );
@@ -1633,6 +1641,266 @@ fn an_alias_in_skip_txt_is_never_visited_even_when_added_after_the_script_was_wr
     put(&sweep, "skip.txt", "db-1\n");
     let _locked = Locked::new(sweep.join("skip.txt"));
     assert!(sweep_with_fake_ssh(&sweep, &bin).is_empty());
+}
+
+/// An ssh configuration with what ssh does not read as aliases: comments, quote marks, the
+/// `keyword=value` form, patterns and a negation, an include that matches a dotfile, and a
+/// code hosting alias on two lines, counted once.
+const SSH_CONFIG_WORDS: &str = "\
+# Invented for tests.
+Host web # production box
+    HostName 192.0.2.10
+Host \"db-1\" 'db-2' # replica set
+    HostName 192.0.2.11
+Host=cache-1
+Host gh # mirror
+    HostName github.com
+Host gh
+    User git
+Host web-? lab-*
+    User admin
+Host * !lab-gw
+    IdentityFile ~/.ssh/id_invented
+Include conf.d/*
+Include absent.d/* conf.d/build/*
+";
+
+#[test]
+fn only_a_literal_alias_of_a_host_line_as_openssh_reads_it_is_ever_visited() {
+    // The sweep is access to servers. A word ssh does not read as an alias must never
+    // become a server the sweep connects to: ssh would look it up as a host name. Nor may a
+    // file ssh does not include, and glob characters in the home folder's name must not
+    // change what an Include matches.
+    let h = Home::new("words-[a]", Some(SSH_CONFIG_WORDS), None);
+    put(
+        &h.home,
+        ".ssh/conf.d/build",
+        "Host build # ci\n    HostName 192.0.2.12\n",
+    );
+    put(
+        &h.home,
+        ".ssh/conf.d/.old",
+        "Host old-box\n    HostName 192.0.2.13\n",
+    );
+    // ssh reads a folder as an empty file and skips a file that is not there.
+    put(&h.home, ".ssh/conf.d/sub/old", "Host sub-box\n");
+    std::os::unix::fs::symlink(h.home.join("gone"), h.home.join(".ssh/conf.d/gone")).unwrap();
+    let printed = h.servers();
+
+    let sweep = h.dir.0.join("store").join("sweep");
+    let script = std::fs::read_to_string(sweep.join("sweep.sh")).unwrap();
+    assert_eq!(listed(&script), ["build", "cache-1", "db-1,db-2", "web"]);
+    assert_eq!(
+        sweep_with_fake_ssh(&sweep, &h.dir.0.join("bin")),
+        ["build", "cache-1", "db-1", "web"]
+    );
+    assert!(
+        printed.contains("Ssh configuration: 5 servers, 1 left out as code hosting.\n"),
+        "{printed}"
+    );
+}
+
+/// What ssh resolves differently from a reader that takes only blocks naming an alias:
+/// includes through glob(3) from `~/.ssh`, the home folder and an absolute path, pattern
+/// blocks first, a negation, an include inside a block that does not apply, files and a
+/// folder that cannot be read, and `Match` blocks that cannot be evaluated without running
+/// ssh. `{ABS}` is replaced with an absolute folder.
+const SSH_CONFIG_RESOLVED: &str = "\
+Include hosts/*/config conf[0-9] ~/.ssh/home.d/* locked.d/* {ABS}/*
+Include %d/extra ${EXTRA}/config ~nobody/config
+Host pat*
+    HostName %h.example.org
+Host patterned
+    HostName 192.0.2.21
+Host db-1 db-* !db-3
+    HostName 192.0.2.50
+Host db-3
+    HostName 192.0.2.51
+Host bastion
+    Include bastion.d/*
+    HostName 192.0.2.70
+Host * !late
+    IdentityFile ~/.ssh/id_invented
+    User deploy
+Host never-*
+    Include never.d/*
+Match exec \"test -e /nonexistent\"
+    HostName 192.0.2.60
+    User admin
+Host late
+    HostName 192.0.2.61
+Match localuser nobody
+    Include match.d/*
+";
+
+#[test]
+fn an_alias_is_known_by_the_host_name_ssh_would_use_and_what_is_not_resolved_makes_the_reading_partial()
+ {
+    // A HostName links an alias to the machine other traces know: one ssh would not use
+    // joins the wrong machines, and the sweep then visits one of them for both. What the
+    // reader cannot resolve without running ssh, it must say, not guess.
+    let h = Home::new("resolved", None, None);
+    let elsewhere = h.dir.0.join("elsewhere");
+    put(
+        &h.home,
+        ".ssh/config",
+        &SSH_CONFIG_RESOLVED.replace("{ABS}", &elsewhere.display().to_string()),
+    );
+    put(&elsewhere, "abs", "Host abs-box\n    HostName 192.0.2.91\n");
+    put(
+        &h.home,
+        ".ssh/home.d/box",
+        "Host home-box\n    HostName 192.0.2.90\n",
+    );
+    let _file = Locked::new(put(&h.home, ".ssh/conf2", "Host hidden-1\n"));
+    put(&h.home, ".ssh/locked.d/box", "Host hidden-2\n");
+    let _folder = Locked::new(h.home.join(".ssh/locked.d"));
+    put(
+        &h.home,
+        ".ssh/hosts/a/config",
+        "Host web-1\n    HostName 192.0.2.40\n",
+    );
+    put(&h.home, ".ssh/conf1", "Host db-1\n");
+    put(
+        &h.home,
+        ".ssh/bastion.d/inner",
+        "Host inner\n    HostName 192.0.2.71\n",
+    );
+    put(
+        &h.home,
+        ".ssh/match.d/box",
+        "Host maybe-box\n    HostName 192.0.2.80\nHost maybe-box\n",
+    );
+    put(
+        &h.home,
+        ".ssh/never.d/all",
+        "Match all\n    HostName 192.0.2.99\n",
+    );
+    h.run(&h.dir.0.join("absent"), &h.dir.0.join("no-tailscale"));
+
+    assert_eq!(
+        rows(
+            &h.store(),
+            "SELECT subject, object FROM assertion
+             WHERE layer = 'live' AND reader = 'ssh-config' ORDER BY subject, object"
+        ),
+        [
+            "machine:abs-box|192.0.2.91",
+            "machine:abs-box|abs-box",
+            "machine:bastion|192.0.2.70",
+            "machine:bastion|bastion",
+            "machine:db-1|192.0.2.50",
+            "machine:db-1|db-1",
+            "machine:db-3|192.0.2.51",
+            "machine:db-3|db-3",
+            "machine:home-box|192.0.2.90",
+            "machine:home-box|home-box",
+            "machine:late|late",
+            "machine:patterned|patterned",
+            "machine:patterned|patterned.example.org",
+            "machine:web-1|192.0.2.40",
+            "machine:web-1|web-1",
+        ]
+    );
+    assert_eq!(
+        rows(
+            &h.store(),
+            "SELECT completeness, reason FROM coverage WHERE kind = 'ssh configuration'"
+        ),
+        [
+            "partial|could not read conf2, locked.d; config:2 Include %d/extra was not read: \
+             % tokens and ${} variables are not expanded; config:2 Include ${EXTRA}/config was \
+             not read: % tokens and ${} variables are not expanded; config:2 Include \
+             ~nobody/config was not read: only ~/ is expanded; the Match at config:19 was not \
+             applied; it may decide the HostName or User of late; the Match at config:24 was \
+             not applied; it may decide the HostName or User of maybe-box"
+        ]
+    );
+    // An alias rests on the first Host line ssh applies for it, here in an included file.
+    let source = rows(
+        &h.store(),
+        "SELECT source_ref FROM assertion WHERE subject = 'machine:db-1' AND object = 'db-1'",
+    );
+    let (file, line) = source[0].rsplit_once(':').unwrap();
+    let extract = std::fs::read_to_string(h.dir.0.join("store").join(file)).unwrap();
+    assert_eq!(
+        extract.lines().nth(line.parse::<usize>().unwrap() - 1),
+        Some("conf1:1\tHost db-1")
+    );
+}
+
+#[test]
+fn a_configuration_ssh_refuses_is_never_read_as_full() {
+    // ssh reads includes 16 deep and refuses a configuration that goes deeper, or that has
+    // an unclosed quote. A reading that says full there claims ways in that ssh refuses.
+    let h = Home::new("refused", Some("Include c1\nHost web\n"), None);
+    for n in 1..=16 {
+        put(
+            &h.home,
+            &format!(".ssh/c{n}"),
+            &format!("Include c{}\nHost web-{n}\n", n + 1),
+        );
+    }
+    let printed = h.servers();
+    assert!(
+        printed.contains("Ssh configuration: 17 servers.\n"),
+        "{printed}"
+    );
+
+    put(&h.home, ".ssh/c17", "Host web-17\n");
+    let printed = h.servers();
+    assert!(
+        printed.contains(
+            "Ssh configuration: 17 servers, c16:1 includes c17 too deep, so ssh refuses the \
+             configuration.\n"
+        ),
+        "{printed}"
+    );
+
+    std::fs::remove_file(h.home.join(".ssh/c17")).unwrap();
+    put(
+        &h.home,
+        ".ssh/c3",
+        "Include c4\nHost \"web-3\nHost web-3b\n",
+    );
+    let printed = h.servers();
+    assert!(
+        printed.contains(
+            "Ssh configuration: 17 servers, c3:2 has an unclosed quote, so ssh refuses the \
+             configuration.\n"
+        ),
+        "{printed}"
+    );
+}
+
+#[test]
+fn two_ports_on_one_address_are_two_servers_and_neither_is_the_one_on_port_22() {
+    // Machines behind one address with forwarded ports are different machines, and ssh
+    // keys them by host and port. Folded into one, all but one go unread while the reading
+    // looks complete.
+    let h = Home::new(
+        "ports",
+        Some("Host gw\n    HostName nat.example.net\n"),
+        Some(&format!(
+            "nat.example.net ssh-ed25519 {KEY}Gw\n\
+             [nat.example.net]:2201 ssh-ed25519 {KEY}One\n\
+             [nat.example.net]:2202 ssh-ed25519 {KEY}Two\n"
+        )),
+    );
+    let report = h.run(&h.dir.0.join("absent"), &h.dir.0.join("no-tailscale"));
+
+    assert_eq!(
+        rows(
+            &h.store(),
+            "SELECT subject, object FROM assertion
+             WHERE layer = 'live' AND predicate = 'same_as' ORDER BY subject"
+        ),
+        ["machine:gw|machine:nat.example.net"]
+    );
+    assert!(
+        report.contains("3 servers known, 1 offered for the sweep, 0 read."),
+        "{report}"
+    );
 }
 
 /// A server file whose probe also printed the server's own names and addresses, as

@@ -5,8 +5,10 @@
 //!
 //! The rule, kept here so that it can be replaced: two machines are the same when they are
 //! known by the same name or address. Names compare without case, addresses exactly; a
-//! trailing dot and a port are ignored. Loopback says nothing about which machine is meant
-//! and is not evidence.
+//! trailing dot is ignored. A port, as known hosts write one other than 22, is part of the
+//! name, as ssh keys known hosts by host and port: machines behind one address with
+//! forwarded ports are different machines, and none of them is the machine on port 22.
+//! Loopback says nothing about which machine is meant and is not evidence.
 //!
 //! A server names itself in its sweep file, and unrelated servers share default host names
 //! and private addresses. So what a sweep file reports about its own server is evidence
@@ -44,29 +46,33 @@ pub struct Link {
 /// What a name or address is compared by, or `None` when it is not evidence.
 pub fn key(value: &str) -> Option<String> {
     let v = value.trim();
-    let v = match v.strip_prefix('[') {
-        Some(rest) => rest.split_once(']').map_or(rest, |(h, _)| h),
-        None => v,
-    };
-    let v = match v.rsplit_once(':') {
-        Some((host, port))
-            if !host.contains(':')
-                && !port.is_empty()
-                && port.bytes().all(|b| b.is_ascii_digit()) =>
-        {
-            host
-        }
-        _ => v,
+    let (v, port) = match v.strip_prefix('[') {
+        Some(rest) => match rest.split_once(']') {
+            Some((host, after)) => (host, after.strip_prefix(':')),
+            None => (rest, None),
+        },
+        None => (v, None),
     };
     let v = v.trim_end_matches('.');
     if v.is_empty() {
         return None;
     }
-    if let Ok(ip) = v.parse::<IpAddr>() {
-        return (!ip.is_loopback() && !ip.is_unspecified()).then(|| ip.to_string());
-    }
-    let name = v.to_lowercase();
-    (name != "localhost" && !name.ends_with(".localhost")).then_some(name)
+    let host = if let Ok(ip) = v.parse::<IpAddr>() {
+        if ip.is_loopback() || ip.is_unspecified() {
+            return None;
+        }
+        ip.to_string()
+    } else {
+        let name = v.to_lowercase();
+        if name == "localhost" || name.ends_with(".localhost") {
+            return None;
+        }
+        name
+    };
+    Some(match port {
+        Some(port) => format!("[{host}]:{port}"),
+        None => host,
+    })
 }
 
 /// Whether a name or address a server gives itself names that one machine: a name with a

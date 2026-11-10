@@ -1,13 +1,37 @@
 //! The `ssh-config` reader: the servers this machine has an explicit way into, from
-//! `~/.ssh/config` and the files it pulls in with `Include`. It takes only `Host`,
+//! `~/.ssh/config` and the files it pulls in with `Include`. It takes only `Host`, `Match`,
 //! `HostName` and `User`. It never opens a key file and keeps no other setting.
 //!
-//! Every `Host` alias that is a plain name, without `*`, `?` or `!`, is a server. Its
-//! `HostName` is another name it is known by. An alias for code hosting, by its name, its
-//! `HostName` or `User git`, is left out.
+//! A server is a literal alias of a `Host` line: a word without `*` or `?` that is not
+//! negated with `!`, and whose line ssh applies when it is given that alias. A `Host` line
+//! ssh never applies to its own alias, because the alias is also negated on it or because
+//! it sits in a file included from a block that does not apply, is not a way in: ssh would
+//! look the word up as a host name. Its `HostName` is another name it is known by. An alias
+//! for code hosting, by its name, its `HostName` or `User git`, is left out.
+//!
+//! Why this is our own code: the configuration is OpenSSH's format, and the reference way
+//! to resolve it, `ssh -G`, evaluates `Match exec` and so runs commands from the
+//! configuration; the program promises never to run ssh. No library reads the format. So
+//! the reader follows OpenSSH's own code closely and is tested on its samples:
+//!
+//! - a line is split into a keyword and words as `readconf.c` does, with a port of
+//!   `argv_split` from `misc.c`;
+//! - `Include` is expanded by the system's glob(3), as ssh does, from `~/.ssh` for a
+//!   relative path, at most 16 files deep;
+//! - a `Host` pattern is matched with the system's fnmatch(3), limited to the `*` and `?`
+//!   OpenSSH knows, and a negated pattern that matches turns the line off;
+//! - the first value obtained wins, from whichever block applies, as in ssh.
+//!
+//! What is not resolved is said, never guessed. A `Match` block is not evaluated: when one
+//! could give an alias its `HostName` or `User` first, that value is not recorded and the
+//! reading is partial with the place of the `Match`. An `Include` argument with `%` tokens,
+//! `${}` variables or `~user` is not expanded, and the reading is partial naming it. So is
+//! one that ssh refuses: an unclosed quote, or includes more than 16 deep.
 
 use crate::traces::{Extract, Found, Seen, code_hosting, note};
-use std::collections::BTreeMap;
+use std::cell::RefCell;
+use std::ffi::{CStr, CString, OsStr};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 pub const READER: &str = "ssh-config";
@@ -15,7 +39,8 @@ pub const KIND: &str = "ssh configuration";
 pub const BASIS: &str = "declared";
 pub const NOT_PRESENT: &str = "there is no ssh configuration on this machine";
 
-/// Includes that include themselves stop here.
+/// How deep includes go: ssh refuses a configuration that includes deeper than this
+/// (`READCONF_MAX_DEPTH` in `readconf.c`).
 const MAX_DEPTH: usize = 16;
 
 pub fn read(home: &Path) -> Found {
@@ -28,140 +53,123 @@ pub fn read(home: &Path) -> Found {
     let mut p = Parser {
         home,
         ssh: &ssh,
-        extract: Extract::default(),
-        aliases: Vec::new(),
-        index: BTreeMap::new(),
+        lines: Vec::new(),
         unread: Vec::new(),
+        problems: Vec::new(),
     };
-    p.file("config", &text, &mut Vec::new(), 0);
+    p.file("config", &text, 0);
     Found::Read(p.finish())
 }
 
-struct Alias {
-    name: String,
-    /// The extract line of the first `Host` line that names it.
-    line: usize,
-    host_name: Option<(String, usize)>,
-    user: Option<String>,
+/// A line that matters, in the order ssh reads it, includes spliced in.
+enum Line {
+    Host {
+        at: String,
+        patterns: Vec<String>,
+    },
+    Match {
+        at: String,
+    },
+    HostName {
+        at: String,
+        value: String,
+    },
+    User {
+        value: String,
+    },
+    /// An included file starts and ends: ssh restores the block state after it.
+    Enter,
+    Leave,
 }
 
 struct Parser<'a> {
     home: &'a Path,
     ssh: &'a Path,
-    extract: Extract,
-    aliases: Vec<Alias>,
-    index: BTreeMap<String, usize>,
-    /// Included files that are there and could not be read.
+    lines: Vec<Line>,
+    /// Files that are there and could not be read.
     unread: Vec<String>,
+    /// Other reasons the reading is partial.
+    problems: Vec<String>,
 }
 
 impl Parser<'_> {
-    /// `block` holds the aliases the lines apply to: those of the latest `Host` line.
-    fn file(&mut self, label: &str, text: &str, block: &mut Vec<usize>, depth: usize) {
+    fn file(&mut self, label: &str, text: &str, depth: usize) {
         for (i, line) in text.lines().enumerate() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
+            let at = format!("{label}:{}", i + 1);
+            let Some((keyword, rest)) = keyword(line) else {
                 continue;
-            }
-            let (keyword, args) = split(line);
-            match keyword.to_ascii_lowercase().as_str() {
-                "host" => {
-                    block.clear();
-                    let n =
-                        self.extract
-                            .add(&format!("{label}:{}\tHost {}", i + 1, args.join(" ")));
-                    for name in args.iter().filter(|a| plain(a)) {
-                        let k = *self.index.entry(name.clone()).or_insert_with(|| {
-                            self.aliases.push(Alias {
-                                name: name.clone(),
-                                line: n,
-                                host_name: None,
-                                user: None,
-                            });
-                            self.aliases.len() - 1
-                        });
-                        block.push(k);
-                    }
-                }
-                "match" => block.clear(),
-                "hostname" if !block.is_empty() => {
-                    let Some(value) = args.first() else { continue };
-                    let n = self
-                        .extract
-                        .add(&format!("{label}:{}\tHostName {value}", i + 1));
-                    // The first value obtained wins, as in ssh.
-                    for &k in block.iter() {
-                        let alias = &mut self.aliases[k];
-                        if alias.host_name.is_none() {
-                            alias.host_name = Some((expand_host(value, &alias.name), n));
-                        }
-                    }
-                }
-                "user" => {
-                    for &k in block.iter() {
-                        let alias = &mut self.aliases[k];
-                        if alias.user.is_none() {
-                            alias.user = args.first().cloned();
-                        }
-                    }
-                }
-                "include" if depth < MAX_DEPTH => {
+            };
+            let Some(args) = argv_split(rest, true) else {
+                self.problems.push(format!(
+                    "{at} has an unclosed quote, so ssh refuses the configuration"
+                ));
+                continue;
+            };
+            let first = args.first().cloned();
+            match (keyword.to_ascii_lowercase().as_str(), first) {
+                ("host", _) => self.lines.push(Line::Host { at, patterns: args }),
+                ("match", _) => self.lines.push(Line::Match { at }),
+                ("hostname", Some(value)) => self.lines.push(Line::HostName { at, value }),
+                ("user", Some(value)) => self.lines.push(Line::User { value }),
+                ("include", _) => {
                     for arg in &args {
-                        for path in self.paths(arg) {
-                            let label = self.label(&path);
-                            match std::fs::read(&path) {
-                                Ok(bytes) => {
-                                    let text = String::from_utf8_lossy(&bytes).into_owned();
-                                    let mut inner = block.clone();
-                                    self.file(&label, &text, &mut inner, depth + 1);
-                                }
-                                // ssh skips an include that is not there.
-                                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                                Err(_) => self.unread.push(label),
-                            }
-                        }
+                        self.include(&at, arg, depth);
                     }
                 }
-                "include" => self.unread.push(format!("{label}:{} (too deep)", i + 1)),
                 _ => {}
             }
         }
     }
 
-    /// The files an `Include` argument names: relative to `~/.ssh`, with `*` and `?`
-    /// allowed in the last part.
-    fn paths(&mut self, arg: &str) -> Vec<PathBuf> {
-        let path = if let Some(rest) = arg.strip_prefix("~/") {
-            self.home.join(rest)
-        } else if arg.starts_with('/') {
-            PathBuf::from(arg)
-        } else {
-            self.ssh.join(arg)
-        };
-        let Some(pattern) = path.file_name().and_then(|n| n.to_str()) else {
-            return vec![path];
-        };
-        if !pattern.contains(['*', '?']) {
-            return vec![path];
+    /// One `Include` argument: anchored as ssh anchors it and expanded by glob(3).
+    fn include(&mut self, at: &str, arg: &str, depth: usize) {
+        if arg.contains('%') || arg.contains("${") {
+            self.problems.push(format!(
+                "{at} Include {arg} was not read: % tokens and ${{}} variables are not expanded"
+            ));
+            return;
         }
-        let dir = path.parent().unwrap_or(Path::new("/"));
-        let entries = match std::fs::read_dir(dir) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
-            Err(_) => {
-                let label = self.label(dir);
-                self.unread.push(label);
-                return Vec::new();
-            }
+        let pattern = if let Some(rest) = arg.strip_prefix("~/") {
+            format!("{}/{rest}", glob_escape(self.home))
+        } else if arg.starts_with('~') {
+            self.problems.push(format!(
+                "{at} Include {arg} was not read: only ~/ is expanded"
+            ));
+            return;
+        } else if arg.starts_with('/') {
+            arg.to_string()
+        } else {
+            format!("{}/{arg}", glob_escape(self.ssh))
         };
-        let mut out: Vec<PathBuf> = entries
-            .filter_map(Result::ok)
-            .filter(|e| e.path().is_file())
-            .filter(|e| e.file_name().to_str().is_some_and(|n| glob(pattern, n)))
-            .map(|e| e.path())
-            .collect();
-        out.sort();
-        out
+        let (paths, failed) = glob(&pattern);
+        for dir in failed {
+            let label = self.label(&dir);
+            self.unread.push(label);
+        }
+        for path in paths {
+            // ssh reads a folder as an empty file.
+            if path.is_dir() {
+                continue;
+            }
+            let label = self.label(&path);
+            if depth >= MAX_DEPTH {
+                self.problems.push(format!(
+                    "{at} includes {label} too deep, so ssh refuses the configuration"
+                ));
+                continue;
+            }
+            match std::fs::read(&path) {
+                Ok(bytes) => {
+                    let text = String::from_utf8_lossy(&bytes).into_owned();
+                    self.lines.push(Line::Enter);
+                    self.file(&label, &text, depth + 1);
+                    self.lines.push(Line::Leave);
+                }
+                // ssh skips an include that is not there.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => self.unread.push(label),
+            }
+        }
     }
 
     /// A path as the extract names it: relative to `~/.ssh` or to the home folder.
@@ -175,66 +183,305 @@ impl Parser<'_> {
         path.to_string_lossy().into_owned()
     }
 
-    fn finish(self) -> Seen {
-        let mut hosts = Vec::new();
-        let mut third_party = 0;
-        for alias in &self.aliases {
-            let host_name = alias.host_name.as_ref();
-            if code_hosting(&alias.name)
-                || host_name.is_some_and(|(h, _)| code_hosting(h))
-                || alias.user.as_deref() == Some("git")
+    fn finish(mut self) -> Seen {
+        let mut aliases: Vec<&str> = Vec::new();
+        for line in &self.lines {
+            if let Line::Host { patterns, .. } = line {
+                for p in patterns.iter().filter(|p| literal(p)) {
+                    if !aliases.contains(&p.as_str()) {
+                        aliases.push(p);
+                    }
+                }
+            }
+        }
+        let mut extract = Extract::default();
+        let mut extracted: Vec<(String, usize)> = Vec::new();
+        let mut add = |line: String| match extracted.iter().find(|(l, _)| *l == line) {
+            Some((_, n)) => *n,
+            None => {
+                let n = extract.add(&line);
+                extracted.push((line, n));
+                n
+            }
+        };
+        let (mut hosts, mut third_party) = (Vec::new(), 0);
+        // Each `Match` not applied, with the aliases whose values it could have set.
+        let mut not_applied: Vec<(&str, Vec<&str>)> = Vec::new();
+        let lines: &[Line] = &self.lines;
+        for alias in aliases {
+            let r = resolve(lines, alias);
+            let host_line = match r.applied {
+                Some((State::Yes, at, patterns)) => format!("{at}\tHost {}", patterns.join(" ")),
+                Some((State::Maybe(m), ..)) => {
+                    depends_on(&mut not_applied, m, alias);
+                    continue;
+                }
+                _ => continue,
+            };
+            for slot in [&r.host_name, &r.user] {
+                if let Value::Unknown(m) = slot {
+                    depends_on(&mut not_applied, m, alias);
+                }
+            }
+            let host_name = match &r.host_name {
+                Value::Set(value, at) => Some((expand_host(value, alias), *at, *value)),
+                _ => None,
+            };
+            if code_hosting(alias)
+                || host_name.as_ref().is_some_and(|(h, ..)| code_hosting(h))
+                || matches!(r.user, Value::Set("git", _))
             {
                 third_party += 1;
                 continue;
             }
-            note(&mut hosts, &alias.name, &alias.name, alias.line);
-            if let Some((value, n)) = host_name {
-                note(&mut hosts, &alias.name, value, *n);
+            note(&mut hosts, alias, alias, add(host_line));
+            if let Some((value, at, raw)) = host_name {
+                note(
+                    &mut hosts,
+                    alias,
+                    &value,
+                    add(format!("{at}\tHostName {raw}")),
+                );
             }
         }
-        let partial =
-            (!self.unread.is_empty()).then(|| format!("could not read {}", self.unread.join(", ")));
+        let mut reasons = Vec::new();
+        if !self.unread.is_empty() {
+            reasons.push(format!("could not read {}", self.unread.join(", ")));
+        }
+        reasons.append(&mut self.problems);
+        for (at, aliases) in not_applied {
+            reasons.push(format!(
+                "the Match at {at} was not applied; it may decide the HostName or User of {}",
+                aliases.join(", ")
+            ));
+        }
         Seen {
-            extract: self.extract.into_text(),
+            extract: extract.into_text(),
             hosts,
-            partial,
+            partial: (!reasons.is_empty()).then(|| reasons.join("; ")),
             third_party,
         }
     }
 }
 
-/// The keyword and its arguments. A keyword is followed by spaces or by `=`; an argument
-/// in double quotes may hold spaces.
-fn split(line: &str) -> (&str, Vec<String>) {
-    let end = line
-        .find(|c: char| c.is_whitespace() || c == '=')
-        .unwrap_or(line.len());
-    let (keyword, rest) = line.split_at(end);
-    let rest = rest.trim_start();
-    let rest = rest.strip_prefix('=').unwrap_or(rest);
-    let mut args = Vec::new();
-    let mut current = String::new();
-    let mut quoted = false;
-    for c in rest.chars() {
-        match c {
-            '"' => quoted = !quoted,
-            c if c.is_whitespace() && !quoted => {
-                if !current.is_empty() {
-                    args.push(std::mem::take(&mut current));
-                }
-            }
-            c => current.push(c),
-        }
+/// Notes that what ssh makes of an alias depends on the `Match` at `at`.
+fn depends_on<'a>(list: &mut Vec<(&'a str, Vec<&'a str>)>, at: &'a str, alias: &'a str) {
+    match list.iter_mut().find(|(m, _)| *m == at) {
+        Some((_, aliases)) if !aliases.contains(&alias) => aliases.push(alias),
+        Some(_) => {}
+        None => list.push((at, vec![alias])),
     }
-    if !current.is_empty() {
-        args.push(current);
-    }
-    (keyword, args)
 }
 
-/// A pattern that names exactly one host.
-fn plain(pattern: &str) -> bool {
-    !pattern.is_empty() && !pattern.contains(['*', '?', '!'])
+/// Whether a block applies: `Maybe` names the `Match` it depends on.
+#[derive(Clone, Copy, PartialEq)]
+enum State<'a> {
+    No,
+    Maybe(&'a str),
+    Yes,
+}
+
+impl State<'_> {
+    fn rank(self) -> u8 {
+        match self {
+            State::No => 0,
+            State::Maybe(_) => 1,
+            State::Yes => 2,
+        }
+    }
+}
+
+/// A value of one alias: the first one obtained wins, as in ssh.
+enum Value<'a> {
+    Unset,
+    /// The value and the place it was read.
+    Set(&'a str, &'a str),
+    /// A `Match` that is not evaluated could have set it first.
+    Unknown(&'a str),
+}
+
+impl<'a> Value<'a> {
+    fn offer(&mut self, value: &'a str, at: &'a str, state: State<'a>) {
+        if let Value::Unset = self {
+            match state {
+                State::Yes => *self = Value::Set(value, at),
+                State::Maybe(m) => *self = Value::Unknown(m),
+                State::No => {}
+            }
+        }
+    }
+}
+
+struct Resolved<'a> {
+    /// The strongest state of a `Host` line that names the alias literally, with its place
+    /// and patterns.
+    applied: Option<(State<'a>, &'a str, &'a [String])>,
+    host_name: Value<'a>,
+    user: Value<'a>,
+}
+
+/// What ssh makes of the configuration when it is given this alias, as `readconf.c` reads
+/// it: a `Host` line turns the block on when a pattern matches and no negated one does; a
+/// file included while the block is off is read with every block off; after an included
+/// file the block is what it was before.
+fn resolve<'a>(lines: &'a [Line], alias: &str) -> Resolved<'a> {
+    let mut r = Resolved {
+        applied: None,
+        host_name: Value::Unset,
+        user: Value::Unset,
+    };
+    let (mut active, mut never) = (State::Yes, State::No);
+    let mut stack = Vec::new();
+    for line in lines {
+        match line {
+            Line::Host { at, patterns } => {
+                let (positive, negative): (Vec<&String>, Vec<&String>) =
+                    patterns.iter().partition(|p| !p.starts_with('!'));
+                let matched = positive.iter().any(|p| host_matches(alias, p))
+                    && !negative.iter().any(|p| host_matches(alias, &p[1..]));
+                active = match never {
+                    _ if !matched => State::No,
+                    State::No => State::Yes,
+                    State::Maybe(m) => State::Maybe(m),
+                    State::Yes => State::No,
+                };
+                if positive.iter().any(|p| p.as_str() == alias)
+                    && active.rank() > r.applied.map_or(0, |(s, ..)| s.rank())
+                {
+                    r.applied = Some((active, at.as_str(), patterns.as_slice()));
+                }
+            }
+            Line::Match { at } => {
+                active = match never {
+                    State::Yes => State::No,
+                    _ => State::Maybe(at),
+                }
+            }
+            Line::HostName { at, value } => r.host_name.offer(value, at, active),
+            Line::User { value } => r.user.offer(value, "", active),
+            Line::Enter => {
+                stack.push((active, never));
+                never = match (never, active) {
+                    (State::Yes, _) | (_, State::No) => State::Yes,
+                    (State::Maybe(m), _) | (_, State::Maybe(m)) => State::Maybe(m),
+                    _ => State::No,
+                };
+            }
+            Line::Leave => {
+                if let Some(saved) = stack.pop() {
+                    (active, never) = saved;
+                }
+            }
+        }
+    }
+    r
+}
+
+/// A pattern of a `Host` line that names exactly one host: not negated, no wildcard.
+fn literal(pattern: &str) -> bool {
+    !pattern.is_empty() && !pattern.starts_with('!') && !pattern.contains(['*', '?'])
+}
+
+/// Whether a `Host` pattern matches the alias, as OpenSSH's `match_pattern` does: `*` is
+/// any run of characters, `?` any one, everything else itself, case counts. fnmatch(3)
+/// also knows brackets and escapes, so those are escaped first.
+fn host_matches(alias: &str, pattern: &str) -> bool {
+    let escaped = pattern.replace('\\', "\\\\").replace('[', "\\[");
+    let (Ok(p), Ok(s)) = (CString::new(escaped), CString::new(alias)) else {
+        return false;
+    };
+    // SAFETY: both are NUL-terminated strings that live across the call.
+    unsafe { libc::fnmatch(p.as_ptr(), s.as_ptr(), 0) == 0 }
+}
+
+/// The keyword and the rest of a configuration line, as `process_config_line_depth` in
+/// `readconf.c` takes them with `strdelim`: the keyword ends at whitespace, a quote or one
+/// `=`, so `Host web`, `Host=web` and `Host = web` are one line. `None` for an empty line,
+/// a comment or a keyword with nothing after it.
+fn keyword(line: &str) -> Option<(String, &str)> {
+    let line = line.trim_end_matches([' ', '\t', '\r', '\n', '\x0c']);
+    let (mut keyword, mut rest) = strdelim(line)?;
+    if keyword.is_empty() {
+        (keyword, rest) = strdelim(rest?)?;
+    }
+    if keyword.is_empty() || keyword.starts_with('#') {
+        return None;
+    }
+    let rest = rest?.trim_start_matches(WHITESPACE);
+    (!rest.is_empty()).then_some((keyword, rest))
+}
+
+const WHITESPACE: [char; 4] = [' ', '\t', '\r', '\n'];
+
+/// One word and what follows it, as `strdelim` in `misc.c` splits them. `None` when a
+/// quote is not closed.
+fn strdelim(s: &str) -> Option<(String, Option<&str>)> {
+    let Some(k) = s.find(|c| WHITESPACE.contains(&c) || c == '"' || c == '=') else {
+        return Some((s.to_string(), None));
+    };
+    if s[k..].starts_with('"') {
+        let close = s[k + 1..].find('"')? + k + 1;
+        let word = format!("{}{}", &s[..k], &s[k + 1..close]);
+        return Some((word, Some(s[close + 1..].trim_start_matches(WHITESPACE))));
+    }
+    let equals = s[k..].starts_with('=');
+    let mut rest = s[k + 1..].trim_start_matches(WHITESPACE);
+    if !equals && rest.starts_with('=') {
+        rest = rest[1..].trim_start_matches(WHITESPACE);
+    }
+    Some((s[..k].to_string(), Some(rest)))
+}
+
+/// The words of a line, as `argv_split` in OpenSSH's `misc.c` splits them: spaces and tabs
+/// separate words, `'` and `"` quote, a backslash escapes a quote, a backslash or (outside
+/// quotes) a space, and with `comments` a `#` that starts a word ends the line. `None` when
+/// a quote is not closed: ssh then refuses the configuration.
+///
+/// Ported from OpenSSH (misc.c: Copyright (c) 2005-2020 Damien Miller and others), under
+/// its ISC-style licence: permission to use, copy, modify and distribute with the
+/// copyright and permission notice kept.
+fn argv_split(s: &str, comments: bool) -> Option<Vec<String>> {
+    let s = s.as_bytes();
+    let mut args = Vec::new();
+    let mut i = 0;
+    while i < s.len() {
+        if s[i] == b' ' || s[i] == b'\t' {
+            i += 1;
+            continue;
+        }
+        if comments && s[i] == b'#' {
+            break;
+        }
+        let (mut quote, mut arg) = (0u8, Vec::new());
+        while i < s.len() {
+            let c = s[i];
+            let next = s.get(i + 1).copied();
+            if c == b'\\' {
+                if matches!(next, Some(b'\'' | b'"' | b'\\')) || (quote == 0 && next == Some(b' '))
+                {
+                    i += 1;
+                    arg.push(s[i]);
+                } else {
+                    arg.push(c);
+                }
+            } else if quote == 0 && (c == b' ' || c == b'\t') {
+                break;
+            } else if quote == 0 && (c == b'"' || c == b'\'') {
+                quote = c;
+            } else if quote != 0 && c == quote {
+                quote = 0;
+            } else {
+                arg.push(c);
+            }
+            i += 1;
+        }
+        if quote != 0 {
+            return None;
+        }
+        args.push(String::from_utf8_lossy(&arg).into_owned());
+        i += 1;
+    }
+    Some(args)
 }
 
 /// `%h` in a `HostName` is the alias; `%%` is a percent sign.
@@ -245,25 +492,246 @@ fn expand_host(value: &str, alias: &str) -> String {
         .replace('\u{0}', "%")
 }
 
-/// `*` matches any run of characters, `?` any one.
-fn glob(pattern: &str, name: &str) -> bool {
-    let (p, n): (Vec<char>, Vec<char>) = (pattern.chars().collect(), name.chars().collect());
-    let (mut pi, mut ni) = (0, 0);
-    let mut star: Option<(usize, usize)> = None;
-    while ni < n.len() {
-        if pi < p.len() && (p[pi] == '?' || p[pi] == n[ni]) {
-            pi += 1;
-            ni += 1;
-        } else if pi < p.len() && p[pi] == '*' {
-            star = Some((pi, ni));
-            pi += 1;
-        } else if let Some((sp, sn)) = star {
-            pi = sp + 1;
-            ni = sn + 1;
-            star = Some((sp, sn + 1));
-        } else {
-            return false;
+/// A path as a glob(3) pattern that matches only itself.
+fn glob_escape(path: &Path) -> String {
+    let mut out = String::new();
+    for c in path.to_string_lossy().chars() {
+        if matches!(c, '*' | '?' | '[' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+thread_local! {
+    /// Folders glob(3) could not open during the current call.
+    static GLOB_FAILED: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+}
+
+/// macOS glob(3) reports no folder that is missing or is a file: it matches nothing there,
+/// as ssh expects. What it does report is a folder it could not open.
+extern "C" fn glob_error(path: *const libc::c_char, _errno: libc::c_int) -> libc::c_int {
+    // SAFETY: glob(3) passes a NUL-terminated path.
+    let path = unsafe { CStr::from_ptr(path) };
+    let path = PathBuf::from(OsStr::from_bytes(path.to_bytes()));
+    GLOB_FAILED.with(|f| f.borrow_mut().push(path));
+    // Go on, as ssh does.
+    0
+}
+
+/// The paths a pattern matches, sorted, as glob(3) gives them to ssh, and the folders it
+/// could not open on the way.
+fn glob(pattern: &str) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let Ok(c) = CString::new(pattern) else {
+        return (Vec::new(), Vec::new());
+    };
+    GLOB_FAILED.with(|f| f.borrow_mut().clear());
+    let mut paths = Vec::new();
+    // SAFETY: glob_t is a plain C structure that glob(3) fills; zeroed is its empty state,
+    // and globfree releases what glob allocated, whatever it returned.
+    unsafe {
+        let mut g: libc::glob_t = std::mem::zeroed();
+        if libc::glob(c.as_ptr(), 0, Some(glob_error), &mut g) == 0 {
+            for i in 0..g.gl_pathc {
+                let p = CStr::from_ptr(*g.gl_pathv.add(i));
+                paths.push(PathBuf::from(OsStr::from_bytes(p.to_bytes())));
+            }
+        }
+        libc::globfree(&mut g);
+    }
+    (paths, GLOB_FAILED.with(|f| f.take()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_line_splits_into_the_words_openssh_reads_so_nothing_in_a_comment_becomes_an_alias() {
+        // OpenSSH's own vectors, regress/unittests/misc/test_argv.c (public domain), as of
+        // openssh-portable 1d28115e. An alias is a word of a Host line, and it becomes a
+        // word in the sweep script: a word ssh does not read must never become one.
+        let ok: &[(&str, bool, &[&str])] = &[
+            ("", false, &[]),
+            ("    ", false, &[]),
+            ("leamas", false, &["leamas"]),
+            ("smiley leamas", false, &["smiley", "leamas"]),
+            ("\"smiley\"", false, &["smiley"]),
+            ("leamas \" smiley \"", false, &["leamas", " smiley "]),
+            ("\"smiley leamas\"", false, &["smiley leamas"]),
+            ("smiley\" leamas\" liz", false, &["smiley leamas", "liz"]),
+            ("\\\"smiley\\'", false, &["\"smiley'"]),
+            ("'\\'smiley\\\"'", false, &["'smiley\""]),
+            ("smiley\\'s leamas\\'", false, &["smiley's", "leamas'"]),
+            ("leamas\\\\smiley", false, &["leamas\\smiley"]),
+            ("leamas\\\\ \\\\smiley", false, &["leamas\\", "\\smiley"]),
+            ("smiley\\ leamas", false, &["smiley leamas"]),
+            ("'smiley\\ leamas'", false, &["smiley\\ leamas"]),
+            ("\"smiley\\ leamas\"", false, &["smiley\\ leamas"]),
+            ("# gold", false, &["#", "gold"]),
+            ("# gold", true, &[]),
+            ("leamas#gold", true, &["leamas#gold"]),
+            ("\"leamas # gold\"", true, &["leamas # gold"]),
+            ("\"leamas\"#gold", true, &["leamas#gold"]),
+        ];
+        for (line, comments, words) in ok {
+            let words: Vec<String> = words.iter().map(|w| w.to_string()).collect();
+            assert_eq!(argv_split(line, *comments), Some(words), "{line:?}");
+        }
+        // ssh refuses a line with an unclosed quote.
+        for line in ["\"smiley", "leamas 'smiley"] {
+            assert_eq!(argv_split(line, true), None, "{line:?}");
         }
     }
-    p[pi..].iter().all(|&c| c == '*')
+
+    #[test]
+    fn only_a_plain_word_of_a_host_line_is_an_alias() {
+        // An alias becomes a word in the sweep script, and ssh connects to it. A pattern, a
+        // negation or an empty word is not a server ssh can be sent to by name.
+        for (word, alias) in [
+            ("web", true),
+            ("db-1.example.org", true),
+            ("we!b", true),
+            ("", false),
+            ("!web", false),
+            ("web-*", false),
+            ("web-?", false),
+        ] {
+            assert_eq!(literal(word), alias, "{word:?}");
+        }
+    }
+
+    #[test]
+    fn a_keyword_is_read_with_spaces_or_one_equals_sign_as_ssh_reads_it() {
+        // readconf.c accepts `Host web`, `Host=web` and `Host = web` alike; a line read
+        // differently from ssh names servers ssh does not have.
+        for (line, expected) in [
+            ("Host web", Some(("Host", "web"))),
+            (
+                "  Host\tweb # production box",
+                Some(("Host", "web # production box")),
+            ),
+            ("Host=web", Some(("Host", "web"))),
+            ("Host = web", Some(("Host", "web"))),
+            ("Host =web", Some(("Host", "web"))),
+            ("Host==web", Some(("Host", "=web"))),
+            ("\"Host\" web", Some(("Host", "web"))),
+            ("Host web \x0c", Some(("Host", "web"))),
+            ("# Host web", None),
+            ("#Host web", None),
+            ("Host", None),
+            ("Host   ", None),
+            ("", None),
+            ("\"Host web", None),
+        ] {
+            let got = keyword(line);
+            assert_eq!(
+                got.as_ref().map(|(k, r)| (k.as_str(), *r)),
+                expected,
+                "{line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_host_pattern_matches_exactly_what_openssh_matches() {
+        // OpenSSH's own vectors for match_pattern, regress/unittests/match/tests.c (public
+        // domain), as of openssh-portable 1d28115e, then the characters fnmatch(3) would
+        // read differently from OpenSSH. A pattern block that applies, or does not, sets
+        // the HostName ssh uses.
+        let vectors: &[(&str, &str, bool)] = &[
+            ("", "", true),
+            ("", "aaa", false),
+            ("aaa", "", false),
+            ("aaa", "aaaa", false),
+            ("aaaa", "aaa", false),
+            ("abc", "abc", true),
+            ("abc", "abd", false),
+            ("abc", "abcd", false),
+            ("abcd", "abc", false),
+            ("", "*", true),
+            ("", "**", true),
+            ("", "***", true),
+            ("", "?", false),
+            ("", "*?", false),
+            ("", "?*", false),
+            ("", "**a*", false),
+            ("a", "?", true),
+            ("aa", "a?", true),
+            ("a", "*", true),
+            ("aa", "a*", true),
+            ("aa", "?*", true),
+            ("aa", "?a", true),
+            ("aa", "*a", true),
+            ("ba", "a?", false),
+            ("ba", "a*", false),
+            ("ab", "?a", false),
+            ("ab", "*a", false),
+            ("aa", "**", true),
+            ("ab", "a***b", true),
+            ("axb", "a***b", true),
+            ("axxb", "a***b", true),
+            ("ax", "a***b", false),
+            ("abbb", "a*b*b", true),
+            ("abbb", "a*b*c", false),
+            ("aaaaaaaaac", "a*a*a*a*b", false),
+            ("aaaaaaaaab", "a*a*a*a*b", true),
+            ("ab", "*b", true),
+            ("ab", "*a*", true),
+            ("ab", "*a*b", true),
+            ("ab", "*a*c", false),
+            ("abc", "a?c", true),
+            ("abc", "??c", true),
+            ("abc", "???", true),
+            ("abc", "a?d", false),
+            ("ab", "???", false),
+            ("abc", "ab*", true),
+            ("ab", "ab*", true),
+            ("a", "ab*", false),
+            ("abc", "ab?", true),
+            ("ab", "ab?", false),
+            ("abcd", "ab?", false),
+            ("abc", "?bc", true),
+            ("abc", "?b*", true),
+            ("abc", "?c", false),
+            ("abc", "a*?c", true),
+            ("ac", "a*?c", false),
+            ("abbc", "a*?c", true),
+            ("abc", "a?*c", true),
+            ("ac", "a?*c", false),
+            ("abbc", "a?*c", true),
+            ("abc", "a*?*c", true),
+            ("ac", "a*?*c", false),
+            ("abc", "?*c", true),
+            ("ac", "?*c", true),
+            ("c", "?*c", false),
+            ("abc", "*?c", true),
+            ("ac", "*?c", true),
+            ("c", "*?c", false),
+            ("abc", "a?*", true),
+            ("ab", "a?*", true),
+            ("a", "a?*", false),
+            ("abc", "a*?", true),
+            ("ab", "a*?", true),
+            ("a", "a*?", false),
+            ("abb", "a*b", true),
+            ("abbc", "a*b", false),
+            // OpenSSH knows no brackets, escapes or case folding.
+            ("a", "[a]", false),
+            ("[a]", "[a]", true),
+            ("a", "\\a", false),
+            ("\\a", "\\a", true),
+            ("Web", "web", false),
+            ("a/b", "a*", true),
+            (".a", "*", true),
+        ];
+        for (input, pattern, expected) in vectors {
+            assert_eq!(
+                host_matches(input, pattern),
+                *expected,
+                "{input:?} against {pattern:?}"
+            );
+        }
+    }
 }
