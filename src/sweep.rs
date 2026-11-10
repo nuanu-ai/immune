@@ -3,7 +3,8 @@
 //! the store; the owner runs the script, which leaves one file per server for `soc run`.
 //!
 //! Only servers with a current, explicit way in are offered: plain aliases of the ssh
-//! configuration, which has already left code hosting out. An alias listed in `skip.txt`
+//! configuration, which has already left code hosting out. A machine the owner said is
+//! retired or not theirs is not offered under any alias. An alias listed in `skip.txt`
 //! is not offered. A machine known under several aliases is visited once, through the
 //! first of them in the order of the ssh configuration that is not in `skip.txt`. The
 //! script checks `skip.txt` again when it runs, so an alias added there later is not

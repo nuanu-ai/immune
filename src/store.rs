@@ -82,13 +82,26 @@ CREATE VIEW gone_entity AS
                       WHERE l.layer = 'live' AND l.predicate = 'located_on'
                         AND l.subject = r.subject);
 
--- The journal cannot be rebuilt from raw input, so it only grows.
+-- The last saved copy of each raw input, so that unchanged input is not copied again.
+CREATE TABLE raw_input (
+    reader TEXT NOT NULL,
+    input  TEXT NOT NULL,
+    path   TEXT NOT NULL,  -- relative to the store's folder
+    run_id TEXT NOT NULL,
+    PRIMARY KEY (reader, input)
+);
+";
+
+/// The journal. It cannot be rebuilt from raw input, so it only grows. Its entries are the
+/// differences a run finds, the run's own notes, and the owner's word.
+const JOURNAL: &str = "
 CREATE TABLE journal (
     seq       INTEGER PRIMARY KEY AUTOINCREMENT,
     at        INTEGER NOT NULL,
     run_id    TEXT NOT NULL,
     entry     TEXT NOT NULL
-              CHECK (entry IN ('run_started', 'added', 'changed', 'removed', 'report', 'run_finished')),
+              CHECK (entry IN ('run_started', 'added', 'changed', 'removed', 'report', 'run_finished',
+                               'owner_said', 'owner_withdrew')),
     reader    TEXT,
     scope     TEXT,
     kind      TEXT,
@@ -98,19 +111,24 @@ CREATE TABLE journal (
     new_value TEXT,
     text      TEXT
 );
--- The last saved copy of each raw input, so that unchanged input is not copied again.
-CREATE TABLE raw_input (
-    reader TEXT NOT NULL,
-    input  TEXT NOT NULL,
-    path   TEXT NOT NULL,  -- relative to the store's folder
-    run_id TEXT NOT NULL,
-    PRIMARY KEY (reader, input)
-);
-
 CREATE TRIGGER journal_no_update BEFORE UPDATE ON journal
     BEGIN SELECT RAISE(ABORT, 'journal is append-only'); END;
 CREATE TRIGGER journal_no_delete BEFORE DELETE ON journal
     BEGIN SELECT RAISE(ABORT, 'journal is append-only'); END;
+";
+
+/// The owner's word: what the owner said about an entity, next to the facts and never an
+/// edit of them. A withdrawn statement is kept with the time it was withdrawn. Created on
+/// every open, so a store of the current format takes it without a rebuild.
+const OWNER: &str = "
+CREATE TABLE IF NOT EXISTS owner_statement (
+    id           INTEGER PRIMARY KEY,
+    entity       TEXT NOT NULL REFERENCES entity (id),
+    said         TEXT NOT NULL CHECK (said IN ('retired', 'not mine')),
+    reason       TEXT NOT NULL,
+    made_at      INTEGER NOT NULL,  -- UTC seconds
+    withdrawn_at INTEGER            -- UTC seconds
+);
 ";
 
 /// The vocabulary seed. It is data, not format: it is applied on every open, so a store of
@@ -181,6 +199,7 @@ pub fn open(path: &Path) -> Res<Connection> {
     if tables == 0 {
         let tx = conn.transaction()?;
         tx.execute_batch(SCHEMA)?;
+        tx.execute_batch(JOURNAL)?;
         tx.execute(
             "INSERT INTO meta (key, value) VALUES ('format_version', ?1)",
             [FORMAT_VERSION],
@@ -189,7 +208,36 @@ pub fn open(path: &Path) -> Res<Connection> {
     }
     check_format(&conn, path)?;
     conn.execute_batch(VOCABULARY)?;
+    conn.execute_batch(OWNER)?;
+    widen_journal(&mut conn)?;
     Ok(conn)
+}
+
+/// A journal made before the owner's word refuses its entries. It is made again with them,
+/// row for row and with the same sequence, in one transaction: the store keeps its history
+/// and its format.
+fn widen_journal(conn: &mut Connection) -> Res<()> {
+    let sql: String = conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'journal'",
+        [],
+        |r| r.get(0),
+    )?;
+    if sql.contains("'owner_said'") {
+        return Ok(());
+    }
+    let tx = conn.transaction()?;
+    tx.execute_batch(
+        "ALTER TABLE journal RENAME TO journal_before_owner;
+         DROP TRIGGER journal_no_update;
+         DROP TRIGGER journal_no_delete;",
+    )?;
+    tx.execute_batch(JOURNAL)?;
+    tx.execute_batch(
+        "INSERT INTO journal SELECT * FROM journal_before_owner;
+         DROP TABLE journal_before_owner;",
+    )?;
+    tx.commit()?;
+    Ok(())
 }
 
 /// Opens an existing store so that nothing can be written to it. Creates nothing.
@@ -483,6 +531,30 @@ pub fn journal_note(
     conn.execute(
         "INSERT INTO journal (at, run_id, entry, text) VALUES (?1, ?2, ?3, ?4)",
         params![at, run_id, entry, text],
+    )?;
+    Ok(())
+}
+
+/// One entry of the owner's word: `owner_said` with what was said and the reason, or
+/// `owner_withdrew` with what had been said and how it was withdrawn.
+pub fn journal_owner(
+    tx: &Transaction,
+    at: i64,
+    run_id: &str,
+    entry: &str,
+    entity: &str,
+    said: &str,
+    text: &str,
+) -> rusqlite::Result<()> {
+    let (old, new) = if entry == "owner_said" {
+        (None, Some(said))
+    } else {
+        (Some(said), None)
+    };
+    tx.execute(
+        "INSERT INTO journal (at, run_id, entry, subject, old_value, new_value, text)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![at, run_id, entry, entity, old, new, text],
     )?;
     Ok(())
 }

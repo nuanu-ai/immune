@@ -2657,3 +2657,767 @@ fn a_session_folder_that_cannot_be_listed_is_a_failed_reading_not_an_empty_one()
         "{report}"
     );
 }
+
+impl Home {
+    /// `soc owner` with these words, for this store and no tailscale.
+    fn owner_out(&self, words: &[&str]) -> std::process::Output {
+        soc_cmd(&self.home)
+            .arg("owner")
+            .args(words)
+            .arg("--store")
+            .arg(self.store())
+            .arg("--tailscale")
+            .arg(self.dir.0.join("no-tailscale"))
+            .output()
+            .unwrap()
+    }
+
+    /// `soc owner` that must succeed; what it printed.
+    fn owner(&self, words: &[&str]) -> String {
+        let out = self.owner_out(words);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    }
+
+    fn sweep(&self) -> PathBuf {
+        self.dir.0.join("store").join("sweep")
+    }
+
+    fn none(&self) -> PathBuf {
+        self.dir.0.join("no-tailscale")
+    }
+
+    fn absent(&self) -> PathBuf {
+        self.dir.0.join("absent")
+    }
+}
+
+/// Moves everything the store has read and been told two hours into the past, as if it had
+/// all happened then. The journal is append-only and keeps its times.
+fn two_hours_earlier(store: &Path) {
+    Connection::open(store)
+        .unwrap()
+        .execute_batch(
+            "UPDATE assertion SET observed_at = observed_at - 7200;
+             UPDATE coverage SET observed_at = observed_at - 7200;
+             UPDATE owner_statement SET made_at = made_at - 7200;",
+        )
+        .unwrap();
+}
+
+fn now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
+
+/// The names in the view's table of machines known and never read.
+fn never_read(page: &str) -> Vec<String> {
+    let machines = section(page, "machines");
+    let Some(never) = machines
+        .split("<details class=\"machine\">")
+        .find(|b| b.contains("Known and never read"))
+    else {
+        return Vec::new();
+    };
+    never
+        .split("<tr><td class=\"mono\">")
+        .skip(1)
+        .map(|r| r.split('<').next().unwrap().to_string())
+        .collect()
+}
+
+/// The view's list of machines the owner set aside.
+fn set_aside(page: &str) -> String {
+    section(page, "machines")
+        .split("<details class=\"machine\">")
+        .find(|b| b.contains("Retired or disowned by the owner</strong>"))
+        .unwrap_or_default()
+        .to_string()
+}
+
+const OWNER_WORDS: &str = "SELECT entity, said, reason, withdrawn_at IS NOT NULL
+                           FROM owner_statement ORDER BY id";
+
+#[test]
+fn a_retired_machine_is_never_visited_by_a_sweep_script_on_disk_even_one_written_before_the_statement()
+ {
+    // The sweep is access to servers. Once the owner says a machine is retired or not
+    // theirs, the script the owner already has must not go in, under any of its aliases.
+    let h = Home::new("word-sweep", Some(SSH_CONFIG_TWO_ALIASES), None);
+    let bin = h.dir.0.join("bin");
+    h.run(&h.absent(), &h.none());
+    h.servers();
+    assert_eq!(sweep_with_fake_ssh(&h.sweep(), &bin), ["db-1", "web-new"]);
+
+    let said = h.owner(&["web-1", "retired", "--reason", "Moved to a new host"]);
+    assert!(
+        said.contains("It covers the machine under every name: web-1, web-new.")
+            && said.contains("The sweep script was written again: it visits 1 server."),
+        "{said}"
+    );
+    assert_eq!(sweep_with_fake_ssh(&h.sweep(), &bin), ["db-1"]);
+    // Nor any script written after it.
+    h.servers();
+    assert_eq!(sweep_with_fake_ssh(&h.sweep(), &bin), ["db-1"]);
+}
+
+#[test]
+fn a_statement_under_a_name_a_trace_no_longer_gives_still_keeps_the_machine_out_of_the_sweep() {
+    // The owner may name a machine by an address only known hosts gave. When that file goes,
+    // the machine is still the one the owner spoke of, under its alias too.
+    let h = Home::new(
+        "word-forgotten-name",
+        Some(SSH_CONFIG_TWO_ALIASES),
+        Some(&format!("10.0.0.5 ssh-ed25519 {KEY}\n")),
+    );
+    h.run(&h.absent(), &h.none());
+    let said = h.owner(&["10.0.0.5", "retired", "--reason", "Moved to a new host"]);
+    assert!(said.contains("Said: 10.0.0.5 is retired"), "{said}");
+    std::fs::remove_file(h.home.join(".ssh/known_hosts")).unwrap();
+
+    h.servers();
+    assert_eq!(
+        sweep_with_fake_ssh(&h.sweep(), &h.dir.0.join("bin")),
+        ["db-1"]
+    );
+}
+
+#[test]
+fn a_sweep_script_that_cannot_be_written_again_after_a_statement_is_removed() {
+    // A script left as it was would still visit the machine the owner set aside.
+    let h = Home::new("word-stale", Some(SSH_CONFIG_TWO_ALIASES), None);
+    h.run(&h.absent(), &h.none());
+    h.servers();
+    let script = h.sweep().join("sweep.sh");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o444)).unwrap();
+    }
+
+    let out = h.owner_out(&["web-1", "retired", "--reason", "Moved to a new host"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success());
+    assert!(
+        stderr.contains("the owner's word was kept") && stderr.contains("no sweep script is left"),
+        "{stderr}"
+    );
+    assert!(!script.exists());
+    assert_eq!(
+        rows(&h.store(), OWNER_WORDS),
+        ["machine:web-1|retired|Moved to a new host|0"]
+    );
+}
+
+#[test]
+fn a_statement_about_one_name_covers_the_machine_under_all_its_names() {
+    // The owner names a machine the way they know it, in any case. Left under its other
+    // names, it would still be swept and counted.
+    let h = Home::new("word-names", Some(SSH_CONFIG), None);
+    let tailscale = fake(&h.dir.0.join("bin").join("tailscale"), TAILNET);
+    h.run(&h.absent(), &tailscale);
+    assert_eq!(
+        never_read(&view(&h.store())),
+        ["build", "phone", "retired-box", "web-1"]
+    );
+
+    let said = h.owner(&[
+        "BUILD-BOX.example-tail.ts.net",
+        "retired",
+        "--reason",
+        "Replaced",
+    ]);
+    assert!(
+        said.contains("Said: build is retired,")
+            && said.contains("under every name: build, build-box."),
+        "{said}"
+    );
+    let printed = h.servers_with(&tailscale);
+    let script = std::fs::read_to_string(h.sweep().join("sweep.sh")).unwrap();
+    assert_eq!(listed(&script), ["retired-box", "web-1"]);
+    let rows: Vec<&str> = printed
+        .lines()
+        .filter(|l| l.starts_with("  build"))
+        .collect();
+    assert_eq!(rows.len(), 1, "{printed}");
+    assert!(
+        rows[0].starts_with("  build    retired  20")
+            && rows[0].ends_with(
+                "Replaced  100.64.0.7, Build-Box.example-tail.ts.net., build-box, \
+                 build-box.example-tail.ts.net, fd7a:115c:a1e0::7"
+            ),
+        "{}",
+        rows[0]
+    );
+    h.run(&h.absent(), &tailscale);
+    assert_eq!(
+        never_read(&view(&h.store())),
+        ["phone", "retired-box", "web-1"]
+    );
+}
+
+const TWO_SERVERS: &str = "\
+Host web-1
+    HostName 203.0.113.5
+Host old-box
+    HostName 203.0.113.8
+";
+
+#[test]
+fn a_retired_machine_is_not_counted_as_known_and_never_read_and_is_listed_with_its_statement() {
+    // "Known and never read" is what the owner has left to sweep. A machine the owner
+    // retired is not, and it must not disappear either: it is shown with the statement.
+    let h = Home::new("word-counts", Some(TWO_SERVERS), None);
+    let report = h.run(&h.absent(), &h.none());
+    assert!(
+        report.contains(" 2 servers known, 2 offered for the sweep, 0 read."),
+        "{report}"
+    );
+
+    h.owner(&["old-box", "retired", "--reason", "Switched off in October"]);
+    let report = h.run(&h.absent(), &h.none());
+    let printed = h.servers();
+    let page = view(&h.store());
+
+    assert!(
+        report.contains(
+            " 1 server known, 1 offered for the sweep, 0 read; 1 retired or disowned by the owner."
+        ),
+        "{report}"
+    );
+    assert!(
+        printed.contains(
+            "\n1 server known, 0 of them under several names, 1 offered for the sweep, \
+             0 left out as code hosting, 0 as other users' devices, 1 known and never read.\n\
+             The owner's word: 1 machine retired or disowned.\n"
+        ),
+        "{printed}"
+    );
+    let lines: Vec<&str> = printed.lines().collect();
+    let head = lines
+        .iter()
+        .position(|l| *l == "Retired or disowned by the owner, not counted as servers: 1 machine")
+        .unwrap_or_else(|| panic!("no list of retired machines: {printed}"));
+    assert!(
+        lines[head + 2].starts_with("  old-box  retired  20")
+            && lines[head + 2].ends_with("UTC  Switched off in October  203.0.113.8"),
+        "{printed}"
+    );
+    assert_eq!(printed.matches("old-box").count(), 1, "{printed}");
+
+    assert_eq!(never_read(&page), ["web-1"]);
+    assert!(
+        section(&page, "machines")
+            .contains("1 known and never read; 1 retired or disowned by the owner."),
+        "{page}"
+    );
+    let aside = set_aside(&page);
+    assert!(
+        aside.contains("1 machine ·")
+            && aside.contains("<td class=\"mono\">old-box</td><td>retired</td>")
+            && aside
+                .contains("<td>Switched off in October</td><td class=\"mono\">203.0.113.8</td>"),
+        "{aside}"
+    );
+}
+
+#[test]
+fn facts_about_a_retired_machine_are_not_retracted_and_its_readings_go_on() {
+    // The owner's word is next to the facts, never an edit of them. What was read on the
+    // machine stays, and readers keep reading what is there.
+    let h = Home::new(
+        "word-facts",
+        Some("Host web-1\n    HostName 203.0.113.5\n"),
+        None,
+    );
+    let servers = h.dir.0.join("servers");
+    put(&servers, "web-1.txt", WEB_1);
+    h.run(&servers, &h.none());
+    let live_before = rows(&h.store(), LIVE);
+
+    h.owner(&["web-1", "not-mine", "--reason", "A client's server"]);
+    let report = h.run(&servers, &h.none());
+
+    assert_eq!(rows(&h.store(), LIVE), live_before);
+    assert!(
+        rows(
+            &h.store(),
+            "SELECT 1 FROM assertion WHERE layer = 'retracted'"
+        )
+        .is_empty()
+    );
+    assert!(report.contains("Since last run: no changes."), "{report}");
+    assert_eq!(
+        rows(
+            &h.store(),
+            "SELECT kind, completeness FROM coverage WHERE scope = 'machine:web-1'
+             AND run_id = (SELECT run_id FROM coverage ORDER BY id DESC LIMIT 1) ORDER BY kind"
+        ),
+        ["containers|full", "system packages|full"]
+    );
+    // The view still shows what was read on it, with the statement.
+    let page = view(&h.store());
+    let web = section(&page, "machines")
+        .split("<details class=\"machine\">")
+        .find(|b| b.contains("<strong>web-1</strong>"))
+        .expect("web-1 is not on the page")
+        .to_string();
+    assert!(
+        web.contains("<span class=\"badge good\">not mine by the owner on ")
+            && web.contains("A client&#39;s server</span>")
+            && web.contains("openssl"),
+        "{web}"
+    );
+}
+
+/// Two servers, the owner's statement that web-1 is retired, and a sweep file of web-1
+/// read before it, all two hours ago. Returns the time of the statement.
+fn retired_two_hours_ago(h: &Home) -> i64 {
+    put(
+        &h.sweep(),
+        "web-1.txt",
+        &format!("##taken_at\n{}\n{WEB_1}", now() - 20_000),
+    );
+    h.run(&h.sweep(), &h.none());
+    h.owner(&["web-1", "retired", "--reason", "Moved to a new host"]);
+    two_hours_earlier(&h.store());
+    rows(&h.store(), "SELECT made_at FROM owner_statement")[0]
+        .parse()
+        .unwrap()
+}
+
+#[test]
+fn a_machine_swept_after_the_statement_is_shown_as_contradicted_counted_again_and_still_not_visited()
+ {
+    // A statement must never hide a machine that is alive: a server the owner thinks is
+    // gone and that answers the sweep is exactly what must be seen. It is still not
+    // visited: the owner said it is not theirs to visit.
+    let h = Home::new("word-seen", Some(SSH_CONFIG_TWO_ALIASES), None);
+    let made = retired_two_hours_ago(&h);
+    let contradicted = |h: &Home| {
+        h.owner(&[])
+            .lines()
+            .find(|l| l.starts_with("  web-1 "))
+            .unwrap()
+            .contains("contradicted")
+    };
+
+    // Not seen alive: a reading taken as the statement was made, and a file a failed ssh
+    // left empty.
+    put(
+        &h.sweep(),
+        "web-1.txt",
+        &format!("##taken_at\n{made}\n{WEB_1}"),
+    );
+    h.run(&h.sweep(), &h.none());
+    assert!(!contradicted(&h));
+    put(&h.sweep(), "web-new.txt", "");
+    let report = h.run(&h.sweep(), &h.none());
+    assert!(!contradicted(&h));
+    assert!(
+        report.contains(" 1 server known, 1 offered for the sweep, 0 read; 1 retired"),
+        "{report}"
+    );
+    std::fs::remove_file(h.sweep().join("web-new.txt")).unwrap();
+
+    // Swept again after the statement: the same packages, a later reading.
+    put(
+        &h.sweep(),
+        "web-1.txt",
+        &format!("##taken_at\n{}\n{WEB_1}", made + 1),
+    );
+    let report = h.run(&h.sweep(), &h.none());
+    assert!(
+        report.contains(
+            " 2 servers known, 1 offered for the sweep, 1 read; 1 retired or disowned by the owner. \
+             Seen alive after the owner's word: web-1."
+        ),
+        "{report}"
+    );
+    let listing = h.owner(&[]);
+    assert!(
+        listing.contains("contradicted: ") && listing.contains("servers read containers on web-1"),
+        "{listing}"
+    );
+
+    let printed = h.servers();
+    let row = printed
+        .lines()
+        .find(|l| l.starts_with("  web-new "))
+        .unwrap_or_else(|| panic!("web-1 is not listed as a server: {printed}"));
+    assert!(
+        row.contains("not offered: retired by the owner on")
+            && row.contains("seen alive after it:"),
+        "{row}"
+    );
+    assert!(
+        printed.contains("\n2 servers known,")
+            && printed.contains("seen alive after it and counted again: web-1."),
+        "{printed}"
+    );
+    assert!(
+        !printed.contains("not counted as servers: 1 machine"),
+        "{printed}"
+    );
+    assert_eq!(
+        sweep_with_fake_ssh(&h.sweep(), &h.dir.0.join("bin")),
+        ["db-1"]
+    );
+
+    let page = view(&h.store());
+    assert!(
+        section(&page, "machines").contains(
+            "<p class=\"alert\">The owner's word is contradicted: <span class=\"mono\">web-1</span>"
+        ),
+        "{page}"
+    );
+    assert!(set_aside(&page).is_empty());
+    let web = section(&page, "machines")
+        .split("<details class=\"machine\">")
+        .find(|b| b.contains("<strong>web-1</strong>"))
+        .expect("web-1 is not on the page")
+        .to_string();
+    assert!(
+        web.contains("<span class=\"badge bad\">the owner's word is contradicted</span>"),
+        "{web}"
+    );
+}
+
+#[test]
+fn a_new_trace_after_the_statement_contradicts_it_and_a_later_statement_clears_it() {
+    // A trace that appears later, such as a new known host, is a sign of life too. The
+    // owner answers it with a new statement, which is later than what was seen.
+    let h = Home::new("word-later", Some(SSH_CONFIG_TWO_ALIASES), None);
+    h.run(&h.absent(), &h.none());
+    h.owner(&["web-1", "retired", "--reason", "Moved to a new host"]);
+    // A statement made in the same second as the reading is not contradicted by it.
+    Connection::open(h.store())
+        .unwrap()
+        .execute_batch(
+            "UPDATE owner_statement SET made_at =
+                 (SELECT MAX(observed_at) FROM assertion WHERE subject = 'machine:web-1')",
+        )
+        .unwrap();
+    assert!(
+        h.owner(&[])
+            .contains("Moved to a new host  10.0.0.5, web-new  nothing")
+    );
+    two_hours_earlier(&h.store());
+
+    put(
+        &h.home,
+        ".ssh/known_hosts",
+        &format!("10.0.0.5 ssh-ed25519 {KEY}\n"),
+    );
+    let report = h.run(&h.absent(), &h.none());
+    assert!(
+        report.contains("Seen alive after the owner's word: web-1."),
+        "{report}"
+    );
+    assert!(
+        h.owner(&[]).contains("contradicted: ")
+            && h.owner(&[])
+                .contains("known-hosts saw 10.0.0.5 known_as 10.0.0.5"),
+        "{}",
+        h.owner(&[])
+    );
+
+    let said = h.owner(&["web-1", "not-mine", "--reason", "Handed over to a client"]);
+    assert!(said.contains("It replaces the statement"), "{said}");
+    let listing = h.owner(&[]);
+    assert!(
+        listing.contains("The owner's word: 1 statement stands.")
+            && listing.contains("not mine")
+            && listing.contains("Handed over to a client")
+            && !listing.contains("contradicted")
+            && listing.contains("1 statement was withdrawn and kept."),
+        "{listing}"
+    );
+    let report = h.run(&h.absent(), &h.none());
+    assert!(
+        report.contains(" 1 server known, 1 offered for the sweep, 0 read; 1 retired")
+            && !report.contains("Seen alive"),
+        "{report}"
+    );
+}
+
+#[test]
+fn a_link_the_resolver_makes_after_the_statement_is_not_a_sign_of_life() {
+    // Only a reader sees a machine. A link worked out again from what was already known
+    // says nothing about whether the machine is alive.
+    let h = Home::new(
+        "word-link",
+        Some("Host web-1\n    HostName 203.0.113.5\n"),
+        None,
+    );
+    let taken = now() - 20_000;
+    let file = |names: &str, address: &str| {
+        format!(
+            "##taken_at\n{taken}\n{}",
+            with_own(names, &format!("eth0\t{address}/24"))
+        )
+    };
+    // Two files give the same address with different names: the address links nothing.
+    put(
+        &h.sweep(),
+        "a.txt",
+        &file("web-host.example.org", "203.0.113.5"),
+    );
+    put(
+        &h.sweep(),
+        "b.txt",
+        &file("other.example.org", "203.0.113.5"),
+    );
+    h.run(&h.sweep(), &h.none());
+    assert!(rows(&h.store(), SAME_AS).is_empty());
+    h.owner(&["web-1", "retired", "--reason", "Moved to a new host"]);
+    two_hours_earlier(&h.store());
+
+    // b turns out to be another server: the address now links a to web-1.
+    put(
+        &h.sweep(),
+        "b.txt",
+        &file("other.example.org", "203.0.113.9"),
+    );
+    h.run(&h.sweep(), &h.none());
+
+    assert_eq!(rows(&h.store(), SAME_AS), ["machine:a|machine:web-1"]);
+    let listing = h.owner(&[]);
+    assert!(
+        listing.contains("a, web-host.example.org") && !listing.contains("contradicted"),
+        "{listing}"
+    );
+}
+
+#[test]
+fn a_withdrawn_statement_restores_the_machine_and_stays_in_the_journal() {
+    // The owner can be wrong. Withdrawn, the machine is a server again; the statement and
+    // its withdrawal stay, because an investigation looks back.
+    let h = Home::new("word-withdraw", Some(SSH_CONFIG_TWO_ALIASES), None);
+    h.run(&h.absent(), &h.none());
+    h.servers();
+    h.owner(&["web-1", "retired", "--reason", "Moved to a new host"]);
+    assert_eq!(
+        sweep_with_fake_ssh(&h.sweep(), &h.dir.0.join("bin")),
+        ["db-1"]
+    );
+
+    let said = h.owner(&["web-new", "withdraw"]);
+    assert!(
+        said.contains("Withdrawn: the statement that web-1 is retired no longer stands"),
+        "{said}"
+    );
+    assert_eq!(
+        sweep_with_fake_ssh(&h.sweep(), &h.dir.0.join("bin")),
+        ["db-1", "web-new"]
+    );
+    assert_eq!(
+        rows(&h.store(), OWNER_WORDS),
+        ["machine:web-1|retired|Moved to a new host|1"]
+    );
+    assert_eq!(
+        rows(
+            &h.store(),
+            "SELECT entry, subject, old_value, new_value, text FROM journal
+             WHERE entry LIKE 'owner%' ORDER BY seq"
+        ),
+        [
+            "owner_said|machine:web-1|NULL|retired|Moved to a new host",
+            "owner_withdrew|machine:web-1|retired|NULL|withdrawn by the owner"
+        ]
+    );
+    let listing = h.owner(&[]);
+    assert!(
+        listing.contains("The owner's word: 0 statements stand.")
+            && listing.contains("1 statement was withdrawn and kept."),
+        "{listing}"
+    );
+    // The owner's word is not a run, and is not shown as one that did not finish.
+    let page = view(&h.store());
+    assert!(
+        !section(&page, "changes").contains("did not finish"),
+        "{page}"
+    );
+
+    let report = h.run(&h.absent(), &h.none());
+    assert!(
+        report.contains(" 2 servers known, 2 offered for the sweep, 0 read.")
+            && !report.contains("retired"),
+        "{report}"
+    );
+}
+
+#[test]
+fn a_statement_about_a_machine_no_trace_names_any_more_can_still_be_withdrawn() {
+    // An alias deleted from the ssh configuration leaves the statement standing; the
+    // owner must still be able to take it back.
+    let h = Home::new("word-forgotten", Some(TWO_SERVERS), None);
+    h.run(&h.absent(), &h.none());
+    h.owner(&["old-box", "retired", "--reason", "Switched off in October"]);
+    put(
+        &h.home,
+        ".ssh/config",
+        "Host web-1\n    HostName 203.0.113.5\n",
+    );
+    h.run(&h.absent(), &h.none());
+    assert!(h.owner(&[]).contains("  old-box  retired"));
+
+    h.owner(&["old-box", "withdraw"]);
+    assert_eq!(
+        rows(&h.store(), OWNER_WORDS),
+        ["machine:old-box|retired|Switched off in October|1"]
+    );
+}
+
+#[test]
+fn an_unknown_or_ambiguous_name_is_an_error_that_changes_nothing() {
+    // Nothing is guessed: a statement about the wrong machine would keep a live server out
+    // of the sweep and out of the count.
+    let h = Home::new("word-errors", None, None);
+    let servers = h.dir.0.join("servers");
+    put(&servers, "a.txt", &with_identity("ubuntu", "203.0.113.10"));
+    put(&servers, "b.txt", &with_identity("ubuntu", "203.0.113.20"));
+    h.run(&servers, &h.none());
+    h.servers();
+    let state = || {
+        (
+            rows(&h.store(), "SELECT * FROM journal"),
+            rows(&h.store(), "SELECT * FROM owner_statement"),
+            std::fs::read(h.sweep().join("sweep.sh")).unwrap(),
+        )
+    };
+    let before = state();
+
+    for (words, says) in [
+        (
+            &["ubuntu", "retired", "--reason", "Gone"][..],
+            "ubuntu fits 2 machines that are not known to be one: a; b.",
+        ),
+        (
+            &["db-9", "retired", "--reason", "Gone"],
+            "the store knows no machine as db-9",
+        ),
+        (&["a", "retired"], "a statement needs a reason"),
+        (
+            &["a", "retired", "--reason", "  "],
+            "a statement needs a reason",
+        ),
+        (&["a", "withdraw"], "no statement stands about a"),
+        (
+            &["a", "withdraw", "--reason", "Back"],
+            "a withdrawal takes no reason",
+        ),
+        (&["a", "gone", "--reason", "Gone"], "not gone"),
+    ] {
+        let out = h.owner_out(words);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{words:?}");
+        assert!(stderr.contains(says), "{words:?}: {stderr}");
+        assert!(
+            state() == before,
+            "{words:?} changed the store or the sweep"
+        );
+    }
+    // Named by its id, the machine is one.
+    h.owner(&["machine:a", "retired", "--reason", "Gone"]);
+    assert_eq!(rows(&h.store(), OWNER_WORDS), ["machine:a|retired|Gone|0"]);
+}
+
+#[test]
+fn a_store_of_the_current_format_takes_the_first_statement_without_losing_its_journal() {
+    // The journal is the one thing raw input cannot rebuild. The owner's store, made before
+    // the owner's word, must take it as it is.
+    let h = Home::new(
+        "word-first",
+        Some("Host web-1\n    HostName 203.0.113.5\n"),
+        None,
+    );
+    h.run(&h.absent(), &h.none());
+    h.run(&h.absent(), &h.none());
+    Connection::open(h.store())
+        .unwrap()
+        .execute_batch(
+            "DROP TABLE owner_statement;
+             CREATE TABLE journal_before (
+                 seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL,
+                 run_id TEXT NOT NULL,
+                 entry TEXT NOT NULL CHECK (entry IN ('run_started', 'added', 'changed',
+                                                      'removed', 'report', 'run_finished')),
+                 reader TEXT, scope TEXT, kind TEXT, subject TEXT, predicate TEXT,
+                 old_value TEXT, new_value TEXT, text TEXT);
+             INSERT INTO journal_before SELECT * FROM journal;
+             DROP TABLE journal;
+             ALTER TABLE journal_before RENAME TO journal;
+             CREATE TRIGGER journal_no_update BEFORE UPDATE ON journal
+                 BEGIN SELECT RAISE(ABORT, 'journal is append-only'); END;
+             CREATE TRIGGER journal_no_delete BEFORE DELETE ON journal
+                 BEGIN SELECT RAISE(ABORT, 'journal is append-only'); END;",
+        )
+        .unwrap();
+    let all = "SELECT * FROM journal ORDER BY seq";
+    let before = rows(&h.store(), all);
+    // As it is, the store is read by the view and by `soc servers`.
+    view(&h.store());
+    h.servers();
+    assert_eq!(rows(&h.store(), all), before);
+
+    h.owner(&["web-1", "retired", "--reason", "Moved to a new host"]);
+    h.run(&h.absent(), &h.none());
+
+    let after = rows(&h.store(), all);
+    assert_eq!(after[..before.len()], before[..]);
+    assert!(
+        after[before.len()].contains("|owner_said|"),
+        "{}",
+        after[before.len()]
+    );
+    let seqs: Vec<i64> = rows(&h.store(), "SELECT seq FROM journal ORDER BY seq")
+        .iter()
+        .map(|s| s.parse().unwrap())
+        .collect();
+    assert!(seqs.windows(2).all(|w| w[1] == w[0] + 1), "{seqs:?}");
+    assert_eq!(
+        rows(
+            &h.store(),
+            "SELECT value FROM meta WHERE key = 'format_version'"
+        ),
+        ["4"]
+    );
+    let conn = Connection::open(h.store()).unwrap();
+    assert!(conn.execute("DELETE FROM journal", []).is_err());
+    assert!(conn.execute("UPDATE journal SET text = ''", []).is_err());
+}
+
+#[test]
+fn the_owners_reason_is_printed_and_shown_escaped_and_kept_as_typed() {
+    // The reason is free text, and pasted text can carry direction controls that reorder
+    // or hide what is around it.
+    let h = Home::new("word-hidden", Some(TWO_SERVERS), None);
+    h.run(&h.absent(), &h.none());
+    let reason = "gone\u{202E}enog";
+    let said = h.owner(&["old-box", "retired", "--reason", reason]);
+    let listing = h.owner(&[]);
+    let printed = h.servers();
+    let page = view(&h.store());
+
+    for (what, text) in [
+        ("soc owner", &said),
+        ("soc owner list", &listing),
+        ("soc servers", &printed),
+        ("the view", &page),
+    ] {
+        assert!(
+            text.contains("gone\\u{202e}enog") && !text.contains('\u{202E}'),
+            "{what}: {text}"
+        );
+    }
+    assert_eq!(
+        rows(&h.store(), "SELECT reason FROM owner_statement"),
+        [reason]
+    );
+}

@@ -587,9 +587,23 @@ fn machines(conn: &Connection, out: &mut String, latest: &[Latest], now: i64) ->
         .iter()
         .map(|g| Machine::new(g, &estate, &traces_of, read))
         .collect();
+    // The owner's word covers a machine under every name. A statement nothing contradicts
+    // sets the machine aside; a contradicted one leaves it where it was, with an alert.
+    let standing = crate::owner::standing(conn)?;
+    let word_of = |m: &Machine| {
+        standing
+            .iter()
+            .find(|s| m.members.iter().any(|id| s.covers(id)))
+    };
+    let set_aside: Vec<&crate::owner::Standing> =
+        standing.iter().filter(|s| s.seen.is_none()).collect();
     let (seen, never): (Vec<&Machine>, Vec<&Machine>) = all
         .iter()
         .partition(|m| m.members.iter().any(|id| read(id)));
+    let never: Vec<&Machine> = never
+        .into_iter()
+        .filter(|m| word_of(m).is_none_or(|w| w.seen.is_some()))
+        .collect();
     // Another user's device known only from the tailnet is not a server never read.
     let devices = crate::store::other_users_devices(conn)?;
     let (theirs, never): (Vec<&Machine>, Vec<&Machine>) = never
@@ -617,6 +631,13 @@ fn machines(conn: &Connection, out: &mut String, latest: &[Latest], now: i64) ->
     if !never.is_empty() {
         write!(out, "; {} known and never read", never.len())?;
     }
+    if !set_aside.is_empty() {
+        write!(
+            out,
+            "; {} retired or disowned by the owner",
+            set_aside.len()
+        )?;
+    }
     if !theirs.is_empty() {
         write!(
             out,
@@ -629,11 +650,29 @@ fn machines(conn: &Connection, out: &mut String, latest: &[Latest], now: i64) ->
         )?;
     }
     out.push_str(". Open one to see what is on it.</p>\n");
+    for s in standing.iter().filter(|s| s.seen.is_some()) {
+        writeln!(
+            out,
+            "<p class=\"alert\">The owner's word is contradicted: <span class=\"mono\">{}</span>, {}, was seen alive after it: {}. It is counted again and still not offered for the sweep.</p>",
+            esc(s.name()),
+            esc(&s.summary()),
+            esc(&s.contradiction().unwrap_or_default())
+        )?;
+    }
 
     let mut seen = seen;
     seen.sort_by(|a, b| a.label.cmp(&b.label));
     for machine in seen {
-        machine_block(out, machine, &estate, &coverage_of, unread(machine), now)?;
+        let word = word_of(machine);
+        machine_block(
+            out,
+            machine,
+            &estate,
+            &coverage_of,
+            unread(machine),
+            word,
+            now,
+        )?;
     }
 
     if !never.is_empty() {
@@ -651,6 +690,26 @@ fn machines(conn: &Connection, out: &mut String, latest: &[Latest], now: i64) ->
             td(out, "mono", &m.label)?;
             td(out, "mono", &m.others.join(", "))?;
             td(out, "", &m.traces.join(", "))?;
+            out.push_str("</tr>\n");
+        }
+        out.push_str("</tbody></table></div>\n</div>\n</details>\n");
+    }
+
+    if !set_aside.is_empty() {
+        write!(
+            out,
+            "<details class=\"machine\">\n<summary><strong>Retired or disowned by the owner</strong> <span class=\"muted\">· {} · the owner's word, and nothing seen alive since; not counted as servers, never offered for the sweep, and what was read on them is kept</span></summary>\n<div class=\"inner\">\n",
+            plural(set_aside.len(), "machine", "machines")
+        )?;
+        out.push_str("<div class=\"scroll\"><table class=\"dense\">\n");
+        thead(out, &["Name", "Said", "Since", "Reason", "Also known as"]);
+        for s in set_aside {
+            out.push_str("<tr>");
+            td(out, "mono", s.name())?;
+            td(out, "", &s.word.said)?;
+            td(out, "nowrap", &utc(s.word.made_at))?;
+            td(out, "", &s.word.reason)?;
+            td(out, "mono", &s.names[1..].join(", "))?;
             out.push_str("</tr>\n");
         }
         out.push_str("</tbody></table></div>\n</div>\n</details>\n");
@@ -683,6 +742,7 @@ fn machine_block<'a>(
     estate: &Estate,
     coverage_of: &dyn Fn(&str) -> Vec<&'a Latest>,
     not_read: bool,
+    word: Option<&crate::owner::Standing>,
     now: i64,
 ) -> Out {
     let members = machine.members;
@@ -700,6 +760,17 @@ fn machine_block<'a>(
     write!(out, "<strong>{}</strong>", esc(&machine.label))?;
     if not_read {
         out.push_str(" <span class=\"badge bad\">could not be read</span>");
+    }
+    match word {
+        Some(w) if w.seen.is_some() => {
+            out.push_str(" <span class=\"badge bad\">the owner's word is contradicted</span>");
+        }
+        Some(w) => write!(
+            out,
+            " <span class=\"badge good\">{}</span>",
+            esc(&w.summary())
+        )?,
+        None => {}
     }
     let os: BTreeSet<String> = members
         .iter()
@@ -884,7 +955,8 @@ fn changes(conn: &Connection, out: &mut String) -> Out {
         "SELECT run_id, MIN(at),
                 MAX(entry = 'run_finished'),
                 MAX(CASE WHEN entry = 'report' THEN text END)
-         FROM journal GROUP BY run_id ORDER BY MAX(seq) DESC LIMIT ?1",
+         FROM journal WHERE entry NOT IN ('owner_said', 'owner_withdrew')
+         GROUP BY run_id ORDER BY MAX(seq) DESC LIMIT ?1",
     )?;
     let runs: Vec<(String, i64, bool, Option<String>)> = runs_stmt
         .query_map([RUNS_SHOWN], |r| {

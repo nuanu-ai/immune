@@ -1,6 +1,7 @@
 //! soc: read what is installed, keep it as facts, report what changed. One line.
 //! `soc view` writes a page that shows what is in the store. `soc servers` shows which
 //! servers this machine knows and writes the read-only sweep for the owner to run.
+//! `soc owner` keeps the owner's word: that a machine is retired or not theirs.
 //!
 //! The program never connects to a server and never runs ssh.
 
@@ -10,6 +11,7 @@ mod checkouts;
 mod known_hosts;
 mod lifecycle;
 mod lockfiles;
+mod owner;
 mod resolver;
 mod servers;
 mod ssh_config;
@@ -32,12 +34,15 @@ const USAGE: &str = "usage: soc run [--store <path>] [--machine-name <name>] [--
                [--brew-input <file>] [--servers-input <dir>] [--checkouts-root <dir>]
                [--sessions-root <dir>] [--tailscale <path>]
        soc servers [--store <path>] [--tailscale <path>]
-       soc view [--store <path>] [--no-open]";
+       soc view [--store <path>] [--no-open]
+       soc owner [<name> retired|not-mine --reason <text> | <name> withdraw]
+                 [--store <path>] [--tailscale <path>]";
 
 enum Cmd {
     Run(Args),
     Servers(ServersArgs),
     View(ViewArgs),
+    Owner(OwnerArgs),
 }
 
 struct Args {
@@ -64,6 +69,18 @@ struct ServersArgs {
     store: PathBuf,
     home: PathBuf,
     tailscale: Option<PathBuf>,
+}
+
+/// `soc owner`: without a statement, lists those that stand. Making or withdrawing one
+/// writes the sweep script again, so it needs what `soc servers` needs.
+struct OwnerArgs {
+    servers: ServersArgs,
+    act: Option<(String, Act)>,
+}
+
+enum Act {
+    Say(&'static str, String),
+    Withdraw,
 }
 
 struct ViewArgs {
@@ -145,6 +162,52 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
             let store = store.map_or_else(default_store, Ok)?;
             Ok(Cmd::View(ViewArgs { store, open }))
         }
+        "owner" => {
+            let (mut tailscale, mut reason, mut words) = (None, None, Vec::new());
+            while let Some(arg) = it.next() {
+                match arg.as_str() {
+                    "--store" => store = Some(value(&mut it, &arg)?.into()),
+                    "--tailscale" => tailscale = Some(value(&mut it, &arg)?.into()),
+                    "--reason" => reason = Some(value(&mut it, &arg)?),
+                    _ if arg.starts_with("--") => {
+                        return Err(format!("unexpected argument: {arg}"));
+                    }
+                    _ => words.push(arg),
+                }
+            }
+            let act = match (words.as_slice(), reason) {
+                ([], None) => None,
+                ([name, verb], None) if verb == "withdraw" => Some((name.clone(), Act::Withdraw)),
+                ([_, verb], Some(_)) if verb == "withdraw" => {
+                    return Err("a withdrawal takes no reason".to_string());
+                }
+                ([name, verb], reason) => {
+                    let said = match verb.as_str() {
+                        "retired" => owner::RETIRED,
+                        "not-mine" => owner::NOT_MINE,
+                        other => {
+                            return Err(format!(
+                                "the owner can say retired or not-mine, or withdraw, not {other}"
+                            ));
+                        }
+                    };
+                    let reason = reason.unwrap_or_default();
+                    if reason.trim().is_empty() {
+                        return Err("a statement needs a reason: --reason <text>".to_string());
+                    }
+                    Some((name.clone(), Act::Say(said, reason)))
+                }
+                _ => return Err("soc owner takes a name and what the owner says".to_string()),
+            };
+            Ok(Cmd::Owner(OwnerArgs {
+                servers: ServersArgs {
+                    store: store.map_or_else(default_store, Ok)?,
+                    home: user_home()?,
+                    tailscale,
+                },
+                act,
+            }))
+        }
         _ => Err(format!("unknown command: {cmd}")),
     }
 }
@@ -184,6 +247,7 @@ fn main() -> ExitCode {
         Cmd::Run(args) => run(&args).map(|line| say(&line)),
         Cmd::Servers(args) => servers_cmd(&args),
         Cmd::View(args) => view(&args),
+        Cmd::Owner(args) => owner_cmd(&args),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -246,11 +310,36 @@ struct ServerRow {
 /// Where `soc servers` says a machine known only from its sweep file is known from.
 const SWEEP_FILE: &str = "sweep file";
 
-/// Finds the servers this machine knows, prints them, and writes the probe and the sweep
-/// script next to the store. Reads local files only; never writes to the store and never
-/// runs ssh.
-fn servers_cmd(args: &ServersArgs) -> Result<(), Box<dyn Error>> {
+/// What `soc servers` finds: the servers, the devices that are not servers, the machines
+/// the owner set aside, and the sweep to write.
+struct Survey {
+    dir: PathBuf,
+    rows: Vec<ServerRow>,
+    /// Other users' devices: the name and what else it is known as.
+    theirs: Vec<Vec<String>>,
+    /// Every statement that stands. Those not contradicted are not servers.
+    standing: Vec<owner::Standing>,
+    said: Vec<String>,
+    third_party: usize,
+    several_names: usize,
+    /// Each machine the sweep visits, as its aliases.
+    machines: Vec<Vec<String>>,
+}
+
+/// The owner's statements that stand, from the store if there is one.
+fn owner_word(store: &Path) -> Result<Vec<owner::Standing>, Box<dyn Error>> {
+    if !store.is_file() {
+        return Ok(Vec::new());
+    }
+    let conn = store::open_read_only(store)?;
+    Ok(owner::standing(&conn)?)
+}
+
+/// Finds the servers this machine knows from local files and the owner's word. Never writes
+/// and never runs ssh.
+fn survey(args: &ServersArgs) -> Result<Survey, Box<dyn Error>> {
     let dir = home(&args.store).join("sweep");
+    let standing = owner_word(&args.store)?;
     let traces = [
         (
             ssh_config::READER,
@@ -366,11 +455,16 @@ fn servers_cmd(args: &ServersArgs) -> Result<(), Box<dyn Error>> {
         .into_iter()
         .map(|l| (l.a, l.b))
         .collect();
+    // The owner's word covers a machine under every name: a group that holds any entity of
+    // the machine the statement names. One that is not contradicted is set aside.
+    let word_of = |group: &[String]| standing.iter().find(|s| group.iter().any(|m| s.covers(m)));
+    let set_aside = |group: &Vec<String>| word_of(group).is_some_and(|s| s.seen.is_none());
     // Another user's device known from the tailnet alone is not a server. Known from any
     // other trace as well, it is one the owner uses as a server.
     let (devices, groups): (Vec<Vec<String>>, Vec<Vec<String>>) =
         resolver::groups(traces_of.keys().cloned(), &pairs)
             .into_iter()
+            .filter(|g| !set_aside(g))
             .partition(|g| {
                 g.iter().all(|m| {
                     someone_elses.contains(m)
@@ -390,12 +484,21 @@ fn servers_cmd(args: &ServersArgs) -> Result<(), Box<dyn Error>> {
             .map(String::as_str)
             .filter(|a| members.contains(a))
             .collect();
+        // A machine seen alive after the owner's word is a server again, and still not
+        // visited: the owner said it is not theirs to visit.
+        let word = word_of(group);
         let offered: Vec<String> = with_alias
             .iter()
-            .filter(|a| sweep::not_offered(a, &skip).is_none())
+            .filter(|a| word.is_none() && sweep::not_offered(a, &skip).is_none())
             .map(|a| a.to_string())
             .collect();
-        let sweep = if let Some(first) = offered.first() {
+        let sweep = if let Some(w) = word {
+            format!(
+                "not offered: {}; seen alive after it: {}",
+                w.summary(),
+                w.contradiction().unwrap_or_default()
+            )
+        } else if let Some(first) = offered.first() {
             let rest: Vec<String> = with_alias
                 .iter()
                 .filter(|a| *a != first)
@@ -450,8 +553,45 @@ fn servers_cmd(args: &ServersArgs) -> Result<(), Box<dyn Error>> {
     }
     rows.sort_by(|a, b| a.name.cmp(&b.name));
 
+    // Groups come sorted by their first member, which names the device.
+    let theirs: Vec<Vec<String>> = devices
+        .iter()
+        .map(|group| {
+            let name = group[0].strip_prefix("machine:").unwrap_or(&group[0]);
+            let mut others: BTreeSet<&String> = group
+                .iter()
+                .flat_map(|m| names_of.get(m).into_iter().flatten())
+                .collect();
+            others.retain(|o| *o != name);
+            let others: Vec<&str> = others.into_iter().map(String::as_str).collect();
+            vec![name.to_string(), others.join(", ")]
+        })
+        .collect();
+    let machines: Vec<Vec<String>> = rows
+        .iter()
+        .filter(|r| !r.offered.is_empty())
+        .map(|r| r.offered.clone())
+        .collect();
+    let several_names = groups.iter().filter(|g| g.len() > 1).count();
+    Ok(Survey {
+        dir,
+        rows,
+        theirs,
+        standing,
+        said,
+        third_party,
+        several_names,
+        machines,
+    })
+}
+
+/// Prints the servers this machine knows, and writes the probe and the sweep script next
+/// to the store. Reads local files and the store; never writes to the store and never runs
+/// ssh.
+fn servers_cmd(args: &ServersArgs) -> Result<(), Box<dyn Error>> {
+    let s = survey(args)?;
     let (offered, rest): (Vec<&ServerRow>, Vec<&ServerRow>) =
-        rows.iter().partition(|r| !r.offered.is_empty());
+        s.rows.iter().partition(|r| !r.offered.is_empty());
     let table = |title: String, rows: &[&ServerRow]| {
         say(&title);
         let cells: Vec<Vec<String>> = rows
@@ -492,43 +632,40 @@ fn servers_cmd(args: &ServersArgs) -> Result<(), Box<dyn Error>> {
         ),
         &rest,
     );
+    let set_aside: Vec<&owner::Standing> = s.standing.iter().filter(|w| w.seen.is_none()).collect();
+    if !set_aside.is_empty() {
+        say(&format!(
+            "Retired or disowned by the owner, not counted as servers: {}",
+            things(set_aside.len() as i64, "machine", "machines")
+        ));
+        print_table(&WORD_HEAD, &word_rows(&set_aside));
+        println!();
+    }
     // Shown with a count, so that nothing the tailnet holds disappears silently.
-    // Groups come sorted by their first member, which names the device.
-    let theirs: Vec<Vec<String>> = devices
-        .iter()
-        .map(|group| {
-            let name = group[0].strip_prefix("machine:").unwrap_or(&group[0]);
-            let mut others: BTreeSet<&String> = group
-                .iter()
-                .flat_map(|m| names_of.get(m).into_iter().flatten())
-                .collect();
-            others.retain(|o| *o != name);
-            let others: Vec<&str> = others.into_iter().map(String::as_str).collect();
-            vec![name.to_string(), others.join(", ")]
-        })
-        .collect();
     say(&format!(
         "Other users' devices on the tailnet, not counted as servers: {}",
-        things(theirs.len() as i64, "device", "devices")
+        things(s.theirs.len() as i64, "device", "devices")
     ));
-    print_table(&["Device", "Also known as"], &theirs);
+    print_table(&["Device", "Also known as"], &s.theirs);
     println!();
 
-    let machines: Vec<Vec<String>> = offered.iter().map(|r| r.offered.clone()).collect();
-    sweep::write(&dir, &machines)?;
-    for line in &said {
+    sweep::write(&s.dir, &s.machines)?;
+    for line in &s.said {
         say(&format!("{}{}.", line[..1].to_uppercase(), &line[1..]));
     }
     say(&format!(
         "{} known, {} of them under several names, {} offered for the sweep, {} left out as code hosting, {} as other users' devices, {} known and never read.",
-        things(rows.len() as i64, "server", "servers"),
-        groups.iter().filter(|g| g.len() > 1).count(),
+        things(s.rows.len() as i64, "server", "servers"),
+        s.several_names,
         offered.len(),
-        third_party,
-        theirs.len(),
-        rows.iter().filter(|r| !r.read).count()
+        s.third_party,
+        s.theirs.len(),
+        s.rows.iter().filter(|r| !r.read).count()
     ));
-    let spare: usize = machines.iter().map(|m| m.len() - 1).sum();
+    if let Some(line) = word_line(&s.standing) {
+        say(&line);
+    }
+    let spare: usize = s.machines.iter().map(|m| m.len() - 1).sum();
     if spare > 0 {
         say(&format!(
             "The sweep visits each offered server once, through one alias; {} not visited.",
@@ -541,15 +678,181 @@ fn servers_cmd(args: &ServersArgs) -> Result<(), Box<dyn Error>> {
     }
     say(&format!(
         "Wrote probe.sh and sweep.sh to {}. Nothing was run.",
-        dir.display()
+        s.dir.display()
     ));
     say("To read the offered servers, run:");
-    say(&format!("  sh {}", sweep::quoted(&dir.join("sweep.sh"))));
+    say(&format!("  sh {}", sweep::quoted(&s.dir.join("sweep.sh"))));
+    say("To say a server is retired or not yours, run `soc owner <name> retired --reason <text>`.");
     say(&format!(
-        "To leave a server out, add its alias to {}, one per line. Then run `soc run`.",
-        dir.join(sweep::SKIP).display()
+        "To choose which alias the sweep uses, add the others to {}, one per line. Then run `soc run`.",
+        s.dir.join(sweep::SKIP).display()
     ));
     Ok(())
+}
+
+/// The columns of a statement as `soc servers` and `soc owner` print it.
+const WORD_HEAD: [&str; 5] = ["Machine", "Said", "Since", "Reason", "Also known as"];
+
+fn word_rows(words: &[&owner::Standing]) -> Vec<Vec<String>> {
+    words
+        .iter()
+        .map(|w| {
+            vec![
+                w.name().to_string(),
+                w.word.said.clone(),
+                view::utc(w.word.made_at),
+                w.word.reason.clone(),
+                w.names[1..].join(", "),
+            ]
+        })
+        .collect()
+}
+
+/// How many machines the owner set aside, and which of them were seen alive after it.
+fn word_line(standing: &[owner::Standing]) -> Option<String> {
+    if standing.is_empty() {
+        return None;
+    }
+    let seen: Vec<&str> = standing
+        .iter()
+        .filter(|s| s.seen.is_some())
+        .map(|s| s.name())
+        .collect();
+    let mut line = format!(
+        "The owner's word: {} retired or disowned",
+        things(standing.len() as i64, "machine", "machines")
+    );
+    if !seen.is_empty() {
+        line.push_str(&format!(
+            "; seen alive after it and counted again: {}",
+            seen.join(", ")
+        ));
+    }
+    line.push('.');
+    Some(line)
+}
+
+/// Makes or withdraws a statement, or lists those that stand.
+fn owner_cmd(args: &OwnerArgs) -> Result<(), Box<dyn Error>> {
+    let store_path = &args.servers.store;
+    if !store_path.is_file() {
+        return Err(format!("no store at {}; run `soc run` first", store_path.display()).into());
+    }
+    let Some((name, act)) = &args.act else {
+        let conn = store::open_read_only(store_path)?;
+        let standing = owner::standing(&conn)?;
+        say(&format!(
+            "The owner's word: {}.",
+            things(
+                standing.len() as i64,
+                "statement stands",
+                "statements stand"
+            )
+        ));
+        let mut rows = word_rows(&standing.iter().collect::<Vec<_>>());
+        for (row, s) in rows.iter_mut().zip(&standing) {
+            row.push(
+                s.contradiction()
+                    .map_or("nothing".to_string(), |c| format!("contradicted: {c}")),
+            );
+        }
+        let mut head = WORD_HEAD.to_vec();
+        head.push("Seen alive after it");
+        print_table(&head, &rows);
+        let withdrawn = owner::withdrawn(&conn)?;
+        if withdrawn > 0 {
+            say(&format!(
+                "{} withdrawn and kept.",
+                things(withdrawn, "statement was", "statements were")
+            ));
+        }
+        return Ok(());
+    };
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?;
+    let at = now.as_secs() as i64;
+    let run_id = format!("owner-{}-{:09}", now.as_secs(), now.subsec_nanos());
+    let mut conn = store::open(store_path)?;
+    let (entity, machine) = match owner::find(&conn, name)? {
+        owner::Found::One(entity, machine) => (entity, machine),
+        owner::Found::Unknown => {
+            return Err(format!("the store knows no machine as {name}; nothing was said").into());
+        }
+        owner::Found::Several(groups) => {
+            let list: Vec<String> = groups
+                .iter()
+                .map(|g| {
+                    let names: Vec<&str> = g.iter().map(|m| owner::bare(m)).collect();
+                    names.join(" = ")
+                })
+                .collect();
+            return Err(format!(
+                "{name} fits {} machines that are not known to be one: {}. Name one of them; nothing was said",
+                list.len(),
+                list.join("; ")
+            )
+            .into());
+        }
+    };
+    let names: Vec<&str> = machine.iter().map(|m| owner::bare(m)).collect();
+    match act {
+        Act::Say(said, reason) => {
+            let replaced = owner::say(&mut conn, &entity, &machine, said, reason, at, &run_id)?;
+            say(&format!(
+                "Said: {} is {said}, {}: {reason}",
+                owner::bare(&entity),
+                view::utc(at)
+            ));
+            if replaced > 0 {
+                say("It replaces the statement that stood about the same machine, which is kept.");
+            }
+        }
+        Act::Withdraw => {
+            let withdrawn = owner::withdraw(&mut conn, &machine, at, &run_id)?;
+            if withdrawn.is_empty() {
+                return Err(
+                    format!("no statement stands about {name}; nothing was withdrawn").into(),
+                );
+            }
+            for (entity, said) in withdrawn {
+                say(&format!(
+                    "Withdrawn: the statement that {} is {said} no longer stands, and is kept.",
+                    owner::bare(&entity)
+                ));
+            }
+        }
+    }
+    say(&format!(
+        "It covers the machine under every name: {}.",
+        names.join(", ")
+    ));
+    drop(conn);
+    let n =
+        rewrite_sweep(&args.servers).map_err(|e| format!("the owner's word was kept, but {e}"))?;
+    say(&format!(
+        "The sweep script was written again: it visits {}.",
+        things(n as i64, "server", "servers")
+    ));
+    Ok(())
+}
+
+/// Writes the sweep script again after the owner's word changed, the way `soc servers`
+/// writes it, so that no script on disk visits a machine the owner set aside. A script that
+/// cannot be written again is removed. Returns how many servers it visits.
+fn rewrite_sweep(args: &ServersArgs) -> Result<usize, Box<dyn Error>> {
+    let written = survey(args).and_then(|s| {
+        sweep::write(&s.dir, &s.machines)?;
+        Ok(s.machines.len())
+    });
+    written.map_err(|e| {
+        let script = home(&args.store).join("sweep").join("sweep.sh");
+        let _ = std::fs::remove_file(&script);
+        let left = if script.exists() {
+            format!("delete {} before you run it", script.display())
+        } else {
+            "no sweep script is left; run `soc servers`".to_string()
+        };
+        format!("the sweep script could not be written again ({e}); {left}").into()
+    })
 }
 
 /// The sweep file of a server under any of its names: when it was taken, or that it is
@@ -1129,11 +1432,16 @@ fn resolve(run: &mut Run) -> Result<(), Box<dyn Error>> {
 }
 
 /// Servers in the store, each counted once however many names it has. Another user's
-/// device known only from the tailnet is not one.
+/// device known only from the tailnet is not one, nor is a machine the owner retired or
+/// disowned, unless it was seen alive after the statement.
 struct ServerCounts {
     known: usize,
     offered: usize,
     read: usize,
+    /// Machines under a statement of the owner's that stands.
+    set_aside: usize,
+    /// Those of them seen alive after the statement.
+    seen: Vec<String>,
 }
 
 fn server_counts(
@@ -1148,17 +1456,28 @@ fn server_counts(
             && sweep::not_offered(id.strip_prefix("machine:").unwrap_or(id), skip).is_none()
     };
     let devices = store::other_users_devices(conn)?;
+    let standing = owner::standing(conn)?;
     let mut counts = ServerCounts {
         known: 0,
         offered: 0,
         read: 0,
+        set_aside: standing.len(),
+        seen: standing
+            .iter()
+            .filter(|s| s.seen.is_some())
+            .map(|s| s.name().to_string())
+            .collect(),
     };
     for group in store::machine_groups(conn)? {
         if group.iter().any(|m| m == machine) || store::only_someone_elses(&group, &devices) {
             continue;
         }
+        let word = standing.iter().find(|s| group.iter().any(|m| s.covers(m)));
+        if word.is_some_and(|w| w.seen.is_none()) {
+            continue;
+        }
         counts.known += 1;
-        counts.offered += usize::from(group.iter().any(offered));
+        counts.offered += usize::from(word.is_none() && group.iter().any(offered));
         counts.read += usize::from(group.iter().any(|m| read.contains(m)));
     }
     Ok(counts)
@@ -1211,13 +1530,26 @@ fn report(run: &Run, t: &store::Totals, s: &ServerCounts, first_run: bool) -> St
         things(t.components, "component", "components"),
     );
     if s.known == 0 {
-        line.push_str(" No servers known.");
+        line.push_str(" No servers known");
     } else {
         line.push_str(&format!(
-            " {} known, {} offered for the sweep, {} read.",
+            " {} known, {} offered for the sweep, {} read",
             things(s.known as i64, "server", "servers"),
             grouped(s.offered as i64),
             grouped(s.read as i64)
+        ));
+    }
+    if s.set_aside > 0 {
+        line.push_str(&format!(
+            "; {} retired or disowned by the owner",
+            grouped(s.set_aside as i64)
+        ));
+    }
+    line.push('.');
+    if !s.seen.is_empty() {
+        line.push_str(&format!(
+            " Seen alive after the owner's word: {}.",
+            s.seen.join(", ")
         ));
     }
     let mut gaps = Vec::new();
