@@ -5,6 +5,11 @@ edition = "2024"
 publish = false
 
 [dependencies]
+# The ssh configuration reader expands `Include` with the system's glob(3) and matches
+# `Host` patterns with fnmatch(3), as OpenSSH does, instead of our own matcher. libc is
+# maintained by the Rust project, has no dependencies of its own and declares the
+# platform's structures, so no C layout is written by hand.
+libc = "0.2.191"
 rusqlite = { version = "0.41.1", default-features = false, features = ["bundled"] }
 # The lockfiles reader parses package-lock.json. JSON is too easy to get subtly wrong by
 # hand; serde_json is used through `Value` only, without derive.
