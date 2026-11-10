@@ -5,7 +5,7 @@
 //! before it enters the page. Names, versions, reasons and source references are
 //! partly written by an attacker and must never become markup.
 
-use rusqlite::Connection;
+use rusqlite::{Connection, params};
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt::Write;
@@ -25,6 +25,7 @@ pub fn page(conn: &Connection, store: &str, now: i64) -> Result<String, Box<dyn 
     let latest = latest_coverage(conn)?;
     coverage(conn, &mut out, &latest, now)?;
     machines(conn, &mut out, &latest, now)?;
+    threats(conn, &mut out, now)?;
     changes(conn, &mut out)?;
     retracted(conn, &mut out)?;
     vocabulary(conn, &mut out)?;
@@ -969,6 +970,183 @@ fn machine_body<'a>(
             names.join(", ")
         )?;
     }
+    Ok(())
+}
+
+/// The threat list: the catalogue's latest reading, its threats newest first with those new
+/// in that reading marked, and those that left it. No threat is judged against the estate.
+fn threats(conn: &Connection, out: &mut String, now: i64) -> Out {
+    out.push_str("<section id=\"threats\">\n<h2>Exploited vulnerabilities</h2>\n");
+    // A store made before the threat list has no tables for it until a run opens it.
+    let has_tables: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'feed_reading')",
+        [],
+        |r| r.get(0),
+    )?;
+    // The latest reading, and the latest one that read the catalogue.
+    type Reading = (
+        String,
+        String,
+        i64,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
+    let reading = |outcomes: &str| -> rusqlite::Result<Option<Reading>> {
+        if !has_tables {
+            return Ok(None);
+        }
+        conn.query_row(
+            &format!(
+                "SELECT run_id, outcome, at, reason, raw_path, sha256 FROM feed_reading
+                 WHERE source = ?1 AND outcome IN ({outcomes}) ORDER BY id DESC LIMIT 1"
+            ),
+            [crate::threats::SOURCE],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            },
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            e => Err(e),
+        })
+    };
+    let (latest, good) = (
+        reading("'read', 'unchanged', 'failed'")?,
+        reading("'read', 'unchanged'")?,
+    );
+    let Some((_, outcome, at, reason, _, _)) = latest else {
+        out.push_str("<p class=\"alert\">The catalogue of exploited vulnerabilities has never been read. Nothing is known about threats.</p>\n</section>\n");
+        return Ok(());
+    };
+    writeln!(
+        out,
+        "<p class=\"muted\">The CISA catalogue of known exploited vulnerabilities, read whole on every run. Latest reading {}: {}.</p>",
+        utc_age(at, now),
+        esc(&outcome)
+    )?;
+    if outcome == "failed" {
+        writeln!(
+            out,
+            "<p class=\"alert\">The latest reading of the catalogue failed: {}. What is new since {} is unknown.</p>",
+            esc(reason.as_deref().unwrap_or("no reason given")),
+            good.as_ref().map_or("then".to_string(), |g| utc(g.2))
+        )?;
+    }
+    // Threats new in the latest reading that read the catalogue are marked.
+    let mut new_in = String::new();
+    if let Some((run_id, _, at, _, raw_path, sha256)) = &good {
+        new_in = run_id.clone();
+        write!(out, "<p class=\"muted\">Last read {}", utc_age(*at, now))?;
+        if let Some(path) = raw_path {
+            write!(out, ", raw copy <span class=\"mono\">{}</span>", esc(path))?;
+        }
+        if let Some(hash) = sha256 {
+            write!(out, ", SHA-256 <span class=\"mono\">{}</span>", esc(hash))?;
+        }
+        out.push_str(".</p>\n");
+    }
+    out.push_str("<p class=\"alert\">None of these is matched against this estate yet: whether any of them affects it is unknown.</p>\n");
+
+    type Threat = (
+        String,
+        String,
+        String,
+        String,
+        String,
+        i64,
+        Option<i64>,
+        bool,
+    );
+    let list: Vec<Threat> = conn
+        .prepare(
+            "SELECT t.id, t.vendor, t.product, t.name, t.date_added, t.first_seen_at, t.gone_at,
+                    EXISTS (SELECT 1 FROM journal j WHERE j.entry = 'threat_added'
+                              AND j.run_id = ?2 AND j.reader = t.source AND j.subject = t.id)
+             FROM threat t WHERE t.source = ?1
+             ORDER BY t.date_added DESC, t.id DESC",
+        )?
+        .query_map(params![crate::threats::SOURCE, new_in], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+                r.get(7)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    let (gone, present): (Vec<&Threat>, Vec<&Threat>) = list.iter().partition(|t| t.6.is_some());
+    let new = present.iter().filter(|t| t.7).count();
+    let table = |out: &mut String, rows: &[&Threat], last: &str| -> Out {
+        out.push_str("<div class=\"scroll\"><table class=\"dense\">\n");
+        thead(
+            out,
+            &[
+                "CVE",
+                "Vendor",
+                "Product",
+                "Name",
+                "Added to the catalogue",
+                last,
+            ],
+        );
+        for (id, vendor, product, name, added, seen, left, is_new) in rows.iter().copied() {
+            out.push_str(if *is_new {
+                "<tr class=\"added\">"
+            } else {
+                "<tr>"
+            });
+            write!(out, "<td class=\"mono\">{}", esc(id))?;
+            if *is_new {
+                out.push_str(" <span class=\"badge bad\">new</span>");
+            }
+            out.push_str("</td>");
+            td(out, "", vendor)?;
+            td(out, "", product)?;
+            td(out, "", name)?;
+            td(out, "nowrap", added)?;
+            td(out, "nowrap", &utc(left.unwrap_or(*seen)))?;
+            out.push_str("</tr>\n");
+        }
+        out.push_str("</tbody></table></div>\n");
+        Ok(())
+    };
+    write!(
+        out,
+        "<details{}>\n<summary>{} in the catalogue, newest first; {} new when it was last read</summary>\n",
+        if new > 0 { " open" } else { "" },
+        plural(
+            present.len(),
+            "exploited vulnerability",
+            "exploited vulnerabilities"
+        ),
+        new
+    )?;
+    table(out, &present, "First seen here")?;
+    out.push_str("</details>\n");
+    if !gone.is_empty() {
+        write!(
+            out,
+            "<details>\n<summary>{} left the catalogue and {} kept</summary>\n",
+            plural(gone.len(), "threat", "threats"),
+            if gone.len() == 1 { "is" } else { "are" }
+        )?;
+        table(out, &gone, "Left the catalogue")?;
+        out.push_str("</details>\n");
+    }
+    out.push_str("</section>\n");
     Ok(())
 }
 

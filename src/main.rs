@@ -3,7 +3,8 @@
 //! servers this machine knows and writes the read-only sweep for the owner to run.
 //! `soc owner` keeps the owner's word: that a machine is retired or not theirs.
 //!
-//! The program never connects to a server and never runs ssh.
+//! The program never connects to a server and never runs ssh. Its one request to the
+//! network is the threat list, fetched whole with the system curl.
 
 mod agent_folders;
 mod brew;
@@ -14,10 +15,12 @@ mod lockfiles;
 mod owner;
 mod resolver;
 mod servers;
+mod sha256;
 mod ssh_config;
 mod store;
 mod sweep;
 mod tailnet;
+mod threats;
 mod traces;
 mod view;
 
@@ -33,6 +36,7 @@ const STORE_FOLDER: &str = "Library/Application Support/personal-soc";
 const USAGE: &str = "usage: soc run [--store <path>] [--machine-name <name>] [--brew <path>]
                [--brew-input <file>] [--servers-input <dir>] [--checkouts-root <dir>]
                [--sessions-root <dir>] [--tailscale <path>]
+               [--threats-input <file>] [--curl <path>]
        soc servers [--store <path>] [--tailscale <path>]
        soc view [--store <path>] [--no-open]
        soc owner [<name> retired|not-mine --reason <text> | <name> withdraw]
@@ -63,6 +67,10 @@ struct Args {
     sessions_root: Option<PathBuf>,
     /// The one place to look for tailscale instead of the usual ones.
     tailscale: Option<PathBuf>,
+    /// A saved copy of the threat catalogue to read instead of fetching it.
+    threats_input: Option<PathBuf>,
+    /// The curl to fetch the catalogue with instead of the system's.
+    curl: Option<PathBuf>,
 }
 
 struct ServersArgs {
@@ -106,7 +114,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
         "run" => {
             let (mut machine, mut brew, mut brew_input) = (None, None, None);
             let (mut servers_input, mut checkouts_root, mut tailscale) = (None, None, None);
-            let mut sessions_root = None;
+            let (mut sessions_root, mut threats_input, mut curl) = (None, None, None);
             while let Some(arg) = it.next() {
                 match arg.as_str() {
                     "--tailscale" => tailscale = Some(value(&mut it, &arg)?.into()),
@@ -117,6 +125,8 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
                     "--servers-input" => servers_input = Some(value(&mut it, &arg)?.into()),
                     "--checkouts-root" => checkouts_root = Some(value(&mut it, &arg)?.into()),
                     "--sessions-root" => sessions_root = Some(value(&mut it, &arg)?.into()),
+                    "--threats-input" => threats_input = Some(value(&mut it, &arg)?.into()),
+                    "--curl" => curl = Some(value(&mut it, &arg)?.into()),
                     _ => return Err(format!("unexpected argument: {arg}")),
                 }
             }
@@ -133,6 +143,8 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
                 sessions_root,
                 home: user_home()?,
                 tailscale,
+                threats_input,
+                curl,
             }))
         }
         "servers" => {
@@ -969,10 +981,11 @@ fn run(args: &Args) -> Result<String, Box<dyn Error>> {
     }
     read_traces(&mut run, args)?;
     resolve(&mut run)?;
+    let catalogue = read_threats(&run, args)?;
 
     let totals = store::totals(&tx, &run_id)?;
     let counts = server_counts(&tx, &machine, &sweep::skip_list(&home.join("sweep")))?;
-    let line = report(&run, &totals, &counts, first_run);
+    let line = report(&run, &totals, &counts, first_run, &catalogue);
     store::journal_note(&tx, at, &run_id, "report", &line)?;
     store::journal_note(&tx, at, &run_id, "run_finished", "")?;
     tx.commit()?;
@@ -1568,9 +1581,150 @@ fn read_lockfiles(run: &mut Run, found: &[checkouts::Checkout]) -> Result<(), Bo
     Ok(())
 }
 
+/// What this run learned from the threat catalogue.
+enum Catalogue {
+    /// Read whole: how many entries it holds, how many are new and how many left it.
+    Read {
+        total: usize,
+        new: usize,
+        gone: usize,
+        first: bool,
+    },
+    /// Not changed since the last reading.
+    Unchanged { total: usize },
+    /// Not read, and when it was last read, with how many entries it held then.
+    Failed {
+        reason: String,
+        last: Option<(i64, usize)>,
+    },
+}
+
+/// Reads the threat catalogue and brings the threat list in line with it. A catalogue that
+/// could not be fetched or parsed changes nothing: no threat is added or marked gone.
+fn read_threats(run: &Run, args: &Args) -> Result<Catalogue, Box<dyn Error>> {
+    let (tx, run_id, at) = (run.tx, run.run_id, run.at);
+    let last = threats::last_good(tx)?;
+    let fetched = match &args.threats_input {
+        Some(path) => threats::read_file(path),
+        None => {
+            let curl = args.curl.as_deref().unwrap_or(Path::new(threats::CURL));
+            threats::fetch(curl, last.as_ref().and_then(|(_, r)| r.etag.as_deref()))
+        }
+    };
+    let failed = |reason: String, sha256, raw_path| -> Result<Catalogue, Box<dyn Error>> {
+        let reading = threats::Reading {
+            outcome: "failed",
+            reason: Some(reason.clone()),
+            sha256,
+            raw_path,
+            ..threats::Reading::default()
+        };
+        threats::put_reading(tx, run_id, at, &reading)?;
+        let held = threats::held(tx)?;
+        let last = last.as_ref().map(|(at, _)| (*at, held));
+        Ok(Catalogue::Failed { reason, last })
+    };
+    match fetched {
+        threats::Fetched::Failed(reason) => failed(reason, None, None),
+        threats::Fetched::Unchanged => {
+            let total = threats::held(tx)?;
+            let (_, before) = last.unwrap_or_default();
+            let reading = threats::Reading {
+                outcome: "unchanged",
+                entries: Some(total),
+                ..before
+            };
+            threats::put_reading(tx, run_id, at, &reading)?;
+            Ok(Catalogue::Unchanged { total })
+        }
+        threats::Fetched::Body { bytes, etag } => {
+            let raw_path = run.keep_raw(threats::SOURCE, threats::RAW, &bytes)?;
+            let sha256 = sha256::hex(&bytes);
+            let entries = match threats::parse(&bytes) {
+                Ok(entries) => entries,
+                Err(reason) => return failed(reason, Some(sha256), Some(raw_path)),
+            };
+            let change = threats::record(tx, run_id, at, &entries)?;
+            let reading = threats::Reading {
+                outcome: "read",
+                reason: None,
+                etag,
+                sha256: Some(sha256),
+                raw_path: Some(raw_path),
+                entries: Some(entries.len()),
+            };
+            threats::put_reading(tx, run_id, at, &reading)?;
+            Ok(Catalogue::Read {
+                total: entries.len(),
+                new: change.new,
+                gone: change.gone,
+                first: change.first,
+            })
+        }
+    }
+}
+
+/// Said of every threat until matching is built. Nothing in the report may read as "does
+/// not affect me": no threat is judged against the estate yet.
+const NOT_JUDGED: &str =
+    "not matched against this estate yet, so whether any affects it is unknown";
+
+/// One sentence about the threat catalogue for the report line.
+fn catalogue_sentence(c: &Catalogue) -> String {
+    let held = |n: usize| {
+        things(
+            n as i64,
+            "exploited vulnerability",
+            "exploited vulnerabilities",
+        )
+    };
+    match c {
+        Catalogue::Read {
+            total, first: true, ..
+        } => format!(
+            "CISA catalogue: {}, first reading, kept as the baseline; {NOT_JUDGED}.",
+            held(*total)
+        ),
+        Catalogue::Read {
+            total, new, gone, ..
+        } => {
+            let mut s = format!(
+                "CISA catalogue: {}, {} new since the last reading",
+                held(*total),
+                grouped(*new as i64)
+            );
+            if *gone > 0 {
+                s.push_str(&format!(", {} left the catalogue", grouped(*gone as i64)));
+            }
+            format!("{s}; {NOT_JUDGED}.")
+        }
+        Catalogue::Unchanged { total } => format!(
+            "CISA catalogue: {}, unchanged, 0 new since the last reading; {NOT_JUDGED}.",
+            held(*total)
+        ),
+        Catalogue::Failed {
+            reason,
+            last: Some((at, total)),
+        } => format!(
+            "CISA catalogue not read: {reason}; what is new is unknown, and the {} it held at its last reading, {}, are {NOT_JUDGED}.",
+            held(*total),
+            view::utc(*at)
+        ),
+        Catalogue::Failed { reason, last: None } => format!(
+            "CISA catalogue not read: {reason}; the program knows no exploited vulnerability yet, so whether any affects this estate is unknown."
+        ),
+    }
+}
+
 /// The one line. It never says "no changes" unless every reading this run was full and
 /// every scope read before was read again.
-fn report(run: &Run, t: &store::Totals, s: &ServerCounts, first_run: bool) -> String {
+fn report(
+    run: &Run,
+    t: &store::Totals,
+    s: &ServerCounts,
+    first_run: bool,
+    catalogue: &Catalogue,
+) -> String {
     let mut line = format!(
         "{}, {}, {}, {}.",
         things(run.readers as i64, "reader", "readers"),
@@ -1643,6 +1797,8 @@ fn report(run: &Run, t: &store::Totals, s: &ServerCounts, first_run: bool) -> St
     } else {
         since_last_run(&run.events, t)
     });
+    line.push(' ');
+    line.push_str(&catalogue_sentence(catalogue));
     for note in &run.notes {
         line.push(' ');
         line.push_str(note);

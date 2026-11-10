@@ -91,14 +91,29 @@ fn soc_cmd(home: &Path) -> Command {
     cmd
 }
 
-/// `soc run` for the machine `mac`, with no tailscale, so that the real one is never asked.
-/// A later `--tailscale` replaces it.
+/// `soc run` for the machine `mac`, with no tailscale, so that the real one is never asked,
+/// and a threat catalogue that is not there, so that the network is never asked. A later
+/// `--tailscale` or `--threats-input` replaces them.
 fn soc_run(home: &Path, store: &Path) -> Command {
     let mut cmd = soc_cmd(home);
     cmd.args(["run", "--machine-name", "mac", "--store"])
         .arg(store)
         .arg("--tailscale")
-        .arg(home.join("no-tailscale"));
+        .arg(home.join("no-tailscale"))
+        .arg("--threats-input")
+        .arg(home.join("no-catalogue"));
+    cmd
+}
+
+/// The same, fetching the threat catalogue with this curl instead.
+fn soc_run_curl(home: &Path, store: &Path, curl: &Path) -> Command {
+    let mut cmd = soc_cmd(home);
+    cmd.args(["run", "--machine-name", "mac", "--store"])
+        .arg(store)
+        .arg("--tailscale")
+        .arg(home.join("no-tailscale"))
+        .arg("--curl")
+        .arg(curl);
     cmd
 }
 
@@ -968,7 +983,9 @@ fn by_default_nothing_is_written_to_the_working_folder_and_the_store_is_in_the_u
         ok(soc(&["run", "--machine-name", "mac", "--brew-input"])
             .arg(&brew)
             .arg("--tailscale")
-            .arg(dir.0.join("no-tailscale")))
+            .arg(dir.0.join("no-tailscale"))
+            .arg("--threats-input")
+            .arg(dir.0.join("no-catalogue")))
     };
 
     let report = run();
@@ -3892,4 +3909,611 @@ fn a_sweep_that_is_stopped_starts_no_further_visit() {
         .filter(|n| n.starts_with('.'))
         .collect();
     assert!(left.is_empty(), "{left:?}");
+}
+
+/// One entry of the threat catalogue in the shape CISA publishes. Ids, vendors and products
+/// are invented.
+fn kev_entry(id: &str, vendor: &str, product: &str, added: &str) -> serde_json::Value {
+    serde_json::json!({
+        "cveID": id,
+        "vendorProject": vendor,
+        "product": product,
+        "vulnerabilityName": format!("{vendor} {product} Remote Code Execution Vulnerability"),
+        "dateAdded": added,
+        "shortDescription": format!("{vendor} {product} contains an invented flaw used only in tests."),
+        "requiredAction": "Apply mitigations per vendor instructions or discontinue use of the product if mitigations are unavailable.",
+        "dueDate": "2099-02-01",
+        "knownRansomwareCampaignUse": "Unknown",
+        "notes": format!("https://nvd.nist.gov/vuln/detail/{id}"),
+        "cwes": ["CWE-94"]
+    })
+}
+
+/// The whole catalogue with these entries.
+fn kev(entries: &[serde_json::Value]) -> String {
+    serde_json::to_string_pretty(&serde_json::json!({
+        "title": "CISA Catalog of Known Exploited Vulnerabilities",
+        "catalogVersion": "2099.01.10",
+        "dateReleased": "2099-01-10T16:00:15.0000Z",
+        "count": entries.len(),
+        "vulnerabilities": entries
+    }))
+    .unwrap()
+}
+
+/// Three entries, and the same three with a fourth added on a later day.
+fn kev_base() -> Vec<serde_json::Value> {
+    vec![
+        kev_entry(
+            "CVE-2099-0002",
+            "Invented Corp",
+            "Pretend Server",
+            "2099-01-05",
+        ),
+        kev_entry(
+            "CVE-2099-0001",
+            "Examplesoft",
+            "Example Gateway",
+            "2099-01-02",
+        ),
+        kev_entry(
+            "CVE-2098-1234",
+            "Nowhere Labs",
+            "Imaginary VPN",
+            "2098-12-30",
+        ),
+    ]
+}
+
+fn kev_plus_one() -> Vec<serde_json::Value> {
+    let mut list = vec![kev_entry(
+        "CVE-2099-0100",
+        "Madeup Systems",
+        "Fictional Router",
+        "2099-01-09",
+    )];
+    list.extend(kev_base());
+    list
+}
+
+const THREAT_EVENTS: &str = "SELECT entry, subject, old_value, new_value FROM journal
+                             WHERE entry IN ('threat_added', 'threat_gone', 'threats_first_read')
+                             ORDER BY seq";
+const THREATS: &str = "SELECT id, gone_at IS NOT NULL FROM threat ORDER BY id";
+const LAST_FEED_READING: &str = "SELECT outcome, reason IS NOT NULL, entries FROM feed_reading
+                                 ORDER BY id DESC LIMIT 1";
+
+/// A store fed the threat catalogue: from a saved copy, or from a fake curl.
+struct Feed {
+    dir: Dir,
+}
+
+impl Feed {
+    fn new(tag: &str) -> Feed {
+        Feed { dir: Dir::new(tag) }
+    }
+
+    fn store(&self) -> PathBuf {
+        self.dir.0.join("store").join("store.db")
+    }
+
+    /// `soc run` with the brew sample and nothing else of the estate, and these arguments.
+    fn run_with(&self, args: &[&std::ffi::OsStr]) -> String {
+        self.run_as(soc_run(&self.dir.0, &self.store()), args)
+    }
+
+    fn run_as(&self, mut cmd: Command, args: &[&std::ffi::OsStr]) -> String {
+        let brew = put(&self.dir.0, "brew.txt", SAMPLE);
+        ok(cmd
+            .arg("--brew-input")
+            .arg(brew)
+            .arg("--servers-input")
+            .arg(self.dir.0.join("absent"))
+            .arg("--checkouts-root")
+            .arg(self.dir.0.join("absent"))
+            .args(args))
+    }
+
+    /// `soc run` reading this catalogue from a saved copy.
+    fn run(&self, catalogue: &str) -> String {
+        let file = put(&self.dir.0, "kev.json", catalogue);
+        self.run_with(&["--threats-input".as_ref(), file.as_os_str()])
+    }
+
+    /// `soc run` fetching the catalogue with this curl.
+    fn run_curl(&self, curl: &Path) -> String {
+        self.run_as(soc_run_curl(&self.dir.0, &self.store(), curl), &[])
+    }
+}
+
+/// A curl that notes every argument it is given and answers as the catalogue's server does:
+/// with `served.json` and the ETag in `etag`, or with 304 when it is asked with that ETag.
+fn fake_curl(dir: &Path) -> PathBuf {
+    let d = dir.display();
+    script(
+        &dir.join("curl"),
+        &format!(
+            r#"for a in "$@"; do printf '%s\n' "$a"; done >> '{d}/curl.log'
+echo '--end--' >> '{d}/curl.log'
+etag=$(cat '{d}/etag')
+for a in "$@"; do
+  if [ "$a" = "If-None-Match: $etag" ]; then printf '\n304 %s\n' "$etag" >&2; exit 0; fi
+done
+cat '{d}/served.json'
+printf '\n200 %s\n' "$etag" >&2"#
+        ),
+    )
+}
+
+/// The argument lists the fake curl was given, one per request.
+fn requests(dir: &Path) -> Vec<Vec<String>> {
+    std::fs::read_to_string(dir.join("curl.log"))
+        .unwrap_or_default()
+        .split("--end--\n")
+        .filter(|r| !r.is_empty())
+        .map(|r| r.lines().map(str::to_string).collect())
+        .collect()
+}
+
+/// The CVE ids the view marks as new.
+fn marked_new(page: &str) -> Vec<String> {
+    section(page, "threats")
+        .split("<tr class=\"added\"><td class=\"mono\">")
+        .skip(1)
+        .map(|r| r.split(' ').next().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn a_new_catalogue_entry_is_reported_as_new_exactly_once() {
+    // A fresh exploited vulnerability is the news the owner reads the line for. Told twice,
+    // the line stops meaning anything.
+    let f = Feed::new("kev-new");
+    f.run(&kev(&kev_base()));
+
+    let second = f.run(&kev(&kev_plus_one()));
+    let page = view(&f.store());
+    let third = f.run(&kev(&kev_plus_one()));
+
+    assert!(
+        second
+            .contains("CISA catalogue: 4 exploited vulnerabilities, 1 new since the last reading;"),
+        "{second}"
+    );
+    assert_eq!(marked_new(&page), ["CVE-2099-0100"]);
+    assert!(
+        third
+            .contains("CISA catalogue: 4 exploited vulnerabilities, 0 new since the last reading;"),
+        "{third}"
+    );
+    assert!(marked_new(&view(&f.store())).is_empty());
+    let added: Vec<String> = rows(&f.store(), THREAT_EVENTS)
+        .into_iter()
+        .filter(|r| r.starts_with("threat_added"))
+        .collect();
+    assert_eq!(
+        added,
+        [
+            "threat_added|CVE-2099-0100|NULL|Madeup Systems Fictional Router Remote Code Execution Vulnerability"
+        ]
+    );
+    // The raw copy is kept, and copied again only when it changed.
+    let copies: Vec<_> = std::fs::read_dir(f.dir.0.join("store").join("raw"))
+        .unwrap()
+        .filter(|run| run.as_ref().unwrap().path().join("cisa-kev.json").exists())
+        .collect();
+    assert_eq!(copies.len(), 2);
+}
+
+#[test]
+fn a_second_run_on_an_unchanged_catalogue_reports_nothing_new_and_does_not_download_it_again() {
+    // The catalogue is fetched on every run; when it has not changed, the server says so and
+    // nothing is downloaded, added or marked gone.
+    let f = Feed::new("kev-unchanged");
+    let curl = fake_curl(&f.dir.0);
+    put(&f.dir.0, "served.json", &kev(&kev_base()));
+    put(&f.dir.0, "etag", "\"v1\"");
+    f.run_curl(&curl);
+    let threats = rows(&f.store(), THREATS);
+
+    let second = f.run_curl(&curl);
+
+    let asked = requests(&f.dir.0);
+    assert!(!asked[0].iter().any(|a| a.starts_with("If-None-Match")));
+    assert!(
+        asked[1].contains(&"If-None-Match: \"v1\"".to_string()),
+        "{:?}",
+        asked[1]
+    );
+    assert!(
+        second.contains(
+            "CISA catalogue: 3 exploited vulnerabilities, unchanged, 0 new since the last reading;"
+        ),
+        "{second}"
+    );
+    assert_eq!(rows(&f.store(), LAST_FEED_READING), ["unchanged|0|3"]);
+    assert_eq!(rows(&f.store(), THREATS), threats);
+    assert_eq!(rows(&f.store(), THREAT_EVENTS).len(), 1);
+    // Both readings rest on the one raw copy, and the hash they record is its SHA-256.
+    let kept = rows(
+        &f.store(),
+        "SELECT DISTINCT raw_path, sha256 FROM feed_reading",
+    );
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    let (raw, sha) = kept[0].split_once('|').unwrap();
+    let shasum = ok(Command::new("/usr/bin/shasum")
+        .args(["-a", "256"])
+        .arg(f.dir.0.join("store").join(raw)));
+    assert_eq!(shasum.split(' ').next(), Some(sha));
+}
+
+#[test]
+fn the_first_reading_of_the_catalogue_is_a_baseline_and_not_a_flood_of_events() {
+    // A thousand entries the first time are not a thousand pieces of news. A store that
+    // could not read the catalogue before still takes its first reading as the baseline.
+    let f = Feed::new("kev-baseline");
+    let missing = f.dir.0.join("missing");
+    let missing = ["--threats-input".as_ref(), missing.as_os_str()];
+    f.run_with(&missing);
+    let failed_again = f.run_with(&missing);
+    assert!(
+        failed_again.contains("the program knows no exploited vulnerability yet"),
+        "{failed_again}"
+    );
+
+    let report = f.run(&kev(&kev_base()));
+
+    assert!(
+        report.contains(
+            "CISA catalogue: 3 exploited vulnerabilities, first reading, kept as the baseline;"
+        ),
+        "{report}"
+    );
+    assert_eq!(
+        rows(&f.store(), THREAT_EVENTS),
+        ["threats_first_read|NULL|NULL|3"]
+    );
+    assert_eq!(rows(&f.store(), THREATS).len(), 3);
+    let page = view(&f.store());
+    assert!(marked_new(&page).is_empty());
+    let threats = section(&page, "threats");
+    let order: Vec<usize> = ["CVE-2099-0002", "CVE-2099-0001", "CVE-2098-1234"]
+        .iter()
+        .map(|id| threats.find(id).unwrap())
+        .collect();
+    assert!(order.is_sorted(), "newest first: {order:?}");
+}
+
+#[test]
+fn a_catalogue_that_could_not_be_read_is_reported_as_not_read_and_adds_nothing_and_marks_nothing_gone()
+ {
+    // A failed download is not an empty catalogue: if it were, every threat would leave it,
+    // and the line would say nothing is new when nothing is known.
+    let f = Feed::new("kev-failed");
+    f.run(&kev(&kev_base()));
+    f.run(&kev(&kev_plus_one()));
+    let threats = rows(&f.store(), THREATS);
+    let curl = script(
+        &f.dir.0.join("curl"),
+        "echo 'curl: (6) Could not resolve host: www.cisa.gov' >&2\nprintf '\\n000 \\n' >&2\nexit 6",
+    );
+
+    let report = f.run_curl(&curl);
+
+    assert!(
+        report.contains(
+            "CISA catalogue not read: curl failed, exit status: 6: curl: (6) Could not resolve host: www.cisa.gov; \
+             what is new is unknown, and the 4 exploited vulnerabilities it held at its last reading"
+        ),
+        "{report}"
+    );
+    assert!(
+        report.contains("are not matched against this estate yet"),
+        "{report}"
+    );
+    assert_eq!(rows(&f.store(), THREATS), threats);
+    assert_eq!(rows(&f.store(), THREAT_EVENTS).len(), 2);
+    assert_eq!(rows(&f.store(), LAST_FEED_READING), ["failed|1|NULL"]);
+    let page = view(&f.store());
+    assert!(
+        section(&page, "threats")
+            .contains("The latest reading of the catalogue failed: curl failed"),
+        "{page}"
+    );
+    // What was new when it was last read stays marked: nothing newer is known.
+    assert_eq!(marked_new(&page), ["CVE-2099-0100"]);
+
+    // A saved copy that is not there is the same.
+    let report = f.run_with(&[
+        "--threats-input".as_ref(),
+        f.dir.0.join("missing").as_os_str(),
+    ]);
+    assert!(
+        report.contains("CISA catalogue not read: cannot read"),
+        "{report}"
+    );
+    assert_eq!(rows(&f.store(), THREATS), threats);
+}
+
+#[test]
+fn an_answer_other_than_the_catalogue_or_not_modified_when_asked_is_a_failed_reading() {
+    // "Not modified" is believed only in answer to the ETag the program sent; a redirect is
+    // not followed. Either way nothing is known, and the line must not say otherwise.
+    let f = Feed::new("kev-status");
+    for (code, report) in [("304", "HTTP 304"), ("301", "HTTP 301")] {
+        let curl = script(
+            &f.dir.0.join(format!("curl-{code}")),
+            &format!("printf '\\n{code} \"v9\"\\n' >&2"),
+        );
+        let said = f.run_curl(&curl);
+        assert!(
+            said.contains(&format!(
+                "CISA catalogue not read: the server answered {report}; the program knows no exploited vulnerability yet"
+            )),
+            "{said}"
+        );
+    }
+    assert!(rows(&f.store(), THREATS).is_empty());
+}
+
+#[test]
+fn an_entry_that_left_the_catalogue_is_recorded_as_gone_and_kept() {
+    // CISA withdraws entries now and then. One that left is an event, and is kept: an
+    // investigation looks back.
+    let f = Feed::new("kev-gone");
+    f.run(&kev(&kev_plus_one()));
+
+    let report = f.run(&kev(&kev_base()));
+
+    assert!(
+        report.contains(
+            "3 exploited vulnerabilities, 0 new since the last reading, 1 left the catalogue;"
+        ),
+        "{report}"
+    );
+    assert_eq!(
+        rows(&f.store(), THREATS),
+        [
+            "CVE-2098-1234|0",
+            "CVE-2099-0001|0",
+            "CVE-2099-0002|0",
+            "CVE-2099-0100|1"
+        ]
+    );
+    assert_eq!(
+        rows(&f.store(), THREAT_EVENTS)[1],
+        "threat_gone|CVE-2099-0100|Madeup Systems Fictional Router Remote Code Execution Vulnerability|NULL"
+    );
+    let page = view(&f.store());
+    let left = section(&page, "threats")
+        .split("left the catalogue and is kept")
+        .nth(1)
+        .unwrap_or_else(|| panic!("{page}"));
+    assert!(left.contains("CVE-2099-0100"), "{left}");
+    // What the catalogue holds no longer counts it, even when it cannot be read.
+    let failed = f.run_with(&[
+        "--threats-input".as_ref(),
+        f.dir.0.join("missing").as_os_str(),
+    ]);
+    assert!(
+        failed.contains("the 3 exploited vulnerabilities it held at its last reading"),
+        "{failed}"
+    );
+
+    // One that comes back is in the catalogue again, and that is news.
+    let back = f.run(&kev(&kev_plus_one()));
+    assert!(back.contains("1 new since the last reading;"), "{back}");
+    assert_eq!(rows(&f.store(), THREATS)[3], "CVE-2099-0100|0");
+}
+
+#[test]
+fn a_catalogue_that_is_malformed_or_over_the_size_cap_is_a_failed_reading() {
+    // The catalogue comes from the network and is untrusted. Whatever is not its shape, or
+    // is too large to be it, changes nothing.
+    let f = Feed::new("kev-malformed");
+    f.run(&kev(&kev_base()));
+    let threats = rows(&f.store(), THREATS);
+    let mut no_id = kev_base();
+    no_id[1]["cveID"] = serde_json::json!("CVE-2099-0001/../x");
+    let over = format!("{}{}", kev(&kev_base()), " ".repeat(8 * 1024 * 1024));
+    let cases = [
+        ("<html>Service unavailable</html>", "not JSON"),
+        ("{\"vulnerabilities\": {}}", "no list of vulnerabilities"),
+        (
+            "{\"vulnerabilities\": []}",
+            "the list of vulnerabilities is empty",
+        ),
+        (&kev(&no_id), "entry 2 has no valid CVE id"),
+        (&over, "larger than the cap of 8388608 bytes"),
+    ];
+    for (catalogue, reason) in cases {
+        let report = f.run(catalogue);
+        assert!(
+            report.contains(&format!("CISA catalogue not read: {reason}")),
+            "{reason}: {report}"
+        );
+        assert_eq!(rows(&f.store(), THREATS), threats, "{reason}");
+        assert_eq!(rows(&f.store(), LAST_FEED_READING), ["failed|1|NULL"]);
+    }
+    // At the cap itself, the catalogue is read.
+    let at_cap = kev(&kev_base());
+    let at_cap = format!("{at_cap}{}", " ".repeat(8 * 1024 * 1024 - at_cap.len()));
+    let report = f.run(&at_cap);
+    assert!(
+        report.contains("3 exploited vulnerabilities, 0 new"),
+        "{report}"
+    );
+}
+
+#[test]
+fn what_is_asked_of_the_network_does_not_depend_on_the_estate() {
+    // Every user sends the same request, so nothing about what they have leaks to the
+    // catalogue's server or to anyone watching the line.
+    let (a, b) = (Feed::new("kev-ask-a"), Feed::new("kev-ask-b"));
+    for f in [&a, &b] {
+        put(&f.dir.0, "served.json", &kev(&kev_base()));
+        put(&f.dir.0, "etag", "W/\"5f2c-61a\"");
+    }
+    let servers = a.dir.0.join("servers");
+    put(&servers, "web-1.txt", WEB_1);
+    let busy = |f: &Feed| {
+        let brew = put(&f.dir.0, "brew.txt", SAMPLE);
+        ok(soc_run_curl(&f.dir.0, &f.store(), &fake_curl(&f.dir.0))
+            .arg("--brew-input")
+            .arg(brew)
+            .arg("--servers-input")
+            .arg(&servers)
+            .arg("--checkouts-root")
+            .arg(&f.dir.0))
+    };
+    let bare = |f: &Feed| {
+        ok(soc_run_curl(&f.dir.0, &f.store(), &fake_curl(&f.dir.0))
+            .args(["--machine-name", "another-mac", "--brew-input"])
+            .arg(f.dir.0.join("absent"))
+            .arg("--servers-input")
+            .arg(f.dir.0.join("absent"))
+            .arg("--checkouts-root")
+            .arg(f.dir.0.join("absent")))
+    };
+    for _ in 0..2 {
+        busy(&a);
+        bare(&b);
+    }
+
+    let (asked_a, asked_b) = (requests(&a.dir.0), requests(&b.dir.0));
+    assert_eq!(asked_a.len(), 2);
+    assert_eq!(asked_a, asked_b);
+    // Exactly this, and the conditional request adds only the ETag the catalogue sent.
+    let asked: Vec<&str> = asked_a[0].iter().map(String::as_str).collect();
+    assert_eq!(
+        asked,
+        [
+            "--disable", // first, so that ~/.curlrc is never read
+            "--silent",
+            "--show-error",
+            "--fail",
+            "--proto",
+            "=https",
+            "--compressed",
+            "--max-filesize",
+            "8388608",
+            "--connect-timeout",
+            "30",
+            "--max-time",
+            "300",
+            "--write-out",
+            "%{stderr}\\n%{http_code} %header{etag}\\n",
+            "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
+        ]
+    );
+    let again = &asked_a[1];
+    assert_eq!(again.len(), asked.len() + 2);
+    assert_eq!(
+        again[again.len() - 3..again.len() - 1],
+        ["--header", "If-None-Match: W/\"5f2c-61a\""]
+    );
+}
+
+#[test]
+fn text_from_the_catalogue_is_shown_escaped_and_kept_as_read() {
+    // Names in the catalogue are text from the network: they must never become markup, and
+    // a direction control must never reorder what the owner reads.
+    let f = Feed::new("kev-escape");
+    f.run(&kev(&kev_base()));
+    let mut list = kev_base();
+    list.push(kev_entry(
+        "CVE-2099-0666",
+        "<script>alert('x')</script>",
+        "Gate\"way\u{202E}yawetag",
+        "2099-01-10",
+    ));
+
+    let report = f.run(&kev(&list));
+    let page = view(&f.store());
+
+    assert!(
+        !report.contains('\u{202E}') && !report.contains("<script"),
+        "{report}"
+    );
+    let threats = section(&page, "threats");
+    assert!(!threats.contains("<script") && !threats.contains('\u{202E}'));
+    assert!(
+        threats.contains("&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt;"),
+        "{threats}"
+    );
+    assert!(
+        threats.contains("<td>Gate&quot;way\\u{202e}yawetag</td>"),
+        "{threats}"
+    );
+    assert_eq!(
+        rows(
+            &f.store(),
+            "SELECT product FROM threat WHERE id = 'CVE-2099-0666'"
+        ),
+        ["Gate\"way\u{202E}yawetag"]
+    );
+}
+
+#[test]
+fn a_store_made_before_the_threat_list_takes_its_tables_and_journal_entries_without_losing_its_journal()
+ {
+    // The journal is the one thing raw input cannot rebuild. The owner's store, made before
+    // the threat list, must take it as it is, in the same format.
+    let f = Feed::new("kev-old-store");
+    f.run_with(&[]);
+    f.run_with(&[]);
+    Connection::open(f.store())
+        .unwrap()
+        .execute_batch(
+            "DROP TABLE threat;
+             DROP TABLE feed_reading;
+             CREATE TABLE journal_before (
+                 seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL,
+                 run_id TEXT NOT NULL,
+                 entry TEXT NOT NULL CHECK (entry IN ('run_started', 'added', 'changed',
+                                                      'removed', 'report', 'run_finished',
+                                                      'owner_said', 'owner_withdrew')),
+                 reader TEXT, scope TEXT, kind TEXT, subject TEXT, predicate TEXT,
+                 old_value TEXT, new_value TEXT, text TEXT);
+             INSERT INTO journal_before SELECT * FROM journal;
+             DROP TABLE journal;
+             ALTER TABLE journal_before RENAME TO journal;
+             CREATE TRIGGER journal_no_update BEFORE UPDATE ON journal
+                 BEGIN SELECT RAISE(ABORT, 'journal is append-only'); END;
+             CREATE TRIGGER journal_no_delete BEFORE DELETE ON journal
+                 BEGIN SELECT RAISE(ABORT, 'journal is append-only'); END;",
+        )
+        .unwrap();
+    let all = "SELECT * FROM journal ORDER BY seq";
+    let before = rows(&f.store(), all);
+    // As it is, the store is read by the view.
+    assert!(section(&view(&f.store()), "threats").contains("has never been read"));
+    assert_eq!(rows(&f.store(), all), before);
+
+    f.run(&kev(&kev_base()));
+    f.run(&kev(&kev_plus_one()));
+
+    let after = rows(&f.store(), all);
+    assert_eq!(after[..before.len()], before[..]);
+    let entries: Vec<&str> = after[before.len()..]
+        .iter()
+        .map(|r| r.split('|').nth(3).unwrap())
+        .filter(|e| e.starts_with("threat"))
+        .collect();
+    assert_eq!(entries, ["threats_first_read", "threat_added"]);
+    let seqs: Vec<i64> = rows(&f.store(), "SELECT seq FROM journal ORDER BY seq")
+        .iter()
+        .map(|s| s.parse().unwrap())
+        .collect();
+    assert!(seqs.windows(2).all(|w| w[1] == w[0] + 1), "{seqs:?}");
+    assert_eq!(
+        rows(
+            &f.store(),
+            "SELECT value FROM meta WHERE key = 'format_version'"
+        ),
+        ["4"]
+    );
+    let conn = Connection::open(f.store()).unwrap();
+    assert!(conn.execute("DELETE FROM journal", []).is_err());
+    assert!(conn.execute("UPDATE journal SET text = ''", []).is_err());
 }

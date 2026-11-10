@@ -92,16 +92,35 @@ CREATE TABLE raw_input (
 );
 ";
 
+/// What the journal records. The list only grows: a store whose journal was made with a
+/// shorter list is made again with this one when it is opened, so a new kind of entry is a
+/// new word here and nothing else.
+const JOURNAL_ENTRIES: [&str; 11] = [
+    "run_started",
+    "added",
+    "changed",
+    "removed",
+    "report",
+    "run_finished",
+    "owner_said",
+    "owner_withdrew",
+    "threat_added",
+    "threat_gone",
+    "threats_first_read",
+];
+
 /// The journal. It cannot be rebuilt from raw input, so it only grows. Its entries are the
-/// differences a run finds, the run's own notes, and the owner's word.
-const JOURNAL: &str = "
+/// differences a run finds, the run's own notes, the owner's word and the threat list's
+/// changes.
+fn journal_sql() -> String {
+    let entries: Vec<String> = JOURNAL_ENTRIES.iter().map(|e| format!("'{e}'")).collect();
+    format!(
+        "
 CREATE TABLE journal (
     seq       INTEGER PRIMARY KEY AUTOINCREMENT,
     at        INTEGER NOT NULL,
     run_id    TEXT NOT NULL,
-    entry     TEXT NOT NULL
-              CHECK (entry IN ('run_started', 'added', 'changed', 'removed', 'report', 'run_finished',
-                               'owner_said', 'owner_withdrew')),
+    entry     TEXT NOT NULL CHECK (entry IN ({})),
     reader    TEXT,
     scope     TEXT,
     kind      TEXT,
@@ -115,7 +134,10 @@ CREATE TRIGGER journal_no_update BEFORE UPDATE ON journal
     BEGIN SELECT RAISE(ABORT, 'journal is append-only'); END;
 CREATE TRIGGER journal_no_delete BEFORE DELETE ON journal
     BEGIN SELECT RAISE(ABORT, 'journal is append-only'); END;
-";
+",
+        entries.join(", ")
+    )
+}
 
 /// The owner's word: what the owner said about an entity, next to the facts and never an
 /// edit of them. A withdrawn statement is kept with the time it was withdrawn. Created on
@@ -128,6 +150,39 @@ CREATE TABLE IF NOT EXISTS owner_statement (
     reason       TEXT NOT NULL,
     made_at      INTEGER NOT NULL,  -- UTC seconds
     withdrawn_at INTEGER            -- UTC seconds
+);
+";
+
+/// The threat list and its readings, see docs/threats.md. Threats are not facts: they live
+/// in their own tables and never touch assertions. Created on every open, like the owner's
+/// word. Text in `threat` is the catalogue's own and is partly written by an attacker.
+const THREATS: &str = "
+CREATE TABLE IF NOT EXISTS threat (
+    source        TEXT NOT NULL,     -- which list, such as 'cisa-kev'
+    id            TEXT NOT NULL,     -- the CVE id
+    vendor        TEXT NOT NULL,
+    product       TEXT NOT NULL,
+    name          TEXT NOT NULL,
+    date_added    TEXT NOT NULL,     -- as the list gives it
+    first_run     TEXT NOT NULL,
+    first_seen_at INTEGER NOT NULL,  -- UTC seconds
+    gone_at       INTEGER,           -- when it left the list, UTC seconds
+    gone_run      TEXT,
+    PRIMARY KEY (source, id),
+    CHECK ((gone_at IS NULL) = (gone_run IS NULL))
+);
+CREATE TABLE IF NOT EXISTS feed_reading (
+    id       INTEGER PRIMARY KEY,
+    source   TEXT NOT NULL,
+    run_id   TEXT NOT NULL,
+    at       INTEGER NOT NULL,       -- UTC seconds
+    outcome  TEXT NOT NULL CHECK (outcome IN ('read', 'unchanged', 'failed')),
+    reason   TEXT,
+    etag     TEXT,                   -- what the source sent, for the next conditional request
+    sha256   TEXT,                   -- of the raw copy
+    raw_path TEXT,                   -- relative to the store's folder
+    entries  INTEGER,                -- how many entries the list held
+    CHECK ((outcome = 'failed') = (reason IS NOT NULL))
 );
 ";
 
@@ -199,7 +254,7 @@ pub fn open(path: &Path) -> Res<Connection> {
     if tables == 0 {
         let tx = conn.transaction()?;
         tx.execute_batch(SCHEMA)?;
-        tx.execute_batch(JOURNAL)?;
+        tx.execute_batch(&journal_sql())?;
         tx.execute(
             "INSERT INTO meta (key, value) VALUES ('format_version', ?1)",
             [FORMAT_VERSION],
@@ -209,32 +264,36 @@ pub fn open(path: &Path) -> Res<Connection> {
     check_format(&conn, path)?;
     conn.execute_batch(VOCABULARY)?;
     conn.execute_batch(OWNER)?;
+    conn.execute_batch(THREATS)?;
     widen_journal(&mut conn)?;
     Ok(conn)
 }
 
-/// A journal made before the owner's word refuses its entries. It is made again with them,
-/// row for row and with the same sequence, in one transaction: the store keeps its history
-/// and its format.
+/// A journal made with a shorter list of entries refuses the new ones. It is made again with
+/// the whole list, row for row and with the same sequence, in one transaction: the store
+/// keeps its history and its format.
 fn widen_journal(conn: &mut Connection) -> Res<()> {
     let sql: String = conn.query_row(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'journal'",
         [],
         |r| r.get(0),
     )?;
-    if sql.contains("'owner_said'") {
+    if JOURNAL_ENTRIES
+        .iter()
+        .all(|e| sql.contains(&format!("'{e}'")))
+    {
         return Ok(());
     }
     let tx = conn.transaction()?;
     tx.execute_batch(
-        "ALTER TABLE journal RENAME TO journal_before_owner;
+        "ALTER TABLE journal RENAME TO journal_before_widening;
          DROP TRIGGER journal_no_update;
          DROP TRIGGER journal_no_delete;",
     )?;
-    tx.execute_batch(JOURNAL)?;
+    tx.execute_batch(&journal_sql())?;
     tx.execute_batch(
-        "INSERT INTO journal SELECT * FROM journal_before_owner;
-         DROP TABLE journal_before_owner;",
+        "INSERT INTO journal SELECT * FROM journal_before_widening;
+         DROP TABLE journal_before_widening;",
     )?;
     tx.commit()?;
     Ok(())
@@ -586,6 +645,30 @@ pub fn journal_event(tx: &Transaction, r: &Reading, e: &Event) -> rusqlite::Resu
             e.old,
             e.new
         ],
+    )?;
+    Ok(())
+}
+
+/// One entry about the threat list: `threat_added` with the threat's name, `threat_gone`
+/// with the name it had, or `threats_first_read` with how many entries the list held.
+pub fn journal_threat(
+    tx: &Transaction,
+    at: i64,
+    run_id: &str,
+    entry: &str,
+    source: &str,
+    subject: Option<&str>,
+    value: &str,
+) -> rusqlite::Result<()> {
+    let (old, new) = if entry == "threat_gone" {
+        (Some(value), None)
+    } else {
+        (None, Some(value))
+    };
+    tx.execute(
+        "INSERT INTO journal (at, run_id, entry, reader, subject, old_value, new_value)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![at, run_id, entry, source, subject, old, new],
     )?;
     Ok(())
 }
