@@ -383,6 +383,8 @@ fn coverage(conn: &Connection, out: &mut String, rows: &[Latest], now: i64) -> O
 #[derive(Default)]
 struct Component {
     versions: BTreeSet<String>,
+    /// The source package and version it was built from, where the reader knows them.
+    built_from: BTreeSet<String>,
     bases: BTreeSet<String>,
     sources: BTreeSet<String>,
     first_seen: Option<i64>,
@@ -442,6 +444,9 @@ impl Estate {
                 "has_version" => {
                     c.versions.insert(object);
                 }
+                "built_from" => {
+                    c.built_from.insert(object);
+                }
                 "part_of" => e.inside.entry(object).or_default().push(subject),
                 _ => {}
             }
@@ -489,6 +494,7 @@ fn components_table(out: &mut String, estate: &Estate, ids: &[String]) -> Out {
             "Name",
             "Ecosystem",
             "Version",
+            "Built from",
             "Basis",
             "First seen",
             "Source",
@@ -503,6 +509,7 @@ fn components_table(out: &mut String, estate: &Estate, ids: &[String]) -> Out {
         td_component(out, id)?;
         td(out, "nowrap", component_name(id).0)?;
         td(out, "mono", &join(&c.versions))?;
+        td(out, "mono", &join(&c.built_from))?;
         td(out, "", &join(&c.bases))?;
         td(out, "nowrap", &utc_or(c.first_seen, ""))?;
         td(out, "mono", &join(&c.sources))?;
@@ -865,11 +872,31 @@ fn machine_body<'a>(
         "<p class=\"muted\"><span class=\"mono\">{}</span>",
         esc(machine)
     )?;
+    let release = estate.attr(machine, "runs_release");
+    if !release.is_empty() {
+        write!(
+            out,
+            " · release <span class=\"mono\">{}</span>",
+            esc(&release)
+        )?;
+        let codename = estate.attr(machine, "release_codename");
+        if !codename.is_empty() {
+            write!(out, " ({})", esc(&codename))?;
+        }
+    }
     if !kernel.is_empty() {
         write!(
             out,
             " · kernel <span class=\"mono\">{}</span>",
             esc(&kernel)
+        )?;
+    }
+    let package = estate.attr(machine, "runs_kernel_package");
+    if !package.is_empty() {
+        write!(
+            out,
+            " from package <span class=\"mono\">{}</span>",
+            esc(&package)
         )?;
     }
     out.push_str("</p>\n");

@@ -198,7 +198,9 @@ INSERT OR IGNORE INTO predicate (name, object_kind, status) VALUES
     ('has_version', 'literal', 'used'), ('runs_os', 'literal', 'used'),
     ('runs_kernel', 'literal', 'used'), ('runs_image', 'literal', 'used'),
     ('known_as', 'literal', 'used'), ('same_as', 'entity', 'used'),
-    ('relation_to_owner', 'literal', 'used'),
+    ('relation_to_owner', 'literal', 'used'), ('built_from', 'literal', 'used'),
+    ('runs_release', 'literal', 'used'), ('release_codename', 'literal', 'used'),
+    ('runs_kernel_package', 'literal', 'used'),
     ('copy_of', NULL, 'reserved'), ('reachable_from', NULL, 'reserved');
 -- A reserved row comes into use: a store seeded before keeps the row and learns its use.
 UPDATE predicate SET object_kind = 'literal', status = 'used'
@@ -211,7 +213,8 @@ INSERT OR IGNORE INTO coverage_kind (name) VALUES
     ('wordpress core version'), ('container contents'),
     ('ssh configuration'), ('known hosts'), ('tailnet peers'),
     ('machines under several names'), ('checkouts in agent working folders'),
-    ('own names and addresses'), ('sweep visit');
+    ('own names and addresses'), ('sweep visit'), ('system package sources'),
+    ('system release'), ('running kernel package');
 ";
 
 /// One reading: which reader looked for which kind of thing in which scope.

@@ -425,18 +425,26 @@ fn removed_component_is_under_no_longer_there_and_not_on_the_machine() {
     assert!(gone.contains("22.9.0"), "{gone}");
 }
 
-/// A server file as the sweep writes it: a web server with two running containers.
+/// A server file as the sweep writes it: a web server with two running containers, whose
+/// kernel no package owns, as with a kernel the hosting provider boots.
 const WEB_1: &str = "\
 ##os
 Ubuntu 24.04.1 LTS
+##os_release
+ID\tubuntu
+VERSION_ID\t24.04
+VERSION_CODENAME\tnoble
 ##kernel
 6.8.0-45-generic
+##kernel_package
+##package_managers
+dpkg
 ##reboot_required
 no
 ##pve
-##dpkg
-bash\t5.2.21-2ubuntu4
-openssl\t3.0.13-0ubuntu3.4
+##dpkg_with_source
+ii \tbash\t5.2.21-2ubuntu4\tbash\t5.2.21-2ubuntu4
+ii \topenssl\t3.0.13-0ubuntu3.4\topenssl\t3.0.13-0ubuntu3.4
 ##snap
 core22\t20240823
 ##docker_access
@@ -584,11 +592,17 @@ fn server_file_without_end_is_a_machine_not_read_and_retracts_nothing() {
         ),
         [
             "machine:db-1|containers|none|the sweep of this server did not complete",
+            "machine:db-1|running kernel package|none|the sweep of this server did not complete",
             "machine:db-1|sweep visit|none|the sweep of this server did not complete",
+            "machine:db-1|system package sources|none|the sweep of this server did not complete",
             "machine:db-1|system packages|none|the sweep of this server did not complete",
+            "machine:db-1|system release|none|the sweep of this server did not complete",
             "machine:web-1|containers|none|the sweep of this server did not complete",
+            "machine:web-1|running kernel package|none|the sweep of this server did not complete",
             "machine:web-1|sweep visit|none|the sweep of this server did not complete",
+            "machine:web-1|system package sources|none|the sweep of this server did not complete",
             "machine:web-1|system packages|none|the sweep of this server did not complete",
+            "machine:web-1|system release|none|the sweep of this server did not complete",
         ]
     );
 
@@ -1798,13 +1812,38 @@ fn a_server_whose_addresses_could_not_be_listed_keeps_the_addresses_read_before(
     );
 }
 
+/// A server file from the probe before it read the release, the sources of packages, the
+/// package that owns the kernel and the package managers: dpkg's list had names and versions
+/// only, removed packages included.
+const WEB_1_OLDER_PROBE: &str = "\
+##os
+Ubuntu 24.04.1 LTS
+##kernel
+6.8.0-45-generic
+##reboot_required
+no
+##pve
+##dpkg
+bash\t5.2.21-2ubuntu4
+openssl\t3.0.13-0ubuntu3.4
+##snap
+core22\t20240823
+##docker_access
+docker not installed
+##end
+";
+
 #[test]
-fn a_file_from_an_older_probe_is_still_read_and_links_to_nothing() {
-    // Files the owner already has were written before the probe said who the server is.
+fn a_file_from_an_older_probe_is_still_read_links_to_nothing_and_claims_nothing_it_did_not_read() {
+    // Files the owner already has were written before the probe said who the server is,
+    // what release it runs, what each package was built from and which package owns the
+    // kernel. They are read as before; what they do not hold is a reading that read
+    // nothing, so a matcher can tell it from a reading that found nothing. The release is
+    // never guessed from the pretty name.
     let dir = Dir::new("older-probe");
     let servers = dir.0.join("servers");
-    put(&servers, "a.txt", WEB_1);
-    put(&servers, "b.txt", WEB_1);
+    put(&servers, "a.txt", WEB_1_OLDER_PROBE);
+    put(&servers, "b.txt", WEB_1_OLDER_PROBE);
     soc_all(
         &dir.store(),
         &dir.input("brew.txt", SAMPLE),
@@ -1812,19 +1851,37 @@ fn a_file_from_an_older_probe_is_still_read_and_links_to_nothing() {
         &dir.0.join("absent"),
     );
 
+    let older = "the file came from an older probe, which did not read this";
     assert_eq!(
         rows(
             &dir.store(),
-            "SELECT scope, kind, completeness FROM coverage
-             WHERE reader = 'servers' AND scope LIKE 'machine:%' ORDER BY scope, kind"
+            "SELECT scope, kind, completeness, COALESCE(reason, '') FROM coverage
+             WHERE reader = 'servers' AND scope = 'machine:a' ORDER BY kind"
         ),
         [
-            "machine:a|containers|full",
-            "machine:a|sweep visit|full",
-            "machine:a|system packages|full",
-            "machine:b|containers|full",
-            "machine:b|sweep visit|full",
-            "machine:b|system packages|full",
+            "machine:a|containers|full|".to_string(),
+            format!("machine:a|running kernel package|none|{older}"),
+            "machine:a|sweep visit|full|".to_string(),
+            format!("machine:a|system package sources|none|{older}"),
+            "machine:a|system packages|full|".to_string(),
+            format!("machine:a|system release|none|{older}"),
+        ]
+    );
+    assert_eq!(
+        rows(
+            &dir.store(),
+            "SELECT subject, predicate, object FROM assertion
+             WHERE layer = 'live' AND subject LIKE '%machine:a%' ORDER BY subject, predicate"
+        ),
+        [
+            "component:machine:a/deb/bash|has_version|5.2.21-2ubuntu4",
+            "component:machine:a/deb/bash|part_of|machine:a",
+            "component:machine:a/deb/openssl|has_version|3.0.13-0ubuntu3.4",
+            "component:machine:a/deb/openssl|part_of|machine:a",
+            "component:machine:a/snap/core22|has_version|20240823",
+            "component:machine:a/snap/core22|part_of|machine:a",
+            "machine:a|runs_kernel|6.8.0-45-generic",
+            "machine:a|runs_os|Ubuntu 24.04.1 LTS",
         ]
     );
     assert!(rows(&dir.store(), SAME_AS).is_empty());
@@ -3008,8 +3065,11 @@ fn facts_about_a_retired_machine_are_not_retracted_and_its_readings_go_on() {
         ),
         [
             "containers|full",
+            "running kernel package|full",
             "sweep visit|full",
-            "system packages|full"
+            "system package sources|full",
+            "system packages|full",
+            "system release|full"
         ]
     );
     // The view still shows what was read on it, with the statement.
@@ -3614,19 +3674,40 @@ fn a_failed_visit_is_reported_with_when_and_why_next_to_the_earlier_reading_whic
     assert_eq!(
         rows(&h.store(), latest),
         [
-            format!(
-                "machine:db-1|containers|none|{failed_at}|the latest visit failed: Permission denied (publickey)."
-            ),
-            format!("machine:db-1|sweep visit|none|{failed_at}|Permission denied (publickey)."),
-            format!(
-                "machine:db-1|system packages|none|{failed_at}|the latest visit failed: Permission denied (publickey)."
-            ),
-            format!("machine:web-new|containers|full|{taken}|"),
-            format!(
-                "machine:web-new|sweep visit|none|{failed_at}|ssh: connect to host web-new port 22: Operation timed out\u{202E}"
-            ),
-            format!("machine:web-new|system packages|full|{taken}|"),
+            "containers",
+            "running kernel package",
+            "sweep visit",
+            "system package sources",
+            "system packages",
+            "system release"
         ]
+        .iter()
+        .map(|kind| match *kind {
+            "sweep visit" => {
+                format!("machine:db-1|{kind}|none|{failed_at}|Permission denied (publickey).")
+            }
+            _ => format!(
+                "machine:db-1|{kind}|none|{failed_at}|the latest visit failed: Permission denied (publickey)."
+            ),
+        })
+        .chain(
+            [
+                "containers",
+                "running kernel package",
+                "sweep visit",
+                "system package sources",
+                "system packages",
+                "system release"
+            ]
+            .iter()
+            .map(|kind| match *kind {
+                "sweep visit" => format!(
+                    "machine:web-new|{kind}|none|{failed_at}|ssh: connect to host web-new port 22: Operation timed out\u{202E}"
+                ),
+                _ => format!("machine:web-new|{kind}|full|{taken}|"),
+            })
+        )
+        .collect::<Vec<_>>()
     );
     let web_said = "web-new was last read 2026-01-02 03:04 UTC; the latest visit failed 2026-01-03 04:00 UTC: ssh: connect to host web-new port 22: Operation timed out\\u{202e}.";
     let db_said = "db-1 was never read; the latest visit failed 2026-01-03 04:00 UTC: Permission denied (publickey).";
@@ -4516,4 +4597,506 @@ fn a_store_made_before_the_threat_list_takes_its_tables_and_journal_entries_with
     let conn = Connection::open(f.store()).unwrap();
     assert!(conn.execute("DELETE FROM journal", []).is_err());
     assert!(conn.execute("UPDATE journal SET text = ''", []).is_err());
+}
+
+/// A server file as the current probe writes it, with the given os-release fields, owners of
+/// the running kernel as `dpkg-query -S` prints them, package managers and dpkg rows as
+/// `dpkg-query -W -f='${db:Status-Abbrev}\t${Package}\t${Version}\t${source:Package}\t${source:Version}\n'`
+/// prints them. No docker.
+fn server(os_release: &str, kernel_package: &str, managers: &str, dpkg: &str) -> String {
+    format!(
+        "##taken_at\n1767323045\n##os\nInvented Linux\n##os_release\n{os_release}##kernel\n\
+         6.8.0-45-generic\n##kernel_package\n{kernel_package}##package_managers\n{managers}\
+         ##reboot_required\nno\n##pve\n##dpkg_with_source\n{dpkg}##snap\n\
+         ##docker_access\ndocker not installed\n##end\n"
+    )
+}
+
+const UBUNTU: &str = "ID\tubuntu\nVERSION_ID\t24.04\nVERSION_CODENAME\tnoble\n";
+
+/// Runs soc on these server files and returns the report line.
+fn run_servers(dir: &Dir, files: &[(&str, &str)]) -> String {
+    let servers = dir.0.join("servers");
+    for (name, text) in files {
+        put(&servers, &format!("{name}.txt"), text);
+    }
+    soc_all(
+        &dir.store(),
+        &dir.input("brew.txt", SAMPLE),
+        &servers,
+        &dir.0.join("absent"),
+    )
+}
+
+/// Live assertions about one server and what is on it.
+fn live_on(store: &Path, machine: &str) -> Vec<String> {
+    rows(
+        store,
+        &format!(
+            "SELECT subject, predicate, object FROM assertion WHERE layer = 'live'
+             AND (subject = 'machine:{machine}'
+                  OR subject LIKE 'component:machine:{machine}/%')
+             AND predicate != 'known_as'
+             ORDER BY subject, predicate, object"
+        ),
+    )
+}
+
+/// The latest reading of one kind on one server: completeness and reason.
+fn reading_of(store: &Path, machine: &str, kind: &str) -> String {
+    rows(
+        store,
+        &format!(
+            "SELECT completeness, COALESCE(reason, '') FROM coverage
+             WHERE scope = 'machine:{machine}' AND kind = '{kind}' ORDER BY id DESC LIMIT 1"
+        ),
+    )
+    .join("")
+}
+
+#[test]
+fn a_package_removed_and_not_purged_is_not_a_component_and_stops_being_one() {
+    // dpkg lists a package whose files were removed and whose configuration was kept, and
+    // one it knows as not installed. Counting either as present is a false alarm now and,
+    // once matching runs, an answer about software that is not there. A package whose files
+    // are on disk but not fully configured, or held, is there.
+    let dir = Dir::new("removed");
+    let store = dir.store();
+    let dpkg = "\
+ii \tcurl\t8.5.0-2ubuntu10.4\tcurl\t8.5.0-2ubuntu10.4
+rc \tapache2\t2.4.58-1ubuntu8.4\tapache2\t2.4.58-1ubuntu8.4
+un \tnano\t7.2-2build1\tnano\t7.2-2build1
+iU \tvim\t2:9.1.0016-1ubuntu7.3\tvim\t2:9.1.0016-1ubuntu7.3
+hi \tzlib1g\t1:1.3.dfsg-3.1ubuntu2.1\tzlib\t1:1.3.dfsg-3.1ubuntu2.1
+";
+    run_servers(&dir, &[("web", &server(UBUNTU, "", "dpkg\n", dpkg))]);
+    let components = "SELECT DISTINCT subject FROM assertion WHERE layer = 'live'
+                      AND predicate = 'part_of' AND subject LIKE '%machine:web/%'
+                      ORDER BY subject";
+    assert_eq!(
+        rows(&store, components),
+        [
+            "component:machine:web/deb/curl",
+            "component:machine:web/deb/vim",
+            "component:machine:web/deb/zlib1g",
+        ]
+    );
+
+    let removed = dpkg.replace("ii \tcurl", "rc \tcurl");
+    let report = run_servers(&dir, &[("web", &server(UBUNTU, "", "dpkg\n", &removed))]);
+    assert_eq!(
+        rows(&store, components),
+        [
+            "component:machine:web/deb/vim",
+            "component:machine:web/deb/zlib1g"
+        ]
+    );
+    assert_eq!(
+        rows(
+            &store,
+            "SELECT predicate, object FROM assertion WHERE layer = 'retracted'
+             AND subject = 'component:machine:web/deb/curl' ORDER BY predicate"
+        ),
+        [
+            "built_from|curl 8.5.0-2ubuntu10.4",
+            "has_version|8.5.0-2ubuntu10.4",
+            "part_of|machine:web"
+        ]
+    );
+    assert!(report.contains("1 removed"), "{report}");
+}
+
+#[test]
+fn a_component_carries_the_source_package_and_version_it_was_built_from() {
+    // Distributions publish their security data by source package, and a binary package's
+    // name and version can both differ from its source's: a rebuilt binary carries a `+b1`
+    // its source does not. A package dpkg gives no source for is said to be unread, so that a
+    // matcher never takes a missing source for a package nothing affects.
+    let dir = Dir::new("sources");
+    let store = dir.store();
+    let dpkg = "\
+ii \tlibssl3t64\t3.0.13-0ubuntu3.4\topenssl\t3.0.13-0ubuntu3.4
+ii \tlibexpat1\t2.5.0-1+b1\texpat\t2.5.0-1
+ii \tbash\t5.2.21-2ubuntu4\tbash\t5.2.21-2ubuntu4
+";
+    let without = format!("{dpkg}ii \tmawk\t1.3.4.20240123-1build1\t\t\n");
+    run_servers(
+        &dir,
+        &[
+            ("a", &server(UBUNTU, "", "dpkg\n", dpkg)),
+            ("b", &server(UBUNTU, "", "dpkg\n", &without)),
+        ],
+    );
+
+    assert_eq!(
+        rows(
+            &store,
+            "SELECT subject, object, substr(source_ref, instr(source_ref, 'servers/'))
+             FROM assertion WHERE layer = 'live' AND predicate = 'built_from'
+             AND subject LIKE '%machine:a/%' ORDER BY subject"
+        ),
+        [
+            "component:machine:a/deb/bash|bash 5.2.21-2ubuntu4|servers/a.txt:20",
+            "component:machine:a/deb/libexpat1|expat 2.5.0-1|servers/a.txt:19",
+            "component:machine:a/deb/libssl3t64|openssl 3.0.13-0ubuntu3.4|servers/a.txt:18",
+        ]
+    );
+    assert_eq!(reading_of(&store, "a", "system package sources"), "full|");
+    assert_eq!(
+        reading_of(&store, "b", "system package sources"),
+        "partial|1 of the packages give no source"
+    );
+    // The package with no source is still a component.
+    assert!(
+        live_on(&store, "b").contains(&"component:machine:b/deb/mawk|part_of|machine:b".into())
+    );
+}
+
+#[test]
+fn a_machine_carries_its_exact_release_and_one_the_system_does_not_give_is_not_guessed() {
+    // Security data is keyed by release: Ubuntu's by its version, Debian's by its code name.
+    // The release is taken as the system gives it, next to the pretty name, which stays as
+    // it was. A system that gives no version, as a rolling distribution does, has no release,
+    // and that is a reading that read nothing, not a release made up from other fields.
+    let dir = Dir::new("release");
+    let store = dir.store();
+    let dpkg = "ii \tbash\t5.2.15-2+b7\tbash\t5.2.15-2\n";
+    run_servers(
+        &dir,
+        &[
+            ("noble", &server(UBUNTU, "", "dpkg\n", dpkg)),
+            (
+                "bookworm",
+                &server("ID\tdebian\nVERSION_ID\t12\n", "", "dpkg\n", dpkg),
+            ),
+            ("rolling", &server("ID\tarch\n", "", "pacman\n", "")),
+        ],
+    );
+
+    let release = "SELECT subject, predicate, object FROM assertion WHERE layer = 'live'
+                   AND predicate IN ('runs_release', 'release_codename', 'runs_os')
+                   ORDER BY subject, predicate";
+    assert_eq!(
+        rows(&store, release),
+        [
+            "machine:bookworm|runs_os|Invented Linux",
+            "machine:bookworm|runs_release|debian 12",
+            "machine:noble|release_codename|noble",
+            "machine:noble|runs_os|Invented Linux",
+            "machine:noble|runs_release|ubuntu 24.04",
+        ]
+    );
+    assert_eq!(reading_of(&store, "noble", "system release"), "full|");
+    assert_eq!(
+        reading_of(&store, "rolling", "system release"),
+        "none|the system does not give VERSION_ID"
+    );
+}
+
+#[test]
+fn the_package_that_owns_the_running_kernel_is_recorded_and_a_kernel_no_package_owns_records_nothing()
+ {
+    // Which package the running kernel came from is what its vulnerabilities are matched
+    // against; it is asked of dpkg, never built from the kernel's name. A kernel no package
+    // owns, such as one the hosting provider boots, has no package, and a diversion line
+    // names none.
+    let dir = Dir::new("kernel-package");
+    let store = dir.store();
+    let dpkg = "ii \tbash\t5.2.21-2ubuntu4\tbash\t5.2.21-2ubuntu4\n";
+    let image = "linux-image-6.8.0-45-generic: /boot/vmlinuz-6.8.0-45-generic\n";
+    let modules = "\
+diversion by invented-divert from: /lib/modules/6.8.0-45-generic
+linux-modules-6.8.0-45-generic, linux-modules-extra-6.8.0-45-generic: /lib/modules/6.8.0-45-generic
+";
+    run_servers(
+        &dir,
+        &[
+            ("image", &server(UBUNTU, image, "dpkg\n", dpkg)),
+            ("modules", &server(UBUNTU, modules, "dpkg\n", dpkg)),
+            ("provider", &server(UBUNTU, "", "dpkg\n", dpkg)),
+        ],
+    );
+
+    assert_eq!(
+        rows(
+            &store,
+            "SELECT subject, object FROM assertion WHERE layer = 'live'
+             AND predicate = 'runs_kernel_package' ORDER BY subject, object"
+        ),
+        [
+            "machine:image|linux-image-6.8.0-45-generic",
+            "machine:modules|linux-modules-6.8.0-45-generic",
+            "machine:modules|linux-modules-extra-6.8.0-45-generic",
+        ]
+    );
+    assert_eq!(
+        reading_of(&store, "provider", "running kernel package"),
+        "full|"
+    );
+}
+
+#[test]
+fn a_server_whose_package_manager_the_program_cannot_read_is_a_reading_that_read_nothing_naming_it()
+{
+    // A server without dpkg has an empty dpkg list. Taken as a full reading it would say the
+    // server has nothing installed, and every answer about it would be calm. The manager the
+    // program has no reader for is named. Next to dpkg, another manager's packages are not
+    // read, so what dpkg lists is not all there is.
+    let dir = Dir::new("no-reader");
+    let store = dir.store();
+    let fedora = "ID\tfedora\nVERSION_ID\t40\n";
+    let dpkg = "ii \tbash\t5.2.21-2ubuntu4\tbash\t5.2.21-2ubuntu4\n";
+    run_servers(
+        &dir,
+        &[
+            ("rpm", &server(fedora, "", "rpm\n", "")),
+            (
+                "unknown",
+                &server("ID\tinvented\nVERSION_ID\t1\n", "", "", ""),
+            ),
+            ("both", &server(UBUNTU, "", "dpkg\nrpm\n", dpkg)),
+            (
+                "empty",
+                &server(UBUNTU, "", "dpkg\n", "rc \tnano\t7.2-2\tnano\t7.2-2\n"),
+            ),
+            (
+                "nolist",
+                &server(UBUNTU, "", "dpkg\n", "").replace("##dpkg_with_source\n", ""),
+            ),
+        ],
+    );
+
+    let no_reader = "none|the program has no reader for the package manager this server uses: rpm";
+    for kind in [
+        "system packages",
+        "system package sources",
+        "running kernel package",
+    ] {
+        assert_eq!(reading_of(&store, "rpm", kind), no_reader, "{kind}");
+    }
+    assert_eq!(
+        reading_of(&store, "unknown", "system packages"),
+        "none|the server has none of the package managers the probe looks for"
+    );
+    // What does not depend on the package manager is still read.
+    assert_eq!(reading_of(&store, "rpm", "system release"), "full|");
+    assert_eq!(
+        live_on(&store, "rpm"),
+        ["machine:rpm|runs_release|fedora 40"]
+    );
+    // dpkg that lists nothing installed is a list that failed, not an empty server.
+    assert_eq!(
+        reading_of(&store, "empty", "system packages"),
+        "none|the package list is empty"
+    );
+    assert_eq!(
+        reading_of(&store, "nolist", "system packages"),
+        "none|the sweep has no package list"
+    );
+    let partial = "partial|only dpkg is read; packages of rpm are not";
+    assert_eq!(reading_of(&store, "both", "system packages"), partial);
+    assert_eq!(
+        reading_of(&store, "both", "system package sources"),
+        partial
+    );
+}
+
+/// The lines of the probe from the one that starts with `from` to the one that starts with
+/// `to`, both included.
+fn probe_part(from: &str, to: &str) -> String {
+    let probe =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/probe.sh")).unwrap();
+    let lines: Vec<&str> = probe.lines().collect();
+    let start = lines.iter().position(|l| l.starts_with(from)).unwrap();
+    let end = start
+        + lines[start..]
+            .iter()
+            .position(|l| l.starts_with(to))
+            .unwrap();
+    lines[start..=end]
+        .iter()
+        .map(|l| format!("{l}\n"))
+        .collect()
+}
+
+#[test]
+fn os_release_is_read_as_text_and_never_run() {
+    // The probe runs on the owner's servers. os-release is written in shell syntax, and a
+    // probe that sources it runs whatever the file holds. The part of the probe that reads
+    // it is run here against a prepared file; the probe is never run against a server.
+    let dir = Dir::new("os-release");
+    let marker = dir.0.join("ran");
+    let file = put(
+        &dir.0,
+        "os-release",
+        &format!(
+            "\
+# An invented os-release.
+NAME=\"Ubuntu\"
+PRETTY_NAME=\"Ubuntu 24.04.1 LTS \\\"x\\\" \\$HOME \\`id\\` a\\\\b\"
+VERSION_ID=\"24.04\"
+ID=ubuntu
+VERSION_CODENAME='noble'
+ID_LIKE=debian$(touch '{m}')
+HOME_URL=`touch '{m}'`
+",
+            m = marker.display()
+        ),
+    );
+    // The file would run a command if it were executed.
+    ok(Command::new("/bin/sh")
+        .arg("-c")
+        .arg(". \"$1\"")
+        .arg("sh")
+        .arg(&file));
+    assert!(
+        marker.exists(),
+        "the prepared file runs nothing when sourced"
+    );
+    std::fs::remove_file(&marker).unwrap();
+
+    let part = probe_part("F=/etc/os-release", "echo \"##os_release\"");
+    let expected = "##os\nUbuntu 24.04.1 LTS \"x\" $HOME `id` a\\b\n##os_release\n\
+                    ID\tubuntu\nVERSION_ID\t24.04\nVERSION_CODENAME\tnoble";
+    let file = file.display().to_string();
+    let printed = ok(Command::new("/bin/sh")
+        .arg("-c")
+        .arg(part.replace("/etc/os-release", &file)));
+    assert!(!marker.exists(), "reading os-release ran a command from it");
+    assert_eq!(printed, expected);
+    // A system that keeps the file only in /usr/lib, as the format allows, is read the same.
+    let missing = dir.0.join("missing").display().to_string();
+    let printed = ok(Command::new("/bin/sh").arg("-c").arg(
+        part.replace("/etc/os-release", &missing)
+            .replace("/usr/lib/os-release", &file),
+    ));
+    assert_eq!(printed, expected);
+}
+
+#[test]
+fn the_probe_is_plain_posix_sh() {
+    // The probe runs with whatever `sh` a server has, often dash. A syntax error there is a
+    // server that is never read.
+    let probe = concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/probe.sh");
+    for sh in ["/bin/sh", "/bin/dash"] {
+        if Path::new(sh).exists() {
+            ok(Command::new(sh).arg("-n").arg(probe));
+        }
+    }
+}
+
+#[test]
+fn the_release_the_source_and_the_kernel_package_are_shown_under_the_machine_escaped() {
+    // What a server prints is partly written by whoever controls it.
+    let dir = Dir::new("view-new-facts");
+    let store = dir.store();
+    let dpkg = "ii \tlibexpat1\t2.5.0-1+b1\t<i>expat</i>\t2.5.0-1\n";
+    let release = "ID\t<b>x</b>\nVERSION_ID\t1\"2\nVERSION_CODENAME\t<u>c</u>\n";
+    let kernel = "<script>k</script>: /boot/vmlinuz-6.8.0-45-generic\n";
+    run_servers(&dir, &[("web", &server(release, kernel, "dpkg\n", dpkg))]);
+    let page = view(&store);
+    let web = machine_block(&page, "web");
+
+    for shown in [
+        "&lt;b&gt;x&lt;/b&gt; 1&quot;2",
+        "(&lt;u&gt;c&lt;/u&gt;)",
+        "&lt;script&gt;k&lt;/script&gt;",
+        "&lt;i&gt;expat&lt;/i&gt; 2.5.0-1",
+    ] {
+        assert!(
+            web.contains(shown),
+            "{shown} is not under the machine: {web}"
+        );
+    }
+    for raw in ["<b>", "<u>", "<script", "<i>"] {
+        assert!(!page.contains(raw), "{raw} reached the page");
+    }
+}
+
+/// Fake `uname`, `dpkg`, `rpm` and `dpkg-query` for running parts of the probe here.
+/// `dpkg-query -S` says `$OWNER` owns `$OWNS` and nothing else; `dpkg-query -W -f=<format>`
+/// fills the format as dpkg does for an invented database of three packages, one of them
+/// removed and not purged.
+fn fake_dpkg(bin: &Path) {
+    script(&bin.join("uname"), "echo 6.8.0-45-generic");
+    script(&bin.join("dpkg"), "exit 0");
+    script(&bin.join("rpm"), "exit 0");
+    script(
+        &bin.join("dpkg-query"),
+        r#"if [ "$1" = -S ]; then
+  [ -n "$OWNS" ] && [ "$2" = "$OWNS" ] && { echo "$OWNER: $2"; exit 0; }
+  echo "dpkg-query: no path found matching pattern $2" >&2; exit 1
+fi
+[ "$1" = -W ] || exit 2
+fmt=${2#-f=}
+printf '%s\n' 'ii |libexpat1|2.5.0-1+b1|expat|2.5.0-1' 'rc |apache2|2.4.58-1|apache2|2.4.58-1' \
+  'ii |linux-image-6.8.0-45-generic|6.8.0-45.45|linux-signed|6.8.0-45.45' |
+while IFS='|' read -r st p v sp sv; do
+  line=$(printf '%s' "$fmt" | sed -e "s/\${db:Status-Abbrev}/$st/g" -e "s/\${Package}/$p/g" \
+    -e "s/\${Version}/$v/g" -e "s/\${source:Package}/$sp/g" -e "s/\${source:Version}/$sv/g")
+  printf "$line"
+done"#,
+    );
+}
+
+#[test]
+fn the_probe_asks_dpkg_which_package_owns_the_running_kernel_and_the_reader_reads_what_it_prints() {
+    // The kernel's package is asked of dpkg for the kernel's own image, then its modules
+    // folder, wherever the system keeps them; a kernel no package owns prints nothing, not
+    // even to stderr. What
+    // the probe prints from dpkg is what the reader reads: the parts of the probe run here
+    // against fake tools, never against a server, and their output goes through `soc run`.
+    let dir = Dir::new("probe-dpkg");
+    let bin = dir.0.join("bin");
+    fake_dpkg(&bin);
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+    let run = |part: &str, owns: &str| {
+        // A part's last command may fail, as it may in the probe, which goes on. Nothing may
+        // reach stderr: the sweep keeps its last line as the reason a failed visit failed.
+        let out = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("{part}true"))
+            .env("PATH", &path)
+            .env("OWNS", owns)
+            .env("OWNER", "linux-image-6.8.0-45-generic")
+            .output()
+            .unwrap();
+        assert!(out.status.success() && out.stderr.is_empty(), "{out:?}");
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    };
+    let kernel = probe_part("echo \"##kernel_package\"", "command -v dpkg-query");
+    for owns in [
+        "/boot/vmlinuz-6.8.0-45-generic",
+        "/lib/modules/6.8.0-45-generic",
+        "/usr/lib/modules/6.8.0-45-generic",
+    ] {
+        assert_eq!(
+            run(&kernel, owns),
+            format!("##kernel_package\nlinux-image-6.8.0-45-generic: {owns}")
+        );
+    }
+    assert_eq!(run(&kernel, ""), "##kernel_package");
+
+    let managers = probe_part("echo \"##package_managers\"", "echo \"##package_managers\"");
+    assert_eq!(run(&managers, ""), "##package_managers\ndpkg\nrpm");
+
+    let dpkg = probe_part("echo \"##dpkg_with_source\"", "echo \"##dpkg_with_source\"");
+    let file = format!(
+        "{}\n##package_managers\ndpkg\n{}\n##end\n",
+        run(&kernel, "/boot/vmlinuz-6.8.0-45-generic"),
+        run(&dpkg, "")
+    );
+    run_servers(&dir, &[("web", &file)]);
+    assert_eq!(
+        live_on(&dir.store(), "web"),
+        [
+            "component:machine:web/deb/libexpat1|built_from|expat 2.5.0-1",
+            "component:machine:web/deb/libexpat1|has_version|2.5.0-1+b1",
+            "component:machine:web/deb/libexpat1|part_of|machine:web",
+            "component:machine:web/deb/linux-image-6.8.0-45-generic|built_from|linux-signed 6.8.0-45.45",
+            "component:machine:web/deb/linux-image-6.8.0-45-generic|has_version|6.8.0-45.45",
+            "component:machine:web/deb/linux-image-6.8.0-45-generic|part_of|machine:web",
+            "machine:web|runs_kernel_package|linux-image-6.8.0-45-generic",
+        ]
+    );
 }

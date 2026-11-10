@@ -14,6 +14,12 @@ use std::time::UNIX_EPOCH;
 pub const READER: &str = "servers";
 pub const BASIS: &str = "observed";
 pub const PACKAGES: &str = "system packages";
+/// The source package and version each system package was built from.
+pub const SOURCES: &str = "system package sources";
+/// The distribution and its version as the system gives them in its os-release file.
+pub const RELEASE: &str = "system release";
+/// The package that owns the running kernel.
+pub const KERNEL_PACKAGE: &str = "running kernel package";
 pub const CONTAINERS: &str = "containers";
 /// Every `*_VERSION` variable of a running container: the sweep prints all of them.
 pub const VARIABLES: &str = "container version variables";
@@ -35,6 +41,11 @@ const BRIDGES: [&str; 11] = [
 ];
 
 pub const NOT_COMPLETE: &str = "the sweep of this server did not complete";
+/// What a file from a probe that did not yet read a kind says about it.
+const OLDER_PROBE: &str = "the file came from an older probe, which did not read this";
+/// dpkg's list with each package's status and source, and the list an older probe printed.
+const DPKG: &str = "dpkg_with_source";
+const DPKG_OLD: &str = "dpkg";
 const NO_RIGHTS: &str = "no rights to list containers";
 const CONTENTS_PARTIAL: &str = "only version variables and the WordPress core version are read";
 /// What the probe prints when docker refused, and when there is no docker.
@@ -247,14 +258,50 @@ pub fn readings(machine: &str, text: &str, raw_file: &str) -> Vec<Outcome> {
         });
     }
 
-    // System packages, with the system itself.
-    let dpkg = pairs(&s, "dpkg");
-    if !s.contains_key("dpkg") {
-        out.push(not_read(machine, PACKAGES, "the sweep has no package list"));
+    // The release, as the os-release file gives it. Never derived from the pretty name.
+    out.push(release(machine, &s, raw_file));
+
+    // System packages, with the system itself, the sources they were built from and the
+    // package that owns the running kernel. These three are read only through dpkg.
+    let dpkg = debs(&s);
+    let managers = s.get("package_managers").map(|rows| {
+        rows.iter()
+            .map(|(_, l)| l.trim())
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+    });
+    let unread = managers.as_deref().map_or(Vec::new(), |m| {
+        m.iter().copied().filter(|m| *m != "dpkg").collect()
+    });
+    let no_reader = managers.as_deref().is_some_and(|m| !m.contains(&"dpkg"));
+    let failed = if no_reader && unread.is_empty() {
+        Some("the server has none of the package managers the probe looks for".to_string())
+    } else if no_reader {
+        Some(format!(
+            "the program has no reader for the package manager this server uses: {}",
+            unread.join(", ")
+        ))
+    } else if !s.contains_key(DPKG) && !s.contains_key(DPKG_OLD) {
+        Some("the sweep has no package list".to_string())
     } else if dpkg.is_empty() {
         // An empty list is a missing dpkg, not a server with nothing installed.
-        out.push(not_read(machine, PACKAGES, "the package list is empty"));
+        Some("the package list is empty".to_string())
     } else {
+        None
+    };
+    if let Some(reason) = failed {
+        for kind in [PACKAGES, SOURCES, KERNEL_PACKAGE] {
+            out.push(not_read(machine, kind, &reason));
+        }
+    } else {
+        // Packages of another manager next to dpkg are not read: nothing may be retracted
+        // for them, and what is read is not all there is.
+        let partial = (!unread.is_empty()).then(|| {
+            format!(
+                "only dpkg is read; packages of {} are not",
+                unread.join(", ")
+            )
+        });
         let mut st = Vec::new();
         if let Some((n, os)) = first_line(&s, "os") {
             say(&mut st, machine, "runs_os", os, n);
@@ -265,14 +312,47 @@ pub fn readings(machine: &str, text: &str, raw_file: &str) -> Vec<Outcome> {
         let snap = pairs(&s, "snap");
         let rows = dpkg
             .iter()
-            .map(|r| ("deb", r))
-            .chain(snap.iter().map(|r| ("snap", r)));
-        for (ecosystem, (n, name, version)) in rows {
+            .map(|d| ("deb", d.n, d.name, d.version))
+            .chain(snap.iter().map(|(n, a, b)| ("snap", *n, *a, *b)));
+        for (ecosystem, n, name, version) in rows {
             let component = format!("component:{machine}/{ecosystem}/{name}");
-            say(&mut st, &component, "part_of", machine, *n);
-            say(&mut st, &component, "has_version", version, *n);
+            say(&mut st, &component, "part_of", machine, n);
+            say(&mut st, &component, "has_version", version, n);
         }
-        out.push(full(machine, PACKAGES, st));
+        out.push(reading(machine, PACKAGES, partial.clone(), st));
+
+        if s.contains_key(DPKG) {
+            let mut st = Vec::new();
+            for d in &dpkg {
+                if let Some((source, version)) = d.source {
+                    let component = format!("component:{machine}/deb/{}", d.name);
+                    say(
+                        &mut st,
+                        &component,
+                        "built_from",
+                        &format!("{source} {version}"),
+                        d.n,
+                    );
+                }
+            }
+            let missing = dpkg.iter().filter(|d| d.source.is_none()).count();
+            let reason = partial.clone().or_else(|| {
+                (missing > 0).then(|| format!("{missing} of the packages give no source"))
+            });
+            out.push(reading(machine, SOURCES, reason, st));
+        } else {
+            out.push(not_read(machine, SOURCES, OLDER_PROBE));
+        }
+
+        if s.contains_key("kernel_package") {
+            let mut st = Vec::new();
+            for (n, package) in kernel_packages(&s) {
+                say(&mut st, machine, "runs_kernel_package", package, n);
+            }
+            out.push(full(machine, KERNEL_PACKAGE, st));
+        } else {
+            out.push(not_read(machine, KERNEL_PACKAGE, OLDER_PROBE));
+        }
     }
 
     // Containers. Docker that is not installed has nothing to list: that is a full read.
@@ -373,6 +453,118 @@ pub fn readings(machine: &str, text: &str, raw_file: &str) -> Vec<Outcome> {
     out
 }
 
+/// One package dpkg lists as present.
+struct Deb<'a> {
+    n: usize,
+    name: &'a str,
+    version: &'a str,
+    /// The source package and version, `None` in a file from an older probe or when dpkg
+    /// did not give them.
+    source: Option<(&'a str, &'a str)>,
+}
+
+/// The packages whose files are on the server. dpkg also lists a package that was removed
+/// and not purged, with only its configuration files left, and one it knows as not
+/// installed; neither is a component. An older probe printed only names and versions of
+/// whatever dpkg listed.
+fn debs<'a>(s: &Sections<'a>) -> Vec<Deb<'a>> {
+    if !s.contains_key(DPKG) {
+        return pairs(s, DPKG_OLD)
+            .into_iter()
+            .map(|(n, name, version)| Deb {
+                n,
+                name,
+                version,
+                source: None,
+            })
+            .collect();
+    }
+    let rows = s.get(DPKG).map(Vec::as_slice).unwrap_or_default();
+    rows.iter()
+        .filter_map(|(n, line)| {
+            let mut cols = line.split('\t').map(str::trim);
+            let (status, name, version) = (cols.next()?, cols.next()?, cols.next()?);
+            let (source, source_version) = (cols.next(), cols.next());
+            // The second letter of `${db:Status-Abbrev}` is the package's state.
+            let gone = matches!(status.chars().nth(1), Some('n' | 'c'));
+            if gone || name.is_empty() || version.is_empty() {
+                return None;
+            }
+            let source = match (source, source_version) {
+                (Some(p), Some(v)) if !p.is_empty() && !v.is_empty() => Some((p, v)),
+                _ => None,
+            };
+            Some(Deb {
+                n: *n,
+                name,
+                version,
+                source,
+            })
+        })
+        .collect()
+}
+
+/// The packages `dpkg-query -S` says own the running kernel: `<package>, <package>: <path>`.
+fn kernel_packages<'a>(s: &Sections<'a>) -> Vec<(usize, &'a str)> {
+    let rows = s
+        .get("kernel_package")
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    for (n, line) in rows {
+        let Some((packages, _)) = line.split_once(": ") else {
+            continue;
+        };
+        // A package name has no blanks; a diversion line, `diversion by <package> from:`,
+        // has them and names no owner.
+        for package in packages.split(',').map(str::trim) {
+            if !package.is_empty() && !package.contains(char::is_whitespace) {
+                out.push((*n, package));
+            }
+        }
+    }
+    out
+}
+
+/// The release as `<ID> <VERSION_ID>`, and the code name when the system gives one. A
+/// system that does not give both is a reading that read nothing, never a guess.
+fn release(machine: &str, s: &Sections, raw_file: &str) -> Outcome {
+    if !s.contains_key("os_release") {
+        return not_read(machine, RELEASE, OLDER_PROBE);
+    }
+    let fields = pairs(s, "os_release");
+    let field = |key: &str| {
+        fields
+            .iter()
+            .find(|(_, k, _)| *k == key)
+            .map(|r| (r.0, r.2))
+    };
+    let (id, version, codename) = (field("ID"), field("VERSION_ID"), field("VERSION_CODENAME"));
+    let (Some((_, id)), Some((n, version))) = (id, version) else {
+        let missing: Vec<&str> = [("ID", id), ("VERSION_ID", version)]
+            .into_iter()
+            .filter(|(_, v)| v.is_none())
+            .map(|(k, _)| k)
+            .collect();
+        return not_read(
+            machine,
+            RELEASE,
+            &format!("the system does not give {}", missing.join(" or ")),
+        );
+    };
+    let say = |predicate, object: String, n: usize| Statement {
+        subject: machine.to_string(),
+        predicate,
+        object,
+        source_ref: format!("{raw_file}:{n}"),
+    };
+    let mut st = vec![say("runs_release", format!("{id} {version}"), n)];
+    if let Some((n, codename)) = codename {
+        st.push(say("release_codename", codename.to_string(), n));
+    }
+    full(machine, RELEASE, st)
+}
+
 /// An address the server has on one of its interfaces, as the resolver compares it, or
 /// `None` when it names no one machine: loopback, link-local, or the address of a
 /// container bridge.
@@ -400,10 +592,10 @@ pub fn visit_failed(machine: &str, reason: &str) -> Vec<Outcome> {
 }
 
 fn nothing_read(machine: &str, reason: &str) -> Vec<Outcome> {
-    vec![
-        not_read(machine, PACKAGES, reason),
-        not_read(machine, CONTAINERS, reason),
-    ]
+    [PACKAGES, SOURCES, KERNEL_PACKAGE, RELEASE, CONTAINERS]
+        .into_iter()
+        .map(|kind| not_read(machine, kind, reason))
+        .collect()
 }
 
 /// The latest visit: full when it left a complete reading, else none with why it failed.
@@ -421,6 +613,22 @@ fn not_read(scope: &str, kind: &'static str, reason: &str) -> Outcome {
         completeness: "none",
         reason: Some(reason.to_string()),
         statements: Vec::new(),
+    }
+}
+
+/// Full, or partial for the reason given.
+fn reading(
+    scope: &str,
+    kind: &'static str,
+    partial: Option<String>,
+    statements: Vec<Statement>,
+) -> Outcome {
+    Outcome {
+        scope: scope.to_string(),
+        kind,
+        completeness: if partial.is_some() { "partial" } else { "full" },
+        reason: partial,
+        statements,
     }
 }
 
