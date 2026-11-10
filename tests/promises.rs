@@ -1,4 +1,5 @@
-//! Promises of the first working whole: store, the brew reader, the lifecycle and the report.
+//! Promises of the first working whole: store, the brew reader, the lifecycle, the report
+//! and the view.
 //! Each test runs the real binary on a sample in the format `brew list --versions` prints.
 
 use rusqlite::Connection;
@@ -50,6 +51,7 @@ impl Drop for Dir {
 /// Runs soc and returns the report line.
 fn soc(store: &Path, input: &Path) -> String {
     let out = Command::new(env!("CARGO_BIN_EXE_soc"))
+        .arg("run")
         .arg("--store")
         .arg(store)
         .arg("--brew-input")
@@ -62,6 +64,31 @@ fn soc(store: &Path, input: &Path) -> String {
         String::from_utf8_lossy(&out.stderr)
     );
     String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+/// Runs `soc view` without opening a browser and returns the page it wrote.
+fn view(store: &Path) -> String {
+    let out = Command::new(env!("CARGO_BIN_EXE_soc"))
+        .args(["view", "--no-open", "--store"])
+        .arg(store)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let path = String::from_utf8(out.stdout).unwrap();
+    std::fs::read_to_string(path.trim()).unwrap()
+}
+
+/// One section of the page, by its id.
+fn section<'a>(page: &'a str, id: &str) -> &'a str {
+    let start = page
+        .find(&format!("<section id=\"{id}\">"))
+        .unwrap_or_else(|| panic!("no section {id}"));
+    let end = start + page[start..].find("</section>").unwrap();
+    &page[start..end]
 }
 
 /// Every row as its columns joined with `|`.
@@ -239,4 +266,96 @@ fn journal_is_append_only() {
     assert!(conn.execute("UPDATE journal SET text = 'x'", []).is_err());
     assert!(conn.execute("DELETE FROM journal", []).is_err());
     assert_eq!(rows(&store, "SELECT * FROM journal ORDER BY seq"), before);
+}
+
+#[test]
+fn text_from_the_store_never_becomes_markup() {
+    // Package names and versions are partly written by an attacker.
+    let dir = Dir::new("escape");
+    let store = dir.store();
+    let evil = "<script>alert('x')</script>\"onload=\"x 1.0\"><b>bold</b>\n";
+    soc(&store, &dir.input("brew.txt", &format!("{SAMPLE}{evil}")));
+    let page = view(&store);
+
+    assert!(!page.contains("<script"), "a script tag reached the page");
+    assert!(
+        !page.contains("<b>"),
+        "a tag from a version reached the page"
+    );
+    assert!(
+        !page.contains("\"onload"),
+        "a quote from a name reached the page"
+    );
+    assert!(page.contains("&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt;&quot;onload=&quot;x"));
+    assert!(page.contains("1.0&quot;&gt;&lt;b&gt;bold&lt;/b&gt;"));
+}
+
+#[test]
+fn view_does_not_change_or_create_the_store() {
+    let dir = Dir::new("readonly");
+    let store = dir.store();
+    soc(&store, &dir.input("brew.txt", SAMPLE));
+    let before = std::fs::read(&store).unwrap();
+    view(&store);
+    assert!(
+        std::fs::read(&store).unwrap() == before,
+        "the store file changed"
+    );
+
+    let missing = dir.0.join("none").join("store.db");
+    let out = Command::new(env!("CARGO_BIN_EXE_soc"))
+        .args(["view", "--no-open", "--store"])
+        .arg(&missing)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no store"));
+    assert!(!missing.exists() && !dir.0.join("none").exists());
+}
+
+#[test]
+fn reading_that_failed_is_shown_with_its_reason_and_not_as_full() {
+    // False calm: the page must not present a scope as read when it was not.
+    let dir = Dir::new("failed");
+    let store = dir.store();
+    soc(&store, &dir.input("brew.txt", SAMPLE));
+    soc(&store, &dir.0.join("missing.txt"));
+    let reason = rows(
+        &store,
+        "SELECT reason FROM coverage ORDER BY id DESC LIMIT 1",
+    );
+    let page = view(&store);
+
+    let coverage = section(&page, "coverage");
+    let row = coverage
+        .split("<tr")
+        .find(|r| r.contains("machine:mac") && r.contains("brew packages"))
+        .expect("no coverage row for the brew reading");
+    assert!(row.contains("nothing read"), "{row}");
+    assert!(row.contains(reason[0].as_str()), "{row}");
+    assert!(!row.contains("full"), "{row}");
+    assert!(!coverage.contains("Every reading was full"), "{coverage}");
+}
+
+#[test]
+fn removed_component_is_under_no_longer_there_and_not_on_the_machine() {
+    // The machine shows only what is there now; an old version is gone too.
+    let dir = Dir::new("view-gone");
+    let store = dir.store();
+    soc(&store, &dir.input("before.txt", SAMPLE));
+    let after = SAMPLE
+        .replace("git 2.47.0\n", "")
+        .replace("node 22.9.0 23.1.0", "node 23.1.0");
+    soc(&store, &dir.input("after.txt", &after));
+    let page = view(&store);
+
+    let git = ">git</td>";
+    let machines = section(&page, "machines");
+    assert!(machines.contains(">node</td>"), "{machines}");
+    assert!(!machines.contains(git), "{machines}");
+    assert!(!machines.contains("22.9.0"), "{machines}");
+    let gone = section(&page, "gone");
+    assert!(gone.contains(git), "{gone}");
+    assert!(gone.contains("2.47.0"), "{gone}");
+    assert!(gone.contains("22.9.0"), "{gone}");
 }

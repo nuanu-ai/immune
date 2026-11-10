@@ -1,7 +1,7 @@
 //! The store: vocabulary, entities, the three assertion layers, coverage and the journal.
 //! The shape follows docs/facts.md.
 
-use rusqlite::{Connection, Transaction, params};
+use rusqlite::{Connection, OpenFlags, Transaction, params};
 use std::path::Path;
 
 pub const FORMAT_VERSION: &str = "1";
@@ -143,6 +143,11 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
         tx.commit()?;
     }
     Ok(conn)
+}
+
+/// Opens an existing store so that nothing can be written to it. Creates nothing.
+pub fn open_read_only(path: &Path) -> rusqlite::Result<Connection> {
+    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
 }
 
 /// The entity type is the part of the id before the first colon.
