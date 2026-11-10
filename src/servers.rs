@@ -13,6 +13,12 @@ pub const READER: &str = "servers";
 pub const BASIS: &str = "observed";
 pub const PACKAGES: &str = "system packages";
 pub const CONTAINERS: &str = "containers";
+/// Every `*_VERSION` variable of a running container: the sweep prints all of them.
+pub const VARIABLES: &str = "container version variables";
+/// The WordPress core version of a container that runs a WordPress image.
+pub const WORDPRESS: &str = "wordpress core version";
+/// What is inside a container as a whole. Only the two kinds above are read, so this
+/// reading is never full and makes no assertions: nothing may claim a container was read.
 pub const CONTENTS: &str = "container contents";
 
 const NOT_COMPLETE: &str = "the sweep of this server did not complete";
@@ -31,8 +37,10 @@ pub struct Input {
     pub modified: i64,
 }
 
-/// What one reading of one server found.
+/// What one reading of one server, or of one container on it, found.
 pub struct Outcome {
+    /// The server's or the container's entity id.
+    pub scope: String,
     pub kind: &'static str,
     pub completeness: &'static str,
     pub reason: Option<String>,
@@ -116,8 +124,8 @@ pub fn readings(machine: &str, text: &str, raw_file: &str) -> Vec<Outcome> {
     let s = sections(text);
     if !s.contains_key("end") {
         return vec![
-            not_read(PACKAGES, NOT_COMPLETE),
-            not_read(CONTAINERS, NOT_COMPLETE),
+            not_read(machine, PACKAGES, NOT_COMPLETE),
+            not_read(machine, CONTAINERS, NOT_COMPLETE),
         ];
     }
     let at = |n: usize| format!("{raw_file}:{n}");
@@ -134,10 +142,10 @@ pub fn readings(machine: &str, text: &str, raw_file: &str) -> Vec<Outcome> {
     // System packages, with the system itself.
     let dpkg = pairs(&s, "dpkg");
     if !s.contains_key("dpkg") {
-        out.push(not_read(PACKAGES, "the sweep has no package list"));
+        out.push(not_read(machine, PACKAGES, "the sweep has no package list"));
     } else if dpkg.is_empty() {
         // An empty list is a missing dpkg, not a server with nothing installed.
-        out.push(not_read(PACKAGES, "the package list is empty"));
+        out.push(not_read(machine, PACKAGES, "the package list is empty"));
     } else {
         let mut st = Vec::new();
         if let Some((n, os)) = first_line(&s, "os") {
@@ -156,24 +164,25 @@ pub fn readings(machine: &str, text: &str, raw_file: &str) -> Vec<Outcome> {
             say(&mut st, &component, "part_of", machine, *n);
             say(&mut st, &component, "has_version", version, *n);
         }
-        out.push(Outcome {
-            kind: PACKAGES,
-            completeness: "full",
-            reason: None,
-            statements: st,
-        });
+        out.push(full(machine, PACKAGES, st));
     }
 
     // Containers. Docker that is not installed has nothing to list: that is a full read.
     let access = first_line(&s, "docker_access").map(|(_, a)| a);
     let mut containers = Vec::new();
     match access {
-        None => out.push(not_read(CONTAINERS, "the sweep has no docker section")),
-        Some(a) if REFUSED.contains(&a) => out.push(not_read(CONTAINERS, NO_RIGHTS)),
-        Some(a) if NOT_INSTALLED.contains(&a) => out.push(full(CONTAINERS, Vec::new())),
-        Some(_) if !s.contains_key("docker_ps") => {
-            out.push(not_read(CONTAINERS, "the sweep has no container list"))
-        }
+        None => out.push(not_read(
+            machine,
+            CONTAINERS,
+            "the sweep has no docker section",
+        )),
+        Some(a) if REFUSED.contains(&a) => out.push(not_read(machine, CONTAINERS, NO_RIGHTS)),
+        Some(a) if NOT_INSTALLED.contains(&a) => out.push(full(machine, CONTAINERS, Vec::new())),
+        Some(_) if !s.contains_key("docker_ps") => out.push(not_read(
+            machine,
+            CONTAINERS,
+            "the sweep has no container list",
+        )),
         Some(_) => {
             let mut st = Vec::new();
             for (n, line) in s.get("docker_ps").map(Vec::as_slice).unwrap_or_default() {
@@ -187,57 +196,87 @@ pub fn readings(machine: &str, text: &str, raw_file: &str) -> Vec<Outcome> {
                 let container = format!("container:{machine}/{name}");
                 say(&mut st, &container, "located_on", machine, *n);
                 say(&mut st, &container, "runs_image", image, *n);
-                containers.push(container);
+                containers.push((container, name));
             }
-            out.push(full(CONTAINERS, st));
+            out.push(full(machine, CONTAINERS, st));
         }
     }
 
-    // What is inside the containers: only a few things are read, so never full.
-    if !containers.is_empty() {
-        let mut st = Vec::new();
-        for (n, name, var) in pairs(&s, "container_versions") {
-            let container = format!("container:{machine}/{}", name.trim_start_matches('/'));
-            let Some((key, value)) = var.split_once('=') else {
-                continue;
-            };
-            let component = key.strip_suffix("_VERSION").unwrap_or("").to_lowercase();
-            if component.is_empty() || value.trim().is_empty() {
+    // What is inside each running container, one reading per kind and container.
+    let variables = s
+        .contains_key("container_versions")
+        .then(|| pairs(&s, "container_versions"));
+    let wordpress = s.get("wp").map(Vec::as_slice).unwrap_or_default();
+    for (container, name) in &containers {
+        let (container, name) = (container.as_str(), *name);
+        match &variables {
+            None => out.push(not_read(
+                container,
+                VARIABLES,
+                "the sweep has no version variables",
+            )),
+            Some(rows) => {
+                let mut st = Vec::new();
+                for (n, _, var) in rows.iter().filter(|r| r.1.trim_start_matches('/') == name) {
+                    let Some((key, value)) = var.split_once('=') else {
+                        continue;
+                    };
+                    let component = key.strip_suffix("_VERSION").unwrap_or("").to_lowercase();
+                    if component.is_empty() || value.trim().is_empty() {
+                        continue;
+                    }
+                    let component = format!("component:{container}/container-env/{component}");
+                    say(&mut st, &component, "part_of", container, *n);
+                    say(&mut st, &component, "has_version", value.trim(), *n);
+                }
+                out.push(full(container, VARIABLES, st));
+            }
+        }
+        // The probe looks for the WordPress version only in WordPress containers.
+        for (n, line) in wordpress {
+            let (row, value) = line.split_once('\t').unwrap_or((line, ""));
+            if row.trim() != name {
                 continue;
             }
-            let component = format!("component:{container}/container-env/{component}");
-            say(&mut st, &component, "part_of", &container, n);
-            say(&mut st, &component, "has_version", value.trim(), n);
-        }
-        for (n, name, value) in pairs(&s, "wp") {
             // The probe prints `wp_version=<version>`; a bare version is accepted too.
             let version = value.split_once('=').map_or(value, |(_, v)| v).trim();
             if version.is_empty() {
+                out.push(not_read(
+                    container,
+                    WORDPRESS,
+                    "the WordPress version file was not found",
+                ));
                 continue;
             }
-            let container = format!("container:{machine}/{name}");
             let component = format!("component:{container}/wordpress-core/wordpress");
-            say(&mut st, &component, "part_of", &container, n);
-            say(&mut st, &component, "has_version", version, n);
+            let mut st = Vec::new();
+            say(&mut st, &component, "part_of", container, *n);
+            say(&mut st, &component, "has_version", version, *n);
+            out.push(full(container, WORDPRESS, st));
         }
         out.push(Outcome {
+            scope: container.to_string(),
             kind: CONTENTS,
             completeness: "partial",
             reason: Some(CONTENTS_PARTIAL.to_string()),
-            statements: st,
+            statements: Vec::new(),
         });
     }
     out
 }
 
 /// The readings of a file that could not be read at all.
-pub fn unreadable() -> Vec<Outcome> {
+pub fn unreadable(machine: &str) -> Vec<Outcome> {
     let reason = "the file of this server could not be read";
-    vec![not_read(PACKAGES, reason), not_read(CONTAINERS, reason)]
+    vec![
+        not_read(machine, PACKAGES, reason),
+        not_read(machine, CONTAINERS, reason),
+    ]
 }
 
-fn not_read(kind: &'static str, reason: &str) -> Outcome {
+fn not_read(scope: &str, kind: &'static str, reason: &str) -> Outcome {
     Outcome {
+        scope: scope.to_string(),
         kind,
         completeness: "none",
         reason: Some(reason.to_string()),
@@ -245,8 +284,9 @@ fn not_read(kind: &'static str, reason: &str) -> Outcome {
     }
 }
 
-fn full(kind: &'static str, statements: Vec<Statement>) -> Outcome {
+fn full(scope: &str, kind: &'static str, statements: Vec<Statement>) -> Outcome {
     Outcome {
+        scope: scope.to_string(),
         kind,
         completeness: "full",
         reason: None,

@@ -2,6 +2,11 @@
 //! Full: new assertions become live and those no longer made are retracted.
 //! Partial: new assertions become live and nothing is retracted.
 //! None: nothing changes. A missing reading is not evidence of absence.
+//!
+//! A container or checkout that is no longer anywhere takes what was read inside it along:
+//! when its last `located_on` is retracted, every live assertion of a reading scoped to it
+//! is retracted in the same run, whatever that reading's completeness was. The entity's
+//! removal is the one event; what was inside it adds none.
 
 use crate::store::{Event, Reading};
 use rusqlite::{Transaction, params};
@@ -94,6 +99,9 @@ fn compare(tx: &Transaction, r: &Reading, full: bool) -> rusqlite::Result<Vec<Ev
             (_, true) => "removed",
             _ => "changed",
         };
+        if kind == "removed" && key.1 == "located_on" {
+            retract_inside(tx, r, &key.0)?;
+        }
         events.push(Event {
             kind,
             subject: key.0,
@@ -103,4 +111,16 @@ fn compare(tx: &Transaction, r: &Reading, full: bool) -> rusqlite::Result<Vec<Ev
         });
     }
     Ok(events)
+}
+
+/// Retracts everything read inside an entity once nothing says where it is any more.
+fn retract_inside(tx: &Transaction, r: &Reading, entity: &str) -> rusqlite::Result<()> {
+    tx.execute(
+        "UPDATE assertion SET layer = 'retracted', retracted_at = ?1, retracted_by = ?2
+         WHERE layer = 'live' AND scope = ?3
+           AND NOT EXISTS (SELECT 1 FROM assertion
+                           WHERE layer = 'live' AND predicate = 'located_on' AND subject = ?3)",
+        params![r.at, r.run_id, entity],
+    )?;
+    Ok(())
 }

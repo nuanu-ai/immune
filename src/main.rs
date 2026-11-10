@@ -2,6 +2,7 @@
 //! `soc view` writes a page that shows what is in the store.
 
 mod brew;
+mod checkouts;
 mod lifecycle;
 mod lockfiles;
 mod servers;
@@ -11,15 +12,14 @@ mod view;
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::{Event, Reading, Statement};
 
-const MACHINE_NAME: &str = "mac";
-const DEFAULT_STORE: &str = "private/store/store.db";
-const DEFAULT_SERVERS: &str = "private/map/servers";
-const USAGE: &str = "usage: soc run [--store <path>] [--brew-input <file>] [--servers-input <dir>]
-               [--checkouts-root <dir>]
+/// The store's folder inside the home folder, where every default path points.
+const STORE_FOLDER: &str = "Library/Application Support/personal-soc";
+const USAGE: &str = "usage: soc run [--store <path>] [--machine-name <name>] [--brew <path>]
+               [--brew-input <file>] [--servers-input <dir>] [--checkouts-root <dir>]
        soc view [--store <path>] [--no-open]";
 
 enum Cmd {
@@ -29,10 +29,17 @@ enum Cmd {
 
 struct Args {
     store: PathBuf,
+    /// The name of this machine in ids.
+    machine: String,
+    /// The one place to look for brew instead of PATH and the standard places.
+    brew: Option<PathBuf>,
     brew_input: Option<PathBuf>,
-    /// Files the owner's read-only sweep wrote, one per server.
-    servers_input: PathBuf,
-    /// Where local checkouts are looked for; `$HOME/Dev` by default.
+    /// Files the owner's read-only sweep wrote, one per server. `None`: the `sweep`
+    /// folder next to the store.
+    servers_input: Option<PathBuf>,
+    /// The home folder: checkout ids are relative to it.
+    home: PathBuf,
+    /// Where checkouts are looked for; the home folder by default.
     checkouts_root: PathBuf,
 }
 
@@ -41,49 +48,82 @@ struct ViewArgs {
     open: bool,
 }
 
+fn user_home() -> Result<PathBuf, String> {
+    std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| "HOME is not set".to_string())
+}
+
+fn default_store() -> Result<PathBuf, String> {
+    Ok(user_home()?.join(STORE_FOLDER).join("store.db"))
+}
+
 fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
     let cmd = it.next().ok_or("no command given")?;
-    let mut store = PathBuf::from(DEFAULT_STORE);
+    let mut store = None;
     match cmd.as_str() {
         "run" => {
-            let mut brew_input = None;
-            let mut servers_input = PathBuf::from(DEFAULT_SERVERS);
-            let mut checkouts_root = None;
+            let (mut machine, mut brew, mut brew_input) = (None, None, None);
+            let (mut servers_input, mut checkouts_root) = (None, None);
             while let Some(arg) = it.next() {
                 match arg.as_str() {
-                    "--store" => store = value(&mut it, &arg)?.into(),
+                    "--store" => store = Some(value(&mut it, &arg)?.into()),
+                    "--machine-name" => machine = Some(value(&mut it, &arg)?),
+                    "--brew" => brew = Some(value(&mut it, &arg)?.into()),
                     "--brew-input" => brew_input = Some(value(&mut it, &arg)?.into()),
-                    "--servers-input" => servers_input = value(&mut it, &arg)?.into(),
+                    "--servers-input" => servers_input = Some(value(&mut it, &arg)?.into()),
                     "--checkouts-root" => checkouts_root = Some(value(&mut it, &arg)?.into()),
                     _ => return Err(format!("unexpected argument: {arg}")),
                 }
             }
-            let checkouts_root = match checkouts_root {
-                Some(root) => root,
-                None => std::env::var_os("HOME")
-                    .map(|home| PathBuf::from(home).join("Dev"))
-                    .ok_or("HOME is not set; give --checkouts-root")?,
-            };
+            if machine.as_deref() == Some("") {
+                return Err("--machine-name needs a name".to_string());
+            }
+            let home = user_home()?;
             Ok(Cmd::Run(Args {
-                store,
+                store: store.map_or_else(default_store, Ok)?,
+                machine: machine.unwrap_or_else(machine_name),
+                brew,
                 brew_input,
                 servers_input,
-                checkouts_root,
+                checkouts_root: checkouts_root.unwrap_or_else(|| home.clone()),
+                home,
             }))
         }
         "view" => {
             let mut open = true;
             while let Some(arg) = it.next() {
                 match arg.as_str() {
-                    "--store" => store = value(&mut it, &arg)?.into(),
+                    "--store" => store = Some(value(&mut it, &arg)?.into()),
                     "--no-open" => open = false,
                     _ => return Err(format!("unexpected argument: {arg}")),
                 }
             }
+            let store = store.map_or_else(default_store, Ok)?;
             Ok(Cmd::View(ViewArgs { store, open }))
         }
         _ => Err(format!("unknown command: {cmd}")),
     }
+}
+
+/// The name this Mac gives itself on the local network, else its short host name.
+fn machine_name() -> String {
+    let asks: [(&str, &[&str]); 2] = [
+        ("scutil", &["--get", "LocalHostName"]),
+        ("hostname", &["-s"]),
+    ];
+    for (program, args) in asks {
+        if let Ok(out) = Command::new(program).args(args).output()
+            && out.status.success()
+        {
+            let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !name.is_empty() {
+                return name;
+            }
+        }
+    }
+    "this-mac".to_string()
 }
 
 fn value(it: &mut impl Iterator<Item = String>, arg: &str) -> Result<String, String> {
@@ -133,7 +173,7 @@ fn view(args: &ViewArgs) -> Result<(), Box<dyn Error>> {
     std::fs::write(&path, html)?;
     println!("{}", path.display());
     if args.open {
-        let status = std::process::Command::new("open").arg(&path).status()?;
+        let status = Command::new("open").arg(&path).status()?;
         if !status.success() {
             return Err(format!("open failed, {status}").into());
         }
@@ -154,18 +194,25 @@ fn run(args: &Args) -> Result<String, Box<dyn Error>> {
 
     let tx = conn.transaction()?;
     let first_run = !store::any_run_finished(&tx)?;
+    let machine = format!("machine:{}", args.machine);
+    store::put_entity(&tx, &machine)?;
     let mut run = Run {
         tx: &tx,
         home: &home,
         run_id: &run_id,
         at,
+        machine: &machine,
         events: Vec::new(),
         notes: Vec::new(),
         readers: 0,
     };
-    read_brew(&mut run, args.brew_input.as_deref())?;
-    read_servers(&mut run, &args.servers_input)?;
-    read_lockfiles(&mut run, &args.checkouts_root)?;
+    read_brew(&mut run, args)?;
+    let servers = args.servers_input.clone();
+    read_servers(&mut run, servers.as_deref())?;
+    let found = read_checkouts(&mut run, &args.checkouts_root, &args.home)?;
+    if let Some(found) = found {
+        read_lockfiles(&mut run, &found)?;
+    }
 
     let totals = store::totals(&tx, &run_id)?;
     let line = report(&run, &totals, first_run);
@@ -181,6 +228,8 @@ struct Run<'a> {
     home: &'a Path,
     run_id: &'a str,
     at: i64,
+    /// This machine's id.
+    machine: &'a str,
     events: Vec<Event>,
     /// Sentences for the end of the report line: inputs that were not there.
     notes: Vec<String>,
@@ -231,11 +280,8 @@ impl Run<'_> {
     }
 }
 
-fn read_brew(run: &mut Run, input: Option<&Path>) -> Result<(), Box<dyn Error>> {
-    run.readers += 1;
-    let machine = format!("machine:{MACHINE_NAME}");
-    store::put_entity(run.tx, &machine)?;
-    let (at, run_id) = (run.at, run.run_id.to_string());
+fn read_brew(run: &mut Run, args: &Args) -> Result<(), Box<dyn Error>> {
+    let (at, run_id, machine) = (run.at, run.run_id.to_string(), run.machine.to_string());
     let reading = Reading {
         reader: brew::READER,
         scope: &machine,
@@ -244,29 +290,46 @@ fn read_brew(run: &mut Run, input: Option<&Path>) -> Result<(), Box<dyn Error>> 
         at,
         observed_at: at,
     };
-    match brew::read(input) {
-        Ok(raw) => {
+    match brew::read(args.brew_input.as_deref(), args.brew.as_deref()) {
+        brew::Found::Output(raw) => {
+            run.readers += 1;
             let raw_file = run.keep_raw(brew::READER, "brew.txt", raw.as_bytes())?;
             let statements = brew::statements(&raw, &machine, &raw_file);
             run.apply(&reading, brew::BASIS, "full", None, &statements)?;
         }
-        Err(reason) => {
+        // Read in full: there is nothing, so what was there before is gone.
+        brew::Found::NotInstalled => {
+            run.apply(
+                &reading,
+                brew::BASIS,
+                "full",
+                Some(brew::NOT_INSTALLED),
+                &[],
+            )?;
+            run.notes
+                .push("Homebrew is not installed, nothing to read.".to_string());
+        }
+        brew::Found::Failed(reason) => {
+            run.readers += 1;
             run.apply(&reading, brew::BASIS, "none", Some(&reason), &[])?;
             run.notes
-                .push(format!("Homebrew on {MACHINE_NAME}: {reason}."));
+                .push(format!("Homebrew could not be read: {reason}."));
         }
     }
     Ok(())
 }
 
-fn read_servers(run: &mut Run, dir: &Path) -> Result<(), Box<dyn Error>> {
-    if !dir.is_dir() {
-        run.notes.push(format!(
-            "No server files: {} is not a folder.",
-            dir.display()
-        ));
+/// `dir` is the folder given on the command line; without one, the sweep folder next to
+/// the store, which is there only once a sweep has been run.
+fn read_servers(run: &mut Run, dir: Option<&Path>) -> Result<(), Box<dyn Error>> {
+    let default = run.home.join("sweep");
+    let Some(dir) = dir.or(Some(&default)).filter(|d| d.is_dir()) else {
+        run.notes.push(match dir {
+            Some(dir) => format!("No server files: {} is not a folder.", dir.display()),
+            None => "No server sweep has been run.".to_string(),
+        });
         return Ok(());
-    }
+    };
     run.readers += 1;
     let run_id = run.run_id.to_string();
     for input in servers::inputs(dir)? {
@@ -281,12 +344,13 @@ fn read_servers(run: &mut Run, dir: &Path) -> Result<(), Box<dyn Error>> {
                 )?;
                 servers::readings(&machine, &String::from_utf8_lossy(bytes), &raw_file)
             }
-            None => servers::unreadable(),
+            None => servers::unreadable(&machine),
         };
         for o in readings {
+            store::put_entity(run.tx, &o.scope)?;
             let reading = Reading {
                 reader: servers::READER,
-                scope: &machine,
+                scope: &o.scope,
                 kind: o.kind,
                 run_id: &run_id,
                 at: run.at,
@@ -304,29 +368,73 @@ fn read_servers(run: &mut Run, dir: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn read_lockfiles(run: &mut Run, root: &Path) -> Result<(), Box<dyn Error>> {
+/// Which checkouts are on this machine. `None` when the root is not a folder: then
+/// nothing was looked at and nothing is said.
+fn read_checkouts(
+    run: &mut Run,
+    root: &Path,
+    home: &Path,
+) -> Result<Option<Vec<checkouts::Checkout>>, Box<dyn Error>> {
     if !root.is_dir() {
         run.notes
             .push(format!("No checkouts: {} is not a folder.", root.display()));
-        return Ok(());
+        return Ok(None);
     }
     run.readers += 1;
-    let machine = format!("machine:{MACHINE_NAME}");
-    store::put_entity(run.tx, &machine)?;
-    let run_id = run.run_id.to_string();
-    let (checkouts, unreadable) = lockfiles::checkouts(root);
-    if unreadable > 0 {
-        run.notes.push(format!(
-            "{} under the checkouts root could not be listed.",
-            things(unreadable as i64, "folder", "folders")
-        ));
+    let walk = checkouts::walk(root, home);
+    let mut raw = String::new();
+    for c in &walk.checkouts {
+        raw.push_str(&format!("checkout\t{}\n", c.rel));
     }
+    for folder in &walk.unlisted {
+        raw.push_str(&format!("not listed\t{folder}\n"));
+    }
+    let raw_file = run.keep_raw(checkouts::READER, "checkouts.txt", raw.as_bytes())?;
+    let machine = run.machine.to_string();
+    let statements: Vec<Statement> = walk
+        .checkouts
+        .iter()
+        .enumerate()
+        .map(|(i, c)| Statement {
+            subject: format!("checkout:{machine}/{}", c.rel),
+            predicate: "located_on",
+            object: machine.clone(),
+            source_ref: format!("{raw_file}:{}", i + 1),
+        })
+        .collect();
+    let reason = (!walk.unlisted.is_empty())
+        .then(|| format!("could not be listed: {}", walk.unlisted.join(", ")));
+    if let Some(reason) = &reason {
+        run.notes.push(format!("Folders that {reason}."));
+    }
+    let run_id = run.run_id.to_string();
+    let reading = Reading {
+        reader: checkouts::READER,
+        scope: &machine,
+        kind: checkouts::KIND,
+        run_id: &run_id,
+        at: run.at,
+        observed_at: run.at,
+    };
+    let completeness = if reason.is_some() { "partial" } else { "full" };
+    run.apply(
+        &reading,
+        checkouts::BASIS,
+        completeness,
+        reason.as_deref(),
+        &statements,
+    )?;
+    Ok(Some(walk.checkouts))
+}
+
+fn read_lockfiles(run: &mut Run, found: &[checkouts::Checkout]) -> Result<(), Box<dyn Error>> {
+    run.readers += 1;
+    let run_id = run.run_id.to_string();
     // Lockfiles are under version control: the raw input is where they are and at which commit.
     let mut manifest = String::new();
-    for checkout in &checkouts {
-        let id = format!("checkout:{machine}/{}", checkout.rel);
-        store::put_entity(run.tx, &id)?;
-        let Some(o) = lockfiles::read(checkout, &id, &machine) else {
+    for checkout in found {
+        let id = format!("checkout:{}/{}", run.machine, checkout.rel);
+        let Some(o) = lockfiles::read(checkout, &id) else {
             continue;
         };
         let commit = lockfiles::commit(&checkout.path);

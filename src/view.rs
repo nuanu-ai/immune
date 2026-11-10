@@ -199,7 +199,8 @@ struct Latest {
 }
 
 /// The latest record for each reader, scope and kind, and its latest full one.
-/// Readings that are not full come first.
+/// Readings that are not full come first. Readings inside a container or checkout that
+/// is gone no longer count and are left out.
 fn latest_coverage(conn: &Connection) -> rusqlite::Result<Vec<Latest>> {
     conn.prepare(
         "SELECT c.reader, c.scope, c.kind, c.completeness, c.reason, c.observed_at,
@@ -208,6 +209,7 @@ fn latest_coverage(conn: &Connection) -> rusqlite::Result<Vec<Latest>> {
                    AND f.completeness = 'full')
          FROM coverage c
          WHERE c.id IN (SELECT MAX(id) FROM coverage GROUP BY reader, scope, kind)
+           AND c.scope NOT IN (SELECT id FROM gone_entity)
          ORDER BY c.completeness = 'full', c.completeness, c.reader, c.scope, c.kind",
     )?
     .query_map([], |r| {
@@ -224,16 +226,18 @@ fn latest_coverage(conn: &Connection) -> rusqlite::Result<Vec<Latest>> {
     .collect()
 }
 
-/// A completeness as the owner reads it: what is known and what is not.
-fn completeness_label(completeness: &str) -> &str {
-    match completeness {
-        "none" => "nothing read",
-        "partial" => "partial, removals unknown",
-        other => other,
+/// A completeness as the owner reads it: what is known and what is not. A full reading
+/// with a note had nothing to read, which is not the same as having read something.
+fn completeness_label<'a>(completeness: &'a str, note: Option<&str>) -> &'a str {
+    match (completeness, note) {
+        ("full", Some(_)) => "nothing to read",
+        ("none", _) => "could not be read",
+        ("partial", _) => "partial, removals unknown",
+        (other, _) => other,
     }
 }
 
-fn badge(out: &mut String, completeness: &str) -> Out {
+fn badge(out: &mut String, completeness: &str, note: Option<&str>) -> Out {
     write!(
         out,
         "<span class=\"badge {}\">{}</span>",
@@ -242,7 +246,7 @@ fn badge(out: &mut String, completeness: &str) -> Out {
         } else {
             "bad"
         },
-        esc(completeness_label(completeness))
+        esc(completeness_label(completeness, note))
     )?;
     Ok(())
 }
@@ -289,7 +293,7 @@ fn coverage(conn: &Connection, out: &mut String, rows: &[Latest], now: i64) -> O
             "Where",
             "What",
             "Completeness",
-            "Why not full",
+            "Why, or what was there",
             "Last read",
             "Last full read",
         ],
@@ -301,7 +305,7 @@ fn coverage(conn: &Connection, out: &mut String, rows: &[Latest], now: i64) -> O
         td(out, "mono", &r.scope)?;
         td(out, "", &r.kind)?;
         out.push_str("<td>");
-        badge(out, &r.completeness)?;
+        badge(out, &r.completeness, r.reason.as_deref())?;
         out.push_str("</td>");
         td(
             out,
@@ -339,6 +343,8 @@ struct Estate {
     inside: BTreeMap<String, Vec<String>>,
     /// Machine -> the containers on it.
     containers: BTreeMap<String, Vec<String>>,
+    /// Machine -> the checkouts on it.
+    checkouts: BTreeMap<String, Vec<String>>,
     /// Subject -> predicate -> objects, for literal attributes such as the OS.
     attrs: BTreeMap<String, BTreeMap<String, BTreeSet<String>>>,
 }
@@ -366,6 +372,8 @@ impl Estate {
             if !subject.starts_with("component:") {
                 if predicate == "located_on" && subject.starts_with("container:") {
                     e.containers.entry(object).or_default().push(subject);
+                } else if predicate == "located_on" && subject.starts_with("checkout:") {
+                    e.checkouts.entry(object).or_default().push(subject);
                 } else {
                     e.attrs
                         .entry(subject)
@@ -387,6 +395,9 @@ impl Estate {
             c.bases.insert(basis);
             c.sources.insert(source);
             c.first_seen = Some(c.first_seen.map_or(at, |t| t.min(at)));
+        }
+        for list in e.checkouts.values_mut() {
+            list.sort();
         }
         for list in e.inside.values_mut().chain(e.containers.values_mut()) {
             list.sort_by_key(|id| {
@@ -458,7 +469,6 @@ fn machines(conn: &Connection, out: &mut String, latest: &[Latest], now: i64) ->
             .collect()
     };
     let machines = ids("machine")?;
-    let checkouts = ids("checkout")?;
     if machines.is_empty() {
         out.push_str("<p>No machines known.</p>\n</section>\n");
         return Ok(());
@@ -495,10 +505,11 @@ fn machines(conn: &Connection, out: &mut String, latest: &[Latest], now: i64) ->
             .map(Vec::as_slice)
             .unwrap_or_default();
         let prefix = format!("checkout:{machine}/");
-        let mine: Vec<&String> = checkouts
-            .iter()
-            .filter(|c| c.starts_with(&prefix))
-            .collect();
+        let mine: Vec<&String> = estate
+            .checkouts
+            .get(machine)
+            .map(|list| list.iter().collect())
+            .unwrap_or_default();
         let read_at = coverage_of(machine).iter().map(|r| r.at).max();
         let not_read = unread(machine);
 
@@ -554,7 +565,7 @@ fn machines(conn: &Connection, out: &mut String, latest: &[Latest], now: i64) ->
             out.push_str("<ul class=\"readings\">\n");
             for r in readings {
                 write!(out, "<li>{} ", esc(&r.kind))?;
-                badge(out, &r.completeness)?;
+                badge(out, &r.completeness, r.reason.as_deref())?;
                 if let Some(reason) = &r.reason {
                     write!(out, " {}", esc(reason))?;
                 }
@@ -602,7 +613,7 @@ fn machines(conn: &Connection, out: &mut String, latest: &[Latest], now: i64) ->
             )?;
             for r in coverage_of(checkout) {
                 out.push(' ');
-                badge(out, &r.completeness)?;
+                badge(out, &r.completeness, r.reason.as_deref())?;
             }
             out.push_str("</summary>\n");
             for r in coverage_of(checkout) {
@@ -666,7 +677,8 @@ fn changes(conn: &Connection, out: &mut String) -> Out {
     let mut not_repeated_stmt = conn.prepare(
         "SELECT COUNT(*) FROM (SELECT DISTINCT reader, scope, kind FROM coverage
          WHERE id < (SELECT MIN(id) FROM coverage WHERE run_id = ?1)
-           AND scope NOT IN (SELECT scope FROM coverage WHERE run_id = ?1))",
+           AND scope NOT IN (SELECT scope FROM coverage WHERE run_id = ?1)
+           AND scope NOT IN (SELECT id FROM gone_entity))",
     )?;
     for (i, (run_id, at, finished, report)) in runs.iter().enumerate() {
         type Event = (String, String, String, Option<String>, Option<String>);
@@ -748,7 +760,7 @@ fn changes(conn: &Connection, out: &mut String) -> Out {
                     esc(scope),
                     esc(kind)
                 )?;
-                badge(out, completeness)?;
+                badge(out, completeness, reason.as_deref())?;
                 writeln!(
                     out,
                     " {}</li>",
@@ -844,8 +856,8 @@ fn retracted(conn: &Connection, out: &mut String) -> Out {
 
 fn vocabulary(conn: &Connection, out: &mut String) -> Out {
     out.push_str("<section id=\"vocabulary\">\n<h2>Vocabulary</h2>\n<details>\n");
-    out.push_str("<summary>The words the store uses: kinds of things, links between them and how a source knows</summary>\n");
-    let tables: [(&str, &[&str], &str); 3] = [
+    out.push_str("<summary>The words the store uses: kinds of things, links between them, what readings look for and how a source knows</summary>\n");
+    let tables: [(&str, &[&str], &str); 4] = [
         (
             "Kinds of things",
             &["Name", "Status"],
@@ -856,6 +868,11 @@ fn vocabulary(conn: &Connection, out: &mut String) -> Out {
             &["Name", "Points to", "Status"],
             "SELECT name, COALESCE(object_kind, ''), status FROM predicate
              ORDER BY status = 'reserved', name",
+        ),
+        (
+            "What readings look for",
+            &["Name"],
+            "SELECT name FROM coverage_kind ORDER BY name",
         ),
         (
             "Basis, strongest first",

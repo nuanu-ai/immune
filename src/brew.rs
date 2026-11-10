@@ -3,32 +3,73 @@
 //! the name followed by every installed version.
 
 use crate::store::Statement;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub const READER: &str = "brew";
 pub const KIND: &str = "brew packages";
 pub const BASIS: &str = "observed";
+/// The note on a full reading that had nothing to read.
+pub const NOT_INSTALLED: &str = "Homebrew is not installed on this machine";
 
-/// The raw output, or the reason it could not be read.
-pub fn read(input: Option<&Path>) -> Result<String, String> {
+/// Where Homebrew puts `brew` when it is not on PATH: Apple Silicon, then Intel.
+const STANDARD: [&str; 2] = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"];
+
+/// What reading Homebrew found.
+pub enum Found {
+    /// The output of `brew list --versions`.
+    Output(String),
+    /// No `brew` here: nothing to read, which is not a failure.
+    NotInstalled,
+    /// `brew` is here and could not be read, with the reason.
+    Failed(String),
+}
+
+/// `input` is a saved output to read instead of running brew. `brew` is the one place to
+/// look for brew instead of PATH and the standard places.
+pub fn read(input: Option<&Path>, brew: Option<&Path>) -> Found {
     if let Some(path) = input {
-        return std::fs::read_to_string(path)
-            .map_err(|e| format!("cannot read {}: {e}", path.display()));
+        return match std::fs::read_to_string(path) {
+            Ok(text) => Found::Output(text),
+            Err(e) => Found::Failed(format!("cannot read {}: {e}", path.display())),
+        };
     }
-    let out = Command::new("brew")
-        .args(["list", "--versions"])
-        .output()
-        .map_err(|e| format!("cannot run brew: {e}"))?;
+    let Some(brew) = find(brew) else {
+        return Found::NotInstalled;
+    };
+    let out = match Command::new(&brew).args(["list", "--versions"]).output() {
+        Ok(out) => out,
+        Err(e) => return Found::Failed(format!("cannot run {}: {e}", brew.display())),
+    };
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let first = stderr.lines().next().unwrap_or("").trim();
-        return Err(format!(
+        return Found::Failed(format!(
             "brew list --versions failed, {}: {first}",
             out.status
         ));
     }
-    String::from_utf8(out.stdout).map_err(|_| "brew output is not UTF-8".to_string())
+    match String::from_utf8(out.stdout) {
+        Ok(text) => Found::Output(text),
+        Err(_) => Found::Failed("brew output is not UTF-8".to_string()),
+    }
+}
+
+fn find(at: Option<&Path>) -> Option<PathBuf> {
+    if let Some(path) = at {
+        return path.is_file().then(|| path.to_path_buf());
+    }
+    let on_path: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| {
+            std::env::split_paths(&p)
+                .map(|dir| dir.join("brew"))
+                .collect()
+        })
+        .unwrap_or_default();
+    on_path
+        .into_iter()
+        .chain(STANDARD.iter().map(PathBuf::from))
+        .find(|path| path.is_file())
 }
 
 /// `raw_file` is the saved copy of the input, relative to the store's folder.

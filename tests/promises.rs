@@ -61,21 +61,33 @@ fn soc_all(store: &Path, brew: &Path, servers: &Path, checkouts: &Path) -> Strin
     soc_in(store.parent().unwrap(), store, brew, servers, checkouts)
 }
 
-/// The same, from a given working folder.
+/// The same, from a given folder, which is also the home folder.
 fn soc_in(cwd: &Path, store: &Path, brew: &Path, servers: &Path, checkouts: &Path) -> String {
-    let out = Command::new(env!("CARGO_BIN_EXE_soc"))
-        .current_dir(cwd)
+    ok(soc_cmd(cwd)
         .arg("run")
         .arg("--store")
         .arg(store)
+        .arg("--machine-name")
+        .arg("mac")
         .arg("--brew-input")
         .arg(brew)
         .arg("--servers-input")
         .arg(servers)
         .arg("--checkouts-root")
-        .arg(checkouts)
-        .output()
-        .unwrap();
+        .arg(checkouts))
+}
+
+/// The binary with `home` as both the home folder and the working folder, so that
+/// nothing a test runs can reach the real home folder.
+fn soc_cmd(home: &Path) -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_soc"));
+    cmd.env("HOME", home).current_dir(home);
+    cmd
+}
+
+/// Runs a command that must succeed and returns what it printed.
+fn ok(cmd: &mut Command) -> String {
+    let out = cmd.output().unwrap();
     assert!(
         out.status.success(),
         "{}",
@@ -351,7 +363,7 @@ fn reading_that_failed_is_shown_with_its_reason_and_not_as_full() {
         .split("<tr")
         .find(|r| r.contains("machine:mac") && r.contains("brew packages"))
         .expect("no coverage row for the brew reading");
-    assert!(row.contains("nothing read"), "{row}");
+    assert!(row.contains("could not be read"), "{row}");
     assert!(row.contains(reason[0].as_str()), "{row}");
     assert!(!row.contains("full"), "{row}");
     assert!(!coverage.contains("Every reading was full"), "{coverage}");
@@ -457,53 +469,44 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
 #[test]
 fn under_partial_coverage_new_assertions_become_live_and_nothing_is_retracted() {
-    // Container contents are always read partially: a variable that is no longer seen
-    // may still be there, so it must not be reported as gone.
+    // A checkout with a lockfile the reader cannot read is read partially: a dependency
+    // that is no longer seen may still be there, so it must not be reported as gone.
     let dir = Dir::new("partial");
     let store = dir.store();
     let brew = dir.input("brew.txt", SAMPLE);
-    let servers = dir.0.join("servers");
     let absent = dir.0.join("absent");
-    put(&servers, "web-1.txt", WEB_1);
-    soc_all(&store, &brew, &servers, &absent);
+    let root = dir.0.join("dev");
+    let shop = checkout(&root, "shop");
+    put(&shop, "api/yarn.lock", "# yarn lockfile v1\n");
+    put(&shop, "package-lock.json", PACKAGE_LOCK);
+    soc_all(&store, &brew, &absent, &root);
 
-    let next = WEB_1
-        .replace("/shop\tNGINX_VERSION=1.27.1", "/shop\tNGINX_VERSION=1.27.2")
-        .replace("/blog\tPHP_VERSION=8.2.24", "/shop\tLUA_VERSION=5.4.6");
-    put(&servers, "web-1.txt", &next);
-    let report = soc_all(&store, &brew, &servers, &absent);
+    let next = PACKAGE_LOCK
+        .replace(
+            "left-pad\": { \"version\": \"1.3.0",
+            "is-odd\": { \"version\": \"3.0.1",
+        )
+        .replace("22.7.4", "22.7.5");
+    put(&shop, "package-lock.json", &next);
+    let report = soc_all(&store, &brew, &absent, &root);
 
-    let shop = "component:container:machine:web-1/shop/container-env";
-    let blog = "component:container:machine:web-1/blog/container-env";
+    let npm = "component:checkout:machine:mac/dev/shop/npm";
     let live = rows(&store, LIVE);
     for expected in [
-        format!("{blog}/php|has_version|8.2.24"),
-        format!("{shop}/nginx|has_version|1.27.1"),
-        format!("{shop}/nginx|has_version|1.27.2"),
-        format!("{shop}/lua|has_version|5.4.6"),
+        format!("{npm}/left-pad|has_version|1.3.0"),
+        format!("{npm}/is-odd|has_version|3.0.1"),
+        format!("{npm}/@types/node|has_version|22.7.4"),
+        format!("{npm}/@types/node|has_version|22.7.5"),
     ] {
         assert!(live.contains(&expected), "{expected} is not live");
     }
-    assert!(
-        rows(
-            &store,
-            "SELECT 1 FROM assertion WHERE layer = 'retracted' AND kind = 'container contents'"
-        )
-        .is_empty()
-    );
-    let events = rows(
-        &store,
-        &LAST_RUN_EVENTS.replace(
-            "WHERE entry IN",
-            "WHERE kind = 'container contents' AND entry IN",
-        ),
-    );
+    assert!(rows(&store, "SELECT 1 FROM assertion WHERE layer = 'retracted'").is_empty());
     assert_eq!(
-        events,
+        rows(&store, LAST_RUN_EVENTS),
         [
-            format!("added|{shop}/lua|has_version|NULL|5.4.6"),
-            format!("added|{shop}/lua|part_of|NULL|container:machine:web-1/shop"),
-            format!("changed|{shop}/nginx|has_version|1.27.1|1.27.1, 1.27.2"),
+            format!("changed|{npm}/@types/node|has_version|22.7.4|22.7.4, 22.7.5"),
+            format!("added|{npm}/is-odd|has_version|NULL|3.0.1"),
+            format!("added|{npm}/is-odd|part_of|NULL|checkout:machine:mac/dev/shop"),
         ]
     );
     assert!(report.contains("1 reading was partial"), "{report}");
@@ -513,8 +516,8 @@ fn under_partial_coverage_new_assertions_become_live_and_nothing_is_retracted() 
     let coverage = section(&page, "coverage");
     let row = coverage
         .split("<tr")
-        .find(|r| r.contains("container contents"))
-        .expect("no coverage row for container contents");
+        .find(|r| r.contains("lockfile dependencies"))
+        .expect("no coverage row for the lockfile reading");
     assert!(row.contains("partial, removals unknown"), "{row}");
 }
 
@@ -641,11 +644,11 @@ fn unsupported_lockfile_gives_partial_coverage_naming_it_and_supported_ones_are_
              WHERE reader = 'lockfiles' ORDER BY scope"
         ),
         [
-            "checkout:machine:mac/tools|full|",
-            "checkout:machine:mac/work/shop|partial|not supported yet: yarn.lock",
+            "checkout:machine:mac/dev/tools|full|",
+            "checkout:machine:mac/dev/work/shop|partial|not supported yet: yarn.lock",
         ]
     );
-    let id = "component:checkout:machine:mac/work/shop";
+    let id = "component:checkout:machine:mac/dev/work/shop";
     let live = rows(&store, LIVE);
     for expected in [
         format!("{id}/npm/left-pad|has_version|1.3.0"),
@@ -747,4 +750,361 @@ fn unchanged_input_is_not_copied_again_as_raw_input() {
     );
     soc_all(&store, &brew, &servers, &absent);
     assert_eq!((copies("brew.txt"), copies("web-1.txt")), (2, 1));
+}
+
+#[test]
+fn without_homebrew_the_brew_reading_has_nothing_to_read_and_earlier_brew_facts_are_retracted() {
+    // A colleague's Mac may have no Homebrew. That is not a failure, and what an earlier
+    // run read there is no longer there.
+    let dir = Dir::new("no-brew");
+    let store = dir.store();
+    soc(&store, &dir.input("brew.txt", SAMPLE));
+    let absent = dir.0.join("absent");
+    let report = ok(soc_cmd(&dir.0)
+        .args(["run", "--machine-name", "mac", "--store"])
+        .arg(&store)
+        .arg("--brew")
+        .arg(dir.0.join("nowhere").join("brew"))
+        .arg("--servers-input")
+        .arg(&absent)
+        .arg("--checkouts-root")
+        .arg(&absent));
+
+    assert!(
+        !rows(&store, LIVE).iter().any(|r| r.contains("/brew/")),
+        "brew facts are still live"
+    );
+    assert_eq!(
+        rows(
+            &store,
+            "SELECT completeness, reason FROM coverage ORDER BY id DESC LIMIT 1"
+        ),
+        ["full|Homebrew is not installed on this machine"]
+    );
+    assert!(
+        report.contains("Since last run: +0 added, 0 changed, 6 removed."),
+        "{report}"
+    );
+    assert!(report.contains("Homebrew is not installed"), "{report}");
+    assert!(!report.contains("could not be read"), "{report}");
+
+    let page = view(&store);
+    let row = section(&page, "coverage")
+        .split("<tr")
+        .find(|r| r.contains("brew packages"))
+        .expect("no coverage row for the brew reading")
+        .to_string();
+    assert!(row.contains("nothing to read"), "{row}");
+    assert!(
+        row.contains("Homebrew is not installed on this machine"),
+        "{row}"
+    );
+    assert!(!row.contains("could not be read"), "{row}");
+}
+
+#[test]
+fn deleted_checkout_is_retracted_with_everything_inside_it_as_one_removed_event() {
+    // Otherwise a deleted project keeps its dependencies live forever, and with them
+    // every vulnerability that matches them.
+    let dir = Dir::new("deleted");
+    let store = dir.store();
+    let brew = dir.input("brew.txt", SAMPLE);
+    let absent = dir.0.join("absent");
+    let root = dir.0.join("dev");
+    let shop = checkout(&root, "shop");
+    put(&shop, "Cargo.lock", CARGO_LOCK);
+    // A partial reading inside it is retracted too: the place itself is gone.
+    put(&shop, "api/yarn.lock", "# yarn lockfile v1\n");
+    checkout(&root, "tools");
+    soc_all(&store, &brew, &absent, &root);
+    let id = "checkout:machine:mac/dev/shop";
+    assert!(rows(&store, LIVE).iter().any(|r| r.contains("/dev/shop/")));
+
+    std::fs::remove_dir_all(&shop).unwrap();
+    let report = soc_all(&store, &brew, &absent, &root);
+
+    assert_eq!(
+        rows(&store, LAST_RUN_EVENTS),
+        [format!("removed|{id}|located_on|machine:mac|NULL")]
+    );
+    assert!(
+        !rows(&store, LIVE).iter().any(|r| r.contains("dev/shop")),
+        "something inside the deleted checkout is still live"
+    );
+    assert_eq!(
+        rows(
+            &store,
+            &format!(
+                "SELECT subject, predicate, object FROM assertion
+                 WHERE layer = 'retracted' AND scope = '{id}' ORDER BY predicate"
+            )
+        ),
+        [
+            format!("component:{id}/crates.io/serde|has_version|1.0.210"),
+            format!("component:{id}/crates.io/serde|part_of|{id}"),
+        ]
+    );
+    assert!(
+        report.contains("1 checkout,") && report.contains("+0 added, 0 changed, 1 removed."),
+        "{report}"
+    );
+
+    // Its readings no longer count: nothing is unknown about a place that is gone.
+    let next = soc_all(&store, &brew, &absent, &root);
+    assert!(next.contains("Since last run: no changes."), "{next}");
+    let page = view(&store);
+    assert!(!section(&page, "coverage").contains(id));
+    assert!(!section(&page, "machines").contains("dev/shop"));
+}
+
+/// Takes every permission off a folder and gives them back when dropped.
+struct Locked(PathBuf);
+
+impl Locked {
+    fn new(path: PathBuf) -> Locked {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        Locked(path)
+    }
+}
+
+impl Drop for Locked {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+    }
+}
+
+#[test]
+fn folder_that_cannot_be_listed_gives_a_partial_checkouts_reading_naming_it_and_retracts_nothing() {
+    // macOS may refuse a terminal Desktop or Documents. The checkouts there are unknown,
+    // not deleted, and the owner is told which folder was not seen.
+    let dir = Dir::new("unlisted");
+    let store = dir.store();
+    let brew = dir.input("brew.txt", SAMPLE);
+    let absent = dir.0.join("absent");
+    let root = dir.0.join("dev");
+    let app = checkout(&root, "archive/app");
+    put(&app, "Cargo.lock", CARGO_LOCK);
+    checkout(&root, "work/site");
+    soc_all(&store, &brew, &absent, &root);
+    let live_before = rows(&store, LIVE);
+
+    // The walk goes on past the folder it cannot list.
+    checkout(&root, "work/new");
+    let _locked = Locked::new(root.join("archive"));
+    let report = soc_all(&store, &brew, &absent, &root);
+
+    assert_eq!(
+        rows(
+            &store,
+            "SELECT completeness, reason FROM coverage
+             WHERE kind = 'checkouts present' ORDER BY id DESC LIMIT 1"
+        ),
+        ["partial|could not be listed: dev/archive"]
+    );
+    assert!(rows(&store, "SELECT 1 FROM assertion WHERE layer = 'retracted'").is_empty());
+    let live = rows(&store, LIVE);
+    for row in &live_before {
+        assert!(live.contains(row), "{row} is no longer live");
+    }
+    assert!(live.contains(&"checkout:machine:mac/dev/work/new|located_on|machine:mac".to_string()));
+    assert!(
+        report.contains("Folders that could not be listed: dev/archive."),
+        "{report}"
+    );
+    assert!(!report.contains("no changes"), "{report}");
+}
+
+#[test]
+fn by_default_nothing_is_written_to_the_working_folder_and_the_store_is_in_the_users_folder() {
+    // A colleague runs the binary from wherever the download landed. The store, raw input
+    // and the page go to their own folder, and server files are looked for next to them.
+    let dir = Dir::new("defaults");
+    let (home, cwd) = (dir.0.join("home"), dir.0.join("cwd"));
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&cwd).unwrap();
+    let brew = dir.input("brew.txt", SAMPLE);
+    let soc = |args: &[&str]| {
+        let mut cmd = soc_cmd(&home);
+        cmd.current_dir(&cwd).args(args);
+        cmd
+    };
+    let run = || ok(soc(&["run", "--machine-name", "mac", "--brew-input"]).arg(&brew));
+
+    let report = run();
+    let folder = home.join("Library/Application Support/personal-soc");
+    assert!(folder.join("store.db").is_file());
+    assert!(folder.join("raw").is_dir());
+    assert!(report.contains("No server sweep has been run."), "{report}");
+
+    put(&folder, "sweep/web-1.txt", WEB_1);
+    let report = run();
+    assert!(report.contains("2 machines"), "{report}");
+
+    let page = ok(&mut soc(&["view", "--no-open"]));
+    assert_eq!(PathBuf::from(page), folder.join("view.html"));
+    assert!(folder.join("view.html").is_file());
+
+    assert_eq!(std::fs::read_dir(&cwd).unwrap().count(), 0);
+    let top: Vec<String> = std::fs::read_dir(&home)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(top, ["Library"]);
+}
+
+#[test]
+fn store_from_an_older_format_is_refused_with_a_message_and_left_untouched() {
+    // Ids changed between formats; mixing old and new facts would give wrong answers,
+    // and the old store is the owner's history.
+    let dir = Dir::new("old-format");
+    let store = dir.store();
+    {
+        let conn = Connection::open(&store).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO meta VALUES ('format_version', '2');
+             CREATE TABLE journal (seq INTEGER PRIMARY KEY, entry TEXT);
+             INSERT INTO journal (entry) VALUES ('run_finished');",
+        )
+        .unwrap();
+    }
+    let before = std::fs::read(&store).unwrap();
+    let brew = dir.input("brew.txt", SAMPLE);
+    let absent = dir.0.join("absent");
+
+    let run = soc_cmd(&dir.0)
+        .args(["run", "--machine-name", "mac", "--store"])
+        .arg(&store)
+        .arg("--brew-input")
+        .arg(&brew)
+        .arg("--servers-input")
+        .arg(&absent)
+        .arg("--checkouts-root")
+        .arg(&absent)
+        .output()
+        .unwrap();
+    let view = soc_cmd(&dir.0)
+        .args(["view", "--no-open", "--store"])
+        .arg(&store)
+        .output()
+        .unwrap();
+    for out in [run, view] {
+        assert_eq!(out.status.code(), Some(1));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("older format"), "{stderr}");
+        assert!(stderr.contains("--store"), "{stderr}");
+    }
+    assert!(
+        std::fs::read(&store).unwrap() == before,
+        "the old store changed"
+    );
+    let mut top: Vec<String> = std::fs::read_dir(&dir.0)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    top.sort();
+    assert_eq!(top, ["brew.txt", "store.db"]);
+}
+
+#[test]
+fn after_a_container_version_variable_changes_the_old_version_is_retracted() {
+    // Every version variable of every running container is read, so that reading is full
+    // and an upgrade leaves no old version behind. What is inside a container as a whole
+    // is never read in full and says so.
+    let dir = Dir::new("variables");
+    let store = dir.store();
+    let brew = dir.input("brew.txt", SAMPLE);
+    let servers = dir.0.join("servers");
+    let absent = dir.0.join("absent");
+    put(&servers, "web-1.txt", WEB_1);
+    soc_all(&store, &brew, &servers, &absent);
+
+    let next = WEB_1.replace("NGINX_VERSION=1.27.1", "NGINX_VERSION=1.27.2");
+    put(&servers, "web-1.txt", &next);
+    soc_all(&store, &brew, &servers, &absent);
+
+    let nginx = "component:container:machine:web-1/shop/container-env/nginx";
+    let live = rows(&store, LIVE);
+    assert!(live.contains(&format!("{nginx}|has_version|1.27.2")));
+    assert!(!live.contains(&format!("{nginx}|has_version|1.27.1")));
+    assert_eq!(
+        rows(
+            &store,
+            "SELECT subject, object FROM assertion WHERE layer = 'retracted'"
+        ),
+        [format!("{nginx}|1.27.1")]
+    );
+    assert_eq!(
+        rows(&store, LAST_RUN_EVENTS),
+        [format!("changed|{nginx}|has_version|1.27.1|1.27.2")]
+    );
+    assert_eq!(
+        rows(
+            &store,
+            "SELECT scope, completeness, reason FROM coverage
+             WHERE kind = 'container contents' AND run_id = (SELECT MAX(run_id) FROM coverage)
+             ORDER BY scope"
+        ),
+        [
+            "container:machine:web-1/blog|partial|only version variables and the WordPress core version are read",
+            "container:machine:web-1/shop|partial|only version variables and the WordPress core version are read",
+        ]
+    );
+    assert!(
+        rows(
+            &store,
+            "SELECT 1 FROM assertion WHERE kind = 'container contents'"
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn checkouts_are_found_anywhere_under_the_home_folder_except_where_none_belong() {
+    // Discovery: a colleague keeps projects wherever they like and configures nothing.
+    let dir = Dir::new("discovery");
+    let home = dir.0.join("home");
+    // In the order the store sorts ids.
+    let found = ["Code/Music/synth", "Code/a", "x1/x2/x3/x4/deep"];
+    for rel in found {
+        checkout(&home, rel);
+    }
+    for rel in [
+        "y1/y2/y3/y4/y5/too-deep",
+        "Code/a/packages/inner",
+        "Code/web/node_modules/pkg",
+        "Code/web/vendor/lib",
+        "Code/web/target/out",
+        "Library/Mobile/repo",
+        "Music/song",
+        ".config/repo",
+    ] {
+        checkout(&home, rel);
+    }
+    // A home folder kept under git holds settings; it does not hide what is inside it.
+    put(&home, ".git/HEAD", "ref: refs/heads/main\n");
+    std::os::unix::fs::symlink(home.join("Code"), home.join("link")).unwrap();
+
+    ok(soc_cmd(&home)
+        .args(["run", "--machine-name", "mac", "--store"])
+        .arg(dir.store())
+        .arg("--brew-input")
+        .arg(dir.input("brew.txt", SAMPLE))
+        .arg("--servers-input")
+        .arg(dir.0.join("absent")));
+
+    let expected: Vec<String> = found
+        .iter()
+        .map(|rel| format!("checkout:machine:mac/{rel}"))
+        .collect();
+    assert_eq!(
+        rows(
+            &dir.store(),
+            "SELECT subject FROM assertion WHERE layer = 'live' AND predicate = 'located_on'
+             ORDER BY subject"
+        ),
+        expected
+    );
 }

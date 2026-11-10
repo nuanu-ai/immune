@@ -4,7 +4,7 @@
 use rusqlite::{Connection, OpenFlags, Transaction, params};
 use std::path::Path;
 
-pub const FORMAT_VERSION: &str = "2";
+pub const FORMAT_VERSION: &str = "3";
 
 const SCHEMA: &str = "
 CREATE TABLE meta (
@@ -26,6 +26,10 @@ CREATE TABLE basis_kind (
     name     TEXT PRIMARY KEY,
     strength INTEGER NOT NULL UNIQUE  -- 1 is strongest
 );
+-- What a reading looks for in its scope. A reading of an unknown kind cannot be written.
+CREATE TABLE coverage_kind (
+    name TEXT PRIMARY KEY
+);
 
 CREATE TABLE entity (
     id   TEXT PRIMARY KEY,
@@ -42,7 +46,7 @@ CREATE TABLE assertion (
     object       TEXT NOT NULL,
     reader       TEXT NOT NULL,
     scope        TEXT NOT NULL REFERENCES entity (id),
-    kind         TEXT NOT NULL,
+    kind         TEXT NOT NULL REFERENCES coverage_kind (name),
     source_ref   TEXT NOT NULL,
     basis        TEXT NOT NULL REFERENCES basis_kind (name),
     observed_at  INTEGER NOT NULL,  -- UTC seconds
@@ -59,11 +63,22 @@ CREATE TABLE coverage (
     run_id       TEXT NOT NULL,
     observed_at  INTEGER NOT NULL,
     scope        TEXT NOT NULL REFERENCES entity (id),
-    kind         TEXT NOT NULL,
+    kind         TEXT NOT NULL REFERENCES coverage_kind (name),
     completeness TEXT NOT NULL CHECK (completeness IN ('full', 'partial', 'none')),
+    -- Why the reading was not full. On a full reading it is a note: why there was
+    -- nothing to read, such as a tool that is not installed.
     reason       TEXT,
     CHECK (completeness = 'full' OR reason IS NOT NULL)
 );
+
+-- Containers and checkouts that were somewhere and are no longer anywhere. What was read
+-- inside them was retracted with them, and their readings no longer count.
+CREATE VIEW gone_entity AS
+    SELECT DISTINCT r.subject AS id FROM assertion r
+    WHERE r.layer = 'retracted' AND r.predicate = 'located_on'
+      AND NOT EXISTS (SELECT 1 FROM assertion l
+                      WHERE l.layer = 'live' AND l.predicate = 'located_on'
+                        AND l.subject = r.subject);
 
 -- The journal cannot be rebuilt from raw input, so it only grows.
 CREATE TABLE journal (
@@ -107,21 +122,10 @@ INSERT INTO predicate (name, object_kind, status) VALUES
     ('relation_to_owner', NULL, 'reserved'), ('same_as', NULL, 'reserved');
 INSERT INTO basis_kind (name, strength) VALUES
     ('observed', 1), ('declared', 2), ('mentioned', 3);
-";
-
-/// Format 1 had no raw copy table and two fewer predicates. Nothing else changed,
-/// so the journal and every layer are kept as they are.
-const MIGRATE_1_TO_2: &str = "
-CREATE TABLE raw_input (
-    reader TEXT NOT NULL,
-    input  TEXT NOT NULL,
-    path   TEXT NOT NULL,
-    run_id TEXT NOT NULL,
-    PRIMARY KEY (reader, input)
-);
-INSERT INTO predicate (name, object_kind, status) VALUES
-    ('runs_kernel', 'literal', 'used'), ('runs_image', 'literal', 'used');
-UPDATE meta SET value = '2' WHERE key = 'format_version';
+INSERT INTO coverage_kind (name) VALUES
+    ('brew packages'), ('checkouts present'), ('lockfile dependencies'),
+    ('system packages'), ('containers'), ('container version variables'),
+    ('wordpress core version'), ('container contents');
 ";
 
 /// One reading: which reader looked for which kind of thing in which scope.
@@ -153,15 +157,15 @@ pub struct Event {
     pub new: Option<String>,
 }
 
-pub fn open(path: &Path) -> Result<Connection, Box<dyn std::error::Error>> {
+type Res<T> = Result<T, Box<dyn std::error::Error>>;
+
+/// Opens the store, creating it in an empty file. A store of another format is refused
+/// and left as it is: old stores are not converted.
+pub fn open(path: &Path) -> Res<Connection> {
     let mut conn = Connection::open(path)?;
     conn.pragma_update(None, "foreign_keys", true)?;
-    let created: bool = conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta')",
-        [],
-        |r| r.get(0),
-    )?;
-    if !created {
+    let tables: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_master", [], |r| r.get(0))?;
+    if tables == 0 {
         let tx = conn.transaction()?;
         tx.execute_batch(SCHEMA)?;
         tx.execute(
@@ -170,26 +174,55 @@ pub fn open(path: &Path) -> Result<Connection, Box<dyn std::error::Error>> {
         )?;
         tx.commit()?;
     }
-    let version: String = conn.query_row(
-        "SELECT value FROM meta WHERE key = 'format_version'",
-        [],
-        |r| r.get(0),
-    )?;
-    match version.as_str() {
-        FORMAT_VERSION => {}
-        "1" => {
-            let tx = conn.transaction()?;
-            tx.execute_batch(MIGRATE_1_TO_2)?;
-            tx.commit()?;
-        }
-        other => return Err(format!("store format {other} is not supported").into()),
-    }
+    check_format(&conn, path)?;
     Ok(conn)
 }
 
 /// Opens an existing store so that nothing can be written to it. Creates nothing.
-pub fn open_read_only(path: &Path) -> rusqlite::Result<Connection> {
-    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+pub fn open_read_only(path: &Path) -> Res<Connection> {
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    check_format(&conn, path)?;
+    Ok(conn)
+}
+
+fn check_format(conn: &Connection, path: &Path) -> Res<()> {
+    let has_meta: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta')",
+        [],
+        |r| r.get(0),
+    )?;
+    let version: Option<String> = if has_meta {
+        conn.query_row(
+            "SELECT MAX(value) FROM meta WHERE key = 'format_version'",
+            [],
+            |r| r.get(0),
+        )?
+    } else {
+        None
+    };
+    let Some(version) = version else {
+        return Err(format!("{} is not a store of this tool", path.display()).into());
+    };
+    let (Ok(found), Ok(ours)) = (version.parse::<u32>(), FORMAT_VERSION.parse::<u32>()) else {
+        return Err(format!("store format {version} is not supported").into());
+    };
+    if found < ours {
+        return Err(format!(
+            "the store at {} is from an older format ({found}); this version uses format {ours} \
+             and does not convert old stores. Nothing was changed. Move the old store aside \
+             or pass another --store.",
+            path.display()
+        )
+        .into());
+    }
+    if found > ours {
+        return Err(format!(
+            "the store at {} is from a newer format ({found}) than this version knows ({ours})",
+            path.display()
+        )
+        .into());
+    }
+    Ok(())
 }
 
 /// The entity type is the part of the id before the first colon.
@@ -280,7 +313,7 @@ pub struct Totals {
     /// Machines this run tried to read and could read nothing on.
     pub machines_unread: i64,
     /// Readings made by earlier runs whose scope this run did not read at all:
-    /// nothing is known about what changed in them.
+    /// nothing is known about what changed in them. A scope that is gone is not counted.
     pub not_repeated: i64,
 }
 
@@ -289,7 +322,8 @@ pub fn totals(tx: &Transaction, run_id: &str) -> rusqlite::Result<Totals> {
     let one = |sql: &str| tx.query_row(sql, [run_id], |row| row.get::<_, i64>(0));
     Ok(Totals {
         machines: all("SELECT COUNT(*) FROM entity WHERE type = 'machine'")?,
-        checkouts: all("SELECT COUNT(*) FROM entity WHERE type = 'checkout'")?,
+        checkouts: all("SELECT COUNT(DISTINCT subject) FROM assertion
+             WHERE layer = 'live' AND predicate = 'located_on' AND subject LIKE 'checkout:%'")?,
         components: all("SELECT COUNT(DISTINCT subject) FROM assertion
              WHERE layer = 'live' AND predicate = 'part_of'")?,
         partial: one(
@@ -301,7 +335,8 @@ pub fn totals(tx: &Transaction, run_id: &str) -> rusqlite::Result<Totals> {
              GROUP BY scope HAVING MAX(completeness != 'none') = 0)")?,
         not_repeated: one(
             "SELECT COUNT(*) FROM (SELECT DISTINCT reader, scope, kind FROM coverage
-             WHERE scope NOT IN (SELECT scope FROM coverage WHERE run_id = ?1))",
+             WHERE scope NOT IN (SELECT scope FROM coverage WHERE run_id = ?1)
+               AND scope NOT IN (SELECT id FROM gone_entity))",
         )?,
     })
 }

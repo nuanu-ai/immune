@@ -1,13 +1,14 @@
 //! The `lockfiles` reader: dependencies that lockfiles declare in local checkouts.
 //! It only reads: it never runs git or a package manager and writes nothing where it reads.
 //!
-//! A checkout is a folder that holds `.git`. Lockfiles are kept under version control,
-//! so the raw input is a manifest of their paths, sizes and the checkout's commit
+//! The checkouts come from the `checkouts` reader. Lockfiles are kept under version
+//! control, so the raw input is a manifest of their paths, sizes and the checkout's commit
 //! instead of a copy.
 
+use crate::checkouts::Checkout;
 use crate::store::Statement;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub const READER: &str = "lockfiles";
 pub const KIND: &str = "lockfile dependencies";
@@ -28,72 +29,17 @@ const NOT_SUPPORTED: [&str; 9] = [
     "bun.lock",
 ];
 
-pub struct Checkout {
-    /// Path relative to the root, with `/` between parts; `.` for the root itself.
-    pub rel: String,
-    pub path: PathBuf,
-}
-
 /// What reading one checkout found.
 pub struct Outcome {
     pub completeness: &'static str,
     pub reason: Option<String>,
     pub statements: Vec<Statement>,
-    /// Every lockfile found: path relative to the root, and size in bytes.
+    /// Every lockfile found: path relative to the home folder, and size in bytes.
     pub lockfiles: Vec<(String, u64)>,
 }
 
 fn pruned(name: &str) -> bool {
     name.starts_with('.') || PRUNED.contains(&name)
-}
-
-/// The folders inside `dir` to descend into, and whether it could be listed.
-fn subfolders(dir: &Path) -> Option<Vec<(String, PathBuf)>> {
-    let mut out = Vec::new();
-    for entry in std::fs::read_dir(dir).ok()? {
-        let entry = entry.ok()?;
-        // Symbolic links are not followed: they lead out of the tree or into a loop.
-        if !entry.file_type().ok()?.is_dir() {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !pruned(&name) {
-            out.push((name, entry.path()));
-        }
-    }
-    out.sort();
-    Some(out)
-}
-
-/// Checkouts under the root, and how many folders could not be listed on the way.
-/// A checkout is not searched for further checkouts.
-pub fn checkouts(root: &Path) -> (Vec<Checkout>, usize) {
-    let mut out = Vec::new();
-    let mut unreadable = 0;
-    let mut stack = vec![(".".to_string(), root.to_path_buf(), 0)];
-    while let Some((rel, dir, depth)) = stack.pop() {
-        if std::fs::symlink_metadata(dir.join(".git")).is_ok() {
-            out.push(Checkout { rel, path: dir });
-            continue;
-        }
-        if depth == MAX_DEPTH {
-            continue;
-        }
-        let Some(subs) = subfolders(&dir) else {
-            unreadable += 1;
-            continue;
-        };
-        for (name, path) in subs.into_iter().rev() {
-            let rel = if rel == "." {
-                name
-            } else {
-                format!("{rel}/{name}")
-            };
-            stack.push((rel, path, depth + 1));
-        }
-    }
-    out.sort_by(|a, b| a.rel.cmp(&b.rel));
-    (out, unreadable)
 }
 
 /// Lockfiles of known kinds inside a checkout, relative to it, and whether every
@@ -136,8 +82,8 @@ fn file_name(path: &str) -> &str {
 }
 
 /// Reads one checkout. `None` when it holds no lockfile at all: then there is nothing
-/// to cover and only its entity is known.
-pub fn read(checkout: &Checkout, id: &str, machine: &str) -> Option<Outcome> {
+/// to cover. Where the checkout is, is said by the `checkouts` reader.
+pub fn read(checkout: &Checkout, id: &str) -> Option<Outcome> {
     let (found, listed) = lockfiles(&checkout.path);
     if found.is_empty() && listed {
         return None;
@@ -182,12 +128,7 @@ pub fn read(checkout: &Checkout, id: &str, machine: &str) -> Option<Outcome> {
         }
     }
 
-    let mut statements = vec![Statement {
-        subject: id.to_string(),
-        predicate: "located_on",
-        object: machine.to_string(),
-        source_ref: format!("{prefix}.git"),
-    }];
+    let mut statements = Vec::new();
     for ((ecosystem, name), versions) in deps {
         let component = format!("component:{id}/{ecosystem}/{name}");
         for (i, (version, at)) in versions.into_iter().enumerate() {
