@@ -4,6 +4,7 @@
 //!
 //! The program never connects to a server and never runs ssh.
 
+mod agent_folders;
 mod brew;
 mod checkouts;
 mod known_hosts;
@@ -29,7 +30,7 @@ use store::{Event, Reading, Statement};
 const STORE_FOLDER: &str = "Library/Application Support/personal-soc";
 const USAGE: &str = "usage: soc run [--store <path>] [--machine-name <name>] [--brew <path>]
                [--brew-input <file>] [--servers-input <dir>] [--checkouts-root <dir>]
-               [--tailscale <path>]
+               [--sessions-root <dir>] [--tailscale <path>]
        soc servers [--store <path>] [--tailscale <path>]
        soc view [--store <path>] [--no-open]";
 
@@ -53,6 +54,8 @@ struct Args {
     home: PathBuf,
     /// The one folder to look for checkouts in instead of the home folder.
     checkouts_root: Option<PathBuf>,
+    /// The folder of agent sessions instead of Claude Code's own.
+    sessions_root: Option<PathBuf>,
     /// The one place to look for tailscale instead of PATH and the app.
     tailscale: Option<PathBuf>,
 }
@@ -86,6 +89,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
         "run" => {
             let (mut machine, mut brew, mut brew_input) = (None, None, None);
             let (mut servers_input, mut checkouts_root, mut tailscale) = (None, None, None);
+            let mut sessions_root = None;
             while let Some(arg) = it.next() {
                 match arg.as_str() {
                     "--tailscale" => tailscale = Some(value(&mut it, &arg)?.into()),
@@ -95,6 +99,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
                     "--brew-input" => brew_input = Some(value(&mut it, &arg)?.into()),
                     "--servers-input" => servers_input = Some(value(&mut it, &arg)?.into()),
                     "--checkouts-root" => checkouts_root = Some(value(&mut it, &arg)?.into()),
+                    "--sessions-root" => sessions_root = Some(value(&mut it, &arg)?.into()),
                     _ => return Err(format!("unexpected argument: {arg}")),
                 }
             }
@@ -108,6 +113,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
                 brew_input,
                 servers_input,
                 checkouts_root,
+                sessions_root,
                 home: user_home()?,
                 tailscale,
             }))
@@ -517,8 +523,13 @@ fn run(args: &Args) -> Result<String, Box<dyn Error>> {
     read_brew(&mut run, args)?;
     let servers = args.servers_input.clone();
     read_servers(&mut run, servers.as_deref())?;
-    let found = read_checkouts(&mut run, args)?;
-    if let Some(found) = found {
+    let walked = read_checkouts(&mut run, args)?;
+    let from_agents = read_agent_folders(&mut run, args)?;
+    if walked.is_some() || !from_agents.is_empty() {
+        // One checkout found by both readers is read once.
+        let mut found = walked.unwrap_or_default();
+        let known: BTreeSet<String> = found.iter().map(|c| c.rel.clone()).collect();
+        found.extend(from_agents.into_iter().filter(|c| !known.contains(&c.rel)));
         read_lockfiles(&mut run, &found)?;
     }
     read_traces(&mut run, args)?;
@@ -762,6 +773,147 @@ fn read_checkouts(
         &statements,
     )?;
     Ok(Some(walk.checkouts))
+}
+
+/// Checkouts in the folders agents worked in. The candidates are the working folders in the
+/// sessions and the checkouts this reader already holds, each checked on disk, so a checkout
+/// stays while it is there however long ago its session was deleted.
+fn read_agent_folders(
+    run: &mut Run,
+    args: &Args,
+) -> Result<Vec<checkouts::Checkout>, Box<dyn Error>> {
+    let (run_id, machine) = (run.run_id.to_string(), run.machine.to_string());
+    let reading = Reading {
+        reader: agent_folders::READER,
+        scope: &machine,
+        kind: agent_folders::KIND,
+        run_id: &run_id,
+        at: run.at,
+        observed_at: run.at,
+    };
+    let dir = args
+        .sessions_root
+        .clone()
+        .unwrap_or_else(|| args.home.join(agent_folders::SESSIONS));
+    let sessions = match agent_folders::sessions(&dir) {
+        agent_folders::Found::Failed(reason) => {
+            run.readers += 1;
+            run.apply(&reading, agent_folders::BASIS, "none", Some(&reason), &[])?;
+            run.notes
+                .push(format!("Agent sessions could not be read: {reason}."));
+            return Ok(Vec::new());
+        }
+        agent_folders::Found::Absent => None,
+        agent_folders::Found::Read(sessions) => {
+            run.readers += 1;
+            Some(sessions)
+        }
+    };
+    let home = std::fs::canonicalize(&args.home).unwrap_or_else(|_| args.home.clone());
+    let mut found: BTreeMap<String, PathBuf> = BTreeMap::new();
+    let mut unknown = BTreeSet::new();
+    for folder in sessions.iter().flat_map(|s| &s.folders) {
+        match agent_folders::checkout_of(folder, &home) {
+            agent_folders::OnDisk::Checkout(path) => {
+                found.insert(checkouts::rel(&home, &path), path);
+            }
+            agent_folders::OnDisk::Nothing => {}
+            agent_folders::OnDisk::Unknown => {
+                unknown.insert(folder.clone());
+            }
+        }
+    }
+    let prefix = format!("checkout:{machine}/");
+    let mut kept = 0;
+    for id in store::live_subjects(run.tx, agent_folders::READER)? {
+        let Some(rel) = id.strip_prefix(&prefix) else {
+            continue;
+        };
+        if found.contains_key(rel) {
+            continue;
+        }
+        let path = if rel.starts_with('/') {
+            PathBuf::from(rel)
+        } else {
+            args.home.join(rel)
+        };
+        match agent_folders::still_there(&path) {
+            Some(true) => {
+                found.insert(rel.to_string(), path);
+            }
+            Some(false) => {}
+            // Not known to be gone: the reading is partial, so it stays as it was.
+            None => kept += 1,
+        }
+    }
+
+    let mut raw = String::new();
+    for rel in found.keys() {
+        raw.push_str(&format!("checkout\t{rel}\n"));
+    }
+    let raw_file = run.keep_raw(agent_folders::READER, "agent-folders.txt", raw.as_bytes())?;
+    let statements: Vec<Statement> = found
+        .keys()
+        .enumerate()
+        .map(|(i, rel)| Statement {
+            subject: format!("{prefix}{rel}"),
+            predicate: "located_on",
+            object: machine.clone(),
+            source_ref: format!("{raw_file}:{}", i + 1),
+        })
+        .collect();
+    let mut reasons = Vec::new();
+    let count = |n: usize, one: &str, many: &str| things(n as i64, one, many);
+    if let Some(s) = &sessions {
+        if s.unreadable > 0 {
+            reasons.push(format!(
+                "{} of {} could not be read",
+                s.unreadable,
+                count(s.files, "session file", "session files")
+            ));
+        }
+        if s.unlisted > 0 {
+            reasons.push(format!(
+                "{} could not be listed",
+                count(s.unlisted, "session folder", "session folders")
+            ));
+        }
+        if s.unparsed > 0 {
+            reasons.push(format!(
+                "{} with a working folder could not be parsed",
+                count(s.unparsed, "line", "lines")
+            ));
+        }
+    }
+    if !unknown.is_empty() {
+        reasons.push(format!(
+            "{} could not be looked at",
+            count(unknown.len(), "working folder", "working folders")
+        ));
+    }
+    if kept > 0 {
+        reasons.push(format!(
+            "{} could not be checked and {} kept",
+            count(kept, "checkout", "checkouts"),
+            if kept == 1 { "is" } else { "are" }
+        ));
+    }
+    let (completeness, reason) = match (reasons.is_empty(), &sessions) {
+        (false, _) => ("partial", Some(reasons.join("; "))),
+        (true, None) => ("full", Some(agent_folders::NOT_HERE.to_string())),
+        (true, Some(_)) => ("full", None),
+    };
+    run.apply(
+        &reading,
+        agent_folders::BASIS,
+        completeness,
+        reason.as_deref(),
+        &statements,
+    )?;
+    Ok(found
+        .into_iter()
+        .map(|(rel, path)| checkouts::Checkout { rel, path })
+        .collect())
 }
 
 /// The three local traces of servers, each its own reading of this machine.

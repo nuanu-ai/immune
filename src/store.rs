@@ -111,26 +111,30 @@ CREATE TRIGGER journal_no_update BEFORE UPDATE ON journal
     BEGIN SELECT RAISE(ABORT, 'journal is append-only'); END;
 CREATE TRIGGER journal_no_delete BEFORE DELETE ON journal
     BEGIN SELECT RAISE(ABORT, 'journal is append-only'); END;
+";
 
-INSERT INTO entity_type (name, status) VALUES
+/// The vocabulary seed. It is data, not format: it is applied on every open, so a store of
+/// the current format learns a new row without being rebuilt, and a row is never removed.
+const VOCABULARY: &str = "
+INSERT OR IGNORE INTO entity_type (name, status) VALUES
     ('machine', 'used'), ('container', 'used'), ('checkout', 'used'), ('component', 'used'),
     ('repository', 'reserved'), ('service', 'reserved'), ('account', 'reserved'),
     ('domain', 'reserved'), ('key', 'reserved'), ('party', 'reserved');
-INSERT INTO predicate (name, object_kind, status) VALUES
+INSERT OR IGNORE INTO predicate (name, object_kind, status) VALUES
     ('located_on', 'entity', 'used'), ('part_of', 'entity', 'used'),
     ('has_version', 'literal', 'used'), ('runs_os', 'literal', 'used'),
     ('runs_kernel', 'literal', 'used'), ('runs_image', 'literal', 'used'),
     ('known_as', 'literal', 'used'), ('same_as', 'entity', 'used'),
     ('copy_of', NULL, 'reserved'), ('reachable_from', NULL, 'reserved'),
     ('relation_to_owner', NULL, 'reserved');
-INSERT INTO basis_kind (name, strength) VALUES
+INSERT OR IGNORE INTO basis_kind (name, strength) VALUES
     ('observed', 1), ('declared', 2), ('mentioned', 3);
-INSERT INTO coverage_kind (name) VALUES
+INSERT OR IGNORE INTO coverage_kind (name) VALUES
     ('brew packages'), ('checkouts under the home folder'), ('lockfile dependencies'),
     ('system packages'), ('containers'), ('container version variables'),
     ('wordpress core version'), ('container contents'),
     ('ssh configuration'), ('known hosts'), ('tailnet peers'),
-    ('machines under several names');
+    ('machines under several names'), ('checkouts in agent working folders');
 ";
 
 /// One reading: which reader looked for which kind of thing in which scope.
@@ -180,6 +184,7 @@ pub fn open(path: &Path) -> Res<Connection> {
         tx.commit()?;
     }
     check_format(&conn, path)?;
+    conn.execute_batch(VOCABULARY)?;
     Ok(conn)
 }
 

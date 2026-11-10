@@ -398,8 +398,10 @@ impl Estate {
             c.sources.insert(source);
             c.first_seen = Some(c.first_seen.map_or(at, |t| t.min(at)));
         }
+        // Two readers that found one checkout make two assertions about one entity.
         for list in e.checkouts.values_mut() {
             list.sort();
+            list.dedup();
         }
         for list in e.inside.values_mut().chain(e.containers.values_mut()) {
             list.sort_by_key(|id| {

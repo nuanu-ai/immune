@@ -1,7 +1,7 @@
 //! The `lockfiles` reader: dependencies that lockfiles declare in local checkouts.
 //! It only reads: it never runs git or a package manager and writes nothing where it reads.
 //!
-//! The checkouts come from the `checkouts` reader. Lockfiles are kept under version
+//! The checkouts come from the `checkouts` and `agent-folders` readers. Lockfiles are kept under version
 //! control, so the raw input is a manifest of their paths, sizes and the checkout's commit
 //! instead of a copy.
 

@@ -1532,3 +1532,403 @@ fn a_standing_partial_reading_without_assertions_still_lets_the_report_say_no_ch
         ["2"]
     );
 }
+
+/// A Claude Code session as it lies on disk: one JSON object per line. Lines of a turn carry
+/// the working folder in `cwd`; a summary line carries none. Every value is invented.
+fn session(sessions: &Path, name: &str, cwds: &[&Path]) -> PathBuf {
+    let mut text = String::from(
+        "{\"type\":\"summary\",\"summary\":\"Invented summary\",\"leafUuid\":\"00000000-0000-4000-8000-00000000000a\"}\n",
+    );
+    for (i, cwd) in cwds.iter().enumerate() {
+        text.push_str(&format!(
+            "{{\"parentUuid\":null,\"isSidechain\":false,\"userType\":\"external\",\"cwd\":{},\
+             \"sessionId\":\"00000000-0000-4000-8000-000000000001\",\"version\":\"2.0.0\",\
+             \"gitBranch\":\"main\",\"type\":\"user\",\"message\":{{\"role\":\"user\",\
+             \"content\":\"invented request {i}\"}},\"uuid\":\"00000000-0000-4000-8000-00000000000{i}\",\
+             \"timestamp\":\"2026-11-01T10:00:0{i}.000Z\"}}\n",
+            serde_json::Value::from(cwd.to_str().unwrap())
+        ));
+    }
+    put(sessions, &format!("-invented-project/{name}.jsonl"), &text)
+}
+
+/// A home folder, a folder outside it and a folder of sessions, all invented.
+struct Agents {
+    dir: Dir,
+    home: PathBuf,
+    outside: PathBuf,
+    sessions: PathBuf,
+}
+
+impl Agents {
+    fn new(tag: &str) -> Agents {
+        let dir = Dir::new(tag);
+        let (home, outside, sessions) = (
+            dir.0.join("home"),
+            dir.0.join("outside"),
+            dir.0.join("sessions"),
+        );
+        for d in [&home, &outside, &sessions] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        Agents {
+            dir,
+            home,
+            outside,
+            sessions,
+        }
+    }
+
+    fn store(&self) -> PathBuf {
+        self.dir.store()
+    }
+
+    /// `soc run` with the home walk of `home` and the given sessions.
+    fn run(&self) -> String {
+        ok(&mut self.cmd())
+    }
+
+    fn cmd(&self) -> Command {
+        let mut cmd = soc_run(&self.home, &self.store());
+        cmd.arg("--brew-input")
+            .arg(self.dir.input("brew.txt", SAMPLE))
+            .arg("--servers-input")
+            .arg(self.dir.0.join("absent"))
+            .arg("--sessions-root")
+            .arg(&self.sessions);
+        cmd
+    }
+
+    /// The id of a checkout outside the home folder: its full path without symbolic links.
+    fn outside_id(&self, rel: &str) -> String {
+        let real = std::fs::canonicalize(self.outside.join(rel)).unwrap();
+        format!("checkout:machine:mac/{}", real.display())
+    }
+
+    fn agent_coverage(&self) -> Vec<String> {
+        rows(
+            &self.store(),
+            "SELECT completeness, reason FROM coverage
+             WHERE reader = 'agent-folders' ORDER BY id DESC LIMIT 1",
+        )
+    }
+}
+
+#[test]
+fn a_checkout_outside_the_home_folder_is_found_through_an_agent_session_and_its_lockfiles_are_read()
+{
+    // Agents work in temporary folders and worktrees that the home walk never sees.
+    let a = Agents::new("agent-outside");
+    let app = checkout(&a.outside, "app");
+    put(&app, "Cargo.lock", CARGO_LOCK);
+    std::fs::create_dir_all(app.join("src/bin")).unwrap();
+    // A worktree has a `.git` file, not a folder.
+    put(
+        &a.outside,
+        "tree/.git",
+        "gitdir: /invented/repo/.git/worktrees/tree\n",
+    );
+    std::fs::create_dir_all(a.outside.join("scratch")).unwrap();
+    checkout(&a.outside, "relative");
+    let file = session(
+        &a.sessions,
+        "s1",
+        &[
+            &app.join("src/bin"),
+            &a.outside.join("tree"),
+            // Not in a checkout, no longer there, or not a full path: none is a checkout.
+            &a.outside.join("scratch"),
+            &a.outside.join("gone/app"),
+            Path::new("../outside/relative"),
+        ],
+    );
+    // Only session files are read.
+    put(&a.sessions, "stray.txt", "{\"cwd\":\n");
+    put(&a.sessions, "-invented-project/notes.txt", "{\"cwd\":\n");
+    // A line cut off mid-text that names no working folder hides nothing.
+    let mut text = std::fs::read_to_string(&file).unwrap();
+    text.push_str("{\"type\":\"assistant\",\"message\":{\"content\":\"cut off\n");
+    std::fs::write(&file, text).unwrap();
+
+    // Found without the home walk, its lockfiles are still read.
+    let report = ok(a.cmd().arg("--checkouts-root").arg(a.dir.0.join("absent")));
+
+    let (app_id, tree_id) = (a.outside_id("app"), a.outside_id("tree"));
+    assert_eq!(
+        rows(
+            &a.store(),
+            "SELECT subject, object FROM assertion
+             WHERE layer = 'live' AND reader = 'agent-folders' ORDER BY subject"
+        ),
+        [
+            format!("{app_id}|machine:mac"),
+            format!("{tree_id}|machine:mac")
+        ]
+    );
+    assert_eq!(
+        rows(
+            &a.store(),
+            &format!(
+                "SELECT subject FROM assertion WHERE layer = 'live' AND predicate = 'part_of'
+                 AND object = '{app_id}'"
+            )
+        ),
+        [format!("component:{app_id}/crates.io/serde")]
+    );
+    assert_eq!(a.agent_coverage(), ["full|NULL"]);
+    // The assertion rests on what the reader looked at, not on a session.
+    let refs = rows(
+        &a.store(),
+        "SELECT source_ref FROM assertion WHERE reader = 'agent-folders' ORDER BY subject",
+    );
+    let (file, line) = refs[0].rsplit_once(':').unwrap();
+    let raw = std::fs::read_to_string(a.dir.0.join(file)).unwrap();
+    let real = std::fs::canonicalize(&app).unwrap();
+    assert_eq!(
+        raw.lines().nth(line.parse::<usize>().unwrap() - 1),
+        Some(format!("checkout\t{}", real.display()).as_str())
+    );
+    assert!(report.contains("2 checkouts,"), "{report}");
+}
+
+#[test]
+fn a_checkout_seen_by_both_readers_is_one_entity() {
+    // Two readers that find the same checkout must not make the owner see it twice.
+    let a = Agents::new("agent-both");
+    let shop = checkout(&a.home, "dev/shop");
+    put(&shop, "Cargo.lock", CARGO_LOCK);
+    // A home folder kept under git is not a checkout for this reader either.
+    put(&a.home, ".git/HEAD", "ref: refs/heads/main\n");
+    std::fs::create_dir_all(a.home.join("notes")).unwrap();
+    session(&a.sessions, "s1", &[&shop, &a.home.join("notes")]);
+
+    let report = a.run();
+
+    let id = "checkout:machine:mac/dev/shop";
+    assert_eq!(
+        rows(
+            &a.store(),
+            "SELECT DISTINCT subject FROM assertion WHERE layer = 'live' AND predicate = 'located_on'"
+        ),
+        [id]
+    );
+    assert_eq!(
+        rows(
+            &a.store(),
+            &format!(
+                "SELECT reader FROM assertion WHERE layer = 'live' AND subject = '{id}'
+                 ORDER BY reader"
+            )
+        ),
+        ["agent-folders", "checkouts"]
+    );
+    // Its lockfile is read once.
+    assert_eq!(
+        rows(
+            &a.store(),
+            "SELECT COUNT(*) FROM coverage WHERE reader = 'lockfiles'"
+        ),
+        ["1"]
+    );
+    assert!(report.contains("1 checkout,"), "{report}");
+    let page = view(&a.store());
+    assert_eq!(
+        section(&page, "machines")
+            .matches("<span class=\"mono\">dev/shop</span>")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_checkout_does_not_vanish_when_its_session_is_deleted() {
+    // Sessions age out and the checkout stays. Dropping it would silently drop everything
+    // read inside it.
+    let a = Agents::new("agent-aged");
+    let app = checkout(&a.outside, "app");
+    put(&app, "Cargo.lock", CARGO_LOCK);
+    let file = session(&a.sessions, "s1", &[&app]);
+    a.run();
+    let live_before = rows(&a.store(), LIVE);
+
+    std::fs::remove_file(file).unwrap();
+    let report = a.run();
+
+    assert_eq!(rows(&a.store(), LIVE), live_before);
+    assert!(rows(&a.store(), LAST_RUN_EVENTS).is_empty());
+    assert_eq!(a.agent_coverage(), ["full|NULL"]);
+    assert!(report.contains("Since last run: no changes."), "{report}");
+}
+
+#[test]
+fn a_checkout_whose_folder_is_gone_is_removed_once() {
+    // A checkout that is really gone must stop being asserted, with what was read inside it,
+    // and must not be reported as removed again on later runs.
+    let a = Agents::new("agent-gone");
+    let app = checkout(&a.outside, "app");
+    put(&app, "Cargo.lock", CARGO_LOCK);
+    let kept = checkout(&a.outside, "kept");
+    // The session still names the folder after it is deleted.
+    session(&a.sessions, "s1", &[&app, &kept]);
+    a.run();
+    let id = a.outside_id("app");
+
+    std::fs::remove_dir_all(&app).unwrap();
+    let report = a.run();
+
+    assert_eq!(
+        rows(&a.store(), LAST_RUN_EVENTS),
+        [format!("removed|{id}|located_on|machine:mac|NULL")]
+    );
+    assert!(
+        !rows(&a.store(), LIVE).iter().any(|r| r.contains(&id)),
+        "something inside the deleted checkout is still live"
+    );
+    assert!(report.contains("1 removed."), "{report}");
+
+    let next = a.run();
+    assert!(rows(&a.store(), LAST_RUN_EVENTS).is_empty());
+    assert!(next.contains("Since last run: no changes."), "{next}");
+}
+
+#[test]
+fn a_missing_session_folder_is_not_applicable_not_a_failure() {
+    // Without Claude Code there is nothing to read; that must not look like a gap.
+    let dir = Dir::new("agent-absent");
+    let store = dir.store();
+    let brew = dir.input("brew.txt", SAMPLE);
+    let absent = dir.0.join("absent");
+    // The default place, inside a home folder that has no sessions.
+    soc_home(&store, &brew, &absent);
+    let report = soc_home(&store, &brew, &absent);
+
+    assert_eq!(
+        rows(
+            &store,
+            "SELECT completeness, reason FROM coverage
+             WHERE reader = 'agent-folders' ORDER BY id DESC LIMIT 1"
+        ),
+        ["full|no Claude Code sessions on this machine"]
+    );
+    // Brew, the home walk and lockfiles; the absent sessions are not a reader that read.
+    assert!(report.starts_with("3 readers,"), "{report}");
+    assert!(report.contains("Since last run: no changes."), "{report}");
+}
+
+#[test]
+fn a_session_that_cannot_be_read_makes_the_reading_partial_with_counts() {
+    // A session that could not be read may name a checkout nobody else knows.
+    let a = Agents::new("agent-partial");
+    let app = checkout(&a.outside, "app");
+    session(&a.sessions, "s1", &[&app]);
+    let locked = session(&a.sessions, "s2", &[&a.outside]);
+    put(
+        &a.sessions,
+        "-invented-project/s3.jsonl",
+        "{\"cwd\":\"/invented\",\"type\":\n",
+    );
+    session(&a.sessions, "../-locked-project/s4", &[&app]);
+    std::fs::create_dir_all(a.outside.join("box/inner")).unwrap();
+    session(&a.sessions, "s5", &[&a.outside.join("box/inner")]);
+    let _locked = [
+        Locked::new(locked),
+        Locked::new(a.sessions.join("-locked-project")),
+        Locked::new(a.outside.join("box")),
+    ];
+
+    a.run();
+
+    assert_eq!(
+        a.agent_coverage(),
+        ["partial|1 of 4 session files could not be read; \
+          1 session folder could not be listed; \
+          1 line with a working folder could not be parsed; \
+          1 working folder could not be looked at"]
+    );
+    assert!(
+        rows(&a.store(), LIVE)
+            .iter()
+            .any(|r| r.starts_with(&a.outside_id("app")))
+    );
+}
+
+#[test]
+fn a_checkout_that_cannot_be_looked_at_is_kept() {
+    // A disk that is not plugged in is not a deleted checkout: what was read there stays.
+    let a = Agents::new("agent-volume");
+    // A folder that can no longer be looked into is not a deleted checkout either.
+    let app = checkout(&a.outside, "box/app");
+    session(&a.sessions, "s1", &[&app]);
+    a.run();
+    let app_id = a.outside_id("box/app");
+    let _locked = Locked::new(a.outside.join("box"));
+    let id = "checkout:machine:mac//Volumes/soc-invented-volume-not-mounted/app";
+    let conn = Connection::open(a.store()).unwrap();
+    conn.execute(
+        "INSERT INTO entity (id, type) VALUES (?1, 'checkout')",
+        [id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO assertion (layer, subject, predicate, object, reader, scope, kind,
+                                source_ref, basis, observed_at, run_id)
+         VALUES ('live', ?1, 'located_on', 'machine:mac', 'agent-folders', 'machine:mac',
+                 'checkouts in agent working folders', 'raw/x:1', 'observed', 0, 'earlier')",
+        [id],
+    )
+    .unwrap();
+    drop(conn);
+
+    a.run();
+
+    let live = rows(&a.store(), LIVE);
+    assert!(live.iter().any(|r| r.starts_with(id)));
+    assert!(live.iter().any(|r| r.starts_with(&app_id)));
+    assert_eq!(
+        a.agent_coverage(),
+        ["partial|1 working folder could not be looked at; \
+          2 checkouts could not be checked and are kept"]
+    );
+}
+
+#[test]
+fn a_store_of_the_current_format_learns_a_new_coverage_kind_without_a_rebuild() {
+    // The vocabulary is data: a new reader must not cost the owner their store and journal.
+    let a = Agents::new("agent-vocabulary");
+    a.run();
+    let conn = Connection::open(a.store()).unwrap();
+    conn.execute_batch(
+        "DELETE FROM coverage WHERE kind = 'checkouts in agent working folders';
+         DELETE FROM coverage_kind WHERE name = 'checkouts in agent working folders';",
+    )
+    .unwrap();
+    drop(conn);
+
+    a.run();
+
+    assert_eq!(a.agent_coverage(), ["full|NULL"]);
+}
+
+#[test]
+fn a_session_folder_that_cannot_be_listed_is_a_failed_reading_not_an_empty_one() {
+    // A source that is here and unreadable must not look like a source with nothing in it.
+    let a = Agents::new("agent-failed");
+    let app = checkout(&a.outside, "app");
+    session(&a.sessions, "s1", &[&app]);
+    a.run();
+    let live_before = rows(&a.store(), LIVE);
+    let _locked = Locked::new(a.sessions.clone());
+
+    let report = a.run();
+
+    let coverage = a.agent_coverage();
+    assert!(
+        coverage[0].starts_with("none|") && coverage[0].contains("Permission denied"),
+        "{coverage:?}"
+    );
+    assert_eq!(rows(&a.store(), LIVE), live_before);
+    assert!(
+        report.contains("Agent sessions could not be read"),
+        "{report}"
+    );
+}

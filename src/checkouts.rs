@@ -44,7 +44,7 @@ pub struct Walk {
 }
 
 /// The path as ids name it: relative to the home folder when it is inside it.
-fn rel(home: &Path, path: &Path) -> String {
+pub fn rel(home: &Path, path: &Path) -> String {
     match path.strip_prefix(home) {
         Ok(p) if p.as_os_str().is_empty() => ".".to_string(),
         Ok(p) => p.to_string_lossy().into_owned(),
