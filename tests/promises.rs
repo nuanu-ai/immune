@@ -3258,8 +3258,47 @@ fn a_checkout_that_cannot_be_looked_at_is_kept() {
     assert_eq!(
         a.agent_coverage(),
         ["partial|1 working folder could not be looked at; \
-          2 checkouts could not be checked and are kept"]
+          1 checkout could not be checked and is kept"]
     );
+    // A volume is a place macOS asks permission for: it is not looked at, and said so.
+    assert_eq!(
+        rows(
+            &a.store(),
+            "SELECT completeness || '|' || reason FROM coverage
+             WHERE reader = 'agent-folders' AND kind = 'folders macOS asks permission for'
+             ORDER BY id DESC LIMIT 1"
+        ),
+        ["none|not looked into: /Volumes/soc-invented-volume-not-mounted"]
+    );
+}
+
+#[test]
+fn a_checkout_in_a_place_macos_asks_permission_for_is_kept_by_a_reading_that_did_not_look() {
+    // Not looking, so that macOS asks the owner nothing, is not finding it gone, even when
+    // the rest of the reading is full.
+    let a = Agents::new("agent-guarded");
+    let app = checkout(&a.outside, "app");
+    session(&a.sessions, "s1", &[&app]);
+    a.run();
+    let id = "checkout:machine:mac//Volumes/soc-invented-volume/app";
+    let conn = Connection::open(a.store()).unwrap();
+    conn.execute(
+        "INSERT INTO entity (id, type) VALUES (?1, 'checkout')",
+        [id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO assertion (layer, subject, predicate, object, reader, scope, kind,
+                                source_ref, basis, observed_at, run_id)
+         VALUES ('live', ?1, 'located_on', 'machine:mac', 'agent-folders', 'machine:mac',
+                 'checkouts in agent working folders', 'raw/x:1', 'observed', 0, 'earlier')",
+        [id],
+    )
+    .unwrap();
+    drop(conn);
+    a.run();
+    assert_eq!(a.agent_coverage(), ["full|NULL"]);
+    assert!(rows(&a.store(), LIVE).iter().any(|r| r.starts_with(id)));
 }
 
 #[test]
@@ -7160,10 +7199,19 @@ fn unknown_is_never_given_as_zero_or_full() {
     let none = status_json(&w.store());
     assert_eq!(none["store"]["exists"], false);
     assert_eq!(none["running"], false);
-    for section in ["last_run", "estate", "watched", "threats", "coverage"] {
+    for section in [
+        "last_run",
+        "estate",
+        "watched",
+        "threats",
+        "coverage",
+        "not_covered",
+    ] {
         assert!(none.get(section).is_none(), "{section}");
     }
-    assert_eq!(none["not_computed"].as_array().unwrap().len(), 9);
+    assert_eq!(none["not_computed"].as_array().unwrap().len(), 10);
+    // With no store, this Mac has not been checked: said, not left out.
+    assert_eq!(none["this_mac"]["state"], "not_checked");
     assert!(
         none["cannot_judge"].as_array().unwrap().contains(
             &"no vulnerability from the catalogue is matched against the estate yet".into()
@@ -7202,16 +7250,19 @@ fn unknown_is_never_given_as_zero_or_full() {
             .map(|p| p["class"].as_str().unwrap().to_string())
     };
     assert_eq!(class_of("brew").as_deref(), Some("failed"), "{c:#}");
-    // A reading that failed needs a look, in plain words, with what the source said.
-    let failed: Vec<&serde_json::Value> = r["needs_a_look"]
+    // A reading that failed is not covered, in plain words, with what the source said, and
+    // this Mac is watched only in part.
+    let failed: Vec<&serde_json::Value> = r["not_covered"]
         .as_array()
         .unwrap()
         .iter()
-        .filter(|i| i["kind"] == "check failed")
+        .filter(|i| i["kind"] == "readings that failed")
         .collect();
     assert_eq!(failed.len(), 1, "{r:#}");
-    assert_eq!(failed[0]["title"], "Something could not be checked.");
-    assert_eq!(failed[0]["where_text"], "mac");
+    assert_eq!(failed[0]["title"], "Something could not be read.");
+    assert_eq!(failed[0]["scope"], "this_mac");
+    assert_eq!(failed[0]["examples_text"], serde_json::json!(["mac"]));
+    assert_eq!(r["this_mac"]["state"], "watched_in_part");
     assert!(
         failed[0]["value_text"]
             .as_str()
@@ -7415,10 +7466,23 @@ fn a_lockfile_of_a_kind_without_a_reader_is_named_as_such_by_status_and_the_repo
         put(&shop, "uv.lock", "version = 1\n");
     }
     let (brew, absent) = (dir.input("brew.txt", SAMPLE), dir.0.join("absent"));
-    let said =
-        " This build has no reader for 2 kinds of thing found here; `soc status` names them.";
+    let said = " Not covered: kinds of file this build has no reader for";
     let first = soc_home(&store, &brew, &absent);
     assert!(first.contains(said), "{first}");
+    // For a person, one item for the projects, with how many kinds.
+    let r = status_json(&store);
+    let item = &r["not_covered"][0];
+    assert_eq!(
+        (&item["scope"], &item["kind"], &item["count"]),
+        (
+            &"projects".into(),
+            &"kinds of file this build has no reader for".into(),
+            &2.into()
+        ),
+        "{r:#}"
+    );
+    // And the threat list, not downloaded in tests.
+    assert_eq!(r["not_covered_total"], 2);
 
     assert_eq!(
         causes(&store, "lockfiles"),
@@ -7592,7 +7656,20 @@ fn a_store_from_before_causes_were_kept_shows_its_incomplete_readings_as_failed(
     let conn = Connection::open(w.store()).unwrap();
     conn.execute_batch("UPDATE coverage SET cause = NULL")
         .unwrap();
-    assert_eq!(classes(&status_json(&w.store())), [1, 0, 0]);
+    let r = status_json(&w.store());
+    assert_eq!(classes(&r), [1, 0, 0]);
+    // For a person they are not a failure of his Mac: the first run of this build reads them
+    // again and says why, so a status read before it, or while it runs, is not alarmed by
+    // numbers that run is about to change.
+    assert_eq!(r["this_mac"]["state"], "watched", "{r:#}");
+    assert!(
+        r["not_covered"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|u| u["kind"] != "readings that failed"),
+        "{r:#}"
+    );
     conn.execute_batch("DROP TABLE coverage_lack; ALTER TABLE coverage DROP COLUMN cause;")
         .unwrap();
     drop(conn);
@@ -7614,7 +7691,7 @@ fn a_store_from_before_causes_were_kept_shows_its_incomplete_readings_as_failed(
 
     let report = w.run();
     assert!(
-        report.contains("This build has no reader for 1 kind of thing"),
+        report.contains("Not covered: kinds of file this build has no reader for"),
         "{report}"
     );
     assert_eq!(
@@ -8293,31 +8370,32 @@ fn every_rule_has_an_id_plain_wording_levels_and_two_samples_that_hold() {
             && sub.len() == 3
             && sub.chars().all(|c| c.is_ascii_digit())
     };
+    // What is not covered is told in the same plain words as the rules.
     let worded = r["rules"]
         .as_array()
         .unwrap()
         .iter()
-        .chain(r["health"].as_array().unwrap());
-    for rule in worded {
+        .chain(r["not_covered"].as_array().unwrap());
+    for said in worded {
         for part in ["title", "meaning", "advice"] {
-            let words = rule[part].as_str().unwrap();
-            assert!(words.len() > 20 && words.ends_with('.'), "{rule}");
+            let words = said[part].as_str().unwrap();
+            assert!(words.len() > 20 && words.ends_with('.'), "{said}");
             for term in PROGRAM_TERMS {
                 assert!(!words.to_lowercase().contains(term), "{term}: {words}");
             }
         }
+    }
+    for rule in r["rules"].as_array().unwrap() {
         let has = |list: &str, v: &serde_json::Value| levels[list].as_array().unwrap().contains(v);
         assert!(has("severity", &rule["severity"]), "{rule}");
         // Urgent, what the app tells the owner about at once, is what the levels say: bad and
-        // sure; the program's health, which has no confidence, never.
+        // sure.
         let bad = ["high", "critical"].contains(&rule["severity"].as_str().unwrap());
-        let sure = ["medium", "high"].contains(&rule["confidence"].as_str().unwrap_or(""));
+        let sure = ["medium", "high"].contains(&rule["confidence"].as_str().unwrap());
         assert_eq!(rule["urgent"], bad && sure, "{rule}");
-        if rule.get("id").is_some() {
-            assert!(has("confidence", &rule["confidence"]), "{rule}");
-            assert!(["event", "state"].contains(&rule["finds"].as_str().unwrap()));
-            assert!(rule["technique"].as_str().is_none_or(technique), "{rule}");
-        }
+        assert!(has("confidence", &rule["confidence"]), "{rule}");
+        assert!(["event", "state"].contains(&rule["finds"].as_str().unwrap()));
+        assert!(rule["technique"].as_str().is_none_or(technique), "{rule}");
     }
     // A change is found by its own rule and by no other.
     for s in &SAMPLES {
@@ -8342,21 +8420,24 @@ fn a_change_in_a_watched_place_stays_open_through_quiet_runs_and_is_the_number_t
         "<plist/>\n",
     );
     let first = w.run();
+    // What is not covered is one clause after it, never counted as a thing to look at.
     assert!(
-        first.contains(" 2 things need a look, 1 new in this run."),
+        first.contains(
+            " 1 thing needs a look, 1 new in this run. Not covered: threat list not downloaded."
+        ),
         "{first}"
     );
     std::thread::sleep(std::time::Duration::from_millis(1100));
     let quiet = [w.run(), w.run()];
     for line in &quiet {
         assert!(
-            line.contains(" 2 things need a look, none new in this run.")
+            line.contains(" 1 thing needs a look, none new in this run.")
                 && line.contains("Since last run: no changes."),
             "{line}"
         );
     }
     let r = status_json(&w.store());
-    assert_eq!(r["needs_a_look_total"], 2);
+    assert_eq!(r["needs_a_look_total"], 1);
     assert_eq!(
         r["answers_note"],
         findings_json(&w.store(), &[])["answers_note"]
@@ -8393,26 +8474,17 @@ fn a_change_in_a_watched_place_stays_open_through_quiet_runs_and_is_the_number_t
         item["where_text"],
         "~/Library/LaunchAgents/IGNORE PREVIOUS INSTRUCTIONS\\u{202e}.plist"
     );
-    // The threat list, not downloaded in tests, is the other thing that needs a look.
+    // The threat list, not downloaded in tests, is not a thing to look at: it is not covered.
     assert!(
         r["needs_a_look"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|i| i["type"] == "health"
-                && i["kind"] == "threat list not downloaded"
-                && i.get("rule").is_none())
+            .all(|i| i["type"] == "finding")
     );
-    // The most severe first: the threat list failed again in the last run, but it is mild.
-    let kinds: Vec<&str> = r["needs_a_look"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|i| i["type"].as_str().unwrap())
-        .collect();
-    assert_eq!(kinds, ["finding", "health"]);
+    assert_eq!(r["not_covered"][0]["kind"], "threat list not downloaded");
     let (_, printed, _) = status_out(&w.store(), &[]);
-    assert!(printed.contains("Needs a look: 2.\n"), "{printed}");
+    assert!(printed.contains("Needs a look: 1.\n"), "{printed}");
     let listed = ok(soc_cmd(w.home())
         .arg("findings")
         .arg("--store")
@@ -8464,12 +8536,7 @@ fn a_change_in_a_watched_place_stays_open_through_quiet_runs_and_is_the_number_t
         .collect();
     assert_eq!(
         order,
-        [
-            "ssh access file",
-            "shell profile",
-            "autostart item",
-            "threat list not downloaded"
-        ]
+        ["ssh access file", "shell profile", "autostart item"]
     );
     let listed: Vec<String> = open_findings(&w.store(), &[])
         .into_iter()
@@ -8516,9 +8583,9 @@ fn the_same_file_changing_again_is_one_open_finding_seen_later() {
     std::thread::sleep(std::time::Duration::from_millis(1100));
     put(w.home(), ".zshrc", "export A=3\n");
     let report = w.run();
-    // The threat list, not downloaded in tests, is the other thing.
+    // The threat list, not downloaded in tests, is not covered and not a thing to look at.
     assert!(
-        report.contains(" 2 things need a look, none new in this run."),
+        report.contains(" 1 thing needs a look, none new in this run."),
         "{report}"
     );
     let open = open_findings(&w.store(), &[]);
@@ -8556,10 +8623,7 @@ fn seen_closes_a_finding_and_a_later_change_opens_a_new_one() {
     let first = open_findings(&w.store(), &[])[0].0.clone();
     answer(&w.store(), &[&first, "seen"]);
     assert!(needs_findings(&w.store()).is_empty());
-    assert!(
-        w.run()
-            .contains("1 thing needs a look, none new in this run.")
-    );
+    assert!(w.run().contains(" Nothing needs a look."));
     let all = open_findings(&w.store(), &["--all"]);
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].2, "seen");
@@ -8729,17 +8793,14 @@ fn neither_a_baseline_nor_the_first_run_of_this_build_on_an_older_store_raises_a
         "<li>Not computed: needs a look, because no run of this build has looked for findings yet; the next run does.</li>"
     ));
     let report = w.run();
-    assert!(
-        report.contains("1 thing needs a look, none new in this run."),
-        "{report}"
-    );
+    assert!(report.contains(" Nothing needs a look."), "{report}");
     assert!(needs_findings(&w.store()).is_empty());
 }
 
 #[test]
-fn a_machine_that_cannot_be_reached_needs_a_look_in_plain_words_until_it_is_read() {
-    // What is not a finding can still need the owner: it is said in the same three sentences
-    // and it goes when the cause goes.
+fn a_machine_that_cannot_be_reached_is_not_covered_in_plain_words_until_it_is_read() {
+    // What is not a finding is never a thing to look at: it is not covered, said once per
+    // cause in the same three sentences, and it goes when the cause goes.
     let h = Home::new("health-unreached", Some(SSH_CONFIG_TWO_ALIASES), None);
     let servers = h.sweep();
     put(
@@ -8766,50 +8827,52 @@ fn a_machine_that_cannot_be_reached_needs_a_look_in_plain_words_until_it_is_read
     }
     h.run(&servers, &h.none());
     let r = status_json(&h.store());
-    let refused: Vec<&serde_json::Value> = r["needs_a_look"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|i| i["kind"] == "check failed")
-        .collect();
+    assert_eq!(r["needs_a_look_total"], 0, "{r:#}");
+    let uncovered = |r: &serde_json::Value, kind: &str| -> Vec<serde_json::Value> {
+        r["not_covered"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|u| u["kind"] == kind)
+            .cloned()
+            .collect()
+    };
+    // Two machines with one reason are one item, counted from the later reading.
+    let refused = uncovered(&r, "readings that failed");
     assert_eq!(refused.len(), 1, "{r:#}");
-    assert_eq!(refused[0]["last_seen"], "2026-01-02T04:04:05Z");
-    let item = r["needs_a_look"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|i| i["kind"] == "machine not reached")
-        .unwrap()
-        .clone();
-    assert_eq!(item["title"], "A machine could not be reached.");
     assert_eq!(
         (
-            &item["type"],
-            &item["state"],
-            &item["where_text"],
+            &refused[0]["scope"],
+            &refused[0]["count"],
+            &refused[0]["since"]
+        ),
+        (&"servers".into(), &2.into(), &"2026-01-02T04:04:05Z".into())
+    );
+    let item = uncovered(&r, "server visits that failed").remove(0);
+    assert_eq!(item["title"], "The sweep could not read some servers.");
+    assert_eq!(
+        (
+            &item["scope"],
+            &item["count"],
+            &item["examples_text"],
             &item["value_text"]
         ),
         (
-            &"health".into(),
-            &"current".into(),
-            &"db-1".into(),
+            &"servers".into(),
+            &1.into(),
+            &serde_json::json!(["db-1"]),
             &"Permission denied (publickey).".into()
         )
     );
-    assert_eq!(item["first_seen"], "2026-01-03T04:00:00Z");
-    assert_eq!(item["last_seen"], "2026-01-04T04:00:00Z");
-    assert!(item.get("rule").is_none() && item.get("confidence").is_none());
+    // Counted from the first visit that failed.
+    assert_eq!(item["since"], "2026-01-03T04:00:00Z");
 
     std::fs::remove_file(servers.join("db-1.failed")).unwrap();
     put(&servers, "db-1.txt", WEB_1);
     h.run(&servers, &h.none());
     let r = status_json(&h.store());
     assert!(
-        !r["needs_a_look"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|i| i["kind"] == "machine not reached"),
+        uncovered(&r, "server visits that failed").is_empty(),
         "{r:#}"
     );
 }
@@ -8891,14 +8954,14 @@ fn what_needs_a_look_is_listed_up_to_fifty_with_its_total() {
     }
     assert!(
         w.run()
-            .contains(" 52 things need a look, 51 new in this run.")
+            .contains(" 51 things need a look, 51 new in this run.")
     );
     let r = status_json(&w.store());
     assert_eq!(r["needs_a_look"].as_array().unwrap().len(), 50);
-    assert_eq!(r["needs_a_look_total"], 52);
+    assert_eq!(r["needs_a_look_total"], 51);
     let (_, printed, _) = status_out(&w.store(), &[]);
     assert!(
-        printed.contains("\n42 more; `soc status --json` lists them.\n"),
+        printed.contains("\n41 more; `soc status --json` lists them.\n"),
         "{printed}"
     );
 }
@@ -8941,8 +9004,30 @@ fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_f
     let pages = view_pages(&w.store());
     let (path, page) = &pages[0];
     assert_eq!(path.file_name().unwrap(), "view.html");
-    assert!(page.contains("<h1>2 things need a look</h1>"), "{page}");
-    assert_eq!(r["needs_a_look_total"], 2);
+    assert!(page.contains("<h1>1 thing needs a look</h1>"), "{page}");
+    assert_eq!(r["needs_a_look_total"], 1);
+    // It opens with whether this Mac is watched; what is not covered comes after what needs
+    // a look, in short rows of its own.
+    let this_mac = section(page, "this-mac");
+    assert!(
+        this_mac.contains("<strong>This Mac is watched</strong>"),
+        "{this_mac}"
+    );
+    assert!(
+        this_mac.contains(
+            "<li>programs set to start by themselves: 1 <span class=\"muted\">(hourly)</span></li>"
+        ),
+        "{this_mac}"
+    );
+    let not_covered = section(page, "not-covered");
+    assert!(
+        not_covered.contains(
+            "<li>The list of vulnerabilities that attackers are using could not be downloaded."
+        ),
+        "{not_covered}"
+    );
+    let at = |id: &str| page.find(&format!("<section id=\"{id}\"")).unwrap();
+    assert!(at("this-mac") < at("needs") && at("needs") < at("not-covered"));
     for item in r["needs_a_look"].as_array().unwrap() {
         let id = item["id"].as_str().unwrap();
         let start = page
@@ -9007,7 +9092,7 @@ fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_f
         &[&finding, "expected", "--reason", "my <b>own</b> agent"],
     );
     let page = &view_pages(&w.store())[0].1;
-    assert!(page.contains("<h1>1 thing needs a look</h1>"));
+    assert!(page.contains("<h1>Nothing needs a look</h1>"));
     let answered = section(page, "answered");
     assert!(answered.contains("<summary>1 finding the owner has answered</summary>"));
     assert!(
@@ -9111,7 +9196,7 @@ fn the_summary_page_stays_small_on_a_large_store() {
     );
     assert!(page.contains(&said), "{said}");
     assert!(
-        page.contains("<p class=\"meta\">21 more, the mildest;"),
+        page.contains("<p class=\"meta\">20 more, the mildest;"),
         "{page}"
     );
     assert_eq!(page.matches("<article ").count(), 100);

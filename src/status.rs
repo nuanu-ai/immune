@@ -48,8 +48,9 @@ pub const CANNOT_JUDGE: &[&str] = &[
     "processes and connections are not read by this build",
 ];
 /// The sections of a result that hold numbers, in the order of the result.
-const SECTIONS: [&str; 9] = [
+const SECTIONS: [&str; 10] = [
     "needs_a_look",
+    "not_covered",
     "last_run",
     "last_finished_run",
     "estate",
@@ -574,8 +575,12 @@ pub struct State {
     pub problems: Problems,
     /// Live files per kind of watched place.
     pub files: BTreeMap<String, i64>,
-    /// What needs a look now.
+    /// What needs a look now: findings only.
     pub needs: findings::Needs,
+    /// Is this Mac watched, and how.
+    pub this_mac: crate::covered::ThisMac,
+    /// What the program does not cover, aggregated for a person.
+    pub not_covered: Vec<crate::covered::Uncovered>,
 }
 
 pub fn state(conn: &Connection, home: &Path, now: i64) -> Res<State> {
@@ -593,6 +598,10 @@ pub fn state(conn: &Connection, home: &Path, now: i64) -> Res<State> {
         files.insert(kind, n);
     }
     let (coverage, problems, needs) = looked(conn, now)?;
+    let live = store::watch_in_progress(home).unwrap_or(false);
+    let this_mac = crate::covered::this_mac(conn, &coverage, live)?;
+    let not_covered =
+        crate::covered::not_covered(conn, &coverage, &problems, catalogue(conn)?.as_ref())?;
     Ok(State {
         last: latest_run(conn)?,
         summary,
@@ -600,6 +609,8 @@ pub fn state(conn: &Connection, home: &Path, now: i64) -> Res<State> {
         coverage,
         files,
         needs,
+        this_mac,
+        not_covered,
     })
 }
 
@@ -608,14 +619,14 @@ pub fn state(conn: &Connection, home: &Path, now: i64) -> Res<State> {
 fn looked(conn: &Connection, now: i64) -> Res<(Vec<Latest>, Problems, findings::Needs)> {
     let coverage = view::latest_coverage(conn)?;
     let problems = problems(conn, &coverage)?;
-    let needs = findings::needs(conn, &problems, catalogue(conn)?.as_ref(), now)?;
+    let needs = findings::needs(conn, now)?;
     Ok((coverage, problems, needs))
 }
 
 /// What needs a look at `now`, as `soc status --json` counts it; `soc watch` gives its total
 /// after each reading.
 pub fn needs(conn: &Connection, now: i64) -> Res<findings::Needs> {
-    Ok(looked(conn, now)?.2)
+    Ok(findings::needs(conn, now)?)
 }
 
 /// Text from a source as a field's value: hidden characters as the terminal shows them,
@@ -674,23 +685,39 @@ pub fn result(state: Option<&State>, running: bool, path: &Path, now: i64) -> Va
     let mut out = Map::new();
     out.insert("generated_at".into(), iso(now));
     out.insert("running".into(), json!(running));
-    let path = text(&path.display().to_string());
     out.insert(
         "store".into(),
-        json!({ "path_text": path, "exists": state.is_some() }),
+        json!({ "path_text": text(&path.display().to_string()), "exists": state.is_some() }),
     );
     out.insert("cannot_judge".into(), json!(CANNOT_JUDGE));
+    // Whether a watcher runs on this store now: `soc watch`, src/watch.rs.
+    out.insert("watching".into(), crate::watch::status(path));
     let mut not_computed: Vec<Value> = Vec::new();
     let mut absent = |section: &str, reason: &str| {
         not_computed.push(json!({ "section": section, "reason": reason }));
     };
     let Some(st) = state else {
+        out.insert(
+            "this_mac".into(),
+            crate::covered::this_mac_json(&crate::covered::ThisMac::unchecked(false)),
+        );
         for section in SECTIONS {
             absent(section, "there is no store yet; `soc run` makes it");
         }
         out.insert("not_computed".into(), Value::Array(not_computed));
         return Value::Object(out);
     };
+    out.insert(
+        "this_mac".into(),
+        crate::covered::this_mac_json(&st.this_mac),
+    );
+    let not_covered: Vec<Value> = st
+        .not_covered
+        .iter()
+        .map(crate::covered::uncovered_json)
+        .collect();
+    out.insert("not_covered_total".into(), json!(not_covered.len()));
+    out.insert("not_covered".into(), Value::Array(not_covered));
     match &st.last {
         Some(l) => {
             out.insert(
@@ -959,8 +986,6 @@ pub struct Unreached {
     /// When its visits began to fail: the first of the failed ones since the last that
     /// completed.
     pub since: i64,
-    /// When its latest visit was.
-    pub last: i64,
     pub reason: Option<String>,
 }
 
@@ -1001,7 +1026,6 @@ pub fn problems(conn: &Connection, latest: &[Latest]) -> rusqlite::Result<Proble
         unreached.push(Unreached {
             scope: r.scope.clone(),
             since,
-            last: r.at,
             reason: r.reason.clone(),
         });
     }

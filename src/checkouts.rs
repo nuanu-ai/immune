@@ -41,6 +41,8 @@ pub struct Walk {
     pub checkouts: Vec<Checkout>,
     /// Folders that could not be listed, named as checkouts are.
     pub unlisted: Vec<String>,
+    /// Folders macOS asks permission for that the walk did not enter (`guarded.rs`).
+    pub guarded: Vec<PathBuf>,
 }
 
 /// The path as ids name it: relative to the home folder when it is inside it.
@@ -89,6 +91,7 @@ pub fn walk(root: &Path, home: &Path) -> Walk {
     let is_home = root == home;
     let mut checkouts = Vec::new();
     let mut unlisted = Vec::new();
+    let mut guarded = Vec::new();
     let mut stack = vec![(root.to_path_buf(), 0)];
     while let Some((dir, depth)) = stack.pop() {
         let top = depth == 0 && is_home;
@@ -110,13 +113,20 @@ pub fn walk(root: &Path, home: &Path) -> Walk {
             unlisted.push(rel(home, &dir));
         }
         for path in subs.into_iter().rev() {
-            stack.push((path, depth + 1));
+            // Entering it would ask the owner's permission, from a run he did not start.
+            match crate::guarded::may_enter(&path, root, home) {
+                Ok(()) => stack.push((path, depth + 1)),
+                Err(folder) => guarded.push(folder),
+            }
         }
     }
     checkouts.sort_by(|a, b| a.rel.cmp(&b.rel));
     unlisted.sort();
+    guarded.sort();
+    guarded.dedup();
     Walk {
         checkouts,
         unlisted,
+        guarded,
     }
 }

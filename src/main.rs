@@ -13,8 +13,10 @@ mod autorun;
 mod brew;
 mod checkouts;
 mod codesign;
+mod covered;
 mod findings;
 mod fsevents;
+mod guarded;
 mod icu;
 mod indicators;
 mod integrity;
@@ -537,9 +539,7 @@ fn answer_json(operation: &str, store: &Path) -> ExitCode {
     match read_all(store) {
         Ok((running, state)) => {
             let path = std::path::absolute(store).unwrap_or_else(|_| store.to_path_buf());
-            let mut result = status::result(state.as_ref(), running, &path, now_secs());
-            // Whether a watcher runs on this store now: `soc watch`, src/watch.rs.
-            result["watching"] = watch::status(store);
+            let result = status::result(state.as_ref(), running, &path, now_secs());
             print_json(&status::envelope(operation, result));
             ExitCode::SUCCESS
         }
@@ -634,6 +634,49 @@ fn needs_text(needs: &findings::Needs) {
     }
 }
 
+/// Whether this Mac is watched, and what, in the words of `this_mac`.
+fn this_mac_text(m: &covered::ThisMac) {
+    let state = match m.state {
+        "watched" => "watched",
+        "watched_in_part" => "watched in part",
+        _ => "not checked yet",
+    };
+    let live = if m.live {
+        "a watcher runs now".to_string()
+    } else {
+        "no watcher runs now".to_string()
+    };
+    say(&format!(
+        "This Mac: {state}; {live}; last checked {}.",
+        m.checked_at.map_or("never".to_string(), view::utc)
+    ));
+    let watched: Vec<String> = m
+        .watched
+        .iter()
+        .map(|(what, n, how)| format!("{what}: {} ({how})", grouped(*n)))
+        .collect();
+    if !watched.is_empty() {
+        say(&format!("Watched: {}.", watched.join(", ")));
+    }
+}
+
+/// What is not covered, one line each, quiet: never a count of things to look at.
+fn not_covered_text(list: &[covered::Uncovered]) {
+    for u in list {
+        let value = u
+            .value
+            .as_deref()
+            .map(|v| format!(" ({})", view::shown(v)))
+            .unwrap_or_default();
+        say(&format!(
+            "Not covered, {}: {} {}{value}.",
+            u.scope.replace('_', " "),
+            grouped(u.count as i64),
+            u.cause.kind
+        ));
+    }
+}
+
 /// `soc status`: a short summary of what `soc status --json` gives, for a person.
 fn status_text(store: &Path) -> Result<(), Stop> {
     let (running, state) = read_all(store)?;
@@ -672,7 +715,9 @@ fn status_text(store: &Path) -> Result<(), Stop> {
         ));
     }
     say(&summary_sentences(s));
+    this_mac_text(&st.this_mac);
     needs_text(&st.needs);
+    not_covered_text(&st.not_covered);
     let p = &st.problems;
     let class = |c: &str| grouped(p.classes.get(c).copied().unwrap_or_default() as i64);
     say(&format!(
@@ -1051,38 +1096,47 @@ fn view(args: &ViewArgs) -> Result<(), Box<dyn Error>> {
     if !args.store.is_file() {
         return Err(format!("no store at {}", args.store.display()).into());
     }
-    let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
-    // The summary is built from what `soc status --json` answers, read the same way.
-    let (running, state) = read_all(&args.store)?;
-    let state = state.ok_or("the store is gone")?;
-    let absolute = std::path::absolute(&args.store)?;
-    let mut result = status::result(Some(&state), running, &absolute, now);
-    result["watching"] = watch::status(&args.store);
-    let conn = store::open_read_only(&args.store)?;
-    let pages = view::pages(
-        &conn,
-        &state,
-        &result,
-        &args.store.display().to_string(),
-        now,
-    )?;
-    drop(conn);
-
-    // The summary first: the path printed first is the page to open.
-    let folder = home(&args.store);
-    std::fs::create_dir_all(folder.join(view::DETAILS))?;
-    let mut written = Vec::new();
-    for (rel, html) in pages {
-        let path = std::path::absolute(folder.join(rel))?;
-        std::fs::write(&path, html)?;
+    let written = write_view(&args.store)?;
+    for path in &written {
         println!("{}", path.display());
-        written.push(path);
     }
     if args.open {
         let status = Command::new(tools::OPEN).arg(&written[0]).status()?;
         if !status.success() {
             return Err(format!("open failed, {status}").into());
         }
+    }
+    Ok(())
+}
+
+/// Writes every page of the view and returns their paths, the summary first: the path given
+/// first is the page to open. Every link of the summary leads to a page written here.
+fn write_view(store: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    let now = now_secs();
+    // The summary is built from what `soc status --json` answers, read the same way.
+    let (running, state) = read_all(store)?;
+    let state = state.ok_or("the store is gone")?;
+    let absolute = std::path::absolute(store)?;
+    let result = status::result(Some(&state), running, &absolute, now);
+    let conn = store::open_read_only(store)?;
+    let pages = view::pages(&conn, &state, &result, &store.display().to_string(), now)?;
+    drop(conn);
+    let folder = home(store);
+    std::fs::create_dir_all(folder.join(view::DETAILS))?;
+    let mut written = Vec::new();
+    for (rel, html) in pages {
+        let path = std::path::absolute(folder.join(rel))?;
+        std::fs::write(&path, html)?;
+        written.push(path);
+    }
+    Ok(written)
+}
+
+/// Brings the view up to date when the owner has made it once, so that a page left open
+/// shows what the store holds after a change; nothing is made that was never asked for.
+fn refresh_view(store: &Path) -> Result<(), Box<dyn Error>> {
+    if home(store).join(view::SUMMARY).is_file() {
+        write_view(store)?;
     }
     Ok(())
 }
@@ -1785,13 +1839,15 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     // What needs a look is counted by the code `soc status` counts it with, at the run's time.
     let latest = view::latest_coverage(&tx)?;
     let problems = status::problems(&tx, &latest)?;
-    let needs = findings::needs(&tx, &problems, summary.catalogue.as_ref(), at)?;
-    let line = report(
-        run.readers,
-        &run.notes,
-        &summary,
-        &needs_sentence(needs.items.len(), opened),
-    );
+    let needs = findings::needs(&tx, at)?;
+    // What is not covered is one clause, never a count of things to look at.
+    let not_covered = covered::not_covered(&tx, &latest, &problems, summary.catalogue.as_ref())?;
+    let mut said = needs_sentence(needs.items.len(), opened);
+    if let Some(clause) = covered::clause(&not_covered) {
+        said.push(' ');
+        said.push_str(&clause);
+    }
+    let line = report(run.readers, &run.notes, &summary, &said);
     store::journal_note(&tx, at, &run_id, "report", &line)?;
     // The time the run finished, so that its start and its end are both in the journal.
     store::journal_note(&tx, now_secs(), &run_id, "run_finished", "")?;
@@ -2027,26 +2083,43 @@ fn read_checkouts(
     }
     run.readers += 1;
     let walk = checkouts::walk(root, home);
+    let machine = run.machine.to_string();
+    // A checkout the store holds in a folder the walk did not enter is not known to be gone:
+    // it is kept as it was, and nothing inside it is read.
+    let prefix = format!("checkout:{machine}/");
+    let kept: Vec<String> = store::live_subjects(run.tx, checkouts::READER)?
+        .into_iter()
+        .filter_map(|id| id.strip_prefix(&prefix).map(str::to_string))
+        .filter(|rel| {
+            let path = home.join(rel);
+            walk.guarded.iter().any(|g| path.starts_with(g))
+        })
+        .collect();
     let mut raw = String::new();
     for c in &walk.checkouts {
         raw.push_str(&format!("checkout\t{}\n", c.rel));
+    }
+    for rel in &kept {
+        raw.push_str(&format!("kept, not looked into\t{rel}\n"));
     }
     for folder in &walk.unlisted {
         raw.push_str(&format!("not listed\t{folder}\n"));
     }
     let raw_file = run.keep_raw(checkouts::READER, "checkouts.txt", raw.as_bytes())?;
-    let machine = run.machine.to_string();
     let statements: Vec<Statement> = walk
         .checkouts
         .iter()
+        .map(|c| &c.rel)
+        .chain(&kept)
         .enumerate()
-        .map(|(i, c)| Statement {
-            subject: format!("checkout:{machine}/{}", c.rel),
+        .map(|(i, rel)| Statement {
+            subject: format!("{prefix}{rel}"),
             predicate: "located_on",
             object: machine.clone(),
             source_ref: format!("{raw_file}:{}", i + 1),
         })
         .collect();
+    not_looked_into(run, checkouts::READER, &walk.guarded, home)?;
     let unlisted = (!walk.unlisted.is_empty())
         .then(|| format!("could not be listed: {}", walk.unlisted.join(", ")));
     if let Some(unlisted) = &unlisted {
@@ -2133,7 +2206,16 @@ fn read_agent_folders(
     let home = std::fs::canonicalize(&args.home).unwrap_or_else(|_| args.home.clone());
     let mut found: BTreeMap<String, PathBuf> = BTreeMap::new();
     let mut unknown = BTreeSet::new();
+    // Folders macOS asks permission for are not looked into, as in the walk.
+    let mut guarded = BTreeSet::new();
+    let guard = |path: &Path| {
+        guarded::folder_of(path, &args.home).or_else(|| guarded::folder_of(path, &home))
+    };
     for folder in sessions.iter().flat_map(|s| &s.folders) {
+        if let Some(g) = guard(Path::new(folder)) {
+            guarded.insert(g);
+            continue;
+        }
         match agent_folders::checkout_of(folder, &home) {
             agent_folders::OnDisk::Checkout(path) => {
                 found.insert(checkouts::rel(&home, &path), path);
@@ -2146,6 +2228,8 @@ fn read_agent_folders(
     }
     let prefix = format!("checkout:{machine}/");
     let mut kept = 0;
+    // Held checkouts in a guarded folder: kept as they were, nothing inside them read.
+    let mut carried = BTreeSet::new();
     for id in store::live_subjects(run.tx, agent_folders::READER)? {
         let Some(rel) = id.strip_prefix(&prefix) else {
             continue;
@@ -2158,6 +2242,11 @@ fn read_agent_folders(
         } else {
             args.home.join(rel)
         };
+        if let Some(g) = guard(&path) {
+            guarded.insert(g);
+            carried.insert(rel.to_string());
+            continue;
+        }
         match agent_folders::still_there(&path) {
             Some(true) => {
                 found.insert(rel.to_string(), path);
@@ -2172,9 +2261,15 @@ fn read_agent_folders(
     for rel in found.keys() {
         raw.push_str(&format!("checkout\t{rel}\n"));
     }
+    for rel in &carried {
+        raw.push_str(&format!("kept, not looked into\t{rel}\n"));
+    }
     let raw_file = run.keep_raw(agent_folders::READER, "agent-folders.txt", raw.as_bytes())?;
+    let guarded: Vec<PathBuf> = guarded.into_iter().collect();
+    not_looked_into(run, agent_folders::READER, &guarded, &args.home)?;
     let statements: Vec<Statement> = found
         .keys()
+        .chain(&carried)
         .enumerate()
         .map(|(i, rel)| Statement {
             subject: format!("{prefix}{rel}"),
@@ -2241,6 +2336,38 @@ fn read_agent_folders(
         .into_iter()
         .map(|(rel, path)| checkouts::Checkout { rel, path })
         .collect())
+}
+
+/// The reading of what a reader did not look into because macOS would have asked the owner's
+/// permission: none, with the folders named, or full when it entered none of them.
+fn not_looked_into(
+    run: &mut Run,
+    reader: &'static str,
+    folders: &[PathBuf],
+    home: &Path,
+) -> rusqlite::Result<()> {
+    let (run_id, machine) = (run.run_id.to_string(), run.machine.to_string());
+    let reading = Reading {
+        reader,
+        scope: &machine,
+        kind: guarded::KIND,
+        run_id: &run_id,
+        at: run.at,
+        observed_at: run.at,
+    };
+    if folders.is_empty() {
+        return run.apply(&reading, "observed", "full", None, &Gap::default(), &[]);
+    }
+    let shown: Vec<String> = folders.iter().map(|g| guarded::shown(g, home)).collect();
+    let reason = format!("{}{}", guarded::NOT_LOOKED_INTO, shown.join(", "));
+    run.apply(
+        &reading,
+        "observed",
+        "none",
+        Some(&reason),
+        &Gap::of(Cause::NotGiven),
+        &[],
+    )
 }
 
 /// The three local traces of servers, each its own reading of this machine.
@@ -3282,13 +3409,8 @@ fn summary_sentences(s: &status::Summary) -> String {
     line.push_str(&integrity::sentence(s.integrity.as_ref()));
     line.push(' ');
     line.push_str(&catalogue_sentence(s.catalogue.as_ref()));
-    // What this build cannot read here is part of every report, named by `soc status`.
-    if let Some(n) = s.no_reader_for.as_ref().map(Vec::len).filter(|n| *n > 0) {
-        line.push_str(&format!(
-            " This build has no reader for {} found here; `soc status` names them.",
-            things(n as i64, "kind of thing", "kinds of thing")
-        ));
-    }
+    // What this build cannot read here is part of every report: in the clause of what is not
+    // covered, and named by `soc status`.
     line
 }
 

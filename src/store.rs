@@ -242,6 +242,18 @@ INSERT OR IGNORE INTO coverage_kind (name) VALUES
     ('indicator list given as a file'),
     ('indicators matched against watched files and texts read in checkouts'),
     ('indicators against what this build does not match them with');
+-- Folders macOS asks the owner's permission for, see src/guarded.rs.
+INSERT OR IGNORE INTO coverage_kind (name) VALUES ('folders macOS asks permission for');
+";
+
+/// Indexes what `soc status` and the view read by, made on every open so that a store of the
+/// current format takes them. Without them the status of a store of tens of thousands of
+/// things took seconds: each finding looked up its subject and its basis by a full scan, and
+/// each latest reading looked for its last full one the same way.
+const INDEXES: &str = "
+CREATE INDEX IF NOT EXISTS coverage_reading ON coverage (reader, scope, kind);
+CREATE INDEX IF NOT EXISTS assertion_subject ON assertion (subject, predicate);
+CREATE INDEX IF NOT EXISTS finding_basis_finding ON finding_basis (finding);
 ";
 
 /// Why a reading is incomplete. The order is from worst: a reading incomplete for several
@@ -404,6 +416,7 @@ pub fn open(path: &Path) -> Res<Connection> {
     conn.execute_batch(OWNER)?;
     conn.execute_batch(THREATS)?;
     conn.execute_batch(crate::findings::SCHEMA)?;
+    conn.execute_batch(INDEXES)?;
     add_causes(&conn)?;
     widen_journal(&mut conn)?;
     Ok(conn)

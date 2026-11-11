@@ -338,6 +338,20 @@ fn a_change_the_watcher_sees_is_an_open_finding_at_once_and_its_read_line_counts
     );
     let result = mac.status()["result"].clone();
     assert_eq!(read["needs_a_look_total"], result["needs_a_look_total"]);
+    // This Mac is watched, live, for what the watcher reads; installed software, which only a
+    // full run reads, is not said to be watched with a count of nothing.
+    let m = &result["this_mac"];
+    assert_eq!((&m["state"], &m["live"]), (&"watched".into(), &true.into()));
+    let whats: Vec<&str> = m["watched"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["what"].as_str().unwrap())
+        .collect();
+    assert!(
+        whats.contains(&"shell profiles") && !whats.contains(&"applications"),
+        "{m}"
+    );
     let items = result["needs_a_look"].as_array().unwrap();
     let found = items
         .iter()
@@ -952,4 +966,239 @@ fn a_watcher_whose_parent_is_gone_before_it_starts_stops_at_once() {
     assert!(mac.status()["result"]["watching"].is_null());
     let said = std::fs::read_to_string(&out).unwrap_or_default();
     assert!(!said.contains("\"problem\""), "{said}");
+}
+
+// What the status answers first: whether this Mac is watched and quiet. What is not covered
+// is apart, aggregated, and never a thing to look at.
+
+/// The results of `soc status --json` as a person's questions: what needs a look, the state
+/// of this Mac, and the kinds of what is not covered.
+fn answered(r: &Value) -> (u64, String, Vec<String>) {
+    let kinds = r["not_covered"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u["kind"].as_str().unwrap().to_string())
+        .collect();
+    (
+        r["needs_a_look_total"].as_u64().unwrap(),
+        r["this_mac"]["state"].as_str().unwrap().to_string(),
+        kinds,
+    )
+}
+
+#[test]
+fn a_quiet_mac_needs_no_look_whatever_is_not_covered_and_a_planted_change_does() {
+    // The owner saw "6 things need a look" on a Mac where nothing had changed: servers whose
+    // sweep did not finish were counted as things to look at. What is not covered is said
+    // once per cause, quietly; what needs a look is a change on his Mac.
+    let mac = Mac::new("quiet");
+    mac.put(".zshrc", "export A=1\n");
+    mac.put("dev/shop/.git/HEAD", "ref: refs/heads/main\n");
+    mac.put("dev/shop/yarn.lock", "# yarn lockfile v1\n");
+    let servers = mac.root.join("servers");
+    std::fs::create_dir_all(&servers).unwrap();
+    std::fs::write(servers.join("web-1.txt"), "##end\n").unwrap();
+    std::fs::write(servers.join("web-2.txt"), "##packages\n").unwrap();
+    for _ in 0..2 {
+        let out = mac.run_cmd_servers(&servers).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let r = mac.status()["result"].clone();
+    let (needs, state, kinds) = answered(&r);
+    assert_eq!((needs, state.as_str()), (0, "watched"), "{r:#}");
+    assert_eq!(
+        kinds,
+        [
+            "kinds of file this build has no reader for",
+            "servers not read at the last sweep",
+            "threat list not downloaded"
+        ],
+        "{r:#}"
+    );
+    let servers_item = &r["not_covered"][1];
+    assert_eq!(
+        (&servers_item["count"], &servers_item["value_text"]),
+        (&1.into(), &"1 of 2 servers in the last sweep".into())
+    );
+    assert_eq!(r["this_mac"]["live"], false);
+    let watched: Vec<(String, u64, String)> = r["this_mac"]["watched"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| {
+            (
+                w["what"].as_str().unwrap().to_string(),
+                w["count"].as_u64().unwrap(),
+                w["how"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert!(
+        watched.contains(&("shell profiles".into(), 1, "hourly".into())),
+        "{watched:?}"
+    );
+    assert_eq!(watched.len(), 9, "{watched:?}");
+
+    // A program set to start by itself, planted: the one thing that needs a look.
+    mac.put(
+        "Library/LaunchAgents/com.example.planted.plist",
+        "<plist/>\n",
+    );
+    let out = mac.run_cmd_servers(&servers).output().unwrap();
+    assert!(out.status.success());
+    let line = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        line.contains(" 1 thing needs a look, 1 new in this run. Not covered: "),
+        "{line}"
+    );
+    assert_eq!(answered(&mac.status()["result"]).0, 1);
+}
+
+#[test]
+fn a_folder_macos_asks_permission_for_is_never_entered_and_what_was_known_there_stays() {
+    // A run the app starts must never make macOS ask the owner for his Documents. A project
+    // he once pointed the program at there is not gone because the next run did not look.
+    let mac = Mac::new("guarded");
+    mac.put("dev/shop/.git/HEAD", "ref: refs/heads/main\n");
+    mac.put("Documents/notes/.git/HEAD", "ref: refs/heads/main\n");
+    std::fs::create_dir_all(mac.home().join("Documents/notes/.git/hooks")).unwrap();
+    // Pointed there by the owner: read.
+    let out = mac
+        .run_cmd()
+        .arg("--checkouts-root")
+        .arg(mac.home().join("Documents"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let known = "SELECT subject FROM assertion WHERE layer = 'live' AND predicate = 'located_on'
+                 AND subject LIKE 'checkout:%' ORDER BY subject";
+    assert_eq!(mac.rows(known), ["checkout:machine:mac/Documents/notes"]);
+
+    // A project made there later that an agent worked in and nobody pointed at: neither the
+    // walk of the home folder nor the agent's session leads into it.
+    mac.put("Documents/other/.git/HEAD", "ref: refs/heads/main\n");
+    let cwd = mac.home().join("Documents/other");
+    mac.put(
+        ".claude/projects/-other/s1.jsonl",
+        &format!("{}\n", serde_json::json!({ "cwd": cwd })),
+    );
+
+    // The run the app starts: Documents is not entered, the project there stays.
+    mac.run();
+    assert_eq!(
+        mac.rows(known),
+        [
+            "checkout:machine:mac/Documents/notes",
+            "checkout:machine:mac/dev/shop"
+        ]
+    );
+    let r = mac.status()["result"].clone();
+    let item = r["not_covered"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["kind"] == "folders macOS asks permission for")
+        .unwrap_or_else(|| panic!("{r:#}"))
+        .clone();
+    assert_eq!(
+        (&item["scope"], &item["count"], &item["examples_text"]),
+        (
+            &"projects".into(),
+            &1.into(),
+            &serde_json::json!(["~/Documents"])
+        )
+    );
+    assert_eq!(r["this_mac"]["state"], "watched", "{r:#}");
+
+    // A watcher started by the app does not look there either: the hooks of the project in
+    // Documents are not among its places, those of the other one are.
+    let mut w = mac.watch();
+    assert_eq!(w.next("watching")["places"], 28);
+}
+
+#[test]
+fn a_watched_file_that_cannot_be_read_leaves_this_mac_watched_in_part() {
+    // A watched place that is there and cannot be read is the one thing on his own Mac the
+    // owner can do something about: the Mac is watched in part, and the item says where.
+    use std::os::unix::fs::PermissionsExt;
+    let mac = Mac::new("in-part");
+    let profile = mac.put(".zprofile", "export A=1\n");
+    mac.run();
+    struct Open(PathBuf);
+    impl Drop for Open {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o644));
+        }
+    }
+    let _open = Open(profile.clone());
+    std::fs::set_permissions(&profile, std::fs::Permissions::from_mode(0o000)).unwrap();
+    mac.run();
+    let r = mac.status()["result"].clone();
+    assert_eq!(r["this_mac"]["state"], "watched_in_part", "{r:#}");
+    let item = r["not_covered"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["kind"] == "readings that failed")
+        .unwrap_or_else(|| panic!("{r:#}"))
+        .clone();
+    assert_eq!(
+        (&item["scope"], &item["examples_text"]),
+        (&"this_mac".into(), &serde_json::json!(["~/.zprofile"]))
+    );
+}
+
+#[test]
+fn this_mac_says_live_for_what_a_running_watcher_sees_and_hourly_for_the_rest() {
+    let mac = Mac::new("live");
+    mac.run();
+    let mut w = mac.watch().started();
+    mac.put(".zshrc", "one\n");
+    w.until("read", |v| count(v, "new") == 1);
+    let m = mac.status()["result"]["this_mac"].clone();
+    assert_eq!(m["live"], true);
+    assert!(m["live_read_at"].as_str().unwrap().ends_with('Z'), "{m}");
+    let how = |what: &str| {
+        m["watched"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|w| w["what"] == what)
+            .unwrap()["how"]
+            .clone()
+    };
+    assert_eq!(how("shell profiles"), "live");
+    assert_eq!(how("applications"), "hourly");
+}
+
+#[test]
+fn a_view_the_owner_has_made_is_brought_up_to_date_by_a_reading_that_changed_something() {
+    // A page left open after Details must not say "Nothing needs a look" while a change waits.
+    let mac = Mac::new("view-fresh");
+    mac.put(".zshrc", "one\n");
+    mac.put(".zprofile", "one\n");
+    mac.run();
+    let summary = mac.root.join("store/view.html");
+    let mut w = mac.watch().started();
+    mac.put(".zprofile", "two\n");
+    w.until("read", |v| count(v, "changed") == 1);
+    // Never made, never written: nothing is made that the owner did not ask for.
+    assert!(!summary.exists());
+    mac.view();
+    let page = std::fs::read_to_string(&summary).unwrap();
+    assert!(page.contains("<h1>1 thing needs a look</h1>"), "{page}");
+    mac.put(".zshrc", "two\n");
+    w.until("read", |v| count(v, "changed") == 1);
+    let page = std::fs::read_to_string(&summary).unwrap();
+    assert!(page.contains("<h1>2 things need a look</h1>"), "{page}");
+    assert!(w.lines("problem").is_empty(), "{:?}", w.seen);
 }

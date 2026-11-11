@@ -1,7 +1,7 @@
 //! Findings: one thing a rule found, kept until the owner answers it, with the program's own
 //! words for it. A change in a watched place is no longer only "since the last reading": the
 //! finding stays open through quiet runs until the owner says it is expected or that he has
-//! seen it. Everything that needs a look, findings and the program's own health, is served
+//! seen it. Everything that needs a look is a finding, served
 //! from here with the same three sentences, so the app, the page and an agent say the same.
 //!
 //! A rule is plain code: an id, the ATT&CK technique where one fits, how bad and how sure as
@@ -12,7 +12,6 @@
 //!
 //! What a finding rests on is kept by reference, as journal entries, never as content.
 
-use crate::status::{Problems, Unreached};
 use crate::{autorun, indicators, integrity, sha256, status, watched};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
@@ -320,46 +319,6 @@ pub fn rules() -> [Rule; 11] {
 fn rule(id: &str) -> Option<Rule> {
     rules().into_iter().find(|r| r.id == id)
 }
-
-/// What is not a finding but still needs the owner: the program's own health, computed from
-/// what the latest readings left.
-pub struct Health {
-    pub kind: &'static str,
-    pub severity: &'static str,
-    pub words: Words,
-}
-
-pub const UNREACHED: Health = Health {
-    kind: "machine not reached",
-    severity: "low",
-    words: Words {
-        title: "A machine could not be reached.",
-        meaning: "This is normal if it is switched off or offline; while it cannot be reached, changes on it go unseen.",
-        advice: "If it should be on, check that you can connect to it.",
-    },
-};
-
-pub const CHECK_FAILED: Health = Health {
-    kind: "check failed",
-    severity: "low",
-    words: Words {
-        title: "Something could not be checked.",
-        meaning: "Until this is fixed, changes there go unseen; the cause is often a permission or a file in an unexpected state.",
-        advice: "Look at the reason given here, or ask your agent to find out why.",
-    },
-};
-
-pub const THREATS_UNREAD: Health = Health {
-    kind: "threat list not downloaded",
-    severity: "low",
-    words: Words {
-        title: "The list of vulnerabilities that attackers are using could not be downloaded.",
-        meaning: "This is normal if this Mac was offline; until it is downloaded, new ones go unannounced.",
-        advice: "Check again when you are online.",
-    },
-};
-
-pub const HEALTH: [Health; 3] = [UNREACHED, CHECK_FAILED, THREATS_UNREAD];
 
 /// A short id, the same for the same rule, thing and occurrence.
 fn short_id(prefix: char, parts: &[&str]) -> String {
@@ -714,11 +673,9 @@ impl std::fmt::Display for RefusedError {
 
 impl std::error::Error for RefusedError {}
 
-/// One thing that needs a look: a finding or an item of the program's health.
+/// One thing that needs a look: a finding.
 pub struct Item {
     pub id: String,
-    /// `finding` or `health`.
-    pub kind_of: &'static str,
     pub kind: &'static str,
     pub rule: Option<&'static str>,
     pub technique: Option<&'static str>,
@@ -783,7 +740,6 @@ pub fn item(f: &Found) -> Option<Item> {
     let r = rule(&f.rule)?;
     Some(Item {
         id: f.id.clone(),
-        kind_of: "finding",
         kind: r.kind,
         rule: Some(r.id),
         technique: r.technique,
@@ -800,28 +756,6 @@ pub fn item(f: &Found) -> Option<Item> {
     })
 }
 
-fn health(h: &Health, about: &[&str], first: Option<i64>, last: Option<i64>) -> Item {
-    let mut parts = vec![h.kind];
-    parts.extend(about);
-    Item {
-        id: short_id('h', &parts),
-        kind_of: "health",
-        kind: h.kind,
-        rule: None,
-        technique: None,
-        severity: h.severity,
-        confidence: None,
-        state: "current".to_string(),
-        change: None,
-        first_seen: first,
-        last_seen: last,
-        words: h.words,
-        value: None,
-        place: None,
-        answer: None,
-    }
-}
-
 /// Everything that needs a look now, newest first.
 pub struct Needs {
     pub items: Vec<Item>,
@@ -829,18 +763,10 @@ pub struct Needs {
     pub findings_unknown: bool,
 }
 
-/// Open findings and the program's health: machines not reached, checks that failed, and
-/// the threat list when its latest download failed. Only a machine not reached says since
-/// when; the others say when they were last so.
-pub fn needs(
-    conn: &Connection,
-    p: &Problems,
-    catalogue: Option<&status::Catalogue>,
-    now: i64,
-) -> rusqlite::Result<Needs> {
+/// The open findings. What the program does not cover is not among them: it is apart, in
+/// `covered.rs`, and never something to look at.
+pub fn needs(conn: &Connection, now: i64) -> rusqlite::Result<Needs> {
     let found = all(conn, now)?;
-    let this = this_machine(conn)?;
-    let this = this.as_deref();
     let findings_unknown = found.is_none();
     let mut items: Vec<Item> = found
         .unwrap_or_default()
@@ -848,38 +774,11 @@ pub fn needs(
         .filter(|f| f.state == "open")
         .filter_map(item)
         .collect();
-    for u in &p.unreached {
-        items.push(unreached(u, this));
-    }
-    for g in p.groups.iter().filter(|g| g.class == "failed") {
-        let reason = g.reason.as_deref().unwrap_or_default();
-        let mut i = health(
-            &CHECK_FAILED,
-            &[&g.reader, &g.kind, reason],
-            None,
-            Some(g.latest),
-        );
-        i.value = g.reason.clone();
-        i.place = g.scopes.first().map(|s| place(s, this));
-        items.push(i);
-    }
-    if let Some(status::Catalogue::Failed { reason, at, .. }) = catalogue {
-        let mut i = health(&THREATS_UNREAD, &[], None, Some(*at));
-        i.value = Some(reason.clone());
-        items.push(i);
-    }
     order(&mut items);
     Ok(Needs {
         items,
         findings_unknown,
     })
-}
-
-fn unreached(u: &Unreached, this: Option<&str>) -> Item {
-    let mut i = health(&UNREACHED, &[&u.scope], Some(u.since), Some(u.last));
-    i.value = u.reason.clone();
-    i.place = Some(place(&u.scope, this));
-    i
 }
 
 /// The order of everything that needs a look, and of findings: the most severe first, then
@@ -907,7 +806,8 @@ pub fn item_json(i: &Item) -> Value {
     let iso = |t: Option<i64>| t.map(crate::view::iso);
     let mut v = json!({
         "id": i.id,
-        "type": i.kind_of,
+        // Every item is a finding; the field stays for those that read it.
+        "type": "finding",
         "kind": i.kind,
         "severity": i.severity,
         "urgent": urgent(i.severity, i.confidence),
@@ -938,8 +838,8 @@ pub fn item_json(i: &Item) -> Value {
     v
 }
 
-/// Every rule and every kind of health item with its wording, for an agent to learn what each
-/// can say.
+/// Every rule, and every cause of what is not covered, with its wording, for an agent to
+/// learn what each can say.
 pub fn catalogue_json() -> Value {
     let rules: Vec<Value> = rules()
         .iter()
@@ -958,22 +858,9 @@ pub fn catalogue_json() -> Value {
             })
         })
         .collect();
-    let health: Vec<Value> = HEALTH
-        .iter()
-        .map(|h| {
-            json!({
-                "kind": h.kind,
-                "severity": h.severity,
-                "urgent": urgent(h.severity, None),
-                "title": h.words.title,
-                "meaning": h.words.meaning,
-                "advice": h.words.advice,
-            })
-        })
-        .collect();
     json!({
         "rules": rules,
-        "health": health,
+        "not_covered": crate::covered::causes_json(),
         "levels": { "severity": SEVERITIES, "confidence": CONFIDENCES },
     })
 }

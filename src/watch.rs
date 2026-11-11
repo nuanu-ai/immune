@@ -23,7 +23,9 @@
 //! Output: one JSON object per line on stdout, flushed at once, and nothing else there. Every
 //! line has `format`, `event` and `at`, and its fields flat beside them:
 //! `watching` (`places`, `cannot_see`), `read` (`new`, `changed`, `gone`, `opened`,
-//! `needs_a_look_total`), `alive`, and `problem` (`code`, `detail_text`). The watcher stops,
+//! `needs_a_look_total`, open findings only), `alive`, and `problem` (`code`, `detail_text`).
+//! After a reading that changed something it brings the view up to date, when the owner has
+//! made it once; `view_failed` says when it could not. The watcher stops,
 //! with exit 0, when stdout is closed or its parent process is gone, so that an app that died
 //! leaves no watcher holding the store.
 
@@ -431,7 +433,22 @@ impl Watcher<'_> {
                 match self.read(d.latest) {
                     Ok(Some(counts)) => {
                         self.handled = Some(d.latest);
+                        let changed = ["new", "changed", "gone"]
+                            .iter()
+                            .any(|c| counts[*c].as_u64().unwrap_or_default() > 0);
+                        // A view the owner has open shows the change too, by the time the
+                        // line says it.
+                        let view = if changed {
+                            crate::refresh_view(&self.args.store).err()
+                        } else {
+                            None
+                        };
                         if !emit(&line("read", counts)) {
+                            return;
+                        }
+                        if let Some(e) = view
+                            && !emit(&problem("view_failed", &e.to_string()))
+                        {
                             return;
                         }
                     }
@@ -614,6 +631,8 @@ fn held_checkouts(
             };
             checkouts::Checkout { rel, path }
         })
+        // A watcher started by the app never looks into a folder macOS asks permission for.
+        .filter(|c| crate::guarded::folder_of(&c.path, home).is_none())
         .collect())
 }
 

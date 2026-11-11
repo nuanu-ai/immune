@@ -22,6 +22,9 @@ type Out = Result<(), Box<dyn Error>>;
 /// At most this many things that need a look are shown in full, so the summary stays small.
 const ITEMS_SHOWN: usize = 100;
 
+/// The summary page, in the store's folder.
+pub const SUMMARY: &str = "view.html";
+
 /// The folder next to the summary page that holds the pages of details.
 pub const DETAILS: &str = "view";
 
@@ -37,7 +40,7 @@ pub fn pages(
     store: &str,
     now: i64,
 ) -> Result<Vec<(String, String)>, Box<dyn Error>> {
-    let mut pages = vec![("view.html".to_string(), summary(conn, st, result, now)?)];
+    let mut pages = vec![(SUMMARY.to_string(), summary(conn, st, result, now)?)];
     let latest = latest_coverage(conn)?;
     for (name, title) in DETAIL_PAGES {
         let mut body = String::new();
@@ -129,6 +132,38 @@ fn summary(
         utc(now)
     )?;
 
+    // First, whether this Mac is watched and how, as `this_mac` says.
+    let m = &st.this_mac;
+    let state = match m.state {
+        "watched" => "This Mac is watched",
+        "watched_in_part" => "This Mac is watched in part",
+        _ => "This Mac has not been checked yet",
+    };
+    writeln!(
+        out,
+        "<section id=\"this-mac\">\n<p><strong>{state}</strong> · {} · last checked {}</p>",
+        if m.live {
+            "a watcher sees changes within seconds"
+        } else {
+            "no watcher runs now; it is checked every hour"
+        },
+        utc_or(m.checked_at, "never")
+    )?;
+    if !m.watched.is_empty() {
+        out.push_str("<ul class=\"counts\">\n");
+        for (what, n, how) in &m.watched {
+            let what = esc(what);
+            let n = counted(*n, "", "");
+            writeln!(
+                out,
+                "<li>{what}: {} <span class=\"muted\">({how})</span></li>",
+                n.trim_end()
+            )?;
+        }
+        out.push_str("</ul>\n");
+    }
+    out.push_str("</section>\n");
+
     out.push_str("<section id=\"needs\">\n");
     for i in st.needs.items.iter().take(ITEMS_SHOWN) {
         item(&mut out, i)?;
@@ -141,6 +176,26 @@ fn summary(
         )?;
     }
     out.push_str("</section>\n");
+
+    // What is not covered: quiet, one short row per cause, never something to look at.
+    if !st.not_covered.is_empty() {
+        out.push_str("<section id=\"not-covered\">\n<h2>Not covered</h2>\n<ul>\n");
+        for u in &st.not_covered {
+            let value = u
+                .value
+                .as_deref()
+                .map(|v| format!(" <span class=\"muted\">{}</span>", esc(v)))
+                .unwrap_or_default();
+            writeln!(
+                out,
+                "<li>{} <span class=\"muted\">{}: {}</span>{value}</li>",
+                esc(u.cause.words.title),
+                esc(&u.scope.replace('_', " ")),
+                u.count
+            )?;
+        }
+        out.push_str("</ul>\n</section>\n");
+    }
 
     out.push_str("<section id=\"cannot-judge\">\n<h2>What cannot be judged here</h2>\n<ul>\n");
     // What a watcher, `soc watch`, cannot see, when one is or was running on this store: the
