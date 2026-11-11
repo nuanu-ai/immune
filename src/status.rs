@@ -13,7 +13,7 @@
 
 use crate::store::{self, Totals};
 use crate::view::{self, Latest};
-use crate::{ServerCounts, resolver, servers, threats, watched};
+use crate::{ServerCounts, findings, resolver, servers, threats, watched};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -37,10 +37,13 @@ pub const EXAMPLES: usize = 3;
 pub const UNREACHED_SHOWN: usize = 100;
 /// The most things without a reader given, most places first.
 pub const NO_READER_SHOWN: usize = 100;
+/// At most this many things that need a look are listed; the total is always given.
+pub const NEEDS_SHOWN: usize = 50;
 /// What this build cannot answer at all, in its own words.
 pub const CANNOT_JUDGE: [&str; 1] = ["no threat is matched against the estate yet"];
 /// The sections of a result that hold numbers, in the order of the result.
-const SECTIONS: [&str; 7] = [
+const SECTIONS: [&str; 8] = [
+    "needs_a_look",
     "last_run",
     "last_finished_run",
     "estate",
@@ -558,9 +561,11 @@ pub struct State {
     pub problems: Problems,
     /// Live files per kind of watched place.
     pub files: BTreeMap<String, i64>,
+    /// What needs a look now.
+    pub needs: findings::Needs,
 }
 
-pub fn state(conn: &Connection, home: &Path) -> Res<State> {
+pub fn state(conn: &Connection, home: &Path, now: i64) -> Res<State> {
     let summary = match latest_finished(conn)? {
         Some(run) => Some(summary(conn, run, home)?),
         None => None,
@@ -575,12 +580,15 @@ pub fn state(conn: &Connection, home: &Path) -> Res<State> {
         files.insert(kind, n);
     }
     let coverage = view::latest_coverage(conn)?;
+    let problems = problems(conn, &coverage)?;
+    let needs = findings::needs(conn, &problems, catalogue(conn)?.as_ref(), now)?;
     Ok(State {
         last: latest_run(conn)?,
         summary,
-        problems: problems(conn, &coverage)?,
+        problems,
         coverage,
         files,
+        needs,
     })
 }
 
@@ -708,6 +716,22 @@ pub fn result(state: Option<&State>, running: bool, path: &Path, now: i64) -> Va
         absent("coverage", "nothing has been read yet");
     } else {
         out.insert("coverage".into(), coverage_section(&st.problems));
+    }
+    if st.needs.findings_unknown {
+        absent(
+            "needs_a_look",
+            "no run of this build has looked for findings yet; the next run does",
+        );
+    } else {
+        let items = &st.needs.items;
+        let shown: Vec<Value> = items
+            .iter()
+            .take(NEEDS_SHOWN)
+            .map(findings::item_json)
+            .collect();
+        out.insert("needs_a_look".into(), Value::Array(shown));
+        out.insert("needs_a_look_total".into(), json!(items.len()));
+        out.insert("answers_note".into(), json!(findings::ANSWERS_NOTE));
     }
     out.insert("not_computed".into(), Value::Array(not_computed));
     Value::Object(out)
@@ -892,6 +916,8 @@ pub struct Group {
     pub kind: String,
     pub reason: Option<String>,
     pub scopes: Vec<String>,
+    /// When the latest of its readings was taken.
+    pub latest: i64,
 }
 
 /// A machine whose latest sweep visit failed or did not complete.
@@ -900,6 +926,8 @@ pub struct Unreached {
     /// When its visits began to fail: the first of the failed ones since the last that
     /// completed.
     pub since: i64,
+    /// When its latest visit was.
+    pub last: i64,
     pub reason: Option<String>,
 }
 
@@ -921,7 +949,7 @@ pub struct Problems {
     pub readings: usize,
 }
 
-fn problems(conn: &Connection, latest: &[Latest]) -> rusqlite::Result<Problems> {
+pub fn problems(conn: &Connection, latest: &[Latest]) -> rusqlite::Result<Problems> {
     let mut unreached = Vec::new();
     for r in latest
         .iter()
@@ -940,6 +968,7 @@ fn problems(conn: &Connection, latest: &[Latest]) -> rusqlite::Result<Problems> 
         unreached.push(Unreached {
             scope: r.scope.clone(),
             since,
+            last: r.at,
             reason: r.reason.clone(),
         });
     }
@@ -982,10 +1011,12 @@ fn problems(conn: &Connection, latest: &[Latest]) -> rusqlite::Result<Problems> 
                 kind: r.kind.clone(),
                 reason: r.reason.clone(),
                 scopes: Vec::new(),
+                latest: r.at,
             });
             p.groups.len() - 1
         });
         p.groups[i].scopes.push(r.scope.clone());
+        p.groups[i].latest = p.groups[i].latest.max(r.at);
     }
     let rank = |c: &str| CLASSES.iter().position(|x| *x == c);
     p.groups.sort_by(|a, b| {

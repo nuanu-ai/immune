@@ -11,6 +11,7 @@
 mod agent_folders;
 mod brew;
 mod checkouts;
+mod findings;
 mod icu;
 mod known_hosts;
 mod lifecycle;
@@ -44,6 +45,12 @@ const USAGE: &str = "usage: soc run [--store <path>] [--machine-name <name>] [--
                [--sessions-root <dir>] [--tailscale <path>]
                [--threats-input <file>] [--curl <path>] [--system-root <dir>] [--json]
        soc status [--store <path>] [--json]
+       soc findings [--all] [--store <path>] [--json]
+       soc finding <id> [--store <path>] [--json]
+       soc finding <id> expected --reason <text> [--days <n>] [--store <path>] [--json]
+       soc finding <id> seen [--store <path>] [--json]
+           expected and seen are the owner's answers: they hide the finding from him.
+           An agent must not give them for the owner.
        soc servers [--store <path>] [--tailscale <path>]
        soc view [--store <path>] [--no-open]
        soc owner [<name> retired|not-mine --reason <text> | <name> withdraw]
@@ -55,7 +62,27 @@ enum Cmd {
     Servers(ServersArgs),
     View(ViewArgs),
     Owner(OwnerArgs),
+    Findings(FindingsArgs),
+    Finding(FindingArgs),
 }
+
+/// `soc findings`: open findings, or every one with `--all`.
+struct FindingsArgs {
+    store: PathBuf,
+    json: bool,
+    all: bool,
+}
+
+/// `soc finding <id>`: one finding with what it rests on, or the owner's answer to it.
+struct FindingArgs {
+    store: PathBuf,
+    json: bool,
+    id: String,
+    answer: Option<findings::Answer>,
+}
+
+/// How long an `expected` mark lasts unless the owner says otherwise.
+const EXPECTED_DAYS: i64 = 30;
 
 struct Args {
     store: PathBuf,
@@ -256,6 +283,72 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
                 act,
             }))
         }
+        "findings" => {
+            let (mut json, mut all) = (false, false);
+            while let Some(arg) = it.next() {
+                match arg.as_str() {
+                    "--store" => store = Some(value(&mut it, &arg)?.into()),
+                    "--json" => json = true,
+                    "--all" => all = true,
+                    _ => return Err(format!("unexpected argument: {arg}")),
+                }
+            }
+            let store = store.map_or_else(default_store, Ok)?;
+            Ok(Cmd::Findings(FindingsArgs { store, json, all }))
+        }
+        "finding" => {
+            let (mut json, mut reason, mut days, mut words) = (false, None, None, Vec::new());
+            while let Some(arg) = it.next() {
+                match arg.as_str() {
+                    "--store" => store = Some(value(&mut it, &arg)?.into()),
+                    "--json" => json = true,
+                    "--reason" => reason = Some(value(&mut it, &arg)?),
+                    "--days" => days = Some(value(&mut it, &arg)?),
+                    _ if arg.starts_with("--") => {
+                        return Err(format!("unexpected argument: {arg}"));
+                    }
+                    _ => words.push(arg),
+                }
+            }
+            let answer = match (words.as_slice(), reason, days) {
+                ([_], None, None) => None,
+                ([_, verb], Some(reason), days) if verb == "expected" => {
+                    if reason.trim().is_empty() {
+                        return Err("expected needs a reason: --reason <text>".to_string());
+                    }
+                    let days = match days {
+                        None => EXPECTED_DAYS,
+                        Some(d) => d
+                            .parse::<i64>()
+                            .ok()
+                            .filter(|d| (1..=3650).contains(d))
+                            .ok_or("--days takes a number of days from 1 to 3650")?,
+                    };
+                    Some(findings::Answer::Expected { reason, days })
+                }
+                ([_, verb], None, _) if verb == "expected" => {
+                    return Err("expected needs a reason: --reason <text>".to_string());
+                }
+                ([_, verb], None, None) if verb == "seen" => Some(findings::Answer::Seen),
+                ([_, verb], ..) if verb == "seen" => {
+                    return Err("seen takes no reason and no days".to_string());
+                }
+                ([_, verb], ..) => {
+                    return Err(format!("the owner can answer expected or seen, not {verb}"));
+                }
+                _ => {
+                    return Err(
+                        "soc finding takes an id, as in: soc finding f0123456789 seen".to_string(),
+                    );
+                }
+            };
+            Ok(Cmd::Finding(FindingArgs {
+                store: store.map_or_else(default_store, Ok)?,
+                json,
+                id: words[0].clone(),
+                answer,
+            }))
+        }
         _ => Err(format!("unknown command: {cmd}")),
     }
 }
@@ -327,11 +420,12 @@ fn main() -> ExitCode {
         Err(e) => {
             if args.iter().any(|a| a == "--json") {
                 let op = args.first().map(String::as_str);
-                let op = op.filter(|o| ["run", "status"].contains(o));
-                let example = if op == Some("run") {
-                    "soc run --json"
-                } else {
-                    "soc status --json"
+                let op = op.filter(|o| ["run", "status", "findings", "finding"].contains(o));
+                let example = match op {
+                    Some("run") => "soc run --json",
+                    Some("findings") => "soc findings --json",
+                    Some("finding") => "soc finding f0123456789 --json",
+                    _ => "soc status --json",
                 };
                 print_json(&status::failure(
                     op,
@@ -374,6 +468,8 @@ fn main() -> ExitCode {
         Cmd::Servers(args) => servers_cmd(&args),
         Cmd::View(args) => view(&args),
         Cmd::Owner(args) => owner_cmd(&args),
+        Cmd::Findings(args) => return findings_cmd(&args),
+        Cmd::Finding(args) => return finding_cmd(&args),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -403,7 +499,7 @@ fn read_status(store: &Path) -> Result<Option<status::State>, Stop> {
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| Stop::Store(e.to_string()))?;
-    status::state(&tx, &home(store))
+    status::state(&tx, &home(store), now_secs())
         .map(Some)
         .map_err(unreadable)
 }
@@ -479,6 +575,41 @@ fn run_json(args: &Args) -> ExitCode {
     }
 }
 
+/// What needs a look, the number the report line, the app and the page show, and the
+/// newest of them.
+fn needs_text(needs: &findings::Needs) {
+    if needs.findings_unknown {
+        say(&format!("Needs a look: not known yet, {NO_FINDINGS_YET}."));
+        return;
+    }
+    say(&format!(
+        "Needs a look: {}.",
+        grouped(needs.items.len() as i64)
+    ));
+    let rows: Vec<Vec<String>> = needs
+        .items
+        .iter()
+        .take(STATUS_ROWS)
+        .map(|i| {
+            vec![
+                i.last_seen.map(view::utc).unwrap_or_default(),
+                i.words.title.to_string(),
+                i.place.clone().unwrap_or_default(),
+                i.id.clone(),
+            ]
+        })
+        .collect();
+    if !rows.is_empty() {
+        print_table(&["Last seen", "What", "Where", "Id"], &rows);
+    }
+    if needs.items.len() > rows.len() {
+        say(&format!(
+            "{} more; `soc status --json` lists them.",
+            grouped((needs.items.len() - rows.len()) as i64)
+        ));
+    }
+}
+
 /// `soc status`: a short summary of what `soc status --json` gives, for a person.
 fn status_text(store: &Path) -> Result<(), Stop> {
     let (running, state) = read_all(store)?;
@@ -517,6 +648,7 @@ fn status_text(store: &Path) -> Result<(), Stop> {
         ));
     }
     say(&summary_sentences(s));
+    needs_text(&st.needs);
     let p = &st.problems;
     let class = |c: &str| grouped(p.classes.get(c).copied().unwrap_or_default() as i64);
     say(&format!(
@@ -647,6 +779,247 @@ fn home(store: &Path) -> PathBuf {
 }
 
 /// Writes the page next to the store, prints its path and opens it. Never writes to the store.
+/// At most this many findings are listed by `soc findings`; the total is always given.
+const FINDINGS_SHOWN: usize = 200;
+
+/// Every finding in the store as it stands at `now`; `None` when there is no store or no run
+/// of this build has looked for findings in it.
+fn read_findings(store: &Path, now: i64) -> Result<Option<Vec<findings::Found>>, Stop> {
+    if !store.exists() {
+        return Ok(None);
+    }
+    let unreadable = |e: Box<dyn Error>| Stop::Store(e.to_string());
+    let conn = store::open_read_only(store).map_err(unreadable)?;
+    findings::all(&conn, now).map_err(|e| Stop::Store(e.to_string()))
+}
+
+/// A refusal in the form the command was asked in, with the exit code given.
+fn refuse(json: bool, op: &str, code: &str, message: &str, example: &str, exit: u8) -> ExitCode {
+    if json {
+        print_json(&status::failure(Some(op), code, message, example, ""));
+    } else {
+        eprintln!("soc: {message}. {example}");
+    }
+    ExitCode::from(exit)
+}
+
+fn store_failed(json: bool, op: &str, e: &Stop) -> ExitCode {
+    if json {
+        return fail_json(op, e);
+    }
+    eprintln!("soc: {}", view::shown(&e.to_string()));
+    ExitCode::from(EXIT_STORE)
+}
+
+const NO_FINDINGS_YET: &str = "no run of this build has looked for findings in this store yet";
+
+/// `soc findings`: the open findings, or every one, with what each means and what to do.
+fn findings_cmd(args: &FindingsArgs) -> ExitCode {
+    let now = now_secs();
+    let found = match read_findings(&args.store, now) {
+        Ok(found) => found,
+        Err(e) => return store_failed(args.json, "findings", &e),
+    };
+    let items: Option<Vec<findings::Item>> = found.map(|all| {
+        all.iter()
+            .filter(|f| args.all || f.state == "open")
+            .filter_map(findings::item)
+            .collect()
+    });
+    if args.json {
+        let mut r = findings::catalogue_json();
+        r["answers_note"] = serde_json::json!(findings::ANSWERS_NOTE);
+        match &items {
+            Some(items) => {
+                let shown: Vec<serde_json::Value> = items
+                    .iter()
+                    .take(FINDINGS_SHOWN)
+                    .map(findings::item_json)
+                    .collect();
+                r["findings"] = serde_json::Value::Array(shown);
+                r["findings_total"] = serde_json::json!(items.len());
+                r["not_computed"] = serde_json::json!([]);
+            }
+            None => {
+                let reason = if args.store.exists() {
+                    NO_FINDINGS_YET
+                } else {
+                    "there is no store yet; `soc run` makes it"
+                };
+                r["not_computed"] =
+                    serde_json::json!([{ "section": "findings", "reason": reason }]);
+            }
+        }
+        print_json(&status::envelope("findings", r));
+        return ExitCode::SUCCESS;
+    }
+    let Some(items) = items else {
+        say(&format!("No findings: {NO_FINDINGS_YET}."));
+        return ExitCode::SUCCESS;
+    };
+    say(&format!(
+        "{}.",
+        things(
+            items.len() as i64,
+            if args.all { "finding" } else { "open finding" },
+            if args.all {
+                "findings"
+            } else {
+                "open findings"
+            }
+        )
+    ));
+    let rows: Vec<Vec<String>> = items
+        .iter()
+        .take(FINDINGS_SHOWN)
+        .map(|i| {
+            vec![
+                i.id.clone(),
+                i.state.clone(),
+                i.last_seen.map(view::utc).unwrap_or_default(),
+                i.words.title.to_string(),
+                i.place.clone().unwrap_or_default(),
+            ]
+        })
+        .collect();
+    print_table(&["Id", "State", "Last seen", "What", "Where"], &rows);
+    say("`soc finding <id>` shows one; expected and seen are the owner's answers.");
+    ExitCode::SUCCESS
+}
+
+/// `soc finding <id>`: one finding with what it rests on, or the owner's answer to it.
+fn finding_cmd(args: &FindingArgs) -> ExitCode {
+    let unknown = |json: bool| {
+        refuse(
+            json,
+            "finding",
+            "unknown_finding",
+            "the store has no finding with this id; nothing was changed",
+            "soc findings --all lists every finding with its id; then: soc finding <id> seen",
+            EXIT_USAGE,
+        )
+    };
+    let now = now_secs();
+    if let Some(answer) = &args.answer {
+        if !args.store.is_file() {
+            return unknown(args.json);
+        }
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
+        let run_id = format!("owner-{now}-{nanos:09}");
+        let answered = (|| -> Result<(), Box<dyn Error>> {
+            let mut conn = store::open(&args.store).map_err(|e| Stop::Store(e.to_string()))?;
+            let tx = conn.transaction()?;
+            findings::answer(&tx, &args.id, answer, now, &run_id)?;
+            tx.commit()?;
+            Ok(())
+        })();
+        if let Err(e) = answered {
+            return match e.downcast_ref::<findings::RefusedError>() {
+                Some(findings::RefusedError(findings::Refused::Unknown)) => unknown(args.json),
+                Some(refused) => refuse(
+                    args.json,
+                    "finding",
+                    "finding_closed",
+                    &format!("{refused}; nothing was changed"),
+                    "soc findings lists the open findings",
+                    EXIT_USAGE,
+                ),
+                None => match e.downcast_ref::<Stop>() {
+                    Some(stop) => store_failed(args.json, "finding", stop),
+                    None => store_failed(args.json, "finding", &Stop::Store(e.to_string())),
+                },
+            };
+        }
+    }
+    let found = match read_findings(&args.store, now) {
+        Ok(found) => found.unwrap_or_default(),
+        Err(e) => return store_failed(args.json, "finding", &e),
+    };
+    let Some(item) = found
+        .iter()
+        .find(|f| f.id == args.id)
+        .and_then(findings::item)
+    else {
+        return unknown(args.json);
+    };
+    let basis = match store::open_read_only(&args.store)
+        .map_err(|e| e.to_string())
+        .and_then(|c| findings::basis(&c, &args.id).map_err(|e| e.to_string()))
+    {
+        Ok(b) => b,
+        Err(e) => return store_failed(args.json, "finding", &Stop::Store(e)),
+    };
+    if args.json {
+        let mut v = findings::item_json(&item);
+        v["rests_on"] = serde_json::Value::Array(
+            basis
+                .iter()
+                .map(|b| {
+                    serde_json::json!({
+                        "journal_seq": b.seq,
+                        "at": view::iso(b.at),
+                        "run_id": b.run_id,
+                        "entry": b.entry,
+                        "predicate": b.predicate,
+                        "subject_text": b.subject.as_deref().map(status::text),
+                    })
+                })
+                .collect(),
+        );
+        let r = serde_json::json!({ "finding": v, "answers_note": findings::ANSWERS_NOTE });
+        print_json(&status::envelope("finding", r));
+        return ExitCode::SUCCESS;
+    }
+    say(&format!("Finding {}: {}", item.id, item.words.title));
+    say(item.words.meaning);
+    say(item.words.advice);
+    let mut facts = vec![
+        format!("rule {}", item.rule.unwrap_or_default()),
+        format!("severity {}", item.severity),
+        format!("confidence {}", item.confidence.unwrap_or_default()),
+    ];
+    if let Some(t) = item.technique {
+        facts.push(format!("ATT&CK {t}"));
+    }
+    say(&format!("{}.", facts.join(", ")));
+    say(&format!(
+        "State: {}. First seen {}, last seen {}{}.",
+        item.state,
+        item.first_seen.map(view::utc).unwrap_or_default(),
+        item.last_seen.map(view::utc).unwrap_or_default(),
+        item.change
+            .as_deref()
+            .map(|c| format!(", latest change: {c}"))
+            .unwrap_or_default()
+    ));
+    if let Some((at, reason, until)) = &item.answer {
+        say(&format!(
+            "Answered {}{}{}.",
+            view::utc(*at),
+            until
+                .map(|u| format!(", expected until {}", view::utc(u)))
+                .unwrap_or_default(),
+            reason
+                .as_deref()
+                .map(|r| format!(": {}", view::shown(r)))
+                .unwrap_or_default()
+        ));
+    }
+    say(&format!(
+        "Where: {}.",
+        view::shown(item.place.as_deref().unwrap_or_default())
+    ));
+    let seqs: Vec<String> = basis.iter().map(|b| b.seq.to_string()).collect();
+    say(&format!(
+        "Rests on {}: {}.",
+        things(basis.len() as i64, "journal entry", "journal entries"),
+        seqs.join(", ")
+    ));
+    ExitCode::SUCCESS
+}
+
 fn view(args: &ViewArgs) -> Result<(), Box<dyn Error>> {
     if !args.store.is_file() {
         return Err(format!("no store at {}", args.store.display()).into());
@@ -1345,10 +1718,11 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     if any_checkouts {
         read_lockfiles(&mut run, &found)?;
     }
-    let watched = read_watched(&mut run, args, &found)?;
+    let (watched, seen) = read_watched(&mut run, args, &found)?;
     read_traces(&mut run, args)?;
     resolve(&mut run)?;
     read_threats(&run, args)?;
+    let opened = findings::detect(&tx, &run_id, at, &seen)?;
 
     // What the line counts is read back from what the run wrote, by the code `soc status`
     // reads it with after the run.
@@ -1358,7 +1732,16 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
         finished_at: None,
     };
     let summary = status::summary(&tx, mark, &home)?;
-    let line = report(run.readers, &run.notes, &summary);
+    // What needs a look is counted by the code `soc status` counts it with, at the run's time.
+    let latest = view::latest_coverage(&tx)?;
+    let problems = status::problems(&tx, &latest)?;
+    let needs = findings::needs(&tx, &problems, summary.catalogue.as_ref(), at)?;
+    let line = report(
+        run.readers,
+        &run.notes,
+        &summary,
+        &needs_sentence(needs.items.len(), opened),
+    );
     store::journal_note(&tx, at, &run_id, "report", &line)?;
     // The time the run finished, so that its start and its end are both in the journal.
     store::journal_note(&tx, now_secs(), &run_id, "run_finished", "")?;
@@ -2019,15 +2402,23 @@ struct Placed {
 /// Which entries a place holds is one reading per kind and scope; the content of each file is
 /// a reading of its own, scoped to the file, so a file that cannot be read changes nothing
 /// about it and nothing else. Returns the rows the run prints after its line: change, kind,
-/// path and why, where paths are text from the machine. What the line counts is read back
-/// from the store by `status::summary`.
+/// path and why, where paths are text from the machine; and what changed, for the rules.
+/// What the line counts is read back from the store by `status::summary`.
 fn read_watched(
     run: &mut Run,
     args: &Args,
     checkouts: &[checkouts::Checkout],
-) -> Result<Rows, Box<dyn Error>> {
+) -> Result<(Rows, Vec<findings::Observed>), Box<dyn Error>> {
     let (run_id, machine) = (run.run_id.to_string(), run.machine.to_string());
     let mut rows: Rows = Vec::new();
+    let mut seen = Vec::new();
+    let mut observe = |change: &'static str, place: &str, file: &str| {
+        seen.push(findings::Observed {
+            change,
+            place: place.to_string(),
+            file: file.to_string(),
+        });
+    };
     let roots = watched::Roots {
         home: &args.home,
         system: &args.system_root,
@@ -2152,14 +2543,19 @@ fn read_watched(
                         path_of(&subject),
                         String::new(),
                     ]);
+                    observe("new", p.watched_as, &subject);
                     new.insert(subject);
                 }
-                ("removed", "watched_as") => rows.push(vec![
-                    "gone".to_string(),
-                    old.unwrap_or_default(),
-                    path_of(&subject),
-                    String::new(),
-                ]),
+                ("removed", "watched_as") => {
+                    let place = old.unwrap_or_default();
+                    observe("gone", &place, &subject);
+                    rows.push(vec![
+                        "gone".to_string(),
+                        place,
+                        path_of(&subject),
+                        String::new(),
+                    ]);
+                }
                 _ => {}
             }
         }
@@ -2213,6 +2609,7 @@ fn read_watched(
                 && store::only_failed_before(run.tx, watched::READER, &id, watched::CONTENT)?;
             let events = apply_watched(run, &reading, completeness, reason, &gap, &statements)?;
             if first_read {
+                observe(findings::FIRST_READ, e.watched_as, &id);
                 rows.push(vec![
                     "first read".to_string(),
                     e.watched_as.to_string(),
@@ -2221,6 +2618,7 @@ fn read_watched(
                 ]);
             }
             if !events.is_empty() && !new.contains(&id) {
+                observe("changed", e.watched_as, &id);
                 rows.push(vec![
                     "changed".to_string(),
                     e.watched_as.to_string(),
@@ -2244,7 +2642,7 @@ fn read_watched(
     {
         run.readers += 1;
     }
-    Ok(rows)
+    Ok((rows, seen))
 }
 
 fn not_full_words(completeness: &str) -> &'static str {
@@ -2445,9 +2843,26 @@ fn catalogue_sentence(c: Option<&status::Catalogue>) -> String {
 /// The one line: how many readers had input, what the run left, and its notes. It never says
 /// "no changes" unless every reading this run was full and every scope read before was read
 /// again.
-fn report(readers: usize, notes: &[String], s: &status::Summary) -> String {
+/// How many things need a look, the number `soc status` and the app show, and how many
+/// findings this run opened.
+fn needs_sentence(total: usize, opened: usize) -> String {
+    if total == 0 {
+        return "Nothing needs a look.".to_string();
+    }
+    let new = if opened == 0 {
+        "none new in this run".to_string()
+    } else {
+        format!("{} new in this run", grouped(opened as i64))
+    };
+    format!(
+        "{} a look, {new}.",
+        things(total as i64, "thing needs", "things need")
+    )
+}
+
+fn report(readers: usize, notes: &[String], s: &status::Summary, needs: &str) -> String {
     let mut line = format!(
-        "{}, {}",
+        "{}, {} {needs}",
         things(readers as i64, "reader", "readers"),
         summary_sentences(s)
     );

@@ -97,7 +97,7 @@ CREATE TABLE raw_input (
 /// What the journal records. The list only grows: a store whose journal was made with a
 /// shorter list is made again with this one when it is opened, so a new kind of entry is a
 /// new word here and nothing else.
-const JOURNAL_ENTRIES: [&str; 11] = [
+const JOURNAL_ENTRIES: [&str; 16] = [
     "run_started",
     "added",
     "changed",
@@ -109,11 +109,16 @@ const JOURNAL_ENTRIES: [&str; 11] = [
     "threat_added",
     "threat_gone",
     "threats_first_read",
+    "finding_raised",
+    "finding_reopened",
+    "finding_cleared",
+    "finding_expected",
+    "finding_seen",
 ];
 
 /// The journal. It cannot be rebuilt from raw input, so it only grows. Its entries are the
-/// differences a run finds, the run's own notes, the owner's word and the threat list's
-/// changes.
+/// differences a run finds, the run's own notes, the owner's word, the threat list's
+/// changes, and findings raised and answered.
 fn journal_sql() -> String {
     let entries: Vec<String> = JOURNAL_ENTRIES.iter().map(|e| format!("'{e}'")).collect();
     format!(
@@ -381,6 +386,7 @@ pub fn open(path: &Path) -> Res<Connection> {
     conn.execute_batch(VOCABULARY)?;
     conn.execute_batch(OWNER)?;
     conn.execute_batch(THREATS)?;
+    conn.execute_batch(crate::findings::SCHEMA)?;
     add_causes(&conn)?;
     widen_journal(&mut conn)?;
     Ok(conn)
