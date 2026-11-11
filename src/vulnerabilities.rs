@@ -1025,7 +1025,8 @@ pub fn affecting(conn: &Connection) -> rusqlite::Result<Vec<Affecting>> {
     Ok(list)
 }
 
-/// The totals of the answers the store holds.
+/// The totals of the answers the store holds. A record that affects several projects is one
+/// answer in each, so every number a person reads counts records, not answers.
 #[derive(Default)]
 pub struct Totals {
     pub affected: usize,
@@ -1036,6 +1037,13 @@ pub struct Totals {
     pub no_signs: Option<usize>,
     /// Affecting answers by label, in the order of `LABELS`.
     pub by_label: Vec<(&'static str, usize)>,
+    /// What a person calls a known vulnerability: a record that affects something, counted
+    /// once however many projects it affects; with the packages and projects it is in.
+    pub records: usize,
+    pub packages: usize,
+    pub projects: usize,
+    /// Affecting records by label, each counted once, in the order of `LABELS`.
+    pub records_by_label: Vec<(&'static str, usize)>,
     /// "Don't know" answers by reason, in the order of `REASONS`.
     pub by_reason: Vec<(&'static str, usize)>,
     /// Packages with a "don't know" answer, each counted once, by reason; the feed's reason
@@ -1088,13 +1096,28 @@ pub fn totals(conn: &Connection) -> rusqlite::Result<Totals> {
         .filter(|(_, n)| *n > 0)
         .collect();
     let mut labels: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let mut records: BTreeMap<(String, String), &'static str> = BTreeMap::new();
+    let mut packages: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut projects: BTreeSet<String> = BTreeSet::new();
     for a in affecting(conn)? {
         *labels.entry(a.label).or_default() += 1;
+        records.insert((a.source, a.advisory), a.label);
+        packages.insert((a.ecosystem, a.package));
+        projects.insert(a.checkout);
     }
-    t.by_label = LABELS
-        .iter()
-        .filter_map(|l| labels.get(l).map(|n| (*l, *n)))
-        .collect();
+    let in_order = |of: &BTreeMap<&'static str, usize>| -> Vec<(&'static str, usize)> {
+        LABELS
+            .iter()
+            .filter_map(|l| of.get(l).map(|n| (*l, *n)))
+            .collect()
+    };
+    t.by_label = in_order(&labels);
+    let mut record_labels: BTreeMap<&'static str, usize> = BTreeMap::new();
+    for label in records.values() {
+        *record_labels.entry(label).or_default() += 1;
+    }
+    t.records_by_label = in_order(&record_labels);
+    (t.records, t.packages, t.projects) = (records.len(), packages.len(), projects.len());
     // A package counts once, under the first reason of its "don't know" answers.
     let unknown: Vec<(String, String, String, String)> = conn
         .prepare(
@@ -1153,6 +1176,17 @@ pub fn totals(conn: &Connection) -> rusqlite::Result<Totals> {
         t.no_signs = read.then_some(catalogue as usize);
     }
     Ok(t)
+}
+
+/// "473 known vulnerabilities in 116 packages, across 9 projects.": what a person calls them.
+pub fn records_said(t: &Totals) -> String {
+    let n = |n: usize, one: &str, many: &str| crate::view::counted(n as i64, one, many);
+    format!(
+        "{} in {}, across {}.",
+        n(t.records, "known vulnerability", "known vulnerabilities"),
+        n(t.packages, "package", "packages"),
+        n(t.projects, "project", "projects"),
+    )
 }
 
 /// What one reason of "don't know" says of packages, for one and for many.
@@ -1263,6 +1297,10 @@ fn totals_json(t: &Totals) -> Value {
         "not_affected_known": t.not_affected,
         "not_affected_no_signs": t.no_signs,
         "affected_by_label": by(&t.by_label),
+        "affected_records": t.records,
+        "affected_packages": t.packages,
+        "affected_projects": t.projects,
+        "affected_records_by_label": by(&t.records_by_label),
         "unknown_by_reason": by(&t.by_reason),
     })
 }
@@ -1619,6 +1657,24 @@ mod tests {
 
     fn v(s: &str) -> Version {
         version(s).unwrap_or_else(|| panic!("{s}"))
+    }
+
+    #[test]
+    fn the_line_a_person_reads_says_one_as_one() {
+        let t = |records, packages, projects| Totals {
+            records,
+            packages,
+            projects,
+            ..Totals::default()
+        };
+        assert_eq!(
+            records_said(&t(1, 1, 1)),
+            "1 known vulnerability in 1 package, across 1 project."
+        );
+        assert_eq!(
+            records_said(&t(1473, 116, 9)),
+            "1,473 known vulnerabilities in 116 packages, across 9 projects."
+        );
     }
 
     /// node-semver's fixture rows, `[a, b, opt]`, as data. `opt` is loose when it is `true`

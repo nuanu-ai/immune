@@ -496,6 +496,43 @@ struct PanelPromises {
     #expect(p.gaps.first?.text == "3 limits of this version, nothing to do")
   }
 
+  @Test(
+    "Known vulnerabilities are one quiet row below the others, counted by record, never by the icon"
+  )
+  func knownVulnerabilities() {
+    func with(_ part: [String: Any]) -> Panel {
+      panel(quiet(removing: ["result", "vulnerabilities"], setting: part))
+    }
+    // One record that affects two projects is two answers and one known vulnerability.
+    let one = with(["affected": 2, "affected_records": 1, "affected_projects": 2])
+    #expect(
+      one.gaps.last
+        == GapRow(
+          text: "1 known vulnerability in packages your projects use", symbol: "shippingbox",
+          section: "vulnerabilities"))
+    #expect(
+      one.lines.contains(
+        "○ 1 known vulnerability in packages your projects use  › #vulnerabilities"))
+    let many = with(["affected": 1015, "affected_records": 473])
+    #expect(
+      many.gaps.map(\.text) == [
+        "You can fix 2 things", "3 limits of this version, nothing to do",
+        "473 known vulnerabilities in packages your projects use",
+      ])
+    // A list, not an alarm: the count, the headline and the icon are what they were.
+    #expect(many.total == 0)
+    #expect(many.light == .nothingToReport)
+    #expect(many.headline == "This Mac is watched. Nothing needs you.")
+    #expect(
+      Light.menuSymbol(many.light, worst: many.worst, urgent: many.urgent) == "checkmark.shield")
+    // None, or a soc that does not count records (it gave only the answers): no row.
+    let without = ["you-can-fix", "limits"]
+    #expect(with(["affected": 0, "affected_records": 0]).gaps.map(\.section) == without)
+    #expect(with(["affected": 3, "affected_by_label": ["high": 3]]).gaps.map(\.section) == without)
+    #expect(with(["affected_records": "2"]).gaps.map(\.section) == without)
+    #expect(panel(quiet()).gaps.map(\.section) == without)
+  }
+
   @Test("A finding outranks everything: whatever this Mac's state, one finding is the headline")
   func findingOutranks() {
     for state in ["watched", "watched_in_part", "not_checked", "something new"] {
@@ -1332,6 +1369,33 @@ struct Page {
     }
     await older.openPage(section: "you-can-fix")
     #expect(plain == [page])
+  }
+
+  @Test("The row of known vulnerabilities opens the file soc names for their section")
+  func vulnerabilitiesSection() async throws {
+    let (page, out) = try written()
+    let file = page.deletingLastPathComponent()
+      .appendingPathComponent("section-vulnerabilities.html")
+    try Data("<html></html>".utf8).write(to: file)
+    var root = (try? JSONSerialization.jsonObject(with: quiet().stdout)) as? [String: Any] ?? [:]
+    var r = root["result"] as? [String: Any] ?? [:]
+    var store = r["store"] as? [String: Any] ?? [:]
+    store["view_sections"] = [["section": "vulnerabilities", "path_text": file.path]]
+    r["store"] = store
+    r["vulnerabilities"] = ["affected": 3, "affected_records": 2]
+    root["result"] = r
+    let status = SocOutput(exitCode: 0, stdout: try JSONSerialization.data(withJSONObject: root))
+    let model = AppModel(soc: GatedSoc(status: status, view: out, gated: []))
+    await model.refresh()
+    var opened: [URL] = []
+    model.opener = {
+      opened.append($0)
+      return true
+    }
+    let row = try #require(Panel.of(model.reading, now: Date()).gaps.last)
+    #expect(row.text == "2 known vulnerabilities in packages your projects use")
+    await model.openPage(section: row.section)
+    #expect(opened.map(\.path) == [file.path])
   }
 
   @Test("Only an absolute path to an HTML file that soc printed first is opened")

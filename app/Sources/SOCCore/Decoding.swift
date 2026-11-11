@@ -47,6 +47,10 @@ public struct Status: Sendable, Equatable {
   public var answeredOutsideApp: AnsweredOutside?
   /// The owner's statements that set a machine aside and were not given in the app.
   public var statementsOutsideApp: StatementsOutside?
+  /// Known vulnerabilities in packages the projects use: distinct records that affect
+  /// something, each counted once however many projects it affects. Nil from a soc that
+  /// does not count them.
+  public var knownVulnerabilities: Int?
 }
 
 /// The statements that stand and were given outside the app: soc's total and the latest.
@@ -463,7 +467,8 @@ public enum Decoding {
                 reasonText: $0["reason_text"].string)
             }
           })
-      })
+      },
+      knownVulnerabilities: r["vulnerabilities"]["affected_records"].count)
   }
 
   static func item(_ i: J) -> Item {

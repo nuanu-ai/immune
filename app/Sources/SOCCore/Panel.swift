@@ -180,7 +180,8 @@ public struct Panel: Sendable, Equatable {
   public let toldAbout = GapRow(
     text: "What you are told about", symbol: "text.bubble", section: "watched-here")
   /// What the program does not cover, as at most two quiet rows: what the owner can
-  /// fix, and the limits of this version. Never counted, never orange.
+  /// fix, and the limits of this version; then, when there are any, the known
+  /// vulnerabilities in packages the projects use. Never counted, never orange.
   public var gaps: [GapRow] = []
   /// The request "Copy for my agent" copies beside "You can fix", or nil when there is
   /// nothing for the owner to fix.
@@ -310,7 +311,20 @@ public struct Panel: Sendable, Equatable {
           text: (limits == 1 ? "1 limit" : "\(limits) limits") + " of this version, nothing to do",
           symbol: "info.circle", section: "limits"))
     }
+    if let known = s.knownVulnerabilities, known > 0 {
+      gaps.append(Self.vulnerabilities(known))
+    }
     answered = AnsweredRow.of(s.answeredOutsideApp, s.statementsOutsideApp)
+  }
+
+  /// "N known vulnerabilities in packages your projects use": records, each counted once
+  /// however many projects it affects. A list, not an alarm: it opens the page's section
+  /// and never reaches the number by the icon or the headline.
+  static func vulnerabilities(_ n: Int) -> GapRow {
+    GapRow(
+      text: (n == 1 ? "1 known vulnerability" : "\(n) known vulnerabilities")
+        + " in packages your projects use",
+      symbol: "shippingbox", section: "vulnerabilities")
   }
 
   /// A short task for the owner's coding agent about what they can fix: the soc this app

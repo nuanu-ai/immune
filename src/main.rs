@@ -1264,7 +1264,7 @@ fn vulnerabilities_cmd(args: &VulnerabilityArgs) -> ExitCode {
             say(&format!(
                 "{} in packages your projects use; {} cannot be told, {} known not to affect them.",
                 things(
-                    t["affected"].as_i64().unwrap_or_default(),
+                    t["affected_records"].as_i64().unwrap_or_default(),
                     "known vulnerability",
                     "known vulnerabilities"
                 ),
@@ -4051,7 +4051,7 @@ fn feeds_sentence(states: &[osv::State], run_id: &str, t: &vulnerabilities::Tota
     let mut matched = format!(
         "matched against the projects' package-lock.json and Cargo.lock: {} in packages they use",
         things(
-            t.affected as i64,
+            t.records as i64,
             "known vulnerability",
             "known vulnerabilities"
         )

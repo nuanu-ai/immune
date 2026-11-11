@@ -487,7 +487,8 @@ fn vulnerability_row(
 }
 
 /// The section of the summary on known vulnerabilities in packages the projects use: what
-/// they are, how many of each label, the most severe few, and the page with all of them.
+/// they are, how many records, packages and projects, how many records of each label, the most
+/// severe few, and the page with all of them.
 fn vulnerabilities_summary(conn: &Connection, out: &mut String) -> Out {
     writeln!(
         out,
@@ -515,8 +516,13 @@ fn vulnerabilities_summary(conn: &Connection, out: &mut String) -> Out {
         )?;
         return Ok(());
     }
+    writeln!(
+        out,
+        "<p>{}</p>",
+        esc(&crate::vulnerabilities::records_said(&t))
+    )?;
     out.push_str("<ul class=\"counts\">\n");
-    for (label, n) in &t.by_label {
+    for (label, n) in &t.records_by_label {
         writeln!(
             out,
             "<li>{}: {}</li>",
@@ -531,18 +537,9 @@ fn vulnerabilities_summary(conn: &Connection, out: &mut String) -> Out {
         vulnerability_row(out, a, true, this.as_deref())?;
     }
     out.push_str("</tbody></table></div>\n");
-    writeln!(
-        out,
-        "<p>{}</p>\n</section>",
-        link(
-            VULNERABILITIES,
-            "by-project",
-            &format!(
-                "Known vulnerabilities by project: {}",
-                grouped(list.len() as i64)
-            )
-        )
-    )?;
+    // No number here: the page lists each record once per project it affects, and a number
+    // of those would not be the count a person reads above.
+    writeln!(out, "<p>{all}</p>\n</section>")?;
     Ok(())
 }
 
