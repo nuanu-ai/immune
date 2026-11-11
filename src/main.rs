@@ -25,6 +25,7 @@ mod known_hosts;
 mod lifecycle;
 mod lockfiles;
 mod owner;
+mod processes;
 mod resolver;
 mod servers;
 mod sha256;
@@ -65,6 +66,7 @@ const USAGE: &str = "usage: soc run [--store <path>] [--machine-name <name>] [--
        soc view [--store <path>] [--no-open]
        soc owner [<name> retired|not-mine --reason <text> | <name> withdraw]
                  [--store <path>] [--tailscale <path>]
+       soc sample [--store <path>] [--sample-input <file>] [--json]
        soc watch [--store <path>] [--system-root <dir>]
                  one JSON line per event: watching, read, alive, problem;
                  a problem's code and detail_text sit beside event, flat
@@ -79,6 +81,7 @@ enum Cmd {
     Findings(FindingsArgs),
     Finding(FindingArgs),
     Watch(watch::WatchArgs),
+    Sample(SampleArgs),
 }
 
 /// `soc findings`: open findings, or every one with `--all`.
@@ -369,6 +372,19 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
             }))
         }
         "watch" => watch::parse(it).map(Cmd::Watch),
+        "sample" => {
+            let (mut json, mut input) = (false, None);
+            while let Some(arg) = it.next() {
+                match arg.as_str() {
+                    "--store" => store = Some(value(&mut it, &arg)?.into()),
+                    "--sample-input" => input = Some(value(&mut it, &arg)?.into()),
+                    "--json" => json = true,
+                    _ => return Err(format!("unexpected argument: {arg}")),
+                }
+            }
+            let store = store.map_or_else(default_store, Ok)?;
+            Ok(Cmd::Sample(SampleArgs { store, json, input }))
+        }
         _ => Err(format!("unknown command: {cmd}")),
     }
 }
@@ -441,13 +457,15 @@ fn main() -> ExitCode {
             // `soc watch` answers only in machine-readable lines.
             let op = args.first().map(String::as_str);
             if args.iter().any(|a| a == "--json") || op == Some("watch") {
-                let op =
-                    op.filter(|o| ["run", "status", "findings", "finding", "watch"].contains(o));
+                let op = op.filter(|o| {
+                    ["run", "status", "findings", "finding", "sample", "watch"].contains(o)
+                });
                 let example = match op {
                     Some("run") => "soc run --json",
                     Some("findings") => "soc findings --json",
                     Some("finding") => "soc finding f0123456789 --json",
                     Some("watch") => "soc watch",
+                    Some("sample") => "soc sample --json",
                     _ => "soc status --json",
                 };
                 print_json(&status::failure(
@@ -494,6 +512,7 @@ fn main() -> ExitCode {
         Cmd::Owner(args) => owner_cmd(&args),
         Cmd::Findings(args) => return findings_cmd(&args),
         Cmd::Finding(args) => return finding_cmd(&args),
+        Cmd::Sample(args) => return sample_cmd(&args),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -503,6 +522,88 @@ fn main() -> ExitCode {
         }
     }
 }
+
+// ---- `soc sample`: one sample of this user's processes and connections, see
+// `processes.rs`. ----
+
+/// `soc sample`.
+struct SampleArgs {
+    store: PathBuf,
+    json: bool,
+    /// A reading made of invented processes instead of the system's.
+    input: Option<PathBuf>,
+}
+
+/// Takes one sample under the run lock, records what the rule tracks and raises what it finds.
+fn sample(args: &SampleArgs) -> Result<processes::Report, Box<dyn Error>> {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?;
+    let run_id = format!("sample-{}-{:09}", now.as_secs(), now.subsec_nanos());
+    let home = home(&args.store);
+    std::fs::create_dir_all(&home)?;
+    let _lock = store::lock_run(&home)?.ok_or(Stop::RunInProgress)?;
+    let mut conn = store::open(&args.store).map_err(|e| Stop::Store(e.to_string()))?;
+    let took = std::time::Instant::now();
+    let reading = match &args.input {
+        Some(file) => processes::Reading::from_json(&std::fs::read_to_string(file)?)?,
+        None => processes::read_system(now.as_secs() as i64),
+    };
+    let tx = conn.transaction()?;
+    let machine = format!("machine:{}", machine_name());
+    store::put_entity(&tx, &machine)?;
+    let report = processes::take(
+        &tx,
+        &run_id,
+        &machine,
+        &user_home()?,
+        reading,
+        took,
+        &mut processes::Signers::default(),
+    )?;
+    // Indicators: the list of addresses from the threat list is matched here, once it is
+    // wired, with `processes::connections_to(&report.sample.connections, &addresses)`.
+    tx.commit()?;
+    Ok(report)
+}
+
+fn sample_cmd(args: &SampleArgs) -> ExitCode {
+    match (sample(args), args.json) {
+        (Ok(report), true) => print_json(&status::envelope("sample", report.json())),
+        (Ok(report), false) => {
+            say(&report.line());
+            say(&format!(
+                "A sample cannot see: {}.",
+                processes::CANNOT_SEE.join("; ")
+            ));
+        }
+        (Err(e), json) => {
+            let stop = e.downcast_ref::<Stop>();
+            if json {
+                return match stop {
+                    Some(stop) => fail_json("sample", stop),
+                    None => {
+                        print_json(&status::failure(
+                            Some("sample"),
+                            "sample_failed",
+                            "the sample failed and nothing was committed to the store",
+                            "soc sample --json",
+                            &e.to_string(),
+                        ));
+                        ExitCode::FAILURE
+                    }
+                };
+            }
+            eprintln!("soc: {}", view::shown(&e.to_string()));
+            return ExitCode::from(match stop {
+                Some(Stop::RunInProgress) => EXIT_RUN_IN_PROGRESS,
+                Some(Stop::Store(_)) => EXIT_STORE,
+                None => 1,
+            });
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+// ---- End of `soc sample`. ----
 
 /// Now, in UTC seconds.
 fn now_secs() -> i64 {

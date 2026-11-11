@@ -299,8 +299,34 @@ fn indicator_match() -> Rule {
 
 // ---- End of what runs by itself and indicators. ----
 
+// ---- Processes: what samples of this user's processes saw, see `processes::take`. ----
+
+fn detached_inline_code() -> Rule {
+    Rule {
+        id: "processes.detached-inline-code",
+        kind: crate::processes::DETACHED_INLINE,
+        // Command and Scripting Interpreter. The sub-technique depends on the interpreter
+        // and is named for each in `processes::INTERPRETERS`; a rule carries one technique.
+        technique: Some("T1059"),
+        // Not one such process was found on the first Mac in the research's samples: high
+        // because it is how hidden code is kept running, medium because twelve minutes of
+        // samples are not a week.
+        severity: "high",
+        confidence: "medium",
+        finds: "event",
+        words: Words {
+            title: "A program that runs scripts has been running code it was handed when it started, on its own in the background, for at least a minute.",
+            meaning: "Tools and agents do this for a moment while they work; staying alive on its own, with no terminal or app it belongs to, is how some malware keeps hidden code running.",
+            advice: "If you did not start something like this, ask your agent to find the process of the program named here and what started it, and stop it if nobody knows it.",
+        },
+        fires: |o| o.place == crate::processes::DETACHED_INLINE,
+    }
+}
+
+// ---- End of processes. ----
+
 /// Every rule, in the order they are listed.
-pub fn rules() -> [Rule; 11] {
+pub fn rules() -> [Rule; 12] {
     [
         autostart(),
         shell_profile(),
@@ -313,6 +339,7 @@ pub fn rules() -> [Rule; 11] {
         app_code_outside(),
         folder_open_task(),
         indicator_match(),
+        detached_inline_code(),
     ]
 }
 

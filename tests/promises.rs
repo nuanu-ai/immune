@@ -8361,6 +8361,12 @@ fn every_rule_has_an_id_plain_wording_levels_and_two_samples_that_hold() {
         .iter()
         .map(|rule| rule["id"].as_str().unwrap())
         .collect();
+    // Samples of processes: the rule over them has its samples in `tests/processes.rs`.
+    let ids: Vec<&str> = ids
+        .into_iter()
+        .filter(|id| !id.starts_with("processes."))
+        .collect();
+    // End of samples of processes.
     assert_eq!(ids, SAMPLES.map(|s| s.rule));
     let technique = |t: &str| {
         let (main, sub) = t.split_once('.').unwrap_or((t, "000"));
