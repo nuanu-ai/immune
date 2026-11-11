@@ -14,3 +14,7 @@ rusqlite = { version = "0.41.1", default-features = false, features = ["bundled"
 # The lockfiles reader parses package-lock.json. JSON is too easy to get subtly wrong by
 # hand; serde_json is used through `Value` only, without derive.
 serde_json = "1.0.154"
+# Vulnerability matching orders versions by SemVer precedence, as OSV's SEMVER ranges are
+# defined. Ordering versions is a silent mistake when written by hand; `semver` is dtolnay's,
+# follows Cargo's choices, parses strictly and has no dependencies of its own.
+semver = "1.0.28"
