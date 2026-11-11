@@ -542,10 +542,11 @@ fn a_package_homebrew_names_no_tap_for_is_not_taken_for_a_core_one_and_the_readi
     assert_eq!(
         rows(
             &store,
-            "SELECT completeness, reason FROM coverage WHERE reader = 'brew' ORDER BY id DESC LIMIT 1"
+            "SELECT completeness, reason, cause FROM coverage WHERE reader = 'brew' ORDER BY id DESC LIMIT 1"
         ),
+        // Homebrew was read; it does not give what the package is.
         [
-            "partial|Homebrew names no tap for invented, so it cannot be told from a core package and is not recorded"
+            "partial|Homebrew names no tap for invented, so it cannot be told from a core package and is not recorded|not_given"
         ]
     );
     let live = rows(&store, LIVE);
@@ -930,6 +931,11 @@ fn unsupported_lockfile_gives_partial_coverage_naming_it_and_supported_ones_are_
     put(&shop, "web/Cargo.lock", CARGO_LOCK);
     let tools = checkout(&root, "tools");
     put(&tools, "Cargo.lock", CARGO_LOCK);
+    // A lockfile that could not be read and one without a reader: the reading is as bad as
+    // the worse of the two, which is that it failed.
+    let broken = checkout(&root, "work/broken");
+    put(&broken, "yarn.lock", "# yarn lockfile v1\n");
+    put(&broken, "package-lock.json", "{ not json");
     soc_all(
         &store,
         &dir.input("brew.txt", SAMPLE),
@@ -940,12 +946,13 @@ fn unsupported_lockfile_gives_partial_coverage_naming_it_and_supported_ones_are_
     assert_eq!(
         rows(
             &store,
-            "SELECT scope, completeness, COALESCE(reason, '') FROM coverage
+            "SELECT scope, completeness, COALESCE(reason, ''), COALESCE(cause, '') FROM coverage
              WHERE reader = 'lockfiles' ORDER BY scope"
         ),
         [
-            "checkout:machine:mac/dev/tools|full|",
-            "checkout:machine:mac/dev/work/shop|partial|not supported yet: yarn.lock",
+            "checkout:machine:mac/dev/tools|full||",
+            "checkout:machine:mac/dev/work/broken|partial|not supported yet: yarn.lock; could not be read: package-lock.json|failed",
+            "checkout:machine:mac/dev/work/shop|partial|not supported yet: yarn.lock|no_reader",
         ]
     );
     let id = "component:checkout:machine:mac/dev/work/shop";
@@ -1196,10 +1203,10 @@ fn folder_that_cannot_be_listed_gives_a_partial_checkouts_reading_naming_it_and_
     assert_eq!(
         rows(
             &store,
-            "SELECT completeness, reason FROM coverage
+            "SELECT completeness, reason, cause FROM coverage
              WHERE kind = 'checkouts under the home folder' ORDER BY id DESC LIMIT 1"
         ),
-        ["partial|could not be listed: dev/archive"]
+        ["partial|could not be listed: dev/archive|failed"]
     );
     assert!(rows(&store, "SELECT 1 FROM assertion WHERE layer = 'retracted'").is_empty());
     let live = rows(&store, LIVE);
@@ -1586,11 +1593,12 @@ fn known_hosts_that_hide_hosts_make_the_reading_partial_with_their_count_and_no_
     assert_eq!(
         rows(
             &h.store(),
-            "SELECT completeness, reason FROM coverage WHERE kind = 'known hosts'"
+            "SELECT completeness, reason, cause FROM coverage WHERE kind = 'known hosts'"
         ),
+        // The file was read; these entries do not give the names of their hosts.
         [
             "partial|2 hashed entries cannot be read; 1 pattern covers hosts it does not name; \
-          1 certificate authority vouches for hosts whose keys are not written here"
+          1 certificate authority vouches for hosts whose keys are not written here|not_given"
         ]
     );
     assert_eq!(
@@ -2042,10 +2050,11 @@ fn an_alias_is_known_by_the_host_name_ssh_would_use_and_what_is_not_resolved_mak
     assert_eq!(
         rows(
             &h.store(),
-            "SELECT completeness, reason FROM coverage WHERE kind = 'ssh configuration'"
+            "SELECT completeness, cause, reason FROM coverage WHERE kind = 'ssh configuration'"
         ),
+        // Files that could not be read failed, which is worse than what has no reader.
         [
-            "partial|could not read conf2, locked.d; config:2 Include %d/extra was not read: \
+            "partial|failed|could not read conf2, locked.d; config:2 Include %d/extra was not read: \
              % tokens and ${} variables are not expanded; config:2 Include ${EXTRA}/config was \
              not read: % tokens and ${} variables are not expanded; config:2 Include \
              ~nobody/config was not read: only ~/ is expanded; the Match at config:19 was not \
@@ -2107,6 +2116,22 @@ fn a_configuration_ssh_refuses_is_never_read_as_full() {
              configuration.\n"
         ),
         "{printed}"
+    );
+
+    // An include without a reader before the quote: the reading takes the worse, which is
+    // that ssh refuses the configuration, whatever comes first in the file.
+    put(
+        &h.home,
+        ".ssh/c3",
+        "Include c4\nInclude ~nobody/extra\nHost \"web-3\n",
+    );
+    h.run(&h.dir.0.join("absent"), &h.dir.0.join("no-tailscale"));
+    assert_eq!(
+        rows(
+            &h.store(),
+            "SELECT completeness, cause FROM coverage WHERE kind = 'ssh configuration'"
+        ),
+        ["partial|failed"]
     );
 }
 
@@ -5418,6 +5443,16 @@ fn a_server_whose_package_manager_the_program_cannot_read_is_a_reading_that_read
         reading_of(&store, "both", "system package sources"),
         partial
     );
+    // What has no reader is named once for each machine that holds it, however many of the
+    // machine's readings it leaves incomplete.
+    assert_eq!(
+        status_json(&store)["no_reader_for"],
+        serde_json::json!([
+            {"what": "package manager", "what_text": "rpm", "where_count": 2},
+            {"what": "a package manager the probe does not look for", "what_text": null,
+             "where_count": 1},
+        ])
+    );
 }
 
 /// The lines of the probe from the one that starts with `from` to the one that starts with
@@ -6147,18 +6182,25 @@ fn a_watched_file_that_cannot_be_read_is_never_unchanged_and_never_gone() {
     );
     let coverage = rows(
         &w.store(),
-        "SELECT scope, completeness, reason FROM coverage
+        "SELECT scope, completeness, reason, cause FROM coverage
          WHERE kind = 'content of a watched file' AND completeness != 'full'
            AND run_id = (SELECT MAX(run_id) FROM coverage) ORDER BY scope",
     );
-    let denied = "none|Permission denied (os error 13)";
+    // A file that could not be opened failed; one too large has no reader in this build.
+    let denied = "none|Permission denied (os error 13)|failed";
     assert_eq!(
         coverage,
         [
-            "file:machine:mac/.bashrc|none|over the size cap of 8 MiB".to_string(),
+            "file:machine:mac/.bashrc|none|over the size cap of 8 MiB|no_reader".to_string(),
             format!("file:machine:mac/.zlogout|{denied}"),
             format!("file:machine:mac//etc/zshrc|{denied}"),
         ]
+    );
+    assert_eq!(
+        status_json(&w.store())["no_reader_for"],
+        serde_json::json!([
+            {"what": "watched file over the size cap", "what_text": null, "where_count": 1}
+        ])
     );
     assert!(
         report.contains("5 files, 1 new, 1 changed, 0 gone since the last reading; not read in full: the content of 3 files."),
@@ -7094,7 +7136,7 @@ fn unknown_is_never_given_as_zero_or_full() {
     for section in ["last_run", "estate", "watched", "threats", "coverage"] {
         assert!(none.get(section).is_none(), "{section}");
     }
-    assert_eq!(none["not_computed"].as_array().unwrap().len(), 6);
+    assert_eq!(none["not_computed"].as_array().unwrap().len(), 7);
     assert_eq!(
         none["cannot_judge"],
         serde_json::json!(["no threat is matched against the estate yet"])
@@ -7118,8 +7160,9 @@ fn unknown_is_never_given_as_zero_or_full() {
     assert_eq!(t["outcome"], "failed");
     assert!(t["entries"].is_null() && t["read_at"].is_null(), "{t}");
     assert!(t.get("new").is_none() && t.get("gone").is_none(), "{t}");
-    // A brew that could not be read failed; a partial lockfile reading is partial; Tailscale
-    // that is not installed had nothing to read. Each is counted by its class.
+    // A brew that could not be read failed; a lockfile of a kind without a reader has no
+    // reader; Tailscale that is not installed had nothing to read. Each is counted by its
+    // class.
     let c = &r["coverage"];
     let class_of = |reader: &str| {
         c["problems"]
@@ -7130,7 +7173,7 @@ fn unknown_is_never_given_as_zero_or_full() {
             .map(|p| p["class"].as_str().unwrap().to_string())
     };
     assert_eq!(class_of("brew").as_deref(), Some("failed"), "{c:#}");
-    assert_eq!(class_of("lockfiles").as_deref(), Some("partial"), "{c:#}");
+    assert_eq!(class_of("lockfiles").as_deref(), Some("no_reader"), "{c:#}");
     assert_eq!(
         class_of("tailnet").as_deref(),
         Some("read_nothing"),
@@ -7158,20 +7201,40 @@ fn unknown_is_never_given_as_zero_or_full() {
             .contains(".git is a file")
     );
     assert_eq!(kind("shell profile")["coverage"], "full");
+    assert_eq!(
+        r["no_reader_for"],
+        serde_json::json!([
+            {"what": "git hooks of a checkout whose .git is a file", "what_text": null,
+             "where_count": 1},
+            {"what": "lockfile kind", "what_text": "yarn.lock", "where_count": 1},
+        ])
+    );
     assert_eq!(c["failed"], 1, "{c:#}");
-    assert_eq!(c["partial"], 2, "{c:#}");
+    assert_eq!(c["no_reader"], 2, "{c:#}");
+    assert_eq!(
+        (c["partial"].clone(), c["none"].clone()),
+        (2.into(), 1.into()),
+        "{c:#}"
+    );
+    let classes = [
+        "full",
+        "failed",
+        "no_reader",
+        "not_given",
+        "read_nothing",
+        "implied_by_unreached",
+    ];
     assert_eq!(
         c["readings"].as_i64().unwrap(),
-        ["full", "read_nothing", "partial", "failed"]
-            .iter()
-            .map(|k| c[k].as_i64().unwrap())
-            .sum::<i64>()
+        classes.iter().map(|k| c[k].as_i64().unwrap()).sum::<i64>()
     );
     // Watched places that were never read, and a catalogue never read.
     Connection::open(w.store())
         .unwrap()
         .execute_batch(
-            "DELETE FROM coverage WHERE reader = 'watched-places';
+            "DELETE FROM coverage_lack WHERE coverage IN
+                 (SELECT id FROM coverage WHERE reader = 'watched-places');
+             DELETE FROM coverage WHERE reader = 'watched-places';
              DELETE FROM feed_reading;",
         )
         .unwrap();
@@ -7208,6 +7271,314 @@ fn unknown_is_never_given_as_zero_or_full() {
     for section in ["last_finished_run", "estate", "watched", "threats"] {
         assert!(r.get(section).is_none(), "{section}");
     }
+}
+
+/// The cause kept for each incomplete reading of a reader in the latest run, by kind.
+fn causes(store: &Path, reader: &str) -> Vec<String> {
+    rows(
+        store,
+        &format!(
+            "SELECT scope, kind, completeness, COALESCE(cause, 'NULL') FROM coverage
+             WHERE reader = '{reader}' AND completeness != 'full'
+               AND run_id = (SELECT run_id FROM coverage ORDER BY id DESC LIMIT 1)
+             ORDER BY scope, kind"
+        ),
+    )
+}
+
+/// The problem groups of `soc status --json` as class, reader, kind and count, leaving out
+/// readings that had nothing to read.
+fn problem_groups(r: &serde_json::Value) -> Vec<String> {
+    r["coverage"]["problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| p["class"] != "read_nothing")
+        .map(|p| {
+            format!(
+                "{}|{}|{}|{}",
+                p["class"], p["reader"], p["kind"], p["count"]
+            )
+        })
+        .map(|s| s.replace('"', ""))
+        .collect()
+}
+
+#[test]
+fn a_section_an_older_probe_did_not_write_is_not_given_never_failed_and_retracts_nothing() {
+    // A file from an older probe holds no release, no sources and no kernel package. That
+    // is not a reading that failed: the source does not hold it, and an agent told it failed
+    // would try to fix what is not broken. It also says nothing about what an earlier
+    // reading found there, so nothing an earlier reading left is retracted by it.
+    let dir = Dir::new("not-given");
+    let (servers, absent) = (dir.0.join("servers"), dir.0.join("absent"));
+    let brew = dir.input("brew.txt", SAMPLE);
+    put(&servers, "a.txt", WEB_1);
+    soc_all(&dir.store(), &brew, &servers, &absent);
+    let release_and_sources = "SELECT subject, predicate, object FROM assertion
+         WHERE layer = 'live' AND predicate IN ('runs_release', 'built_from')
+         ORDER BY subject, predicate";
+    let before = rows(&dir.store(), release_and_sources);
+    assert_eq!(before.len(), 3, "{before:?}");
+
+    put(&servers, "a.txt", WEB_1_OLDER_PROBE);
+    let report = soc_all(&dir.store(), &brew, &servers, &absent);
+    // Nothing here lacks a reader, and the report says nothing about readers.
+    assert!(!report.contains("no reader"), "{report}");
+
+    assert_eq!(
+        causes(&dir.store(), "servers"),
+        [
+            "machine:a|running kernel package|none|not_given",
+            "machine:a|system package sources|none|not_given",
+            "machine:a|system release|none|not_given",
+        ]
+    );
+    assert_eq!(rows(&dir.store(), release_and_sources), before);
+    let r = status_json(&dir.store());
+    let c = &r["coverage"];
+    assert_eq!(
+        (c["not_given"].as_i64(), c["failed"].as_i64()),
+        (Some(3), Some(0)),
+        "{c:#}"
+    );
+    assert_eq!(c["none"], 3, "{c:#}");
+    assert_eq!(c["unreached_total"], 0, "{c:#}");
+    assert_eq!(
+        problem_groups(&r),
+        [
+            "not_given|servers|running kernel package|1",
+            "not_given|servers|system package sources|1",
+            "not_given|servers|system release|1",
+        ]
+    );
+}
+
+#[test]
+fn a_lockfile_of_a_kind_without_a_reader_is_named_as_such_by_status_and_the_report() {
+    // A lockfile this build cannot read is not a reading that failed: the build has no reader
+    // for it. What the build cannot judge on this estate is part of every report, and
+    // `soc status` names it, with how many places hold it. Saying so is not a change: a second
+    // run on the same inputs still reports no changes.
+    let dir = Dir::new("no-reader");
+    let store = dir.store();
+    let root = dir.0.join("dev");
+    for shop in ["work/shop", "work/blog"] {
+        let shop = checkout(&root, shop);
+        put(&shop, "yarn.lock", "# yarn lockfile v1\n");
+        put(&shop, "api/yarn.lock", "# yarn lockfile v1\n");
+        put(&shop, "uv.lock", "version = 1\n");
+    }
+    let (brew, absent) = (dir.input("brew.txt", SAMPLE), dir.0.join("absent"));
+    let said =
+        " This build has no reader for 2 kinds of thing found here; `soc status` names them.";
+    let first = soc_home(&store, &brew, &absent);
+    assert!(first.contains(said), "{first}");
+
+    assert_eq!(
+        causes(&store, "lockfiles"),
+        [
+            "checkout:machine:mac/dev/work/blog|lockfile dependencies|partial|no_reader",
+            "checkout:machine:mac/dev/work/shop|lockfile dependencies|partial|no_reader",
+        ]
+    );
+    let r = status_json(&store);
+    assert_eq!(
+        r["no_reader_for"],
+        serde_json::json!([
+            {"what": "lockfile kind", "what_text": "uv.lock", "where_count": 2},
+            {"what": "lockfile kind", "what_text": "yarn.lock", "where_count": 2},
+        ])
+    );
+    let c = &r["coverage"];
+    assert_eq!(
+        (c["no_reader"].as_i64(), c["failed"].as_i64()),
+        (Some(2), Some(0)),
+        "{c:#}"
+    );
+    assert_eq!(
+        problem_groups(&r),
+        ["no_reader|lockfiles|lockfile dependencies|2"]
+    );
+    let (code, printed, _) = status_out(&store, &[]);
+    assert_eq!(code, Some(0));
+    assert!(
+        printed.contains("This build has no reader for:\n")
+            && printed.contains("lockfile kind  uv.lock    2\n")
+            && printed.contains("lockfile kind  yarn.lock  2\n"),
+        "{printed}"
+    );
+
+    let second = soc_home(&store, &brew, &absent);
+    assert!(
+        second.contains(" Since last run: no changes. ") && second.contains(said),
+        "{second}"
+    );
+
+    // A kind no longer found is no longer named.
+    for shop in ["work/shop", "work/blog"] {
+        std::fs::remove_file(root.join(shop).join("uv.lock")).unwrap();
+    }
+    soc_home(&store, &brew, &absent);
+    assert_eq!(
+        status_json(&store)["no_reader_for"],
+        serde_json::json!([{"what": "lockfile kind", "what_text": "yarn.lock", "where_count": 2}])
+    );
+    // Nor in a checkout that is gone.
+    std::fs::remove_dir_all(root.join("work/blog")).unwrap();
+    soc_home(&store, &brew, &absent);
+    assert_eq!(
+        status_json(&store)["no_reader_for"],
+        serde_json::json!([{"what": "lockfile kind", "what_text": "yarn.lock", "where_count": 1}])
+    );
+}
+
+#[test]
+fn a_machine_that_could_not_be_reached_is_named_once_and_what_it_leaves_unread_is_not_repeated() {
+    // A visit that failed and a sweep that broke off before its end both leave no current
+    // reading of the machine: each of its readings that is not full is `failed`. The machine
+    // is named once in `unreached`, with when its visits began to fail since it was last
+    // read and why, and those readings are counted as implied by it, never repeated as
+    // problems one by one. What its earlier reading did not hold is still said as such.
+    let h = Home::new("unreached", Some(SSH_CONFIG_TWO_ALIASES), None);
+    let servers = h.sweep();
+    let taken = 1_767_323_045; // 2026-01-02 03:04:05 UTC
+    put(
+        &servers,
+        "web-new.txt",
+        &format!("##taken_at\n{taken}\n{WEB_1_OLDER_PROBE}"),
+    );
+    h.run(&servers, &h.none());
+    let (first, second) = (1_767_412_800, 1_767_499_200); // 2026-01-03 and 2026-01-04 04:00 UTC
+    let fail = |alias: &str, at: i64, why: &str| {
+        put(
+            &servers,
+            &format!("{alias}.failed"),
+            &format!("{at}\n{why}\n"),
+        )
+    };
+    let timed_out = "ssh: connect to host web-new port 22: Operation timed out";
+    fail("db-1", first, "Permission denied (publickey).");
+    fail("web-new", first, timed_out);
+    h.run(&servers, &h.none());
+    // web-new is reached again, and fails again later; db-1 has never been reached.
+    std::fs::remove_file(servers.join("web-new.failed")).unwrap();
+    fail("db-1", second, "Permission denied (publickey).");
+    h.run(&servers, &h.none());
+    fail("web-new", second, timed_out);
+    put(&servers, "old-db.txt", &cut(WEB_1));
+    h.run(&servers, &h.none());
+
+    let incomplete: Vec<String> = causes(&h.store(), "servers")
+        .into_iter()
+        .filter(|c| !c.ends_with("|not_given"))
+        .collect();
+    assert!(
+        incomplete.len() == 13 && incomplete.iter().all(|c| c.ends_with("|none|failed")),
+        "{incomplete:#?}"
+    );
+    let r = status_json(&h.store());
+    let c = &r["coverage"];
+    let unreached: Vec<String> = c["unreached"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| format!("{}|{}|{}", u["scope_text"], u["since"], u["reason_text"]))
+        .map(|s| s.replace('"', ""))
+        .collect();
+    assert_eq!(unreached.len(), 3, "{unreached:#?}");
+    assert_eq!(
+        unreached[..2],
+        [
+            "machine:db-1|2026-01-03T04:00:00Z|Permission denied (publickey).",
+            "machine:web-new|2026-01-04T04:00:00Z|ssh: connect to host web-new port 22: Operation timed out",
+        ]
+    );
+    assert!(
+        unreached[2].starts_with("machine:old-db|")
+            && unreached[2].ends_with("|the sweep of this server did not complete"),
+        "{unreached:#?}"
+    );
+    assert_eq!(c["unreached_total"], 3);
+    assert_eq!(c["implied_by_unreached"], 13, "{c:#}");
+    assert_eq!(c["failed"], 0, "{c:#}");
+    assert_eq!(
+        problem_groups(&r),
+        [
+            "not_given|servers|running kernel package|1",
+            "not_given|servers|system package sources|1",
+            "not_given|servers|system release|1",
+        ],
+        "{c:#}"
+    );
+    let (_, printed, _) = status_out(&h.store(), &[]);
+    assert_eq!(printed.matches("machine:db-1").count(), 1, "{printed}");
+    assert!(
+        printed.contains("2026-01-03 04:00 UTC  Permission denied (publickey).\n"),
+        "{printed}"
+    );
+}
+
+#[test]
+fn a_store_from_before_causes_were_kept_shows_its_incomplete_readings_as_failed() {
+    // A store written before the cause was kept has incomplete readings with no cause. Not
+    // knowing why, the program never calls them anything milder than failed, and what this
+    // build has no reader for is not computed rather than given as nothing. A run on such a
+    // store adds what it lacks and leaves the old rows as they were.
+    let w = Watch::new("before-causes");
+    std::fs::create_dir_all(w.home()).unwrap();
+    let shop = checkout(w.home(), "dev/shop");
+    put(&shop, "yarn.lock", "# yarn lockfile v1\n");
+    w.run();
+    let classes = |r: &serde_json::Value| {
+        let c = &r["coverage"];
+        ["failed", "no_reader", "not_given"].map(|k| c[k].as_i64().unwrap())
+    };
+    assert_eq!(classes(&status_json(&w.store())), [0, 1, 0]);
+
+    let conn = Connection::open(w.store()).unwrap();
+    conn.execute_batch("UPDATE coverage SET cause = NULL")
+        .unwrap();
+    assert_eq!(classes(&status_json(&w.store())), [1, 0, 0]);
+    conn.execute_batch("DROP TABLE coverage_lack; ALTER TABLE coverage DROP COLUMN cause;")
+        .unwrap();
+    drop(conn);
+    let r = status_json(&w.store());
+    assert_eq!(classes(&r), [1, 0, 0]);
+    assert_eq!(
+        problem_groups(&r)[0],
+        "failed|lockfiles|lockfile dependencies|1"
+    );
+    assert!(r.get("no_reader_for").is_none(), "{r:#}");
+    assert!(
+        r["not_computed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["section"] == "no_reader_for"),
+        "{r:#}"
+    );
+
+    let report = w.run();
+    assert!(
+        report.contains("This build has no reader for 1 kind of thing"),
+        "{report}"
+    );
+    assert_eq!(
+        rows(
+            &w.store(),
+            "SELECT value FROM meta WHERE key = 'format_version'"
+        ),
+        ["4"]
+    );
+    assert_eq!(
+        rows(
+            &w.store(),
+            "SELECT COUNT(*) FROM coverage WHERE completeness != 'full' AND cause IS NULL"
+        ),
+        ["1"]
+    );
+    assert_eq!(classes(&status_json(&w.store())), [0, 1, 0]);
 }
 
 /// Every string of a value that is not under a key ending in `_text`.
@@ -7306,8 +7677,10 @@ fn lists_are_capped_with_their_totals_and_names_and_times_are_stable() {
         let conn = Connection::open(w.store()).unwrap();
         for i in 0..120 {
             conn.execute(
-                "INSERT INTO coverage (reader, run_id, observed_at, scope, kind, completeness, reason)
-                 VALUES (?1, 'invented', 1, 'machine:mac', 'brew packages', 'partial', ?2)",
+                "INSERT INTO coverage (reader, run_id, observed_at, scope, kind, completeness, reason,
+                                       cause)
+                 VALUES (?1, 'invented', 1, 'machine:mac', 'brew packages', 'partial', ?2,
+                         'not_given')",
                 [format!("invented-{i:03}"), format!("reason {i}")],
             )
             .unwrap();
@@ -7335,7 +7708,8 @@ fn lists_are_capped_with_their_totals_and_names_and_times_are_stable() {
     let problems = c["problems"].as_array().unwrap();
     assert_eq!(problems.len(), 100);
     assert!(c["problems_total"].as_i64().unwrap() > 120, "{c}");
-    // Failed first, then partial, then nothing to read; the four checkouts are one group.
+    // Failed first, then no reader, then not given, then nothing to read, the largest group
+    // first inside a class; the four checkouts are one group.
     let lockfiles = problems
         .iter()
         .find(|p| p["reader"] == "lockfiles")
@@ -7344,7 +7718,7 @@ fn lists_are_capped_with_their_totals_and_names_and_times_are_stable() {
     assert_eq!(lockfiles["examples_text"].as_array().unwrap().len(), 3);
     assert_eq!(
         (problems[0]["class"].as_str(), problems[0]["count"].as_i64()),
-        (Some("partial"), Some(4)),
+        (Some("no_reader"), Some(4)),
         "{:#}",
         problems[0]
     );

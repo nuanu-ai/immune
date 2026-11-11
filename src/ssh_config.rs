@@ -28,6 +28,7 @@
 //! `${}` variables or `~user` is not expanded, and the reading is partial naming it. So is
 //! one that ssh refuses: an unclosed quote, or includes more than 16 deep.
 
+use crate::store::{Cause, Gap, Lack};
 use crate::traces::{Extract, Found, Seen, code_hosting, note};
 use std::cell::RefCell;
 use std::ffi::{CStr, CString, OsStr};
@@ -38,6 +39,10 @@ pub const READER: &str = "ssh-config";
 pub const KIND: &str = "ssh configuration";
 pub const BASIS: &str = "declared";
 pub const NOT_PRESENT: &str = "there is no ssh configuration on this machine";
+/// What this build has no reader for in an ssh configuration, in its own words.
+pub const MATCH: &str = "ssh Match block, which is not evaluated";
+pub const INCLUDE_TOKENS: &str = "ssh Include with % tokens or ${} variables";
+pub const INCLUDE_USER: &str = "ssh Include with ~user";
 
 /// How deep includes go: ssh refuses a configuration that includes deeper than this
 /// (`READCONF_MAX_DEPTH` in `readconf.c`).
@@ -56,6 +61,7 @@ pub fn read(home: &Path) -> Found {
         lines: Vec::new(),
         unread: Vec::new(),
         problems: Vec::new(),
+        lacks: Vec::new(),
     };
     p.file("config", &text, 0);
     Found::Read(p.finish())
@@ -88,8 +94,10 @@ struct Parser<'a> {
     lines: Vec<Line>,
     /// Files that are there and could not be read.
     unread: Vec<String>,
-    /// Other reasons the reading is partial.
-    problems: Vec<String>,
+    /// Other reasons the reading is partial, each with its cause.
+    problems: Vec<(Cause, String)>,
+    /// What this build has no reader for in the configuration.
+    lacks: Vec<Lack>,
 }
 
 impl Parser<'_> {
@@ -100,8 +108,10 @@ impl Parser<'_> {
                 continue;
             };
             let Some(args) = argv_split(rest, true) else {
-                self.problems.push(format!(
-                    "{at} has an unclosed quote, so ssh refuses the configuration"
+                // ssh itself refuses the configuration: nothing in it can be relied on.
+                self.problems.push((
+                    Cause::Failed,
+                    format!("{at} has an unclosed quote, so ssh refuses the configuration"),
                 ));
                 continue;
             };
@@ -124,16 +134,22 @@ impl Parser<'_> {
     /// One `Include` argument: anchored as ssh anchors it and expanded by glob(3).
     fn include(&mut self, at: &str, arg: &str, depth: usize) {
         if arg.contains('%') || arg.contains("${") {
-            self.problems.push(format!(
-                "{at} Include {arg} was not read: % tokens and ${{}} variables are not expanded"
+            self.lacks.push(Lack::new(INCLUDE_TOKENS, None));
+            self.problems.push((
+                Cause::NoReader,
+                format!(
+                    "{at} Include {arg} was not read: % tokens and ${{}} variables are not expanded"
+                ),
             ));
             return;
         }
         let pattern = if let Some(rest) = arg.strip_prefix("~/") {
             format!("{}/{rest}", glob_escape(self.home))
         } else if arg.starts_with('~') {
-            self.problems.push(format!(
-                "{at} Include {arg} was not read: only ~/ is expanded"
+            self.lacks.push(Lack::new(INCLUDE_USER, None));
+            self.problems.push((
+                Cause::NoReader,
+                format!("{at} Include {arg} was not read: only ~/ is expanded"),
             ));
             return;
         } else if arg.starts_with('/') {
@@ -153,8 +169,9 @@ impl Parser<'_> {
             }
             let label = self.label(&path);
             if depth >= MAX_DEPTH {
-                self.problems.push(format!(
-                    "{at} includes {label} too deep, so ssh refuses the configuration"
+                self.problems.push((
+                    Cause::Failed,
+                    format!("{at} includes {label} too deep, so ssh refuses the configuration"),
                 ));
                 continue;
             }
@@ -244,21 +261,36 @@ impl Parser<'_> {
                 );
             }
         }
-        let mut reasons = Vec::new();
+        let mut reasons: Vec<(Cause, String)> = Vec::new();
         if !self.unread.is_empty() {
-            reasons.push(format!("could not read {}", self.unread.join(", ")));
+            let unread = format!("could not read {}", self.unread.join(", "));
+            reasons.push((Cause::Failed, unread));
         }
         reasons.append(&mut self.problems);
         for (at, aliases) in not_applied {
-            reasons.push(format!(
-                "the Match at {at} was not applied; it may decide the HostName or User of {}",
-                aliases.join(", ")
+            // Evaluating a Match would run its commands: this build has no reader for it.
+            self.lacks.push(Lack::new(MATCH, None));
+            reasons.push((
+                Cause::NoReader,
+                format!(
+                    "the Match at {at} was not applied; it may decide the HostName or User of {}",
+                    aliases.join(", ")
+                ),
             ));
         }
+        // Several reasons: the reading is as bad as the worst of them.
+        let mut lacks = std::mem::take(&mut self.lacks);
+        lacks.dedup();
+        let gap = Gap {
+            cause: Cause::worst(reasons.iter().map(|(c, _)| *c)),
+            lacks,
+        };
+        let reasons: Vec<String> = reasons.into_iter().map(|(_, r)| r).collect();
         Seen {
             extract: extract.into_text(),
             hosts,
             partial: (!reasons.is_empty()).then(|| reasons.join("; ")),
+            gap,
             third_party,
         }
     }

@@ -7,12 +7,15 @@
 
 use crate::checkouts::Checkout;
 use crate::store::Statement;
+use crate::store::{Cause, Gap, Lack};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 pub const READER: &str = "lockfiles";
 pub const KIND: &str = "lockfile dependencies";
 pub const BASIS: &str = "declared";
+/// What this build has no reader for among lockfiles, in its own words: a kind, by name.
+pub const LOCKFILE_KIND: &str = "lockfile kind";
 
 const MAX_DEPTH: usize = 4;
 const PRUNED: [&str; 4] = ["node_modules", "target", "vendor", ".git"];
@@ -33,6 +36,8 @@ const NOT_SUPPORTED: [&str; 9] = [
 pub struct Outcome {
     pub completeness: &'static str,
     pub reason: Option<String>,
+    /// Why the reading is incomplete, and the lockfile kinds this build has no reader for.
+    pub gap: Gap,
     pub statements: Vec<Statement>,
     /// Every lockfile found: path relative to the home folder, and size in bytes.
     pub lockfiles: Vec<(String, u64)>,
@@ -160,7 +165,24 @@ pub fn read(checkout: &Checkout, id: &str) -> Option<Outcome> {
     if !listed {
         reasons.push("a folder could not be listed".to_string());
     }
+    // A lockfile that could not be read or a folder that could not be listed failed; a kind
+    // of lockfile without a reader is no reader. The reading takes the worse.
+    let mut causes = Vec::new();
+    if !not_parsed.is_empty() || !listed {
+        causes.push(Cause::Failed);
+    }
+    if !not_supported.is_empty() {
+        causes.push(Cause::NoReader);
+    }
+    let gap = Gap {
+        cause: Cause::worst(causes),
+        lacks: not_supported
+            .iter()
+            .map(|name| Lack::new(LOCKFILE_KIND, Some(name)))
+            .collect(),
+    };
     Some(Outcome {
+        gap,
         completeness: if reasons.is_empty() {
             "full"
         } else {

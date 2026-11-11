@@ -14,6 +14,7 @@
 //! keys ssh then never writes here. A negated pattern names no host to add, and a
 //! `@revoked` line names a key that must not be trusted, not a host connected to.
 
+use crate::store::{Cause, Gap};
 use crate::traces::{Extract, Found, Seen, code_hosting, note};
 use std::path::Path;
 
@@ -101,6 +102,8 @@ pub fn parse(text: &str) -> Seen {
         extract: extract.into_text(),
         hosts,
         partial: (!reasons.is_empty()).then(|| reasons.join("; ")),
+        // Each reason is an entry that does not give the names of its hosts.
+        gap: Gap::when((!reasons.is_empty()).then_some(Cause::NotGiven)),
         third_party,
     }
 }

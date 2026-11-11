@@ -13,7 +13,7 @@
 
 use crate::store::{self, Totals};
 use crate::view::{self, Latest};
-use crate::{ServerCounts, resolver, threats, watched};
+use crate::{ServerCounts, resolver, servers, threats, watched};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -33,16 +33,21 @@ pub const CHANGES_SHOWN: usize = 50;
 pub const PROBLEMS_SHOWN: usize = 100;
 /// The most scopes given as examples of one group of readings.
 pub const EXAMPLES: usize = 3;
+/// The most machines that could not be reached given; `unreached_total` counts them all.
+pub const UNREACHED_SHOWN: usize = 100;
+/// The most things without a reader given, most places first.
+pub const NO_READER_SHOWN: usize = 100;
 /// What this build cannot answer at all, in its own words.
 pub const CANNOT_JUDGE: [&str; 1] = ["no threat is matched against the estate yet"];
 /// The sections of a result that hold numbers, in the order of the result.
-const SECTIONS: [&str; 6] = [
+const SECTIONS: [&str; 7] = [
     "last_run",
     "last_finished_run",
     "estate",
     "watched",
     "threats",
     "coverage",
+    "no_reader_for",
 ];
 
 /// A run as the journal records it.
@@ -172,6 +177,48 @@ pub struct Summary {
     pub catalogue: Option<Catalogue>,
     /// Every change of a watched place the journal holds, oldest first.
     pub changes: Vec<FileChange>,
+    /// What this build has no reader for on this estate; `None` on a store made before it
+    /// was recorded.
+    pub no_reader_for: Option<Vec<NoReader>>,
+}
+
+/// One kind of thing this build has no reader for, and in how many places it was found.
+pub struct NoReader {
+    /// What it is, in the program's words.
+    pub what: String,
+    /// Its name as the source gives it, where there is one, such as a lockfile's.
+    pub name: Option<String>,
+    /// How many scopes read last hold it.
+    pub places: i64,
+}
+
+/// What the latest readings found this build has no reader for, most places first.
+fn no_reader_for(conn: &Connection) -> rusqlite::Result<Option<Vec<NoReader>>> {
+    let has_table: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'coverage_lack')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !has_table {
+        return Ok(None);
+    }
+    conn.prepare(
+        "SELECT l.what, l.name, COUNT(DISTINCT c.scope) AS places
+         FROM coverage_lack l JOIN coverage c ON c.id = l.coverage
+         WHERE c.id IN (SELECT MAX(id) FROM coverage GROUP BY reader, scope, kind)
+           AND c.scope NOT IN (SELECT id FROM gone_entity)
+         GROUP BY l.what, l.name
+         ORDER BY places DESC, l.what, l.name",
+    )?
+    .query_map([], |r| {
+        Ok(NoReader {
+            what: r.get(0)?,
+            name: r.get(1)?,
+            places: r.get(2)?,
+        })
+    })?
+    .collect::<rusqlite::Result<_>>()
+    .map(Some)
 }
 
 /// Reads what `run` left. `home` is the store's folder, where the sweep's skip list is.
@@ -193,6 +240,7 @@ pub fn summary(conn: &Connection, run: RunMark, home: &Path) -> Res<Summary> {
         since: since(conn, &run.id, &base)?,
         watched: watched_summary(conn, &run.id, &changes)?,
         catalogue: catalogue(conn)?,
+        no_reader_for: no_reader_for(conn)?,
         changes,
         run,
     })
@@ -506,6 +554,8 @@ pub struct State {
     pub summary: Option<Summary>,
     /// The latest reading of each reader, scope and kind, not full first.
     pub coverage: Vec<Latest>,
+    /// The incomplete readings grouped, and the machines that could not be reached.
+    pub problems: Problems,
     /// Live files per kind of watched place.
     pub files: BTreeMap<String, i64>,
 }
@@ -524,10 +574,12 @@ pub fn state(conn: &Connection, home: &Path) -> Res<State> {
         let (kind, n): (String, i64) = row?;
         files.insert(kind, n);
     }
+    let coverage = view::latest_coverage(conn)?;
     Ok(State {
         last: latest_run(conn)?,
         summary,
-        coverage: view::latest_coverage(conn)?,
+        problems: problems(conn, &coverage)?,
+        coverage,
         files,
     })
 }
@@ -630,9 +682,24 @@ pub fn result(state: Option<&State>, running: bool, path: &Path, now: i64) -> Va
                 None => absent("watched", "watched places have never been read"),
             }
             out.insert("threats".into(), threats_section(s.catalogue.as_ref()));
+            match &s.no_reader_for {
+                Some(list) => {
+                    out.insert("no_reader_for".into(), no_reader_section(list));
+                }
+                None => absent(
+                    "no_reader_for",
+                    "the store was made before this was recorded; the next run records it",
+                ),
+            }
         }
         None => {
-            for section in ["last_finished_run", "estate", "watched", "threats"] {
+            for section in [
+                "last_finished_run",
+                "estate",
+                "watched",
+                "threats",
+                "no_reader_for",
+            ] {
                 absent(section, "no run has finished yet");
             }
         }
@@ -640,7 +707,7 @@ pub fn result(state: Option<&State>, running: bool, path: &Path, now: i64) -> Va
     if st.coverage.is_empty() {
         absent("coverage", "nothing has been read yet");
     } else {
-        out.insert("coverage".into(), coverage_section(&st.coverage));
+        out.insert("coverage".into(), coverage_section(&st.problems));
     }
     out.insert("not_computed".into(), Value::Array(not_computed));
     Value::Object(out)
@@ -798,42 +865,110 @@ fn threats_section(c: Option<&Catalogue>) -> Value {
     v
 }
 
-/// The class of a reading: `failed` read nothing, `partial` read some and cannot tell what
-/// disappeared, `read_nothing` was full with a note that there was nothing to read, as the
-/// view's "nothing to read". A full reading without a note is no problem. The report line's
-/// "readings read nothing" are the `failed` ones.
-pub fn class(completeness: &str, reason: Option<&str>) -> Option<&'static str> {
-    match (completeness, reason) {
-        ("none", _) => Some("failed"),
-        ("partial", _) => Some("partial"),
-        ("full", Some(_)) => Some("read_nothing"),
-        _ => None,
+/// The class of a reading, from the store's own data: an incomplete reading is classed by its
+/// cause, and one written without a cause, before causes were kept, is `failed`; a full
+/// reading with a note had nothing to read. A full reading without a note is no problem.
+pub fn class(
+    completeness: &str,
+    reason: Option<&str>,
+    cause: Option<&str>,
+) -> Option<&'static str> {
+    match (completeness, reason, cause) {
+        ("full", Some(_), _) => Some("read_nothing"),
+        ("full", None, _) => None,
+        (_, _, Some("no_reader")) => Some("no_reader"),
+        (_, _, Some("not_given")) => Some("not_given"),
+        _ => Some("failed"),
     }
 }
 
-/// The order of classes in the list of problems.
-const CLASSES: [&str; 3] = ["failed", "partial", "read_nothing"];
+/// The classes in the order the problems are listed: worst first.
+pub const CLASSES: [&str; 4] = ["failed", "no_reader", "not_given", "read_nothing"];
 
 /// Readings of one class, reader, kind and reason.
-struct Group<'a> {
-    class: &'static str,
-    reader: &'a str,
-    kind: &'a str,
-    reason: Option<&'a str>,
-    scopes: Vec<&'a str>,
+pub struct Group {
+    pub class: &'static str,
+    pub reader: String,
+    pub kind: String,
+    pub reason: Option<String>,
+    pub scopes: Vec<String>,
 }
 
-/// Counts of the latest readings by class, and the problems grouped so that many readings
-/// with one reason are one entry, with up to three of their scopes as examples.
-fn coverage_section(latest: &[Latest]) -> Value {
-    let mut full = 0;
-    let mut groups: Vec<Group> = Vec::new();
+/// A machine whose latest sweep visit failed or did not complete.
+pub struct Unreached {
+    pub scope: String,
+    /// When its visits began to fail: the first of the failed ones since the last that
+    /// completed.
+    pub since: i64,
+    pub reason: Option<String>,
+}
+
+/// The incomplete readings of the latest readings, grouped, and the machines that could not
+/// be reached. What failed on a machine that could not be reached is implied by it and left
+/// out of the groups.
+pub struct Problems {
+    pub groups: Vec<Group>,
+    pub unreached: Vec<Unreached>,
+    /// Readings by class, over the readings in the groups.
+    pub classes: BTreeMap<&'static str, usize>,
+    /// Readings full without a note.
+    pub full: usize,
+    /// Readings that failed on a machine that could not be reached.
+    pub implied: usize,
+    /// Readings by completeness, all of them.
+    pub partial: usize,
+    pub none: usize,
+    pub readings: usize,
+}
+
+fn problems(conn: &Connection, latest: &[Latest]) -> rusqlite::Result<Problems> {
+    let mut unreached = Vec::new();
+    for r in latest
+        .iter()
+        .filter(|r| r.reader == servers::READER && r.kind == servers::VISIT)
+        .filter(|r| r.completeness != "full")
+    {
+        let since: i64 = conn.query_row(
+            "SELECT MIN(observed_at) FROM coverage
+             WHERE reader = ?1 AND kind = ?2 AND scope = ?3 AND completeness != 'full'
+               AND id > COALESCE((SELECT MAX(id) FROM coverage
+                                  WHERE reader = ?1 AND kind = ?2 AND scope = ?3
+                                    AND completeness = 'full'), 0)",
+            params![servers::READER, servers::VISIT, r.scope],
+            |row| row.get(0),
+        )?;
+        unreached.push(Unreached {
+            scope: r.scope.clone(),
+            since,
+            reason: r.reason.clone(),
+        });
+    }
+    unreached.sort_by(|a, b| (a.since, &a.scope).cmp(&(b.since, &b.scope)));
+    let away: HashSet<&str> = unreached.iter().map(|u| u.scope.as_str()).collect();
+    let mut p = Problems {
+        groups: Vec::new(),
+        classes: CLASSES.iter().map(|c| (*c, 0)).collect(),
+        full: 0,
+        implied: 0,
+        partial: latest
+            .iter()
+            .filter(|r| r.completeness == "partial")
+            .count(),
+        none: latest.iter().filter(|r| r.completeness == "none").count(),
+        readings: latest.len(),
+        unreached: Vec::new(),
+    };
     let mut index: HashMap<(&str, &str, &str, Option<&str>), usize> = HashMap::new();
     for r in latest {
-        let Some(class) = class(&r.completeness, r.reason.as_deref()) else {
-            full += 1;
+        let Some(class) = class(&r.completeness, r.reason.as_deref(), r.cause.as_deref()) else {
+            p.full += 1;
             continue;
         };
+        if class == "failed" && r.reader == servers::READER && away.contains(r.scope.as_str()) {
+            p.implied += 1;
+            continue;
+        }
+        *p.classes.entry(class).or_default() += 1;
         let key = (
             class,
             r.reader.as_str(),
@@ -841,35 +976,37 @@ fn coverage_section(latest: &[Latest]) -> Value {
             r.reason.as_deref(),
         );
         let i = *index.entry(key).or_insert_with(|| {
-            groups.push(Group {
+            p.groups.push(Group {
                 class,
-                reader: &r.reader,
-                kind: &r.kind,
-                reason: r.reason.as_deref(),
+                reader: r.reader.clone(),
+                kind: r.kind.clone(),
+                reason: r.reason.clone(),
                 scopes: Vec::new(),
             });
-            groups.len() - 1
+            p.groups.len() - 1
         });
-        groups[i].scopes.push(&r.scope);
+        p.groups[i].scopes.push(r.scope.clone());
     }
     let rank = |c: &str| CLASSES.iter().position(|x| *x == c);
-    groups.sort_by(|a, b| {
-        (rank(a.class), b.scopes.len(), a.reader, a.kind, a.reason).cmp(&(
+    p.groups.sort_by(|a, b| {
+        (rank(a.class), b.scopes.len(), &a.reader, &a.kind, &a.reason).cmp(&(
             rank(b.class),
             a.scopes.len(),
-            b.reader,
-            b.kind,
-            b.reason,
+            &b.reader,
+            &b.kind,
+            &b.reason,
         ))
     });
-    let count = |c: &str| {
-        groups
-            .iter()
-            .filter(|g| g.class == c)
-            .map(|g| g.scopes.len())
-            .sum::<usize>()
-    };
-    let problems: Vec<Value> = groups
+    p.unreached = unreached;
+    Ok(p)
+}
+
+/// Counts of the latest readings by class and by completeness, the problems grouped so that
+/// many readings with one reason are one entry with up to three of their scopes, and the
+/// machines that could not be reached.
+fn coverage_section(p: &Problems) -> Value {
+    let problems: Vec<Value> = p
+        .groups
         .iter()
         .take(PROBLEMS_SHOWN)
         .map(|g| {
@@ -878,19 +1015,52 @@ fn coverage_section(latest: &[Latest]) -> Value {
                 "class": g.class,
                 "reader": g.reader,
                 "kind": g.kind,
-                "reason_text": g.reason.map(text),
+                "reason_text": g.reason.as_deref().map(text),
                 "count": g.scopes.len(),
                 "examples_text": examples,
             })
         })
         .collect();
-    json!({
-        "readings": latest.len(),
-        "full": full,
-        "read_nothing": count("read_nothing"),
-        "partial": count("partial"),
-        "failed": count("failed"),
+    let unreached: Vec<Value> = p
+        .unreached
+        .iter()
+        .take(UNREACHED_SHOWN)
+        .map(|u| {
+            json!({
+                "scope_text": text(&u.scope),
+                "since": iso(u.since),
+                "reason_text": u.reason.as_deref().map(text),
+            })
+        })
+        .collect();
+    let mut v = json!({
+        "readings": p.readings,
+        "full": p.full,
+        "partial": p.partial,
+        "none": p.none,
+        "implied_by_unreached": p.implied,
         "problems": problems,
-        "problems_total": groups.len(),
-    })
+        "problems_total": p.groups.len(),
+        "unreached": unreached,
+        "unreached_total": p.unreached.len(),
+    });
+    for (class, n) in &p.classes {
+        v[*class] = json!(n);
+    }
+    v
+}
+
+fn no_reader_section(list: &[NoReader]) -> Value {
+    Value::Array(
+        list.iter()
+            .take(NO_READER_SHOWN)
+            .map(|n| {
+                json!({
+                    "what": n.what,
+                    "what_text": n.name.as_deref().map(text),
+                    "where_count": n.places,
+                })
+            })
+            .collect(),
+    )
 }

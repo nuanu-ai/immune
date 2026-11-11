@@ -222,6 +222,103 @@ INSERT OR IGNORE INTO coverage_kind (name) VALUES
     ('hooks in the checkout''s .git folder'), ('content of a watched file');
 ";
 
+/// Why a reading is incomplete. The order is from worst: a reading incomplete for several
+/// reasons takes the worst of them, so that it never looks better than it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Cause {
+    /// The reader tried and could not: no access, an error, a visit that failed or did not
+    /// complete, a file that could not be opened.
+    Failed,
+    /// The thing is there and this build has no reader for it.
+    NoReader,
+    /// The source was read and does not hold this.
+    NotGiven,
+}
+
+impl Cause {
+    /// The literal kept in `coverage.cause`.
+    pub fn literal(self) -> &'static str {
+        match self {
+            Cause::Failed => "failed",
+            Cause::NoReader => "no_reader",
+            Cause::NotGiven => "not_given",
+        }
+    }
+
+    /// The worst of several causes, or `None` when there is none.
+    pub fn worst(causes: impl IntoIterator<Item = Cause>) -> Option<Cause> {
+        causes.into_iter().min()
+    }
+}
+
+/// Something this build has no reader for, found in a reading: what it is in the program's
+/// words, and its name where the source gives one, such as a lockfile's or a package
+/// manager's. It is recorded whatever the reading's worst cause is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Lack {
+    pub what: &'static str,
+    pub name: Option<String>,
+}
+
+impl Lack {
+    pub fn new(what: &'static str, name: Option<&str>) -> Lack {
+        Lack {
+            what,
+            name: name.map(str::to_string),
+        }
+    }
+}
+
+/// Why a reading is incomplete, and what this build has no reader for in it. Empty on a
+/// full reading.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Gap {
+    pub cause: Option<Cause>,
+    pub lacks: Vec<Lack>,
+}
+
+impl Gap {
+    pub fn of(cause: Cause) -> Gap {
+        Gap {
+            cause: Some(cause),
+            lacks: Vec::new(),
+        }
+    }
+
+    /// The gap of a reading with this cause, if it is incomplete at all.
+    pub fn when(cause: Option<Cause>) -> Gap {
+        Gap {
+            cause,
+            lacks: Vec::new(),
+        }
+    }
+}
+
+/// Why a reading is incomplete, as data: a cause from a closed set, and what this build has
+/// no reader for. Added on open, so a store of the current format takes it without a rebuild;
+/// readings written before have no cause, which is read as `failed`.
+fn add_causes(conn: &Connection) -> Res<()> {
+    let has_cause: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('coverage') WHERE name = 'cause')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !has_cause {
+        conn.execute_batch(
+            "ALTER TABLE coverage ADD COLUMN cause TEXT
+                 CHECK (cause IN ('failed', 'no_reader', 'not_given'));",
+        )?;
+    }
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS coverage_lack (
+             coverage INTEGER NOT NULL REFERENCES coverage (id),
+             what     TEXT NOT NULL,
+             name     TEXT  -- as the source gives it, where it names one
+         );",
+    )?;
+    Ok(())
+}
+
 /// One reading: which reader looked for which kind of thing in which scope.
 /// `at` is the time of the run; `observed_at` is when the source itself was read,
 /// which for a server file is when the sweep wrote it.
@@ -284,6 +381,7 @@ pub fn open(path: &Path) -> Res<Connection> {
     conn.execute_batch(VOCABULARY)?;
     conn.execute_batch(OWNER)?;
     conn.execute_batch(THREATS)?;
+    add_causes(&conn)?;
     widen_journal(&mut conn)?;
     Ok(conn)
 }
@@ -452,15 +550,30 @@ pub fn put_draft(
     Ok(())
 }
 
+/// Writes one reading's coverage, with why it is incomplete and what this build has no
+/// reader for in it. A full reading has no cause. An incomplete one without a cause is a
+/// mistake in a reader: it is written as `failed`, because unknown is never calm.
 pub fn put_coverage(
     tx: &Transaction,
     r: &Reading,
     completeness: &str,
     reason: Option<&str>,
+    gap: &Gap,
 ) -> rusqlite::Result<()> {
+    debug_assert_eq!(
+        completeness == "full",
+        gap.cause.is_none(),
+        "{} {} {completeness}",
+        r.reader,
+        r.kind
+    );
+    // An incomplete reading without a cause is read back as failed, like one written
+    // before causes were kept.
+    let cause = gap.cause.map(Cause::literal);
     tx.execute(
-        "INSERT INTO coverage (reader, run_id, observed_at, scope, kind, completeness, reason)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO coverage (reader, run_id, observed_at, scope, kind, completeness, reason,
+                               cause)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             r.reader,
             r.run_id,
@@ -468,9 +581,17 @@ pub fn put_coverage(
             r.scope,
             r.kind,
             completeness,
-            reason
+            reason,
+            cause
         ],
     )?;
+    let id = tx.last_insert_rowid();
+    for lack in &gap.lacks {
+        tx.execute(
+            "INSERT INTO coverage_lack (coverage, what, name) VALUES (?1, ?2, ?3)",
+            params![id, lack.what, lack.name],
+        )?;
+    }
     Ok(())
 }
 

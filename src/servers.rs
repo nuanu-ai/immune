@@ -6,7 +6,7 @@
 //! `##end`. `##taken_at` is when the probe ran, in UTC seconds. A visit that failed leaves
 //! `<name>.failed` next to it, and the earlier `<name>.txt` as it was.
 
-use crate::store::Statement;
+use crate::store::{Cause, Gap, Lack, Statement};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::UNIX_EPOCH;
@@ -56,6 +56,11 @@ const NOT_INSTALLED: &str = "docker not installed";
 /// completed. The readings of what is on the server keep their own coverage and time; this
 /// one says when the latest attempt failed and why, next to them.
 pub const VISIT: &str = "sweep visit";
+/// What this build has no reader for on a server, in its own words.
+pub const PACKAGE_MANAGER: &str = "package manager";
+pub const OTHER_MANAGER: &str = "a package manager the probe does not look for";
+pub const CONTAINER_CONTENTS: &str =
+    "container contents other than version variables and the WordPress core version";
 
 /// What the sweep left for one server: its reading, its failed visit, or both.
 pub struct Input {
@@ -122,6 +127,8 @@ pub struct Outcome {
     pub kind: &'static str,
     pub completeness: &'static str,
     pub reason: Option<String>,
+    /// Why the reading is incomplete, and what this build has no reader for in it.
+    pub gap: Gap,
     pub statements: Vec<Statement>,
 }
 
@@ -246,11 +253,13 @@ pub fn readings(machine: &str, text: &str, raw_file: &str) -> Vec<Outcome> {
             }
         }
         out.push(if addresses.is_empty() {
+            // The probe ran and its section of addresses holds none.
             Outcome {
                 scope: machine.to_string(),
                 kind: IDENTITY,
                 completeness: "partial",
                 reason: Some("the server's addresses could not be listed".to_string()),
+                gap: Gap::of(Cause::NotGiven),
                 statements: st,
             }
         } else {
@@ -274,24 +283,51 @@ pub fn readings(machine: &str, text: &str, raw_file: &str) -> Vec<Outcome> {
         m.iter().copied().filter(|m| *m != "dpkg").collect()
     });
     let no_reader = managers.as_deref().is_some_and(|m| !m.contains(&"dpkg"));
+    // Package managers there that this build has no reader for.
+    let lacks: Vec<Lack> = unread
+        .iter()
+        .map(|m| Lack::new(PACKAGE_MANAGER, Some(m)))
+        .collect();
     let failed = if no_reader && unread.is_empty() {
-        Some("the server has none of the package managers the probe looks for".to_string())
+        let lack = vec![Lack::new(OTHER_MANAGER, None)];
+        Some((
+            Gap {
+                cause: Some(Cause::NoReader),
+                lacks: lack,
+            },
+            "the server has none of the package managers the probe looks for".to_string(),
+        ))
     } else if no_reader {
-        Some(format!(
-            "the program has no reader for the package manager this server uses: {}",
-            unread.join(", ")
+        Some((
+            Gap {
+                cause: Some(Cause::NoReader),
+                lacks: lacks.clone(),
+            },
+            format!(
+                "the program has no reader for the package manager this server uses: {}",
+                unread.join(", ")
+            ),
         ))
     } else if !s.contains_key(DPKG) && !s.contains_key(DPKG_OLD) {
-        Some("the sweep has no package list".to_string())
+        Some((
+            Gap::of(Cause::NotGiven),
+            "the sweep has no package list".to_string(),
+        ))
     } else if dpkg.is_empty() {
         // An empty list is a missing dpkg, not a server with nothing installed.
-        Some("the package list is empty".to_string())
+        Some((
+            Gap::of(Cause::NotGiven),
+            "the package list is empty".to_string(),
+        ))
     } else {
         None
     };
-    if let Some(reason) = failed {
+    if let Some((gap, reason)) = failed {
         for kind in [PACKAGES, SOURCES, KERNEL_PACKAGE] {
-            out.push(not_read(machine, kind, &reason));
+            out.push(Outcome {
+                gap: gap.clone(),
+                ..not_read(machine, kind, Cause::Failed, &reason)
+            });
         }
     } else {
         // Packages of another manager next to dpkg are not read: nothing may be retracted
@@ -319,7 +355,16 @@ pub fn readings(machine: &str, text: &str, raw_file: &str) -> Vec<Outcome> {
             say(&mut st, &component, "part_of", machine, n);
             say(&mut st, &component, "has_version", version, n);
         }
-        out.push(reading(machine, PACKAGES, partial.clone(), st));
+        let no_reader = Gap {
+            cause: Some(Cause::NoReader),
+            lacks,
+        };
+        let gap = if partial.is_some() {
+            no_reader.clone()
+        } else {
+            Gap::default()
+        };
+        out.push(reading(machine, PACKAGES, partial.clone(), gap, st));
 
         if s.contains_key(DPKG) {
             let mut st = Vec::new();
@@ -336,12 +381,19 @@ pub fn readings(machine: &str, text: &str, raw_file: &str) -> Vec<Outcome> {
                 }
             }
             let missing = dpkg.iter().filter(|d| d.source.is_none()).count();
-            let reason = partial.clone().or_else(|| {
-                (missing > 0).then(|| format!("{missing} of the packages give no source"))
-            });
-            out.push(reading(machine, SOURCES, reason, st));
+            // Packages of a manager without a reader are worse than packages dpkg gives no
+            // source for, and only the worse is said.
+            let (reason, gap) = match (&partial, missing) {
+                (Some(p), _) => (Some(p.clone()), no_reader),
+                (None, 0) => (None, Gap::default()),
+                (None, _) => (
+                    Some(format!("{missing} of the packages give no source")),
+                    Gap::of(Cause::NotGiven),
+                ),
+            };
+            out.push(reading(machine, SOURCES, reason, gap, st));
         } else {
-            out.push(not_read(machine, SOURCES, OLDER_PROBE));
+            out.push(not_read(machine, SOURCES, Cause::NotGiven, OLDER_PROBE));
         }
 
         if s.contains_key("kernel_package") {
@@ -351,7 +403,12 @@ pub fn readings(machine: &str, text: &str, raw_file: &str) -> Vec<Outcome> {
             }
             out.push(full(machine, KERNEL_PACKAGE, st));
         } else {
-            out.push(not_read(machine, KERNEL_PACKAGE, OLDER_PROBE));
+            out.push(not_read(
+                machine,
+                KERNEL_PACKAGE,
+                Cause::NotGiven,
+                OLDER_PROBE,
+            ));
         }
     }
 
@@ -362,13 +419,16 @@ pub fn readings(machine: &str, text: &str, raw_file: &str) -> Vec<Outcome> {
         None => out.push(not_read(
             machine,
             CONTAINERS,
+            Cause::NotGiven,
             "the sweep has no docker section",
         )),
-        Some(REFUSED) => out.push(not_read(machine, CONTAINERS, NO_RIGHTS)),
+        // Docker refused the probe: it tried and could not.
+        Some(REFUSED) => out.push(not_read(machine, CONTAINERS, Cause::Failed, NO_RIGHTS)),
         Some(NOT_INSTALLED) => out.push(full(machine, CONTAINERS, Vec::new())),
         Some(_) if !s.contains_key("docker_ps") => out.push(not_read(
             machine,
             CONTAINERS,
+            Cause::NotGiven,
             "the sweep has no container list",
         )),
         Some(_) => {
@@ -401,6 +461,7 @@ pub fn readings(machine: &str, text: &str, raw_file: &str) -> Vec<Outcome> {
             None => out.push(not_read(
                 container,
                 VARIABLES,
+                Cause::NotGiven,
                 "the sweep has no version variables",
             )),
             Some(rows) => {
@@ -432,6 +493,7 @@ pub fn readings(machine: &str, text: &str, raw_file: &str) -> Vec<Outcome> {
                 out.push(not_read(
                     container,
                     WORDPRESS,
+                    Cause::NotGiven,
                     "the WordPress version file was not found",
                 ));
                 continue;
@@ -447,6 +509,10 @@ pub fn readings(machine: &str, text: &str, raw_file: &str) -> Vec<Outcome> {
             kind: CONTENTS,
             completeness: "partial",
             reason: Some(CONTENTS_PARTIAL.to_string()),
+            gap: Gap {
+                cause: Some(Cause::NoReader),
+                lacks: vec![Lack::new(CONTAINER_CONTENTS, None)],
+            },
             statements: Vec::new(),
         });
     }
@@ -534,7 +600,7 @@ fn kernel_packages<'a>(s: &Sections<'a>) -> Vec<(usize, &'a str)> {
 /// value cannot, was not read the way the shell reads it: it is taken as not given.
 fn release(machine: &str, s: &Sections, raw_file: &str) -> Outcome {
     if !s.contains_key("os_release") {
-        return not_read(machine, RELEASE, OLDER_PROBE);
+        return not_read(machine, RELEASE, Cause::NotGiven, OLDER_PROBE);
     }
     let fields = pairs(s, "os_release");
     let plain = |v: &str| !v.contains(['"', '\'']) && !v.contains(char::is_whitespace);
@@ -555,6 +621,7 @@ fn release(machine: &str, s: &Sections, raw_file: &str) -> Outcome {
         return not_read(
             machine,
             RELEASE,
+            Cause::NotGiven,
             &format!("the system does not give {}", missing.join(" or ")),
         );
     };
@@ -597,36 +664,40 @@ pub fn visit_failed(machine: &str, reason: &str) -> Vec<Outcome> {
     nothing_read(machine, &format!("the latest visit failed: {reason}"))
 }
 
+/// The readings of a server whose file could not be read or whose visit failed: the reader
+/// tried and could not.
 fn nothing_read(machine: &str, reason: &str) -> Vec<Outcome> {
     [PACKAGES, SOURCES, KERNEL_PACKAGE, RELEASE, CONTAINERS]
         .into_iter()
-        .map(|kind| not_read(machine, kind, reason))
+        .map(|kind| not_read(machine, kind, Cause::Failed, reason))
         .collect()
 }
 
 /// The latest visit: full when it left a complete reading, else none with why it failed.
 pub fn visit(machine: &str, failed: Option<&str>) -> Outcome {
     match failed {
-        Some(reason) => not_read(machine, VISIT, reason),
+        Some(reason) => not_read(machine, VISIT, Cause::Failed, reason),
         None => full(machine, VISIT, Vec::new()),
     }
 }
 
-fn not_read(scope: &str, kind: &'static str, reason: &str) -> Outcome {
+fn not_read(scope: &str, kind: &'static str, cause: Cause, reason: &str) -> Outcome {
     Outcome {
         scope: scope.to_string(),
         kind,
         completeness: "none",
         reason: Some(reason.to_string()),
+        gap: Gap::of(cause),
         statements: Vec::new(),
     }
 }
 
-/// Full, or partial for the reason given.
+/// Full, or partial for the reason and with the gap given.
 fn reading(
     scope: &str,
     kind: &'static str,
     partial: Option<String>,
+    gap: Gap,
     statements: Vec<Statement>,
 ) -> Outcome {
     Outcome {
@@ -634,6 +705,7 @@ fn reading(
         kind,
         completeness: if partial.is_some() { "partial" } else { "full" },
         reason: partial,
+        gap,
         statements,
     }
 }
@@ -644,6 +716,7 @@ fn full(scope: &str, kind: &'static str, statements: Vec<Statement>) -> Outcome 
         kind,
         completeness: "full",
         reason: None,
+        gap: Gap::default(),
         statements,
     }
 }

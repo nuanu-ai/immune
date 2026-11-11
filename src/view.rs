@@ -236,7 +236,10 @@ pub struct Latest {
     pub kind: String,
     pub completeness: String,
     pub reason: Option<String>,
-    at: i64,
+    /// Why it is incomplete, as `coverage.cause` holds it; `None` on a full reading and on
+    /// a reading written before causes were kept.
+    pub cause: Option<String>,
+    pub at: i64,
     last_full: Option<i64>,
 }
 
@@ -244,16 +247,24 @@ pub struct Latest {
 /// Readings that are not full come first. Readings inside a container or checkout that
 /// is gone no longer count and are left out. `soc status` counts coverage from this too.
 pub fn latest_coverage(conn: &Connection) -> rusqlite::Result<Vec<Latest>> {
-    conn.prepare(
+    // A store opened read-only may predate the column: its readings have no cause.
+    let has_cause: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('coverage') WHERE name = 'cause')",
+        [],
+        |r| r.get(0),
+    )?;
+    let cause = if has_cause { "c.cause" } else { "NULL" };
+    conn.prepare(&format!(
         "SELECT c.reader, c.scope, c.kind, c.completeness, c.reason, c.observed_at,
                 (SELECT MAX(f.observed_at) FROM coverage f
                  WHERE f.reader = c.reader AND f.scope = c.scope AND f.kind = c.kind
-                   AND f.completeness = 'full')
+                   AND f.completeness = 'full'),
+                {cause}
          FROM coverage c
          WHERE c.id IN (SELECT MAX(id) FROM coverage GROUP BY reader, scope, kind)
            AND c.scope NOT IN (SELECT id FROM gone_entity)
-         ORDER BY c.completeness = 'full', c.completeness, c.reader, c.scope, c.kind",
-    )?
+         ORDER BY c.completeness = 'full', c.completeness, c.reader, c.scope, c.kind"
+    ))?
     .query_map([], |r| {
         Ok(Latest {
             reader: r.get(0)?,
@@ -263,6 +274,7 @@ pub fn latest_coverage(conn: &Connection) -> rusqlite::Result<Vec<Latest>> {
             reason: r.get(4)?,
             at: r.get(5)?,
             last_full: r.get(6)?,
+            cause: r.get(7)?,
         })
     })?
     .collect()

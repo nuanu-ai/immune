@@ -17,6 +17,8 @@ use std::io::{ErrorKind, Read};
 use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
 use std::path::Path;
 
+use crate::store::Cause;
+
 pub const READER: &str = "watched-places";
 pub const BASIS: &str = "observed";
 /// The kind of the reading of one file's content, scoped to the file.
@@ -31,6 +33,9 @@ pub const NOT_HERE: &str = "none of these places is on this machine";
 pub const NO_HOOKS: &str = "the checkout has no hooks";
 /// Why the hooks of a checkout whose `.git` is a file were not read.
 pub const GIT_FILE: &str = ".git is a file, as in a worktree or a submodule: the hooks are kept elsewhere and were not read";
+/// What this build has no reader for among watched places, in its own words.
+pub const HOOKS_ELSEWHERE: &str = "git hooks of a checkout whose .git is a file";
+pub const OVER_CAP: &str = "watched file over the size cap";
 
 /// What a place is resolved against.
 #[derive(Clone, Copy, PartialEq)]
@@ -135,8 +140,8 @@ pub enum Content {
     Special(&'static str),
     /// A symbolic link whose target is not there.
     Dangling,
-    /// Present and not read, with the reason.
-    Unread(String),
+    /// Present and not read, with why as data and the reason in words.
+    Unread(Cause, String),
 }
 
 impl Content {
@@ -146,7 +151,7 @@ impl Content {
             Content::Hash(h) => Some(h.clone()),
             Content::Special(what) => Some(format!("not a regular file: {what}")),
             Content::Dangling => Some("dangling link".to_string()),
-            Content::Unread(_) => None,
+            Content::Unread(..) => None,
         }
     }
 }
@@ -317,7 +322,7 @@ fn examine(path: &Path) -> Examined {
     let content = match std::fs::metadata(path) {
         Ok(target) => content(path, &target),
         Err(e) if absent(&e) => Content::Dangling,
-        Err(e) => Content::Unread(reason(&e)),
+        Err(e) => Content::Unread(Cause::Failed, reason(&e)),
     };
     Examined::Present(content, Some(link))
 }
@@ -351,11 +356,13 @@ fn content(path: &Path, meta: &Metadata) -> Content {
         Ok(Ok(bytes))
     };
     match read() {
-        Err(e) => Content::Unread(reason(&e)),
+        Err(e) => Content::Unread(Cause::Failed, reason(&e)),
         Ok(Err(what)) => Content::Special(what),
-        Ok(Ok(bytes)) if bytes.len() as u64 > CAP => {
-            Content::Unread(format!("over the size cap of {} MiB", CAP >> 20))
-        }
+        // The file is there and this build does not read a file that large.
+        Ok(Ok(bytes)) if bytes.len() as u64 > CAP => Content::Unread(
+            Cause::NoReader,
+            format!("over the size cap of {} MiB", CAP >> 20),
+        ),
         Ok(Ok(bytes)) => Content::Hash(format!("sha256:{}", crate::sha256::hex(&bytes))),
     }
 }

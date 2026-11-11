@@ -35,7 +35,7 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::{SystemTime, UNIX_EPOCH};
-use store::{Event, Reading, Statement};
+use store::{Cause, Event, Gap, Lack, Reading, Statement};
 
 /// The store's folder inside the home folder, where every default path points.
 const STORE_FOLDER: &str = "Library/Application Support/personal-soc";
@@ -517,33 +517,90 @@ fn status_text(store: &Path) -> Result<(), Stop> {
         ));
     }
     say(&summary_sentences(s));
-    let rows: Vec<&view::Latest> = st.coverage.iter().collect();
-    let class_of = |r: &&view::Latest| status::class(&r.completeness, r.reason.as_deref());
-    let n = |c: &str| rows.iter().filter(|r| class_of(r) == Some(c)).count();
+    let p = &st.problems;
+    let class = |c: &str| grouped(p.classes.get(c).copied().unwrap_or_default() as i64);
     say(&format!(
-        "Coverage at the latest readings: {} of {} not plainly full: {} failed, {} partial, {} with nothing to read.",
-        grouped((n("failed") + n("partial") + n("read_nothing")) as i64),
-        grouped(rows.len() as i64),
-        grouped(n("failed") as i64),
-        grouped(n("partial") as i64),
-        grouped(n("read_nothing") as i64)
+        "Coverage at the latest {}: {} full, {} failed, {} with no reader, {} where the source does not give it, {} with nothing to read, {} implied by {}.",
+        things(p.readings as i64, "reading", "readings"),
+        grouped(p.full as i64),
+        class("failed"),
+        class("no_reader"),
+        class("not_given"),
+        class("read_nothing"),
+        grouped(p.implied as i64),
+        things(
+            p.unreached.len() as i64,
+            "machine that could not be reached",
+            "machines that could not be reached"
+        )
     ));
-    let problems: Vec<Vec<String>> = rows
+    if !p.unreached.is_empty() {
+        let rows: Vec<Vec<String>> = p
+            .unreached
+            .iter()
+            .take(STATUS_ROWS)
+            .map(|u| {
+                vec![
+                    u.scope.clone(),
+                    view::utc(u.since),
+                    u.reason.clone().unwrap_or_default(),
+                ]
+            })
+            .collect();
+        print_table(&["Not reached", "Since", "Why"], &rows);
+    }
+    // The same groups as `soc status --json`: one line for many readings with one reason.
+    let groups: Vec<Vec<String>> = p
+        .groups
         .iter()
-        .filter(|r| matches!(class_of(r), Some("failed" | "partial")))
+        .filter(|g| g.class != "read_nothing")
         .take(STATUS_ROWS)
-        .map(|r| {
+        .map(|g| {
             vec![
-                r.reader.clone(),
-                r.scope.clone(),
-                r.kind.clone(),
-                r.completeness.clone(),
-                r.reason.clone().unwrap_or_default(),
+                g.class.replace('_', " "),
+                g.reader.clone(),
+                g.kind.clone(),
+                g.scopes.len().to_string(),
+                g.scopes[0].clone(),
+                g.reason.clone().unwrap_or_default(),
             ]
         })
         .collect();
-    if !problems.is_empty() {
-        print_table(&["Reader", "Where", "What", "Read", "Why"], &problems);
+    if !groups.is_empty() {
+        print_table(
+            &["Class", "Reader", "What", "Readings", "For example", "Why"],
+            &groups,
+        );
+    }
+    let shown = p
+        .groups
+        .iter()
+        .filter(|g| g.class != "read_nothing")
+        .count();
+    if shown > groups.len() {
+        say(&format!(
+            "{} more; `soc status --json` lists them.",
+            things(
+                (shown - groups.len()) as i64,
+                "group of readings",
+                "groups of readings"
+            )
+        ));
+    }
+    if let Some(list) = s.no_reader_for.as_ref().filter(|l| !l.is_empty()) {
+        say("This build has no reader for:");
+        let rows: Vec<Vec<String>> = list
+            .iter()
+            .take(STATUS_ROWS)
+            .map(|n| {
+                vec![
+                    n.what.clone(),
+                    n.name.clone().unwrap_or_default(),
+                    n.places.to_string(),
+                ]
+            })
+            .collect();
+        print_table(&["What", "Which", "Places"], &rows);
     }
     let changes: Vec<Vec<String>> = s
         .changes
@@ -1332,10 +1389,11 @@ impl Run<'_> {
         basis: &str,
         completeness: &str,
         reason: Option<&str>,
+        gap: &Gap,
         statements: &[Statement],
     ) -> rusqlite::Result<()> {
         let with_basis: Vec<(&str, &Statement)> = statements.iter().map(|s| (basis, s)).collect();
-        self.apply_each(r, completeness, reason, &with_basis)
+        self.apply_each(r, completeness, reason, gap, &with_basis)
     }
 
     /// The same, for statements that each have their own basis.
@@ -1344,6 +1402,7 @@ impl Run<'_> {
         r: &Reading,
         completeness: &str,
         reason: Option<&str>,
+        gap: &Gap,
         statements: &[(&str, &Statement)],
     ) -> rusqlite::Result<()> {
         if completeness != "none" {
@@ -1351,7 +1410,7 @@ impl Run<'_> {
                 store::put_draft(self.tx, r, basis, s)?;
             }
         }
-        store::put_coverage(self.tx, r, completeness, reason)?;
+        store::put_coverage(self.tx, r, completeness, reason, gap)?;
         let events = lifecycle::promote(self.tx, r, completeness)?;
         for e in &events {
             store::journal_event(self.tx, r, e)?;
@@ -1395,11 +1454,14 @@ fn read_brew(run: &mut Run, args: &Args) -> Result<(), Box<dyn Error>> {
             let raw_file = run.keep_raw(brew::READER, brew::RAW, raw.as_bytes())?;
             let (statements, partial) = brew::statements(&raw, &machine, &raw_file);
             let completeness = if partial.is_some() { "partial" } else { "full" };
+            // A package Homebrew names no tap for: the source does not give what it is.
+            let gap = Gap::when(partial.is_some().then_some(Cause::NotGiven));
             run.apply(
                 &reading,
                 brew::BASIS,
                 completeness,
                 partial.as_deref(),
+                &gap,
                 &statements,
             )?;
         }
@@ -1410,6 +1472,7 @@ fn read_brew(run: &mut Run, args: &Args) -> Result<(), Box<dyn Error>> {
                 brew::BASIS,
                 "full",
                 Some(brew::NOT_INSTALLED),
+                &Gap::default(),
                 &[],
             )?;
             run.notes
@@ -1417,7 +1480,8 @@ fn read_brew(run: &mut Run, args: &Args) -> Result<(), Box<dyn Error>> {
         }
         brew::Found::Failed(reason) => {
             run.readers += 1;
-            run.apply(&reading, brew::BASIS, "none", Some(&reason), &[])?;
+            let gap = Gap::of(Cause::Failed);
+            run.apply(&reading, brew::BASIS, "none", Some(&reason), &gap, &[])?;
             run.notes
                 .push(format!("Homebrew could not be read: {reason}."));
         }
@@ -1492,6 +1556,7 @@ fn read_servers(run: &mut Run, dir: Option<&Path>) -> Result<(), Box<dyn Error>>
                 servers::BASIS,
                 o.completeness,
                 o.reason.as_deref(),
+                &o.gap,
                 &o.statements,
             )?;
         }
@@ -1558,6 +1623,15 @@ fn read_checkouts(
         .checkouts_root
         .is_some()
         .then(|| checkouts::ONLY_GIVEN.to_string());
+    // A folder that could not be listed failed; a walk limited to the folder given read
+    // what it was given, which does not hold the rest of the home folder. The worse is the
+    // reading's cause.
+    let gap = Gap::when(Cause::worst(
+        given
+            .iter()
+            .map(|_| Cause::NotGiven)
+            .chain(unlisted.iter().map(|_| Cause::Failed)),
+    ));
     let reasons: Vec<String> = given.into_iter().chain(unlisted).collect();
     let reason = (!reasons.is_empty()).then(|| reasons.join("; "));
     let run_id = run.run_id.to_string();
@@ -1575,6 +1649,7 @@ fn read_checkouts(
         checkouts::BASIS,
         completeness,
         reason.as_deref(),
+        &gap,
         &statements,
     )?;
     Ok(Some(walk.checkouts))
@@ -1603,7 +1678,15 @@ fn read_agent_folders(
     let sessions = match agent_folders::sessions(&dir) {
         agent_folders::Found::Failed(reason) => {
             run.readers += 1;
-            run.apply(&reading, agent_folders::BASIS, "none", Some(&reason), &[])?;
+            let gap = Gap::of(Cause::Failed);
+            run.apply(
+                &reading,
+                agent_folders::BASIS,
+                "none",
+                Some(&reason),
+                &gap,
+                &[],
+            )?;
             run.notes
                 .push(format!("Agent sessions could not be read: {reason}."));
             return Ok(Vec::new());
@@ -1703,16 +1786,22 @@ fn read_agent_folders(
             if kept == 1 { "is" } else { "are" }
         ));
     }
-    let (completeness, reason) = match (reasons.is_empty(), &sessions) {
-        (false, _) => ("partial", Some(reasons.join("; "))),
-        (true, None) => ("full", Some(agent_folders::NOT_HERE.to_string())),
-        (true, Some(_)) => ("full", None),
+    // Every reason above is a session, a folder or a checkout that could not be read.
+    let (completeness, reason, gap) = match (reasons.is_empty(), &sessions) {
+        (false, _) => ("partial", Some(reasons.join("; ")), Gap::of(Cause::Failed)),
+        (true, None) => (
+            "full",
+            Some(agent_folders::NOT_HERE.to_string()),
+            Gap::default(),
+        ),
+        (true, Some(_)) => ("full", None, Gap::default()),
     };
     run.apply(
         &reading,
         agent_folders::BASIS,
         completeness,
         reason.as_deref(),
+        &gap,
         &statements,
     )?;
     Ok(found
@@ -1755,7 +1844,9 @@ fn read_traces(run: &mut Run, args: &Args) -> Result<(), Box<dyn Error>> {
         };
         match found {
             // Read in full: there is nothing, so what was there before is gone.
-            traces::Found::Absent(note) => run.apply(&reading, basis, "full", Some(note), &[])?,
+            traces::Found::Absent(note) => {
+                run.apply(&reading, basis, "full", Some(note), &Gap::default(), &[])?
+            }
             traces::Found::Read(seen) => {
                 run.readers += 1;
                 let input = format!("{reader}.txt");
@@ -1771,12 +1862,14 @@ fn read_traces(run: &mut Run, args: &Args) -> Result<(), Box<dyn Error>> {
                     basis,
                     completeness,
                     seen.partial.as_deref(),
+                    &seen.gap,
                     &statements,
                 )?;
             }
             traces::Found::Failed(reason) => {
                 run.readers += 1;
-                run.apply(&reading, basis, "none", Some(&reason), &[])?;
+                let gap = Gap::of(Cause::Failed);
+                run.apply(&reading, basis, "none", Some(&reason), &gap, &[])?;
                 run.notes
                     .push(format!("The {kind} could not be read: {reason}."));
             }
@@ -1813,7 +1906,7 @@ fn resolve(run: &mut Run) -> Result<(), Box<dyn Error>> {
         at: run.at,
         observed_at: run.at,
     };
-    run.apply_each(&reading, "full", None, &refs)?;
+    run.apply_each(&reading, "full", None, &Gap::default(), &refs)?;
     Ok(())
 }
 
@@ -1896,6 +1989,7 @@ fn read_lockfiles(run: &mut Run, found: &[checkouts::Checkout]) -> Result<(), Bo
             lockfiles::BASIS,
             o.completeness,
             o.reason.as_deref(),
+            &o.gap,
             &o.statements,
         )?;
     }
@@ -1976,7 +2070,7 @@ fn read_watched(
         let mut mine = Vec::new();
         for e in &p.look.entries {
             let content = match &e.content {
-                watched::Content::Unread(why) => format!("not read: {why}"),
+                watched::Content::Unread(_, why) => format!("not read: {why}"),
                 other => other.literal().unwrap_or_default(),
             };
             let link = e.link.as_deref().unwrap_or_default();
@@ -2030,12 +2124,26 @@ fn read_watched(
         } else {
             p.look.completeness()
         };
+        // A place that could not be looked at failed; hooks kept elsewhere have no reader.
+        let gap = if p.git_file {
+            Gap {
+                cause: Some(Cause::NoReader),
+                lacks: vec![Lack::new(watched::HOOKS_ELSEWHERE, None)],
+            }
+        } else {
+            Gap::when((completeness != "full").then_some(Cause::Failed))
+        };
         let prefix = format!("file:{machine}/");
         let path_of = |id: &str| id.strip_prefix(&prefix).unwrap_or(id).to_string();
         let mut new = BTreeSet::new();
-        for (kind, subject, predicate, old) in
-            apply_watched(run, &reading, completeness, reason.as_deref(), &statements)?
-        {
+        for (kind, subject, predicate, old) in apply_watched(
+            run,
+            &reading,
+            completeness,
+            reason.as_deref(),
+            &gap,
+            &statements,
+        )? {
             match (kind, predicate.as_str()) {
                 ("added", "watched_as") => {
                     rows.push(vec![
@@ -2084,9 +2192,15 @@ fn read_watched(
                     source_ref,
                 });
             }
-            let (completeness, reason) = match &e.content {
-                watched::Content::Unread(why) => ("none", Some(why.as_str())),
-                _ => ("full", None),
+            let (completeness, reason, gap) = match &e.content {
+                watched::Content::Unread(cause, why) => {
+                    let mut gap = Gap::of(*cause);
+                    if *cause == Cause::NoReader {
+                        gap.lacks.push(Lack::new(watched::OVER_CAP, None));
+                    }
+                    ("none", Some(why.as_str()), gap)
+                }
+                _ => ("full", None, Gap::default()),
             };
             let reading = Reading {
                 scope: &id,
@@ -2097,7 +2211,7 @@ fn read_watched(
             // nothing was known before, and still named.
             let first_read = completeness == "full"
                 && store::only_failed_before(run.tx, watched::READER, &id, watched::CONTENT)?;
-            let events = apply_watched(run, &reading, completeness, reason, &statements)?;
+            let events = apply_watched(run, &reading, completeness, reason, &gap, &statements)?;
             if first_read {
                 rows.push(vec![
                     "first read".to_string(),
@@ -2149,11 +2263,12 @@ fn apply_watched(
     r: &Reading,
     completeness: &str,
     reason: Option<&str>,
+    gap: &Gap,
     statements: &[Statement],
 ) -> Result<Vec<Change>, Box<dyn Error>> {
     let baseline = !store::read_before(run.tx, r.reader, r.scope, r.kind)?;
     let before = run.events.len();
-    run.apply(r, watched::BASIS, completeness, reason, statements)?;
+    run.apply(r, watched::BASIS, completeness, reason, gap, statements)?;
     if baseline {
         run.events.truncate(before);
         return Ok(Vec::new());
@@ -2421,6 +2536,13 @@ fn summary_sentences(s: &status::Summary) -> String {
     line.push_str(&watched_sentence(s.watched.as_ref()));
     line.push(' ');
     line.push_str(&catalogue_sentence(s.catalogue.as_ref()));
+    // What this build cannot read here is part of every report, named by `soc status`.
+    if let Some(n) = s.no_reader_for.as_ref().map(Vec::len).filter(|n| *n > 0) {
+        line.push_str(&format!(
+            " This build has no reader for {} found here; `soc status` names them.",
+            things(n as i64, "kind of thing", "kinds of thing")
+        ));
+    }
     line
 }
 

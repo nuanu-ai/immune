@@ -7,7 +7,7 @@
 //! A trace keeps an extract as its raw input, not the source itself: the sources hold keys
 //! and settings that are not ours to copy.
 
-use crate::store::Statement;
+use crate::store::{Gap, Statement};
 
 /// Code hosting and similar third parties. They are not the owner's machines: no reader
 /// makes an entity for them and the sweep never visits them.
@@ -56,6 +56,8 @@ pub struct Seen {
     pub hosts: Vec<Host>,
     /// Why the reading is partial; `None` when it is full.
     pub partial: Option<String>,
+    /// Why it is partial as data: its cause, and what this build has no reader for.
+    pub gap: Gap,
     /// Entries left out as code hosting.
     pub third_party: usize,
 }

@@ -18,6 +18,7 @@
 //! daemon on the default socket, the sockets of running `tailscaled` processes are tried.
 //! Of the process list only the value of `--socket` of a `tailscaled` process is taken.
 
+use crate::store::Gap;
 use crate::traces::{Extract, Found, Seen, code_hosting, note};
 use serde_json::Value;
 use std::io::Read;
@@ -296,6 +297,7 @@ pub fn parse(json: &str) -> Result<Seen, String> {
         extract: extract.into_text(),
         hosts,
         partial: None,
+        gap: Gap::default(),
         third_party,
     })
 }
