@@ -2516,6 +2516,7 @@ fn another_users_device_known_only_from_the_tailnet_is_not_a_server_and_never_of
     assert_eq!(
         rows(&h.store(), RELATION),
         [
+            "machine:build-box|owner's device|observed|tailnet",
             "machine:friends-laptop|other user's device|observed|tailnet",
             "machine:lab-box|other user's device|observed|tailnet",
             "machine:old-laptop|other user's device|observed|tailnet",
@@ -2560,7 +2561,8 @@ fn another_users_device_known_only_from_the_tailnet_is_not_a_server_and_never_of
     assert!(
         printed.contains(
             "\n4 servers known, 1 of them under several names, 1 offered for the sweep, \
-             0 left out as code hosting, 3 as other users' devices, 4 known and never read."
+             0 left out as code hosting, 0 as your other devices, 3 as other users' devices, \
+             4 known and never read."
         ),
         "{printed}"
     );
@@ -2570,7 +2572,7 @@ fn another_users_device_known_only_from_the_tailnet_is_not_a_server_and_never_of
     assert!(
         report.contains(
             " 4 servers known, 1 offered for the sweep, 0 read; \
-             3 other devices seen in the private network, not read."
+             3 other people's devices seen in the private network, not read."
         ),
         "{report}"
     );
@@ -2692,6 +2694,139 @@ fn a_peer_whose_owner_the_status_does_not_give_is_treated_as_before() {
     assert!(report.contains(" 1 server known,"), "{report}");
 }
 
+/// `tailscale status --json` of the owner's own tailnet, cut to the fields that matter.
+/// This Mac is user 1, and so is every peer: a phone and a laptop nothing else names, a
+/// Linux box nothing else names, a desktop the SSH configuration names too, and a peer whose
+/// system the status does not give.
+const TAILNET_OWN: &str = r#"{
+  "BackendState": "Running",
+  "Self": { "HostName": "mac", "DNSName": "mac.example-tail.ts.net.",
+            "TailscaleIPs": ["100.64.0.1"], "OS": "macOS", "UserID": 1 },
+  "Peer": {
+    "nodekey:invented1": { "HostName": "pocket", "DNSName": "pocket.example-tail.ts.net.",
+      "TailscaleIPs": ["100.64.0.30"], "OS": "iOS", "UserID": 1 },
+    "nodekey:invented2": { "HostName": "travel-laptop",
+      "DNSName": "travel-laptop.example-tail.ts.net.", "TailscaleIPs": ["100.64.0.31"],
+      "OS": "macOS", "UserID": 1 },
+    "nodekey:invented3": { "HostName": "pi", "DNSName": "pi.example-tail.ts.net.",
+      "TailscaleIPs": ["100.64.0.32"], "OS": "linux", "UserID": 1 },
+    "nodekey:invented4": { "HostName": "studio", "DNSName": "studio.example-tail.ts.net.",
+      "TailscaleIPs": ["100.64.0.33"], "OS": "macOS", "UserID": 1 },
+    "nodekey:invented5": { "HostName": "mystery", "DNSName": "mystery.example-tail.ts.net.",
+      "TailscaleIPs": ["100.64.0.34"], "UserID": 1 }
+  }
+}"#;
+
+/// The owner logs in to the desktop over SSH by its tailnet address, and to one server.
+const SSH_CONFIG_OWN: &str = "\
+Host studio
+    HostName 100.64.0.33
+Host web-1
+    HostName 203.0.113.5
+";
+
+#[test]
+fn the_owners_phones_and_laptops_that_nothing_else_names_are_their_other_devices_not_servers() {
+    // The owner's phone and laptop on their tailnet were counted as servers never checked:
+    // nobody checks a phone over SSH. What the tailnet says about a peer's system decides it,
+    // and only for the owner's own peers that nothing else names.
+    let h = Home::new("own-devices", Some(SSH_CONFIG_OWN), None);
+    let tailscale = fake(&h.dir.0.join("bin").join("tailscale"), TAILNET_OWN);
+    let printed = h.servers_with(&tailscale);
+    // The server check of web-1 did not finish.
+    let servers = h.dir.0.join("sweep-files");
+    put(&servers, "web-1.txt", "##taken_at\n1700000000\n");
+    let report = h.run(&servers, &tailscale);
+
+    // What the tailnet says is kept as a fact of its own, not as the release name.
+    assert_eq!(
+        rows(
+            &h.store(),
+            "SELECT subject, object FROM assertion WHERE layer = 'live'
+             AND predicate = 'runs_platform' ORDER BY subject"
+        ),
+        [
+            "machine:pi|linux",
+            "machine:pocket|iOS",
+            "machine:studio|macOS",
+            "machine:travel-laptop|macOS",
+        ]
+    );
+    let e = status_json(&h.store())["estate"].clone();
+    // Servers: studio, named by SSH too; web-1; pi, Linux; mystery, no system given.
+    assert_eq!(
+        (
+            &e["servers"],
+            &e["own_devices"],
+            &e["other_devices"],
+            &e["servers_system_not_given"]
+        ),
+        (&4.into(), &2.into(), &0.into(), &1.into()),
+        "{e}"
+    );
+    assert!(
+        report.contains(
+            " 4 servers known, 2 offered for the sweep, 0 read; \
+             2 of your other devices seen in the private network, not read."
+        ),
+        "{report}"
+    );
+    // Never in the server check, nor in what was not checked.
+    let script = std::fs::read_to_string(h.sweep().join("sweep.sh")).unwrap();
+    assert_eq!(listed(&script), ["studio", "web-1"]);
+    let r = status_json(&h.store());
+    let not_checked: Vec<&serde_json::Value> = r["not_covered"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["id"] == "servers-not-checked" || i["id"] == "servers-not-opened")
+        .collect();
+    assert!(!not_checked.is_empty(), "{r:#}");
+    for item in not_checked {
+        let said = item.to_string();
+        assert!(
+            !said.contains("pocket") && !said.contains("travel-laptop"),
+            "{said}"
+        );
+    }
+    assert!(
+        printed.contains("Your other devices on the tailnet, not counted as servers: 2 devices")
+            && printed.contains("Tailnet peers: 5 peers, 3 of them phones, tablets or computers of yours, 1 whose system the tailnet does not give.")
+            && printed.contains(" 0 left out as code hosting, 2 as your other devices, 0 as other users' devices,"),
+        "{printed}"
+    );
+
+    // The page beyond this Mac: three sections, and the summary counts all three.
+    let page = view(&h.store());
+    let mine = section(&page, "your-devices");
+    assert!(
+        mine.contains("<h2>Your other devices</h2>\n<p class=\"muted\">Phones, tablets and computers on your private network that you do not log in to over SSH. They are not checked: this version looks at this Mac and at servers.</p>")
+            && mine.contains("<td class=\"mono\">pocket</td><td>iOS</td>")
+            && mine.contains("<td class=\"mono\">travel-laptop</td><td>macOS</td>"),
+        "{mine}"
+    );
+    let listed_servers = section(&page, "servers");
+    for name in ["studio", "pi", "mystery", "web-1"] {
+        assert!(
+            listed_servers.contains(&format!("<td class=\"mono\">{name}</td>")),
+            "{name}: {listed_servers}"
+        );
+    }
+    assert!(
+        !listed_servers.contains("pocket") && !listed_servers.contains("travel-laptop"),
+        "{listed_servers}"
+    );
+    assert!(
+        listed_servers.contains("1 of them is known only from your private network, which does not say what system it runs, so it is counted as a server."),
+        "{listed_servers}"
+    );
+    let beyond = section(&page, "beyond");
+    assert!(
+        beyond.contains("Servers: 4</a>") && beyond.contains("Your other devices: 2</a>"),
+        "{beyond}"
+    );
+}
+
 #[test]
 fn a_store_seeded_before_relation_to_owner_was_used_takes_it_without_a_rebuild() {
     // The vocabulary is data: the owner's store keeps its journal when a reserved word comes
@@ -2710,7 +2845,7 @@ fn a_store_seeded_before_relation_to_owner_was_used_takes_it_without_a_rebuild()
 
     h.run(&h.dir.0.join("absent"), &tailscale);
 
-    assert_eq!(rows(&h.store(), RELATION).len(), 4);
+    assert_eq!(rows(&h.store(), RELATION).len(), 5);
     assert_eq!(
         rows(
             &h.store(),
@@ -3593,7 +3728,8 @@ fn a_retired_machine_is_not_counted_as_known_and_never_read_and_is_listed_with_i
     assert!(
         printed.contains(
             "\n1 server known, 0 of them under several names, 1 offered for the sweep, \
-             0 left out as code hosting, 0 as other users' devices, 1 known and never read.\n\
+             0 left out as code hosting, 0 as your other devices, 0 as other users' devices, \
+             1 known and never read.\n\
              The owner's word: 1 machine retired or disowned.\n"
         ),
         "{printed}"

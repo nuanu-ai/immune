@@ -34,8 +34,8 @@ pub struct Host {
     pub name: String,
     /// Names and addresses, each with the line of the extract it rests on, counted from 1.
     pub known_as: Vec<(String, usize)>,
-    /// The operating system, where the trace gives one.
-    pub os: Option<(String, usize)>,
+    /// The system as the trace names it, where it gives one: `runs_platform`.
+    pub platform: Option<(String, usize)>,
     /// Whose it is, where the trace says it is not the owner's: one of the closed set of
     /// `relation_to_owner` values.
     pub relation: Option<(&'static str, usize)>,
@@ -72,7 +72,11 @@ impl Seen {
                 .known_as
                 .iter()
                 .map(|(v, n)| ("known_as", v.as_str(), n))
-                .chain(host.os.iter().map(|(v, n)| ("runs_os", v.as_str(), n)))
+                .chain(
+                    host.platform
+                        .iter()
+                        .map(|(v, n)| ("runs_platform", v.as_str(), n)),
+                )
                 .chain(
                     host.relation
                         .iter()
@@ -120,7 +124,7 @@ pub fn note(hosts: &mut Vec<Host>, name: &str, known_as: &str, line: usize) {
             hosts.push(Host {
                 name: name.to_string(),
                 known_as: Vec::new(),
-                os: None,
+                platform: None,
                 relation: None,
             });
             hosts.len() - 1

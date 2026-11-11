@@ -238,6 +238,9 @@ INSERT OR IGNORE INTO coverage_kind (name) VALUES
 -- What runs by itself, see src/autorun.rs, and indicators, see src/indicators.rs.
 INSERT OR IGNORE INTO predicate (name, object_kind, status) VALUES
     ('matches_indicator', 'literal', 'used');
+-- A peer's system as the private network names it, see src/tailnet.rs.
+INSERT OR IGNORE INTO predicate (name, object_kind, status) VALUES
+    ('runs_platform', 'literal', 'used');
 INSERT OR IGNORE INTO coverage_kind (name) VALUES
     ('editor tasks set to run when a checkout''s folder is opened'),
     ('other ways a checkout runs code by itself'),

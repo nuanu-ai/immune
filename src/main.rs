@@ -1373,6 +1373,9 @@ struct Survey {
     rows: Vec<ServerRow>,
     /// Other users' devices: the name and what else it is known as.
     theirs: Vec<Vec<String>>,
+    /// The owner's other devices: the name, the system the tailnet gives and what else it is
+    /// known as.
+    own: Vec<Vec<String>>,
     /// Every statement that stands. Those not contradicted are not servers.
     standing: Vec<owner::Standing>,
     said: Vec<String>,
@@ -1389,6 +1392,11 @@ fn owner_word(store: &Path) -> Result<Vec<owner::Standing>, Box<dyn Error>> {
     }
     let conn = store::open_read_only(store)?;
     Ok(owner::standing(&conn)?)
+}
+
+/// Whether the tailnet's name for a system is one the server check cannot read at all.
+fn device(platform: Option<&str>) -> bool {
+    tailnet::system(platform) == tailnet::System::Device
 }
 
 /// Finds the servers this machine knows from local files and the owner's word. Never writes
@@ -1419,8 +1427,10 @@ fn survey(args: &ServersArgs) -> Result<Survey, Box<dyn Error>> {
     let mut known = Vec::new();
     let mut traces_of: BTreeMap<String, Vec<&'static str>> = BTreeMap::new();
     let mut names_of: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    // Entities a trace says are another user's device.
+    // Entities a trace says are another user's device, and those it says are the owner's
+    // own with a system the server check cannot read, with that system.
     let mut someone_elses: BTreeSet<String> = BTreeSet::new();
+    let mut own_devices: BTreeMap<String, String> = BTreeMap::new();
     // Aliases in the order of the ssh configuration.
     let mut aliases: Vec<String> = Vec::new();
     let (mut said, mut third_party) = (Vec::new(), 0);
@@ -1456,9 +1466,31 @@ fn survey(args: &ServersArgs) -> Result<Survey, Box<dyn Error>> {
                 } else {
                     format!("{kind}: {}", things(n, "server", "servers"))
                 };
-                let theirs = seen.hosts.iter().filter(|h| h.relation.is_some()).count();
+                let relation = |r: &'static str| {
+                    seen.hosts
+                        .iter()
+                        .filter(move |h| h.relation.map(|x| x.0) == Some(r))
+                };
+                let theirs = relation(tailnet::OTHER_USER).count();
                 if theirs > 0 {
                     line.push_str(&format!(", {theirs} of them other users' devices"));
+                }
+                let own = relation(tailnet::OWN)
+                    .filter(|h| device(h.platform.as_ref().map(|p| p.0.as_str())))
+                    .count();
+                if own > 0 {
+                    line.push_str(&format!(
+                        ", {} of them phones, tablets or computers of yours",
+                        own
+                    ));
+                }
+                if *kind == tailnet::KIND {
+                    let no_system = seen.hosts.iter().filter(|h| h.platform.is_none()).count();
+                    if no_system > 0 {
+                        line.push_str(&format!(
+                            ", {no_system} whose system the tailnet does not give"
+                        ));
+                    }
                 }
                 if let Some(partial) = &seen.partial {
                     line.push_str(&format!(", {partial}"));
@@ -1470,8 +1502,14 @@ fn survey(args: &ServersArgs) -> Result<Survey, Box<dyn Error>> {
                 third_party += seen.third_party;
                 for host in &seen.hosts {
                     let id = format!("machine:{}", host.name);
-                    if host.relation.is_some() {
-                        someone_elses.insert(id.clone());
+                    match (host.relation.map(|r| r.0), &host.platform) {
+                        (Some(tailnet::OTHER_USER), _) => {
+                            someone_elses.insert(id.clone());
+                        }
+                        (Some(tailnet::OWN), Some((p, _))) if device(Some(p)) => {
+                            own_devices.insert(id.clone(), p.clone());
+                        }
+                        _ => {}
                     }
                     add(&id, reader, kind, basis, "");
                     for (value, _) in &host.known_as {
@@ -1519,16 +1557,21 @@ fn survey(args: &ServersArgs) -> Result<Survey, Box<dyn Error>> {
     // Another user's device known from the tailnet alone is not a server. Known from any
     // other trace as well, it is one the owner uses as a server. `beyond.rs` tells them
     // apart the same way from the store.
+    // The owner's own device whose system the server check cannot read is not a server
+    // either, on the same condition.
+    let tailnet_only = |m: &String| traces_of.get(m).is_some_and(|t| *t == [tailnet::KIND]);
     let (devices, groups): (Vec<Vec<String>>, Vec<Vec<String>>) =
         resolver::groups(traces_of.keys().cloned(), &pairs)
             .into_iter()
             .filter(|g| !set_aside(g))
             .partition(|g| {
-                g.iter().all(|m| {
-                    someone_elses.contains(m)
-                        && traces_of.get(m).is_some_and(|t| *t == [tailnet::KIND])
-                })
+                g.iter()
+                    .all(|m| someone_elses.contains(m) && tailnet_only(m))
             });
+    let (own, groups): (Vec<Vec<String>>, Vec<Vec<String>>) = groups.into_iter().partition(|g| {
+        g.iter()
+            .all(|m| own_devices.contains_key(m) && tailnet_only(m))
+    });
     let skip = sweep::skip_list(&dir);
 
     let mut rows = Vec::new();
@@ -1625,6 +1668,20 @@ fn survey(args: &ServersArgs) -> Result<Survey, Box<dyn Error>> {
             vec![name.to_string(), others.join(", ")]
         })
         .collect();
+    let own: Vec<Vec<String>> = own
+        .iter()
+        .map(|group| {
+            let name = group[0].strip_prefix("machine:").unwrap_or(&group[0]);
+            let system = own_devices.get(&group[0]).cloned().unwrap_or_default();
+            let mut others: BTreeSet<&String> = group
+                .iter()
+                .flat_map(|m| names_of.get(m).into_iter().flatten())
+                .collect();
+            others.retain(|o| *o != name);
+            let others: Vec<&str> = others.into_iter().map(String::as_str).collect();
+            vec![name.to_string(), system, others.join(", ")]
+        })
+        .collect();
     let machines: Vec<Vec<String>> = rows
         .iter()
         .filter(|r| !r.offered.is_empty())
@@ -1635,6 +1692,7 @@ fn survey(args: &ServersArgs) -> Result<Survey, Box<dyn Error>> {
         dir,
         rows,
         theirs,
+        own,
         standing,
         said,
         third_party,
@@ -1701,6 +1759,12 @@ fn servers_cmd(args: &ServersArgs) -> Result<(), Box<dyn Error>> {
     }
     // Shown with a count, so that nothing the tailnet holds disappears silently.
     say(&format!(
+        "Your other devices on the tailnet, not counted as servers: {}",
+        things(s.own.len() as i64, "device", "devices")
+    ));
+    print_table(&["Device", "System", "Also known as"], &s.own);
+    println!();
+    say(&format!(
         "Other users' devices on the tailnet, not counted as servers: {}",
         things(s.theirs.len() as i64, "device", "devices")
     ));
@@ -1712,11 +1776,12 @@ fn servers_cmd(args: &ServersArgs) -> Result<(), Box<dyn Error>> {
         say(&format!("{}{}.", line[..1].to_uppercase(), &line[1..]));
     }
     say(&format!(
-        "{} known, {} of them under several names, {} offered for the sweep, {} left out as code hosting, {} as other users' devices, {} known and never read.",
+        "{} known, {} of them under several names, {} offered for the sweep, {} left out as code hosting, {} as your other devices, {} as other users' devices, {} known and never read.",
         things(s.rows.len() as i64, "server", "servers"),
         s.several_names,
         offered.len(),
         s.third_party,
+        s.own.len(),
         s.theirs.len(),
         s.rows.iter().filter(|r| !r.read).count()
     ));
@@ -2809,8 +2874,12 @@ struct ServerCounts {
     /// Servers the latest server check has a visit of, and of them those it read.
     in_last_check: usize,
     checked_in_last_check: usize,
-    /// Computers and phones seen in the private network that the owner does not log in to.
+    /// The owner's own phones, tablets and computers in the private network.
+    own_devices: usize,
+    /// Other people's computers and phones seen in the private network.
     other_devices: usize,
+    /// Servers known only from the private network, which gives no system for them.
+    system_not_given: usize,
     /// Machines under a statement of the owner's that stands.
     set_aside: usize,
     /// Those of them seen alive after the statement.
@@ -2848,7 +2917,9 @@ fn server_counts(
         read: 0,
         in_last_check: 0,
         checked_in_last_check: 0,
+        own_devices: beyond.own_devices.len(),
         other_devices: beyond.other_devices.len(),
+        system_not_given: beyond.system_not_given,
         set_aside: standing.len(),
         seen: standing
             .iter()
@@ -3696,13 +3767,19 @@ fn summary_sentences(s: &status::Summary) -> String {
             grouped(servers.read as i64)
         ));
     }
+    if servers.own_devices > 0 {
+        line.push_str(&format!(
+            "; {} of your other devices seen in the private network, not read",
+            grouped(servers.own_devices as i64)
+        ));
+    }
     if servers.other_devices > 0 {
         line.push_str(&format!(
             "; {} seen in the private network, not read",
             things(
                 servers.other_devices as i64,
-                "other device",
-                "other devices"
+                "other person's device",
+                "other people's devices"
             )
         ));
     }

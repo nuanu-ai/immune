@@ -510,6 +510,17 @@ fn beyond_summary(conn: &Connection, out: &mut String, r: &serde_json::Value) ->
             )
         )?;
     }
+    if n("own_devices") > 0 {
+        writeln!(
+            out,
+            "<li>{}<br><span class=\"muted\">{YOUR_DEVICES}</span></li>",
+            link(
+                BEYOND,
+                "your-devices",
+                &format!("Your other devices: {}", grouped(n("own_devices")))
+            )
+        )?;
+    }
     if n("other_devices") > 0 {
         writeln!(
             out,
@@ -784,7 +795,11 @@ fn installed(conn: &Connection, out: &mut String, kind: &str, this: Option<&str>
     Ok(())
 }
 
-/// Servers, other devices and machines the owner set aside, each in a section of its own.
+/// What the owner's other devices are, on the summary and on the page beyond this Mac.
+const YOUR_DEVICES: &str = "Phones, tablets and computers on your private network that you do not log in to over SSH. They are not checked: this version looks at this Mac and at servers.";
+
+/// Servers, the owner's other devices, other people's devices and machines the owner set
+/// aside, each in a section of its own.
 pub fn beyond(conn: &Connection, latest: &[Latest], now: i64) -> Result<String, Box<dyn Error>> {
     let mut out = top("Beyond this Mac", &format!("This page made {}", utc(now)));
     let this = covered::this_machine(conn)?.unwrap_or_default();
@@ -863,6 +878,49 @@ pub fn beyond(conn: &Connection, latest: &[Latest], now: i64) -> Result<String, 
         }
         out.push_str("</tbody></table></div>\n");
     }
+    // Never guessed: a server the private network alone knows, without a system, says so.
+    match split.system_not_given {
+        0 => {}
+        1 => out.push_str("<p class=\"muted\">1 of them is known only from your private network, which does not say what system it runs, so it is counted as a server.</p>\n"),
+        n => writeln!(
+            out,
+            "<p class=\"muted\">{n} of them are known only from your private network, which does not say what system they run, so they are counted as servers.</p>"
+        )?,
+    }
+    out.push_str("</section>\n");
+
+    writeln!(
+        out,
+        "<section id=\"your-devices\">\n<h2>Your other devices</h2>\n<p class=\"muted\">{YOUR_DEVICES}</p>"
+    )?;
+    if split.own_devices.is_empty() {
+        out.push_str("<p class=\"muted\">None seen.</p>\n");
+    } else {
+        let mut rows: Vec<(String, String, String)> = split
+            .own_devices
+            .iter()
+            .map(|g| {
+                let (label, others) = named(g);
+                let system = g
+                    .iter()
+                    .find_map(|m| split.platform.get(m))
+                    .cloned()
+                    .unwrap_or_default();
+                (label, system, others)
+            })
+            .collect();
+        rows.sort();
+        out.push_str("<div class=\"scroll\"><table class=\"dense\">\n");
+        view::thead(&mut out, &["Device", "System", "Also known as"]);
+        for (label, system, others) in rows {
+            out.push_str("<tr>");
+            view::td(&mut out, "mono", &label)?;
+            view::td(&mut out, "", &system)?;
+            view::td(&mut out, "mono", &others)?;
+            out.push_str("</tr>\n");
+        }
+        out.push_str("</tbody></table></div>\n");
+    }
     out.push_str("</section>\n");
 
     out.push_str("<section id=\"other-devices\">\n<h2>Other devices</h2>\n<p class=\"muted\">Other people's computers and phones seen in your private network, such as a colleague's laptop. They are not yours to check, and this program does not read them. Only a Tailscale network is looked at; devices in a network of another kind are not known here.</p>\n");
@@ -922,7 +980,7 @@ pub fn technical() -> String {
     out.push_str("<section id=\"technical\">\n<ul class=\"counts\">\n");
     // The page of servers is linked from the summary only where there are some.
     out.push_str(&format!(
-        "<li><a href=\"{BEYOND}.html\">Beyond this Mac: servers, other devices, and machines you set aside</a></li>\n"
+        "<li><a href=\"{BEYOND}.html\">Beyond this Mac: servers, your other devices, other people's devices, and machines you set aside</a></li>\n"
     ));
     for (name, title) in view::DETAIL_PAGES {
         out.push_str(&format!(

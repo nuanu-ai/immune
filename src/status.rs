@@ -863,6 +863,8 @@ fn estate(s: &Summary) -> Value {
         "servers_read": s.servers.read,
         "servers_in_last_check": s.servers.in_last_check,
         "servers_checked_in_last_check": s.servers.checked_in_last_check,
+        "servers_system_not_given": s.servers.system_not_given,
+        "own_devices": s.servers.own_devices,
         "other_devices": s.servers.other_devices,
         "machines_set_aside": s.servers.set_aside,
         "machines_seen_after_owner_word": s.servers.seen.len(),

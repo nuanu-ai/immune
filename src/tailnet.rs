@@ -3,9 +3,15 @@
 //! operating system, and nothing else: no keys, no user names.
 //!
 //! A tailnet also holds other people's laptops and phones. A peer without tags that belongs
-//! to another user than this machine's is recorded as another user's device; the user ids
-//! are only compared, never kept. A tagged peer belongs to the tailnet, not to a person, and
-//! a peer whose user the status does not give is not taken to be anyone else's.
+//! to another user than this machine's is recorded as another user's device, and one that
+//! belongs to the same user as the owner's device; the user ids are only compared, never
+//! kept. A tagged peer belongs to the tailnet, not to a person, and a peer whose user the
+//! status does not give is taken to be nobody's in particular.
+//!
+//! The system of a peer is what the tailnet says, `runs_platform`: Tailscale's
+//! `PeerStatus.OS`, which its client fills from `version.OS()`. That is Go's `GOOS`, except
+//! `macOS`, `iOS` and `tvOS` for Apple's systems: `linux`, `windows`, `android`, `freebsd`,
+//! `openbsd` and so on. It is not `runs_os`, the release name a server gives itself.
 //!
 //! Tailscale that is not installed has nothing to read. Tailscale that is installed and
 //! stopped or logged out could not be read, and says so. Tailscale whose command cannot
@@ -32,6 +38,52 @@ pub const BASIS: &str = "observed";
 pub const NOT_INSTALLED: &str = "Tailscale is not installed on this machine";
 /// The `relation_to_owner` of a peer of another user, without tags.
 pub const OTHER_USER: &str = "other user's device";
+/// The `relation_to_owner` of a peer of the same user as this machine, without tags.
+pub const OWN: &str = "owner's device";
+
+/// Systems the server check cannot read at all, as the tailnet names them: phones, tablets,
+/// TVs and desktop systems. The probe is a POSIX shell script that reads `/etc/os-release`
+/// and a Linux package manager; none of these has either.
+pub const DEVICE_SYSTEMS: [&str; 5] = ["iOS", "tvOS", "android", "macOS", "windows"];
+/// Systems the server check reads, in full (Linux with dpkg) or in part (a BSD or a Unix
+/// with `/etc/os-release` and no Linux package manager), as the tailnet names them.
+/// Neither list holds `js`, `plan9`, `aix` or a value a later Tailscale adds: a peer with
+/// such a system is not taken for a device, and its system is named as one not known here.
+pub const SERVER_SYSTEMS: [&str; 7] = [
+    "linux",
+    "freebsd",
+    "openbsd",
+    "netbsd",
+    "dragonfly",
+    "illumos",
+    "solaris",
+];
+
+/// What a peer's system, as the tailnet gives it, says about the peer.
+#[derive(Debug, PartialEq, Eq)]
+pub enum System {
+    /// One the server check cannot read at all.
+    Device,
+    /// One the server check reads.
+    Server,
+    /// The tailnet gives none.
+    NotGiven,
+    /// One in neither list.
+    NotKnown,
+}
+
+pub fn system(platform: Option<&str>) -> System {
+    let Some(p) = platform.map(str::trim).filter(|p| !p.is_empty()) else {
+        return System::NotGiven;
+    };
+    if DEVICE_SYSTEMS.iter().any(|d| d.eq_ignore_ascii_case(p)) {
+        System::Device
+    } else if SERVER_SYSTEMS.iter().any(|d| d.eq_ignore_ascii_case(p)) {
+        System::Server
+    } else {
+        System::NotKnown
+    }
+}
 
 /// Where the Tailscale app keeps its command, under `/Applications` or the user's own.
 const IN_APP: &str = "Applications/Tailscale.app/Contents/MacOS/Tailscale";
@@ -234,18 +286,20 @@ pub fn parse(json: &str) -> Result<Seen, String> {
     };
     peers.sort_by_key(|p| name(p));
     let me = v.get("Self").and_then(|s| s.get("UserID"));
-    let someone_elses = |p: &Value| {
-        p.get("Tags").is_none()
-            && matches!((me, p.get("UserID")), (Some(me), Some(user)) if me != user)
+    // Whose an untagged peer is, when the status gives both users.
+    let whose = |p: &Value| match (me, p.get("UserID")) {
+        (Some(me), Some(user)) if p.get("Tags").is_none() => {
+            Some(if me == user { OWN } else { OTHER_USER })
+        }
+        _ => None,
     };
 
     let mut extract = Extract::default();
     let mut hosts = Vec::new();
     let mut third_party = 0;
-    // Names under which another user's device was seen, and names under which any other
-    // peer was: two peers may share a host name, and the name is someone else's only when
-    // every peer under it is.
-    let (mut others, mut not_others) = (Vec::new(), Vec::new());
+    // Whose each peer under a name is: two peers may share a host name, and the name is
+    // someone's only when every peer under it is theirs.
+    let mut owners: Vec<(String, Option<&'static str>, usize)> = Vec::new();
     for peer in peers {
         let host = name(peer);
         if host.is_empty() {
@@ -262,16 +316,13 @@ pub fn parse(json: &str) -> Result<Seen, String> {
             .map(|a| a.iter().filter_map(Value::as_str).collect())
             .unwrap_or_default();
         let os = text(peer, "OS");
-        let whose = if someone_elses(peer) { OTHER_USER } else { "" };
+        let relation = whose(peer);
         let n = extract.add(&format!(
-            "{host}\t{dns}\t{}\t{os}\t{whose}",
-            addresses.join(",")
+            "{host}\t{dns}\t{}\t{os}\t{}",
+            addresses.join(","),
+            relation.unwrap_or("")
         ));
-        if whose.is_empty() {
-            not_others.push(host.clone());
-        } else {
-            others.push((host.clone(), n));
-        }
+        owners.push((host.clone(), relation, n));
         note(&mut hosts, &host, &host, n);
         for value in std::iter::once(dns).chain(addresses) {
             if !value.is_empty() {
@@ -280,17 +331,18 @@ pub fn parse(json: &str) -> Result<Seen, String> {
         }
         if !os.is_empty()
             && let Some(h) = hosts.iter_mut().find(|h| h.name == host)
-            && h.os.is_none()
+            && h.platform.is_none()
         {
-            h.os = Some((os.to_string(), n));
+            h.platform = Some((os.to_string(), n));
         }
     }
     for host in &mut hosts {
-        if !not_others.contains(&host.name) {
-            host.relation = others
-                .iter()
-                .find(|(name, _)| *name == host.name)
-                .map(|(_, n)| (OTHER_USER, *n));
+        let mut under = owners.iter().filter(|(name, ..)| *name == host.name);
+        let Some((_, first, n)) = under.next() else {
+            continue;
+        };
+        if first.is_some() && under.all(|(_, r, _)| r == first) {
+            host.relation = first.map(|r| (r, *n));
         }
     }
     Ok(Seen {

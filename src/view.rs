@@ -349,6 +349,7 @@ fn what(predicate: &str) -> &str {
         "has_version" => "version",
         "located_on" => "located on",
         "runs_os" => "operating system",
+        "runs_platform" => "system, as the private network names it",
         "runs_kernel" => "kernel",
         "runs_image" => "image",
         "known_as" => "known as",
@@ -1000,7 +1001,10 @@ fn machine_block<'a>(
     }
     let os: BTreeSet<String> = members
         .iter()
-        .map(|m| estate.attr(m, "runs_os"))
+        .map(|m| match estate.attr(m, "runs_os") {
+            os if os.is_empty() => estate.attr(m, "runs_platform"),
+            os => os,
+        })
         .filter(|os| !os.is_empty())
         .collect();
     if !os.is_empty() {
