@@ -259,17 +259,21 @@ struct PanelView: View {
   @ObservedObject var watcher: WatcherBox
   /// Fixed for an off-screen render; nil means now.
   var now: Date? = nil
+  /// Opens the system's notification settings for this app.
+  var openSettings: () -> Void = {}
 
   var body: some View {
     let p = Panel.of(
       model.reading, now: now ?? Date(), checking: model.runInProgress, notes: model.notes,
       notWatching: watcher.watcher?.notWatching, form: model.form, answering: model.answering,
-      refusals: model.refusals)
+      refusals: model.refusals, notificationsOff: model.notificationsOff)
     VStack(alignment: .leading, spacing: 0) {
       HeadlineView(panel: p)
         .padding(Metrics.padding)
       if !p.shown.isEmpty { cards(p) }
-      if p.more > 0 || p.blind != nil || p.notWatching != nil || !p.notes.isEmpty {
+      if p.more > 0 || p.blind != nil || p.notWatching != nil || p.notificationsOff != nil
+        || !p.notes.isEmpty
+      {
         quiet(p).padding(.top, p.shown.isEmpty ? 0 : 4)
       }
       Divider()
@@ -306,6 +310,18 @@ struct PanelView: View {
           Image(systemName: "pause.circle").font(.system(size: 12)).frame(width: 16)
             .accessibilityHidden(true)
           Plain(line).font(.system(size: 12))
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 12)
+      }
+      if let line = p.notificationsOff {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+          Image(systemName: "bell.slash").font(.system(size: 12)).frame(width: 16)
+            .accessibilityHidden(true)
+          Plain(line).font(.system(size: 12))
+          Spacer(minLength: 0)
+          Button("Open Settings", action: openSettings)
+            .buttonStyle(.borderless).foregroundStyle(.tint).font(.system(size: 12)).fixedSize()
         }
         .foregroundStyle(.secondary)
         .padding(.horizontal, 12)

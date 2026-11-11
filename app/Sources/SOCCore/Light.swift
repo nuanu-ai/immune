@@ -72,9 +72,10 @@ public enum Light: Sendable, Equatable {
     return total == 0 ? .nothingToReport : .attention(total)
   }
 
-  /// The menu-bar symbol: filled when the worst thing shown is high or critical.
-  public static func menuSymbol(_ light: Light, worst: String?) -> String {
-    if case .attention = light, Severity.isStrong(worst) { return light.symbol + ".fill" }
+  /// The menu-bar symbol: filled when the worst thing shown is high or critical, or
+  /// when soc marked something urgent.
+  public static func menuSymbol(_ light: Light, worst: String?, urgent: Bool = false) -> String {
+    if case .attention = light, urgent || Severity.isStrong(worst) { return light.symbol + ".fill" }
     return light.symbol
   }
 

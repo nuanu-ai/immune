@@ -94,7 +94,8 @@
     "rule": "watched.ssh-access",
     "confidence": "low",
     "change": "changed",
-    "technique": "T1098.004"
+    "technique": "T1098.004",
+    "urgent": true
    },
    {
     "id": "f5d20b8e641",
@@ -112,7 +113,8 @@
     "rule": "watched.shell-profile",
     "confidence": "low",
     "change": "changed",
-    "technique": "T1546.004"
+    "technique": "T1546.004",
+    "urgent": false
    },
    {
     "id": "f8a6c3d1e05",
@@ -130,7 +132,8 @@
     "rule": "watched.autostart",
     "confidence": "low",
     "change": "new",
-    "technique": "T1543"
+    "technique": "T1543",
+    "urgent": false
    },
    {
     "id": "h2e9f4a7c10",

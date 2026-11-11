@@ -149,6 +149,10 @@ public struct Panel: Sendable, Equatable {
   public var total = 0
   /// The worst severity among the items served; the menu-bar icon follows it.
   public var worst: String?
+  /// soc marked something served urgent; the menu-bar icon takes its strongest form.
+  public var urgent = false
+  /// "Notifications are off, …", one quiet line with a button, or nil.
+  public var notificationsOff: String?
 
   public var shown: [Row] { Array(rows.prefix(Self.rowsShown)) }
   public var more: Int { max(0, total - shown.count) }
@@ -156,12 +160,13 @@ public struct Panel: Sendable, Equatable {
   public static func of(
     _ reading: Reading, now: Date, checking: Bool = false, notes: [String] = [],
     notWatching: String? = nil, form: ExpectedForm? = nil, answering: String? = nil,
-    refusals: [String: String] = [:]
+    refusals: [String: String] = [:], notificationsOff: Bool = false
   ) -> Panel {
     let light = Light.of(reading)
     var p = Panel(
       light: light, headline: light.headline, notes: notes, notWatching: notWatching,
       canCheck: !checking, form: form, answering: answering, refusals: refusals)
+    if notificationsOff { p.notificationsOff = Announcer.offLine }
     switch reading {
     case .notYetRead:
       p.headline = "Looking at the last check…"
@@ -210,6 +215,7 @@ public struct Panel: Sendable, Equatable {
     rows = items.enumerated().map { Row(id: $0.offset, item: $0.element, now: now) }
     total = s.needsALookTotal ?? 0
     worst = Severity.worst(items)
+    urgent = items.contains { $0.urgent }
     let blindCount = Self.blindCount(s)
     if blindCount > 0 {
       blind = "Cannot judge \(blindCount) " + (blindCount == 1 ? "kind" : "kinds") + " of thing yet"
@@ -259,6 +265,7 @@ public struct Panel: Sendable, Equatable {
     if more > 0 { out.append("\(more) more in Details") }
     if let blind { out.append(blind + "  ›") }
     if let notWatching { out.append(notWatching) }
+    if let notificationsOff { out.append(notificationsOff + "  [ Open Settings ]") }
     out += notes
     out.append("----")
     out.append(footer.map { "[ \($0) ]" }.joined(separator: "  "))

@@ -61,6 +61,9 @@ public struct Item: Sendable, Equatable {
   public var confidence: String?
   public var change: String?
   public var technique: String?
+  /// soc decided this needs the owner now, from how bad and how sure. Missing, or
+  /// not a boolean, is false: the app never decides it.
+  public var urgent = false
 }
 
 public struct Store: Sendable, Equatable {
@@ -326,7 +329,7 @@ public enum Decoding {
       advice: i["advice"].string, valueText: i["value_text"].string,
       whereText: i["where_text"].string, rule: i["rule"].string,
       confidence: i["confidence"].string, change: i["change"].string,
-      technique: i["technique"].string)
+      technique: i["technique"].string, urgent: i["urgent"].bool ?? false)
   }
 
   static func finishedRun(_ f: J) -> FinishedRun {

@@ -84,15 +84,18 @@ func waitUntil(
 func lookItem(
   id: String = "f0a1b2c3d4e", type: String = "finding", kind: String = "shell profile",
   severity: String = "medium", whereText: Any = ".zprofile", valueText: Any = NSNull(),
-  title: String = "A title from the program."
+  title: String = "A title from the program.", urgent: Any? = nil,
+  lastSeen: String = "2026-11-10T09:00:00Z"
 ) -> [String: Any] {
-  [
+  var item: [String: Any] = [
     "id": id, "type": type, "kind": kind, "severity": severity,
     "state": type == "finding" ? "open" : "current",
-    "first_seen": "2026-11-10T09:00:00Z", "last_seen": "2026-11-10T09:00:00Z", "title": title,
+    "first_seen": "2026-11-10T09:00:00Z", "last_seen": lastSeen, "title": title,
     "meaning": "Meaning from the program.", "advice": "Advice from the program.",
     "value_text": valueText, "where_text": whereText,
   ]
+  if let urgent { item["urgent"] = urgent }
+  return item
 }
 
 /// quiet.json with these things needing a look, and soc's total.
@@ -341,6 +344,10 @@ struct PanelPromises {
     let row = panel(looking([lookItem(whereText: full)])).rows[0]
     #expect(row.shownValue == "…/LaunchAgents/org.example.helper.plist")
     #expect(row.agentRequest.contains(full))
+    let home = panel(
+      looking([lookItem(whereText: "~/Library/LaunchAgents/org.example.helper.plist")]))
+    #expect(home.rows[0].shownValue == "…/LaunchAgents/org.example.helper.plist")
+    #expect(panel(looking([lookItem(whereText: "~/.zshrc")])).rows[0].shownValue == "~/.zshrc")
     let machine = panel(
       looking([lookItem(whereText: "a-machine-name-longer-than-forty-characters.example")]))
     #expect(machine.rows[0].shownValue == "a-machine-name-longer-than-forty-characters.example")
@@ -414,6 +421,10 @@ struct PanelPromises {
     }
     let row = panel(output("two.json")).rows[0]
     #expect(row.when != nil && row.whenFull != nil && row.whenFull != row.when)
+    // A card seen today says the time of day.
+    let recent = now.addingTimeInterval(-90)
+    let todays = panel(looking([lookItem(lastSeen: recent.formatted(.iso8601))])).rows[0]
+    #expect(todays.when == recent.formatted(date: .omitted, time: .shortened))
   }
 
   @Test("A time in the future is shown as a date, never as 'in 1 day'; the past is relative")
@@ -483,12 +494,19 @@ struct PanelPromises {
     let dir = fixtures.deletingLastPathComponent().appendingPathComponent("Sources/PersonalSOC")
     let files = try FileManager.default.contentsOfDirectory(atPath: dir.path)
     #expect(!files.isEmpty)
+    var opens = 0
     for f in files {
       let code = try String(contentsOf: dir.appendingPathComponent(f), encoding: .utf8)
       #expect(!code.contains("NSWindow"), "\(f)")
       #expect(!code.contains("Window("), "\(f)")
-      #expect(!code.contains("NSWorkspace.shared.open"), "\(f)")
+      opens += code.components(separatedBy: "NSWorkspace.shared.open").count - 1
     }
+    // The one thing it opens is the system's notification settings for itself.
+    let main = try String(
+      contentsOf: dir.appendingPathComponent("main.swift"), encoding: .utf8)
+    #expect(opens == 1)
+    #expect(main.contains("guard let url = Announcer.settingsURL("))
+    #expect(main.contains("NSWorkspace.shared.open(url)"))
   }
 }
 
@@ -1066,6 +1084,278 @@ struct Answers {
     #expect(await first.value)
     #expect(model.answering == nil)
     #expect(soc.callsSoFar.filter { $0.first == "finding" }.count == 1)
+  }
+}
+
+// MARK: - Notifications
+
+/// The system's notification centre, played: records what it is asked.
+@MainActor
+final class RecordingNotifier: Notifying {
+  var state: NotifyPermission
+  /// What the owner answers when asked; nil leaves the question unanswered.
+  var answer: NotifyPermission?
+  var asked = 0
+  var delivered: [Note] = []
+  init(_ state: NotifyPermission = .allowed, answer: NotifyPermission? = .allowed) {
+    self.state = state
+    self.answer = answer
+  }
+  func permission() async -> NotifyPermission { state }
+  func requestPermission() async {
+    asked += 1
+    if let answer { state = answer }
+  }
+  func deliver(_ note: Note) { delivered.append(note) }
+}
+
+/// soc's status for one store with these things needing a look.
+func status(_ items: [[String: Any]], store: String = "/tmp/example/store.db") -> Status {
+  var s = Interpret.reading(from: looking(items)).status!
+  s.store?.pathText = store
+  return s
+}
+
+@Suite("The owner hears about urgent things, once, and never about what was there before the app")
+@MainActor
+struct Notifications {
+  let a = lookItem(id: "fa", title: "Title A.", urgent: true)
+  let b = lookItem(id: "fb", whereText: "~/.ssh/authorized_keys", title: "Title B.", urgent: true)
+
+  @Test("An urgent item seen for the first time is notified once, by its id")
+  func firstAppearanceOnce() async {
+    let n = RecordingNotifier()
+    let ann = Announcer(notifier: n, memory: Forgetful())
+    await ann.saw(status([]))  // the baseline of this store
+    await ann.saw(status([a]))
+    await ann.saw(status([a]))
+    await ann.saw(status([b, a]))
+    #expect(n.delivered.map(\.id) == ["fa", "fb"])
+    #expect(n.delivered[0] == Note(id: "fa", title: "Title A.", body: ".zprofile"))
+  }
+
+  @Test("A restart of the app does not notify again: delivered ids are remembered")
+  func restart() async {
+    let memory = Forgetful()
+    let first = RecordingNotifier()
+    let ann = Announcer(notifier: first, memory: memory)
+    await ann.saw(status([]))
+    await ann.saw(status([a]))
+    let second = RecordingNotifier()
+    let again = Announcer(notifier: second, memory: memory)
+    await again.saw(status([a]))
+    await again.saw(status([a, b]))
+    #expect(first.delivered.map(\.id) == ["fa"])
+    #expect(second.delivered.map(\.id) == ["fb"])
+  }
+
+  @Test("The first reading of a store is the baseline: what is already there is not notified")
+  func baseline() async {
+    let n = RecordingNotifier()
+    let ann = Announcer(notifier: n, memory: Forgetful())
+    await ann.saw(status([a, b]))
+    await ann.saw(status([a, b]))
+    #expect(n.delivered.isEmpty)
+    // Each store has its own baseline.
+    await ann.saw(status([lookItem(id: "fc", urgent: true)], store: "/tmp/other/store.db"))
+    #expect(n.delivered.isEmpty)
+    // A reading with no list, or no store yet, sets no baseline.
+    let fresh = Announcer(notifier: n, memory: Forgetful())
+    var noList = status([a])
+    noList.needsALook = nil
+    await fresh.saw(noList)
+    await fresh.saw(status([]))
+    await fresh.saw(status([a]))
+    #expect(n.delivered.map(\.id) == ["fa"])
+  }
+
+  @Test("More than three new urgent things at once are one notification, in fixed words")
+  func burst() async {
+    let n = RecordingNotifier()
+    let ann = Announcer(notifier: n, memory: Forgetful())
+    await ann.saw(status([]))
+    let four = (1...4).map { lookItem(id: "f\($0)", urgent: true) }
+    await ann.saw(status(four))
+    #expect(
+      n.delivered == [Note(id: "needs-a-look-now", title: "4 things need a look now", body: nil)])
+    let three = (5...7).map { lookItem(id: "f\($0)", urgent: true) }
+    await ann.saw(status(four + three))
+    #expect(n.delivered.count == 1 + 3)
+  }
+
+  @Test("Only urgent items are notified: a missing or non-boolean urgent is false")
+  func onlyUrgent() async {
+    let n = RecordingNotifier()
+    let ann = Announcer(notifier: n, memory: Forgetful())
+    await ann.saw(status([]))
+    await ann.saw(
+      status([
+        lookItem(id: "f1", severity: "critical"), lookItem(id: "f2", urgent: false),
+        lookItem(id: "f3", urgent: "true"), lookItem(id: "f4", urgent: 1),
+      ]))
+    #expect(n.delivered.isEmpty)
+  }
+
+  @Test("A notification carries soc's title and the place, inert, and nothing else from a source")
+  func onlyTitleAndWhere() async {
+    let n = RecordingNotifier()
+    let ann = Announcer(notifier: n, memory: Forgetful())
+    await ann.saw(status([]))
+    var item = lookItem(
+      id: "f1", whereText: "~/x\u{202E}y", valueText: "VALUE", title: "T\u{1B}[31m", urgent: true)
+    item["meaning"] = "MEANING"
+    item["advice"] = "ADVICE"
+    item["kind"] = "KIND"
+    await ann.saw(status([item, lookItem(id: "f2", whereText: NSNull(), urgent: true)]))
+    #expect(n.delivered[0] == Note(id: "f1", title: "T\\u{1B}[31m", body: "~/x\\u{202E}y"))
+    #expect(n.delivered[1].body == nil)
+    let text = n.delivered.map { $0.title + ($0.body ?? "") }.joined()
+    for word in ["VALUE", "MEANING", "ADVICE", "KIND"] { #expect(!text.contains(word)) }
+  }
+
+  @Test("While notifications are off nothing is delivered, and turning them on brings no backlog")
+  func offMeansRemembered() async {
+    let n = RecordingNotifier(.off)
+    let ann = Announcer(notifier: n, memory: Forgetful())
+    await ann.saw(status([]))
+    await ann.saw(status([a]))
+    n.state = .allowed
+    await ann.saw(status([a]))
+    #expect(n.delivered.isEmpty)
+  }
+
+  @Test(
+    "Permission is asked once; declined or dismissed, the panel says so and it is never asked again"
+  )
+  func permissionOnce() async {
+    let memory = Forgetful()
+    let declines = RecordingNotifier(.notAsked, answer: .off)
+    let ann = Announcer(notifier: declines, memory: memory)
+    // Not asked yet is not "off": the question comes at launch.
+    await ann.checkPermission()
+    #expect(!ann.off)
+    await ann.askOnce()
+    #expect(declines.asked == 1)
+    #expect(ann.off)
+    await ann.askOnce()
+    await Announcer(notifier: declines, memory: memory).askOnce()
+    #expect(declines.asked == 1)
+    // Dismissed without an answer: still off, still not asked again.
+    let dismisses = RecordingNotifier(.notAsked, answer: nil)
+    let memory2 = Forgetful()
+    await Announcer(notifier: dismisses, memory: memory2).askOnce()
+    let later = Announcer(notifier: dismisses, memory: memory2)
+    await later.askOnce()
+    #expect(dismisses.asked == 1)
+    #expect(later.off)
+    // Allowed: no line. Already decided by the owner elsewhere: not asked.
+    let allows = RecordingNotifier(.notAsked, answer: .allowed)
+    let fine = Announcer(notifier: allows, memory: Forgetful())
+    await fine.askOnce()
+    #expect(!fine.off)
+    let decided = RecordingNotifier(.off)
+    let off = Announcer(notifier: decided, memory: Forgetful())
+    await off.askOnce()
+    #expect(decided.asked == 0)
+    #expect(off.off)
+  }
+
+  @Test(
+    "Reading the status never asks: the line follows System Settings, and only refresh reads it")
+  func refreshNeverAsks() async {
+    let n = RecordingNotifier(.off)
+    let model = AppModel(soc: GatedSoc(status: output("status.json")))
+    model.announcer = Announcer(notifier: n, memory: Forgetful())
+    await model.refresh()
+    #expect(model.notificationsOff)
+    let p = Panel.of(model.reading, now: Date(), notificationsOff: model.notificationsOff)
+    #expect(
+      p.lines.contains("Notifications are off, so urgent things show only here  [ Open Settings ]"))
+    n.state = .allowed
+    await model.refresh()
+    #expect(!model.notificationsOff)
+    #expect(n.asked == 0)
+    #expect(Panel.of(model.reading, now: Date()).notificationsOff == nil)
+  }
+
+  @Test("Every status the app reads is looked at for urgent things")
+  func modelAnnounces() async {
+    let memory = Forgetful()
+    let n = RecordingNotifier()
+    let first = AppModel(soc: GatedSoc(status: quiet()))
+    first.announcer = Announcer(notifier: n, memory: memory)
+    await first.refresh()  // the baseline of the fixtures' store
+    let then = AppModel(soc: GatedSoc(status: output("status.json")))
+    then.announcer = Announcer(notifier: n, memory: memory)
+    await then.refresh()
+    #expect(n.delivered.map(\.id) == ["f3c1e07a9b2"])
+  }
+
+  @Test("The button opens System Settings at this app's notifications")
+  func settingsURL() {
+    #expect(
+      Announcer.settingsURL(bundleId: "org.example.personal-soc")?.absoluteString
+        == "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=org.example.personal-soc"
+    )
+  }
+
+  @Test("Remembered ids are capped; ids soc still serves are never the ones forgotten")
+  func cap() async {
+    let memory = Forgetful()
+    let n = RecordingNotifier()
+    let ann = Announcer(notifier: n, memory: memory)
+    await ann.saw(status([]))
+    await ann.saw(status([a]))
+    let old = (0..<Announcer.rememberedIds).map { "old\($0)" }
+    memory.set(["fa"] + old, forKey: "notify.delivered")
+    await ann.saw(status([a]))  // fa is served again: it moves to the newest
+    let ids = memory.object(forKey: "notify.delivered") as? [String] ?? []
+    #expect(ids.count == Announcer.rememberedIds)
+    #expect(ids.last == "fa")
+    #expect(ids.first == "old1")
+    #expect(n.delivered.map(\.id) == ["fa"])
+    // The cap is a thousand ids, and an id served again and again takes one place.
+    #expect(Announcer.rememberedIds == 1000)
+    memory.set(Array(old.prefix(999)), forKey: "notify.delivered")
+    for _ in 0..<3 { await ann.saw(status([a])) }
+    let kept = memory.object(forKey: "notify.delivered") as? [String] ?? []
+    #expect(kept == Array(old.prefix(999)) + ["fa"])
+  }
+
+  @Test("While something urgent is served, the menu-bar icon takes its strongest form")
+  func urgentIcon() {
+    let p = panel(looking([lookItem(severity: "low", urgent: true)]))
+    #expect(p.urgent)
+    #expect(
+      Light.menuSymbol(p.light, worst: p.worst, urgent: p.urgent) == "exclamationmark.triangle.fill"
+    )
+    let calm = panel(looking([lookItem(severity: "low")]))
+    #expect(!calm.urgent)
+    #expect(
+      Light.menuSymbol(calm.light, worst: calm.worst, urgent: calm.urgent)
+        == "exclamationmark.triangle")
+  }
+
+  @Test("Only the running app can ask the system: tests and the library never touch it")
+  func onlyTheAppAsks() throws {
+    let root = fixtures.deletingLastPathComponent()
+    for dir in ["Sources/SOCCore", "Tests/SOCCoreTests"] {
+      for f in try FileManager.default.contentsOfDirectory(
+        atPath: root.appendingPathComponent(dir).path)
+      {
+        let code = try String(
+          contentsOf: root.appendingPathComponent(dir + "/" + f), encoding: .utf8)
+        #expect(!code.contains("import " + "UserNotifications"), "\(f)")
+      }
+    }
+    let main = try String(
+      contentsOf: root.appendingPathComponent("Sources/PersonalSOC/main.swift"), encoding: .utf8)
+    // Made once, in the launch of the real app, after the debug render paths have exited.
+    #expect(main.components(separatedBy: "SystemNotifier(").count == 2)
+    let launch = try #require(main.range(of: "func applicationDidFinishLaunching"))
+    let made = try #require(main.range(of: "SystemNotifier("))
+    let quit = try #require(main.range(of: "func applicationWillTerminate"))
+    #expect(launch.upperBound < made.lowerBound && made.upperBound < quit.lowerBound)
   }
 }
 

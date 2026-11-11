@@ -31,6 +31,10 @@ public final class AppModel: ObservableObject {
   @Published public private(set) var answering: String?
   /// Why soc did not take the last answer to a finding, by its id, in plain words.
   @Published public private(set) var refusals: [String: String] = [:]
+  /// Notifications cannot reach the owner: the panel says so in one quiet line.
+  @Published public private(set) var notificationsOff = false
+  /// Tells the owner about urgent things; nil in tests, renders and `--print-panel`.
+  public var announcer: Announcer?
 
   private let soc: any SocRunning
   private let launchedAt: Date
@@ -75,6 +79,11 @@ public final class AppModel: ObservableObject {
     let out = await soc.run(["status", "--json"] + extraArguments, timeout: Self.statusTimeout)
     reading = Interpret.reading(from: out)
     readAt = Date()
+    if let announcer {
+      await announcer.checkPermission()
+      notificationsOff = announcer.off
+      if let s = reading.status { await announcer.saw(s) }
+    }
     refreshing = false
   }
 

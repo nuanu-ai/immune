@@ -38,14 +38,18 @@ final class Delegate: NSObject, NSApplicationDelegate {
     item.button?.imagePosition = .imageLeading
     self.item = item
 
-    let panel = NSHostingController(rootView: PanelView(model: model, watcher: WatcherBox(watcher)))
+    let panel = NSHostingController(
+      rootView: PanelView(
+        model: model, watcher: WatcherBox(watcher), openSettings: { openNotificationSettings() }))
     panel.sizingOptions = [.preferredContentSize]
     popover.contentViewController = panel
     popover.behavior = .transient
 
     // @Published sends the new value before it is stored; paint from the value.
     watching = model.$reading.sink { [weak self] reading in
-      self?.paint(Light.of(reading), worst: Severity.worst(reading.status?.needsALook ?? []))
+      let items = reading.status?.needsALook ?? []
+      self?.paint(
+        Light.of(reading), worst: Severity.worst(items), urgent: items.contains { $0.urgent })
     }
 
     // Every minute: read the status, then start the hourly check if it is due.
@@ -74,7 +78,17 @@ final class Delegate: NSObject, NSApplicationDelegate {
     source.resume()
     termination = source
 
+    // The only place the app may ask for notifications: the running app. The
+    // question is asked once in the app's life (see `Announcer.askOnce`).
+    let announcer = Announcer(
+      notifier: SystemNotifier(onOpen: { [weak self] in self?.showPanel() }),
+      memory: UserDefaults.standard)
+    model.announcer = announcer
     Task { await model.refresh() }
+    Task {
+      await announcer.askOnce()
+      await model.refresh()
+    }
     watcher.start()
 
     // Test-only convenience, so the panel can be looked at without clicking.
@@ -94,7 +108,7 @@ final class Delegate: NSObject, NSApplicationDelegate {
     if await model.checkIfDue() { log("hourly check done") }
   }
 
-  private func paint(_ light: Light, worst: String?) {
+  private func paint(_ light: Light, worst: String?, urgent: Bool) {
     guard let button = item?.button else { return }
     let words: String
     switch light {
@@ -103,7 +117,7 @@ final class Delegate: NSObject, NSApplicationDelegate {
     case .cannotRead(let reason): words = "can't tell. " + reason
     }
     // The worst severity shown decides the weight: filled for high or critical.
-    let symbol = Light.menuSymbol(light, worst: worst)
+    let symbol = Light.menuSymbol(light, worst: worst, urgent: urgent)
     let image = NSImage(
       systemSymbolName: symbol, accessibilityDescription: "\(appName): \(words)")
     image?.isTemplate = true
@@ -111,6 +125,11 @@ final class Delegate: NSObject, NSApplicationDelegate {
     if case .attention(let n) = light { button.title = " \(n)" } else { button.title = "" }
     button.toolTip = "\(appName): \(words)"
     log("state: \(symbol) \(words)")
+  }
+
+  /// Opens the panel, as a click on a notification does.
+  func showPanel() {
+    if !popover.isShown { toggle() }
   }
 
   @objc private func toggle() {
@@ -124,6 +143,15 @@ final class Delegate: NSObject, NSApplicationDelegate {
     NSApp.activate()
     log("panel shown: \(popover.isShown)")
   }
+}
+
+/// System Settings, Notifications, at this app. The one thing the app opens.
+@MainActor
+func openNotificationSettings() {
+  guard let url = Announcer.settingsURL(bundleId: Bundle.main.bundleIdentifier ?? "") else {
+    return
+  }
+  NSWorkspace.shared.open(url)
 }
 
 /// One line per change of state on stderr, for whoever started the app from a
@@ -211,6 +239,14 @@ func printPanel(_ soc: any SocRunning, _ extra: [String]) -> Never {
   exit(0)
 }
 
+/// Debug only: a system that has notifications turned off.
+@MainActor
+final class SilentNotifier: Notifying {
+  func permission() async -> NotifyPermission { .off }
+  func requestPermission() async {}
+  func deliver(_ note: Note) {}
+}
+
 /// Debug only: draws the panel's own view off-screen, at the popover's width and
 /// at 2x, in light and dark appearance, to `<folder>/light.png` and `dark.png`,
 /// and the same panel as text to `panel.txt`, and exits. No screen capture: the view hierarchy is drawn into a bitmap. The
@@ -222,6 +258,13 @@ func printPanel(_ soc: any SocRunning, _ extra: [String]) -> Never {
 /// it with that reason typed.
 @MainActor
 func renderPanel(_ model: AppModel, _ watcher: Watcher, to folder: URL) async -> Never {
+  // `--render-notify-off` draws the line shown when notifications are off, with a
+  // stand-in for the system: a render never asks the system anything.
+  if CommandLine.arguments.contains("--render-notify-off") {
+    let memory = Forgetful()
+    memory.set(true, forKey: "notify.asked")
+    model.announcer = Announcer(notifier: SilentNotifier(), memory: memory)
+  }
   await model.refresh()
   let first = model.reading.status?.needsALook?.first { $0.type == "finding" }?.id
   if CommandLine.arguments.contains("--render-seen"), let first {
@@ -265,7 +308,7 @@ func renderPanel(_ model: AppModel, _ watcher: Watcher, to folder: URL) async ->
   let panel = Panel.of(
     model.reading, now: Date(), checking: model.runInProgress, notes: model.notes,
     notWatching: watcher.notWatching, form: model.form, answering: model.answering,
-    refusals: model.refusals)
+    refusals: model.refusals, notificationsOff: model.notificationsOff)
   try? (panel.lines.joined(separator: "\n") + "\n").write(
     to: folder.appendingPathComponent("panel.txt"), atomically: true, encoding: .utf8)
   watcher.stop()
