@@ -23,7 +23,7 @@ pub const WATCHED: [(Count, &str, bool); 9] = [
     (
         Count::Files(autorun::RUNS_ON_OPEN),
         "editor tasks that run when a project is opened",
-        false,
+        true,
     ),
     (Count::Installed(integrity::BUNDLES), "applications", false),
     (

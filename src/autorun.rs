@@ -32,6 +32,10 @@ use crate::watched::{Content, Entry, Look};
 
 /// The editor's task file, from the checkout.
 pub const TASKS: &str = ".vscode/tasks.json";
+/// The files of a checkout read here, each from the checkout's folder. The watcher subscribes
+/// to each of them in every checkout it holds, as it does to the hooks folder, so a file
+/// added here is watched within seconds with no change to the watcher.
+pub const FILES: [&str; 1] = [TASKS];
 /// The kind of watched file, the literal of `watched_as`.
 pub const RUNS_ON_OPEN: &str = "task run when the project folder is opened";
 /// The coverage kind of the reading of the task files of every checkout.

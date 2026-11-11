@@ -252,8 +252,15 @@ INSERT OR IGNORE INTO coverage_kind (name) VALUES ('folders macOS asks permissio
 /// current format takes them. Without them the status of a store of tens of thousands of
 /// things took seconds: each finding looked up its subject and its basis by a full scan, and
 /// each latest reading looked for its last full one the same way.
+///
+/// Every reading adds coverage rows, a watcher's too, and none is ever deleted. The latest
+/// reading of a kind, which a watcher asks for at every reading to know which machine it
+/// reads, is found through `coverage_latest_of_kind`. Without it, and with
+/// `only_failed_before` counting every earlier reading, a watcher's reading looked through
+/// every reading before it: 3 ms after ten readings, 124 ms after ten thousand.
 const INDEXES: &str = "
 CREATE INDEX IF NOT EXISTS coverage_reading ON coverage (reader, scope, kind);
+CREATE INDEX IF NOT EXISTS coverage_latest_of_kind ON coverage (reader, kind);
 CREATE INDEX IF NOT EXISTS assertion_subject ON assertion (subject, predicate);
 CREATE INDEX IF NOT EXISTS finding_basis_finding ON finding_basis (finding);
 ";
@@ -850,7 +857,8 @@ pub fn read_before(
 }
 
 /// Whether every earlier reading of this kind by this reader in this scope read nothing,
-/// and there was at least one.
+/// and there was at least one. Asked as two that stop at the first row that answers them, not
+/// as a count of every earlier reading: it is asked for each watched file at every reading.
 pub fn only_failed_before(
     conn: &Connection,
     reader: &str,
@@ -858,8 +866,10 @@ pub fn only_failed_before(
     kind: &str,
 ) -> rusqlite::Result<bool> {
     conn.query_row(
-        "SELECT COUNT(*) > 0 AND MAX(completeness != 'none') = 0 FROM coverage
-         WHERE reader = ?1 AND scope = ?2 AND kind = ?3",
+        "SELECT EXISTS (SELECT 1 FROM coverage WHERE reader = ?1 AND scope = ?2 AND kind = ?3)
+            AND NOT EXISTS (SELECT 1 FROM coverage
+                            WHERE reader = ?1 AND scope = ?2 AND kind = ?3
+                              AND completeness IN ('full', 'partial'))",
         params![reader, scope, kind],
         |r| r.get(0),
     )

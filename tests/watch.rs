@@ -780,7 +780,8 @@ fn the_hooks_of_the_checkouts_the_store_holds_are_watched() {
     mac.run();
     let mut w = mac.watch();
     let watching = w.next("watching");
-    assert_eq!(watching["places"], 28);
+    // The table's places, and the checkout's hooks and its files that run code by itself.
+    assert_eq!(watching["places"], 27 + CHECKOUT_PLACES);
     w.next("read");
     mac.put("dev/shop/.git/hooks/pre-commit", "#!/bin/sh\n");
     w.until("read", |v| count(v, "new") == 1);
@@ -788,6 +789,44 @@ fn the_hooks_of_the_checkouts_the_store_holds_are_watched() {
         mac.journaled("dev/shop/.git/hooks/pre-commit", "added"),
         vec!["located_on", "watched_as", "has_content"]
     );
+}
+
+/// The places the watcher subscribes to in each checkout: its hooks folder and its editor's
+/// task file.
+const CHECKOUT_PLACES: u64 = 2;
+
+/// An editor's task file with a task set to run when the folder is opened.
+const ON_OPEN: &str = r#"{
+    // tasks
+    "version": "2.0.0",
+    "tasks": [{ "label": "setup", "command": "node setup.js", "runOptions": { "runOn": "folderOpen" } }]
+}
+"#;
+
+#[test]
+fn an_editor_task_planted_while_the_watcher_runs_is_a_finding_within_seconds() {
+    // The incident's way in: a task that runs as soon as the folder is opened, planted in a
+    // project the store already holds. Waiting for the hourly check would leave an hour in
+    // which the owner opens the folder. The folder `.vscode` is not there yet when the
+    // watcher starts.
+    let mac = Mac::new("tasks");
+    mac.put("dev/shop/.git/HEAD", "ref: refs/heads/main\n");
+    mac.run();
+    let mut w = mac.watch().started();
+    let written = Instant::now();
+    mac.put("dev/shop/.vscode/tasks.json", ON_OPEN);
+    let read = w.until("read", |v| count(v, "opened") == 1);
+    assert!(written.elapsed() < Duration::from_secs(10), "read too late");
+    assert_eq!(count(&read, "new"), 1);
+    let items = mac.status()["result"]["needs_a_look"].clone();
+    let found = items
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["rule"] == "autorun.folder-open")
+        .unwrap_or_else(|| panic!("{items}"))
+        .clone();
+    assert_eq!(found["where_text"], "~/dev/shop/.vscode/tasks.json");
 }
 
 #[test]
@@ -1173,7 +1212,7 @@ fn a_folder_macos_asks_permission_for_is_never_entered_and_what_was_known_there_
     // A watcher started by the app does not look there either: the hooks of the project in
     // Documents are not among its places, those of the other one are.
     let mut w = mac.watch();
-    assert_eq!(w.next("watching")["places"], 28);
+    assert_eq!(w.next("watching")["places"], 27 + CHECKOUT_PLACES);
 }
 
 #[test]
@@ -1238,33 +1277,42 @@ fn this_mac_says_live_for_what_a_running_watcher_sees_and_hourly_for_the_rest() 
         .join("opt/homebrew/Cellar/fmt-tool/1.4/bin/fmt-tool");
     std::fs::create_dir_all(keg.parent().unwrap()).unwrap();
     std::fs::write(keg, "#!/bin/sh\n").unwrap();
+    mac.put("dev/shop/.git/HEAD", "ref: refs/heads/main\n");
+    mac.put("dev/shop/.vscode/tasks.json", ON_OPEN);
     mac.run();
     // Running programs are sampled only while a watcher runs.
     let sampled = "running programs and their connections";
-    let before = mac.status()["result"]["this_mac"]["watched"].clone();
-    assert!(!before.to_string().contains(sampled), "{before}");
+    let tasks = "editor tasks that run when a project is opened";
+    let how = |m: &Value, what: &str| {
+        m["watched"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|w| w["what"] == what)
+            .unwrap_or_else(|| panic!("{what}: {m}"))["how"]
+            .clone()
+    };
+    let before = mac.status()["result"]["this_mac"].clone();
+    assert!(!before["watched"].to_string().contains(sampled), "{before}");
+    // Seen within seconds only while a watcher runs.
+    assert_eq!(how(&before, tasks), "hourly");
     let mut w = mac.watch().started();
     mac.put(".zshrc", "one\n");
     w.until("read", |v| count(v, "new") == 1);
     let m = mac.status()["result"]["this_mac"].clone();
     assert_eq!(m["live"], true);
     assert!(m["live_read_at"].as_str().unwrap().ends_with('Z'), "{m}");
-    let how = |what: &str| {
-        m["watched"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|w| w["what"] == what)
-            .unwrap()["how"]
-            .clone()
-    };
-    assert_eq!(how("shell startup files"), "live");
-    assert_eq!(how("Homebrew packages"), "hourly");
-    assert_eq!(how(sampled), "sampled");
-    // A watcher that stopped samples nothing: the entry goes with it.
+    assert_eq!(how(&m, "shell startup files"), "live");
+    assert_eq!(how(&m, tasks), "live");
+    assert_eq!(how(&m, "Homebrew packages"), "hourly");
+    assert_eq!(how(&m, sampled), "sampled");
+    // A watcher that stopped samples nothing: the entry goes with it, and nothing is seen
+    // within seconds any more.
     assert!(w.stop().success());
-    let after = mac.status()["result"]["this_mac"]["watched"].clone();
-    assert!(!after.to_string().contains(sampled), "{after}");
+    let after = mac.status()["result"]["this_mac"].clone();
+    assert!(!after["watched"].to_string().contains(sampled), "{after}");
+    assert_eq!(how(&after, tasks), "hourly");
+    assert_eq!(how(&after, "shell startup files"), "hourly");
 }
 
 #[test]

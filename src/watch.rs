@@ -50,7 +50,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 
 use crate::fsevents::{self, EventId};
-use crate::{checkouts, status, store, watched};
+use crate::{autorun, checkouts, status, store, watched};
 
 /// How long the watcher waits after the last event before it reads: a burst of writes, such
 /// as an installer's or an editor's safe save, becomes one reading.
@@ -399,7 +399,7 @@ impl Watcher<'_> {
     /// The paths to watch now, from the table of places and the checkouts the store holds,
     /// and a problem line for each place that cannot be watched.
     fn derive(&self) -> Result<(Vec<PathBuf>, Vec<Value>), Box<dyn Error>> {
-        let (_, found) = self.holds()?;
+        let (_, found) = holds(self.args)?;
         let mut wanted = BTreeSet::new();
         let mut problems = Vec::new();
         for (place, folder) in places(&self.args.home, &self.args.system_root, &found) {
@@ -412,17 +412,6 @@ impl Watcher<'_> {
             }
         }
         Ok((wanted.into_iter().collect(), problems))
-    }
-
-    /// This machine's id and the checkouts the store holds on it.
-    fn holds(&self) -> Result<(String, Vec<checkouts::Checkout>), Box<dyn Error>> {
-        if !self.args.store.exists() {
-            return Ok((this_machine(None)?, Vec::new()));
-        }
-        let conn = store::open_read_only(&self.args.store)?;
-        let machine = this_machine(Some(&conn))?;
-        let found = held_checkouts(&conn, &machine, &self.args.home)?;
-        Ok((machine, found))
     }
 
     fn run(&mut self, rx: mpsc::Receiver<Msg>, at_start: Option<EventId>) {
@@ -575,43 +564,7 @@ impl Watcher<'_> {
         let Some(_lock) = self.lock()? else {
             return Ok(None);
         };
-        let (machine, found) = self.holds()?;
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?;
-        let at = now.as_secs() as i64;
-        let run_id = format!("{RUN_PREFIX}{}-{:09}", now.as_secs(), now.subsec_nanos());
-        let mut conn = store::open(&self.args.store)?;
-        let tx = conn.transaction()?;
-        store::put_entity(&tx, &machine)?;
-        let mut run = crate::Run {
-            tx: &tx,
-            home: &self.folder,
-            run_id: &run_id,
-            at,
-            machine: &machine,
-            events: Vec::new(),
-            notes: Vec::new(),
-            readers: 0,
-        };
-        // The reading and the rules of `soc run`: a change seen here is a finding at once.
-        let (rows, opened) = crate::watch_places(&mut run, &self.reader_args(), &found)?;
-        // What needs a look after it, counted by the code `soc status --json` counts it with.
-        let needs = status::needs(&tx, at)?.items.len();
-        tx.execute_batch(TABLE)?;
-        tx.execute(
-            "INSERT INTO watcher (id, last_read, event_id, volumes) VALUES (1, ?1, ?2, ?3)
-             ON CONFLICT (id) DO UPDATE SET last_read = excluded.last_read,
-                 event_id = excluded.event_id, volumes = excluded.volumes",
-            params![at, latest.to_string(), self.volumes],
-        )?;
-        tx.commit()?;
-        let count = |change: &str| rows.iter().filter(|r| r[0] == change).count();
-        Ok(Some(json!({
-            "needs_a_look_total": needs,
-            "opened": opened,
-            "new": count("new"),
-            "changed": count("changed"),
-            "gone": count("gone"),
-        })))
+        read_held(self.args, &self.folder, &self.volumes, latest).map(Some)
     }
 
     /// The run lock, waited for; `None` when the watcher was stopped, or orphaned, meanwhile.
@@ -640,25 +593,84 @@ impl Watcher<'_> {
         )?;
         Ok(Some((report.findings_opened, needs)))
     }
+}
 
-    /// What `watch_places` takes from the run's arguments: the home folder and the system root.
-    fn reader_args(&self) -> crate::Args {
-        crate::Args {
-            store: self.args.store.clone(),
-            machine: String::new(),
-            brew: None,
-            brew_input: None,
-            servers_input: None,
-            home: self.args.home.clone(),
-            checkouts_root: None,
-            sessions_root: None,
-            tailscale: None,
-            threats_input: None,
-            curl: None,
-            system_root: self.args.system_root.clone(),
-            indicators: None,
-            json: false,
-        }
+/// One reading of the watched places under the run lock the caller holds, as a small run of
+/// that reader alone, recording `latest` as handled with the identities of `volumes`. The
+/// counts are of this reading, the baseline counting as nothing new.
+fn read_held(
+    args: &WatchArgs,
+    folder: &Path,
+    volumes: &str,
+    latest: EventId,
+) -> Result<Value, Box<dyn Error>> {
+    let (machine, found) = holds(args)?;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?;
+    let at = now.as_secs() as i64;
+    let run_id = format!("{RUN_PREFIX}{}-{:09}", now.as_secs(), now.subsec_nanos());
+    let mut conn = store::open(&args.store)?;
+    let tx = conn.transaction()?;
+    store::put_entity(&tx, &machine)?;
+    let mut run = crate::Run {
+        tx: &tx,
+        home: folder,
+        run_id: &run_id,
+        at,
+        machine: &machine,
+        events: Vec::new(),
+        notes: Vec::new(),
+        readers: 0,
+    };
+    // The reading and the rules of `soc run`: a change seen here is a finding at once.
+    let (rows, opened) = crate::watch_places(&mut run, &reader_args(args), &found)?;
+    // What needs a look after it, counted by the code `soc status --json` counts it with.
+    let needs = status::needs(&tx, at)?.items.len();
+    tx.execute_batch(TABLE)?;
+    tx.execute(
+        "INSERT INTO watcher (id, last_read, event_id, volumes) VALUES (1, ?1, ?2, ?3)
+         ON CONFLICT (id) DO UPDATE SET last_read = excluded.last_read,
+             event_id = excluded.event_id, volumes = excluded.volumes",
+        params![at, latest.to_string(), volumes],
+    )?;
+    tx.commit()?;
+    let count = |change: &str| rows.iter().filter(|r| r[0] == change).count();
+    Ok(json!({
+        "needs_a_look_total": needs,
+        "opened": opened,
+        "new": count("new"),
+        "changed": count("changed"),
+        "gone": count("gone"),
+    }))
+}
+
+/// This machine's id and the checkouts the store holds on it.
+fn holds(args: &WatchArgs) -> Result<(String, Vec<checkouts::Checkout>), Box<dyn Error>> {
+    if !args.store.exists() {
+        return Ok((this_machine(None)?, Vec::new()));
+    }
+    let conn = store::open_read_only(&args.store)?;
+    let machine = this_machine(Some(&conn))?;
+    let found = held_checkouts(&conn, &machine, &args.home)?;
+    Ok((machine, found))
+}
+
+/// What `watch_places` takes from the run's arguments: the home folder and the system root.
+fn reader_args(args: &WatchArgs) -> crate::Args {
+    crate::Args {
+        store: args.store.clone(),
+        machine: String::new(),
+        brew: None,
+        brew_input: None,
+        servers_input: None,
+        home: args.home.clone(),
+        checkouts_root: None,
+        sessions_root: None,
+        tailscale: None,
+        threats_input: None,
+        curl: None,
+        system_root: args.system_root.clone(),
+        indicators: None,
+        json: false,
     }
 }
 
@@ -713,7 +725,8 @@ fn held_checkouts(
 }
 
 /// Every watched place on this machine as a path, and whether it is a folder whose entries
-/// are watched: the table of places, and the hooks folder of each checkout.
+/// are watched: the table of places, the hooks folder of each checkout, and the files of
+/// each checkout through which something runs by itself (`autorun::FILES`).
 fn places(home: &Path, system: &Path, found: &[checkouts::Checkout]) -> Vec<(PathBuf, bool)> {
     let mut out = Vec::new();
     for p in &watched::PLACES {
@@ -725,6 +738,11 @@ fn places(home: &Path, system: &Path, found: &[checkouts::Checkout]) -> Vec<(Pat
                     out.push((c.path.join(p.path), p.folder));
                 }
             }
+        }
+    }
+    for c in found {
+        for file in autorun::FILES {
+            out.push((c.path.join(file), false));
         }
     }
     out
@@ -890,6 +908,107 @@ mod tests {
             event_id,
             volumes: volumes.to_string(),
         }
+    }
+
+    #[test]
+    fn a_watchers_reading_after_ten_thousand_readings_is_as_quick_as_the_first() {
+        // The watcher reads at every change for as long as the Mac runs, and every reading
+        // adds to the history of what was looked through. A reading that grew with that
+        // history would after months take longer than the quiet second it waits, and hold
+        // the store from a full run and from the owner's status for as long.
+        let dir = std::env::temp_dir().join(format!("soc-watch-flat-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (home, sys) = (dir.join("home"), dir.join("sys"));
+        let put = |p: PathBuf, s: &str| {
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, s).unwrap();
+        };
+        put(home.join(".zshrc"), "export EDITOR=vi\n");
+        put(
+            home.join("Library/LaunchAgents/org.example.sync.plist"),
+            "<plist/>\n",
+        );
+        put(sys.join("etc/zshrc"), "setopt nobeep\n");
+        for c in ["api", "site", "shop"] {
+            put(
+                home.join(format!("dev/{c}/.git/HEAD")),
+                "ref: refs/heads/main\n",
+            );
+            put(
+                home.join(format!("dev/{c}/.git/hooks/pre-commit")),
+                "#!/bin/sh\n",
+            );
+            put(
+                home.join(format!("dev/{c}/.vscode/tasks.json")),
+                r#"{"tasks": [{"label": "dev", "runOptions": {"runOn": "folderOpen"}}]}"#,
+            );
+        }
+        put(dir.join("brew.json"), r#"{"formulae": [], "casks": []}"#);
+        let (store, absent) = (dir.join("store/store.db"), dir.join("absent"));
+        crate::run(&crate::Args {
+            store: store.clone(),
+            machine: "mac".into(),
+            brew: None,
+            brew_input: Some(dir.join("brew.json")),
+            servers_input: Some(absent.clone()),
+            home: home.clone(),
+            checkouts_root: Some(home.clone()),
+            sessions_root: Some(absent.clone()),
+            tailscale: Some(absent.clone()),
+            threats_input: Some(absent),
+            curl: None,
+            system_root: sys.clone(),
+            indicators: None,
+            json: false,
+        })
+        .unwrap();
+        let w = WatchArgs {
+            store: store.clone(),
+            system_root: sys,
+            home,
+            sample_input: None,
+            sample_every: SAMPLE,
+        };
+        let folder = crate::home(&store);
+        // The quickest of a few, so that a busy moment of the Mac is not taken for the cost.
+        let quickest = || {
+            (0..5)
+                .map(|_| {
+                    let t = Instant::now();
+                    read_held(&w, &folder, "", 1).unwrap();
+                    t.elapsed()
+                })
+                .min()
+                .unwrap()
+        };
+        let first = quickest();
+        // The history ten thousand readings of the watcher leave, made in one statement: the
+        // latest reading's rows again, each time under a run id of its own.
+        let conn = Connection::open(&store).unwrap();
+        let run: String = conn
+            .query_row(
+                "SELECT run_id FROM coverage WHERE run_id LIKE 'watch-%' ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "WITH RECURSIVE n (i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 10000)
+             INSERT INTO coverage (reader, run_id, observed_at, scope, kind, completeness,
+                                   reason, cause)
+             SELECT reader, run_id || '-' || i, observed_at, scope, kind, completeness, reason,
+                    cause
+             FROM n, coverage WHERE run_id = ?1",
+            [&run],
+        )
+        .unwrap();
+        drop(conn);
+        let later = quickest();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            later < first * 3 + Duration::from_millis(5),
+            "the first reading took {first:?}, one after ten thousand {later:?}"
+        );
     }
 
     #[test]
