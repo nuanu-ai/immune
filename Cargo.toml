@@ -18,3 +18,9 @@ serde_json = "1.0.154"
 # defined. Ordering versions is a silent mistake when written by hand; `semver` is dtolnay's,
 # follows Cargo's choices, parses strictly and has no dependencies of its own.
 semver = "1.0.28"
+# Editors' settings, workspaces and dev container files are JSON with comments, a format
+# someone else defines; Foundation reads it but drops the second of two equal keys, so it
+# cannot say what the editor, which keeps the last, reads. jsonc-parser (dprint) keeps every
+# property of an object in order in its tree, so equal keys stay visible. No feature is on,
+# and with none it has no dependencies.
+jsonc-parser = { version = "0.34.0", default-features = false }
