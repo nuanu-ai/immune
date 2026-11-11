@@ -1,8 +1,8 @@
 #!/bin/sh
 # All checks, in order: formatting, linter, tests.
 set -e
-export PATH="/opt/homebrew/opt/rustup/bin:$PATH"
 cd "$(dirname "$0")"
+. ./scripts/rust-path.sh
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
