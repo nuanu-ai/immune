@@ -39,8 +39,14 @@ pub const UNREACHED_SHOWN: usize = 100;
 pub const NO_READER_SHOWN: usize = 100;
 /// At most this many things that need a look are listed; the total is always given.
 pub const NEEDS_SHOWN: usize = 50;
-/// What this build cannot answer at all, in its own words.
-pub const CANNOT_JUDGE: [&str; 1] = ["no threat is matched against the estate yet"];
+/// What this build cannot answer at all, in its own words. One sentence a line: the builder
+/// who closes a gap deletes its line, and nothing else changes.
+pub const CANNOT_JUDGE: &[&str] = &[
+    // Closed by matching the catalogue's vulnerabilities (docs/threats.md).
+    "no vulnerability from the catalogue is matched against the estate yet",
+    // Closed by the reader of processes and connections, `src/processes.rs`.
+    "processes and connections are not read by this build",
+];
 /// The sections of a result that hold numbers, in the order of the result.
 const SECTIONS: [&str; 9] = [
     "needs_a_look",

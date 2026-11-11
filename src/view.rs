@@ -143,8 +143,30 @@ fn summary(
     out.push_str("</section>\n");
 
     out.push_str("<section id=\"cannot-judge\">\n<h2>What cannot be judged here</h2>\n<ul>\n");
-    for said in r["cannot_judge"].as_array().into_iter().flatten() {
-        let said = said.as_str().unwrap_or_default();
+    // What a watcher, `soc watch`, cannot see, when one is or was running on this store: the
+    // program's fixed words, and whether one runs now.
+    let last_read = crate::watch::last_read(conn)?;
+    let watching = !r["watching"].is_null();
+    let mut said: Vec<String> = r["cannot_judge"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|s| s.as_str().unwrap_or_default().to_string())
+        .collect();
+    if watching || last_read.is_some() {
+        said.extend(crate::watch::CANNOT_SEE.map(|s| format!("a watcher does not see {s}")));
+        writeln!(
+            out,
+            "<li>{} the watched places were last read by a watcher {}.</li>",
+            if watching {
+                "A watcher is running now;"
+            } else {
+                "No watcher is running now;"
+            },
+            utc_or(last_read, "never")
+        )?;
+    }
+    for said in said {
         let mut chars = said.chars();
         let said: String = chars
             .next()

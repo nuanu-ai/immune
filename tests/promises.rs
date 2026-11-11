@@ -7164,9 +7164,11 @@ fn unknown_is_never_given_as_zero_or_full() {
         assert!(none.get(section).is_none(), "{section}");
     }
     assert_eq!(none["not_computed"].as_array().unwrap().len(), 9);
-    assert_eq!(
-        none["cannot_judge"],
-        serde_json::json!(["no threat is matched against the estate yet"])
+    assert!(
+        none["cannot_judge"].as_array().unwrap().contains(
+            &"no vulnerability from the catalogue is matched against the estate yet".into()
+        ),
+        "{none}"
     );
 
     // A run that never finished: its start is all there is.
@@ -7868,7 +7870,10 @@ fn status_without_json_is_a_short_summary_for_a_person() {
                 == ["changed", "shell", "profile", ".zshrc"]),
         "{text}"
     );
-    assert!(text.contains("Cannot judge: no threat is matched against the estate yet."));
+    assert!(text.contains(
+        "Cannot judge: no vulnerability from the catalogue is matched against the estate yet."
+    ));
+    assert!(text.contains("Cannot judge: processes and connections are not read by this build."));
 }
 
 // Findings: what a rule found, kept until the owner answers it.
@@ -8966,8 +8971,9 @@ fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_f
     }
     // What cannot be judged here, and nothing answered yet.
     assert!(
-        section(page, "cannot-judge")
-            .contains("<li>No threat is matched against the estate yet.</li>"),
+        section(page, "cannot-judge").contains(
+            "<li>No vulnerability from the catalogue is matched against the estate yet.</li>"
+        ),
         "{page}"
     );
     assert!(!page.contains("id=\"answered\""));

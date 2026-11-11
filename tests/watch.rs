@@ -118,6 +118,21 @@ impl Mac {
         serde_json::from_slice(&out.stdout).unwrap()
     }
 
+    /// Every page `soc view` writes, joined.
+    fn view(&self) -> String {
+        let out = within(
+            self.soc()
+                .args(["view", "--no-open", "--store"])
+                .arg(self.store()),
+        );
+        assert!(out.status.success());
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .map(|path| std::fs::read_to_string(path).unwrap())
+            .collect()
+    }
+
     fn rows(&self, sql: &str) -> Vec<String> {
         let conn = Connection::open(self.store()).unwrap();
         let mut stmt = conn.prepare(sql).unwrap();
@@ -360,21 +375,39 @@ fn a_watchers_reading_shows_in_the_view_as_what_it_is_and_not_as_a_run_that_did_
     mac.put(".zshrc", "two\n");
     w.until("read", |v| count(v, "changed") == 1);
     drop(w);
-    let out = within(
-        mac.soc()
-            .args(["view", "--no-open", "--store"])
-            .arg(mac.store()),
-    );
-    assert!(out.status.success());
-    let pages: String = String::from_utf8(out.stdout)
-        .unwrap()
-        .lines()
-        .map(|path| std::fs::read_to_string(path).unwrap())
-        .collect();
+    let pages = mac.view();
     assert!(!pages.contains("did not finish"), "{pages}");
     let shown = "watcher&#39;s reading of the watched places: +0 added, 1 changed, 0 removed";
     assert!(pages.contains(shown), "{pages}");
     assert!(!pages.contains("were not read in this run"), "{pages}");
+}
+
+#[test]
+fn the_view_says_what_a_watcher_cannot_see_and_whether_one_runs_once_one_has_run() {
+    // The owner reading the view must know which changes no watcher would have caught, and
+    // whether one watches now; on a store no watcher ever read, neither is said.
+    let mac = Mac::new("view-watching");
+    mac.run();
+    let cannot = "A watcher does not see who made a change";
+    assert!(!mac.view().contains(cannot));
+    let mut w = mac.watch().started();
+    mac.put(".zshrc", "one\n");
+    w.until("read", |v| count(v, "new") == 1);
+    let now = mac.view();
+    assert!(now.contains(cannot), "{now}");
+    assert!(
+        now.contains("A watcher is running now; the watched places were last read by a watcher 2"),
+        "{now}"
+    );
+    drop(w);
+    let after = mac.view();
+    assert!(after.contains(cannot), "{after}");
+    assert!(
+        after.contains(
+            "No watcher is running now; the watched places were last read by a watcher 2"
+        ),
+        "{after}"
+    );
 }
 
 #[test]
@@ -880,4 +913,43 @@ fn a_watcher_whose_parent_is_gone_stops_and_frees_the_store() {
     }
     // It is gone and its id may be another process's now.
     std::mem::forget(reap);
+}
+
+#[test]
+fn a_watcher_whose_parent_is_gone_before_it_starts_stops_at_once() {
+    // As the app builder met it: a shell starts the watcher in the background and exits at
+    // once, so the watcher may begin life already handed to launchd. It must not take that
+    // for its parent and live on holding the store.
+    let mac = Mac::new("orphan-at-start");
+    let (out, pid) = (mac.root.join("out.txt"), mac.root.join("pid.txt"));
+    let status = Command::new("/bin/sh")
+        .env("HOME", mac.home())
+        .current_dir(mac.home())
+        .arg("-c")
+        .arg(r#""$0" watch --store "$1" --system-root "$2" > "$3" & echo $! > "$4""#)
+        .arg(env!("CARGO_BIN_EXE_soc"))
+        .arg(mac.store())
+        .arg(mac.sys())
+        .arg(&out)
+        .arg(&pid)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let watcher: i32 = std::fs::read_to_string(&pid)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let reap = Reap(watcher);
+    let end = Instant::now() + WAIT;
+    // SAFETY: kill(2) with signal 0 only asks whether the process exists.
+    while unsafe { libc::kill(watcher, 0) } == 0 {
+        assert!(Instant::now() < end, "the orphaned watcher lives on");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // It is gone and its id may be another process's now.
+    std::mem::forget(reap);
+    assert!(mac.status()["result"]["watching"].is_null());
+    let said = std::fs::read_to_string(&out).unwrap_or_default();
+    assert!(!said.contains("\"problem\""), "{said}");
 }

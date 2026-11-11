@@ -20,9 +20,12 @@
 //! own queue and only sends a batch into a channel; a signal handler only writes one byte into
 //! a pipe, and a thread waiting on that pipe sends `Stop`. Nothing else is shared.
 //!
-//! Output: one JSON object per line on stdout, flushed at once, and nothing else there. The
-//! watcher stops, with exit 0, when stdout is closed or its parent process is gone, so that an
-//! app that died leaves no watcher holding the store.
+//! Output: one JSON object per line on stdout, flushed at once, and nothing else there. Every
+//! line has `format`, `event` and `at`, and its fields flat beside them:
+//! `watching` (`places`, `cannot_see`), `read` (`new`, `changed`, `gone`, `opened`,
+//! `needs_a_look_total`), `alive`, and `problem` (`code`, `detail_text`). The watcher stops,
+//! with exit 0, when stdout is closed or its parent process is gone, so that an app that died
+//! leaves no watcher holding the store.
 
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -113,7 +116,16 @@ static SIGNAL_FD: AtomicI32 = AtomicI32::new(-1);
 /// Runs the watcher until it is stopped. Exit 0 on SIGTERM or SIGINT; the error envelope of
 /// `soc status --json` and a non-zero exit when it cannot watch at all.
 pub fn watch(args: &WatchArgs) -> ExitCode {
-    // First, so that a stop asked for at any moment after this is a clean one.
+    // The parent is taken before anything else: taken later, a parent that died meanwhile
+    // would leave launchd recorded as the parent, and the watcher would never stop. A parent
+    // that is launchd already is one that is gone, since nothing starts a watcher from launchd
+    // in this build; it stops at once with exit 0 and prints nothing.
+    // SAFETY: getppid(2) takes nothing and cannot fail.
+    let parent = unsafe { libc::getppid() };
+    if parent == 1 {
+        return ExitCode::SUCCESS;
+    }
+    // Next, so that a stop asked for at any moment after this is a clean one.
     let (tx, rx) = mpsc::channel();
     if let Err(e) = on_signals(tx.clone()) {
         return failed(&format!("the signal handlers could not be set: {e}"));
@@ -161,8 +173,7 @@ pub fn watch(args: &WatchArgs) -> ExitCode {
         paths: Vec::new(),
         volumes: String::new(),
         handled: None,
-        // SAFETY: getppid(2) takes nothing and cannot fail.
-        parent: unsafe { libc::getppid() },
+        parent,
     };
     let (problems, since) = match w.subscribe(stored) {
         Ok(found) => found,
@@ -751,15 +762,9 @@ pub fn status(store: &Path) -> Value {
     let since: Option<i64> = std::fs::read_to_string(folder.join(store::WATCH_LOCK))
         .ok()
         .and_then(|s| s.trim().parse().ok());
-    let last: Option<i64> = store::open_read_only(store).ok().and_then(|conn| {
-        if !has_table(&conn).ok()? {
-            return None;
-        }
-        conn.query_row("SELECT last_read FROM watcher WHERE id = 1", [], |r| {
-            r.get(0)
-        })
+    let last = store::open_read_only(store)
         .ok()
-    });
+        .and_then(|conn| last_read(&conn).ok().flatten());
     let last = last.filter(|last| since.is_some_and(|since| *last >= since));
     let iso = |secs: i64| json!(crate::view::iso(secs));
     json!({
@@ -767,6 +772,18 @@ pub fn status(store: &Path) -> Value {
         "last_read": last.map_or(Value::Null, iso),
         "cannot_see": CANNOT_SEE,
     })
+}
+
+/// When a watcher last read the watched places of this store, whichever watcher it was;
+/// `None` when none ever did.
+pub fn last_read(conn: &Connection) -> rusqlite::Result<Option<i64>> {
+    if !has_table(conn)? {
+        return Ok(None);
+    }
+    conn.query_row("SELECT last_read FROM watcher WHERE id = 1", [], |r| {
+        r.get(0)
+    })
+    .optional()
 }
 
 #[cfg(test)]

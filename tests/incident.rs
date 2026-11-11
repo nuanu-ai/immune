@@ -406,8 +406,19 @@ fn the_incident_of_7_october_is_reported_step_by_step() {
     // GAP: processes and connections are not read yet, so nothing is found here. Closed by
     // samples of processes and connections and their two rules (first pass, item 4,
     // `src/processes.rs`); this step then expects its finding here. Until the indicator
-    // list arrives the status does not say that connections are not read: see step 6.
+    // list arrives no indicator names connections as not matched against (see step 6); the
+    // status says it in `cannot_judge` instead.
     let seen = exactly(&e, &seen, None);
+    // Silence here is not "nothing runs": the status says by name what it does not read.
+    let processes = "processes and connections are not read by this build";
+    assert!(
+        e.status()["cannot_judge"]
+            .as_array()
+            .unwrap()
+            .contains(&processes.into()),
+        "{}",
+        e.status()
+    );
     drop(interpreter);
 
     // Step 3: code inside the application's bundle.

@@ -64,6 +64,8 @@ const USAGE: &str = "usage: soc run [--store <path>] [--machine-name <name>] [--
        soc owner [<name> retired|not-mine --reason <text> | <name> withdraw]
                  [--store <path>] [--tailscale <path>]
        soc watch [--store <path>] [--system-root <dir>]
+                 one JSON line per event: watching, read, alive, problem;
+                 a problem's code and detail_text sit beside event, flat
                  exits 5 when another watcher has the store";
 
 enum Cmd {
@@ -1054,7 +1056,8 @@ fn view(args: &ViewArgs) -> Result<(), Box<dyn Error>> {
     let (running, state) = read_all(&args.store)?;
     let state = state.ok_or("the store is gone")?;
     let absolute = std::path::absolute(&args.store)?;
-    let result = status::result(Some(&state), running, &absolute, now);
+    let mut result = status::result(Some(&state), running, &absolute, now);
+    result["watching"] = watch::status(&args.store);
     let conn = store::open_read_only(&args.store)?;
     let pages = view::pages(
         &conn,
