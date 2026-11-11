@@ -461,6 +461,7 @@ pub fn open(path: &Path) -> Res<Connection> {
     }
     check_format(&conn, path)?;
     conn.execute_batch(VOCABULARY)?;
+    crate::autorun::add_kinds(&conn)?;
     conn.execute_batch(OWNER)?;
     crate::owner::add_via(&conn)?;
     conn.execute_batch(THREATS)?;

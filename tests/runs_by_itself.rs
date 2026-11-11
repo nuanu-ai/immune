@@ -173,6 +173,44 @@ impl Estate {
         self.findings(false).into_iter().map(|f| f.0).collect()
     }
 
+    /// `soc status --json`'s result.
+    fn status(&self) -> serde_json::Value {
+        let out = Command::new(env!("CARGO_BIN_EXE_soc"))
+            .args(["status", "--json", "--store"])
+            .arg(self.store())
+            .output()
+            .unwrap();
+        serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()["result"].clone()
+    }
+
+    /// The page of what is watched on this Mac.
+    fn this_mac_page(&self) -> String {
+        let out = Command::new(env!("CARGO_BIN_EXE_soc"))
+            .args(["view", "--no-open", "--store"])
+            .arg(self.store())
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let pages = String::from_utf8(out.stdout).unwrap();
+        let path = pages
+            .lines()
+            .find(|p| p.ends_with("this-mac.html"))
+            .unwrap()
+            .to_string();
+        std::fs::read_to_string(path).unwrap()
+    }
+
+    /// The open findings as rule and where, sorted.
+    fn found(&self) -> Vec<(String, String)> {
+        let mut found: Vec<(String, String)> = self
+            .findings(false)
+            .into_iter()
+            .map(|f| (f.0, f.2))
+            .collect();
+        found.sort();
+        found
+    }
+
     /// The owner says he has seen every open finding.
     fn seen(&self) {
         let out = Command::new(env!("CARGO_BIN_EXE_soc"))
@@ -299,23 +337,29 @@ fn a_task_file_that_is_not_a_regular_file_or_is_too_large_is_a_failed_reading() 
 #[test]
 fn other_ways_a_project_runs_code_by_itself_are_named_where_they_are_present() {
     // They are not read, so what they would run is not known: the report says so by name,
-    // with how many checkouts hold each, and says nothing of what is not there.
+    // with how many checkouts hold each, and says nothing of what is not there, nor of what
+    // is read. A file under a worktree's `.git`, which is a file, is not there.
     let e = Estate::new("others");
     for rel in ["dev/a", "dev/b"] {
         let c = e.checkout(rel);
+        put(&c.join(".npmrc"), "ignore-scripts=false\n");
         put(&c.join("package.json"), "{\"scripts\": {}}");
     }
     put(&e.checkout("dev/c").join(".envrc"), "use flake\n");
+    put(
+        &e.home().join("dev/tree/.git"),
+        "gitdir: /invented/.git/worktrees/tree\n",
+    );
     e.run();
     assert_eq!(
         e.coverage(OTHERS_KIND),
-        "none|not read: .envrc (direnv, on entering the folder) in 1 checkout; package.json (scripts a package manager runs on install) in 2 checkouts"
+        "none|not read: .envrc in 1 checkout; .npmrc in 2 checkouts"
     );
     assert_eq!(
         e.lacks(OTHERS_KIND),
         [
-            "way a project runs code by itself|.envrc (direnv, on entering the folder)",
-            "way a project runs code by itself|package.json (scripts a package manager runs on install)"
+            "way a project runs code by itself|.envrc",
+            "way a project runs code by itself|.npmrc"
         ]
     );
     for c in ["dev/a", "dev/b", "dev/c"] {
@@ -324,6 +368,310 @@ fn other_ways_a_project_runs_code_by_itself_are_named_where_they_are_present() {
     e.run();
     assert_eq!(e.coverage(OTHERS_KIND), "full|");
     assert!(e.lacks(OTHERS_KIND).is_empty());
+}
+
+/// A project's `package.json` with these scripts.
+fn package(c: &Path, scripts: &str) {
+    put(
+        &c.join("package.json"),
+        &format!(
+            "{{\n  \"name\": \"shop\",\n  \"version\": \"1.0.0\",\n  \"scripts\": {{{scripts}}}\n}}\n"
+        ),
+    );
+}
+
+/// Settings of Claude Code for a project, with this more.
+fn agent(c: &Path, more: &str) {
+    put(
+        &c.join(".claude/settings.json"),
+        &format!("{{\"permissions\": {{\"deny\": [\"Read(./.env)\"]}}{more}}}"),
+    );
+}
+
+const HOOK: &str = r#", "hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "node .invented/start-91c2.js"}]}]}"#;
+const SERVER: &str =
+    r#"{"mcpServers": {"helper": {"command": "npx", "args": ["-y", "invented-helper-5d0e"]}}}"#;
+
+fn pair(rule: &str, place: &str) -> (String, String) {
+    (rule.to_string(), place.to_string())
+}
+
+#[test]
+fn a_planted_install_script_and_a_planted_agent_hook_are_findings_and_their_removal_is_not() {
+    // The incident's uncaught step and ChainDrop's: a script a package manager runs on
+    // install, a hook and a server an agent starts. Each is found by the rule of what runs it
+    // and named by its file and key; what else changes in those files is not read.
+    let e = Estate::new("planted");
+    let shop = e.checkout("dev/shop");
+    package(&shop, "\"test\": \"jest\"");
+    agent(&shop, "");
+    put(&shop.join(".mcp.json"), "{\"mcpServers\": {}}");
+    e.run();
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+
+    package(
+        &shop,
+        "\"test\": \"jest\", \"prepare\": \"node .invented/loader-7f3a.js\"",
+    );
+    agent(&shop, HOOK);
+    put(&shop.join(".mcp.json"), SERVER);
+    e.run();
+    assert_eq!(
+        e.found(),
+        [
+            pair(
+                "autorun.agent-start",
+                "~/dev/shop/.claude/settings.json#/hooks"
+            ),
+            pair(
+                "autorun.agent-start",
+                "~/dev/shop/.mcp.json#/mcpServers/helper"
+            ),
+            pair(
+                "autorun.package-install",
+                "~/dev/shop/package.json#/scripts/prepare"
+            ),
+        ]
+    );
+
+    // What runs only when asked, and keys no tool runs, change: nothing to say.
+    e.seen();
+    put(
+        &shop.join("package.json"),
+        "{\"name\": \"shop\", \"version\": \"1.1.0\", \"scripts\": {\"prepare\": \"node .invented/loader-7f3a.js\", \"test\": \"jest --ci\"}}",
+    );
+    agent(&shop, &format!("{HOOK}, \"model\": \"opus\""));
+    e.run();
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+
+    // Taken out: they leave what is watched, and that is nothing to find.
+    package(&shop, "\"test\": \"jest\"");
+    agent(&shop, "");
+    put(&shop.join(".mcp.json"), "{\"mcpServers\": {}}");
+    e.run();
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+    assert!(
+        e.rows(
+            "SELECT subject FROM assertion WHERE layer = 'live' AND predicate = 'watched_as'
+               AND subject LIKE '%#/%'"
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn the_text_of_a_script_or_a_command_is_never_kept_printed_or_returned() {
+    // A script is code someone else wrote: kept, it could be read as an instruction, and it
+    // may hold a token. Only its checksum is kept.
+    let e = Estate::new("no-text");
+    let shop = e.checkout("dev/shop");
+    e.run();
+    package(&shop, "\"postinstall\": \"node .invented/loader-7f3a.js\"");
+    agent(&shop, HOOK);
+    put(&shop.join(".mcp.json"), SERVER);
+    let mut said = e.run();
+    said.push_str(&e.status().to_string());
+    said.push_str(&format!("{:?}", e.findings(true)));
+    assert_eq!(e.rules().len(), 3, "{said}");
+    let mut kept = std::fs::read(e.store()).unwrap();
+    for file in walk(&e.0.join("raw")) {
+        kept.extend(std::fs::read(file).unwrap());
+    }
+    for text in ["loader-7f3a", "start-91c2", "invented-helper-5d0e"] {
+        assert!(!said.contains(text), "{text}: {said}");
+        assert!(
+            !kept.windows(text.len()).any(|w| w == text.as_bytes()),
+            "{text} is in the store"
+        );
+    }
+}
+
+/// Every file under a folder.
+fn walk(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            out.extend(walk(&path));
+        } else {
+            out.push(path);
+        }
+    }
+    out
+}
+
+#[test]
+fn a_file_that_cannot_be_read_by_key_faithfully_is_read_whole_and_is_never_unchanged() {
+    // The false calm: a benign script where one tool looks and a planted one where another
+    // does. Read by key it could look unchanged; read whole, any change is one.
+    let e = Estate::new("whole");
+    let shop = e.checkout("dev/shop");
+    package(&shop, "\"prepare\": \"husky\"");
+    e.run();
+    let kind = "package.json of each checkout, the part that runs by itself";
+    assert_eq!(e.coverage(kind), "full|");
+    package(
+        &shop,
+        "\"prepare\": \"node .invented/loader-7f3a.js\", \"prepare\": \"husky\"",
+    );
+    e.run();
+    assert_eq!(
+        e.found(),
+        [pair("autorun.package-install", "~/dev/shop/package.json")]
+    );
+    assert_eq!(
+        e.coverage(kind),
+        "full|read whole, not by key: dev/shop/package.json (two equal keys that tools read differently)"
+    );
+    // A byte order mark, and a file that is not strict JSON, are read whole too, and say why.
+    e.seen();
+    put(&shop.join("package.json"), "\u{feff}{\"scripts\": {}}");
+    put(
+        &e.checkout("dev/blog").join("package.json"),
+        "{\"scripts\": {},}",
+    );
+    e.run();
+    let coverage = e.coverage(kind);
+    assert!(
+        coverage.contains("dev/blog/package.json (not strict JSON: ")
+            && coverage.contains("dev/shop/package.json (starts with a byte order mark"),
+        "{coverage}"
+    );
+    assert_eq!(
+        e.found(),
+        [
+            pair("autorun.package-install", "~/dev/blog/package.json"),
+            pair("autorun.package-install", "~/dev/shop/package.json"),
+        ]
+    );
+}
+
+#[test]
+fn a_way_read_for_the_first_time_on_a_store_that_never_read_it_is_its_baseline() {
+    // A store of an earlier build held the checkouts and never read their package scripts:
+    // the first reading of them is the baseline, not a finding about every project. A script
+    // planted after it is found.
+    let e = Estate::new("upgrade");
+    let shop = e.checkout("dev/shop");
+    package(&shop, "\"prepare\": \"husky\"");
+    agent(&shop, HOOK);
+    e.run();
+    // As an earlier build left it: no reading of these kinds, nothing they asserted.
+    let db = Connection::open(e.store()).unwrap();
+    db.execute_batch(
+        "DELETE FROM coverage_lack WHERE coverage IN (SELECT id FROM coverage
+           WHERE kind LIKE '% of each checkout, the part that runs by itself'
+              OR scope LIKE '%#/%');
+         DELETE FROM assertion WHERE kind LIKE '% of each checkout, the part that runs by itself'
+              OR scope LIKE '%#/%';
+         DELETE FROM coverage WHERE kind LIKE '% of each checkout, the part that runs by itself'
+              OR scope LIKE '%#/%';",
+    )
+    .unwrap();
+    drop(db);
+    e.run();
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+    package(
+        &shop,
+        "\"prepare\": \"husky\", \"preinstall\": \"node x.js\"",
+    );
+    e.run();
+    assert_eq!(
+        e.found(),
+        [pair(
+            "autorun.package-install",
+            "~/dev/shop/package.json#/scripts/preinstall"
+        )]
+    );
+}
+
+#[test]
+fn every_known_way_is_on_the_page_and_the_limit_says_the_numbers_of_that_table() {
+    // A way the program does not read is never silent: present or not, it is on the page,
+    // and the one item of what is not covered counts the same table.
+    let e = Estate::new("ways");
+    for rel in ["dev/a", "dev/b"] {
+        let c = e.checkout(rel);
+        put(&c.join(".envrc"), "use flake\n");
+        package(&c, "");
+    }
+    put(&e.checkout("dev/c").join("bunfig.toml"), "preload = []\n");
+    e.run();
+    let page = e.this_mac_page();
+    let start = page.find("<section id=\"ways-code-runs\">").unwrap();
+    let section = &page[start..start + page[start..].find("</section>").unwrap()];
+    let rows: Vec<Vec<&str>> = section
+        .split("<tr>")
+        .skip(2)
+        .map(|row| {
+            row.split("<td")
+                .skip(1)
+                .map(|cell| &cell[cell.find('>').unwrap() + 1..cell.find("</td>").unwrap()])
+                .collect()
+        })
+        .collect();
+    let read = rows.iter().filter(|r| r[3].starts_with("Read")).count();
+    let not_read = rows.iter().filter(|r| r[3] == "Not read").count();
+    assert_eq!(read + not_read, rows.len());
+    let here: Vec<(&str, &str)> = rows
+        .iter()
+        .filter(|r| r[4] != "0" && r[4] != "Not looked for")
+        .map(|r| (r[0], r[4]))
+        .collect();
+    assert_eq!(
+        here,
+        [("package.json", "2"), ("bunfig.toml", "1"), (".envrc", "2")]
+    );
+    let present = rows
+        .iter()
+        .filter(|r| r[3] == "Not read" && r[4] != "0" && r[4] != "Not looked for")
+        .count();
+    assert_eq!(present, 2);
+
+    let item = |r: &serde_json::Value| {
+        r["not_covered"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|u| u["id"] == "project-autorun")
+            .unwrap()
+            .clone()
+    };
+    let u = item(&e.status());
+    assert_eq!(
+        u["title"],
+        format!(
+            "This version reads {read} of the {} known ways a project can make code run by itself.",
+            rows.len()
+        )
+    );
+    assert_eq!(
+        u["meaning"],
+        format!(
+            "{present} of the others are present in your projects and are not read, so a change in them would go unseen."
+        )
+    );
+    assert_eq!(
+        (&u["who"], &u["count"]),
+        (&"nothing".into(), &present.into())
+    );
+    // The status's item of what it does not understand no longer names them.
+    assert!(
+        e.status()["not_covered"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|u| u["id"] != "not-understood")
+    );
+    for c in ["dev/a", "dev/c"] {
+        std::fs::remove_dir_all(e.home().join(c)).unwrap();
+    }
+    std::fs::remove_file(e.home().join("dev/b/.envrc")).unwrap();
+    e.run();
+    assert_eq!(
+        item(&e.status())["meaning"],
+        "None of the others is present in your projects now."
+    );
 }
 
 // Indicators.
@@ -377,6 +725,26 @@ fn a_file_hash_on_the_list_is_found_in_a_watched_file_at_the_first_reading() {
     e.seen();
     e.run();
     assert!(e.rules().is_empty());
+}
+
+#[test]
+fn the_checksum_of_a_part_taken_from_a_file_is_never_matched_as_a_files_hash() {
+    // A file hash on a list says "this file is here". The checksum of a script taken out of
+    // `package.json` is not a file; taken for one, a list could name a file that is not there.
+    let e = Estate::new("part-hash");
+    let shop = e.checkout("dev/shop");
+    package(&shop, "\"prepare\": \"node x.js\"");
+    let (canonical, text) = (sha256_of("\"node x.js\""), sha256_of("node x.js"));
+    e.list(&format!(
+        r#"[{{"kind": "file:hashes.'SHA-256'", "value": "{canonical}"}},
+            {{"kind": "file:hashes.'SHA-256'", "value": "{text}"}}]"#
+    ));
+    e.run();
+    assert!(
+        e.rows("SELECT object FROM assertion WHERE predicate = 'has_content'")
+            .contains(&format!("value sha256:{canonical}"))
+    );
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
 }
 
 #[test]

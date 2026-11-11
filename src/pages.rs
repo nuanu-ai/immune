@@ -77,16 +77,13 @@ fn about(what: &str) -> &'static str {
         "git hooks in projects" => {
             "Scripts git runs by itself in your projects, for example before a commit."
         }
-        "editor tasks that run when a project is opened" => {
-            "Tasks an editor runs by itself as soon as a project folder is opened."
-        }
         "applications" => "Applications in the Applications folders, with who signed each.",
         "Homebrew packages" => "What Homebrew installed.",
         "npm packages" => "Packages npm installed for every project at once.",
         "app code kept outside the app" => {
             "Code that applications not made by Apple keep in your Library folder, outside the application itself."
         }
-        _ => "",
+        _ => crate::autorun::about(what),
     }
 }
 
@@ -359,9 +356,10 @@ fn watched_here(
     if m.watched.is_empty() && none.is_empty() {
         out.push_str("<p class=\"muted\">Nothing has been read on this Mac yet.</p>\n");
     }
-    // Every kind to list, in the order of `WATCHED`, with its group.
+    // Every kind to list, in the order of `covered::watched`, with its group.
+    let all = covered::watched();
     let mut kinds: Vec<(&str, Shown, &str)> = Vec::new();
-    for (_, what, fast) in covered::WATCHED {
+    for (_, what, fast) in all.iter().copied() {
         if let Some((_, n, how)) = m.watched.iter().find(|w| w.0 == what) {
             kinds.push((what, Shown::Count(*n), how));
         } else if none.contains(&what) {
@@ -371,7 +369,7 @@ fn watched_here(
     }
     // Any other kind the status names, as it names it.
     for (what, n, how) in &m.watched {
-        if *what != covered::SAMPLED && !covered::WATCHED.iter().any(|w| w.1 == *what) {
+        if *what != covered::SAMPLED && !all.iter().any(|w| w.1 == *what) {
             kinds.push((what, Shown::Count(*n), how));
         }
     }
@@ -604,7 +602,7 @@ pub fn this_mac(
     );
     let this = covered::this_machine(conn)?;
     let this = this.as_deref();
-    for (count, what, _) in covered::WATCHED {
+    for (count, what, _) in covered::watched() {
         writeln!(
             out,
             "<section id=\"{}\">\n<h2>{}</h2>\n<p class=\"muted\">{}</p>",
@@ -640,6 +638,8 @@ pub fn this_mac(
     }
     out.push_str("</section>\n");
 
+    ways(conn, &mut out, this)?;
+
     out.push_str("<section id=\"projects\">\n<h2>Projects</h2>\n<p class=\"muted\">Folders of code kept with git on this Mac, with how many of their dependencies are known from the files that list them.</p>\n");
     let list = projects(conn, this)?;
     if list.is_empty() {
@@ -658,6 +658,67 @@ pub fn this_mac(
     out.push_str("</section>\n");
     out.push_str(FOOT);
     Ok(out)
+}
+
+/// What the section of every known way a project runs code by itself says first.
+const WAYS: &str = "Files in a project that make a tool run code by itself during routine work, such as opening the folder or installing its packages. This version reads some of them and watches what they say; the others are only named here, so a change in them goes unseen. Every way known to this version is listed, whether it is in your projects or not.";
+
+/// Every known way a project runs code by itself, from the table in `autorun`: the file, what
+/// runs it, whether the tool asks first, whether it is read, and in how many projects here it
+/// is. None is left out, present or not.
+fn ways(conn: &Connection, out: &mut String, this: Option<&str>) -> Out {
+    use crate::autorun::{self, Part, Scope};
+    let (read, known) = autorun::counts();
+    writeln!(
+        out,
+        "<section id=\"ways-code-runs\">\n<h2>Ways a project can make code run by itself</h2>\n<p class=\"muted\">{}</p>\n<p>{}</p>",
+        esc(WAYS),
+        esc(&format!(
+            "This version reads {read} of the {known} known ways."
+        ))
+    )?;
+    let in_checkout = this.map(|t| format!("checkout:{t}/%")).unwrap_or_default();
+    let holding = |name: &str| -> rusqlite::Result<i64> {
+        conn.query_row(
+            "SELECT COUNT(DISTINCT subject) FROM assertion
+             WHERE layer = 'live' AND reader = ?1 AND predicate = ?2 AND object = ?3
+               AND subject LIKE ?4",
+            params![watched::READER, autorun::HOLDS, name, in_checkout],
+            |r| r.get(0),
+        )
+    };
+    out.push_str("<div class=\"scroll\"><table class=\"dense\">\n");
+    view::thead(
+        out,
+        &[
+            "File",
+            "What runs it",
+            "Asks first",
+            "Read",
+            "Projects here",
+        ],
+    );
+    for p in &autorun::POINTS {
+        let runs = format!("{} ({})", capital(p.trigger.words()), p.tool);
+        let read = match p.part {
+            Part::Present => "Not read",
+            Part::Entries(_) => "Read: every entry",
+            _ => "Read",
+        };
+        let here = match p.scope {
+            Scope::NamedBy(_) => "Not looked for".to_string(),
+            Scope::Checkout => grouped(holding(&p.name())?),
+        };
+        out.push_str("<tr>");
+        view::td(out, "mono", &p.name())?;
+        view::td(out, "", &runs)?;
+        view::td(out, "", p.asks.words())?;
+        view::td(out, "", read)?;
+        view::td(out, "", &here)?;
+        out.push_str("</tr>\n");
+    }
+    out.push_str("</tbody></table></div>\n</section>\n");
+    Ok(())
 }
 
 /// The watched files of one kind: where each is, when it was first seen and when it last
@@ -997,12 +1058,63 @@ pub fn technical() -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_way_read_is_in_every_place_derived_from_the_table_so_adding_a_row_changes_no_code() {
+        // Adding a product is adding a row. Every place that tells or acts on what runs by
+        // itself takes it from the table: a row read here that one of them missed would be
+        // read and never told, or told and never watched live.
+        use crate::autorun::{self, POINTS};
+        let dir = std::env::temp_dir().join(format!("soc-ways-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = crate::store::open(&dir.join("store.db")).unwrap();
+        let mut page = String::new();
+        ways(&conn, &mut page, None).unwrap();
+        let registered: Vec<String> = conn
+            .prepare("SELECT name FROM coverage_kind")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
+        for p in &POINTS {
+            assert!(page.contains(&format!("<td class=\"mono\">{}</td>", esc(&p.name()))));
+            if !p.read_here() {
+                continue;
+            }
+            let as_ = p.watched_as().unwrap_or_default();
+            let (_, what, line) = p.trigger.watched().unwrap_or_default();
+            assert!(!as_.is_empty() && !line.is_empty(), "{}", p.name());
+            for path in p.paths {
+                assert!(autorun::files().contains(path) && !path.contains('*'));
+            }
+            assert!(registered.contains(&p.kind()), "{}", p.kind());
+            assert!(autorun::kinds_of(as_).contains(&p.kind()));
+            assert!(
+                covered::watched()
+                    .iter()
+                    .any(|w| matches!(w.0, Count::Files(a) if a == as_) && w.1 == what)
+            );
+            assert_eq!(about(what), line);
+            let rules = covered::rules_about(what);
+            assert_eq!(rules.len(), 1, "{}", p.name());
+            assert_eq!(
+                (rules[0].technique, rules[0].severity, rules[0].confidence),
+                (p.technique, p.severity, p.confidence),
+                "{}",
+                p.name()
+            );
+        }
+    }
+
     /// The section of what is watched for a Mac where every kind is watched, and one kind
     /// that no rule speaks about.
     fn everything_watched() -> String {
-        let mut watched: Vec<(&'static str, i64, &'static str)> = covered::WATCHED
-            .iter()
-            .map(|(_, what, _)| (*what, 1, "hourly"))
+        let mut watched: Vec<(&'static str, i64, &'static str)> = covered::watched()
+            .into_iter()
+            .map(|(_, what, _)| (what, 1, "hourly"))
             .collect();
         watched.push((covered::SAMPLED, 1, "sampled"));
         watched.push(("things of a kind no rule knows", 1, "hourly"));
@@ -1017,7 +1129,10 @@ mod tests {
 
     /// The same for a Mac where the last check found none of anything, with no watcher.
     fn nothing_found() -> String {
-        let none: Vec<&'static str> = covered::WATCHED.iter().map(|(_, what, _)| *what).collect();
+        let none: Vec<&'static str> = covered::watched()
+            .into_iter()
+            .map(|(_, what, _)| what)
+            .collect();
         let mut out = String::new();
         watched_here(&mut out, &covered::ThisMac::unchecked(false), &none, None).unwrap();
         out
@@ -1062,9 +1177,9 @@ mod tests {
         // False calm: a kind listed as watched that no rule can fire about must say so in
         // words, or "watched" promises a warning that never comes.
         let page = everything_watched();
-        assert_eq!(kinds(&page).len(), covered::WATCHED.len() + 2, "{page}");
+        assert_eq!(kinds(&page).len(), covered::watched().len() + 2, "{page}");
         let empty = nothing_found();
-        assert_eq!(kinds(&empty).len(), covered::WATCHED.len() + 1, "{empty}");
+        assert_eq!(kinds(&empty).len(), covered::watched().len() + 1, "{empty}");
         for kind in kinds(&page).into_iter().chain(kinds(&empty)) {
             assert!(kind.starts_with("<li>"), "{kind}");
             let said = kind.contains("<ul class=\"rules\">\n<li>") || kind.contains(KEPT_AS_LIST);

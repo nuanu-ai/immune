@@ -6,7 +6,11 @@
 //! from the value Foundation returns: of two equal keys it keeps the first and an editor the
 //! last, so its value cannot stand in for the editor's.
 //!
-//! The option and the method are from `NSJSONSerialization.h` in the macOS SDK. Foundation is
+//! The same reader, in strict mode, also says which of two equal keys a reader that keeps the
+//! first would see: `first_of_equal_keys` writes back what it parsed, keys sorted. Compared
+//! with a reader that keeps the last, it tells whether a file's duplicate keys matter.
+//!
+//! The options and the methods are from `NSJSONSerialization.h` in the macOS SDK. Foundation is
 //! Objective-C, so the method is called through the runtime's `objc_msgSend`, cast to the
 //! method's exact signature, inside an autorelease pool that owns what it returns. The error
 //! is toll-free bridged to CFError, whose C functions read it before the pool is popped.
@@ -18,6 +22,8 @@ type CFIndex = isize;
 
 /// `NSJSONReadingJSON5Allowed`.
 const JSON5_ALLOWED: usize = 1 << 3;
+/// `NSJSONWritingSortedKeys`.
+const SORTED_KEYS: usize = 1 << 1;
 const K_CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
 /// `NSDebugDescriptionErrorKey`: where the reader stopped is only said there.
 const DEBUG_DESCRIPTION: &str = "NSDebugDescription";
@@ -38,6 +44,8 @@ unsafe extern "C" {
     fn CFStringGetCString(s: CFTypeRef, buffer: *mut c_char, size: CFIndex, encoding: u32) -> u8;
     fn CFErrorCopyUserInfo(error: CFTypeRef) -> CFTypeRef;
     fn CFDictionaryGetValue(dict: CFTypeRef, key: CFTypeRef) -> CFTypeRef;
+    fn CFDataGetLength(data: CFTypeRef) -> CFIndex;
+    fn CFDataGetBytePtr(data: CFTypeRef) -> *const u8;
 }
 
 #[link(name = "Foundation", kind = "framework")]
@@ -60,6 +68,15 @@ type JsonObjectWithData = unsafe extern "C" fn(
     class: *const c_void,
     selector: *const c_void,
     data: CFTypeRef,
+    options: usize,
+    error: *mut CFTypeRef,
+) -> CFTypeRef;
+
+/// `+[NSJSONSerialization dataWithJSONObject:options:error:]`.
+type DataWithJsonObject = unsafe extern "C" fn(
+    class: *const c_void,
+    selector: *const c_void,
+    object: CFTypeRef,
     options: usize,
     error: *mut CFTypeRef,
 ) -> CFTypeRef;
@@ -93,6 +110,45 @@ impl Drop for Owned {
 /// Whether Foundation reads the bytes as JSON5, and so as JSON with comments, with an object
 /// or a list at the top; else its reason, which says where it stopped and quotes nothing.
 pub fn reads(bytes: &[u8]) -> Result<(), String> {
+    parsed(bytes, JSON5_ALLOWED, |_| Ok(()))
+}
+
+/// Strict JSON as Foundation reads it, which of two equal keys keeps the first, written back
+/// with its keys sorted; else Foundation's reason.
+pub fn first_of_equal_keys(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    parsed(bytes, 0, |object| {
+        // SAFETY: the name is a NUL-terminated literal.
+        let (class, selector) = unsafe {
+            (
+                objc_getClass(c"NSJSONSerialization".as_ptr()),
+                sel_registerName(c"dataWithJSONObject:options:error:".as_ptr()),
+            )
+        };
+        let mut error: CFTypeRef = std::ptr::null();
+        // SAFETY: called with the method's exact signature: a class, a selector, the object
+        // Foundation itself just parsed, which is valid for writing, an NSUInteger and an
+        // NSError**. The data returned is autoreleased in the caller's pool, and is copied
+        // out here, while the pool holds it; CFData is toll-free bridged to NSData.
+        unsafe {
+            let send: DataWithJsonObject =
+                std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
+            let data = send(class, selector, object, SORTED_KEYS, &mut error);
+            if data.is_null() {
+                return Err(describe(error));
+            }
+            let len = CFDataGetLength(data) as usize;
+            Ok(std::slice::from_raw_parts(CFDataGetBytePtr(data), len).to_vec())
+        }
+    })
+}
+
+/// Parses the bytes with Foundation's reader and the options given and hands what it returns
+/// to `then` while the autorelease pool holds it; else Foundation's reason.
+fn parsed<T>(
+    bytes: &[u8],
+    options: usize,
+    then: impl FnOnce(CFTypeRef) -> Result<T, String>,
+) -> Result<T, String> {
     // SAFETY: both names are NUL-terminated literals; the static is only read.
     let (class, selector) = unsafe {
         let _ = std::ptr::read_volatile(&raw const NSFoundationVersionNumber);
@@ -109,7 +165,7 @@ pub fn reads(bytes: &[u8]) -> Result<(), String> {
         CFDataCreate(std::ptr::null(), bytes.as_ptr(), bytes.len() as CFIndex)
     })
     .ok_or("the file could not be handed to Foundation")?;
-    // SAFETY: a push is paired with the pop when `_pool` drops, after the error is read.
+    // SAFETY: a push is paired with the pop when `_pool` drops, after `then` has returned.
     let _pool = Pool(unsafe { objc_autoreleasePoolPush() });
     let mut error: CFTypeRef = std::ptr::null();
     // SAFETY: `objc_msgSend` is called with the method's exact signature: a class, a
@@ -117,12 +173,12 @@ pub fn reads(bytes: &[u8]) -> Result<(), String> {
     // What it returns, and the error, are autoreleased and live until the pool is popped.
     let object = unsafe {
         let send: JsonObjectWithData = std::mem::transmute(objc_msgSend as unsafe extern "C" fn());
-        send(class, selector, data.0, JSON5_ALLOWED, &mut error)
+        send(class, selector, data.0, options, &mut error)
     };
     if object.is_null() {
         return Err(describe(error));
     }
-    Ok(())
+    then(object)
 }
 
 /// Foundation's debug description of the error: what is wrong and at which line and column.
@@ -181,5 +237,17 @@ mod tests {
         assert!(e.contains("line 1, column 9"), "{e}");
         assert!(reads(b"").is_err());
         assert!(reads(b"\"just text\"").is_err());
+    }
+
+    #[test]
+    fn of_two_equal_keys_the_strict_reader_keeps_the_first_and_writes_keys_sorted() {
+        // What makes a duplicate key visible: a reader that keeps the last sees "b" here.
+        let written = first_of_equal_keys(br#"{"z": 1, "a": {"k": "a", "k": "b"}}"#).unwrap();
+        assert_eq!(written, br#"{"a":{"k":"a"},"z":1}"#);
+        // What it cannot read is refused, with where. Strict mode still takes a trailing
+        // comma, so it is never the judge of whether a file is strict JSON.
+        assert!(first_of_equal_keys(b"{\"a\": 1,}").is_ok());
+        let e = first_of_equal_keys(b"{\"a\": }").unwrap_err();
+        assert!(e.contains("line 1"), "{e}");
     }
 }

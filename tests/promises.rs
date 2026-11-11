@@ -6816,7 +6816,8 @@ fn a_checkout_that_is_gone_takes_its_hooks_with_it() {
         rows(
             &w.store(),
             "SELECT subject, predicate, object FROM assertion
-             WHERE layer = 'live' AND reader = 'watched-places' AND predicate != 'has_content'
+             WHERE layer = 'live' AND reader = 'watched-places'
+               AND predicate NOT IN ('has_content', 'holds_autorun_point')
              ORDER BY subject, predicate"
         ),
         [
@@ -6866,9 +6867,14 @@ fn a_checkout_that_is_gone_takes_its_hooks_with_it() {
 
     std::fs::remove_dir_all(&shop).unwrap();
     let report = w.run();
+    // Its hooks leave with it and are no event of their own; that it held a hooks folder
+    // leaves the list of which checkout holds which way a project runs code by itself.
     assert_eq!(
         rows(&w.store(), LAST_RUN_EVENTS),
-        [format!("removed|{shop_id}|located_on|machine:mac|NULL")]
+        [
+            format!("removed|{shop_id}|located_on|machine:mac|NULL"),
+            format!("removed|{shop_id}|holds_autorun_point|.git/hooks|NULL"),
+        ]
     );
     assert!(
         !rows(&w.store(), LIVE)
@@ -7050,11 +7056,19 @@ fn a_second_run_on_unchanged_watched_places_reports_no_changes() {
              WHERE reader = 'watched-places' AND scope = 'machine:mac' ORDER BY kind"
         ),
         [
+            ".claude/settings.json of each checkout, the part that runs by itself",
+            ".claude/settings.local.json of each checkout, the part that runs by itself",
+            ".cursor/hooks.json of each checkout, the part that runs by itself",
+            ".cursor/mcp.json of each checkout, the part that runs by itself",
+            ".gemini/settings.json of each checkout, the part that runs by itself",
+            ".mcp.json of each checkout, the part that runs by itself",
             "editor tasks set to run when a checkout's folder is opened",
             "launch agents and daemons",
             "other ways a checkout runs code by itself",
+            "package.json of each checkout, the part that runs by itself",
             "shell profiles of zsh and bash",
-            "ssh access files"
+            "ssh access files",
+            "ways a checkout runs code by itself, as present in each"
         ]
     );
     // The raw copy is the list of entries, kept once while it does not change, and every
@@ -8575,7 +8589,25 @@ fn lock_from(w: &Watch, url: &str) {
     );
 }
 
-const SAMPLES: [Sample; 11] = [
+/// A project's `package.json` with these scripts.
+fn package(w: &Watch, scripts: &str) {
+    put(
+        w.home(),
+        "dev/shop/package.json",
+        &format!("{{\"name\": \"shop\", \"version\": \"1.0.0\", \"scripts\": {{{scripts}}}}}\n"),
+    );
+}
+
+/// A project's settings for Claude Code with this more.
+fn agent_settings(w: &Watch, more: &str) {
+    put(
+        w.home(),
+        "dev/shop/.claude/settings.json",
+        &format!("{{\"permissions\": {{\"deny\": [\"Read(./.env)\"]}}{more}}}\n"),
+    );
+}
+
+const SAMPLES: [Sample; 13] = [
     Sample {
         rule: "watched.autostart",
         before: |w| {
@@ -8773,6 +8805,31 @@ const SAMPLES: [Sample; 11] = [
         silent: |w| tasks(w, "Default"),
     },
     Sample {
+        rule: "autorun.package-install",
+        before: |w| {
+            checkout(w.home(), "dev/shop");
+            package(w, "\"test\": \"jest\"");
+        },
+        raise: |w| package(w, "\"test\": \"jest\", \"prepare\": \"node setup.js\""),
+        // A script that runs only when asked, changed.
+        silent: |w| package(w, "\"test\": \"jest --ci\", \"build\": \"tsc\""),
+    },
+    Sample {
+        rule: "autorun.agent-start",
+        before: |w| {
+            checkout(w.home(), "dev/shop");
+            agent_settings(w, "");
+        },
+        raise: |w| {
+            agent_settings(
+                w,
+                ", \"hooks\": {\"SessionStart\": [{\"hooks\": [{\"type\": \"command\", \"command\": \"node setup.js\"}]}]}",
+            )
+        },
+        // A setting that runs nothing, changed.
+        silent: |w| agent_settings(w, ", \"model\": \"opus\""),
+    },
+    Sample {
         rule: "indicator.match",
         before: |w| {
             checkout(w.home(), "dev/shop");
@@ -8912,7 +8969,7 @@ fn a_change_in_a_watched_place_stays_open_through_quiet_runs_and_is_the_number_t
     // What is not covered comes after it by name, never counted as a thing to look at.
     assert!(
         first.contains(
-            " 1 thing needs a look, 1 new in this run. Limits of this version: vulnerability list not downloaded,"
+            " 1 thing needs a look, 1 new in this run. Limits of this version: ways a project runs code by itself that are not read, vulnerability list not downloaded,"
         ),
         "{first}"
     );
@@ -8972,8 +9029,11 @@ fn a_change_in_a_watched_place_stays_open_through_quiet_runs_and_is_the_number_t
             .all(|i| i["type"] == "finding")
     );
     assert_eq!(
-        r["not_covered"][0]["id"],
-        "vulnerability-list-not-downloaded"
+        (&r["not_covered"][0]["id"], &r["not_covered"][1]["id"]),
+        (
+            &"project-autorun".into(),
+            &"vulnerability-list-not-downloaded".into()
+        )
     );
 
     let (_, printed, _) = status_out(&w.store(), &[]);
@@ -10174,7 +10234,7 @@ fn on_a_mac_where_nothing_was_found_and_no_watcher_ran_every_rule_is_on_the_summ
     let told = section(&pages[0].1, "watched-here");
     let rules = findings_json(&w.store(), &[]);
     let rules = rules["rules"].as_array().unwrap();
-    assert_eq!(rules.len(), 12);
+    assert_eq!(rules.len(), 14);
     for r in rules {
         let title = r["title"].as_str().unwrap().replace('\'', "&#39;");
         assert!(told.contains(&title), "{}: {told}", r["id"]);

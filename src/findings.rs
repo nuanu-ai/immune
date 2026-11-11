@@ -278,22 +278,63 @@ fn app_code_outside() -> Rule {
 // ---- What runs by itself and indicators: see `autorun` and `indicators`. ----
 
 fn folder_open_task() -> Rule {
+    // Event Triggered Execution: code set to run on an event, here the folder being opened. No
+    // sub-technique names an editor's tasks; its procedure examples include `runOn` conditions
+    // written into coding tools' settings. The levels are the table's.
+    let (technique, severity, confidence) = autorun::levels(autorun::Trigger::OpenInEditor);
     Rule {
         id: "autorun.folder-open",
         kind: autorun::RUNS_ON_OPEN,
-        // Event Triggered Execution: code set to run on an event, here the folder being
-        // opened. No sub-technique names an editor's tasks; its procedure examples include
-        // `runOn` conditions written into coding tools' settings.
-        technique: Some("T1546"),
-        severity: "high",
-        confidence: "medium",
+        technique,
+        severity,
+        confidence,
         finds: "event",
         words: Words {
             title: "A project on this Mac now has a task that runs by itself when its folder is opened in the editor.",
             meaning: "Some projects use this to start a build or a server when you open them; it is also how code was planted in projects, so that it runs as soon as anyone opens the folder.",
             advice: "Do not open that folder in the editor until you have read the task file named here and know who added the task.",
         },
-        fires: |o| o.place == autorun::RUNS_ON_OPEN && (o.change == "new" || o.change == "changed"),
+        fires: |o| autorun::fires(&o.place, o.change, autorun::Trigger::OpenInEditor),
+    }
+}
+
+fn package_install() -> Rule {
+    // Installer Packages: its procedure examples are npm's pre- and post-install scripts.
+    let (technique, severity, confidence) = autorun::levels(autorun::Trigger::InstallPackages);
+    Rule {
+        id: "autorun.package-install",
+        kind: autorun::Trigger::InstallPackages
+            .watched()
+            .map_or("", |w| w.0),
+        technique,
+        severity,
+        confidence,
+        finds: "event",
+        words: Words {
+            title: "A project on this Mac now has a script that runs by itself when its packages are installed.",
+            meaning: "Some projects need this to build themselves or to set up their tools; it is also how code was planted in projects, so that it runs as soon as anyone installs their packages.",
+            advice: "Do not install that project's packages again until you have read the script named here. If you did not add it and no tool you use did, do not install them, and ask your agent to look into it.",
+        },
+        fires: |o| autorun::fires(&o.place, o.change, autorun::Trigger::InstallPackages),
+    }
+}
+
+fn agent_start() -> Rule {
+    // Event Triggered Execution: the event is an agent started in the folder.
+    let (technique, severity, confidence) = autorun::levels(autorun::Trigger::StartAgent);
+    Rule {
+        id: "autorun.agent-start",
+        kind: autorun::Trigger::StartAgent.watched().map_or("", |w| w.0),
+        technique,
+        severity,
+        confidence,
+        finds: "event",
+        words: Words {
+            title: "A project on this Mac now tells your coding agent to run a program or a tool by itself.",
+            meaning: "Projects use this to give the agent tools and to run checks; it is also how a project was made to run code as soon as an agent was started in its folder.",
+            advice: "Do not start your agent in that folder again until you have read what the file named here starts. If you did not add it and no tool you use did, do not start the agent there.",
+        },
+        fires: |o| autorun::fires(&o.place, o.change, autorun::Trigger::StartAgent),
     }
 }
 
@@ -344,7 +385,7 @@ fn detached_inline_code() -> Rule {
 // ---- End of processes. ----
 
 /// Every rule, in the order they are listed.
-pub fn rules() -> [Rule; 12] {
+pub fn rules() -> [Rule; 14] {
     [
         autostart(),
         shell_profile(),
@@ -356,6 +397,8 @@ pub fn rules() -> [Rule; 12] {
         package_files(),
         app_code_outside(),
         folder_open_task(),
+        package_install(),
+        agent_start(),
         indicator_match(),
         detached_inline_code(),
     ]

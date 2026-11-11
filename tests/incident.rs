@@ -377,6 +377,15 @@ fn exactly(
     before: &[(String, String)],
     new: Option<(String, String)>,
 ) -> Vec<(String, String)> {
+    exactly_all(e, before, new.into_iter().collect())
+}
+
+/// The same for a step that several findings are expected of.
+fn exactly_all(
+    e: &Estate,
+    before: &[(String, String)],
+    new: Vec<(String, String)>,
+) -> Vec<(String, String)> {
     let mut expected: Vec<_> = before.iter().cloned().chain(new).collect();
     expected.sort();
     let mut now = e.needs();
@@ -400,17 +409,22 @@ fn the_incident_of_7_october_is_reported_step_by_step() {
     // Baseline: the estate as it was, nothing to look at.
     e.run();
     assert_eq!(e.needs(), []);
-    let package_scripts = "package.json (scripts a package manager runs on install)";
-    assert!(!names(&e, OTHER_WAY, package_scripts));
 
-    // Step 1: the project with the loader and the task run on opening.
+    // Step 1: the project with the loader, the task run on opening and the loader put in
+    // front of a package script. Both are found, each by the rule of what runs it; the script
+    // is named by its file and key, and its text is not kept.
     clone_a_project_carrying_the_loader(&e);
     e.run();
-    let seen = exactly(&e, &[], Some(pair("autorun.folder-open", &tasks)));
-    // GAP: the loader put in front of a package script is not read. The status names
-    // package.json scripts as a way a project runs code that has no reader. Closed by a
-    // reader of package scripts (second pass).
-    assert!(names(&e, OTHER_WAY, package_scripts));
+    let prepare = format!("~/{PROJECT}/package.json#/scripts/prepare");
+    let seen = exactly_all(
+        &e,
+        &[],
+        vec![
+            pair("autorun.folder-open", &tasks),
+            pair("autorun.package-install", &prepare),
+        ],
+    );
+    assert!(!names(&e, OTHER_WAY, "package.json"));
 
     // Step 2: a detached interpreter holding a connection. The first sample only starts
     // tracking it; one a minute later finds it.
@@ -514,7 +528,7 @@ fn the_incident_of_7_october_is_reported_step_by_step() {
         severities.windows(2).all(|w| w[0] >= w[1]),
         "{severities:?}"
     );
-    assert_eq!(status["needs_a_look_total"], 7);
+    assert_eq!(status["needs_a_look_total"], 8);
 
     // The summary page names every one, with where it is.
     let out = Command::new(env!("CARGO_BIN_EXE_soc"))

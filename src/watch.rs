@@ -726,7 +726,7 @@ fn held_checkouts(
 
 /// Every watched place on this machine as a path, and whether it is a folder whose entries
 /// are watched: the table of places, the hooks folder of each checkout, and the files of
-/// each checkout through which something runs by itself (`autorun::FILES`).
+/// each checkout through which something runs by itself (`autorun::files`).
 fn places(home: &Path, system: &Path, found: &[checkouts::Checkout]) -> Vec<(PathBuf, bool)> {
     let mut out = Vec::new();
     for p in &watched::PLACES {
@@ -741,7 +741,7 @@ fn places(home: &Path, system: &Path, found: &[checkouts::Checkout]) -> Vec<(Pat
         }
     }
     for c in found {
-        for file in autorun::FILES {
+        for file in autorun::files() {
             out.push((c.path.join(file), false));
         }
     }

@@ -14,17 +14,26 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// What is watched on this Mac, in words a person knows: the kind of thing as the store
-/// counts it, the words, and whether the watcher sees it within seconds.
-pub const WATCHED: [(Count, &str, bool); 9] = [
-    (Count::Files(watched::AUTOSTART), "startup items", true),
-    (Count::Files(watched::PROFILE), "shell startup files", true),
-    (Count::Files(watched::SSH), "SSH files", true),
-    (Count::Files(watched::HOOK), "git hooks in projects", true),
-    (
-        Count::Files(autorun::RUNS_ON_OPEN),
-        "editor tasks that run when a project is opened",
-        true,
-    ),
+/// counts it, the words, and whether the watcher sees it within seconds. What runs by itself
+/// in projects is one kind per trigger whose ways are read, from the table in `autorun`.
+pub fn watched() -> Vec<(Count, &'static str, bool)> {
+    let mut out = vec![
+        (Count::Files(watched::AUTOSTART), "startup items", true),
+        (Count::Files(watched::PROFILE), "shell startup files", true),
+        (Count::Files(watched::SSH), "SSH files", true),
+        (Count::Files(watched::HOOK), "git hooks in projects", true),
+    ];
+    out.extend(
+        autorun::watched()
+            .into_iter()
+            .map(|(as_, what, _)| (Count::Files(as_), what, true)),
+    );
+    out.extend(INSTALLED);
+    out
+}
+
+/// Installed software, as the integrity reader counts it.
+const INSTALLED: [(Count, &str, bool); 4] = [
     (Count::Installed(integrity::BUNDLES), "applications", false),
     (
         Count::Installed(integrity::KEGS),
@@ -43,7 +52,7 @@ pub const WATCHED: [(Count, &str, bool); 9] = [
 pub const SAMPLED: &str = "running programs and their connections";
 
 /// The rules that tell the owner about a change in a kind of watched thing, by its words as
-/// `WATCHED` and `SAMPLED` give them. Derived from the rules themselves: a rule speaks about a
+/// `watched` and `SAMPLED` give them. Derived from the rules themselves: a rule speaks about a
 /// kind when it fires on what a run reports for a change of that kind. None for words that
 /// name no kind.
 pub fn rules_about(what: &str) -> Vec<findings::Rule> {
@@ -52,8 +61,8 @@ pub fn rules_about(what: &str) -> Vec<findings::Rule> {
         // a match of an indicator is not about one kind and is told apart.
         vec![crate::processes::DETACHED_INLINE]
     } else {
-        match WATCHED.iter().find(|(_, w, _)| *w == what) {
-            Some((Count::Files(as_), _, _)) => vec![*as_],
+        match watched().into_iter().find(|(_, w, _)| *w == what) {
+            Some((Count::Files(as_), _, _)) => vec![as_],
             Some((Count::Installed(kind), _, _)) => integrity::places(kind),
             None => Vec::new(),
         }
@@ -87,28 +96,36 @@ pub fn none_here(
     };
     let in_checkout = format!("checkout:{this}/");
     let mut out = Vec::new();
-    for (count, what, _) in WATCHED {
+    for (count, what, _) in watched() {
         if m.watched.iter().any(|w| w.0 == what) {
             continue;
         }
-        let (reader, kind) = match count {
-            Count::Files(as_) if as_ == autorun::RUNS_ON_OPEN => (watched::READER, autorun::KIND),
-            Count::Files(as_) => match watched::kinds().into_iter().find(|(w, _)| *w == as_) {
-                Some((_, kind)) => (watched::READER, kind),
-                None => continue,
-            },
-            Count::Installed(kind) => (integrity::READER, kind),
+        let (reader, kinds) = match count {
+            Count::Files(as_) => {
+                let mut kinds = autorun::kinds_of(as_);
+                kinds.extend(
+                    watched::kinds()
+                        .into_iter()
+                        .filter(|(w, _)| *w == as_)
+                        .map(|(_, kind)| kind.to_string()),
+                );
+                if kinds.is_empty() {
+                    continue;
+                }
+                (watched::READER, kinds)
+            }
+            Count::Installed(kind) => (integrity::READER, vec![kind.to_string()]),
         };
         // The reader looked at this Mac at its last reading: for files, any place of its; for
         // installed things, this very kind.
         let ran = latest.iter().any(|r| {
             r.reader == reader
                 && r.scope == this
-                && (matches!(count, Count::Files(_)) || r.kind == kind)
+                && (matches!(count, Count::Files(_)) || kinds.contains(&r.kind))
         });
         let failed_here = latest.iter().any(|r| {
             r.reader == reader
-                && r.kind == kind
+                && kinds.contains(&r.kind)
                 && (r.scope == this || r.scope.starts_with(&in_checkout))
                 && failed(r)
         });
@@ -231,16 +248,16 @@ pub fn this_mac(conn: &Connection, latest: &[Latest], live: bool) -> rusqlite::R
     // full run, reads only the watched places, which every reading of this Mac reads.
     let installed_read = mine.iter().any(|r| r.reader == integrity::READER);
     // A kind with nothing to watch on this Mac has no count and is left out.
-    let mut watched: Vec<(&'static str, i64, &'static str)> = WATCHED
-        .iter()
+    let mut watched: Vec<(&'static str, i64, &'static str)> = watched()
+        .into_iter()
         .filter_map(|(count, what, fast)| {
             let n = match count {
-                Count::Files(as_) => files.get(*as_),
-                Count::Installed(kind) if installed_read => installed.get(*kind),
+                Count::Files(as_) => files.get(as_),
+                Count::Installed(kind) if installed_read => installed.get(kind),
                 Count::Installed(_) => return None,
             };
-            let how = if live && *fast { "live" } else { "hourly" };
-            Some((*what, *n?, how))
+            let how = if live && fast { "live" } else { "hourly" };
+            Some((what, *n?, how))
         })
         .collect();
     // Running programs are sampled only while a watcher runs.
@@ -289,6 +306,8 @@ pub struct Cause {
     pub kind: &'static str,
     pub title: [&'static str; 2],
     pub meaning: &'static str,
+    /// What it means when the count is none, where that is said otherwise.
+    pub meaning_none: Option<&'static str>,
     pub advice: &'static str,
 }
 
@@ -302,6 +321,7 @@ pub const SERVERS_NOT_CHECKED: Cause = Cause {
         "{n} of your servers were not checked last time.",
     ],
     meaning: "Servers are checked only when you run the server check yourself. The last one did not finish on these, so changes on them go unseen for now.",
+    meaning_none: None,
     advice: "Run the server check again when it suits you.",
 };
 
@@ -315,6 +335,7 @@ pub const SERVERS_NOT_OPENED: Cause = Cause {
         "{n} servers could not be opened at the last server check.",
     ],
     meaning: "A server that refuses or does not answer cannot be checked; the reason is listed with each one.",
+    meaning_none: None,
     advice: "If you still use them, check that you can log in to them yourself and run the server check again. If one is no longer yours, mark it as retired.",
 };
 
@@ -328,6 +349,7 @@ pub const NOT_PERMITTED: Cause = Cause {
         "{n} files could not be opened because of their permissions.",
     ],
     meaning: "Their permissions do not let this program open them, so a change in them goes unseen. Where they are and the reason are listed with them.",
+    meaning_none: None,
     advice: "If they are yours, make them readable for your user account again; your agent can tell you how.",
 };
 
@@ -341,6 +363,7 @@ pub const READING_FAILED: Cause = Cause {
         "{n} things could not be read at the last check.",
     ],
     meaning: "Changes in them go unseen until they can be read again. Where they are and the reason are listed with them.",
+    meaning_none: None,
     advice: "Nothing to do for now: they are tried again at every check. If one stays, your agent can find out why.",
 };
 
@@ -354,6 +377,7 @@ pub const GUARDED: Cause = Cause {
         "Projects inside {examples} are not checked.",
     ],
     meaning: "macOS asks for permission before a program may look there, and this program does not ask on its own. If you keep no code there, nothing is missed.",
+    meaning_none: None,
     advice: "Nothing to do for now. Including them from the app comes in a later version.",
 };
 
@@ -366,8 +390,23 @@ pub const NOT_UNDERSTOOD: Cause = Cause {
         "Some files and packages are not understood by this version yet.",
         "Some files and packages are not understood by this version yet.",
     ],
-    meaning: "They tell what your projects or servers depend on or what runs by itself, for example {examples}. A change in them is not noticed yet.",
+    meaning: "They tell what your projects or servers depend on, for example {examples}. A change in them is not noticed yet.",
+    meaning_none: None,
     advice: "Nothing to do. Support for them comes in later versions.",
+};
+
+pub const PROJECT_AUTORUN: Cause = Cause {
+    id: "project-autorun",
+    who: NOTHING,
+    scope: "projects",
+    kind: "ways a project runs code by itself that are not read",
+    title: [
+        "This version reads {read} of the {known} known ways a project can make code run by itself.",
+        "This version reads {read} of the {known} known ways a project can make code run by itself.",
+    ],
+    meaning: "{n} of the others are present in your projects and are not read, so a change in them would go unseen.",
+    meaning_none: Some("None of the others is present in your projects now."),
+    advice: "Nothing to do. This is a limit of this version; the page lists every way and whether it is read.",
 };
 
 pub const THREATS_UNREAD: Cause = Cause {
@@ -380,6 +419,7 @@ pub const THREATS_UNREAD: Cause = Cause {
         "The list of vulnerabilities attackers are using could not be downloaded.",
     ],
     meaning: "This is normal when the Mac is offline. Until it is downloaded, new ones go unannounced.",
+    meaning_none: None,
     advice: "Nothing to do. It is tried again at every check.",
 };
 
@@ -393,17 +433,19 @@ pub const NOT_COMPARED: Cause = Cause {
         "Known vulnerabilities are not yet compared with what you have installed.",
     ],
     meaning: "The list of vulnerabilities attackers are using is downloaded at every check, but this version does not yet tell you which of them affect you.",
+    meaning_none: None,
     advice: "Nothing to do. This comes in a later version.",
 };
 
 /// Every cause, in the order items are listed: what the owner can fix first.
-pub const CAUSES: [&Cause; 8] = [
+pub const CAUSES: [&Cause; 9] = [
     &SERVERS_NOT_CHECKED,
     &SERVERS_NOT_OPENED,
     &NOT_PERMITTED,
     &READING_FAILED,
     &GUARDED,
     &NOT_UNDERSTOOD,
+    &PROJECT_AUTORUN,
     &THREATS_UNREAD,
     &NOT_COMPARED,
 ];
@@ -450,7 +492,7 @@ impl Uncovered {
             .take(EXAMPLES)
             .map(String::as_str)
             .collect();
-        words
+        numbers(words)
             .replace("{n}", &self.count.to_string())
             .replace("{examples}", &listed(&shown))
     }
@@ -460,7 +502,10 @@ impl Uncovered {
     }
 
     pub fn meaning(&self) -> String {
-        self.fill(self.cause.meaning)
+        match self.cause.meaning_none {
+            Some(none) if self.count == 0 => self.fill(none),
+            _ => self.fill(self.cause.meaning),
+        }
     }
 
     /// What is told apart from the words: the examples, unless the words name them, and the
@@ -475,6 +520,15 @@ impl Uncovered {
         out.extend(self.value.as_deref());
         out
     }
+}
+
+/// Words with the numbers of this build filled in: how many known ways a project runs code by
+/// itself are read, and how many are known.
+fn numbers(words: &str) -> String {
+    let (read, known) = autorun::counts();
+    words
+        .replace("{read}", &read.to_string())
+        .replace("{known}", &known.to_string())
 }
 
 /// `a`, `a and b`, `a, b and c`.
@@ -615,9 +669,33 @@ pub fn not_covered(
         });
     }
 
-    // What this version does not understand, wherever it was found: one item, the kinds
-    // counted once each.
-    let lacks = lacks(conn)?;
+    // What runs by itself in projects, against the table of every known way: how many this
+    // version reads, and how many of the others the latest look at projects found here. Told
+    // once projects were looked at.
+    let (ways, lacks): (Vec<_>, Vec<_>) = lacks(conn)?
+        .into_iter()
+        .partition(|(_, what, _)| what == autorun::OTHER_WAY);
+    let looked = latest.iter().any(|r| {
+        r.reader == watched::READER
+            && r.kind == autorun::OTHERS_KIND
+            && this.is_some_and(|t| r.scope == t)
+    });
+    let mut project_autorun = None;
+    if looked {
+        let names: BTreeSet<&str> = ways.iter().filter_map(|(_, _, n)| n.as_deref()).collect();
+        project_autorun = Some(Uncovered {
+            since: latest
+                .iter()
+                .filter(|r| r.kind == autorun::OTHERS_KIND)
+                .map(|r| r.at)
+                .max(),
+            examples: names.iter().map(|n| n.to_string()).collect(),
+            ..Uncovered::new(&PROJECT_AUTORUN, names.len())
+        });
+    }
+
+    // What this version does not understand otherwise, wherever it was found: one item, the
+    // kinds counted once each.
     let kinds: BTreeSet<String> = lacks
         .iter()
         .map(|(_, what, name)| plain_lack(what, name.as_deref()))
@@ -629,6 +707,7 @@ pub fn not_covered(
             ..Uncovered::new(&NOT_UNDERSTOOD, kinds.len())
         });
     }
+    out.extend(project_autorun);
 
     if let Some(Catalogue::Failed { reason, last, .. }) = catalogue {
         out.push(Uncovered {
@@ -742,7 +821,7 @@ pub fn causes_json() -> Value {
                     "id": c.id,
                     "who": c.who,
                     "kind": c.kind,
-                    "title": c.title[1],
+                    "title": numbers(c.title[1]),
                     "meaning": c.meaning,
                     "advice": c.advice,
                 })

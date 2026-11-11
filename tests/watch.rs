@@ -791,9 +791,10 @@ fn the_hooks_of_the_checkouts_the_store_holds_are_watched() {
     );
 }
 
-/// The places the watcher subscribes to in each checkout: its hooks folder and its editor's
-/// task file.
-const CHECKOUT_PLACES: u64 = 2;
+/// The places the watcher subscribes to in each checkout: its hooks folder and the eight
+/// files of the ways a project runs code by itself that are read: the editor's task file,
+/// `package.json`, and six files of coding agents' settings.
+const CHECKOUT_PLACES: u64 = 9;
 
 /// An editor's task file with a task set to run when the folder is opened.
 const ON_OPEN: &str = r#"{
@@ -1483,6 +1484,7 @@ fn a_sample_that_opens_a_finding_says_so_in_one_line_and_a_quiet_sample_says_not
     assert_eq!(
         ids,
         [
+            "project-autorun",
             "vulnerability-list-not-downloaded",
             "vulnerabilities-not-compared"
         ],

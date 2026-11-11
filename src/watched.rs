@@ -136,6 +136,9 @@ pub fn kinds() -> Vec<(&'static str, &'static str)> {
 pub enum Content {
     /// `sha256:<64 hex>` of a regular file.
     Hash(String),
+    /// `sha256:<64 hex>` of a part taken from a file, not of the file: said as
+    /// `value sha256:<64 hex>`, so that nothing takes it for a file's checksum.
+    Value(String),
     /// Present and not a regular file: what it is.
     Special(&'static str),
     /// A symbolic link whose target is not there.
@@ -149,6 +152,7 @@ impl Content {
     pub fn literal(&self) -> Option<String> {
         match self {
             Content::Hash(h) => Some(h.clone()),
+            Content::Value(h) => Some(format!("value {h}")),
             Content::Special(what) => Some(format!("not a regular file: {what}")),
             Content::Dangling => Some("dangling link".to_string()),
             Content::Unread(..) => None,

@@ -2988,10 +2988,12 @@ type Change = (&'static str, String, String, Option<String>);
 struct Placed {
     scope: String,
     watched_as: &'static str,
-    kind: &'static str,
+    kind: String,
     look: watched::Look,
     /// The checkout's `.git` is a file, so its hooks were not read.
     git_file: bool,
+    /// The completeness and reason the reading says, where its reader gives them.
+    coverage: Option<(&'static str, Option<String>)>,
 }
 
 /// Reads the watched places, moves what they hold through the lifecycle and raises what the
@@ -3041,9 +3043,10 @@ fn read_watched(
         placed.push(Placed {
             scope: machine.clone(),
             watched_as,
-            kind,
+            kind: kind.to_string(),
             look: watched::look_machine(&roots, kind),
             git_file: false,
+            coverage: None,
         });
     }
     for c in checkouts {
@@ -3057,21 +3060,29 @@ fn read_watched(
         placed.push(Placed {
             scope,
             watched_as: watched::HOOK,
-            kind: watched::HOOK_KIND,
+            kind: watched::HOOK_KIND.to_string(),
             look,
             git_file,
+            coverage: None,
         });
     }
-    // Editors' task files that hold a task set to run on opening, in every checkout, as one
+    // Each way a project runs code by itself that is read here, in every checkout, as one
     // reading of this machine: its first is the baseline, and a checkout that arrives later
-    // with such a task is new, which is what the rule is for.
-    placed.push(Placed {
-        scope: machine.clone(),
-        watched_as: autorun::RUNS_ON_OPEN,
-        kind: autorun::KIND,
-        look: autorun::look_all(checkouts.iter().map(|c| (c.path.as_path(), c.rel.as_str()))),
-        git_file: false,
-    });
+    // with such a part is new, which is what its trigger's rule is for.
+    for point in autorun::POINTS.iter().filter(|p| p.read_here()) {
+        let looked = autorun::look_all(
+            point,
+            checkouts.iter().map(|c| (c.path.as_path(), c.rel.as_str())),
+        );
+        placed.push(Placed {
+            scope: machine.clone(),
+            watched_as: point.watched_as().unwrap_or_default(),
+            kind: point.kind(),
+            coverage: Some(looked.coverage(point)),
+            look: looked.look,
+            git_file: false,
+        });
+    }
 
     // The raw copy: kind, path, checksum and link target, one line per entry; never content.
     let mut raw = String::new();
@@ -3103,7 +3114,7 @@ fn read_watched(
         let reading = Reading {
             reader: watched::READER,
             scope: &p.scope,
-            kind: p.kind,
+            kind: &p.kind,
             run_id: &run_id,
             at: run.at,
             observed_at: run.at,
@@ -3132,11 +3143,8 @@ fn read_watched(
                 ("full", _) => ("full", Some(watched::NO_HOOKS.to_string())),
                 other => other,
             }
-        } else if p.kind == autorun::KIND && p.look.entries.is_empty() {
-            match p.look.completeness() {
-                ("full", _) => ("full", Some(autorun::NO_TASK.to_string())),
-                other => other,
-            }
+        } else if let Some(coverage) = &p.coverage {
+            coverage.clone()
         } else {
             p.look.completeness()
         };
@@ -3393,25 +3401,43 @@ fn read_integrity(run: &mut Run, args: &Args) -> Result<Vec<findings::Observed>,
 
 // ---- What runs by itself and indicators: see src/autorun.rs and src/indicators.rs. ----
 
-/// Names the other ways a project runs code by itself that are present in checkouts and
-/// that this build does not read, each with how many checkouts hold it, in one reading of
-/// this machine. With none present it is read in full.
+/// Which known ways a project runs code by itself each checkout holds, read here or not, as
+/// one reading of this machine; and apart, as before, the ways present that this build does
+/// not read, each with how many checkouts hold it. With none present that one is read in full.
 fn read_other_autoruns(run: &mut Run, found: &[checkouts::Checkout]) -> Result<(), Box<dyn Error>> {
-    let (run_id, machine) = (run.run_id.to_string(), run.machine.to_string());
-    let mut present: BTreeMap<&str, usize> = BTreeMap::new();
+    let (run_id, machine, at) = (run.run_id.to_string(), run.machine.to_string(), run.at);
+    let mut present: BTreeMap<String, usize> = BTreeMap::new();
+    let mut statements = Vec::new();
     for c in found {
-        for name in autorun::others(&c.path) {
-            *present.entry(name).or_default() += 1;
+        let checkout = format!("checkout:{machine}/{}", c.rel);
+        for point in autorun::present(&c.path) {
+            statements.push(Statement {
+                subject: checkout.clone(),
+                predicate: autorun::HOLDS,
+                object: point.name(),
+                source_ref: c.rel.clone(),
+            });
+            if !point.read() {
+                *present.entry(point.name()).or_default() += 1;
+            }
         }
     }
-    let reading = Reading {
+    let on_machine = |kind| Reading {
         reader: watched::READER,
         scope: &machine,
-        kind: autorun::OTHERS_KIND,
+        kind,
         run_id: &run_id,
-        at: run.at,
-        observed_at: run.at,
+        at,
+        observed_at: at,
     };
+    run.apply(
+        &on_machine(autorun::PRESENT_KIND),
+        watched::BASIS,
+        "full",
+        None,
+        &Gap::default(),
+        &statements,
+    )?;
     let (completeness, reason, gap) = if present.is_empty() {
         ("full", None, Gap::default())
     } else {
@@ -3430,7 +3456,7 @@ fn read_other_autoruns(run: &mut Run, found: &[checkouts::Checkout]) -> Result<(
         ("none", Some(format!("not read: {}", named.join("; "))), gap)
     };
     run.apply(
-        &reading,
+        &on_machine(autorun::OTHERS_KIND),
         watched::BASIS,
         completeness,
         reason.as_deref(),
