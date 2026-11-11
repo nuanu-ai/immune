@@ -392,6 +392,8 @@ pub struct Found {
     pub answered_at: Option<i64>,
     pub reason: Option<String>,
     pub until: Option<i64>,
+    /// Where the thing is, as a person recognises it.
+    pub place: String,
 }
 
 /// The state of a finding at `now`. An `expected` mark hides the finding until it ends; at
@@ -426,6 +428,7 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Found>>> 
     if !has_table(conn)? {
         return Ok(None);
     }
+    let this = this_machine(conn)?;
     conn.prepare(
         "SELECT id, rule, about, state, change, first_seen_at, first_seen_run, last_seen_at,
                 last_seen_run, answered_at, reason, until_at
@@ -434,10 +437,12 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Found>>> 
     .query_map([], |r| {
         let (state, answered_at, until, last): (String, Option<i64>, Option<i64>, i64) =
             (r.get(3)?, r.get(9)?, r.get(11)?, r.get(7)?);
+        let about: String = r.get(2)?;
         Ok(Found {
             id: r.get(0)?,
             rule: r.get(1)?,
-            about: r.get(2)?,
+            place: place(&about, this.as_deref()),
+            about,
             state: state_at(state, answered_at, until, last, now),
             change: r.get(4)?,
             first_seen: (r.get(5)?, r.get(6)?),
@@ -579,11 +584,46 @@ pub struct Item {
     pub answer: Option<(i64, Option<String>, Option<i64>)>,
 }
 
-/// A file's path from its id, `file:<machine>/<path>`.
-fn path_of(id: &str) -> &str {
-    id.strip_prefix("file:")
+/// The machine the latest run ran on: the scope of its resolver reading.
+fn this_machine(conn: &Connection) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT scope FROM coverage WHERE reader = ?1 ORDER BY id DESC LIMIT 1",
+        [crate::resolver::READER],
+        |r| r.get(0),
+    )
+    .optional()
+}
+
+/// Where a thing is, from its entity id, as a person recognises it: a path under the home
+/// folder as `~/…`, a path outside it as it is, a machine by its name, a container with its
+/// machine, and the machine first for a file or checkout on a machine other than `this`.
+/// Anything else is shown as its id.
+pub fn place(id: &str, this: Option<&str>) -> String {
+    if let Some(name) = id.strip_prefix("machine:") {
+        return name.to_string();
+    }
+    if let Some(rest) = id.strip_prefix("container:")
+        && let Some((machine, name)) = rest.rsplit_once('/')
+    {
+        return format!("{name} on {}", place(machine, this));
+    }
+    let Some((machine, path)) = ["file:", "checkout:"]
+        .iter()
+        .find_map(|p| id.strip_prefix(p))
         .and_then(|rest| rest.split_once('/'))
-        .map_or(id, |(_, path)| path)
+    else {
+        return id.to_string();
+    };
+    let path = if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("~/{path}")
+    };
+    if this.is_some_and(|t| t != machine) {
+        format!("{}: {path}", place(machine, this))
+    } else {
+        path
+    }
 }
 
 /// A finding as an item; `None` for a rule this build does not have.
@@ -603,7 +643,7 @@ pub fn item(f: &Found) -> Option<Item> {
         last_seen: Some(f.last_seen.0),
         words: r.words,
         value: None,
-        place: Some(path_of(&f.about).to_string()),
+        place: Some(f.place.clone()),
         answer: f.answered_at.map(|at| (at, f.reason.clone(), f.until)),
     })
 }
@@ -647,6 +687,8 @@ pub fn needs(
     now: i64,
 ) -> rusqlite::Result<Needs> {
     let found = all(conn, now)?;
+    let this = this_machine(conn)?;
+    let this = this.as_deref();
     let findings_unknown = found.is_none();
     let mut items: Vec<Item> = found
         .unwrap_or_default()
@@ -655,7 +697,7 @@ pub fn needs(
         .filter_map(item)
         .collect();
     for u in &p.unreached {
-        items.push(unreached(u));
+        items.push(unreached(u, this));
     }
     for g in p.groups.iter().filter(|g| g.class == "failed") {
         let reason = g.reason.as_deref().unwrap_or_default();
@@ -666,7 +708,7 @@ pub fn needs(
             Some(g.latest),
         );
         i.value = g.reason.clone();
-        i.place = g.scopes.first().cloned();
+        i.place = g.scopes.first().map(|s| place(s, this));
         items.push(i);
     }
     if let Some(status::Catalogue::Failed { reason, at, .. }) = catalogue {
@@ -674,18 +716,31 @@ pub fn needs(
         i.value = Some(reason.clone());
         items.push(i);
     }
-    items.sort_by(|a, b| b.last_seen.cmp(&a.last_seen).then_with(|| a.id.cmp(&b.id)));
+    order(&mut items);
     Ok(Needs {
         items,
         findings_unknown,
     })
 }
 
-fn unreached(u: &Unreached) -> Item {
+fn unreached(u: &Unreached, this: Option<&str>) -> Item {
     let mut i = health(&UNREACHED, &[&u.scope], Some(u.since), Some(u.last));
     i.value = u.reason.clone();
-    i.place = Some(u.scope.clone());
+    i.place = Some(place(&u.scope, this));
     i
+}
+
+/// The order of everything that needs a look, and of findings: the most severe first, then
+/// the newest, then by id. The app shows the first few, so a severe finding is never under
+/// a mild item.
+pub fn order(items: &mut [Item]) {
+    let rank = |i: &Item| SEVERITIES.iter().position(|s| *s == i.severity);
+    items.sort_by(|a, b| {
+        rank(b)
+            .cmp(&rank(a))
+            .then_with(|| b.last_seen.cmp(&a.last_seen))
+            .then_with(|| a.id.cmp(&b.id))
+    });
 }
 
 /// An item in the machine-readable form. Text from a source is only in `_text` fields.
@@ -759,4 +814,42 @@ pub fn catalogue_json() -> Value {
         "health": health,
         "levels": { "severity": SEVERITIES, "confidence": CONFIDENCES },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::place;
+
+    #[test]
+    fn where_a_thing_is_reads_as_a_person_knows_it() {
+        // The owner recognises `~/.zshrc` and a project's folder, not an entity id.
+        let this = Some("machine:mac");
+        for (id, said) in [
+            ("file:machine:mac/.zshrc", "~/.zshrc"),
+            ("file:machine:mac//etc/zshrc", "/etc/zshrc"),
+            (
+                "file:machine:mac/dev/shop/.git/hooks/pre-commit",
+                "~/dev/shop/.git/hooks/pre-commit",
+            ),
+            (
+                "file:machine:mac//Volumes/work/shop/.git/hooks/pre-commit",
+                "/Volumes/work/shop/.git/hooks/pre-commit",
+            ),
+            (
+                "file:machine:web-1//etc/ssh/sshd_config",
+                "web-1: /etc/ssh/sshd_config",
+            ),
+            ("checkout:machine:mac/dev/shop", "~/dev/shop"),
+            ("machine:db-1", "db-1"),
+            ("container:machine:web-1/blog", "blog on web-1"),
+            (
+                "component:machine:mac/brew/jq",
+                "component:machine:mac/brew/jq",
+            ),
+        ] {
+            assert_eq!(place(id, this), said, "{id}");
+        }
+        // Not knowing which machine this is, a file is shown without one.
+        assert_eq!(place("file:machine:web-1/.zshrc", None), "~/.zshrc");
+    }
 }

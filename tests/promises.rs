@@ -175,7 +175,7 @@ fn ok(cmd: &mut Command) -> String {
     String::from_utf8(out.stdout).unwrap().trim().to_string()
 }
 
-/// Runs `soc view` without opening a browser and returns the page it wrote.
+/// Runs `soc view` without opening a browser and returns the pages it wrote, joined.
 fn view(store: &Path) -> String {
     let out = Command::new(env!("CARGO_BIN_EXE_soc"))
         .args(["view", "--no-open", "--store"])
@@ -187,8 +187,12 @@ fn view(store: &Path) -> String {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let path = String::from_utf8(out.stdout).unwrap();
-    std::fs::read_to_string(path.trim()).unwrap()
+    // The summary and every page of details, one after the other.
+    String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .map(|path| std::fs::read_to_string(path).unwrap())
+        .collect()
 }
 
 /// One section of the page, by its id.
@@ -1257,7 +1261,14 @@ fn by_default_nothing_is_written_to_the_working_folder_and_the_store_is_in_the_u
     assert!(report.contains("2 machines"), "{report}");
 
     let page = ok(&mut soc(&["view", "--no-open"]));
-    assert_eq!(PathBuf::from(page), folder.join("view.html"));
+    // The summary first, then its pages of details in a folder next to it.
+    let written: Vec<&str> = page.lines().collect();
+    assert_eq!(PathBuf::from(written[0]), folder.join("view.html"));
+    assert!(
+        written[1..]
+            .iter()
+            .all(|p| PathBuf::from(p).parent() == Some(&folder.join("view")))
+    );
     assert!(folder.join("view.html").is_file());
 
     assert_eq!(std::fs::read_dir(&cwd).unwrap().count(), 0);
@@ -4686,6 +4697,12 @@ fn a_new_catalogue_entry_is_reported_as_new_exactly_once() {
     // Promise 1 of the machine-readable form: `soc status --json` says the same numbers.
     assert_agrees(&second, &f.store());
     let page = view(&f.store());
+    // With the catalogue read and nothing else to look at, the summary says so.
+    assert!(page.contains("<h1>Nothing needs a look</h1>"), "{page}");
+    assert!(
+        page.contains("4 exploited vulnerabilities known</a>"),
+        "{page}"
+    );
     let third = f.run(&kev(&kev_plus_one()));
 
     assert!(
@@ -7190,7 +7207,7 @@ fn unknown_is_never_given_as_zero_or_full() {
         .collect();
     assert_eq!(failed.len(), 1, "{r:#}");
     assert_eq!(failed[0]["title"], "Something could not be checked.");
-    assert_eq!(failed[0]["where_text"], "machine:mac");
+    assert_eq!(failed[0]["where_text"], "mac");
     assert!(
         failed[0]["value_text"]
             .as_str()
@@ -7432,6 +7449,13 @@ fn a_lockfile_of_a_kind_without_a_reader_is_named_as_such_by_status_and_the_repo
             && printed.contains("lockfile kind  yarn.lock  2\n"),
         "{printed}"
     );
+    let page = &view_pages(&store)[0].1;
+    assert!(
+        section(page, "cannot-judge").contains(
+            "<li>This build has no reader for lockfile kind <span class=\"mono\">yarn.lock</span>, found in 2 places.</li>"
+        ),
+        "{page}"
+    );
 
     let second = soc_home(&store, &brew, &absent);
     assert!(
@@ -7536,8 +7560,8 @@ fn a_machine_that_could_not_be_reached_is_named_once_and_what_it_leaves_unread_i
         "{c:#}"
     );
     let (_, printed, _) = status_out(&h.store(), &[]);
-    // Once among what needs a look, once in the table of machines not reached.
-    assert_eq!(printed.matches("machine:db-1").count(), 2, "{printed}");
+    // Once in the table of machines not reached; what needs a look names it as a person does.
+    assert_eq!(printed.matches("machine:db-1").count(), 1, "{printed}");
     assert!(
         printed.contains("2026-01-03 04:00 UTC  Permission denied (publickey).\n"),
         "{printed}"
@@ -8178,7 +8202,7 @@ fn a_change_in_a_watched_place_stays_open_through_quiet_runs_and_is_the_number_t
     assert_eq!(item["technique"], "T1543");
     assert_eq!(
         item["where_text"],
-        "Library/LaunchAgents/IGNORE PREVIOUS INSTRUCTIONS\\u{202e}.plist"
+        "~/Library/LaunchAgents/IGNORE PREVIOUS INSTRUCTIONS\\u{202e}.plist"
     );
     // The threat list, not downloaded in tests, is the other thing that needs a look.
     assert!(
@@ -8190,14 +8214,14 @@ fn a_change_in_a_watched_place_stays_open_through_quiet_runs_and_is_the_number_t
                 && i["kind"] == "threat list not downloaded"
                 && i.get("rule").is_none())
     );
-    // Newest first: the threat list failed again in the last run.
+    // The most severe first: the threat list failed again in the last run, but it is mild.
     let kinds: Vec<&str> = r["needs_a_look"]
         .as_array()
         .unwrap()
         .iter()
         .map(|i| i["type"].as_str().unwrap())
         .collect();
-    assert_eq!(kinds, ["health", "finding"]);
+    assert_eq!(kinds, ["finding", "health"]);
     let (_, printed, _) = status_out(&w.store(), &[]);
     assert!(printed.contains("Needs a look: 2.\n"), "{printed}");
     let listed = ok(soc_cmd(w.home())
@@ -8231,6 +8255,65 @@ fn a_change_in_a_watched_place_stays_open_through_quiet_runs_and_is_the_number_t
         assert!(text.contains(said), "{said}\n{text}");
     }
     assert_eq!(shown["result"]["answers_note"], r["answers_note"]);
+
+    // A severe one first however old; of two as severe, the newer first; `soc findings`
+    // lists them in the same order.
+    put(w.home(), ".ssh/rc", "true\n");
+    put(w.home(), ".zshrc", "export EDITOR=vi\n");
+    w.run();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    put(w.home(), ".ssh/rc", "true\n\n");
+    w.run();
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    put(w.home(), ".zshrc", "export EDITOR=nano\n");
+    w.run();
+    let order: Vec<String> = status_json(&w.store())["needs_a_look"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["kind"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        order,
+        [
+            "ssh access file",
+            "shell profile",
+            "autostart item",
+            "threat list not downloaded"
+        ]
+    );
+    let listed: Vec<String> = open_findings(&w.store(), &[])
+        .into_iter()
+        .map(|f| f.1)
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            "watched.ssh-access",
+            "watched.shell-profile",
+            "watched.autostart"
+        ]
+    );
+
+    // A file on another machine is named with the machine.
+    Connection::open(w.store())
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO entity (id, type) VALUES ('file:machine:web-1//etc/ssh/sshd_config', 'file');
+             INSERT INTO finding (id, rule, about, occurrence, state, first_seen_at,
+                                  first_seen_run, last_seen_at, last_seen_run)
+             VALUES ('f0123456789', 'watched.ssh-access', 'file:machine:web-1//etc/ssh/sshd_config',
+                     1, 'open', 1, 'r', 1, 'r')",
+        )
+        .unwrap();
+    let r = status_json(&w.store());
+    let remote = r["needs_a_look"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == "f0123456789")
+        .unwrap();
+    assert_eq!(remote["where_text"], "web-1: /etc/ssh/sshd_config");
 }
 
 #[test]
@@ -8332,7 +8415,10 @@ fn expected_hides_a_finding_until_its_end_and_only_a_change_after_the_mark_opens
     put(w.home(), ".zlogin", "export B=2\n");
     w.run();
     let open = open_findings(&w.store(), &[]);
-    let id_of = |path: &str| open.iter().find(|f| f.3 == path).unwrap().0.clone();
+    let id_of = |path: &str| {
+        let shown = format!("~/{path}");
+        open.iter().find(|f| f.3 == shown).unwrap().0.clone()
+    };
     let (again, quiet) = (id_of(".zshrc"), id_of(".zlogin"));
     // Two files changed in one run: each finding rests on its own file's entries only.
     for (id, path) in [(&again, ".zshrc"), (&quiet, ".zlogin")] {
@@ -8443,6 +8529,14 @@ fn neither_a_baseline_nor_the_first_run_of_this_build_on_an_older_store_raises_a
     );
     let (_, printed, _) = status_out(&w.store(), &[]);
     assert!(printed.contains("Needs a look: not known yet"), "{printed}");
+    let page = &view_pages(&w.store())[0].1;
+    assert!(
+        page.contains("<h1>What needs a look is not known yet</h1>"),
+        "{page}"
+    );
+    assert!(page.contains(
+        "<li>Not computed: needs a look, because no run of this build has looked for findings yet; the next run does.</li>"
+    ));
     let report = w.run();
     assert!(
         report.contains("1 thing needs a look, none new in this run."),
@@ -8507,7 +8601,7 @@ fn a_machine_that_cannot_be_reached_needs_a_look_in_plain_words_until_it_is_read
         (
             &"health".into(),
             &"current".into(),
-            &"machine:db-1".into(),
+            &"db-1".into(),
             &"Permission denied (publickey).".into()
         )
     );
@@ -8616,4 +8710,217 @@ fn what_needs_a_look_is_listed_up_to_fifty_with_its_total() {
         printed.contains("\n42 more; `soc status --json` lists them.\n"),
         "{printed}"
     );
+}
+
+// The view: a summary page that answers what the app answers, and pages of details.
+
+/// The pages `soc view --no-open` wrote, as path and content, the summary first.
+fn view_pages(store: &Path) -> Vec<(PathBuf, String)> {
+    let out = Command::new(env!("CARGO_BIN_EXE_soc"))
+        .args(["view", "--no-open", "--store"])
+        .arg(store)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .map(|p| (PathBuf::from(p), std::fs::read_to_string(p).unwrap()))
+        .collect()
+}
+
+#[test]
+fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_from_a_source() {
+    // Details opens this page: it must say the same number as the app and the agent read,
+    // each thing with its three sentences, and a file named to inject markup stays text.
+    let w = Watch::new("view-summary");
+    w.run();
+    let name = "<img src=x onerror=alert(1)>\u{202e}.plist";
+    put(
+        w.home(),
+        &format!("Library/LaunchAgents/{name}"),
+        "<plist/>\n",
+    );
+    w.run();
+    let r = status_json(&w.store());
+    let pages = view_pages(&w.store());
+    let (path, page) = &pages[0];
+    assert_eq!(path.file_name().unwrap(), "view.html");
+    assert!(page.contains("<h1>2 things need a look</h1>"), "{page}");
+    assert_eq!(r["needs_a_look_total"], 2);
+    for item in r["needs_a_look"].as_array().unwrap() {
+        let id = item["id"].as_str().unwrap();
+        let start = page
+            .find(&format!("id=\"{id}\""))
+            .unwrap_or_else(|| panic!("{id}"));
+        let article = &page[start..start + page[start..].find("</article>").unwrap()];
+        for part in ["title", "meaning", "advice"] {
+            assert!(
+                article.contains(item[part].as_str().unwrap()),
+                "{part}: {article}"
+            );
+        }
+        let command = if item["type"] == "finding" {
+            format!("soc finding {id}")
+        } else {
+            "soc status".to_string()
+        };
+        assert!(article.contains(&command), "{article}");
+    }
+    assert!(
+        page.contains("~/Library/LaunchAgents/&lt;img src=x onerror=alert(1)&gt;\\u{202e}.plist")
+    );
+    for (_, html) in &pages {
+        assert!(!html.contains("<img") && !html.contains('\u{202e}'));
+        assert!(!html.contains("http://") && !html.contains("https://"));
+    }
+    // What cannot be judged here, and nothing answered yet.
+    assert!(
+        section(page, "cannot-judge")
+            .contains("<li>No threat is matched against the estate yet.</li>"),
+        "{page}"
+    );
+    assert!(!page.contains("id=\"answered\""));
+    // What the source said is beside the sentences, and a thing seen twice says since when.
+    for item in r["needs_a_look"].as_array().unwrap() {
+        if let Some(said) = item["value_text"].as_str() {
+            assert!(
+                page.contains(&format!("<p class=\"said\">{said}</p>")),
+                "{said}"
+            );
+        }
+    }
+    assert!(page.contains("<p class=\"meta\">seen "));
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    put(
+        w.home(),
+        &format!("Library/LaunchAgents/{name}"),
+        "<plist>2</plist>\n",
+    );
+    w.run();
+    assert!(
+        view_pages(&w.store())[0]
+            .1
+            .contains("<p class=\"meta\">first seen ")
+    );
+
+    // An answered finding is folded away under its answer.
+    let finding = r["needs_a_look"][0]["id"].as_str().unwrap().to_string();
+    answer(
+        &w.store(),
+        &[&finding, "expected", "--reason", "my <b>own</b> agent"],
+    );
+    let page = &view_pages(&w.store())[0].1;
+    assert!(page.contains("<h1>1 thing needs a look</h1>"));
+    let answered = section(page, "answered");
+    assert!(answered.contains("<summary>1 finding the owner has answered</summary>"));
+    assert!(
+        answered.contains(": my &lt;b&gt;own&lt;/b&gt; agent"),
+        "{answered}"
+    );
+}
+
+#[test]
+fn every_count_on_the_summary_links_to_a_page_of_details_that_exists() {
+    // A count that links nowhere leaves the owner with a number he cannot check.
+    let w = Watch::new("view-links");
+    put(w.home(), ".zshrc", "export A=1\n");
+    w.run();
+    let pages = view_pages(&w.store());
+    let (main, page) = &pages[0];
+    let folder = main.parent().unwrap();
+    let links: Vec<&str> = page
+        .split("href=\"")
+        .skip(1)
+        .map(|rest| &rest[..rest.find('"').unwrap()])
+        .collect();
+    let counts = section(page, "estate");
+    for counted in [
+        "1 machine</a>",
+        "0 checkouts</a>",
+        "1 watched file</a> <span class=\"muted\">(1 shell profile)</span>",
+        "readings at the latest check</a>",
+    ] {
+        assert!(counts.contains(counted), "{counted}: {counts}");
+    }
+    assert_eq!(links.len(), 10, "{links:?}");
+    for link in &links {
+        let detail = folder.join(link);
+        let html = std::fs::read_to_string(&detail).unwrap_or_else(|_| panic!("{link}"));
+        assert!(
+            html.contains("<section id=\"") && html.contains("href=\"../view.html\""),
+            "{link}"
+        );
+        assert!(
+            pages.iter().any(|(p, _)| p == &detail),
+            "{link} was not written"
+        );
+    }
+    // Every page of details is linked from the summary.
+    assert_eq!(pages.len() - 1, links.iter().collect::<BTreeSetOf>().len());
+}
+
+type BTreeSetOf<'a> = std::collections::BTreeSet<&'a &'a str>;
+
+#[test]
+fn the_summary_page_stays_small_on_a_large_store() {
+    // The page Details opens was 15 MB on a real store. The big tables live in pages of
+    // their own; the summary holds counts and what needs a look.
+    let w = Watch::new("view-large");
+    put(w.home(), "brew.txt", &many_formulae(20_000, "1.0"));
+    let brew = w.home().join("brew.txt");
+    let run = || {
+        ok(soc_run(w.home(), &w.store())
+            .arg("--brew-input")
+            .arg(&brew)
+            .arg("--servers-input")
+            .arg(w.home().join("absent"))
+            .arg("--system-root")
+            .arg(&w.sys))
+    };
+    run();
+    put(w.home(), "brew.txt", &many_formulae(20_000, "1.1"));
+    for n in 0..120 {
+        put(
+            w.home(),
+            &format!("Library/LaunchAgents/com.example.agent{n}.plist"),
+            "<plist/>\n",
+        );
+    }
+    run();
+    let pages = view_pages(&w.store());
+    let sizes: Vec<(String, usize)> = pages
+        .iter()
+        .map(|(p, html)| {
+            (
+                p.file_name().unwrap().to_string_lossy().into_owned(),
+                html.len(),
+            )
+        })
+        .collect();
+    assert!(sizes[0].1 < 200_000, "{sizes:?}");
+    assert!(
+        sizes.iter().map(|s| s.1).sum::<usize>() > 1_000_000,
+        "{sizes:?}"
+    );
+    let page = &pages[0].1;
+    let components = status_json(&w.store())["estate"]["components"]
+        .as_i64()
+        .unwrap();
+    assert!(components >= 20_000);
+    let said = format!(
+        "{},{:03} components</a>",
+        components / 1000,
+        components % 1000
+    );
+    assert!(page.contains(&said), "{said}");
+    assert!(
+        page.contains("<p class=\"meta\">21 more, the mildest;"),
+        "{page}"
+    );
+    assert_eq!(page.matches("<article ").count(), 100);
 }

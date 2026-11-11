@@ -821,10 +821,13 @@ fn findings_cmd(args: &FindingsArgs) -> ExitCode {
         Err(e) => return store_failed(args.json, "findings", &e),
     };
     let items: Option<Vec<findings::Item>> = found.map(|all| {
-        all.iter()
+        let mut items: Vec<findings::Item> = all
+            .iter()
             .filter(|f| args.all || f.state == "open")
             .filter_map(findings::item)
-            .collect()
+            .collect();
+        findings::order(&mut items);
+        items
     });
     if args.json {
         let mut r = findings::catalogue_json();
@@ -1024,16 +1027,34 @@ fn view(args: &ViewArgs) -> Result<(), Box<dyn Error>> {
     if !args.store.is_file() {
         return Err(format!("no store at {}", args.store.display()).into());
     }
-    let conn = store::open_read_only(&args.store)?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
-    let html = view::page(&conn, &args.store.display().to_string(), now)?;
+    // The summary is built from what `soc status --json` answers, read the same way.
+    let (running, state) = read_all(&args.store)?;
+    let state = state.ok_or("the store is gone")?;
+    let absolute = std::path::absolute(&args.store)?;
+    let result = status::result(Some(&state), running, &absolute, now);
+    let conn = store::open_read_only(&args.store)?;
+    let pages = view::pages(
+        &conn,
+        &state,
+        &result,
+        &args.store.display().to_string(),
+        now,
+    )?;
     drop(conn);
 
-    let path = std::path::absolute(home(&args.store).join("view.html"))?;
-    std::fs::write(&path, html)?;
-    println!("{}", path.display());
+    // The summary first: the path printed first is the page to open.
+    let folder = home(&args.store);
+    std::fs::create_dir_all(folder.join(view::DETAILS))?;
+    let mut written = Vec::new();
+    for (rel, html) in pages {
+        let path = std::path::absolute(folder.join(rel))?;
+        std::fs::write(&path, html)?;
+        println!("{}", path.display());
+        written.push(path);
+    }
     if args.open {
-        let status = Command::new(tools::OPEN).arg(&path).status()?;
+        let status = Command::new(tools::OPEN).arg(&written[0]).status()?;
         if !status.success() {
             return Err(format!("open failed, {status}").into());
         }
@@ -1718,11 +1739,10 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     if any_checkouts {
         read_lockfiles(&mut run, &found)?;
     }
-    let (watched, seen) = read_watched(&mut run, args, &found)?;
+    let (watched, opened) = watch_places(&mut run, args, &found)?;
     read_traces(&mut run, args)?;
     resolve(&mut run)?;
     read_threats(&run, args)?;
-    let opened = findings::detect(&tx, &run_id, at, &seen)?;
 
     // What the line counts is read back from what the run wrote, by the code `soc status`
     // reads it with after the run.
@@ -2396,6 +2416,20 @@ struct Placed {
     look: watched::Look,
     /// The checkout's `.git` is a file, so its hooks were not read.
     git_file: bool,
+}
+
+/// Reads the watched places, moves what they hold through the lifecycle and raises what the
+/// rules find, all in the run's transaction. `soc run` calls it among the other readers; a
+/// small run of the watched places alone calls it with nothing else. Returns the rows printed
+/// under the report line and how many findings it opened.
+fn watch_places(
+    run: &mut Run,
+    args: &Args,
+    checkouts: &[checkouts::Checkout],
+) -> Result<(Rows, usize), Box<dyn Error>> {
+    let (rows, seen) = read_watched(run, args, checkouts)?;
+    let opened = findings::detect(run.tx, run.run_id, run.at, &seen)?;
+    Ok((rows, opened))
 }
 
 /// Reads the watched places of this machine and the hooks of every checkout the run holds.

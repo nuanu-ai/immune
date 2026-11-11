@@ -1,5 +1,6 @@
-//! The view: one self-contained HTML page that shows what is in the store.
-//! It only reads. No scripts, no outside files: plain HTML, `<details>` and inline CSS.
+//! The view: a small summary page that answers what the app answers, and pages of details
+//! next to it with the big tables. It only reads. No scripts, nothing from the network:
+//! plain HTML, `<details>` and inline CSS.
 //!
 //! Invariant: every piece of text that comes from the store goes through `esc`
 //! before it enters the page. Names, versions, reasons and source references are
@@ -18,20 +19,336 @@ const EVENTS_SHOWN_OPEN: usize = 500;
 
 type Out = Result<(), Box<dyn Error>>;
 
-pub fn page(conn: &Connection, store: &str, now: i64) -> Result<String, Box<dyn Error>> {
-    let mut out = String::new();
-    out.push_str(HEAD);
-    header(conn, &mut out, store, now)?;
+/// At most this many things that need a look are shown in full, so the summary stays small.
+const ITEMS_SHOWN: usize = 100;
+
+/// The folder next to the summary page that holds the pages of details.
+pub const DETAILS: &str = "view";
+
+/// Every page the view writes, as its path relative to the store's folder and its HTML: the
+/// summary first, then one page of details for each of the big tables. The summary is built
+/// from the state and the machine-readable result `soc status --json` gives, so the two say
+/// the same; the details are what the store holds, moved out of the summary so that it stays
+/// small.
+pub fn pages(
+    conn: &Connection,
+    st: &crate::status::State,
+    result: &serde_json::Value,
+    store: &str,
+    now: i64,
+) -> Result<Vec<(String, String)>, Box<dyn Error>> {
+    let mut pages = vec![("view.html".to_string(), summary(conn, st, result, now)?)];
     let latest = latest_coverage(conn)?;
-    coverage(conn, &mut out, &latest, now)?;
-    machines(conn, &mut out, &latest, now)?;
-    watched(conn, &mut out, &latest, now)?;
-    threats(conn, &mut out, now)?;
-    changes(conn, &mut out)?;
-    retracted(conn, &mut out)?;
-    vocabulary(conn, &mut out)?;
-    out.push_str("</main>\n</body>\n</html>\n");
+    for (name, title) in DETAIL_PAGES {
+        let mut body = String::new();
+        match name {
+            "coverage" => coverage(conn, &mut body, &latest, now)?,
+            "machines" => machines(conn, &mut body, &latest, now)?,
+            "watched" => watched(conn, &mut body, &latest, now)?,
+            "threats" => threats(conn, &mut body, now)?,
+            "changes" => changes(conn, &mut body)?,
+            "gone" => retracted(conn, &mut body)?,
+            _ => vocabulary(conn, &mut body)?,
+        }
+        let mut out = head(title);
+        out.push_str(
+            "<nav class=\"meta\"><a href=\"../view.html\">← What needs a look</a></nav>\n",
+        );
+        header(conn, &mut out, store, now)?;
+        out.push_str(&body);
+        out.push_str(FOOT);
+        pages.push((format!("{DETAILS}/{name}.html"), out));
+    }
+    Ok(pages)
+}
+
+/// The pages of details, by file name and title.
+const DETAIL_PAGES: [(&str, &str); 7] = [
+    ("coverage", "What was read and how completely"),
+    ("machines", "Machines"),
+    ("watched", "Watched places"),
+    ("threats", "Exploited vulnerabilities"),
+    ("changes", "Changes"),
+    ("gone", "No longer there"),
+    ("vocabulary", "Vocabulary"),
+];
+
+const FOOT: &str = "</main>\n</body>\n</html>\n";
+
+fn head(title: &str) -> String {
+    HEAD.replace(
+        "<title>What the store holds</title>",
+        &format!("<title>{}</title>", esc(title)),
+    )
+}
+
+/// A link to a page of details, with the text it is shown as.
+fn link(name: &str, text: &str) -> String {
+    format!("<a href=\"{DETAILS}/{name}.html\">{}</a>", esc(text))
+}
+
+/// `15,617 components`.
+fn counted(n: i64, one: &str, many: &str) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    format!("{out} {}", if n == 1 { one } else { many })
+}
+
+/// A number from the result, or nothing when it is not there.
+fn number(v: &serde_json::Value) -> Option<i64> {
+    v.as_i64()
+}
+
+/// The summary page: the same three questions as the app, in the same words. What needs a
+/// look, in full; what cannot be judged here; what is watched, in counts that link to their
+/// pages of details; and the findings the owner has answered.
+fn summary(
+    conn: &Connection,
+    st: &crate::status::State,
+    r: &serde_json::Value,
+    now: i64,
+) -> Result<String, Box<dyn Error>> {
+    let mut out = head("What needs a look");
+    let finished = st.summary.as_ref().and_then(|s| s.run.finished_at);
+    let headline = match number(&r["needs_a_look_total"]) {
+        Some(0) => "Nothing needs a look".to_string(),
+        Some(n) => counted(n, "thing needs a look", "things need a look"),
+        None => "What needs a look is not known yet".to_string(),
+    };
+    writeln!(
+        out,
+        "<header>\n<h1>{}</h1>\n<p class=\"meta\">Last checked {} · this page made {}</p>\n</header>",
+        esc(&headline),
+        utc_or(finished, "never"),
+        utc(now)
+    )?;
+
+    out.push_str("<section id=\"needs\">\n");
+    for i in st.needs.items.iter().take(ITEMS_SHOWN) {
+        item(&mut out, i)?;
+    }
+    if st.needs.items.len() > ITEMS_SHOWN {
+        writeln!(
+            out,
+            "<p class=\"meta\">{} more, the mildest; <span class=\"mono\">soc status --json</span> and <span class=\"mono\">soc findings</span> list them.</p>",
+            st.needs.items.len() - ITEMS_SHOWN
+        )?;
+    }
+    out.push_str("</section>\n");
+
+    out.push_str("<section id=\"cannot-judge\">\n<h2>What cannot be judged here</h2>\n<ul>\n");
+    for said in r["cannot_judge"].as_array().into_iter().flatten() {
+        let said = said.as_str().unwrap_or_default();
+        let mut chars = said.chars();
+        let said: String = chars
+            .next()
+            .map(|c| c.to_uppercase().chain(chars).collect())
+            .unwrap_or_default();
+        writeln!(out, "<li>{}.</li>", esc(&said))?;
+    }
+    for n in r["no_reader_for"].as_array().into_iter().flatten() {
+        let what = n["what"].as_str().unwrap_or_default();
+        let which = n["what_text"]
+            .as_str()
+            .map(|t| format!(" <span class=\"mono\">{}</span>", esc(t)))
+            .unwrap_or_default();
+        writeln!(
+            out,
+            "<li>This build has no reader for {}{which}, found in {}.</li>",
+            esc(what),
+            counted(
+                number(&n["where_count"]).unwrap_or_default(),
+                "place",
+                "places"
+            )
+        )?;
+    }
+    for n in r["not_computed"].as_array().into_iter().flatten() {
+        writeln!(
+            out,
+            "<li>Not computed: {}, because {}.</li>",
+            esc(&n["section"].as_str().unwrap_or_default().replace('_', " ")),
+            esc(n["reason"].as_str().unwrap_or_default())
+        )?;
+    }
+    out.push_str("</ul>\n</section>\n");
+
+    out.push_str("<section id=\"estate\">\n<h2>What is watched</h2>\n<ul class=\"counts\">\n");
+    let e = &r["estate"];
+    let count = |key: &str, one: &str, many: &str| number(&e[key]).map(|n| counted(n, one, many));
+    for (key, one, many) in [
+        ("machines", "machine", "machines"),
+        ("servers", "server", "servers"),
+        ("checkouts", "checkout", "checkouts"),
+        ("components", "component", "components"),
+    ] {
+        if let Some(text) = count(key, one, many) {
+            writeln!(out, "<li>{}</li>", link("machines", &text))?;
+        }
+    }
+    if let Some(n) = number(&r["watched"]["files"]) {
+        let kinds: Vec<String> = r["watched"]["kinds"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|k| k["files"].as_i64().unwrap_or_default() > 0)
+            .map(|k| {
+                format!(
+                    "{} {}",
+                    k["files"],
+                    esc(k["kind"].as_str().unwrap_or_default())
+                )
+            })
+            .collect();
+        writeln!(
+            out,
+            "<li>{}{}</li>",
+            link("watched", &counted(n, "watched file", "watched files")),
+            if kinds.is_empty() {
+                String::new()
+            } else {
+                format!(" <span class=\"muted\">({})</span>", kinds.join(", "))
+            }
+        )?;
+    }
+    let t = &r["threats"];
+    match (t["outcome"].as_str(), number(&t["entries"])) {
+        (Some(_), Some(n)) => writeln!(
+            out,
+            "<li>{}</li>",
+            link(
+                "threats",
+                &counted(
+                    n,
+                    "exploited vulnerability known",
+                    "exploited vulnerabilities known"
+                )
+            )
+        )?,
+        (Some(_), None) => writeln!(
+            out,
+            "<li>{}</li>",
+            link(
+                "threats",
+                "The list of exploited vulnerabilities was never read"
+            )
+        )?,
+        _ => {}
+    }
+    if let Some(n) = number(&r["coverage"]["readings"]) {
+        writeln!(
+            out,
+            "<li>{}</li>",
+            link(
+                "coverage",
+                &counted(
+                    n,
+                    "reading at the latest check",
+                    "readings at the latest check"
+                )
+            )
+        )?;
+    }
+    writeln!(
+        out,
+        "<li>{} · {} · {}</li>\n</ul>\n</section>",
+        link("changes", "Changes by run"),
+        link("gone", "What is no longer there"),
+        link("vocabulary", "Vocabulary")
+    )?;
+
+    let answered: Vec<crate::findings::Item> = crate::findings::all(conn, now)?
+        .unwrap_or_default()
+        .iter()
+        .filter(|f| f.state == "expected" || f.state == "seen")
+        .filter_map(crate::findings::item)
+        .collect();
+    if !answered.is_empty() {
+        writeln!(
+            out,
+            "<section id=\"answered\">\n<details>\n<summary>{} the owner has answered</summary>",
+            counted(answered.len() as i64, "finding", "findings")
+        )?;
+        for i in &answered {
+            item(&mut out, i)?;
+        }
+        out.push_str("</details>\n</section>\n");
+    }
+    out.push_str(FOOT);
     Ok(out)
+}
+
+/// One thing that needs a look, in full: its three sentences, where, what the source says,
+/// when, how bad and how sure, its id and the command that reads it.
+fn item(out: &mut String, i: &crate::findings::Item) -> Out {
+    writeln!(
+        out,
+        "<article class=\"item {}\" id=\"{}\">\n<h2>{}</h2>",
+        esc(i.severity),
+        esc(&i.id),
+        esc(i.words.title)
+    )?;
+    if let Some(place) = &i.place {
+        writeln!(out, "<p class=\"where mono\">{}</p>", esc(place))?;
+    }
+    if let Some(value) = &i.value {
+        writeln!(out, "<p class=\"said\">{}</p>", esc(value))?;
+    }
+    writeln!(
+        out,
+        "<p>{}</p>\n<p class=\"advice\">{}</p>",
+        esc(i.words.meaning),
+        esc(i.words.advice)
+    )?;
+    let mut facts = Vec::new();
+    match (i.first_seen, i.last_seen) {
+        (Some(f), Some(l)) if f != l => {
+            facts.push(format!("first seen {}, last seen {}", utc(f), utc(l)));
+        }
+        (_, Some(l)) => facts.push(format!("seen {}", utc(l))),
+        _ => {}
+    }
+    if let Some(change) = &i.change {
+        facts.push(format!("latest change: {change}"));
+    }
+    if let Some((at, reason, until)) = &i.answer {
+        let mut said = match until {
+            Some(u) => format!("expected until {}", utc(*u)),
+            None => format!("seen {}", utc(*at)),
+        };
+        if let Some(reason) = reason {
+            said.push_str(&format!(": {reason}"));
+        }
+        facts.push(said);
+    }
+    facts.push(format!(
+        "how bad: {}{}",
+        i.severity,
+        i.confidence
+            .map(|c| format!(", how sure: {c}"))
+            .unwrap_or_default()
+    ));
+    if let Some(t) = i.technique {
+        facts.push(format!("ATT&CK {t}"));
+    }
+    let command = if i.rule.is_some() {
+        format!("soc finding {}", i.id)
+    } else {
+        "soc status".to_string()
+    };
+    writeln!(
+        out,
+        "<p class=\"meta\">{} · <span class=\"mono\">{}</span></p>\n</article>",
+        esc(&facts.join(" · ")),
+        esc(&command)
+    )?;
+    Ok(())
 }
 
 /// Makes text safe to put anywhere in the page, inside elements and inside quoted attributes.
@@ -1676,6 +1993,18 @@ details.sub { margin: 4px 0; }
 details.sub > :not(summary) { margin-left: 0; }
 ul.readings { margin: 6px 0; padding-left: 18px; font-size: .875rem; }
 ul.readings li { margin: 2px 0; overflow-wrap: anywhere; }
+a { color: inherit; text-decoration-color: var(--muted); }
+nav { margin-bottom: 12px; }
+article.item { border: 1px solid var(--line); border-left: 4px solid var(--muted); border-radius: 8px;
+  padding: 10px 14px; margin: 12px 0; background: var(--head); }
+article.item.high, article.item.critical { border-left-color: var(--bad-fg); }
+article.item.medium { border-left-color: var(--changed); }
+article.item h2 { font-size: 1rem; margin: 0 0 4px; padding: 0; border: 0; }
+article.item .where { margin: 0 0 6px; }
+article.item .said { color: var(--muted); overflow-wrap: anywhere; }
+article.item .advice { font-weight: 600; }
+ul.counts { list-style: none; padding: 0; }
+ul.counts li { margin: 4px 0; }
 </style>
 </head>
 <body>

@@ -8,3 +8,6 @@ private/
 # The menu-bar app: SwiftPM build products and editor state (builds go to target/app)
 /app/.build/
 /app/.swiftpm/
+
+# Agent worktrees and local tool settings
+/.claude/
