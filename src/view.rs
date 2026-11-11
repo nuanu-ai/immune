@@ -76,7 +76,45 @@ pub fn pages(
         out.push_str(FOOT);
         pages.push((format!("{DETAILS}/{name}.html"), out));
     }
+    for (anchor, title) in SECTIONS {
+        pages.push((section_file(anchor), section_page(anchor, title)));
+    }
     Ok(pages)
+}
+
+/// The sections of the summary something outside the page may ask for, by anchor and
+/// title. Each has a page of its own that only sends the browser on to it, because macOS
+/// can lose the `#section` of a file URL when it hands one to the browser.
+pub const SECTIONS: [(&str, &str); 2] = [
+    ("you-can-fix", "You can fix"),
+    ("limits", "Limits of this version"),
+];
+
+/// Where a section's own page is, relative to the store's folder.
+pub fn section_file(anchor: &str) -> String {
+    format!("{DETAILS}/section-{anchor}.html")
+}
+
+/// The files of the sections for a store, as anchor and absolute path: what
+/// `soc status --json` names so that nothing outside builds these paths.
+pub fn section_files(store: &std::path::Path) -> Vec<(&'static str, std::path::PathBuf)> {
+    let folder = store.parent().unwrap_or(std::path::Path::new("."));
+    SECTIONS
+        .iter()
+        .map(|(anchor, _)| (*anchor, folder.join(section_file(anchor))))
+        .collect()
+}
+
+/// A page that only sends the browser on to the summary at one section, with a plain link
+/// for a browser that does not follow the refresh. No script.
+fn section_page(anchor: &str, title: &str) -> String {
+    let target = format!("../{SUMMARY}#{}", esc(anchor));
+    format!(
+        "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
+         <meta http-equiv=\"refresh\" content=\"0; url={target}\">\n<title>{title}</title>\n\
+         </head>\n<body>\n<p><a href=\"{target}\">{title}</a></p>\n</body>\n</html>\n",
+        title = esc(title)
+    )
 }
 
 /// The pages of details, by file name and title.

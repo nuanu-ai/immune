@@ -9423,8 +9423,62 @@ fn each_link_on_the_summary_shows_what_its_label_says_first_thing_on_arrival() {
     for (href, _) in links(html) {
         reached.push(technical.parent().unwrap().join(href));
     }
+    // A section's own page is reached from outside: the status names it for the app.
+    for s in status_json(&w.store())["store"]["view_sections"]
+        .as_array()
+        .unwrap()
+    {
+        reached.push(PathBuf::from(s["path_text"].as_str().unwrap()));
+    }
     for (p, _) in &pages[1..] {
         assert!(reached.contains(p), "{} is not reached", p.display());
+    }
+}
+
+#[test]
+fn a_section_of_the_summary_can_be_opened_from_outside_as_a_file() {
+    // The app's rows "You can fix" and "Limits of this version" opened the summary at its
+    // top: macOS lost the `#section` of the file URL on its way to the browser. Each
+    // section the status names has a file of its own that sends the browser on to the
+    // summary that was written, at an anchor that is there.
+    let w = Watch::new("view-sections");
+    w.run();
+    let sections = status_json(&w.store())["store"]["view_sections"].clone();
+    let pages = view_pages(&w.store());
+    let (main, summary) = &pages[0];
+    let named: Vec<&str> = sections
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["section"].as_str().unwrap())
+        .collect();
+    assert_eq!(named, ["you-can-fix", "limits"]);
+    for s in sections.as_array().unwrap() {
+        let anchor = s["section"].as_str().unwrap();
+        let file = PathBuf::from(s["path_text"].as_str().unwrap());
+        let html = &pages
+            .iter()
+            .find(|(p, _)| *p == file)
+            .unwrap_or_else(|| panic!("{} was not written", file.display()))
+            .1;
+        assert!(!html.contains("<script"), "{html}");
+        let refresh = html
+            .split("<meta http-equiv=\"refresh\" content=\"0; url=")
+            .nth(1)
+            .unwrap_or_else(|| panic!("no refresh: {html}"));
+        let target = &refresh[..refresh.find('"').unwrap()];
+        assert!(
+            html.contains(&format!("<a href=\"{target}\">")),
+            "no plain link to {target}: {html}"
+        );
+        let (path, at) = target.split_once('#').unwrap();
+        assert_eq!(at, anchor);
+        let resolved = file.parent().unwrap().join(path).canonicalize().unwrap();
+        assert_eq!(resolved, main.canonicalize().unwrap(), "{target}");
+        assert!(
+            summary.contains(&format!(" id=\"{anchor}\"")),
+            "no {anchor} in the summary"
+        );
     }
 }
 

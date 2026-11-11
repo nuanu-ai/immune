@@ -112,6 +112,9 @@ public struct Item: Sendable, Equatable {
 public struct Store: Sendable, Equatable {
   public var pathText: String?
   public var exists: Bool?
+  /// The pages `soc view` writes for sections of its summary, by the section's name
+  /// (`view_sections`). Only an absolute path to an HTML file is kept.
+  public var viewSections: [String: URL] = [:]
 }
 
 public struct LastRun: Sendable, Equatable {
@@ -327,7 +330,15 @@ public enum Decoding {
       generatedAt: r["generated_at"].date,
       running: r["running"].bool,
       store: r["store"].object.map {
-        Store(pathText: $0["path_text"].string, exists: $0["exists"].bool)
+        Store(
+          pathText: $0["path_text"].string, exists: $0["exists"].bool,
+          viewSections: Dictionary(
+            ($0["view_sections"].array ?? []).compactMap { s in
+              guard let name = s["section"].string,
+                let path = s["path_text"].string.flatMap(AppModel.htmlFile)
+              else { return nil }
+              return (name, path)
+            }, uniquingKeysWith: { first, _ in first }))
       },
       lastRun: r["last_run"].object.map {
         LastRun(

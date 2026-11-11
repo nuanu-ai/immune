@@ -819,10 +819,9 @@ struct PanelPromises {
     // notification settings for itself.
     let main = try String(
       contentsOf: dir.appendingPathComponent("main.swift"), encoding: .utf8)
-    // The page by the system's opener, or by the browser when it carries a section.
-    #expect(opens == 3)
-    #expect(main.contains("return NSWorkspace.shared.open(page)"))
-    #expect(main.contains("[page], withApplicationAt: browser"))
+    // The page, or a section's own page, by the system's opener.
+    #expect(opens == 2)
+    #expect(main.contains("model.opener = { page in NSWorkspace.shared.open(page) }"))
     #expect(main.contains("guard let url = Announcer.settingsURL("))
     #expect(main.contains("NSWorkspace.shared.open(url)"))
   }
@@ -1289,20 +1288,38 @@ struct Page {
     #expect(soc.callsSoFar.filter { $0.first == "view" }.count == 1)
   }
 
-  @Test("A row below opens the page at its section, by the anchor soc gives it")
+  @Test(
+    "A row below opens the file soc names for its section, never a #section; with no file named, the summary"
+  )
   func section() async throws {
     let (page, out) = try written()
-    let model = AppModel(soc: GatedSoc(status: quiet(), view: out, gated: []))
+    let fix = page.deletingLastPathComponent().appendingPathComponent("section-you-can-fix.html")
+    try Data("<html></html>".utf8).write(to: fix)
+    let status = quiet(
+      removing: ["result", "store", "view_sections"],
+      setting: [["section": "you-can-fix", "path_text": fix.path]])
+    let model = AppModel(soc: GatedSoc(status: status, view: out, gated: []))
+    await model.refresh()
     var opened: [URL] = []
     model.opener = {
       opened.append($0)
       return true
     }
     await model.openPage(section: "you-can-fix")
-    await model.openPage(section: "limits")
+    await model.openPage(section: "limits")  // no file named: the summary
     await model.openPage()
-    #expect(opened.map(\.fragment) == ["you-can-fix", "limits", nil])
-    #expect(opened.allSatisfy { $0.isFileURL && $0.path == page.path })
+    #expect(opened.map(\.path) == [fix.path, page.path, page.path])
+    #expect(opened.allSatisfy { $0.isFileURL && $0.fragment == nil })
+    // An older soc names no files: every row opens the summary.
+    let older = AppModel(soc: GatedSoc(status: quiet(), view: out, gated: []))
+    await older.refresh()
+    var plain: [URL] = []
+    older.opener = {
+      plain.append($0)
+      return true
+    }
+    await older.openPage(section: "you-can-fix")
+    #expect(plain == [page])
   }
 
   @Test("Only an absolute path to an HTML file that soc printed first is opened")

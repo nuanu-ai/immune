@@ -131,7 +131,7 @@ public final class AppModel: ObservableObject {
   @discardableResult
   public func openPage(at id: String? = nil, section: String? = nil) async -> Bool {
     if let page = pagePath, FileManager.default.fileExists(atPath: page.path) {
-      pageFailure = opener(Self.page(page, at: section)) ? nil : "Details could not be opened."
+      pageFailure = opener(target(page, section: section)) ? nil : "Details could not be opened."
       Task { _ = await writePage() }
       return true
     }
@@ -142,7 +142,7 @@ public final class AppModel: ObservableObject {
     if out.exitCode != 0 {
       pageFailure = "Details could not be opened. " + Self.viewFailure(out)
     } else if let page = pagePath {
-      if !opener(Self.page(page, at: section)) { pageFailure = "Details could not be opened." }
+      if !opener(target(page, section: section)) { pageFailure = "Details could not be opened." }
     } else {
       pageFailure = "Details could not be opened. The program did not say where its page is."
     }
@@ -169,24 +169,28 @@ public final class AppModel: ObservableObject {
     return out
   }
 
-  /// The page's file URL, at one of its sections (an anchor soc gives it) when asked.
-  static func page(_ page: URL, at section: String?) -> URL {
-    guard let section, var c = URLComponents(url: page, resolvingAgainstBaseURL: false) else {
-      return page
-    }
-    c.fragment = section
-    return c.url ?? page
+  /// What a click opens: the file soc names for the section when it is there, otherwise
+  /// the summary. A file is opened as it is, never with a `#section`: macOS can lose
+  /// that on the way to the browser.
+  func target(_ page: URL, section: String?) -> URL {
+    guard let section, let file = reading.status?.store?.viewSections[section],
+      FileManager.default.fileExists(atPath: file.path)
+    else { return page }
+    return file
   }
 
   /// The page `soc view` printed first: an absolute path to an HTML file, as a file
   /// URL, or nil for anything else.
   static func pagePath(_ stdout: Data) -> URL? {
-    guard
-      let first = String(decoding: stdout.prefix(4096), as: UTF8.self)
-        .split(separator: "\n").first.map(String.init),
-      first.hasPrefix("/"), first.hasSuffix(".html"), Inert.text(first, limit: 4096) == first
+    String(decoding: stdout.prefix(4096), as: UTF8.self)
+      .split(separator: "\n").first.map(String.init).flatMap(htmlFile)
+  }
+
+  /// An absolute path to an HTML file, as a file URL, or nil for anything else.
+  nonisolated static func htmlFile(_ path: String) -> URL? {
+    guard path.hasPrefix("/"), path.hasSuffix(".html"), Inert.text(path, limit: 4096) == path
     else { return nil }
-    return URL(fileURLWithPath: first)
+    return URL(fileURLWithPath: path)
   }
 
   static func viewFailure(_ out: SocOutput) -> String {

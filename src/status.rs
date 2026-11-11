@@ -683,10 +683,19 @@ pub fn result(state: Option<&State>, running: bool, path: &Path, now: i64) -> Va
     let mut out = Map::new();
     out.insert("generated_at".into(), iso(now));
     out.insert("running".into(), json!(running));
-    out.insert(
-        "store".into(),
-        json!({ "path_text": text(&path.display().to_string()), "exists": state.is_some() }),
-    );
+    let mut store =
+        json!({ "path_text": text(&path.display().to_string()), "exists": state.is_some() });
+    if state.is_some() {
+        // The pages `soc view` writes for its sections, so the app opens a file and never
+        // builds a path or depends on a `#section` surviving the hand-over to a browser.
+        store["view_sections"] = view::section_files(path)
+            .into_iter()
+            .map(|(anchor, file)| {
+                json!({ "section": anchor, "path_text": text(&file.display().to_string()) })
+            })
+            .collect();
+    }
+    out.insert("store".into(), store);
     out.insert("cannot_judge".into(), json!(CANNOT_JUDGE));
     // Whether a watcher runs on this store now: `soc watch`, src/watch.rs.
     out.insert("watching".into(), crate::watch::status(path));

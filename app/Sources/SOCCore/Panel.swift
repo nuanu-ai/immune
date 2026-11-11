@@ -1,7 +1,6 @@
 // What the panel under the icon says, built here so it can be tested and printed
-// without a screen. It answers the owner's three questions and nothing else:
-// is anything wrong, what needs me, what can I do about it. Everything else is
-// on the program's own page (`soc view`).
+// without a screen. It answers one question: is this Mac watched and quiet.
+// Everything else is on the program's own page (`soc view`).
 //
 // What needs a look is said by soc, in its fixed words (`title`, `meaning`,
 // `advice`), item by item in the order it serves them. The app has words only for
