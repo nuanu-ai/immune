@@ -1564,3 +1564,121 @@ fn a_sample_that_fails_is_a_problem_line_and_the_watcher_goes_on() {
     w.until("read", |v| count(v, "changed") == 1);
     assert!(w.stop().success());
 }
+
+// A store that has watched for months.
+
+/// A Mac with a few projects, after its first full run and its watcher's first reading.
+fn watched_for_a_while(tag: &str) -> Mac {
+    let mac = Mac::new(tag);
+    mac.put(".zshrc", "export EDITOR=vi\n");
+    mac.put("Library/LaunchAgents/org.example.sync.plist", "<plist/>\n");
+    for c in ["api", "site", "shop"] {
+        mac.put(&format!("dev/{c}/.git/HEAD"), "ref: refs/heads/main\n");
+        mac.put(&format!("dev/{c}/.git/hooks/pre-commit"), "#!/bin/sh\n");
+        mac.put(&format!("dev/{c}/.vscode/tasks.json"), ON_OPEN);
+    }
+    // What this version does not read, named at every reading: a project's package scripts,
+    // and the hooks of a working folder git keeps elsewhere.
+    mac.put("dev/shop/package.json", "{\"scripts\": {}}\n");
+    mac.put(
+        "dev/shop-fix/.git",
+        "gitdir: ../shop/.git/worktrees/shop-fix\n",
+    );
+    // A server the owner's check has read.
+    let servers = mac.root.join("servers");
+    std::fs::create_dir_all(&servers).unwrap();
+    std::fs::write(servers.join("web-1.txt"), "##end\n").unwrap();
+    assert!(
+        mac.run_cmd_servers(&servers)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let w = mac.watch().started();
+    assert!(w.stop().success());
+    mac
+}
+
+/// The history a watcher leaves after `readings` readings, made in two statements: the rows
+/// of its latest reading again, each time under a run id of its own, with what each names as
+/// not read.
+fn add_watcher_history(mac: &Mac, readings: u32) {
+    let conn = Connection::open(mac.store()).unwrap();
+    let run: String = conn
+        .query_row(
+            "SELECT run_id FROM coverage WHERE run_id LIKE 'watch-%' ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    conn.execute(
+        "WITH RECURSIVE n (i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+         INSERT INTO coverage (reader, run_id, observed_at, scope, kind, completeness, reason,
+                               cause)
+         SELECT reader, run_id || '-' || i, observed_at, scope, kind, completeness, reason, cause
+         FROM n, coverage WHERE run_id = ?2",
+        rusqlite::params![readings, run],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO coverage_lack (coverage, what, name)
+         SELECT copy.id, l.what, l.name
+         FROM coverage c JOIN coverage_lack l ON l.coverage = c.id
+         JOIN coverage copy ON copy.run_id >= ?1 || '-' AND copy.run_id < ?1 || '.'
+          AND copy.reader = c.reader AND copy.scope = c.scope AND copy.kind = c.kind
+         WHERE c.run_id = ?1",
+        [&run],
+    )
+    .unwrap();
+}
+
+/// How long a command takes on a Mac on its first day and on one with ten thousand readings
+/// of its watcher behind it: the quickest of seven runs on each, taken in turn, so that the
+/// two are measured under the same load and a busy moment of the Mac is not taken for cost.
+fn first_day_and_later(tag: &str, args: &[&str]) -> (Duration, Duration) {
+    let fresh = watched_for_a_while(&format!("{tag}-first"));
+    let later = watched_for_a_while(&format!("{tag}-later"));
+    add_watcher_history(&later, 10_000);
+    let time = |mac: &Mac| {
+        let mut cmd = mac.soc();
+        cmd.args(args).arg("--store").arg(mac.store());
+        let started = Instant::now();
+        let out = within(&mut cmd);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        started.elapsed()
+    };
+    let (mut a, mut b) = (Duration::MAX, Duration::MAX);
+    for _ in 0..7 {
+        a = a.min(time(&fresh));
+        b = b.min(time(&later));
+    }
+    (a, b)
+}
+
+#[test]
+fn the_status_after_ten_thousand_readings_is_as_quick_as_on_the_first_day() {
+    // The app asks for the status after every reading of its watcher and every sample. One
+    // that grew with what the watcher has read would, after months of an open app, make the
+    // panel slow and hold the store while the next reading waits.
+    let (first, later) = first_day_and_later("status-flat", &["status", "--json"]);
+    assert!(
+        later < first * 3 / 2 + Duration::from_millis(5),
+        "the status took {first:?} on the first day, {later:?} after ten thousand readings"
+    );
+}
+
+#[test]
+fn the_view_after_ten_thousand_readings_is_made_as_quickly_as_on_the_first_day() {
+    // The watcher brings the owner's pages up to date after every reading that changed
+    // something; they must not take longer the longer the app has been open.
+    let (first, later) = first_day_and_later("view-flat", &["view", "--no-open"]);
+    assert!(
+        later < first * 3 / 2 + Duration::from_millis(5),
+        "the view took {first:?} on the first day, {later:?} after ten thousand readings"
+    );
+}

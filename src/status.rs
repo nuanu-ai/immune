@@ -215,14 +215,15 @@ fn no_reader_for(conn: &Connection) -> rusqlite::Result<Option<Vec<NoReader>>> {
     if !has_table {
         return Ok(None);
     }
-    conn.prepare(
-        "SELECT l.what, l.name, COUNT(DISTINCT c.scope) AS places
-         FROM coverage_lack l JOIN coverage c ON c.id = l.coverage
-         WHERE c.id IN (SELECT MAX(id) FROM coverage GROUP BY reader, scope, kind)
-           AND c.scope NOT IN (SELECT id FROM gone_entity)
+    conn.prepare(&format!(
+        "{}
+         SELECT l.what, l.name, COUNT(DISTINCT c.scope) AS places
+         FROM latest c CROSS JOIN coverage_lack l ON l.coverage = c.id
+         WHERE c.scope NOT IN (SELECT id FROM gone_entity)
          GROUP BY l.what, l.name
          ORDER BY places DESC, l.what, l.name",
-    )?
+        store::LATEST
+    ))?
     .query_map([], |r| {
         Ok(NoReader {
             what: r.get(0)?,
@@ -279,17 +280,26 @@ const BASELINED: [&str; 2] = [watched::READER, crate::integrity::READER];
 /// something. That run's events of the reading are the baseline: journaled, and counted as
 /// nothing new. The two readers' kinds differ, so scope and kind name one reading.
 fn baselines(conn: &Connection) -> rusqlite::Result<HashMap<(String, String), String>> {
-    let mut stmt = conn.prepare(
-        "SELECT scope, kind, run_id FROM coverage
-         WHERE reader IN (?1, ?2) AND completeness != 'none' ORDER BY id",
-    )?;
+    // The first reading of each that read something, looked up from where its readings
+    // begin, not found by going through every reading.
+    let mut stmt = conn.prepare(&format!(
+        "{}
+         SELECT r.scope, r.kind,
+                (SELECT c.run_id FROM coverage c
+                 WHERE c.reader = r.reader AND c.scope = r.scope AND c.kind = r.kind
+                   AND c.completeness != 'none'
+                 ORDER BY c.id LIMIT 1)
+         FROM reading r WHERE r.reader IN (?1, ?2)",
+        store::LATEST
+    ))?;
     let rows = stmt.query_map(BASELINED, |r| {
         Ok((r.get::<_, String>(0)?, r.get(1)?, r.get(2)?))
     })?;
     let mut out = HashMap::new();
     for row in rows {
-        let (scope, kind, run) = row?;
-        out.entry((scope, kind)).or_insert(run);
+        if let (scope, kind, Some(run)) = row? {
+            out.insert((scope, kind), run);
+        }
     }
     Ok(out)
 }

@@ -157,9 +157,15 @@ impl ThisMac {
 /// The machine the store's readings of this Mac are scoped to: the resolver's, which every
 /// full run makes, else the watched places', which a watcher makes.
 pub fn this_machine(conn: &Connection) -> rusqlite::Result<Option<String>> {
+    // The latest row of a reader is the latest reading of one of its scopes and kinds.
     conn.query_row(
-        "SELECT scope FROM coverage WHERE reader IN (?1, ?2) AND scope LIKE 'machine:%'
-         ORDER BY reader = ?1 DESC, id DESC LIMIT 1",
+        &format!(
+            "{}
+             SELECT scope FROM latest
+             WHERE reader IN (?1, ?2) AND scope LIKE 'machine:%'
+             ORDER BY reader = ?1 DESC, id DESC LIMIT 1",
+            crate::store::LATEST
+        ),
         params![resolver::READER, watched::READER],
         |r| r.get(0),
     )
@@ -689,12 +695,13 @@ fn lacks(conn: &Connection) -> rusqlite::Result<Vec<(String, String, Option<Stri
     if !has_table {
         return Ok(Vec::new());
     }
-    conn.prepare(
-        "SELECT DISTINCT c.scope, l.what, l.name
-         FROM coverage_lack l JOIN coverage c ON c.id = l.coverage
-         WHERE c.id IN (SELECT MAX(id) FROM coverage GROUP BY reader, scope, kind)
-           AND c.scope NOT IN (SELECT id FROM gone_entity)",
-    )?
+    conn.prepare(&format!(
+        "{}
+         SELECT DISTINCT c.scope, l.what, l.name
+         FROM latest c CROSS JOIN coverage_lack l ON l.coverage = c.id
+         WHERE c.scope NOT IN (SELECT id FROM gone_entity)",
+        crate::store::LATEST
+    ))?
     .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
     .collect()
 }

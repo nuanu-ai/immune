@@ -261,11 +261,47 @@ INSERT OR IGNORE INTO coverage_kind (name) VALUES ('folders macOS asks permissio
 /// reads, is found through `coverage_latest_of_kind`. Without it, and with
 /// `only_failed_before` counting every earlier reading, a watcher's reading looked through
 /// every reading before it: 3 ms after ten readings, 124 ms after ten thousand.
+///
+/// The status and the view ask for the latest reading of each reader, scope and kind, when
+/// each was last read in full, and what one run read. `LATEST` finds the first through
+/// `coverage_reading`, `coverage_full` answers the second in one look-up and `coverage_run`
+/// the third; `coverage_lack_of` finds what a latest reading names as not read. Without them `soc status` took 8 ms after ten watcher readings and 325 ms after
+/// ten thousand, and `soc view` 9 ms and 589 ms.
 const INDEXES: &str = "
 CREATE INDEX IF NOT EXISTS coverage_reading ON coverage (reader, scope, kind);
 CREATE INDEX IF NOT EXISTS coverage_latest_of_kind ON coverage (reader, kind);
+CREATE INDEX IF NOT EXISTS coverage_full ON coverage (reader, scope, kind, completeness, observed_at);
+CREATE INDEX IF NOT EXISTS coverage_run ON coverage (run_id);
+CREATE INDEX IF NOT EXISTS coverage_lack_of ON coverage_lack (coverage);
 CREATE INDEX IF NOT EXISTS assertion_subject ON assertion (subject, predicate);
 CREATE INDEX IF NOT EXISTS finding_basis_finding ON finding_basis (finding);
+";
+
+/// The start of a query that names two tables: `reading (reader, scope, kind)`, one row for
+/// each reader, scope and kind ever read, and `latest`, the coverage row of the latest
+/// reading of each, with every column of `coverage`. It is what `coverage WHERE id IN (SELECT
+/// MAX(id) FROM coverage GROUP BY reader, scope, kind)` says, asked so that its cost follows
+/// the number of things read and not the number of readings: `reading` steps through
+/// `coverage_reading` from one reader, scope and kind to the next (a loose index scan), and
+/// `latest` takes the last row of each from the same index. A query starts from `latest`, not
+/// from `coverage`, so that SQLite never goes through every reading to match it.
+pub const LATEST: &str = "
+WITH RECURSIVE reading (reader, scope, kind) AS (
+    SELECT * FROM (SELECT reader, scope, kind FROM coverage ORDER BY reader, scope, kind LIMIT 1)
+    UNION ALL
+    SELECT n.reader, n.scope, n.kind FROM reading r JOIN coverage n ON n.id = COALESCE(
+        (SELECT id FROM coverage WHERE reader = r.reader AND scope = r.scope AND kind > r.kind
+         ORDER BY reader, scope, kind LIMIT 1),
+        (SELECT id FROM coverage WHERE reader = r.reader AND scope > r.scope
+         ORDER BY reader, scope, kind LIMIT 1),
+        (SELECT id FROM coverage WHERE reader > r.reader ORDER BY reader, scope, kind LIMIT 1))
+),
+latest AS (
+    SELECT c.* FROM reading r CROSS JOIN coverage c
+    ON c.id = (SELECT l.id FROM coverage l
+               WHERE l.reader = r.reader AND l.scope = r.scope AND l.kind = r.kind
+               ORDER BY l.id DESC LIMIT 1)
+)
 ";
 
 /// Why a reading is incomplete. The order is from worst: a reading incomplete for several
@@ -430,8 +466,8 @@ pub fn open(path: &Path) -> Res<Connection> {
     conn.execute_batch(THREATS)?;
     conn.execute_batch(crate::findings::SCHEMA)?;
     crate::findings::add_via(&conn)?;
-    conn.execute_batch(INDEXES)?;
     add_causes(&conn)?;
+    conn.execute_batch(INDEXES)?;
     widen_journal(&mut conn)?;
     Ok(conn)
 }
@@ -751,11 +787,12 @@ pub fn totals(tx: &Connection, run_id: &str) -> rusqlite::Result<Totals> {
         machines_unread: one("SELECT COUNT(*) FROM (SELECT scope FROM coverage
              WHERE run_id = ?1 AND scope IN (SELECT id FROM entity WHERE type = 'machine')
              GROUP BY scope HAVING MAX(completeness != 'none') = 0)")?,
-        not_repeated: one(
-            "SELECT COUNT(*) FROM (SELECT DISTINCT reader, scope, kind FROM coverage
+        not_repeated: one(&format!(
+            "{LATEST}
+             SELECT COUNT(*) FROM reading
              WHERE scope NOT IN (SELECT scope FROM coverage WHERE run_id = ?1)
-               AND scope NOT IN (SELECT id FROM gone_entity))",
-        )?,
+               AND scope NOT IN (SELECT id FROM gone_entity)"
+        ))?,
     })
 }
 
@@ -766,7 +803,7 @@ fn machines_known(conn: &Connection) -> rusqlite::Result<BTreeSet<String>> {
         conn.prepare(sql)?.query_map([], |r| r.get(0))?.collect()
     };
     let entities = column("SELECT id FROM entity WHERE type = 'machine'")?;
-    let mut named = column("SELECT DISTINCT scope FROM coverage")?;
+    let mut named = column(&format!("{LATEST} SELECT DISTINCT scope FROM reading"))?;
     named.extend(column(
         "SELECT DISTINCT subject FROM assertion WHERE layer = 'live' AND subject LIKE 'machine:%'",
     )?);
@@ -836,11 +873,10 @@ pub fn live_subjects(conn: &Connection, reader: &str) -> rusqlite::Result<BTreeS
 
 /// Scopes where the latest reading of some kind by this reader read something.
 pub fn scopes_read(conn: &Connection, reader: &str) -> rusqlite::Result<BTreeSet<String>> {
-    conn.prepare(
-        "SELECT DISTINCT scope FROM coverage
-         WHERE reader = ?1 AND completeness != 'none'
-           AND id IN (SELECT MAX(id) FROM coverage GROUP BY reader, scope, kind)",
-    )?
+    conn.prepare(&format!(
+        "{LATEST}
+         SELECT DISTINCT scope FROM latest WHERE reader = ?1 AND completeness != 'none'"
+    ))?
     .query_map([reader], |r| r.get(0))?
     .collect()
 }

@@ -455,15 +455,16 @@ pub fn latest_coverage(conn: &Connection) -> rusqlite::Result<Vec<Latest>> {
     )?;
     let cause = if has_cause { "c.cause" } else { "NULL" };
     conn.prepare(&format!(
-        "SELECT c.reader, c.scope, c.kind, c.completeness, c.reason, c.observed_at,
+        "{latest}
+         SELECT c.reader, c.scope, c.kind, c.completeness, c.reason, c.observed_at,
                 (SELECT MAX(f.observed_at) FROM coverage f
                  WHERE f.reader = c.reader AND f.scope = c.scope AND f.kind = c.kind
                    AND f.completeness = 'full'),
                 {cause}
-         FROM coverage c
-         WHERE c.id IN (SELECT MAX(id) FROM coverage GROUP BY reader, scope, kind)
-           AND c.scope NOT IN (SELECT id FROM gone_entity)
-         ORDER BY c.completeness = 'full', c.completeness, c.reader, c.scope, c.kind"
+         FROM latest c
+         WHERE c.scope NOT IN (SELECT id FROM gone_entity)
+         ORDER BY c.completeness = 'full', c.completeness, c.reader, c.scope, c.kind",
+        latest = crate::store::LATEST
     ))?
     .query_map([], |r| {
         Ok(Latest {
@@ -1589,12 +1590,16 @@ fn changes(conn: &Connection, out: &mut String) -> Out {
          ORDER BY completeness, scope, kind",
     )?;
     // Scopes read before this run and not read by it: nothing is known about them.
-    let mut not_repeated_stmt = conn.prepare(
-        "SELECT COUNT(*) FROM (SELECT DISTINCT reader, scope, kind FROM coverage
-         WHERE id < (SELECT MIN(id) FROM coverage WHERE run_id = ?1)
-           AND scope NOT IN (SELECT scope FROM coverage WHERE run_id = ?1)
-           AND scope NOT IN (SELECT id FROM gone_entity))",
-    )?;
+    let mut not_repeated_stmt = conn.prepare(&format!(
+        "{}
+         SELECT COUNT(*) FROM reading r
+         WHERE (SELECT c.id FROM coverage c
+                WHERE c.reader = r.reader AND c.scope = r.scope AND c.kind = r.kind
+                ORDER BY c.id LIMIT 1) < (SELECT MIN(id) FROM coverage WHERE run_id = ?1)
+           AND r.scope NOT IN (SELECT scope FROM coverage WHERE run_id = ?1)
+           AND r.scope NOT IN (SELECT id FROM gone_entity)",
+        crate::store::LATEST
+    ))?;
     for (i, (run_id, at, finished, report)) in runs.iter().enumerate() {
         type Event = (String, String, String, Option<String>, Option<String>);
         let events: Vec<Event> = events_stmt
