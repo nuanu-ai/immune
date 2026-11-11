@@ -7161,7 +7161,7 @@ fn unknown_is_never_given_as_zero_or_full() {
     for section in ["last_run", "estate", "watched", "threats", "coverage"] {
         assert!(none.get(section).is_none(), "{section}");
     }
-    assert_eq!(none["not_computed"].as_array().unwrap().len(), 8);
+    assert_eq!(none["not_computed"].as_array().unwrap().len(), 9);
     assert_eq!(
         none["cannot_judge"],
         serde_json::json!(["no threat is matched against the estate yet"])
@@ -7962,7 +7962,45 @@ fn chmod(path: &Path, mode: u32) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
 }
 
-const SAMPLES: [Sample; 5] = [
+/// A tiny application under the system root, a copy of `/usr/bin/true` signed ad hoc, at a
+/// version. Signing it again after a change keeps the version.
+fn tiny_app(w: &Watch, version: &str) {
+    let contents = w.sys.join("Applications/Tiny.app/Contents");
+    put(
+        &contents,
+        "Info.plist",
+        &format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\n<key>CFBundleIdentifier</key><string>org.example.tiny</string>\n<key>CFBundleExecutable</key><string>Tiny</string>\n<key>CFBundleShortVersionString</key><string>{version}</string>\n</dict></plist>\n"
+        ),
+    );
+    std::fs::create_dir_all(contents.join("MacOS")).unwrap();
+    std::fs::copy("/usr/bin/true", contents.join("MacOS/Tiny")).unwrap();
+    if !contents.join("Resources/main.js").exists() {
+        put(&contents, "Resources/main.js", "start();\n");
+    }
+    sign_tiny(w);
+}
+
+fn sign_tiny(w: &Watch) {
+    let out = Command::new("/usr/bin/codesign")
+        .args(["--force", "--sign", "-"])
+        .arg(w.sys.join("Applications/Tiny.app"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+fn add_line(path: &Path, line: &str) {
+    let mut text = std::fs::read_to_string(path).unwrap();
+    text.push_str(line);
+    std::fs::write(path, text).unwrap();
+}
+
+const SAMPLES: [Sample; 9] = [
     Sample {
         rule: "watched.autostart",
         before: |w| {
@@ -8064,6 +8102,89 @@ const SAMPLES: [Sample; 5] = [
             chmod(&p, 0o200);
             std::fs::write(&p, "export A=2\n").unwrap();
             chmod(&p, 0o000);
+        },
+    },
+    Sample {
+        rule: "integrity.app-seal",
+        before: |w| tiny_app(w, "1.0"),
+        raise: |w| {
+            let js = w
+                .sys
+                .join("Applications/Tiny.app/Contents/Resources/main.js");
+            add_line(&js, "steal();\n");
+        },
+        // An update: a new version, signed again.
+        silent: |w| {
+            let js = w
+                .sys
+                .join("Applications/Tiny.app/Contents/Resources/main.js");
+            add_line(&js, "more();\n");
+            tiny_app(w, "2.0");
+        },
+    },
+    Sample {
+        rule: "integrity.app-signer",
+        before: |w| tiny_app(w, "1.0"),
+        // Changed and signed again to hide it.
+        raise: |w| {
+            let js = w
+                .sys
+                .join("Applications/Tiny.app/Contents/Resources/main.js");
+            add_line(&js, "steal();\n");
+            sign_tiny(w);
+        },
+        silent: |w| {
+            let js = w
+                .sys
+                .join("Applications/Tiny.app/Contents/Resources/main.js");
+            add_line(&js, "more();\n");
+            tiny_app(w, "2.0");
+        },
+    },
+    Sample {
+        rule: "integrity.package-files",
+        before: |w| {
+            put(
+                &w.sys,
+                "opt/homebrew/Cellar/tool/1.0/bin/tool",
+                "#!/bin/sh\n",
+            );
+        },
+        raise: |w| {
+            add_line(
+                &w.sys.join("opt/homebrew/Cellar/tool/1.0/bin/tool"),
+                "steal\n",
+            )
+        },
+        // A new version is a new folder, and the old one goes.
+        silent: |w| {
+            std::fs::remove_dir_all(w.sys.join("opt/homebrew/Cellar/tool/1.0")).unwrap();
+            put(
+                &w.sys,
+                "opt/homebrew/Cellar/tool/1.1/bin/tool",
+                "#!/bin/sh\n",
+            );
+        },
+    },
+    Sample {
+        rule: "integrity.app-code-outside",
+        before: |w| {
+            tiny_app(w, "1.0");
+            put(
+                w.home(),
+                "Library/Application Support/org.example.tiny/1.0/modules/index.js",
+                "start();\n",
+            );
+        },
+        raise: |w| {
+            let js = "Library/Application Support/org.example.tiny/1.0/modules/index.js";
+            add_line(&w.home().join(js), "steal();\n");
+        },
+        // The application updated, and its code there with it.
+        silent: |w| {
+            let js = "Library/Application Support/org.example.tiny/1.0/modules/index.js";
+            add_line(&w.home().join(js), "more();\n");
+            tiny_app(w, "2.0");
         },
     },
 ];

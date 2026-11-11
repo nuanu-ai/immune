@@ -13,7 +13,7 @@
 //! What a finding rests on is kept by reference, as journal entries, never as content.
 
 use crate::status::{Problems, Unreached};
-use crate::{sha256, status, watched};
+use crate::{integrity, sha256, status, watched};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 
@@ -183,14 +183,93 @@ fn first_read() -> Rule {
     }
 }
 
+// ---- Integrity of what is installed: what the integrity reader saw change while the
+// version stayed, see `integrity::observed`. ----
+
+fn app_seal() -> Rule {
+    Rule {
+        id: "integrity.app-seal",
+        kind: integrity::SEAL_BROKEN,
+        // Compromise Host Software Binary: code added to software the owner runs.
+        technique: Some("T1554"),
+        severity: "high",
+        confidence: "medium",
+        finds: "event",
+        words: Words {
+            title: "An app's files were changed after its developer signed it, while its version stayed the same.",
+            meaning: "This happens when something writes code into an app so that it runs whenever you open the app; some apps that update themselves in place cause it too.",
+            advice: "If the app did not just update itself, do not open it; reinstall it from its developer and look for what else changed.",
+        },
+        fires: |o| o.place == integrity::SEAL_BROKEN,
+    }
+}
+
+fn app_signer() -> Rule {
+    Rule {
+        id: "integrity.app-signer",
+        kind: integrity::SIGNER_CHANGED,
+        // The same act as above, covered by signing the app again.
+        technique: Some("T1554"),
+        severity: "high",
+        confidence: "low",
+        finds: "event",
+        words: Words {
+            title: "An app is now signed by someone other than before, while its version stayed the same.",
+            meaning: "This is normal for an app you build yourself; otherwise it can mean that someone changed the app and signed it again to hide it.",
+            advice: "If you did not just build or reinstall this app, reinstall it from its developer and look for what else changed.",
+        },
+        fires: |o| o.place == integrity::SIGNER_CHANGED,
+    }
+}
+
+fn package_files() -> Rule {
+    Rule {
+        id: "integrity.package-files",
+        kind: integrity::FILES_CHANGED,
+        technique: Some("T1554"),
+        severity: "high",
+        confidence: "medium",
+        finds: "event",
+        words: Words {
+            title: "Files of an installed command-line tool or package were changed in place, while its version stayed the same.",
+            meaning: "Package managers put in a new version rather than change an installed one, so this is rare; it happens when something adds code to a tool you run.",
+            advice: "If you did not edit it yourself, reinstall that package and look for what else changed.",
+        },
+        fires: |o| o.place == integrity::FILES_CHANGED,
+    }
+}
+
+fn app_code_outside() -> Rule {
+    Rule {
+        id: "integrity.app-code-outside",
+        kind: integrity::CODE_OUTSIDE_CHANGED,
+        technique: Some("T1554"),
+        severity: "medium",
+        confidence: "low",
+        finds: "event",
+        words: Words {
+            title: "Code an app keeps in your Library folder, outside the app itself, changed while the app's version stayed the same.",
+            meaning: "Many apps download parts of themselves there and update them on their own, so this is often normal; it is also where code can be added so that it runs inside the app.",
+            advice: "If this happens again without an update, reinstall the app and remove its folder named here.",
+        },
+        fires: |o| o.place == integrity::CODE_OUTSIDE_CHANGED,
+    }
+}
+
+// ---- End of integrity of what is installed. ----
+
 /// Every rule, in the order they are listed.
-pub fn rules() -> [Rule; 5] {
+pub fn rules() -> [Rule; 9] {
     [
         autostart(),
         shell_profile(),
         ssh_access(),
         git_hook(),
         first_read(),
+        app_seal(),
+        app_signer(),
+        package_files(),
+        app_code_outside(),
     ]
 }
 
@@ -350,9 +429,9 @@ fn raise(
     tx.execute(
         "INSERT INTO finding_basis (finding, journal)
          SELECT ?1, seq FROM journal
-         WHERE run_id = ?2 AND reader = ?3 AND entry IN ('added', 'changed', 'removed')
+         WHERE run_id = ?2 AND reader IN (?3, ?5) AND entry IN ('added', 'changed', 'removed')
            AND subject = ?4",
-        params![id, run_id, watched::READER, o.file],
+        params![id, run_id, watched::READER, o.file, integrity::READER],
     )?;
     Ok(opened)
 }
@@ -392,8 +471,12 @@ pub struct Found {
     pub answered_at: Option<i64>,
     pub reason: Option<String>,
     pub until: Option<i64>,
-    /// Where the thing is, as a person recognises it.
+    /// Where the thing is, as a person recognises it: from its id, or from `installed_at`
+    /// for an installed thing whose id does not say.
     pub place: String,
+    /// What an application's seal or signer became, in the program's words with the team or
+    /// code directory the signature gives: told as text from a source.
+    pub became: Option<String>,
 }
 
 /// The state of a finding at `now`. An `expected` mark hides the finding until it ends; at
@@ -431,17 +514,31 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Found>>> 
     let this = this_machine(conn)?;
     conn.prepare(
         "SELECT id, rule, about, state, change, first_seen_at, first_seen_run, last_seen_at,
-                last_seen_run, answered_at, reason, until_at
-         FROM finding ORDER BY last_seen_at DESC, id",
+                last_seen_run, answered_at, reason, until_at,
+                (SELECT object FROM assertion a WHERE a.subject = f.about
+                   AND a.predicate = 'installed_at' ORDER BY a.id DESC LIMIT 1),
+                (SELECT j.new_value FROM finding_basis b JOIN journal j ON j.seq = b.journal
+                 WHERE b.finding = f.id AND j.entry = 'changed'
+                   AND j.predicate = CASE f.rule WHEN 'integrity.app-seal' THEN 'has_seal'
+                                                 WHEN 'integrity.app-signer' THEN 'signed_by' END
+                 ORDER BY j.seq DESC LIMIT 1)
+         FROM finding f ORDER BY last_seen_at DESC, id",
     )?
     .query_map([], |r| {
         let (state, answered_at, until, last): (String, Option<i64>, Option<i64>, i64) =
             (r.get(3)?, r.get(9)?, r.get(11)?, r.get(7)?);
         let about: String = r.get(2)?;
+        // Where it is installed, as the reader wrote it: under the home folder when it does
+        // not start at the root.
+        let installed: Option<String> = r.get(12)?;
         Ok(Found {
             id: r.get(0)?,
             rule: r.get(1)?,
-            place: place(&about, this.as_deref()),
+            place: match installed {
+                Some(path) if path.starts_with('/') => path,
+                Some(path) => format!("~/{path}"),
+                None => place(&about, this.as_deref()),
+            },
             about,
             state: state_at(state, answered_at, until, last, now),
             change: r.get(4)?,
@@ -450,6 +547,7 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Found>>> 
             answered_at,
             reason: r.get(10)?,
             until,
+            became: r.get(13)?,
         })
     })?
     .collect::<rusqlite::Result<_>>()
@@ -642,7 +740,7 @@ pub fn item(f: &Found) -> Option<Item> {
         first_seen: Some(f.first_seen.0),
         last_seen: Some(f.last_seen.0),
         words: r.words,
-        value: None,
+        value: f.became.clone(),
         place: Some(f.place.clone()),
         answer: f.answered_at.map(|at| (at, f.reason.clone(), f.until)),
     })

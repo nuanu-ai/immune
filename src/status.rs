@@ -42,12 +42,13 @@ pub const NEEDS_SHOWN: usize = 50;
 /// What this build cannot answer at all, in its own words.
 pub const CANNOT_JUDGE: [&str; 1] = ["no threat is matched against the estate yet"];
 /// The sections of a result that hold numbers, in the order of the result.
-const SECTIONS: [&str; 8] = [
+const SECTIONS: [&str; 9] = [
     "needs_a_look",
     "last_run",
     "last_finished_run",
     "estate",
     "watched",
+    "integrity",
     "threats",
     "coverage",
     "no_reader_for",
@@ -183,6 +184,8 @@ pub struct Summary {
     /// What this build has no reader for on this estate; `None` on a store made before it
     /// was recorded.
     pub no_reader_for: Option<Vec<NoReader>>,
+    /// What is installed and whether it changed in place; `None`: never read.
+    pub integrity: Option<crate::integrity::Summary>,
 }
 
 /// One kind of thing this build has no reader for, and in how many places it was found.
@@ -244,6 +247,7 @@ pub fn summary(conn: &Connection, run: RunMark, home: &Path) -> Res<Summary> {
         watched: watched_summary(conn, &run.id, &changes)?,
         catalogue: catalogue(conn)?,
         no_reader_for: no_reader_for(conn)?,
+        integrity: crate::integrity::summary(conn, &run.id)?,
         changes,
         run,
     })
@@ -261,15 +265,18 @@ fn this_machine(conn: &Connection, run_id: &str) -> rusqlite::Result<String> {
     Ok(scope.unwrap_or_default())
 }
 
-/// For each reading of the watched places reader, the run whose reading of it first read
+/// Readers whose first reading of a scope and kind is a baseline.
+const BASELINED: [&str; 2] = [watched::READER, crate::integrity::READER];
+
+/// For each reading of a reader in `BASELINED`, the run whose reading of it first read
 /// something. That run's events of the reading are the baseline: journaled, and counted as
-/// nothing new.
+/// nothing new. The two readers' kinds differ, so scope and kind name one reading.
 fn baselines(conn: &Connection) -> rusqlite::Result<HashMap<(String, String), String>> {
     let mut stmt = conn.prepare(
         "SELECT scope, kind, run_id FROM coverage
-         WHERE reader = ?1 AND completeness != 'none' ORDER BY id",
+         WHERE reader IN (?1, ?2) AND completeness != 'none' ORDER BY id",
     )?;
-    let rows = stmt.query_map([watched::READER], |r| {
+    let rows = stmt.query_map(BASELINED, |r| {
         Ok((r.get::<_, String>(0)?, r.get(1)?, r.get(2)?))
     })?;
     let mut out = HashMap::new();
@@ -320,7 +327,7 @@ fn journaled(
             old: r.get(8)?,
             new: r.get(9)?,
         };
-        let baseline = reader.as_deref() == Some(watched::READER)
+        let baseline = reader.as_deref().is_some_and(|r| BASELINED.contains(&r))
             && base.get(&(e.scope.clone(), kind.unwrap_or_default())) == Some(&e.run_id);
         Ok((!baseline).then_some(e))
     })?;
@@ -690,6 +697,12 @@ pub fn result(state: Option<&State>, running: bool, path: &Path, now: i64) -> Va
                 None => absent("watched", "watched places have never been read"),
             }
             out.insert("threats".into(), threats_section(s.catalogue.as_ref()));
+            match &s.integrity {
+                Some(i) => {
+                    out.insert("integrity".into(), crate::integrity::section(i));
+                }
+                None => absent("integrity", "installed software has never been read"),
+            }
             match &s.no_reader_for {
                 Some(list) => {
                     out.insert("no_reader_for".into(), no_reader_section(list));
@@ -705,6 +718,7 @@ pub fn result(state: Option<&State>, running: bool, path: &Path, now: i64) -> Va
                 "last_finished_run",
                 "estate",
                 "watched",
+                "integrity",
                 "threats",
                 "no_reader_for",
             ] {

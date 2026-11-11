@@ -11,8 +11,10 @@
 mod agent_folders;
 mod brew;
 mod checkouts;
+mod codesign;
 mod findings;
 mod icu;
+mod integrity;
 mod known_hosts;
 mod lifecycle;
 mod lockfiles;
@@ -1739,7 +1741,9 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     if any_checkouts {
         read_lockfiles(&mut run, &found)?;
     }
-    let (watched, opened) = watch_places(&mut run, args, &found)?;
+    let (watched, mut opened) = watch_places(&mut run, args, &found)?;
+    let changed = read_integrity(&mut run, args)?;
+    opened += findings::detect(run.tx, run.run_id, run.at, &changed)?;
     read_traces(&mut run, args)?;
     resolve(&mut run)?;
     read_threats(&run, args)?;
@@ -2757,6 +2761,49 @@ fn watched_sentence(w: Option<&status::Watched>) -> String {
     s
 }
 
+// ---- Integrity of what is installed: see src/integrity.rs. ----
+
+/// Reads application bundles, Homebrew kegs, global npm packages and applications' code under
+/// Application Support, one reading per kind scoped to this machine. A first reading of a kind
+/// is its baseline, which `soc status` counts as nothing new. Returns what changed while its
+/// version stayed, for the rules.
+fn read_integrity(run: &mut Run, args: &Args) -> Result<Vec<findings::Observed>, Box<dyn Error>> {
+    let (run_id, machine) = (run.run_id.to_string(), run.machine.to_string());
+    let roots = integrity::Roots {
+        home: &args.home,
+        system: &args.system_root,
+    };
+    let kinds = integrity::read(run.tx, &roots, &machine)?;
+    let (raw, lines) = integrity::raw(&kinds);
+    let raw_file = run.keep_raw(integrity::READER, integrity::RAW, raw.as_bytes())?;
+    for (k, lines) in kinds.iter().zip(&lines) {
+        let reading = Reading {
+            reader: integrity::READER,
+            scope: &machine,
+            kind: k.kind,
+            run_id: &run_id,
+            at: run.at,
+            observed_at: run.at,
+        };
+        let (completeness, reason, gap) = k.coverage();
+        let statements = k.statements(&raw_file, lines);
+        run.apply(
+            &reading,
+            integrity::BASIS,
+            completeness,
+            Some(&reason),
+            &gap,
+            &statements,
+        )?;
+    }
+    if kinds.iter().any(|k| k.present > 0) {
+        run.readers += 1;
+    }
+    Ok(integrity::observed(run.tx, &run_id)?)
+}
+
+// ---- End of integrity of what is installed. ----
+
 /// Reads the threat catalogue and brings the threat list in line with it. A catalogue that
 /// could not be fetched or parsed changes nothing: no threat is added or marked gone.
 fn read_threats(run: &Run, args: &Args) -> Result<(), Box<dyn Error>> {
@@ -2983,6 +3030,8 @@ fn summary_sentences(s: &status::Summary) -> String {
     });
     line.push(' ');
     line.push_str(&watched_sentence(s.watched.as_ref()));
+    line.push(' ');
+    line.push_str(&integrity::sentence(s.integrity.as_ref()));
     line.push(' ');
     line.push_str(&catalogue_sentence(s.catalogue.as_ref()));
     // What this build cannot read here is part of every report, named by `soc status`.

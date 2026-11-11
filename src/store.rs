@@ -225,6 +225,14 @@ INSERT OR IGNORE INTO coverage_kind (name) VALUES
     ('system release'), ('running kernel package'), ('launch agents and daemons'),
     ('shell profiles of zsh and bash'), ('ssh access files'),
     ('hooks in the checkout''s .git folder'), ('content of a watched file');
+-- Integrity of what is installed, see src/integrity.rs.
+INSERT OR IGNORE INTO predicate (name, object_kind, status) VALUES
+    ('installed_at', 'literal', 'used'), ('signed_by', 'literal', 'used'),
+    ('has_seal', 'literal', 'used'), ('has_digest', 'literal', 'used');
+INSERT OR IGNORE INTO coverage_kind (name) VALUES
+    ('application bundles in /Applications and ~/Applications'), ('Homebrew kegs'),
+    ('global npm packages'),
+    ('code kept by applications not signed by Apple under ~/Library/Application Support');
 ";
 
 /// Why a reading is incomplete. The order is from worst: a reading incomplete for several
