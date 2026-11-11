@@ -99,6 +99,7 @@ impl Estate {
             .arg("--brew-input")
             .arg(self.0.join("brew.json"))
             .args(["--tailscale", "none", "--threats-input", "none"])
+            .args(["--osv-crates-input", "none", "--osv-npm-input", "none"])
             .arg("--checkouts-root")
             .arg(self.home())
             .arg("--sessions-root")

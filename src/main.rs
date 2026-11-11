@@ -5,8 +5,9 @@
 //! says what the last finished run left, read-only; with `--json`, `soc status` and `soc run`
 //! answer in one machine-readable envelope.
 //!
-//! The program never connects to a server and never runs ssh. Its one request to the
-//! network is the threat list, fetched whole with the system curl.
+//! The program never connects to a server and never runs ssh. Its requests to the network
+//! are the threat list and the vulnerability data of npm and crates.io, each fetched whole
+//! with the system curl.
 
 mod agent_folders;
 mod autorun;
@@ -25,6 +26,7 @@ mod json5;
 mod known_hosts;
 mod lifecycle;
 mod lockfiles;
+mod osv;
 mod owner;
 mod pages;
 mod processes;
@@ -55,7 +57,8 @@ const STORE_FOLDER: &str = "Library/Application Support/personal-soc";
 const USAGE: &str = "usage: soc run [--store <path>] [--machine-name <name>] [--brew <path>]
                [--brew-input <file>] [--servers-input <dir>] [--checkouts-root <dir>]
                [--sessions-root <dir>] [--tailscale <path>]
-               [--threats-input <file>] [--curl <path>] [--system-root <dir>]
+               [--threats-input <file>] [--osv-crates-input <file>]
+               [--osv-npm-input <file>] [--curl <path>] [--system-root <dir>]
                [--indicators <file>] [--json]
        soc status [--store <path>] [--json]
        soc findings [--all] [--store <path>] [--json]
@@ -84,7 +87,7 @@ const USAGE: &str = "usage: soc run [--store <path>] [--machine-name <name>] [--
                  exits 5 when another watcher has the store";
 
 enum Cmd {
-    Run(Args),
+    Run(Box<Args>),
     Status(StatusArgs),
     Servers(ServersArgs),
     View(ViewArgs),
@@ -134,7 +137,11 @@ struct Args {
     tailscale: Option<PathBuf>,
     /// A saved copy of the threat catalogue to read instead of fetching it.
     threats_input: Option<PathBuf>,
-    /// The curl to fetch the catalogue with instead of the system's.
+    /// Saved archives of the vulnerability data to read instead of fetching them: crates.io's
+    /// and npm's.
+    osv_crates_input: Option<PathBuf>,
+    osv_npm_input: Option<PathBuf>,
+    /// The curl to fetch the catalogue and the vulnerability data with instead of the system's.
     curl: Option<PathBuf>,
     /// The folder that `/Library` and `/etc` are resolved under for watched places: `/`
     /// unless a test gives another.
@@ -198,9 +205,12 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
             let (mut servers_input, mut checkouts_root, mut tailscale) = (None, None, None);
             let (mut sessions_root, mut threats_input, mut curl) = (None, None, None);
             let (mut system_root, mut json, mut indicators) = (None, false, None);
+            let (mut osv_crates_input, mut osv_npm_input) = (None, None);
             while let Some(arg) = it.next() {
                 match arg.as_str() {
                     "--json" => json = true,
+                    "--osv-crates-input" => osv_crates_input = Some(value(&mut it, &arg)?.into()),
+                    "--osv-npm-input" => osv_npm_input = Some(value(&mut it, &arg)?.into()),
                     "--tailscale" => tailscale = Some(value(&mut it, &arg)?.into()),
                     "--store" => store = Some(value(&mut it, &arg)?.into()),
                     "--machine-name" => machine = Some(value(&mut it, &arg)?),
@@ -219,7 +229,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
             if machine.as_deref() == Some("") {
                 return Err("--machine-name needs a name".to_string());
             }
-            Ok(Cmd::Run(Args {
+            Ok(Cmd::Run(Box::new(Args {
                 store: store.map_or_else(default_store, Ok)?,
                 machine: machine.unwrap_or_else(machine_name),
                 brew,
@@ -230,11 +240,13 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
                 home: user_home()?,
                 tailscale,
                 threats_input,
+                osv_crates_input,
+                osv_npm_input,
                 curl,
                 system_root: system_root.unwrap_or_else(|| PathBuf::from("/")),
                 indicators,
                 json,
-            }))
+            })))
         }
         "status" => {
             let mut json = false;
@@ -2186,6 +2198,10 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     let _lock = store::lock_run_past_watcher(&home)?.ok_or(Stop::RunInProgress)?;
     let mut conn = store::open(&args.store).map_err(|e| Stop::Store(e.to_string()))?;
     store::journal_note(&conn, at, &run_id, "run_started", "")?;
+    // The vulnerability data is asked for before the run writes anything, so that a long
+    // download holds no write lock on the store. What is asked comes from the feeds' own
+    // readings only.
+    let feeds = get_feeds(&conn, args, &home, at)?;
 
     let tx = conn.transaction()?;
     let machine = format!("machine:{}", args.machine);
@@ -2221,6 +2237,7 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     read_traces(&mut run, args)?;
     resolve(&mut run)?;
     read_threats(&run, args)?;
+    read_feeds(&run, feeds)?;
 
     // What the line counts is read back from what the run wrote, by the code `soc status`
     // reads it with after the run.
@@ -3682,6 +3699,99 @@ fn read_threats(run: &Run, args: &Args) -> Result<(), Box<dyn Error>> {
     }
 }
 
+/// Asks for each feed of vulnerability data, or takes the archive given for it.
+fn get_feeds(
+    conn: &rusqlite::Connection,
+    args: &Args,
+    home: &Path,
+    now: i64,
+) -> Result<Vec<osv::Got>, Box<dyn Error>> {
+    let curl = args.curl.as_deref().unwrap_or(Path::new(threats::CURL));
+    let inputs = [&args.osv_crates_input, &args.osv_npm_input];
+    let mut got = Vec::new();
+    for (feed, input) in osv::FEEDS.iter().zip(inputs) {
+        got.push(osv::get(conn, feed, input.as_deref(), curl, home, now)?);
+    }
+    Ok(got)
+}
+
+/// Brings the advisories in line with what was got for each feed. A feed that could not be
+/// read changes nothing, and the data read before stays in force.
+fn read_feeds(run: &Run, got: Vec<osv::Got>) -> Result<(), Box<dyn Error>> {
+    for (feed, got) in osv::FEEDS.iter().zip(got) {
+        if let Some(lines) = osv::record(run.tx, run.run_id, run.at, run.home, feed, got)? {
+            // What was read, one line per record; copied only when it changed.
+            run.keep_raw(feed.source, &format!("{}.records.txt", feed.source), &lines)?;
+        }
+    }
+    Ok(())
+}
+
+/// Said of the vulnerability data until matching is built. Nothing in the report may read as
+/// "does not affect me".
+const NOT_MATCHED: &str =
+    "none of it is matched against the lockfiles yet, so whether any affects them is unknown";
+
+/// One sentence about the vulnerability data for the report line.
+fn feeds_sentence(states: &[osv::State], run_id: &str) -> String {
+    let clauses: Vec<String> = states.iter().map(|s| feed_clause(s, run_id)).collect();
+    format!(
+        "Vulnerability data from OSV: {}; {NOT_MATCHED}.",
+        clauses.join("; ")
+    )
+}
+
+fn feed_clause(s: &osv::State, run_id: &str) -> String {
+    let ecosystem = s.feed.ecosystem;
+    let held = format!(
+        "{}, {} of them on malicious packages",
+        things(s.records as i64, "record", "records"),
+        grouped(s.malicious as i64)
+    );
+    let Some((_, _, outcome, reason)) = &s.latest else {
+        return format!("{ecosystem} never read");
+    };
+    let since = view::utc_or(s.changed_at.or(s.good_at), "an unknown time");
+    match outcome.as_str() {
+        "failed" => {
+            let reason = reason.as_deref().unwrap_or_default();
+            match s.good_at {
+                Some(at) => format!(
+                    "{ecosystem} not read: {reason}; the {held}, read {}, stay in force",
+                    view::utc(at)
+                ),
+                None => format!("{ecosystem} not read: {reason}; nothing of it is known yet"),
+            }
+        }
+        // Not asked in this run: its last good reading is recent enough.
+        _ if !s.asked_in(run_id) => format!(
+            "{ecosystem}: {held}, unchanged since {since}, asked for {}",
+            s.feed.asked
+        ),
+        "unchanged" => format!("{ecosystem}: {held}, unchanged since {since}"),
+        _ => match &s.counts {
+            Some(c) if c.first => {
+                format!("{ecosystem}: {held}, first reading, kept as the baseline")
+            }
+            Some(c) => {
+                let mut said = format!(
+                    "{ecosystem}: {held}, {} new and {} changed since the last reading",
+                    grouped(c.new as i64),
+                    grouped(c.changed as i64)
+                );
+                if c.withdrawn > 0 {
+                    said.push_str(&format!(", {} withdrawn", grouped(c.withdrawn as i64)));
+                }
+                if c.gone > 0 {
+                    said.push_str(&format!(", {} left it", grouped(c.gone as i64)));
+                }
+                said
+            }
+            None => format!("{ecosystem}: {held}"),
+        },
+    }
+}
+
 /// Said of every threat until matching is built. Nothing in the report may read as "does
 /// not affect me": no threat is judged against the estate yet.
 const NOT_JUDGED: &str =
@@ -3870,6 +3980,8 @@ fn summary_sentences(s: &status::Summary) -> String {
     line.push_str(&integrity::sentence(s.integrity.as_ref()));
     line.push(' ');
     line.push_str(&catalogue_sentence(s.catalogue.as_ref()));
+    line.push(' ');
+    line.push_str(&feeds_sentence(&s.feeds, &s.run.id));
     // What this build cannot read here is part of every report: in the clause of what is not
     // covered, and named by `soc status`.
     line

@@ -49,7 +49,20 @@ pub enum Fetched {
 /// The arguments curl is run with. They are the same for every user who holds the same
 /// version of the catalogue: nothing about the estate is in them.
 pub fn request(etag: Option<&str>) -> Vec<String> {
-    let max = MAX_BYTES.to_string();
+    curl_args(URL, MAX_BYTES, 300, None, etag)
+}
+
+/// The arguments of one request to a feed: its address, its cap, how long it may take, the
+/// file the body goes to instead of stdout, and the ETag the feed itself sent last. The other
+/// feeds use the same invocation, so this is the one place it is written.
+pub fn curl_args(
+    url: &str,
+    cap: u64,
+    max_time: u32,
+    output: Option<&Path>,
+    etag: Option<&str>,
+) -> Vec<String> {
+    let (max, time) = (cap.to_string(), max_time.to_string());
     let mut args: Vec<String> = [
         // First, or curl reads ~/.curlrc, which could change what is asked.
         "--disable",
@@ -64,21 +77,51 @@ pub fn request(etag: Option<&str>) -> Vec<String> {
         "--connect-timeout",
         "30",
         "--max-time",
-        "300",
-        // The status and the ETag go to stderr, after anything curl says there. curl
-        // itself turns each `\n` into a new line.
-        "--write-out",
-        "%{stderr}\\n%{http_code} %header{etag}\\n",
+        &time,
     ]
     .iter()
     .map(|a| a.to_string())
     .collect();
+    if let Some(output) = output {
+        args.push("--output".to_string());
+        args.push(output.display().to_string());
+    }
+    // The status and the ETag go to stderr, after anything curl says there. curl itself
+    // turns each `\n` into a new line.
+    args.push("--write-out".to_string());
+    args.push("%{stderr}\\n%{http_code} %header{etag}\\n".to_string());
     if let Some(etag) = etag {
         args.push("--header".to_string());
         args.push(format!("If-None-Match: {etag}"));
     }
-    args.push(URL.to_string());
+    args.push(url.to_string());
     args
+}
+
+/// What curl's exit and the status line it wrote to stderr say of one request.
+pub enum Answer {
+    /// The body came, with the ETag the server sent if it is a plain one.
+    Body(Option<String>),
+    /// "Not modified", in answer to the program's own ETag.
+    NotModified,
+    Failed(String),
+}
+
+/// Reads curl's answer. "Not modified" is believed only when the request carried an ETag.
+pub fn answer(status: std::process::ExitStatus, said: &[u8], asked_with_etag: bool) -> Answer {
+    let said = String::from_utf8_lossy(said);
+    let mut lines = said.lines().map(str::trim).filter(|l| !l.is_empty());
+    if !status.success() {
+        let why = lines.next().unwrap_or_default();
+        return Answer::Failed(format!("curl failed, {status}: {why}"));
+    }
+    let last = lines.next_back().unwrap_or_default();
+    let (code, sent) = last.split_once(' ').unwrap_or((last, ""));
+    match code {
+        "200" => Answer::Body(valid_etag(sent.trim())),
+        "304" if asked_with_etag => Answer::NotModified,
+        other => Answer::Failed(format!("the server answered HTTP {other}")),
+    }
 }
 
 /// Fetches the catalogue with curl. The body is read from curl's output under the cap, so
@@ -109,21 +152,10 @@ pub fn fetch(curl: &Path, etag: Option<&str>) -> Fetched {
         Ok(bytes) => bytes,
         Err(reason) => return Fetched::Failed(reason),
     };
-    let said = String::from_utf8_lossy(&said);
-    let mut lines = said.lines().map(str::trim).filter(|l| !l.is_empty());
-    if !status.success() {
-        let why = lines.next().unwrap_or_default();
-        return Fetched::Failed(format!("curl failed, {status}: {why}"));
-    }
-    let last = lines.next_back().unwrap_or_default();
-    let (code, sent) = last.split_once(' ').unwrap_or((last, ""));
-    match code {
-        "200" => Fetched::Body {
-            bytes,
-            etag: valid_etag(sent.trim()),
-        },
-        "304" if etag.is_some() => Fetched::Unchanged,
-        other => Fetched::Failed(format!("the server answered HTTP {other}")),
+    match answer(status, &said, etag.is_some()) {
+        Answer::Body(etag) => Fetched::Body { bytes, etag },
+        Answer::NotModified => Fetched::Unchanged,
+        Answer::Failed(reason) => Fetched::Failed(reason),
     }
 }
 

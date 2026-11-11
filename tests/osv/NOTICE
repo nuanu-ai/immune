@@ -1,0 +1,17 @@
+Public advisory records, copied unchanged as test data on 11 November 2026 from OSV.dev's
+bucket, https://osv-vulnerabilities.storage.googleapis.com/<ecosystem>/<id>.json, where
+<ecosystem> is the folder each file is in. GHSA-j7hp-h8jx-5ppr is served the same in both.
+
+GHSA-*.json: from the GitHub Advisory Database, https://github.com/github/advisory-database,
+licensed under the Creative Commons Attribution 4.0 International licence (CC-BY-4.0),
+https://creativecommons.org/licenses/by/4.0/. Copyright GitHub, Inc. and the advisories'
+contributors. Not modified.
+
+MAL-*.json: from the OpenSSF Malicious Packages repository,
+https://github.com/ossf/malicious-packages, licensed under the Apache License, Version 2.0,
+https://www.apache.org/licenses/LICENSE-2.0. Copyright the OpenSSF Malicious Packages
+authors. Not modified.
+
+RUSTSEC-2016-0004.json: from the RustSec Advisory Database,
+https://github.com/rustsec/advisory-db, released into the public domain under CC0-1.0, as
+the record itself states.

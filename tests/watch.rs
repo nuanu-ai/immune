@@ -80,6 +80,10 @@ impl Mac {
             .arg(&absent)
             .arg("--threats-input")
             .arg(&absent)
+            .arg("--osv-crates-input")
+            .arg(&absent)
+            .arg("--osv-npm-input")
+            .arg(&absent)
             .arg("--system-root")
             .arg(self.sys());
         cmd

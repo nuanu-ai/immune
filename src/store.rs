@@ -97,7 +97,7 @@ CREATE TABLE raw_input (
 /// What the journal records. The list only grows: a store whose journal was made with a
 /// shorter list is made again with this one when it is opened, so a new kind of entry is a
 /// new word here and nothing else.
-const JOURNAL_ENTRIES: [&str; 17] = [
+const JOURNAL_ENTRIES: [&str; 18] = [
     "run_started",
     "added",
     "changed",
@@ -116,6 +116,8 @@ const JOURNAL_ENTRIES: [&str; 17] = [
     "finding_seen",
     // What a sample saw that a finding rests on, see `processes.rs`.
     "sampled",
+    // One reading of a vulnerability data feed with its counts, see `osv.rs`.
+    "advisories_read",
 ];
 
 /// The journal. It cannot be rebuilt from raw input, so it only grows. Its entries are the
@@ -465,6 +467,7 @@ pub fn open(path: &Path) -> Res<Connection> {
     conn.execute_batch(OWNER)?;
     crate::owner::add_via(&conn)?;
     conn.execute_batch(THREATS)?;
+    conn.execute_batch(crate::osv::SCHEMA)?;
     conn.execute_batch(crate::findings::SCHEMA)?;
     crate::findings::add_via(&conn)?;
     add_causes(&conn)?;

@@ -46,7 +46,7 @@ pub const CANNOT_JUDGE: &[&str] = &[
     "no vulnerability from the catalogue is matched against the estate yet",
 ];
 /// The sections of a result that hold numbers, in the order of the result.
-const SECTIONS: [&str; 12] = [
+const SECTIONS: [&str; 13] = [
     "needs_a_look",
     "answered_outside_app",
     "statements_outside_app",
@@ -57,6 +57,7 @@ const SECTIONS: [&str; 12] = [
     "watched",
     "integrity",
     "threats",
+    "vulnerability_data",
     "coverage",
     "no_reader_for",
 ];
@@ -193,6 +194,8 @@ pub struct Summary {
     pub no_reader_for: Option<Vec<NoReader>>,
     /// What is installed and whether it changed in place; `None`: never read.
     pub integrity: Option<crate::integrity::Summary>,
+    /// Each feed of vulnerability data: what it holds and how its latest reading went.
+    pub feeds: Vec<crate::osv::State>,
 }
 
 /// One kind of thing this build has no reader for, and in how many places it was found.
@@ -256,6 +259,7 @@ pub fn summary(conn: &Connection, run: RunMark, home: &Path) -> Res<Summary> {
         catalogue: catalogue(conn)?,
         no_reader_for: no_reader_for(conn)?,
         integrity: crate::integrity::summary(conn, &run.id)?,
+        feeds: crate::osv::states(conn)?,
         changes,
         run,
     })
@@ -769,6 +773,10 @@ pub fn result(state: Option<&State>, running: bool, path: &Path, now: i64) -> Va
                 None => absent("watched", "watched places have never been read"),
             }
             out.insert("threats".into(), threats_section(s.catalogue.as_ref()));
+            out.insert(
+                "vulnerability_data".into(),
+                feeds_section(&s.feeds, &s.run.id),
+            );
             match &s.integrity {
                 Some(i) => {
                     out.insert("integrity".into(), crate::integrity::section(i));
@@ -792,6 +800,7 @@ pub fn result(state: Option<&State>, running: bool, path: &Path, now: i64) -> Va
                 "watched",
                 "integrity",
                 "threats",
+                "vulnerability_data",
                 "no_reader_for",
             ] {
                 absent(section, "no run has finished yet");
@@ -994,6 +1003,52 @@ fn threats_section(c: Option<&Catalogue>) -> Value {
     v["source"] = json!(threats::SOURCE);
     v["matched"] = json!(false);
     v
+}
+
+/// The feeds of vulnerability data, one entry each. `outcome` is the latest reading's: `read`,
+/// `unchanged`, `failed` or `never_read`; a run that did not ask for a feed, because its last
+/// good reading is recent, leaves it `unchanged` with `asked_this_run` false. `read_at` is when
+/// it was last read successfully, `changed_at` when what it holds last changed. Nothing is
+/// matched against the estate yet, and `matched` says so.
+fn feeds_section(feeds: &[crate::osv::State], run_id: &str) -> Value {
+    let list: Vec<Value> = feeds
+        .iter()
+        .map(|s| {
+            let mut v = json!({
+                "source": s.feed.source,
+                "ecosystem": s.feed.ecosystem,
+                "asked_this_run": s.asked_in(run_id),
+                "read_at": s.good_at.map(iso),
+                "changed_at": s.changed_at.map(iso),
+                "checked_at": s.latest.as_ref().map(|(_, at, ..)| iso(*at)),
+                "records": s.records,
+                "malicious_records": s.malicious,
+                "withdrawn_records": s.withdrawn,
+            });
+            match &s.latest {
+                None => v["outcome"] = json!("never_read"),
+                Some((_, _, outcome, reason)) if outcome == "failed" => {
+                    v["outcome"] = json!("failed");
+                    v["reason_text"] = text(reason.as_deref().unwrap_or_default());
+                }
+                Some((_, _, outcome, _)) if outcome == "read" && s.asked_in(run_id) => {
+                    v["outcome"] = json!("read");
+                    if let Some(c) = &s.counts {
+                        v["first_reading"] = json!(c.first);
+                        v["since_last_reading"] = json!({
+                            "new": c.new,
+                            "changed": c.changed,
+                            "withdrawn": c.withdrawn,
+                            "gone": c.gone,
+                        });
+                    }
+                }
+                Some(_) => v["outcome"] = json!("unchanged"),
+            }
+            v
+        })
+        .collect();
+    json!({ "matched": false, "feeds": list })
 }
 
 /// The class of a reading, from the store's own data: an incomplete reading is classed by its

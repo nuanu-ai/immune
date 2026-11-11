@@ -134,9 +134,10 @@ fn soc_cmd(home: &Path) -> Command {
 }
 
 /// `soc run` for the machine `mac`, with no tailscale, so that the real one is never asked,
-/// a threat catalogue that is not there, so that the network is never asked, and a system
-/// root that is not there, so that the real `/etc` and `/Library` are never read. A later
-/// `--tailscale`, `--threats-input` or `--system-root` replaces them.
+/// a threat catalogue and vulnerability data that are not there, so that the network is never
+/// asked, and a system root that is not there, so that the real `/etc` and `/Library` are never
+/// read. A later `--tailscale`, `--threats-input`, `--osv-*-input` or `--system-root` replaces
+/// them.
 fn soc_run(home: &Path, store: &Path) -> Command {
     let mut cmd = soc_cmd(home);
     cmd.args(["run", "--machine-name", "mac", "--store"])
@@ -147,7 +148,16 @@ fn soc_run(home: &Path, store: &Path) -> Command {
         .arg(home.join("no-catalogue"))
         .arg("--system-root")
         .arg(home.join("no-system"));
+    no_vulnerability_data(&mut cmd, home);
     cmd
+}
+
+/// Vulnerability data that is not there, so that the network is never asked for it.
+fn no_vulnerability_data(cmd: &mut Command, home: &Path) {
+    cmd.arg("--osv-crates-input")
+        .arg(home.join("no-osv"))
+        .arg("--osv-npm-input")
+        .arg(home.join("no-osv"));
 }
 
 /// The same, fetching the threat catalogue with this curl instead.
@@ -161,6 +171,7 @@ fn soc_run_curl(home: &Path, store: &Path, curl: &Path) -> Command {
         .arg(home.join("no-system"))
         .arg("--curl")
         .arg(curl);
+    no_vulnerability_data(&mut cmd, home);
     cmd
 }
 
@@ -649,6 +660,10 @@ fn a_program_in_the_current_folder_or_reached_through_a_relative_path_entry_is_n
         .arg("--tailscale")
         .arg(dir.0.join("nowhere").join("tailscale"))
         .arg("--threats-input")
+        .arg(&absent)
+        .arg("--osv-crates-input")
+        .arg(&absent)
+        .arg("--osv-npm-input")
         .arg(&absent)
         .arg("--system-root")
         .arg(&absent)
@@ -1246,6 +1261,10 @@ fn by_default_nothing_is_written_to_the_working_folder_and_the_store_is_in_the_u
             .arg(dir.0.join("no-tailscale"))
             .arg("--threats-input")
             .arg(dir.0.join("no-catalogue"))
+            .arg("--osv-crates-input")
+            .arg(dir.0.join("no-osv"))
+            .arg("--osv-npm-input")
+            .arg(dir.0.join("no-osv"))
             .arg("--system-root")
             .arg(dir.0.join("no-system")))
     };
@@ -5056,7 +5075,7 @@ const THREAT_EVENTS: &str = "SELECT entry, subject, old_value, new_value FROM jo
                              ORDER BY seq";
 const THREATS: &str = "SELECT id, gone_at IS NOT NULL FROM threat ORDER BY id";
 const LAST_FEED_READING: &str = "SELECT outcome, reason IS NOT NULL, entries FROM feed_reading
-                                 ORDER BY id DESC LIMIT 1";
+                                 WHERE source = 'cisa-kev' ORDER BY id DESC LIMIT 1";
 
 /// A store fed the threat catalogue: from a saved copy, or from a fake curl.
 struct Feed {
@@ -5218,7 +5237,7 @@ fn a_second_run_on_an_unchanged_catalogue_reports_nothing_new_and_does_not_downl
     // Both readings rest on the one raw copy, and the hash they record is its SHA-256.
     let kept = rows(
         &f.store(),
-        "SELECT DISTINCT raw_path, sha256 FROM feed_reading",
+        "SELECT DISTINCT raw_path, sha256 FROM feed_reading WHERE source = 'cisa-kev'",
     );
     assert_eq!(kept.len(), 1, "{kept:?}");
     let (raw, sha) = kept[0].split_once('|').unwrap();
@@ -7639,6 +7658,7 @@ fn unknown_is_never_given_as_zero_or_full() {
         "estate",
         "watched",
         "threats",
+        "vulnerability_data",
         "coverage",
         "not_covered",
         "answered_outside_app",
@@ -7646,7 +7666,7 @@ fn unknown_is_never_given_as_zero_or_full() {
     ] {
         assert!(none.get(section).is_none(), "{section}");
     }
-    assert_eq!(none["not_computed"].as_array().unwrap().len(), 12);
+    assert_eq!(none["not_computed"].as_array().unwrap().len(), 13);
     // With no store, this Mac has not been checked: said, not left out.
     assert_eq!(none["this_mac"]["state"], "not_checked");
     assert!(
