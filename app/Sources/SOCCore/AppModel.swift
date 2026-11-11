@@ -25,6 +25,16 @@ public final class AppModel: ObservableObject {
   @Published public private(set) var pageOpening = false
   /// Why the page could not be opened, in plain words. Cleared on the next try.
   @Published public private(set) var pageFailure: String?
+  /// Where the program's page is, as `soc view` last said.
+  @Published public private(set) var pagePath: URL?
+  /// Opens the page file; the app gives the system's opener, tests a recorder.
+  public var opener: @MainActor (URL) -> Bool = { _ in false }
+  /// Ask soc where its page is as soon as a store is read, so the first click is
+  /// instant too. On in the app, off in tests.
+  public var learnPageEarly = false
+  private var pageTask: Task<SocOutput, Never>?
+  /// "What is watched" is open in the panel.
+  @Published public var watchedOpen = false
   /// The "Expected…" form, open on one finding's card, or nil.
   @Published public var form: ExpectedForm?
   /// The id of the finding whose answer is being saved now.
@@ -86,6 +96,9 @@ public final class AppModel: ObservableObject {
       notificationsOff = announcer.off
       if let s = reading.status { await announcer.saw(s) }
     }
+    if learnPageEarly, pagePath == nil, reading.status?.store?.exists == true {
+      Task { _ = await writePage() }
+    }
     refreshing = false
   }
 
@@ -108,27 +121,64 @@ public final class AppModel: ObservableObject {
     return true
   }
 
-  /// Details: `soc view` writes the program's own page and opens it. The app opens
-  /// no window of its own and builds no path or URL. Returns false, and starts
-  /// nothing, while the page is already being opened. A failure is a plain line and
-  /// never changes what the icon says.
+  /// Details and Show open the program's page at once. The page is written by
+  /// `soc view --no-open`, which says where it is; the app opens that file and never
+  /// waits on a rewrite in the click: with a page known, it opens it and has it
+  /// rewritten behind. With none known yet (soc has not been asked this session), the
+  /// click asks soc once, shows that it is opening, and opens the page when soc has
+  /// written it. Returns false, and starts nothing, while that first opening runs. A
+  /// failure is a plain line and never changes what the icon says.
   @discardableResult
   public func openPage(at id: String? = nil) async -> Bool {
+    if let page = pagePath, FileManager.default.fileExists(atPath: page.path) {
+      pageFailure = opener(page) ? nil : "Details could not be opened."
+      Task { _ = await writePage() }
+      return true
+    }
     guard !pageOpening else { return false }
     pageOpening = true
     pageFailure = nil
-    let out = await soc.run(
-      Self.viewArguments(at: id) + extraArguments, timeout: Self.viewTimeout)
+    let out = await writePage()
     if out.exitCode != 0 {
       pageFailure = "Details could not be opened. " + Self.viewFailure(out)
+    } else if let page = pagePath {
+      if !opener(page) { pageFailure = "Details could not be opened." }
+    } else {
+      pageFailure = "Details could not be opened. The program did not say where its page is."
     }
     pageOpening = false
     return true
   }
 
-  /// The seam for opening the page at one item: today `soc view` takes no item,
-  /// so the item's id is not passed yet.
-  static func viewArguments(at id: String?) -> [String] { ["view"] }
+  /// `soc view --no-open` on the same store: rewrites the page and learns where it
+  /// is. One at a time; a second caller waits for the one running.
+  func writePage() async -> SocOutput {
+    let task: Task<SocOutput, Never>
+    if let running = pageTask {
+      task = running
+    } else {
+      let soc = self.soc
+      let args = ["view", "--no-open"] + extraArguments
+      task = Task { await soc.run(args, timeout: Self.viewTimeout) }
+      pageTask = task
+    }
+    let out = await task.value
+    if pageTask == task { pageTask = nil }
+    // Every waiter learns the page, whoever started the run.
+    if out.exitCode == 0, let page = Self.pagePath(out.stdout) { pagePath = page }
+    return out
+  }
+
+  /// The page `soc view` printed first: an absolute path to an HTML file, as a file
+  /// URL, or nil for anything else.
+  static func pagePath(_ stdout: Data) -> URL? {
+    guard
+      let first = String(decoding: stdout.prefix(4096), as: UTF8.self)
+        .split(separator: "\n").first.map(String.init),
+      first.hasPrefix("/"), first.hasSuffix(".html"), Inert.text(first, limit: 4096) == first
+    else { return nil }
+    return URL(fileURLWithPath: first)
+  }
 
   static func viewFailure(_ out: SocOutput) -> String {
     if out.launchFailure != nil { return "The program could not be started." }

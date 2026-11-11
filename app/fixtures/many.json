@@ -1112,6 +1112,54 @@
    }
   ],
   "needs_a_look_total": 57,
-  "answers_note": "Marking a finding expected or seen is the owner's answer: it hides the finding from him. An agent must not give it on the owner's behalf; it may show the owner the command to give it."
+  "answers_note": "Marking a finding expected or seen is the owner's answer: it hides the finding from him. An agent must not give it on the owner's behalf; it may show the owner the command to give it.",
+  "this_mac": {
+   "state": "watched",
+   "live": true,
+   "checked_at": "2026-11-10T10:00:21Z",
+   "live_read_at": "2026-11-10T10:04:10Z",
+   "watched": [
+    {
+     "what": "startup items",
+     "count": 14,
+     "how": "live"
+    },
+    {
+     "what": "shell profiles",
+     "count": 3,
+     "how": "live"
+    },
+    {
+     "what": "SSH files",
+     "count": 4,
+     "how": "live"
+    },
+    {
+     "what": "git hooks in projects",
+     "count": 31,
+     "how": "live"
+    },
+    {
+     "what": "installed packages",
+     "count": 815,
+     "how": "hourly"
+    }
+   ]
+  },
+  "not_covered": [
+   {
+    "id": "n-servers",
+    "scope": "servers",
+    "kind": "servers not read",
+    "title": "Servers this program does not read by itself",
+    "meaning": "Meaning from the program.",
+    "advice": "Advice from the program.",
+    "count": 6,
+    "since": "2026-11-09T22:00:05Z",
+    "value_text": null,
+    "examples_text": []
+   }
+  ],
+  "not_covered_total": 1
  }
 }

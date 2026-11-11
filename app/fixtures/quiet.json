@@ -157,6 +157,102 @@
   "not_computed": [],
   "needs_a_look": [],
   "needs_a_look_total": 0,
-  "answers_note": "Marking a finding expected or seen is the owner's answer: it hides the finding from him. An agent must not give it on the owner's behalf; it may show the owner the command to give it."
+  "answers_note": "Marking a finding expected or seen is the owner's answer: it hides the finding from him. An agent must not give it on the owner's behalf; it may show the owner the command to give it.",
+  "this_mac": {
+   "state": "watched",
+   "live": true,
+   "checked_at": "2026-11-10T10:00:21Z",
+   "live_read_at": "2026-11-10T10:04:10Z",
+   "watched": [
+    {
+     "what": "startup items",
+     "count": 14,
+     "how": "live"
+    },
+    {
+     "what": "shell profiles",
+     "count": 3,
+     "how": "live"
+    },
+    {
+     "what": "SSH files",
+     "count": 4,
+     "how": "live"
+    },
+    {
+     "what": "git hooks in projects",
+     "count": 31,
+     "how": "live"
+    },
+    {
+     "what": "installed packages",
+     "count": 815,
+     "how": "hourly"
+    }
+   ]
+  },
+  "not_covered": [
+   {
+    "id": "n-servers",
+    "scope": "servers",
+    "kind": "servers not read",
+    "title": "Servers this program does not read by itself",
+    "meaning": "Meaning from the program.",
+    "advice": "Advice from the program.",
+    "count": 6,
+    "since": "2026-11-09T22:00:05Z",
+    "value_text": null,
+    "examples_text": []
+   },
+   {
+    "id": "n-locks",
+    "scope": "projects",
+    "kind": "no reader",
+    "title": "Project lockfiles this program cannot read yet",
+    "meaning": "Meaning from the program.",
+    "advice": "Advice from the program.",
+    "count": 2,
+    "since": "2026-11-09T22:00:05Z",
+    "value_text": null,
+    "examples_text": []
+   },
+   {
+    "id": "n-threats",
+    "scope": "threats",
+    "kind": "not matched",
+    "title": "Known exploited vulnerabilities are not matched against this Mac yet",
+    "meaning": "Meaning from the program.",
+    "advice": "Advice from the program.",
+    "count": 1,
+    "since": null,
+    "value_text": null,
+    "examples_text": []
+   },
+   {
+    "id": "n-feed",
+    "scope": "threats",
+    "kind": "threat list not downloaded",
+    "title": "The list of exploited vulnerabilities could not be downloaded",
+    "meaning": "Meaning from the program.",
+    "advice": "Advice from the program.",
+    "count": 1,
+    "since": "2026-11-09T22:00:05Z",
+    "value_text": "the network is unreachable",
+    "examples_text": []
+   },
+   {
+    "id": "n-unreached",
+    "scope": "servers",
+    "kind": "machine not reached",
+    "title": "A server could not be reached",
+    "meaning": "Meaning from the program.",
+    "advice": "Advice from the program.",
+    "count": 1,
+    "since": "2026-11-09T22:00:05Z",
+    "value_text": "connection timed out after 10 s",
+    "examples_text": []
+   }
+  ],
+  "not_covered_total": 5
  }
 }

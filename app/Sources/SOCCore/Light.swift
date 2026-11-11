@@ -66,7 +66,14 @@ public enum Light: Sendable, Equatable {
     guard total >= items.count else {
       return .cannotRead("What needs a look does not add up.")
     }
-    return total == 0 ? .nothingToReport : .attention(total)
+    // A finding outranks everything else.
+    if total > 0 { return .attention(total) }
+    // Calm only when soc says this Mac is watched, wholly or in part; not checked,
+    // or anything else, is not calm. What it does not cover never raises the icon.
+    switch s.thisMac?.state {
+    case "watched", "watched_in_part": return .nothingToReport
+    default: return .cannotRead("Whether this Mac is watched is not reported.")
+    }
   }
 
   /// The menu-bar symbol: filled when the worst thing shown is high or critical, or
@@ -91,8 +98,9 @@ public enum Light: Sendable, Equatable {
 
   public var headline: String {
     switch self {
-    case .nothingToReport: "Nothing needs you."
-    case .attention(let n): n == 1 ? "1 thing needs a look." : "\(n) things need a look."
+    case .nothingToReport: "This Mac is watched. Nothing needs you."
+    case .attention(let n):
+      n == 1 ? "1 thing changed on this Mac." : "\(n) things changed on this Mac."
     case .cannotRead: "I can't tell."
     }
   }

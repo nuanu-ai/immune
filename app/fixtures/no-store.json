@@ -26,6 +26,15 @@
     "section": "needs_a_look",
     "reason": "there is no store yet; `soc run` makes it"
    }
-  ]
+  ],
+  "this_mac": {
+   "state": "not_checked",
+   "live": false,
+   "checked_at": null,
+   "live_read_at": null,
+   "watched": []
+  },
+  "not_covered": [],
+  "not_covered_total": 0
  }
 }

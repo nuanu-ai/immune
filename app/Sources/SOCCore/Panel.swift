@@ -61,10 +61,7 @@ public struct Row: Sendable, Equatable, Identifiable {
     case "ssh access file": "key"
     case "git hook": "arrow.triangle.branch"
     case "file read for the first time": "doc.text.magnifyingglass"
-    case "machine not reached": "server.rack"
-    case "check failed": "magnifyingglass"
-    case "threat list not downloaded": "list.bullet.rectangle"
-    default: item.type == "health" ? "stethoscope" : "exclamationmark.circle"
+    default: "exclamationmark.circle"
     }
   }
 
@@ -174,8 +171,13 @@ public struct Panel: Sendable, Equatable {
   public var reason: String?
   /// Every row; the panel shows the first `rowsShown`.
   public var rows: [Row] = []
-  /// The one quiet line for blind spots.
-  public var blind: String?
+  /// "What is watched": one line per kind of place, shown when the row is open.
+  public var watched: [String] = []
+  public var watchedOpen = false
+  /// What the program does not cover: quiet rows, never counted, never orange.
+  public var uncovered: [CoverRow] = []
+  /// Not covered beyond the rows shown.
+  public var uncoveredMore = 0
   /// Plain lines about the last Check now or Details.
   public var notes: [String] = []
   /// "Not watching for changes right now: …", one quiet line, or nil.
@@ -204,12 +206,14 @@ public struct Panel: Sendable, Equatable {
   public static func of(
     _ reading: Reading, now: Date, checking: Bool = false, notes: [String] = [],
     notWatching: String? = nil, form: ExpectedForm? = nil, answering: String? = nil,
-    refusals: [String: String] = [:], notificationsOff: Bool = false, soc: SocCommand? = nil
+    refusals: [String: String] = [:], notificationsOff: Bool = false, soc: SocCommand? = nil,
+    watchedOpen: Bool = false
   ) -> Panel {
     let light = Light.of(reading)
     var p = Panel(
-      light: light, headline: light.headline, notes: notes, notWatching: notWatching,
-      canCheck: !checking, form: form, answering: answering, refusals: refusals)
+      light: light, headline: light.headline, watchedOpen: watchedOpen, notes: notes,
+      notWatching: notWatching, canCheck: !checking, form: form, answering: answering,
+      refusals: refusals)
     if notificationsOff { p.notificationsOff = Announcer.offLine }
     switch reading {
     case .notYetRead:
@@ -231,23 +235,22 @@ public struct Panel: Sendable, Equatable {
 
   mutating func fill(_ s: Status, now: Date, checking: Bool, soc: SocCommand?) {
     // The status is the judge of what may be shown. "Nothing has been checked yet" is
-    // only for a status that has not computed what needs a look and has no run at all.
+    // for a status that has not computed what needs a look and has no run at all, or
+    // that says this Mac was never checked and nothing changed.
     let notComputed = s.notComputed?.contains { $0.section == "needs_a_look" } == true
     // A first run under way counts as no run yet; one that started and stopped does not.
     let noRun = s.lastFinishedRun == nil && (s.lastRun == nil || checking)
-    if notComputed && noRun {
+    let mac = s.thisMac
+    let neverChecked = mac?.state == "not_checked" && (s.needsALookTotal ?? 0) == 0
+    if (notComputed && noRun) || neverChecked {
       headline = checking ? "Checking for the first time…" : "Nothing has been checked yet."
       if !checking { help = ["Press Check now to take the first look."] }
       return
     }
 
-    let finished: String? =
-      s.lastFinishedRun?.finishedAt.map { "Checked " + Clock.ago($0, now: now) }
-      ?? (s.lastFinishedRun == nil ? "A full check has not finished yet" : nil)
-    checkedAt = s.lastFinishedRun?.finishedAt.map(Clock.full)
-    checked = [finished, checking ? (finished == nil ? "Checking now…" : "checking now…") : nil]
-      .compactMap { $0 }.joined(separator: " · ")
-    if checked == "" { checked = nil }
+    let lastCheck = mac?.checkedAt ?? s.lastFinishedRun?.finishedAt
+    checkedAt = lastCheck.map(Clock.full)
+    checked = Self.how(live: mac?.live, lastCheck: lastCheck, now: now)
 
     if case .cannotRead(let r) = light {
       headline = "I can't tell: the program's answer is incomplete."
@@ -260,23 +263,45 @@ public struct Panel: Sendable, Equatable {
     total = s.needsALookTotal ?? 0
     worst = Severity.worst(items)
     urgent = items.contains { $0.urgent }
-    let blindCount = Self.blindCount(s)
-    if blindCount > 0 {
-      blind = "Cannot judge \(blindCount) " + (blindCount == 1 ? "kind" : "kinds") + " of thing yet"
+    let urgentCount = items.filter(\.urgent).count
+    if urgentCount > 0 {
+      headline += " " + (urgentCount == 1 ? "1 needs you now." : "\(urgentCount) need you now.")
+    } else if total == 0, mac?.state == "watched_in_part" {
+      headline = "This Mac is watched in part. Nothing needs you."
     }
+    // While a check runs, nothing is presented as settled.
+    if checking { headline = "Checking this Mac…" }
+
+    watched = (mac?.watched ?? []).map {
+      Inert.text($0.what ?? "", limit: 80) + ": " + ($0.count.map(String.init) ?? "?") + " · "
+        + ($0.how == "live" ? "live" : "every hour")
+    }
+    // This Mac's own gaps first: the reason it is watched only in part.
+    let list = s.notCovered ?? []
+    let all = list.filter { $0.scope == "this_mac" } + list.filter { $0.scope != "this_mac" }
+    let totalUncovered = max(s.notCoveredTotal ?? 0, all.count)
+    let room = totalUncovered > Self.uncoveredShown ? Self.uncoveredShown - 1 : Self.uncoveredShown
+    uncovered = all.prefix(room).enumerated().map { CoverRow(id: $0.offset, item: $0.element) }
+    uncoveredMore = totalUncovered - uncovered.count
   }
 
-  /// Kinds of thing the program cannot judge yet: its own sentences, what it has no
-  /// reader for, and the groups it could only partly see.
-  static func blindCount(_ s: Status) -> Int {
-    let groups = s.coverage?.problems ?? []
-    // Kinds are told apart by the program's words and the machine's name together.
-    let noReader =
-      s.noReaderFor.map { list in
-        Set(list.map { [$0.what ?? "", $0.whatText ?? ""] }).count
-      } ?? groups.filter { $0.class == "no_reader" }.count
-    let partial = groups.filter { $0.class == "partial" }.count
-    return (s.cannotJudge?.count ?? 0) + noReader + partial
+  /// Rows for what is not covered, the "more" line included.
+  public static let uncoveredShown = 3
+
+  /// The second line: how this Mac is watched and when it was last fully checked.
+  /// Live watching is claimed only when soc says so.
+  static func how(live: Bool?, lastCheck: Date?, now: Date) -> String {
+    let last = lastCheck.map { Clock.ago($0, now: now) }
+    switch live {
+    case true?:
+      return "Changes show within seconds. "
+        + (last.map { "Full check hourly, last \($0)." } ?? "No full check has finished yet.")
+    case false?:
+      return "Only the hourly check is running"
+        + (last.map { ", last \($0)." } ?? "; no full check has finished yet.")
+    case nil:
+      return last.map { "Last full check \($0)." } ?? "No full check has finished yet."
+    }
   }
 
   /// The panel as plain text, line by line, in the order the panel shows it.
@@ -285,7 +310,7 @@ public struct Panel: Sendable, Equatable {
     if let checked { out.append("    " + checked) }
     out += help.map { "    " + $0 }
     if let reason { out.append("    (small) " + reason) }
-    if !shown.isEmpty || blind != nil { out.append("----") }
+    if !shown.isEmpty || !watched.isEmpty || !uncovered.isEmpty { out.append("----") }
     for r in shown {
       let mark = r.strong ? "!" : r.quiet ? "·" : "•"
       out.append(mark + " " + (r.when.map { $0 + " — " } ?? "") + r.title)
@@ -307,13 +332,40 @@ public struct Panel: Sendable, Equatable {
       }
     }
     if more > 0 { out.append("\(more) more in Details") }
-    if let blind { out.append(blind + "  ›") }
+    if !watched.isEmpty {
+      out.append((watchedOpen ? "▾ " : "▸ ") + "What is watched")
+      if watchedOpen { out += watched.map { "    " + $0 } }
+    }
+    out += uncovered.map { "○ " + $0.text + "  ›" }
+    if uncoveredMore > 0 { out.append("○ \(uncoveredMore) more not covered  ›") }
     if let notWatching { out.append(notWatching) }
     if let notificationsOff { out.append(notificationsOff + "  [ Open Settings ]") }
     out += notes
     out.append("----")
     out.append(footer.map { "[ \($0) ]" }.joined(separator: "  "))
     return out
+  }
+}
+
+/// One thing the program does not cover, as one quiet row.
+public struct CoverRow: Sendable, Equatable, Identifiable {
+  public let id: Int
+  public let item: Uncovered
+
+  /// soc's title, inert, with how many when more than one.
+  public var text: String {
+    Inert.text(item.title ?? "", limit: 200)
+      + ((item.count ?? 0) > 1 ? " (\(item.count ?? 0))" : "")
+  }
+
+  public var symbol: String {
+    switch item.scope {
+    case "this_mac": "desktopcomputer"
+    case "projects": "folder"
+    case "servers": "server.rack"
+    case "threats": "list.bullet.rectangle"
+    default: "circle.dashed"
+    }
   }
 }
 

@@ -201,20 +201,23 @@ struct FalseCalm {
   func servedBeforeFullCheck() {
     let p = panel(output("watcher-only.json"))
     #expect(p.light == .attention(1))
-    #expect(p.headline == "1 thing needs a look.")
+    #expect(p.headline == "1 thing changed on this Mac.")
     #expect(p.rows.count == 1)
-    #expect(p.checked == "A full check has not finished yet")
+    #expect(p.checked == "Changes show within seconds. No full check has finished yet.")
     #expect(p.help.isEmpty)
     let none = panel(
       edited("watcher-only.json", removing: ["result", "needs_a_look_total"], setting: 0)
         .withList([]))
     #expect(none.light == .nothingToReport)
-    #expect(none.checked == "A full check has not finished yet")
+    #expect(none.checked == "Changes show within seconds. No full check has finished yet.")
     let going = panel(edited("watcher-only.json", removing: ["result", "running"], setting: true))
-    #expect(going.checked == "A full check has not finished yet · checking now…")
+    #expect(going.headline == "Checking this Mac…")
     #expect(going.rows.count == 1)
     // A finished check still says when.
-    #expect(panel(output("status.json")).checked?.hasPrefix("Checked ") == true)
+    #expect(
+      panel(output("status.json")).checked?.hasPrefix(
+        "Changes show within seconds. Full check hourly, last ")
+        == true)
   }
 
   @Test(
@@ -280,12 +283,12 @@ struct FalseCalm {
 struct Count {
   @Test("The count is soc's total, not the length of the list it serves (at most 50)")
   func total() {
-    #expect(light(output("status.json")) == .attention(4))
+    #expect(light(output("status.json")) == .attention(3))
     let many = panel(output("many.json"))
     #expect(many.light == .attention(57))
     #expect(many.total == 57)
     #expect(many.rows.count == 50)
-    #expect(many.headline == "57 things need a look.")
+    #expect(many.headline == "57 things changed on this Mac.")
   }
 
   @Test(
@@ -305,8 +308,8 @@ struct Count {
 
   @Test("A run in progress is not a failure: the icon shows the last finished run")
   func runningIsNotFailure() {
-    #expect(light(output("running.json")) == .attention(4))
-    #expect(panel(output("running.json")).checked?.hasSuffix("checking now…") == true)
+    #expect(light(output("running.json")) == .attention(3))
+    #expect(panel(output("running.json")).rows.count == 3)
   }
 }
 
@@ -326,10 +329,12 @@ struct PanelPromises {
     case .attention(let n):
       #expect(p.total == n)
       #expect(p.shown.count + p.more == n)
-      #expect(p.headline == (n == 1 ? "1 thing needs a look." : "\(n) things need a look."))
+      let changed = n == 1 ? "1 thing changed on this Mac." : "\(n) things changed on this Mac."
+      #expect(p.headline.hasPrefix(changed) || p.headline == "Checking this Mac…")
     case .nothingToReport:
       #expect(p.rows.isEmpty)
-      #expect(p.headline == "Nothing needs you.")
+      #expect(p.headline.hasPrefix("This Mac is watched"))
+      #expect(p.headline.hasSuffix("Nothing needs you."))
     case .cannotRead:
       #expect(p.rows.isEmpty)
       #expect(p.headline != "Nothing needs you.")
@@ -355,11 +360,14 @@ struct PanelPromises {
   @Test("A source's reason is under 'Reason:', the place is on its own line")
   func reasonAndPlace() {
     let p = panel(output("status.json"))
-    #expect(panel(output("two.json")).lines.contains("    Reason: the network is unreachable"))
+    #expect(
+      panel(output("long.json")).lines.contains {
+        $0.hasPrefix("    Reason: the file was unreadable before")
+      })
     #expect(p.lines.contains("    › .ssh/authorized_keys"))
     #expect(
       panel(output("two.json")).rows.map(\.item.kind) == [
-        "shell profile", "threat list not downloaded",
+        "shell profile"
       ])
   }
 
@@ -428,27 +436,171 @@ struct PanelPromises {
     #expect(machine.rows[0].shownValue == "a-machine-name-longer-than-forty-characters.example")
   }
 
-  @Test("Kinds the program has no reader for are told apart by its words and the machine's name")
-  func noReaderKinds() {
-    let o = edited(
-      "running.json", removing: ["result", "no_reader_for"],
-      setting: [
-        ["what": "lockfile", "what_text": "uv.lock", "where_count": 2],
-        ["what": "lockfile", "what_text": "uv.lock", "where_count": 1],
-        ["what": "lockfile", "where_count": 1],
-        ["what": "package manager", "where_count": 1],
-      ])
-    // One sentence of its own plus three kinds.
-    #expect(panel(o).blind == "Cannot judge 4 kinds of thing yet")
+  @Test("A quiet Mac with five things not covered is calm, says so first, and counts zero")
+  func quietWithGaps() {
+    let p = panel(quiet())
+    #expect(p.light == .nothingToReport)
+    #expect(p.total == 0)
+    #expect(p.headline == "This Mac is watched. Nothing needs you.")
+    #expect(Light.menuSymbol(p.light, worst: p.worst, urgent: p.urgent) == "checkmark.shield")
+    // Five not covered: two rows and one line for the rest, quiet, after the state.
+    #expect(p.uncovered.count == 2)
+    #expect(p.uncoveredMore == 3)
+    #expect(p.lines.contains("○ Servers this program does not read by itself (6)  ›"))
+    #expect(p.lines.contains("○ 3 more not covered  ›"))
+    #expect(!p.lines.contains { $0.contains("Cannot judge") })
   }
 
-  @Test("Blind spots are one quiet line with a count, never a card")
-  func blindLine() {
-    #expect(panel(quiet()).blind == "Cannot judge 3 kinds of thing yet")
-    #expect(panel(output("running.json")).blind == "Cannot judge 1 kind of thing yet")
-    let none = edited("running.json", removing: ["result", "cannot_judge"], setting: [String]())
-    #expect(panel(none).blind == nil)
-    #expect(panel(quiet()).rows.isEmpty)
+  @Test("What is not covered never raises the icon, however much there is")
+  func notCoveredNeverRaises() {
+    let many = (1...40).map { i -> [String: Any] in
+      [
+        "id": "n\(i)", "scope": "servers", "title": "Something not covered \(i)", "count": 9,
+        "since": "2026-11-01T00:00:00Z",
+      ]
+    }
+    let o = edited("quiet.json", removing: ["result", "not_covered"], setting: many)
+    let p = panel(o)
+    #expect(p.light == .nothingToReport)
+    #expect(!p.urgent)
+    #expect(p.uncovered.count == 2)
+    #expect(p.uncoveredMore == 38)
+    #expect(p.uncovered.allSatisfy { $0.symbol == "server.rack" })
+  }
+
+  @Test("A finding outranks everything: whatever this Mac's state, one finding is the headline")
+  func findingOutranks() {
+    for state in ["watched", "watched_in_part", "not_checked", "something new"] {
+      var root =
+        (try? JSONSerialization.jsonObject(with: looking([lookItem()]).stdout)) as? [String: Any]
+        ?? [:]
+      var r = root["result"] as? [String: Any] ?? [:]
+      r["this_mac"] = ["state": state, "live": false]
+      root["result"] = r
+      let p = panel(
+        SocOutput(exitCode: 0, stdout: (try? JSONSerialization.data(withJSONObject: root))!))
+      #expect(p.light == .attention(1), "\(state)")
+      #expect(p.headline == "1 thing changed on this Mac.", "\(state)")
+    }
+    let urgent = panel(looking([lookItem(urgent: true), lookItem(id: "f2")]))
+    #expect(urgent.headline == "2 things changed on this Mac. 1 needs you now.")
+    let both = panel(looking([lookItem(urgent: true), lookItem(id: "f2", urgent: true)]))
+    #expect(both.headline == "2 things changed on this Mac. 2 need you now.")
+  }
+
+  @Test("Calm needs soc to say this Mac is watched: otherwise it is not checked, or unknown")
+  func calmNeedsState() {
+    #expect(isCannotRead(light(quiet(removing: ["result", "this_mac"]))))
+    #expect(isCannotRead(light(quiet(removing: ["result", "this_mac", "state"]))))
+    #expect(isCannotRead(light(quiet(removing: ["result", "this_mac", "state"], setting: "new"))))
+    let never = quiet(removing: ["result", "this_mac", "state"], setting: "not_checked")
+    #expect(isCannotRead(light(never)))
+    #expect(panel(never).headline == "Nothing has been checked yet.")
+  }
+
+  @Test("Watched in part with nothing changed is still calm, its reason row first")
+  func inPart() {
+    let p = panel(output("watched-in-part.json"))
+    #expect(p.light == .nothingToReport)
+    #expect(p.headline == "This Mac is watched in part. Nothing needs you.")
+    #expect(p.uncovered.first?.item.scope == "this_mac")
+    #expect(p.uncovered.first?.text == "Places on this Mac that could not be read (2)")
+    // The order otherwise is as served.
+    let served = panel(quiet()).uncovered.map { $0.item.id }
+    #expect(served == ["n-servers", "n-locks"])
+  }
+
+  @Test(
+    "Not-covered rows: this Mac's own first, soc's total counted, counts only above one, text inert"
+  )
+  func coverRows() {
+    let items: [[String: Any]] = [
+      ["id": "a", "scope": "servers", "title": "Servers", "count": 6],
+      ["id": "b", "scope": "threats", "title": "Threats \u{202E}x", "count": 1],
+      ["id": "c", "scope": "this_mac", "title": "Places", "count": 2],
+    ]
+    var o = edited("quiet.json", removing: ["result", "not_covered"], setting: items)
+    var root = (try? JSONSerialization.jsonObject(with: o.stdout)) as? [String: Any] ?? [:]
+    var r = root["result"] as? [String: Any] ?? [:]
+    r["not_covered_total"] = 3
+    root["result"] = r
+    o.stdout = (try? JSONSerialization.data(withJSONObject: root)) ?? Data()
+    let p = panel(o)
+    #expect(p.uncovered.map { $0.item.id } == ["c", "a", "b"])
+    #expect(p.uncovered.map(\.text) == ["Places (2)", "Servers (6)", "Threats \\u{202E}x"])
+    #expect(p.uncoveredMore == 0)
+    // soc counts more than it lists: the rest is one line.
+    r["not_covered_total"] = 9
+    root["result"] = r
+    o.stdout = (try? JSONSerialization.data(withJSONObject: root)) ?? Data()
+    let more = panel(o)
+    #expect(more.uncovered.count == 2)
+    #expect(more.uncoveredMore == 7)
+    // Nothing watched said: no "What is watched" row.
+    let bare = panel(quiet(removing: ["result", "this_mac", "watched"]))
+    #expect(bare.light == .nothingToReport)
+    #expect(!bare.lines.contains { $0.contains("What is watched") })
+  }
+
+  @Test("The last full check is soc's this_mac.checked_at, and the last finished run without it")
+  func lastCheckSource() {
+    let now = Date()
+    let mac = quiet(
+      removing: ["result", "this_mac", "checked_at"],
+      setting: Clock.iso(now.addingTimeInterval(-120)))
+    #expect(panel(mac).checked?.contains(Clock.ago(now.addingTimeInterval(-120), now: now)) == true)
+    let noMac = edited("status.json", removing: ["result", "this_mac"])
+    let finished = Interpret.reading(from: noMac).status?.lastFinishedRun?.finishedAt
+    #expect(finished != nil)
+    #expect(panel(noMac).checked == "Last full check " + Clock.ago(finished!, now: Date()) + ".")
+  }
+
+  @Test("The second line never claims live watching unless soc says it watches live")
+  func liveLine() {
+    let now = Date()
+    let at = now.addingTimeInterval(-300)
+    let live = Panel.how(live: true, lastCheck: at, now: now)
+    #expect(live.hasPrefix("Changes show within seconds. Full check hourly, last "))
+    for off in [
+      Panel.how(live: false, lastCheck: at, now: now),
+      Panel.how(live: nil, lastCheck: at, now: now),
+    ] {
+      #expect(!off.contains("seconds"))
+      #expect(!off.contains("live"))
+    }
+    #expect(
+      Panel.how(live: false, lastCheck: at, now: now).hasPrefix(
+        "Only the hourly check is running, last "))
+    #expect(Panel.how(live: nil, lastCheck: at, now: now).hasPrefix("Last full check "))
+    #expect(
+      Panel.how(live: false, lastCheck: nil, now: now)
+        == "Only the hourly check is running; no full check has finished yet.")
+    #expect(
+      Panel.how(live: true, lastCheck: nil, now: now)
+        == "Changes show within seconds. No full check has finished yet.")
+    #expect(Panel.how(live: nil, lastCheck: nil, now: now) == "No full check has finished yet.")
+    #expect(
+      panel(output("live-off.json")).checked?.hasPrefix("Only the hourly check is running") == true)
+    #expect(panel(quiet()).checked?.hasPrefix("Changes show within seconds.") == true)
+  }
+
+  @Test("While a check runs the headline says so and presents nothing as settled")
+  func checkingHeadline() {
+    #expect(panel(output("running.json")).headline == "Checking this Mac…")
+    #expect(panel(quiet(), checking: true).headline == "Checking this Mac…")
+    #expect(panel(output("status.json"), checking: true).headline == "Checking this Mac…")
+  }
+
+  @Test("What is watched lists each kind with its count and how, and opens in the panel")
+  func whatIsWatched() {
+    let closed = panel(quiet())
+    #expect(closed.watched.contains("startup items: 14 · live"))
+    #expect(closed.watched.contains("installed packages: 815 · every hour"))
+    #expect(closed.lines.contains("▸ What is watched"))
+    #expect(!closed.lines.contains("    startup items: 14 · live"))
+    let open = Panel.of(Interpret.reading(from: quiet()), now: Date(), watchedOpen: true)
+    #expect(open.lines.contains("▾ What is watched"))
+    #expect(open.lines.contains("    startup items: 14 · live"))
   }
 
   @Test("When the program cannot be read, the panel says what the owner can do")
@@ -477,12 +629,12 @@ struct PanelPromises {
   @Test("A run in progress says 'checking now' and Check now cannot be pressed")
   func checking() {
     let p = panel(output("running.json"))
-    #expect(p.checked?.hasSuffix("checking now…") == true)
+    #expect(p.headline == "Checking this Mac…")
     #expect(!p.canCheck)
     #expect(p.footer.first == "Checking…")
     let mine = panel(quiet(), checking: true)
     #expect(!mine.canCheck)
-    #expect(mine.checked?.contains("checking now") == true)
+    #expect(mine.headline == "Checking this Mac…")
     #expect(panel(quiet()).canCheck)
   }
 
@@ -576,17 +728,18 @@ struct PanelPromises {
   func symbolsExist() {
     let kinds = [
       "autostart item", "shell profile", "ssh access file", "git hook",
-      "file read for the first time", "machine not reached", "check failed",
-      "threat list not downloaded", "unknown",
+      "file read for the first time", "unknown",
     ]
-    let rows = panel(
-      looking(
-        kinds.map { lookItem(id: "f" + String($0.count), kind: $0) }
-          + [lookItem(id: "h9", type: "health", kind: "unknown")], total: 10)
-    ).rows
-    #expect(Set(rows.map(\.symbol)).count == 10)
+    let rows = panel(looking(kinds.map { lookItem(id: "f" + String($0.count), kind: $0) })).rows
+    #expect(Set(rows.map(\.symbol)).count == 6)
+    let scopes = ["this_mac", "projects", "servers", "threats", "unknown"]
+    let cover = scopes.enumerated().map {
+      CoverRow(id: $0.offset, item: Uncovered(scope: $0.element))
+    }
+    #expect(Set(cover.map(\.symbol)).count == 5)
     let names =
-      rows.map(\.symbol)
+      rows.map(\.symbol) + cover.map(\.symbol)
+      + ["eye", "chevron.down", "chevron.right", "ellipsis.circle", "bell.slash", "pause.circle"]
       + [Light.nothingToReport, .attention(1), .cannotRead("x")].flatMap {
         [$0.symbol, $0.panelSymbol, Light.menuSymbol($0, worst: "critical")]
       }
@@ -607,10 +760,12 @@ struct PanelPromises {
       #expect(!code.contains("Window("), "\(f)")
       opens += code.components(separatedBy: "NSWorkspace.shared.open").count - 1
     }
-    // The one thing it opens is the system's notification settings for itself.
+    // It opens two things: the program's page, a file soc wrote, and the system's
+    // notification settings for itself.
     let main = try String(
       contentsOf: dir.appendingPathComponent("main.swift"), encoding: .utf8)
-    #expect(opens == 1)
+    #expect(opens == 2)
+    #expect(main.contains("model.opener = { page in NSWorkspace.shared.open(page) }"))
     #expect(main.contains("guard let url = Announcer.settingsURL("))
     #expect(main.contains("NSWorkspace.shared.open(url)"))
   }
@@ -951,49 +1106,171 @@ struct RunNow {
   }
 }
 
-@Suite("Details: the program's page")
+@Suite("Details: the program's page, opened at once")
 @MainActor
 struct Page {
-  @Test("Details and Show run `soc view` on the same store, and nothing else")
-  func runsView() async {
-    let soc = GatedSoc(status: quiet())
-    let model = AppModel(soc: soc, extraArguments: ["--store", "/tmp/example.db"])
-    let task = Task { await model.openPage(at: "f5d20b8e641") }
-    await waitUntil { soc.waiting }
-    soc.release()
-    #expect(await task.value)
-    #expect(soc.callsSoFar == [["view", "--store", "/tmp/example.db"]])
+  /// A page file soc "wrote", and the output of `soc view --no-open` naming it.
+  func written() throws -> (URL, SocOutput) {
+    let dir = FileManager.default.temporaryDirectory
+      .appendingPathComponent("personal-soc-page-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let page = dir.appendingPathComponent("view.html")
+    try Data("<html></html>".utf8).write(to: page)
+    let out = SocOutput(
+      exitCode: 0, stdout: Data((page.path + "\n" + dir.path + "/details/a.html\n").utf8))
+    return (page, out)
   }
 
-  @Test("Details cannot be started twice at once")
-  func once() async {
-    let soc = GatedSoc(status: quiet())
-    let model = AppModel(soc: soc)
-    let first = Task { await model.openPage() }
+  @Test(
+    "With no page known, the first click asks soc once, on the same store, and opens the page it wrote"
+  )
+  func firstClick() async throws {
+    let (page, out) = try written()
+    let soc = GatedSoc(status: quiet(), view: out)
+    let model = AppModel(soc: soc, extraArguments: ["--store", "/tmp/example.db"])
+    var opened: [URL] = []
+    model.opener = {
+      opened.append($0)
+      return true
+    }
+    let task = Task { await model.openPage(at: "f5d20b8e641") }
     await waitUntil { soc.waiting }
     #expect(model.pageOpening)
-    #expect(await model.openPage() == false)
+    #expect(await model.openPage() == false)  // a second click starts nothing
     soc.release()
-    _ = await first.value
-    #expect(soc.callsSoFar.count == 1)
+    #expect(await task.value)
+    #expect(soc.callsSoFar == [["view", "--no-open", "--store", "/tmp/example.db"]])
+    #expect(opened == [page])
     #expect(!model.pageOpening)
   }
 
-  @Test("A failing `soc view` is one plain line and does not change the icon")
-  func failure() async {
-    let soc = GatedSoc(
-      status: quiet(), view: SocOutput(exitCode: 1, stderr: Data("disk full\nmore".utf8)))
+  @Test("With a page known, a click opens it at once and has it rewritten behind, never waiting")
+  func instant() async throws {
+    let (page, out) = try written()
+    let soc = GatedSoc(status: quiet(), view: out)
     let model = AppModel(soc: soc)
-    await model.refresh()
-    let before = model.light
-    let task = Task { await model.openPage() }
+    var opened: [URL] = []
+    model.opener = {
+      opened.append($0)
+      return true
+    }
+    let first = Task { await model.openPage() }
     await waitUntil { soc.waiting }
     soc.release()
-    _ = await task.value
+    _ = await first.value
+    // The rewrite behind is held at soc; the click still returns, the page opened.
+    #expect(await model.openPage())
+    #expect(opened == [page, page])
+    #expect(!model.pageOpening)
+    await waitUntil("the rewrite behind") { soc.waiting }
+    #expect(await model.openPage())  // a third click opens again, no second rewrite
+    #expect(opened.count == 3)
+    soc.release()
+    await waitUntil("the rewrite to end") { !soc.waiting }
+    #expect(soc.callsSoFar.filter { $0.first == "view" }.count == 2)
+  }
+
+  @Test("The app learns where the page is as soon as a store is read, when asked to")
+  func learnEarly() async throws {
+    let (page, out) = try written()
+    let soc = GatedSoc(status: quiet(), view: out, gated: [])
+    let model = AppModel(soc: soc)
+    await model.refresh()
+    #expect(!soc.callsSoFar.contains { $0.first == "view" })
+    model.learnPageEarly = true
+    await model.refresh()
+    await waitUntil("the page to be known") { model.pagePath == page }
+    let none = GatedSoc(status: output("no-store.json"), view: out, gated: [])
+    let fresh = AppModel(soc: none)
+    fresh.learnPageEarly = true
+    await fresh.refresh()
+    try await Task.sleep(for: .milliseconds(200))
+    #expect(!none.callsSoFar.contains { $0.first == "view" })
+  }
+
+  @Test("A page that is gone is written again before it opens; a failed run never names the page")
+  func goneOrFailed() async throws {
+    let (page, out) = try written()
+    let soc = GatedSoc(status: quiet(), view: out, gated: [])
+    let model = AppModel(soc: soc)
+    var opened: [URL] = []
+    model.opener = {
+      opened.append($0)
+      return true
+    }
+    await model.openPage()
+    try FileManager.default.removeItem(at: page)
+    #expect(await model.openPage())
+    // The click with the page gone waited for soc to write it: two runs, two opens.
+    #expect(soc.callsSoFar.filter { $0.first == "view" }.count == 2)
+    #expect(opened == [page, page])
+    let bad = GatedSoc(
+      status: quiet(), view: SocOutput(exitCode: 1, stdout: out.stdout), gated: [])
+    let failing = AppModel(soc: bad)
+    await failing.openPage()
+    #expect(failing.pagePath == nil)
+  }
+
+  @Test("A click while the page is being learnt waits for that one `soc view`, it starts no second")
+  func sharedWrite() async throws {
+    let (page, out) = try written()
+    let soc = GatedSoc(status: quiet(), view: out)
+    let model = AppModel(soc: soc)
+    var opened: [URL] = []
+    model.opener = {
+      opened.append($0)
+      return true
+    }
+    model.learnPageEarly = true
+    await model.refresh()
+    await waitUntil("the early `soc view`") { soc.waiting }
+    let click = Task { await model.openPage() }
+    for _ in 0..<20 { await Task.yield() }
+    soc.release()
+    #expect(await click.value)
+    #expect(opened == [page])
+    #expect(soc.callsSoFar.filter { $0.first == "view" }.count == 1)
+  }
+
+  @Test("Only an absolute path to an HTML file that soc printed first is opened")
+  func pagePath() {
+    #expect(AppModel.pagePath(Data("/a b/view.html\n/x.html\n".utf8))?.path == "/a b/view.html")
+    for bad in [
+      "view.html", "/a/view.txt", "/a/\u{202E}lmth.html", "", "https://example.invalid/x.html",
+    ] {
+      #expect(AppModel.pagePath(Data(bad.utf8)) == nil, "\(bad)")
+    }
+  }
+
+  @Test(
+    "A failing or silent `soc view` is one plain line, opens nothing, and does not change the icon")
+  func failure() async {
+    let soc = GatedSoc(
+      status: quiet(), view: SocOutput(exitCode: 1, stderr: Data("disk full\nmore".utf8)),
+      gated: [])
+    let model = AppModel(soc: soc)
+    var opened = 0
+    model.opener = { _ in
+      opened += 1
+      return true
+    }
+    await model.refresh()
+    let before = model.light
+    await model.openPage()
     #expect(model.pageFailure == "Details could not be opened. The program said: disk full")
     #expect(model.notes == [model.pageFailure])
     #expect(model.light == before)
     #expect(before == .nothingToReport)
+    let silent = AppModel(soc: GatedSoc(status: quiet(), view: SocOutput(exitCode: 0), gated: []))
+    silent.opener = { _ in
+      opened += 1
+      return true
+    }
+    await silent.openPage()
+    #expect(
+      silent.pageFailure
+        == "Details could not be opened. The program did not say where its page is.")
+    #expect(opened == 0)
   }
 }
 
@@ -1094,7 +1371,9 @@ struct Answers {
 
   @Test("Health items offer no answer, on the card or through the model")
   func healthHasNone() async {
-    let p = panel(output("two.json"))
+    // Health items have left the list; one served anyway gets no answer.
+    let mixed = looking([lookItem(id: "f1"), lookItem(id: "h1", type: "health")])
+    let p = panel(mixed)
     let health = p.rows.filter { $0.item.type == "health" }
     #expect(!health.isEmpty)
     #expect(health.allSatisfy { !$0.canAnswer })
@@ -1103,7 +1382,7 @@ struct Answers {
     let last = p.lines.lastIndex { $0.contains("[ Show ]") }!
     #expect(!p.lines[last].contains("Seen"))
     #expect(p.lines.filter { $0.contains("[ Seen ]  [ Expected… ]") }.count == 1)
-    let soc = GatedSoc(status: output("two.json"))
+    let soc = GatedSoc(status: mixed)
     let model = AppModel(soc: soc)
     await model.refresh()
     let hid = health[0].item.id!
@@ -1770,10 +2049,9 @@ struct Lines {
       return
     }
     let pid = real.pid
-    let deadline = Date().addingTimeInterval(10)
-    while lines.count < 2, Date() < deadline { try await Task.sleep(for: .milliseconds(50)) }
-    #expect(lines.first == .watching(places: 12))
-    #expect(lines.last == .alive)
+    // `watching`, the first `read`, the flood (dropped), then `alive`.
+    await waitUntil("the line after the flood") { lines.count >= 3 }
+    #expect(lines == [.watching(places: 12), .read, .alive])
     #expect(dropped == 1)
     #expect(kill(pid, 0) == 0)
     // Asked politely first: it is gone well before the two seconds of grace.
@@ -1897,7 +2175,9 @@ struct RealSoc {
     let p = Panel.of(model.reading, now: Date())
     #expect(p.light == .attention(before + 1))
     #expect(p.rows.count == before + 1)
-    #expect(p.checked == "A full check has not finished yet")
+    // No full check has finished, and live watching is claimed only if soc says so.
+    #expect(p.checked?.contains("No full check has finished yet.") == true)
+    #expect(p.checked?.contains("within seconds") == (status.thisMac?.live == true))
 
     watcher.stop()
     #expect(await processes(naming: store).isEmpty)

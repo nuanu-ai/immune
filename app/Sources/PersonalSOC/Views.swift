@@ -231,6 +231,7 @@ struct LinkLine: View {
   let symbol: String
   let text: String
   var primary = false
+  var chevron = "chevron.right"
   let open: () -> Void
   var body: some View {
     Button(action: open) {
@@ -239,8 +240,9 @@ struct LinkLine: View {
           .accessibilityHidden(true)
         Text(verbatim: text).font(.system(size: 12))
           .foregroundStyle(primary ? .primary : .secondary)
+          .fixedSize(horizontal: false, vertical: true)
         Spacer(minLength: 0)
-        Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold))
+        Image(systemName: chevron).font(.system(size: 11, weight: .semibold))
           .foregroundStyle(.tertiary)
           .accessibilityHidden(true)
       }
@@ -267,13 +269,13 @@ struct PanelView: View {
       model.reading, now: now ?? Date(), checking: model.runInProgress, notes: model.notes,
       notWatching: watcher.watcher?.notWatching, form: model.form, answering: model.answering,
       refusals: model.refusals, notificationsOff: model.notificationsOff,
-      soc: model.socCommand)
+      soc: model.socCommand, watchedOpen: model.watchedOpen)
     VStack(alignment: .leading, spacing: 0) {
       HeadlineView(panel: p)
         .padding(Metrics.padding)
       if !p.shown.isEmpty { cards(p) }
-      if p.more > 0 || p.blind != nil || p.notWatching != nil || p.notificationsOff != nil
-        || !p.notes.isEmpty
+      if p.more > 0 || !p.watched.isEmpty || !p.uncovered.isEmpty || p.notWatching != nil
+        || p.notificationsOff != nil || !p.notes.isEmpty
       {
         quiet(p).padding(.top, p.shown.isEmpty ? 0 : 4)
       }
@@ -295,7 +297,8 @@ struct PanelView: View {
     .padding(.bottom, 12)
   }
 
-  /// Below the cards: how many more, the blind spots, whether it watches, notes.
+  /// Below the cards: how many more, what is watched, what is not covered, whether
+  /// the watcher runs, notes.
   @ViewBuilder func quiet(_ p: Panel) -> some View {
     VStack(alignment: .leading, spacing: 8) {
       if p.more > 0 {
@@ -303,8 +306,28 @@ struct PanelView: View {
           Task { await model.openPage() }
         }
       }
-      if let blind = p.blind {
-        LinkLine(symbol: "eye.slash", text: blind) { Task { await model.openPage() } }
+      if !p.watched.isEmpty {
+        LinkLine(
+          symbol: "eye", text: "What is watched",
+          chevron: p.watchedOpen ? "chevron.down" : "chevron.right"
+        ) { model.watchedOpen.toggle() }
+        if p.watchedOpen {
+          VStack(alignment: .leading, spacing: 2) {
+            ForEach(Array(p.watched.enumerated()), id: \.offset) { _, line in
+              Plain(line).font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+          }
+          .padding(.leading, 36)
+          .padding(.trailing, 12)
+        }
+      }
+      ForEach(p.uncovered) { row in
+        LinkLine(symbol: row.symbol, text: row.text) { Task { await model.openPage() } }
+      }
+      if p.uncoveredMore > 0 {
+        LinkLine(symbol: "ellipsis.circle", text: "\(p.uncoveredMore) more not covered") {
+          Task { await model.openPage() }
+        }
       }
       if let line = p.notWatching {
         HStack(alignment: .firstTextBaseline, spacing: 8) {

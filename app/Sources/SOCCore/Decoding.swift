@@ -38,9 +38,49 @@ public struct Status: Sendable, Equatable {
   public var needsALook: [Item]?
   public var needsALookTotal: Int?
   public var answersNote: String?
+  /// Whether this Mac is watched, and how.
+  public var thisMac: ThisMac?
+  /// What the program does not cover, a handful of items in its fixed words.
+  public var notCovered: [Uncovered]?
+  public var notCoveredTotal: Int?
 }
 
-/// One thing that needs a look: a finding the owner can answer, or a health item.
+/// The state of this Mac as soc judges it.
+public struct ThisMac: Sendable, Equatable {
+  /// watched, watched_in_part or not_checked.
+  public var state: String?
+  /// A watcher holds the store: changes show within seconds.
+  public var live: Bool?
+  /// The last full check.
+  public var checkedAt: Date?
+  public var watched: [WatchedPart]?
+}
+
+/// One kind of place on this Mac that is watched: the program's words, how many,
+/// and whether live or by the hourly check.
+public struct WatchedPart: Sendable, Equatable {
+  public var what: String?
+  public var count: Int?
+  /// live or hourly.
+  public var how: String?
+}
+
+/// Something the program does not cover, in its fixed words; `*_text` is data.
+public struct Uncovered: Sendable, Equatable {
+  public var id: String?
+  /// this_mac, projects, servers or threats.
+  public var scope: String?
+  public var kind: String?
+  public var title: String?
+  public var meaning: String?
+  public var advice: String?
+  public var count: Int?
+  public var since: Date?
+  public var valueText: String?
+}
+
+/// One thing that needs a look: a finding the owner can answer. (Health items have
+/// left this list for `not_covered`; the app still never answers one.)
 /// `title`, `meaning` and `advice` are the program's fixed words; `*_text` is data.
 public struct Item: Sendable, Equatable {
   public var id: String?
@@ -320,7 +360,25 @@ public enum Decoding {
       },
       needsALook: r["needs_a_look"].array?.compactMap { i in i.object.map(item) },
       needsALookTotal: r["needs_a_look_total"].count,
-      answersNote: r["answers_note"].string)
+      answersNote: r["answers_note"].string,
+      thisMac: r["this_mac"].object.map { m in
+        ThisMac(
+          state: m["state"].string, live: m["live"].bool, checkedAt: m["checked_at"].date,
+          watched: m["watched"].array?.compactMap { w in
+            w.object.map {
+              WatchedPart(what: $0["what"].string, count: $0["count"].count, how: $0["how"].string)
+            }
+          })
+      },
+      notCovered: r["not_covered"].array?.compactMap { n in
+        n.object.map {
+          Uncovered(
+            id: $0["id"].string, scope: $0["scope"].string, kind: $0["kind"].string,
+            title: $0["title"].string, meaning: $0["meaning"].string, advice: $0["advice"].string,
+            count: $0["count"].count, since: $0["since"].date, valueText: $0["value_text"].string)
+        }
+      },
+      notCoveredTotal: r["not_covered_total"].count)
   }
 
   static func item(_ i: J) -> Item {

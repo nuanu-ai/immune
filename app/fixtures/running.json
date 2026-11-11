@@ -134,23 +134,69 @@
     "change": "new",
     "technique": "T1543",
     "urgent": false
-   },
-   {
-    "id": "h2e9f4a7c10",
-    "type": "health",
-    "kind": "machine not reached",
-    "severity": "low",
-    "state": "current",
-    "first_seen": "2026-11-09T22:00:05Z",
-    "last_seen": "2026-11-10T10:00:24Z",
-    "title": "A machine could not be reached.",
-    "meaning": "This is normal if it is switched off or offline; while it cannot be reached, changes on it go unseen.",
-    "advice": "If it should be on, check that you can connect to it.",
-    "value_text": "connection timed out after 10 s",
-    "where_text": "build-01.example.net"
    }
   ],
-  "needs_a_look_total": 4,
-  "answers_note": "Marking a finding expected or seen is the owner's answer: it hides the finding from him. An agent must not give it on the owner's behalf; it may show the owner the command to give it."
+  "needs_a_look_total": 3,
+  "answers_note": "Marking a finding expected or seen is the owner's answer: it hides the finding from him. An agent must not give it on the owner's behalf; it may show the owner the command to give it.",
+  "this_mac": {
+   "state": "watched",
+   "live": true,
+   "checked_at": "2026-11-10T10:00:21Z",
+   "live_read_at": "2026-11-10T10:04:10Z",
+   "watched": [
+    {
+     "what": "startup items",
+     "count": 14,
+     "how": "live"
+    },
+    {
+     "what": "shell profiles",
+     "count": 3,
+     "how": "live"
+    },
+    {
+     "what": "SSH files",
+     "count": 4,
+     "how": "live"
+    },
+    {
+     "what": "git hooks in projects",
+     "count": 31,
+     "how": "live"
+    },
+    {
+     "what": "installed packages",
+     "count": 815,
+     "how": "hourly"
+    }
+   ]
+  },
+  "not_covered": [
+   {
+    "id": "n-unreached",
+    "scope": "servers",
+    "kind": "machine not reached",
+    "title": "A server could not be reached",
+    "meaning": "Meaning from the program.",
+    "advice": "Advice from the program.",
+    "count": 1,
+    "since": "2026-11-09T22:00:05Z",
+    "value_text": "connection timed out after 10 s",
+    "examples_text": []
+   },
+   {
+    "id": "n-locks",
+    "scope": "projects",
+    "kind": "no reader",
+    "title": "Project lockfiles this program cannot read yet",
+    "meaning": "Meaning from the program.",
+    "advice": "Advice from the program.",
+    "count": 2,
+    "since": "2026-11-09T22:00:05Z",
+    "value_text": null,
+    "examples_text": []
+   }
+  ],
+  "not_covered_total": 2
  }
 }

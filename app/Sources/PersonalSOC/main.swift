@@ -265,6 +265,7 @@ func renderPanel(_ model: AppModel, _ watcher: Watcher, to folder: URL) async ->
     memory.set(true, forKey: "notify.asked")
     model.announcer = Announcer(notifier: SilentNotifier(), memory: memory)
   }
+  model.watchedOpen = CommandLine.arguments.contains("--render-watched-open")
   await model.refresh()
   let first = model.reading.status?.needsALook?.first { $0.type == "finding" }?.id
   if CommandLine.arguments.contains("--render-seen"), let first {
@@ -308,7 +309,8 @@ func renderPanel(_ model: AppModel, _ watcher: Watcher, to folder: URL) async ->
   let panel = Panel.of(
     model.reading, now: Date(), checking: model.runInProgress, notes: model.notes,
     notWatching: watcher.notWatching, form: model.form, answering: model.answering,
-    refusals: model.refusals, notificationsOff: model.notificationsOff, soc: model.socCommand)
+    refusals: model.refusals, notificationsOff: model.notificationsOff, soc: model.socCommand,
+    watchedOpen: model.watchedOpen)
   try? (panel.lines.joined(separator: "\n") + "\n").write(
     to: folder.appendingPathComponent("panel.txt"), atomically: true, encoding: .utf8)
   watcher.stop()
@@ -332,6 +334,10 @@ let (soc, extra, socURL) = locate(overrides.0, overrides.1)
 #endif
 let model = AppModel(soc: soc, extraArguments: extra)
 model.socCommand = SocCommand.at(socURL, extra: extra)
+// The program's page, a file soc wrote, opened by the system: the only other thing
+// the app opens. The app learns where it is early, so Details opens at once.
+model.opener = { page in NSWorkspace.shared.open(page) }
+model.learnPageEarly = true
 let delegate = Delegate(model: model, watcher: makeWatcher(socURL, extra, model))
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
