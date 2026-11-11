@@ -46,8 +46,9 @@ pub const CANNOT_JUDGE: &[&str] = &[
     "no vulnerability from the catalogue is matched against the estate yet",
 ];
 /// The sections of a result that hold numbers, in the order of the result.
-const SECTIONS: [&str; 10] = [
+const SECTIONS: [&str; 11] = [
     "needs_a_look",
+    "answered_outside_app",
     "not_covered",
     "last_run",
     "last_finished_run",
@@ -575,6 +576,9 @@ pub struct State {
     pub files: BTreeMap<String, i64>,
     /// What needs a look now: findings only.
     pub needs: findings::Needs,
+    /// The findings whose answer is in force now, the latest answer first; `None` before
+    /// any run of this build looked for findings.
+    pub answered: Option<Vec<findings::Item>>,
     /// Is this Mac watched, and how.
     pub this_mac: crate::covered::ThisMac,
     /// What the program does not cover, aggregated for a person.
@@ -607,6 +611,7 @@ pub fn state(conn: &Connection, home: &Path, now: i64) -> Res<State> {
         coverage,
         files,
         needs,
+        answered: findings::answered(conn, now)?,
         this_mac,
         not_covered,
     })
@@ -799,6 +804,18 @@ pub fn result(state: Option<&State>, running: bool, path: &Path, now: i64) -> Va
         out.insert("needs_a_look".into(), Value::Array(shown));
         out.insert("needs_a_look_total".into(), json!(items.len()));
         out.insert("answers_note".into(), json!(findings::ANSWERS_NOTE));
+    }
+    match &st.answered {
+        Some(answered) => {
+            out.insert(
+                "answered_outside_app".into(),
+                findings::outside_app_json(answered, NEEDS_SHOWN),
+            );
+        }
+        None => absent(
+            "answered_outside_app",
+            "no run of this build has looked for findings yet; the next run does",
+        ),
     }
     out.insert("not_computed".into(), Value::Array(not_computed));
     Value::Object(out)

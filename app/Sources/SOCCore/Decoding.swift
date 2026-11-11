@@ -43,6 +43,28 @@ public struct Status: Sendable, Equatable {
   /// What the program does not cover, a handful of items in its fixed words.
   public var notCovered: [Uncovered]?
   public var notCoveredTotal: Int?
+  /// Answers that hide a finding now and were not given in the app.
+  public var answeredOutsideApp: AnsweredOutside?
+}
+
+/// The answers given outside the app that are in force: soc's total and the latest few.
+public struct AnsweredOutside: Sendable, Equatable {
+  public var total: Int?
+  public var items: [AnsweredItem]
+}
+
+/// One answer given outside the app. `title` is soc's fixed words; `*_text` is data.
+public struct AnsweredItem: Sendable, Equatable {
+  public var id: String?
+  public var title: String?
+  /// `seen` or `expected`.
+  public var answer: String?
+  public var until: Date?
+  /// `agent` or `command`.
+  public var via: String?
+  public var at: Date?
+  public var reasonText: String?
+  public var whereText: String?
 }
 
 /// The state of this Mac as soc judges it.
@@ -396,7 +418,19 @@ public enum Decoding {
             who: $0["who"].string)
         }
       },
-      notCoveredTotal: r["not_covered_total"].count)
+      notCoveredTotal: r["not_covered_total"].count,
+      answeredOutsideApp: r["answered_outside_app"].object.map { a in
+        AnsweredOutside(
+          total: a["total"].count,
+          items: (a["items"].array ?? []).compactMap { i in
+            i.object.map {
+              AnsweredItem(
+                id: $0["id"].string, title: $0["title"].string, answer: $0["answer"].string,
+                until: $0["until"].date, via: $0["via"].string, at: $0["at"].date,
+                reasonText: $0["reason_text"].string, whereText: $0["where_text"].string)
+            }
+          })
+      })
   }
 
   static func item(_ i: J) -> Item {

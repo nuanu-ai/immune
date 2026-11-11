@@ -35,6 +35,8 @@ public final class AppModel: ObservableObject {
   private var pageTask: Task<SocOutput, Never>?
   /// "What is watched" is open in the panel.
   @Published public var watchedOpen = false
+  /// The answers given through the owner's agent are open in the panel.
+  @Published public var answeredOpen = false
   /// The "Expected…" form, open on one finding's card, or nil.
   @Published public var form: ExpectedForm?
   /// The id of the finding whose answer is being saved now.
@@ -221,11 +223,27 @@ public final class AppModel: ObservableObject {
     return await answer(form.id, args)
   }
 
+  /// The owner's "Take back" on an answer given outside the app: `soc finding <id>
+  /// reopen --via app`, then a refresh. Returns false, and runs nothing, for an answer
+  /// the panel does not list or while another answer is being saved.
+  @discardableResult
+  public func takeBack(_ id: String) async -> Bool {
+    let listed = reading.status?.answeredOutsideApp?.items ?? []
+    guard let args = Answer.reopenArguments(id: id), listed.contains(where: { $0.id == id })
+    else { return false }
+    return await save(id, args)
+  }
+
   private func answer(_ id: String, _ args: [String]) async -> Bool {
     // Only a finding the panel shows takes an answer; a health item never does.
     let shown = reading.status?.needsALook ?? []
-    guard answering == nil, shown.contains(where: { $0.id == id && $0.type == "finding" })
-    else { return false }
+    guard shown.contains(where: { $0.id == id && $0.type == "finding" }) else { return false }
+    return await save(id, args)
+  }
+
+  /// Runs one change to a finding and reads the status again; one at a time.
+  private func save(_ id: String, _ args: [String]) async -> Bool {
+    guard answering == nil else { return false }
     answering = id
     refusals[id] = nil
     let out = await soc.run(args + extraArguments, timeout: Self.answerTimeout)

@@ -425,6 +425,7 @@ pub fn open(path: &Path) -> Res<Connection> {
     conn.execute_batch(OWNER)?;
     conn.execute_batch(THREATS)?;
     conn.execute_batch(crate::findings::SCHEMA)?;
+    crate::findings::add_via(&conn)?;
     conn.execute_batch(INDEXES)?;
     add_causes(&conn)?;
     widen_journal(&mut conn)?;

@@ -32,8 +32,9 @@ CREATE TABLE IF NOT EXISTS finding (
     last_seen_at   INTEGER NOT NULL,
     last_seen_run  TEXT NOT NULL,
     answered_at    INTEGER,  -- the owner's latest answer
-    reason         TEXT,     -- given with `expected`
+    reason         TEXT,     -- given with `expected`, and with `seen` when one was given
     until_at       INTEGER,  -- when an `expected` mark ends
+    via            TEXT,     -- how the answer was given: app, agent or command
     UNIQUE (rule, about, occurrence)
 );
 -- What a finding rests on: journal entries by their sequence number.
@@ -48,8 +49,25 @@ pub const SEVERITIES: [&str; 5] = ["informational", "low", "medium", "high", "cr
 /// The levels of how sure that it is something bad, OCSF's `confidence_id` names.
 pub const CONFIDENCES: [&str; 3] = ["low", "medium", "high"];
 
+/// How an answer was given, kept with it. A table made before this was kept takes the column
+/// on open; an answer given before has none and is read as `unknown`.
+pub fn add_via(conn: &Connection) -> rusqlite::Result<()> {
+    if !has_via(conn)? {
+        conn.execute_batch("ALTER TABLE finding ADD COLUMN via TEXT")?;
+    }
+    Ok(())
+}
+
+fn has_via(conn: &Connection) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('finding') WHERE name = 'via')",
+        [],
+        |r| r.get(0),
+    )
+}
+
 /// What every listing of findings says to an agent that reads it.
-pub const ANSWERS_NOTE: &str = "Marking a finding expected or seen is the owner's answer: it hides the finding from him. An agent must not give it on the owner's behalf; it may show the owner the command to give it.";
+pub const ANSWERS_NOTE: &str = "Answer a finding only after the owner has agreed in this conversation, having been told what it is and what the options are. Pass --via agent and the reason the owner agreed to. The app shows every answer given this way.";
 
 /// The three sentences for a person: what happened, when it is normal, what to do.
 #[derive(Clone, Copy)]
@@ -509,6 +527,12 @@ pub struct Found {
     pub answered_at: Option<i64>,
     pub reason: Option<String>,
     pub until: Option<i64>,
+    /// How the answer was given; `None` before this was kept.
+    pub via: Option<String>,
+    /// A later occurrence of the same rule about the same thing was raised.
+    pub superseded: bool,
+    /// Its answer hides it now, see `in_force`.
+    pub in_force: bool,
     /// Where the thing is, as a person recognises it: from its id, or from `installed_at`
     /// for an installed thing whose id does not say.
     pub place: String,
@@ -551,7 +575,9 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Found>>> 
         return Ok(None);
     }
     let this = this_machine(conn)?;
-    conn.prepare(
+    // A store opened only for reading since this build keeps no `via` yet.
+    let via = if has_via(conn)? { "via" } else { "NULL" };
+    conn.prepare(&format!(
         "SELECT id, rule, about, state, change, first_seen_at, first_seen_run, last_seen_at,
                 last_seen_run, answered_at, reason, until_at,
                 (SELECT object FROM assertion a WHERE a.subject = f.about
@@ -562,9 +588,12 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Found>>> 
                                                  WHEN 'integrity.app-signer' THEN 'signed_by'
                                                  WHEN 'indicator.match' THEN 'matches_indicator'
                                                  END
-                 ORDER BY j.seq DESC LIMIT 1)
-         FROM finding f ORDER BY last_seen_at DESC, id",
-    )?
+                 ORDER BY j.seq DESC LIMIT 1),
+                {via},
+                EXISTS (SELECT 1 FROM finding g WHERE g.rule = f.rule AND g.about = f.about
+                          AND g.occurrence > f.occurrence)
+         FROM finding f ORDER BY last_seen_at DESC, id"
+    ))?
     .query_map([], |r| {
         let (state, answered_at, until, last): (String, Option<i64>, Option<i64>, i64) =
             (r.get(3)?, r.get(9)?, r.get(11)?, r.get(7)?);
@@ -589,8 +618,17 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Found>>> 
             reason: r.get(10)?,
             until,
             became: r.get(13)?,
+            via: r.get(14)?,
+            superseded: r.get(15)?,
+            in_force: false,
         })
     })?
+    .map(|f| {
+        f.map(|mut f| {
+            f.in_force = in_force(&f, now);
+            f
+        })
+    })
     .collect::<rusqlite::Result<_>>()
     .map(Some)
 }
@@ -627,7 +665,36 @@ pub fn basis(conn: &Connection, id: &str) -> rusqlite::Result<Vec<Basis>> {
 /// The owner's answer to a finding.
 pub enum Answer {
     Expected { reason: String, days: i64 },
-    Seen,
+    Seen { reason: Option<String> },
+}
+
+/// What is done to a finding: an answer, or taking an answer back.
+pub enum Act {
+    Answer(Answer),
+    Reopen,
+}
+
+/// How an answer was given: in the app, by the owner's agent with their agreement, or from
+/// the command line, which is what an answer that names neither is. `Unknown` is an answer
+/// given before this was kept: most were given in the app, so it is never taken for one given
+/// outside it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Via {
+    App,
+    Agent,
+    Command,
+    Unknown,
+}
+
+impl Via {
+    pub fn literal(self) -> &'static str {
+        match self {
+            Via::App => "app",
+            Via::Agent => "agent",
+            Via::Command => "command",
+            Via::Unknown => "unknown",
+        }
+    }
 }
 
 /// Why an answer was not taken.
@@ -636,26 +703,32 @@ pub enum Refused {
     Unknown,
     /// The finding is not open or expected now.
     Closed(String),
+    /// There is no answer to take back: the finding is in this state.
+    NotAnswered(String),
 }
 
-/// Takes the owner's answer, journaled with how it was given.
+fn found(tx: &Transaction, id: &str, at: i64) -> Result<Found, Box<dyn std::error::Error>> {
+    all(tx, at)?
+        .unwrap_or_default()
+        .into_iter()
+        .find(|f| f.id == id)
+        .ok_or_else(|| Box::new(RefusedError(Refused::Unknown)) as Box<dyn std::error::Error>)
+}
+
+/// Takes the owner's answer, kept and journaled with how it was given.
 pub fn answer(
     tx: &Transaction,
     id: &str,
     a: &Answer,
+    via: Via,
     at: i64,
     run_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let found = all(tx, at)?
-        .unwrap_or_default()
-        .into_iter()
-        .find(|f| f.id == id);
-    let Some(f) = found else {
-        return Err(Box::new(RefusedError(Refused::Unknown)));
-    };
+    let f = found(tx, id, at)?;
     if f.state != "open" && f.state != "expected" {
         return Err(Box::new(RefusedError(Refused::Closed(f.state))));
     }
+    let via = via.literal();
     let (entry, state, reason, until, text) = match a {
         Answer::Expected { reason, days } => {
             let until = at + days * 86_400;
@@ -664,24 +737,126 @@ pub fn answer(
                 "expected",
                 Some(reason.as_str()),
                 Some(until),
-                json!({ "via": "command", "reason": reason, "until": until }),
+                json!({ "via": via, "reason": reason, "until": until }),
             )
         }
-        Answer::Seen => (
-            "finding_seen",
-            "seen",
-            None,
-            None,
-            json!({ "via": "command" }),
-        ),
+        Answer::Seen { reason } => {
+            let mut text = json!({ "via": via });
+            if let Some(reason) = reason {
+                text["reason"] = json!(reason);
+            }
+            ("finding_seen", "seen", reason.as_deref(), None, text)
+        }
     };
     tx.execute(
-        "UPDATE finding SET state = ?2, answered_at = ?3, reason = ?4, until_at = ?5
+        "UPDATE finding SET state = ?2, answered_at = ?3, reason = ?4, until_at = ?5, via = ?6
          WHERE id = ?1",
-        params![id, state, at, reason, until],
+        params![id, state, at, reason, until, via],
     )?;
     journal(tx, at, run_id, entry, id, &f.rule, &f.about, text)?;
     Ok(())
+}
+
+/// Takes an answer back: the finding is open again as if it had never been answered, with
+/// its first and last seen as they were. The journal says who took it back and what the
+/// answer was. An `expected` mark that ended is still an answer that can be taken back.
+pub fn reopen(
+    tx: &Transaction,
+    id: &str,
+    via: Via,
+    at: i64,
+    run_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let f = found(tx, id, at)?;
+    let Some(given) = f.answered_at.map(|_| given(&f)) else {
+        return Err(Box::new(RefusedError(Refused::NotAnswered(f.state))));
+    };
+    if f.state != "expected" && f.state != "seen" {
+        return Err(Box::new(RefusedError(Refused::NotAnswered(f.state))));
+    }
+    tx.execute(
+        "UPDATE finding SET state = 'open', answered_at = NULL, reason = NULL, until_at = NULL,
+                            via = NULL
+         WHERE id = ?1",
+        [id],
+    )?;
+    journal(
+        tx,
+        at,
+        run_id,
+        "finding_reopened",
+        id,
+        &f.rule,
+        &f.about,
+        json!({ "via": via.literal(), "taken_back": given }),
+    )?;
+    Ok(())
+}
+
+/// What the answer to a finding was: `expected` when it carries an end, `seen` otherwise.
+fn given(f: &Found) -> &'static str {
+    if f.until.is_some() {
+        "expected"
+    } else {
+        "seen"
+    }
+}
+
+/// Whether a finding's answer hides it now: seen, or expected until a time still ahead, and
+/// not followed by a later occurrence of the same thing, which is open and shown by itself.
+fn in_force(f: &Found, now: i64) -> bool {
+    f.answered_at.is_some()
+        && !f.superseded
+        && (f.state == "seen" || (f.state == "expected" && f.until.is_some_and(|u| u > now)))
+}
+
+/// Every finding whose answer is in force now, whoever gave it, the latest answer first.
+pub fn answered(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Item>>> {
+    let Some(found) = all(conn, now)? else {
+        return Ok(None);
+    };
+    let mut items: Vec<Item> = found
+        .iter()
+        .filter(|f| f.in_force)
+        .filter_map(item)
+        .collect();
+    items.sort_by(|a, b| {
+        let at = |i: &Item| i.answer.as_ref().map(|a| a.at);
+        at(b).cmp(&at(a)).then_with(|| a.id.cmp(&b.id))
+    });
+    Ok(Some(items))
+}
+
+/// The answers in force known to have been given outside the app, by an agent or from the
+/// command line, listed apart so that nothing is quieted silently. An answer from before
+/// `via` was kept is not among them. Never counted as something to look at.
+pub fn outside_app_json(answered: &[Item], shown: usize) -> Value {
+    let outside: Vec<&Item> = answered
+        .iter()
+        .filter(|i| {
+            i.answer
+                .as_ref()
+                .is_some_and(|a| matches!(a.via, Via::Agent | Via::Command))
+        })
+        .collect();
+    let items: Vec<Value> = outside
+        .iter()
+        .take(shown)
+        .map(|i| {
+            let a = i.answer.as_ref().expect("filtered on an answer");
+            json!({
+                "id": i.id,
+                "title": i.words.title,
+                "answer": a.given,
+                "until": a.until.map(crate::view::iso),
+                "via": a.via.literal(),
+                "at": crate::view::iso(a.at),
+                "reason_text": a.reason.as_deref().map(status::text),
+                "where_text": i.place.as_deref().map(status::text),
+            })
+        })
+        .collect();
+    json!({ "total": outside.len(), "items": items })
 }
 
 #[derive(Debug)]
@@ -695,6 +870,12 @@ impl std::fmt::Display for RefusedError {
                 f,
                 "the finding is {state}, so there is nothing to answer; a new occurrence opens a new one"
             ),
+            Refused::NotAnswered(state) => {
+                write!(
+                    f,
+                    "the finding is {state}, so there is no answer to take back"
+                )
+            }
         }
     }
 }
@@ -718,7 +899,19 @@ pub struct Item {
     pub value: Option<String>,
     /// Where: a path, a machine.
     pub place: Option<String>,
-    pub answer: Option<(i64, Option<String>, Option<i64>)>,
+    pub answer: Option<Answered>,
+}
+
+/// The answer a finding has.
+pub struct Answered {
+    pub at: i64,
+    /// `expected` or `seen`.
+    pub given: &'static str,
+    pub via: Via,
+    pub reason: Option<String>,
+    pub until: Option<i64>,
+    /// It hides the finding now.
+    pub in_force: bool,
 }
 
 /// The machine the latest run ran on: the scope of its resolver reading.
@@ -780,7 +973,19 @@ pub fn item(f: &Found) -> Option<Item> {
         words: r.words,
         value: f.became.clone(),
         place: Some(f.place.clone()),
-        answer: f.answered_at.map(|at| (at, f.reason.clone(), f.until)),
+        answer: f.answered_at.map(|at| Answered {
+            at,
+            given: given(f),
+            via: match f.via.as_deref() {
+                Some("app") => Via::App,
+                Some("agent") => Via::Agent,
+                Some("command") => Via::Command,
+                _ => Via::Unknown,
+            },
+            reason: f.reason.clone(),
+            until: f.until,
+            in_force: f.in_force,
+        }),
     })
 }
 
@@ -856,11 +1061,14 @@ pub fn item_json(i: &Item) -> Value {
     if let Some(t) = i.technique {
         v["technique"] = json!(t);
     }
-    if let Some((at, reason, until)) = &i.answer {
+    if let Some(a) = &i.answer {
         v["answer"] = json!({
-            "at": crate::view::iso(*at),
-            "reason_text": reason.as_deref().map(status::text),
-            "until": until.map(crate::view::iso),
+            "given": a.given,
+            "via": a.via.literal(),
+            "at": crate::view::iso(a.at),
+            "until": a.until.map(crate::view::iso),
+            "in_force": a.in_force,
+            "reason_text": a.reason.as_deref().map(status::text),
         });
     }
     v

@@ -85,13 +85,14 @@ pub fn pages(
 /// The sections of the summary something outside the page may ask for, by anchor and
 /// title. Each has a page of its own that only sends the browser on to it, because macOS
 /// can lose the `#section` of a file URL when it hands one to the browser.
-pub const SECTIONS: [(&str, &str); 3] = [
+pub const SECTIONS: [(&str, &str); 4] = [
     (
         "watched-here",
         "What is watched, and what you are told about",
     ),
     ("you-can-fix", "You can fix"),
     ("limits", "Limits of this version"),
+    ("answered", "Answered"),
 ];
 
 /// Where a section's own page is, relative to the store's folder.
@@ -187,12 +188,13 @@ pub fn item(out: &mut String, i: &crate::findings::Item) -> Out {
     if let Some(change) = &i.change {
         facts.push(format!("latest change: {change}"));
     }
-    if let Some((at, reason, until)) = &i.answer {
-        let mut said = match until {
-            Some(u) => format!("expected until {}", utc(*u)),
-            None => format!("seen {}", utc(*at)),
+    if let Some(a) = &i.answer {
+        let mut said = match a.until {
+            Some(u) => format!("expected until {}", utc(u)),
+            None => format!("seen {}", utc(a.at)),
         };
-        if let Some(reason) = reason {
+        said.push_str(&format!(" {}", given_by(a.via)));
+        if let Some(reason) = &a.reason {
             said.push_str(&format!(": {reason}"));
         }
         facts.push(said);
@@ -219,6 +221,16 @@ pub fn item(out: &mut String, i: &crate::findings::Item) -> Out {
         esc(&command)
     )?;
     Ok(())
+}
+
+/// Who gave an answer, as the owner reads it after the answer.
+pub fn given_by(via: crate::findings::Via) -> &'static str {
+    match via {
+        crate::findings::Via::App => "in the app",
+        crate::findings::Via::Agent => "through your agent",
+        crate::findings::Via::Command => "from the command line",
+        crate::findings::Via::Unknown => "given before this version recorded who",
+    }
 }
 
 /// Makes text safe to put anywhere in the page, inside elements and inside quoted attributes.

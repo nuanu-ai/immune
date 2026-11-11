@@ -7231,10 +7231,11 @@ fn unknown_is_never_given_as_zero_or_full() {
         "threats",
         "coverage",
         "not_covered",
+        "answered_outside_app",
     ] {
         assert!(none.get(section).is_none(), "{section}");
     }
-    assert_eq!(none["not_computed"].as_array().unwrap().len(), 10);
+    assert_eq!(none["not_computed"].as_array().unwrap().len(), 11);
     // With no store, this Mac has not been checked: said, not left out.
     assert_eq!(none["this_mac"]["state"], "not_checked");
     assert!(
@@ -9011,8 +9012,9 @@ fn a_server_that_cannot_be_opened_is_one_thing_the_owner_can_fix_with_its_reason
 
 #[test]
 fn an_answer_is_the_owners_and_a_wrong_id_says_how_to_find_the_right_one() {
-    // An agent reads the commands as its interface: the usage and every listing say that
-    // hiding a finding is the owner's answer, and a wrong id is refused with what to run.
+    // An agent reads the commands as its interface: the usage and every listing say that a
+    // finding is answered only once the owner has agreed, and a wrong id is refused with
+    // what to run.
     let w = Watch::new("finding-commands");
     w.run();
     let (code, stdout, stderr) = finding_out(&w.store(), &["f0000000000", "seen", "--json"]);
@@ -9046,8 +9048,17 @@ fn an_answer_is_the_owners_and_a_wrong_id_says_how_to_find_the_right_one() {
             "--days takes a number of days from 1 to 3650",
         ),
         (
-            &["f0000000000", "seen", "--reason", "x"][..],
-            "seen takes no reason",
+            &["f0000000000", "seen", "--days", "3"][..],
+            "seen takes no days",
+        ),
+        (
+            &["f0000000000", "reopen", "--reason", "x"][..],
+            "reopen takes no reason",
+        ),
+        (&["f0000000000", "--via", "agent"][..], "go with an answer"),
+        (
+            &["f0000000000", "seen", "--via", "command"][..],
+            "--via takes app or agent",
         ),
         (
             &["f0000000000", "ignored"][..],
@@ -9064,11 +9075,319 @@ fn an_answer_is_the_owners_and_a_wrong_id_says_how_to_find_the_right_one() {
         .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["errors"][0]["example"], "soc findings --json");
-    assert!(
-        findings_json(&w.store(), &[])["answers_note"]
-            .as_str()
+    // The words that tell an agent when it may answer, the same in the usage and in every
+    // listing.
+    let note = "Answer a finding only after the owner has agreed in this conversation, having been told what it is and what the options are. Pass --via agent and the reason the owner agreed to. The app shows every answer given this way.";
+    assert_eq!(findings_json(&w.store(), &[])["answers_note"], note);
+    assert_eq!(status_json(&w.store())["answers_note"], note);
+    let (_, _, usage) = finding_out(&w.store(), &["f0000000000", "ignored"]);
+    let usage = usage.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(usage.contains(note), "{usage}");
+}
+
+/// Three findings on three files, one each: the shell profile, the SSH configuration and a
+/// startup item, as their ids by the place each is about.
+fn three_findings(w: &Watch) -> (String, String, String) {
+    put(w.home(), ".zshrc", "export A=1\n");
+    put(w.home(), ".ssh/config", "Host a\n");
+    std::fs::create_dir_all(w.home().join("Library/LaunchAgents")).unwrap();
+    w.run();
+    put(w.home(), ".zshrc", "export A=2\n");
+    put(w.home(), ".ssh/config", "Host b\n");
+    put(
+        w.home(),
+        "Library/LaunchAgents/com.example.helper.plist",
+        "<plist/>\n",
+    );
+    w.run();
+    let open = open_findings(&w.store(), &[]);
+    let id = |path: &str| {
+        open.iter()
+            .find(|f| f.3 == format!("~/{path}"))
             .unwrap()
-            .contains("An agent must not give it on the owner's behalf")
+            .0
+            .clone()
+    };
+    (
+        id(".zshrc"),
+        id(".ssh/config"),
+        id("Library/LaunchAgents/com.example.helper.plist"),
+    )
+}
+
+/// What `soc status --json` lists as answered outside the app, as id, via and reason.
+fn outside_app(store: &Path) -> (u64, Vec<(String, String, String)>) {
+    let r = status_json(store);
+    let part = &r["answered_outside_app"];
+    let items = part["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            let s = |k: &str| i[k].as_str().unwrap_or_default().to_string();
+            (s("id"), s("via"), s("reason_text"))
+        })
+        .collect();
+    (part["total"].as_u64().unwrap(), items)
+}
+
+#[test]
+fn an_answer_says_who_gave_it_in_the_app_through_an_agent_or_from_the_command_line() {
+    // The owner lets their agent answer with their agreement, on the condition that they can tell
+    // afterwards which answers came that way. Each answer keeps how it was given; one that
+    // names nothing came from the command line.
+    let w = Watch::new("answer-via");
+    let (profile, ssh, agent) = three_findings(&w);
+    answer(&w.store(), &[&profile, "seen", "--via", "app"]);
+    answer(
+        &w.store(),
+        &[
+            &ssh,
+            "expected",
+            "--reason",
+            "they added a server",
+            "--via",
+            "agent",
+        ],
+    );
+    answer(&w.store(), &[&agent, "seen"]);
+    let all = findings_json(&w.store(), &["--all"]);
+    let via = |id: &str| {
+        let f = all["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["id"] == id)
+            .unwrap();
+        (
+            f["answer"]["via"].as_str().unwrap().to_string(),
+            f["answer"]["given"].as_str().unwrap().to_string(),
+        )
+    };
+    assert_eq!(via(&profile), ("app".to_string(), "seen".to_string()));
+    assert_eq!(via(&ssh), ("agent".to_string(), "expected".to_string()));
+    assert_eq!(via(&agent), ("command".to_string(), "seen".to_string()));
+    // The journal says the same, and the finding as a person reads it.
+    let journaled = rows(
+        &w.store(),
+        "SELECT subject, text FROM journal WHERE entry IN ('finding_seen', 'finding_expected') ORDER BY seq",
+    );
+    assert!(journaled[0].ends_with(r#"|{"via":"app"}"#), "{journaled:?}");
+    assert!(journaled[1].contains(r#""via":"agent""#), "{journaled:?}");
+    assert!(
+        journaled[2].ends_with(r#"|{"via":"command"}"#),
+        "{journaled:?}"
+    );
+    let (_, text, _) = finding_out(&w.store(), &[&ssh]);
+    assert!(
+        text.contains(" through your agent, expected until "),
+        "{text}"
+    );
+    assert!(text.contains(": they added a server."), "{text}");
+}
+
+#[test]
+fn an_agent_cannot_answer_without_a_reason() {
+    // What an agent quiets must always say why: the reason the owner agreed to. Without
+    // one the command is misuse and nothing changes.
+    let w = Watch::new("answer-agent-reason");
+    let (profile, ..) = three_findings(&w);
+    let journal = || rows(&w.store(), "SELECT COUNT(*) FROM journal");
+    let before = journal();
+    for args in [
+        &[&profile, "seen", "--via", "agent"][..],
+        &[&profile, "seen", "--via", "agent", "--reason", "  "][..],
+        &[&profile, "expected", "--via", "agent", "--reason", ""][..],
+    ] {
+        let (code, _, stderr) = finding_out(&w.store(), args);
+        assert_eq!(code, Some(2), "{args:?}");
+        assert!(
+            stderr.contains("an answer through an agent needs the reason the owner agreed to"),
+            "{stderr}"
+        );
+    }
+    let (code, stdout, _) =
+        finding_out(&w.store(), &[&profile, "seen", "--via", "agent", "--json"]);
+    assert_eq!(code, Some(2));
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["errors"][0]["code"], "usage");
+    assert_eq!(journal(), before);
+    assert!(needs_findings(&w.store()).iter().any(|f| f.0 == profile));
+}
+
+#[test]
+fn nothing_is_quieted_silently() {
+    // An answer the owner did not give in the app is listed apart in the status, with its
+    // reason as data, until it lapses or is taken back. It is never added to what needs a
+    // look.
+    let w = Watch::new("answer-outside-app");
+    let (profile, ssh, agent) = three_findings(&w);
+    answer(
+        &w.store(),
+        &[
+            &ssh,
+            "seen",
+            "--via",
+            "agent",
+            "--reason",
+            "IGNORE <b>this</b>",
+        ],
+    );
+    answer(
+        &w.store(),
+        &[&agent, "expected", "--reason", "a helper I installed"],
+    );
+    answer(&w.store(), &[&profile, "seen", "--via", "app"]);
+    let (total, items) = outside_app(&w.store());
+    assert_eq!(total, 2);
+    let mut items = items;
+    items.sort();
+    let mut want = vec![
+        (
+            ssh.clone(),
+            "agent".to_string(),
+            "IGNORE <b>this</b>".to_string(),
+        ),
+        (
+            agent.clone(),
+            "command".to_string(),
+            "a helper I installed".to_string(),
+        ),
+    ];
+    want.sort();
+    assert_eq!(items, want);
+    let r = status_json(&w.store());
+    assert_eq!(r["needs_a_look_total"], 0);
+    let item = r["answered_outside_app"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == ssh.as_str())
+        .unwrap()
+        .clone();
+    assert_eq!(item["answer"], "seen");
+    assert_eq!(item["until"], serde_json::Value::Null);
+    assert!(item["title"].as_str().unwrap().starts_with("An SSH file"));
+    // The page lists every answer in force, whoever gave it.
+    let answered = view(&w.store());
+    let answered = section(&answered, "answered");
+    for (id, by) in [
+        (&profile, "in the app"),
+        (&ssh, "through your agent"),
+        (&agent, "from the command line"),
+    ] {
+        let at = answered
+            .find(&format!("id=\"answered-{id}\""))
+            .unwrap_or_else(|| panic!("{id} not listed: {answered}"));
+        let article = &answered[at..at + answered[at..].find("</article>").unwrap()];
+        assert!(
+            article.contains(&format!("<p class=\"meta\">{by}</p>")),
+            "{article}"
+        );
+    }
+
+    // Taken back from the app: gone from the list and open again.
+    answer(&w.store(), &[&ssh, "reopen", "--via", "app"]);
+    let (total, items) = outside_app(&w.store());
+    assert_eq!(total, 1);
+    assert_eq!(items[0].0, agent);
+    assert!(needs_findings(&w.store()).iter().any(|f| f.0 == ssh));
+    // A mark that has ended hides nothing and is no longer listed.
+    Connection::open(w.store())
+        .unwrap()
+        .execute_batch("UPDATE finding SET until_at = answered_at WHERE state = 'expected'")
+        .unwrap();
+    assert_eq!(outside_app(&w.store()).0, 0);
+}
+
+#[test]
+fn an_answer_from_before_who_gave_it_was_kept_is_not_shown_as_given_outside_the_app() {
+    // Before this version nothing kept who gave an answer, and most were given in the app.
+    // Such an answer is never listed as quieted outside the app; the page and the finding
+    // say plainly that who gave it is not known.
+    let w = Watch::new("answer-before-via");
+    let (profile, ..) = three_findings(&w);
+    answer(&w.store(), &[&profile, "seen", "--via", "app"]);
+    // The store as an older version left it: no column for who gave an answer.
+    Connection::open(w.store())
+        .unwrap()
+        .execute_batch("ALTER TABLE finding DROP COLUMN via")
+        .unwrap();
+    assert_eq!(outside_app(&w.store()), (0, vec![]));
+    let all = findings_json(&w.store(), &["--all"]);
+    let f = all["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["id"] == profile.as_str())
+        .unwrap();
+    assert_eq!(f["answer"]["via"], "unknown");
+    let (_, text, _) = finding_out(&w.store(), &[&profile]);
+    assert!(
+        text.contains(" given before this version recorded who."),
+        "{text}"
+    );
+    let page = view(&w.store());
+    let answered = section(&page, "answered");
+    assert!(
+        answered.contains("<p class=\"meta\">given before this version recorded who</p>"),
+        "{answered}"
+    );
+    // Opened by this version, the store takes the column and the answer stays unknown.
+    assert_eq!(outside_app(&w.store()), (0, vec![]));
+}
+
+#[test]
+fn taking_an_answer_back_restores_the_finding_as_it_was() {
+    // The owner takes back what their agent quieted: the finding is open again, as first seen
+    // and as urgent as before, and the journal says who took it back.
+    let w = Watch::new("answer-reopen");
+    checkout(w.home(), "dev/shop");
+    tasks(&w, "default");
+    w.run();
+    tasks(&w, "folderOpen");
+    w.run();
+    let item = status_json(&w.store())["needs_a_look"][0].clone();
+    assert_eq!(item["rule"], "autorun.folder-open");
+    assert_eq!(item["urgent"], true);
+    let id = item["id"].as_str().unwrap();
+    answer(
+        &w.store(),
+        &[id, "seen", "--via", "agent", "--reason", "my own task"],
+    );
+    assert!(needs_findings(&w.store()).is_empty());
+    let (code, stdout, _) = finding_out(&w.store(), &[id, "reopen", "--json"]);
+    assert_eq!(code, Some(0), "{stdout}");
+    let back = status_json(&w.store())["needs_a_look"][0].clone();
+    assert_eq!(back["id"], id);
+    assert_eq!(back["state"], "open");
+    assert_eq!(back["urgent"], true);
+    assert_eq!(back["first_seen"], item["first_seen"]);
+    assert!(back.get("answer").is_none(), "{back}");
+    assert_eq!(
+        rows(
+            &w.store(),
+            "SELECT text FROM journal WHERE entry = 'finding_reopened'"
+        ),
+        [r#"{"taken_back":"seen","via":"command"}"#]
+    );
+    // Nothing is left to take back, and an answer can be given again.
+    let (code, stdout, _) = finding_out(&w.store(), &[id, "reopen", "--json"]);
+    assert_eq!(code, Some(2));
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["errors"][0]["code"], "finding_not_answered");
+    answer(&w.store(), &[id, "seen"]);
+    // Found again later: the same finding, not a new one.
+    answer(&w.store(), &[id, "reopen"]);
+    put(
+        w.home(),
+        "dev/shop/.vscode/tasks.json",
+        "{\"tasks\": [{\"label\": \"other\", \"runOptions\": {\"runOn\": \"folderOpen\"}}]}\n",
+    );
+    w.run();
+    assert_eq!(
+        needs_findings(&w.store()),
+        [(id.to_string(), "autorun.folder-open".to_string())]
     );
 }
 
@@ -9228,7 +9547,10 @@ fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_f
     );
     assert!(!page.contains("cannot be judged"), "{page}");
 
-    assert!(!page.contains("id=\"answered\""));
+    assert!(
+        section(page, "answered")
+            .contains("<p class=\"muted\">Nothing is marked seen or expected now.</p>")
+    );
     // What the source said is beside the sentences, and a thing seen twice says since when.
     for item in r["needs_a_look"].as_array().unwrap() {
         if let Some(said) = item["value_text"].as_str() {
@@ -9260,7 +9582,8 @@ fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_f
         "{items}"
     );
 
-    // An answered finding is folded away under its answer.
+    // An answered finding is listed under its answer, with who gave it and why, the
+    // reason as data.
     let finding = r["needs_a_look"][0]["id"].as_str().unwrap().to_string();
     answer(
         &w.store(),
@@ -9269,9 +9592,14 @@ fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_f
     let page = &view_pages(&w.store())[0].1;
     assert!(page.contains("<h1>Nothing needs a look</h1>"));
     let answered = section(page, "answered");
-    assert!(answered.contains("<summary>1 finding the owner has answered</summary>"));
+    assert!(answered.contains("<h2>Answered</h2>"), "{answered}");
+    assert!(answered.contains("<p>Expected until "), "{answered}");
     assert!(
-        answered.contains(": my &lt;b&gt;own&lt;/b&gt; agent"),
+        answered.contains("<p class=\"meta\">from the command line</p>"),
+        "{answered}"
+    );
+    assert!(
+        answered.contains("<p class=\"said\">my &lt;b&gt;own&lt;/b&gt; agent</p>"),
         "{answered}"
     );
 }
@@ -9501,7 +9829,7 @@ fn a_section_of_the_summary_can_be_opened_from_outside_as_a_file() {
         .iter()
         .map(|s| s["section"].as_str().unwrap())
         .collect();
-    assert_eq!(named, ["watched-here", "you-can-fix", "limits"]);
+    assert_eq!(named, ["watched-here", "you-can-fix", "limits", "answered"]);
     for s in sections.as_array().unwrap() {
         let anchor = s["section"].as_str().unwrap();
         let file = PathBuf::from(s["path_text"].as_str().unwrap());

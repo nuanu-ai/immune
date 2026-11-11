@@ -60,10 +60,15 @@ const USAGE: &str = "usage: soc run [--store <path>] [--machine-name <name>] [--
        soc status [--store <path>] [--json]
        soc findings [--all] [--store <path>] [--json]
        soc finding <id> [--store <path>] [--json]
-       soc finding <id> expected --reason <text> [--days <n>] [--store <path>] [--json]
-       soc finding <id> seen [--store <path>] [--json]
+       soc finding <id> expected --reason <text> [--days <n>] [--via app|agent]
+                   [--store <path>] [--json]
+       soc finding <id> seen [--reason <text>] [--via app|agent] [--store <path>] [--json]
+       soc finding <id> reopen [--via app|agent] [--store <path>] [--json]
            expected and seen are the owner's answers: they hide the finding from him.
-           An agent must not give them for the owner.
+           reopen takes an answer back. --via says who gave it; without it, the command
+           line. Answer a finding only after the owner has agreed in this conversation,
+           having been told what it is and what the options are. Pass --via agent and
+           the reason the owner agreed to. The app shows every answer given this way.
        soc servers [--store <path>] [--tailscale <path>]
        soc view [--store <path>] [--no-open]
        soc owner [<name> retired|not-mine --reason <text> | <name> withdraw]
@@ -99,7 +104,8 @@ struct FindingArgs {
     store: PathBuf,
     json: bool,
     id: String,
-    answer: Option<findings::Answer>,
+    act: Option<findings::Act>,
+    via: findings::Via,
 }
 
 /// How long an `expected` mark lasts unless the owner says otherwise.
@@ -323,20 +329,44 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
         }
         "finding" => {
             let (mut json, mut reason, mut days, mut words) = (false, None, None, Vec::new());
+            let mut via = None;
             while let Some(arg) = it.next() {
                 match arg.as_str() {
                     "--store" => store = Some(value(&mut it, &arg)?.into()),
                     "--json" => json = true,
                     "--reason" => reason = Some(value(&mut it, &arg)?),
                     "--days" => days = Some(value(&mut it, &arg)?),
+                    "--via" => {
+                        via = Some(match value(&mut it, &arg)?.as_str() {
+                            "app" => findings::Via::App,
+                            "agent" => findings::Via::Agent,
+                            _ => return Err("--via takes app or agent".to_string()),
+                        });
+                    }
                     _ if arg.starts_with("--") => {
                         return Err(format!("unexpected argument: {arg}"));
                     }
                     _ => words.push(arg),
                 }
             }
-            let answer = match (words.as_slice(), reason, days) {
-                ([_], None, None) => None,
+            // An agent answers only with the reason the owner agreed to, so that what was
+            // quieted through it always says why.
+            let blank = |r: &Option<String>| r.as_deref().is_none_or(|r| r.trim().is_empty());
+            let answering = matches!(words.as_slice(), [_, v] if v == "expected" || v == "seen");
+            if via == Some(findings::Via::Agent) && answering && blank(&reason) {
+                return Err(
+                    "an answer through an agent needs the reason the owner agreed to: --reason <text>"
+                        .to_string(),
+                );
+            }
+            let act = match (words.as_slice(), reason, days) {
+                ([_], None, None) if via.is_none() => None,
+                ([_], ..) => {
+                    return Err(
+                        "--reason, --days and --via go with an answer: expected, seen or reopen"
+                            .to_string(),
+                    );
+                }
                 ([_, verb], Some(reason), days) if verb == "expected" => {
                     if reason.trim().is_empty() {
                         return Err("expected needs a reason: --reason <text>".to_string());
@@ -349,17 +379,29 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
                             .filter(|d| (1..=3650).contains(d))
                             .ok_or("--days takes a number of days from 1 to 3650")?,
                     };
-                    Some(findings::Answer::Expected { reason, days })
+                    Some(findings::Act::Answer(findings::Answer::Expected {
+                        reason,
+                        days,
+                    }))
                 }
                 ([_, verb], None, _) if verb == "expected" => {
                     return Err("expected needs a reason: --reason <text>".to_string());
                 }
-                ([_, verb], None, None) if verb == "seen" => Some(findings::Answer::Seen),
+                ([_, verb], reason, None) if verb == "seen" => {
+                    let reason = reason.filter(|r| !r.trim().is_empty());
+                    Some(findings::Act::Answer(findings::Answer::Seen { reason }))
+                }
                 ([_, verb], ..) if verb == "seen" => {
-                    return Err("seen takes no reason and no days".to_string());
+                    return Err("seen takes no days".to_string());
+                }
+                ([_, verb], None, None) if verb == "reopen" => Some(findings::Act::Reopen),
+                ([_, verb], ..) if verb == "reopen" => {
+                    return Err("reopen takes no reason and no days".to_string());
                 }
                 ([_, verb], ..) => {
-                    return Err(format!("the owner can answer expected or seen, not {verb}"));
+                    return Err(format!(
+                        "the owner can answer expected or seen, or reopen, not {verb}"
+                    ));
                 }
                 _ => {
                     return Err(
@@ -371,7 +413,8 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
                 store: store.map_or_else(default_store, Ok)?,
                 json,
                 id: words[0].clone(),
-                answer,
+                act,
+                via: via.unwrap_or(findings::Via::Command),
             }))
         }
         "watch" => watch::parse(it).map(Cmd::Watch),
@@ -1096,7 +1139,7 @@ fn finding_cmd(args: &FindingArgs) -> ExitCode {
         )
     };
     let now = now_secs();
-    if let Some(answer) = &args.answer {
+    if let Some(act) = &args.act {
         if !args.store.is_file() {
             return unknown(args.json);
         }
@@ -1107,13 +1150,28 @@ fn finding_cmd(args: &FindingArgs) -> ExitCode {
         let answered = (|| -> Result<(), Box<dyn Error>> {
             let mut conn = store::open(&args.store).map_err(|e| Stop::Store(e.to_string()))?;
             let tx = conn.transaction()?;
-            findings::answer(&tx, &args.id, answer, now, &run_id)?;
+            match act {
+                findings::Act::Answer(a) => {
+                    findings::answer(&tx, &args.id, a, args.via, now, &run_id)?;
+                }
+                findings::Act::Reopen => findings::reopen(&tx, &args.id, args.via, now, &run_id)?,
+            }
             tx.commit()?;
             Ok(())
         })();
         if let Err(e) = answered {
             return match e.downcast_ref::<findings::RefusedError>() {
                 Some(findings::RefusedError(findings::Refused::Unknown)) => unknown(args.json),
+                Some(refused @ findings::RefusedError(findings::Refused::NotAnswered(_))) => {
+                    refuse(
+                        args.json,
+                        "finding",
+                        "finding_not_answered",
+                        &format!("{refused}; nothing was changed"),
+                        "soc findings --all lists every finding with its state",
+                        EXIT_USAGE,
+                    )
+                }
                 Some(refused) => refuse(
                     args.json,
                     "finding",
@@ -1190,14 +1248,15 @@ fn finding_cmd(args: &FindingArgs) -> ExitCode {
             .map(|c| format!(", latest change: {c}"))
             .unwrap_or_default()
     ));
-    if let Some((at, reason, until)) = &item.answer {
+    if let Some(a) = &item.answer {
         say(&format!(
-            "Answered {}{}{}.",
-            view::utc(*at),
-            until
+            "Answered {} {}{}{}.",
+            view::utc(a.at),
+            view::given_by(a.via),
+            a.until
                 .map(|u| format!(", expected until {}", view::utc(u)))
                 .unwrap_or_default(),
-            reason
+            a.reason
                 .as_deref()
                 .map(|r| format!(": {}", view::shown(r)))
                 .unwrap_or_default()

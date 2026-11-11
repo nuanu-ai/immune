@@ -99,7 +99,6 @@ struct RowCard: View {
   let panel: Panel
   @ObservedObject var model: AppModel
   let show: () -> Void
-  @State private var copied = false
 
   private var formOpen: Bool { row.canAnswer && panel.form?.id == row.item.id }
 
@@ -172,14 +171,7 @@ struct RowCard: View {
       }
       Spacer(minLength: 0)
       Button("Show", action: show).fixedSize()
-      Button(copied ? "Copied" : "Copy for my agent") {
-        // Only on the owner's click.
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(row.agentRequest, forType: .string)
-        copied = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
-      }
-      .fixedSize()
+      CopyForAgent(text: row.agentRequest)
     }
     .buttonStyle(.borderless)
     .foregroundStyle(.tint)
@@ -233,6 +225,22 @@ struct RowCard: View {
   }
 }
 
+/// "Copy for my agent": puts a request for the owner's coding agent on the clipboard,
+/// only on their click.
+struct CopyForAgent: View {
+  let text: String
+  @State private var copied = false
+  var body: some View {
+    Button(copied ? "Copied" : "Copy for my agent") {
+      NSPasteboard.general.clearContents()
+      NSPasteboard.general.setString(text, forType: .string)
+      copied = true
+      DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+    }
+    .fixedSize()
+  }
+}
+
 /// A whole-row link: a small symbol, the text, a chevron. Used for "N more" and
 /// for the blind spots, which is never styled as a problem.
 struct LinkLine: View {
@@ -277,13 +285,13 @@ struct PanelView: View {
       model.reading, now: now ?? Date(), checking: model.runInProgress, notes: model.notes,
       notWatching: watcher.watcher?.notWatching, form: model.form, answering: model.answering,
       refusals: model.refusals, notificationsOff: model.notificationsOff,
-      soc: model.socCommand, watchedOpen: model.watchedOpen)
+      soc: model.socCommand, watchedOpen: model.watchedOpen, answeredOpen: model.answeredOpen)
     VStack(alignment: .leading, spacing: 0) {
       HeadlineView(panel: p)
         .padding(Metrics.padding)
       if !p.shown.isEmpty { cards(p) }
-      if p.more > 0 || !p.watched.isEmpty || !p.gaps.isEmpty || p.notWatching != nil
-        || p.notificationsOff != nil || !p.notes.isEmpty
+      if p.more > 0 || !p.watched.isEmpty || !p.gaps.isEmpty || p.answered != nil
+        || p.notWatching != nil || p.notificationsOff != nil || !p.notes.isEmpty
       {
         quiet(p).padding(.top, p.shown.isEmpty ? 0 : 4)
       }
@@ -343,10 +351,19 @@ struct PanelView: View {
         }
       }
       ForEach(p.gaps) { row in
-        LinkLine(symbol: row.symbol, text: row.text) {
-          Task { await model.openPage(section: row.section) }
+        HStack(spacing: 4) {
+          LinkLine(symbol: row.symbol, text: row.text) {
+            Task { await model.openPage(section: row.section) }
+          }
+          // The row still opens the page; the hand-over to the agent is beside it.
+          if row.section == "you-can-fix", let request = p.fixRequest {
+            CopyForAgent(text: request)
+              .buttonStyle(.borderless).foregroundStyle(.tint).font(.system(size: 11))
+              .padding(.trailing, 12)
+          }
         }
       }
+      if let answered = p.answered { answeredRows(p, answered) }
       if let line = p.notWatching {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
           Image(systemName: "pause.circle").font(.system(size: 12)).frame(width: 16)
@@ -375,6 +392,55 @@ struct PanelView: View {
     }
     .padding(.horizontal, Metrics.padding)
     .padding(.bottom, 12)
+  }
+
+  /// "N answers given through your agent", opening in place like "What is watched":
+  /// each answer with what it is about, what was said, by whom and why, and Take back.
+  @ViewBuilder func answeredRows(_ p: Panel, _ a: AnsweredRow) -> some View {
+    LinkLine(
+      symbol: "person.badge.clock", text: a.text,
+      chevron: p.answeredOpen ? "chevron.down" : "chevron.right"
+    ) { model.answeredOpen.toggle() }
+    if p.answeredOpen {
+      VStack(alignment: .leading, spacing: 8) {
+        ForEach(a.lines) { line in
+          VStack(alignment: .leading, spacing: 2) {
+            Plain(line.title).font(.system(size: 11, weight: .semibold))
+            ForEach([line.answer, line.by].compactMap { $0 }, id: \.self) { said in
+              Plain(said).font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            if let reason = line.reason {
+              Text(verbatim: reason).font(.system(size: 11)).foregroundStyle(.secondary)
+                .lineLimit(2).truncationMode(.tail).textSelection(.enabled).help(reason)
+            }
+            if let id = line.finding, let refused = p.refusals[id] {
+              Plain(refused).font(.system(size: 11)).textSelection(.enabled)
+            }
+            if let id = line.finding {
+              if p.answering == id {
+                Text(verbatim: "Saving…").font(.system(size: 11)).foregroundStyle(.secondary)
+              } else {
+                Button("Take back") { Task { await model.takeBack(id) } }
+                  .buttonStyle(.borderless).foregroundStyle(.tint).font(.system(size: 11))
+                  .fixedSize().disabled(p.answering != nil)
+                  .help("Show it again as something that needs a look.")
+              }
+            }
+          }
+        }
+        if a.more > 0 {
+          Button {
+            Task { await model.openPage(section: AnsweredRow.section) }
+          } label: {
+            Text(verbatim: "\(a.more) more in Details").font(.system(size: 11)).underline()
+              .foregroundStyle(.secondary)
+          }
+          .buttonStyle(.plain)
+        }
+      }
+      .padding(.leading, 36)
+      .padding(.trailing, 12)
+    }
   }
 
   @ViewBuilder func footer(_ p: Panel) -> some View {

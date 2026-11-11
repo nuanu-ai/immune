@@ -213,23 +213,47 @@ pub fn summary(
 
     beyond_summary(conn, &mut out, r)?;
 
-    let answered: Vec<findings::Item> = findings::all(conn, now)?
-        .unwrap_or_default()
-        .iter()
-        .filter(|f| f.state == "expected" || f.state == "seen")
-        .filter_map(findings::item)
-        .collect();
-    if !answered.is_empty() {
+    // Every answer that hides a finding now, whoever gave it, so that none is given
+    // silently.
+    let answered = findings::answered(conn, now)?.unwrap_or_default();
+    out.push_str("<section id=\"answered\">\n<h2>Answered</h2>\n");
+    if answered.is_empty() {
         writeln!(
             out,
-            "<section id=\"answered\">\n<details>\n<summary>{} the owner has answered</summary>",
-            counted(answered.len() as i64, "finding", "findings")
+            "<p class=\"muted\">Nothing is marked seen or expected now.</p>"
         )?;
-        for i in &answered {
-            view::item(&mut out, i)?;
-        }
-        out.push_str("</details>\n</section>\n");
     }
+    for i in &answered {
+        let Some(a) = &i.answer else { continue };
+        writeln!(
+            out,
+            "<article class=\"item answered\" id=\"answered-{}\">\n<h3>{}</h3>",
+            esc(&i.id),
+            esc(i.words.title)
+        )?;
+        if let Some(place) = &i.place {
+            writeln!(out, "<p class=\"where mono\">{}</p>", esc(place))?;
+        }
+        let said = match a.until {
+            Some(u) => format!("Expected until {}", utc(u)),
+            None => "Seen".to_string(),
+        };
+        writeln!(
+            out,
+            "<p>{}</p>\n<p class=\"meta\">{}</p>",
+            esc(&said),
+            esc(view::given_by(a.via))
+        )?;
+        if let Some(reason) = &a.reason {
+            writeln!(out, "<p class=\"said\">{}</p>", esc(reason))?;
+        }
+        writeln!(
+            out,
+            "<p class=\"meta mono\">{}</p>\n</article>",
+            esc(&format!("soc finding {} reopen", i.id))
+        )?;
+    }
+    out.push_str("</section>\n");
     writeln!(
         out,
         "<footer>\n<p class=\"meta\"><a href=\"{DETAILS}/{TECHNICAL}.html\">Technical details</a>: everything the program keeps, as it keeps it.</p>\n</footer>"

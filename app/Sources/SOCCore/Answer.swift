@@ -39,13 +39,27 @@ public enum Answer {
     }
   }
 
-  /// `soc finding <id> seen --json`, or nil for an id that is not usable.
+  /// What soc tells an agent about answering, in its fixed words; the request copied
+  /// for the agent carries the same sentence.
+  public static let agentNote =
+    "Answer a finding only after the owner has agreed in this conversation, having been told"
+    + " what it is and what the options are. Pass --via agent and the reason the owner agreed"
+    + " to. The app shows every answer given this way."
+
+  /// `soc finding <id> seen --via app --json`, or nil for an id that is not usable.
   public static func seenArguments(id: String) -> [String]? {
     guard isUsable(id: id) else { return nil }
-    return ["finding", id, "seen", "--json"]
+    return ["finding", id, "seen", "--via", "app", "--json"]
   }
 
-  /// `soc finding <id> expected --reason <reason> --days <n> --json`, or nil when the
+  /// `soc finding <id> reopen --via app --json`: the owner takes an answer back. Nil for
+  /// an id that is not usable.
+  public static func reopenArguments(id: String) -> [String]? {
+    guard isUsable(id: id) else { return nil }
+    return ["finding", id, "reopen", "--via", "app", "--json"]
+  }
+
+  /// `soc finding <id> expected --reason <reason> --days <n> --via app --json`, or nil when the
   /// id is not usable, the reason is blank or the length is not one offered.
   ///
   /// The reason is the value of `--reason`, one argument exactly as typed: soc takes
@@ -55,7 +69,10 @@ public enum Answer {
     guard isUsable(id: id), Self.days.contains(days),
       !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     else { return nil }
-    return ["finding", id, "expected", "--reason", reason, "--days", String(days), "--json"]
+    return [
+      "finding", id, "expected", "--reason", reason, "--days", String(days), "--via", "app",
+      "--json",
+    ]
   }
 
   /// What the card says when soc did not take the answer: its own message when it
