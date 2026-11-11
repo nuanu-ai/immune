@@ -100,14 +100,21 @@ public struct ProcessRunner: SocRunning {
   public let executable: URL
   /// More than this from `soc` is not read; the run is stopped and reported.
   public let outputLimit: Int
+  /// Added to the app's own environment; empty in the app, used by tests.
+  public let environment: [String: String]
 
-  public init(executable: URL, outputLimit: Int = 8 << 20) {
+  public init(
+    executable: URL, outputLimit: Int = 8 << 20, environment: [String: String] = [:]
+  ) {
     self.executable = executable
     self.outputLimit = outputLimit
+    self.environment = environment
   }
 
   public func run(_ arguments: [String], timeout: TimeInterval) async -> SocOutput {
-    let job = Job(executable: executable, arguments: arguments, limit: outputLimit)
+    let job = Job(
+      executable: executable, arguments: arguments, limit: outputLimit,
+      environment: environment)
     return await withCheckedContinuation { job.start(timeout: timeout, then: $0) }
   }
 }
@@ -127,10 +134,11 @@ private final class Job: @unchecked Sendable {
   private var result = SocOutput()
   private var continuation: CheckedContinuation<SocOutput, Never>?
 
-  init(executable: URL, arguments: [String], limit: Int) {
+  init(executable: URL, arguments: [String], limit: Int, environment: [String: String]) {
     self.limit = limit
     process.executableURL = executable
     process.arguments = arguments
+    process.environment = ProcessInfo.processInfo.environment.merging(environment) { $1 }
     process.standardInput = FileHandle.nullDevice
     process.standardOutput = outPipe
     process.standardError = errPipe

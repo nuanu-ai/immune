@@ -466,6 +466,36 @@ struct PanelPromises {
     #expect(!flagPanel.lines.contains { $0.contains("[ Seen ]") })
   }
 
+  @Test(
+    "The agent is given the soc this app runs, by its absolute path quoted for a shell, and the skill to use"
+  )
+  func agentGetsThePath() async throws {
+    let bundled = SocCommand(path: "/Applications/Personal SOC.app/Contents/MacOS/soc")
+    let p = Panel.of(
+      Interpret.reading(from: looking([lookItem(id: "f5d20b8e641")])), now: Date(), soc: bundled)
+    let text = p.rows[0].agentRequest
+    #expect(
+      text.contains(
+        "Read it with `'/Applications/Personal SOC.app/Contents/MacOS/soc' finding f5d20b8e641 --json`."
+      ))
+    #expect(text.contains("If you have the skill named personal-soc, use it for this."))
+    // A path with spaces and quotes, and a store beside it, stay one word each in a shell.
+    let odd = "/tmp/it's \"here\" $HOME `x`/soc"
+    let store = "/tmp/a store/s.db"
+    let line = SocCommand(path: odd, extra: ["--store", store]).line(["finding", "f1", "--json"])
+    let sh = await ProcessRunner(executable: URL(fileURLWithPath: "/bin/sh")).run(
+      ["-c", "set -- " + line + "; printf '%s\\n' \"$#\" \"$@\""], timeout: 10)
+    #expect(
+      String(decoding: sh.stdout, as: UTF8.self)
+        == (["6", odd, "finding", "f1", "--json", "--store", store].joined(separator: "\n") + "\n"))
+    #expect(Shell.quoted("") == "''")
+    #expect(Shell.quoted("/usr/local/bin/soc") == "/usr/local/bin/soc")
+    // A path a pasted line cannot carry is not offered at all.
+    #expect(SocCommand.at(URL(fileURLWithPath: "/tmp/a\nb/soc"), extra: []) == nil)
+    #expect(SocCommand.at(URL(fileURLWithPath: "/tmp/a b/soc"), extra: [])?.path == "/tmp/a b/soc")
+    #expect(SocCommand.at(nil, extra: []) == nil)
+  }
+
   @Test("Every symbol the panel and the icon name exists on this Mac, so no state is drawn blank")
   func symbolsExist() {
     let kinds = [
@@ -634,20 +664,18 @@ struct FailedSoc {
     "An answer's reason with quotes, newlines or a leading dash reaches a real soc as one argument, right after --reason"
   )
   func reasonIsOneArgument() async throws {
-    // In this serialized suite: the stand-in is told where to log by the environment.
+    // The stand-in is told where to log through the child's own environment.
     let log = FileManager.default.temporaryDirectory
       .appendingPathComponent("answer-\(UUID().uuidString).log")
-    setenv("SOC_STANDIN_ANSWER_LOG", log.path, 1)
-    defer {
-      unsetenv("SOC_STANDIN_ANSWER_LOG")
-      try? FileManager.default.removeItem(at: log)
-    }
+    defer { try? FileManager.default.removeItem(at: log) }
+    let runner = ProcessRunner(
+      executable: standin, environment: ["SOC_STANDIN_ANSWER_LOG": log.path])
     for reason in awkwardReasons {
       let args = try #require(
         Answer.expectedArguments(id: "f5d20b8e641", reason: reason, days: 90))
       #expect(args.count == 8)
       #expect(args[3] == "--reason" && args[4] == reason)
-      let out = await ProcessRunner(executable: standin).run(args, timeout: 10)
+      let out = await runner.run(args, timeout: 10)
       #expect(out.exitCode == 0)
       // What the program received, byte for byte, split at the NUL after each argument.
       let got = try Data(contentsOf: log).split(separator: 0, omittingEmptySubsequences: false)
@@ -1473,14 +1501,34 @@ final class Harness {
   }
 }
 
-let watchingLine = #"{"format":1,"event":"watching","places":12,"at":"2026-11-10T10:00:00Z"}"#
+// Lines as `soc watch` writes them (src/watch.rs).
+let watchingLine =
+  #"{"format":1,"event":"watching","at":"2026-11-10T10:00:00Z","places":12,"cannot_see":["a","b","c"]}"#
 let readLine =
-  #"{"format":1,"event":"read","at":"2026-11-10T10:00:00Z","needs_a_look_total":1,"new":1,"changed":0,"gone":0}"#
+  #"{"format":1,"event":"read","at":"2026-11-10T10:00:00Z","new":1,"changed":0,"gone":0,"opened":1,"needs_a_look_total":1}"#
 let aliveLine = #"{"format":1,"event":"alive","at":"2026-11-10T10:00:00Z"}"#
 
 @Suite("The watcher is kept running, and the panel says plainly when it is not")
 @MainActor
 struct Watching {
+  @Test("The lines of soc watch as built are understood; a problem is news of life, not a failure")
+  func realShapes() {
+    #expect(Decoding.watchLine(Data(watchingLine.utf8)) == .watching(places: 12))
+    #expect(Decoding.watchLine(Data(readLine.utf8)) == .read)
+    let flat =
+      #"{"format":1,"event":"problem","at":"2026-11-10T10:00:00Z","code":"read_failed","detail_text":"x"}"#
+    let nested =
+      #"{"format":1,"event":"problem","at":"2026-11-10T10:00:00Z","problem":{"code":"history_unusable","detail_text":"x"}}"#
+    #expect(Decoding.watchLine(Data(flat.utf8)) == .problem(code: "read_failed"))
+    #expect(Decoding.watchLine(Data(nested.utf8)) == .problem(code: "history_unusable"))
+    let h = Harness()
+    h.watcher.start()
+    h.launcher.say(watchingLine)
+    h.launcher.say(flat)
+    #expect(h.watcher.state == .watching)
+    #expect(h.watcher.notWatching == nil)
+  }
+
   @Test("A read line refreshes the status at once")
   func readRefreshes() {
     let h = Harness()
@@ -1577,7 +1625,7 @@ struct Watching {
     h.watcher.start()
     h.launcher.say(
       #"{"format":1,"ok":false,"errors":[{"code":"watch_in_progress","message":"m"}]}"#)
-    h.launcher.exit?(6)
+    h.launcher.exit?(5)
     #expect(h.watcher.state == .elsewhere)
     #expect(h.watcher.notWatching == nil)
     #expect(h.scheduled.last?.0 == Watcher.elsewhereRetry)
@@ -1657,5 +1705,159 @@ struct Lines {
     child.stop(grace: 2)
     #expect(Date().timeIntervalSince(asked) < 1.5)
     #expect(kill(pid, 0) != 0)
+  }
+}
+
+@Suite("The real watcher launcher gives the child its environment")
+struct LauncherEnvironment {
+  @Test(
+    "What is given is added to the app's own environment, which the child keeps (soc needs HOME)")
+  @MainActor
+  func added() async {
+    let env = URL(fileURLWithPath: "/usr/bin/env")
+    var lines: [String] = []
+    _ = ProcessWatchLauncher(executable: env, environment: ["SOC_EXAMPLE": "1"]).launch(
+      [], onLine: { lines.append(String(decoding: $0, as: UTF8.self)) }, onDropped: { _ in },
+      onExit: { _ in })
+    // Lines and the exit arrive on the main queue in no fixed order: wait for both lines.
+    await waitUntil("the given variable and HOME", seconds: 5) {
+      lines.contains("SOC_EXAMPLE=1") && lines.contains { $0.hasPrefix("HOME=") }
+    }
+    let out = await ProcessRunner(executable: env, environment: ["SOC_EXAMPLE": "2"]).run(
+      [], timeout: 10)
+    let text = String(decoding: out.stdout, as: UTF8.self).split(separator: "\n")
+    #expect(text.contains("SOC_EXAMPLE=2"))
+    #expect(text.contains { $0.hasPrefix("HOME=") })
+  }
+
+  @Test("The environment given reaches the watcher process")
+  @MainActor
+  func environmentReaches() async {
+    let launcher = ProcessWatchLauncher(
+      executable: fixtures.appendingPathComponent("soc-standin"),
+      environment: ["SOC_STANDIN_WATCH_MODE": "problem"])
+    var events: [WatchEvent?] = []
+    guard
+      case .success(let child) = launcher.launch(
+        ["watch"], onLine: { events.append(Decoding.watchLine($0)) }, onDropped: { _ in },
+        onExit: { _ in })
+    else {
+      Issue.record("not started")
+      return
+    }
+    defer { child.stop(grace: 2) }
+    await waitUntil("the problem line") { events.count >= 3 }
+    #expect(
+      events.prefix(3) == [.watching(places: 12), .read, .problem(code: "place_not_watched")])
+  }
+}
+
+// MARK: - The two halves together
+
+/// The debug soc built from this repository, when it is there.
+let realSoc: URL? = {
+  let url = fixtures.deletingLastPathComponent().deletingLastPathComponent()
+    .appendingPathComponent("target/debug/soc")
+  return FileManager.default.isExecutableFile(atPath: url.path) ? url : nil
+}()
+
+/// The processes whose command line names this text.
+func processes(naming text: String) async -> [String] {
+  let out = await ProcessRunner(executable: URL(fileURLWithPath: "/usr/bin/pgrep")).run(
+    ["-f", text], timeout: 10)
+  return String(decoding: out.stdout, as: UTF8.self).split(separator: "\n").map(String.init)
+}
+
+@Suite(
+  "The app's watcher and status reading against the real soc, on an invented tree",
+  .serialized,
+  .enabled(if: realSoc != nil, "skipped: no debug soc at target/debug/soc (run cargo build)"))
+@MainActor
+struct RealSoc {
+  @Test(
+    "The app sees soc watch start, a planted file gives a read line and one more thing to look at, and stopping leaves no process"
+  )
+  func watchAndRead() async throws {
+    let soc = try #require(realSoc)
+    let tmp = FileManager.default.temporaryDirectory
+      .appendingPathComponent("personal-soc-real-\(UUID().uuidString)")
+    let root = tmp.appendingPathComponent("root")
+    let daemons = root.appendingPathComponent("Library/LaunchDaemons")
+    let home = tmp.appendingPathComponent("home")
+    try FileManager.default.createDirectory(at: daemons, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tmp) }
+    let store = tmp.appendingPathComponent("store.db").path
+    // An invented home and system root: nothing of this Mac is read.
+    let env = ["HOME": home.path]
+
+    var reads = 0
+    let watcher = Watcher(
+      launcher: ProcessWatchLauncher(executable: soc, environment: env),
+      arguments: ["watch", "--store", store, "--system-root", root.path],
+      onRead: { reads += 1 }, schedule: { _, _ in })
+    let model = AppModel(
+      soc: ProcessRunner(executable: soc, environment: env), extraArguments: ["--store", store])
+
+    watcher.start()
+    defer { watcher.stop() }
+    await waitUntil("watching", seconds: 30) { watcher.state == .watching && reads >= 1 }
+    #expect(watcher.notWatching == nil)
+    #expect(await processes(naming: store).count == 1)
+    await model.refresh()
+    let before = try #require(model.reading.status?.needsALookTotal)
+
+    try Data("<plist/>".utf8).write(to: daemons.appendingPathComponent("org.example.planted.plist"))
+    await waitUntil("a read line", seconds: 30) { reads >= 2 }
+    await model.refresh()
+    let status = try #require(model.reading.status)
+    #expect(status.needsALookTotal == before + 1)
+    #expect(
+      status.needsALook?.contains { $0.whereText?.hasSuffix("org.example.planted.plist") == true }
+        == true)
+    #expect(status.needsALook?.allSatisfy { $0.urgent == false } == true)
+
+    watcher.stop()
+    #expect(await processes(naming: store).isEmpty)
+  }
+
+  @Test(
+    "A watcher whose parent is gone, as when the app is killed outright, stops by itself within seconds"
+  )
+  func parentGone() async throws {
+    let soc = try #require(realSoc)
+    let tmp = FileManager.default.temporaryDirectory
+      .appendingPathComponent("personal-soc-orphan-\(UUID().uuidString)")
+    let root = tmp.appendingPathComponent("root")
+    let home = tmp.appendingPathComponent("home")
+    try FileManager.default.createDirectory(
+      at: root.appendingPathComponent("Library/LaunchDaemons"), withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tmp) }
+    let store = tmp.appendingPathComponent("store.db").path
+    // A shell starts the watcher, stays a second so the watcher knows it as its
+    // parent, and exits, leaving it with no parent. (A parent gone before the watcher
+    // has started is not noticed by soc today: see the report.)
+    let out = await ProcessRunner(
+      executable: URL(fileURLWithPath: "/bin/sh"), environment: ["HOME": home.path]
+    ).run(
+      [
+        "-c",
+        "\"$0\" watch --store \"$1\" --system-root \"$2\" > /dev/null 2>&1 & echo $!; sleep 1",
+        soc.path, store, root.path,
+      ], timeout: 10)
+    let pid = try #require(
+      Int32(
+        String(decoding: out.stdout, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
+    )
+    // It ran: its first reading made the store.
+    #expect(FileManager.default.fileExists(atPath: store))
+    var gone = false
+    for _ in 0..<50 where !gone {
+      gone = kill(pid, 0) != 0
+      if !gone { try await Task.sleep(for: .milliseconds(100)) }
+    }
+    if !gone { kill(pid, SIGTERM) }
+    #expect(gone)
   }
 }

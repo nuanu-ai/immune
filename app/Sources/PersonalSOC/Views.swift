@@ -266,7 +266,8 @@ struct PanelView: View {
     let p = Panel.of(
       model.reading, now: now ?? Date(), checking: model.runInProgress, notes: model.notes,
       notWatching: watcher.watcher?.notWatching, form: model.form, answering: model.answering,
-      refusals: model.refusals, notificationsOff: model.notificationsOff)
+      refusals: model.refusals, notificationsOff: model.notificationsOff,
+      soc: model.socCommand)
     VStack(alignment: .leading, spacing: 0) {
       HeadlineView(panel: p)
         .padding(Metrics.padding)

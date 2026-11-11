@@ -308,7 +308,7 @@ func renderPanel(_ model: AppModel, _ watcher: Watcher, to folder: URL) async ->
   let panel = Panel.of(
     model.reading, now: Date(), checking: model.runInProgress, notes: model.notes,
     notWatching: watcher.notWatching, form: model.form, answering: model.answering,
-    refusals: model.refusals, notificationsOff: model.notificationsOff)
+    refusals: model.refusals, notificationsOff: model.notificationsOff, soc: model.socCommand)
   try? (panel.lines.joined(separator: "\n") + "\n").write(
     to: folder.appendingPathComponent("panel.txt"), atomically: true, encoding: .utf8)
   watcher.stop()
@@ -323,6 +323,7 @@ let (soc, extra, socURL) = locate(overrides.0, overrides.1)
   {
     let folder = URL(fileURLWithPath: CommandLine.arguments[i + 1])
     let model = AppModel(soc: soc, extraArguments: extra)
+    model.socCommand = SocCommand.at(socURL, extra: extra)
     let watcher = makeWatcher(socURL, extra, model)
     NSApplication.shared.setActivationPolicy(.prohibited)
     Task { @MainActor in await renderPanel(model, watcher, to: folder) }
@@ -330,6 +331,7 @@ let (soc, extra, socURL) = locate(overrides.0, overrides.1)
   }
 #endif
 let model = AppModel(soc: soc, extraArguments: extra)
+model.socCommand = SocCommand.at(socURL, extra: extra)
 let delegate = Delegate(model: model, watcher: makeWatcher(socURL, extra, model))
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)

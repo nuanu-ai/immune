@@ -269,7 +269,9 @@ public enum Decoding {
     case "watching": return .watching(places: j["places"].count)
     case "read": return .read
     case "alive": return .alive
-    case "problem": return .problem(code: j["code"].string)
+    // `soc watch` as built puts the code beside `event`; a nested `problem` object is
+    // read too, so either shape is understood.
+    case "problem": return .problem(code: j["problem"]["code"].string ?? j["code"].string)
     default: return nil
     }
   }

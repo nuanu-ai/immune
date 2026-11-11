@@ -33,6 +33,8 @@ public final class AppModel: ObservableObject {
   @Published public private(set) var refusals: [String: String] = [:]
   /// Notifications cannot reach the owner: the panel says so in one quiet line.
   @Published public private(set) var notificationsOff = false
+  /// The soc this app runs, for "Copy for my agent".
+  public var socCommand: SocCommand?
   /// Tells the owner about urgent things; nil in tests, renders and `--print-panel`.
   public var announcer: Announcer?
 

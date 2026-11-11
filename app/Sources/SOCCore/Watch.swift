@@ -2,6 +2,10 @@
 // it says line by line, refreshes the status when it re-read the watched places,
 // and starts it again with a growing delay when it stops or falls silent. No
 // logic of the program lives here: the watcher decides what changed.
+//
+// Quitting stops the watcher (TERM, then KILL after a grace). If the app is killed
+// outright, `soc watch` stops by itself within a second or two: it looks for its
+// parent every second and stops when its stdout closes.
 
 import Foundation
 
@@ -69,10 +73,13 @@ public struct LaunchFailure: Error, Equatable, Sendable {
 public struct ProcessWatchLauncher: WatchLaunching {
   public let executable: URL
   public let lineCap: Int
+  /// Added to the app's own environment; empty in the app, used by tests.
+  public let environment: [String: String]
 
-  public init(executable: URL, lineCap: Int = 64 * 1024) {
+  public init(executable: URL, lineCap: Int = 64 * 1024, environment: [String: String] = [:]) {
     self.executable = executable
     self.lineCap = lineCap
+    self.environment = environment
   }
 
   @MainActor
@@ -81,7 +88,8 @@ public struct ProcessWatchLauncher: WatchLaunching {
     onDropped: @escaping @MainActor (Int) -> Void,
     onExit: @escaping @MainActor (Int32?) -> Void
   ) -> Result<any WatchChild, LaunchFailure> {
-    let child = ProcessWatchChild(executable: executable, arguments: arguments, cap: lineCap)
+    let child = ProcessWatchChild(
+      executable: executable, arguments: arguments, cap: lineCap, environment: environment)
     child.onLine = onLine
     child.onDropped = onDropped
     child.onExit = onExit
@@ -103,10 +111,11 @@ final class ProcessWatchChild: WatchChild, @unchecked Sendable {
   var onDropped: (@MainActor (Int) -> Void)?
   var onExit: (@MainActor (Int32?) -> Void)?
 
-  init(executable: URL, arguments: [String], cap: Int) {
+  init(executable: URL, arguments: [String], cap: Int, environment: [String: String]) {
     splitter = LineSplitter(cap: cap)
     process.executableURL = executable
     process.arguments = arguments
+    process.environment = ProcessInfo.processInfo.environment.merging(environment) { $1 }
     process.standardInput = FileHandle.nullDevice
     process.standardOutput = out
     process.standardError = FileHandle.nullDevice
