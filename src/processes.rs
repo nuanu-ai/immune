@@ -726,6 +726,11 @@ fn cover(tx: &Transaction, w: &At, s: &Sample) -> rusqlite::Result<()> {
 
 /// How many programs the latest sample read, or `None` when no sample was taken here.
 pub fn last_sampled(conn: &rusqlite::Connection) -> rusqlite::Result<Option<i64>> {
+    Ok(last_sample(conn)?.map(|(_, programs, _)| programs))
+}
+
+/// When the latest sample was taken, and how many programs and connections it read.
+pub fn last_sample(conn: &rusqlite::Connection) -> rusqlite::Result<Option<(i64, i64, i64)>> {
     let exists: bool = conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'last_sample')",
         [],
@@ -734,9 +739,11 @@ pub fn last_sampled(conn: &rusqlite::Connection) -> rusqlite::Result<Option<i64>
     if !exists {
         return Ok(None);
     }
-    conn.query_row("SELECT processes FROM last_sample WHERE id = 1", [], |r| {
-        r.get(0)
-    })
+    conn.query_row(
+        "SELECT at, processes, connections FROM last_sample WHERE id = 1",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )
     .optional()
 }
 

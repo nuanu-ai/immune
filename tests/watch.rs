@@ -365,7 +365,7 @@ fn a_change_the_watcher_sees_is_an_open_finding_at_once_and_its_read_line_counts
         .map(|w| w["what"].as_str().unwrap())
         .collect();
     assert!(
-        whats.contains(&"shell profiles") && !whats.contains(&"applications"),
+        whats.contains(&"shell startup files") && !whats.contains(&"applications"),
         "{m}"
     );
     let items = result["needs_a_look"].as_array().unwrap();
@@ -426,7 +426,7 @@ fn the_view_says_what_a_watcher_cannot_see_and_whether_one_runs_once_one_has_run
     let now = mac.view();
     assert!(now.contains(cannot), "{now}");
     assert!(
-        now.contains("A watcher is running now; the watched places were last read by a watcher 2"),
+        now.contains("A watcher is running now: a change in what is watched all the time shows within seconds. It last looked 2"),
         "{now}"
     );
     drop(w);
@@ -434,7 +434,7 @@ fn the_view_says_what_a_watcher_cannot_see_and_whether_one_runs_once_one_has_run
     assert!(after.contains(cannot), "{after}");
     assert!(
         after.contains(
-            "No watcher is running now; the watched places were last read by a watcher 2"
+            "No watcher is running now, so everything is checked every hour. A watcher last looked 2"
         ),
         "{after}"
     );
@@ -989,13 +989,13 @@ fn a_watcher_whose_parent_is_gone_before_it_starts_stops_at_once() {
 // is apart, aggregated, and never a thing to look at.
 
 /// The results of `soc status --json` as a person's questions: what needs a look, the state
-/// of this Mac, and the kinds of what is not covered.
+/// of this Mac, and the ids of what is not covered, what the owner can fix first.
 fn answered(r: &Value) -> (u64, String, Vec<String>) {
     let kinds = r["not_covered"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|u| u["kind"].as_str().unwrap().to_string())
+        .map(|u| u["id"].as_str().unwrap().to_string())
         .collect();
     (
         r["needs_a_look_total"].as_u64().unwrap(),
@@ -1008,7 +1008,8 @@ fn answered(r: &Value) -> (u64, String, Vec<String>) {
 fn a_quiet_mac_needs_no_look_whatever_is_not_covered_and_a_planted_change_does() {
     // The owner saw "6 things need a look" on a Mac where nothing had changed: servers whose
     // sweep did not finish were counted as things to look at. What is not covered is said
-    // once per cause, quietly; what needs a look is a change on his Mac.
+    // once per cause, quietly, what he can fix apart from the limits of this version; what
+    // needs a look is a change on his Mac.
     let mac = Mac::new("quiet");
     mac.put(".zshrc", "export A=1\n");
     mac.put("dev/shop/.git/HEAD", "ref: refs/heads/main\n");
@@ -1037,19 +1038,28 @@ fn a_quiet_mac_needs_no_look_whatever_is_not_covered_and_a_planted_change_does()
     let r = mac.status()["result"].clone();
     let (needs, state, kinds) = answered(&r);
     assert_eq!((needs, state.as_str()), (0, "watched"), "{r:#}");
+    let who = |id: &str| {
+        r["not_covered"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|u| u["id"] == id)
+            .unwrap_or_else(|| panic!("{id}: {r:#}"))["who"]
+            .clone()
+    };
+    assert_eq!(kinds[0], "servers-not-checked", "{r:#}");
+    assert_eq!(who("servers-not-checked"), "you");
+    for limit in ["not-understood", "vulnerability-list-not-downloaded"] {
+        assert_eq!(who(limit), "nothing");
+    }
+    assert_eq!(kinds.iter().filter(|k| who(k) == "you").count(), 1, "{r:#}");
+    let servers_item = &r["not_covered"][0];
     assert_eq!(
-        kinds,
-        [
-            "kinds of file this build has no reader for",
-            "servers not read at the last sweep",
-            "threat list not downloaded"
-        ],
-        "{r:#}"
-    );
-    let servers_item = &r["not_covered"][1];
-    assert_eq!(
-        (&servers_item["count"], &servers_item["value_text"]),
-        (&1.into(), &"1 of 2 servers in the last sweep".into())
+        (&servers_item["title"], &servers_item["examples_text"]),
+        (
+            &"1 of your servers was not checked last time.".into(),
+            &serde_json::json!(["web-2"])
+        )
     );
     // Counted from the sweep itself, not from the run that read its files.
     assert_eq!(servers_item["since"], "2023-11-14T22:13:20Z");
@@ -1067,7 +1077,7 @@ fn a_quiet_mac_needs_no_look_whatever_is_not_covered_and_a_planted_change_does()
         })
         .collect();
     assert!(
-        watched.contains(&("shell profiles".into(), 1, "hourly".into())),
+        watched.contains(&("shell startup files".into(), 1, "hourly".into())),
         "{watched:?}"
     );
     // A kind with nothing to watch on this Mac is left out.
@@ -1086,7 +1096,9 @@ fn a_quiet_mac_needs_no_look_whatever_is_not_covered_and_a_planted_change_does()
     assert!(out.status.success());
     let line = String::from_utf8_lossy(&out.stdout);
     assert!(
-        line.contains(" 1 thing needs a look, 1 new in this run. Not covered: "),
+        line.contains(
+            " 1 thing needs a look, 1 new in this run. You can fix: servers not checked last time. Limits of this version: "
+        ),
         "{line}"
     );
     assert_eq!(answered(&mac.status()["result"]).0, 1);
@@ -1139,15 +1151,21 @@ fn a_folder_macos_asks_permission_for_is_never_entered_and_what_was_known_there_
         .as_array()
         .unwrap()
         .iter()
-        .find(|u| u["kind"] == "folders macOS asks permission for")
+        .find(|u| u["id"] == "protected-folders")
         .unwrap_or_else(|| panic!("{r:#}"))
         .clone();
     assert_eq!(
-        (&item["scope"], &item["count"], &item["examples_text"]),
         (
-            &"projects".into(),
+            &item["who"],
+            &item["title"],
+            &item["count"],
+            &item["examples_text"]
+        ),
+        (
+            &"nothing".into(),
+            &"Projects inside Documents are not checked.".into(),
             &1.into(),
-            &serde_json::json!(["~/Documents"])
+            &serde_json::json!(["Documents"])
         )
     );
     assert_eq!(r["this_mac"]["state"], "watched", "{r:#}");
@@ -1159,9 +1177,11 @@ fn a_folder_macos_asks_permission_for_is_never_entered_and_what_was_known_there_
 }
 
 #[test]
-fn a_watched_file_that_cannot_be_read_leaves_this_mac_watched_in_part() {
-    // A watched place that is there and cannot be read is the one thing on his own Mac the
-    // owner can do something about: the Mac is watched in part, and the item says where.
+fn a_watched_file_its_permissions_keep_closed_leaves_this_mac_watched_in_part_and_is_the_owners_to_fix()
+ {
+    // A watched place that is there and cannot be read because of its permissions is the
+    // one thing on his own Mac the owner can do something about: the Mac is watched in part,
+    // and the item says where and why.
     use std::os::unix::fs::PermissionsExt;
     let mac = Mac::new("in-part");
     let profile = mac.put(".zprofile", "export A=1\n");
@@ -1181,12 +1201,32 @@ fn a_watched_file_that_cannot_be_read_leaves_this_mac_watched_in_part() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|u| u["kind"] == "readings that failed")
+        .find(|u| u["id"] == "not-permitted")
         .unwrap_or_else(|| panic!("{r:#}"))
         .clone();
     assert_eq!(
-        (&item["scope"], &item["examples_text"]),
-        (&"this_mac".into(), &serde_json::json!(["~/.zprofile"]))
+        (&item["who"], &item["scope"], &item["title"]),
+        (
+            &"you".into(),
+            &"this_mac".into(),
+            &"1 file could not be opened because of its permissions.".into()
+        )
+    );
+    assert_eq!(
+        item["examples_text"],
+        serde_json::json!(["~/.zprofile: Permission denied (os error 13)"])
+    );
+    // The page opens on it, not in green, and lists it under what he can fix.
+    let page = mac.view();
+    assert!(
+        page.contains("<p class=\"alert\"><strong>This Mac is watched in part</strong>"),
+        "{page}"
+    );
+    let fix = &page[page.find("<section id=\"you-can-fix\">").unwrap()..];
+    let fix = &fix[..fix.find("</section>").unwrap()];
+    assert!(
+        fix.contains("~/.zprofile: Permission denied (os error 13)"),
+        "{fix}"
     );
 }
 
@@ -1218,7 +1258,7 @@ fn this_mac_says_live_for_what_a_running_watcher_sees_and_hourly_for_the_rest() 
             .unwrap()["how"]
             .clone()
     };
-    assert_eq!(how("shell profiles"), "live");
+    assert_eq!(how("shell startup files"), "live");
     assert_eq!(how("Homebrew packages"), "hourly");
     assert_eq!(how(sampled), "sampled");
     // A watcher that stopped samples nothing: the entry goes with it.
@@ -1385,13 +1425,37 @@ fn a_sample_that_opens_a_finding_says_so_in_one_line_and_a_quiet_sample_says_not
         (&sampled["what"], &sampled["count"]),
         (&"running programs and their connections".into(), &2.into())
     );
-    let kinds: Vec<&str> = r["not_covered"]
+    // Running programs are no longer a limit of this version.
+    let ids: Vec<&str> = r["not_covered"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|u| u["kind"].as_str().unwrap())
+        .map(|u| u["id"].as_str().unwrap())
         .collect();
-    assert_eq!(kinds, ["threat list not downloaded"], "{r:#}");
+    assert_eq!(
+        ids,
+        [
+            "vulnerability-list-not-downloaded",
+            "vulnerabilities-not-compared"
+        ],
+        "{r:#}"
+    );
+    // The summary counts what the latest sample saw, and its section says it in numbers:
+    // no list of running programs is kept.
+    assert!(
+        page.contains(
+            "<a href=\"view/this-mac.html#running-programs-and-their-connections\">Running programs and their connections: 2</a>"
+        ),
+        "{page}"
+    );
+    let at = page
+        .find("<section id=\"running-programs-and-their-connections\">")
+        .unwrap();
+    let shown = &page[at..at + page[at..].find("</section>").unwrap()];
+    assert!(
+        shown.contains("saw 2 running programs and ") && shown.contains("no list of them is"),
+        "{shown}"
+    );
     assert!(w.stop().success());
 }
 
@@ -1410,9 +1474,7 @@ fn a_folder_macos_asks_permission_for_does_not_lengthen_the_report_of_a_quiet_ma
     let r = mac.status()["result"].clone();
     assert_eq!(r["last_finished_run"]["readings"]["failed"], 0, "{r:#}");
     assert!(
-        r["not_covered"]
-            .to_string()
-            .contains("folders macOS asks permission for"),
+        r["not_covered"].to_string().contains("protected-folders"),
         "{r:#}"
     );
 }

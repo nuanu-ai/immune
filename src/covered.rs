@@ -15,14 +15,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// What is watched on this Mac, in words a person knows: the kind of thing as the store
 /// counts it, the words, and whether the watcher sees it within seconds.
-const WATCHED: [(Count, &str, bool); 9] = [
-    (
-        Count::Files(watched::AUTOSTART),
-        "programs set to start by themselves",
-        true,
-    ),
-    (Count::Files(watched::PROFILE), "shell profiles", true),
-    (Count::Files(watched::SSH), "SSH access files", true),
+pub const WATCHED: [(Count, &str, bool); 9] = [
+    (Count::Files(watched::AUTOSTART), "startup items", true),
+    (Count::Files(watched::PROFILE), "shell startup files", true),
+    (Count::Files(watched::SSH), "SSH files", true),
     (Count::Files(watched::HOOK), "git hooks in projects", true),
     (
         Count::Files(autorun::RUNS_ON_OPEN),
@@ -35,14 +31,10 @@ const WATCHED: [(Count, &str, bool); 9] = [
         "Homebrew packages",
         false,
     ),
-    (
-        Count::Installed(integrity::NPM),
-        "global npm packages",
-        false,
-    ),
+    (Count::Installed(integrity::NPM), "npm packages", false),
     (
         Count::Installed(integrity::APP_SUPPORT),
-        "folders of code applications keep outside their bundle",
+        "app code kept outside the app",
         false,
     ),
 ];
@@ -53,7 +45,7 @@ pub const SAMPLED: &str = "running programs and their connections";
 /// How a kind of watched thing is counted: live files of a kind of watched place, or live
 /// installed things of a kind of the integrity reader.
 #[derive(Clone, Copy)]
-enum Count {
+pub enum Count {
     Files(&'static str),
     Installed(&'static str),
 }
@@ -197,98 +189,218 @@ pub fn this_mac_json(m: &ThisMac) -> Value {
     })
 }
 
-/// The fixed words of one cause of what is not covered.
+/// Who can do something about a thing that is not covered: the owner, or nobody, because it
+/// is a limit of this version or passes by itself. Its words say which.
+pub const YOU: &str = "you";
+pub const NOTHING: &str = "nothing";
+
+/// The fixed words of one cause of what is not covered, for a person: plain words, what it
+/// means for him, and whether he can do something about it. A title is given for one and
+/// for many. In the words `{n}` is the count and `{examples}` the examples, as a list.
 pub struct Cause {
     pub id: &'static str,
+    pub who: &'static str,
+    /// Where it is, unless the item says otherwise.
+    pub scope: &'static str,
+    /// What it is in a few words, for the report line.
     pub kind: &'static str,
-    pub words: findings::Words,
+    pub title: [&'static str; 2],
+    pub meaning: &'static str,
+    pub advice: &'static str,
 }
 
-pub const SERVERS_NOT_READ: Cause = Cause {
-    id: "servers-not-read",
-    kind: "servers not read at the last sweep",
-    words: findings::Words {
-        title: "Some servers were not read at the last sweep.",
-        meaning: "The program reads servers only when you run the sweep by hand, and never connects to them itself; a server whose part of the sweep did not finish was not read, and changes on it go unseen until a sweep reads it.",
-        advice: "Run the sweep again when it suits you; nothing here says the servers are switched off.",
-    },
+pub const SERVERS_NOT_CHECKED: Cause = Cause {
+    id: "servers-not-checked",
+    who: YOU,
+    scope: "servers",
+    kind: "servers not checked last time",
+    title: [
+        "{n} of your servers was not checked last time.",
+        "{n} of your servers were not checked last time.",
+    ],
+    meaning: "Servers are checked only when you run the server check yourself. The last one did not finish on these, so changes on them go unseen for now.",
+    advice: "Run the server check again when it suits you.",
 };
 
-pub const VISIT_FAILED: Cause = Cause {
-    id: "server-visit-failed",
-    kind: "server visits that failed",
-    words: findings::Words {
-        title: "The sweep could not read some servers.",
-        meaning: "At the last sweep the visit to them failed for the reason given here; changes on them go unseen until a visit succeeds.",
-        advice: "If a server should be reachable, check that you can connect to it, then run the sweep again.",
-    },
+pub const SERVERS_NOT_OPENED: Cause = Cause {
+    id: "servers-not-opened",
+    who: YOU,
+    scope: "servers",
+    kind: "servers that could not be opened",
+    title: [
+        "{n} server could not be opened at the last server check.",
+        "{n} servers could not be opened at the last server check.",
+    ],
+    meaning: "A server that refuses or does not answer cannot be checked; the reason is listed with each one.",
+    advice: "If you still use them, check that you can log in to them yourself and run the server check again. If one is no longer yours, mark it as retired.",
 };
 
-pub const NO_READER: Cause = Cause {
-    id: "no-reader",
-    kind: "kinds of file this build has no reader for",
-    words: findings::Words {
-        title: "Some kinds of file found here are not read by this build.",
-        meaning: "They are there and this build cannot read them, so a change in them goes unseen; this is a limit of the program, not a fault of yours.",
-        advice: "Nothing to do; `soc status --json` names each kind under no_reader_for.",
-    },
+pub const NOT_PERMITTED: Cause = Cause {
+    id: "not-permitted",
+    who: YOU,
+    scope: "this_mac",
+    kind: "files their permissions keep closed",
+    title: [
+        "{n} file could not be opened because of its permissions.",
+        "{n} files could not be opened because of their permissions.",
+    ],
+    meaning: "Their permissions do not let this program open them, so a change in them goes unseen. Where they are and the reason are listed with them.",
+    advice: "If they are yours, make them readable for your user account again; your agent can tell you how.",
 };
 
 pub const READING_FAILED: Cause = Cause {
-    id: "reading-failed",
-    kind: "readings that failed",
-    words: findings::Words {
-        title: "Something could not be read.",
-        meaning: "Until it can be read again, changes there go unseen; the cause is often a permission or a file in an unexpected state.",
-        advice: "Look at the reason given here, or ask your agent to find out why.",
-    },
-};
-
-pub const THREATS_UNREAD: Cause = Cause {
-    id: "threats-not-downloaded",
-    kind: "threat list not downloaded",
-    words: findings::Words {
-        title: "The list of vulnerabilities that attackers are using could not be downloaded.",
-        meaning: "This is normal if this Mac was offline; until it is downloaded, new ones go unannounced.",
-        advice: "Nothing to do if you were offline; it is tried again at every run.",
-    },
+    id: "could-not-read",
+    who: NOTHING,
+    scope: "this_mac",
+    kind: "things that could not be read",
+    title: [
+        "{n} thing could not be read at the last check.",
+        "{n} things could not be read at the last check.",
+    ],
+    meaning: "Changes in them go unseen until they can be read again. Where they are and the reason are listed with them.",
+    advice: "Nothing to do for now: they are tried again at every check. If one stays, your agent can find out why.",
 };
 
 pub const GUARDED: Cause = Cause {
-    id: "guarded-folders",
-    kind: "folders macOS asks permission for",
-    words: findings::Words {
-        title: "Folders macOS asks permission for were not searched for projects.",
-        meaning: "Looking into them would make macOS ask you for permission on behalf of a program running in the background, so it does not; projects already known there stay as they were, and nothing inside them is read.",
-        advice: "To read a project kept there, run `soc run --checkouts-root <that folder>` yourself in Terminal; granting the app more access changes nothing in this build.",
-    },
+    id: "protected-folders",
+    who: NOTHING,
+    scope: "projects",
+    kind: "projects in folders macOS protects",
+    title: [
+        "Projects inside {examples} are not checked.",
+        "Projects inside {examples} are not checked.",
+    ],
+    meaning: "macOS asks for permission before a program may look there, and this program does not ask on its own. If you keep no code there, nothing is missed.",
+    advice: "Nothing to do for now. Including them from the app comes in a later version.",
 };
 
-/// Every cause, for the catalogue.
-pub const CAUSES: [Cause; 6] = [
-    SERVERS_NOT_READ,
-    VISIT_FAILED,
-    NO_READER,
-    READING_FAILED,
-    THREATS_UNREAD,
-    GUARDED,
+pub const NOT_UNDERSTOOD: Cause = Cause {
+    id: "not-understood",
+    who: NOTHING,
+    scope: "projects",
+    kind: "files this version does not understand yet",
+    title: [
+        "Some files and packages are not understood by this version yet.",
+        "Some files and packages are not understood by this version yet.",
+    ],
+    meaning: "They tell what your projects or servers depend on or what runs by itself, for example {examples}. A change in them is not noticed yet.",
+    advice: "Nothing to do. Support for them comes in later versions.",
+};
+
+pub const THREATS_UNREAD: Cause = Cause {
+    id: "vulnerability-list-not-downloaded",
+    who: NOTHING,
+    scope: "threats",
+    kind: "vulnerability list not downloaded",
+    title: [
+        "The list of vulnerabilities attackers are using could not be downloaded.",
+        "The list of vulnerabilities attackers are using could not be downloaded.",
+    ],
+    meaning: "This is normal when the Mac is offline. Until it is downloaded, new ones go unannounced.",
+    advice: "Nothing to do. It is tried again at every check.",
+};
+
+pub const NOT_COMPARED: Cause = Cause {
+    id: "vulnerabilities-not-compared",
+    who: NOTHING,
+    scope: "threats",
+    kind: "vulnerabilities not yet compared with what you have",
+    title: [
+        "Known vulnerabilities are not yet compared with what you have installed.",
+        "Known vulnerabilities are not yet compared with what you have installed.",
+    ],
+    meaning: "The list of vulnerabilities attackers are using is downloaded at every check, but this version does not yet tell you which of them affect you.",
+    advice: "Nothing to do. This comes in a later version.",
+};
+
+/// Every cause, in the order items are listed: what the owner can fix first.
+pub const CAUSES: [&Cause; 8] = [
+    &SERVERS_NOT_CHECKED,
+    &SERVERS_NOT_OPENED,
+    &NOT_PERMITTED,
+    &READING_FAILED,
+    &GUARDED,
+    &NOT_UNDERSTOOD,
+    &THREATS_UNREAD,
+    &NOT_COMPARED,
 ];
 
-/// The scopes of what is not covered, in the order they are listed.
+/// Each sentence of `status::CANNOT_JUDGE`, told for a person, one for one: the builder who
+/// closes a gap deletes the sentence and its line here, and the item goes with them.
+pub const LIMITS: [(&str, &Cause); 1] = [(
+    "no vulnerability from the catalogue is matched against the estate yet",
+    &NOT_COMPARED,
+)];
+
+/// The scopes of what is not covered.
 pub const SCOPES: [&str; 4] = ["this_mac", "projects", "servers", "threats"];
 
-/// One thing not covered.
+/// One thing not covered: one per cause, never one per machine or per file.
 pub struct Uncovered {
-    pub id: String,
     pub scope: &'static str,
     pub cause: &'static Cause,
     pub count: usize,
-    /// When it is counted from: the last sweep for servers not read, the first failed visit
-    /// for visits that failed, the last download of the threat list, else the latest reading
-    /// that found it.
+    /// When it is counted from: the last server check for servers not checked, the first
+    /// failed visit for servers that could not be opened, the last download of the list of
+    /// vulnerabilities, else the latest reading that found it.
     pub since: Option<i64>,
     pub value: Option<String>,
     pub examples: Vec<String>,
+}
+
+impl Uncovered {
+    fn new(cause: &'static Cause, count: usize) -> Uncovered {
+        Uncovered {
+            scope: cause.scope,
+            cause,
+            count,
+            since: None,
+            value: None,
+            examples: Vec::new(),
+        }
+    }
+
+    fn fill(&self, words: &str) -> String {
+        let shown: Vec<&str> = self
+            .examples
+            .iter()
+            .take(EXAMPLES)
+            .map(String::as_str)
+            .collect();
+        words
+            .replace("{n}", &self.count.to_string())
+            .replace("{examples}", &listed(&shown))
+    }
+
+    pub fn title(&self) -> String {
+        self.fill(self.cause.title[usize::from(self.count != 1)])
+    }
+
+    pub fn meaning(&self) -> String {
+        self.fill(self.cause.meaning)
+    }
+
+    /// What is told apart from the words: the examples, unless the words name them, and the
+    /// value.
+    pub fn apart(&self) -> Vec<&str> {
+        let named =
+            self.cause.title[1].contains("{examples}") || self.cause.meaning.contains("{examples}");
+        let mut out: Vec<&str> = Vec::new();
+        if !named {
+            out.extend(self.examples.iter().map(String::as_str));
+        }
+        out.extend(self.value.as_deref());
+        out
+    }
+}
+
+/// `a`, `a and b`, `a, b and c`.
+fn listed(items: &[&str]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.to_string(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
 }
 
 /// Where a reading's scope belongs, for a person.
@@ -302,16 +414,32 @@ fn scope_of(scope: &str, this: Option<&str>) -> &'static str {
     }
 }
 
-/// A short id, the same for the same cause and group.
-fn id(cause: &Cause, parts: &[&str]) -> String {
-    if parts.is_empty() {
-        return cause.id.to_string();
-    }
-    let hex = crate::sha256::hex(parts.join("\n").as_bytes());
-    format!("{}-{}", cause.id, &hex[..8])
+/// Whether a reading failed because of permissions, which the owner can change. Readers keep
+/// the system's error as the reason, and Rust writes an error from the system with its
+/// number: EPERM is 1 and EACCES is 13 on macOS and on Linux (errno.h).
+fn not_permitted(reason: Option<&str>) -> bool {
+    reason.is_some_and(|r| r.contains("(os error 13)") || r.contains("(os error 1)"))
 }
 
-/// What the program does not cover, one item per cause and group, in the order of `SCOPES`.
+/// The first of `SCOPES` among some readings' scopes.
+fn first_scope<'a>(scopes: impl Iterator<Item = &'a str>, this: Option<&str>) -> &'static str {
+    let found: BTreeSet<&str> = scopes.map(|s| scope_of(s, this)).collect();
+    SCOPES
+        .into_iter()
+        .find(|s| found.contains(s))
+        .unwrap_or("this_mac")
+}
+
+/// `place: reason`, or the place alone.
+fn with_reason(place: String, reason: Option<&str>) -> String {
+    match reason {
+        Some(r) => format!("{place}: {r}"),
+        None => place,
+    }
+}
+
+/// What the program does not cover, one item per cause, in the order of `CAUSES`: what the
+/// owner can fix first.
 pub fn not_covered(
     conn: &Connection,
     latest: &[Latest],
@@ -323,99 +451,63 @@ pub fn not_covered(
     let place = |s: &str| findings::place(s, this);
     let mut out = Vec::new();
 
-    // Servers: those whose part of the last sweep did not finish, and apart, by reason,
-    // those whose visit failed.
-    let visits: Vec<&Latest> = latest
+    // Servers: those the last server check did not finish on, and apart, those it could not
+    // open, each with its reason.
+    let last_sweep = latest
         .iter()
         .filter(|r| r.reader == servers::READER && r.kind == servers::VISIT)
-        .collect();
-    let last_sweep = visits.iter().map(|r| r.at).max();
-    let (unfinished, failed_visits): (Vec<_>, Vec<_>) = p
+        .map(|r| r.at)
+        .max();
+    let (unfinished, unopened): (Vec<_>, Vec<_>) = p
         .unreached
         .iter()
         .partition(|u| u.reason.as_deref() == Some(servers::NOT_COMPLETE));
     if !unfinished.is_empty() {
         out.push(Uncovered {
-            id: id(&SERVERS_NOT_READ, &[]),
-            scope: "servers",
-            cause: &SERVERS_NOT_READ,
-            count: unfinished.len(),
             since: last_sweep,
-            value: Some(format!(
-                "{} of {} servers in the last sweep",
-                unfinished.len(),
-                visits.len()
-            )),
             examples: unfinished.iter().map(|u| place(&u.scope)).collect(),
+            ..Uncovered::new(&SERVERS_NOT_CHECKED, unfinished.len())
         });
     }
-    let mut by_reason: BTreeMap<String, Vec<&status::Unreached>> = BTreeMap::new();
-    for u in failed_visits {
-        by_reason
-            .entry(u.reason.clone().unwrap_or_default())
-            .or_default()
-            .push(u);
-    }
-    for (reason, list) in by_reason {
+    if !unopened.is_empty() {
         out.push(Uncovered {
-            id: id(&VISIT_FAILED, &[&reason]),
-            scope: "servers",
-            cause: &VISIT_FAILED,
-            count: list.len(),
-            since: list.iter().map(|u| u.since).min(),
-            value: Some(reason),
-            examples: list.iter().map(|u| place(&u.scope)).collect(),
+            since: unopened.iter().map(|u| u.since).min(),
+            examples: unopened
+                .iter()
+                .map(|u| with_reason(place(&u.scope), u.reason.as_deref()))
+                .collect(),
+            ..Uncovered::new(&SERVERS_NOT_OPENED, unopened.len())
         });
     }
 
-    // Readings that failed, by where and why. On a server that was not reached they are
-    // implied by it and told there.
+    // Readings that failed: those kept closed by permissions, which the owner can open, and
+    // the rest. On a server that could not be opened they are implied by it and told there.
     let away: BTreeSet<&str> = p.unreached.iter().map(|u| u.scope.as_str()).collect();
-    let mut groups: BTreeMap<(&str, Option<&str>), Vec<&Latest>> = BTreeMap::new();
-    for r in latest.iter().filter(|r| failed(r)) {
-        if r.reader == servers::READER && away.contains(r.scope.as_str()) {
+    let (closed, other): (Vec<&Latest>, Vec<&Latest>) = latest
+        .iter()
+        .filter(|r| failed(r))
+        .filter(|r| !(r.reader == servers::READER && away.contains(r.scope.as_str())))
+        .partition(|r| not_permitted(r.reason.as_deref()));
+    for (cause, list) in [(&NOT_PERMITTED, closed), (&READING_FAILED, other)] {
+        if list.is_empty() {
             continue;
         }
-        groups
-            .entry((scope_of(&r.scope, this), r.reason.as_deref()))
-            .or_default()
-            .push(r);
-    }
-    for ((scope, reason), list) in groups {
-        let mut places: Vec<String> = list.iter().map(|r| place(&r.scope)).collect();
-        places.dedup();
+        let mut examples: Vec<String> = Vec::new();
+        for r in &list {
+            let e = with_reason(place(&r.scope), r.reason.as_deref());
+            if !examples.contains(&e) {
+                examples.push(e);
+            }
+        }
         out.push(Uncovered {
-            id: id(&READING_FAILED, &[scope, reason.unwrap_or_default()]),
-            scope,
-            cause: &READING_FAILED,
-            count: list.len(),
+            scope: first_scope(list.iter().map(|r| r.scope.as_str()), this),
             since: list.iter().map(|r| r.at).max(),
-            value: reason.map(str::to_string),
-            examples: places,
+            examples,
+            ..Uncovered::new(cause, list.len())
         });
     }
 
-    // Kinds of file with no reader, one item per scope with the count of kinds.
-    let mut kinds: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
-    for (scope, what) in lacks(conn)? {
-        kinds
-            .entry(scope_of(&scope, this))
-            .or_default()
-            .insert(what);
-    }
-    for (scope, list) in kinds {
-        out.push(Uncovered {
-            id: id(&NO_READER, &[scope]),
-            scope,
-            cause: &NO_READER,
-            count: list.len(),
-            since: None,
-            value: None,
-            examples: list.into_iter().collect(),
-        });
-    }
-
-    // Folders not looked into, whichever reader did not look.
+    // Folders macOS protects, whichever reader did not look into them.
     let mut folders = BTreeSet::new();
     let mut at = None;
     for r in latest.iter().filter(|r| r.kind == guarded::KIND) {
@@ -428,40 +520,90 @@ pub fn not_covered(
             named
                 .split(", ")
                 .filter(|f| !f.is_empty())
-                .map(str::to_string),
+                .map(plain_folder),
         );
         at = at.max(Some(r.at));
     }
     if !folders.is_empty() {
         out.push(Uncovered {
-            id: id(&GUARDED, &[]),
-            scope: "projects",
-            cause: &GUARDED,
-            count: folders.len(),
             since: at,
-            value: None,
-            examples: folders.into_iter().collect(),
+            examples: folders.iter().cloned().collect(),
+            ..Uncovered::new(&GUARDED, folders.len())
+        });
+    }
+
+    // What this version does not understand, wherever it was found: one item, the kinds
+    // counted once each.
+    let lacks = lacks(conn)?;
+    let kinds: BTreeSet<String> = lacks
+        .iter()
+        .map(|(_, what, name)| plain_lack(what, name.as_deref()))
+        .collect();
+    if !kinds.is_empty() {
+        out.push(Uncovered {
+            scope: first_scope(lacks.iter().map(|(s, _, _)| s.as_str()), this),
+            examples: names_first(&kinds),
+            ..Uncovered::new(&NOT_UNDERSTOOD, kinds.len())
         });
     }
 
     if let Some(Catalogue::Failed { reason, last, .. }) = catalogue {
         out.push(Uncovered {
-            id: id(&THREATS_UNREAD, &[]),
-            scope: "threats",
-            cause: &THREATS_UNREAD,
-            count: 1,
             since: last.map(|(at, _)| at),
             value: Some(reason.clone()),
-            examples: Vec::new(),
+            ..Uncovered::new(&THREATS_UNREAD, 1)
         });
     }
-    let rank = |u: &Uncovered| SCOPES.iter().position(|s| *s == u.scope);
-    out.sort_by_key(rank);
+    // One for each sentence of `CANNOT_JUDGE`: a test pins the pairing.
+    out.extend(LIMITS.iter().map(|(_, cause)| Uncovered::new(cause, 1)));
     Ok(out)
 }
 
-/// What the latest readings found this build has no reader for, by the scope it was found in.
-fn lacks(conn: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
+/// Names of files first, `yarn.lock`, then what is said in words, so that a sentence that
+/// gives them as examples reads as one.
+fn names_first(kinds: &BTreeSet<String>) -> Vec<String> {
+    let (named, said): (Vec<String>, Vec<String>) =
+        kinds.iter().cloned().partition(|k| !k.contains(' '));
+    named.into_iter().chain(said).collect()
+}
+
+/// A folder macOS protects, as a person names it.
+fn plain_folder(shown: &str) -> String {
+    match shown {
+        "~/Library/Mobile Documents" => "iCloud Drive".to_string(),
+        "~/Library/CloudStorage" => "cloud storage folders".to_string(),
+        "~/Library/Containers" | "~/Library/Group Containers" => "other apps' folders".to_string(),
+        _ => match shown.strip_prefix("/Volumes/") {
+            Some(disk) => format!("the disk {disk}"),
+            None => shown.strip_prefix("~/").unwrap_or(shown).to_string(),
+        },
+    }
+}
+
+/// Something this version has no reader for, as a person names it: by its own name where
+/// the source gives one, such as `yarn.lock`, else in plain words.
+fn plain_lack(what: &str, name: Option<&str>) -> String {
+    use crate::{indicators, ssh_config};
+    let plain = match what {
+        indicators::NO_MATCHER | indicators::NOT_AGAINST => "some kinds of indicator in your list",
+        servers::PACKAGE_MANAGER => return format!("{} packages", name.unwrap_or("other")),
+        _ if name.is_some() => return name.unwrap_or_default().to_string(),
+        watched::HOOKS_ELSEWHERE => "git hooks of projects kept as separate working folders",
+        watched::OVER_CAP => "files too large to read",
+        ssh_config::MATCH => "Match blocks in your SSH settings",
+        ssh_config::INCLUDE_TOKENS | ssh_config::INCLUDE_USER => {
+            "Include lines in your SSH settings"
+        }
+        servers::OTHER_MANAGER => "packages of other package managers on servers",
+        servers::CONTAINER_CONTENTS => "software inside containers on servers",
+        other => other,
+    };
+    plain.to_string()
+}
+
+/// What the latest readings found this version has no reader for: the scope it was found in,
+/// what it is and its name.
+fn lacks(conn: &Connection) -> rusqlite::Result<Vec<(String, String, Option<String>)>> {
     let has_table: bool = conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'coverage_lack')",
         [],
@@ -470,14 +612,13 @@ fn lacks(conn: &Connection) -> rusqlite::Result<Vec<(String, String)>> {
     if !has_table {
         return Ok(Vec::new());
     }
-    // A kind is what it is with its name, where it has one: `lockfile kind yarn.lock`.
     conn.prepare(
-        "SELECT DISTINCT c.scope, l.what || COALESCE(' ' || l.name, '')
+        "SELECT DISTINCT c.scope, l.what, l.name
          FROM coverage_lack l JOIN coverage c ON c.id = l.coverage
          WHERE c.id IN (SELECT MAX(id) FROM coverage GROUP BY reader, scope, kind)
            AND c.scope NOT IN (SELECT id FROM gone_entity)",
     )?
-    .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+    .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
     .collect()
 }
 
@@ -492,12 +633,13 @@ pub fn uncovered_json(u: &Uncovered) -> Value {
         .map(|e| status::text(e))
         .collect();
     json!({
-        "id": u.id,
+        "id": u.cause.id,
+        "who": u.cause.who,
         "scope": u.scope,
         "kind": u.cause.kind,
-        "title": u.cause.words.title,
-        "meaning": u.cause.words.meaning,
-        "advice": u.cause.words.advice,
+        "title": u.title(),
+        "meaning": u.meaning(),
+        "advice": u.cause.advice,
         "count": u.count,
         "since": u.since.map(crate::view::iso),
         "value_text": u.value.as_deref().map(status::text),
@@ -505,7 +647,8 @@ pub fn uncovered_json(u: &Uncovered) -> Value {
     })
 }
 
-/// Every cause with its words, for an agent to learn what each can say.
+/// Every cause with its words, for an agent to learn what each can say. `{n}` and
+/// `{examples}` stand for the count and the examples of an item.
 pub fn causes_json() -> Value {
     Value::Array(
         CAUSES
@@ -513,23 +656,77 @@ pub fn causes_json() -> Value {
             .map(|c| {
                 json!({
                     "id": c.id,
+                    "who": c.who,
                     "kind": c.kind,
-                    "title": c.words.title,
-                    "meaning": c.words.meaning,
-                    "advice": c.words.advice,
+                    "title": c.title[1],
+                    "meaning": c.meaning,
+                    "advice": c.advice,
                 })
             })
             .collect(),
     )
 }
 
-/// What is not covered, in one clause for the report line: the kinds, each once.
+/// What is not covered, for the report line, each by name: what the owner can fix, then
+/// the limits of this version. What the program cannot judge here is part of every report.
 pub fn clause(list: &[Uncovered]) -> Option<String> {
-    let mut kinds: Vec<&str> = Vec::new();
-    for u in list {
-        if !kinds.contains(&u.cause.kind) {
-            kinds.push(u.cause.kind);
+    let said: Vec<String> = [(YOU, "You can fix"), (NOTHING, "Limits of this version")]
+        .into_iter()
+        .filter_map(|(who, head)| {
+            let kinds: Vec<&str> = list
+                .iter()
+                .filter(|u| u.cause.who == who)
+                .map(|u| u.cause.kind)
+                .collect();
+            (!kinds.is_empty()).then(|| format!("{head}: {}.", kinds.join(", ")))
+        })
+        .collect();
+    (!said.is_empty()).then(|| said.join(" "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_reading_kept_closed_by_permissions_is_told_from_one_that_failed_otherwise() {
+        // The owner can open a file whose permissions keep it closed; he can do nothing about
+        // a source that is not there. The samples are the system's own messages.
+        // EPERM is 1, ENOENT 2, EAGAIN 35, EACCES 13 and EIO 5 (sys/errno.h).
+        let said = |errno: i32| std::io::Error::from_raw_os_error(errno).to_string();
+        for (errno, closed) in [(1, true), (13, true), (2, false), (35, false), (5, false)] {
+            assert_eq!(not_permitted(Some(&said(errno))), closed, "{}", said(errno));
         }
+        assert!(!not_permitted(None));
     }
-    (!kinds.is_empty()).then(|| format!("Not covered: {}.", kinds.join(", ")))
+
+    #[test]
+    fn what_this_version_does_not_understand_is_named_as_the_owner_knows_it() {
+        // "for example software inside containers on servers and yarn.lock" reads as one
+        // thing; the names of files come first.
+        let kinds: BTreeSet<String> = [
+            plain_lack(servers::CONTAINER_CONTENTS, None),
+            plain_lack(crate::lockfiles::LOCKFILE_KIND, Some("yarn.lock")),
+            plain_lack(servers::PACKAGE_MANAGER, Some("apk")),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            names_first(&kinds),
+            [
+                "yarn.lock",
+                "apk packages",
+                "software inside containers on servers"
+            ]
+        );
+    }
+
+    #[test]
+    fn every_sentence_this_version_cannot_judge_and_only_those_is_told_to_a_person_as_a_limit() {
+        // A gap an agent reads in `cannot_judge` and the owner never sees would be calm the
+        // program has not earned; a limit told after its gap was closed would be a false one.
+        let told: Vec<&str> = LIMITS.iter().map(|(s, _)| *s).collect();
+        assert_eq!(told, status::CANNOT_JUDGE);
+        assert!(LIMITS.iter().all(|(_, c)| c.who == NOTHING));
+    }
 }

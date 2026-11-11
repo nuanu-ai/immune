@@ -245,7 +245,7 @@ fn second_run_on_unchanged_input_reports_no_changes_and_writes_no_events() {
     let second = soc(&dir.store(), &input);
     assert!(
         second.starts_with(
-            "1 reader, 1 machine, 0 checkouts, 6 components. No servers known. \
+            "1 reader, 0 checkouts, 6 components. No servers known. \
              Since last run: no changes."
         ),
         "{second}"
@@ -1258,7 +1258,7 @@ fn by_default_nothing_is_written_to_the_working_folder_and_the_store_is_in_the_u
 
     put(&folder, "sweep/web-1.txt", WEB_1);
     let report = run();
-    assert!(report.contains("2 machines"), "{report}");
+    assert!(report.contains("1 server known"), "{report}");
 
     let page = ok(&mut soc(&["view", "--no-open"]));
     // The summary first, then its pages of details in a folder next to it.
@@ -1693,8 +1693,7 @@ fn two_traces_that_name_the_same_address_are_one_machine_and_each_reader_keeps_w
         ]
     );
     assert!(
-        report.contains("5 machines,")
-            && report.contains("4 servers known, 3 offered for the sweep, 1 read."),
+        report.contains("4 servers known, 3 offered for the sweep, 1 read."),
         "{report}"
     );
 
@@ -2567,12 +2566,28 @@ fn another_users_device_known_only_from_the_tailnet_is_not_a_server_and_never_of
     );
     let script = std::fs::read_to_string(h.dir.0.join("store/sweep/sweep.sh")).unwrap();
     assert_eq!(listed(&script), ["shared"]);
+    // Other users' devices are counted apart from servers, never in one number of machines.
     assert!(
-        report.contains(" 4 servers known, 1 offered for the sweep, 0 read."),
+        report.contains(
+            " 4 servers known, 1 offered for the sweep, 0 read; \
+             3 other devices seen in the private network, not read."
+        ),
         "{report}"
     );
+    assert_eq!(status_json(&h.store())["estate"]["other_devices"], 3);
 
     let machines = view(&h.store());
+    // The page beyond this Mac lists them apart from the servers.
+    assert!(
+        section(&machines, "other-devices").contains("<tr><td class=\"mono\">friends-laptop</td>"),
+        "{machines}"
+    );
+    let servers = section(&machines, "servers");
+    assert!(
+        servers.contains("<tr><td class=\"mono\">shared</td>")
+            && !servers.contains("friends-laptop"),
+        "{servers}"
+    );
     let machines = section(&machines, "machines");
     let blocks: Vec<&str> = machines.split("<details class=\"machine\">").collect();
     let never = blocks
@@ -3768,6 +3783,9 @@ fn a_machine_swept_after_the_statement_is_shown_as_contradicted_counted_again_an
         ),
         "{page}"
     );
+    // A word the machine contradicts sets nothing aside, on the summary either.
+    assert!(!page.contains("Retired or not yours: "), "{page}");
+
     assert!(set_aside(&page).is_empty());
     let web = section(&page, "machines")
         .split("<details class=\"machine\">")
@@ -4738,10 +4756,6 @@ fn a_new_catalogue_entry_is_reported_as_new_exactly_once() {
     let page = view(&f.store());
     // With the catalogue read and nothing else to look at, the summary says so.
     assert!(page.contains("<h1>Nothing needs a look</h1>"), "{page}");
-    assert!(
-        page.contains("4 exploited vulnerabilities known</a>"),
-        "{page}"
-    );
     let third = f.run(&kev(&kev_plus_one()));
 
     assert!(
@@ -6794,13 +6808,13 @@ fn assert_agrees(line: &str, store: &Path) {
         &r["watched"],
         &r["threats"],
     );
+    // Servers and other devices are counted apart, never as one number of machines.
     let mut said = vec![format!(
-        "{}, {}, {}.",
-        counted(&e["machines"], "machine", "machines"),
+        "{}, {}.",
         counted(&e["checkouts"], "checkout", "checkouts"),
         counted(&e["components"], "component", "components")
     )];
-    said.push(if e["servers"] == 0 {
+    let servers = if e["servers"] == 0 {
         " No servers known".to_string()
     } else {
         format!(
@@ -6809,7 +6823,18 @@ fn assert_agrees(line: &str, store: &Path) {
             e["servers_offered"],
             e["servers_read"]
         )
-    });
+    };
+    said.push(servers);
+    if e["other_devices"] != 0 {
+        said.push(format!(
+            "; {} seen in the private network, not read",
+            counted(&e["other_devices"], "other device", "other devices")
+        ));
+    }
+    assert!(
+        !line.contains(" machines, ") && !line.contains(" machine, "),
+        "{line}"
+    );
     let gaps = [
         (
             "machines_unread",
@@ -7256,19 +7281,25 @@ fn unknown_is_never_given_as_zero_or_full() {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|i| i["kind"] == "readings that failed")
+        .filter(|i| i["id"] == "could-not-read")
         .collect();
     assert_eq!(failed.len(), 1, "{r:#}");
-    assert_eq!(failed[0]["title"], "Something could not be read.");
-    assert_eq!(failed[0]["scope"], "this_mac");
-    assert_eq!(failed[0]["examples_text"], serde_json::json!(["mac"]));
-    assert_eq!(r["this_mac"]["state"], "watched_in_part");
-    assert!(
-        failed[0]["value_text"]
-            .as_str()
-            .unwrap()
-            .contains("no-brew-answer")
+    // Not a permission: nothing for the owner to do but wait for the next check.
+    assert_eq!(
+        (&failed[0]["title"], &failed[0]["who"]),
+        (
+            &"1 thing could not be read at the last check.".into(),
+            &"nothing".into()
+        )
     );
+    assert_eq!(failed[0]["scope"], "this_mac");
+    let example = failed[0]["examples_text"][0].as_str().unwrap();
+    assert!(
+        example.starts_with("mac: ") && example.contains("no-brew-answer"),
+        "{example}"
+    );
+    assert_eq!(r["this_mac"]["state"], "watched_in_part");
+
     assert_eq!(class_of("lockfiles").as_deref(), Some("no_reader"), "{c:#}");
     assert_eq!(
         class_of("tailnet").as_deref(),
@@ -7466,23 +7497,34 @@ fn a_lockfile_of_a_kind_without_a_reader_is_named_as_such_by_status_and_the_repo
         put(&shop, "uv.lock", "version = 1\n");
     }
     let (brew, absent) = (dir.input("brew.txt", SAMPLE), dir.0.join("absent"));
-    let said = " Not covered: kinds of file this build has no reader for";
+    let said = " Limits of this version: files this version does not understand yet,";
     let first = soc_home(&store, &brew, &absent);
     assert!(first.contains(said), "{first}");
-    // For a person, one item for the projects, with how many kinds.
+    // For a person, one item wherever they were found, with how many kinds, each by the name
+    // the owner knows it by, and said to be a limit of this version.
     let r = status_json(&store);
-    let item = &r["not_covered"][0];
+    let item = r["not_covered"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["id"] == "not-understood")
+        .unwrap_or_else(|| panic!("{r:#}"));
     assert_eq!(
-        (&item["scope"], &item["kind"], &item["count"]),
-        (
-            &"projects".into(),
-            &"kinds of file this build has no reader for".into(),
-            &2.into()
-        ),
+        (&item["scope"], &item["who"], &item["count"]),
+        (&"projects".into(), &"nothing".into(), &2.into()),
         "{r:#}"
     );
-    // And the threat list, not downloaded in tests.
-    assert_eq!(r["not_covered_total"], 2);
+    assert_eq!(
+        item["examples_text"],
+        serde_json::json!(["uv.lock", "yarn.lock"])
+    );
+    assert!(
+        item["meaning"]
+            .as_str()
+            .unwrap()
+            .contains("for example uv.lock and yarn.lock."),
+        "{item}"
+    );
 
     assert_eq!(
         causes(&store, "lockfiles"),
@@ -7519,10 +7561,18 @@ fn a_lockfile_of_a_kind_without_a_reader_is_named_as_such_by_status_and_the_repo
     );
     let page = &view_pages(&store)[0].1;
     assert!(
-        section(page, "cannot-judge").contains(
-            "<li>This build has no reader for lockfile kind <span class=\"mono\">yarn.lock</span>, found in 2 places.</li>"
-        ),
+        section(page, "limits")
+            .contains("<h3>Some files and packages are not understood by this version yet.</h3>"),
         "{page}"
+    );
+    // Its examples are in its sentence, and not listed a second time under it.
+    let start = page
+        .find("<article class=\"item\" id=\"not-understood\">")
+        .unwrap();
+    let article = &page[start..start + page[start..].find("</article>").unwrap()];
+    assert!(
+        article.contains("for example uv.lock and yarn.lock.") && !article.contains("<ul"),
+        "{article}"
     );
 
     let second = soc_home(&store, &brew, &absent);
@@ -7667,7 +7717,7 @@ fn a_store_from_before_causes_were_kept_shows_its_incomplete_readings_as_failed(
             .as_array()
             .unwrap()
             .iter()
-            .all(|u| u["kind"] != "readings that failed"),
+            .all(|u| u["id"] != "could-not-read"),
         "{r:#}"
     );
     conn.execute_batch("DROP TABLE coverage_lack; ALTER TABLE coverage DROP COLUMN cause;")
@@ -7689,11 +7739,14 @@ fn a_store_from_before_causes_were_kept_shows_its_incomplete_readings_as_failed(
         "{r:#}"
     );
 
-    let report = w.run();
-    assert!(
-        report.contains("Not covered: kinds of file this build has no reader for"),
-        "{report}"
-    );
+    w.run();
+    let ids: Vec<serde_json::Value> = status_json(&w.store())["not_covered"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u["id"].clone())
+        .collect();
+    assert!(ids.contains(&"not-understood".into()), "{ids:?}");
     assert_eq!(
         rows(
             &w.store(),
@@ -7947,8 +8000,9 @@ fn status_without_json_is_a_short_summary_for_a_person() {
                 == ["changed", "shell", "profile", ".zshrc"]),
         "{text}"
     );
+    // The limits of this version in the same words as the page and the app.
     assert!(text.contains(
-        "Cannot judge: no vulnerability from the catalogue is matched against the estate yet."
+        "\nLimit of this version: Known vulnerabilities are not yet compared with what you have installed.\n"
     ));
     // Processes and connections are sampled: the status no longer says they are not read.
     assert!(!text.contains("processes and connections are not read"));
@@ -8032,6 +8086,22 @@ fn needs_findings(store: &Path) -> Vec<(String, String)> {
 
 /// Words that belong to the program and mean nothing to the owner.
 const PROGRAM_TERMS: [&str; 6] = ["reading", "coverage", "scope", "partial", "class", "estate"];
+
+/// Words of the program that never reach what a person reads of what is not covered, nor
+/// the summary page he lands on.
+const PERSON_NEVER_READS: [&str; 11] = [
+    "sweep",
+    "reader",
+    "build",
+    "estate",
+    "coverage",
+    "catalogue",
+    "watched place",
+    "matched",
+    "store",
+    "readings",
+    "vocabulary",
+];
 
 /// A rule's two samples: what is there before the first run, which is the baseline, and a
 /// change after it that the rule must raise on, and another it must stay silent on.
@@ -8392,6 +8462,20 @@ fn every_rule_has_an_id_plain_wording_levels_and_two_samples_that_hold() {
             }
         }
     }
+    // What is not covered says whether the owner can do something, in words that say so.
+    for said in r["not_covered"].as_array().unwrap() {
+        assert!(["you", "nothing"].contains(&said["who"].as_str().unwrap()));
+        for part in ["kind", "title", "meaning", "advice"] {
+            let words = said[part].as_str().unwrap().to_lowercase();
+            for term in PERSON_NEVER_READS {
+                assert!(!words.contains(term), "{term}: {words}");
+            }
+        }
+        if said["who"] == "nothing" {
+            let advice = said["advice"].as_str().unwrap();
+            assert!(advice.starts_with("Nothing to do"), "{advice}");
+        }
+    }
     for rule in r["rules"].as_array().unwrap() {
         let has = |list: &str, v: &serde_json::Value| levels[list].as_array().unwrap().contains(v);
         assert!(has("severity", &rule["severity"]), "{rule}");
@@ -8427,10 +8511,10 @@ fn a_change_in_a_watched_place_stays_open_through_quiet_runs_and_is_the_number_t
         "<plist/>\n",
     );
     let first = w.run();
-    // What is not covered is one clause after it, never counted as a thing to look at.
+    // What is not covered comes after it by name, never counted as a thing to look at.
     assert!(
         first.contains(
-            " 1 thing needs a look, 1 new in this run. Not covered: threat list not downloaded."
+            " 1 thing needs a look, 1 new in this run. Limits of this version: vulnerability list not downloaded,"
         ),
         "{first}"
     );
@@ -8489,7 +8573,11 @@ fn a_change_in_a_watched_place_stays_open_through_quiet_runs_and_is_the_number_t
             .iter()
             .all(|i| i["type"] == "finding")
     );
-    assert_eq!(r["not_covered"][0]["kind"], "threat list not downloaded");
+    assert_eq!(
+        r["not_covered"][0]["id"],
+        "vulnerability-list-not-downloaded"
+    );
+
     let (_, printed, _) = status_out(&w.store(), &[]);
     assert!(printed.contains("Needs a look: 1.\n"), "{printed}");
     let listed = ok(soc_cmd(w.home())
@@ -8797,7 +8885,7 @@ fn neither_a_baseline_nor_the_first_run_of_this_build_on_an_older_store_raises_a
         "{page}"
     );
     assert!(page.contains(
-        "<li>Not computed: needs a look, because no run of this build has looked for findings yet; the next run does.</li>"
+        "<p class=\"meta\">No run of this build has looked for findings yet; the next run does.</p>"
     ));
     let report = w.run();
     assert!(report.contains(" Nothing needs a look."), "{report}");
@@ -8805,9 +8893,11 @@ fn neither_a_baseline_nor_the_first_run_of_this_build_on_an_older_store_raises_a
 }
 
 #[test]
-fn a_machine_that_cannot_be_reached_is_not_covered_in_plain_words_until_it_is_read() {
+fn a_server_that_cannot_be_opened_is_one_thing_the_owner_can_fix_with_its_reason_until_it_is_read()
+{
     // What is not a finding is never a thing to look at: it is not covered, said once per
-    // cause in the same three sentences, and it goes when the cause goes.
+    // cause in plain words that say whether the owner can do something, and it goes when the
+    // cause goes.
     let h = Home::new("health-unreached", Some(SSH_CONFIG_TWO_ALIASES), None);
     let servers = h.sweep();
     put(
@@ -8835,53 +8925,88 @@ fn a_machine_that_cannot_be_reached_is_not_covered_in_plain_words_until_it_is_re
     h.run(&servers, &h.none());
     let r = status_json(&h.store());
     assert_eq!(r["needs_a_look_total"], 0, "{r:#}");
-    let uncovered = |r: &serde_json::Value, kind: &str| -> Vec<serde_json::Value> {
+    // Two servers were in the last server check, web-1 and web-new being one machine, and
+    // one of them was read.
+    assert_eq!(
+        (
+            &r["estate"]["servers_in_last_check"],
+            &r["estate"]["servers_checked_in_last_check"]
+        ),
+        (&2.into(), &1.into()),
+        "{r:#}"
+    );
+    let (_, printed, _) = status_out(&h.store(), &[]);
+    assert!(
+        printed.contains(
+            "\nYou can fix: 1 server could not be opened at the last server check. (db-1: Permission denied (publickey).)\n"
+        ),
+        "{printed}"
+    );
+
+    let uncovered = |r: &serde_json::Value, id: &str| -> Vec<serde_json::Value> {
         r["not_covered"]
             .as_array()
             .unwrap()
             .iter()
-            .filter(|u| u["kind"] == kind)
+            .filter(|u| u["id"] == id)
             .cloned()
             .collect()
     };
-    // Two machines with one reason are one item, counted from the later reading.
-    let refused = uncovered(&r, "readings that failed");
+    // Two machines whose part could not be read are one item, counted from the later
+    // reading; they are tried again at every check.
+    let refused = uncovered(&r, "could-not-read");
     assert_eq!(refused.len(), 1, "{r:#}");
     assert_eq!(
         (
             &refused[0]["scope"],
             &refused[0]["count"],
-            &refused[0]["since"]
-        ),
-        (&"servers".into(), &2.into(), &"2026-01-02T04:04:05Z".into())
-    );
-    let item = uncovered(&r, "server visits that failed").remove(0);
-    assert_eq!(item["title"], "The sweep could not read some servers.");
-    assert_eq!(
-        (
-            &item["scope"],
-            &item["count"],
-            &item["examples_text"],
-            &item["value_text"]
+            &refused[0]["since"],
+            &refused[0]["who"]
         ),
         (
             &"servers".into(),
+            &2.into(),
+            &"2026-01-02T04:04:05Z".into(),
+            &"nothing".into()
+        )
+    );
+    // A server that could not be opened is the owner's to fix, with its name and reason.
+    let item = uncovered(&r, "servers-not-opened").remove(0);
+    assert_eq!(
+        item["title"],
+        "1 server could not be opened at the last server check."
+    );
+    assert_eq!(
+        (
+            &item["who"],
+            &item["scope"],
+            &item["count"],
+            &item["examples_text"],
+        ),
+        (
+            &"you".into(),
+            &"servers".into(),
             &1.into(),
-            &serde_json::json!(["db-1"]),
-            &"Permission denied (publickey).".into()
+            &serde_json::json!(["db-1: Permission denied (publickey)."]),
         )
     );
     // Counted from the first visit that failed.
     assert_eq!(item["since"], "2026-01-03T04:00:00Z");
+    // The page beyond this Mac says, server by server, what the last check did.
+    let page = view(&h.store());
+    let listed = section(&page, "servers");
+    assert!(
+        listed.contains(
+            "<tr><td class=\"mono\">db-1</td><td>could not be opened: Permission denied (publickey).</td><td class=\"nowrap\">never</td>"
+        ) && listed.contains("<tr><td class=\"mono\">web-1</td><td>checked</td>"),
+        "{listed}"
+    );
 
     std::fs::remove_file(servers.join("db-1.failed")).unwrap();
     put(&servers, "db-1.txt", WEB_1);
     h.run(&servers, &h.none());
     let r = status_json(&h.store());
-    assert!(
-        uncovered(&r, "server visits that failed").is_empty(),
-        "{r:#}"
-    );
+    assert!(uncovered(&r, "servers-not-opened").is_empty(), "{r:#}");
 }
 
 #[test]
@@ -9013,28 +9138,60 @@ fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_f
     assert_eq!(path.file_name().unwrap(), "view.html");
     assert!(page.contains("<h1>1 thing needs a look</h1>"), "{page}");
     assert_eq!(r["needs_a_look_total"], 1);
-    // It opens with whether this Mac is watched; what is not covered comes after what needs
-    // a look, in short rows of its own.
+    // It opens with whether this Mac is watched, with the watcher and the last full check
+    // right there; then what needs a look; then what is watched, in plain words; then what
+    // the owner can fix and the limits of this version, each in full; then what is beyond.
     let this_mac = section(page, "this-mac");
     assert!(
-        this_mac.contains("<strong>This Mac is watched</strong>"),
+        this_mac.contains("<strong>This Mac is watched</strong>")
+            && this_mac.contains("No watcher is running now, so everything is checked every hour.")
+            && this_mac.contains("The last full check was "),
         "{this_mac}"
     );
     assert!(
-        this_mac.contains(
-            "<li>programs set to start by themselves: 1 <span class=\"muted\">(hourly)</span></li>"
+        section(page, "watched-here").contains(
+            "<h3>Checked every hour: a change shows at the next check</h3>\n<ul class=\"counts\">\n<li><a href=\"view/this-mac.html#startup-items\">Startup items: 1</a></li>"
         ),
-        "{this_mac}"
-    );
-    let not_covered = section(page, "not-covered");
-    assert!(
-        not_covered.contains(
-            "<li>The list of vulnerabilities that attackers are using could not be downloaded."
-        ),
-        "{not_covered}"
+        "{page}"
     );
     let at = |id: &str| page.find(&format!("<section id=\"{id}\"")).unwrap();
-    assert!(at("this-mac") < at("needs") && at("needs") < at("not-covered"));
+    let order = [
+        "this-mac",
+        "needs",
+        "watched-here",
+        "you-can-fix",
+        "limits",
+        "beyond",
+    ];
+    assert!(order.windows(2).all(|w| at(w[0]) < at(w[1])), "{page}");
+    assert!(
+        section(page, "you-can-fix").contains("<p class=\"muted\">Nothing for you to fix.</p>")
+    );
+    for u in r["not_covered"].as_array().unwrap() {
+        let id = u["id"].as_str().unwrap();
+        let start = page
+            .find(&format!("<article class=\"item\" id=\"{id}\">"))
+            .unwrap_or_else(|| panic!("{id}"));
+        let article = &page[start..start + page[start..].find("</article>").unwrap()];
+        for part in ["title", "meaning", "advice"] {
+            assert!(
+                article.contains(u[part].as_str().unwrap()),
+                "{part}: {article}"
+            );
+        }
+        let held = if u["who"] == "you" {
+            "you-can-fix"
+        } else {
+            "limits"
+        };
+        assert!(section(page, held).contains(article), "{id}");
+    }
+    assert!(
+        section(page, "limits").contains(
+            "<h3>The list of vulnerabilities attackers are using could not be downloaded.</h3>"
+        ),
+        "{page}"
+    );
     for item in r["needs_a_look"].as_array().unwrap() {
         let id = item["id"].as_str().unwrap();
         let start = page
@@ -9061,13 +9218,16 @@ fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_f
         assert!(!html.contains("<img") && !html.contains('\u{202e}'));
         assert!(!html.contains("http://") && !html.contains("https://"));
     }
-    // What cannot be judged here, and nothing answered yet.
+    // What cannot be judged here is a limit of this version, in plain words, and nothing is
+    // answered yet.
     assert!(
-        section(page, "cannot-judge").contains(
-            "<li>No vulnerability from the catalogue is matched against the estate yet.</li>"
+        section(page, "limits").contains(
+            "<h3>Known vulnerabilities are not yet compared with what you have installed.</h3>"
         ),
         "{page}"
     );
+    assert!(!page.contains("cannot be judged"), "{page}");
+
     assert!(!page.contains("id=\"answered\""));
     // What the source said is beside the sentences, and a thing seen twice says since when.
     for item in r["needs_a_look"].as_array().unwrap() {
@@ -9086,10 +9246,18 @@ fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_f
         "<plist>2</plist>\n",
     );
     w.run();
+    let pages = view_pages(&w.store());
+    assert!(pages[0].1.contains("<p class=\"meta\">first seen "));
+    // The startup item's own row says when it last changed.
+    let this_mac = &pages
+        .iter()
+        .find(|(p, _)| p.ends_with("view/this-mac.html"))
+        .unwrap()
+        .1;
+    let items = section(this_mac, "startup-items");
     assert!(
-        view_pages(&w.store())[0]
-            .1
-            .contains("<p class=\"meta\">first seen ")
+        items.contains("UTC</td><td class=\"nowrap\">2") && !items.contains("not since first seen"),
+        "{items}"
     );
 
     // An answered finding is folded away under its answer.
@@ -9109,46 +9277,156 @@ fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_f
 }
 
 #[test]
-fn every_count_on_the_summary_links_to_a_page_of_details_that_exists() {
-    // A count that links nowhere leaves the owner with a number he cannot check.
+fn each_link_on_the_summary_shows_what_its_label_says_first_thing_on_arrival() {
+    // The owner followed every count on the summary to one long page where he found neither
+    // projects nor machines. Each link now leads to a section headed with what its label
+    // names, listing exactly as many things as the label counts. The app opens the summary
+    // at what he can fix and at the limits of this version, by their anchors.
     let w = Watch::new("view-links");
     put(w.home(), ".zshrc", "export A=1\n");
+    put(
+        w.home(),
+        "Library/LaunchAgents/com.example.helper.plist",
+        "<plist/>\n",
+    );
+    let shop = checkout(w.home(), "dev/shop");
+    put(&shop, "package-lock.json", PACKAGE_LOCK);
+    tiny_app(&w, "1.0");
+    put(
+        &w.sys,
+        "opt/homebrew/Cellar/wget/1.24.5/bin/wget",
+        "#!/bin/sh\n",
+    );
+    put(
+        &w.sys,
+        "opt/homebrew/lib/node_modules/left-pad/package.json",
+        "{\"name\": \"left-pad\", \"version\": \"1.3.0\"}\n",
+    );
     w.run();
     let pages = view_pages(&w.store());
     let (main, page) = &pages[0];
     let folder = main.parent().unwrap();
-    let links: Vec<&str> = page
-        .split("href=\"")
-        .skip(1)
-        .map(|rest| &rest[..rest.find('"').unwrap()])
-        .collect();
-    let counts = section(page, "estate");
-    for counted in [
-        "1 machine</a>",
-        "0 checkouts</a>",
-        "1 watched file</a> <span class=\"muted\">(1 shell profile)</span>",
-        "readings at the latest check</a>",
+    for anchor in ["you-can-fix", "limits"] {
+        assert!(
+            page.contains(&format!("<section id=\"{anchor}\">")),
+            "{anchor}"
+        );
+    }
+    // Every link as its target and the text it is shown as.
+    let links = |html: &str| -> Vec<(String, String)> {
+        html.split("<a href=\"")
+            .skip(1)
+            .map(|rest| {
+                let href = &rest[..rest.find('"').unwrap()];
+                let text = &rest[rest.find('>').unwrap() + 1..rest.find("</a>").unwrap()];
+                (href.to_string(), text.to_string())
+            })
+            .collect()
+    };
+    // What a person lands on first is in his words, not the program's. What a source said,
+    // listed apart under its item, is data.
+    let mut words = page[page.find("<main>").unwrap()..].to_string();
+    while let Some(start) = words.find("<ul class=\"readings mono\">") {
+        let end = start + words[start..].find("</ul>").unwrap();
+        words.replace_range(start..end, "");
+    }
+    let mut text = String::new();
+    for part in words.split('<') {
+        text.push_str(part.split_once('>').map_or(part, |(_, t)| t));
+        text.push(' ');
+    }
+    let text = text.to_lowercase();
+    for term in PERSON_NEVER_READS {
+        assert!(!text.contains(term), "{term}: {text}");
+    }
+    let summary = links(page);
+    let mut reached: Vec<PathBuf> = Vec::new();
+    for (href, text) in &summary {
+        let (file, anchor) = href.split_once('#').unwrap_or((href, ""));
+        let target = folder.join(file);
+        let html = &pages
+            .iter()
+            .find(|(p, _)| *p == target)
+            .unwrap_or_else(|| panic!("{href} was not written"))
+            .1;
+        reached.push(target.clone());
+        // The heading of the section the link opens at, or of the page.
+        let at = if anchor.is_empty() {
+            0
+        } else {
+            html.find(&format!("<section id=\"{anchor}\">"))
+                .unwrap_or_else(|| panic!("no section {anchor} in {file}"))
+        };
+        let from = &html[at..];
+        let (open, close) = if anchor.is_empty() {
+            ("<h1>", "</h1>")
+        } else {
+            ("<h2>", "</h2>")
+        };
+        let start = from.find(open).unwrap() + open.len();
+        let heading = &from[start..start + from[start..].find(close).unwrap()];
+        let (label, count) = text.split_once(": ").unwrap_or((text, ""));
+        assert!(label.starts_with(heading), "{text} leads to {heading}");
+        // A count is the number of things the section lists, or, where no list is kept, the
+        // number it says.
+        if let (Ok(n), false) = (count.parse::<usize>(), anchor.is_empty()) {
+            let shown = section(html, anchor);
+            if shown.contains("<table") {
+                assert_eq!(shown.matches("</td></tr>").count(), n, "{text}: {shown}");
+            } else {
+                assert!(shown.contains(&format!(" {n} ")), "{text}: {shown}");
+            }
+        }
+    }
+    let labels: Vec<&str> = summary.iter().map(|(_, t)| t.as_str()).collect();
+    for said in [
+        "Startup items: 1",
+        "Shell startup files: 1",
+        "Applications: 1",
+        "Homebrew packages: 1",
+        "npm packages: 1",
+        "Projects on this Mac: 1",
+        "Technical details",
     ] {
-        assert!(counts.contains(counted), "{counted}: {counts}");
+        assert!(labels.contains(&said), "{said}: {labels:?}");
     }
-    assert_eq!(links.len(), 10, "{links:?}");
-    for link in &links {
-        let detail = folder.join(link);
-        let html = std::fs::read_to_string(&detail).unwrap_or_else(|_| panic!("{link}"));
-        assert!(
-            html.contains("<section id=\"") && html.contains("href=\"../view.html\""),
-            "{link}"
-        );
-        assert!(
-            pages.iter().any(|(p, _)| p == &detail),
-            "{link} was not written"
-        );
-    }
-    // Every page of details is linked from the summary.
-    assert_eq!(pages.len() - 1, links.iter().collect::<BTreeSetOf>().len());
-}
+    // A founder with no servers and no private network is told about his projects alone.
+    let beyond = section(page, "beyond");
+    assert!(
+        !beyond.contains("Servers") && !beyond.contains("Other devices"),
+        "{beyond}"
+    );
 
-type BTreeSetOf<'a> = std::collections::BTreeSet<&'a &'a str>;
+    // Who signed an application is beside its name, first.
+    let this_mac = &pages
+        .iter()
+        .find(|(p, _)| p.ends_with("view/this-mac.html"))
+        .unwrap()
+        .1;
+    let apps = section(this_mac, "applications");
+    assert!(
+        apps.contains("<thead><tr><th>Name</th><th>Signed by</th>")
+            && apps.contains("<tr><td>Tiny</td>"),
+        "{apps}"
+    );
+    // A Homebrew package by its name and version; nobody signs it.
+    let kegs = section(this_mac, "homebrew-packages");
+    assert!(
+        kegs.contains("<tr><td>wget</td><td class=\"mono\">1.24.5</td>")
+            && !kegs.contains("Signed by"),
+        "{kegs}"
+    );
+
+    // Every page written is reached from the summary, or from its technical details.
+    let technical = folder.join("view/technical.html");
+    let html = &pages.iter().find(|(p, _)| *p == technical).unwrap().1;
+    for (href, _) in links(html) {
+        reached.push(technical.parent().unwrap().join(href));
+    }
+    for (p, _) in &pages[1..] {
+        assert!(reached.contains(p), "{} is not reached", p.display());
+    }
+}
 
 #[test]
 fn the_summary_page_stays_small_on_a_large_store() {
@@ -9196,15 +9474,9 @@ fn the_summary_page_stays_small_on_a_large_store() {
         .as_i64()
         .unwrap();
     assert!(components >= 20_000);
-    let said = format!(
-        "{},{:03} components</a>",
-        components / 1000,
-        components % 1000
-    );
-    assert!(page.contains(&said), "{said}");
     assert!(
         page.contains("<p class=\"meta\">20 more, the mildest;"),
         "{page}"
     );
-    assert_eq!(page.matches("<article ").count(), 100);
+    assert_eq!(section(page, "needs").matches("<article ").count(), 100);
 }

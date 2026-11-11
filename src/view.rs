@@ -17,10 +17,7 @@ const RUNS_SHOWN: i64 = 20;
 /// The latest run is shown open only when its changes fit on a screen or a few.
 const EVENTS_SHOWN_OPEN: usize = 500;
 
-type Out = Result<(), Box<dyn Error>>;
-
-/// At most this many things that need a look are shown in full, so the summary stays small.
-const ITEMS_SHOWN: usize = 100;
+pub type Out = Result<(), Box<dyn Error>>;
 
 /// The summary page, in the store's folder.
 pub const SUMMARY: &str = "view.html";
@@ -29,10 +26,10 @@ pub const SUMMARY: &str = "view.html";
 pub const DETAILS: &str = "view";
 
 /// Every page the view writes, as its path relative to the store's folder and its HTML: the
-/// summary first, then one page of details for each of the big tables. The summary is built
-/// from the state and the machine-readable result `soc status --json` gives, so the two say
-/// the same; the details are what the store holds, moved out of the summary so that it stays
-/// small.
+/// summary first, then the pages its links lead a person to (`pages.rs`), then one technical
+/// page for each of the big tables. The summary is built from the state and the
+/// machine-readable result `soc status --json` gives, so the two say the same; the technical
+/// pages are what the store holds, reached from one line at the bottom of the summary.
 pub fn pages(
     conn: &Connection,
     st: &crate::status::State,
@@ -40,8 +37,25 @@ pub fn pages(
     store: &str,
     now: i64,
 ) -> Result<Vec<(String, String)>, Box<dyn Error>> {
-    let mut pages = vec![(SUMMARY.to_string(), summary(conn, st, result, now)?)];
     let latest = latest_coverage(conn)?;
+    let mut pages = vec![
+        (
+            SUMMARY.to_string(),
+            crate::pages::summary(conn, st, result, now)?,
+        ),
+        (
+            format!("{DETAILS}/{}.html", crate::pages::THIS_MAC),
+            crate::pages::this_mac(conn, st, now)?,
+        ),
+        (
+            format!("{DETAILS}/{}.html", crate::pages::BEYOND),
+            crate::pages::beyond(conn, &latest, now)?,
+        ),
+        (
+            format!("{DETAILS}/{}.html", crate::pages::TECHNICAL),
+            crate::pages::technical(),
+        ),
+    ];
     for (name, title) in DETAIL_PAGES {
         let mut body = String::new();
         match name {
@@ -66,7 +80,7 @@ pub fn pages(
 }
 
 /// The pages of details, by file name and title.
-const DETAIL_PAGES: [(&str, &str); 7] = [
+pub const DETAIL_PAGES: [(&str, &str); 7] = [
     ("coverage", "What was read and how completely"),
     ("machines", "Machines"),
     ("watched", "Watched places"),
@@ -76,22 +90,17 @@ const DETAIL_PAGES: [(&str, &str); 7] = [
     ("vocabulary", "Vocabulary"),
 ];
 
-const FOOT: &str = "</main>\n</body>\n</html>\n";
+pub const FOOT: &str = "</main>\n</body>\n</html>\n";
 
-fn head(title: &str) -> String {
+pub fn head(title: &str) -> String {
     HEAD.replace(
         "<title>What the store holds</title>",
         &format!("<title>{}</title>", esc(title)),
     )
 }
 
-/// A link to a page of details, with the text it is shown as.
-fn link(name: &str, text: &str) -> String {
-    format!("<a href=\"{DETAILS}/{name}.html\">{}</a>", esc(text))
-}
-
 /// `15,617 components`.
-fn counted(n: i64, one: &str, many: &str) -> String {
+pub fn counted(n: i64, one: &str, many: &str) -> String {
     let digits = n.to_string();
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {
@@ -103,274 +112,9 @@ fn counted(n: i64, one: &str, many: &str) -> String {
     format!("{out} {}", if n == 1 { one } else { many })
 }
 
-/// A number from the result, or nothing when it is not there.
-fn number(v: &serde_json::Value) -> Option<i64> {
-    v.as_i64()
-}
-
-/// The summary page: the same three questions as the app, in the same words. What needs a
-/// look, in full; what cannot be judged here; what is watched, in counts that link to their
-/// pages of details; and the findings the owner has answered.
-fn summary(
-    conn: &Connection,
-    st: &crate::status::State,
-    r: &serde_json::Value,
-    now: i64,
-) -> Result<String, Box<dyn Error>> {
-    let mut out = head("What needs a look");
-    let finished = st.summary.as_ref().and_then(|s| s.run.finished_at);
-    let headline = match number(&r["needs_a_look_total"]) {
-        Some(0) => "Nothing needs a look".to_string(),
-        Some(n) => counted(n, "thing needs a look", "things need a look"),
-        None => "What needs a look is not known yet".to_string(),
-    };
-    writeln!(
-        out,
-        "<header>\n<h1>{}</h1>\n<p class=\"meta\">Last checked {} · this page made {}</p>\n</header>",
-        esc(&headline),
-        utc_or(finished, "never"),
-        utc(now)
-    )?;
-
-    // First, whether this Mac is watched and how, as `this_mac` says.
-    let m = &st.this_mac;
-    let state = match m.state {
-        "watched" => "This Mac is watched",
-        "watched_in_part" => "This Mac is watched in part",
-        _ => "This Mac has not been checked yet",
-    };
-    writeln!(
-        out,
-        "<section id=\"this-mac\">\n<p><strong>{state}</strong> · {} · last checked {}</p>",
-        if m.live {
-            "a watcher sees changes within seconds"
-        } else {
-            "no watcher runs now; it is checked every hour"
-        },
-        utc_or(m.checked_at, "never")
-    )?;
-    if !m.watched.is_empty() {
-        out.push_str("<ul class=\"counts\">\n");
-        for (what, n, how) in &m.watched {
-            let what = esc(what);
-            let n = counted(*n, "", "");
-            writeln!(
-                out,
-                "<li>{what}: {} <span class=\"muted\">({how})</span></li>",
-                n.trim_end()
-            )?;
-        }
-        out.push_str("</ul>\n");
-    }
-    out.push_str("</section>\n");
-
-    out.push_str("<section id=\"needs\">\n");
-    for i in st.needs.items.iter().take(ITEMS_SHOWN) {
-        item(&mut out, i)?;
-    }
-    if st.needs.items.len() > ITEMS_SHOWN {
-        writeln!(
-            out,
-            "<p class=\"meta\">{} more, the mildest; <span class=\"mono\">soc status --json</span> and <span class=\"mono\">soc findings</span> list them.</p>",
-            st.needs.items.len() - ITEMS_SHOWN
-        )?;
-    }
-    out.push_str("</section>\n");
-
-    // What is not covered: quiet, one short row per cause, never something to look at.
-    if !st.not_covered.is_empty() {
-        out.push_str("<section id=\"not-covered\">\n<h2>Not covered</h2>\n<ul>\n");
-        for u in &st.not_covered {
-            let value = u
-                .value
-                .as_deref()
-                .map(|v| format!(" <span class=\"muted\">{}</span>", esc(v)))
-                .unwrap_or_default();
-            writeln!(
-                out,
-                "<li>{} <span class=\"muted\">{}: {}</span>{value}</li>",
-                esc(u.cause.words.title),
-                esc(&u.scope.replace('_', " ")),
-                u.count
-            )?;
-        }
-        out.push_str("</ul>\n</section>\n");
-    }
-
-    out.push_str("<section id=\"cannot-judge\">\n<h2>What cannot be judged here</h2>\n<ul>\n");
-    // What a watcher, `soc watch`, cannot see, when one is or was running on this store: the
-    // program's fixed words, and whether one runs now.
-    let last_read = crate::watch::last_read(conn)?;
-    let watching = !r["watching"].is_null();
-    let mut said: Vec<String> = r["cannot_judge"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|s| s.as_str().unwrap_or_default().to_string())
-        .collect();
-    if watching || last_read.is_some() {
-        said.extend(crate::watch::CANNOT_SEE.map(|s| format!("a watcher does not see {s}")));
-        // A limit of sampling without administrator rights, not a fault: said here only.
-        if crate::processes::last_sampled(conn)?.is_some() {
-            said.extend(
-                crate::processes::PERSON_CANNOT_SEE
-                    .map(|s| format!("a watcher's sample of running programs does not see {s}")),
-            );
-        }
-        writeln!(
-            out,
-            "<li>{} the watched places were last read by a watcher {}.</li>",
-            if watching {
-                "A watcher is running now;"
-            } else {
-                "No watcher is running now;"
-            },
-            utc_or(last_read, "never")
-        )?;
-    }
-    for said in said {
-        let mut chars = said.chars();
-        let said: String = chars
-            .next()
-            .map(|c| c.to_uppercase().chain(chars).collect())
-            .unwrap_or_default();
-        writeln!(out, "<li>{}.</li>", esc(&said))?;
-    }
-    for n in r["no_reader_for"].as_array().into_iter().flatten() {
-        let what = n["what"].as_str().unwrap_or_default();
-        let which = n["what_text"]
-            .as_str()
-            .map(|t| format!(" <span class=\"mono\">{}</span>", esc(t)))
-            .unwrap_or_default();
-        writeln!(
-            out,
-            "<li>This build has no reader for {}{which}, found in {}.</li>",
-            esc(what),
-            counted(
-                number(&n["where_count"]).unwrap_or_default(),
-                "place",
-                "places"
-            )
-        )?;
-    }
-    for n in r["not_computed"].as_array().into_iter().flatten() {
-        writeln!(
-            out,
-            "<li>Not computed: {}, because {}.</li>",
-            esc(&n["section"].as_str().unwrap_or_default().replace('_', " ")),
-            esc(n["reason"].as_str().unwrap_or_default())
-        )?;
-    }
-    out.push_str("</ul>\n</section>\n");
-
-    out.push_str("<section id=\"estate\">\n<h2>What is watched</h2>\n<ul class=\"counts\">\n");
-    let e = &r["estate"];
-    let count = |key: &str, one: &str, many: &str| number(&e[key]).map(|n| counted(n, one, many));
-    for (key, one, many) in [
-        ("machines", "machine", "machines"),
-        ("servers", "server", "servers"),
-        ("checkouts", "checkout", "checkouts"),
-        ("components", "component", "components"),
-    ] {
-        if let Some(text) = count(key, one, many) {
-            writeln!(out, "<li>{}</li>", link("machines", &text))?;
-        }
-    }
-    if let Some(n) = number(&r["watched"]["files"]) {
-        let kinds: Vec<String> = r["watched"]["kinds"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|k| k["files"].as_i64().unwrap_or_default() > 0)
-            .map(|k| {
-                format!(
-                    "{} {}",
-                    k["files"],
-                    esc(k["kind"].as_str().unwrap_or_default())
-                )
-            })
-            .collect();
-        writeln!(
-            out,
-            "<li>{}{}</li>",
-            link("watched", &counted(n, "watched file", "watched files")),
-            if kinds.is_empty() {
-                String::new()
-            } else {
-                format!(" <span class=\"muted\">({})</span>", kinds.join(", "))
-            }
-        )?;
-    }
-    let t = &r["threats"];
-    match (t["outcome"].as_str(), number(&t["entries"])) {
-        (Some(_), Some(n)) => writeln!(
-            out,
-            "<li>{}</li>",
-            link(
-                "threats",
-                &counted(
-                    n,
-                    "exploited vulnerability known",
-                    "exploited vulnerabilities known"
-                )
-            )
-        )?,
-        (Some(_), None) => writeln!(
-            out,
-            "<li>{}</li>",
-            link(
-                "threats",
-                "The list of exploited vulnerabilities was never read"
-            )
-        )?,
-        _ => {}
-    }
-    if let Some(n) = number(&r["coverage"]["readings"]) {
-        writeln!(
-            out,
-            "<li>{}</li>",
-            link(
-                "coverage",
-                &counted(
-                    n,
-                    "reading at the latest check",
-                    "readings at the latest check"
-                )
-            )
-        )?;
-    }
-    writeln!(
-        out,
-        "<li>{} · {} · {}</li>\n</ul>\n</section>",
-        link("changes", "Changes by run"),
-        link("gone", "What is no longer there"),
-        link("vocabulary", "Vocabulary")
-    )?;
-
-    let answered: Vec<crate::findings::Item> = crate::findings::all(conn, now)?
-        .unwrap_or_default()
-        .iter()
-        .filter(|f| f.state == "expected" || f.state == "seen")
-        .filter_map(crate::findings::item)
-        .collect();
-    if !answered.is_empty() {
-        writeln!(
-            out,
-            "<section id=\"answered\">\n<details>\n<summary>{} the owner has answered</summary>",
-            counted(answered.len() as i64, "finding", "findings")
-        )?;
-        for i in &answered {
-            item(&mut out, i)?;
-        }
-        out.push_str("</details>\n</section>\n");
-    }
-    out.push_str(FOOT);
-    Ok(out)
-}
-
 /// One thing that needs a look, in full: its three sentences, where, what the source says,
 /// when, how bad and how sure, its id and the command that reads it.
-fn item(out: &mut String, i: &crate::findings::Item) -> Out {
+pub fn item(out: &mut String, i: &crate::findings::Item) -> Out {
     writeln!(
         out,
         "<article class=\"item {}\" id=\"{}\">\n<h2>{}</h2>",
@@ -499,7 +243,7 @@ fn civil(secs: i64) -> (String, i64) {
     (format!("{year:04}-{month:02}-{day:02}"), rest)
 }
 
-fn utc_or(secs: Option<i64>, missing: &str) -> String {
+pub fn utc_or(secs: Option<i64>, missing: &str) -> String {
     secs.map(utc).unwrap_or_else(|| missing.to_string())
 }
 
@@ -525,7 +269,7 @@ fn split_component(id: &str) -> Option<(&str, &str, &str)> {
 }
 
 /// Ecosystem and name of a component, or no ecosystem and the whole id for anything else.
-fn component_name(id: &str) -> (&str, &str) {
+pub fn component_name(id: &str) -> (&str, &str) {
     split_component(id).map_or(("", id), |(_, ecosystem, name)| (ecosystem, name))
 }
 
@@ -560,7 +304,7 @@ fn what(predicate: &str) -> &str {
 }
 
 /// A table cell with escaped text and an optional class.
-fn td(out: &mut String, class: &str, text: &str) -> Out {
+pub fn td(out: &mut String, class: &str, text: &str) -> Out {
     if class.is_empty() {
         write!(out, "<td>{}</td>", esc(text))?;
     } else {
@@ -580,7 +324,7 @@ fn td_component(out: &mut String, id: &str) -> Out {
     Ok(())
 }
 
-fn thead(out: &mut String, columns: &[&str]) {
+pub fn thead(out: &mut String, columns: &[&str]) {
     out.push_str("<thead><tr>");
     for c in columns {
         out.push_str("<th>");
@@ -641,7 +385,7 @@ pub struct Latest {
     /// a reading written before causes were kept.
     pub cause: Option<String>,
     pub at: i64,
-    last_full: Option<i64>,
+    pub last_full: Option<i64>,
 }
 
 /// The latest record for each reader, scope and kind, and its latest full one.
@@ -2098,7 +1842,7 @@ article.item { border: 1px solid var(--line); border-left: 4px solid var(--muted
   padding: 10px 14px; margin: 12px 0; background: var(--head); }
 article.item.high, article.item.critical { border-left-color: var(--bad-fg); }
 article.item.medium { border-left-color: var(--changed); }
-article.item h2 { font-size: 1rem; margin: 0 0 4px; padding: 0; border: 0; }
+article.item h2, article.item h3 { font-size: 1rem; margin: 0 0 4px; padding: 0; border: 0; }
 article.item .where { margin: 0 0 6px; }
 article.item .said { color: var(--muted); overflow-wrap: anywhere; }
 article.item .advice { font-weight: 600; }

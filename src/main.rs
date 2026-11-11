@@ -10,6 +10,7 @@
 
 mod agent_folders;
 mod autorun;
+mod beyond;
 mod brew;
 mod checkouts;
 mod codesign;
@@ -25,6 +26,7 @@ mod known_hosts;
 mod lifecycle;
 mod lockfiles;
 mod owner;
+mod pages;
 mod processes;
 mod resolver;
 mod servers;
@@ -782,20 +784,23 @@ fn this_mac_text(m: &covered::ThisMac) {
     }
 }
 
-/// What is not covered, one line each, quiet: never a count of things to look at.
+/// What is not covered, one line each, quiet: never a count of things to look at. What the
+/// owner can fix comes first; then the limits of this version.
 fn not_covered_text(list: &[covered::Uncovered]) {
-    for u in list {
-        let value = u
-            .value
-            .as_deref()
-            .map(|v| format!(" ({})", view::shown(v)))
-            .unwrap_or_default();
-        say(&format!(
-            "Not covered, {}: {} {}{value}.",
-            u.scope.replace('_', " "),
-            grouped(u.count as i64),
-            u.cause.kind
-        ));
+    for (who, head) in [
+        (covered::YOU, "You can fix"),
+        (covered::NOTHING, "Limit of this version"),
+    ] {
+        for u in list.iter().filter(|u| u.cause.who == who) {
+            let apart = u.apart();
+            let also = if apart.is_empty() {
+                String::new()
+            } else {
+                let shown: Vec<&str> = apart.into_iter().take(covered::EXAMPLES).collect();
+                format!(" ({})", shown.join("; "))
+            };
+            say(&format!("{head}: {}{also}", u.title()));
+        }
     }
 }
 
@@ -945,9 +950,6 @@ fn status_text(store: &Path) -> Result<(), Stop> {
         s.changes.len()
     ));
     print_table(&["When", "Change", "Kind", "Path"], &changes);
-    for what in status::CANNOT_JUDGE {
-        say(&format!("Cannot judge: {what}."));
-    }
     say("All of it, with every list, is in `soc status --json`.");
     Ok(())
 }
@@ -1430,7 +1432,8 @@ fn survey(args: &ServersArgs) -> Result<Survey, Box<dyn Error>> {
     let word_of = |group: &[String]| standing.iter().find(|s| group.iter().any(|m| s.covers(m)));
     let set_aside = |group: &Vec<String>| word_of(group).is_some_and(|s| s.seen.is_none());
     // Another user's device known from the tailnet alone is not a server. Known from any
-    // other trace as well, it is one the owner uses as a server.
+    // other trace as well, it is one the owner uses as a server. `beyond.rs` tells them
+    // apart the same way from the store.
     let (devices, groups): (Vec<Vec<String>>, Vec<Vec<String>>) =
         resolver::groups(traces_of.keys().cloned(), &pairs)
             .into_iter()
@@ -2592,13 +2595,18 @@ fn resolve(run: &mut Run) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Servers in the store, each counted once however many names it has. Another user's
-/// device known only from the tailnet is not one, nor is a machine the owner retired or
-/// disowned, unless it was seen alive after the statement.
+/// Servers in the store, each counted once however many names it has, and the other devices
+/// beside them: `beyond.rs` tells them apart. A machine the owner retired or disowned is
+/// neither, unless it was seen alive after the statement.
 struct ServerCounts {
     known: usize,
     offered: usize,
     read: usize,
+    /// Servers the latest server check has a visit of, and of them those it read.
+    in_last_check: usize,
+    checked_in_last_check: usize,
+    /// Computers and phones seen in the private network that the owner does not log in to.
+    other_devices: usize,
     /// Machines under a statement of the owner's that stands.
     set_aside: usize,
     /// Those of them seen alive after the statement.
@@ -2616,12 +2624,27 @@ fn server_counts(
         aliases.contains(id)
             && sweep::not_offered(id.strip_prefix("machine:").unwrap_or(id), skip).is_none()
     };
-    let devices = store::other_users_devices(conn)?;
+    // The latest visit of each server, and whether it read the server.
+    let visits: BTreeMap<String, bool> = conn
+        .prepare(
+            "SELECT scope, completeness = 'full' FROM coverage
+             WHERE reader = ?1 AND kind = ?2
+               AND id IN (SELECT MAX(id) FROM coverage WHERE reader = ?1 AND kind = ?2
+                          GROUP BY scope)",
+        )?
+        .query_map([servers::READER, servers::VISIT], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
     let standing = owner::standing(conn)?;
+    let beyond = beyond::split(conn, machine)?;
     let mut counts = ServerCounts {
-        known: 0,
+        known: beyond.servers.len(),
         offered: 0,
         read: 0,
+        in_last_check: 0,
+        checked_in_last_check: 0,
+        other_devices: beyond.other_devices.len(),
         set_aside: standing.len(),
         seen: standing
             .iter()
@@ -2629,17 +2652,16 @@ fn server_counts(
             .map(|s| s.name().to_string())
             .collect(),
     };
-    for group in store::machine_groups(conn)? {
-        if group.iter().any(|m| m == machine) || store::only_someone_elses(&group, &devices) {
-            continue;
-        }
+    for group in &beyond.servers {
         let word = standing.iter().find(|s| group.iter().any(|m| s.covers(m)));
-        if word.is_some_and(|w| w.seen.is_none()) {
-            continue;
-        }
-        counts.known += 1;
         counts.offered += usize::from(word.is_none() && group.iter().any(offered));
         counts.read += usize::from(group.iter().any(|m| read.contains(m)));
+        let visited: Vec<bool> = group
+            .iter()
+            .filter_map(|m| visits.get(m).copied())
+            .collect();
+        counts.in_last_check += usize::from(!visited.is_empty());
+        counts.checked_in_last_check += usize::from(visited.contains(&true));
     }
     Ok(counts)
 }
@@ -3454,9 +3476,9 @@ fn report(readers: usize, notes: &[String], s: &status::Summary, needs: &str) ->
 /// What a finished run left, in the words of the report line; `soc status` says the same.
 fn summary_sentences(s: &status::Summary) -> String {
     let (t, servers) = (&s.totals, &s.servers);
+    // Servers and other devices are counted apart, never as one number of machines.
     let mut line = format!(
-        "{}, {}, {}.",
-        things(t.machines, "machine", "machines"),
+        "{}, {}.",
         things(t.checkouts, "checkout", "checkouts"),
         things(t.components, "component", "components"),
     );
@@ -3468,6 +3490,16 @@ fn summary_sentences(s: &status::Summary) -> String {
             things(servers.known as i64, "server", "servers"),
             grouped(servers.offered as i64),
             grouped(servers.read as i64)
+        ));
+    }
+    if servers.other_devices > 0 {
+        line.push_str(&format!(
+            "; {} seen in the private network, not read",
+            things(
+                servers.other_devices as i64,
+                "other device",
+                "other devices"
+            )
         ));
     }
     if servers.set_aside > 0 {
