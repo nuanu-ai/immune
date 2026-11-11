@@ -93,7 +93,7 @@
      "how": "live"
     },
     {
-     "what": "shell profiles",
+     "what": "shell startup files",
      "count": 3,
      "how": "live"
     },
@@ -108,8 +108,23 @@
      "how": "live"
     },
     {
-     "what": "installed packages",
-     "count": 815,
+     "what": "running programs and their connections",
+     "count": 87,
+     "how": "sampled"
+    },
+    {
+     "what": "applications",
+     "count": 214,
+     "how": "hourly"
+    },
+    {
+     "what": "Homebrew packages",
+     "count": 96,
+     "how": "hourly"
+    },
+    {
+     "what": "npm packages",
+     "count": 640,
      "how": "hourly"
     }
    ]
@@ -119,13 +134,14 @@
     "id": "n-threats",
     "scope": "threats",
     "kind": "not matched",
-    "title": "Known exploited vulnerabilities are not matched against this Mac yet",
+    "title": "Known exploited vulnerabilities are not matched yet",
     "meaning": "Meaning from the program.",
     "advice": "Advice from the program.",
     "count": 1,
     "since": null,
     "value_text": null,
-    "examples_text": []
+    "examples_text": [],
+    "who": "nothing"
    }
   ],
   "not_covered_total": 1

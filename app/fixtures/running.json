@@ -150,7 +150,7 @@
      "how": "live"
     },
     {
-     "what": "shell profiles",
+     "what": "shell startup files",
      "count": 3,
      "how": "live"
     },
@@ -165,8 +165,23 @@
      "how": "live"
     },
     {
-     "what": "installed packages",
-     "count": 815,
+     "what": "running programs and their connections",
+     "count": 87,
+     "how": "sampled"
+    },
+    {
+     "what": "applications",
+     "count": 214,
+     "how": "hourly"
+    },
+    {
+     "what": "Homebrew packages",
+     "count": 96,
+     "how": "hourly"
+    },
+    {
+     "what": "npm packages",
+     "count": 640,
      "how": "hourly"
     }
    ]
@@ -182,19 +197,21 @@
     "count": 1,
     "since": "2026-11-09T22:00:05Z",
     "value_text": "connection timed out after 10 s",
-    "examples_text": []
+    "examples_text": [],
+    "who": "you"
    },
    {
     "id": "n-locks",
     "scope": "projects",
     "kind": "no reader",
-    "title": "Project lockfiles this program cannot read yet",
+    "title": "Some project lockfiles are not read by this version",
     "meaning": "Meaning from the program.",
     "advice": "Advice from the program.",
     "count": 2,
     "since": "2026-11-09T22:00:05Z",
     "value_text": null,
-    "examples_text": []
+    "examples_text": [],
+    "who": "nothing"
    }
   ],
   "not_covered_total": 2

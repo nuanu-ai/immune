@@ -51,7 +51,15 @@ struct HeadlineView: View {
         .frame(width: 26)
         .accessibilityLabel(panel.light.spoken)
       VStack(alignment: .leading, spacing: 4) {
-        Plain(panel.headline).font(.system(size: 15, weight: .semibold))
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+          Plain(panel.headline).font(.system(size: 15, weight: .semibold))
+          // While a check runs, something moves, so the panel never looks frozen.
+          if panel.busy {
+            ProgressView().controlSize(.small).alignmentGuide(.firstTextBaseline) {
+              $0[.bottom] - 3
+            }
+          }
+        }
         if let checked = panel.checked {
           Text(verbatim: checked)
             .font(.system(size: 12)).foregroundStyle(.secondary)
@@ -274,7 +282,7 @@ struct PanelView: View {
       HeadlineView(panel: p)
         .padding(Metrics.padding)
       if !p.shown.isEmpty { cards(p) }
-      if p.more > 0 || !p.watched.isEmpty || !p.uncovered.isEmpty || p.notWatching != nil
+      if p.more > 0 || !p.watched.isEmpty || !p.gaps.isEmpty || p.notWatching != nil
         || p.notificationsOff != nil || !p.notes.isEmpty
       {
         quiet(p).padding(.top, p.shown.isEmpty ? 0 : 4)
@@ -312,21 +320,24 @@ struct PanelView: View {
           chevron: p.watchedOpen ? "chevron.down" : "chevron.right"
         ) { model.watchedOpen.toggle() }
         if p.watchedOpen {
-          VStack(alignment: .leading, spacing: 2) {
-            ForEach(Array(p.watched.enumerated()), id: \.offset) { _, line in
-              Plain(line).font(.system(size: 11)).foregroundStyle(.secondary)
+          VStack(alignment: .leading, spacing: 6) {
+            ForEach(p.watched, id: \.title) { group in
+              VStack(alignment: .leading, spacing: 2) {
+                Text(verbatim: group.title).font(.system(size: 11, weight: .semibold))
+                  .foregroundStyle(.secondary)
+                ForEach(Array(group.lines.enumerated()), id: \.offset) { _, line in
+                  Plain(line).font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+              }
             }
           }
           .padding(.leading, 36)
           .padding(.trailing, 12)
         }
       }
-      ForEach(p.uncovered) { row in
-        LinkLine(symbol: row.symbol, text: row.text) { Task { await model.openPage() } }
-      }
-      if p.uncoveredMore > 0 {
-        LinkLine(symbol: "ellipsis.circle", text: "\(p.uncoveredMore) more not covered") {
-          Task { await model.openPage() }
+      ForEach(p.gaps) { row in
+        LinkLine(symbol: row.symbol, text: row.text) {
+          Task { await model.openPage(section: row.section) }
         }
       }
       if let line = p.notWatching {

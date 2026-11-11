@@ -182,7 +182,7 @@
      "how": "live"
     },
     {
-     "what": "shell profiles",
+     "what": "shell startup files",
      "count": 3,
      "how": "live"
     },
@@ -197,8 +197,23 @@
      "how": "live"
     },
     {
-     "what": "installed packages",
-     "count": 815,
+     "what": "running programs and their connections",
+     "count": 87,
+     "how": "sampled"
+    },
+    {
+     "what": "applications",
+     "count": 214,
+     "how": "hourly"
+    },
+    {
+     "what": "Homebrew packages",
+     "count": 96,
+     "how": "hourly"
+    },
+    {
+     "what": "npm packages",
+     "count": 640,
      "how": "hourly"
     }
    ]
@@ -208,13 +223,14 @@
     "id": "n-long",
     "scope": "this_mac",
     "kind": "check failed",
-    "title": "Places on this Mac that could not be read",
+    "title": "A place on this Mac could not be read",
     "meaning": "Meaning from the program.",
     "advice": "Advice from the program.",
     "count": 1,
     "since": "2026-11-09T22:00:05Z",
     "value_text": "reading stopped: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-    "examples_text": []
+    "examples_text": [],
+    "who": "you"
    }
   ],
   "not_covered_total": 1

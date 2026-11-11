@@ -17,7 +17,7 @@ code=${SOC_STANDIN_EXIT:-0}
 if [ "${1:-}" = watch ]; then
   # Plays `soc watch` as built (src/watch.rs). SOC_STANDIN_WATCH_MODE: normal
   # (default), silent, exit, refuse (store unreadable: envelope, exit 3), elsewhere
-  # (another watcher: envelope, exit 5), problem, garbage, flood. A file at
+  # (another watcher: envelope, exit 5), problem, sample, garbage, flood. A file at
   # SOC_STANDIN_TRIGGER makes it print one `read` line. SOC_STANDIN_ALIVE: seconds
   # between `alive` lines (default 60). Tests pass the mode as
   # `watch --standin-mode <mode>` instead. Like soc, it reads once at start, and
@@ -42,6 +42,7 @@ if [ "${1:-}" = watch ]; then
   read_line 0 0
   case "${SOC_STANDIN_WATCH_MODE:-normal}" in
     problem) echo "{\"format\":1,\"event\":\"problem\",\"at\":\"$(at)\",\"code\":\"place_not_watched\",\"detail_text\":\"/Library/LaunchDaemons: not found\"}" ;;
+    sample) echo "{\"format\":1,\"event\":\"sample\",\"at\":\"$(at)\",\"opened\":1,\"needs_a_look_total\":1}" ;;
     garbage) echo 'not json at all'; echo '{"format":1,"event":"unheard-of"}'; echo '[1,2,3]' ;;
     flood) head -c 300000 /dev/zero | tr '\0' 'x'; echo; echo "{\"format\":1,\"event\":\"alive\",\"at\":\"$(at)\"}" ;;
   esac

@@ -129,9 +129,9 @@ public final class AppModel: ObservableObject {
   /// written it. Returns false, and starts nothing, while that first opening runs. A
   /// failure is a plain line and never changes what the icon says.
   @discardableResult
-  public func openPage(at id: String? = nil) async -> Bool {
+  public func openPage(at id: String? = nil, section: String? = nil) async -> Bool {
     if let page = pagePath, FileManager.default.fileExists(atPath: page.path) {
-      pageFailure = opener(page) ? nil : "Details could not be opened."
+      pageFailure = opener(Self.page(page, at: section)) ? nil : "Details could not be opened."
       Task { _ = await writePage() }
       return true
     }
@@ -142,7 +142,7 @@ public final class AppModel: ObservableObject {
     if out.exitCode != 0 {
       pageFailure = "Details could not be opened. " + Self.viewFailure(out)
     } else if let page = pagePath {
-      if !opener(page) { pageFailure = "Details could not be opened." }
+      if !opener(Self.page(page, at: section)) { pageFailure = "Details could not be opened." }
     } else {
       pageFailure = "Details could not be opened. The program did not say where its page is."
     }
@@ -167,6 +167,15 @@ public final class AppModel: ObservableObject {
     // Every waiter learns the page, whoever started the run.
     if out.exitCode == 0, let page = Self.pagePath(out.stdout) { pagePath = page }
     return out
+  }
+
+  /// The page's file URL, at one of its sections (an anchor soc gives it) when asked.
+  static func page(_ page: URL, at section: String?) -> URL {
+    guard let section, var c = URLComponents(url: page, resolvingAgainstBaseURL: false) else {
+      return page
+    }
+    c.fragment = section
+    return c.url ?? page
   }
 
   /// The page `soc view` printed first: an absolute path to an HTML file, as a file

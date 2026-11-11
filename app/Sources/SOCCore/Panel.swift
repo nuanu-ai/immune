@@ -171,13 +171,15 @@ public struct Panel: Sendable, Equatable {
   public var reason: String?
   /// Every row; the panel shows the first `rowsShown`.
   public var rows: [Row] = []
-  /// "What is watched": one line per kind of place, shown when the row is open.
-  public var watched: [String] = []
+  /// "What is watched", shown when the row is open: what is seen all the time and
+  /// what every hour, each kind with its count.
+  public var watched: [WatchedGroup] = []
   public var watchedOpen = false
-  /// What the program does not cover: quiet rows, never counted, never orange.
-  public var uncovered: [CoverRow] = []
-  /// Not covered beyond the rows shown.
-  public var uncoveredMore = 0
+  /// What the program does not cover, as at most two quiet rows: what the owner can
+  /// fix, and the limits of this version. Never counted, never orange.
+  public var gaps: [GapRow] = []
+  /// A check is running: the headline says so with a moving indicator.
+  public var busy = false
   /// Plain lines about the last Check now or Details.
   public var notes: [String] = []
   /// "Not watching for changes right now: …", one quiet line, or nil.
@@ -244,13 +246,16 @@ public struct Panel: Sendable, Equatable {
     let neverChecked = mac?.state == "not_checked" && (s.needsALookTotal ?? 0) == 0
     if (notComputed && noRun) || neverChecked {
       headline = checking ? "Checking for the first time…" : "Nothing has been checked yet."
+      busy = checking
       if !checking { help = ["Press Check now to take the first look."] }
       return
     }
 
     let lastCheck = mac?.checkedAt ?? s.lastFinishedRun?.finishedAt
     checkedAt = lastCheck.map(Clock.full)
-    checked = Self.how(live: mac?.live, lastCheck: lastCheck, now: now)
+    let parts = (mac?.watched ?? []).filter { $0.count != 0 }
+    let liveKinds = parts.filter { $0.how == "live" || $0.how == "sampled" }.compactMap(\.what)
+    checked = Self.how(live: mac?.live, liveKinds: liveKinds, lastCheck: lastCheck, now: now)
 
     if case .cannotRead(let r) = light {
       headline = "I can't tell: the program's answer is incomplete."
@@ -270,32 +275,63 @@ public struct Panel: Sendable, Equatable {
       headline = "This Mac is watched in part. Nothing needs you."
     }
     // While a check runs, nothing is presented as settled.
-    if checking { headline = "Checking this Mac…" }
-
-    watched = (mac?.watched ?? []).map {
-      Inert.text($0.what ?? "", limit: 80) + ": " + ($0.count.map(String.init) ?? "?") + " · "
-        + ($0.how == "live" ? "live" : "every hour")
+    if checking {
+      headline = "Checking this Mac…"
+      busy = true
     }
-    // This Mac's own gaps first: the reason it is watched only in part.
+
+    watched = Self.groups(parts, live: mac?.live == true)
     let list = s.notCovered ?? []
-    let all = list.filter { $0.scope == "this_mac" } + list.filter { $0.scope != "this_mac" }
-    let totalUncovered = max(s.notCoveredTotal ?? 0, all.count)
-    let room = totalUncovered > Self.uncoveredShown ? Self.uncoveredShown - 1 : Self.uncoveredShown
-    uncovered = all.prefix(room).enumerated().map { CoverRow(id: $0.offset, item: $0.element) }
-    uncoveredMore = totalUncovered - uncovered.count
+    let yours = list.filter { $0.who == "you" }.count
+    let limits = list.count - yours
+    if yours > 0 {
+      gaps.append(
+        GapRow(
+          text: yours == 1 ? "You can fix 1 thing" : "You can fix \(yours) things",
+          symbol: "wrench.and.screwdriver", section: "you-can-fix"))
+    }
+    if limits > 0 {
+      gaps.append(
+        GapRow(
+          text: (limits == 1 ? "1 limit" : "\(limits) limits") + " of this version, nothing to do",
+          symbol: "info.circle", section: "limits"))
+    }
   }
 
-  /// Rows for what is not covered, the "more" line included.
-  public static let uncoveredShown = 3
+  /// What is watched in two groups: seen all the time (live, or sampled) and checked
+  /// every hour. Without a live watcher everything is in the hourly group.
+  static func groups(_ parts: [WatchedPart], live: Bool) -> [WatchedGroup] {
+    // soc's own words as they are: no capitals added, so "npm" stays "npm".
+    func line(_ p: WatchedPart) -> String {
+      Inert.text(p.what ?? "", limit: 80) + ": " + (p.count.map(String.init) ?? "?")
+    }
+    let always = live ? parts.filter { $0.how == "live" || $0.how == "sampled" } : []
+    let hourly = parts.filter { p in !always.contains(p) }
+    return [
+      WatchedGroup(title: "All the time", lines: always.map(line)),
+      WatchedGroup(title: "Every hour", lines: hourly.map(line)),
+    ].filter { !$0.lines.isEmpty }
+  }
 
-  /// The second line: how this Mac is watched and when it was last fully checked.
-  /// Live watching is claimed only when soc says so.
-  static func how(live: Bool?, lastCheck: Date?, now: Date) -> String {
+  /// The second line: what is seen at once, what waits for the hourly check, and when
+  /// the last full check was. Live watching is claimed only when soc says so, and only
+  /// for the kinds soc names as watched live.
+  static func how(live: Bool?, liveKinds: [String] = [], lastCheck: Date?, now: Date) -> String {
     let last = lastCheck.map { Clock.ago($0, now: now) }
     switch live {
     case true?:
-      return "Changes show within seconds. "
-        + (last.map { "Full check hourly, last \($0)." } ?? "No full check has finished yet.")
+      let short = [
+        ("startup items", "startup"), ("shell startup files", "shell"), ("SSH files", "SSH"),
+      ]
+      .filter { liveKinds.contains($0.0) }.map(\.1)
+      let named =
+        short.isEmpty
+        ? "some"
+        : short.count == 1
+          ? short[0] : short.dropLast().joined(separator: ", ") + " and " + short.last!
+      return named.prefix(1).uppercased() + named.dropFirst() + " changes show within seconds. "
+        + (last.map { "Everything else is checked every hour, last \($0)." }
+          ?? "Everything else is checked every hour; no full check has finished yet.")
     case false?:
       return "Only the hourly check is running"
         + (last.map { ", last \($0)." } ?? "; no full check has finished yet.")
@@ -306,11 +342,11 @@ public struct Panel: Sendable, Equatable {
 
   /// The panel as plain text, line by line, in the order the panel shows it.
   public var lines: [String] {
-    var out = ["[\(light.panelSymbol)] " + headline]
+    var out = ["[\(light.panelSymbol)] " + headline + (busy ? " (spinning)" : "")]
     if let checked { out.append("    " + checked) }
     out += help.map { "    " + $0 }
     if let reason { out.append("    (small) " + reason) }
-    if !shown.isEmpty || !watched.isEmpty || !uncovered.isEmpty { out.append("----") }
+    if !shown.isEmpty || !watched.isEmpty || !gaps.isEmpty { out.append("----") }
     for r in shown {
       let mark = r.strong ? "!" : r.quiet ? "·" : "•"
       out.append(mark + " " + (r.when.map { $0 + " — " } ?? "") + r.title)
@@ -334,10 +370,11 @@ public struct Panel: Sendable, Equatable {
     if more > 0 { out.append("\(more) more in Details") }
     if !watched.isEmpty {
       out.append((watchedOpen ? "▾ " : "▸ ") + "What is watched")
-      if watchedOpen { out += watched.map { "    " + $0 } }
+      if watchedOpen {
+        for g in watched { out += ["    " + g.title] + g.lines.map { "      " + $0 } }
+      }
     }
-    out += uncovered.map { "○ " + $0.text + "  ›" }
-    if uncoveredMore > 0 { out.append("○ \(uncoveredMore) more not covered  ›") }
+    out += gaps.map { "○ " + $0.text + "  › #" + $0.section }
     if let notWatching { out.append(notWatching) }
     if let notificationsOff { out.append(notificationsOff + "  [ Open Settings ]") }
     out += notes
@@ -347,26 +384,20 @@ public struct Panel: Sendable, Equatable {
   }
 }
 
-/// One thing the program does not cover, as one quiet row.
-public struct CoverRow: Sendable, Equatable, Identifiable {
-  public let id: Int
-  public let item: Uncovered
+/// A group of "What is watched": its header and one line per kind.
+public struct WatchedGroup: Sendable, Equatable {
+  public let title: String
+  public let lines: [String]
+}
 
-  /// soc's title, inert, with how many when more than one.
-  public var text: String {
-    Inert.text(item.title ?? "", limit: 200)
-      + ((item.count ?? 0) > 1 ? " (\(item.count ?? 0))" : "")
-  }
-
-  public var symbol: String {
-    switch item.scope {
-    case "this_mac": "desktopcomputer"
-    case "projects": "folder"
-    case "servers": "server.rack"
-    case "threats": "list.bullet.rectangle"
-    default: "circle.dashed"
-    }
-  }
+/// One quiet row about what the program does not cover, leading to its section of
+/// the program's page.
+public struct GapRow: Sendable, Equatable, Identifiable {
+  public let text: String
+  public let symbol: String
+  /// The anchor of the page's section.
+  public let section: String
+  public var id: String { section }
 }
 
 /// Times for the owner. Relative only for the past; a time in the future is shown

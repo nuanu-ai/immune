@@ -183,7 +183,7 @@
      "how": "live"
     },
     {
-     "what": "shell profiles",
+     "what": "shell startup files",
      "count": 3,
      "how": "live"
     },
@@ -198,8 +198,23 @@
      "how": "live"
     },
     {
-     "what": "installed packages",
-     "count": 815,
+     "what": "running programs and their connections",
+     "count": 87,
+     "how": "sampled"
+    },
+    {
+     "what": "applications",
+     "count": 214,
+     "how": "hourly"
+    },
+    {
+     "what": "Homebrew packages",
+     "count": 96,
+     "how": "hourly"
+    },
+    {
+     "what": "npm packages",
+     "count": 640,
      "how": "hourly"
     }
    ]
@@ -209,7 +224,7 @@
     "id": "n-feed",
     "scope": "threats",
     "kind": "threat list not downloaded",
-    "title": "The list of exploited vulnerabilities could not be downloaded",
+    "title": "The vulnerability list could not be downloaded; it is tried again",
     "meaning": "Meaning from the program.",
     "advice": "Advice from the program.",
     "count": 1,

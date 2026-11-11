@@ -257,7 +257,7 @@ public final class Watcher: ObservableObject {
     case .watching:
       sawWatching = true
       state = .watching
-    case .read:
+    case .read, .sample:
       sawWatching = true
       state = .watching
       onRead()

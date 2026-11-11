@@ -77,6 +77,9 @@ public struct Uncovered: Sendable, Equatable {
   public var count: Int?
   public var since: Date?
   public var valueText: String?
+  /// "you" when the owner can change it; anything else, or missing, is nothing for
+  /// him to do (a limit of this version, or it resolves by itself).
+  public var who: String?
 }
 
 /// One thing that needs a look: a finding the owner can answer. (Health items have
@@ -255,6 +258,8 @@ public enum WatchEvent: Sendable, Equatable {
   case watching(places: Int?)
   /// Re-read the watched places after something changed.
   case read
+  /// A sample of running programs opened a finding.
+  case sample
   case alive
   /// Something it survived.
   case problem(code: String?)
@@ -308,6 +313,7 @@ public enum Decoding {
     switch j["event"].string {
     case "watching": return .watching(places: j["places"].count)
     case "read": return .read
+    case "sample": return .sample
     case "alive": return .alive
     // `soc watch` as built puts the code beside `event`; a nested `problem` object is
     // read too, so either shape is understood.
@@ -375,7 +381,8 @@ public enum Decoding {
           Uncovered(
             id: $0["id"].string, scope: $0["scope"].string, kind: $0["kind"].string,
             title: $0["title"].string, meaning: $0["meaning"].string, advice: $0["advice"].string,
-            count: $0["count"].count, since: $0["since"].date, valueText: $0["value_text"].string)
+            count: $0["count"].count, since: $0["since"].date, valueText: $0["value_text"].string,
+            who: $0["who"].string)
         }
       },
       notCoveredTotal: r["not_covered_total"].count)

@@ -1125,7 +1125,7 @@
      "how": "live"
     },
     {
-     "what": "shell profiles",
+     "what": "shell startup files",
      "count": 3,
      "how": "live"
     },
@@ -1140,8 +1140,23 @@
      "how": "live"
     },
     {
-     "what": "installed packages",
-     "count": 815,
+     "what": "running programs and their connections",
+     "count": 87,
+     "how": "sampled"
+    },
+    {
+     "what": "applications",
+     "count": 214,
+     "how": "hourly"
+    },
+    {
+     "what": "Homebrew packages",
+     "count": 96,
+     "how": "hourly"
+    },
+    {
+     "what": "npm packages",
+     "count": 640,
      "how": "hourly"
     }
    ]
@@ -1151,13 +1166,14 @@
     "id": "n-servers",
     "scope": "servers",
     "kind": "servers not read",
-    "title": "Servers this program does not read by itself",
+    "title": "Servers are read only when you run the server check",
     "meaning": "Meaning from the program.",
     "advice": "Advice from the program.",
     "count": 6,
     "since": "2026-11-09T22:00:05Z",
     "value_text": null,
-    "examples_text": []
+    "examples_text": [],
+    "who": "you"
    }
   ],
   "not_covered_total": 1

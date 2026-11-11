@@ -203,20 +203,27 @@ struct FalseCalm {
     #expect(p.light == .attention(1))
     #expect(p.headline == "1 thing changed on this Mac.")
     #expect(p.rows.count == 1)
-    #expect(p.checked == "Changes show within seconds. No full check has finished yet.")
+    #expect(
+      p.checked
+        == "Startup, shell and SSH changes show within seconds. Everything else is checked every hour; no full check has finished yet."
+    )
     #expect(p.help.isEmpty)
     let none = panel(
       edited("watcher-only.json", removing: ["result", "needs_a_look_total"], setting: 0)
         .withList([]))
     #expect(none.light == .nothingToReport)
-    #expect(none.checked == "Changes show within seconds. No full check has finished yet.")
+    #expect(
+      none.checked
+        == "Startup, shell and SSH changes show within seconds. Everything else is checked every hour; no full check has finished yet."
+    )
     let going = panel(edited("watcher-only.json", removing: ["result", "running"], setting: true))
     #expect(going.headline == "Checking this Mac…")
     #expect(going.rows.count == 1)
     // A finished check still says when.
     #expect(
       panel(output("status.json")).checked?.hasPrefix(
-        "Changes show within seconds. Full check hourly, last ")
+        "Startup, shell and SSH changes show within seconds. Everything else is checked every hour, last "
+      )
         == true)
   }
 
@@ -443,29 +450,50 @@ struct PanelPromises {
     #expect(p.total == 0)
     #expect(p.headline == "This Mac is watched. Nothing needs you.")
     #expect(Light.menuSymbol(p.light, worst: p.worst, urgent: p.urgent) == "checkmark.shield")
-    // Five not covered: two rows and one line for the rest, quiet, after the state.
-    #expect(p.uncovered.count == 2)
-    #expect(p.uncoveredMore == 3)
-    #expect(p.lines.contains("○ Servers this program does not read by itself (6)  ›"))
-    #expect(p.lines.contains("○ 3 more not covered  ›"))
-    #expect(!p.lines.contains { $0.contains("Cannot judge") })
+    // Five not covered: two quiet rows, by who can act, after the state.
+    #expect(
+      p.gaps == [
+        GapRow(
+          text: "You can fix 2 things", symbol: "wrench.and.screwdriver", section: "you-can-fix"),
+        GapRow(
+          text: "3 limits of this version, nothing to do", symbol: "info.circle", section: "limits"),
+      ])
+    #expect(!p.lines.contains { $0.contains("Cannot judge") || $0.contains("more not covered") })
   }
 
-  @Test("What is not covered never raises the icon, however much there is")
-  func notCoveredNeverRaises() {
+  @Test(
+    "Never more than two rows below, however much is not covered; a `you` item never counts beside the icon"
+  )
+  func twoRowsAtMost() {
     let many = (1...40).map { i -> [String: Any] in
       [
         "id": "n\(i)", "scope": "servers", "title": "Something not covered \(i)", "count": 9,
-        "since": "2026-11-01T00:00:00Z",
+        "who": i % 2 == 0 ? "you" : "nothing",
       ]
     }
-    let o = edited("quiet.json", removing: ["result", "not_covered"], setting: many)
-    let p = panel(o)
+    let p = panel(edited("quiet.json", removing: ["result", "not_covered"], setting: many))
     #expect(p.light == .nothingToReport)
+    #expect(p.total == 0)
     #expect(!p.urgent)
-    #expect(p.uncovered.count == 2)
-    #expect(p.uncoveredMore == 38)
-    #expect(p.uncovered.allSatisfy { $0.symbol == "server.rack" })
+    #expect(
+      p.gaps.map(\.text) == ["You can fix 20 things", "20 limits of this version, nothing to do"])
+    let one = panel(
+      edited(
+        "quiet.json", removing: ["result", "not_covered"],
+        setting: [["id": "a", "who": "you"], ["id": "b", "who": "nothing"]]))
+    #expect(
+      one.gaps.map(\.text) == ["You can fix 1 thing", "1 limit of this version, nothing to do"])
+    #expect(panel(output("quiet-limits.json")).gaps.map(\.section) == ["limits"])
+    let none = panel(edited("quiet.json", removing: ["result", "not_covered"], setting: [Any]()))
+    #expect(none.gaps.isEmpty)
+  }
+
+  @Test("A missing or unknown `who` is not the owner's: it is a limit, never 'you can fix'")
+  func whoMissing() {
+    let items: [[String: Any]] = [["id": "a"], ["id": "b", "who": "You"], ["id": "c", "who": 1]]
+    let p = panel(edited("quiet.json", removing: ["result", "not_covered"], setting: items))
+    #expect(p.gaps.map(\.section) == ["limits"])
+    #expect(p.gaps.first?.text == "3 limits of this version, nothing to do")
   }
 
   @Test("A finding outranks everything: whatever this Mac's state, one finding is the headline")
@@ -498,48 +526,12 @@ struct PanelPromises {
     #expect(panel(never).headline == "Nothing has been checked yet.")
   }
 
-  @Test("Watched in part with nothing changed is still calm, its reason row first")
+  @Test("Watched in part with nothing changed is still calm, and what the owner can fix is first")
   func inPart() {
     let p = panel(output("watched-in-part.json"))
     #expect(p.light == .nothingToReport)
     #expect(p.headline == "This Mac is watched in part. Nothing needs you.")
-    #expect(p.uncovered.first?.item.scope == "this_mac")
-    #expect(p.uncovered.first?.text == "Places on this Mac that could not be read (2)")
-    // The order otherwise is as served.
-    let served = panel(quiet()).uncovered.map { $0.item.id }
-    #expect(served == ["n-servers", "n-locks"])
-  }
-
-  @Test(
-    "Not-covered rows: this Mac's own first, soc's total counted, counts only above one, text inert"
-  )
-  func coverRows() {
-    let items: [[String: Any]] = [
-      ["id": "a", "scope": "servers", "title": "Servers", "count": 6],
-      ["id": "b", "scope": "threats", "title": "Threats \u{202E}x", "count": 1],
-      ["id": "c", "scope": "this_mac", "title": "Places", "count": 2],
-    ]
-    var o = edited("quiet.json", removing: ["result", "not_covered"], setting: items)
-    var root = (try? JSONSerialization.jsonObject(with: o.stdout)) as? [String: Any] ?? [:]
-    var r = root["result"] as? [String: Any] ?? [:]
-    r["not_covered_total"] = 3
-    root["result"] = r
-    o.stdout = (try? JSONSerialization.data(withJSONObject: root)) ?? Data()
-    let p = panel(o)
-    #expect(p.uncovered.map { $0.item.id } == ["c", "a", "b"])
-    #expect(p.uncovered.map(\.text) == ["Places (2)", "Servers (6)", "Threats \\u{202E}x"])
-    #expect(p.uncoveredMore == 0)
-    // soc counts more than it lists: the rest is one line.
-    r["not_covered_total"] = 9
-    root["result"] = r
-    o.stdout = (try? JSONSerialization.data(withJSONObject: root)) ?? Data()
-    let more = panel(o)
-    #expect(more.uncovered.count == 2)
-    #expect(more.uncoveredMore == 7)
-    // Nothing watched said: no "What is watched" row.
-    let bare = panel(quiet(removing: ["result", "this_mac", "watched"]))
-    #expect(bare.light == .nothingToReport)
-    #expect(!bare.lines.contains { $0.contains("What is watched") })
+    #expect(p.gaps.map(\.section) == ["you-can-fix", "limits"])
   }
 
   @Test("The last full check is soc's this_mac.checked_at, and the last finished run without it")
@@ -555,52 +547,120 @@ struct PanelPromises {
     #expect(panel(noMac).checked == "Last full check " + Clock.ago(finished!, now: Date()) + ".")
   }
 
-  @Test("The second line never claims live watching unless soc says it watches live")
+  @Test(
+    "The second line names what is seen at once only from what soc watches live, and when the last full check was"
+  )
   func liveLine() {
     let now = Date()
     let at = now.addingTimeInterval(-300)
-    let live = Panel.how(live: true, lastCheck: at, now: now)
-    #expect(live.hasPrefix("Changes show within seconds. Full check hourly, last "))
+    let ago = Clock.ago(at, now: now)
+    let three = ["startup items", "shell startup files", "SSH files", "git hooks in projects"]
+    #expect(
+      Panel.how(live: true, liveKinds: three, lastCheck: at, now: now)
+        == "Startup, shell and SSH changes show within seconds. Everything else is checked every hour, last \(ago)."
+    )
+    #expect(
+      Panel.how(live: true, liveKinds: ["SSH files"], lastCheck: at, now: now).hasPrefix(
+        "SSH changes show within seconds. "))
+    #expect(
+      Panel.how(
+        live: true, liveKinds: ["shell startup files", "SSH files"], lastCheck: at, now: now
+      )
+      .hasPrefix("Shell and SSH changes show within seconds. "))
+    #expect(
+      Panel.how(live: true, liveKinds: ["git hooks in projects"], lastCheck: nil, now: now)
+        == "Some changes show within seconds. Everything else is checked every hour; no full check has finished yet."
+    )
     for off in [
-      Panel.how(live: false, lastCheck: at, now: now),
-      Panel.how(live: nil, lastCheck: at, now: now),
+      Panel.how(live: false, liveKinds: three, lastCheck: at, now: now),
+      Panel.how(live: nil, liveKinds: three, lastCheck: at, now: now),
     ] {
       #expect(!off.contains("seconds"))
-      #expect(!off.contains("live"))
     }
     #expect(
-      Panel.how(live: false, lastCheck: at, now: now).hasPrefix(
-        "Only the hourly check is running, last "))
-    #expect(Panel.how(live: nil, lastCheck: at, now: now).hasPrefix("Last full check "))
+      Panel.how(live: false, lastCheck: at, now: now)
+        == "Only the hourly check is running, last \(ago).")
+    #expect(Panel.how(live: nil, lastCheck: at, now: now) == "Last full check \(ago).")
     #expect(
       Panel.how(live: false, lastCheck: nil, now: now)
         == "Only the hourly check is running; no full check has finished yet.")
-    #expect(
-      Panel.how(live: true, lastCheck: nil, now: now)
-        == "Changes show within seconds. No full check has finished yet.")
     #expect(Panel.how(live: nil, lastCheck: nil, now: now) == "No full check has finished yet.")
     #expect(
       panel(output("live-off.json")).checked?.hasPrefix("Only the hourly check is running") == true)
-    #expect(panel(quiet()).checked?.hasPrefix("Changes show within seconds.") == true)
+    #expect(
+      panel(quiet()).checked?.hasPrefix("Startup, shell and SSH changes show within seconds.")
+        == true)
   }
 
-  @Test("While a check runs the headline says so and presents nothing as settled")
+  @Test(
+    "While a check runs the headline says so, with something that moves, and nothing as settled")
   func checkingHeadline() {
-    #expect(panel(output("running.json")).headline == "Checking this Mac…")
-    #expect(panel(quiet(), checking: true).headline == "Checking this Mac…")
-    #expect(panel(output("status.json"), checking: true).headline == "Checking this Mac…")
+    for p in [
+      panel(output("running.json")), panel(quiet(), checking: true),
+      panel(output("status.json"), checking: true),
+    ] {
+      #expect(p.headline == "Checking this Mac…")
+      #expect(p.busy)
+    }
+    #expect(panel(edited("no-store.json", removing: ["result", "running"], setting: true)).busy)
+    #expect(!panel(quiet()).busy)
+    #expect(!panel(output("no-store.json")).busy)
   }
 
-  @Test("What is watched lists each kind with its count and how, and opens in the panel")
+  @Test(
+    "What is watched opens in place in two groups, all the time and every hour, each kind with its count"
+  )
   func whatIsWatched() {
-    let closed = panel(quiet())
-    #expect(closed.watched.contains("startup items: 14 · live"))
-    #expect(closed.watched.contains("installed packages: 815 · every hour"))
-    #expect(closed.lines.contains("▸ What is watched"))
-    #expect(!closed.lines.contains("    startup items: 14 · live"))
+    let p = panel(quiet())
+    #expect(
+      p.watched == [
+        WatchedGroup(
+          title: "All the time",
+          lines: [
+            "startup items: 14", "shell startup files: 3", "SSH files: 4",
+            "git hooks in projects: 31", "running programs and their connections: 87",
+          ]),
+        WatchedGroup(
+          title: "Every hour",
+          lines: ["applications: 214", "Homebrew packages: 96", "npm packages: 640"]),
+      ])
+    #expect(p.lines.contains("▸ What is watched"))
+    #expect(!p.lines.contains("    All the time"))
     let open = Panel.of(Interpret.reading(from: quiet()), now: Date(), watchedOpen: true)
     #expect(open.lines.contains("▾ What is watched"))
-    #expect(open.lines.contains("    startup items: 14 · live"))
+    #expect(open.lines.contains("    All the time"))
+    #expect(open.lines.contains("      startup items: 14"))
+    // Sampled running programs sit in the group; the second line names only file kinds.
+    #expect(p.checked?.hasPrefix("Startup, shell and SSH changes show within seconds.") == true)
+    #expect(p.checked?.contains("running") == false)
+    // Without a live watcher, one group: every hour.
+    let off = panel(output("live-off.json"))
+    #expect(off.watched.map(\.title) == ["Every hour"])
+    #expect(off.watched.first?.lines.count == 7)
+    // Sampled kinds are seen all the time; a kind with nothing in it is left out.
+    let parts = [
+      WatchedPart(what: "running programs", count: 12, how: "sampled"),
+      WatchedPart(what: "empty", count: 0, how: "hourly"),
+    ]
+    #expect(
+      Panel.groups(parts.filter { $0.count != 0 }, live: true).map(\.title) == ["All the time"])
+    let zero = quiet(
+      removing: ["result", "this_mac", "watched"],
+      setting: [
+        ["what": "applications", "count": 0, "how": "hourly"],
+        ["what": "SSH files", "count": 2, "how": "live"],
+      ])
+    #expect(panel(zero).watched == [WatchedGroup(title: "All the time", lines: ["SSH files: 2"])])
+    // Only kinds soc watches live are named in the second line, and its words stay inert.
+    let mixed = quiet(
+      removing: ["result", "this_mac", "watched"],
+      setting: [
+        ["what": "startup items", "count": 3, "how": "hourly"],
+        ["what": "SSH files", "count": 2, "how": "live"],
+        ["what": "odd\u{202E}kind", "count": 1, "how": "hourly"],
+      ])
+    #expect(panel(mixed).checked?.hasPrefix("SSH changes show within seconds. ") == true)
+    #expect(panel(mixed).watched.last?.lines.last == "odd\\u{202E}kind: 1")
   }
 
   @Test("When the program cannot be read, the panel says what the owner can do")
@@ -732,13 +792,8 @@ struct PanelPromises {
     ]
     let rows = panel(looking(kinds.map { lookItem(id: "f" + String($0.count), kind: $0) })).rows
     #expect(Set(rows.map(\.symbol)).count == 6)
-    let scopes = ["this_mac", "projects", "servers", "threats", "unknown"]
-    let cover = scopes.enumerated().map {
-      CoverRow(id: $0.offset, item: Uncovered(scope: $0.element))
-    }
-    #expect(Set(cover.map(\.symbol)).count == 5)
     let names =
-      rows.map(\.symbol) + cover.map(\.symbol)
+      rows.map(\.symbol) + panel(quiet()).gaps.map(\.symbol)
       + ["eye", "chevron.down", "chevron.right", "ellipsis.circle", "bell.slash", "pause.circle"]
       + [Light.nothingToReport, .attention(1), .cannotRead("x")].flatMap {
         [$0.symbol, $0.panelSymbol, Light.menuSymbol($0, worst: "critical")]
@@ -764,8 +819,10 @@ struct PanelPromises {
     // notification settings for itself.
     let main = try String(
       contentsOf: dir.appendingPathComponent("main.swift"), encoding: .utf8)
-    #expect(opens == 2)
-    #expect(main.contains("model.opener = { page in NSWorkspace.shared.open(page) }"))
+    // The page by the system's opener, or by the browser when it carries a section.
+    #expect(opens == 3)
+    #expect(main.contains("return NSWorkspace.shared.open(page)"))
+    #expect(main.contains("[page], withApplicationAt: browser"))
     #expect(main.contains("guard let url = Announcer.settingsURL("))
     #expect(main.contains("NSWorkspace.shared.open(url)"))
   }
@@ -1230,6 +1287,22 @@ struct Page {
     #expect(await click.value)
     #expect(opened == [page])
     #expect(soc.callsSoFar.filter { $0.first == "view" }.count == 1)
+  }
+
+  @Test("A row below opens the page at its section, by the anchor soc gives it")
+  func section() async throws {
+    let (page, out) = try written()
+    let model = AppModel(soc: GatedSoc(status: quiet(), view: out, gated: []))
+    var opened: [URL] = []
+    model.opener = {
+      opened.append($0)
+      return true
+    }
+    await model.openPage(section: "you-can-fix")
+    await model.openPage(section: "limits")
+    await model.openPage()
+    #expect(opened.map(\.fragment) == ["you-can-fix", "limits", nil])
+    #expect(opened.allSatisfy { $0.isFileURL && $0.path == page.path })
   }
 
   @Test("Only an absolute path to an HTML file that soc printed first is opened")
@@ -1861,6 +1934,8 @@ let watchingLine =
   #"{"format":1,"event":"watching","at":"2026-11-10T10:00:00Z","places":12,"cannot_see":["a","b","c"]}"#
 let readLine =
   #"{"format":1,"event":"read","at":"2026-11-10T10:00:00Z","new":1,"changed":0,"gone":0,"opened":1,"needs_a_look_total":1}"#
+let sampleLine =
+  #"{"format":1,"event":"sample","at":"2026-11-10T10:00:30Z","opened":1,"needs_a_look_total":2}"#
 let aliveLine = #"{"format":1,"event":"alive","at":"2026-11-10T10:00:00Z"}"#
 
 @Suite("The watcher is kept running, and the panel says plainly when it is not")
@@ -1870,6 +1945,7 @@ struct Watching {
   func realShapes() {
     #expect(Decoding.watchLine(Data(watchingLine.utf8)) == .watching(places: 12))
     #expect(Decoding.watchLine(Data(readLine.utf8)) == .read)
+    #expect(Decoding.watchLine(Data(sampleLine.utf8)) == .sample)
     let flat =
       #"{"format":1,"event":"problem","at":"2026-11-10T10:00:00Z","code":"read_failed","detail_text":"x"}"#
     let nested =
@@ -1893,6 +1969,23 @@ struct Watching {
     #expect(h.watcher.notWatching == nil)
     h.launcher.say(readLine)
     #expect(h.reads == 1)
+  }
+
+  @Test("A sample line, a running program that opened a finding, refreshes the status at once")
+  func sampleRefreshes() async {
+    var reads = 0
+    let watcher = Watcher(
+      launcher: ProcessWatchLauncher(
+        executable: fixtures.appendingPathComponent("soc-standin"),
+        environment: ["SOC_STANDIN_WATCH_MODE": "sample"]),
+      arguments: ["watch"], onRead: { reads += 1 }, schedule: { _, _ in })
+    watcher.start()
+    defer { watcher.stop() }
+    // One refresh for the read at start, one for the sample.
+    await waitUntil("the sample line") { reads >= 2 }
+    #expect(reads == 2)
+    #expect(watcher.state == .watching)
+    #expect(watcher.notWatching == nil)
   }
 
   @Test("A watcher that stops is started again with a growing delay, and the panel says so")
@@ -2176,7 +2269,7 @@ struct RealSoc {
     #expect(p.light == .attention(before + 1))
     #expect(p.rows.count == before + 1)
     // No full check has finished, and live watching is claimed only if soc says so.
-    #expect(p.checked?.contains("No full check has finished yet.") == true)
+    #expect(p.checked?.lowercased().contains("no full check has finished yet.") == true)
     #expect(p.checked?.contains("within seconds") == (status.thisMac?.live == true))
 
     watcher.stop()
