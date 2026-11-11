@@ -895,6 +895,13 @@ pub fn order(items: &mut [Item]) {
     });
 }
 
+/// Whether an item is urgent, what the app tells the owner about at once: a finding both bad
+/// and sure, its severity high or critical and its confidence medium or high. The program's
+/// health has no confidence and is never urgent. The app shows this and decides nothing itself.
+pub fn urgent(severity: &str, confidence: Option<&str>) -> bool {
+    matches!(severity, "high" | "critical") && matches!(confidence, Some("medium" | "high"))
+}
+
 /// An item in the machine-readable form. Text from a source is only in `_text` fields.
 pub fn item_json(i: &Item) -> Value {
     let iso = |t: Option<i64>| t.map(crate::view::iso);
@@ -903,6 +910,7 @@ pub fn item_json(i: &Item) -> Value {
         "type": i.kind_of,
         "kind": i.kind,
         "severity": i.severity,
+        "urgent": urgent(i.severity, i.confidence),
         "state": i.state,
         "first_seen": iso(i.first_seen),
         "last_seen": iso(i.last_seen),
@@ -942,6 +950,7 @@ pub fn catalogue_json() -> Value {
                 "technique": r.technique,
                 "severity": r.severity,
                 "confidence": r.confidence,
+                "urgent": urgent(r.severity, Some(r.confidence)),
                 "finds": r.finds,
                 "title": r.words.title,
                 "meaning": r.words.meaning,
@@ -955,6 +964,7 @@ pub fn catalogue_json() -> Value {
             json!({
                 "kind": h.kind,
                 "severity": h.severity,
+                "urgent": urgent(h.severity, None),
                 "title": h.words.title,
                 "meaning": h.words.meaning,
                 "advice": h.words.advice,
@@ -970,7 +980,25 @@ pub fn catalogue_json() -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::place;
+    use super::{CONFIDENCES, SEVERITIES, place, urgent};
+
+    #[test]
+    fn only_a_finding_both_bad_and_sure_is_urgent_and_the_programs_health_never_is() {
+        // The app tells the owner at once about what is urgent: a mild or unsure finding must
+        // not, a bad and sure one must, and the program's own health never does.
+        for severity in SEVERITIES {
+            for confidence in CONFIDENCES {
+                let bad = severity == "high" || severity == "critical";
+                let sure = confidence == "medium" || confidence == "high";
+                assert_eq!(
+                    urgent(severity, Some(confidence)),
+                    bad && sure,
+                    "{severity} {confidence}"
+                );
+            }
+            assert!(!urgent(severity, None), "{severity}");
+        }
+    }
 
     #[test]
     fn where_a_thing_is_reads_as_a_person_knows_it() {

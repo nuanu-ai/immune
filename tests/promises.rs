@@ -8252,6 +8252,12 @@ fn sample_findings(s: &Sample, change: fn(&Watch), tag: &str) -> (usize, usize) 
     w.run();
     let open = open_findings(&w.store(), &[]);
     let n = (open.iter().filter(|f| f.1 == s.rule).count(), open.len());
+    // Each item the app is given says whether it is urgent, as its levels say.
+    for item in status_json(&w.store())["needs_a_look"].as_array().unwrap() {
+        let bad = ["high", "critical"].contains(&item["severity"].as_str().unwrap());
+        let sure = ["medium", "high"].contains(&item["confidence"].as_str().unwrap_or(""));
+        assert_eq!(item["urgent"], bad && sure, "{item}");
+    }
     // A file left unreadable would outlive the test's folder.
     if w.home().join(".zprofile").exists() {
         chmod(&w.home().join(".zprofile"), 0o644);
@@ -8297,6 +8303,11 @@ fn every_rule_has_an_id_plain_wording_levels_and_two_samples_that_hold() {
         }
         let has = |list: &str, v: &serde_json::Value| levels[list].as_array().unwrap().contains(v);
         assert!(has("severity", &rule["severity"]), "{rule}");
+        // Urgent, what the app tells the owner about at once, is what the levels say: bad and
+        // sure; the program's health, which has no confidence, never.
+        let bad = ["high", "critical"].contains(&rule["severity"].as_str().unwrap());
+        let sure = ["medium", "high"].contains(&rule["confidence"].as_str().unwrap_or(""));
+        assert_eq!(rule["urgent"], bad && sure, "{rule}");
         if rule.get("id").is_some() {
             assert!(has("confidence", &rule["confidence"]), "{rule}");
             assert!(["event", "state"].contains(&rule["finds"].as_str().unwrap()));

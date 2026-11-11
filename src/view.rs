@@ -1721,7 +1721,14 @@ fn changes(conn: &Connection, out: &mut String) -> Out {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
             })?
             .collect::<rusqlite::Result<_>>()?;
-        let not_repeated: i64 = not_repeated_stmt.query_row([run_id], |r| r.get(0))?;
+        // A watcher's reading, `soc watch`, reads only the watched places and never finishes
+        // a run: it is shown as a watcher's reading, not as a run that did not finish.
+        let watcher = run_id.starts_with(crate::watch::RUN_PREFIX);
+        let not_repeated: i64 = if watcher {
+            0
+        } else {
+            not_repeated_stmt.query_row([run_id], |r| r.get(0))?
+        };
         let partial = not_full.iter().any(|r| r.2 == "partial" && r.4);
         let nothing = not_repeated > 0 || not_full.iter().any(|r| r.2 == "none");
 
@@ -1749,7 +1756,7 @@ fn changes(conn: &Connection, out: &mut String) -> Out {
         if nothing {
             unknown.push("changes unknown where nothing was read");
         }
-        let summary = if !finished {
+        let summary = if !finished && !watcher {
             "did not finish, changes unknown".to_string()
         } else if !unknown.is_empty() {
             format!("{counts}; {}", unknown.join(", "))
@@ -1757,6 +1764,11 @@ fn changes(conn: &Connection, out: &mut String) -> Out {
             counts
         } else {
             "no changes".to_string()
+        };
+        let summary = if watcher {
+            format!("watcher's reading of the watched places: {summary}")
+        } else {
+            summary
         };
 
         write!(

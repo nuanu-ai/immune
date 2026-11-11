@@ -14,6 +14,7 @@ mod brew;
 mod checkouts;
 mod codesign;
 mod findings;
+mod fsevents;
 mod icu;
 mod indicators;
 mod integrity;
@@ -34,6 +35,7 @@ mod threats;
 mod tools;
 mod traces;
 mod view;
+mod watch;
 mod watched;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -60,7 +62,9 @@ const USAGE: &str = "usage: soc run [--store <path>] [--machine-name <name>] [--
        soc servers [--store <path>] [--tailscale <path>]
        soc view [--store <path>] [--no-open]
        soc owner [<name> retired|not-mine --reason <text> | <name> withdraw]
-                 [--store <path>] [--tailscale <path>]";
+                 [--store <path>] [--tailscale <path>]
+       soc watch [--store <path>] [--system-root <dir>]
+                 exits 5 when another watcher has the store";
 
 enum Cmd {
     Run(Args),
@@ -70,6 +74,7 @@ enum Cmd {
     Owner(OwnerArgs),
     Findings(FindingsArgs),
     Finding(FindingArgs),
+    Watch(watch::WatchArgs),
 }
 
 /// `soc findings`: open findings, or every one with `--all`.
@@ -359,6 +364,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
                 answer,
             }))
         }
+        "watch" => watch::parse(it).map(Cmd::Watch),
         _ => Err(format!("unknown command: {cmd}")),
     }
 }
@@ -428,13 +434,16 @@ fn main() -> ExitCode {
     let cmd = match parse_args(args.iter().cloned()) {
         Ok(cmd) => cmd,
         Err(e) => {
-            if args.iter().any(|a| a == "--json") {
-                let op = args.first().map(String::as_str);
-                let op = op.filter(|o| ["run", "status", "findings", "finding"].contains(o));
+            // `soc watch` answers only in machine-readable lines.
+            let op = args.first().map(String::as_str);
+            if args.iter().any(|a| a == "--json") || op == Some("watch") {
+                let op =
+                    op.filter(|o| ["run", "status", "findings", "finding", "watch"].contains(o));
                 let example = match op {
                     Some("run") => "soc run --json",
                     Some("findings") => "soc findings --json",
                     Some("finding") => "soc finding f0123456789 --json",
+                    Some("watch") => "soc watch",
                     _ => "soc status --json",
                 };
                 print_json(&status::failure(
@@ -452,6 +461,7 @@ fn main() -> ExitCode {
     let result = match cmd {
         Cmd::Run(args) if args.json => return run_json(&args),
         Cmd::Status(args) if args.json => return status_json(&args.store),
+        Cmd::Watch(args) => return watch::watch(&args),
         Cmd::Run(args) => match run(&args) {
             Ok((line, watched)) => {
                 say(&line);
@@ -525,7 +535,9 @@ fn answer_json(operation: &str, store: &Path) -> ExitCode {
     match read_all(store) {
         Ok((running, state)) => {
             let path = std::path::absolute(store).unwrap_or_else(|_| store.to_path_buf());
-            let result = status::result(state.as_ref(), running, &path, now_secs());
+            let mut result = status::result(state.as_ref(), running, &path, now_secs());
+            // Whether a watcher runs on this store now: `soc watch`, src/watch.rs.
+            result["watching"] = watch::status(store);
             print_json(&status::envelope(operation, result));
             ExitCode::SUCCESS
         }
@@ -1718,8 +1730,9 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     // Raw input is kept next to the store so that the store can be rebuilt from it.
     let home = home(&args.store);
     std::fs::create_dir_all(&home)?;
-    // Held until the run returns: a second run stops here and writes nothing.
-    let _lock = store::lock_run(&home)?.ok_or(Stop::RunInProgress)?;
+    // Held until the run returns: a second run stops here and writes nothing. A watcher's
+    // reading, `soc watch`, is waited out.
+    let _lock = store::lock_run_past_watcher(&home)?.ok_or(Stop::RunInProgress)?;
     let mut conn = store::open(&args.store).map_err(|e| Stop::Store(e.to_string()))?;
     store::journal_note(&conn, at, &run_id, "run_started", "")?;
 

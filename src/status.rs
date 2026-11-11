@@ -586,9 +586,7 @@ pub fn state(conn: &Connection, home: &Path, now: i64) -> Res<State> {
         let (kind, n): (String, i64) = row?;
         files.insert(kind, n);
     }
-    let coverage = view::latest_coverage(conn)?;
-    let problems = problems(conn, &coverage)?;
-    let needs = findings::needs(conn, &problems, catalogue(conn)?.as_ref(), now)?;
+    let (coverage, problems, needs) = looked(conn, now)?;
     Ok(State {
         last: latest_run(conn)?,
         summary,
@@ -597,6 +595,21 @@ pub fn state(conn: &Connection, home: &Path, now: i64) -> Res<State> {
         files,
         needs,
     })
+}
+
+/// The latest readings, their problems and what needs a look at `now`: what `needs_a_look`
+/// serves.
+fn looked(conn: &Connection, now: i64) -> Res<(Vec<Latest>, Problems, findings::Needs)> {
+    let coverage = view::latest_coverage(conn)?;
+    let problems = problems(conn, &coverage)?;
+    let needs = findings::needs(conn, &problems, catalogue(conn)?.as_ref(), now)?;
+    Ok((coverage, problems, needs))
+}
+
+/// What needs a look at `now`, as `soc status --json` counts it; `soc watch` gives its total
+/// after each reading.
+pub fn needs(conn: &Connection, now: i64) -> Res<findings::Needs> {
+    Ok(looked(conn, now)?.2)
 }
 
 /// Text from a source as a field's value: hidden characters as the terminal shows them,
