@@ -1,0 +1,229 @@
+{
+ "format": 1,
+ "operation": "status",
+ "ok": true,
+ "errors": [],
+ "result": {
+  "generated_at": "2026-11-10T10:05:00Z",
+  "running": false,
+  "store": {
+   "path_text": "/Users/example/Library/Application Support/personal-soc/store.db",
+   "exists": true
+  },
+  "cannot_judge": [
+   "no threat is matched against the estate yet"
+  ],
+  "last_run": {
+   "id": "1794300000-000000001",
+   "started_at": "2026-11-10T10:00:00Z",
+   "finished_at": "2026-11-10T10:00:21Z",
+   "finished": true
+  },
+  "last_finished_run": {
+   "id": "1794300000-000000001",
+   "started_at": "2026-11-10T10:00:00Z",
+   "finished_at": "2026-11-10T10:00:21Z",
+   "first_run": false,
+   "readings": {
+    "partial": 2,
+    "failed": 0,
+    "not_repeated": 0,
+    "machines_unread": 0
+   },
+   "since_previous_run": null,
+   "unknown": []
+  },
+  "estate": {
+   "machines": 3,
+   "servers": 2,
+   "servers_offered": 1,
+   "servers_read": 0,
+   "machines_set_aside": 0,
+   "machines_seen_after_owner_word": 0,
+   "checkouts": 7,
+   "components": 812
+  },
+  "watched": {
+   "files": 12,
+   "first_reading": false,
+   "since_last_reading": {
+    "new": 0,
+    "changed": 0,
+    "gone": 0
+   },
+   "kinds": [
+    {
+     "kind": "autostart item",
+     "files": 5,
+     "coverage": "full",
+     "readings": {
+      "full": 1,
+      "partial": 0,
+      "none": 0
+     },
+     "reason_text": null
+    },
+    {
+     "kind": "shell profile",
+     "files": 3,
+     "coverage": "full",
+     "readings": {
+      "full": 1,
+      "partial": 0,
+      "none": 0
+     },
+     "reason_text": null
+    },
+    {
+     "kind": "ssh access file",
+     "files": 0,
+     "coverage": null,
+     "readings": {
+      "full": 0,
+      "partial": 0,
+      "none": 0
+     },
+     "reason_text": null
+    },
+    {
+     "kind": "git hook",
+     "files": 4,
+     "coverage": "partial",
+     "readings": {
+      "full": 6,
+      "partial": 1,
+      "none": 0
+     },
+     "reason_text": ".git is a file, as in a worktree or a submodule: the hooks are kept elsewhere and were not read"
+    }
+   ],
+   "content_not_read": 0,
+   "changes": [],
+   "changes_total": 0
+  },
+  "threats": {
+   "outcome": "read",
+   "entries": 1700,
+   "first_reading": true,
+   "new": 0,
+   "gone": 0,
+   "read_at": "2026-11-10T10:00:01Z",
+   "checked_at": "2026-11-10T10:00:01Z",
+   "source": "cisa-kev",
+   "matched": false
+  },
+  "coverage": {
+   "readings": 20,
+   "full": 12,
+   "read_nothing": 6,
+   "partial": 2,
+   "failed": 28,
+   "problems": [
+    {
+     "class": "failed",
+     "reader": "r0",
+     "kind": "installed software",
+     "reason_text": "the package list could not be read: permission denied",
+     "count": 1,
+     "examples_text": [
+      "machine:example-mac"
+     ]
+    },
+    {
+     "class": "failed",
+     "reader": "r1",
+     "kind": "lockfile dependencies",
+     "reason_text": "the lockfile is not valid: unexpected end of file",
+     "count": 2,
+     "examples_text": [
+      "machine:example-mac"
+     ]
+    },
+    {
+     "class": "failed",
+     "reader": "r2",
+     "kind": "hooks in the checkout's .git folder",
+     "reason_text": "the folder could not be listed: operation not permitted",
+     "count": 3,
+     "examples_text": [
+      "machine:example-mac"
+     ]
+    },
+    {
+     "class": "failed",
+     "reader": "r3",
+     "kind": "ssh configuration",
+     "reason_text": "the file could not be read: permission denied",
+     "count": 4,
+     "examples_text": [
+      "machine:example-mac"
+     ]
+    },
+    {
+     "class": "failed",
+     "reader": "r4",
+     "kind": "known hosts",
+     "reason_text": "the file is larger than the program reads",
+     "count": 5,
+     "examples_text": [
+      "machine:example-mac"
+     ]
+    },
+    {
+     "class": "failed",
+     "reader": "r5",
+     "kind": "applications",
+     "reason_text": "the list of applications could not be read: timed out",
+     "count": 6,
+     "examples_text": [
+      "machine:example-mac"
+     ]
+    },
+    {
+     "class": "failed",
+     "reader": "r6",
+     "kind": "autostart items",
+     "reason_text": "the folder could not be listed: operation not permitted",
+     "count": 7,
+     "examples_text": [
+      "machine:example-mac"
+     ]
+    },
+    {
+     "class": "partial",
+     "reader": "lockfiles",
+     "kind": "lockfile dependencies",
+     "reason_text": "not supported yet: uv.lock",
+     "count": 1,
+     "examples_text": [
+      "checkout:machine:example-mac/work/alpha"
+     ]
+    },
+    {
+     "class": "partial",
+     "reader": "watched-places",
+     "kind": "hooks in the checkout's .git folder",
+     "reason_text": ".git is a file, as in a worktree or a submodule: the hooks are kept elsewhere and were not read",
+     "count": 1,
+     "examples_text": [
+      "checkout:machine:example-mac/work/alpha-worktree"
+     ]
+    },
+    {
+     "class": "read_nothing",
+     "reader": "watched-places",
+     "kind": "hooks in the checkout's .git folder",
+     "reason_text": "the checkout has no hooks",
+     "count": 6,
+     "examples_text": [
+      "checkout:machine:example-mac/work/beta",
+      "checkout:machine:example-mac/work/gamma",
+      "checkout:machine:example-mac/work/delta"
+     ]
+    }
+   ],
+   "problems_total": 10
+  },
+  "not_computed": []
+ }
+}

@@ -143,9 +143,54 @@ func printPanel(_ soc: any SocRunning, _ extra: [String]) -> Never {
   exit(0)
 }
 
+/// Debug only: draws the panel's own view off-screen, at the popover's width and
+/// at 2x, in light and dark appearance, to `<folder>/light.png` and `dark.png`,
+/// and exits. No screen capture: the view hierarchy is drawn into a bitmap. The
+/// popover's translucent material cannot be drawn this way; the window background
+/// colour stands in for it.
+@MainActor
+func renderPanel(_ model: AppModel, to folder: URL) async -> Never {
+  await model.refresh()
+  try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+  for (name, look) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+    guard let appearance = NSAppearance(named: look) else { continue }
+    let host = NSHostingView(
+      rootView: PanelView(model: model).background(Color(nsColor: .windowBackgroundColor)))
+    host.appearance = appearance
+    // Lay out twice: the rows' measured height settles after the first pass.
+    for _ in 0..<3 {
+      host.frame = NSRect(origin: .zero, size: host.fittingSize)
+      host.layoutSubtreeIfNeeded()
+      try? await Task.sleep(for: .milliseconds(150))
+    }
+    let size = host.bounds.size
+    guard
+      let rep = NSBitmapImageRep(
+        bitmapDataPlanes: nil, pixelsWide: Int(size.width * 2), pixelsHigh: Int(size.height * 2),
+        bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+        colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
+    else { continue }
+    rep.size = size
+    appearance.performAsCurrentDrawingAppearance { host.cacheDisplay(in: host.bounds, to: rep) }
+    let file = folder.appendingPathComponent("\(name).png")
+    try? rep.representation(using: .png, properties: [:])?.write(to: file)
+    log("rendered \(file.lastPathComponent): \(Int(size.width))x\(Int(size.height)) pt")
+  }
+  exit(0)
+}
+
 let (soc, extra) = locate(overrides.0, overrides.1)
 #if DEBUG
   if CommandLine.arguments.contains("--print-panel") { printPanel(soc, extra) }
+  if let i = CommandLine.arguments.firstIndex(of: "--render-panel"),
+    i + 1 < CommandLine.arguments.count
+  {
+    let folder = URL(fileURLWithPath: CommandLine.arguments[i + 1])
+    let model = AppModel(soc: soc, extraArguments: extra)
+    NSApplication.shared.setActivationPolicy(.prohibited)
+    Task { @MainActor in await renderPanel(model, to: folder) }
+    NSApplication.shared.run()
+  }
 #endif
 let delegate = Delegate(model: AppModel(soc: soc, extraArguments: extra))
 let app = NSApplication.shared

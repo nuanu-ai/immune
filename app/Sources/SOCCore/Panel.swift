@@ -27,6 +27,23 @@ public enum ItemKind: String, CaseIterable, Sendable {
   case unknown = "unknown"
 }
 
+extension ItemKind {
+  /// A small SF Symbol for the kind of item, shown on its card.
+  public var symbol: String {
+    switch self {
+    case .autostartNew, .autostartChanged, .autostartGone: "power"
+    case .shellProfile: "terminal"
+    case .sshAccessFile: "key"
+    case .gitHook: "arrow.triangle.branch"
+    case .otherPlace, .changesUnlisted: "gearshape"
+    case .checkFailed, .checksUnlisted: "magnifyingglass"
+    case .machineUnreached, .machinesUnlisted: "server.rack"
+    case .threatListUnread: "list.bullet.rectangle"
+    case .unknown: "questionmark.square"
+    }
+  }
+}
+
 /// The app's fixed words for one kind: what happened, what it means and when it is
 /// normal, what the owner can do. `addsChange` appends "was added / changed / removed".
 public struct Wording: Sendable, Equatable {
@@ -81,9 +98,8 @@ public struct Wording: Sendable, Equatable {
     case .checkFailed:
       Wording(
         what: "Something could not be checked",
-        means:
-          "Until this is fixed I cannot see changes there. Often a permission or a file in an unexpected state.",
-        todo: "Open Details for the reason, or ask your agent to look.", addsChange: false)
+        means: "Until this is fixed I cannot see changes there.",
+        todo: "Your agent can help find out why.", addsChange: false)
     case .checksUnlisted:
       Wording(
         what: "More checks failed than are listed",
@@ -92,8 +108,7 @@ public struct Wording: Sendable, Equatable {
     case .machineUnreached:
       Wording(
         what: "A machine could not be reached",
-        means:
-          "Normal if it is switched off or offline; while it is unreachable I cannot see changes on it.",
+        means: "Normal if it is switched off or offline.",
         todo: "If it should be on, check that you can connect to it.", addsChange: false)
     case .machinesUnlisted:
       Wording(
@@ -103,8 +118,7 @@ public struct Wording: Sendable, Equatable {
     case .threatListUnread:
       Wording(
         what: "The list of exploited vulnerabilities was not downloaded",
-        means:
-          "Normal if this Mac was offline; until it is downloaded I cannot tell you about new ones.",
+        means: "Normal if this Mac was offline.",
         todo: "Check now when you are online.", addsChange: false)
     case .unknown:
       Wording(
@@ -152,10 +166,15 @@ public struct Row: Sendable, Equatable, Identifiable {
   public let kind: ItemKind
   /// When it happened, as a time in the past or an absolute date; nil when not known.
   public let when: String?
+  /// The full date and time of `when`, for a tooltip.
+  public let whenFull: String?
   /// The app's fixed sentence.
   public let sentence: String
-  /// Text from the machine, inert, shown under the sentence.
+  /// What it is, from the machine (a path, a machine, a kind of thing), inert:
+  /// one line under the sentence.
   public let value: String?
+  /// Why, from the machine, inert: under the value, may wrap.
+  public let reason: String?
   public let means: String
   public let todo: String
   /// How many of the things counted beside the icon this row stands for.
@@ -197,6 +216,8 @@ public struct Panel: Sendable, Equatable {
   public var headline: String
   /// "Checked 12 minutes ago", "checking now…".
   public var checked: String?
+  /// The absolute time of the last check, for a tooltip on `checked`.
+  public var checkedAt: String?
   /// What the owner can do when the program cannot be read.
   public var help: [String] = []
   /// The reason in small type, with what soc said.
@@ -234,10 +255,11 @@ public struct Panel: Sendable, Equatable {
   }
 
   static let helpLine =
-    "Press Check now, or run `\(statusCommand)` in a terminal to see what is wrong."
+    "Press Check now, or run \(statusCommand) in a terminal to see what is wrong."
 
   mutating func fill(_ s: Status, now: Date, checking: Bool) {
     let finished = s.lastFinishedRun?.finishedAt.map { "Checked " + Clock.ago($0, now: now) }
+    checkedAt = s.lastFinishedRun?.finishedAt.map(Clock.full)
     checked = [finished, checking ? (finished == nil ? "Checking now…" : "checking now…") : nil]
       .compactMap { $0 }.joined(separator: " · ")
     if checked == "" { checked = nil }
@@ -275,14 +297,17 @@ public struct Panel: Sendable, Equatable {
     var out: [Row] = []
     func add(
       _ kind: ItemKind, when: Date? = nil, since: Bool = false, extra: String = "",
-      value: String? = nil, weight: Int = 1, fields: [Field]
+      value: String? = nil, reason: String? = nil, weight: Int = 1, fields: [Field]
     ) {
       let w = Wording.of(kind)
       out.append(
         Row(
           id: out.count, kind: kind,
           when: when.map { (since ? "since " : "") + Clock.at($0, now: now) },
-          sentence: w.what + extra, value: value, means: w.means, todo: w.todo, weight: weight,
+          whenFull: when.map(Clock.full),
+          sentence: w.what + extra, value: value.map { Inert.text($0, limit: 160) },
+          reason: reason.map { Inert.text($0, limit: 240) }, means: w.means, todo: w.todo,
+          weight: weight,
           fields: fields))
     }
     func f(_ name: String, _ value: String?) -> Field? {
@@ -296,7 +321,7 @@ public struct Panel: Sendable, Equatable {
       let kind = Wording.kind(place: c.kind, change: c.change)
       let extra = Wording.of(kind).addsChange ? " " + Wording.verb(c.change) : ""
       add(
-        kind, when: c.at, extra: extra, value: c.pathText.map { Inert.text($0, limit: 160) },
+        kind, when: c.at, extra: extra, value: c.pathText,
         fields: [
           f("change", c.change), f("place_kind", c.kind), f("at", c.at.map(Clock.iso)),
           f("run_id", c.runId), f("path_text", c.pathText),
@@ -312,11 +337,11 @@ public struct Panel: Sendable, Equatable {
     for g in groups where Place.of(class: g.class) == .attention {
       let known = g.class == "failed"
       let places = (g.count ?? 1) > 1 ? " in \(g.count ?? 1) places" : ""
-      let value = [g.class.flatMap { known ? nil : $0 }, g.kind, g.reasonText]
-        .compactMap { $0 }.map { Inert.text($0, limit: 160) }.joined(separator: ": ")
+      let value = [g.class.flatMap { known ? nil : $0 }, g.kind].compactMap { $0 }
+        .joined(separator: ": ")
       add(
         known ? .checkFailed : .unknown, extra: known ? places : "",
-        value: value.isEmpty ? nil : value,
+        value: value.isEmpty ? nil : value, reason: g.reasonText,
         fields: [
           f("class", g.class), f("reader", g.reader), f("kind", g.kind),
           f("reason_text", g.reasonText),
@@ -328,10 +353,8 @@ public struct Panel: Sendable, Equatable {
     // Machines not reached.
     let unreached = s.coverage?.unreached ?? []
     for u in unreached.prefix(t.unreached) {
-      let value = [u.scopeText, u.reasonText].compactMap { $0 }.map { Inert.text($0, limit: 160) }
-        .joined(separator: ": ")
       add(
-        .machineUnreached, when: u.since, since: true, value: value.isEmpty ? nil : value,
+        .machineUnreached, when: u.since, since: true, value: u.scopeText, reason: u.reasonText,
         fields: [
           f("scope_text", u.scopeText), f("since", u.since.map(Clock.iso)),
           f("reason_text", u.reasonText),
@@ -347,7 +370,7 @@ public struct Panel: Sendable, Equatable {
     if t.feed > 0, let th = s.threats {
       add(
         .threatListUnread, when: th.checkedAt,
-        value: th.reasonText.map { Inert.text($0, limit: 160) },
+        reason: th.reasonText,
         fields: [f("source", th.source), f("outcome", th.outcome), f("reason_text", th.reasonText)]
           .compactMap { $0 })
     }
@@ -365,7 +388,7 @@ public struct Panel: Sendable, Equatable {
 
   /// The panel as plain text, line by line, in the order the panel shows it.
   public var lines: [String] {
-    var out = ["[\(light.symbol)] " + headline]
+    var out = ["[\(light.panelSymbol)] " + headline]
     if let checked { out.append("    " + checked) }
     out += help.map { "    " + $0 }
     if let reason { out.append("    (small) " + reason) }
@@ -373,6 +396,7 @@ public struct Panel: Sendable, Equatable {
     for r in shown {
       out.append("• " + (r.when.map { $0 + " — " } ?? "") + r.sentence + ".")
       if let v = r.value { out.append("    › " + v) }
+      if let why = r.reason { out.append("    Reason: " + why) }
       out.append("    " + r.means + " " + r.todo)
       out.append("    [ Show ]  [ Copy for my agent ]")
     }
@@ -395,10 +419,16 @@ public enum Clock {
     return f.localizedString(for: d, relativeTo: now)
   }
 
-  /// A short absolute time: the time alone today, the date and time otherwise.
+  /// A short absolute time: the time alone today, the day alone this year, the
+  /// full date otherwise or when it lies in the future.
   public static func at(_ d: Date, now: Date) -> String {
-    Calendar.current.isDate(d, inSameDayAs: now) && d <= now
-      ? d.formatted(date: .omitted, time: .shortened) : full(d)
+    let cal = Calendar.current
+    guard d <= now else { return full(d) }
+    if cal.isDate(d, inSameDayAs: now) { return d.formatted(date: .omitted, time: .shortened) }
+    if cal.isDate(d, equalTo: now, toGranularity: .year) {
+      return d.formatted(.dateTime.month(.abbreviated).day())
+    }
+    return full(d)
   }
 
   static func full(_ d: Date) -> String { d.formatted(date: .abbreviated, time: .shortened) }

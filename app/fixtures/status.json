@@ -1,14 +1,14 @@
 {
   "format": 1, "operation": "status", "ok": true, "errors": [],
   "result": {
-    "generated_at": "2026-11-12T10:05:00Z",
+    "generated_at": "2026-11-10T10:05:00Z",
     "running": false,
     "store": { "path_text": "/Users/example/Library/Application Support/personal-soc/store.db", "exists": true },
     "cannot_judge": [ "no threat is matched against the estate yet" ],
     "no_reader_for": [ { "what_text": "uv.lock", "where_count": 2 }, { "what_text": "go.sum", "where_count": 1 } ],
-    "last_run": { "id": "1794400000-000000002", "started_at": "2026-11-12T10:00:00Z", "finished_at": "2026-11-12T10:00:24Z", "finished": true },
+    "last_run": { "id": "1794400000-000000002", "started_at": "2026-11-10T10:00:00Z", "finished_at": "2026-11-10T10:00:24Z", "finished": true },
     "last_finished_run": {
-      "id": "1794400000-000000002", "started_at": "2026-11-12T10:00:00Z", "finished_at": "2026-11-12T10:00:24Z",
+      "id": "1794400000-000000002", "started_at": "2026-11-10T10:00:00Z", "finished_at": "2026-11-10T10:00:24Z",
       "first_run": false,
       "readings": { "partial": 2, "failed": 2, "not_repeated": 0, "machines_unread": 1 },
       "since_previous_run": { "added": 3, "changed": 2, "removed": 0 },
@@ -27,13 +27,13 @@
       ],
       "content_not_read": 0,
       "changes": [
-        { "at": "2026-11-12T10:00:20Z", "run_id": "1794400000-000000002", "change": "changed", "kind": "shell profile", "path_text": ".zshrc" },
-        { "at": "2026-11-12T10:00:19Z", "run_id": "1794400000-000000002", "change": "new", "kind": "autostart item", "path_text": "Library/LaunchAgents/org.example.helper.plist" }
+        { "at": "2026-11-10T10:00:20Z", "run_id": "1794400000-000000002", "change": "changed", "kind": "shell profile", "path_text": ".zshrc" },
+        { "at": "2026-11-10T10:00:19Z", "run_id": "1794400000-000000002", "change": "new", "kind": "autostart item", "path_text": "Library/LaunchAgents/org.example.helper.plist" }
       ],
       "changes_total": 2
     },
     "threats": { "outcome": "read", "entries": 1702, "first_reading": false, "new": 2, "gone": 0,
-                 "read_at": "2026-11-12T10:00:01Z", "checked_at": "2026-11-12T10:00:01Z", "source": "cisa-kev", "matched": false },
+                 "read_at": "2026-11-10T10:00:01Z", "checked_at": "2026-11-10T10:00:01Z", "source": "cisa-kev", "matched": false },
     "coverage": {
       "readings": 24, "full": 12, "read_nothing": 6, "not_given": 2, "partial": 2, "failed": 2,
       "problems": [

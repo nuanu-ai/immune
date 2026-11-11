@@ -132,6 +132,9 @@ public enum Light: Sendable, Equatable {
     }
   }
 
+  /// The filled symbol for the panel's headline: the same shapes as `symbol`.
+  public var panelSymbol: String { symbol + ".fill" }
+
   public var headline: String {
     switch self {
     case .nothingToReport: "Nothing needs you."

@@ -1,5 +1,5 @@
 { "format": 1, "operation": "status", "ok": true, "errors": [],
-  "result": { "generated_at": "2026-11-11T10:05:00Z", "running": false,
+  "result": { "generated_at": "2026-11-10T10:05:00Z", "running": false,
     "store": { "path_text": "/Users/example/Library/Application Support/personal-soc/store.db", "exists": false },
     "cannot_judge": [ "no threat is matched against the estate yet" ],
     "not_computed": [

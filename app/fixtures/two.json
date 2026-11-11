@@ -4,7 +4,7 @@
  "ok": true,
  "errors": [],
  "result": {
-  "generated_at": "2026-11-12T10:05:00Z",
+  "generated_at": "2026-11-10T10:05:00Z",
   "running": false,
   "store": {
    "path_text": "/Users/example/Library/Application Support/personal-soc/store.db",
@@ -16,14 +16,14 @@
   "no_reader_for": [],
   "last_run": {
    "id": "1794400000-000000002",
-   "started_at": "2026-11-12T10:00:00Z",
-   "finished_at": "2026-11-12T10:00:24Z",
+   "started_at": "2026-11-10T10:00:00Z",
+   "finished_at": "2026-11-10T10:00:24Z",
    "finished": true
   },
   "last_finished_run": {
    "id": "1794400000-000000002",
-   "started_at": "2026-11-12T10:00:00Z",
-   "finished_at": "2026-11-12T10:00:24Z",
+   "started_at": "2026-11-10T10:00:00Z",
+   "finished_at": "2026-11-10T10:00:24Z",
    "first_run": false,
    "readings": {
     "partial": 2,
@@ -94,7 +94,7 @@
    "content_not_read": 0,
    "changes": [
     {
-     "at": "2026-11-12T10:00:19Z",
+     "at": "2026-11-10T10:00:19Z",
      "run_id": "1794400000-000000002",
      "change": "new",
      "kind": "autostart item",
@@ -107,8 +107,8 @@
    "outcome": "failed",
    "reason_text": "could not connect to the catalogue: network is unreachable",
    "entries": 1700,
-   "read_at": "2026-11-11T10:00:01Z",
-   "checked_at": "2026-11-12T10:00:01Z",
+   "read_at": "2026-11-10T10:00:01Z",
+   "checked_at": "2026-11-10T10:00:01Z",
    "source": "cisa-kev",
    "matched": false
   },
