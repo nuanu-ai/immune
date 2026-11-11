@@ -230,25 +230,25 @@ public struct Panel: Sendable, Equatable {
     "Press Check now, or run \(statusCommand) in a terminal to see what is wrong."
 
   mutating func fill(_ s: Status, now: Date, checking: Bool, soc: SocCommand?) {
-    let finished = s.lastFinishedRun?.finishedAt.map { "Checked " + Clock.ago($0, now: now) }
+    // The status is the judge of what may be shown. "Nothing has been checked yet" is
+    // only for a status that has not computed what needs a look and has no run at all.
+    let notComputed = s.notComputed?.contains { $0.section == "needs_a_look" } == true
+    // A first run under way counts as no run yet; one that started and stopped does not.
+    let noRun = s.lastFinishedRun == nil && (s.lastRun == nil || checking)
+    if notComputed && noRun {
+      headline = checking ? "Checking for the first time…" : "Nothing has been checked yet."
+      if !checking { help = ["Press Check now to take the first look."] }
+      return
+    }
+
+    let finished: String? =
+      s.lastFinishedRun?.finishedAt.map { "Checked " + Clock.ago($0, now: now) }
+      ?? (s.lastFinishedRun == nil ? "A full check has not finished yet" : nil)
     checkedAt = s.lastFinishedRun?.finishedAt.map(Clock.full)
     checked = [finished, checking ? (finished == nil ? "Checking now…" : "checking now…") : nil]
       .compactMap { $0 }.joined(separator: " · ")
     if checked == "" { checked = nil }
 
-    if s.store?.exists != true || s.lastFinishedRun == nil {
-      if s.store?.exists == nil {
-        headline = "I can't tell: the program's answer is incomplete."
-        help = [Self.helpLine]
-        if case .cannotRead(let r) = light { reason = r }
-      } else if checking {
-        headline = "Checking for the first time…"
-      } else {
-        headline = "Nothing has been checked yet."
-        help = ["Press Check now to take the first look."]
-      }
-      return
-    }
     if case .cannotRead(let r) = light {
       headline = "I can't tell: the program's answer is incomplete."
       help = [Self.helpLine]

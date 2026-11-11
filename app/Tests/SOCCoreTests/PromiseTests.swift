@@ -36,6 +36,19 @@ func edited(
   return SocOutput(exitCode: 0, stdout: data)
 }
 
+extension SocOutput {
+  /// The same output with this list of things that need a look.
+  func withList(_ items: [[String: Any]]) -> SocOutput {
+    var root = (try? JSONSerialization.jsonObject(with: stdout)) as? [String: Any] ?? [:]
+    var r = root["result"] as? [String: Any] ?? [:]
+    r["needs_a_look"] = items
+    root["result"] = r
+    var o = self
+    o.stdout = (try? JSONSerialization.data(withJSONObject: root)) ?? Data()
+    return o
+  }
+}
+
 func quiet(removing path: [String] = [], setting value: Any? = nil) -> SocOutput {
   edited("quiet.json", removing: path, setting: value)
 }
@@ -123,7 +136,6 @@ struct FalseCalm {
     "Unknown is never shown as calm: each missing piece makes the program 'cannot be read'",
     arguments: [
       ["result", "store"], ["result", "store", "exists"],
-      ["result", "last_finished_run"],
       ["result", "needs_a_look"], ["result", "needs_a_look_total"],
       ["result"], ["ok"], ["format"],
     ])
@@ -135,7 +147,6 @@ struct FalseCalm {
     "A wrong type is not read as a value: false is not 0, 0 is not false, a string is not a count",
     arguments: [
       (["result", "store", "exists"], "1"),
-      (["result", "last_finished_run"], "true"),
       (["result", "needs_a_look_total"], "\"0\""),
       (["result", "needs_a_look_total"], "-1"),
       (["result", "needs_a_look_total"], "0.5"),
@@ -176,12 +187,76 @@ struct FalseCalm {
     #expect(isCannotRead(light(looking([lookItem()], total: 0))))
   }
 
-  @Test("No store yet, and a first run that has not finished, are 'cannot be read', not calm")
+  @Test("No store yet, and a first run with nothing computed yet, are 'cannot be read', not calm")
   func noStoreAndFirstRun() {
     #expect(isCannotRead(light(output("no-store.json"))))
     #expect(isCannotRead(light(quiet(removing: ["result", "store", "exists"], setting: false))))
-    let firstRunGoing = edited("running.json", removing: ["result", "last_finished_run"])
-    #expect(light(firstRunGoing) == .cannotRead("The first run is in progress."))
+    let firstRunGoing = edited("no-store.json", removing: ["result", "running"], setting: true)
+    #expect(isCannotRead(light(firstRunGoing)))
+  }
+
+  @Test(
+    "The status is the judge: what soc serves is shown with its count before any full check has finished, and the second line says so"
+  )
+  func servedBeforeFullCheck() {
+    let p = panel(output("watcher-only.json"))
+    #expect(p.light == .attention(1))
+    #expect(p.headline == "1 thing needs a look.")
+    #expect(p.rows.count == 1)
+    #expect(p.checked == "A full check has not finished yet")
+    #expect(p.help.isEmpty)
+    let none = panel(
+      edited("watcher-only.json", removing: ["result", "needs_a_look_total"], setting: 0)
+        .withList([]))
+    #expect(none.light == .nothingToReport)
+    #expect(none.checked == "A full check has not finished yet")
+    let going = panel(edited("watcher-only.json", removing: ["result", "running"], setting: true))
+    #expect(going.checked == "A full check has not finished yet · checking now…")
+    #expect(going.rows.count == 1)
+    // A finished check still says when.
+    #expect(panel(output("status.json")).checked?.hasPrefix("Checked ") == true)
+  }
+
+  @Test(
+    "'Nothing has been checked yet' only when what needs a look is not computed and no run exists")
+  func nothingCheckedOnlyWithoutRun() {
+    #expect(panel(output("no-store.json")).headline == "Nothing has been checked yet.")
+    // Not computed, but a run exists: the app does not know, and says so.
+    #expect(
+      panel(output("not-computed.json")).headline
+        == "I can't tell: the program's answer is incomplete.")
+    // Nor is it "checking for the first time" when a check runs after a finished one.
+    #expect(
+      panel(edited("not-computed.json", removing: ["result", "running"], setting: true)).headline
+        == "I can't tell: the program's answer is incomplete.")
+    // A store and no run, not computed: nothing checked yet.
+    var root =
+      (try? JSONSerialization.jsonObject(with: fixture("watcher-only.json"))) as? [String: Any]
+      ?? [:]
+    var r = root["result"] as? [String: Any] ?? [:]
+    r["needs_a_look"] = nil
+    r["needs_a_look_total"] = nil
+    r["not_computed"] = [["section": "needs_a_look", "reason": "no run has looked yet"]]
+    root["result"] = r
+    let fresh = SocOutput(exitCode: 0, stdout: (try? JSONSerialization.data(withJSONObject: root))!)
+    #expect(panel(fresh).headline == "Nothing has been checked yet.")
+    // A first run under way: checking for the first time. One that started and
+    // stopped without finishing: the app does not know.
+    let started: [String: Any] = [
+      "id": "r1", "started_at": "2026-11-10T10:00:00Z", "finished": false,
+    ]
+    r["last_run"] = started
+    r["running"] = true
+    root["result"] = r
+    let going = SocOutput(exitCode: 0, stdout: (try? JSONSerialization.data(withJSONObject: root))!)
+    #expect(panel(going).headline == "Checking for the first time…")
+    r["running"] = false
+    root["result"] = r
+    let stopped = SocOutput(
+      exitCode: 0, stdout: (try? JSONSerialization.data(withJSONObject: root))!)
+    #expect(panel(stopped).headline == "I can't tell: the program's answer is incomplete.")
+    // Served, with no run: never "nothing checked".
+    #expect(panel(output("watcher-only.json")).headline != "Nothing has been checked yet.")
   }
 
   @Test(
@@ -239,7 +314,7 @@ struct Count {
 
 let allFixtures = [
   "quiet.json", "status.json", "two.json", "running.json", "no-store.json", "many.json",
-  "long.json", "not-computed.json",
+  "long.json", "not-computed.json", "watcher-only.json",
 ]
 
 @Suite("The panel answers: is anything wrong, what needs me, what can I do")
@@ -394,8 +469,9 @@ struct PanelPromises {
     #expect(p.headline == "Nothing has been checked yet.")
     #expect(p.help == ["Press Check now to take the first look."])
     #expect(p.reason == nil)
-    let first = panel(edited("running.json", removing: ["result", "last_finished_run"]))
+    let first = panel(edited("no-store.json", removing: ["result", "running"], setting: true))
     #expect(first.headline == "Checking for the first time…")
+    #expect(first.help.isEmpty)
   }
 
   @Test("A run in progress says 'checking now' and Check now cannot be pressed")
@@ -1816,6 +1892,12 @@ struct RealSoc {
       status.needsALook?.contains { $0.whereText?.hasSuffix("org.example.planted.plist") == true }
         == true)
     #expect(status.needsALook?.allSatisfy { $0.urgent == false } == true)
+
+    // No full run has happened: the panel still shows what soc serves.
+    let p = Panel.of(model.reading, now: Date())
+    #expect(p.light == .attention(before + 1))
+    #expect(p.rows.count == before + 1)
+    #expect(p.checked == "A full check has not finished yet")
 
     watcher.stop()
     #expect(await processes(naming: store).isEmpty)

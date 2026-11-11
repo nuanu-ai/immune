@@ -53,11 +53,8 @@ public enum Light: Sendable, Equatable {
     case false?: return .cannotRead("There is no store yet. Run a full run to create it.")
     case nil: return .cannotRead("Whether the store exists is not reported.")
     }
-    guard s.lastFinishedRun != nil else {
-      if s.running == true { return .cannotRead("The first run is in progress.") }
-      return .cannotRead("No run has finished yet.")
-    }
-    // What needs a look is soc's to say. Not computed, or not said, is not calm.
+    // What needs a look is soc's to say, whether or not a full check has finished.
+    // Not computed, or not said, is not calm.
     if let nc = s.notComputed?.first(where: { $0.section == "needs_a_look" }) {
       return .cannotRead(
         "What needs a look is not computed yet: " + Inert.text(nc.reason ?? "no reason given") + "."
