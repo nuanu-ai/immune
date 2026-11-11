@@ -55,6 +55,10 @@ pub fn pages(
             format!("{DETAILS}/{}.html", crate::pages::TECHNICAL),
             crate::pages::technical(),
         ),
+        (
+            format!("{DETAILS}/{}.html", crate::pages::VULNERABILITIES),
+            crate::pages::vulnerabilities(conn, now)?,
+        ),
     ];
     for (name, title) in DETAIL_PAGES {
         let mut body = String::new();
@@ -85,10 +89,14 @@ pub fn pages(
 /// The sections of the summary something outside the page may ask for, by anchor and
 /// title. Each has a page of its own that only sends the browser on to it, because macOS
 /// can lose the `#section` of a file URL when it hands one to the browser.
-pub const SECTIONS: [(&str, &str); 4] = [
+pub const SECTIONS: [(&str, &str); 5] = [
     (
         "watched-here",
         "What is watched, and what you are told about",
+    ),
+    (
+        "vulnerabilities",
+        "Known vulnerabilities in packages your projects use",
     ),
     ("you-can-fix", "You can fix"),
     ("limits", "Limits of this version"),

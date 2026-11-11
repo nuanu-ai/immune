@@ -42,12 +42,14 @@ pub const NEEDS_SHOWN: usize = 50;
 /// What this build cannot answer at all, in its own words. One sentence a line: the builder
 /// who closes a gap deletes its line, and nothing else changes.
 pub const CANNOT_JUDGE: &[&str] = &[
-    // Closed by matching the catalogue's vulnerabilities (docs/threats.md).
-    "no vulnerability from the catalogue is matched against the estate yet",
+    // Lockfiles of npm and crates.io are matched (`vulnerabilities`); the rest is planned in
+    // docs/threats.md.
+    "no vulnerability is matched against installed software, servers' packages or ecosystems other than npm and crates.io yet",
 ];
 /// The sections of a result that hold numbers, in the order of the result.
-const SECTIONS: [&str; 13] = [
+const SECTIONS: [&str; 14] = [
     "needs_a_look",
+    "vulnerabilities",
     "answered_outside_app",
     "statements_outside_app",
     "not_covered",
@@ -196,6 +198,8 @@ pub struct Summary {
     pub integrity: Option<crate::integrity::Summary>,
     /// Each feed of vulnerability data: what it holds and how its latest reading went.
     pub feeds: Vec<crate::osv::State>,
+    /// What matching the lockfiles against that data answered.
+    pub vulnerabilities: crate::vulnerabilities::Totals,
 }
 
 /// One kind of thing this build has no reader for, and in how many places it was found.
@@ -260,6 +264,7 @@ pub fn summary(conn: &Connection, run: RunMark, home: &Path) -> Res<Summary> {
         no_reader_for: no_reader_for(conn)?,
         integrity: crate::integrity::summary(conn, &run.id)?,
         feeds: crate::osv::states(conn)?,
+        vulnerabilities: crate::vulnerabilities::totals(conn)?,
         changes,
         run,
     })
@@ -600,6 +605,9 @@ pub struct State {
     pub this_mac: crate::covered::ThisMac,
     /// What the program does not cover, aggregated for a person.
     pub not_covered: Vec<crate::covered::Uncovered>,
+    /// Known vulnerabilities in packages the projects use, beside what needs a look and never
+    /// counted in it: `vulnerabilities::status_json`.
+    pub vulnerabilities: Value,
 }
 
 pub fn state(conn: &Connection, home: &Path, now: i64) -> Res<State> {
@@ -632,6 +640,7 @@ pub fn state(conn: &Connection, home: &Path, now: i64) -> Res<State> {
         standing: crate::owner::standing(conn)?,
         this_mac,
         not_covered,
+        vulnerabilities: crate::vulnerabilities::status_json(conn, now)?,
     })
 }
 
@@ -777,6 +786,7 @@ pub fn result(state: Option<&State>, running: bool, path: &Path, now: i64) -> Va
                 "vulnerability_data".into(),
                 feeds_section(&s.feeds, &s.run.id),
             );
+            out.insert("vulnerabilities".into(), st.vulnerabilities.clone());
             match &s.integrity {
                 Some(i) => {
                     out.insert("integrity".into(), crate::integrity::section(i));
@@ -801,6 +811,7 @@ pub fn result(state: Option<&State>, running: bool, path: &Path, now: i64) -> Va
                 "integrity",
                 "threats",
                 "vulnerability_data",
+                "vulnerabilities",
                 "no_reader_for",
             ] {
                 absent(section, "no run has finished yet");
@@ -1008,8 +1019,9 @@ fn threats_section(c: Option<&Catalogue>) -> Value {
 /// The feeds of vulnerability data, one entry each. `outcome` is the latest reading's: `read`,
 /// `unchanged`, `failed` or `never_read`; a run that did not ask for a feed, because its last
 /// good reading is recent, leaves it `unchanged` with `asked_this_run` false. `read_at` is when
-/// it was last read successfully, `changed_at` when what it holds last changed. Nothing is
-/// matched against the estate yet, and `matched` says so.
+/// it was last read successfully, `changed_at` when what it holds last changed. `matched` says
+/// that its ecosystem is matched against the projects' lockfiles; the answers are in the part
+/// `vulnerabilities`.
 fn feeds_section(feeds: &[crate::osv::State], run_id: &str) -> Value {
     let list: Vec<Value> = feeds
         .iter()
@@ -1024,6 +1036,7 @@ fn feeds_section(feeds: &[crate::osv::State], run_id: &str) -> Value {
                 "records": s.records,
                 "malicious_records": s.malicious,
                 "withdrawn_records": s.withdrawn,
+                "matched": true,
             });
             match &s.latest {
                 None => v["outcome"] = json!("never_read"),
@@ -1048,7 +1061,7 @@ fn feeds_section(feeds: &[crate::osv::State], run_id: &str) -> Value {
             v
         })
         .collect();
-    json!({ "matched": false, "feeds": list })
+    json!({ "matched": true, "feeds": list })
 }
 
 /// The class of a reading, from the store's own data: an incomplete reading is classed by its

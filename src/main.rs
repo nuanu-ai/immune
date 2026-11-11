@@ -42,6 +42,7 @@ mod threats;
 mod tools;
 mod traces;
 mod view;
+mod vulnerabilities;
 mod watch;
 mod watched;
 
@@ -79,6 +80,10 @@ const USAGE: &str = "usage: soc run [--store <path>] [--machine-name <name>] [--
            retired and not-mine set a machine aside: it is no longer checked. --via says
            who gave it; without it, the command line. An agent gives one only after the
            owner has said so in this conversation, with --via agent and their reason.
+       soc vulnerabilities [--store <path>] [--json]
+           known vulnerabilities that affect packages the projects' lockfiles declare
+       soc vulnerability <record id or CVE id> [--store <path>] [--json]
+           the answer for one vulnerability in every project, with what it rests on
        soc sample [--store <path>] [--sample-input <file>] [--json]
        soc watch [--store <path>] [--system-root <dir>] [--sample-input <file>]
                  [--sample-every <seconds>]
@@ -96,6 +101,15 @@ enum Cmd {
     Finding(FindingArgs),
     Watch(watch::WatchArgs),
     Sample(SampleArgs),
+    Vulnerabilities(VulnerabilityArgs),
+    Vulnerability(VulnerabilityArgs),
+}
+
+/// `soc vulnerabilities`, and `soc vulnerability <id>` with the id.
+struct VulnerabilityArgs {
+    store: PathBuf,
+    json: bool,
+    id: Option<String>,
 }
 
 /// `soc findings`: open findings, or every one with `--all`.
@@ -442,6 +456,37 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
                 via: via.unwrap_or(findings::Via::Command),
             }))
         }
+        "vulnerabilities" | "vulnerability" => {
+            let (mut json, mut words) = (false, Vec::new());
+            while let Some(arg) = it.next() {
+                match arg.as_str() {
+                    "--store" => store = Some(value(&mut it, &arg)?.into()),
+                    "--json" => json = true,
+                    _ if arg.starts_with("--") => {
+                        return Err(format!("unexpected argument: {arg}"));
+                    }
+                    _ => words.push(arg),
+                }
+            }
+            let store = store.map_or_else(default_store, Ok)?;
+            match (cmd.as_str(), words.as_slice()) {
+                ("vulnerabilities", []) => Ok(Cmd::Vulnerabilities(VulnerabilityArgs {
+                    store,
+                    json,
+                    id: None,
+                })),
+                ("vulnerability", [id]) => Ok(Cmd::Vulnerability(VulnerabilityArgs {
+                    store,
+                    json,
+                    id: Some(id.clone()),
+                })),
+                ("vulnerability", _) => Err(
+                    "soc vulnerability takes one record id or CVE id, as in: soc vulnerability CVE-2023-4863"
+                        .to_string(),
+                ),
+                _ => Err("soc vulnerabilities takes no id; soc vulnerability <id> does".to_string()),
+            }
+        }
         "watch" => watch::parse(it).map(Cmd::Watch),
         "sample" => {
             let (mut json, mut input) = (false, None);
@@ -539,12 +584,22 @@ fn main() -> ExitCode {
             if args.iter().any(|a| a == "--json") || op == Some("watch") {
                 let op = op.filter(|o| {
                     [
-                        "run", "status", "findings", "finding", "sample", "watch", "owner",
+                        "run",
+                        "status",
+                        "findings",
+                        "finding",
+                        "sample",
+                        "watch",
+                        "owner",
+                        "vulnerabilities",
+                        "vulnerability",
                     ]
                     .contains(o)
                 });
                 let example = match op {
                     Some("run") => "soc run --json",
+                    Some("vulnerabilities") => "soc vulnerabilities --json",
+                    Some("vulnerability") => "soc vulnerability CVE-2023-4863 --json",
                     Some("findings") => "soc findings --json",
                     Some("finding") => "soc finding f0123456789 --json",
                     Some("watch") => "soc watch",
@@ -597,6 +652,9 @@ fn main() -> ExitCode {
         Cmd::Findings(args) => return findings_cmd(&args),
         Cmd::Finding(args) => return finding_cmd(&args),
         Cmd::Sample(args) => return sample_cmd(&args),
+        Cmd::Vulnerabilities(args) | Cmd::Vulnerability(args) => {
+            return vulnerabilities_cmd(&args);
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -1161,6 +1219,150 @@ fn findings_cmd(args: &FindingsArgs) -> ExitCode {
         .collect();
     print_table(&["Id", "State", "Last seen", "What", "Where"], &rows);
     say("`soc finding <id>` shows one; expected and seen are the owner's answers.");
+    ExitCode::SUCCESS
+}
+
+/// `soc vulnerabilities` and `soc vulnerability <id>`: the answers matching gave, read only.
+fn vulnerabilities_cmd(args: &VulnerabilityArgs) -> ExitCode {
+    let op = if args.id.is_some() {
+        "vulnerability"
+    } else {
+        "vulnerabilities"
+    };
+    let now = now_secs();
+    if !args.store.exists() {
+        if args.json {
+            print_json(&status::envelope(
+                op,
+                serde_json::json!({ "not_computed": [{ "section": op, "reason": "there is no store yet; `soc run` makes it" }] }),
+            ));
+        } else {
+            say("Nothing is known yet: there is no store; `soc run` makes it.");
+        }
+        return ExitCode::SUCCESS;
+    }
+    let read = (|| -> Result<serde_json::Value, Box<dyn Error>> {
+        let conn = store::open_read_only(&args.store)?;
+        Ok(match &args.id {
+            Some(id) => vulnerabilities::one_json(&conn, id, now)?,
+            None => vulnerabilities::list_json(&conn, now)?,
+        })
+    })();
+    let r = match read {
+        Ok(r) => r,
+        Err(e) => return store_failed(args.json, op, &Stop::Store(e.to_string())),
+    };
+    if args.json {
+        print_json(&status::envelope(op, r));
+        return ExitCode::SUCCESS;
+    }
+    let s = |v: &serde_json::Value| view::shown(v.as_str().unwrap_or_default());
+    match &args.id {
+        None => {
+            let t = &r["totals"];
+            say(&format!(
+                "{} in packages your projects use; {} cannot be told, {} known not to affect them.",
+                things(
+                    t["affected"].as_i64().unwrap_or_default(),
+                    "known vulnerability",
+                    "known vulnerabilities"
+                ),
+                grouped(t["unknown"].as_i64().unwrap_or_default()),
+                grouped(t["not_affected_known"].as_i64().unwrap_or_default()),
+            ));
+            let rows: Vec<Vec<String>> = r["affected"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|a| {
+                    let releases: Vec<String> = a["releases"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|x| format!("{} {}", s(&x["version_text"]), s(&x["at_text"])))
+                        .collect();
+                    let fixed: Vec<String> = a["fixed_text"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(s)
+                        .collect();
+                    vec![
+                        s(&a["label"]),
+                        format!("{} ({})", s(&a["record"]), s(&a["record_source"])),
+                        format!("{} {}", s(&a["package_text"]), releases.join(", ")),
+                        s(&a["project_text"]),
+                        fixed.join(", "),
+                    ]
+                })
+                .collect();
+            if !rows.is_empty() {
+                print_table(
+                    &["Label", "Record", "Package", "Project", "Fixed in"],
+                    &rows,
+                );
+            }
+            let reasons: Vec<String> = t["unknown_by_reason"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .map(|(k, n)| format!("{k} {n}"))
+                .collect();
+            if !reasons.is_empty() {
+                say(&format!(
+                    "Cannot be told, by reason: {}.",
+                    reasons.join(", ")
+                ));
+            }
+            say(vulnerabilities::DECLARED);
+        }
+        Some(_) => {
+            match r["data"].as_str() {
+                Some("held") => {}
+                _ => {
+                    say(r["said"].as_str().unwrap_or_default());
+                    return ExitCode::SUCCESS;
+                }
+            }
+            for rec in r["records"].as_array().into_iter().flatten() {
+                say(&format!(
+                    "{} from {}, {}, modified {}:",
+                    s(&rec["record"]),
+                    s(&rec["record_source"]),
+                    s(&rec["ecosystem"]),
+                    s(&rec["modified"])
+                ));
+                if rec["answered"] == false {
+                    say(&format!("  {}", s(&rec["said"])));
+                    continue;
+                }
+                for a in rec["answers"].as_array().into_iter().flatten() {
+                    let project = s(&a["project_text"]);
+                    match a["packages"].as_array() {
+                        Some(packages) => {
+                            for p in packages {
+                                say(&format!(
+                                    "  {project}: {} {} ({})",
+                                    s(&p["package_text"]),
+                                    s(&p["answer"]),
+                                    s(&p["detail_text"])
+                                ));
+                            }
+                        }
+                        None => say(&format!(
+                            "  {project}: {}{}",
+                            s(&a["answer"]),
+                            a["reason"]
+                                .as_str()
+                                .map(|r| format!(", {r}"))
+                                .unwrap_or_default()
+                        )),
+                    }
+                }
+            }
+            say(vulnerabilities::DECLARED);
+        }
+    }
     ExitCode::SUCCESS
 }
 
@@ -2193,15 +2395,23 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     // Raw input is kept next to the store so that the store can be rebuilt from it.
     let home = home(&args.store);
     std::fs::create_dir_all(&home)?;
+    // The vulnerability data is asked for before the run lock is taken, so that a download of
+    // minutes holds up no watcher's reading and no status. What is asked comes from the feeds'
+    // own readings only, read first from the store opened to read. A second run stops here,
+    // at the lock on the downloads, and writes nothing.
+    // A store this build cannot use is refused before anything is written next to it.
+    let read_only = match args.store.exists() {
+        true => Some(store::open_read_only(&args.store).map_err(|e| Stop::Store(e.to_string()))?),
+        false => None,
+    };
+    let _fetching = osv::lock_fetch(&home)?.ok_or(Stop::RunInProgress)?;
+    let feeds = get_feeds(read_only.as_ref(), args, &home, at)?;
+    drop(read_only);
     // Held until the run returns: a second run stops here and writes nothing. A watcher's
     // reading, `soc watch`, is waited out.
     let _lock = store::lock_run_past_watcher(&home)?.ok_or(Stop::RunInProgress)?;
     let mut conn = store::open(&args.store).map_err(|e| Stop::Store(e.to_string()))?;
     store::journal_note(&conn, at, &run_id, "run_started", "")?;
-    // The vulnerability data is asked for before the run writes anything, so that a long
-    // download holds no write lock on the store. What is asked comes from the feeds' own
-    // readings only.
-    let feeds = get_feeds(&conn, args, &home, at)?;
 
     let tx = conn.transaction()?;
     let machine = format!("machine:{}", args.machine);
@@ -2238,6 +2448,7 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     resolve(&mut run)?;
     read_threats(&run, args)?;
     read_feeds(&run, feeds)?;
+    opened += match_dependencies(&run)?;
 
     // What the line counts is read back from what the run wrote, by the code `soc status`
     // reads it with after the run.
@@ -3701,7 +3912,7 @@ fn read_threats(run: &Run, args: &Args) -> Result<(), Box<dyn Error>> {
 
 /// Asks for each feed of vulnerability data, or takes the archive given for it.
 fn get_feeds(
-    conn: &rusqlite::Connection,
+    conn: Option<&rusqlite::Connection>,
     args: &Args,
     home: &Path,
     now: i64,
@@ -3719,24 +3930,92 @@ fn get_feeds(
 /// read changes nothing, and the data read before stays in force.
 fn read_feeds(run: &Run, got: Vec<osv::Got>) -> Result<(), Box<dyn Error>> {
     for (feed, got) in osv::FEEDS.iter().zip(got) {
-        if let Some(lines) = osv::record(run.tx, run.run_id, run.at, run.home, feed, got)? {
-            // What was read, one line per record; copied only when it changed.
-            run.keep_raw(feed.source, &format!("{}.records.txt", feed.source), &lines)?;
-        }
+        osv::record(run.tx, run.run_id, run.at, run.home, feed, got)?;
     }
     Ok(())
 }
 
-/// Said of the vulnerability data until matching is built. Nothing in the report may read as
-/// "does not affect me".
-const NOT_MATCHED: &str =
-    "none of it is matched against the lockfiles yet, so whether any affects them is unknown";
+/// Matches the packages the projects' lockfiles hold against the vulnerability data, and holds
+/// the findings of what is urgent: a malicious package, or a vulnerability attackers are using.
+/// Every other match is an answer in a list and raises nothing. Returns how many findings it
+/// opened.
+fn match_dependencies(run: &Run) -> Result<usize, Box<dyn Error>> {
+    let matched = vulnerabilities::match_all(run.tx, run.run_id, run.at)?;
+    let linked: BTreeSet<String> = {
+        let mut stmt = run
+            .tx
+            .prepare("SELECT DISTINCT advisory FROM vulnerability_linked")?;
+        stmt.query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    let mut held: BTreeMap<&str, Vec<(String, Vec<i64>)>> = BTreeMap::new();
+    for (component, records) in &matched.affected {
+        let malicious: Vec<&(String, String, Vec<String>)> =
+            records.iter().filter(|r| r.1 == "malicious").collect();
+        let rule = if !malicious.is_empty() {
+            // npm's placeholder for a name it removed as malicious: the name is the finding,
+            // not code that runs.
+            let placeholder = malicious
+                .iter()
+                .all(|r| r.2.iter().all(|v| v == "0.0.1-security"));
+            if placeholder {
+                findings::MALICIOUS_NAME_REMOVED
+            } else {
+                findings::MALICIOUS_PACKAGE
+            }
+        } else if records.iter().any(|r| linked.contains(&r.0)) {
+            findings::EXPLOITED_VULNERABILITY
+        } else {
+            continue;
+        };
+        // What it rests on: the journal entries of the component's releases, and the latest
+        // reading of the data.
+        let basis: Vec<i64> = run
+            .tx
+            .prepare(
+                "SELECT MAX(seq) FROM journal
+                 WHERE subject = ?1 AND entry IN ('added', 'changed') AND predicate = 'has_version'
+                 UNION
+                 SELECT MAX(seq) FROM journal WHERE entry = 'advisories_read'",
+            )?
+            .query_map([component], |r| r.get::<_, Option<i64>>(0))?
+            .filter_map(|r| r.transpose())
+            .collect::<rusqlite::Result<_>>()?;
+        held.entry(rule)
+            .or_default()
+            .push((component.clone(), basis));
+    }
+    let mut opened = 0;
+    for rule in [
+        findings::MALICIOUS_PACKAGE,
+        findings::MALICIOUS_NAME_REMOVED,
+        findings::EXPLOITED_VULNERABILITY,
+    ] {
+        let now = held.remove(rule).unwrap_or_default();
+        opened += findings::hold(run.tx, rule, &now, run.run_id, run.at)?;
+    }
+    Ok(opened)
+}
 
-/// One sentence about the vulnerability data for the report line.
-fn feeds_sentence(states: &[osv::State], run_id: &str) -> String {
+/// One sentence about the vulnerability data for the report line, with what matching found.
+fn feeds_sentence(states: &[osv::State], run_id: &str, t: &vulnerabilities::Totals) -> String {
     let clauses: Vec<String> = states.iter().map(|s| feed_clause(s, run_id)).collect();
+    let mut matched = format!(
+        "matched against the projects' package-lock.json and Cargo.lock: {} in packages they use",
+        things(
+            t.affected as i64,
+            "known vulnerability",
+            "known vulnerabilities"
+        )
+    );
+    if t.packages_unknown > 0 {
+        matched.push_str(&format!(
+            ", and for {} whether one affects them cannot be told",
+            things(t.packages_unknown as i64, "package", "packages")
+        ));
+    }
     format!(
-        "Vulnerability data from OSV: {}; {NOT_MATCHED}.",
+        "Vulnerability data from OSV: {}; {matched}.",
         clauses.join("; ")
     )
 }
@@ -3981,7 +4260,7 @@ fn summary_sentences(s: &status::Summary) -> String {
     line.push(' ');
     line.push_str(&catalogue_sentence(s.catalogue.as_ref()));
     line.push(' ');
-    line.push_str(&feeds_sentence(&s.feeds, &s.run.id));
+    line.push_str(&feeds_sentence(&s.feeds, &s.run.id, &s.vulnerabilities));
     // What this build cannot read here is part of every report: in the clause of what is not
     // covered, and named by `soc status`.
     line

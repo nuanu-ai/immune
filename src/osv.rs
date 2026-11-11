@@ -79,6 +79,10 @@ pub struct Feed {
     pub every: i64,
     /// How often it is asked for, in words.
     pub asked: &'static str,
+    /// How long its last good reading counts as current for "does not affect me, known for
+    /// certain", in seconds: two hours where it is asked for on every run, a day and two hours
+    /// where once a day.
+    pub current_for: i64,
 }
 
 pub const FEEDS: [Feed; 2] = [
@@ -90,16 +94,20 @@ pub const FEEDS: [Feed; 2] = [
         max_time: 300,
         every: 0,
         asked: "on every run",
+        current_for: 2 * 3600,
     },
-    // About 220 MB in 2026, 93% of it malicious-package reports: asked for once a day.
+    // About 220 MB in 2026, 93% of it malicious-package reports: asked for once a day. Its
+    // time, with crates.io's and the catalogue's 300 s each and a watcher's reading waited out
+    // for up to 60 s, keeps a run inside the app's 30 minutes (1,800 s): 1,560 s at most.
     Feed {
         source: "osv-npm",
         ecosystem: "npm",
         url: "https://osv-vulnerabilities.storage.googleapis.com/npm/all.zip",
         cap: 512 * 1024 * 1024,
-        max_time: 1800,
+        max_time: 900,
         every: 24 * 3600,
         asked: "once a day",
+        current_for: 26 * 3600,
     },
 ];
 
@@ -118,11 +126,17 @@ const SAID_CAP: u64 = 64 * 1024;
 
 /// The archive of a feed's latest reading that read it, relative to the store's folder. Only
 /// the latest is kept: an exception to keeping every changed copy of raw input, since npm's
-/// would be about 80 GB a year. What each reading read is kept instead as one line per record,
-/// `id`, `modified` and the SHA-256 of its text, so that it can be checked against the public
-/// sources behind OSV, which keep their history.
+/// would be about 80 GB a year. Beside it, what that reading read, one line per record with
+/// `id`, `modified` and the SHA-256 of its text (`kept_lines`), also the latest only, since
+/// npm's is 23 MB: both are overwritten by the next reading that changes them, so nothing
+/// grows by the day. History is in the public sources behind OSV, which keep theirs.
 pub fn kept(feed: &Feed) -> String {
     format!("{FOLDER}/{}.zip", feed.source)
+}
+
+/// The lines of what the latest reading of a feed read, relative to the store's folder.
+pub fn kept_lines(feed: &Feed) -> String {
+    format!("{FOLDER}/{}.records.txt", feed.source)
 }
 
 /// The archive of a reading that failed, kept until a reading succeeds, so that the reason can
@@ -172,10 +186,40 @@ pub fn request(feed: &Feed, output: &Path, etag: Option<&str>) -> Vec<String> {
     threats::curl_args(feed.url, feed.cap, feed.max_time, Some(output), etag)
 }
 
-/// Asks for a feed, or takes the archive given instead. Run before the run's transaction,
-/// so that a long download keeps no write lock on the store.
+/// The lock a run holds on the feeds' folder from before its downloads until it ends, so that
+/// two runs never write the same partial download. It is not the run lock: a download, which
+/// can take minutes, holds up no watcher's reading and no `soc status`. `None` when another
+/// run holds it.
+pub fn lock_fetch(home: &Path) -> std::io::Result<Option<std::fs::File>> {
+    let dir = home.join(FOLDER);
+    std::fs::create_dir_all(&dir)?;
+    let handle = std::fs::File::options()
+        .create(true)
+        .append(true)
+        .open(dir.join("fetch.lock"))?;
+    match handle.try_lock() {
+        Ok(()) => Ok(Some(handle)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(e)) => Err(e),
+    }
+}
+
+/// Whether the store has the feeds' tables: one made before them has none until a run
+/// opens it.
+fn has_tables(conn: &Connection) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT COUNT(*) = 2 FROM sqlite_master
+         WHERE type = 'table' AND name IN ('advisory', 'feed_reading')",
+        [],
+        |r| r.get(0),
+    )
+}
+
+/// Asks for a feed, or takes the archive given instead. Run before the run lock is taken, with
+/// the store open only to read, or with no store yet: what it needs of the store, the ETag
+/// and when the feed was last read, is read first, and the download touches nothing in it.
 pub fn get(
-    conn: &Connection,
+    conn: Option<&Connection>,
     feed: &Feed,
     input: Option<&Path>,
     curl: &Path,
@@ -189,7 +233,12 @@ pub fn get(
             downloaded: false,
         });
     }
+    let conn = match conn {
+        Some(conn) if has_tables(conn)? => Some(conn),
+        _ => None,
+    };
     if feed.every > 0
+        && let Some(conn) = conn
         && let Some(at) = last_good_at(conn, feed.source)?
         && now - at <= feed.every
     {
@@ -197,9 +246,12 @@ pub fn get(
     }
     // The ETag of the archive held: the one last read, or the one that failed, while it is
     // still there to be read again.
-    let etag = last_etag(conn, feed.source)?
-        .filter(|(_, failed)| !failed || home.join(kept_failed(feed)).is_file())
-        .map(|(etag, _)| etag);
+    let etag = match conn {
+        Some(conn) => last_etag(conn, feed.source)?,
+        None => None,
+    }
+    .filter(|(_, failed)| !failed || home.join(kept_failed(feed)).is_file())
+    .map(|(etag, _)| etag);
     let dir = home.join(FOLDER);
     if let Err(e) = std::fs::create_dir_all(&dir) {
         return Ok(Got::Failed(format!("cannot make {}: {e}", dir.display())));
@@ -350,8 +402,7 @@ pub fn held(conn: &Connection, source: &str) -> rusqlite::Result<(usize, usize, 
 }
 
 /// Records what was got for a feed, in the run's transaction. A reading that failed changes
-/// no advisory. Returns the lines of what was read, one per record, sorted, when an archive
-/// was read whole: the caller keeps them as raw input.
+/// no advisory. An archive read whole is kept, with its lines (see `kept`).
 pub fn record(
     tx: &Transaction,
     run_id: &str,
@@ -359,7 +410,7 @@ pub fn record(
     home: &Path,
     feed: &Feed,
     got: Got,
-) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error>> {
     let put = |r: Reading| put_reading(tx, feed.source, run_id, at, &r);
     let failed = |reason: String| Reading {
         outcome: "failed",
@@ -367,10 +418,10 @@ pub fn record(
         ..Reading::default()
     };
     let (path, etag, downloaded) = match got {
-        Got::NotDue => return Ok(None),
+        Got::NotDue => return Ok(()),
         Got::Failed(reason) => {
             put(failed(reason))?;
-            return Ok(None);
+            return Ok(());
         }
         Got::Unchanged => match last_with_etag(tx, feed.source)? {
             // The archive that failed has not changed: it is read again, never taken as good.
@@ -387,7 +438,7 @@ pub fn record(
                     entries: Some(held(tx, feed.source)?.0),
                     ..before
                 })?;
-                return Ok(None);
+                return Ok(());
             }
         },
         Got::Archive {
@@ -398,8 +449,8 @@ pub fn record(
     };
     let failed_path = home.join(kept_failed(feed));
     let reread = path == failed_path;
-    let bytes = match archive_bytes(&path, feed.cap) {
-        Ok(bytes) => bytes,
+    let sha = match archive_sha(&path, feed.cap) {
+        Ok(sha) => sha,
         Err(reason) => {
             if downloaded {
                 let _ = std::fs::remove_file(&path);
@@ -408,11 +459,9 @@ pub fn record(
                 etag: None,
                 ..failed(reason)
             })?;
-            return Ok(None);
+            return Ok(());
         }
     };
-    let sha = sha256::hex(&bytes);
-    drop(bytes);
     // The same bytes as the archive last read: nothing to read again.
     if let Some(before) = last_good(tx, feed.source)?
         && before.sha256.as_deref() == Some(sha.as_str())
@@ -426,7 +475,7 @@ pub fn record(
             entries: Some(held(tx, feed.source)?.0),
             ..before
         })?;
-        return Ok(None);
+        return Ok(());
     }
     match ingest(tx, run_id, at, feed, &path, STREAM_CAP, RECORD_CAP)? {
         Err(reason) => {
@@ -447,7 +496,7 @@ pub fn record(
                 raw_path,
                 entries: None,
             })?;
-            Ok(None)
+            Ok(())
         }
         Ok((counts, lines)) => {
             let keep = home.join(kept(feed));
@@ -458,6 +507,11 @@ pub fn record(
                 std::fs::copy(&path, &keep)?;
             }
             let _ = std::fs::remove_file(&failed_path);
+            // What was read, one line per record, in place of the one before.
+            let lines_at = home.join(kept_lines(feed));
+            let part = lines_at.with_extension("txt.part");
+            std::fs::write(&part, &lines)?;
+            std::fs::rename(&part, &lines_at)?;
             let text = json!({
                 "first": counts.first,
                 "records": counts.records,
@@ -479,26 +533,38 @@ pub fn record(
                 raw_path: Some(kept(feed)),
                 entries: Some(counts.records),
             })?;
-            Ok(Some(lines))
+            Ok(())
         }
     }
 }
 
-/// The archive's bytes, if it is a zip archive under the cap.
-fn archive_bytes(path: &Path, cap: u64) -> Result<Vec<u8>, String> {
-    let file =
-        std::fs::File::open(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-    let mut bytes = Vec::new();
-    file.take(cap + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-    if bytes.len() as u64 > cap {
+/// The SHA-256 of the archive, if it is a zip archive under the cap. Read in pieces, so that
+/// the archive is never held in memory.
+fn archive_sha(path: &Path, cap: u64) -> Result<String, String> {
+    let cannot = |e: std::io::Error| format!("cannot read {}: {e}", path.display());
+    let mut file = std::fs::File::open(path).map_err(cannot)?.take(cap + 1);
+    let mut hasher = sha256::Hasher::new();
+    let mut piece = vec![0u8; 1024 * 1024];
+    let (mut total, mut head) = (0u64, Vec::<u8>::with_capacity(4));
+    loop {
+        let n = match file.read(&mut piece) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(cannot(e)),
+        };
+        let want = 4 - head.len();
+        head.extend(piece[..n].iter().take(want));
+        hasher.update(&piece[..n]);
+        total += n as u64;
+    }
+    if total > cap {
         return Err(format!("the archive is larger than the cap of {cap} bytes"));
     }
-    if !bytes.starts_with(b"PK\x03\x04") {
+    if head != b"PK\x03\x04" {
         return Err("not a zip archive".to_string());
     }
-    Ok(bytes)
+    Ok(hasher.hex())
 }
 
 /// Why a reading stopped: the feed, named for a person, or the store.
@@ -1190,13 +1256,7 @@ impl State {
 
 /// The state of every feed.
 pub fn states(conn: &Connection) -> rusqlite::Result<Vec<State>> {
-    // A store made before them has neither table until a run opens it.
-    let has_tables: bool = conn.query_row(
-        "SELECT COUNT(*) = 2 FROM sqlite_master
-         WHERE type = 'table' AND name IN ('advisory', 'feed_reading')",
-        [],
-        |r| r.get(0),
-    )?;
+    let has_tables = has_tables(conn)?;
     let mut out = Vec::new();
     for feed in &FEEDS {
         if !has_tables {
@@ -1269,7 +1329,7 @@ pub fn states(conn: &Connection) -> rusqlite::Result<Vec<State>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Record, STREAM_CAP, Stop, archive_bytes, each_record, normalized, parse, stream};
+    use super::{Record, STREAM_CAP, Stop, archive_sha, each_record, normalized, parse, stream};
     use serde_json::{Value, json};
     use std::path::{Path, PathBuf};
     use std::process::Command;
@@ -1454,7 +1514,7 @@ mod tests {
         let html = dir.0.join("page.zip");
         std::fs::write(&html, "<html>Service unavailable</html>").unwrap();
         assert_eq!(
-            archive_bytes(&html, 1024).err().as_deref(),
+            archive_sha(&html, 1024).err().as_deref(),
             Some("not a zip archive")
         );
     }
@@ -1466,9 +1526,20 @@ mod tests {
         let dir = Dir::new("caps");
         let good = npm_zip(&dir.0, "good.zip", vec![]);
         let size = std::fs::metadata(&good).unwrap().len();
-        assert!(archive_bytes(&good, size).is_ok());
+        // Hashed in pieces, the archive's hash is the hash of its whole bytes.
+        let whole = crate::sha256::hex(&std::fs::read(&good).unwrap());
+        assert_eq!(archive_sha(&good, size), Ok(whole));
+        // So is the hash of one larger than a piece, as npm's is.
+        let mut bytes = b"PK\x03\x04".to_vec();
+        bytes.extend((0..3 * 1024 * 1024 + 7).map(|i: u32| (i % 251) as u8));
+        let large = dir.0.join("large.zip");
+        std::fs::write(&large, &bytes).unwrap();
         assert_eq!(
-            archive_bytes(&good, size - 1).err(),
+            archive_sha(&large, bytes.len() as u64),
+            Ok(crate::sha256::hex(&bytes))
+        );
+        assert_eq!(
+            archive_sha(&good, size - 1).err(),
             Some(format!(
                 "the archive is larger than the cap of {} bytes",
                 size - 1

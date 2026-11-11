@@ -468,6 +468,7 @@ pub fn open(path: &Path) -> Res<Connection> {
     crate::owner::add_via(&conn)?;
     conn.execute_batch(THREATS)?;
     conn.execute_batch(crate::osv::SCHEMA)?;
+    conn.execute_batch(crate::vulnerabilities::SCHEMA)?;
     conn.execute_batch(crate::findings::SCHEMA)?;
     crate::findings::add_via(&conn)?;
     add_causes(&conn)?;

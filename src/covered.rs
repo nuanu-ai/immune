@@ -29,8 +29,13 @@ pub fn watched() -> Vec<(Count, &'static str, bool)> {
             .map(|(as_, what, _)| (Count::Files(as_), what, true)),
     );
     out.extend(INSTALLED);
+    out.push((Count::Dependencies, DEPENDENCIES, false));
     out
 }
+
+/// What the projects' lockfiles declare, matched against the known vulnerabilities at every
+/// check.
+pub const DEPENDENCIES: &str = "packages your projects depend on";
 
 /// Installed software, as the integrity reader counts it.
 const INSTALLED: [(Count, &str, bool); 4] = [
@@ -56,6 +61,14 @@ pub const SAMPLED: &str = "running programs and their connections";
 /// kind when it fires on what a run reports for a change of that kind. None for words that
 /// name no kind.
 pub fn rules_about(what: &str) -> Vec<findings::Rule> {
+    // What the matching of dependencies finds is a state, not a change: its rules say so by
+    // their kind.
+    if what == DEPENDENCIES {
+        return findings::rules()
+            .into_iter()
+            .filter(|r| r.kind == findings::DEPENDENCY)
+            .collect();
+    }
     let places: Vec<&str> = if what == SAMPLED {
         // What a sample of running programs reports for a rule about the programs themselves;
         // a match of an indicator is not about one kind and is told apart.
@@ -64,7 +77,7 @@ pub fn rules_about(what: &str) -> Vec<findings::Rule> {
         match watched().into_iter().find(|(_, w, _)| *w == what) {
             Some((Count::Files(as_), _, _)) => vec![as_],
             Some((Count::Installed(kind), _, _)) => integrity::places(kind),
-            None => Vec::new(),
+            Some((Count::Dependencies, _, _)) | None => Vec::new(),
         }
     };
     findings::rules()
@@ -101,6 +114,19 @@ pub fn none_here(
             continue;
         }
         let (reader, kinds) = match count {
+            // Projects were looked for on this Mac and no lockfile of them failed.
+            Count::Dependencies => {
+                let looked = latest
+                    .iter()
+                    .any(|r| r.reader == crate::checkouts::READER && r.scope == this);
+                let failed_here = latest
+                    .iter()
+                    .any(|r| r.reader == crate::lockfiles::READER && failed(r));
+                if looked && !failed_here {
+                    out.push(what);
+                }
+                continue;
+            }
             Count::Files(as_) => {
                 let mut kinds = autorun::kinds_of(as_);
                 kinds.extend(
@@ -142,6 +168,8 @@ pub fn none_here(
 pub enum Count {
     Files(&'static str),
     Installed(&'static str),
+    /// Packages the projects' lockfiles declare, from the lockfiles reader.
+    Dependencies,
 }
 
 /// The state of this Mac, as `this_mac` gives it.
@@ -247,6 +275,21 @@ pub fn this_mac(conn: &Connection, latest: &[Latest], live: bool) -> rusqlite::R
     // Installed software is listed once it has been read here: a watcher alone, before any
     // full run, reads only the watched places, which every reading of this Mac reads.
     let installed_read = mine.iter().any(|r| r.reader == integrity::READER);
+    // Packages of the projects on this Mac, once their lockfiles have been read.
+    let in_checkout = format!("checkout:{this}/%");
+    let dependencies: Option<i64> = if latest
+        .iter()
+        .any(|r| r.reader == crate::lockfiles::READER && r.scope.starts_with("checkout:"))
+    {
+        Some(conn.query_row(
+            "SELECT COUNT(DISTINCT subject) FROM assertion
+             WHERE layer = 'live' AND reader = ?1 AND predicate = 'part_of' AND scope LIKE ?2",
+            params![crate::lockfiles::READER, in_checkout],
+            |r| r.get(0),
+        )?)
+    } else {
+        None
+    };
     // A kind with nothing to watch on this Mac has no count and is left out.
     let mut watched: Vec<(&'static str, i64, &'static str)> = watched()
         .into_iter()
@@ -255,6 +298,7 @@ pub fn this_mac(conn: &Connection, latest: &[Latest], live: bool) -> rusqlite::R
                 Count::Files(as_) => files.get(as_),
                 Count::Installed(kind) if installed_read => installed.get(kind),
                 Count::Installed(_) => return None,
+                Count::Dependencies => dependencies.as_ref().filter(|n| **n > 0),
             };
             let how = if live && fast { "live" } else { "hourly" };
             Some((what, *n?, how))
@@ -423,22 +467,50 @@ pub const THREATS_UNREAD: Cause = Cause {
     advice: "Nothing to do. It is tried again at every check.",
 };
 
+pub const VULNERABILITIES_UNKNOWN: Cause = Cause {
+    id: "vulnerabilities-unknown",
+    who: NOTHING,
+    scope: "projects",
+    kind: "packages whose known vulnerabilities cannot be told",
+    title: [
+        "For {n} of the packages your projects use, this version cannot tell whether a known vulnerability affects them.",
+        "For {n} of the packages your projects use, this version cannot tell whether a known vulnerability affects them.",
+    ],
+    meaning: "Why, with how many packages each: {reasons}.",
+    meaning_none: None,
+    advice: "Nothing to do. This is a limit of this version.",
+};
+
+pub const VULNERABILITY_DATA_OLD: Cause = Cause {
+    id: "vulnerability-data-old",
+    who: NOTHING,
+    scope: "threats",
+    kind: "list of known vulnerabilities not current",
+    title: [
+        "The list of known vulnerabilities could not be updated since {date}.",
+        "The list of known vulnerabilities could not be updated since {date}.",
+    ],
+    meaning: "It is downloaded again at every check. Until it is, a vulnerability published after that date is not known here.",
+    meaning_none: None,
+    advice: "Nothing to do if you were offline. If it stays, ask your agent to look at why the download fails.",
+};
+
 pub const NOT_COMPARED: Cause = Cause {
     id: "vulnerabilities-not-compared",
     who: NOTHING,
     scope: "threats",
-    kind: "vulnerabilities not yet compared with what you have",
+    kind: "vulnerabilities not yet compared with installed software and servers",
     title: [
-        "Known vulnerabilities are not yet compared with what you have installed.",
-        "Known vulnerabilities are not yet compared with what you have installed.",
+        "Known vulnerabilities are not yet compared with your installed software, your servers or projects of other kinds.",
+        "Known vulnerabilities are not yet compared with your installed software, your servers or projects of other kinds.",
     ],
-    meaning: "The list of vulnerabilities attackers are using is downloaded at every check, but this version does not yet tell you which of them affect you.",
+    meaning: "The packages your projects list in package-lock.json and Cargo.lock are compared. Applications, Homebrew packages, what your servers run, and projects in other languages are not yet, so this version does not tell you which vulnerabilities affect them.",
     meaning_none: None,
     advice: "Nothing to do. This comes in a later version.",
 };
 
 /// Every cause, in the order items are listed: what the owner can fix first.
-pub const CAUSES: [&Cause; 9] = [
+pub const CAUSES: [&Cause; 11] = [
     &SERVERS_NOT_CHECKED,
     &SERVERS_NOT_OPENED,
     &NOT_PERMITTED,
@@ -447,13 +519,15 @@ pub const CAUSES: [&Cause; 9] = [
     &NOT_UNDERSTOOD,
     &PROJECT_AUTORUN,
     &THREATS_UNREAD,
+    &VULNERABILITY_DATA_OLD,
+    &VULNERABILITIES_UNKNOWN,
     &NOT_COMPARED,
 ];
 
 /// Each sentence of `status::CANNOT_JUDGE`, told for a person, one for one: the builder who
 /// closes a gap deletes the sentence and its line here, and the item goes with them.
 pub const LIMITS: [(&str, &Cause); 1] = [(
-    "no vulnerability from the catalogue is matched against the estate yet",
+    "no vulnerability is matched against installed software, servers' packages or ecosystems other than npm and crates.io yet",
     &NOT_COMPARED,
 )];
 
@@ -471,6 +545,8 @@ pub struct Uncovered {
     pub since: Option<i64>,
     pub value: Option<String>,
     pub examples: Vec<String>,
+    /// Why, clause by clause in the program's words, where the words say `{reasons}`.
+    pub reasons: Vec<String>,
 }
 
 impl Uncovered {
@@ -482,6 +558,7 @@ impl Uncovered {
             since: None,
             value: None,
             examples: Vec::new(),
+            reasons: Vec::new(),
         }
     }
 
@@ -492,9 +569,15 @@ impl Uncovered {
             .take(EXAMPLES)
             .map(String::as_str)
             .collect();
+        let date = self
+            .since
+            .map_or("the first check".to_string(), crate::view::utc);
+        let reasons = self.reasons.join("; ");
         numbers(words)
             .replace("{n}", &self.count.to_string())
             .replace("{examples}", &listed(&shown))
+            .replace("{date}", &date)
+            .replace("{reasons}", &reasons)
     }
 
     pub fn title(&self) -> String {
@@ -714,6 +797,28 @@ pub fn not_covered(
             since: last.map(|(at, _)| at),
             value: Some(reason.clone()),
             ..Uncovered::new(&THREATS_UNREAD, 1)
+        });
+    }
+    // The vulnerability data, judged as the latest run judged it: current or not.
+    if let Some(run) = status::latest_finished(conn)?
+        && let Some(since) = crate::vulnerabilities::stale(conn, run.started_at)?
+    {
+        out.push(Uncovered {
+            since,
+            ..Uncovered::new(&VULNERABILITY_DATA_OLD, 1)
+        });
+    }
+    // Packages whose answer is "don't know", one count, with each reason and its count. The
+    // data not being current is the item above, not a reason here.
+    let t = crate::vulnerabilities::totals(conn)?;
+    if t.packages_unknown > 0 {
+        out.push(Uncovered {
+            reasons: t
+                .packages_by_reason
+                .iter()
+                .map(|(code, n)| crate::vulnerabilities::reason_said(code, *n))
+                .collect(),
+            ..Uncovered::new(&VULNERABILITIES_UNKNOWN, t.packages_unknown)
         });
     }
     // One for each sentence of `CANNOT_JUDGE`: a test pins the pairing.

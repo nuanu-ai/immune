@@ -65,6 +65,59 @@ fn component_name(name: &str, source: Source) -> String {
     format!("{name} ({source})")
 }
 
+/// The name part of a component's id told apart: the package's name, and where it comes from
+/// when that is not the public registry. The inverse of `component_name`.
+pub fn split_name(name: &str) -> (&str, Option<&'static str>) {
+    for (suffix, from) in [
+        (" (git)", "git"),
+        (" (path)", "a path"),
+        (" (other registry)", "another registry"),
+    ] {
+        if let Some(package) = name.strip_suffix(suffix) {
+            return (package, Some(from));
+        }
+    }
+    (name, None)
+}
+
+/// The ecosystem whose dependencies a kind of lockfile declares, by its name as `read` names
+/// it; `None` for one not known here.
+fn ecosystem_of(kind: &str) -> Option<&'static str> {
+    match kind {
+        "package-lock.json" | "pnpm-lock.yaml" | "yarn.lock" | "bun.lock" => Some("npm"),
+        k if k.starts_with("package-lock.json version") => Some("npm"),
+        "Cargo.lock" => Some("crates.io"),
+        "uv.lock" | "poetry.lock" | "requirements.txt" => Some("PyPI"),
+        "composer.lock" => Some("Packagist"),
+        "go.sum" => Some("Go"),
+        "Package.resolved" => Some("SwiftURL"),
+        _ => None,
+    }
+}
+
+/// Whether a partial reading, by the reason `read` gives it, leaves the dependencies of one
+/// ecosystem in part unknown: a lockfile of that ecosystem not read or not parsed, an entry not
+/// told, a folder not listed. A clause this does not recognise counts for every ecosystem, so
+/// that nothing reads as fully known that is not.
+pub fn partial_for(reason: &str, ecosystem: &str) -> bool {
+    let names_it = |names: &str| {
+        names
+            .split(", ")
+            .any(|n| ecosystem_of(n).is_none_or(|e| e == ecosystem))
+    };
+    reason.split("; ").any(|clause| {
+        if let Some(names) = clause.strip_prefix("not supported yet: ") {
+            names_it(names)
+        } else if let Some(names) = clause.strip_prefix("could not be read: ") {
+            names_it(names)
+        } else if clause.starts_with("the package of ") {
+            ecosystem == "npm"
+        } else {
+            true
+        }
+    })
+}
+
 /// What reading one checkout found.
 pub struct Outcome {
     pub completeness: &'static str,

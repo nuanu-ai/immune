@@ -384,8 +384,171 @@ fn detached_inline_code() -> Rule {
 
 // ---- End of processes. ----
 
+// ---- Packages the projects depend on: what matching the lockfiles against the vulnerability
+// data found, see `vulnerabilities`. These rules find a state: a finding stays while the
+// dependency matches and is cleared when it goes. They are raised by `hold`, never by what a
+// run saw change, so `fires` is false for every observation. ----
+
+/// What these rules are about, as the item's `kind`.
+pub const DEPENDENCY: &str = "lockfile dependency";
+
+/// The ids of the rules about packages the projects depend on.
+pub const MALICIOUS_PACKAGE: &str = "lockfiles.malicious-package";
+pub const MALICIOUS_NAME_REMOVED: &str = "lockfiles.malicious-name-removed";
+pub const EXPLOITED_VULNERABILITY: &str = "lockfiles.exploited-vulnerability";
+
+fn malicious_package() -> Rule {
+    Rule {
+        id: MALICIOUS_PACKAGE,
+        kind: DEPENDENCY,
+        // Supply Chain Compromise: Compromise Software Dependencies and Development Tools.
+        technique: Some("T1195.001"),
+        severity: "critical",
+        confidence: "high",
+        finds: "state",
+        words: Words {
+            title: "A project on this Mac depends on a package that is known to be malicious.",
+            meaning: "The package, or this release of it, was reported as carrying harmful code. If the project's packages were installed on this Mac, that code may have run here.",
+            advice: "Do not install or run that project again. Ask your agent to look into it; if its packages were installed here, treat the tokens and keys this Mac could reach as exposed.",
+        },
+        fires: |_| false,
+    }
+}
+
+fn malicious_name_removed() -> Rule {
+    Rule {
+        id: MALICIOUS_NAME_REMOVED,
+        kind: DEPENDENCY,
+        technique: Some("T1195.001"),
+        severity: "high",
+        confidence: "low",
+        finds: "state",
+        words: Words {
+            title: "A project on this Mac depends on a package name that was removed from the registry as malicious.",
+            meaning: "The registry now serves a harmless placeholder under that name, so installing it does nothing harmful today. But the project asks for a name that carried harmful code, often through a misspelt dependency.",
+            advice: "Find how that name got into the project and remove it.",
+        },
+        fires: |_| false,
+    }
+}
+
+fn exploited_vulnerability() -> Rule {
+    Rule {
+        id: EXPLOITED_VULNERABILITY,
+        kind: DEPENDENCY,
+        // Exploitation is the attacker's act elsewhere; no technique describes this Mac.
+        technique: None,
+        severity: "critical",
+        confidence: "medium",
+        finds: "state",
+        words: Words {
+            title: "A project on this Mac depends on a package with a vulnerability that attackers are using.",
+            meaning: "The vulnerability is on the list of those known to be used in real attacks. Whether this project can be reached that way is not known.",
+            advice: "Update the package to a release that fixes it; the finding names one where the record gives it.",
+        },
+        fires: |_| false,
+    }
+}
+
+/// Holds a rule that finds a state for what a run found now: each thing in `now` has a finding
+/// that stands, raised when none does, with the journal entries it rests on; each finding of
+/// the rule about a thing no longer in `now` is cleared. A finding the owner answered stays
+/// answered while the thing stays. Returns how many findings were opened.
+pub fn hold(
+    tx: &Transaction,
+    rule: &str,
+    now: &[(String, Vec<i64>)],
+    run_id: &str,
+    at: i64,
+) -> rusqlite::Result<usize> {
+    let mut opened = 0;
+    for (about, basis) in now {
+        let latest: Option<(String, i64, String, Option<i64>)> = tx
+            .query_row(
+                "SELECT id, occurrence, state, until_at FROM finding
+                 WHERE rule = ?1 AND about = ?2 ORDER BY occurrence DESC LIMIT 1",
+                params![rule, about],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()?;
+        match latest {
+            Some((id, _, state, until)) if state != "cleared" => {
+                let ended = state == "expected" && until.is_some_and(|u| u <= at);
+                tx.execute(
+                    "UPDATE finding SET last_seen_at = ?2, last_seen_run = ?3,
+                            state = CASE WHEN ?4 THEN 'open' ELSE state END
+                     WHERE id = ?1",
+                    params![id, at, run_id, ended],
+                )?;
+                if ended {
+                    journal(
+                        tx,
+                        at,
+                        run_id,
+                        "finding_reopened",
+                        &id,
+                        rule,
+                        about,
+                        json!({}),
+                    )?;
+                }
+            }
+            latest => {
+                let n = latest.map_or(1, |(_, n, _, _)| n + 1);
+                let id = short_id('f', &[rule, about, &n.to_string()]);
+                tx.execute(
+                    "INSERT INTO finding (id, rule, about, occurrence, state, change, first_seen_at,
+                                          first_seen_run, last_seen_at, last_seen_run)
+                     VALUES (?1, ?2, ?3, ?4, 'open', 'new', ?5, ?6, ?5, ?6)",
+                    params![id, rule, about, n, at, run_id],
+                )?;
+                journal(
+                    tx,
+                    at,
+                    run_id,
+                    "finding_raised",
+                    &id,
+                    rule,
+                    about,
+                    json!({}),
+                )?;
+                for seq in basis {
+                    tx.execute(
+                        "INSERT INTO finding_basis (finding, journal) VALUES (?1, ?2)",
+                        params![id, seq],
+                    )?;
+                }
+                opened += 1;
+            }
+        }
+    }
+    let standing: Vec<(String, String)> = tx
+        .prepare("SELECT id, about FROM finding WHERE rule = ?1 AND state != 'cleared'")?
+        .query_map([rule], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (id, about) in standing {
+        if now.iter().any(|(a, _)| *a == about) {
+            continue;
+        }
+        tx.execute("UPDATE finding SET state = 'cleared' WHERE id = ?1", [&id])?;
+        journal(
+            tx,
+            at,
+            run_id,
+            "finding_cleared",
+            &id,
+            rule,
+            &about,
+            json!({}),
+        )?;
+    }
+    Ok(opened)
+}
+
+// ---- End of packages the projects depend on. ----
+
 /// Every rule, in the order they are listed.
-pub fn rules() -> [Rule; 14] {
+pub fn rules() -> [Rule; 17] {
     [
         autostart(),
         shell_profile(),
@@ -401,6 +564,9 @@ pub fn rules() -> [Rule; 14] {
         agent_start(),
         indicator_match(),
         detached_inline_code(),
+        malicious_package(),
+        malicious_name_removed(),
+        exploited_vulnerability(),
     ]
 }
 
@@ -669,6 +835,14 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Found>>> 
     .map(|f| {
         f.map(|mut f| {
             f.in_force = in_force(&f, now);
+            // A finding about a dependency says where its lockfile lines are and what records
+            // it rests on, from the answers that stand now.
+            if f.rule.starts_with("lockfiles.")
+                && let Some((place, value)) = crate::vulnerabilities::finding_detail(conn, &f.about)
+            {
+                f.place = place;
+                f.became = Some(value);
+            }
             f
         })
     })

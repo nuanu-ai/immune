@@ -152,12 +152,77 @@ fn soc_run(home: &Path, store: &Path) -> Command {
     cmd
 }
 
-/// Vulnerability data that is not there, so that the network is never asked for it.
+/// Vulnerability data read from files, so that the network is never asked for it: none unless
+/// a test puts an archive there (`osv_npm`).
 fn no_vulnerability_data(cmd: &mut Command, home: &Path) {
     cmd.arg("--osv-crates-input")
-        .arg(home.join("no-osv"))
+        .arg(home.join("osv-crates.zip"))
         .arg("--osv-npm-input")
-        .arg(home.join("no-osv"));
+        .arg(home.join("osv-npm.zip"));
+}
+
+/// npm's vulnerability data as a run reads it: an archive of these public records from
+/// `tests/osv/npm` (see its NOTICE), made by bsdtar, each changed now so that the data is
+/// current.
+fn osv_npm(home: &Path, ids: &[&str]) {
+    let src = home.join("osv-src");
+    let _ = std::fs::remove_dir_all(&src);
+    std::fs::create_dir_all(&src).unwrap();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut cmd = Command::new("/usr/bin/bsdtar");
+    cmd.args(["-c", "--format", "zip", "-f"])
+        .arg(home.join("osv-npm.zip"))
+        .arg("-C")
+        .arg(&src);
+    for id in ids {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/osv/npm/{id}.json"));
+        let mut record: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        record["modified"] = serde_json::json!(iso_utc(now as i64 - 3600));
+        std::fs::write(src.join(format!("{id}.json")), record.to_string()).unwrap();
+        cmd.arg(format!("{id}.json"));
+    }
+    assert!(cmd.status().unwrap().success());
+    std::fs::remove_dir_all(&src).unwrap();
+}
+
+/// UTC seconds as OSV writes a time.
+fn iso_utc(secs: i64) -> String {
+    let (days, rest) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        rest / 3600,
+        rest % 3600 / 60,
+        rest % 60
+    )
+}
+
+/// A project's `package-lock.json` naming these packages from the registry.
+fn lock_deps(w: &Watch, deps: &[(&str, &str)]) {
+    let entries: Vec<String> = deps
+        .iter()
+        .map(|(name, version)| format!("\"node_modules/{name}\": {{\"version\": \"{version}\"}}"))
+        .collect();
+    put(
+        w.home(),
+        "dev/shop/package-lock.json",
+        &format!(
+            "{{\"lockfileVersion\": 3, \"packages\": {{\"\": {{\"name\": \"shop\"}}, {}}}}}\n",
+            entries.join(", ")
+        ),
+    );
 }
 
 /// The same, fetching the threat catalogue with this curl instead.
@@ -7666,12 +7731,12 @@ fn unknown_is_never_given_as_zero_or_full() {
     ] {
         assert!(none.get(section).is_none(), "{section}");
     }
-    assert_eq!(none["not_computed"].as_array().unwrap().len(), 13);
+    assert_eq!(none["not_computed"].as_array().unwrap().len(), 14);
     // With no store, this Mac has not been checked: said, not left out.
     assert_eq!(none["this_mac"]["state"], "not_checked");
     assert!(
         none["cannot_judge"].as_array().unwrap().contains(
-            &"no vulnerability from the catalogue is matched against the estate yet".into()
+            &"no vulnerability is matched against installed software, servers' packages or ecosystems other than npm and crates.io yet".into()
         ),
         "{none}"
     );
@@ -8434,7 +8499,7 @@ fn status_without_json_is_a_short_summary_for_a_person() {
     );
     // The limits of this version in the same words as the page and the app.
     assert!(text.contains(
-        "\nLimit of this version: Known vulnerabilities are not yet compared with what you have installed.\n"
+        "\nLimit of this version: Known vulnerabilities are not yet compared with your installed software, your servers or projects of other kinds.\n"
     ));
     // Processes and connections are sampled: the status no longer says they are not read.
     assert!(!text.contains("processes and connections are not read"));
@@ -8627,7 +8692,7 @@ fn agent_settings(w: &Watch, more: &str) {
     );
 }
 
-const SAMPLES: [Sample; 13] = [
+const SAMPLES: [Sample; 16] = [
     Sample {
         rule: "watched.autostart",
         before: |w| {
@@ -8866,6 +8931,52 @@ const SAMPLES: [Sample; 13] = [
         raise: |w| lock_from(w, "https://evil.example/left-pad-1.3.0.tgz"),
         // A name that only ends like the one on the list.
         silent: |w| lock_from(w, "https://notevil.example/left-pad-1.3.0.tgz"),
+    },
+    // The release of ansi-regex that carried harmful code in September 2025.
+    Sample {
+        rule: "lockfiles.malicious-package",
+        before: |w| {
+            checkout(w.home(), "dev/shop");
+            osv_npm(w.home(), &["MAL-2025-46966"]);
+            lock_deps(w, &[("ansi-regex", "6.2.0")]);
+        },
+        raise: |w| lock_deps(w, &[("ansi-regex", "6.2.1")]),
+        // The release after it, which did not.
+        silent: |w| lock_deps(w, &[("ansi-regex", "6.2.2")]),
+    },
+    // A name npm removed as malicious, pinned at its placeholder.
+    Sample {
+        rule: "lockfiles.malicious-name-removed",
+        before: |w| {
+            checkout(w.home(), "dev/shop");
+            osv_npm(w.home(), &["MAL-2021-1"]);
+            lock_deps(w, &[("jquery", "3.7.1")]);
+        },
+        raise: |w| lock_deps(w, &[("jquery", "3.7.1"), ("cxp-jquery", "0.0.1-security")]),
+        // The real package whose name it imitated.
+        silent: |w| lock_deps(w, &[("jquery", "3.7.0")]),
+    },
+    // React Server Components, CVE-2025-55182, in the catalogue.
+    Sample {
+        rule: "lockfiles.exploited-vulnerability",
+        before: |w| {
+            checkout(w.home(), "dev/shop");
+            osv_npm(w.home(), &["GHSA-fv66-9v8q-g76r"]);
+            std::fs::write(
+                w.home().join("no-catalogue"),
+                kev(&[kev_entry(
+                    "CVE-2025-55182",
+                    "Meta",
+                    "React Server Components",
+                    "2025-12-05",
+                )]),
+            )
+            .unwrap();
+            lock_deps(w, &[("react-server-dom-webpack", "19.0.1")]);
+        },
+        raise: |w| lock_deps(w, &[("react-server-dom-webpack", "19.0.0")]),
+        // A release with the fix.
+        silent: |w| lock_deps(w, &[("react-server-dom-webpack", "19.1.2")]),
     },
 ];
 
@@ -9331,9 +9442,13 @@ fn neither_a_baseline_nor_the_first_run_of_this_build_on_an_older_store_raises_a
     // Everything found on the first reading is the baseline. A store whose watched places were
     // read before this build looked for findings must not turn its history into findings.
     // A match of an indicator is not a change but a state the list asks about, so it is found
-    // at the first reading: see tests/runs_by_itself.rs.
+    // at the first reading: see tests/runs_by_itself.rs. So is a dependency on a malicious or
+    // exploited package: see tests/vulnerability_data.rs.
     let w = Watch::new("finding-upgrade");
-    for s in SAMPLES.iter().filter(|s| s.rule != "indicator.match") {
+    for s in SAMPLES
+        .iter()
+        .filter(|s| s.rule != "indicator.match" && !s.rule.starts_with("lockfiles."))
+    {
         (s.before)(&w);
         (s.raise)(&w);
     }
@@ -10018,7 +10133,7 @@ fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_f
     // answered yet.
     assert!(
         section(page, "limits").contains(
-            "<h3>Known vulnerabilities are not yet compared with what you have installed.</h3>"
+            "<h3>Known vulnerabilities are not yet compared with your installed software, your servers or projects of other kinds.</h3>"
         ),
         "{page}"
     );
@@ -10254,7 +10369,7 @@ fn on_a_mac_where_nothing_was_found_and_no_watcher_ran_every_rule_is_on_the_summ
     let told = section(&pages[0].1, "watched-here");
     let rules = findings_json(&w.store(), &[]);
     let rules = rules["rules"].as_array().unwrap();
-    assert_eq!(rules.len(), 14);
+    assert_eq!(rules.len(), 17);
     for r in rules {
         let title = r["title"].as_str().unwrap().replace('\'', "&#39;");
         assert!(told.contains(&title), "{}: {told}", r["id"]);
@@ -10306,7 +10421,16 @@ fn a_section_of_the_summary_can_be_opened_from_outside_as_a_file() {
         .iter()
         .map(|s| s["section"].as_str().unwrap())
         .collect();
-    assert_eq!(named, ["watched-here", "you-can-fix", "limits", "answered"]);
+    assert_eq!(
+        named,
+        [
+            "watched-here",
+            "vulnerabilities",
+            "you-can-fix",
+            "limits",
+            "answered"
+        ]
+    );
     for s in sections.as_array().unwrap() {
         let anchor = s["section"].as_str().unwrap();
         let file = PathBuf::from(s["path_text"].as_str().unwrap());

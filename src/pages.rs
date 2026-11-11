@@ -20,6 +20,7 @@ use std::fmt::Write;
 pub const THIS_MAC: &str = "this-mac";
 pub const BEYOND: &str = "beyond";
 pub const TECHNICAL: &str = "technical";
+pub const VULNERABILITIES: &str = "vulnerabilities";
 
 /// At most this many things that need a look are shown in full, so the summary stays small.
 const ITEMS_SHOWN: usize = 100;
@@ -82,6 +83,9 @@ fn about(what: &str) -> &'static str {
         "npm packages" => "Packages npm installed for every project at once.",
         "app code kept outside the app" => {
             "Code that applications not made by Apple keep in your Library folder, outside the application itself."
+        }
+        covered::DEPENDENCIES => {
+            "Packages your projects list in package-lock.json and Cargo.lock, compared at every check with the known vulnerabilities and malicious packages of npm and crates.io."
         }
         _ => crate::autorun::about(what),
     }
@@ -173,6 +177,7 @@ pub fn summary(
     let list = indicator_list(conn)?;
     let none = covered::none_here(conn, &view::latest_coverage(conn)?, m)?;
     watched_here(&mut out, m, &none, list)?;
+    vulnerabilities_summary(conn, &mut out)?;
 
     // What the owner can fix, then the limits of this version: each in full, never counted
     // as something to look at.
@@ -431,6 +436,154 @@ fn watched_here(
     Ok(())
 }
 
+/// What the summary says first of known vulnerabilities.
+const VULNERABILITIES_SAY: &str = "These are published weaknesses in packages your projects depend on. They are listed, not alarmed: most matter only under particular conditions. A package known to be malicious, or a vulnerability attackers are using, is shown at the top as something that needs a look.";
+/// At most this many known vulnerabilities are shown on the summary.
+const VULNERABILITIES_SHOWN: usize = 10;
+
+/// A label as a person reads it.
+fn label_words(label: &str) -> &'static str {
+    match label {
+        "malicious" => "Malicious package",
+        "critical" => "Critical",
+        "high" => "High",
+        "moderate" => "Moderate",
+        "low" => "Low",
+        _ => "No label",
+    }
+}
+
+/// One known vulnerability as a row: package and release, project, label, fixed release,
+/// record with its source. Text from the record is escaped by `td`.
+fn vulnerability_row(
+    out: &mut String,
+    a: &crate::vulnerabilities::Affecting,
+    project: bool,
+    this: Option<&str>,
+) -> Out {
+    let releases: Vec<String> = a.affected().into_iter().map(|(v, _)| v).collect();
+    out.push_str("<tr>");
+    view::td(
+        out,
+        "mono",
+        &format!("{} {}", a.package, releases.join(", ")),
+    )?;
+    if project {
+        view::td(out, "mono", &findings::place(&a.checkout, this))?;
+    }
+    view::td(out, "", label_words(a.label))?;
+    view::td(out, "mono", &a.fixed.join(", "))?;
+    view::td(
+        out,
+        "mono",
+        &format!(
+            "{} ({})",
+            a.advisory,
+            crate::vulnerabilities::source_name(&a.advisory)
+        ),
+    )?;
+    out.push_str("</tr>\n");
+    Ok(())
+}
+
+/// The section of the summary on known vulnerabilities in packages the projects use: what
+/// they are, how many of each label, the most severe few, and the page with all of them.
+fn vulnerabilities_summary(conn: &Connection, out: &mut String) -> Out {
+    writeln!(
+        out,
+        "<section id=\"vulnerabilities\">\n<h2>Known vulnerabilities in packages your projects use</h2>\n<p>{}</p>",
+        esc(VULNERABILITIES_SAY)
+    )?;
+    let list = crate::vulnerabilities::affecting(conn)?;
+    let t = crate::vulnerabilities::totals(conn)?;
+    let all = link(
+        VULNERABILITIES,
+        "by-project",
+        "Known vulnerabilities by project",
+    );
+    if !t.matched {
+        writeln!(
+            out,
+            "<p class=\"muted\">Not compared yet: no check has compared your projects' packages with the known vulnerabilities.</p>\n<p>{all}</p>\n</section>"
+        )?;
+        return Ok(());
+    }
+    if list.is_empty() {
+        writeln!(
+            out,
+            "<p class=\"muted\">None is known in the packages that could be compared. What could not be compared is under Limits of this version.</p>\n<p>{all}</p>\n</section>"
+        )?;
+        return Ok(());
+    }
+    out.push_str("<ul class=\"counts\">\n");
+    for (label, n) in &t.by_label {
+        writeln!(
+            out,
+            "<li>{}: {}</li>",
+            label_words(label),
+            grouped(*n as i64)
+        )?;
+    }
+    out.push_str("</ul>\n<div class=\"scroll\"><table class=\"dense\">\n");
+    view::thead(out, &["Package", "Project", "Label", "Fixed in", "Record"]);
+    let this = covered::this_machine(conn)?;
+    for a in list.iter().take(VULNERABILITIES_SHOWN) {
+        vulnerability_row(out, a, true, this.as_deref())?;
+    }
+    out.push_str("</tbody></table></div>\n");
+    writeln!(
+        out,
+        "<p>{}</p>\n</section>",
+        link(
+            VULNERABILITIES,
+            "by-project",
+            &format!(
+                "Known vulnerabilities by project: {}",
+                grouped(list.len() as i64)
+            )
+        )
+    )?;
+    Ok(())
+}
+
+/// Every known vulnerability in packages the projects use, grouped by project.
+pub fn vulnerabilities(conn: &Connection, now: i64) -> Result<String, Box<dyn Error>> {
+    let mut out = top(
+        "Known vulnerabilities in packages your projects use",
+        &format!("This page made {}", utc(now)),
+    );
+    writeln!(
+        out,
+        "<section id=\"by-project\">\n<h2>Known vulnerabilities by project</h2>\n<p class=\"muted\">{}</p>\n<p class=\"muted\">{}</p>",
+        esc(VULNERABILITIES_SAY),
+        esc(crate::vulnerabilities::DECLARED)
+    )?;
+    let this = covered::this_machine(conn)?;
+    let list = crate::vulnerabilities::affecting(conn)?;
+    if list.is_empty() {
+        out.push_str("<p class=\"muted\">None is known.</p>\n");
+    }
+    let mut projects: BTreeMap<&str, Vec<&crate::vulnerabilities::Affecting>> = BTreeMap::new();
+    for a in &list {
+        projects.entry(a.checkout.as_str()).or_default().push(a);
+    }
+    for (checkout, of) in projects {
+        writeln!(
+            out,
+            "<h3 class=\"mono\">{}</h3>\n<div class=\"scroll\"><table class=\"dense\">",
+            esc(&findings::place(checkout, this.as_deref()))
+        )?;
+        view::thead(&mut out, &["Package", "Label", "Fixed in", "Record"]);
+        for a in of {
+            vulnerability_row(&mut out, a, false, this.as_deref())?;
+        }
+        out.push_str("</tbody></table></div>\n");
+    }
+    out.push_str("</section>\n");
+    out.push_str(FOOT);
+    Ok(out)
+}
+
 /// `a`, `a or b`, `a, b or c`.
 fn listed_or(items: &[&str]) -> String {
     match items {
@@ -614,6 +767,23 @@ pub fn this_mac(
         match count {
             Count::Files(as_) => files(conn, &mut out, as_, this)?,
             Count::Installed(kind) => installed(conn, &mut out, kind, this)?,
+            Count::Dependencies => {
+                let n: i64 = conn.query_row(
+                    "SELECT COUNT(DISTINCT subject) FROM assertion
+                     WHERE layer = 'live' AND reader = ?1 AND predicate = 'part_of'
+                       AND scope LIKE ?2",
+                    params![
+                        crate::lockfiles::READER,
+                        format!("checkout:{}/%", this.unwrap_or_default())
+                    ],
+                    |r| r.get(0),
+                )?;
+                writeln!(
+                    out,
+                    "<p>Your projects on this Mac depend on {} packages, each counted once per project; each project and its count are under Projects below. <a href=\"{VULNERABILITIES}.html\">Known vulnerabilities in them</a> are listed by project.</p>",
+                    grouped(n)
+                )?
+            }
         }
         out.push_str("</section>\n");
     }
