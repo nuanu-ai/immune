@@ -192,7 +192,7 @@ const VOCABULARY: &str = "
 INSERT OR IGNORE INTO entity_type (name, status) VALUES
     ('machine', 'used'), ('container', 'used'), ('checkout', 'used'), ('component', 'used'),
     ('repository', 'reserved'), ('service', 'reserved'), ('account', 'reserved'),
-    ('domain', 'reserved'), ('key', 'reserved'), ('party', 'reserved');
+    ('domain', 'reserved'), ('key', 'reserved'), ('party', 'reserved'), ('file', 'used');
 INSERT OR IGNORE INTO predicate (name, object_kind, status) VALUES
     ('located_on', 'entity', 'used'), ('part_of', 'entity', 'used'),
     ('has_version', 'literal', 'used'), ('runs_os', 'literal', 'used'),
@@ -200,7 +200,8 @@ INSERT OR IGNORE INTO predicate (name, object_kind, status) VALUES
     ('known_as', 'literal', 'used'), ('same_as', 'entity', 'used'),
     ('relation_to_owner', 'literal', 'used'), ('built_from', 'literal', 'used'),
     ('runs_release', 'literal', 'used'), ('release_codename', 'literal', 'used'),
-    ('runs_kernel_package', 'literal', 'used'),
+    ('runs_kernel_package', 'literal', 'used'), ('watched_as', 'literal', 'used'),
+    ('has_content', 'literal', 'used'), ('links_to', 'literal', 'used'),
     ('copy_of', NULL, 'reserved'), ('reachable_from', NULL, 'reserved');
 -- A reserved row comes into use: a store seeded before keeps the row and learns its use.
 UPDATE predicate SET object_kind = 'literal', status = 'used'
@@ -214,7 +215,9 @@ INSERT OR IGNORE INTO coverage_kind (name) VALUES
     ('ssh configuration'), ('known hosts'), ('tailnet peers'),
     ('machines under several names'), ('checkouts in agent working folders'),
     ('own names and addresses'), ('sweep visit'), ('system package sources'),
-    ('system release'), ('running kernel package');
+    ('system release'), ('running kernel package'), ('launch agents and daemons'),
+    ('shell profiles of zsh and bash'), ('ssh access files'),
+    ('hooks in the checkout''s .git folder'), ('content of a watched file');
 ";
 
 /// One reading: which reader looked for which kind of thing in which scope.
@@ -553,6 +556,47 @@ pub fn scopes_read(conn: &Connection, reader: &str) -> rusqlite::Result<BTreeSet
     )?
     .query_map([reader], |r| r.get(0))?
     .collect()
+}
+
+/// Whether an earlier reading of this kind by this reader read something in this scope.
+/// A reading that is not preceded by one is the baseline: what it finds is not new.
+pub fn read_before(
+    conn: &Connection,
+    reader: &str,
+    scope: &str,
+    kind: &str,
+) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM coverage WHERE reader = ?1 AND scope = ?2 AND kind = ?3
+                          AND completeness != 'none')",
+        params![reader, scope, kind],
+        |r| r.get(0),
+    )
+}
+
+/// Whether every earlier reading of this kind by this reader in this scope read nothing,
+/// and there was at least one.
+pub fn only_failed_before(
+    conn: &Connection,
+    reader: &str,
+    scope: &str,
+    kind: &str,
+) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT COUNT(*) > 0 AND MAX(completeness != 'none') = 0 FROM coverage
+         WHERE reader = ?1 AND scope = ?2 AND kind = ?3",
+        params![reader, scope, kind],
+        |r| r.get(0),
+    )
+}
+
+/// Whether this reader ever made a reading.
+pub fn read_any(conn: &Connection, reader: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM coverage WHERE reader = ?1)",
+        [reader],
+        |r| r.get(0),
+    )
 }
 
 /// When one reader last read a scope in full.

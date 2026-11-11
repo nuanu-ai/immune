@@ -25,6 +25,7 @@ mod threats;
 mod tools;
 mod traces;
 mod view;
+mod watched;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -38,7 +39,7 @@ const STORE_FOLDER: &str = "Library/Application Support/personal-soc";
 const USAGE: &str = "usage: soc run [--store <path>] [--machine-name <name>] [--brew <path>]
                [--brew-input <file>] [--servers-input <dir>] [--checkouts-root <dir>]
                [--sessions-root <dir>] [--tailscale <path>]
-               [--threats-input <file>] [--curl <path>]
+               [--threats-input <file>] [--curl <path>] [--system-root <dir>]
        soc servers [--store <path>] [--tailscale <path>]
        soc view [--store <path>] [--no-open]
        soc owner [<name> retired|not-mine --reason <text> | <name> withdraw]
@@ -73,6 +74,9 @@ struct Args {
     threats_input: Option<PathBuf>,
     /// The curl to fetch the catalogue with instead of the system's.
     curl: Option<PathBuf>,
+    /// The folder that `/Library` and `/etc` are resolved under for watched places: `/`
+    /// unless a test gives another.
+    system_root: PathBuf,
 }
 
 struct ServersArgs {
@@ -117,6 +121,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
             let (mut machine, mut brew, mut brew_input) = (None, None, None);
             let (mut servers_input, mut checkouts_root, mut tailscale) = (None, None, None);
             let (mut sessions_root, mut threats_input, mut curl) = (None, None, None);
+            let mut system_root = None;
             while let Some(arg) = it.next() {
                 match arg.as_str() {
                     "--tailscale" => tailscale = Some(value(&mut it, &arg)?.into()),
@@ -129,6 +134,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
                     "--sessions-root" => sessions_root = Some(value(&mut it, &arg)?.into()),
                     "--threats-input" => threats_input = Some(value(&mut it, &arg)?.into()),
                     "--curl" => curl = Some(value(&mut it, &arg)?.into()),
+                    "--system-root" => system_root = Some(value(&mut it, &arg)?.into()),
                     _ => return Err(format!("unexpected argument: {arg}")),
                 }
             }
@@ -147,6 +153,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
                 tailscale,
                 threats_input,
                 curl,
+                system_root: system_root.unwrap_or_else(|| PathBuf::from("/")),
             }))
         }
         "servers" => {
@@ -258,7 +265,13 @@ fn main() -> ExitCode {
         }
     };
     let result = match cmd {
-        Cmd::Run(args) => run(&args).map(|line| say(&line)),
+        Cmd::Run(args) => run(&args).map(|(line, watched)| {
+            say(&line);
+            if !watched.is_empty() {
+                say("Watched places:");
+                print_table(&["Change", "Kind", "Path", "Why"], &watched);
+            }
+        }),
         Cmd::Servers(args) => servers_cmd(&args),
         Cmd::View(args) => view(&args),
         Cmd::Owner(args) => owner_cmd(&args),
@@ -944,7 +957,9 @@ fn print_table(head: &[&str], rows: &[Vec<String>]) {
     }
 }
 
-fn run(args: &Args) -> Result<String, Box<dyn Error>> {
+/// Runs every reader and returns the report line, and the watched places that changed or
+/// could not be read, as change, kind, path and why.
+fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?;
     let at = now.as_secs() as i64;
     let run_id = format!("{}-{:09}", now.as_secs(), now.subsec_nanos());
@@ -974,24 +989,26 @@ fn run(args: &Args) -> Result<String, Box<dyn Error>> {
     read_servers(&mut run, servers.as_deref())?;
     let walked = read_checkouts(&mut run, args)?;
     let from_agents = read_agent_folders(&mut run, args)?;
-    if walked.is_some() || !from_agents.is_empty() {
-        // One checkout found by both readers is read once.
-        let mut found = walked.unwrap_or_default();
-        let known: BTreeSet<String> = found.iter().map(|c| c.rel.clone()).collect();
-        found.extend(from_agents.into_iter().filter(|c| !known.contains(&c.rel)));
+    let any_checkouts = walked.is_some() || !from_agents.is_empty();
+    // One checkout found by both readers is read once.
+    let mut found = walked.unwrap_or_default();
+    let known: BTreeSet<String> = found.iter().map(|c| c.rel.clone()).collect();
+    found.extend(from_agents.into_iter().filter(|c| !known.contains(&c.rel)));
+    if any_checkouts {
         read_lockfiles(&mut run, &found)?;
     }
+    let watched = read_watched(&mut run, args, &found)?;
     read_traces(&mut run, args)?;
     resolve(&mut run)?;
     let catalogue = read_threats(&run, args)?;
 
     let totals = store::totals(&tx, &run_id)?;
     let counts = server_counts(&tx, &machine, &sweep::skip_list(&home.join("sweep")))?;
-    let line = report(&run, &totals, &counts, first_run, &catalogue);
+    let line = report(&run, &totals, &counts, first_run, &catalogue, &watched);
     store::journal_note(&tx, at, &run_id, "report", &line)?;
     store::journal_note(&tx, at, &run_id, "run_finished", "")?;
     tx.commit()?;
-    Ok(line)
+    Ok((line, watched.rows))
 }
 
 /// One run in progress: where it writes and what it has seen so far.
@@ -1590,6 +1607,340 @@ fn read_lockfiles(run: &mut Run, found: &[checkouts::Checkout]) -> Result<(), Bo
     Ok(())
 }
 
+/// Rows of a table as the run prints it after the report line.
+type Rows = Vec<Vec<String>>;
+
+/// One event of the watched places reader: kind, subject, predicate and old value.
+type Change = (&'static str, String, String, Option<String>);
+
+/// What the watched places reader tells the report.
+#[derive(Default)]
+struct Watched {
+    /// No reading of watched places was ever made: this one is the baseline.
+    first: bool,
+    /// Files watched after the run.
+    files: i64,
+    new: usize,
+    changed: usize,
+    gone: usize,
+    /// Readings that were not full, in the program's own words.
+    not_full: Vec<String>,
+    /// Change, kind, path and why, for the run's output. Paths are text from the machine.
+    rows: Rows,
+}
+
+/// One reading of which entries a kind of place holds in one scope.
+struct Placed {
+    scope: String,
+    watched_as: &'static str,
+    kind: &'static str,
+    look: watched::Look,
+    /// The checkout's `.git` is a file, so its hooks were not read.
+    git_file: bool,
+}
+
+/// Reads the watched places of this machine and the hooks of every checkout the run holds.
+/// Which entries a place holds is one reading per kind and scope; the content of each file is
+/// a reading of its own, scoped to the file, so a file that cannot be read changes nothing
+/// about it and nothing else.
+fn read_watched(
+    run: &mut Run,
+    args: &Args,
+    checkouts: &[checkouts::Checkout],
+) -> Result<Watched, Box<dyn Error>> {
+    let (run_id, machine) = (run.run_id.to_string(), run.machine.to_string());
+    let mut out = Watched {
+        first: !store::read_any(run.tx, watched::READER)?,
+        ..Watched::default()
+    };
+    let roots = watched::Roots {
+        home: &args.home,
+        system: &args.system_root,
+    };
+    let mut placed = Vec::new();
+    for (watched_as, kind) in watched::kinds() {
+        if kind == watched::HOOK_KIND {
+            continue;
+        }
+        placed.push(Placed {
+            scope: machine.clone(),
+            watched_as,
+            kind,
+            look: watched::look_machine(&roots, kind),
+            git_file: false,
+        });
+    }
+    for c in checkouts {
+        let scope = format!("checkout:{machine}/{}", c.rel);
+        let (look, git_file) = match watched::look_checkout(&c.path, &c.rel) {
+            watched::Hooks::GitFile => (watched::Look::default(), true),
+            watched::Hooks::Looked(look) => (look, false),
+        };
+        // Every checkout is read, those with no hooks too: the first hook planted in a
+        // checkout the store already held is then new, not the baseline.
+        placed.push(Placed {
+            scope,
+            watched_as: watched::HOOK,
+            kind: watched::HOOK_KIND,
+            look,
+            git_file,
+        });
+    }
+
+    // The raw copy: kind, path, checksum and link target, one line per entry; never content.
+    let mut raw = String::new();
+    let mut lines: Vec<Vec<usize>> = Vec::new();
+    let mut n = 0;
+    for p in &placed {
+        let mut mine = Vec::new();
+        for e in &p.look.entries {
+            let content = match &e.content {
+                watched::Content::Unread(why) => format!("not read: {why}"),
+                other => other.literal().unwrap_or_default(),
+            };
+            let link = e.link.as_deref().unwrap_or_default();
+            raw.push_str(&format!(
+                "{}\t{}\t{}\t{}\n",
+                e.watched_as,
+                watched::field(&e.path),
+                watched::field(&content),
+                watched::field(link)
+            ));
+            n += 1;
+            mine.push(n);
+        }
+        lines.push(mine);
+    }
+    let raw_file = run.keep_raw(watched::READER, watched::RAW, raw.as_bytes())?;
+
+    let mut hooks_not_full: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut unread = 0;
+    for (p, mine) in placed.iter().zip(&lines) {
+        let reading = Reading {
+            reader: watched::READER,
+            scope: &p.scope,
+            kind: p.kind,
+            run_id: &run_id,
+            at: run.at,
+            observed_at: run.at,
+        };
+        let file_id = |path: &str| format!("file:{machine}/{path}");
+        let mut statements = Vec::new();
+        for (e, line) in p.look.entries.iter().zip(mine) {
+            let source_ref = format!("{raw_file}:{line}");
+            statements.push(Statement {
+                subject: file_id(&e.path),
+                predicate: "watched_as",
+                object: e.watched_as.to_string(),
+                source_ref: source_ref.clone(),
+            });
+            statements.push(Statement {
+                subject: file_id(&e.path),
+                predicate: "located_on",
+                object: p.scope.clone(),
+                source_ref,
+            });
+        }
+        let (completeness, reason) = if p.git_file {
+            ("partial", Some(watched::GIT_FILE.to_string()))
+        } else if p.kind == watched::HOOK_KIND && p.look.entries.is_empty() {
+            match p.look.completeness() {
+                ("full", _) => ("full", Some(watched::NO_HOOKS.to_string())),
+                other => other,
+            }
+        } else {
+            p.look.completeness()
+        };
+        let prefix = format!("file:{machine}/");
+        let path_of = |id: &str| id.strip_prefix(&prefix).unwrap_or(id).to_string();
+        let mut new = BTreeSet::new();
+        for (kind, subject, predicate, old) in
+            apply_watched(run, &reading, completeness, reason.as_deref(), &statements)?
+        {
+            match (kind, predicate.as_str()) {
+                ("added", "watched_as") => {
+                    out.rows.push(vec![
+                        "new".to_string(),
+                        p.watched_as.to_string(),
+                        path_of(&subject),
+                        String::new(),
+                    ]);
+                    new.insert(subject);
+                }
+                ("removed", "watched_as") => out.rows.push(vec![
+                    "gone".to_string(),
+                    old.unwrap_or_default(),
+                    path_of(&subject),
+                    String::new(),
+                ]),
+                _ => {}
+            }
+        }
+        out.new += new.len();
+        if completeness != "full" {
+            if p.kind == watched::HOOK_KIND {
+                *hooks_not_full.entry(completeness).or_default() += 1;
+            } else {
+                out.not_full
+                    .push(format!("{} ({})", p.kind, not_full_words(completeness)));
+            }
+        }
+        for (path, why) in &p.look.failed {
+            out.rows.push(vec![
+                "not read".to_string(),
+                p.watched_as.to_string(),
+                path.clone(),
+                why.clone(),
+            ]);
+        }
+
+        for (e, line) in p.look.entries.iter().zip(mine) {
+            let id = file_id(&e.path);
+            let source_ref = format!("{raw_file}:{line}");
+            let mut statements = Vec::new();
+            if let Some(literal) = e.content.literal() {
+                statements.push(Statement {
+                    subject: id.clone(),
+                    predicate: "has_content",
+                    object: literal,
+                    source_ref: source_ref.clone(),
+                });
+            }
+            if let Some(link) = &e.link {
+                statements.push(Statement {
+                    subject: id.clone(),
+                    predicate: "links_to",
+                    object: link.clone(),
+                    source_ref,
+                });
+            }
+            let (completeness, reason) = match &e.content {
+                watched::Content::Unread(why) => ("none", Some(why.as_str())),
+                _ => ("full", None),
+            };
+            let reading = Reading {
+                scope: &id,
+                kind: watched::CONTENT,
+                ..reading
+            };
+            // Content first read after every earlier reading of it failed: not a change, since
+            // nothing was known before, and still named.
+            let first_read = completeness == "full"
+                && store::only_failed_before(run.tx, watched::READER, &id, watched::CONTENT)?;
+            let events = apply_watched(run, &reading, completeness, reason, &statements)?;
+            if first_read {
+                out.rows.push(vec![
+                    "first read".to_string(),
+                    e.watched_as.to_string(),
+                    e.path.clone(),
+                    String::new(),
+                ]);
+            }
+            if !events.is_empty() && !new.contains(&id) {
+                out.changed += 1;
+                out.rows.push(vec![
+                    "changed".to_string(),
+                    e.watched_as.to_string(),
+                    e.path.clone(),
+                    String::new(),
+                ]);
+            }
+            if let Some(why) = reason {
+                unread += 1;
+                out.rows.push(vec![
+                    "not read".to_string(),
+                    e.watched_as.to_string(),
+                    e.path.clone(),
+                    why.to_string(),
+                ]);
+            }
+        }
+    }
+    out.gone = out.rows.iter().filter(|r| r[0] == "gone").count();
+    for (completeness, n) in hooks_not_full {
+        out.not_full.push(format!(
+            "hooks in {} ({})",
+            things(n as i64, "checkout", "checkouts"),
+            not_full_words(completeness)
+        ));
+    }
+    if unread > 0 {
+        out.not_full.push(format!(
+            "the content of {}",
+            things(unread, "file", "files")
+        ));
+    }
+    if placed
+        .iter()
+        .any(|p| !p.look.entries.is_empty() || !p.look.failed.is_empty() || p.git_file)
+    {
+        run.readers += 1;
+    }
+    out.files = run.tx.query_row(
+        "SELECT COUNT(DISTINCT subject) FROM assertion
+         WHERE layer = 'live' AND reader = ?1 AND predicate = 'watched_as'",
+        [watched::READER],
+        |r| r.get(0),
+    )?;
+    Ok(out)
+}
+
+fn not_full_words(completeness: &str) -> &'static str {
+    if completeness == "partial" {
+        "partial"
+    } else {
+        "nothing read"
+    }
+}
+
+/// Applies one reading of the watched places reader and returns its events as kind,
+/// subject, predicate and old value. A reading with no earlier one that read something is
+/// the baseline: its events are journaled and counted as nothing new.
+fn apply_watched(
+    run: &mut Run,
+    r: &Reading,
+    completeness: &str,
+    reason: Option<&str>,
+    statements: &[Statement],
+) -> Result<Vec<Change>, Box<dyn Error>> {
+    let baseline = !store::read_before(run.tx, r.reader, r.scope, r.kind)?;
+    let before = run.events.len();
+    run.apply(r, watched::BASIS, completeness, reason, statements)?;
+    if baseline {
+        run.events.truncate(before);
+        return Ok(Vec::new());
+    }
+    Ok(run.events[before..]
+        .iter()
+        .map(|e| {
+            (
+                e.kind,
+                e.subject.clone(),
+                e.predicate.clone(),
+                e.old.clone(),
+            )
+        })
+        .collect())
+}
+
+/// One sentence about watched places for the report line. Paths are never in it.
+fn watched_sentence(w: &Watched) -> String {
+    let files = things(w.files, "file", "files");
+    let mut s = if w.first {
+        format!("Watched places: {files}, first reading, kept as the baseline")
+    } else {
+        format!(
+            "Watched places: {files}, {} new, {} changed, {} gone since the last reading",
+            w.new, w.changed, w.gone
+        )
+    };
+    if !w.not_full.is_empty() {
+        s.push_str(&format!("; not read in full: {}", w.not_full.join(", ")));
+    }
+    s.push('.');
+    s
+}
+
 /// What this run learned from the threat catalogue.
 enum Catalogue {
     /// Read whole: how many entries it holds, how many are new and how many left it.
@@ -1733,6 +2084,7 @@ fn report(
     s: &ServerCounts,
     first_run: bool,
     catalogue: &Catalogue,
+    watched: &Watched,
 ) -> String {
     let mut line = format!(
         "{}, {}, {}, {}.",
@@ -1806,6 +2158,8 @@ fn report(
     } else {
         since_last_run(&run.events, t)
     });
+    line.push(' ');
+    line.push_str(&watched_sentence(watched));
     line.push(' ');
     line.push_str(&catalogue_sentence(catalogue));
     for note in &run.notes {

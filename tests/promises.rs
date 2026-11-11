@@ -134,8 +134,9 @@ fn soc_cmd(home: &Path) -> Command {
 }
 
 /// `soc run` for the machine `mac`, with no tailscale, so that the real one is never asked,
-/// and a threat catalogue that is not there, so that the network is never asked. A later
-/// `--tailscale` or `--threats-input` replaces them.
+/// a threat catalogue that is not there, so that the network is never asked, and a system
+/// root that is not there, so that the real `/etc` and `/Library` are never read. A later
+/// `--tailscale`, `--threats-input` or `--system-root` replaces them.
 fn soc_run(home: &Path, store: &Path) -> Command {
     let mut cmd = soc_cmd(home);
     cmd.args(["run", "--machine-name", "mac", "--store"])
@@ -143,7 +144,9 @@ fn soc_run(home: &Path, store: &Path) -> Command {
         .arg("--tailscale")
         .arg(home.join("no-tailscale"))
         .arg("--threats-input")
-        .arg(home.join("no-catalogue"));
+        .arg(home.join("no-catalogue"))
+        .arg("--system-root")
+        .arg(home.join("no-system"));
     cmd
 }
 
@@ -154,6 +157,8 @@ fn soc_run_curl(home: &Path, store: &Path, curl: &Path) -> Command {
         .arg(store)
         .arg("--tailscale")
         .arg(home.join("no-tailscale"))
+        .arg("--system-root")
+        .arg(home.join("no-system"))
         .arg("--curl")
         .arg(curl);
     cmd
@@ -639,6 +644,8 @@ fn a_program_in_the_current_folder_or_reached_through_a_relative_path_entry_is_n
         .arg("--tailscale")
         .arg(dir.0.join("nowhere").join("tailscale"))
         .arg("--threats-input")
+        .arg(&absent)
+        .arg("--system-root")
         .arg(&absent)
         .arg("--servers-input")
         .arg(&absent)
@@ -1227,7 +1234,9 @@ fn by_default_nothing_is_written_to_the_working_folder_and_the_store_is_in_the_u
             .arg("--tailscale")
             .arg(dir.0.join("no-tailscale"))
             .arg("--threats-input")
-            .arg(dir.0.join("no-catalogue")))
+            .arg(dir.0.join("no-catalogue"))
+            .arg("--system-root")
+            .arg(dir.0.join("no-system")))
     };
 
     let report = run();
@@ -5755,4 +5764,849 @@ fn the_probe_asks_dpkg_which_package_owns_the_running_kernel_and_the_reader_read
             "machine:web|runs_kernel_package|linux-image-6.8.0-45-generic",
         ]
     );
+}
+
+/// An invented Mac for watched places: the home folder and the system root are temporary
+/// folders, and brew is the sample, so that no real profile, launch item or key is read.
+struct Watch {
+    dir: Dir,
+    sys: PathBuf,
+    brew: PathBuf,
+}
+
+impl Watch {
+    fn new(tag: &str) -> Watch {
+        let dir = Dir::new(tag);
+        let brew = dir.input("brew.txt", SAMPLE);
+        let sys = dir.0.join("sys");
+        std::fs::create_dir_all(&sys).unwrap();
+        Watch { dir, sys, brew }
+    }
+
+    fn home(&self) -> &Path {
+        &self.dir.0
+    }
+
+    fn store(&self) -> PathBuf {
+        self.dir.store()
+    }
+
+    /// `soc run` on this Mac; checkouts are found by the walk of the home folder.
+    fn cmd(&self) -> Command {
+        let mut cmd = soc_run(self.home(), &self.store());
+        cmd.arg("--brew-input")
+            .arg(&self.brew)
+            .arg("--servers-input")
+            .arg(self.home().join("absent"))
+            .arg("--system-root")
+            .arg(&self.sys);
+        cmd
+    }
+
+    fn run(&self) -> String {
+        ok(&mut self.cmd())
+    }
+
+    /// The live content of a watched file, by its id.
+    fn content(&self, id: &str) -> Vec<String> {
+        rows(
+            &self.store(),
+            &format!(
+                "SELECT object FROM assertion
+                 WHERE layer = 'live' AND subject = '{id}' AND predicate = 'has_content'"
+            ),
+        )
+    }
+
+    /// The latest reading of a kind in a scope, as completeness and reason.
+    fn coverage(&self, scope: &str, kind: &str) -> Vec<String> {
+        rows(
+            &self.store(),
+            &format!(
+                "SELECT completeness, reason FROM coverage
+                 WHERE scope = '{scope}' AND kind = '{}' ORDER BY id DESC LIMIT 1",
+                kind.replace('\'', "''")
+            ),
+        )
+    }
+}
+
+/// Leaves a folder listable and takes away looking at what is in it; gives it back when
+/// dropped.
+struct ListOnly(PathBuf);
+
+impl ListOnly {
+    fn new(path: PathBuf) -> ListOnly {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        ListOnly(path)
+    }
+}
+
+impl Drop for ListOnly {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+    }
+}
+
+/// The rows the run printed under "Watched places:", as their cells.
+fn watched_rows(printed: &str) -> Vec<Vec<String>> {
+    printed
+        .lines()
+        .skip_while(|l| *l != "Watched places:")
+        .skip(2)
+        .map(|l| {
+            l.split("  ")
+                .map(str::trim)
+                .filter(|c| !c.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .collect()
+}
+
+/// Runs a command that must finish within the time given and succeed; returns its output.
+fn within(cmd: &mut Command, secs: u64) -> String {
+    use std::process::Stdio;
+    let mut child = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let start = std::time::Instant::now();
+    while child.try_wait().unwrap().is_none() {
+        if start.elapsed().as_secs() >= secs {
+            child.kill().unwrap();
+            panic!("the run did not finish in {secs} seconds");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap()
+}
+
+#[test]
+fn a_changed_watched_file_is_one_changed_event_and_new_changed_and_gone_files_are_named() {
+    // A shell profile or a launch item that changes between two runs is the signal this
+    // reader exists for: the owner sees which file, of what kind, and nothing else.
+    let w = Watch::new("watched-changed");
+    put(w.home(), ".zshrc", "export EDITOR=vi\n");
+    let agents = w.home().join("Library/LaunchAgents");
+    put(&agents, "com.example.old.plist", "<plist/>\n");
+    // A link retargeted is a change even when both targets hold the same.
+    put(w.home(), "profile-a", "umask 022\n");
+    put(w.home(), "profile-b", "umask 022\n");
+    let profile = w.home().join(".profile");
+    std::os::unix::fs::symlink("profile-a", &profile).unwrap();
+    w.run();
+    w.run();
+    let id = "file:machine:mac/.zshrc";
+    let before = w.content(id);
+
+    put(
+        w.home(),
+        ".zshrc",
+        "export EDITOR=vi\nexport PATH=/tmp/x:$PATH\n",
+    );
+    std::fs::remove_file(agents.join("com.example.old.plist")).unwrap();
+    // A name with a character that would reorder what the terminal shows.
+    put(&agents, "com.example.\u{202e}tsilp.plist", "<plist/>\n");
+    std::fs::remove_file(&profile).unwrap();
+    std::os::unix::fs::symlink("profile-b", &profile).unwrap();
+    let printed = w.run();
+
+    let after = w.content(id);
+    assert_eq!(
+        rows(&w.store(), LAST_RUN_EVENTS)
+            .into_iter()
+            .filter(|e| e.contains(".zshrc"))
+            .collect::<Vec<_>>(),
+        [format!(
+            "changed|{id}|has_content|{}|{}",
+            before[0], after[0]
+        )]
+    );
+    assert!(after[0].starts_with("sha256:") && after[0].len() == 7 + 64);
+    let line = printed.lines().next().unwrap();
+    assert!(
+        line.contains("Since last run: +1 added, 2 changed, 1 removed.")
+            && line.contains(
+                "Watched places: 3 files, 1 new, 2 changed, 1 gone since the last reading."
+            ),
+        "{printed}"
+    );
+    // Paths are text from the machine: named in their own column, never in the sentence,
+    // and with hidden characters shown escaped.
+    assert!(
+        !line.contains(".zshrc") && !line.contains("LaunchAgents"),
+        "{line}"
+    );
+    assert_eq!(
+        watched_rows(&printed),
+        [
+            [
+                "gone",
+                "autostart item",
+                "Library/LaunchAgents/com.example.old.plist"
+            ],
+            [
+                "new",
+                "autostart item",
+                "Library/LaunchAgents/com.example.\\u{202e}tsilp.plist"
+            ],
+            ["changed", "shell profile", ".zshrc"],
+            ["changed", "shell profile", ".profile"],
+        ],
+        "{printed}"
+    );
+    assert!(!printed.contains('\u{202e}'));
+
+    // The view shows each file with when it was first seen and when its content changed.
+    let page = view(&w.store());
+    let watched = section(&page, "watched");
+    assert!(watched.contains(&after[0]) && !watched.contains(&before[0]));
+    assert!(!watched.contains("com.example.old.plist"));
+    let row = |path: &str| {
+        let start = watched.find(&format!(">{path}</td>")).unwrap();
+        &watched[start..start + watched[start..].find("</tr>").unwrap()]
+    };
+    assert!(!row(".zshrc").contains("not since first seen"));
+    assert!(
+        !row(".profile").contains("not since first seen") && row(".profile").contains("profile-b")
+    );
+    // A kind with none of its places here says so, and shows no table of files.
+    assert_eq!(
+        w.coverage("machine:mac", "ssh access files"),
+        ["full|none of these places is on this machine"]
+    );
+    assert_eq!(watched.matches("<table").count(), 2);
+    assert!(
+        row("Library/LaunchAgents/com.example.\\u{202e}tsilp.plist")
+            .contains("not since first seen")
+    );
+
+    // A file that comes back is new, not changed.
+    put(&agents, "com.example.old.plist", "<plist/>\n");
+    let printed = w.run();
+    assert!(
+        printed
+            .contains("Watched places: 4 files, 1 new, 0 changed, 0 gone since the last reading."),
+        "{printed}"
+    );
+}
+
+#[test]
+fn a_watched_folder_that_cannot_be_listed_retracts_nothing_and_reports_no_change() {
+    // A failed reading is never "unchanged" and never "gone".
+    let w = Watch::new("watched-locked");
+    let daemons = w.sys.join("Library/LaunchDaemons");
+    put(&daemons, "com.example.d.plist", "<plist/>\n");
+    put(
+        w.home(),
+        "Library/LaunchAgents/com.example.a.plist",
+        "<plist/>\n",
+    );
+    put(w.home(), ".ssh/config", "Host *\n");
+    w.run();
+    w.run();
+    let live = rows(&w.store(), LIVE);
+    let unchanged = |report: &str| {
+        assert_eq!(rows(&w.store(), LIVE), live);
+        assert!(
+            rows(
+                &w.store(),
+                "SELECT 1 FROM assertion WHERE layer = 'retracted'"
+            )
+            .is_empty()
+        );
+        assert!(rows(&w.store(), LAST_RUN_EVENTS).is_empty());
+        assert!(
+            report.contains("changes unknown where nothing was read")
+                && !report.contains("no changes"),
+            "{report}"
+        );
+    };
+
+    put(&daemons, "com.example.d.plist", "<plist>changed</plist>\n");
+    let _daemons = Locked::new(daemons.clone());
+    // A folder that can be listed and whose entries cannot be looked at.
+    let agents = w.home().join("Library/LaunchAgents");
+    let _agents = ListOnly::new(agents);
+    let printed = w.run();
+    unchanged(&printed);
+    let denied = "Permission denied (os error 13)";
+    assert_eq!(
+        w.coverage("machine:mac", "launch agents and daemons"),
+        [format!(
+            "partial|could not be read: Library/LaunchAgents/com.example.a.plist ({denied}); /Library/LaunchDaemons ({denied})"
+        )]
+    );
+    assert!(
+        printed.contains("0 new, 0 changed, 0 gone since the last reading; not read in full: launch agents and daemons (partial)."),
+        "{printed}"
+    );
+    assert_eq!(
+        watched_rows(&printed),
+        [
+            [
+                "not read",
+                "autostart item",
+                "Library/LaunchAgents/com.example.a.plist",
+                denied
+            ],
+            [
+                "not read",
+                "autostart item",
+                "/Library/LaunchDaemons",
+                denied
+            ]
+        ]
+    );
+
+    // Nothing of a kind could be read: the reading read nothing.
+    let ssh = Locked::new(w.home().join(".ssh"));
+    let printed = w.run();
+    unchanged(&printed);
+    let coverage = w.coverage("machine:mac", "ssh access files");
+    assert!(
+        coverage[0].starts_with(&format!("none|could not be read: .ssh/config ({denied}); ")),
+        "{coverage:?}"
+    );
+    assert!(
+        printed.contains("not read in full: launch agents and daemons (partial), ssh access files (nothing read)."),
+        "{printed}"
+    );
+    // Something of the kind could be read: the reading is partial.
+    put(&w.sys, "etc/ssh/ssh_config", "Host *\n");
+    w.run();
+    assert!(w.coverage("machine:mac", "ssh access files")[0].starts_with("partial|"));
+    drop(ssh);
+    drop(_daemons);
+    drop(_agents);
+
+    // Readable again, the change is seen.
+    let report = w.run();
+    assert!(report.contains("0 new, 1 changed, 0 gone"), "{report}");
+}
+
+#[test]
+fn a_watched_file_that_cannot_be_read_is_never_unchanged_and_never_gone() {
+    // A file that cannot be opened, or is over the size cap, is present and unknown: its
+    // checksum stays as it was, and every other file is still compared in full.
+    let w = Watch::new("watched-unreadable");
+    let profile = put(&w.sys, "etc/zshrc", "setopt nobeep\n");
+    let big = put(w.home(), ".bashrc", "alias ll='ls -l'\n");
+    let other = put(w.home(), ".zshenv", "export LANG=C\n");
+    // A file of exactly the cap is read.
+    std::fs::write(w.home().join(".zlogin"), vec![b'#'; 8 * 1024 * 1024]).unwrap();
+    w.run();
+    w.run();
+    let live = rows(&w.store(), LIVE);
+
+    std::fs::write(&profile, "setopt nobeep\nsource /tmp/x\n").unwrap();
+    std::fs::write(&big, vec![b'#'; 8 * 1024 * 1024 + 1]).unwrap();
+    std::fs::write(&other, "export LANG=en_US.UTF-8\n").unwrap();
+    // A new file that cannot be read from the start.
+    let fresh = put(w.home(), ".zlogout", "clear\n");
+    let locked = (Locked::new(profile.clone()), Locked::new(fresh.clone()));
+    let report = w.run();
+    let events: Vec<String> = rows(&w.store(), LAST_RUN_EVENTS)
+        .into_iter()
+        .filter(|e| !e.contains(".zlogout"))
+        .collect();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert!(events[0].starts_with("changed|file:machine:mac/.zshenv|has_content|"));
+    let now = rows(&w.store(), LIVE);
+    assert!(
+        live.iter()
+            .filter(|r| !r.contains(".zshenv"))
+            .all(|r| now.contains(r)),
+        "{now:?}"
+    );
+    let coverage = rows(
+        &w.store(),
+        "SELECT scope, completeness, reason FROM coverage
+         WHERE kind = 'content of a watched file' AND completeness != 'full'
+           AND run_id = (SELECT MAX(run_id) FROM coverage) ORDER BY scope",
+    );
+    let denied = "none|Permission denied (os error 13)";
+    assert_eq!(
+        coverage,
+        [
+            "file:machine:mac/.bashrc|none|over the size cap of 8 MiB".to_string(),
+            format!("file:machine:mac/.zlogout|{denied}"),
+            format!("file:machine:mac//etc/zshrc|{denied}"),
+        ]
+    );
+    assert!(
+        report.contains("5 files, 1 new, 1 changed, 0 gone since the last reading; not read in full: the content of 3 files."),
+        "{report}"
+    );
+    // The raw copy says the file was not read, and the view lists the readings that failed.
+    let raw = std::fs::read_dir(w.home().join("raw"))
+        .unwrap()
+        .map(|d| d.unwrap().path().join("watched-places.txt"))
+        .filter_map(|p| std::fs::read_to_string(p).ok())
+        .max_by_key(|t| t.contains("cap"))
+        .unwrap();
+    assert!(
+        raw.contains("shell profile\t.bashrc\tnot read: over the size cap of 8 MiB\t\n"),
+        "{raw}"
+    );
+    assert!(section(&view(&w.store()), "coverage").contains("over the size cap of 8 MiB"));
+
+    // Still not read: nothing is named as read for the first time.
+    let printed = w.run();
+    assert!(
+        !watched_rows(&printed).iter().any(|r| r[0] == "first read"),
+        "{printed}"
+    );
+
+    // Readable again: the change made while it could not be read is seen, and a file never
+    // read before is not taken for a change, and is named as read for the first time.
+    drop(locked);
+    let printed = w.run();
+    assert!(
+        printed.contains("5 files, 0 new, 1 changed, 0 gone"),
+        "{printed}"
+    );
+    let named = watched_rows(&printed);
+    assert!(
+        named.contains(&vec![
+            "first read".to_string(),
+            "shell profile".to_string(),
+            ".zlogout".to_string()
+        ]) && !named
+            .iter()
+            .any(|r| r[0] == "first read" && r[2] != ".zlogout"),
+        "{printed}"
+    );
+}
+
+#[test]
+fn nothing_but_a_regular_file_is_read_and_a_named_pipe_or_a_link_loop_never_holds_the_run() {
+    // A named pipe opened for reading waits for a writer forever. Nothing that is not a
+    // regular file is read: it is recorded as present with what it is.
+    let w = Watch::new("watched-fifo");
+    let agents = w.home().join("Library/LaunchAgents");
+    std::fs::create_dir_all(&agents).unwrap();
+    let status = Command::new("/usr/bin/mkfifo")
+        .arg(agents.join("pipe"))
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let link = |target: &Path, name: &str| std::os::unix::fs::symlink(target, agents.join(name));
+    link(&agents.join("pipe"), "to-pipe").unwrap();
+    link(Path::new("nowhere.plist"), "dangling").unwrap();
+    link(Path::new("loop-b"), "loop-a").unwrap();
+    link(Path::new("loop-a"), "loop-b").unwrap();
+    std::fs::create_dir_all(agents.join("folder")).unwrap();
+    // Every Mac has these devices; they are looked at, never opened.
+    link(Path::new("/dev/null"), "null").unwrap();
+    link(Path::new("/dev/disk0"), "disk").unwrap();
+    // A socket's path must be short, so it is made beside the test folder.
+    let socket = std::env::temp_dir().join(format!("soc-s{}", std::process::id()));
+    let _ = std::fs::remove_file(&socket);
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    link(&socket, "socket").unwrap();
+
+    within(&mut w.cmd(), 30);
+    drop(listener);
+    let _ = std::fs::remove_file(&socket);
+
+    let id = |name: &str| format!("file:machine:mac/Library/LaunchAgents/{name}");
+    for (name, content) in [
+        ("pipe", "not a regular file: fifo"),
+        ("to-pipe", "not a regular file: fifo"),
+        ("folder", "not a regular file: folder"),
+        ("null", "not a regular file: character device"),
+        ("disk", "not a regular file: block device"),
+        ("socket", "not a regular file: socket"),
+        ("dangling", "dangling link"),
+    ] {
+        assert_eq!(w.content(&id(name)), [content], "{name}");
+    }
+    assert!(w.content(&id("loop-a")).is_empty());
+    assert_eq!(
+        w.coverage(&id("loop-a"), "content of a watched file"),
+        ["none|link loop"]
+    );
+    assert_eq!(
+        rows(
+            &w.store(),
+            "SELECT subject, object FROM assertion
+             WHERE predicate = 'links_to'
+               AND (subject LIKE '%dangling' OR subject LIKE '%to-pipe')
+             ORDER BY subject"
+        ),
+        [
+            format!("{}|nowhere.plist", id("dangling")),
+            format!("{}|{}", id("to-pipe"), agents.join("pipe").display()),
+        ]
+    );
+    // The view shows a link's target and why a file's content was not read.
+    let page = view(&w.store());
+    let watched = section(&page, "watched");
+    let row = |name: &str| {
+        let start = watched
+            .find(&format!(">Library/LaunchAgents/{name}</td>"))
+            .unwrap();
+        &watched[start..start + watched[start..].find("</tr>").unwrap()]
+    };
+    assert!(row("dangling").contains("nowhere.plist"));
+    assert!(row("loop-a").contains("link loop"));
+}
+
+#[test]
+fn a_checkout_that_is_gone_takes_its_hooks_with_it() {
+    // A hook in a deleted project is not a hook on this machine any more, and its removal
+    // is the checkout's one event.
+    let w = Watch::new("watched-hooks");
+    let shop = checkout(w.home(), "dev/shop");
+    put(&shop, ".git/hooks/pre-commit", "#!/bin/sh\nexit 0\n");
+    put(&shop, ".git/hooks/post-merge", "#!/bin/sh\n");
+    put(&shop, ".git/hooks/pre-push.sample", "#!/bin/sh\n");
+    // A worktree keeps its hooks elsewhere: its reading is partial and says why.
+    put(
+        w.home(),
+        "dev/tree/.git",
+        "gitdir: /invented/repo/.git/worktrees/tree\n",
+    );
+    // A checkout without hooks is read in full and says it has none.
+    checkout(w.home(), "dev/plain");
+    let locked = checkout(w.home(), "dev/locked");
+    put(&locked, ".git/hooks/pre-commit", "#!/bin/sh\n");
+    let _locked = Locked::new(locked.join(".git/hooks"));
+    let solo = checkout(w.home(), "dev/solo");
+    put(&solo, ".git/hooks/commit-msg", "#!/bin/sh\n");
+    let report = w.run();
+    let shop_id = "checkout:machine:mac/dev/shop";
+    let hook = |name: &str| format!("file:machine:mac/dev/shop/.git/hooks/{name}");
+    assert_eq!(
+        rows(
+            &w.store(),
+            "SELECT subject, predicate, object FROM assertion
+             WHERE layer = 'live' AND reader = 'watched-places' AND predicate != 'has_content'
+             ORDER BY subject, predicate"
+        ),
+        [
+            format!("{}|located_on|{shop_id}", hook("post-merge")),
+            format!("{}|watched_as|git hook", hook("post-merge")),
+            format!("{}|located_on|{shop_id}", hook("pre-commit")),
+            format!("{}|watched_as|git hook", hook("pre-commit")),
+            "file:machine:mac/dev/solo/.git/hooks/commit-msg|located_on|checkout:machine:mac/dev/solo".to_string(),
+            "file:machine:mac/dev/solo/.git/hooks/commit-msg|watched_as|git hook".to_string(),
+        ]
+    );
+    let hooks = "hooks in the checkout's .git folder";
+    assert_eq!(
+        w.coverage("checkout:machine:mac/dev/tree", hooks),
+        [
+            "partial|.git is a file, as in a worktree or a submodule: the hooks are kept elsewhere and were not read"
+        ]
+    );
+    assert_eq!(
+        w.coverage("checkout:machine:mac/dev/plain", hooks),
+        ["full|the checkout has no hooks"]
+    );
+    assert_eq!(
+        w.coverage("checkout:machine:mac/dev/locked", hooks),
+        ["none|could not be read: dev/locked/.git/hooks (Permission denied (os error 13))"]
+    );
+    assert!(
+        report.contains(
+            "not read in full: hooks in 1 checkout (nothing read), hooks in 1 checkout (partial)."
+        ),
+        "{report}"
+    );
+    // Checkouts with hooks and no lockfile are still listed as having no lockfile, and a
+    // checkout's hooks read in full are counted under watched places, not listed in coverage.
+    let page = view(&w.store());
+    assert!(section(&page, "machines").contains("No lockfile found in 5 checkouts"));
+    assert!(!section(&page, "coverage").contains("dev/plain"));
+    assert!(section(&page, "coverage").contains("dev/tree"));
+    assert!(section(&page, "watched").contains("<li>3 checkouts read in full</li>"));
+    assert!(section(&page, "watched").contains("<li><span class=\"mono\">machine:mac</span>"));
+
+    // A hook removed from a checkout that is still there is gone, the last one too.
+    std::fs::remove_file(shop.join(".git/hooks/post-merge")).unwrap();
+    std::fs::remove_file(solo.join(".git/hooks/commit-msg")).unwrap();
+    let report = w.run();
+    assert!(report.contains("0 new, 0 changed, 2 gone"), "{report}");
+
+    std::fs::remove_dir_all(&shop).unwrap();
+    let report = w.run();
+    assert_eq!(
+        rows(&w.store(), LAST_RUN_EVENTS),
+        [format!("removed|{shop_id}|located_on|machine:mac|NULL")]
+    );
+    assert!(
+        !rows(&w.store(), LIVE)
+            .iter()
+            .any(|r| r.contains("dev/shop")),
+        "something read inside the deleted checkout is still live"
+    );
+    assert!(w.content(&hook("pre-commit")).is_empty());
+    assert!(
+        report
+            .contains("Watched places: 0 files, 0 new, 0 changed, 0 gone since the last reading;"),
+        "{report}"
+    );
+}
+
+#[test]
+fn the_first_reading_of_watched_places_counts_nothing_as_new() {
+    // On a store made before this reader, the owner's whole setup is not news.
+    let w = Watch::new("watched-first");
+    let app = checkout(w.home(), "dev/app");
+    w.run();
+    // A store from before watched places: other readers ran, this one never did.
+    Connection::open(w.store())
+        .unwrap()
+        .execute_batch(
+            "DELETE FROM coverage WHERE reader = 'watched-places';
+             DELETE FROM assertion WHERE reader = 'watched-places';",
+        )
+        .unwrap();
+    put(&app, ".git/hooks/pre-commit", "#!/bin/sh\n");
+    put(
+        w.home(),
+        ".zprofile",
+        "eval \"$(/opt/homebrew/bin/brew shellenv)\"\n",
+    );
+    put(
+        w.home(),
+        ".ssh/config",
+        "Host *\n  ServerAliveInterval 60\n",
+    );
+    let printed = w.run();
+    assert_eq!(printed.lines().count(), 1, "{printed}");
+    assert!(
+        printed.contains(
+            "Since last run: no changes. Watched places: 3 files, first reading, kept as the baseline."
+        ),
+        "{printed}"
+    );
+    // The journal still records what was found.
+    let found: std::collections::BTreeSet<String> = rows(&w.store(), LAST_RUN_EVENTS)
+        .iter()
+        .filter_map(|e| e.strip_prefix("added|file:"))
+        .map(|e| e.split('|').next().unwrap().to_string())
+        .collect();
+    assert_eq!(found.len(), 3, "{found:?}");
+}
+
+#[test]
+fn the_first_hook_planted_in_a_checkout_the_store_already_held_is_new_and_named() {
+    // Planting a hook in a project that had none is the attack this reader exists for. The
+    // hooks of a checkout that itself first appears are the baseline: the checkout is the news.
+    let w = Watch::new("watched-first-hook");
+    let app = checkout(w.home(), "dev/app");
+    put(&app, ".git/hooks/pre-push.sample", "#!/bin/sh\n");
+    w.run();
+    let quiet = w.run();
+    assert!(quiet.contains("Since last run: no changes."), "{quiet}");
+
+    put(&app, ".git/hooks/post-checkout", "#!/bin/sh\n");
+    let fresh = checkout(w.home(), "dev/fresh");
+    put(&fresh, ".git/hooks/pre-commit", "#!/bin/sh\n");
+    let printed = w.run();
+    assert!(
+        printed.contains("Since last run: +2 added, 0 changed, 0 removed.")
+            && printed.contains(
+                "Watched places: 2 files, 1 new, 0 changed, 0 gone since the last reading."
+            ),
+        "{printed}"
+    );
+    assert_eq!(
+        watched_rows(&printed),
+        [["new", "git hook", "dev/app/.git/hooks/post-checkout"]]
+    );
+
+    let again = w.run();
+    assert!(
+        again.contains(
+            "Since last run: no changes. Watched places: 2 files, 0 new, 0 changed, 0 gone"
+        ),
+        "{again}"
+    );
+}
+
+#[test]
+fn a_watched_place_that_appears_after_the_first_reading_is_new_and_named() {
+    // A launch folder made together with its first item, or a first profile or ssh file, is
+    // new: the reading of each kind on the machine exists from the first run.
+    let w = Watch::new("watched-appears");
+    w.run();
+    w.run();
+    put(
+        w.home(),
+        "Library/LaunchAgents/com.example.a.plist",
+        "<plist/>\n",
+    );
+    put(w.home(), ".ssh/rc", "xauth add\n");
+    put(w.home(), ".zshenv", "export LANG=C\n");
+    let printed = w.run();
+    assert!(
+        printed
+            .contains("Watched places: 3 files, 3 new, 0 changed, 0 gone since the last reading."),
+        "{printed}"
+    );
+    assert_eq!(
+        watched_rows(&printed),
+        [
+            [
+                "new",
+                "autostart item",
+                "Library/LaunchAgents/com.example.a.plist"
+            ],
+            ["new", "shell profile", ".zshenv"],
+            ["new", "ssh access file", ".ssh/rc"],
+        ]
+    );
+}
+
+#[test]
+fn a_second_run_on_unchanged_watched_places_reports_no_changes() {
+    let w = Watch::new("watched-unchanged");
+    put(w.home(), ".zshrc", "bindkey -e\n");
+    put(
+        w.home(),
+        ".ssh/authorized_keys",
+        "ssh-ed25519 AAAAinvented owner@example\n",
+    );
+    put(&w.sys, "etc/zshrc", "setopt nobeep\n");
+    put(
+        &w.sys,
+        "etc/ssh/sshd_config.d/100-example.conf",
+        "PasswordAuthentication no\n",
+    );
+    let agents = w.sys.join("Library/LaunchAgents");
+    put(&agents, "com.example.a.plist", "<plist/>\n");
+    // Only a git hook named so is a sample; and a line break in a name breaks no line.
+    put(&agents, "com.example.sample", "<plist/>\n");
+    put(&agents, "com.example.\nb.plist", "<plist/>\n");
+    let shop = checkout(w.home(), "dev/shop");
+    put(&shop, ".git/hooks/pre-commit", "#!/bin/sh\n");
+    std::os::unix::fs::symlink("nowhere", w.home().join(".profile")).unwrap();
+    let first = w.run();
+    assert!(
+        first.contains("Watched places: 9 files, first reading, kept as the baseline."),
+        "{first}"
+    );
+    let second = w.run();
+    assert!(
+        second.starts_with("4 readers,")
+            && second.contains(
+                "Since last run: no changes. Watched places: 9 files, 0 new, 0 changed, 0 gone since the last reading."
+            ),
+        "{second}"
+    );
+    assert_eq!(second.lines().count(), 1, "{second}");
+    assert!(rows(&w.store(), LAST_RUN_EVENTS).is_empty());
+    // A system place is named by its path from `/`, whatever root it was read under.
+    assert_eq!(w.content("file:machine:mac//etc/zshrc").len(), 1);
+    // One reading per kind of place on the machine.
+    assert_eq!(
+        rows(
+            &w.store(),
+            "SELECT DISTINCT kind FROM coverage
+             WHERE reader = 'watched-places' AND scope = 'machine:mac' ORDER BY kind"
+        ),
+        [
+            "launch agents and daemons",
+            "shell profiles of zsh and bash",
+            "ssh access files"
+        ]
+    );
+    // The raw copy is the list of entries, kept once while it does not change, and every
+    // assertion points at the line of its file.
+    let refs = rows(
+        &w.store(),
+        "SELECT subject, source_ref, (SELECT object FROM assertion l
+                                      WHERE l.subject = a.subject AND l.predicate = 'links_to')
+         FROM assertion a WHERE reader = 'watched-places' AND predicate = 'watched_as'",
+    );
+    for row in &refs {
+        let mut cells = row.split('|');
+        let (subject, source, link) = (
+            cells.next().unwrap(),
+            cells.next().unwrap(),
+            cells.next().unwrap(),
+        );
+        let (file, line) = source.rsplit_once(':').unwrap();
+        assert!(refs.iter().all(|r| r.contains(&format!("|{file}:"))));
+        let raw = std::fs::read_to_string(w.home().join(file)).unwrap();
+        let line = raw.lines().nth(line.parse::<usize>().unwrap() - 1).unwrap();
+        let path = subject.strip_prefix("file:machine:mac/").unwrap();
+        assert!(
+            line.contains(&format!("\t{}\t", path.replace('\n', " "))),
+            "{line}"
+        );
+        let link = if link == "NULL" { "" } else { link };
+        assert!(line.ends_with(&format!("\t{link}")), "{line}");
+    }
+    assert!(!section(&view(&w.store()), "coverage").contains("content of a watched file"));
+}
+
+#[test]
+fn content_of_a_watched_file_never_enters_the_store_the_raw_copy_the_report_or_the_view() {
+    // Profiles and ssh files hold secrets. Only a checksum is kept.
+    let w = Watch::new("watched-secret");
+    let marker = "MARKER-7f3a9c-never-stored";
+    put(w.home(), ".zshrc", &format!("export TOKEN={marker}\n"));
+    // The ssh configuration reader keeps the aliases it names, so the marker is in a comment.
+    put(w.home(), ".ssh/config", &format!("# {marker}\nHost *\n"));
+    put(
+        &w.sys,
+        "Library/LaunchDaemons/com.example.d.plist",
+        &format!("<string>{marker}</string>\n"),
+    );
+    let mut printed = w.run();
+    put(w.home(), ".zshrc", &format!("export TOKEN={marker}-2\n"));
+    printed.push_str(&w.run());
+    view(&w.store());
+    assert!(!printed.contains(marker), "{printed}");
+    let mut stack = vec![w.home().join("raw")];
+    let mut written = vec![w.store(), w.home().join("view.html")];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                written.push(path);
+            }
+        }
+    }
+    assert!(written.iter().any(|p| p.ends_with("watched-places.txt")));
+    for path in written {
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(
+            !bytes.windows(marker.len()).any(|w| w == marker.as_bytes()),
+            "{}",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn a_watched_place_that_could_not_be_read_still_counts_its_reader() {
+    // "N readers" counts readers that had something to read, as a failed brew does.
+    let w = Watch::new("watched-reader");
+    let before = w.run();
+    put(
+        w.home(),
+        "dev/tree/.git",
+        "gitdir: /invented/repo/.git/worktrees/tree\n",
+    );
+    let after = w.run();
+    let readers = |line: &str| line.split(' ').next().unwrap().parse::<usize>().unwrap();
+    assert_eq!(readers(&after), readers(&before) + 1, "{before}\n{after}");
 }

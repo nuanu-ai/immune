@@ -5,8 +5,9 @@
 //!
 //! A container or checkout that is no longer anywhere takes what was read inside it along:
 //! when its last `located_on` is retracted, every live assertion of a reading scoped to it
-//! is retracted in the same run, whatever that reading's completeness was. The entity's
-//! removal is the one event; what was inside it adds none.
+//! is retracted in the same run, whatever that reading's completeness was, and with it what
+//! was read inside anything located there. The entity's removal is the one event; what was
+//! inside it adds none.
 
 use crate::store::{Event, Reading};
 use rusqlite::{Transaction, params};
@@ -113,14 +114,32 @@ fn compare(tx: &Transaction, r: &Reading, full: bool) -> rusqlite::Result<Vec<Ev
     Ok(events)
 }
 
-/// Retracts everything read inside an entity once nothing says where it is any more.
+/// Retracts everything read inside an entity once nothing says where it is any more, and
+/// so on down: a file located in a checkout that is gone takes its own readings along.
 fn retract_inside(tx: &Transaction, r: &Reading, entity: &str) -> rusqlite::Result<()> {
+    let still_somewhere: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM assertion
+                        WHERE layer = 'live' AND predicate = 'located_on' AND subject = ?1)",
+        [entity],
+        |row| row.get(0),
+    )?;
+    if still_somewhere {
+        return Ok(());
+    }
+    let inside: Vec<String> = tx
+        .prepare(
+            "SELECT DISTINCT subject FROM assertion
+             WHERE layer = 'live' AND scope = ?1 AND predicate = 'located_on'",
+        )?
+        .query_map([entity], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
     tx.execute(
         "UPDATE assertion SET layer = 'retracted', retracted_at = ?1, retracted_by = ?2
-         WHERE layer = 'live' AND scope = ?3
-           AND NOT EXISTS (SELECT 1 FROM assertion
-                           WHERE layer = 'live' AND predicate = 'located_on' AND subject = ?3)",
+         WHERE layer = 'live' AND scope = ?3",
         params![r.at, r.run_id, entity],
     )?;
+    for thing in inside {
+        retract_inside(tx, r, &thing)?;
+    }
     Ok(())
 }

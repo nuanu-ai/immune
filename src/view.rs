@@ -25,6 +25,7 @@ pub fn page(conn: &Connection, store: &str, now: i64) -> Result<String, Box<dyn 
     let latest = latest_coverage(conn)?;
     coverage(conn, &mut out, &latest, now)?;
     machines(conn, &mut out, &latest, now)?;
+    watched(conn, &mut out, &latest, now)?;
     threats(conn, &mut out, now)?;
     changes(conn, &mut out)?;
     retracted(conn, &mut out)?;
@@ -289,6 +290,13 @@ fn coverage(conn: &Connection, out: &mut String, rows: &[Latest], now: i64) -> O
             utc(at)
         )?;
     }
+    // The content of each watched file and the hooks of each checkout are readings of their
+    // own; those read in full are shown under watched places, not here.
+    let per_thing = [crate::watched::CONTENT, crate::watched::HOOK_KIND];
+    let rows: Vec<&Latest> = rows
+        .iter()
+        .filter(|r| !per_thing.contains(&r.kind.as_str()) || r.completeness != "full")
+        .collect();
     if rows.is_empty() {
         out.push_str("<p class=\"alert\">Nothing has been read yet.</p>\n</section>\n");
         return Ok(());
@@ -931,8 +939,12 @@ fn machine_body<'a>(
         out.push_str("</details>\n");
     }
 
-    let (with, without): (Vec<&String>, Vec<&String>) =
-        mine.iter().partition(|c| !coverage_of(c).is_empty());
+    // The hooks of a checkout are shown under watched places.
+    let (with, without): (Vec<&String>, Vec<&String>) = mine.iter().partition(|c| {
+        coverage_of(c)
+            .iter()
+            .any(|r| r.reader != crate::watched::READER)
+    });
     if !mine.is_empty() {
         out.push_str("<h3>Checkouts</h3>\n");
     }
@@ -972,6 +984,167 @@ fn machine_body<'a>(
             names.join(", ")
         )?;
     }
+    Ok(())
+}
+
+/// One watched file as the view shows it.
+#[derive(Default)]
+struct WatchedFile {
+    first_seen: i64,
+    content: String,
+    link: String,
+    /// When the current content or link target was first seen.
+    content_since: i64,
+}
+
+/// Watched files whose content or link target was ever replaced.
+fn watched_changed(conn: &Connection) -> rusqlite::Result<BTreeSet<String>> {
+    conn.prepare(
+        "SELECT DISTINCT subject FROM assertion
+         WHERE layer = 'retracted' AND reader = ?1 AND predicate IN ('has_content', 'links_to')",
+    )?
+    .query_map([crate::watched::READER], |r| r.get(0))?
+    .collect()
+}
+
+/// Watched places: per kind, each file with when it was first seen and when its content last
+/// changed, and the coverage of each reading. Only checksums are in the store, never content.
+fn watched(conn: &Connection, out: &mut String, latest: &[Latest], now: i64) -> Out {
+    use crate::watched::{CONTENT, READER};
+    out.push_str("<section id=\"watched\">\n<h2>Watched places</h2>\n");
+    out.push_str("<p class=\"muted\">Places where persistence lives. Each file is kept as a checksum of its content, never the content.</p>\n");
+    let mut stmt = conn.prepare(
+        "SELECT subject, predicate, object, observed_at FROM assertion
+         WHERE layer = 'live' AND reader = ?1 ORDER BY subject, observed_at",
+    )?;
+    let rows = stmt.query_map([READER], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, i64>(3)?,
+        ))
+    })?;
+    // Kind -> file id -> what is known of it.
+    let mut files: BTreeMap<String, BTreeMap<String, WatchedFile>> = BTreeMap::new();
+    let mut kind_of: BTreeMap<String, String> = BTreeMap::new();
+    let mut facts = Vec::new();
+    for row in rows {
+        let (subject, predicate, object, at) = row?;
+        if predicate == "watched_as" {
+            kind_of.insert(subject.clone(), object.clone());
+            files
+                .entry(object)
+                .or_default()
+                .entry(subject)
+                .or_default()
+                .first_seen = at;
+        } else {
+            facts.push((subject, predicate, object, at));
+        }
+    }
+    for (subject, predicate, object, at) in facts {
+        let Some(f) = kind_of
+            .get(&subject)
+            .and_then(|k| files.get_mut(k))
+            .and_then(|m| m.get_mut(&subject))
+        else {
+            continue;
+        };
+        match predicate.as_str() {
+            "has_content" => f.content = object,
+            "links_to" => f.link = object,
+            _ => continue,
+        }
+        // Rows come oldest first: the last is when the current content was first seen.
+        f.content_since = at;
+    }
+    let changed = watched_changed(conn)?;
+    let read_by_us: Vec<&Latest> = latest.iter().filter(|r| r.reader == READER).collect();
+    for (watched_as, kind) in crate::watched::kinds() {
+        let readings: Vec<&&Latest> = read_by_us.iter().filter(|r| r.kind == kind).collect();
+        let of_kind = files.remove(watched_as).unwrap_or_default();
+        writeln!(
+            out,
+            "<h3>{} <span class=\"muted\">· {}</span></h3>",
+            esc(kind),
+            plural(of_kind.len(), "file", "files")
+        )?;
+        out.push_str("<ul class=\"readings\">\n");
+        // One reading per checkout: those read in full are counted, the rest are listed.
+        let (listed, full): (Vec<&&Latest>, Vec<&&Latest>) = readings
+            .iter()
+            .partition(|r| kind != crate::watched::HOOK_KIND || r.completeness != "full");
+        if !full.is_empty() {
+            writeln!(
+                out,
+                "<li>{} read in full</li>",
+                plural(full.len(), "checkout", "checkouts")
+            )?;
+        }
+        for r in listed {
+            write!(out, "<li><span class=\"mono\">{}</span> ", esc(&r.scope))?;
+            badge(out, &r.completeness, r.reason.as_deref())?;
+            if let Some(reason) = &r.reason {
+                write!(out, " {}", esc(reason))?;
+            }
+            writeln!(
+                out,
+                " <span class=\"muted nowrap\">{}</span></li>",
+                utc_age(r.at, now)
+            )?;
+        }
+        out.push_str("</ul>\n");
+        if of_kind.is_empty() {
+            continue;
+        }
+        out.push_str("<div class=\"scroll\"><table class=\"dense\">\n");
+        thead(
+            out,
+            &[
+                "Path",
+                "Content",
+                "Link to",
+                "First seen",
+                "Content last changed",
+                "Latest reading of its content",
+            ],
+        );
+        for (id, f) in &of_kind {
+            let path = id
+                .strip_prefix("file:")
+                .and_then(|rest| rest.split_once('/'))
+                .map_or(id.as_str(), |(_, path)| path);
+            write!(
+                out,
+                "<tr><td class=\"mono\" title=\"{}\">{}</td>",
+                esc(id),
+                esc(path)
+            )?;
+            td(out, "mono", &f.content)?;
+            td(out, "mono", &f.link)?;
+            td(out, "nowrap", &utc(f.first_seen))?;
+            let last = if changed.contains(id) {
+                utc(f.content_since)
+            } else {
+                "not since first seen".to_string()
+            };
+            td(out, "nowrap", &last)?;
+            out.push_str("<td>");
+            if let Some(r) = read_by_us
+                .iter()
+                .find(|r| r.kind == CONTENT && r.scope == *id)
+            {
+                badge(out, &r.completeness, None)?;
+                if let Some(reason) = &r.reason {
+                    write!(out, " {}", esc(reason))?;
+                }
+            }
+            out.push_str("</td></tr>\n");
+        }
+        out.push_str("</tbody></table></div>\n");
+    }
+    out.push_str("</section>\n");
     Ok(())
 }
 
