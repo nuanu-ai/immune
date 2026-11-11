@@ -1,0 +1,15 @@
+#!/bin/sh
+# Runs the app's tests. With Apple's Command Line Tools alone, Swift Testing is
+# present but not on the default search paths, so they are added here when the
+# tools are the Command Line Tools; with Xcode nothing is added.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+tools=$(xcode-select -p)
+set --
+if [ -d "$tools/Library/Developer/Frameworks/Testing.framework" ]; then
+  fw="$tools/Library/Developer/Frameworks"
+  lib="$tools/Library/Developer/usr/lib"
+  set -- -Xswiftc -F -Xswiftc "$fw" -Xlinker -F -Xlinker "$fw" \
+    -Xlinker -rpath -Xlinker "$fw" -Xlinker -rpath -Xlinker "$lib"
+fi
+exec swift test --package-path "$here" --scratch-path "$here/../target/app/swift" "$@"

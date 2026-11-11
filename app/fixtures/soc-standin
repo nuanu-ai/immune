@@ -1,0 +1,26 @@
+#!/bin/sh
+# A stand-in for `soc` in tests and trial runs of the app: it prints a fixture
+# instead of reading anything. Invented data only.
+#   SOC_STANDIN_FIXTURE      file `status` prints (default: status.json next to this script)
+#   SOC_STANDIN_EXIT         exit code of `status` (default 0)
+#   SOC_STANDIN_SLEEP        seconds to wait before printing (default 0)
+#   SOC_STANDIN_RUN_FIXTURE  file `run` prints (default: the status fixture)
+#   SOC_STANDIN_RUN_EXIT     exit code of `run` (default 0)
+#   SOC_STANDIN_RUN_SLEEP    extra seconds `run` waits (default 2)
+#   SOC_STANDIN_VIEW_EXIT    exit code of `view`, which prints nothing and opens nothing (default 0)
+dir=$(dirname "$0")
+fixture=${SOC_STANDIN_FIXTURE:-$dir/status.json}
+code=${SOC_STANDIN_EXIT:-0}
+if [ "${1:-}" = view ]; then
+  sleep "${SOC_STANDIN_SLEEP:-0}"
+  [ "${SOC_STANDIN_VIEW_EXIT:-0}" = 0 ] || echo "the page could not be written: disk full" >&2
+  exit "${SOC_STANDIN_VIEW_EXIT:-0}"
+fi
+if [ "${1:-}" = run ]; then
+  sleep "${SOC_STANDIN_RUN_SLEEP:-2}"
+  fixture=${SOC_STANDIN_RUN_FIXTURE:-$fixture}
+  code=${SOC_STANDIN_RUN_EXIT:-0}
+fi
+sleep "${SOC_STANDIN_SLEEP:-0}"
+cat "$fixture"
+exit "$code"

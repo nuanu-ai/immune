@@ -1,0 +1,54 @@
+#!/bin/sh
+# Builds the menu-bar app with Apple's Command Line Tools alone and assembles
+# target/app/<CFBundleName>.app with the given soc inside, signed ad hoc.
+# Usage: app/build [--debug] <path to soc>
+# --debug builds a bundle for trials into target/app/debug/: only a debug build
+# honours --soc-path, --store and their environment variables. The release
+# bundle always runs its own soc on soc's default store.
+# Prints the path of the bundle on stdout; everything else goes to stderr.
+set -eu
+
+config=release
+place=
+if [ "${1:-}" = --debug ]; then
+  config=debug
+  place=/debug
+  shift
+fi
+if [ $# -ne 1 ]; then
+  echo "usage: app/build [--debug] <path to soc>" >&2
+  exit 2
+fi
+if [ ! -f "$1" ] || [ ! -x "$1" ]; then
+  echo "app/build: not an executable file: $1" >&2
+  exit 2
+fi
+soc=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
+
+here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/.." && pwd)
+out="$root/target/app"
+plist="$here/Info.plist"
+
+name=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$plist")
+exe=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")
+
+swift build -c "$config" --package-path "$here" --scratch-path "$out/swift" --product "$exe" >&2
+bin=$(swift build -c "$config" --package-path "$here" --scratch-path "$out/swift" --show-bin-path)
+
+mkdir -p "$out$place"
+bundle="$out$place/$name.app"
+rm -rf "$bundle"
+mkdir -p "$bundle/Contents/MacOS"
+cp "$plist" "$bundle/Contents/Info.plist"
+plutil -lint -s "$bundle/Contents/Info.plist" >&2
+cp "$bin/$exe" "$bundle/Contents/MacOS/$exe"
+cp "$soc" "$bundle/Contents/MacOS/soc"
+chmod 755 "$bundle/Contents/MacOS/$exe" "$bundle/Contents/MacOS/soc"
+
+# Ad hoc: enough for the Mac it was built on. Inner code first, then the bundle.
+codesign --force --sign - --timestamp=none "$bundle/Contents/MacOS/soc" >&2
+codesign --force --sign - --timestamp=none "$bundle" >&2
+codesign --verify --deep --strict "$bundle" >&2
+
+echo "$bundle"

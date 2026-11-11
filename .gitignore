@@ -4,3 +4,7 @@ private/
 .DS_Store
 
 /target
+
+# The menu-bar app: SwiftPM build products and editor state (builds go to target/app)
+/app/.build/
+/app/.swiftpm/

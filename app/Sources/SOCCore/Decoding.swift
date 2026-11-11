@@ -1,0 +1,356 @@
+// All decoding of what `soc ... --json` prints lives in this one file, so a change
+// of shape is cheap. Every field is optional: a missing or mistyped field becomes
+// nil and is shown as "not reported", never as zero or as fine. Unknown fields are
+// ignored. The shape is the one `src/status.rs` writes.
+
+import Foundation
+
+public struct Envelope: Sendable, Equatable {
+  public var format: Int?
+  public var operation: String?
+  public var ok: Bool?
+  public var errors: [SocError]
+  public var result: Status?
+}
+
+public struct SocError: Sendable, Equatable {
+  public var code: String?
+  public var message: String?
+  public var example: String?
+  public var detailText: String?
+}
+
+public struct Status: Sendable, Equatable {
+  public var generatedAt: Date?
+  /// A run is in progress now; every other section describes the last finished run.
+  public var running: Bool?
+  public var store: Store?
+  public var lastRun: LastRun?
+  public var lastFinishedRun: FinishedRun?
+  public var estate: Estate?
+  public var watched: Watched?
+  public var threats: Threats?
+  public var coverage: Coverage?
+  public var cannotJudge: [String]?
+  public var noReaderFor: [NoReader]?
+  public var notComputed: [NotComputed]?
+}
+
+public struct Store: Sendable, Equatable {
+  public var pathText: String?
+  public var exists: Bool?
+}
+
+public struct LastRun: Sendable, Equatable {
+  public var id: String?
+  public var startedAt: Date?
+  public var finishedAt: Date?
+  public var finished: Bool?
+}
+
+public struct FinishedRun: Sendable, Equatable {
+  public var id: String?
+  public var startedAt: Date?
+  public var finishedAt: Date?
+  public var firstRun: Bool?
+  public var readings: RunReadings?
+  public var sinceStated: Bool  // false when the key is missing; null is stated
+  public var since: SinceRun?
+  public var unknown: [String]?
+}
+
+public struct RunReadings: Sendable, Equatable {
+  public var partial: Int?
+  public var failed: Int?
+  public var notRepeated: Int?
+  public var machinesUnread: Int?
+}
+
+public struct SinceRun: Sendable, Equatable {
+  public var added: Int?
+  public var changed: Int?
+  public var removed: Int?
+}
+
+public struct Estate: Sendable, Equatable {
+  public var machines: Int?
+  public var servers: Int?
+  public var serversOffered: Int?
+  public var serversRead: Int?
+  public var machinesSetAside: Int?
+  public var machinesSeenAfterOwnerWord: Int?
+  public var checkouts: Int?
+  public var components: Int?
+}
+
+public struct Watched: Sendable, Equatable {
+  public var files: Int?
+  public var firstReading: Bool?
+  public var sinceLastReading: Counts?
+  public var kinds: [WatchedKind]?
+  public var contentNotRead: Int?
+  public var changes: [WatchedChange]?
+  public var changesTotal: Int?
+}
+
+public struct Counts: Sendable, Equatable {
+  public var new: Int?
+  public var changed: Int?
+  public var gone: Int?
+}
+
+public struct WatchedKind: Sendable, Equatable {
+  public var kind: String?
+  public var files: Int?
+  public var coverage: String?
+  public var readings: KindReadings?
+  public var reasonText: String?
+}
+
+public struct KindReadings: Sendable, Equatable {
+  public var full: Int?
+  public var partial: Int?
+  public var none: Int?
+}
+
+public struct WatchedChange: Sendable, Equatable {
+  public var at: Date?
+  public var runId: String?
+  public var change: String?
+  public var kind: String?
+  public var pathText: String?
+}
+
+public struct Threats: Sendable, Equatable {
+  public var source: String?
+  /// `read`, `unchanged`, `failed` or `never_read`.
+  public var outcome: String?
+  public var entries: Int?
+  public var firstReading: Bool?
+  public var new: Int?
+  public var gone: Int?
+  public var matched: Bool?
+  public var readAt: Date?
+  public var checkedAt: Date?
+  public var reasonText: String?
+}
+
+public struct Coverage: Sendable, Equatable {
+  public var readings: Int?
+  public var full: Int?
+  public var readNothing: Int?
+  public var notGiven: Int?
+  public var partial: Int?
+  public var failed: Int?
+  public var problems: [Problem]?
+  public var problemsTotal: Int?
+  public var unreached: [Unreached]?
+  public var unreachedTotal: Int?
+}
+
+/// Readings of one class, reader, kind and reason, counted.
+public struct Problem: Sendable, Equatable {
+  public var `class`: String?
+  public var reader: String?
+  public var kind: String?
+  public var reasonText: String?
+  public var count: Int?
+  public var examplesText: [String]?
+}
+
+/// A machine whose visit failed.
+public struct Unreached: Sendable, Equatable {
+  public var scopeText: String?
+  public var since: Date?
+  public var reasonText: String?
+}
+
+/// Something this build has no reader for, and in how many places it was seen.
+public struct NoReader: Sendable, Equatable {
+  public var whatText: String?
+  public var whereCount: Int?
+}
+
+public struct NotComputed: Sendable, Equatable {
+  public var section: String?
+  public var reason: String?
+}
+
+public enum DecodeFailure: Error, Equatable {
+  case notJSON
+  case notAnObject
+}
+
+public enum Decoding {
+  /// The envelope format this app understands.
+  public static let knownFormat = 1
+
+  public static func envelope(from data: Data) -> Result<Envelope, DecodeFailure> {
+    guard let any = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
+    else { return .failure(.notJSON) }
+    guard any is [String: Any] else { return .failure(.notAnObject) }
+    let j = J(any)
+    return .success(
+      Envelope(
+        format: j["format"].count,
+        operation: j["operation"].string,
+        ok: j["ok"].bool,
+        errors: (j["errors"].array ?? []).map {
+          SocError(
+            code: $0["code"].string, message: $0["message"].string,
+            example: $0["example"].string, detailText: $0["detail_text"].string)
+        },
+        result: j["result"].object.map(status)
+      ))
+  }
+
+  static func status(_ r: J) -> Status {
+    Status(
+      generatedAt: r["generated_at"].date,
+      running: r["running"].bool,
+      store: r["store"].object.map {
+        Store(pathText: $0["path_text"].string, exists: $0["exists"].bool)
+      },
+      lastRun: r["last_run"].object.map {
+        LastRun(
+          id: $0["id"].string, startedAt: $0["started_at"].date,
+          finishedAt: $0["finished_at"].date, finished: $0["finished"].bool)
+      },
+      lastFinishedRun: r["last_finished_run"].object.map(finishedRun),
+      estate: r["estate"].object.map {
+        Estate(
+          machines: $0["machines"].count, servers: $0["servers"].count,
+          serversOffered: $0["servers_offered"].count, serversRead: $0["servers_read"].count,
+          machinesSetAside: $0["machines_set_aside"].count,
+          machinesSeenAfterOwnerWord: $0["machines_seen_after_owner_word"].count,
+          checkouts: $0["checkouts"].count, components: $0["components"].count)
+      },
+      watched: r["watched"].object.map(watched),
+      threats: r["threats"].object.map {
+        Threats(
+          source: $0["source"].string, outcome: $0["outcome"].string,
+          entries: $0["entries"].count, firstReading: $0["first_reading"].bool,
+          new: $0["new"].count, gone: $0["gone"].count, matched: $0["matched"].bool,
+          readAt: $0["read_at"].date, checkedAt: $0["checked_at"].date,
+          reasonText: $0["reason_text"].string)
+      },
+      coverage: r["coverage"].object.map(coverage),
+      cannotJudge: r["cannot_judge"].array?.compactMap(\.string),
+      noReaderFor: r["no_reader_for"].array?.compactMap { n in
+        n.object.map {
+          NoReader(whatText: $0["what_text"].string, whereCount: $0["where_count"].count)
+        }
+      },
+      notComputed: r["not_computed"].array?.compactMap { n in
+        n.object.map { NotComputed(section: $0["section"].string, reason: $0["reason"].string) }
+      })
+  }
+
+  static func finishedRun(_ f: J) -> FinishedRun {
+    FinishedRun(
+      id: f["id"].string, startedAt: f["started_at"].date, finishedAt: f["finished_at"].date,
+      firstRun: f["first_run"].bool,
+      readings: f["readings"].object.map {
+        RunReadings(
+          partial: $0["partial"].count, failed: $0["failed"].count,
+          notRepeated: $0["not_repeated"].count, machinesUnread: $0["machines_unread"].count)
+      },
+      sinceStated: f["since_previous_run"].isPresent,
+      since: f["since_previous_run"].object.map {
+        SinceRun(
+          added: $0["added"].count, changed: $0["changed"].count, removed: $0["removed"].count)
+      },
+      unknown: f["unknown"].array?.compactMap(\.string))
+  }
+
+  static func watched(_ w: J) -> Watched {
+    Watched(
+      files: w["files"].count,
+      firstReading: w["first_reading"].bool,
+      sinceLastReading: w["since_last_reading"].object.map {
+        Counts(new: $0["new"].count, changed: $0["changed"].count, gone: $0["gone"].count)
+      },
+      kinds: w["kinds"].array?.compactMap { k in
+        k.object.map {
+          WatchedKind(
+            kind: $0["kind"].string, files: $0["files"].count, coverage: $0["coverage"].string,
+            readings: $0["readings"].object.map {
+              KindReadings(
+                full: $0["full"].count, partial: $0["partial"].count, none: $0["none"].count)
+            },
+            reasonText: $0["reason_text"].string)
+        }
+      },
+      contentNotRead: w["content_not_read"].count,
+      changes: w["changes"].array?.compactMap { c in
+        c.object.map {
+          WatchedChange(
+            at: $0["at"].date, runId: $0["run_id"].string, change: $0["change"].string,
+            kind: $0["kind"].string, pathText: $0["path_text"].string)
+        }
+      },
+      changesTotal: w["changes_total"].count)
+  }
+
+  static func coverage(_ c: J) -> Coverage {
+    Coverage(
+      readings: c["readings"].count, full: c["full"].count, readNothing: c["read_nothing"].count,
+      notGiven: c["not_given"].count, partial: c["partial"].count, failed: c["failed"].count,
+      problems: c["problems"].array?.compactMap { p in
+        p.object.map {
+          Problem(
+            class: $0["class"].string, reader: $0["reader"].string, kind: $0["kind"].string,
+            reasonText: $0["reason_text"].string, count: $0["count"].count,
+            examplesText: $0["examples_text"].array?.compactMap(\.string))
+        }
+      },
+      problemsTotal: c["problems_total"].count,
+      unreached: c["unreached"].array?.compactMap { u in
+        u.object.map {
+          Unreached(
+            scopeText: $0["scope_text"].string, since: $0["since"].date,
+            reasonText: $0["reason_text"].string)
+        }
+      },
+      unreachedTotal: c["unreached_total"].count)
+  }
+}
+
+/// A view of one JSON value that answers nil for anything missing or of another type.
+struct J {
+  let value: Any?
+  init(_ value: Any?) { self.value = value }
+
+  subscript(_ key: String) -> J { J((value as? [String: Any])?[key]) }
+
+  /// The key is there, even with the value null.
+  var isPresent: Bool { value != nil }
+  /// Present only when the value is a JSON object.
+  var object: J? { value is [String: Any] ? self : nil }
+  var array: [J]? { (value as? [Any])?.map(J.init) }
+  var string: String? { value as? String }
+
+  /// JSON `true`/`false` only: the numbers 0 and 1 are not booleans.
+  var bool: Bool? {
+    guard let n = value as? NSNumber, CFGetTypeID(n) == CFBooleanGetTypeID() else { return nil }
+    return n.boolValue
+  }
+
+  /// A whole, non-negative number. Booleans, fractions and negatives are not counts.
+  var count: Int? {
+    guard let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() else { return nil }
+    let d = n.doubleValue
+    guard d >= 0, d <= 1e15, d.rounded() == d else { return nil }
+    return Int(d)
+  }
+
+  /// An RFC 3339 time, with or without fractional seconds.
+  var date: Date? {
+    guard let s = string else { return nil }
+    let plain = ISO8601DateFormatter()
+    if let d = plain.date(from: s) { return d }
+    let fractional = ISO8601DateFormatter()
+    fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return fractional.date(from: s)
+  }
+}

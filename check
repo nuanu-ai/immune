@@ -6,3 +6,6 @@ cd "$(dirname "$0")"
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
+# The menu-bar app: Swift on Apple's Command Line Tools.
+swift format lint --strict -r app/Package.swift app/Sources app/Tests
+app/test
