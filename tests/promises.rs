@@ -6601,7 +6601,9 @@ fn a_second_run_on_unchanged_watched_places_reports_no_changes() {
              WHERE reader = 'watched-places' AND scope = 'machine:mac' ORDER BY kind"
         ),
         [
+            "editor tasks set to run when a checkout's folder is opened",
             "launch agents and daemons",
+            "other ways a checkout runs code by itself",
             "shell profiles of zsh and bash",
             "ssh access files"
         ]
@@ -8000,7 +8002,29 @@ fn add_line(path: &Path, line: &str) {
     std::fs::write(path, text).unwrap();
 }
 
-const SAMPLES: [Sample; 9] = [
+/// An editor's task file with one task, set to run when the folder is opened or when asked.
+fn tasks(w: &Watch, run_on: &str) {
+    put(
+        w.home(),
+        "dev/shop/.vscode/tasks.json",
+        &format!(
+            "{{\n  // tasks\n  \"version\": \"2.0.0\",\n  \"tasks\": [{{\"label\": \"setup\", \"command\": \"node setup.js\", \"runOptions\": {{\"runOn\": \"{run_on}\"}},}}]\n}}\n"
+        ),
+    );
+}
+
+/// A lockfile that fetches one package from this address.
+fn lock_from(w: &Watch, url: &str) {
+    put(
+        w.home(),
+        "dev/shop/package-lock.json",
+        &format!(
+            "{{\"lockfileVersion\": 3, \"packages\": {{\"node_modules/left-pad\": {{\"version\": \"1.3.0\", \"resolved\": \"{url}\"}}}}}}\n"
+        ),
+    );
+}
+
+const SAMPLES: [Sample; 11] = [
     Sample {
         rule: "watched.autostart",
         before: |w| {
@@ -8186,6 +8210,34 @@ const SAMPLES: [Sample; 9] = [
             add_line(&w.home().join(js), "more();\n");
             tiny_app(w, "2.0");
         },
+    },
+    Sample {
+        rule: "autorun.folder-open",
+        before: |w| {
+            checkout(w.home(), "dev/shop");
+            tasks(w, "default");
+        },
+        raise: |w| tasks(w, "folderOpen"),
+        // Another task that runs only when asked.
+        silent: |w| tasks(w, "Default"),
+    },
+    Sample {
+        rule: "indicator.match",
+        before: |w| {
+            checkout(w.home(), "dev/shop");
+            lock_from(
+                w,
+                "https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz",
+            );
+            std::fs::write(
+                w.store().with_file_name("indicators.json"),
+                r#"[{"kind": "domain-name:value", "value": "evil.example"}]"#,
+            )
+            .unwrap();
+        },
+        raise: |w| lock_from(w, "https://evil.example/left-pad-1.3.0.tgz"),
+        // A name that only ends like the one on the list.
+        silent: |w| lock_from(w, "https://notevil.example/left-pad-1.3.0.tgz"),
     },
 ];
 
@@ -8625,8 +8677,10 @@ fn expected_hides_a_finding_until_its_end_and_only_a_change_after_the_mark_opens
 fn neither_a_baseline_nor_the_first_run_of_this_build_on_an_older_store_raises_anything() {
     // Everything found on the first reading is the baseline. A store whose watched places were
     // read before this build looked for findings must not turn its history into findings.
+    // A match of an indicator is not a change but a state the list asks about, so it is found
+    // at the first reading: see tests/runs_by_itself.rs.
     let w = Watch::new("finding-upgrade");
-    for s in &SAMPLES {
+    for s in SAMPLES.iter().filter(|s| s.rule != "indicator.match") {
         (s.before)(&w);
         (s.raise)(&w);
     }

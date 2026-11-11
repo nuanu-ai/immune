@@ -9,12 +9,15 @@
 //! network is the threat list, fetched whole with the system curl.
 
 mod agent_folders;
+mod autorun;
 mod brew;
 mod checkouts;
 mod codesign;
 mod findings;
 mod icu;
+mod indicators;
 mod integrity;
+mod json5;
 mod known_hosts;
 mod lifecycle;
 mod lockfiles;
@@ -45,7 +48,8 @@ const STORE_FOLDER: &str = "Library/Application Support/personal-soc";
 const USAGE: &str = "usage: soc run [--store <path>] [--machine-name <name>] [--brew <path>]
                [--brew-input <file>] [--servers-input <dir>] [--checkouts-root <dir>]
                [--sessions-root <dir>] [--tailscale <path>]
-               [--threats-input <file>] [--curl <path>] [--system-root <dir>] [--json]
+               [--threats-input <file>] [--curl <path>] [--system-root <dir>]
+               [--indicators <file>] [--json]
        soc status [--store <path>] [--json]
        soc findings [--all] [--store <path>] [--json]
        soc finding <id> [--store <path>] [--json]
@@ -111,6 +115,8 @@ struct Args {
     /// The folder that `/Library` and `/etc` are resolved under for watched places: `/`
     /// unless a test gives another.
     system_root: PathBuf,
+    /// The list of indicators. `None`: `indicators.json` next to the store.
+    indicators: Option<PathBuf>,
     /// Answer in the machine-readable envelope instead of the report line.
     json: bool,
 }
@@ -163,7 +169,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
             let (mut machine, mut brew, mut brew_input) = (None, None, None);
             let (mut servers_input, mut checkouts_root, mut tailscale) = (None, None, None);
             let (mut sessions_root, mut threats_input, mut curl) = (None, None, None);
-            let (mut system_root, mut json) = (None, false);
+            let (mut system_root, mut json, mut indicators) = (None, false, None);
             while let Some(arg) = it.next() {
                 match arg.as_str() {
                     "--json" => json = true,
@@ -178,6 +184,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
                     "--threats-input" => threats_input = Some(value(&mut it, &arg)?.into()),
                     "--curl" => curl = Some(value(&mut it, &arg)?.into()),
                     "--system-root" => system_root = Some(value(&mut it, &arg)?.into()),
+                    "--indicators" => indicators = Some(value(&mut it, &arg)?.into()),
                     _ => return Err(format!("unexpected argument: {arg}")),
                 }
             }
@@ -197,6 +204,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
                 threats_input,
                 curl,
                 system_root: system_root.unwrap_or_else(|| PathBuf::from("/")),
+                indicators,
                 json,
             }))
         }
@@ -1742,7 +1750,9 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
         read_lockfiles(&mut run, &found)?;
     }
     let (watched, mut opened) = watch_places(&mut run, args, &found)?;
-    let changed = read_integrity(&mut run, args)?;
+    read_other_autoruns(&mut run, &found)?;
+    let mut changed = read_integrity(&mut run, args)?;
+    changed.extend(read_indicators(&mut run, args, &found)?);
     opened += findings::detect(run.tx, run.run_id, run.at, &changed)?;
     read_traces(&mut run, args)?;
     resolve(&mut run)?;
@@ -2490,6 +2500,16 @@ fn read_watched(
             git_file,
         });
     }
+    // Editors' task files that hold a task set to run on opening, in every checkout, as one
+    // reading of this machine: its first is the baseline, and a checkout that arrives later
+    // with such a task is new, which is what the rule is for.
+    placed.push(Placed {
+        scope: machine.clone(),
+        watched_as: autorun::RUNS_ON_OPEN,
+        kind: autorun::KIND,
+        look: autorun::look_all(checkouts.iter().map(|c| (c.path.as_path(), c.rel.as_str()))),
+        git_file: false,
+    });
 
     // The raw copy: kind, path, checksum and link target, one line per entry; never content.
     let mut raw = String::new();
@@ -2548,6 +2568,11 @@ fn read_watched(
         } else if p.kind == watched::HOOK_KIND && p.look.entries.is_empty() {
             match p.look.completeness() {
                 ("full", _) => ("full", Some(watched::NO_HOOKS.to_string())),
+                other => other,
+            }
+        } else if p.kind == autorun::KIND && p.look.entries.is_empty() {
+            match p.look.completeness() {
+                ("full", _) => ("full", Some(autorun::NO_TASK.to_string())),
                 other => other,
             }
         } else {
@@ -2803,6 +2828,213 @@ fn read_integrity(run: &mut Run, args: &Args) -> Result<Vec<findings::Observed>,
 }
 
 // ---- End of integrity of what is installed. ----
+
+// ---- What runs by itself and indicators: see src/autorun.rs and src/indicators.rs. ----
+
+/// Names the other ways a project runs code by itself that are present in checkouts and
+/// that this build does not read, each with how many checkouts hold it, in one reading of
+/// this machine. With none present it is read in full.
+fn read_other_autoruns(run: &mut Run, found: &[checkouts::Checkout]) -> Result<(), Box<dyn Error>> {
+    let (run_id, machine) = (run.run_id.to_string(), run.machine.to_string());
+    let mut present: BTreeMap<&str, usize> = BTreeMap::new();
+    for c in found {
+        for name in autorun::others(&c.path) {
+            *present.entry(name).or_default() += 1;
+        }
+    }
+    let reading = Reading {
+        reader: watched::READER,
+        scope: &machine,
+        kind: autorun::OTHERS_KIND,
+        run_id: &run_id,
+        at: run.at,
+        observed_at: run.at,
+    };
+    let (completeness, reason, gap) = if present.is_empty() {
+        ("full", None, Gap::default())
+    } else {
+        let named: Vec<String> = present
+            .iter()
+            .map(|(name, n)| format!("{name} in {}", things(*n as i64, "checkout", "checkouts")))
+            .collect();
+        let lacks = present
+            .keys()
+            .map(|name| Lack::new(autorun::OTHER_WAY, Some(name)))
+            .collect();
+        let gap = Gap {
+            cause: Some(Cause::NoReader),
+            lacks,
+        };
+        ("none", Some(format!("not read: {}", named.join("; "))), gap)
+    };
+    run.apply(
+        &reading,
+        watched::BASIS,
+        completeness,
+        reason.as_deref(),
+        &gap,
+        &[],
+    )?;
+    Ok(())
+}
+
+/// Reads the list of indicators and matches it. The list is the file given, else the one
+/// next to the store; neither there means not applicable, and nothing is written. A list
+/// that cannot be read fails and the one read before is matched. Returns the files that
+/// match an indicator they did not match before, for the rule.
+fn read_indicators(
+    run: &mut Run,
+    args: &Args,
+    found: &[checkouts::Checkout],
+) -> Result<Vec<findings::Observed>, Box<dyn Error>> {
+    let path = args
+        .indicators
+        .clone()
+        .unwrap_or_else(|| run.home.join(indicators::LIST));
+    if matches!(std::fs::symlink_metadata(&path), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+    {
+        return Ok(Vec::new());
+    }
+    run.readers += 1;
+    let (run_id, machine, at) = (run.run_id.to_string(), run.machine.to_string(), run.at);
+    let on_machine = |kind: &'static str| Reading {
+        reader: indicators::READER,
+        scope: &machine,
+        kind,
+        run_id: &run_id,
+        at,
+        observed_at: at,
+    };
+    let given = autorun::read_capped(&path, indicators::CAP)
+        .and_then(|bytes| Ok((indicators::parse(&bytes)?, bytes)));
+    let (list, raw) = match given {
+        Ok((list, bytes)) => {
+            let raw = run.keep_raw(indicators::READER, indicators::LIST, &bytes)?;
+            let note = format!("{} entries", list.entries);
+            run.apply(
+                &on_machine(indicators::LIST_KIND),
+                indicators::BASIS,
+                "full",
+                Some(&note),
+                &Gap::default(),
+                &[],
+            )?;
+            (list, raw)
+        }
+        Err(why) => {
+            let before = store::last_raw(run.tx, indicators::READER, indicators::LIST)?;
+            let previous = before.and_then(|raw| {
+                let bytes = std::fs::read(run.home.join(&raw)).ok()?;
+                Some((indicators::parse(&bytes).ok()?, raw))
+            });
+            let then = if previous.is_some() {
+                "the list read before is matched"
+            } else {
+                "no list was read before"
+            };
+            run.apply(
+                &on_machine(indicators::LIST_KIND),
+                indicators::BASIS,
+                "none",
+                Some(&format!("{why}; {then}")),
+                &Gap::of(Cause::Failed),
+                &[],
+            )?;
+            match previous {
+                Some(p) => p,
+                None => return Ok(Vec::new()),
+            }
+        }
+    };
+
+    // What matches, as file id and indicator: hashes against watched files, the network
+    // kinds against the texts read in checkouts.
+    let mut matches = indicators::match_hashes(run.tx, &list)?;
+    let mut failed = Vec::new();
+    for c in found {
+        let mut texts = lockfiles::read_as_text(&c.path);
+        if std::fs::symlink_metadata(c.path.join(autorun::TASKS)).is_ok() {
+            texts.push(autorun::TASKS.to_string());
+        }
+        for rel in texts {
+            let shown = format!("{}/{rel}", c.rel);
+            match autorun::read_capped(&c.path.join(&rel), indicators::CAP) {
+                Ok(bytes) => {
+                    let text = String::from_utf8_lossy(&bytes);
+                    for i in indicators::match_text(&text, &list) {
+                        matches.push((format!("file:{machine}/{shown}"), i));
+                    }
+                }
+                Err(why) => failed.push(format!("{shown} ({why})")),
+            }
+        }
+    }
+    let before: BTreeSet<(String, String)> = run
+        .tx
+        .prepare(
+            "SELECT subject, object FROM assertion
+             WHERE layer = 'live' AND reader = ?1 AND predicate = 'matches_indicator'",
+        )?
+        .query_map([indicators::READER], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let statements: Vec<Statement> = matches
+        .iter()
+        .map(|(file, i)| Statement {
+            subject: file.clone(),
+            predicate: "matches_indicator",
+            object: i.literal(),
+            source_ref: raw.clone(),
+        })
+        .collect();
+    let (completeness, reason, gap) = if failed.is_empty() {
+        ("full", None, Gap::default())
+    } else {
+        let reason = format!("could not be read: {}", failed.join("; "));
+        ("partial", Some(reason), Gap::of(Cause::Failed))
+    };
+    run.apply(
+        &on_machine(indicators::MATCH_KIND),
+        indicators::BASIS,
+        completeness,
+        reason.as_deref(),
+        &gap,
+        &statements,
+    )?;
+    let lacks = indicators::lacks(&list);
+    let (completeness, reason, gap) = if lacks.is_empty() {
+        ("full", None, Gap::default())
+    } else {
+        let names: Vec<&str> = lacks.iter().filter_map(|l| l.name.as_deref()).collect();
+        let reason = format!("not matched: {}", names.join("; "));
+        let cause = Some(Cause::NoReader);
+        ("none", Some(reason), Gap { cause, lacks })
+    };
+    run.apply(
+        &on_machine(indicators::UNMATCHED_KIND),
+        indicators::BASIS,
+        completeness,
+        reason.as_deref(),
+        &gap,
+        &[],
+    )?;
+
+    // A file is found once in a run, however many indicators it newly matches.
+    let new: BTreeSet<&String> = statements
+        .iter()
+        .filter(|s| !before.contains(&(s.subject.clone(), s.object.clone())))
+        .map(|s| &s.subject)
+        .collect();
+    Ok(new
+        .into_iter()
+        .map(|file| findings::Observed {
+            change: "new",
+            place: indicators::MATCHED.to_string(),
+            file: file.clone(),
+        })
+        .collect())
+}
+
+// ---- End of what runs by itself and indicators. ----
 
 /// Reads the threat catalogue and brings the threat list in line with it. A catalogue that
 /// could not be fetched or parsed changes nothing: no threat is added or marked gone.

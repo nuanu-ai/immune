@@ -82,6 +82,16 @@ fn lockfiles(checkout: &Path) -> (Vec<String>, bool) {
     (out, listed)
 }
 
+/// The lockfiles inside a checkout that this reader opens as text, relative to it, for the
+/// indicators reader to look for strings in.
+pub fn read_as_text(checkout: &Path) -> Vec<String> {
+    lockfiles(checkout)
+        .0
+        .into_iter()
+        .filter(|p| SUPPORTED.contains(&file_name(p)))
+        .collect()
+}
+
 fn file_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }

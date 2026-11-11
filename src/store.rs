@@ -233,6 +233,15 @@ INSERT OR IGNORE INTO coverage_kind (name) VALUES
     ('application bundles in /Applications and ~/Applications'), ('Homebrew kegs'),
     ('global npm packages'),
     ('code kept by applications not signed by Apple under ~/Library/Application Support');
+-- What runs by itself, see src/autorun.rs, and indicators, see src/indicators.rs.
+INSERT OR IGNORE INTO predicate (name, object_kind, status) VALUES
+    ('matches_indicator', 'literal', 'used');
+INSERT OR IGNORE INTO coverage_kind (name) VALUES
+    ('editor tasks set to run when a checkout''s folder is opened'),
+    ('other ways a checkout runs code by itself'),
+    ('indicator list given as a file'),
+    ('indicators matched against watched files and texts read in checkouts'),
+    ('indicators against what this build does not match them with');
 ";
 
 /// Why a reading is incomplete. The order is from worst: a reading incomplete for several

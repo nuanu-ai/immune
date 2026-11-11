@@ -13,7 +13,7 @@
 //! What a finding rests on is kept by reference, as journal entries, never as content.
 
 use crate::status::{Problems, Unreached};
-use crate::{integrity, sha256, status, watched};
+use crate::{autorun, indicators, integrity, sha256, status, watched};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 
@@ -258,8 +258,50 @@ fn app_code_outside() -> Rule {
 
 // ---- End of integrity of what is installed. ----
 
+// ---- What runs by itself and indicators: see `autorun` and `indicators`. ----
+
+fn folder_open_task() -> Rule {
+    Rule {
+        id: "autorun.folder-open",
+        kind: autorun::RUNS_ON_OPEN,
+        // Event Triggered Execution: code set to run on an event, here the folder being
+        // opened. No sub-technique names an editor's tasks; its procedure examples include
+        // `runOn` conditions written into coding tools' settings.
+        technique: Some("T1546"),
+        severity: "high",
+        confidence: "medium",
+        finds: "event",
+        words: Words {
+            title: "A project on this Mac now has a task that runs by itself when its folder is opened in the editor.",
+            meaning: "Some projects use this to start a build or a server when you open them; it is also how code was planted in projects, so that it runs as soon as anyone opens the folder.",
+            advice: "Do not open that folder in the editor until you have read the task file named here and know who added the task.",
+        },
+        fires: |o| o.place == autorun::RUNS_ON_OPEN && (o.change == "new" || o.change == "changed"),
+    }
+}
+
+fn indicator_match() -> Rule {
+    Rule {
+        id: "indicator.match",
+        kind: indicators::MATCHED,
+        // What technique a match is evidence of is the list's to say, not the program's.
+        technique: None,
+        severity: "high",
+        confidence: "high",
+        finds: "event",
+        words: Words {
+            title: "Something on this Mac matches a sign of a known attack from the list you gave.",
+            meaning: "The list names files, sites and addresses that the attack is known to use, so a match is rarely chance; it is wrong only when the list itself is wrong.",
+            advice: "Do not open or run what is named here; find out how it got there, and treat this Mac as affected until you know.",
+        },
+        fires: |o| o.place == indicators::MATCHED,
+    }
+}
+
+// ---- End of what runs by itself and indicators. ----
+
 /// Every rule, in the order they are listed.
-pub fn rules() -> [Rule; 9] {
+pub fn rules() -> [Rule; 11] {
     [
         autostart(),
         shell_profile(),
@@ -270,6 +312,8 @@ pub fn rules() -> [Rule; 9] {
         app_signer(),
         package_files(),
         app_code_outside(),
+        folder_open_task(),
+        indicator_match(),
     ]
 }
 
@@ -429,9 +473,16 @@ fn raise(
     tx.execute(
         "INSERT INTO finding_basis (finding, journal)
          SELECT ?1, seq FROM journal
-         WHERE run_id = ?2 AND reader IN (?3, ?5) AND entry IN ('added', 'changed', 'removed')
-           AND subject = ?4",
-        params![id, run_id, watched::READER, o.file, integrity::READER],
+         WHERE run_id = ?2 AND reader IN (?3, ?5, ?6)
+           AND entry IN ('added', 'changed', 'removed') AND subject = ?4",
+        params![
+            id,
+            run_id,
+            watched::READER,
+            o.file,
+            integrity::READER,
+            indicators::READER
+        ],
     )?;
     Ok(opened)
 }
@@ -476,6 +527,7 @@ pub struct Found {
     pub place: String,
     /// What an application's seal or signer became, in the program's words with the team or
     /// code directory the signature gives: told as text from a source.
+    /// For a match of indicators, the indicators the file matches, as the list gives them.
     pub became: Option<String>,
 }
 
@@ -518,9 +570,11 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Found>>> 
                 (SELECT object FROM assertion a WHERE a.subject = f.about
                    AND a.predicate = 'installed_at' ORDER BY a.id DESC LIMIT 1),
                 (SELECT j.new_value FROM finding_basis b JOIN journal j ON j.seq = b.journal
-                 WHERE b.finding = f.id AND j.entry = 'changed'
+                 WHERE b.finding = f.id AND j.entry IN ('added', 'changed')
                    AND j.predicate = CASE f.rule WHEN 'integrity.app-seal' THEN 'has_seal'
-                                                 WHEN 'integrity.app-signer' THEN 'signed_by' END
+                                                 WHEN 'integrity.app-signer' THEN 'signed_by'
+                                                 WHEN 'indicator.match' THEN 'matches_indicator'
+                                                 END
                  ORDER BY j.seq DESC LIMIT 1)
          FROM finding f ORDER BY last_seen_at DESC, id",
     )?
