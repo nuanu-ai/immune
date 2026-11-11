@@ -47,6 +47,9 @@ const WATCHED: [(Count, &str, bool); 9] = [
     ),
 ];
 
+/// What a watcher samples, in the same words as the other kinds.
+pub const SAMPLED: &str = "running programs and their connections";
+
 /// How a kind of watched thing is counted: live files of a kind of watched place, or live
 /// installed things of a kind of the integrity reader.
 #[derive(Clone, Copy)]
@@ -65,7 +68,7 @@ pub struct ThisMac {
     pub checked_at: Option<i64>,
     /// When a watcher last read the watched places.
     pub live_read_at: Option<i64>,
-    /// What is watched, its count, and `live` or `hourly`.
+    /// What is watched, its count, and `live`, `hourly` or `sampled`.
     pub watched: Vec<(&'static str, i64, &'static str)>,
 }
 
@@ -152,7 +155,8 @@ pub fn this_mac(conn: &Connection, latest: &[Latest], live: bool) -> rusqlite::R
     // Installed software is listed once it has been read here: a watcher alone, before any
     // full run, reads only the watched places, which every reading of this Mac reads.
     let installed_read = mine.iter().any(|r| r.reader == integrity::READER);
-    let watched = WATCHED
+    // A kind with nothing to watch on this Mac has no count and is left out.
+    let mut watched: Vec<(&'static str, i64, &'static str)> = WATCHED
         .iter()
         .filter_map(|(count, what, fast)| {
             let n = match count {
@@ -161,9 +165,13 @@ pub fn this_mac(conn: &Connection, latest: &[Latest], live: bool) -> rusqlite::R
                 Count::Installed(_) => return None,
             };
             let how = if live && *fast { "live" } else { "hourly" };
-            Some((*what, n.copied().unwrap_or_default(), how))
+            Some((*what, *n?, how))
         })
         .collect();
+    // Running programs are sampled only while a watcher runs.
+    if live && let Some(n) = crate::processes::last_sampled(conn)? {
+        watched.push((SAMPLED, n, "sampled"));
+    }
     Ok(ThisMac {
         state,
         live,

@@ -46,10 +46,15 @@ fn soc(dir: &Dir, args: &[&str]) -> Output {
 
 /// Feeds one reading at time `at` and returns what `soc sample --json` answered.
 fn sample(dir: &Dir, at: i64, processes: &[Value]) -> Value {
-    let input = dir.0.join(format!("reading-{at}.json"));
     let connection = json!({ "pid": 4242, "start": 7, "transport": "tcp",
                               "address": "::ffff:192.0.2.9", "port": 80 });
-    let reading = json!({ "at": at, "processes": processes, "connections": [connection],
+    sample_with(dir, at, processes, &[connection])
+}
+
+/// Feeds one reading with these connections.
+fn sample_with(dir: &Dir, at: i64, processes: &[Value], connections: &[Value]) -> Value {
+    let input = dir.0.join(format!("reading-{at}.json"));
+    let reading = json!({ "at": at, "processes": processes, "connections": connections,
                           "other_users": [1, 80, 81, 82, 83, 84, 85], "unreadable": 2, "ended": 3,
                           "sockets_unreadable": 1 });
     std::fs::write(&input, reading.to_string()).unwrap();
@@ -261,6 +266,25 @@ fn every_sample_names_its_level_of_access_and_what_it_cannot_see() {
     assert_eq!(said["interpreters"]["arguments_unreadable"], 1);
     assert_eq!(said["connections"]["read"], 1);
     assert_eq!(said["connections"]["unreadable"], 1);
+    // What could not be read makes the sample's coverage partial, by kind.
+    let conn = rusqlite::Connection::open(dir.store()).unwrap();
+    let covered: Vec<String> = conn
+        .prepare(
+            "SELECT completeness || '|' || reason FROM coverage WHERE reader = 'processes'
+             ORDER BY kind",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        covered,
+        [
+            "partial|sockets that could not be read: 1",
+            "partial|programs that could not be read: 2"
+        ]
+    );
     let cannot: Vec<&str> = said["cannot_see"]
         .as_array()
         .unwrap()
@@ -305,4 +329,114 @@ fn a_sample_waits_for_a_run_in_progress_and_then_stops_writing_nothing() {
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["errors"][0]["code"], "run_in_progress");
     assert!(!dir.store().exists());
+}
+
+fn rows(dir: &Dir, sql: &str) -> Vec<String> {
+    let conn = rusqlite::Connection::open(dir.store()).unwrap();
+    let mut stmt = conn.prepare(sql).unwrap();
+    stmt.query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+#[test]
+fn a_process_gone_for_a_day_is_no_longer_kept_and_one_gone_for_less_is() {
+    let dir = Dir::new("trim");
+    let gone = || {
+        vec![process(
+            51,
+            7,
+            1,
+            "/opt/tools/bin/node",
+            &["node", "-e", "x"],
+            false,
+        )]
+    };
+    sample(&dir, T, &gone());
+    sample(&dir, T + 3600, &[]);
+    assert_eq!(
+        rows(&dir, "SELECT executable FROM tracked_process").len(),
+        1
+    );
+    sample(&dir, T + 24 * 3600 + 1, &[]);
+    assert!(rows(&dir, "SELECT executable FROM tracked_process").is_empty());
+}
+
+/// A full run of `dir` that reads the indicator list next to the store and nothing real.
+fn run(dir: &Dir) {
+    let absent = dir.0.join("absent");
+    std::fs::write(dir.0.join("brew.json"), r#"{"formulae": [], "casks": []}"#).unwrap();
+    std::fs::create_dir_all(dir.0.join("home")).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_soc"))
+        .env("HOME", &dir.0)
+        .current_dir(&dir.0)
+        .args(["run", "--machine-name", "mac", "--store"])
+        .arg(dir.store())
+        .arg("--brew-input")
+        .arg(dir.0.join("brew.json"))
+        .args(["--tailscale", "absent", "--threats-input", "absent"])
+        .arg("--system-root")
+        .arg(&absent)
+        .arg("--servers-input")
+        .arg(&absent)
+        .arg("--checkouts-root")
+        .arg(dir.0.join("home"))
+        .arg("--sessions-root")
+        .arg(&absent)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn a_connection_to_a_listed_address_is_a_finding_once_and_a_listed_name_is_never_resolved() {
+    let dir = Dir::new("indicator");
+    // The address of the list, and a name that is written like an address: a name is not
+    // matched against connections, whatever it looks like.
+    std::fs::write(
+        dir.0.join("indicators.json"),
+        r#"[{"kind": "ipv4-addr:value", "value": "203.0.113.47"},
+            {"kind": "domain-name:value", "value": "198.51.100.8"}]"#,
+    )
+    .unwrap();
+    run(&dir);
+    let tool = |pid| process(pid, 7, 500, "/opt/tools/bin/agent", &["agent"], false);
+    let to = |pid, address: &str| json!({ "pid": pid, "start": 7, "transport": "tcp", "address": address, "port": 80 });
+    let conns = [to(60, "::ffff:203.0.113.47"), to(61, "198.51.100.8")];
+    let said = sample_with(&dir, T, &[tool(60), tool(61)], &conns);
+    assert_eq!(said["connections"]["matched_indicators"], 1);
+    assert_eq!(said["findings_opened"], 1);
+    let f = &findings(&dir)[0];
+    assert_eq!(f["rule"], "indicator.match");
+    assert_eq!(f["where_text"], "/opt/tools/bin/agent");
+    assert_eq!(f["value_text"], "[ipv4-addr:value = '203.0.113.47']");
+    // The connection stays: one finding, and once the owner has seen it, it stays quiet.
+    assert_eq!(
+        sample_with(&dir, T + 30, &[tool(60)], &conns[..1])["findings_opened"],
+        0
+    );
+    let id = f["id"].as_str().unwrap().to_string();
+    assert!(soc(&dir, &["finding", &id, "seen"]).status.success());
+    assert_eq!(
+        sample_with(&dir, T + 60, &[tool(60)], &conns[..1])["findings_opened"],
+        0
+    );
+    // A connection that drops for a sample and comes back is the same one, not raised again.
+    sample_with(&dir, T + 90, &[tool(60)], &[]);
+    assert_eq!(
+        sample_with(&dir, T + 120, &[tool(60)], &conns[..1])["findings_opened"],
+        0
+    );
+    assert_eq!(
+        rows(&dir, "SELECT entry FROM journal WHERE entry = 'sampled'").len(),
+        1
+    );
+    // Gone for a day, it is no longer kept.
+    sample_with(&dir, T + 120 + 24 * 3600 + 1, &[], &[]);
+    assert!(rows(&dir, "SELECT indicator FROM matched_connection").is_empty());
 }

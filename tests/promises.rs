@@ -7950,7 +7950,8 @@ fn status_without_json_is_a_short_summary_for_a_person() {
     assert!(text.contains(
         "Cannot judge: no vulnerability from the catalogue is matched against the estate yet."
     ));
-    assert!(text.contains("Cannot judge: processes and connections are not read by this build."));
+    // Processes and connections are sampled: the status no longer says they are not read.
+    assert!(!text.contains("processes and connections are not read"));
 }
 
 // Findings: what a rule found, kept until the owner answers it.

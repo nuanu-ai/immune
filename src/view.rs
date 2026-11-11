@@ -210,6 +210,13 @@ fn summary(
         .collect();
     if watching || last_read.is_some() {
         said.extend(crate::watch::CANNOT_SEE.map(|s| format!("a watcher does not see {s}")));
+        // A limit of sampling without administrator rights, not a fault: said here only.
+        if crate::processes::last_sampled(conn)?.is_some() {
+            said.extend(
+                crate::processes::PERSON_CANNOT_SEE
+                    .map(|s| format!("a watcher's sample of running programs does not see {s}")),
+            );
+        }
         writeln!(
             out,
             "<li>{} the watched places were last read by a watcher {}.</li>",
@@ -1800,7 +1807,8 @@ fn changes(conn: &Connection, out: &mut String) -> Out {
             .collect::<rusqlite::Result<_>>()?;
         // A watcher's reading, `soc watch`, reads only the watched places and never finishes
         // a run: it is shown as a watcher's reading, not as a run that did not finish.
-        let watcher = run_id.starts_with(crate::watch::RUN_PREFIX);
+        let sampled = run_id.starts_with(crate::processes::RUN_PREFIX);
+        let watcher = run_id.starts_with(crate::watch::RUN_PREFIX) || sampled;
         let not_repeated: i64 = if watcher {
             0
         } else {
@@ -1842,7 +1850,9 @@ fn changes(conn: &Connection, out: &mut String) -> Out {
         } else {
             "no changes".to_string()
         };
-        let summary = if watcher {
+        let summary = if sampled {
+            "sample of running programs and their connections".to_string()
+        } else if watcher {
             format!("watcher's reading of the watched places: {summary}")
         } else {
             summary

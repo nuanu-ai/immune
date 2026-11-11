@@ -459,15 +459,16 @@ fn raise(
     tx.execute(
         "INSERT INTO finding_basis (finding, journal)
          SELECT ?1, seq FROM journal
-         WHERE run_id = ?2 AND reader IN (?3, ?5, ?6)
-           AND entry IN ('added', 'changed', 'removed') AND subject = ?4",
+         WHERE run_id = ?2 AND reader IN (?3, ?5, ?6, ?7)
+           AND entry IN ('added', 'changed', 'removed', 'sampled') AND subject = ?4",
         params![
             id,
             run_id,
             watched::READER,
             o.file,
             integrity::READER,
-            indicators::READER
+            indicators::READER,
+            crate::processes::READER
         ],
     )?;
     Ok(opened)
@@ -556,7 +557,7 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Found>>> 
                 (SELECT object FROM assertion a WHERE a.subject = f.about
                    AND a.predicate = 'installed_at' ORDER BY a.id DESC LIMIT 1),
                 (SELECT j.new_value FROM finding_basis b JOIN journal j ON j.seq = b.journal
-                 WHERE b.finding = f.id AND j.entry IN ('added', 'changed')
+                 WHERE b.finding = f.id AND j.entry IN ('added', 'changed', 'sampled')
                    AND j.predicate = CASE f.rule WHEN 'integrity.app-seal' THEN 'has_seal'
                                                  WHEN 'integrity.app-signer' THEN 'signed_by'
                                                  WHEN 'indicator.match' THEN 'matches_indicator'

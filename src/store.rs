@@ -97,7 +97,7 @@ CREATE TABLE raw_input (
 /// What the journal records. The list only grows: a store whose journal was made with a
 /// shorter list is made again with this one when it is opened, so a new kind of entry is a
 /// new word here and nothing else.
-const JOURNAL_ENTRIES: [&str; 16] = [
+const JOURNAL_ENTRIES: [&str; 17] = [
     "run_started",
     "added",
     "changed",
@@ -114,6 +114,8 @@ const JOURNAL_ENTRIES: [&str; 16] = [
     "finding_cleared",
     "finding_expected",
     "finding_seen",
+    // What a sample saw that a finding rests on, see `processes.rs`.
+    "sampled",
 ];
 
 /// The journal. It cannot be rebuilt from raw input, so it only grows. Its entries are the
@@ -726,7 +728,14 @@ pub fn totals(tx: &Connection, run_id: &str) -> rusqlite::Result<Totals> {
                AND EXISTS (SELECT 1 FROM assertion a WHERE a.layer IN ('live', 'retracted')
                              AND a.reader = c.reader
                              AND a.scope = c.scope AND a.kind = c.kind)")?,
-        none: one("SELECT COUNT(*) FROM coverage WHERE run_id = ?1 AND completeness = 'none'")?,
+        // Folders macOS asks permission for were not looked into, which is not a reading
+        // that read nothing: they are told apart, under what is not covered.
+        none: tx.query_row(
+            "SELECT COUNT(*) FROM coverage WHERE run_id = ?1 AND completeness = 'none'
+               AND kind != ?2",
+            params![run_id, crate::guarded::KIND],
+            |row| row.get::<_, i64>(0),
+        )?,
         machines_unread: one("SELECT COUNT(*) FROM (SELECT scope FROM coverage
              WHERE run_id = ?1 AND scope IN (SELECT id FROM entity WHERE type = 'machine')
              GROUP BY scope HAVING MAX(completeness != 'none') = 0)")?,

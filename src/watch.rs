@@ -23,7 +23,14 @@
 //! Output: one JSON object per line on stdout, flushed at once, and nothing else there. Every
 //! line has `format`, `event` and `at`, and its fields flat beside them:
 //! `watching` (`places`, `cannot_see`), `read` (`new`, `changed`, `gone`, `opened`,
-//! `needs_a_look_total`, open findings only), `alive`, and `problem` (`code`, `detail_text`).
+//! `needs_a_look_total`, open findings only), `sample` (`opened`, `needs_a_look_total`),
+//! `alive`, and `problem` (`code`, `detail_text`).
+//!
+//! Samples. Every `SAMPLE` the watcher takes a sample of this user's running programs and
+//! their connections (`processes.rs`), under the run lock like a reading, in one transaction.
+//! A `sample` line is printed only when a sample opened a finding; a quiet sample prints
+//! nothing. A sample that failed is a `problem` line, `sample_failed`, and the next is taken
+//! at its time.
 //! After a reading that changed something it brings the view up to date, when the owner has
 //! made it once; `view_failed` says when it could not. The watcher stops,
 //! with exit 0, when stdout is closed or its parent process is gone, so that an app that died
@@ -58,6 +65,9 @@ const ALIVE: Duration = Duration::from_secs(60);
 const RETRY: Duration = Duration::from_secs(30);
 /// How often the watcher looks whether the process that started it is still there.
 const PARENT: Duration = Duration::from_secs(1);
+/// How often the watcher takes a sample of running programs. The rule over them wants two
+/// samples a minute apart, so three samples at this cadence; a sample costs 10 to 20 ms.
+pub const SAMPLE: Duration = Duration::from_secs(30);
 /// Another watcher holds the store.
 pub const EXIT_WATCHING: u8 = 5;
 /// How the run id of a watcher's reading begins; it writes no `run_started` or `run_finished`.
@@ -86,15 +96,29 @@ pub struct WatchArgs {
     pub store: PathBuf,
     pub system_root: PathBuf,
     pub home: PathBuf,
+    /// A reading made of invented processes, read again at every sample, instead of the
+    /// system's: for tests, which set the clock in it.
+    pub sample_input: Option<PathBuf>,
+    pub sample_every: Duration,
 }
 
 /// Parses what follows `soc watch`.
 pub fn parse(mut it: impl Iterator<Item = String>) -> Result<WatchArgs, String> {
     let (mut store, mut system_root) = (None, None);
+    let (mut sample_input, mut sample_every) = (None, SAMPLE);
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--store" => store = Some(crate::value(&mut it, &arg)?.into()),
             "--system-root" => system_root = Some(crate::value(&mut it, &arg)?.into()),
+            "--sample-input" => sample_input = Some(crate::value(&mut it, &arg)?.into()),
+            "--sample-every" => {
+                let seconds = crate::value(&mut it, &arg)?
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|s| (1..=3600).contains(s))
+                    .ok_or("--sample-every takes a number of seconds from 1 to 3600")?;
+                sample_every = Duration::from_secs(seconds);
+            }
             _ => return Err(format!("unexpected argument: {arg}")),
         }
     }
@@ -102,6 +126,8 @@ pub fn parse(mut it: impl Iterator<Item = String>) -> Result<WatchArgs, String> 
         store: store.map_or_else(crate::default_store, Ok)?,
         system_root: system_root.unwrap_or_else(|| PathBuf::from("/")),
         home: crate::user_home()?,
+        sample_input,
+        sample_every,
     })
 }
 
@@ -176,6 +202,7 @@ pub fn watch(args: &WatchArgs) -> ExitCode {
         volumes: String::new(),
         handled: None,
         parent,
+        signers: crate::processes::Signers::default(),
     };
     let (problems, since) = match w.subscribe(stored) {
         Ok(found) => found,
@@ -298,6 +325,8 @@ struct Watcher<'a> {
     /// The process that started the watcher. When it is gone the watcher is an orphan, its
     /// parent now another process, and it stops: a new app must be able to start its own.
     parent: libc::pid_t,
+    /// Who signed what the samples track, kept across samples.
+    signers: crate::processes::Signers,
 }
 
 /// A reading that is due: when, since which event it was first due, and the latest id it
@@ -403,8 +432,10 @@ impl Watcher<'_> {
             latest,
         });
         let mut alive = Instant::now() + ALIVE;
+        // The first sample is taken at start, after the reading due then.
+        let mut sample = Instant::now();
         loop {
-            let next = due.as_ref().map_or(alive, |d| d.at.min(alive));
+            let next = due.as_ref().map_or(alive, |d| d.at.min(alive)).min(sample);
             let next = next.min(Instant::now() + PARENT);
             match rx.recv_timeout(next.saturating_duration_since(Instant::now())) {
                 Ok(Msg::Stop) | Err(RecvTimeoutError::Disconnected) => return,
@@ -466,6 +497,30 @@ impl Watcher<'_> {
                     }
                 }
             }
+            if sample <= Instant::now() {
+                sample = Instant::now() + self.args.sample_every;
+                match self.sample() {
+                    Ok(Some((opened, needs))) if opened > 0 => {
+                        let view = crate::refresh_view(&self.args.store).err();
+                        let said = json!({ "opened": opened, "needs_a_look_total": needs });
+                        if !emit(&line("sample", said)) {
+                            return;
+                        }
+                        if let Some(e) = view
+                            && !emit(&problem("view_failed", &e.to_string()))
+                        {
+                            return;
+                        }
+                    }
+                    // Quiet, or stopped while it waited: the loop ends at its next turn.
+                    Ok(_) => {}
+                    Err(e) => {
+                        if !emit(&problem("sample_failed", &e.to_string())) {
+                            return;
+                        }
+                    }
+                }
+            }
             if alive <= now {
                 alive = now + ALIVE;
                 if !emit(&line("alive", json!({}))) {
@@ -517,14 +572,8 @@ impl Watcher<'_> {
     /// `latest` as handled. `None` when the watcher was stopped, or orphaned, while it waited for the run
     /// lock. The counts are of this reading, the baseline counting as nothing new.
     fn read(&self, latest: EventId) -> Result<Option<Value>, Box<dyn Error>> {
-        let _lock = loop {
-            if STOP.load(Ordering::SeqCst) || self.orphaned() {
-                return Ok(None);
-            }
-            // Waits a little each time; a full run holds the lock for as long as it runs.
-            if let Some(lock) = store::lock_run(&self.folder)? {
-                break lock;
-            }
+        let Some(_lock) = self.lock()? else {
+            return Ok(None);
         };
         let (machine, found) = self.holds()?;
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?;
@@ -563,6 +612,33 @@ impl Watcher<'_> {
             "changed": count("changed"),
             "gone": count("gone"),
         })))
+    }
+
+    /// The run lock, waited for; `None` when the watcher was stopped, or orphaned, meanwhile.
+    fn lock(&self) -> std::io::Result<Option<std::fs::File>> {
+        loop {
+            if STOP.load(Ordering::SeqCst) || self.orphaned() {
+                return Ok(None);
+            }
+            // Waits a little each time; a full run holds the lock for as long as it runs.
+            if let Some(lock) = store::lock_run(&self.folder)? {
+                return Ok(Some(lock));
+            }
+        }
+    }
+
+    /// One sample under the run lock: how many findings it opened and how many things need a
+    /// look after it. `None` when the watcher was stopped while it waited for the lock.
+    fn sample(&mut self) -> Result<Option<(usize, usize)>, Box<dyn Error>> {
+        let Some(_lock) = self.lock()? else {
+            return Ok(None);
+        };
+        let (report, needs) = crate::sample_held(
+            &self.args.store,
+            self.args.sample_input.as_deref(),
+            &mut self.signers,
+        )?;
+        Ok(Some((report.findings_opened, needs)))
     }
 
     /// What `watch_places` takes from the run's arguments: the home folder and the system root.

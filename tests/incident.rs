@@ -17,10 +17,13 @@
 //!
 //! On the day none of this was noticed for 13 days. A step the program does not catch yet is
 //! not skipped: it is a named expectation that the status says what it cannot see there.
+//!
+//! Running programs are read by samples, as the watcher takes them; here a sample is fed a
+//! reading made of invented processes through the same code a reading of the system takes,
+//! so that no test leaves a program running or reads the real ones.
 
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The project the attack comes in through.
@@ -133,6 +136,28 @@ impl Estate {
             .arg(&empty)
             .arg("--servers-input")
             .arg(&empty)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// One sample of running programs, as the watcher takes one, of these processes and
+    /// connections at `at`.
+    fn sample(&self, at: i64, processes: serde_json::Value, connections: serde_json::Value) {
+        let input = self.0.join("sample.json");
+        let reading = serde_json::json!({ "at": at, "processes": processes,
+                                          "connections": connections });
+        std::fs::write(&input, reading.to_string()).unwrap();
+        let out = Command::new(env!("CARGO_BIN_EXE_soc"))
+            .env("HOME", self.home())
+            .args(["sample", "--json", "--store"])
+            .arg(self.store())
+            .arg("--sample-input")
+            .arg(&input)
             .output()
             .unwrap();
         assert!(
@@ -281,33 +306,21 @@ fn clone_a_project_carrying_the_loader(e: &Estate) {
     put(&project.join("package.json"), PACKAGE_JSON);
 }
 
-/// A process that stays after the test unless it is stopped; stopped when dropped.
-struct Detached(Child);
-
-impl Drop for Detached {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
+/// The interpreter the loader leaves: perl given code, its parent gone, no terminal.
+const INTERPRETER: &str = "/usr/bin/perl";
 
 /// Step 2: the loader leaves an interpreter running inline code, detached from any terminal,
-/// holding a connection open. The far end is a listener of the test's own on this Mac: it
-/// stands for the incident's address, which no test may reach.
-fn leave_a_detached_interpreter_holding_a_connection(listener: &TcpListener) -> Detached {
-    let port = listener.local_addr().unwrap().port();
-    let code = format!(
-        "use IO::Socket::INET; my $s = IO::Socket::INET->new('127.0.0.1:{port}') or die; sleep 60;"
+/// holding a connection open to the incident's address; a sample sees it at `at`.
+fn leave_a_detached_interpreter_holding_a_connection(e: &Estate, at: i64) {
+    let code = format!("use IO::Socket::INET; IO::Socket::INET->new('{C2_ADDRESS}:80'); sleep;");
+    e.sample(
+        at,
+        serde_json::json!([{ "pid": 4242, "start": 1_000_000, "parent": 1,
+                             "executable": INTERPRETER, "name": "perl", "terminal": false,
+                             "args": ["perl", "-e", code] }]),
+        serde_json::json!([{ "pid": 4242, "start": 1_000_000, "transport": "tcp",
+                             "address": C2_ADDRESS, "port": 80 }]),
     );
-    let child = Command::new("/usr/bin/perl")
-        .args(["-e", &code])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    listener.accept().unwrap();
-    Detached(child)
 }
 
 /// Step 3: code added inside the application's bundle, after its developer signed it.
@@ -399,27 +412,20 @@ fn the_incident_of_7_october_is_reported_step_by_step() {
     // reader of package scripts (second pass).
     assert!(names(&e, OTHER_WAY, package_scripts));
 
-    // Step 2: a detached interpreter holding a connection.
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let interpreter = leave_a_detached_interpreter_holding_a_connection(&listener);
-    e.run();
-    // GAP: processes and connections are not read yet, so nothing is found here. Closed by
-    // samples of processes and connections and their two rules (first pass, item 4,
-    // `src/processes.rs`); this step then expects its finding here. Until the indicator
-    // list arrives no indicator names connections as not matched against (see step 6); the
-    // status says it in `cannot_judge` instead.
+    // Step 2: a detached interpreter holding a connection. The first sample only starts
+    // tracking it; one a minute later finds it.
+    let t = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    leave_a_detached_interpreter_holding_a_connection(&e, t);
     let seen = exactly(&e, &seen, None);
-    // Silence here is not "nothing runs": the status says by name what it does not read.
-    let processes = "processes and connections are not read by this build";
-    assert!(
-        e.status()["cannot_judge"]
-            .as_array()
-            .unwrap()
-            .contains(&processes.into()),
-        "{}",
-        e.status()
+    leave_a_detached_interpreter_holding_a_connection(&e, t + 60);
+    let seen = exactly(
+        &e,
+        &seen,
+        Some(pair("processes.detached-inline-code", INTERPRETER)),
     );
-    drop(interpreter);
 
     // Step 3: code inside the application's bundle.
     add_code_inside_the_application_bundle(&e);
@@ -456,6 +462,17 @@ fn the_incident_of_7_october_is_reported_step_by_step() {
     give_the_incident_indicator_list(&e);
     e.run();
     let seen = exactly(&e, &seen, Some(pair("indicator.match", &tasks)));
+    // The next sample finds the interpreter's connection to the incident's address.
+    leave_a_detached_interpreter_holding_a_connection(&e, t + 120);
+    let seen = exactly(&e, &seen, Some(pair("indicator.match", INTERPRETER)));
+    let matched = e.status()["needs_a_look"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["rule"] == "indicator.match" && i["where_text"] == INTERPRETER)
+        .unwrap()["value_text"]
+        .clone();
+    assert_eq!(matched, format!("[ipv4-addr:value = '{C2_ADDRESS}']"));
     // GAP: the loader's hash is not matched, since only watched files are; closed by
     // matching hashes against checkouts' files (second pass).
     assert!(names(
@@ -463,14 +480,14 @@ fn the_incident_of_7_october_is_reported_step_by_step() {
         NOT_AGAINST,
         "file:hashes.'SHA-256' against files of checkouts and installed software other than watched files"
     ));
-    // GAP: the domain and the address are not matched against connections; closed with
-    // step 2's gap by `src/processes.rs`.
+    // GAP: the domain is not matched against connections: a sample has addresses, not names,
+    // and no name is resolved. The address is matched, above.
     assert!(names(
         &e,
         NOT_AGAINST,
         "domain-name:value against connections"
     ));
-    assert!(names(
+    assert!(!names(
         &e,
         NOT_AGAINST,
         "ipv4-addr:value against connections"
@@ -497,7 +514,7 @@ fn the_incident_of_7_october_is_reported_step_by_step() {
         severities.windows(2).all(|w| w[0] >= w[1]),
         "{severities:?}"
     );
-    assert_eq!(status["needs_a_look_total"], 5);
+    assert_eq!(status["needs_a_look_total"], 7);
 
     // The summary page names every one, with where it is.
     let out = Command::new(env!("CARGO_BIN_EXE_soc"))

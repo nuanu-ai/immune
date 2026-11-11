@@ -94,13 +94,29 @@ impl Mac {
         );
     }
 
+    /// `soc watch` on this Mac. Its samples are of the reading in `sample.json`, which a test
+    /// rewrites; by default no process, so that no test reads the real ones.
     fn watch_cmd(&self) -> Command {
+        let reading = self.root.join("sample.json");
+        if !reading.exists() {
+            self.sample(now(), &[]);
+        }
         let mut cmd = self.soc();
         cmd.args(["watch", "--store"])
             .arg(self.store())
             .arg("--system-root")
-            .arg(self.sys());
+            .arg(self.sys())
+            .arg("--sample-input")
+            .arg(reading);
         cmd
+    }
+
+    /// Sets what the next sample sees: these processes at `at`.
+    fn sample(&self, at: i64, processes: &[Value]) {
+        let reading = serde_json::json!({ "at": at, "processes": processes });
+        let part = self.root.join("sample.json.part");
+        std::fs::write(&part, reading.to_string()).unwrap();
+        std::fs::rename(part, self.root.join("sample.json")).unwrap();
     }
 
     fn watch(&self) -> Watcher {
@@ -805,7 +821,8 @@ fn a_reading_that_failed_is_a_problem_line_and_the_watcher_reads_again_later() {
     let mode = |m| std::fs::set_permissions(mac.store(), std::fs::Permissions::from_mode(m));
     mode(0o444).unwrap();
     mac.put(".zshrc", "one\n");
-    assert_eq!(w.next("problem")["code"], "read_failed");
+    // A sample taken meanwhile fails too, with its own line.
+    w.until("problem", |v| v["code"] == "read_failed");
     mode(0o644).unwrap();
     mac.put(".zprofile", "two\n");
     w.until("read", |v| count(v, "new") == 2);
@@ -1000,6 +1017,15 @@ fn a_quiet_mac_needs_no_look_whatever_is_not_covered_and_a_planted_change_does()
     std::fs::create_dir_all(&servers).unwrap();
     std::fs::write(servers.join("web-1.txt"), "##end\n").unwrap();
     std::fs::write(servers.join("web-2.txt"), "##packages\n").unwrap();
+    // The sweep ran long before the runs that read what it left.
+    let swept = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    for name in ["web-1.txt", "web-2.txt"] {
+        let f = std::fs::File::options()
+            .write(true)
+            .open(servers.join(name))
+            .unwrap();
+        f.set_modified(swept).unwrap();
+    }
     for _ in 0..2 {
         let out = mac.run_cmd_servers(&servers).output().unwrap();
         assert!(
@@ -1025,6 +1051,8 @@ fn a_quiet_mac_needs_no_look_whatever_is_not_covered_and_a_planted_change_does()
         (&servers_item["count"], &servers_item["value_text"]),
         (&1.into(), &"1 of 2 servers in the last sweep".into())
     );
+    // Counted from the sweep itself, not from the run that read its files.
+    assert_eq!(servers_item["since"], "2023-11-14T22:13:20Z");
     assert_eq!(r["this_mac"]["live"], false);
     let watched: Vec<(String, u64, String)> = r["this_mac"]["watched"]
         .as_array()
@@ -1042,7 +1070,12 @@ fn a_quiet_mac_needs_no_look_whatever_is_not_covered_and_a_planted_change_does()
         watched.contains(&("shell profiles".into(), 1, "hourly".into())),
         "{watched:?}"
     );
-    assert_eq!(watched.len(), 9, "{watched:?}");
+    // A kind with nothing to watch on this Mac is left out.
+    assert!(watched.iter().all(|w| w.1 > 0), "{watched:?}");
+    assert!(
+        !watched.iter().any(|w| w.0.starts_with("editor tasks")),
+        "{watched:?}"
+    );
 
     // A program set to start by itself, planted: the one thing that needs a look.
     mac.put(
@@ -1160,7 +1193,16 @@ fn a_watched_file_that_cannot_be_read_leaves_this_mac_watched_in_part() {
 #[test]
 fn this_mac_says_live_for_what_a_running_watcher_sees_and_hourly_for_the_rest() {
     let mac = Mac::new("live");
+    let keg = mac
+        .sys()
+        .join("opt/homebrew/Cellar/fmt-tool/1.4/bin/fmt-tool");
+    std::fs::create_dir_all(keg.parent().unwrap()).unwrap();
+    std::fs::write(keg, "#!/bin/sh\n").unwrap();
     mac.run();
+    // Running programs are sampled only while a watcher runs.
+    let sampled = "running programs and their connections";
+    let before = mac.status()["result"]["this_mac"]["watched"].clone();
+    assert!(!before.to_string().contains(sampled), "{before}");
     let mut w = mac.watch().started();
     mac.put(".zshrc", "one\n");
     w.until("read", |v| count(v, "new") == 1);
@@ -1177,7 +1219,12 @@ fn this_mac_says_live_for_what_a_running_watcher_sees_and_hourly_for_the_rest() 
             .clone()
     };
     assert_eq!(how("shell profiles"), "live");
-    assert_eq!(how("applications"), "hourly");
+    assert_eq!(how("Homebrew packages"), "hourly");
+    assert_eq!(how(sampled), "sampled");
+    // A watcher that stopped samples nothing: the entry goes with it.
+    assert!(w.stop().success());
+    let after = mac.status()["result"]["this_mac"]["watched"].clone();
+    assert!(!after.to_string().contains(sampled), "{after}");
 }
 
 #[test]
@@ -1201,4 +1248,209 @@ fn a_view_the_owner_has_made_is_brought_up_to_date_by_a_reading_that_changed_som
     let page = std::fs::read_to_string(&summary).unwrap();
     assert!(page.contains("<h1>2 things need a look</h1>"), "{page}");
     assert!(w.lines("problem").is_empty(), "{:?}", w.seen);
+}
+
+fn now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
+
+/// A detached interpreter given code on its command line, as a sample reads it.
+fn detached_code() -> Value {
+    serde_json::json!({ "pid": 4242, "start": 7, "parent": 1,
+                        "executable": "/opt/tools/bin/node", "name": "node",
+                        "terminal": false, "args": ["node", "-e", "x"] })
+}
+
+/// Waits until a query of the store gives a row.
+fn until_row(mac: &Mac, sql: &str) -> Vec<String> {
+    let end = Instant::now() + WAIT;
+    loop {
+        if let Ok(conn) = Connection::open(mac.store())
+            && let Ok(mut stmt) = conn.prepare(sql)
+        {
+            let rows: Vec<String> = stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            if !rows.is_empty() {
+                return rows;
+            }
+        }
+        assert!(Instant::now() < end, "no row for {sql}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// A watcher on `mac` that takes a sample every second.
+fn sampling(mac: &Mac) -> Watcher {
+    let mut cmd = mac.watch_cmd();
+    cmd.args(["--sample-every", "1"]);
+    Watcher::start(cmd).started()
+}
+
+#[test]
+fn a_sample_that_opens_a_finding_says_so_in_one_line_and_a_quiet_sample_says_nothing() {
+    // The app refreshes on a line; a line for every quiet sample would be a line every
+    // thirty seconds for nothing.
+    let mac = Mac::new("sample");
+    // A server read by the run, which a sample never reads.
+    let servers = mac.root.join("servers");
+    std::fs::create_dir_all(&servers).unwrap();
+    std::fs::write(servers.join("web-1.txt"), "##end\n").unwrap();
+    assert!(
+        mac.run_cmd_servers(&servers)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let t = now();
+    mac.sample(t, &[detached_code()]);
+    let mut w = sampling(&mac);
+    until_row(&mac, "SELECT executable FROM tracked_process");
+    // A page the owner has made is up to date by the time the line says it.
+    mac.view();
+    // The later sample also sees a shell, so the count the status shows is the latest one.
+    let shell = serde_json::json!({ "pid": 4243, "start": 7, "parent": 1,
+                                    "executable": "/bin/zsh", "name": "zsh",
+                                    "terminal": true, "args": ["zsh"] });
+    mac.sample(t + 60, &[detached_code(), shell]);
+    let said = w.until("sample", |_| true);
+    assert_eq!(
+        (count(&said, "opened"), count(&said, "needs_a_look_total")),
+        (1, 1)
+    );
+    let summary = std::fs::read_to_string(mac.root.join("store/view.html")).unwrap();
+    assert!(
+        summary.contains("<h1>1 thing needs a look</h1>"),
+        "{summary}"
+    );
+    // The pages refreshed then name the sample among the runs. It reads only programs: it is
+    // not a run that left out the server the full run read.
+    let changes = std::fs::read_to_string(mac.root.join("store/view/changes.html")).unwrap();
+    assert!(changes.contains("sample of running programs and their connections"));
+    assert!(!changes.contains("were not read in this run"), "{changes}");
+    assert!(said["at"].as_str().unwrap().ends_with('Z'), "{said}");
+    // Two more samples of the same process are quiet: two seconds at one a second.
+    let run = "SELECT last_seen_run FROM tracked_process";
+    let before = mac.rows(run);
+    std::thread::sleep(Duration::from_millis(2500));
+    assert_ne!(
+        mac.rows(run),
+        before,
+        "no sample was taken at the cadence asked for"
+    );
+    assert_eq!(w.lines("sample").len(), 1, "{:?}", w.seen);
+    assert!(w.lines("problem").is_empty(), "{:?}", w.seen);
+    // A sample's coverage is one row per kind, replaced at every sample.
+    assert_eq!(
+        mac.rows("SELECT kind FROM coverage WHERE reader = 'processes' ORDER BY kind"),
+        [
+            "internet connections of this user's programs, sampled",
+            "running programs of this user, sampled"
+        ]
+    );
+    // The finding rests on the journal entry of the sample that raised it.
+    assert_eq!(
+        mac.rows(
+            "SELECT j.entry FROM finding_basis b JOIN journal j ON j.seq = b.journal
+             JOIN finding f ON f.id = b.finding WHERE f.rule = 'processes.detached-inline-code'"
+        ),
+        ["sampled"]
+    );
+    // The page says what a sample cannot see, apart from what is not covered, and names the
+    // sample among the latest runs.
+    let page = mac.view();
+    assert!(
+        page.contains("does not see a program that started and ended between two samples"),
+        "{page}"
+    );
+    assert!(page.contains("sample of running programs and their connections"));
+    // A sample reads only programs: it is not a run that left the other readings out.
+    assert!(!page.contains("were not read in this run"), "{page}");
+    let r = mac.status()["result"].clone();
+    assert_eq!(r["this_mac"]["state"], "watched", "{r:#}");
+    let sampled = r["this_mac"]["watched"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["how"] == "sampled")
+        .unwrap_or_else(|| panic!("{r:#}"))
+        .clone();
+    assert_eq!(
+        (&sampled["what"], &sampled["count"]),
+        (&"running programs and their connections".into(), &2.into())
+    );
+    let kinds: Vec<&str> = r["not_covered"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["threat list not downloaded"], "{r:#}");
+    assert!(w.stop().success());
+}
+
+#[test]
+fn a_folder_macos_asks_permission_for_does_not_lengthen_the_report_of_a_quiet_mac() {
+    // Every Mac with a Documents folder had its report end in "1 reading read nothing ...
+    // changes unknown where nothing was read": a folder not looked into is not a reading
+    // that read nothing, and it is said under what is not covered.
+    let mac = Mac::new("guarded-quiet");
+    mac.put("Documents/notes.txt", "x\n");
+    mac.run();
+    let out = mac.run_cmd().output().unwrap();
+    let line = String::from_utf8_lossy(&out.stdout);
+    assert!(line.contains("Since last run: no changes."), "{line}");
+    assert!(!line.contains("read nothing"), "{line}");
+    let r = mac.status()["result"].clone();
+    assert_eq!(r["last_finished_run"]["readings"]["failed"], 0, "{r:#}");
+    assert!(
+        r["not_covered"]
+            .to_string()
+            .contains("folders macOS asks permission for"),
+        "{r:#}"
+    );
+}
+
+#[test]
+fn a_sample_waits_for_a_full_run_and_a_stop_while_it_waits_is_a_clean_one() {
+    let mac = Mac::new("sample-lock");
+    mac.run();
+    let t = now();
+    mac.sample(t, &[detached_code()]);
+    let mut w = sampling(&mac);
+    until_row(&mac, "SELECT executable FROM tracked_process");
+    // A full run holds the lock: the sample that would open the finding waits for it.
+    let held = std::fs::File::open(mac.root.join("store")).unwrap();
+    held.lock().unwrap();
+    mac.sample(t + 60, &[detached_code()]);
+    // Nothing can say that a sample did not happen; three of its seconds pass.
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(w.lines("sample").is_empty(), "{:?}", w.seen);
+    w.signal(libc::SIGTERM);
+    assert!(w.exit().success());
+    drop(held);
+    assert!(
+        mac.rows("SELECT id FROM finding").is_empty(),
+        "a stopped watcher raised a finding"
+    );
+}
+
+#[test]
+fn a_sample_that_fails_is_a_problem_line_and_the_watcher_goes_on() {
+    let mac = Mac::new("sample-failed");
+    mac.put(".zshrc", "one\n");
+    mac.run();
+    std::fs::write(mac.root.join("sample.json"), "not a reading").unwrap();
+    let mut w = sampling(&mac);
+    let p = w.until("problem", |v| v["code"] == "sample_failed");
+    assert!(p["detail_text"].as_str().is_some(), "{p}");
+    mac.put(".zshrc", "two\n");
+    w.until("read", |v| count(v, "changed") == 1);
+    assert!(w.stop().success());
 }

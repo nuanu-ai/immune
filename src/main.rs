@@ -67,8 +67,9 @@ const USAGE: &str = "usage: soc run [--store <path>] [--machine-name <name>] [--
        soc owner [<name> retired|not-mine --reason <text> | <name> withdraw]
                  [--store <path>] [--tailscale <path>]
        soc sample [--store <path>] [--sample-input <file>] [--json]
-       soc watch [--store <path>] [--system-root <dir>]
-                 one JSON line per event: watching, read, alive, problem;
+       soc watch [--store <path>] [--system-root <dir>] [--sample-input <file>]
+                 [--sample-every <seconds>]
+                 one JSON line per event: watching, read, sample, alive, problem;
                  a problem's code and detail_text sit beside event, flat
                  exits 5 when another watcher has the store";
 
@@ -536,33 +537,53 @@ struct SampleArgs {
 
 /// Takes one sample under the run lock, records what the rule tracks and raises what it finds.
 fn sample(args: &SampleArgs) -> Result<processes::Report, Box<dyn Error>> {
-    let now = SystemTime::now().duration_since(UNIX_EPOCH)?;
-    let run_id = format!("sample-{}-{:09}", now.as_secs(), now.subsec_nanos());
     let home = home(&args.store);
     std::fs::create_dir_all(&home)?;
     let _lock = store::lock_run(&home)?.ok_or(Stop::RunInProgress)?;
-    let mut conn = store::open(&args.store).map_err(|e| Stop::Store(e.to_string()))?;
+    let (report, _) = sample_held(
+        &args.store,
+        args.input.as_deref(),
+        &mut processes::Signers::default(),
+    )?;
+    Ok(report)
+}
+
+/// One sample, with the run lock held by the caller: of the system, or of the reading in
+/// `input`. Returns its report and how many things need a look after it. `soc sample` and
+/// the watcher both take their samples here.
+pub fn sample_held(
+    path: &Path,
+    input: Option<&Path>,
+    signers: &mut processes::Signers,
+) -> Result<(processes::Report, usize), Box<dyn Error>> {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?;
+    let run_id = format!(
+        "{}{}-{:09}",
+        processes::RUN_PREFIX,
+        now.as_secs(),
+        now.subsec_nanos()
+    );
+    let mut conn = store::open(path).map_err(|e| Stop::Store(e.to_string()))?;
     let took = std::time::Instant::now();
-    let reading = match &args.input {
+    let reading = match input {
         Some(file) => processes::Reading::from_json(&std::fs::read_to_string(file)?)?,
         None => processes::read_system(now.as_secs() as i64),
     };
     let tx = conn.transaction()?;
-    let machine = format!("machine:{}", machine_name());
+    // The machine the readings of this Mac are scoped to, so the sample is of the same one.
+    let machine =
+        covered::this_machine(&tx)?.unwrap_or_else(|| format!("machine:{}", machine_name()));
     store::put_entity(&tx, &machine)?;
-    let report = processes::take(
-        &tx,
-        &run_id,
-        &machine,
-        &user_home()?,
-        reading,
-        took,
-        &mut processes::Signers::default(),
-    )?;
-    // Indicators: the list of addresses from the threat list is matched here, once it is
-    // wired, with `processes::connections_to(&report.sample.connections, &addresses)`.
+    let at = processes::At {
+        run_id: &run_id,
+        machine: &machine,
+        home: &user_home()?,
+        folder: &home(path),
+    };
+    let report = processes::take(&tx, &at, reading, took, signers)?;
+    let needs = status::needs(&tx, report.sample.at)?.items.len();
     tx.commit()?;
-    Ok(report)
+    Ok((report, needs))
 }
 
 fn sample_cmd(args: &SampleArgs) -> ExitCode {

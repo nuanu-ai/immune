@@ -16,10 +16,15 @@
 //! A command line is read into memory only for a program the interpreter table names, only to
 //! decide one literal, and is dropped there. It is never stored, printed or returned.
 //!
-//! What is kept: a small table of the processes the rule is tracking, see `SCHEMA`. A process
-//! is not an entity with a lifecycle: it lives for minutes or days, and the facts and their
-//! lifecycle are for what the owner has. The scheme's Event table is where a process with a
-//! stable identity belongs; this table is its first rough form, for one rule.
+//! What is kept: a small table of the processes the rule is tracking and one of connections
+//! that matched an indicator, see `SCHEMA`, both trimmed of what has been gone for `KEEP`.
+//! A process is not an entity with a lifecycle: it lives for minutes or days, and the facts
+//! and their lifecycle are for what the owner has. The scheme's Event table is where a process
+//! with a stable identity belongs; these tables are its first rough form, for two rules.
+//! A finding a sample raises rests on a journal entry `sampled`, one per raise, naming the
+//! program, the process's identity and what was derived; never its command line.
+//! Each sample's coverage is one row per kind, replaced at every sample: a sample every
+//! thirty seconds would otherwise outgrow every other reading's history.
 
 use crate::codesign;
 use crate::findings::Observed;
@@ -52,7 +57,44 @@ CREATE TABLE IF NOT EXISTS tracked_process (
     last_seen_run  TEXT NOT NULL,
     PRIMARY KEY (pid, start)
 );
+-- A connection of a process to an address on the indicator list, once per process and
+-- indicator, so that a connection that stays raises its finding once.
+CREATE TABLE IF NOT EXISTS matched_connection (
+    pid           INTEGER NOT NULL,
+    start         INTEGER NOT NULL,
+    indicator     TEXT NOT NULL,     -- the STIX comparison it matched
+    executable    TEXT NOT NULL,
+    first_seen_at INTEGER NOT NULL,
+    last_seen_at  INTEGER NOT NULL,
+    PRIMARY KEY (pid, start, indicator)
+);
+-- The latest sample, for the status: when, and how many processes and connections it read.
+CREATE TABLE IF NOT EXISTS last_sample (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    at          INTEGER NOT NULL,
+    processes   INTEGER NOT NULL,
+    connections INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO coverage_kind (name) VALUES
+    ('running programs of this user, sampled'),
+    ('internet connections of this user''s programs, sampled');
 ";
+
+/// The reader's name in coverage and the journal.
+pub const READER: &str = "processes";
+/// The coverage kinds of a sample.
+pub const PROGRAMS_KIND: &str = "running programs of this user, sampled";
+pub const CONNECTIONS_KIND: &str = "internet connections of this user's programs, sampled";
+/// How the run id of a sample begins.
+pub const RUN_PREFIX: &str = "sample-";
+/// How long a process, or its matched connection, is kept after the last sample that saw it.
+pub const KEEP: i64 = 24 * 60 * 60;
+/// What a sample cannot see, for a person, as the view says it under what a watcher cannot see.
+pub const PERSON_CANNOT_SEE: [&str; 3] = [
+    "a program that started and ended between two samples",
+    "other users' programs",
+    "who a connection's address belongs to: it has an address, not a name",
+];
 
 /// The one literal derived from a command line.
 pub const INLINE_CODE: &str = "interpreter given code on its command line";
@@ -329,9 +371,7 @@ pub fn derive(r: Reading) -> Sample {
 }
 
 /// The connections to any of these addresses, compared in canonical form. The port is not
-/// compared: an indicator names an address. Called once the indicator list is wired, at the
-/// call site marked in `main.rs`.
-#[allow(dead_code)]
+/// compared: an indicator names an address.
 pub fn connections_to<'a>(all: &'a [Connection], addresses: &[IpAddr]) -> Vec<&'a Connection> {
     let wanted: HashSet<IpAddr> = addresses.iter().map(IpAddr::to_canonical).collect();
     all.iter().filter(|c| wanted.contains(&c.address)).collect()
@@ -392,23 +432,34 @@ pub struct Report {
     pub took_ms: u128,
     pub tracked_new: usize,
     pub tracked_again: usize,
+    /// Connections to an address on the indicator list.
+    pub matched: usize,
     pub findings_opened: usize,
 }
 
-/// Records a sample into the tracking table and raises what the rule finds. The watcher calls
-/// this on a timer; `soc sample` calls it once.
+/// Where a sample is recorded: its run id, this machine, the home folder, and the store's
+/// folder, where the indicator list the last run read is kept.
+pub struct At<'a> {
+    pub run_id: &'a str,
+    pub machine: &'a str,
+    pub home: &'a Path,
+    pub folder: &'a Path,
+}
+
+/// Records a sample: the processes the rule tracks, the connections that match the indicator
+/// list, the sample's coverage, and the findings. The watcher calls this on a timer; `soc
+/// sample` calls it once.
 pub fn take(
     tx: &Transaction,
-    run_id: &str,
-    machine: &str,
-    home: &Path,
+    w: &At,
     reading: Reading,
     took: Instant,
     signers: &mut Signers,
-) -> rusqlite::Result<Report> {
+) -> Result<Report, Box<dyn std::error::Error>> {
     let sample = derive(reading);
     let took_ms = took.elapsed().as_millis();
     tx.execute_batch(SCHEMA)?;
+    let at = sample.at;
     let (mut tracked_new, mut tracked_again, mut seen) = (0, 0, Vec::new());
     for p in &sample.processes {
         let (Some(i), Some(shape), Some(path), true) =
@@ -437,12 +488,12 @@ pub fn take(
                     "UPDATE tracked_process SET last_seen_at = ?3, last_seen_run = ?4,
                             interactive = interactive OR ?5
                      WHERE pid = ?1 AND start = ?2",
-                    params![p.pid, p.start, sample.at, run_id, p.terminal],
+                    params![p.pid, p.start, at, w.run_id, p.terminal],
                 )?;
                 Tracked {
                     interactive: t.interactive || p.terminal,
                     first: t.first,
-                    last: sample.at,
+                    last: at,
                 }
             }
             None => {
@@ -460,39 +511,233 @@ pub fn take(
                         shape,
                         p.terminal,
                         signers.of(path),
-                        sample.at,
-                        run_id
+                        at,
+                        w.run_id
                     ],
                 )?;
                 Tracked {
                     interactive: p.terminal,
-                    first: sample.at,
-                    last: sample.at,
+                    first: at,
+                    last: at,
                 }
             }
         };
         // Raised once per process: when it first meets the rule.
         if fires(&after) && !before.as_ref().is_some_and(fires) {
-            let shown = path
-                .strip_prefix(&format!("{}/", home.display()))
-                .unwrap_or(path);
-            let file = format!("file:{machine}/{shown}");
-            crate::store::put_entity(tx, &file)?;
-            seen.push(Observed {
-                change: "new",
-                place: DETACHED_INLINE.to_string(),
-                file,
-            });
+            let file = program(w, path);
+            basis(tx, w, at, DETACHED_INLINE, &file, None, shape, p)?;
+            seen.push(observed(DETACHED_INLINE, file));
         }
     }
-    let findings_opened = crate::findings::detect(tx, run_id, sample.at, &seen)?;
+    let matched = match_connections(tx, w, &sample, &mut seen)?;
+    // What has been gone for a day is no longer kept.
+    tx.execute(
+        "DELETE FROM tracked_process WHERE last_seen_at < ?1",
+        [at - KEEP],
+    )?;
+    tx.execute(
+        "DELETE FROM matched_connection WHERE last_seen_at < ?1",
+        [at - KEEP],
+    )?;
+    cover(tx, w, &sample)?;
+    let findings_opened = crate::findings::detect(tx, w.run_id, at, &seen)?;
     Ok(Report {
         sample,
         took_ms,
         tracked_new,
         tracked_again,
+        matched,
         findings_opened,
     })
+}
+
+/// The program's file as the store names it: under the home folder relative to it.
+fn program(w: &At, path: &str) -> String {
+    let shown = path
+        .strip_prefix(&format!("{}/", w.home.display()))
+        .unwrap_or(path);
+    format!("file:{}/{shown}", w.machine)
+}
+
+fn observed(kind: &str, file: String) -> Observed {
+    Observed {
+        change: "new",
+        place: kind.to_string(),
+        file,
+    }
+}
+
+/// The journal entry a raise rests on: the program, the process's identity and what was
+/// derived or matched.
+#[allow(clippy::too_many_arguments)]
+fn basis(
+    tx: &Transaction,
+    w: &At,
+    at: i64,
+    kind: &str,
+    file: &str,
+    predicate: Option<&str>,
+    value: &str,
+    p: &Process,
+) -> rusqlite::Result<()> {
+    crate::store::put_entity(tx, file)?;
+    tx.execute(
+        "INSERT INTO journal (at, run_id, entry, reader, scope, kind, subject, predicate,
+                              new_value, text)
+         VALUES (?1, ?2, 'sampled', ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            at,
+            w.run_id,
+            READER,
+            w.machine,
+            kind,
+            file,
+            predicate,
+            value,
+            json!({ "pid": p.pid, "start": p.start }).to_string()
+        ],
+    )?;
+    Ok(())
+}
+
+/// The indicator list the last run read, from its saved copy; `None` when there is none or it
+/// cannot be read now.
+fn indicator_list(
+    tx: &Transaction,
+    folder: &Path,
+) -> rusqlite::Result<Option<crate::indicators::List>> {
+    use crate::indicators;
+    let raw = crate::store::last_raw(tx, indicators::READER, indicators::LIST)?;
+    Ok(raw
+        .and_then(|raw| std::fs::read(folder.join(raw)).ok())
+        .and_then(|bytes| indicators::parse(&bytes).ok()))
+}
+
+/// Connections to an address of an `ipv4-addr:value` indicator, each raised once per process
+/// and indicator. A `domain-name:value` indicator is not matched: a sample has addresses, not
+/// names, and names are not resolved. Returns how many connections matched.
+fn match_connections(
+    tx: &Transaction,
+    w: &At,
+    sample: &Sample,
+    seen: &mut Vec<Observed>,
+) -> rusqlite::Result<usize> {
+    use crate::indicators::{self, IPV4, Indicator};
+    let Some(list) = indicator_list(tx, w.folder)? else {
+        return Ok(0);
+    };
+    let addresses: Vec<IpAddr> = list
+        .matched
+        .iter()
+        .filter(|i| i.kind == IPV4)
+        .filter_map(|i| i.value.parse().ok())
+        .collect();
+    // Indicators: the list's addresses are matched against the sample's connections here.
+    let found = connections_to(&sample.connections, &addresses);
+    for c in &found {
+        let Some(p) = sample
+            .processes
+            .iter()
+            .find(|p| p.pid == c.pid && p.start == c.start)
+        else {
+            continue;
+        };
+        let Some(path) = &p.executable else {
+            continue;
+        };
+        let literal = Indicator {
+            kind: IPV4,
+            value: c.address.to_string(),
+        }
+        .literal();
+        let new = tx.execute(
+            "INSERT INTO matched_connection (pid, start, indicator, executable, first_seen_at,
+                                            last_seen_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+             ON CONFLICT (pid, start, indicator) DO NOTHING",
+            params![c.pid, c.start, literal, path, sample.at],
+        )? == 1;
+        if new {
+            let file = program(w, path);
+            basis(
+                tx,
+                w,
+                sample.at,
+                indicators::MATCHED,
+                &file,
+                Some("matches_indicator"),
+                &literal,
+                p,
+            )?;
+            seen.push(observed(indicators::MATCHED, file));
+        } else {
+            tx.execute(
+                "UPDATE matched_connection SET last_seen_at = ?4
+                 WHERE pid = ?1 AND start = ?2 AND indicator = ?3",
+                params![c.pid, c.start, literal, sample.at],
+            )?;
+        }
+    }
+    Ok(found.len())
+}
+
+/// The sample's coverage, one row per kind, in place of the one before, and the counts the
+/// status shows. A program or a socket that could not be read makes its kind partial.
+fn cover(tx: &Transaction, w: &At, s: &Sample) -> rusqlite::Result<()> {
+    use crate::store::{Cause, Gap, Reading as Covered};
+    let kinds = [
+        (PROGRAMS_KIND, s.unreadable, "programs"),
+        (CONNECTIONS_KIND, s.sockets_unreadable, "sockets"),
+    ];
+    for (kind, failed, why) in kinds {
+        tx.execute(
+            "DELETE FROM coverage WHERE reader = ?1 AND scope = ?2 AND kind = ?3",
+            params![READER, w.machine, kind],
+        )?;
+        let reading = Covered {
+            reader: READER,
+            scope: w.machine,
+            kind,
+            run_id: w.run_id,
+            at: s.at,
+            observed_at: s.at,
+        };
+        if failed == 0 {
+            crate::store::put_coverage(tx, &reading, "full", None, &Gap::default())?;
+        } else {
+            let reason = format!("{why} that could not be read: {failed}");
+            crate::store::put_coverage(
+                tx,
+                &reading,
+                "partial",
+                Some(&reason),
+                &Gap::of(Cause::Failed),
+            )?;
+        }
+    }
+    tx.execute(
+        "INSERT INTO last_sample (id, at, processes, connections) VALUES (1, ?1, ?2, ?3)
+         ON CONFLICT (id) DO UPDATE SET at = excluded.at, processes = excluded.processes,
+             connections = excluded.connections",
+        params![s.at, s.processes.len() as i64, s.connections.len() as i64],
+    )?;
+    Ok(())
+}
+
+/// How many programs the latest sample read, or `None` when no sample was taken here.
+pub fn last_sampled(conn: &rusqlite::Connection) -> rusqlite::Result<Option<i64>> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'last_sample')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !exists {
+        return Ok(None);
+    }
+    conn.query_row("SELECT processes FROM last_sample WHERE id = 1", [], |r| {
+        r.get(0)
+    })
+    .optional()
 }
 
 impl Report {
@@ -518,6 +763,7 @@ impl Report {
             },
             "connections": {
                 "read": s.connections.len(),
+                "matched_indicators": self.matched,
                 "unreadable": s.sockets_unreadable,
             },
             "tracked": { "new": self.tracked_new, "seen_again": self.tracked_again },

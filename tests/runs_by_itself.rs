@@ -490,8 +490,8 @@ fn an_indicator_taken_off_the_list_leaves_its_finding_open_for_the_owner() {
 
 #[test]
 fn what_an_indicator_is_not_matched_against_is_named_never_answered_as_no_match() {
-    // An address is not matched against connections yet, and a file name has no matcher at
-    // all: both are said by name, so silence is never read as "not here".
+    // A block of addresses and a file name have no matcher: both are said by name, so silence
+    // is never read as "not here". One address is matched against what samples see.
     let e = Estate::new("unmatched");
     e.list(
         r#"[{"kind": "ipv4-addr:value", "value": "203.0.113.9"},
@@ -501,13 +501,12 @@ fn what_an_indicator_is_not_matched_against_is_named_never_answered_as_no_match(
     e.run();
     assert_eq!(
         e.coverage(UNMATCHED_KIND),
-        "none|not matched: file:name; ipv4-addr:value given as a CIDR block; ipv4-addr:value against connections"
+        "none|not matched: file:name; ipv4-addr:value given as a CIDR block"
     );
     assert_eq!(
         e.lacks(UNMATCHED_KIND),
         [
             "indicator kind with no matcher|file:name",
-            "place indicators are not matched against|ipv4-addr:value against connections",
             "indicator kind with no matcher|ipv4-addr:value given as a CIDR block",
         ]
     );

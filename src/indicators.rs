@@ -246,7 +246,14 @@ pub fn lacks(list: &List) -> Vec<Lack> {
         .iter()
         .map(|k| Lack::new(NO_MATCHER, Some(k)))
         .collect();
-    let kinds: BTreeSet<&str> = list.matched.iter().map(|i| i.kind).collect();
+    // An address is matched against the connections a sample sees, `processes.rs`; a name or
+    // a URL is not, since a sample has addresses and no name is resolved.
+    let kinds: BTreeSet<&str> = list
+        .matched
+        .iter()
+        .map(|i| i.kind)
+        .filter(|k| *k != IPV4)
+        .collect();
     for kind in kinds {
         let place = if kind == SHA256 {
             "files of checkouts and installed software other than watched files"

@@ -44,8 +44,6 @@ pub const NEEDS_SHOWN: usize = 50;
 pub const CANNOT_JUDGE: &[&str] = &[
     // Closed by matching the catalogue's vulnerabilities (docs/threats.md).
     "no vulnerability from the catalogue is matched against the estate yet",
-    // Closed by the reader of processes and connections, `src/processes.rs`.
-    "processes and connections are not read by this build",
 ];
 /// The sections of a result that hold numbers, in the order of the result.
 const SECTIONS: [&str; 10] = [
