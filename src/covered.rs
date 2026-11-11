@@ -26,7 +26,7 @@ pub fn watched() -> Vec<(Count, &'static str, bool)> {
     out.extend(
         autorun::watched()
             .into_iter()
-            .map(|(as_, what, _)| (Count::Files(as_), what, true)),
+            .map(|(as_, what, _)| (Count::Files(as_), what, autorun::live(as_))),
     );
     out.extend(INSTALLED);
     out.push((Count::Dependencies, DEPENDENCIES, false));
@@ -453,6 +453,20 @@ pub const PROJECT_AUTORUN: Cause = Cause {
     advice: "Nothing to do. This is a limit of this version; the page lists every way and whether it is read.",
 };
 
+pub const HOME_AUTORUN: Cause = Cause {
+    id: "home-autorun",
+    who: NOTHING,
+    scope: "this_mac",
+    kind: "places in the home folder where a tool's settings run code by itself that are not read",
+    title: [
+        "This version reads {read} of the {known} known places where a developer tool's own settings can make code run by itself.",
+        "This version reads {read} of the {known} known places where a developer tool's own settings can make code run by itself.",
+    ],
+    meaning: "{n} of the others are present on this Mac and are not read, so a change in them would go unseen.",
+    meaning_none: Some("None of the others is present on this Mac now."),
+    advice: "Nothing to do. This is a limit of this version; the page lists every place and whether it is read.",
+};
+
 pub const THREATS_UNREAD: Cause = Cause {
     id: "vulnerability-list-not-downloaded",
     who: NOTHING,
@@ -510,7 +524,7 @@ pub const NOT_COMPARED: Cause = Cause {
 };
 
 /// Every cause, in the order items are listed: what the owner can fix first.
-pub const CAUSES: [&Cause; 11] = [
+pub const CAUSES: [&Cause; 12] = [
     &SERVERS_NOT_CHECKED,
     &SERVERS_NOT_OPENED,
     &NOT_PERMITTED,
@@ -518,6 +532,7 @@ pub const CAUSES: [&Cause; 11] = [
     &GUARDED,
     &NOT_UNDERSTOOD,
     &PROJECT_AUTORUN,
+    &HOME_AUTORUN,
     &THREATS_UNREAD,
     &VULNERABILITY_DATA_OLD,
     &VULNERABILITIES_UNKNOWN,
@@ -573,7 +588,7 @@ impl Uncovered {
             .since
             .map_or("the first check".to_string(), crate::view::utc);
         let reasons = self.reasons.join("; ");
-        numbers(words)
+        numbers(words, self.cause)
             .replace("{n}", &self.count.to_string())
             .replace("{examples}", &listed(&shown))
             .replace("{date}", &date)
@@ -606,9 +621,9 @@ impl Uncovered {
 }
 
 /// Words with the numbers of this build filled in: how many known ways a project runs code by
-/// itself are read, and how many are known.
-fn numbers(words: &str) -> String {
-    let (read, known) = autorun::counts();
+/// itself are read, and how many are known; for the home folder's item, its places.
+fn numbers(words: &str, cause: &Cause) -> String {
+    let (read, known) = autorun::counts(cause.id == HOME_AUTORUN.id);
     words
         .replace("{read}", &read.to_string())
         .replace("{known}", &known.to_string())
@@ -758,6 +773,9 @@ pub fn not_covered(
     let (ways, lacks): (Vec<_>, Vec<_>) = lacks(conn)?
         .into_iter()
         .partition(|(_, what, _)| what == autorun::OTHER_WAY);
+    let (in_home, lacks): (Vec<_>, Vec<_>) = lacks
+        .into_iter()
+        .partition(|(_, what, _)| what == autorun::OTHER_HOME);
     let looked = latest.iter().any(|r| {
         r.reader == watched::READER
             && r.kind == autorun::OTHERS_KIND
@@ -791,6 +809,27 @@ pub fn not_covered(
         });
     }
     out.extend(project_autorun);
+    // The same for the places of the home folder, told once the home folder was looked at.
+    let home_read = latest
+        .iter()
+        .filter(|r| {
+            r.reader == watched::READER
+                && r.kind == autorun::HOME_OTHERS_KIND
+                && this.is_some_and(|t| r.scope == t)
+        })
+        .map(|r| r.at)
+        .max();
+    if home_read.is_some() {
+        let names: BTreeSet<&str> = in_home
+            .iter()
+            .filter_map(|(_, _, n)| n.as_deref())
+            .collect();
+        out.push(Uncovered {
+            since: home_read,
+            examples: names.iter().map(|n| n.to_string()).collect(),
+            ..Uncovered::new(&HOME_AUTORUN, names.len())
+        });
+    }
 
     if let Some(Catalogue::Failed { reason, last, .. }) = catalogue {
         out.push(Uncovered {
@@ -926,7 +965,7 @@ pub fn causes_json() -> Value {
                     "id": c.id,
                     "who": c.who,
                     "kind": c.kind,
-                    "title": numbers(c.title[1]),
+                    "title": numbers(c.title[1], c),
                     "meaning": c.meaning,
                     "advice": c.advice,
                 })

@@ -833,61 +833,101 @@ pub fn this_mac(
 /// What the section of every known way a project runs code by itself says first.
 const WAYS: &str = "Files in a project that make a tool run code by itself during routine work, such as opening the folder or installing its packages. This version reads some of them and watches what they say; the others are only named here, so a change in them goes unseen. Every way known to this version is listed, whether it is in your projects or not.";
 
+/// What the section of every known place in the home folder says first.
+const HOME_WAYS: &str = "Files and folders in your home folder where a developer tool keeps its own settings for what it runs by itself, such as the programs a coding agent starts or an editor's extensions. This version reads some of them and watches what they say; the others are only named here, so a change in them goes unseen. Every place known to this version is listed, whether it is on this Mac or not.";
+
 /// Every known way a project runs code by itself, from the table in `autorun`: the file, what
 /// runs it, whether the tool asks first, whether it is read, and in how many projects here it
-/// is. None is left out, present or not.
+/// is; then, in a section of their own, the places of the home folder, and whether this Mac
+/// holds each. None is left out, present or not.
 fn ways(conn: &Connection, out: &mut String, this: Option<&str>) -> Out {
     use crate::autorun::{self, Part, Scope};
-    let (read, known) = autorun::counts();
-    writeln!(
-        out,
-        "<section id=\"ways-code-runs\">\n<h2>Ways a project can make code run by itself</h2>\n<p class=\"muted\">{}</p>\n<p>{}</p>",
-        esc(WAYS),
-        esc(&format!(
-            "This version reads {read} of the {known} known ways."
-        ))
-    )?;
-    let in_checkout = this.map(|t| format!("checkout:{t}/%")).unwrap_or_default();
-    let holding = |name: &str| -> rusqlite::Result<i64> {
+    // Which subjects hold a way: checkouts of this Mac by the start of their id, or this Mac
+    // itself for the home folder.
+    let holding = |name: &str, home: bool| -> rusqlite::Result<i64> {
+        let this = this.unwrap_or_default();
         conn.query_row(
             "SELECT COUNT(DISTINCT subject) FROM assertion
              WHERE layer = 'live' AND reader = ?1 AND predicate = ?2 AND object = ?3
-               AND subject LIKE ?4",
-            params![watched::READER, autorun::HOLDS, name, in_checkout],
+               AND CASE WHEN ?5 THEN subject = ?4
+                        ELSE substr(subject, 1, length(?4)) = ?4 END",
+            params![
+                watched::READER,
+                autorun::HOLDS,
+                name,
+                if home {
+                    this.to_string()
+                } else {
+                    format!("checkout:{this}/")
+                },
+                home
+            ],
             |r| r.get(0),
         )
     };
-    out.push_str("<div class=\"scroll\"><table class=\"dense\">\n");
-    view::thead(
-        out,
-        &[
-            "File",
-            "What runs it",
-            "Asks first",
-            "Read",
-            "Projects here",
-        ],
-    );
-    for p in &autorun::POINTS {
-        let runs = format!("{} ({})", capital(p.trigger.words()), p.tool);
-        let read = match p.part {
-            Part::Present => "Not read",
-            Part::Entries(_) => "Read: every entry",
-            _ => "Read",
+    for home in [false, true] {
+        let (read, known) = autorun::counts(home);
+        let (id, heading, intro, unit, column) = if home {
+            (
+                "home-code-runs",
+                "Places where a developer tool's own settings can make code run by itself",
+                HOME_WAYS,
+                "places",
+                "On this Mac",
+            )
+        } else {
+            (
+                "ways-code-runs",
+                "Ways a project can make code run by itself",
+                WAYS,
+                "ways",
+                "Projects here",
+            )
         };
-        let here = match p.scope {
-            Scope::NamedBy(_) => "Not looked for".to_string(),
-            Scope::Checkout => grouped(holding(&p.name())?),
-        };
-        out.push_str("<tr>");
-        view::td(out, "mono", &p.name())?;
-        view::td(out, "", &runs)?;
-        view::td(out, "", p.asks.words())?;
-        view::td(out, "", read)?;
-        view::td(out, "", &here)?;
-        out.push_str("</tr>\n");
+        writeln!(
+            out,
+            "<section id=\"{id}\">\n<h2>{}</h2>\n<p class=\"muted\">{}</p>\n<p>{}</p>",
+            esc(heading),
+            esc(intro),
+            esc(&format!(
+                "This version reads {read} of the {known} known {unit}."
+            ))
+        )?;
+        out.push_str("<div class=\"scroll\"><table class=\"dense\">\n");
+        view::thead(out, &["File", "What runs it", "Asks first", "Read", column]);
+        for p in autorun::POINTS
+            .iter()
+            .filter(|p| (p.scope == Scope::Home) == home)
+        {
+            let words = if home {
+                p.trigger.words_home()
+            } else {
+                p.trigger.words()
+            };
+            let runs = format!("{} ({})", capital(words), p.tool);
+            let read = match p.part {
+                Part::Present => "Not read",
+                Part::Entries(_) => "Read: every entry",
+                _ if p.hourly.is_some() => "Read at each hourly check",
+                Part::Folders(_) => "Read: every folder, by name",
+                _ => "Read",
+            };
+            let here = match p.scope {
+                Scope::NamedBy(_) => "Not looked for".to_string(),
+                Scope::Checkout => grouped(holding(&p.name(), false)?),
+                Scope::Home if holding(&p.name(), true)? > 0 => "Yes".to_string(),
+                Scope::Home => "No".to_string(),
+            };
+            out.push_str("<tr>");
+            view::td(out, "mono", &p.name())?;
+            view::td(out, "", &runs)?;
+            view::td(out, "", p.asks.words())?;
+            view::td(out, "", read)?;
+            view::td(out, "", &here)?;
+            out.push_str("</tr>\n");
+        }
+        out.push_str("</tbody></table></div>\n</section>\n");
     }
-    out.push_str("</tbody></table></div>\n</section>\n");
     Ok(())
 }
 
@@ -1250,15 +1290,30 @@ mod tests {
         drop(conn);
         let _ = std::fs::remove_dir_all(&dir);
         for p in &POINTS {
-            assert!(page.contains(&format!("<td class=\"mono\">{}</td>", esc(&p.name()))));
+            let cell = format!("<td class=\"mono\">{}</td>", esc(&p.name()));
+            assert!(page.contains(&cell));
+            // A row read only at the hourly check says so where it says it is read.
+            let rest = &page[page.find(&cell).unwrap()..];
+            let line = &rest[..rest.find("</tr>").unwrap()];
+            assert_eq!(
+                line.contains(">Read at each hourly check<"),
+                p.hourly.is_some(),
+                "{line}"
+            );
             if !p.read_here() {
                 continue;
             }
             let as_ = p.watched_as().unwrap_or_default();
-            let (_, what, line) = p.trigger.watched().unwrap_or_default();
+            let (_, what, line) = p.watched().unwrap_or_default();
             assert!(!as_.is_empty() && !line.is_empty(), "{}", p.name());
+            // A row not watched live says why; a path with a `*` cannot be watched live.
             for path in p.paths {
-                assert!(autorun::files().contains(path) && !path.contains('*'));
+                let live = match p.scope {
+                    autorun::Scope::Home => autorun::home_places().iter().any(|(h, _)| h == path),
+                    _ => autorun::files().contains(path),
+                };
+                assert_eq!(live, p.hourly.is_none(), "{path}");
+                assert!(!live || !path.contains('*'), "{path}");
             }
             assert!(registered.contains(&p.kind()), "{}", p.kind());
             assert!(autorun::kinds_of(as_).contains(&p.kind()));

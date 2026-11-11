@@ -1,14 +1,8 @@
-//! Whether a file is JSON with comments and trailing commas, asked of the reader macOS ships:
-//! Foundation's `NSJSONSerialization` with `NSJSONReadingJSON5Allowed` (macOS 12 and later).
-//! JSON5 is a superset of what editors call JSON with comments, so whatever such a file says,
-//! this reads; what it cannot read is an error with Foundation's own reason. No comment or
-//! comma is stripped here: this file only calls Foundation. What the file says is not taken
-//! from the value Foundation returns: of two equal keys it keeps the first and an editor the
-//! last, so its value cannot stand in for the editor's.
-//!
-//! The same reader, in strict mode, also says which of two equal keys a reader that keeps the
-//! first would see: `first_of_equal_keys` writes back what it parsed, keys sorted. Compared
-//! with a reader that keeps the last, it tells whether a file's duplicate keys matter.
+//! Strict JSON as the reader macOS ships reads it: Foundation's `NSJSONSerialization`. Of two
+//! equal keys it keeps the first, so it says which one a reader that keeps the first would
+//! see: `first_of_equal_keys` writes back what it parsed, keys sorted. Compared with a reader
+//! that keeps the last, it tells whether a file's duplicate keys matter. JSON with comments is
+//! read by `jsonc.rs`, which sees every equal key.
 //!
 //! The options and the methods are from `NSJSONSerialization.h` in the macOS SDK. Foundation is
 //! Objective-C, so the method is called through the runtime's `objc_msgSend`, cast to the
@@ -20,8 +14,6 @@ use std::ffi::{c_char, c_void};
 type CFTypeRef = *const c_void;
 type CFIndex = isize;
 
-/// `NSJSONReadingJSON5Allowed`.
-const JSON5_ALLOWED: usize = 1 << 3;
 /// `NSJSONWritingSortedKeys`.
 const SORTED_KEYS: usize = 1 << 1;
 const K_CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
@@ -105,12 +97,6 @@ impl Drop for Owned {
         // SAFETY: non-null, see `take`, and released once.
         unsafe { CFRelease(self.0) };
     }
-}
-
-/// Whether Foundation reads the bytes as JSON5, and so as JSON with comments, with an object
-/// or a list at the top; else its reason, which says where it stopped and quotes nothing.
-pub fn reads(bytes: &[u8]) -> Result<(), String> {
-    parsed(bytes, JSON5_ALLOWED, |_| Ok(()))
 }
 
 /// Strict JSON as Foundation reads it, which of two equal keys keeps the first, written back
@@ -224,20 +210,6 @@ fn describe(error: CFTypeRef) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn comments_trailing_commas_and_text_that_looks_like_a_comment_are_read() {
-        let text = "{\n  // a comment\n  \"a\": \"http://x/*y*/\", /* block */\n  \"b\": [1, 2.5, true, null,],\n}";
-        assert_eq!(reads(text.as_bytes()), Ok(()));
-    }
-
-    #[test]
-    fn what_foundation_cannot_read_is_an_error_saying_where() {
-        let e = reads(b"{\"a\": 1} garbage").unwrap_err();
-        assert!(e.contains("line 1, column 9"), "{e}");
-        assert!(reads(b"").is_err());
-        assert!(reads(b"\"just text\"").is_err());
-    }
 
     #[test]
     fn of_two_equal_keys_the_strict_reader_keeps_the_first_and_writes_keys_sorted() {

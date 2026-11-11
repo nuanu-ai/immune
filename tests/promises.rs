@@ -7140,19 +7140,31 @@ fn a_second_run_on_unchanged_watched_places_reports_no_changes() {
              WHERE reader = 'watched-places' AND scope = 'machine:mac' ORDER BY kind"
         ),
         [
+            "*.code-workspace of each checkout, the part that runs by itself",
             ".claude/settings.json of each checkout, the part that runs by itself",
             ".claude/settings.local.json of each checkout, the part that runs by itself",
             ".cursor/hooks.json of each checkout, the part that runs by itself",
             ".cursor/mcp.json of each checkout, the part that runs by itself",
+            ".devcontainer/devcontainer.json, .devcontainer.json of each checkout, the part that runs by itself",
             ".gemini/settings.json of each checkout, the part that runs by itself",
             ".mcp.json of each checkout, the part that runs by itself",
+            ".vscode/mcp.json of each checkout, the part that runs by itself",
+            ".vscode/settings.json of each checkout, the part that runs by itself",
             "editor tasks set to run when a checkout's folder is opened",
             "launch agents and daemons",
+            "other places in the home folder where a tool's settings run code by itself",
             "other ways a checkout runs code by itself",
             "package.json of each checkout, the part that runs by itself",
             "shell profiles of zsh and bash",
             "ssh access files",
-            "ways a checkout runs code by itself, as present in each"
+            "ways a checkout runs code by itself, as present in each",
+            "~/.claude.json, the part that runs by itself",
+            "~/.claude/settings.json, the part that runs by itself",
+            "~/.cursor/hooks.json, the part that runs by itself",
+            "~/.cursor/mcp.json, the part that runs by itself",
+            "~/.gemini/settings.json, the part that runs by itself",
+            "~/.vscode/extensions, every folder by name",
+            "~/Library/Application Support/Claude/claude_desktop_config.json, the part that runs by itself"
         ]
     );
     // The raw copy is the list of entries, kept once while it does not change, and every
@@ -8663,6 +8675,33 @@ fn tasks(w: &Watch, run_on: &str) {
     );
 }
 
+/// A project's editor settings, written as editors write them: comments and a trailing comma.
+fn editor_settings(w: &Watch, more: &str) {
+    put(
+        w.home(),
+        "dev/shop/.vscode/settings.json",
+        &format!("{{\n  // shop\n  \"editor.tabSize\": 2,{more}\n}}\n"),
+    );
+}
+
+/// Claude Code's own settings in the home folder with this more.
+fn user_agent_settings(w: &Watch, more: &str) {
+    put(
+        w.home(),
+        ".claude/settings.json",
+        &format!("{{\"model\": \"opus\"{more}}}\n"),
+    );
+}
+
+/// An extension in VS Code's folder, as VS Code names its folder.
+fn extension(w: &Watch, folder: &str) {
+    put(
+        w.home(),
+        &format!(".vscode/extensions/{folder}/package.json"),
+        "{\"name\": \"x\"}\n",
+    );
+}
+
 /// A lockfile that fetches one package from this address.
 fn lock_from(w: &Watch, url: &str) {
     put(
@@ -8692,7 +8731,7 @@ fn agent_settings(w: &Watch, more: &str) {
     );
 }
 
-const SAMPLES: [Sample; 16] = [
+const SAMPLES: [Sample; 19] = [
     Sample {
         rule: "watched.autostart",
         before: |w| {
@@ -8890,6 +8929,21 @@ const SAMPLES: [Sample; 16] = [
         silent: |w| tasks(w, "Default"),
     },
     Sample {
+        rule: "autorun.editor-open",
+        before: |w| {
+            checkout(w.home(), "dev/shop");
+            editor_settings(w, "");
+        },
+        raise: |w| {
+            editor_settings(
+                w,
+                "\n  /* lint */ \"php.validate.executablePath\": \"./tools/php\",",
+            )
+        },
+        // A setting that names no program, changed, in the same file.
+        silent: |w| editor_settings(w, "\n  \"editor.tabSize\": 4, // wider"),
+    },
+    Sample {
         rule: "autorun.package-install",
         before: |w| {
             checkout(w.home(), "dev/shop");
@@ -8913,6 +8967,33 @@ const SAMPLES: [Sample; 16] = [
         },
         // A setting that runs nothing, changed.
         silent: |w| agent_settings(w, ", \"model\": \"opus\""),
+    },
+    Sample {
+        rule: "autorun.agent-settings",
+        before: |w| user_agent_settings(w, ""),
+        raise: |w| {
+            user_agent_settings(
+                w,
+                ", \"hooks\": {\"SessionStart\": [{\"hooks\": [{\"type\": \"command\", \"command\": \"node .invented/start.js\"}]}]}",
+            )
+        },
+        // A setting that runs nothing, changed.
+        silent: |w| user_agent_settings(w, ", \"theme\": \"dark\""),
+    },
+    Sample {
+        rule: "autorun.editor-extension",
+        before: |w| extension(w, "esbenp.prettier-vscode-10.1.0"),
+        // Another publisher's extension of the same name.
+        raise: |w| extension(w, "esbemp.prettier-vscode-10.1.0"),
+        // The editor updated it: a new folder, and the old one goes.
+        silent: |w| {
+            extension(w, "esbenp.prettier-vscode-11.0.0");
+            std::fs::remove_dir_all(
+                w.home()
+                    .join(".vscode/extensions/esbenp.prettier-vscode-10.1.0"),
+            )
+            .unwrap();
+        },
     },
     Sample {
         rule: "indicator.match",
@@ -9100,7 +9181,7 @@ fn a_change_in_a_watched_place_stays_open_through_quiet_runs_and_is_the_number_t
     // What is not covered comes after it by name, never counted as a thing to look at.
     assert!(
         first.contains(
-            " 1 thing needs a look, 1 new in this run. Limits of this version: ways a project runs code by itself that are not read, vulnerability list not downloaded,"
+            " 1 thing needs a look, 1 new in this run. Limits of this version: ways a project runs code by itself that are not read, places in the home folder where a tool's settings run code by itself that are not read, vulnerability list not downloaded,"
         ),
         "{first}"
     );
@@ -9160,9 +9241,14 @@ fn a_change_in_a_watched_place_stays_open_through_quiet_runs_and_is_the_number_t
             .all(|i| i["type"] == "finding")
     );
     assert_eq!(
-        (&r["not_covered"][0]["id"], &r["not_covered"][1]["id"]),
+        (
+            &r["not_covered"][0]["id"],
+            &r["not_covered"][1]["id"],
+            &r["not_covered"][2]["id"]
+        ),
         (
             &"project-autorun".into(),
+            &"home-autorun".into(),
             &"vulnerability-list-not-downloaded".into()
         )
     );
@@ -10085,8 +10171,9 @@ fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_f
             .unwrap_or_else(|| panic!("{id}"));
         let article = &page[start..start + page[start..].find("</article>").unwrap()];
         for part in ["title", "meaning", "advice"] {
+            // As the page writes it: an apostrophe is escaped.
             assert!(
-                article.contains(u[part].as_str().unwrap()),
+                article.contains(&u[part].as_str().unwrap().replace('\'', "&#39;")),
                 "{part}: {article}"
             );
         }
@@ -10369,7 +10456,7 @@ fn on_a_mac_where_nothing_was_found_and_no_watcher_ran_every_rule_is_on_the_summ
     let told = section(&pages[0].1, "watched-here");
     let rules = findings_json(&w.store(), &[]);
     let rules = rules["rules"].as_array().unwrap();
-    assert_eq!(rules.len(), 17);
+    assert_eq!(rules.len(), 20);
     for r in rules {
         let title = r["title"].as_str().unwrap().replace('\'', "&#39;");
         assert!(told.contains(&title), "{}: {told}", r["id"]);

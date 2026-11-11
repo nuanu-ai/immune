@@ -23,6 +23,7 @@ mod icu;
 mod indicators;
 mod integrity;
 mod json5;
+mod jsonc;
 mod known_hosts;
 mod lifecycle;
 mod lockfiles;
@@ -2440,7 +2441,7 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
         read_lockfiles(&mut run, &found)?;
     }
     let (watched, mut opened) = watch_places(&mut run, args, &found)?;
-    read_other_autoruns(&mut run, &found)?;
+    read_other_autoruns(&mut run, &args.home, &found)?;
     let mut changed = read_integrity(&mut run, args)?;
     changed.extend(read_indicators(&mut run, args, &found)?);
     opened += findings::detect(run.tx, run.run_id, run.at, &changed)?;
@@ -3294,14 +3295,19 @@ fn read_watched(
             coverage: None,
         });
     }
-    // Each way a project runs code by itself that is read here, in every checkout, as one
-    // reading of this machine: its first is the baseline, and a checkout that arrives later
-    // with such a part is new, which is what its trigger's rule is for.
+    // Each way code runs by itself that is read here, in every checkout or in the home
+    // folder, as one reading of this machine: its first is the baseline, and a checkout that
+    // arrives later with such a part is new, which is what its trigger's rule is for.
     for point in autorun::POINTS.iter().filter(|p| p.read_here()) {
-        let looked = autorun::look_all(
-            point,
-            checkouts.iter().map(|c| (c.path.as_path(), c.rel.as_str())),
-        );
+        let looked = match point.scope {
+            autorun::Scope::Home => {
+                autorun::look_all(point, [(args.home.as_path(), "")].into_iter())
+            }
+            _ => autorun::look_all(
+                point,
+                checkouts.iter().map(|c| (c.path.as_path(), c.rel.as_str())),
+            ),
+        };
         placed.push(Placed {
             scope: machine.clone(),
             watched_as: point.watched_as().unwrap_or_default(),
@@ -3629,16 +3635,22 @@ fn read_integrity(run: &mut Run, args: &Args) -> Result<Vec<findings::Observed>,
 
 // ---- What runs by itself and indicators: see src/autorun.rs and src/indicators.rs. ----
 
-/// Which known ways a project runs code by itself each checkout holds, read here or not, as
-/// one reading of this machine; and apart, as before, the ways present that this build does
-/// not read, each with how many checkouts hold it. With none present that one is read in full.
-fn read_other_autoruns(run: &mut Run, found: &[checkouts::Checkout]) -> Result<(), Box<dyn Error>> {
+/// Which known ways a project runs code by itself each checkout holds, and which places of
+/// the home folder this machine holds, read here or not, as one reading of this machine; and
+/// apart, as before, the ways present that this build does not read, each with how many
+/// checkouts hold it, and the places of the home folder. With none present each of those is
+/// read in full.
+fn read_other_autoruns(
+    run: &mut Run,
+    home: &Path,
+    found: &[checkouts::Checkout],
+) -> Result<(), Box<dyn Error>> {
     let (run_id, machine, at) = (run.run_id.to_string(), run.machine.to_string(), run.at);
     let mut present: BTreeMap<String, usize> = BTreeMap::new();
     let mut statements = Vec::new();
     for c in found {
         let checkout = format!("checkout:{machine}/{}", c.rel);
-        for point in autorun::present(&c.path) {
+        for point in autorun::present(&c.path, autorun::Scope::Checkout) {
             statements.push(Statement {
                 subject: checkout.clone(),
                 predicate: autorun::HOLDS,
@@ -3648,6 +3660,18 @@ fn read_other_autoruns(run: &mut Run, found: &[checkouts::Checkout]) -> Result<(
             if !point.read() {
                 *present.entry(point.name()).or_default() += 1;
             }
+        }
+    }
+    let mut in_home = Vec::new();
+    for point in autorun::present(home, autorun::Scope::Home) {
+        statements.push(Statement {
+            subject: machine.clone(),
+            predicate: autorun::HOLDS,
+            object: point.name(),
+            source_ref: "~".to_string(),
+        });
+        if !point.read() {
+            in_home.push(point.name());
         }
     }
     let on_machine = |kind| Reading {
@@ -3685,6 +3709,30 @@ fn read_other_autoruns(run: &mut Run, found: &[checkouts::Checkout]) -> Result<(
     };
     run.apply(
         &on_machine(autorun::OTHERS_KIND),
+        watched::BASIS,
+        completeness,
+        reason.as_deref(),
+        &gap,
+        &[],
+    )?;
+    let (completeness, reason, gap) = if in_home.is_empty() {
+        ("full", None, Gap::default())
+    } else {
+        let gap = Gap {
+            cause: Some(Cause::NoReader),
+            lacks: in_home
+                .iter()
+                .map(|name| Lack::new(autorun::OTHER_HOME, Some(name)))
+                .collect(),
+        };
+        (
+            "none",
+            Some(format!("not read: {}", in_home.join("; "))),
+            gap,
+        )
+    };
+    run.apply(
+        &on_machine(autorun::HOME_OTHERS_KIND),
         watched::BASIS,
         completeness,
         reason.as_deref(),

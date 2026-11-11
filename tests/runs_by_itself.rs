@@ -548,6 +548,67 @@ fn a_file_that_cannot_be_read_by_key_faithfully_is_read_whole_and_is_never_uncha
 }
 
 #[test]
+fn an_agents_file_with_comments_is_read_by_key_so_an_edit_elsewhere_is_no_finding_and_equal_keys_are()
+ {
+    // Cursor's and Gemini CLI's files are JSON with comments. Read by key, what changes
+    // around their servers is nothing to find; a server added is. Two equal keys are read
+    // whole, so the one a tool may read is never taken as unchanged.
+    let e = Estate::new("comments");
+    let shop = e.checkout("dev/shop");
+    let cursor = |more: &str| {
+        put(
+            &shop.join(".cursor/mcp.json"),
+            &format!(
+                "{{\n  // ours\n  \"mcpServers\": {{\"helper\": {{\"command\": \"npx\"{more}}},}},\n}}\n"
+            ),
+        )
+    };
+    let gemini = |theme: &str, servers: &str| {
+        put(
+            &shop.join(".gemini/settings.json"),
+            &format!(
+                "{{\n  /* {theme} */ \"ui\": {{\"theme\": \"{theme}\"}},\n  \"mcpServers\": {{{servers}}}\n}}\n"
+            ),
+        )
+    };
+    cursor("");
+    gemini("dark", "");
+    e.run();
+    let kind = ".cursor/mcp.json of each checkout, the part that runs by itself";
+    assert_eq!(e.coverage(kind), "full|");
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+
+    put(
+        &shop.join(".cursor/mcp.json"),
+        "{\"mcpServers\": {\"helper\": {\"command\": \"npx\"}}, \"note\": \"edited\" /* again */}",
+    );
+    gemini("light", "");
+    e.run();
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+
+    gemini(
+        "light",
+        "\"x\": {\"command\": \"node .invented/x-4b1e.js\"}",
+    );
+    cursor(", \"command\": \"node .invented/x-4b1e.js\", \"command\": \"npx\"");
+    e.run();
+    assert_eq!(
+        e.found(),
+        [
+            pair("autorun.agent-start", "~/dev/shop/.cursor/mcp.json"),
+            pair(
+                "autorun.agent-start",
+                "~/dev/shop/.gemini/settings.json#/mcpServers/x"
+            ),
+        ]
+    );
+    assert_eq!(
+        e.coverage(kind),
+        "full|read whole, not by key: dev/shop/.cursor/mcp.json (two equal keys that tools read differently)"
+    );
+}
+
+#[test]
 fn a_way_read_for_the_first_time_on_a_store_that_never_read_it_is_its_baseline() {
     // A store of an earlier build held the checkouts and never read their package scripts:
     // the first reading of them is the baseline, not a finding about every project. A script
@@ -672,6 +733,243 @@ fn every_known_way_is_on_the_page_and_the_limit_says_the_numbers_of_that_table()
     assert_eq!(
         item(&e.status())["meaning"],
         "None of the others is present in your projects now."
+    );
+}
+
+// The home folder: a developer tool's own settings.
+
+/// Claude Code's state file as it rewrites it, with servers of one project and these more of
+/// the user's.
+fn state(e: &Estate, starts: u32, project: &str) {
+    put(
+        &e.home().join(".claude.json"),
+        &format!(
+            "{{\"numStartups\": {starts}, \"tipsHistory\": {{\"a\": {starts}}}, \"mcpServers\": {{}},
+              \"projects\": {{\"/invented/shop\": {{\"allowedTools\": [], \"history\": [{starts}],
+                \"mcpServers\": {{{project}}}}}}}}}"
+        ),
+    );
+}
+
+const DESKTOP: &str = "Library/Application Support/Claude/claude_desktop_config.json";
+
+#[test]
+fn a_planted_tool_in_an_agents_own_settings_is_a_finding_and_an_edit_elsewhere_in_that_file_is_not()
+{
+    // How malware made agents run its code in every project: its own server added to the
+    // agent's settings in the home folder. Claude Code rewrites its state file all the time;
+    // only the servers in it are read, so its rewrites are nothing to find.
+    let e = Estate::new("home-agents");
+    state(&e, 1, "");
+    put(&e.home().join(DESKTOP), "{\"mcpServers\": {}}");
+    e.run();
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+    assert_eq!(
+        e.coverage("~/.claude.json, the part that runs by itself"),
+        "full|none of the keys read is in ~/.claude.json"
+    );
+
+    state(&e, 2, "");
+    put(
+        &e.home().join(DESKTOP),
+        "{\"mcpServers\": {}, \"globalShortcut\": \"Cmd+Space\"}",
+    );
+    e.run();
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+
+    state(
+        &e,
+        3,
+        "\"helper\": {\"command\": \"node\", \"args\": [\".invented/x.js\"]}",
+    );
+    put(
+        &e.home().join(DESKTOP),
+        "{\"mcpServers\": {\"helper\": {\"command\": \"node\"}}}",
+    );
+    e.run();
+    assert_eq!(
+        e.found(),
+        [
+            pair(
+                "autorun.agent-settings",
+                "~/.claude.json#/projects/~1invented~1shop/mcpServers/helper"
+            ),
+            pair(
+                "autorun.agent-settings",
+                &format!("~/{DESKTOP}#/mcpServers/helper")
+            ),
+        ]
+    );
+}
+
+/// An extension's folder as VS Code names it, holding its manifest.
+fn extension(e: &Estate, folder: &str) {
+    put(
+        &e.home()
+            .join(".vscode/extensions")
+            .join(folder)
+            .join("package.json"),
+        "{}",
+    );
+}
+
+#[test]
+fn an_extensions_new_version_is_not_a_finding_and_a_new_extension_or_a_new_publisher_is() {
+    // The editor updates its extensions by itself: a new version is a new folder, and the old
+    // one goes. Only what identifies an extension apart from its version is watched.
+    let e = Estate::new("extensions");
+    let folder = e.home().join(".vscode/extensions");
+    extension(&e, "ms-python.python-2024.2.1-darwin-arm64");
+    extension(&e, "esbenp.prettier-vscode-10.1.0");
+    put(&folder.join("extensions.json"), "[]");
+    put(&folder.join(".obsolete"), "{}");
+    e.run();
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+
+    std::fs::remove_dir_all(folder.join("ms-python.python-2024.2.1-darwin-arm64")).unwrap();
+    extension(&e, "ms-python.python-2024.4.0-darwin-arm64");
+    extension(&e, "esbenp.prettier-vscode-11.0.0");
+    std::fs::create_dir_all(folder.join(".4a1b2c3d-extracting")).unwrap();
+    e.run();
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+
+    extension(&e, "esbemp.prettier-vscode-11.0.0");
+    extension(&e, "invented.helper-0.0.1");
+    e.run();
+    assert_eq!(
+        e.found(),
+        [
+            pair(
+                "autorun.editor-extension",
+                "~/.vscode/extensions/esbemp.prettier-vscode"
+            ),
+            pair(
+                "autorun.editor-extension",
+                "~/.vscode/extensions/invented.helper"
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_place_in_the_home_folder_read_for_the_first_time_on_an_existing_store_is_its_baseline() {
+    // A store of an earlier build never read the home folder's settings: what they hold the
+    // first time is the baseline, not a finding about every server and extension.
+    let e = Estate::new("home-upgrade");
+    state(&e, 1, "\"helper\": {\"command\": \"node\"}");
+    put(
+        &e.home().join(".gemini/settings.json"),
+        "{\n  // mine\n  \"mcpServers\": {\"x\": {\"command\": \"npx\"}}\n}",
+    );
+    extension(&e, "esbenp.prettier-vscode-10.1.0");
+    e.run();
+    // As an earlier build left it: no reading of these kinds, nothing they asserted.
+    let db = Connection::open(e.store()).unwrap();
+    db.execute_batch(
+        "DELETE FROM coverage_lack WHERE coverage IN (SELECT id FROM coverage
+           WHERE kind LIKE '~/%' OR kind LIKE 'other places in the home folder%'
+              OR scope LIKE '%#/%' OR scope LIKE '%/.vscode/extensions/%');
+         DELETE FROM assertion WHERE kind LIKE '~/%' OR scope LIKE '%#/%'
+              OR scope LIKE '%/.vscode/extensions/%';
+         DELETE FROM coverage WHERE kind LIKE '~/%' OR kind LIKE 'other places in the home folder%'
+              OR scope LIKE '%#/%' OR scope LIKE '%/.vscode/extensions/%';",
+    )
+    .unwrap();
+    drop(db);
+    e.run();
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+    extension(&e, "invented.helper-0.0.1");
+    e.run();
+    assert_eq!(
+        e.found(),
+        [pair(
+            "autorun.editor-extension",
+            "~/.vscode/extensions/invented.helper"
+        )]
+    );
+}
+
+#[test]
+fn the_home_items_numbers_equal_the_pages_table_of_places() {
+    // A place the program does not read is never silent: present or not, it is on the page,
+    // and the one item of what is not covered counts the same table.
+    let e = Estate::new("home-places");
+    put(&e.home().join(".codex/config.toml"), "model = \"x\"\n");
+    put(&e.home().join(".claude/skills/a/SKILL.md"), "x\n");
+    put(&e.home().join(".gemini/settings.json"), "{}");
+    e.run();
+    let page = e.this_mac_page();
+    let start = page.find("<section id=\"home-code-runs\">").unwrap();
+    let section = &page[start..start + page[start..].find("</section>").unwrap()];
+    let rows: Vec<Vec<&str>> = section
+        .split("<tr>")
+        .skip(2)
+        .map(|row| {
+            row.split("<td")
+                .skip(1)
+                .map(|cell| &cell[cell.find('>').unwrap() + 1..cell.find("</td>").unwrap()])
+                .collect()
+        })
+        .collect();
+    let read = rows.iter().filter(|r| r[3].starts_with("Read")).count();
+    let here: Vec<(&str, &str)> = rows
+        .iter()
+        .filter(|r| r[4] == "Yes")
+        .map(|r| (r[0], r[3]))
+        .collect();
+    assert_eq!(
+        here,
+        [
+            ("~/.gemini/settings.json", "Read"),
+            (
+                "~/.claude/skills, ~/.claude/commands, ~/.claude/agents",
+                "Not read"
+            ),
+            ("~/.codex/config.toml", "Not read"),
+        ]
+    );
+    assert!(rows.iter().all(|r| r[4] == "Yes" || r[4] == "No"));
+    let present = here.iter().filter(|r| r.1 == "Not read").count();
+    let item = |r: &serde_json::Value| {
+        r["not_covered"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|u| u["id"] == "home-autorun")
+            .unwrap()
+            .clone()
+    };
+    let u = item(&e.status());
+    assert_eq!(
+        u["title"],
+        format!(
+            "This version reads {read} of the {} known places where a developer tool's own settings can make code run by itself.",
+            rows.len()
+        )
+    );
+    assert_eq!(
+        u["meaning"],
+        format!(
+            "{present} of the others are present on this Mac and are not read, so a change in them would go unseen."
+        )
+    );
+    assert_eq!(
+        (&u["who"], &u["count"]),
+        (&"nothing".into(), &present.into())
+    );
+    assert!(
+        e.status()["not_covered"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|u| u["id"] != "not-understood")
+    );
+    std::fs::remove_dir_all(e.home().join(".codex")).unwrap();
+    std::fs::remove_dir_all(e.home().join(".claude")).unwrap();
+    e.run();
+    assert_eq!(
+        item(&e.status())["meaning"],
+        "None of the others is present on this Mac now."
     );
 }
 

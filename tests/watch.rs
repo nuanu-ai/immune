@@ -696,8 +696,8 @@ fn a_place_that_cannot_be_subscribed_to_is_a_problem_line_and_the_rest_is_still_
         assert!(p["detail_text"].as_str().unwrap().contains("etc/ssh"));
     }
     assert_eq!(
-        watching["places"].as_u64().unwrap() as usize + problems.len(),
-        27
+        watching["places"].as_u64().unwrap() + problems.len() as u64,
+        27 + HOME_PLACES
     );
     // An autostart item: its kind of place reads in full here, so it has a baseline.
     mac.put("Library/LaunchAgents/seen.plist", "<plist/>\n");
@@ -785,7 +785,7 @@ fn the_hooks_of_the_checkouts_the_store_holds_are_watched() {
     let mut w = mac.watch();
     let watching = w.next("watching");
     // The table's places, and the checkout's hooks and its files that run code by itself.
-    assert_eq!(watching["places"], 27 + CHECKOUT_PLACES);
+    assert_eq!(watching["places"], 27 + HOME_PLACES + CHECKOUT_PLACES);
     w.next("read");
     mac.put("dev/shop/.git/hooks/pre-commit", "#!/bin/sh\n");
     w.until("read", |v| count(v, "new") == 1);
@@ -795,10 +795,16 @@ fn the_hooks_of_the_checkouts_the_store_holds_are_watched() {
     );
 }
 
-/// The places the watcher subscribes to in each checkout: its hooks folder and the eight
-/// files of the ways a project runs code by itself that are read: the editor's task file,
-/// `package.json`, and six files of coding agents' settings.
-const CHECKOUT_PLACES: u64 = 9;
+/// The places of the home folder the watcher subscribes to through which a tool's own settings
+/// run code by itself: five files of coding agents' settings and VS Code's extensions folder.
+/// Claude Code's state file is not one: it is rewritten all the time.
+const HOME_PLACES: u64 = 6;
+
+/// The places the watcher subscribes to in each checkout: its hooks folder and the twelve
+/// files of the ways a project runs code by itself that are read: the editor's task file and
+/// settings, the two places of a dev container's file, `package.json`, and seven files of
+/// coding agents' settings. A workspace file has no fixed name and is not subscribed to.
+const CHECKOUT_PLACES: u64 = 13;
 
 /// An editor's task file with a task set to run when the folder is opened.
 const ON_OPEN: &str = r#"{
@@ -832,6 +838,101 @@ fn an_editor_task_planted_while_the_watcher_runs_is_a_finding_within_seconds() {
         .unwrap_or_else(|| panic!("{items}"))
         .clone();
     assert_eq!(found["where_text"], "~/dev/shop/.vscode/tasks.json");
+}
+
+#[test]
+fn a_tool_planted_in_an_agents_settings_and_a_new_editor_extension_are_findings_within_seconds() {
+    // Malware made agents run its code in every project by adding its own tool to their
+    // settings; extensions run as soon as the editor starts. Neither waits for the hourly
+    // check. Neither file nor folder is there when the watcher starts.
+    let mac = Mac::new("home-autorun");
+    mac.run();
+    let mut w = mac.watch().started();
+    let written = Instant::now();
+    mac.put(
+        ".cursor/mcp.json",
+        "{\n  // added\n  \"mcpServers\": {\"x\": {\"command\": \"node\"},},\n}\n",
+    );
+    mac.put(
+        ".vscode/extensions/invented.tool-1.0.0/package.json",
+        "{}\n",
+    );
+    w.until("read", |v| count(v, "opened") >= 1);
+    let mut found = Vec::new();
+    while found.len() < 2 {
+        assert!(written.elapsed() < Duration::from_secs(10), "read too late");
+        found = mac.status()["result"]["needs_a_look"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| (i["rule"].to_string(), i["where_text"].to_string()))
+            .collect();
+        found.sort();
+        if found.len() < 2 {
+            w.next("read");
+        }
+    }
+    assert_eq!(
+        found,
+        [
+            (
+                "\"autorun.agent-settings\"".to_string(),
+                "\"~/.cursor/mcp.json#/mcpServers/x\"".to_string()
+            ),
+            (
+                "\"autorun.editor-extension\"".to_string(),
+                "\"~/.vscode/extensions/invented.tool\"".to_string()
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_file_its_tool_rewrites_all_the_time_wakes_no_reading_and_what_is_planted_in_it_is_found_later()
+{
+    // Claude Code rewrites its state file every few seconds while it works. A reading at each
+    // write reads every watched place and grows the store for nothing, so the watcher does not
+    // subscribe to it; what is planted in it is found at the next full run.
+    let mac = Mac::new("rewritten");
+    mac.run();
+    let mut w = mac.watch().started();
+    // A file that is watched live still is.
+    let written = Instant::now();
+    mac.put(".cursor/mcp.json", "{\"mcpServers\": {}}");
+    w.until("read", |_| true);
+    assert!(written.elapsed() < Duration::from_secs(10), "read too late");
+    let reads = w.lines("read").len();
+    for n in 0..3 {
+        mac.put(
+            ".claude.json",
+            &format!(
+                "{{\"numStartups\": {n}, \"mcpServers\": {{\"x\": {{\"command\": \"node\"}}}}}}"
+            ),
+        );
+        std::thread::sleep(Duration::from_millis(1100));
+    }
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(
+        w.lines("read").len(),
+        reads,
+        "a write to the state file woke a reading"
+    );
+    w.signal(libc::SIGTERM);
+    w.exit();
+    mac.run();
+    let found: Vec<(String, String)> = mac.status()["result"]["needs_a_look"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| (i["rule"].to_string(), i["where_text"].to_string()))
+        .collect();
+    assert_eq!(
+        found,
+        [(
+            "\"autorun.agent-settings\"".to_string(),
+            "\"~/.claude.json#/mcpServers/x\"".to_string()
+        )]
+    );
 }
 
 #[test]
@@ -1217,7 +1318,10 @@ fn a_folder_macos_asks_permission_for_is_never_entered_and_what_was_known_there_
     // A watcher started by the app does not look there either: the hooks of the project in
     // Documents are not among its places, those of the other one are.
     let mut w = mac.watch();
-    assert_eq!(w.next("watching")["places"], 27 + CHECKOUT_PLACES);
+    assert_eq!(
+        w.next("watching")["places"],
+        27 + HOME_PLACES + CHECKOUT_PLACES
+    );
 }
 
 #[test]
@@ -1489,6 +1593,7 @@ fn a_sample_that_opens_a_finding_says_so_in_one_line_and_a_quiet_sample_says_not
         ids,
         [
             "project-autorun",
+            "home-autorun",
             "vulnerability-list-not-downloaded",
             "vulnerability-data-old",
             "vulnerabilities-not-compared"

@@ -281,7 +281,7 @@ fn folder_open_task() -> Rule {
     // Event Triggered Execution: code set to run on an event, here the folder being opened. No
     // sub-technique names an editor's tasks; its procedure examples include `runOn` conditions
     // written into coding tools' settings. The levels are the table's.
-    let (technique, severity, confidence) = autorun::levels(autorun::Trigger::OpenInEditor);
+    let (technique, severity, confidence) = autorun::levels(autorun::RUNS_ON_OPEN);
     Rule {
         id: "autorun.folder-open",
         kind: autorun::RUNS_ON_OPEN,
@@ -294,18 +294,37 @@ fn folder_open_task() -> Rule {
             meaning: "Some projects use this to start a build or a server when you open them; it is also how code was planted in projects, so that it runs as soon as anyone opens the folder.",
             advice: "Do not open that folder in the editor until you have read the task file named here and know who added the task.",
         },
-        fires: |o| autorun::fires(&o.place, o.change, autorun::Trigger::OpenInEditor),
+        fires: |o| autorun::fires(&o.place, o.change, autorun::RUNS_ON_OPEN),
+    }
+}
+
+fn editor_open() -> Rule {
+    // Event Triggered Execution: the event is the folder opened in the editor, which then
+    // runs what the project's settings name: an executable, a tool approved in advance, a dev
+    // container's command.
+    let (technique, severity, confidence) = autorun::levels(autorun::EDITOR_OPEN.0);
+    Rule {
+        id: "autorun.editor-open",
+        kind: autorun::EDITOR_OPEN.0,
+        technique,
+        severity,
+        confidence,
+        finds: "event",
+        words: Words {
+            title: "A project on this Mac now tells your editor to run a program or a command by itself.",
+            meaning: "Projects set this to use their own tools, such as a linter or a container; it is also how a project was made to run code as soon as it was opened in an editor.",
+            advice: "Do not open that folder in the editor until you have read what the file named here sets and know who added it. If you did not add it and no tool you use did, ask your agent to look into it.",
+        },
+        fires: |o| autorun::fires(&o.place, o.change, autorun::EDITOR_OPEN.0),
     }
 }
 
 fn package_install() -> Rule {
     // Installer Packages: its procedure examples are npm's pre- and post-install scripts.
-    let (technique, severity, confidence) = autorun::levels(autorun::Trigger::InstallPackages);
+    let (technique, severity, confidence) = autorun::levels(autorun::PACKAGE_INSTALL.0);
     Rule {
         id: "autorun.package-install",
-        kind: autorun::Trigger::InstallPackages
-            .watched()
-            .map_or("", |w| w.0),
+        kind: autorun::PACKAGE_INSTALL.0,
         technique,
         severity,
         confidence,
@@ -315,16 +334,16 @@ fn package_install() -> Rule {
             meaning: "Some projects need this to build themselves or to set up their tools; it is also how code was planted in projects, so that it runs as soon as anyone installs their packages.",
             advice: "Do not install that project's packages again until you have read the script named here. If you did not add it and no tool you use did, do not install them, and ask your agent to look into it.",
         },
-        fires: |o| autorun::fires(&o.place, o.change, autorun::Trigger::InstallPackages),
+        fires: |o| autorun::fires(&o.place, o.change, autorun::PACKAGE_INSTALL.0),
     }
 }
 
 fn agent_start() -> Rule {
     // Event Triggered Execution: the event is an agent started in the folder.
-    let (technique, severity, confidence) = autorun::levels(autorun::Trigger::StartAgent);
+    let (technique, severity, confidence) = autorun::levels(autorun::AGENT_START.0);
     Rule {
         id: "autorun.agent-start",
-        kind: autorun::Trigger::StartAgent.watched().map_or("", |w| w.0),
+        kind: autorun::AGENT_START.0,
         technique,
         severity,
         confidence,
@@ -334,7 +353,48 @@ fn agent_start() -> Rule {
             meaning: "Projects use this to give the agent tools and to run checks; it is also how a project was made to run code as soon as an agent was started in its folder.",
             advice: "Do not start your agent in that folder again until you have read what the file named here starts. If you did not add it and no tool you use did, do not start the agent there.",
         },
-        fires: |o| autorun::fires(&o.place, o.change, autorun::Trigger::StartAgent),
+        fires: |o| autorun::fires(&o.place, o.change, autorun::AGENT_START.0),
+    }
+}
+
+fn agent_settings() -> Rule {
+    // Event Triggered Execution: the event is the agent started, anywhere, which then runs
+    // what its own settings in the home folder name.
+    let (technique, severity, confidence) = autorun::levels(autorun::AGENT_SETTINGS.0);
+    Rule {
+        id: "autorun.agent-settings",
+        kind: autorun::AGENT_SETTINGS.0,
+        technique,
+        severity,
+        confidence,
+        finds: "event",
+        words: Words {
+            title: "The settings of a coding agent on this Mac now tell it to run a program or a tool by itself.",
+            meaning: "You or a tool you installed may have added it; it is also how malware made agents run its code in every project, by adding its own tool to the agent's settings.",
+            advice: "Read what was added in the file named here. If you did not add it, do not start that agent until the entry is removed, and ask an agent started in a clean folder to look into where it came from.",
+        },
+        fires: |o| autorun::fires(&o.place, o.change, autorun::AGENT_SETTINGS.0),
+    }
+}
+
+fn editor_extension() -> Rule {
+    // IDE Extensions. An entry is an extension by its publisher and name, with no version in
+    // it: a new version is the same entry, unchanged; a new one, or one whose publisher
+    // changed, is new.
+    let (technique, severity, confidence) = autorun::levels(autorun::EDITOR_EXTENSION.0);
+    Rule {
+        id: "autorun.editor-extension",
+        kind: autorun::EDITOR_EXTENSION.0,
+        technique,
+        severity,
+        confidence,
+        finds: "event",
+        words: Words {
+            title: "An extension was added to an editor on this Mac.",
+            meaning: "Extensions run with your access as soon as the editor starts; this is normal when you just installed one, and it is also how code was planted through extension stores.",
+            advice: "If you did not install it, remove it in the editor and ask your agent to look into it.",
+        },
+        fires: |o| autorun::fires(&o.place, o.change, autorun::EDITOR_EXTENSION.0),
     }
 }
 
@@ -548,7 +608,7 @@ pub fn hold(
 // ---- End of packages the projects depend on. ----
 
 /// Every rule, in the order they are listed.
-pub fn rules() -> [Rule; 17] {
+pub fn rules() -> [Rule; 20] {
     [
         autostart(),
         shell_profile(),
@@ -560,8 +620,11 @@ pub fn rules() -> [Rule; 17] {
         package_files(),
         app_code_outside(),
         folder_open_task(),
+        editor_open(),
         package_install(),
         agent_start(),
+        agent_settings(),
+        editor_extension(),
         indicator_match(),
         detached_inline_code(),
         malicious_package(),
