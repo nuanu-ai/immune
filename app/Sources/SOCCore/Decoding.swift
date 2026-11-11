@@ -167,6 +167,9 @@ public struct Unreached: Sendable, Equatable {
 
 /// Something this build has no reader for, and in how many places it was seen.
 public struct NoReader: Sendable, Equatable {
+  /// The program's fixed words for the kind of thing.
+  public var what: String?
+  /// A name from the machine, when there is one.
   public var whatText: String?
   public var whereCount: Int?
 }
@@ -174,6 +177,19 @@ public struct NoReader: Sendable, Equatable {
 public struct NotComputed: Sendable, Equatable {
   public var section: String?
   public var reason: String?
+}
+
+/// One line from `soc watch`.
+public enum WatchEvent: Sendable, Equatable {
+  /// Subscribed to the watched places.
+  case watching(places: Int?)
+  /// Re-read the watched places after something changed.
+  case read
+  case alive
+  /// Something it survived.
+  case problem(code: String?)
+  /// It cannot watch: the error envelope it prints before it exits.
+  case failure(SocError?)
 }
 
 public enum DecodeFailure: Error, Equatable {
@@ -202,6 +218,30 @@ public enum Decoding {
         },
         result: j["result"].object.map(status)
       ))
+  }
+
+  /// One line of `soc watch`, or nil when it is not understood.
+  public static func watchLine(_ data: Data) -> WatchEvent? {
+    guard let any = try? JSONSerialization.jsonObject(with: data),
+      any is [String: Any]
+    else { return nil }
+    let j = J(any)
+    guard j["format"].count == knownFormat else { return nil }
+    if j["ok"].bool == false {
+      let e = j["errors"].array?.first.map {
+        SocError(
+          code: $0["code"].string, message: $0["message"].string,
+          example: $0["example"].string, detailText: $0["detail_text"].string)
+      }
+      return .failure(e)
+    }
+    switch j["event"].string {
+    case "watching": return .watching(places: j["places"].count)
+    case "read": return .read
+    case "alive": return .alive
+    case "problem": return .problem(code: j["code"].string)
+    default: return nil
+    }
   }
 
   static func status(_ r: J) -> Status {
@@ -238,7 +278,9 @@ public enum Decoding {
       cannotJudge: r["cannot_judge"].array?.compactMap(\.string),
       noReaderFor: r["no_reader_for"].array?.compactMap { n in
         n.object.map {
-          NoReader(whatText: $0["what_text"].string, whereCount: $0["where_count"].count)
+          NoReader(
+            what: $0["what"].string, whatText: $0["what_text"].string,
+            whereCount: $0["where_count"].count)
         }
       },
       notComputed: r["not_computed"].array?.compactMap { n in

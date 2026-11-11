@@ -7,14 +7,13 @@
 // one spacing scale (4/8/12/16), no colours, gradients or shadows of our own.
 
 import AppKit
+import Combine
 import SOCCore
 import SwiftUI
 
 enum Metrics {
   static let width: CGFloat = 352
   static let padding: CGFloat = 16
-  /// The rows scroll beyond this height; headline and footer stay put.
-  static let rowsMaxHeight: CGFloat = 340
 }
 
 /// A line of text shown exactly as given: no markdown, no links, no localisation.
@@ -62,7 +61,7 @@ struct HeadlineView: View {
           HelpLine(line: line).padding(.top, 4)
         }
         if let reason = panel.reason {
-          Plain(reason).font(.system(size: 11)).foregroundStyle(.tertiary)
+          Plain(reason).font(.system(size: 11)).foregroundStyle(.secondary)
             .textSelection(.enabled).padding(.top, 4)
         }
       }
@@ -109,10 +108,12 @@ struct RowCard: View {
               .help(row.whenFull ?? "")
           }
         }
-        if let value = row.value {
-          Text(verbatim: value)
-            .font(.system(size: 11.5, design: .monospaced)).foregroundStyle(.secondary)
-            .lineLimit(1).truncationMode(.middle)
+        if let value = row.value, let shown = row.shownValue {
+          // A path is already cut at its head at a folder boundary; anything still
+          // too long loses its head too, never the file's name.
+          Text(verbatim: shown)
+            .font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
+            .lineLimit(1).truncationMode(.head)
             .textSelection(.enabled)
             .help(value)
         }
@@ -180,23 +181,20 @@ struct LinkLine: View {
 
 struct PanelView: View {
   @ObservedObject var model: AppModel
+  /// nil when nothing is watched (an off-screen render or `--print-panel`).
+  @ObservedObject var watcher: WatcherBox
   /// Fixed for an off-screen render; nil means now.
   var now: Date? = nil
 
   var body: some View {
     let p = Panel.of(
-      model.reading, now: now ?? Date(), checking: model.runInProgress, notes: model.notes)
+      model.reading, now: now ?? Date(), checking: model.runInProgress, notes: model.notes,
+      notWatching: watcher.watcher?.notWatching)
     VStack(alignment: .leading, spacing: 0) {
       HeadlineView(panel: p)
         .padding(Metrics.padding)
-      if !p.shown.isEmpty {
-        // The cards take their natural height up to the maximum, then scroll.
-        ScrollView(.vertical) { cards(p) }
-          .scrollBounceBehavior(.basedOnSize)
-          .frame(maxHeight: Metrics.rowsMaxHeight)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-      if p.more > 0 || p.blind != nil || !p.notes.isEmpty {
+      if !p.shown.isEmpty { cards(p) }
+      if p.more > 0 || p.blind != nil || p.notWatching != nil || !p.notes.isEmpty {
         quiet(p).padding(.top, p.shown.isEmpty ? 0 : 4)
       }
       Divider()
@@ -217,7 +215,7 @@ struct PanelView: View {
     .padding(.bottom, 12)
   }
 
-  /// Below the cards, outside the scrolling: how many more, the blind spots, notes.
+  /// Below the cards: how many more, the blind spots, whether it watches, notes.
   @ViewBuilder func quiet(_ p: Panel) -> some View {
     VStack(alignment: .leading, spacing: 8) {
       if p.more > 0 {
@@ -227,6 +225,15 @@ struct PanelView: View {
       }
       if let blind = p.blind {
         LinkLine(symbol: "eye.slash", text: blind) { Task { await model.openPage() } }
+      }
+      if let line = p.notWatching {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+          Image(systemName: "pause.circle").font(.system(size: 12)).frame(width: 16)
+            .accessibilityHidden(true)
+          Plain(line).font(.system(size: 12))
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 12)
       }
       ForEach(Array(p.notes.enumerated()), id: \.offset) { _, line in
         Plain(line).font(.system(size: 12)).foregroundStyle(.secondary)
@@ -255,5 +262,16 @@ struct PanelView: View {
       Button(p.footer[2]) { NSApp.terminate(nil) }
     }
     .controlSize(.small)
+  }
+}
+
+/// Lets the panel observe a watcher that may not exist (renders, `--print-panel`).
+@MainActor
+final class WatcherBox: ObservableObject {
+  let watcher: Watcher?
+  private var forward: AnyCancellable?
+  init(_ watcher: Watcher?) {
+    self.watcher = watcher
+    forward = watcher?.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
   }
 }

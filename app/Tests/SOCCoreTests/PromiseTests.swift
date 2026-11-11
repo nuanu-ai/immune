@@ -331,14 +331,51 @@ struct PanelPromises {
     #expect(row?.when?.hasPrefix("since ") == true)
   }
 
-  @Test("At most five rows; the rest are counted in one line")
-  func fiveRows() {
+  @Test("At most three cards, and no scrolling: the rest are counted in one line")
+  func threeRows() {
     let groups = (1...7).map { group("failed", reason: "r\($0)") }
     let p = panel(
       quiet(removing: ["result", "coverage"], setting: ["failed": 7, "problems": groups]))
-    #expect(p.shown.count == 5)
-    #expect(p.more == 2)
-    #expect(p.lines.contains("2 more in Details"))
+    #expect(p.shown.count == 3)
+    #expect(p.more == 4)
+    #expect(p.lines.contains("4 more in Details"))
+  }
+
+  @Test("A path keeps its file name and the folders next to it, and loses its head")
+  func pathHead() {
+    #expect(
+      Paths.shortened("Library/LaunchAgents/org.example.helper.plist")
+        == "…/LaunchAgents/org.example.helper.plist")
+    #expect(Paths.shortened(".zshrc") == ".zshrc")
+    let long = "a/" + String(repeating: "x", count: 60) + ".plist"
+    #expect(Paths.shortened(long).hasSuffix("xxx.plist"))
+    #expect(Paths.shortened(long).count == Paths.fits)
+    let o = edited(
+      "two.json", removing: ["result", "watched", "changes"],
+      setting: [
+        [
+          "change": "new", "kind": "autostart item", "run_id": "1794400000-000000002",
+          "path_text": "Users/example/Library/LaunchAgents/org.example.helper.plist",
+        ]
+      ])
+    let row = panel(o).rows[0]
+    #expect(row.shownValue == "…/LaunchAgents/org.example.helper.plist")
+    #expect(
+      row.agentRequest.contains("Users/example/Library/LaunchAgents/org.example.helper.plist"))
+  }
+
+  @Test("Kinds the program has no reader for are told apart by its words and the machine's name")
+  func noReaderKinds() {
+    let o = edited(
+      "running.json", removing: ["result", "no_reader_for"],
+      setting: [
+        ["what": "lockfile", "what_text": "uv.lock", "where_count": 2],
+        ["what": "lockfile", "what_text": "uv.lock", "where_count": 1],
+        ["what": "lockfile", "where_count": 1],
+        ["what": "package manager", "where_count": 1],
+      ])
+    // One sentence of its own plus three kinds.
+    #expect(panel(o).blind == "Cannot judge 4 kinds of thing yet")
   }
 
   @Test("Blind spots are one quiet line with a count, never a row")
@@ -456,7 +493,7 @@ struct PanelPromises {
       let code = try String(contentsOf: dir.appendingPathComponent(f), encoding: .utf8)
       #expect(!code.contains("NSWindow"), "\(f)")
       #expect(!code.contains("Window("), "\(f)")
-      #expect(!code.contains("NSWorkspace"), "\(f)")
+      #expect(!code.contains("NSWorkspace.shared.open"), "\(f)")
     }
   }
 }
@@ -816,5 +853,306 @@ struct Page {
     #expect(model.notes == [model.pageFailure])
     #expect(model.light == before)
     #expect(before == .nothingToReport)
+  }
+}
+
+// MARK: - The hourly check
+
+@Suite("A full check every hour while the app is open")
+struct Hourly {
+  let launched = Date(timeIntervalSince1970: 1_800_000_000)
+
+  func due(
+    lastFinished: TimeInterval?, lastAuto: TimeInterval? = nil, upFor: TimeInterval = 600,
+    running: Bool = false, known: Bool = true
+  ) -> Bool {
+    let now = launched.addingTimeInterval(upFor)
+    return HourlyCheck.isDue(
+      known: known, lastFinished: lastFinished.map { now.addingTimeInterval(-$0) },
+      lastAutoCheck: lastAuto.map { now.addingTimeInterval(-$0) }, launchedAt: launched, now: now,
+      running: running)
+  }
+
+  @Test("Due when the last check is an hour old or there is none, and not before")
+  func whenDue() {
+    #expect(due(lastFinished: 3600))
+    #expect(due(lastFinished: nil))
+    #expect(!due(lastFinished: 3500))
+  }
+
+  @Test(
+    "Never while a check is running, never in the first minute, never before the status is known")
+  func notWhen() {
+    #expect(!due(lastFinished: 7200, running: true))
+    #expect(!due(lastFinished: 7200, upFor: 30))
+    #expect(due(lastFinished: 7200, upFor: 60))
+    #expect(!due(lastFinished: 7200, known: false))
+  }
+
+  @Test("A check the app started within the hour is not started again, even if it failed")
+  func noRetryBurst() {
+    #expect(!due(lastFinished: 7200, lastAuto: 600))
+    #expect(due(lastFinished: 7200, lastAuto: 3600))
+  }
+
+  @Test("After a night asleep the app gives one check, not one per missed hour")
+  @MainActor
+  func wakeGivesOne() async {
+    let soc = GatedSoc(status: edited("quiet.json"))  // its last check is long past
+    let model = AppModel(soc: soc, launchedAt: Date().addingTimeInterval(-8 * 3600))
+    await model.refresh()
+    let first = Task { await model.checkIfDue() }
+    while !soc.waiting { await Task.yield() }
+    #expect(await model.checkIfDue() == false)  // one is running
+    soc.release()
+    #expect(await first.value)
+    #expect(await model.checkIfDue(now: Date().addingTimeInterval(60)) == false)
+    #expect(soc.callsSoFar.filter { $0.first == "run" }.count == 1)
+  }
+
+  @Test("No check is started while soc says one is running elsewhere")
+  @MainActor
+  func notWhileSocRuns() async {
+    let soc = GatedSoc(status: output("running.json"))
+    let model = AppModel(soc: soc, launchedAt: Date().addingTimeInterval(-3600))
+    await model.refresh()
+    #expect(await model.checkIfDue() == false)
+    #expect(!soc.callsSoFar.contains { $0.first == "run" })
+  }
+}
+
+// MARK: - The watcher
+
+final class FakeChild: WatchChild, @unchecked Sendable {
+  var stopped = false
+  func stop(grace: TimeInterval) { stopped = true }
+}
+
+@MainActor
+final class FakeLauncher: WatchLaunching, @unchecked Sendable {
+  var launches = 0
+  var fail = false
+  var child = FakeChild()
+  var line: (@MainActor (Data) -> Void)?
+  var dropped: (@MainActor (Int) -> Void)?
+  var exit: (@MainActor (Int32?) -> Void)?
+
+  func launch(
+    _ arguments: [String], onLine: @escaping @MainActor (Data) -> Void,
+    onDropped: @escaping @MainActor (Int) -> Void, onExit: @escaping @MainActor (Int32?) -> Void
+  ) -> Result<any WatchChild, LaunchFailure> {
+    launches += 1
+    if fail { return .failure(LaunchFailure("no")) }
+    child = FakeChild()
+    line = onLine
+    dropped = onDropped
+    exit = onExit
+    return .success(child)
+  }
+
+  func say(_ json: String) { line?(Data(json.utf8)) }
+}
+
+@MainActor
+final class Harness {
+  let launcher = FakeLauncher()
+  var now = Date(timeIntervalSince1970: 1_800_000_000)
+  var scheduled: [(TimeInterval, @MainActor () -> Void)] = []
+  var reads = 0
+  lazy var watcher = Watcher(
+    launcher: launcher, arguments: ["watch"], onRead: { [unowned self] in reads += 1 },
+    schedule: { [unowned self] in scheduled.append(($0, $1)) }, clock: { [unowned self] in now })
+
+  /// Runs the next scheduled start, as the timer would.
+  func fire() {
+    let (_, action) = scheduled.removeFirst()
+    action()
+  }
+}
+
+let watchingLine = #"{"format":1,"event":"watching","places":12,"at":"2026-11-10T10:00:00Z"}"#
+let readLine =
+  #"{"format":1,"event":"read","at":"2026-11-10T10:00:00Z","needs_a_look_total":1,"new":1,"changed":0,"gone":0}"#
+let aliveLine = #"{"format":1,"event":"alive","at":"2026-11-10T10:00:00Z"}"#
+
+@Suite("The watcher is kept running, and the panel says plainly when it is not")
+@MainActor
+struct Watching {
+  @Test("A read line refreshes the status at once")
+  func readRefreshes() {
+    let h = Harness()
+    h.watcher.start()
+    h.launcher.say(watchingLine)
+    #expect(h.watcher.state == .watching)
+    #expect(h.watcher.notWatching == nil)
+    h.launcher.say(readLine)
+    #expect(h.reads == 1)
+  }
+
+  @Test("A watcher that stops is started again with a growing delay, and the panel says so")
+  func restartsGrowing() {
+    let h = Harness()
+    h.watcher.start()
+    h.launcher.say(watchingLine)
+    for expected in [5.0, 10, 20, 40] {
+      h.launcher.exit?(1)
+      #expect(h.scheduled.last?.0 == expected)
+      #expect(
+        h.watcher.notWatching
+          == "Not watching for changes right now: the watcher stopped unexpectedly.")
+      h.fire()
+      h.launcher.say(watchingLine)
+    }
+    #expect(h.launcher.launches == 5)
+    #expect(h.watcher.notWatching == nil)
+    #expect(Watcher.delay(attempt: 20) == 300)
+  }
+
+  @Test("A watcher that ran a good while starts again from the shortest delay")
+  func healthyResets() {
+    let h = Harness()
+    h.watcher.start()
+    h.launcher.exit?(1)
+    h.fire()
+    h.launcher.exit?(1)
+    #expect(h.scheduled.last?.0 == 10)
+    h.fire()
+    h.now += Watcher.healthyRun
+    h.launcher.exit?(1)
+    #expect(h.scheduled.last?.0 == 5)
+  }
+
+  @Test("Three minutes of silence count as dead; less does not")
+  func silence() {
+    let h = Harness()
+    h.watcher.start()
+    h.launcher.say(watchingLine)
+    h.now += 170
+    h.watcher.tick()
+    #expect(h.watcher.state == .watching)
+    h.launcher.say(aliveLine)
+    h.now += 20
+    h.watcher.tick()
+    #expect(h.watcher.state == .watching)  // a line just now keeps it alive
+    h.now += 181
+    let child = h.launcher.child
+    h.watcher.tick()
+    #expect(child.stopped)
+    #expect(
+      h.watcher.notWatching == "Not watching for changes right now: the watcher stopped answering.")
+    #expect(h.scheduled.count == 1)
+    h.launcher.exit?(nil)  // its late exit changes nothing
+    #expect(h.scheduled.count == 1)
+  }
+
+  @Test("Its own reason is said, inert; one that cannot start says so")
+  func reasons() {
+    let h = Harness()
+    h.watcher.start()
+    h.launcher.say(
+      #"{"format":1,"ok":false,"errors":[{"code":"store_unreadable","message":"the store\ncannot be read"}]}"#
+    )
+    h.launcher.exit?(1)
+    #expect(
+      h.watcher.notWatching
+        == "Not watching for changes right now: the watcher stopped (the store\\ncannot be read).")
+    h.launcher.fail = true
+    h.fire()
+    #expect(
+      h.watcher.notWatching
+        == "Not watching for changes right now: the watcher could not be started.")
+    h.launcher.fail = false
+    h.fire()
+    h.launcher.exit?(2)
+    #expect(
+      h.watcher.notWatching == "Not watching for changes right now: the watcher could not start.")
+  }
+
+  @Test("Another watcher on the store is not an alarm: nothing is said, and it looks again later")
+  func elsewhere() {
+    let h = Harness()
+    h.watcher.start()
+    h.launcher.say(
+      #"{"format":1,"ok":false,"errors":[{"code":"watch_in_progress","message":"m"}]}"#)
+    h.launcher.exit?(6)
+    #expect(h.watcher.state == .elsewhere)
+    #expect(h.watcher.notWatching == nil)
+    #expect(h.scheduled.last?.0 == Watcher.elsewhereRetry)
+  }
+
+  @Test("Lines not understood are counted and never change what is shown")
+  func garbage() {
+    let h = Harness()
+    h.watcher.start()
+    h.launcher.say(watchingLine)
+    for junk in [
+      "not json", "[1]", #"{"format":2,"event":"read"}"#, #"{"format":1,"event":"new-thing"}"#,
+    ] {
+      h.launcher.say(junk)
+    }
+    h.launcher.dropped?(2)
+    #expect(h.watcher.ignoredLines == 6)
+    #expect(h.watcher.state == .watching)
+    #expect(h.reads == 0)
+  }
+
+  @Test("Quitting stops the watcher and starts nothing again")
+  func quit() {
+    let h = Harness()
+    h.watcher.start()
+    let child = h.launcher.child
+    h.watcher.stop()
+    #expect(child.stopped)
+    h.launcher.exit?(0)
+    #expect(h.scheduled.isEmpty)
+    h.watcher.start()
+    #expect(h.launcher.launches == 1)
+  }
+}
+
+@Suite("Lines from the watcher are read with a cap")
+struct Lines {
+  @Test("An endless line is dropped and counted, and the lines after it still arrive")
+  func endless() {
+    var s = LineSplitter(cap: 100)
+    var r = s.feed(Data(String(repeating: "x", count: 1000).utf8))
+    #expect(r.lines.isEmpty)
+    r = s.feed(Data(String(repeating: "x", count: 1000).utf8))
+    r = s.feed(Data("x\nok\npart".utf8))
+    #expect(r.dropped == 1)
+    #expect(r.lines == [Data("ok".utf8)])
+    r = s.feed(Data("ial\n".utf8))
+    #expect(r.lines == [Data("partial".utf8)])
+    r = s.feed(Data((String(repeating: "y", count: 1000) + "\nok\n").utf8))
+    #expect(r.dropped == 1)
+    #expect(r.lines == [Data("ok".utf8)])
+  }
+
+  @Test("A real watcher's flood does not break the reading, and quitting leaves no process")
+  @MainActor
+  func realProcess() async throws {
+    let launcher = ProcessWatchLauncher(
+      executable: fixtures.appendingPathComponent("soc-standin"), lineCap: 64 * 1024)
+    var lines: [WatchEvent?] = []
+    var dropped = 0
+    let result = launcher.launch(
+      ["watch", "--standin-mode", "flood"], onLine: { lines.append(Decoding.watchLine($0)) },
+      onDropped: { dropped += $0 }, onExit: { _ in })
+    guard case .success(let child) = result, let real = child as? ProcessWatchChild else {
+      Issue.record("not started")
+      return
+    }
+    let pid = real.pid
+    let deadline = Date().addingTimeInterval(10)
+    while lines.count < 2, Date() < deadline { try await Task.sleep(for: .milliseconds(50)) }
+    #expect(lines.first == .watching(places: 12))
+    #expect(lines.last == .alive)
+    #expect(dropped == 1)
+    #expect(kill(pid, 0) == 0)
+    // Asked politely first: it is gone well before the two seconds of grace.
+    let asked = Date()
+    child.stop(grace: 2)
+    #expect(Date().timeIntervalSince(asked) < 1.5)
+    #expect(kill(pid, 0) != 0)
   }
 }

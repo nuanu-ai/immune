@@ -182,6 +182,13 @@ public struct Row: Sendable, Equatable, Identifiable {
   /// The item's stable values, as soc gave them.
   public let fields: [Field]
 
+  /// The value as the panel shows it: a path keeps its file name and the folders
+  /// next to it whole, and loses its head ("…/LaunchAgents/x.plist").
+  public var shownValue: String? {
+    guard let value else { return nil }
+    return fields.contains { $0.name == "path_text" } ? Paths.shortened(value) : value
+  }
+
   /// A short request for the owner's coding agent, in fixed words. Values are
   /// quoted as JSON strings and marked as data.
   public var agentRequest: String {
@@ -209,7 +216,7 @@ public struct Row: Sendable, Equatable, Identifiable {
 }
 
 public struct Panel: Sendable, Equatable {
-  public static let rowsShown = 5
+  public static let rowsShown = 3
   public static let statusCommand = "soc status"
 
   public var light: Light
@@ -228,6 +235,8 @@ public struct Panel: Sendable, Equatable {
   public var blind: String?
   /// Plain lines about the last Check now or Details.
   public var notes: [String] = []
+  /// "Not watching for changes right now: …", one quiet line, or nil.
+  public var notWatching: String?
   public var canCheck: Bool
   public var footer: [String] { [canCheck ? "Check now" : "Checking…", "Details", "Quit"] }
 
@@ -235,10 +244,13 @@ public struct Panel: Sendable, Equatable {
   public var more: Int { max(0, rows.count - Self.rowsShown) }
 
   public static func of(
-    _ reading: Reading, now: Date, checking: Bool = false, notes: [String] = []
+    _ reading: Reading, now: Date, checking: Bool = false, notes: [String] = [],
+    notWatching: String? = nil
   ) -> Panel {
     let light = Light.of(reading)
-    var p = Panel(light: light, headline: light.headline, notes: notes, canCheck: !checking)
+    var p = Panel(
+      light: light, headline: light.headline, notes: notes, notWatching: notWatching,
+      canCheck: !checking)
     switch reading {
     case .notYetRead:
       p.headline = "Looking at the last check…"
@@ -381,7 +393,11 @@ public struct Panel: Sendable, Equatable {
   /// reader for, and the groups it could only partly see.
   static func blindCount(_ s: Status) -> Int {
     let groups = s.coverage?.problems ?? []
-    let noReader = s.noReaderFor?.count ?? groups.filter { $0.class == "no_reader" }.count
+    // Kinds are told apart by the program's words and the machine's name together.
+    let noReader =
+      s.noReaderFor.map { list in
+        Set(list.map { [$0.what ?? "", $0.whatText ?? ""] }).count
+      } ?? groups.filter { $0.class == "no_reader" }.count
     let partial = groups.filter { $0.class == "partial" }.count
     return (s.cannotJudge?.count ?? 0) + noReader + partial
   }
@@ -395,13 +411,14 @@ public struct Panel: Sendable, Equatable {
     if !shown.isEmpty || blind != nil { out.append("----") }
     for r in shown {
       out.append("• " + (r.when.map { $0 + " — " } ?? "") + r.sentence + ".")
-      if let v = r.value { out.append("    › " + v) }
+      if let v = r.shownValue { out.append("    › " + v) }
       if let why = r.reason { out.append("    Reason: " + why) }
       out.append("    " + r.means + " " + r.todo)
       out.append("    [ Show ]  [ Copy for my agent ]")
     }
     if more > 0 { out.append("\(more) more in Details") }
     if let blind { out.append(blind + "  ›") }
+    if let notWatching { out.append(notWatching) }
     out += notes
     out.append("----")
     out.append(footer.map { "[ \($0) ]" }.joined(separator: "  "))
@@ -434,4 +451,26 @@ public enum Clock {
   static func full(_ d: Date) -> String { d.formatted(date: .abbreviated, time: .shortened) }
 
   static func iso(_ d: Date) -> String { d.formatted(.iso8601) }
+}
+
+public enum Paths {
+  /// About what fits on one line of a card in the value's font.
+  public static let fits = 40
+
+  /// A path cut at its head at a folder boundary, so whole trailing parts stay.
+  /// A last part longer than the line loses its own head.
+  public static func shortened(_ path: String, max: Int = fits) -> String {
+    guard path.count > max else { return path }
+    var kept: [Substring] = []
+    var length = 1  // "…"
+    for part in path.split(separator: "/").reversed() {
+      guard length + 1 + part.count <= max else { break }
+      kept.insert(part, at: 0)
+      length += 1 + part.count
+    }
+    if kept.isEmpty, let last = path.split(separator: "/").last {
+      return "…" + last.suffix(max - 1)
+    }
+    return "…/" + kept.joined(separator: "/")
+  }
 }

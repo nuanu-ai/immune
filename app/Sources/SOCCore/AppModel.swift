@@ -26,12 +26,31 @@ public final class AppModel: ObservableObject {
   @Published public private(set) var pageFailure: String?
 
   private let soc: any SocRunning
+  private let launchedAt: Date
+  /// When the app last started a check by itself.
+  private var lastAutoCheck: Date?
   /// Appended to every command; empty except in trials (`--store <path>`).
   private let extraArguments: [String]
 
-  public init(soc: any SocRunning, extraArguments: [String] = []) {
+  public init(soc: any SocRunning, extraArguments: [String] = [], launchedAt: Date = Date()) {
     self.soc = soc
     self.extraArguments = extraArguments
+    self.launchedAt = launchedAt
+  }
+
+  /// The full check every hour while the app is open. Called on a timer and after
+  /// the Mac wakes; starts a check only when `HourlyCheck.isDue` says so. Returns
+  /// whether it started one.
+  @discardableResult
+  public func checkIfDue(now: Date = Date()) async -> Bool {
+    let due = HourlyCheck.isDue(
+      known: reading != .notYetRead,
+      lastFinished: reading.status?.lastFinishedRun?.finishedAt,
+      lastAutoCheck: lastAutoCheck, launchedAt: launchedAt, now: now,
+      running: !canRun)
+    guard due else { return false }
+    lastAutoCheck = now
+    return await runNow()
   }
 
   public var light: Light { Light.of(reading) }
@@ -113,5 +132,26 @@ public final class AppModel: ObservableObject {
   static func otherRunInProgress(_ out: SocOutput) -> Bool {
     guard case .success(let env) = Decoding.envelope(from: out.stdout) else { return false }
     return env.ok == false && env.errors.contains { $0.code == "run_in_progress" }
+  }
+}
+
+/// When the app starts a full check by itself.
+public enum HourlyCheck {
+  public static let every: TimeInterval = 3600
+  /// The first check waits this long after launch, so the app settles first.
+  public static let afterLaunch: TimeInterval = 60
+
+  /// Due when the last finished check is an hour old or there is none, the app has
+  /// not itself tried within the hour (so a failing check, or a Mac that slept
+  /// through many hours, gives one check and not a burst), nothing is running, and
+  /// the app has been up a minute and knows the status.
+  public static func isDue(
+    known: Bool, lastFinished: Date?, lastAutoCheck: Date?, launchedAt: Date, now: Date,
+    running: Bool
+  ) -> Bool {
+    guard known, !running, now.timeIntervalSince(launchedAt) >= afterLaunch else { return false }
+    if let f = lastFinished, now.timeIntervalSince(f) < every { return false }
+    if let a = lastAutoCheck, now.timeIntervalSince(a) < every { return false }
+    return true
   }
 }

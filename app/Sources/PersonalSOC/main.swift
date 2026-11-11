@@ -1,4 +1,6 @@
 // The menu-bar app: an AppKit status item and a popover around a SwiftUI view.
+// While it is open it keeps the program running: `soc watch` as a child process,
+// and a full check every hour (`HourlyCheck`).
 // AppKit owns the icon so that opening the panel is one known call (which
 // refreshes) and the count beside the icon is plain button text. There is no
 // window of the app's own: Details is the program's page, written and opened by
@@ -17,13 +19,16 @@ let appName =
 @MainActor
 final class Delegate: NSObject, NSApplicationDelegate {
   let model: AppModel
+  let watcher: Watcher
   private var item: NSStatusItem?
   private let popover = NSPopover()
-  private var timer: Timer?
+  private var timers: [Timer] = []
   private var watching: AnyCancellable?
+  private var termination: DispatchSourceSignal?
 
-  init(model: AppModel) {
+  init(model: AppModel, watcher: Watcher) {
     self.model = model
+    self.watcher = watcher
   }
 
   func applicationDidFinishLaunching(_ notification: Notification) {
@@ -33,7 +38,7 @@ final class Delegate: NSObject, NSApplicationDelegate {
     item.button?.imagePosition = .imageLeading
     self.item = item
 
-    let panel = NSHostingController(rootView: PanelView(model: model))
+    let panel = NSHostingController(rootView: PanelView(model: model, watcher: WatcherBox(watcher)))
     panel.sizingOptions = [.preferredContentSize]
     popover.contentViewController = panel
     popover.behavior = .transient
@@ -41,16 +46,50 @@ final class Delegate: NSObject, NSApplicationDelegate {
     // @Published sends the new value before it is stored; paint from the value.
     watching = model.$reading.sink { [weak self] reading in self?.paint(Light.of(reading)) }
 
-    timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-      Task { @MainActor in await self?.model.refresh() }
+    // Every minute: read the status, then start the hourly check if it is due.
+    timers.append(
+      Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+        Task { @MainActor in await self?.minute() }
+      })
+    // Every half minute: the watcher's watchdog.
+    timers.append(
+      Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+        MainActor.assumeIsolated { self?.watcher.tick() }
+      })
+    // After the Mac wakes: one look soon after, never a burst (see `HourlyCheck`).
+    NSWorkspace.shared.notificationCenter.addObserver(
+      forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+    ) { [weak self] _ in
+      log("woke")
+      DispatchQueue.main.asyncAfter(deadline: .now() + 30) {
+        Task { @MainActor in await self?.minute() }
+      }
     }
+    // SIGTERM quits like Quit does, so the watcher is stopped too.
+    signal(SIGTERM, SIG_IGN)
+    let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+    source.setEventHandler { NSApp.terminate(nil) }
+    source.resume()
+    termination = source
+
     Task { await model.refresh() }
+    watcher.start()
 
     // Test-only convenience, so the panel can be looked at without clicking.
     if CommandLine.arguments.contains("--open-panel") {
       // The status item needs a moment to be placed before a popover can hang from it.
       DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in self?.toggle() }
     }
+  }
+
+  func applicationWillTerminate(_ notification: Notification) {
+    watcher.stop()
+    log("quit: watcher stopped")
+  }
+
+  private func minute() async {
+    await model.refresh()
+    if await model.checkIfDue() { log("hourly check done") }
   }
 
   private func paint(_ light: Light) {
@@ -101,8 +140,11 @@ func log(_ line: String) {
 #endif
 
 /// The soc to run and the arguments that point it at a store.
-func locate(_ arguments: [String], _ environment: [String: String]) -> (any SocRunning, [String]) {
+func locate(_ arguments: [String], _ environment: [String: String]) -> (
+  any SocRunning, [String], URL?
+) {
   let soc: any SocRunning
+  let found: URL
   switch SocLocation.resolve(
     arguments: arguments, environment: environment,
     executableDirectory: Bundle.main.executableURL?.deletingLastPathComponent())
@@ -110,19 +152,41 @@ func locate(_ arguments: [String], _ environment: [String: String]) -> (any SocR
   case .success(let url):
     log("soc: \(url.path)")
     soc = ProcessRunner(executable: url)
+    found = url
   case .failure(let problem):
     log("soc: not located: \(problem.words)")
-    return (UnlocatedSoc(problem: problem), [])
+    return (UnlocatedSoc(problem: problem), [], nil)
   }
   switch SocLocation.store(arguments: arguments, environment: environment) {
   case .success(let extra):
     log(extra.isEmpty ? "store: soc's default" : "store: \(extra[1])")
-    return (soc, extra)
+    return (soc, extra, found)
   case .failure(let problem):
     // Never fall back to the default store when a trial asked for another one.
     log("store: refused: \(problem.words)")
-    return (UnlocatedSoc(problem: problem), [])
+    return (UnlocatedSoc(problem: problem), [], nil)
   }
+}
+
+/// A launcher that cannot start anything, for when soc was not located.
+struct NoWatch: WatchLaunching {
+  @MainActor
+  func launch(
+    _ arguments: [String], onLine: @escaping @MainActor (Data) -> Void,
+    onDropped: @escaping @MainActor (Int) -> Void, onExit: @escaping @MainActor (Int32?) -> Void
+  ) -> Result<any WatchChild, LaunchFailure> { .failure(LaunchFailure("soc was not located")) }
+}
+
+@MainActor
+func makeWatcher(_ url: URL?, _ extra: [String], _ model: AppModel) -> Watcher {
+  let launcher: any WatchLaunching = url.map { ProcessWatchLauncher(executable: $0) } ?? NoWatch()
+  return Watcher(
+    launcher: launcher, arguments: ["watch"] + extra,
+    onRead: { Task { await model.refresh() } },
+    schedule: { wait, action in
+      log("watcher: next start in \(Int(wait)) s")
+      DispatchQueue.main.asyncAfter(deadline: .now() + wait) { MainActor.assumeIsolated(action) }
+    })
 }
 
 /// Debug only: prints the lines the panel shows for soc's current answer, as plain
@@ -145,17 +209,21 @@ func printPanel(_ soc: any SocRunning, _ extra: [String]) -> Never {
 
 /// Debug only: draws the panel's own view off-screen, at the popover's width and
 /// at 2x, in light and dark appearance, to `<folder>/light.png` and `dark.png`,
-/// and exits. No screen capture: the view hierarchy is drawn into a bitmap. The
+/// and the same panel as text to `panel.txt`, and exits. No screen capture: the view hierarchy is drawn into a bitmap. The
 /// popover's translucent material cannot be drawn this way; the window background
 /// colour stands in for it.
 @MainActor
-func renderPanel(_ model: AppModel, to folder: URL) async -> Never {
+func renderPanel(_ model: AppModel, _ watcher: Watcher, to folder: URL) async -> Never {
   await model.refresh()
+  // Give the watcher a moment, so the panel shows what it says.
+  watcher.start()
+  try? await Task.sleep(for: .milliseconds(1500))
   try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
   for (name, look) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
     guard let appearance = NSAppearance(named: look) else { continue }
     let host = NSHostingView(
-      rootView: PanelView(model: model).background(Color(nsColor: .windowBackgroundColor)))
+      rootView: PanelView(model: model, watcher: WatcherBox(watcher))
+        .background(Color(nsColor: .windowBackgroundColor)))
     host.appearance = appearance
     // Lay out twice: the rows' measured height settles after the first pass.
     for _ in 0..<3 {
@@ -176,10 +244,17 @@ func renderPanel(_ model: AppModel, to folder: URL) async -> Never {
     try? rep.representation(using: .png, properties: [:])?.write(to: file)
     log("rendered \(file.lastPathComponent): \(Int(size.width))x\(Int(size.height)) pt")
   }
+  // The same panel as text, beside the pictures.
+  let panel = Panel.of(
+    model.reading, now: Date(), checking: model.runInProgress, notes: model.notes,
+    notWatching: watcher.notWatching)
+  try? (panel.lines.joined(separator: "\n") + "\n").write(
+    to: folder.appendingPathComponent("panel.txt"), atomically: true, encoding: .utf8)
+  watcher.stop()
   exit(0)
 }
 
-let (soc, extra) = locate(overrides.0, overrides.1)
+let (soc, extra, socURL) = locate(overrides.0, overrides.1)
 #if DEBUG
   if CommandLine.arguments.contains("--print-panel") { printPanel(soc, extra) }
   if let i = CommandLine.arguments.firstIndex(of: "--render-panel"),
@@ -187,12 +262,14 @@ let (soc, extra) = locate(overrides.0, overrides.1)
   {
     let folder = URL(fileURLWithPath: CommandLine.arguments[i + 1])
     let model = AppModel(soc: soc, extraArguments: extra)
+    let watcher = makeWatcher(socURL, extra, model)
     NSApplication.shared.setActivationPolicy(.prohibited)
-    Task { @MainActor in await renderPanel(model, to: folder) }
+    Task { @MainActor in await renderPanel(model, watcher, to: folder) }
     NSApplication.shared.run()
   }
 #endif
-let delegate = Delegate(model: AppModel(soc: soc, extraArguments: extra))
+let model = AppModel(soc: soc, extraArguments: extra)
+let delegate = Delegate(model: model, watcher: makeWatcher(socURL, extra, model))
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 app.delegate = delegate

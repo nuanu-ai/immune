@@ -7,10 +7,49 @@
 #   SOC_STANDIN_RUN_FIXTURE  file `run` prints (default: the status fixture)
 #   SOC_STANDIN_RUN_EXIT     exit code of `run` (default 0)
 #   SOC_STANDIN_RUN_SLEEP    extra seconds `run` waits (default 2)
+#   `watch` plays the watcher; see its own comment below.
 #   SOC_STANDIN_VIEW_EXIT    exit code of `view`, which prints nothing and opens nothing (default 0)
 dir=$(dirname "$0")
 fixture=${SOC_STANDIN_FIXTURE:-$dir/status.json}
 code=${SOC_STANDIN_EXIT:-0}
+if [ "${1:-}" = watch ]; then
+  # Plays `soc watch`. SOC_STANDIN_WATCH_MODE: normal (default), silent, exit,
+  # refuse (prints the error envelope and exits 1), elsewhere (another watcher),
+  # garbage, flood. A file at SOC_STANDIN_TRIGGER makes it print one `read` line.
+  # SOC_STANDIN_ALIVE: seconds between `alive` lines (default 60).
+  # Tests pass the mode as `watch --standin-mode <mode>` instead.
+  [ "${2:-}" = --standin-mode ] && SOC_STANDIN_WATCH_MODE=$3
+  at() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+  trap 'exit 0' TERM
+  case "${SOC_STANDIN_WATCH_MODE:-normal}" in
+    exit) exit 3 ;;
+    refuse)
+      echo '{"format":1,"operation":"watch","ok":false,"errors":[{"code":"store_unreadable","message":"the store cannot be read","example":"soc status --json","detail_text":"database is locked"}]}'
+      exit 1 ;;
+    elsewhere)
+      echo '{"format":1,"operation":"watch","ok":false,"errors":[{"code":"watch_in_progress","message":"another watcher already watches this store","example":"soc status --json","detail_text":""}]}'
+      exit 6 ;;
+    silent) while :; do sleep 1 & wait $!; done ;;
+  esac
+  echo "{\"format\":1,\"event\":\"watching\",\"places\":12,\"at\":\"$(at)\"}"
+  case "${SOC_STANDIN_WATCH_MODE:-normal}" in
+    garbage) echo 'not json at all'; echo '{"format":1,"event":"unheard-of"}'; echo '[1,2,3]' ;;
+    flood) head -c 300000 /dev/zero | tr '\0' 'x'; echo; echo "{\"format\":1,\"event\":\"alive\",\"at\":\"$(at)\"}" ;;
+  esac
+  n=0
+  while :; do
+    sleep 1 & wait $!
+    n=$((n + 1))
+    if [ -n "${SOC_STANDIN_TRIGGER:-}" ] && [ -e "$SOC_STANDIN_TRIGGER" ]; then
+      rm -f "$SOC_STANDIN_TRIGGER"
+      echo "{\"format\":1,\"event\":\"read\",\"at\":\"$(at)\",\"needs_a_look_total\":1,\"new\":1,\"changed\":0,\"gone\":0}"
+    fi
+    if [ "$n" -ge "${SOC_STANDIN_ALIVE:-60}" ]; then
+      n=0
+      echo "{\"format\":1,\"event\":\"alive\",\"at\":\"$(at)\"}"
+    fi
+  done
+fi
 if [ "${1:-}" = view ]; then
   sleep "${SOC_STANDIN_SLEEP:-0}"
   [ "${SOC_STANDIN_VIEW_EXIT:-0}" = 0 ] || echo "the page could not be written: disk full" >&2
