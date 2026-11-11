@@ -1,7 +1,9 @@
 //! soc: read what is installed, keep it as facts, report what changed. One line.
 //! `soc view` writes a page that shows what is in the store. `soc servers` shows which
 //! servers this machine knows and writes the read-only sweep for the owner to run.
-//! `soc owner` keeps the owner's word: that a machine is retired or not theirs.
+//! `soc owner` keeps the owner's word: that a machine is retired or not theirs. `soc status`
+//! says what the last finished run left, read-only; with `--json`, `soc status` and `soc run`
+//! answer in one machine-readable envelope.
 //!
 //! The program never connects to a server and never runs ssh. Its one request to the
 //! network is the threat list, fetched whole with the system curl.
@@ -18,6 +20,7 @@ mod resolver;
 mod servers;
 mod sha256;
 mod ssh_config;
+mod status;
 mod store;
 mod sweep;
 mod tailnet;
@@ -39,7 +42,8 @@ const STORE_FOLDER: &str = "Library/Application Support/personal-soc";
 const USAGE: &str = "usage: soc run [--store <path>] [--machine-name <name>] [--brew <path>]
                [--brew-input <file>] [--servers-input <dir>] [--checkouts-root <dir>]
                [--sessions-root <dir>] [--tailscale <path>]
-               [--threats-input <file>] [--curl <path>] [--system-root <dir>]
+               [--threats-input <file>] [--curl <path>] [--system-root <dir>] [--json]
+       soc status [--store <path>] [--json]
        soc servers [--store <path>] [--tailscale <path>]
        soc view [--store <path>] [--no-open]
        soc owner [<name> retired|not-mine --reason <text> | <name> withdraw]
@@ -47,6 +51,7 @@ const USAGE: &str = "usage: soc run [--store <path>] [--machine-name <name>] [--
 
 enum Cmd {
     Run(Args),
+    Status(StatusArgs),
     Servers(ServersArgs),
     View(ViewArgs),
     Owner(OwnerArgs),
@@ -77,6 +82,14 @@ struct Args {
     /// The folder that `/Library` and `/etc` are resolved under for watched places: `/`
     /// unless a test gives another.
     system_root: PathBuf,
+    /// Answer in the machine-readable envelope instead of the report line.
+    json: bool,
+}
+
+/// `soc status`: what the last finished run left, read without writing anything.
+struct StatusArgs {
+    store: PathBuf,
+    json: bool,
 }
 
 struct ServersArgs {
@@ -121,9 +134,10 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
             let (mut machine, mut brew, mut brew_input) = (None, None, None);
             let (mut servers_input, mut checkouts_root, mut tailscale) = (None, None, None);
             let (mut sessions_root, mut threats_input, mut curl) = (None, None, None);
-            let mut system_root = None;
+            let (mut system_root, mut json) = (None, false);
             while let Some(arg) = it.next() {
                 match arg.as_str() {
+                    "--json" => json = true,
                     "--tailscale" => tailscale = Some(value(&mut it, &arg)?.into()),
                     "--store" => store = Some(value(&mut it, &arg)?.into()),
                     "--machine-name" => machine = Some(value(&mut it, &arg)?),
@@ -154,7 +168,20 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
                 threats_input,
                 curl,
                 system_root: system_root.unwrap_or_else(|| PathBuf::from("/")),
+                json,
             }))
+        }
+        "status" => {
+            let mut json = false;
+            while let Some(arg) = it.next() {
+                match arg.as_str() {
+                    "--store" => store = Some(value(&mut it, &arg)?.into()),
+                    "--json" => json = true,
+                    _ => return Err(format!("unexpected argument: {arg}")),
+                }
+            }
+            let store = store.map_or_else(default_store, Ok)?;
+            Ok(Cmd::Status(StatusArgs { store, json }))
         }
         "servers" => {
             let mut tailscale = None;
@@ -256,22 +283,94 @@ fn value(it: &mut impl Iterator<Item = String>, arg: &str) -> Result<String, Str
     it.next().ok_or(format!("{arg} needs a value"))
 }
 
+/// Misuse of the command line.
+const EXIT_USAGE: u8 = 2;
+/// The store is there and cannot be read.
+const EXIT_STORE: u8 = 3;
+/// Another run holds the store.
+const EXIT_RUN_IN_PROGRESS: u8 = 4;
+
+/// A failure an agent can act on, with its own code and exit code.
+#[derive(Debug)]
+enum Stop {
+    /// The store cannot be opened or read, with what was said.
+    Store(String),
+    /// Another run holds the run lock.
+    RunInProgress,
+}
+
+impl std::fmt::Display for Stop {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Stop::Store(e) => write!(f, "the store cannot be read: {e}"),
+            Stop::RunInProgress => {
+                write!(
+                    f,
+                    "another run is in progress on this store; nothing was done"
+                )
+            }
+        }
+    }
+}
+
+impl Error for Stop {}
+
+/// Prints one machine-readable envelope on stdout, the only thing on stdout in that form.
+fn print_json(v: &serde_json::Value) {
+    println!("{v}");
+}
+
 fn main() -> ExitCode {
-    let cmd = match parse_args(std::env::args().skip(1)) {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let cmd = match parse_args(args.iter().cloned()) {
         Ok(cmd) => cmd,
         Err(e) => {
+            if args.iter().any(|a| a == "--json") {
+                let op = args.first().map(String::as_str);
+                let op = op.filter(|o| ["run", "status"].contains(o));
+                let example = if op == Some("run") {
+                    "soc run --json"
+                } else {
+                    "soc status --json"
+                };
+                print_json(&status::failure(
+                    op,
+                    "usage",
+                    "the command line is not one soc understands; the usage is on stderr",
+                    example,
+                    &e,
+                ));
+            }
             eprintln!("soc: {}\n{USAGE}", view::shown(&e));
-            return ExitCode::from(2);
+            return ExitCode::from(EXIT_USAGE);
         }
     };
     let result = match cmd {
-        Cmd::Run(args) => run(&args).map(|(line, watched)| {
-            say(&line);
-            if !watched.is_empty() {
-                say("Watched places:");
-                print_table(&["Change", "Kind", "Path", "Why"], &watched);
+        Cmd::Run(args) if args.json => return run_json(&args),
+        Cmd::Status(args) if args.json => return status_json(&args.store),
+        Cmd::Run(args) => match run(&args) {
+            Ok((line, watched)) => {
+                say(&line);
+                if !watched.is_empty() {
+                    say("Watched places:");
+                    print_table(&["Change", "Kind", "Path", "Why"], &watched);
+                }
+                Ok(())
             }
-        }),
+            // A second run used to fail with "database is locked"; it now says why.
+            Err(e) if matches!(e.downcast_ref(), Some(Stop::RunInProgress)) => {
+                eprintln!("soc: {e}");
+                return ExitCode::from(EXIT_RUN_IN_PROGRESS);
+            }
+            Err(e) => Err(e),
+        },
+        Cmd::Status(args) => match status_text(&args.store) {
+            Err(e) => {
+                eprintln!("soc: {}", view::shown(&e.to_string()));
+                return ExitCode::from(EXIT_STORE);
+            }
+            ok => ok.map_err(Into::into),
+        },
         Cmd::Servers(args) => servers_cmd(&args),
         Cmd::View(args) => view(&args),
         Cmd::Owner(args) => owner_cmd(&args),
@@ -284,6 +383,197 @@ fn main() -> ExitCode {
         }
     }
 }
+
+/// Now, in UTC seconds.
+fn now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
+}
+
+/// What `soc status` shows, read-only and in one read transaction, so that every number is of
+/// one state of the store: a run that commits meanwhile waits for it, and it never sees half
+/// a run. `None` when there is no store.
+fn read_status(store: &Path) -> Result<Option<status::State>, Stop> {
+    if !store.exists() {
+        return Ok(None);
+    }
+    let unreadable = |e: Box<dyn Error>| Stop::Store(e.to_string());
+    let conn = store::open_read_only(store).map_err(unreadable)?;
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| Stop::Store(e.to_string()))?;
+    status::state(&tx, &home(store))
+        .map(Some)
+        .map_err(unreadable)
+}
+
+/// Whether a run is in progress on the store, and what the store holds.
+fn read_all(store: &Path) -> Result<(bool, Option<status::State>), Stop> {
+    let running = store::run_in_progress(&home(store)).map_err(|e| Stop::Store(e.to_string()))?;
+    Ok((running, read_status(store)?))
+}
+
+/// Answers `soc status --json`, or `soc run --json` once the run finished.
+fn answer_json(operation: &str, store: &Path) -> ExitCode {
+    match read_all(store) {
+        Ok((running, state)) => {
+            let path = std::path::absolute(store).unwrap_or_else(|_| store.to_path_buf());
+            let result = status::result(state.as_ref(), running, &path, now_secs());
+            print_json(&status::envelope(operation, result));
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail_json(operation, &e),
+    }
+}
+
+fn fail_json(operation: &str, e: &Stop) -> ExitCode {
+    let (code, message, example, detail, exit) = match e {
+        Stop::Store(detail) => (
+            "store_unreadable",
+            "the store cannot be read; nothing was changed",
+            "soc status --json --store <file>",
+            detail.as_str(),
+            EXIT_STORE,
+        ),
+        Stop::RunInProgress => (
+            "run_in_progress",
+            "another run is in progress on this store; nothing was done",
+            "soc status --json",
+            "",
+            EXIT_RUN_IN_PROGRESS,
+        ),
+    };
+    print_json(&status::failure(
+        Some(operation),
+        code,
+        message,
+        example,
+        detail,
+    ));
+    ExitCode::from(exit)
+}
+
+fn status_json(store: &Path) -> ExitCode {
+    answer_json("status", store)
+}
+
+/// `soc run --json`: the run, then the same answer as `soc status --json`, read back from the
+/// store it committed, so the two cannot differ.
+fn run_json(args: &Args) -> ExitCode {
+    match run(args) {
+        Ok(_) => answer_json("run", &args.store),
+        Err(e) => match e.downcast_ref::<Stop>() {
+            Some(stop) => fail_json("run", stop),
+            None => {
+                print_json(&status::failure(
+                    Some("run"),
+                    "run_failed",
+                    "the run failed and nothing it read was committed to the store",
+                    "soc run --json",
+                    &e.to_string(),
+                ));
+                ExitCode::FAILURE
+            }
+        },
+    }
+}
+
+/// `soc status`: a short summary of what `soc status --json` gives, for a person.
+fn status_text(store: &Path) -> Result<(), Stop> {
+    let (running, state) = read_all(store)?;
+    say(&format!("Store: {}.", store.display()));
+    let Some(st) = state else {
+        say("There is no store yet; `soc run` makes it.");
+        return Ok(());
+    };
+    match &st.last {
+        None => say("No run has started."),
+        Some(l) => match l.finished_at {
+            Some(at) => say(&format!(
+                "Last run: started {}, finished {}.",
+                view::utc(l.started_at),
+                view::utc(at)
+            )),
+            None => say(&format!(
+                "The latest run started {} and has not finished: {}.",
+                view::utc(l.started_at),
+                if running {
+                    "it is running"
+                } else {
+                    "it died, and nothing it read is in the store"
+                }
+            )),
+        },
+    }
+    let Some(s) = &st.summary else {
+        say("No run has finished yet, so nothing is counted.");
+        return Ok(());
+    };
+    if st.last.as_ref().is_some_and(|l| l.id != s.run.id) {
+        say(&format!(
+            "The numbers below are what the run that finished {} left.",
+            view::utc(s.run.finished_at.unwrap_or(s.run.started_at))
+        ));
+    }
+    say(&summary_sentences(s));
+    let rows: Vec<&view::Latest> = st.coverage.iter().collect();
+    let class_of = |r: &&view::Latest| status::class(&r.completeness, r.reason.as_deref());
+    let n = |c: &str| rows.iter().filter(|r| class_of(r) == Some(c)).count();
+    say(&format!(
+        "Coverage at the latest readings: {} of {} not plainly full: {} failed, {} partial, {} with nothing to read.",
+        grouped((n("failed") + n("partial") + n("read_nothing")) as i64),
+        grouped(rows.len() as i64),
+        grouped(n("failed") as i64),
+        grouped(n("partial") as i64),
+        grouped(n("read_nothing") as i64)
+    ));
+    let problems: Vec<Vec<String>> = rows
+        .iter()
+        .filter(|r| matches!(class_of(r), Some("failed" | "partial")))
+        .take(STATUS_ROWS)
+        .map(|r| {
+            vec![
+                r.reader.clone(),
+                r.scope.clone(),
+                r.kind.clone(),
+                r.completeness.clone(),
+                r.reason.clone().unwrap_or_default(),
+            ]
+        })
+        .collect();
+    if !problems.is_empty() {
+        print_table(&["Reader", "Where", "What", "Read", "Why"], &problems);
+    }
+    let changes: Vec<Vec<String>> = s
+        .changes
+        .iter()
+        .rev()
+        .take(STATUS_ROWS)
+        .map(|c| {
+            vec![
+                view::utc(c.at),
+                c.change.to_string(),
+                c.kind.clone(),
+                c.path.clone(),
+            ]
+        })
+        .collect();
+    say(&format!(
+        "Latest changes in watched places, newest first, {} of {}:",
+        changes.len(),
+        s.changes.len()
+    ));
+    print_table(&["When", "Change", "Kind", "Path"], &changes);
+    for what in status::CANNOT_JUDGE {
+        say(&format!("Cannot judge: {what}."));
+    }
+    say("All of it, with every list, is in `soc status --json`.");
+    Ok(())
+}
+
+/// The most rows of a table `soc status` prints.
+const STATUS_ROWS: usize = 10;
 
 /// Prints one line. Text from a source never reaches the terminal raw: it could reorder or
 /// hide the text around it.
@@ -967,11 +1257,12 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     // Raw input is kept next to the store so that the store can be rebuilt from it.
     let home = home(&args.store);
     std::fs::create_dir_all(&home)?;
-    let mut conn = store::open(&args.store)?;
+    // Held until the run returns: a second run stops here and writes nothing.
+    let _lock = store::lock_run(&home)?.ok_or(Stop::RunInProgress)?;
+    let mut conn = store::open(&args.store).map_err(|e| Stop::Store(e.to_string()))?;
     store::journal_note(&conn, at, &run_id, "run_started", "")?;
 
     let tx = conn.transaction()?;
-    let first_run = !store::any_run_finished(&tx)?;
     let machine = format!("machine:{}", args.machine);
     store::put_entity(&tx, &machine)?;
     let mut run = Run {
@@ -1000,15 +1291,22 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     let watched = read_watched(&mut run, args, &found)?;
     read_traces(&mut run, args)?;
     resolve(&mut run)?;
-    let catalogue = read_threats(&run, args)?;
+    read_threats(&run, args)?;
 
-    let totals = store::totals(&tx, &run_id)?;
-    let counts = server_counts(&tx, &machine, &sweep::skip_list(&home.join("sweep")))?;
-    let line = report(&run, &totals, &counts, first_run, &catalogue, &watched);
+    // What the line counts is read back from what the run wrote, by the code `soc status`
+    // reads it with after the run.
+    let mark = status::RunMark {
+        id: run_id.clone(),
+        started_at: at,
+        finished_at: None,
+    };
+    let summary = status::summary(&tx, mark, &home)?;
+    let line = report(run.readers, &run.notes, &summary);
     store::journal_note(&tx, at, &run_id, "report", &line)?;
-    store::journal_note(&tx, at, &run_id, "run_finished", "")?;
+    // The time the run finished, so that its start and its end are both in the journal.
+    store::journal_note(&tx, now_secs(), &run_id, "run_finished", "")?;
     tx.commit()?;
-    Ok((line, watched.rows))
+    Ok((line, watched))
 }
 
 /// One run in progress: where it writes and what it has seen so far.
@@ -1613,22 +1911,6 @@ type Rows = Vec<Vec<String>>;
 /// One event of the watched places reader: kind, subject, predicate and old value.
 type Change = (&'static str, String, String, Option<String>);
 
-/// What the watched places reader tells the report.
-#[derive(Default)]
-struct Watched {
-    /// No reading of watched places was ever made: this one is the baseline.
-    first: bool,
-    /// Files watched after the run.
-    files: i64,
-    new: usize,
-    changed: usize,
-    gone: usize,
-    /// Readings that were not full, in the program's own words.
-    not_full: Vec<String>,
-    /// Change, kind, path and why, for the run's output. Paths are text from the machine.
-    rows: Rows,
-}
-
 /// One reading of which entries a kind of place holds in one scope.
 struct Placed {
     scope: String,
@@ -1642,17 +1924,16 @@ struct Placed {
 /// Reads the watched places of this machine and the hooks of every checkout the run holds.
 /// Which entries a place holds is one reading per kind and scope; the content of each file is
 /// a reading of its own, scoped to the file, so a file that cannot be read changes nothing
-/// about it and nothing else.
+/// about it and nothing else. Returns the rows the run prints after its line: change, kind,
+/// path and why, where paths are text from the machine. What the line counts is read back
+/// from the store by `status::summary`.
 fn read_watched(
     run: &mut Run,
     args: &Args,
     checkouts: &[checkouts::Checkout],
-) -> Result<Watched, Box<dyn Error>> {
+) -> Result<Rows, Box<dyn Error>> {
     let (run_id, machine) = (run.run_id.to_string(), run.machine.to_string());
-    let mut out = Watched {
-        first: !store::read_any(run.tx, watched::READER)?,
-        ..Watched::default()
-    };
+    let mut rows: Rows = Vec::new();
     let roots = watched::Roots {
         home: &args.home,
         system: &args.system_root,
@@ -1713,8 +1994,6 @@ fn read_watched(
     }
     let raw_file = run.keep_raw(watched::READER, watched::RAW, raw.as_bytes())?;
 
-    let mut hooks_not_full: BTreeMap<&str, usize> = BTreeMap::new();
-    let mut unread = 0;
     for (p, mine) in placed.iter().zip(&lines) {
         let reading = Reading {
             reader: watched::READER,
@@ -1759,7 +2038,7 @@ fn read_watched(
         {
             match (kind, predicate.as_str()) {
                 ("added", "watched_as") => {
-                    out.rows.push(vec![
+                    rows.push(vec![
                         "new".to_string(),
                         p.watched_as.to_string(),
                         path_of(&subject),
@@ -1767,7 +2046,7 @@ fn read_watched(
                     ]);
                     new.insert(subject);
                 }
-                ("removed", "watched_as") => out.rows.push(vec![
+                ("removed", "watched_as") => rows.push(vec![
                     "gone".to_string(),
                     old.unwrap_or_default(),
                     path_of(&subject),
@@ -1776,17 +2055,8 @@ fn read_watched(
                 _ => {}
             }
         }
-        out.new += new.len();
-        if completeness != "full" {
-            if p.kind == watched::HOOK_KIND {
-                *hooks_not_full.entry(completeness).or_default() += 1;
-            } else {
-                out.not_full
-                    .push(format!("{} ({})", p.kind, not_full_words(completeness)));
-            }
-        }
         for (path, why) in &p.look.failed {
-            out.rows.push(vec![
+            rows.push(vec![
                 "not read".to_string(),
                 p.watched_as.to_string(),
                 path.clone(),
@@ -1829,7 +2099,7 @@ fn read_watched(
                 && store::only_failed_before(run.tx, watched::READER, &id, watched::CONTENT)?;
             let events = apply_watched(run, &reading, completeness, reason, &statements)?;
             if first_read {
-                out.rows.push(vec![
+                rows.push(vec![
                     "first read".to_string(),
                     e.watched_as.to_string(),
                     e.path.clone(),
@@ -1837,8 +2107,7 @@ fn read_watched(
                 ]);
             }
             if !events.is_empty() && !new.contains(&id) {
-                out.changed += 1;
-                out.rows.push(vec![
+                rows.push(vec![
                     "changed".to_string(),
                     e.watched_as.to_string(),
                     e.path.clone(),
@@ -1846,8 +2115,7 @@ fn read_watched(
                 ]);
             }
             if let Some(why) = reason {
-                unread += 1;
-                out.rows.push(vec![
+                rows.push(vec![
                     "not read".to_string(),
                     e.watched_as.to_string(),
                     e.path.clone(),
@@ -1856,33 +2124,13 @@ fn read_watched(
             }
         }
     }
-    out.gone = out.rows.iter().filter(|r| r[0] == "gone").count();
-    for (completeness, n) in hooks_not_full {
-        out.not_full.push(format!(
-            "hooks in {} ({})",
-            things(n as i64, "checkout", "checkouts"),
-            not_full_words(completeness)
-        ));
-    }
-    if unread > 0 {
-        out.not_full.push(format!(
-            "the content of {}",
-            things(unread, "file", "files")
-        ));
-    }
     if placed
         .iter()
         .any(|p| !p.look.entries.is_empty() || !p.look.failed.is_empty() || p.git_file)
     {
         run.readers += 1;
     }
-    out.files = run.tx.query_row(
-        "SELECT COUNT(DISTINCT subject) FROM assertion
-         WHERE layer = 'live' AND reader = ?1 AND predicate = 'watched_as'",
-        [watched::READER],
-        |r| r.get(0),
-    )?;
-    Ok(out)
+    Ok(rows)
 }
 
 fn not_full_words(completeness: &str) -> &'static str {
@@ -1924,7 +2172,28 @@ fn apply_watched(
 }
 
 /// One sentence about watched places for the report line. Paths are never in it.
-fn watched_sentence(w: &Watched) -> String {
+fn watched_sentence(w: Option<&status::Watched>) -> String {
+    let Some(w) = w else {
+        return "Watched places: never read.".to_string();
+    };
+    let mut not_full: Vec<String> = w
+        .kinds_not_full
+        .iter()
+        .map(|(kind, completeness)| format!("{kind} ({})", not_full_words(completeness)))
+        .collect();
+    for (completeness, n) in &w.hooks_not_full {
+        not_full.push(format!(
+            "hooks in {} ({})",
+            things(*n as i64, "checkout", "checkouts"),
+            not_full_words(completeness)
+        ));
+    }
+    if w.unread > 0 {
+        not_full.push(format!(
+            "the content of {}",
+            things(w.unread as i64, "file", "files")
+        ));
+    }
     let files = things(w.files, "file", "files");
     let mut s = if w.first {
         format!("Watched places: {files}, first reading, kept as the baseline")
@@ -1934,34 +2203,16 @@ fn watched_sentence(w: &Watched) -> String {
             w.new, w.changed, w.gone
         )
     };
-    if !w.not_full.is_empty() {
-        s.push_str(&format!("; not read in full: {}", w.not_full.join(", ")));
+    if !not_full.is_empty() {
+        s.push_str(&format!("; not read in full: {}", not_full.join(", ")));
     }
     s.push('.');
     s
 }
 
-/// What this run learned from the threat catalogue.
-enum Catalogue {
-    /// Read whole: how many entries it holds, how many are new and how many left it.
-    Read {
-        total: usize,
-        new: usize,
-        gone: usize,
-        first: bool,
-    },
-    /// Not changed since the last reading.
-    Unchanged { total: usize },
-    /// Not read, and when it was last read, with how many entries it held then.
-    Failed {
-        reason: String,
-        last: Option<(i64, usize)>,
-    },
-}
-
 /// Reads the threat catalogue and brings the threat list in line with it. A catalogue that
 /// could not be fetched or parsed changes nothing: no threat is added or marked gone.
-fn read_threats(run: &Run, args: &Args) -> Result<Catalogue, Box<dyn Error>> {
+fn read_threats(run: &Run, args: &Args) -> Result<(), Box<dyn Error>> {
     let (tx, run_id, at) = (run.tx, run.run_id, run.at);
     let last = threats::last_good(tx)?;
     let fetched = match &args.threats_input {
@@ -1971,18 +2222,16 @@ fn read_threats(run: &Run, args: &Args) -> Result<Catalogue, Box<dyn Error>> {
             threats::fetch(curl, last.as_ref().and_then(|(_, r)| r.etag.as_deref()))
         }
     };
-    let failed = |reason: String, sha256, raw_path| -> Result<Catalogue, Box<dyn Error>> {
+    let failed = |reason: String, sha256, raw_path| -> Result<(), Box<dyn Error>> {
         let reading = threats::Reading {
             outcome: "failed",
-            reason: Some(reason.clone()),
+            reason: Some(reason),
             sha256,
             raw_path,
             ..threats::Reading::default()
         };
         threats::put_reading(tx, run_id, at, &reading)?;
-        let held = threats::held(tx)?;
-        let last = last.as_ref().map(|(at, _)| (*at, held));
-        Ok(Catalogue::Failed { reason, last })
+        Ok(())
     };
     match fetched {
         threats::Fetched::Failed(reason) => failed(reason, None, None),
@@ -1995,7 +2244,7 @@ fn read_threats(run: &Run, args: &Args) -> Result<Catalogue, Box<dyn Error>> {
                 ..before
             };
             threats::put_reading(tx, run_id, at, &reading)?;
-            Ok(Catalogue::Unchanged { total })
+            Ok(())
         }
         threats::Fetched::Body { bytes, etag } => {
             let raw_path = run.keep_raw(threats::SOURCE, threats::RAW, &bytes)?;
@@ -2004,7 +2253,7 @@ fn read_threats(run: &Run, args: &Args) -> Result<Catalogue, Box<dyn Error>> {
                 Ok(entries) => entries,
                 Err(reason) => return failed(reason, Some(sha256), Some(raw_path)),
             };
-            let change = threats::record(tx, run_id, at, &entries)?;
+            threats::record(tx, run_id, at, &entries)?;
             let reading = threats::Reading {
                 outcome: "read",
                 reason: None,
@@ -2014,12 +2263,7 @@ fn read_threats(run: &Run, args: &Args) -> Result<Catalogue, Box<dyn Error>> {
                 entries: Some(entries.len()),
             };
             threats::put_reading(tx, run_id, at, &reading)?;
-            Ok(Catalogue::Read {
-                total: entries.len(),
-                new: change.new,
-                gone: change.gone,
-                first: change.first,
-            })
+            Ok(())
         }
     }
 }
@@ -2030,7 +2274,11 @@ const NOT_JUDGED: &str =
     "not matched against this estate yet, so whether any affects it is unknown";
 
 /// One sentence about the threat catalogue for the report line.
-fn catalogue_sentence(c: &Catalogue) -> String {
+fn catalogue_sentence(c: Option<&status::Catalogue>) -> String {
+    use status::Catalogue;
+    let Some(c) = c else {
+        return "CISA catalogue: never read; the program knows no exploited vulnerability yet, so whether any affects this estate is unknown.".to_string();
+    };
     let held = |n: usize| {
         things(
             n as i64,
@@ -2058,62 +2306,73 @@ fn catalogue_sentence(c: &Catalogue) -> String {
             }
             format!("{s}; {NOT_JUDGED}.")
         }
-        Catalogue::Unchanged { total } => format!(
+        Catalogue::Unchanged { total, .. } => format!(
             "CISA catalogue: {}, unchanged, 0 new since the last reading; {NOT_JUDGED}.",
             held(*total)
         ),
         Catalogue::Failed {
             reason,
             last: Some((at, total)),
+            ..
         } => format!(
             "CISA catalogue not read: {reason}; what is new is unknown, and the {} it held at its last reading, {}, are {NOT_JUDGED}.",
             held(*total),
             view::utc(*at)
         ),
-        Catalogue::Failed { reason, last: None } => format!(
+        Catalogue::Failed {
+            reason, last: None, ..
+        } => format!(
             "CISA catalogue not read: {reason}; the program knows no exploited vulnerability yet, so whether any affects this estate is unknown."
         ),
     }
 }
 
-/// The one line. It never says "no changes" unless every reading this run was full and
-/// every scope read before was read again.
-fn report(
-    run: &Run,
-    t: &store::Totals,
-    s: &ServerCounts,
-    first_run: bool,
-    catalogue: &Catalogue,
-    watched: &Watched,
-) -> String {
+/// The one line: how many readers had input, what the run left, and its notes. It never says
+/// "no changes" unless every reading this run was full and every scope read before was read
+/// again.
+fn report(readers: usize, notes: &[String], s: &status::Summary) -> String {
     let mut line = format!(
-        "{}, {}, {}, {}.",
-        things(run.readers as i64, "reader", "readers"),
+        "{}, {}",
+        things(readers as i64, "reader", "readers"),
+        summary_sentences(s)
+    );
+    for note in notes {
+        line.push(' ');
+        line.push_str(note);
+    }
+    line
+}
+
+/// What a finished run left, in the words of the report line; `soc status` says the same.
+fn summary_sentences(s: &status::Summary) -> String {
+    let (t, servers) = (&s.totals, &s.servers);
+    let mut line = format!(
+        "{}, {}, {}.",
         things(t.machines, "machine", "machines"),
         things(t.checkouts, "checkout", "checkouts"),
         things(t.components, "component", "components"),
     );
-    if s.known == 0 {
+    if servers.known == 0 {
         line.push_str(" No servers known");
     } else {
         line.push_str(&format!(
             " {} known, {} offered for the sweep, {} read",
-            things(s.known as i64, "server", "servers"),
-            grouped(s.offered as i64),
-            grouped(s.read as i64)
+            things(servers.known as i64, "server", "servers"),
+            grouped(servers.offered as i64),
+            grouped(servers.read as i64)
         ));
     }
-    if s.set_aside > 0 {
+    if servers.set_aside > 0 {
         line.push_str(&format!(
             "; {} retired or disowned by the owner",
-            grouped(s.set_aside as i64)
+            grouped(servers.set_aside as i64)
         ));
     }
     line.push('.');
-    if !s.seen.is_empty() {
+    if !servers.seen.is_empty() {
         line.push_str(&format!(
             " Seen alive after the owner's word: {}.",
-            s.seen.join(", ")
+            servers.seen.join(", ")
         ));
     }
     let mut gaps = Vec::new();
@@ -2153,47 +2412,27 @@ fn report(
         line.push('.');
     }
     line.push(' ');
-    line.push_str(&if first_run {
+    line.push_str(&if s.first_run {
         "First run.".to_string()
     } else {
-        since_last_run(&run.events, t)
+        since_last_run(&s.since, t)
     });
     line.push(' ');
-    line.push_str(&watched_sentence(watched));
+    line.push_str(&watched_sentence(s.watched.as_ref()));
     line.push(' ');
-    line.push_str(&catalogue_sentence(catalogue));
-    for note in &run.notes {
-        line.push(' ');
-        line.push_str(note);
-    }
+    line.push_str(&catalogue_sentence(s.catalogue.as_ref()));
     line
 }
 
-/// Counts things, not assertions: a new component is one addition however many
-/// assertions it brings.
-fn since_last_run(events: &[Event], t: &store::Totals) -> String {
-    let count = |kind: &str| {
-        events
-            .iter()
-            .filter(|e| e.kind == kind)
-            .map(|e| e.subject.as_str())
-            .collect::<BTreeSet<_>>()
-            .len()
-    };
-    let (added, changed, removed) = (count("added"), count("changed"), count("removed"));
+fn since_last_run(since: &status::Since, t: &store::Totals) -> String {
+    let (added, changed, removed) = (since.added, since.changed, since.removed);
     let counts = format!(
         "+{} added, {} changed, {} removed",
         grouped(added as i64),
         grouped(changed as i64),
         grouped(removed as i64)
     );
-    let mut unknown = Vec::new();
-    if t.partial > 0 {
-        unknown.push("removals unknown where a reading was partial");
-    }
-    if t.none > 0 || t.not_repeated > 0 {
-        unknown.push("changes unknown where nothing was read");
-    }
+    let unknown = status::unknown(t);
     if !unknown.is_empty() {
         return format!("Since last run: {counts}; {}.", unknown.join(", "));
     }

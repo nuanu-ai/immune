@@ -66,8 +66,25 @@ pub fn shown(s: &str) -> String {
     out
 }
 
-/// UTC seconds as `YYYY-MM-DD HH:MM UTC`, from the civil-from-days algorithm.
+/// UTC seconds as `YYYY-MM-DD HH:MM UTC`.
 pub fn utc(secs: i64) -> String {
+    let (date, rest) = civil(secs);
+    format!("{date} {:02}:{:02} UTC", rest / 3600, rest % 3600 / 60)
+}
+
+/// UTC seconds as ISO 8601 in UTC, `YYYY-MM-DDTHH:MM:SSZ`, for the machine-readable form.
+pub fn iso(secs: i64) -> String {
+    let (date, rest) = civil(secs);
+    format!(
+        "{date}T{:02}:{:02}:{:02}Z",
+        rest / 3600,
+        rest % 3600 / 60,
+        rest % 60
+    )
+}
+
+/// The date `YYYY-MM-DD` and the seconds into that day, from the civil-from-days algorithm.
+fn civil(secs: i64) -> (String, i64) {
     let (days, rest) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
@@ -78,11 +95,7 @@ pub fn utc(secs: i64) -> String {
     let day = doy - (153 * mp + 2) / 5 + 1;
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + i64::from(month <= 2);
-    format!(
-        "{year:04}-{month:02}-{day:02} {:02}:{:02} UTC",
-        rest / 3600,
-        rest % 3600 / 60
-    )
+    (format!("{year:04}-{month:02}-{day:02}"), rest)
 }
 
 fn utc_or(secs: Option<i64>, missing: &str) -> String {
@@ -217,20 +230,20 @@ fn unfinished_latest_run(conn: &Connection) -> rusqlite::Result<Option<i64>> {
 }
 
 /// The latest coverage record of one reader, scope and kind.
-struct Latest {
-    reader: String,
-    scope: String,
-    kind: String,
-    completeness: String,
-    reason: Option<String>,
+pub struct Latest {
+    pub reader: String,
+    pub scope: String,
+    pub kind: String,
+    pub completeness: String,
+    pub reason: Option<String>,
     at: i64,
     last_full: Option<i64>,
 }
 
 /// The latest record for each reader, scope and kind, and its latest full one.
 /// Readings that are not full come first. Readings inside a container or checkout that
-/// is gone no longer count and are left out.
-fn latest_coverage(conn: &Connection) -> rusqlite::Result<Vec<Latest>> {
+/// is gone no longer count and are left out. `soc status` counts coverage from this too.
+pub fn latest_coverage(conn: &Connection) -> rusqlite::Result<Vec<Latest>> {
     conn.prepare(
         "SELECT c.reader, c.scope, c.kind, c.completeness, c.reason, c.observed_at,
                 (SELECT MAX(f.observed_at) FROM coverage f

@@ -4,7 +4,9 @@
 use crate::resolver;
 use rusqlite::{Connection, OpenFlags, Transaction, params};
 use std::collections::BTreeSet;
+use std::fs::{File, TryLockError};
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 pub const FORMAT_VERSION: &str = "4";
 
@@ -253,8 +255,19 @@ type Res<T> = Result<T, Box<dyn std::error::Error>>;
 
 /// Opens the store, creating it in an empty file. A store of another format is refused
 /// and left as it is: old stores are not converted.
+///
+/// A run writes in one transaction that lasts the whole run. Readers such as `soc status`
+/// must be able to read the last committed state all that time, so the run never takes the
+/// exclusive lock before it commits: a cache that grew past its size would otherwise be
+/// spilled to the file, which takes the exclusive lock in the middle of the transaction and
+/// shuts every reader out until the commit. The rollback journal is kept, rather than
+/// write-ahead logging, because a reader in a folder it cannot write must open the store
+/// without creating files next to it. Waiting on a lock is rusqlite's busy timeout of five
+/// seconds on every connection: a reader waits out the commit, and the commit waits out a
+/// reader.
 pub fn open(path: &Path) -> Res<Connection> {
     let mut conn = Connection::open(path)?;
+    conn.pragma_update(None, "cache_spill", false)?;
     conn.pragma_update(None, "foreign_keys", true)?;
     let tables: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_master", [], |r| r.get(0))?;
     if tables == 0 {
@@ -352,6 +365,46 @@ fn check_format(conn: &Connection, path: &Path) -> Res<()> {
     Ok(())
 }
 
+/// How long a run waits for the run lock before it says another run is in progress. A
+/// `soc status` holds the lock shared for a moment only; another run holds it for minutes.
+const LOCK_WAIT: Duration = Duration::from_secs(2);
+
+/// Takes the run lock on the store's folder, for as long as the handle returned stays open,
+/// or `None` when another run holds it. The lock is flock(2) on the folder: on macOS flock
+/// and the record locks SQLite takes on the database file are one mechanism, so the file
+/// itself cannot carry it, and a folder needs no file of its own. It is the kernel's lock:
+/// it goes when the process ends, however it ends, so a run that died never looks like one
+/// in progress. Two stores in one folder share it.
+pub fn lock_run(folder: &Path) -> std::io::Result<Option<File>> {
+    let handle = File::open(folder)?;
+    let start = Instant::now();
+    loop {
+        match handle.try_lock() {
+            Ok(()) => return Ok(Some(handle)),
+            Err(TryLockError::WouldBlock) if start.elapsed() < LOCK_WAIT => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(TryLockError::WouldBlock) => return Ok(None),
+            Err(TryLockError::Error(e)) => return Err(e),
+        }
+    }
+}
+
+/// Whether a run holds the run lock on the store's folder now. It opens the folder only to
+/// read and holds the lock shared for a moment, which a run starting meanwhile waits out.
+pub fn run_in_progress(folder: &Path) -> std::io::Result<bool> {
+    let handle = match File::open(folder) {
+        Ok(handle) => handle,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    match handle.try_lock_shared() {
+        Ok(()) => Ok(false),
+        Err(TryLockError::WouldBlock) => Ok(true),
+        Err(TryLockError::Error(e)) => Err(e),
+    }
+}
+
 /// The entity type is the part of the id before the first colon.
 pub fn put_entity(tx: &Transaction, id: &str) -> rusqlite::Result<()> {
     let entity_type = id.split(':').next().unwrap_or(id);
@@ -421,15 +474,6 @@ pub fn put_coverage(
     Ok(())
 }
 
-/// Whether any run finished before this one.
-pub fn any_run_finished(tx: &Transaction) -> rusqlite::Result<bool> {
-    tx.query_row(
-        "SELECT EXISTS (SELECT 1 FROM journal WHERE entry = 'run_finished')",
-        [],
-        |row| row.get(0),
-    )
-}
-
 /// What the report line says about the store after a run.
 pub struct Totals {
     /// Machines, each counted once however many names it has.
@@ -445,7 +489,7 @@ pub struct Totals {
     pub not_repeated: i64,
 }
 
-pub fn totals(tx: &Transaction, run_id: &str) -> rusqlite::Result<Totals> {
+pub fn totals(tx: &Connection, run_id: &str) -> rusqlite::Result<Totals> {
     let all = |sql: &str| tx.query_row(sql, [], |row| row.get::<_, i64>(0));
     let one = |sql: &str| tx.query_row(sql, [run_id], |row| row.get::<_, i64>(0));
     Ok(Totals {

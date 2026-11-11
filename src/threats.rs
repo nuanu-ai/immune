@@ -268,23 +268,11 @@ pub fn held(conn: &Connection) -> rusqlite::Result<usize> {
     .map(|n| n as usize)
 }
 
-/// What a reading changed in the threat list.
-pub struct Change {
-    pub new: usize,
-    pub gone: usize,
-    /// The first reading: a baseline, with no event per entry.
-    pub first: bool,
-}
-
 /// Brings the threat list in line with a reading of the whole catalogue. A threat is new
 /// when its id is in the reading and not in the list, which includes one that left and came
-/// back. A threat that is no longer in the catalogue is kept with the time it left.
-pub fn record(
-    tx: &Transaction,
-    run_id: &str,
-    at: i64,
-    entries: &[Entry],
-) -> rusqlite::Result<Change> {
+/// back. A threat that is no longer in the catalogue is kept with the time it left. What it
+/// changed is in the journal, where `status::catalogue` counts it.
+pub fn record(tx: &Transaction, run_id: &str, at: i64, entries: &[Entry]) -> rusqlite::Result<()> {
     let first = !tx.query_row(
         "SELECT EXISTS (SELECT 1 FROM threat WHERE source = ?1)",
         [SOURCE],
@@ -294,11 +282,6 @@ pub fn record(
         .prepare("SELECT id, name FROM threat WHERE source = ?1 AND gone_at IS NULL")?
         .query_map([SOURCE], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
-    let mut change = Change {
-        new: 0,
-        gone: 0,
-        first,
-    };
     for e in entries {
         tx.execute(
             "INSERT INTO threat (source, id, vendor, product, name, date_added, first_run,
@@ -320,7 +303,6 @@ pub fn record(
         )?;
         if !first && !present.contains_key(&e.id) {
             store::journal_threat(tx, at, run_id, "threat_added", SOURCE, Some(&e.id), &e.name)?;
-            change.new += 1;
         }
     }
     let ids: BTreeSet<&str> = entries.iter().map(|e| e.id.as_str()).collect();
@@ -330,13 +312,12 @@ pub fn record(
             params![at, run_id, SOURCE, id],
         )?;
         store::journal_threat(tx, at, run_id, "threat_gone", SOURCE, Some(id), name)?;
-        change.gone += 1;
     }
     if first {
         let count = entries.len().to_string();
         store::journal_threat(tx, at, run_id, "threats_first_read", SOURCE, None, &count)?;
     }
-    Ok(change)
+    Ok(())
 }
 
 #[cfg(test)]
