@@ -42,6 +42,83 @@ pub const WATCHED: [(Count, &str, bool); 9] = [
 /// What a watcher samples, in the same words as the other kinds.
 pub const SAMPLED: &str = "running programs and their connections";
 
+/// The rules that tell the owner about a change in a kind of watched thing, by its words as
+/// `WATCHED` and `SAMPLED` give them. Derived from the rules themselves: a rule speaks about a
+/// kind when it fires on what a run reports for a change of that kind. None for words that
+/// name no kind.
+pub fn rules_about(what: &str) -> Vec<findings::Rule> {
+    let places: Vec<&str> = if what == SAMPLED {
+        // What a sample of running programs reports for a rule about the programs themselves;
+        // a match of an indicator is not about one kind and is told apart.
+        vec![crate::processes::DETACHED_INLINE]
+    } else {
+        match WATCHED.iter().find(|(_, w, _)| *w == what) {
+            Some((Count::Files(as_), _, _)) => vec![*as_],
+            Some((Count::Installed(kind), _, _)) => integrity::places(kind),
+            None => Vec::new(),
+        }
+    };
+    findings::rules()
+        .into_iter()
+        .filter(|r| {
+            places.iter().any(|p| {
+                ["new", "changed", "gone"].into_iter().any(|change| {
+                    (r.fires)(&findings::Observed {
+                        change,
+                        place: p.to_string(),
+                        file: String::new(),
+                    })
+                })
+            })
+        })
+        .collect()
+}
+
+/// The kinds of watched thing, by their words, that the latest readings of this Mac looked
+/// for and found none of, so the page can still say what a change there would tell. A kind
+/// that was not read, or whose reading failed, is not one: what is not covered says why.
+pub fn none_here(
+    conn: &Connection,
+    latest: &[Latest],
+    m: &ThisMac,
+) -> rusqlite::Result<Vec<&'static str>> {
+    let Some(this) = this_machine(conn)? else {
+        return Ok(Vec::new());
+    };
+    let in_checkout = format!("checkout:{this}/");
+    let mut out = Vec::new();
+    for (count, what, _) in WATCHED {
+        if m.watched.iter().any(|w| w.0 == what) {
+            continue;
+        }
+        let (reader, kind) = match count {
+            Count::Files(as_) if as_ == autorun::RUNS_ON_OPEN => (watched::READER, autorun::KIND),
+            Count::Files(as_) => match watched::kinds().into_iter().find(|(w, _)| *w == as_) {
+                Some((_, kind)) => (watched::READER, kind),
+                None => continue,
+            },
+            Count::Installed(kind) => (integrity::READER, kind),
+        };
+        // The reader looked at this Mac at its last reading: for files, any place of its; for
+        // installed things, this very kind.
+        let ran = latest.iter().any(|r| {
+            r.reader == reader
+                && r.scope == this
+                && (matches!(count, Count::Files(_)) || r.kind == kind)
+        });
+        let failed_here = latest.iter().any(|r| {
+            r.reader == reader
+                && r.kind == kind
+                && (r.scope == this || r.scope.starts_with(&in_checkout))
+                && failed(r)
+        });
+        if ran && !failed_here {
+            out.push(what);
+        }
+    }
+    Ok(out)
+}
+
 /// How a kind of watched thing is counted: live files of a kind of watched place, or live
 /// installed things of a kind of the integrity reader.
 #[derive(Clone, Copy)]

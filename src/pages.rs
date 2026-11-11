@@ -173,36 +173,9 @@ pub fn summary(
     }
     out.push_str("</section>\n");
 
-    out.push_str("<section id=\"watched-here\">\n<h2>What is watched on this Mac</h2>\n");
-    if m.watched.is_empty() {
-        out.push_str("<p class=\"muted\">Nothing has been read on this Mac yet.</p>\n");
-    }
-    for (how, head) in [
-        (
-            "live",
-            "Watched all the time: a change shows within seconds",
-        ),
-        (
-            "hourly",
-            "Checked every hour: a change shows at the next check",
-        ),
-        (
-            "sampled",
-            "Looked at often while a watcher runs: what is running right now",
-        ),
-    ] {
-        let of: Vec<&(&str, i64, &str)> = m.watched.iter().filter(|w| w.2 == how).collect();
-        if of.is_empty() {
-            continue;
-        }
-        writeln!(out, "<h3>{head}</h3>\n<ul class=\"counts\">")?;
-        for (what, n, _) in of {
-            let text = format!("{}: {}", capital(what), grouped(*n));
-            writeln!(out, "<li>{}</li>", link(THIS_MAC, &anchor(what), &text))?;
-        }
-        out.push_str("</ul>\n");
-    }
-    out.push_str("</section>\n");
+    let list = indicator_list(conn)?;
+    let none = covered::none_here(conn, &view::latest_coverage(conn)?, m)?;
+    watched_here(&mut out, m, &none, list)?;
 
     // What the owner can fix, then the limits of this version: each in full, never counted
     // as something to look at.
@@ -263,6 +236,177 @@ pub fn summary(
     )?;
     out.push_str(FOOT);
     Ok(out)
+}
+
+/// What "watched" means, first under the heading of what is watched.
+const WATCHED_MEANS: &str = "Watched means this: the program remembers what each of these things looked like the last time it checked, and tells you when one of them changes in a way listed here. It only tells you. It never blocks, stops or removes anything.";
+/// Where what is told shows, and what also notifies.
+const TOLD_WHERE: &str = "Everything listed here shows in the panel. What is marked 'Sends a notification' also sends one at once.";
+/// A kind of thing that is listed as watched and that no rule speaks about.
+const KEPT_AS_LIST: &str = "Kept as a list. Nothing tells you about a change here in this version.";
+/// The mark of a rule whose findings notify at once.
+const NOTIFIES: &str = "Sends a notification";
+/// The rule about a match of a list of indicators, which is about no one kind.
+const INDICATOR_RULE: &str = "indicator.match";
+/// The rule about a file read for the first time, which is about every watched file.
+const FIRST_READ_RULE: &str = "watched.first-read";
+
+/// Whether a list of indicators was read at the last full check: `Some(true)` read in full,
+/// `Some(false)` given and not read, `None` not given.
+fn indicator_list(conn: &Connection) -> rusqlite::Result<Option<bool>> {
+    let Some(run) = crate::status::latest_finished(conn)? else {
+        return Ok(None);
+    };
+    conn.query_row(
+        "SELECT MAX(completeness = 'full') FROM coverage
+         WHERE run_id = ?1 AND reader = ?2 AND kind = ?3",
+        params![
+            run.id,
+            crate::indicators::READER,
+            crate::indicators::LIST_KIND
+        ],
+        |r| r.get::<_, Option<bool>>(0),
+    )
+}
+
+/// What the owner is told about: each rule's title and what it means, marked where its
+/// findings notify at once; for no rule, that the thing is only kept as a list. The summary
+/// and the page of what is watched say it the same way.
+fn told(out: &mut String, rules: &[findings::Rule]) -> Out {
+    if rules.is_empty() {
+        writeln!(out, "<p class=\"muted\">{}</p>", esc(KEPT_AS_LIST))?;
+        return Ok(());
+    }
+    out.push_str("<ul class=\"rules\">\n");
+    for r in rules {
+        let mark = if findings::urgent(r.severity, Some(r.confidence)) {
+            format!(" <span class=\"badge notify\">{NOTIFIES}</span>")
+        } else {
+            String::new()
+        };
+        writeln!(
+            out,
+            "<li>{}{mark}<br><span class=\"muted\">{}</span></li>",
+            esc(r.words.title),
+            esc(r.words.meaning)
+        )?;
+    }
+    out.push_str("</ul>\n");
+    Ok(())
+}
+
+/// The rules with one id, as `told` takes them.
+fn rule_with(id: &str) -> Vec<findings::Rule> {
+    findings::rules()
+        .into_iter()
+        .filter(|r| r.id == id)
+        .collect()
+}
+
+/// What a kind of watched thing is shown with: its count, none found where it was looked
+/// for, or running programs when no sample of them was taken.
+enum Shown {
+    Count(i64),
+    None,
+    NotSampled,
+}
+
+/// Running programs when no sample is there.
+const NOT_SAMPLED: &str =
+    "Looked at only while the app is open. It is not open now, or has not looked yet.";
+
+/// What is watched on this Mac, group by group, each kind with what the owner is told about
+/// it; then the rule about a list of indicators and, last, the rule about every watched file.
+/// A kind the last check looked for and found none of (`none`) is listed too, and so are
+/// running programs when no sample is there: a rule about a thing appearing matters most
+/// when there is none yet.
+fn watched_here(
+    out: &mut String,
+    m: &covered::ThisMac,
+    none: &[&'static str],
+    list: Option<bool>,
+) -> Out {
+    writeln!(
+        out,
+        "<section id=\"watched-here\">\n<h2>What is watched, and what you are told about</h2>\n<p>{}</p>\n<p class=\"muted\">{}</p>",
+        esc(WATCHED_MEANS),
+        esc(TOLD_WHERE)
+    )?;
+    if m.watched.is_empty() && none.is_empty() {
+        out.push_str("<p class=\"muted\">Nothing has been read on this Mac yet.</p>\n");
+    }
+    // Every kind to list, in the order of `WATCHED`, with its group.
+    let mut kinds: Vec<(&str, Shown, &str)> = Vec::new();
+    for (_, what, fast) in covered::WATCHED {
+        if let Some((_, n, how)) = m.watched.iter().find(|w| w.0 == what) {
+            kinds.push((what, Shown::Count(*n), how));
+        } else if none.contains(&what) {
+            let how = if m.live && fast { "live" } else { "hourly" };
+            kinds.push((what, Shown::None, how));
+        }
+    }
+    // Any other kind the status names, as it names it.
+    for (what, n, how) in &m.watched {
+        if *what != covered::SAMPLED && !covered::WATCHED.iter().any(|w| w.1 == *what) {
+            kinds.push((what, Shown::Count(*n), how));
+        }
+    }
+    match m.watched.iter().find(|w| w.0 == covered::SAMPLED) {
+        Some((what, n, how)) => kinds.push((what, Shown::Count(*n), how)),
+        None => kinds.push((covered::SAMPLED, Shown::NotSampled, "sampled")),
+    }
+    for (how, head) in [
+        (
+            "live",
+            "Watched all the time: a change shows within seconds",
+        ),
+        (
+            "hourly",
+            "Checked every hour: a change shows at the next check",
+        ),
+        (
+            "sampled",
+            "Looked at often while a watcher runs: what is running right now",
+        ),
+    ] {
+        let of: Vec<&(&str, Shown, &str)> = kinds.iter().filter(|k| k.2 == how).collect();
+        if of.is_empty() {
+            continue;
+        }
+        writeln!(out, "<h3>{head}</h3>\n<ul class=\"counts\">")?;
+        for (what, shown, _) in of {
+            match shown {
+                Shown::Count(n) => {
+                    let text = format!("{}: {}", capital(what), grouped(*n));
+                    writeln!(out, "<li>{}", link(THIS_MAC, &anchor(what), &text))?;
+                }
+                Shown::None => {
+                    writeln!(out, "<li>{}: none on this Mac now", esc(&capital(what)))?;
+                }
+                Shown::NotSampled => writeln!(
+                    out,
+                    "<li>{}<br><span class=\"muted\">{}</span>",
+                    esc(&capital(what)),
+                    esc(NOT_SAMPLED)
+                )?,
+            }
+            told(out, &covered::rules_about(what))?;
+            out.push_str("</li>\n");
+        }
+        out.push_str("</ul>\n");
+    }
+    out.push_str("<h3>A list of signs of a known attack, when you give one</h3>\n");
+    told(out, &rule_with(INDICATOR_RULE))?;
+    let said = match list {
+        Some(true) => "A list was read at the last check.",
+        Some(false) => "A list was given but could not be read at the last check.",
+        None => "No list has been given, so nothing is compared.",
+    };
+    writeln!(out, "<p class=\"muted\">{said}</p>")?;
+    out.push_str("<h3>Also</h3>\n");
+    told(out, &rule_with(FIRST_READ_RULE))?;
+    out.push_str("</section>\n");
+    Ok(())
 }
 
 /// `a`, `a or b`, `a, b or c`.
@@ -433,6 +577,7 @@ pub fn this_mac(
             esc(&capital(what)),
             esc(about(what))
         )?;
+        told(&mut out, &covered::rules_about(what))?;
         match count {
             Count::Files(as_) => files(conn, &mut out, as_, this)?,
             Count::Installed(kind) => installed(conn, &mut out, kind, this)?,
@@ -447,6 +592,7 @@ pub fn this_mac(
         esc(&capital(covered::SAMPLED)),
         crate::watch::SAMPLE.as_secs()
     )?;
+    told(&mut out, &covered::rules_about(covered::SAMPLED))?;
     match crate::processes::last_sample(conn)? {
         Some((at, programs, connections)) => writeln!(
             out,
@@ -759,4 +905,109 @@ pub fn technical() -> String {
     out.push_str("</ul>\n</section>\n");
     out.push_str(FOOT);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The section of what is watched for a Mac where every kind is watched, and one kind
+    /// that no rule speaks about.
+    fn everything_watched() -> String {
+        let mut watched: Vec<(&'static str, i64, &'static str)> = covered::WATCHED
+            .iter()
+            .map(|(_, what, _)| (*what, 1, "hourly"))
+            .collect();
+        watched.push((covered::SAMPLED, 1, "sampled"));
+        watched.push(("things of a kind no rule knows", 1, "hourly"));
+        let m = covered::ThisMac {
+            watched,
+            ..covered::ThisMac::unchecked(true)
+        };
+        let mut out = String::new();
+        watched_here(&mut out, &m, &[], None).unwrap();
+        out
+    }
+
+    /// The same for a Mac where the last check found none of anything, with no watcher.
+    fn nothing_found() -> String {
+        let none: Vec<&'static str> = covered::WATCHED.iter().map(|(_, what, _)| *what).collect();
+        let mut out = String::new();
+        watched_here(&mut out, &covered::ThisMac::unchecked(false), &none, None).unwrap();
+        out
+    }
+
+    /// Each kind listed, up to where its line ends.
+    fn kinds(page: &str) -> Vec<&str> {
+        let mut parts: Vec<&str> = page.split("\n</li>\n").collect();
+        parts.pop();
+        parts
+            .into_iter()
+            .map(|p| {
+                let start = "<ul class=\"counts\">\n";
+                p.rfind(start).map_or(p, |i| &p[i + start.len()..])
+            })
+            .collect()
+    }
+
+    /// Each line of what is told, as the text of its `<li>`.
+    fn rule_lines(html: &str) -> Vec<&str> {
+        html.split("<ul class=\"rules\">")
+            .skip(1)
+            .flat_map(|list| list[..list.find("</ul>").unwrap()].split("<li>").skip(1))
+            .collect()
+    }
+
+    #[test]
+    fn every_rule_is_on_the_page() {
+        // The owner reads on the page what he is told about. A rule added later and not
+        // placed under a kind, the list of indicators or "Also" would tell him something the
+        // page never says it does.
+        for page in [everything_watched(), nothing_found()] {
+            for r in findings::rules() {
+                assert!(page.contains(&esc(r.words.title)), "{}: {page}", r.id);
+                assert!(page.contains(&esc(r.words.meaning)), "{}: {page}", r.id);
+            }
+        }
+    }
+
+    #[test]
+    fn the_page_never_calls_a_thing_watched_without_saying_what_is_told_about_it() {
+        // False calm: a kind listed as watched that no rule can fire about must say so in
+        // words, or "watched" promises a warning that never comes.
+        let page = everything_watched();
+        assert_eq!(kinds(&page).len(), covered::WATCHED.len() + 2, "{page}");
+        let empty = nothing_found();
+        assert_eq!(kinds(&empty).len(), covered::WATCHED.len() + 1, "{empty}");
+        for kind in kinds(&page).into_iter().chain(kinds(&empty)) {
+            assert!(kind.starts_with("<li>"), "{kind}");
+            let said = kind.contains("<ul class=\"rules\">\n<li>") || kind.contains(KEPT_AS_LIST);
+            assert!(said, "{kind}");
+        }
+        let unknown = &page[page.find("Things of a kind no rule knows").unwrap()..];
+        assert!(
+            unknown[..unknown.find("</li>").unwrap()].contains(KEPT_AS_LIST),
+            "{unknown}"
+        );
+    }
+
+    #[test]
+    fn a_rule_marked_as_sending_a_notification_is_exactly_an_urgent_one() {
+        // The page tells the owner which changes notify at once; the app notifies for what
+        // is urgent. The two must not disagree.
+        let page = everything_watched();
+        let lines = rule_lines(&page);
+        for r in findings::rules() {
+            let line = lines
+                .iter()
+                .find(|l| l.starts_with(&esc(r.words.title)))
+                .unwrap_or_else(|| panic!("{} is not on the page", r.id));
+            assert_eq!(
+                line.contains(NOTIFIES),
+                findings::urgent(r.severity, Some(r.confidence)),
+                "{}: {line}",
+                r.id
+            );
+        }
+    }
 }

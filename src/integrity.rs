@@ -843,20 +843,39 @@ pub fn observed(
 ) -> rusqlite::Result<Vec<crate::findings::Observed>> {
     let mut out = Vec::new();
     for (kind, subject, predicate, new) in changed_in_place(conn, run_id)? {
-        let place = match (kind.as_str(), predicate.as_str()) {
-            (BUNDLES, "has_seal") if new.as_deref() == Some(codesign::VERIFIES) => continue,
-            (BUNDLES, "has_seal") => SEAL_BROKEN,
-            (BUNDLES, _) => SIGNER_CHANGED,
-            (APP_SUPPORT, _) => CODE_OUTSIDE_CHANGED,
-            _ => FILES_CHANGED,
-        };
+        if kind == BUNDLES && predicate == "has_seal" && new.as_deref() == Some(codesign::VERIFIES)
+        {
+            continue;
+        }
         out.push(crate::findings::Observed {
             change: "changed",
-            place: place.to_string(),
+            place: place(&kind, &predicate).to_string(),
             file: subject,
         });
     }
     Ok(out)
+}
+
+/// What the rules are told changed when a fact of an installed thing changed in place.
+fn place(kind: &str, predicate: &str) -> &'static str {
+    match (kind, predicate) {
+        (BUNDLES, "has_seal") => SEAL_BROKEN,
+        (BUNDLES, _) => SIGNER_CHANGED,
+        (APP_SUPPORT, _) => CODE_OUTSIDE_CHANGED,
+        _ => FILES_CHANGED,
+    }
+}
+
+/// Everything the rules can be told about installed things of one kind: what `observed`
+/// gives for each fact `changed_in_place` looks at.
+pub fn places(kind: &str) -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = ["has_seal", "signed_by", "has_digest"]
+        .iter()
+        .map(|p| place(kind, p))
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 /// What the rules are told changed, each the kind of its findings.

@@ -9150,7 +9150,7 @@ fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_f
     );
     assert!(
         section(page, "watched-here").contains(
-            "<h3>Checked every hour: a change shows at the next check</h3>\n<ul class=\"counts\">\n<li><a href=\"view/this-mac.html#startup-items\">Startup items: 1</a></li>"
+            "<h3>Checked every hour: a change shows at the next check</h3>\n<ul class=\"counts\">\n<li><a href=\"view/this-mac.html#startup-items\">Startup items: 1</a>\n<ul class=\"rules\">"
         ),
         "{page}"
     );
@@ -9324,11 +9324,14 @@ fn each_link_on_the_summary_shows_what_its_label_says_first_thing_on_arrival() {
             .collect()
     };
     // What a person lands on first is in his words, not the program's. What a source said,
-    // listed apart under its item, is data.
+    // listed apart under its item, is data. The rules' own words are a person's words where
+    // they are written, and "an app you build yourself" is not about this program's build.
     let mut words = page[page.find("<main>").unwrap()..].to_string();
-    while let Some(start) = words.find("<ul class=\"readings mono\">") {
-        let end = start + words[start..].find("</ul>").unwrap();
-        words.replace_range(start..end, "");
+    for list in ["<ul class=\"readings mono\">", "<ul class=\"rules\">"] {
+        while let Some(start) = words.find(list) {
+            let end = start + words[start..].find("</ul>").unwrap();
+            words.replace_range(start..end, "");
+        }
     }
     let mut text = String::new();
     for part in words.split('<') {
@@ -9436,6 +9439,52 @@ fn each_link_on_the_summary_shows_what_its_label_says_first_thing_on_arrival() {
 }
 
 #[test]
+fn on_a_mac_where_nothing_was_found_and_no_watcher_ran_every_rule_is_on_the_summary() {
+    // The summary says what the owner is told about. A rule about a thing appearing matters
+    // most when there is none yet: a kind the last check looked for and found none of is
+    // still listed with its rules, and running programs with theirs while no sample is there.
+    let w = Watch::new("view-rules-empty");
+    w.run();
+    let pages = view_pages(&w.store());
+    let told = section(&pages[0].1, "watched-here");
+    let rules = findings_json(&w.store(), &[]);
+    let rules = rules["rules"].as_array().unwrap();
+    assert_eq!(rules.len(), 12);
+    for r in rules {
+        let title = r["title"].as_str().unwrap().replace('\'', "&#39;");
+        assert!(told.contains(&title), "{}: {told}", r["id"]);
+    }
+    assert!(
+        told.contains("<li>Editor tasks that run when a project is opened: none on this Mac now\n"),
+        "{told}"
+    );
+    assert!(
+        told.contains("<li>Running programs and their connections<br><span class=\"muted\">Looked at only while the app is open. It is not open now, or has not looked yet.</span>"),
+        "{told}"
+    );
+    // The page of what is watched says the same, with no empty table.
+    let this_mac = &pages
+        .iter()
+        .find(|(p, _)| p.ends_with("view/this-mac.html"))
+        .unwrap()
+        .1;
+    let tasks = section(this_mac, "editor-tasks-that-run-when-a-project-is-opened");
+    assert!(
+        tasks.contains("<ul class=\"rules\">") && !tasks.contains("<table"),
+        "{tasks}"
+    );
+    // False calm: a place that could not be read is never "none on this Mac now".
+    let agents = w.home().join("Library/LaunchAgents");
+    std::fs::create_dir_all(&agents).unwrap();
+    chmod(&agents, 0o000);
+    w.run();
+    let pages = view_pages(&w.store());
+    chmod(&agents, 0o755);
+    let told = section(&pages[0].1, "watched-here");
+    assert!(!told.contains("Startup items: none"), "{told}");
+}
+
+#[test]
 fn a_section_of_the_summary_can_be_opened_from_outside_as_a_file() {
     // The app's rows "You can fix" and "Limits of this version" opened the summary at its
     // top: macOS lost the `#section` of the file URL on its way to the browser. Each
@@ -9452,7 +9501,7 @@ fn a_section_of_the_summary_can_be_opened_from_outside_as_a_file() {
         .iter()
         .map(|s| s["section"].as_str().unwrap())
         .collect();
-    assert_eq!(named, ["you-can-fix", "limits"]);
+    assert_eq!(named, ["watched-here", "you-can-fix", "limits"]);
     for s in sections.as_array().unwrap() {
         let anchor = s["section"].as_str().unwrap();
         let file = PathBuf::from(s["path_text"].as_str().unwrap());

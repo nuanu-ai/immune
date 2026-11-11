@@ -85,7 +85,11 @@ pub fn pages(
 /// The sections of the summary something outside the page may ask for, by anchor and
 /// title. Each has a page of its own that only sends the browser on to it, because macOS
 /// can lose the `#section` of a file URL when it hands one to the browser.
-pub const SECTIONS: [(&str, &str); 2] = [
+pub const SECTIONS: [(&str, &str); 3] = [
+    (
+        "watched-here",
+        "What is watched, and what you are told about",
+    ),
     ("you-can-fix", "You can fix"),
     ("limits", "Limits of this version"),
 ];
@@ -1886,6 +1890,9 @@ article.item .said { color: var(--muted); overflow-wrap: anywhere; }
 article.item .advice { font-weight: 600; }
 ul.counts { list-style: none; padding: 0; }
 ul.counts li { margin: 4px 0; }
+ul.rules { margin: 2px 0 12px; padding-left: 18px; font-size: .875rem; }
+ul.rules li { margin: 4px 0; }
+.badge.notify { border: 1px solid var(--line); font-weight: 500; }
 </style>
 </head>
 <body>

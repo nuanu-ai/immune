@@ -1289,15 +1289,20 @@ struct Page {
   }
 
   @Test(
-    "A row below opens the file soc names for its section, never a #section; with no file named, the summary"
+    "A row below, and the row under what is watched, opens the file soc names for its section, never a #section; with no file named, the summary"
   )
   func section() async throws {
     let (page, out) = try written()
     let fix = page.deletingLastPathComponent().appendingPathComponent("section-you-can-fix.html")
+    let told = page.deletingLastPathComponent().appendingPathComponent("section-watched-here.html")
     try Data("<html></html>".utf8).write(to: fix)
+    try Data("<html></html>".utf8).write(to: told)
     let status = quiet(
       removing: ["result", "store", "view_sections"],
-      setting: [["section": "you-can-fix", "path_text": fix.path]])
+      setting: [
+        ["section": "you-can-fix", "path_text": fix.path],
+        ["section": "watched-here", "path_text": told.path],
+      ])
     let model = AppModel(soc: GatedSoc(status: status, view: out, gated: []))
     await model.refresh()
     var opened: [URL] = []
@@ -1308,7 +1313,11 @@ struct Page {
     await model.openPage(section: "you-can-fix")
     await model.openPage(section: "limits")  // no file named: the summary
     await model.openPage()
-    #expect(opened.map(\.path) == [fix.path, page.path, page.path])
+    // The quiet row under the open list of what is watched: what the owner is told about.
+    let open = Panel.of(model.reading, now: Date(), watchedOpen: true)
+    #expect(open.lines.contains("    ○ What you are told about  › #watched-here"))
+    await model.openPage(section: open.toldAbout.section)
+    #expect(opened.map(\.path) == [fix.path, page.path, page.path, told.path])
     #expect(opened.allSatisfy { $0.isFileURL && $0.fragment == nil })
     // An older soc names no files: every row opens the summary.
     let older = AppModel(soc: GatedSoc(status: quiet(), view: out, gated: []))

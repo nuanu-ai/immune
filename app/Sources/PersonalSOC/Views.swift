@@ -330,6 +330,13 @@ struct PanelView: View {
                 }
               }
             }
+            Button {
+              Task { await model.openPage(section: p.toldAbout.section) }
+            } label: {
+              Text(verbatim: p.toldAbout.text).font(.system(size: 11)).underline()
+                .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
           }
           .padding(.leading, 36)
           .padding(.trailing, 12)

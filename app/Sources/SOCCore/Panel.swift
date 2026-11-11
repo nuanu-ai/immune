@@ -174,6 +174,10 @@ public struct Panel: Sendable, Equatable {
   /// what every hour, each kind with its count.
   public var watched: [WatchedGroup] = []
   public var watchedOpen = false
+  /// The quiet row at the bottom of the open list: the page's section that says, for
+  /// each kind, what the owner is told about.
+  public let toldAbout = GapRow(
+    text: "What you are told about", symbol: "text.bubble", section: "watched-here")
   /// What the program does not cover, as at most two quiet rows: what the owner can
   /// fix, and the limits of this version. Never counted, never orange.
   public var gaps: [GapRow] = []
@@ -371,6 +375,7 @@ public struct Panel: Sendable, Equatable {
       out.append((watchedOpen ? "▾ " : "▸ ") + "What is watched")
       if watchedOpen {
         for g in watched { out += ["    " + g.title] + g.lines.map { "      " + $0 } }
+        out.append("    ○ " + toldAbout.text + "  › #" + toldAbout.section)
       }
     }
     out += gaps.map { "○ " + $0.text + "  › #" + $0.section }
