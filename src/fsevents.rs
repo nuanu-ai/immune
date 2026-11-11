@@ -458,15 +458,44 @@ mod tests {
         (stream, refused, rx)
     }
 
-    /// Waits for a batch with an event, skipping the end-of-history sentinel.
-    fn event(rx: &mpsc::Receiver<Batch>) -> Option<Batch> {
-        loop {
-            match rx.recv_timeout(Duration::from_secs(10)) {
+    /// How long a test waits on fseventsd. It delivers late when the Mac is busy: measured
+    /// on a busy build Mac, every event 14 s late for minutes on end, and under heavy writing
+    /// over 40 s. A passing test returns as soon as its batch is in, so the bound costs only
+    /// a failing run.
+    const DEADLINE: Duration = Duration::from_secs(120);
+
+    /// Waits for a batch with an event, skipping the end-of-history sentinel. `write` runs
+    /// first and again after every second without one: under load a single write can arrive
+    /// later than any short wait, and a repeated one says the same thing.
+    fn event_after(rx: &mpsc::Receiver<Batch>, write: impl Fn()) -> Option<Batch> {
+        let start = std::time::Instant::now();
+        while start.elapsed() < DEADLINE {
+            write();
+            match rx.recv_timeout(Duration::from_secs(1)) {
                 Ok(b) if b.events > 0 => return Some(b),
-                Ok(_) => {}
-                Err(_) => return None,
+                Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => return None,
             }
         }
+        None
+    }
+
+    /// What a stream replays from history, summed up to its end-of-history batch, or `None`
+    /// when that batch does not come.
+    fn replay(rx: &mpsc::Receiver<Batch>) -> Option<Batch> {
+        let start = std::time::Instant::now();
+        let mut replayed = Batch::default();
+        while start.elapsed() < DEADLINE {
+            if let Ok(b) = rx.recv_timeout(Duration::from_secs(1)) {
+                replayed.events += b.events;
+                replayed.latest = replayed.latest.max(b.latest);
+                if b.history_done {
+                    replayed.history_done = true;
+                    return Some(replayed);
+                }
+            }
+        }
+        None
     }
 
     #[test]
@@ -477,9 +506,11 @@ mod tests {
         let folder = dir.join("Library/LaunchAgents");
         let (stream, refused, rx) = start(&[&folder], None);
         assert!(refused.is_empty());
-        std::fs::create_dir_all(&folder).unwrap();
-        std::fs::write(folder.join("item.plist"), "x").unwrap();
-        let b = event(&rx).expect("an event for a path created after the stream started");
+        let b = event_after(&rx, || {
+            std::fs::create_dir_all(&folder).unwrap();
+            std::fs::write(folder.join("item.plist"), "x").unwrap();
+        })
+        .expect("an event for a path created after the stream started");
         assert!(b.latest > 0 && b.latest <= current_event_id());
         drop(stream);
         let _ = std::fs::remove_dir_all(&dir);
@@ -493,39 +524,35 @@ mod tests {
         let good = dir.join("good");
         let (stream, refused, rx) = start(&[&bad, &good], None);
         assert_eq!(refused, vec![(0, NOT_UTF8)]);
-        std::fs::write(&good, "x").unwrap();
-        assert!(event(&rx).is_some());
+        assert!(event_after(&rx, || std::fs::write(&good, "x").unwrap()).is_some());
         drop(stream);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn history_since_an_id_is_replayed_and_then_marked_done() {
-        // A change made while no stream ran is in the per-volume history.
+        // A change made while no stream ran is in the per-volume history. It need not come
+        // before the end-of-history batch: when fseventsd has not yet stored it, it comes
+        // after (measured: 4 of 20 times on a busy Mac, 2 to 14 s later). The watcher counts
+        // it either way, so the promise is that both come.
         let dir = temp("history");
         let file = dir.join("profile");
         let before = current_event_id();
         std::fs::write(&file, "changed while nobody watched").unwrap();
         let (stream, _, rx) = start(&[&file], Some(before));
-        let mut replayed = Batch::default();
-        let done = loop {
-            match rx.recv_timeout(Duration::from_secs(10)) {
-                Ok(b) if b.history_done => {
-                    replayed.events += b.events;
-                    replayed.latest = replayed.latest.max(b.latest);
-                    break true;
-                }
-                Ok(b) => {
-                    replayed.events += b.events;
-                    replayed.latest = replayed.latest.max(b.latest);
-                }
-                Err(_) => break false,
+        let started = std::time::Instant::now();
+        let mut seen = Batch::default();
+        while started.elapsed() < DEADLINE && !(seen.history_done && seen.events > 0) {
+            if let Ok(b) = rx.recv_timeout(Duration::from_secs(1)) {
+                seen.events += b.events;
+                seen.latest = seen.latest.max(b.latest);
+                seen.history_done |= b.history_done;
             }
-        };
+        }
         drop(stream);
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(done, "the end of history is marked");
-        assert!(replayed.events > 0 && replayed.latest > before);
+        assert!(seen.history_done, "the end of history is marked");
+        assert!(seen.events > 0 && seen.latest > before);
     }
 
     #[test]
@@ -560,25 +587,20 @@ mod tests {
         let dir = temp("nothing");
         let file = dir.join("profile");
         let (stream, _, rx) = start(&[&file], None);
+        // Written once: a second write would be a change after the id handled.
         std::fs::write(&file, "once").unwrap();
-        let handled = event(&rx).expect("the live write").latest;
+        let handled = event_after(&rx, || {}).expect("the live write").latest;
         drop(stream);
         let (stream, _, rx) = start(&[&file], Some(handled));
-        let mut events = 0;
-        let done = loop {
-            match rx.recv_timeout(Duration::from_secs(10)) {
-                Ok(b) if b.history_done => break true,
-                Ok(b) => events += b.events,
-                Err(_) => break false,
-            }
-        };
+        let replayed = replay(&rx);
         // Anything still on its way would come right after the end of history.
+        let mut events = replayed.as_ref().map_or(0, |b| b.events);
         while let Ok(b) = rx.recv_timeout(Duration::from_millis(500)) {
             events += b.events;
         }
         drop(stream);
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(done);
+        assert!(replayed.is_some(), "the end of history is marked");
         assert_eq!(events, 0);
     }
 
