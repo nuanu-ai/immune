@@ -88,19 +88,27 @@ struct HelpLine: View {
 
 struct RowCard: View {
   let row: Row
+  let panel: Panel
+  @ObservedObject var model: AppModel
   let show: () -> Void
   @State private var copied = false
 
+  private var formOpen: Bool { row.canAnswer && panel.form?.id == row.item.id }
+
   var body: some View {
     HStack(alignment: .top, spacing: 8) {
-      Image(systemName: row.kind.symbol)
+      Image(systemName: row.symbol)
         .font(.system(size: 13))
-        .foregroundStyle(.secondary)
+        .foregroundStyle(
+          row.strong ? AnyShapeStyle(Light.attention(1).tint) : AnyShapeStyle(.secondary)
+        )
         .frame(width: 16, height: 17)
         .accessibilityHidden(true)
       VStack(alignment: .leading, spacing: 4) {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-          Plain(row.sentence + ".").font(.system(size: 13))
+          Plain(row.title)
+            .font(.system(size: 13, weight: row.strong ? .semibold : .regular))
+            .foregroundStyle(row.quiet ? .secondary : .primary)
           Spacer(minLength: 0)
           if let when = row.when {
             Text(verbatim: when).font(.system(size: 11).monospacedDigit())
@@ -126,28 +134,94 @@ struct RowCard: View {
             .textSelection(.enabled)
             .help(reason)
         }
-        Plain(row.means + " " + row.todo).font(.system(size: 12)).foregroundStyle(.secondary)
-        HStack(spacing: 12) {
-          Spacer(minLength: 0)
-          Button("Show", action: show)
-          Button(copied ? "Copied" : "Copy for my agent") {
-            // Only on the owner's click.
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(row.agentRequest, forType: .string)
-            copied = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
-          }
+        if !row.means.isEmpty {
+          Plain(row.means).font(.system(size: 12)).foregroundStyle(.secondary)
         }
-        .buttonStyle(.borderless)
-        .foregroundStyle(.tint)
-        .font(.system(size: 12))
-        .padding(.top, 4)
+        if let id = row.item.id, let refused = panel.refusals[id] {
+          Plain(refused).font(.system(size: 12)).textSelection(.enabled).padding(.top, 4)
+        }
+        if formOpen { expectedForm.padding(.top, 4) } else { buttons.padding(.top, 4) }
       }
     }
     .padding(12)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     .accessibilityElement(children: .contain)
+  }
+
+  var buttons: some View {
+    HStack(spacing: 10) {
+      if row.canAnswer, let id = row.item.id {
+        if panel.answering == id {
+          ProgressView().controlSize(.mini)
+          Text(verbatim: "Saving…").foregroundStyle(.secondary)
+        } else {
+          Button("Seen") { Task { await model.answerSeen(id) } }.fixedSize()
+            .help("Mark it seen: it stops asking for a look.")
+          Button("Expected…") { model.form = ExpectedForm(id: id) }.fixedSize()
+            .help("Mark it expected for a while, with a short reason.")
+        }
+      }
+      Spacer(minLength: 0)
+      Button("Show", action: show).fixedSize()
+      Button(copied ? "Copied" : "Copy for my agent") {
+        // Only on the owner's click.
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(row.agentRequest, forType: .string)
+        copied = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+      }
+      .fixedSize()
+    }
+    .buttonStyle(.borderless)
+    .foregroundStyle(.tint)
+    .font(.system(size: 12))
+    .disabled(panel.answering != nil)
+  }
+
+  /// One required text field for the reason and how long; nothing else.
+  @ViewBuilder var expectedForm: some View {
+    let reason = Binding(
+      get: { model.form?.reason ?? "" }, set: { model.form?.reason = $0 })
+    let days = Binding(
+      get: { model.form?.days ?? Answer.defaultDays }, set: { model.form?.days = $0 })
+    let complete = panel.form?.isComplete == true
+    VStack(alignment: .leading, spacing: 8) {
+      TextField("Why is it expected? (required)", text: reason)
+        .textFieldStyle(.roundedBorder)
+        .font(.system(size: 12))
+        .onSubmit { send() }
+      HStack(spacing: 8) {
+        Text(verbatim: "For").foregroundStyle(.secondary)
+        Picker("For", selection: days) {
+          ForEach(Answer.days, id: \.self) { n in Text(verbatim: "\(n) days").tag(n) }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
+      }
+      .controlSize(.small)
+      .font(.system(size: 12))
+      HStack(spacing: 8) {
+        if panel.answering == panel.form?.id {
+          ProgressView().controlSize(.mini)
+          Text(verbatim: "Saving…").foregroundStyle(.secondary)
+        }
+        Spacer(minLength: 0)
+        Button("Cancel") { model.form = nil }.fixedSize()
+        Button("Mark expected") { send() }
+          .buttonStyle(.borderedProminent)
+          .fixedSize()
+          .disabled(!complete || panel.answering != nil)
+      }
+      .controlSize(.small)
+      .font(.system(size: 12))
+    }
+  }
+
+  private func send() {
+    guard let form = model.form, form.isComplete else { return }
+    Task { await model.answerExpected(form) }
   }
 }
 
@@ -189,7 +263,8 @@ struct PanelView: View {
   var body: some View {
     let p = Panel.of(
       model.reading, now: now ?? Date(), checking: model.runInProgress, notes: model.notes,
-      notWatching: watcher.watcher?.notWatching)
+      notWatching: watcher.watcher?.notWatching, form: model.form, answering: model.answering,
+      refusals: model.refusals)
     VStack(alignment: .leading, spacing: 0) {
       HeadlineView(panel: p)
         .padding(Metrics.padding)
@@ -208,7 +283,7 @@ struct PanelView: View {
   @ViewBuilder func cards(_ p: Panel) -> some View {
     VStack(alignment: .leading, spacing: 8) {
       ForEach(p.shown) { row in
-        RowCard(row: row) { Task { await model.openPage(at: row.fields) } }
+        RowCard(row: row, panel: p, model: model) { Task { await model.openPage(at: row.item.id) } }
       }
     }
     .padding(.horizontal, Metrics.padding)

@@ -1,59 +1,283 @@
 {
-  "format": 1, "operation": "status", "ok": true, "errors": [],
-  "result": {
-    "generated_at": "2026-11-10T10:05:00Z",
-    "running": false,
-    "store": { "path_text": "/Users/example/Library/Application Support/personal-soc/store.db", "exists": true },
-    "cannot_judge": [ "no threat is matched against the estate yet" ],
-    "no_reader_for": [ { "what_text": "uv.lock", "where_count": 2 }, { "what_text": "go.sum", "where_count": 1 } ],
-    "last_run": { "id": "1794400000-000000002", "started_at": "2026-11-10T10:00:00Z", "finished_at": "2026-11-10T10:00:24Z", "finished": true },
-    "last_finished_run": {
-      "id": "1794400000-000000002", "started_at": "2026-11-10T10:00:00Z", "finished_at": "2026-11-10T10:00:24Z",
-      "first_run": false,
-      "readings": { "partial": 2, "failed": 2, "not_repeated": 0, "machines_unread": 1 },
-      "since_previous_run": { "added": 3, "changed": 2, "removed": 0 },
-      "unknown": [ "removals unknown where a reading was partial" ]
+ "format": 1,
+ "operation": "status",
+ "ok": true,
+ "errors": [],
+ "result": {
+  "generated_at": "2026-11-10T10:05:00Z",
+  "running": false,
+  "store": {
+   "path_text": "/Users/example/Library/Application Support/personal-soc/store.db",
+   "exists": true
+  },
+  "cannot_judge": [
+   "no threat is matched against the estate yet"
+  ],
+  "no_reader_for": [
+   {
+    "what_text": "uv.lock",
+    "where_count": 2
+   },
+   {
+    "what_text": "go.sum",
+    "where_count": 1
+   }
+  ],
+  "last_run": {
+   "id": "1794400000-000000002",
+   "started_at": "2026-11-10T10:00:00Z",
+   "finished_at": "2026-11-10T10:00:24Z",
+   "finished": true
+  },
+  "last_finished_run": {
+   "id": "1794400000-000000002",
+   "started_at": "2026-11-10T10:00:00Z",
+   "finished_at": "2026-11-10T10:00:24Z",
+   "first_run": false,
+   "readings": {
+    "partial": 2,
+    "failed": 2,
+    "not_repeated": 0,
+    "machines_unread": 1
+   },
+   "since_previous_run": {
+    "added": 3,
+    "changed": 2,
+    "removed": 0
+   },
+   "unknown": [
+    "removals unknown where a reading was partial"
+   ]
+  },
+  "estate": {
+   "machines": 3,
+   "servers": 2,
+   "servers_offered": 1,
+   "servers_read": 1,
+   "machines_set_aside": 1,
+   "machines_seen_after_owner_word": 0,
+   "checkouts": 7,
+   "components": 815
+  },
+  "watched": {
+   "files": 13,
+   "first_reading": false,
+   "since_last_reading": {
+    "new": 1,
+    "changed": 1,
+    "gone": 0
+   },
+   "kinds": [
+    {
+     "kind": "autostart item",
+     "files": 6,
+     "coverage": "full",
+     "readings": {
+      "full": 1,
+      "partial": 0,
+      "none": 0
+     },
+     "reason_text": null
     },
-    "estate": { "machines": 3, "servers": 2, "servers_offered": 1, "servers_read": 1, "machines_set_aside": 1,
-                "machines_seen_after_owner_word": 0, "checkouts": 7, "components": 815 },
-    "watched": {
-      "files": 13, "first_reading": false,
-      "since_last_reading": { "new": 1, "changed": 1, "gone": 0 },
-      "kinds": [
-        { "kind": "autostart item", "files": 6, "coverage": "full", "readings": { "full": 1, "partial": 0, "none": 0 }, "reason_text": null },
-        { "kind": "shell profile", "files": 3, "coverage": "full", "readings": { "full": 1, "partial": 0, "none": 0 }, "reason_text": null },
-        { "kind": "git hook", "files": 4, "coverage": "partial", "readings": { "full": 6, "partial": 1, "none": 0 },
-          "reason_text": ".git is a file, as in a worktree or a submodule: the hooks are kept elsewhere and were not read" }
-      ],
-      "content_not_read": 0,
-      "changes": [
-        { "at": "2026-11-10T10:00:20Z", "run_id": "1794400000-000000002", "change": "changed", "kind": "shell profile", "path_text": ".zshrc" },
-        { "at": "2026-11-10T10:00:19Z", "run_id": "1794400000-000000002", "change": "new", "kind": "autostart item", "path_text": "Library/LaunchAgents/org.example.helper.plist" }
-      ],
-      "changes_total": 2
+    {
+     "kind": "shell profile",
+     "files": 3,
+     "coverage": "full",
+     "readings": {
+      "full": 1,
+      "partial": 0,
+      "none": 0
+     },
+     "reason_text": null
     },
-    "threats": { "outcome": "read", "entries": 1702, "first_reading": false, "new": 2, "gone": 0,
-                 "read_at": "2026-11-10T10:00:01Z", "checked_at": "2026-11-10T10:00:01Z", "source": "cisa-kev", "matched": false },
-    "coverage": {
-      "readings": 24, "full": 12, "read_nothing": 6, "not_given": 2, "partial": 2, "failed": 2,
-      "problems": [
-        { "class": "failed", "reader": "software", "kind": "installed software", "reason_text": "the package list could not be read: permission denied",
-          "count": 2, "examples_text": [ "machine:example-mac", "machine:example-server" ] },
-        { "class": "no_reader", "reader": "lockfiles", "kind": "lockfile dependencies", "reason_text": "not supported yet: uv.lock",
-          "count": 2, "examples_text": [ "checkout:machine:example-mac/work/alpha", "checkout:machine:example-mac/work/epsilon" ] },
-        { "class": "partial", "reader": "watched-places", "kind": "hooks in the checkout's .git folder",
-          "reason_text": ".git is a file, as in a worktree or a submodule: the hooks are kept elsewhere and were not read",
-          "count": 1, "examples_text": [ "checkout:machine:example-mac/work/alpha-worktree" ] },
-        { "class": "not_given", "reader": "sweep", "kind": "server packages", "reason_text": "no sweep file was given for this server",
-          "count": 2, "examples_text": [ "machine:example-server-2", "machine:example-server-3" ] },
-        { "class": "read_nothing", "reader": "watched-places", "kind": "hooks in the checkout's .git folder",
-          "reason_text": "the checkout has no hooks", "count": 6,
-          "examples_text": [ "checkout:machine:example-mac/work/beta", "checkout:machine:example-mac/work/gamma", "checkout:machine:example-mac/work/delta" ] }
-      ],
-      "problems_total": 5,
-      "unreached": [ { "scope_text": "machine:example-server", "since": "2026-11-10T09:00:00Z", "reason_text": "the sweep file is older than the last run" } ],
-      "unreached_total": 1
+    {
+     "kind": "git hook",
+     "files": 4,
+     "coverage": "partial",
+     "readings": {
+      "full": 6,
+      "partial": 1,
+      "none": 0
+     },
+     "reason_text": ".git is a file, as in a worktree or a submodule: the hooks are kept elsewhere and were not read"
+    }
+   ],
+   "content_not_read": 0,
+   "changes": [
+    {
+     "at": "2026-11-10T10:00:20Z",
+     "run_id": "1794400000-000000002",
+     "change": "changed",
+     "kind": "shell profile",
+     "path_text": ".zshrc"
     },
-    "not_computed": []
-  }
+    {
+     "at": "2026-11-10T10:00:19Z",
+     "run_id": "1794400000-000000002",
+     "change": "new",
+     "kind": "autostart item",
+     "path_text": "Library/LaunchAgents/org.example.helper.plist"
+    }
+   ],
+   "changes_total": 2
+  },
+  "threats": {
+   "outcome": "read",
+   "entries": 1702,
+   "first_reading": false,
+   "new": 2,
+   "gone": 0,
+   "read_at": "2026-11-10T10:00:01Z",
+   "checked_at": "2026-11-10T10:00:01Z",
+   "source": "cisa-kev",
+   "matched": false
+  },
+  "coverage": {
+   "readings": 24,
+   "full": 12,
+   "read_nothing": 6,
+   "not_given": 2,
+   "partial": 2,
+   "failed": 2,
+   "problems": [
+    {
+     "class": "failed",
+     "reader": "software",
+     "kind": "installed software",
+     "reason_text": "the package list could not be read: permission denied",
+     "count": 2,
+     "examples_text": [
+      "machine:example-mac",
+      "machine:example-server"
+     ]
+    },
+    {
+     "class": "no_reader",
+     "reader": "lockfiles",
+     "kind": "lockfile dependencies",
+     "reason_text": "not supported yet: uv.lock",
+     "count": 2,
+     "examples_text": [
+      "checkout:machine:example-mac/work/alpha",
+      "checkout:machine:example-mac/work/epsilon"
+     ]
+    },
+    {
+     "class": "partial",
+     "reader": "watched-places",
+     "kind": "hooks in the checkout's .git folder",
+     "reason_text": ".git is a file, as in a worktree or a submodule: the hooks are kept elsewhere and were not read",
+     "count": 1,
+     "examples_text": [
+      "checkout:machine:example-mac/work/alpha-worktree"
+     ]
+    },
+    {
+     "class": "not_given",
+     "reader": "sweep",
+     "kind": "server packages",
+     "reason_text": "no sweep file was given for this server",
+     "count": 2,
+     "examples_text": [
+      "machine:example-server-2",
+      "machine:example-server-3"
+     ]
+    },
+    {
+     "class": "read_nothing",
+     "reader": "watched-places",
+     "kind": "hooks in the checkout's .git folder",
+     "reason_text": "the checkout has no hooks",
+     "count": 6,
+     "examples_text": [
+      "checkout:machine:example-mac/work/beta",
+      "checkout:machine:example-mac/work/gamma",
+      "checkout:machine:example-mac/work/delta"
+     ]
+    }
+   ],
+   "problems_total": 5,
+   "unreached": [
+    {
+     "scope_text": "machine:example-server",
+     "since": "2026-11-10T09:00:00Z",
+     "reason_text": "the sweep file is older than the last run"
+    }
+   ],
+   "unreached_total": 1
+  },
+  "not_computed": [],
+  "needs_a_look": [
+   {
+    "id": "f3c1e07a9b2",
+    "type": "finding",
+    "kind": "ssh access file",
+    "severity": "high",
+    "state": "open",
+    "first_seen": "2026-11-10T10:00:21Z",
+    "last_seen": "2026-11-10T10:00:21Z",
+    "title": "An SSH file that decides who can log in to this Mac, or how it connects to other machines, was added, changed or removed.",
+    "meaning": "This is normal when you just added a key, a server or a setting.",
+    "advice": "If you did not, look at the file now, before you next connect anywhere.",
+    "value_text": null,
+    "where_text": ".ssh/authorized_keys",
+    "rule": "watched.ssh-access",
+    "confidence": "low",
+    "change": "changed",
+    "technique": "T1098.004"
+   },
+   {
+    "id": "f5d20b8e641",
+    "type": "finding",
+    "kind": "shell profile",
+    "severity": "medium",
+    "state": "open",
+    "first_seen": "2026-11-10T10:00:20Z",
+    "last_seen": "2026-11-10T10:00:20Z",
+    "title": "A file your terminal runs every time it starts was added, changed or removed.",
+    "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
+    "advice": "If you did not, open the file and look at its last lines.",
+    "value_text": null,
+    "where_text": ".zshrc",
+    "rule": "watched.shell-profile",
+    "confidence": "low",
+    "change": "changed",
+    "technique": "T1546.004"
+   },
+   {
+    "id": "f8a6c3d1e05",
+    "type": "finding",
+    "kind": "autostart item",
+    "severity": "medium",
+    "state": "open",
+    "first_seen": "2026-11-10T10:00:19Z",
+    "last_seen": "2026-11-10T10:00:19Z",
+    "title": "A program set to start by itself on this Mac was added, changed or removed.",
+    "meaning": "This is normal right after you install, update or remove an app that works in the background.",
+    "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
+    "value_text": null,
+    "where_text": "Library/LaunchAgents/org.example.helper.plist",
+    "rule": "watched.autostart",
+    "confidence": "low",
+    "change": "new",
+    "technique": "T1543"
+   },
+   {
+    "id": "h2e9f4a7c10",
+    "type": "health",
+    "kind": "machine not reached",
+    "severity": "low",
+    "state": "current",
+    "first_seen": "2026-11-09T22:00:05Z",
+    "last_seen": "2026-11-10T10:00:24Z",
+    "title": "A machine could not be reached.",
+    "meaning": "This is normal if it is switched off or offline; while it cannot be reached, changes on it go unseen.",
+    "advice": "If it should be on, check that you can connect to it.",
+    "value_text": "connection timed out after 10 s",
+    "where_text": "build-01.example.net"
+   }
+  ],
+  "needs_a_look_total": 4,
+  "answers_note": "Marking a finding expected or seen is the owner's answer: it hides the finding from him. An agent must not give it on the owner's behalf; it may show the owner the command to give it."
+ }
 }

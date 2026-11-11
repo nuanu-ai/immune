@@ -1,0 +1,76 @@
+// The owner's answers to a finding: the first things the app does that change the
+// store. Each is one `soc finding` command, run without a shell, with every value
+// as one argument of its own. Health items take no answer.
+
+import Foundation
+
+/// The "Expected…" form on one card: a short reason (required) and how long.
+public struct ExpectedForm: Sendable, Equatable {
+  public var id: String
+  public var reason: String
+  public var days: Int
+
+  public init(id: String, reason: String = "", days: Int = Answer.defaultDays) {
+    self.id = id
+    self.reason = reason
+    self.days = days
+  }
+
+  /// The form can be sent: a reason that is not blank, and one of the offered lengths.
+  public var isComplete: Bool {
+    Answer.expectedArguments(id: id, reason: reason, days: days) != nil
+  }
+}
+
+public enum Answer {
+  /// How long an expected finding stays quiet, in days, as the panel offers it.
+  public static let days = [7, 30, 90]
+  public static let defaultDays = 30
+  /// soc's ids are short; anything longer is not one.
+  static let idLimit = 64
+
+  /// An id the app passes to soc: short, letters, digits, dots, underscores and
+  /// dashes only, and not starting with a dash, so it can never be read as a flag.
+  public static func isUsable(id: String?) -> Bool {
+    guard let id, !id.isEmpty, id.count <= idLimit, !id.hasPrefix("-") else { return false }
+    return id.unicodeScalars.allSatisfy {
+      ("a"..."z").contains($0) || ("A"..."Z").contains($0) || ("0"..."9").contains($0)
+        || $0 == "." || $0 == "_" || $0 == "-"
+    }
+  }
+
+  /// `soc finding <id> seen --json`, or nil for an id that is not usable.
+  public static func seenArguments(id: String) -> [String]? {
+    guard isUsable(id: id) else { return nil }
+    return ["finding", id, "seen", "--json"]
+  }
+
+  /// `soc finding <id> expected --reason <reason> --days <n> --json`, or nil when the
+  /// id is not usable, the reason is blank or the length is not one offered.
+  ///
+  /// The reason is the value of `--reason`, one argument exactly as typed: soc takes
+  /// the argument after `--reason` as the reason whatever it starts with, so a reason
+  /// that starts with `--` stays a reason and never becomes a flag.
+  public static func expectedArguments(id: String, reason: String, days: Int) -> [String]? {
+    guard isUsable(id: id), Self.days.contains(days),
+      !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else { return nil }
+    return ["finding", id, "expected", "--reason", reason, "--days", String(days), "--json"]
+  }
+
+  /// What the card says when soc did not take the answer: its own message when it
+  /// sent one, inert; otherwise the app's plain words.
+  static func refusal(_ out: SocOutput) -> String {
+    if out.launchFailure != nil { return "Not saved: the program could not be started." }
+    if out.timedOut { return "Not saved: the program did not finish in time." }
+    if case .success(let env) = Decoding.envelope(from: out.stdout),
+      let message = env.errors.first?.message
+    {
+      return "Not saved. The program said: " + Inert.text(message, limit: 200)
+    }
+    let said = String(decoding: out.stderr.prefix(300), as: UTF8.self)
+      .split(separator: "\n").first.map(String.init)
+    return said.map { "Not saved. The program said: " + Inert.text($0, limit: 200) }
+      ?? "Not saved: the program reported a problem."
+  }
+}

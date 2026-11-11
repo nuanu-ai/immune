@@ -2,8 +2,18 @@
 # Runs the app's tests. With Apple's Command Line Tools alone, Swift Testing is
 # present but not on the default search paths, so they are added here when the
 # tools are the Command Line Tools; with Xcode nothing is added.
-set -eu
+#
+# A run leaves no process behind. `swift test` runs the tests in a helper
+# (swiftpm-testing-helper) that is a process group of its own, so when the run is
+# stopped from outside, or a test hangs, the helper is not stopped with it and
+# lives on with parent 1. So: the run has a time limit (APP_TEST_LIMIT seconds,
+# default 600); on the limit or on INT/TERM every descendant, and every helper of
+# this scratch path that was not there before the run, is stopped; and a helper
+# still there at the end is stopped, named, and fails the run.
+set -u
 here=$(cd "$(dirname "$0")" && pwd)
+scratch="$here/../target/app/swift"
+limit=${APP_TEST_LIMIT:-600}
 tools=$(xcode-select -p)
 set --
 if [ -d "$tools/Library/Developer/Frameworks/Testing.framework" ]; then
@@ -12,4 +22,44 @@ if [ -d "$tools/Library/Developer/Frameworks/Testing.framework" ]; then
   set -- -Xswiftc -F -Xswiftc "$fw" -Xlinker -F -Xlinker "$fw" \
     -Xlinker -rpath -Xlinker "$fw" -Xlinker -rpath -Xlinker "$lib"
 fi
-exec swift test --package-path "$here" --scratch-path "$here/../target/app/swift" "$@"
+
+helpers() { pgrep -f "swiftpm-testing-helper --test-bundle-path $scratch" | sort; }
+tree() { for c in $(pgrep -P "$1"); do tree "$c"; echo "$c"; done; }
+stop() {
+  [ -n "$*" ] || return 0
+  kill -TERM "$@" 2>/dev/null
+  sleep 1
+  kill -KILL "$@" 2>/dev/null
+  return 0
+}
+
+before=$(helpers)
+new_helpers() {
+  for p in $(helpers); do echo "$before" | grep -qx "$p" || echo "$p"; done
+}
+
+swift test --package-path "$here" --scratch-path "$scratch" "$@" &
+run=$!
+# The watchdog cleans up by itself, so the limit holds even if this script is
+# killed outright (SIGKILL cannot be trapped).
+(
+  sleep "$limit" &
+  wait $!
+  echo "app/test: no result after ${limit}s; stopping the run" >&2
+  stop $(tree "$run") "$run" $(new_helpers)
+) &
+watchdog=$!
+trap 'stop $(tree "$run") "$run" $(new_helpers); stop $(tree "$watchdog") "$watchdog"; exit 1' INT TERM
+
+wait "$run"
+code=$?
+stop $(tree "$watchdog") "$watchdog"
+
+left=$(new_helpers | tr '\n' ' ')
+if [ -n "$left" ]; then
+  echo "app/test: stopped test processes left behind: $left" >&2
+  # shellcheck disable=SC2086
+  stop $left
+  [ "$code" -ne 0 ] || code=1
+fi
+exit "$code"

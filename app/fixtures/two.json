@@ -148,6 +148,42 @@
    "unreached": [],
    "unreached_total": 0
   },
-  "not_computed": []
+  "not_computed": [],
+  "needs_a_look": [
+   {
+    "id": "f5d20b8e641",
+    "type": "finding",
+    "kind": "shell profile",
+    "severity": "medium",
+    "state": "open",
+    "first_seen": "2026-11-10T10:00:20Z",
+    "last_seen": "2026-11-10T10:00:20Z",
+    "title": "A file your terminal runs every time it starts was added, changed or removed.",
+    "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
+    "advice": "If you did not, open the file and look at its last lines.",
+    "value_text": null,
+    "where_text": ".zshrc",
+    "rule": "watched.shell-profile",
+    "confidence": "low",
+    "change": "changed",
+    "technique": "T1546.004"
+   },
+   {
+    "id": "h7b0d2c5e83",
+    "type": "health",
+    "kind": "threat list not downloaded",
+    "severity": "low",
+    "state": "current",
+    "first_seen": null,
+    "last_seen": "2026-11-10T10:00:24Z",
+    "title": "The list of vulnerabilities that attackers are using could not be downloaded.",
+    "meaning": "This is normal if this Mac was offline; until it is downloaded, new ones go unannounced.",
+    "advice": "Check again when you are online.",
+    "value_text": "the network is unreachable",
+    "where_text": null
+   }
+  ],
+  "needs_a_look_total": 2,
+  "answers_note": "Marking a finding expected or seen is the owner's answer: it hides the finding from him. An agent must not give it on the owner's behalf; it may show the owner the command to give it."
  }
 }

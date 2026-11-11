@@ -9,6 +9,7 @@ public final class AppModel: ObservableObject {
   public static let statusTimeout: TimeInterval = 30
   public static let runTimeout: TimeInterval = 30 * 60
   public static let viewTimeout: TimeInterval = 60
+  public static let answerTimeout: TimeInterval = 60
 
   @Published public private(set) var reading: Reading = .notYetRead
   @Published public private(set) var readAt: Date?
@@ -24,6 +25,12 @@ public final class AppModel: ObservableObject {
   @Published public private(set) var pageOpening = false
   /// Why the page could not be opened, in plain words. Cleared on the next try.
   @Published public private(set) var pageFailure: String?
+  /// The "Expected…" form, open on one finding's card, or nil.
+  @Published public var form: ExpectedForm?
+  /// The id of the finding whose answer is being saved now.
+  @Published public private(set) var answering: String?
+  /// Why soc did not take the last answer to a finding, by its id, in plain words.
+  @Published public private(set) var refusals: [String: String] = [:]
 
   private let soc: any SocRunning
   private let launchedAt: Date
@@ -95,12 +102,12 @@ public final class AppModel: ObservableObject {
   /// nothing, while the page is already being opened. A failure is a plain line and
   /// never changes what the icon says.
   @discardableResult
-  public func openPage(at item: [Field]? = nil) async -> Bool {
+  public func openPage(at id: String? = nil) async -> Bool {
     guard !pageOpening else { return false }
     pageOpening = true
     pageFailure = nil
     let out = await soc.run(
-      Self.viewArguments(at: item) + extraArguments, timeout: Self.viewTimeout)
+      Self.viewArguments(at: id) + extraArguments, timeout: Self.viewTimeout)
     if out.exitCode != 0 {
       pageFailure = "Details could not be opened. " + Self.viewFailure(out)
     }
@@ -109,8 +116,8 @@ public final class AppModel: ObservableObject {
   }
 
   /// The seam for opening the page at one item: today `soc view` takes no item,
-  /// so the item's stable values are not passed yet.
-  static func viewArguments(at item: [Field]?) -> [String] { ["view"] }
+  /// so the item's id is not passed yet.
+  static func viewArguments(at id: String?) -> [String] { ["view"] }
 
   static func viewFailure(_ out: SocOutput) -> String {
     if out.launchFailure != nil { return "The program could not be started." }
@@ -119,6 +126,44 @@ public final class AppModel: ObservableObject {
       .split(separator: "\n").first.map(String.init)
     return said.map { "The program said: " + Inert.text($0, limit: 200) }
       ?? "The program reported a problem."
+  }
+
+  /// The owner's "Seen" on a finding: `soc finding <id> seen`, then a refresh.
+  /// Returns false, and runs nothing, for an id the app does not pass or while
+  /// another answer is being saved.
+  @discardableResult
+  public func answerSeen(_ id: String) async -> Bool {
+    guard let args = Answer.seenArguments(id: id) else { return false }
+    return await answer(id, args)
+  }
+
+  /// The owner's "Expected…" on a finding, from the open form: `soc finding <id>
+  /// expected --reason <reason> --days <n>`, then a refresh. Returns false, and runs
+  /// nothing, unless the form is complete.
+  @discardableResult
+  public func answerExpected(_ form: ExpectedForm) async -> Bool {
+    guard let args = Answer.expectedArguments(id: form.id, reason: form.reason, days: form.days)
+    else { return false }
+    return await answer(form.id, args)
+  }
+
+  private func answer(_ id: String, _ args: [String]) async -> Bool {
+    // Only a finding the panel shows takes an answer; a health item never does.
+    let shown = reading.status?.needsALook ?? []
+    guard answering == nil, shown.contains(where: { $0.id == id && $0.type == "finding" })
+    else { return false }
+    answering = id
+    refusals[id] = nil
+    let out = await soc.run(args + extraArguments, timeout: Self.answerTimeout)
+    // Saved only when soc finished by itself with 0: a timed-out soc may still exit 0.
+    if out.exitCode == 0, !out.timedOut {
+      if form?.id == id { form = nil }
+    } else {
+      refusals[id] = Answer.refusal(out)
+    }
+    answering = nil
+    await refresh()
+    return true
   }
 
   /// The plain lines the panel shows about the last Check now and Details.

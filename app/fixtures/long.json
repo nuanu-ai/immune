@@ -148,6 +148,41 @@
    "unreached": [],
    "unreached_total": 0
   },
-  "not_computed": []
+  "not_computed": [],
+  "needs_a_look": [
+   {
+    "id": "f0e1d2c3b4a",
+    "type": "finding",
+    "kind": "file read for the first time",
+    "severity": "informational",
+    "state": "open",
+    "first_seen": "2026-11-10T10:00:20Z",
+    "last_seen": "2026-11-10T10:00:20Z",
+    "title": "A file that is checked for changes could be opened for the first time.",
+    "meaning": "Until now it could not be opened, so a change to it before today would have gone unseen; this is normal after a permission was fixed.",
+    "advice": "Look at the file once, so that from now on only changes to it are shown.",
+    "value_text": "the file was unreadable before: permission denied (os error 13) while opening it for reading; the file was unreadable before: permission denied (os error 13) while opening it for reading; the file was unreadable before: permission denied (os error 13) while opening it for reading; ",
+    "where_text": "projects/a-very-long-project-name-for-testing/subfolder/another-level/.git/hooks/pre-push-with-a-long-name",
+    "rule": "watched.first-read",
+    "confidence": "low",
+    "change": "new"
+   },
+   {
+    "id": "h9c8b7a6f5e",
+    "type": "health",
+    "kind": "check failed",
+    "severity": "low",
+    "state": "current",
+    "first_seen": null,
+    "last_seen": "2026-11-10T10:00:24Z",
+    "title": "Something could not be checked.",
+    "meaning": "Until this is fixed, changes there go unseen; the cause is often a permission or a file in an unexpected state.",
+    "advice": "Look at the reason given here, or ask your agent to find out why.",
+    "value_text": "reading stopped: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "where_text": "Library/LaunchAgents"
+   }
+  ],
+  "needs_a_look_total": 2,
+  "answers_note": "Marking a finding expected or seen is the owner's answer: it hides the finding from him. An agent must not give it on the owner's behalf; it may show the owner the command to give it."
  }
 }

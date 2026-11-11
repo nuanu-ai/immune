@@ -18,79 +18,20 @@ public enum Reading: Sendable, Equatable {
   }
 }
 
-/// Where a group of readings belongs on the panel, by its class. The panel never
-/// mixes the three.
-public enum Place: Sendable, Equatable {
-  /// Counted beside the icon.
-  case attention
-  /// What the program is blind to: shown calmly, not counted.
-  case blind
-  /// Silence that was expected: one line with a count, opened in Details.
-  case silence
+/// The levels of how bad, as soc names them (OCSF's), from least to worst.
+public enum Severity {
+  public static let levels = ["informational", "low", "medium", "high", "critical"]
 
-  public static func of(class name: String?) -> Place {
-    switch name {
-    case "failed": .attention
-    case "partial", "no_reader": .blind
-    case "not_given", "read_nothing": .silence
-    // A class this app does not know may be a new kind of failure: never hide it.
-    default: .attention
-    }
-  }
-}
-
-/// The things that need attention, counted. The number beside the icon is `total`.
-public struct Tally: Sendable, Equatable {
-  /// New, changed and gone files in watched places since the last reading.
-  public var changes = 0
-  /// Groups of failed readings: one per reader, kind and reason.
-  public var failedGroups = 0
-  /// Failed readings soc counted but did not list in a group: counted as one.
-  public var unlistedFailed = 0
-  /// Groups of readings of a class this app does not know.
-  public var unknownGroups = 0
-  /// Machines whose visit failed.
-  public var unreached = 0
-  /// The threat feed was not read: failed, never read, or an outcome not known here.
-  public var feed = 0
-
-  public var total: Int {
-    changes + failedGroups + unlistedFailed + unknownGroups + unreached + feed
+  /// The worst level among the items, or nil when there are none or none is known.
+  public static func worst(_ items: [Item]) -> String? {
+    items.compactMap { $0.severity }.filter(levels.contains)
+      .max { levels.firstIndex(of: $0)! < levels.firstIndex(of: $1)! }
   }
 
-  /// The tally, or why it cannot be made.
-  public static func of(_ s: Status) -> Result<Tally, CannotRead> {
-    var t = Tally()
-    guard let c = s.watched?.sinceLastReading, let new = c.new, let changed = c.changed,
-      let gone = c.gone
-    else { return .failure(CannotRead("What changed in watched places is not reported.")) }
-    t.changes = new + changed + gone
-    guard let coverage = s.coverage, let failed = coverage.failed
-    else { return .failure(CannotRead("How many readings failed is not reported.")) }
-    let groups = coverage.problems ?? []
-    let failedGroups = groups.filter { $0.class == "failed" }
-    t.failedGroups = failedGroups.count
-    let listed = failedGroups.reduce(0) { $0 + ($1.count ?? 1) }
-    t.unlistedFailed = failed > listed ? 1 : 0
-    t.unknownGroups =
-      groups.filter { Place.of(class: $0.class) == .attention && $0.class != "failed" }
-      .count
-    // `unreached` is new in the contract; until soc gives it, it is not counted.
-    t.unreached = coverage.unreachedTotal ?? coverage.unreached?.count ?? 0
-    guard let outcome = s.threats?.outcome
-    else { return .failure(CannotRead("Whether the threat feed was read is not reported.")) }
-    t.feed = Tally.feedIsCalm(outcome) ? 0 : 1
-    return .success(t)
+  /// High and critical get the stronger of the two weights the panel has.
+  public static func isStrong(_ severity: String?) -> Bool {
+    severity == "high" || severity == "critical"
   }
-
-  public static func feedIsCalm(_ outcome: String) -> Bool {
-    outcome == "read" || outcome == "unchanged"
-  }
-}
-
-public struct CannotRead: Error, Sendable, Equatable {
-  public let reason: String
-  public init(_ reason: String) { self.reason = reason }
 }
 
 public enum Light: Sendable, Equatable {
@@ -116,10 +57,25 @@ public enum Light: Sendable, Equatable {
       if s.running == true { return .cannotRead("The first run is in progress.") }
       return .cannotRead("No run has finished yet.")
     }
-    switch Tally.of(s) {
-    case .failure(let why): return .cannotRead(why.reason)
-    case .success(let t): return t.total == 0 ? .nothingToReport : .attention(t.total)
+    // What needs a look is soc's to say. Not computed, or not said, is not calm.
+    if let nc = s.notComputed?.first(where: { $0.section == "needs_a_look" }) {
+      return .cannotRead(
+        "What needs a look is not computed yet: " + Inert.text(nc.reason ?? "no reason given") + "."
+      )
     }
+    guard let total = s.needsALookTotal, let items = s.needsALook else {
+      return .cannotRead("What needs a look is not reported.")
+    }
+    guard total >= items.count else {
+      return .cannotRead("What needs a look does not add up.")
+    }
+    return total == 0 ? .nothingToReport : .attention(total)
+  }
+
+  /// The menu-bar symbol: filled when the worst thing shown is high or critical.
+  public static func menuSymbol(_ light: Light, worst: String?) -> String {
+    if case .attention = light, Severity.isStrong(worst) { return light.symbol + ".fill" }
+    return light.symbol
   }
 
   /// One SF Symbol per state, each a different shape, so the states are told

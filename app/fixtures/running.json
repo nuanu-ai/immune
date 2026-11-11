@@ -1,23 +1,153 @@
 {
-  "format": 1, "operation": "status", "ok": true, "errors": [],
-  "result": {
-    "generated_at": "2026-11-10T11:00:05Z",
-    "running": true,
-    "store": { "path_text": "/Users/example/Library/Application Support/personal-soc/store.db", "exists": true },
-    "cannot_judge": [ "no threat is matched against the estate yet" ],
-    "last_run": { "id": "1794403600-000000003", "started_at": "2026-11-10T11:00:00Z", "finished_at": null, "finished": false },
-    "last_finished_run": {
-      "id": "1794300000-000000001", "started_at": "2026-11-10T10:00:00Z", "finished_at": "2026-11-10T10:00:21Z",
-      "first_run": true, "readings": { "partial": 0, "failed": 0, "not_repeated": 0, "machines_unread": 0 },
-      "since_previous_run": null, "unknown": []
-    },
-    "estate": { "machines": 1, "servers": 0, "servers_offered": 0, "servers_read": 0, "machines_set_aside": 0,
-                "machines_seen_after_owner_word": 0, "checkouts": 0, "components": 10 },
-    "watched": { "files": 2, "first_reading": true, "since_last_reading": { "new": 0, "changed": 0, "gone": 0 },
-                 "kinds": [], "content_not_read": 0, "changes": [], "changes_total": 0 },
-    "threats": { "outcome": "unchanged", "entries": 1700, "first_reading": false, "new": 0, "gone": 0,
-                 "read_at": "2026-11-10T10:00:01Z", "checked_at": "2026-11-10T10:00:01Z", "source": "cisa-kev", "matched": false },
-    "coverage": { "readings": 2, "full": 2, "read_nothing": 0, "partial": 0, "failed": 0, "problems": [], "problems_total": 0 },
-    "not_computed": []
-  }
+ "format": 1,
+ "operation": "status",
+ "ok": true,
+ "errors": [],
+ "result": {
+  "generated_at": "2026-11-10T11:00:05Z",
+  "running": true,
+  "store": {
+   "path_text": "/Users/example/Library/Application Support/personal-soc/store.db",
+   "exists": true
+  },
+  "cannot_judge": [
+   "no threat is matched against the estate yet"
+  ],
+  "last_run": {
+   "id": "1794403600-000000003",
+   "started_at": "2026-11-10T11:00:00Z",
+   "finished_at": null,
+   "finished": false
+  },
+  "last_finished_run": {
+   "id": "1794300000-000000001",
+   "started_at": "2026-11-10T10:00:00Z",
+   "finished_at": "2026-11-10T10:00:21Z",
+   "first_run": true,
+   "readings": {
+    "partial": 0,
+    "failed": 0,
+    "not_repeated": 0,
+    "machines_unread": 0
+   },
+   "since_previous_run": null,
+   "unknown": []
+  },
+  "estate": {
+   "machines": 1,
+   "servers": 0,
+   "servers_offered": 0,
+   "servers_read": 0,
+   "machines_set_aside": 0,
+   "machines_seen_after_owner_word": 0,
+   "checkouts": 0,
+   "components": 10
+  },
+  "watched": {
+   "files": 2,
+   "first_reading": true,
+   "since_last_reading": {
+    "new": 0,
+    "changed": 0,
+    "gone": 0
+   },
+   "kinds": [],
+   "content_not_read": 0,
+   "changes": [],
+   "changes_total": 0
+  },
+  "threats": {
+   "outcome": "unchanged",
+   "entries": 1700,
+   "first_reading": false,
+   "new": 0,
+   "gone": 0,
+   "read_at": "2026-11-10T10:00:01Z",
+   "checked_at": "2026-11-10T10:00:01Z",
+   "source": "cisa-kev",
+   "matched": false
+  },
+  "coverage": {
+   "readings": 2,
+   "full": 2,
+   "read_nothing": 0,
+   "partial": 0,
+   "failed": 0,
+   "problems": [],
+   "problems_total": 0
+  },
+  "not_computed": [],
+  "needs_a_look": [
+   {
+    "id": "f3c1e07a9b2",
+    "type": "finding",
+    "kind": "ssh access file",
+    "severity": "high",
+    "state": "open",
+    "first_seen": "2026-11-10T10:00:21Z",
+    "last_seen": "2026-11-10T10:00:21Z",
+    "title": "An SSH file that decides who can log in to this Mac, or how it connects to other machines, was added, changed or removed.",
+    "meaning": "This is normal when you just added a key, a server or a setting.",
+    "advice": "If you did not, look at the file now, before you next connect anywhere.",
+    "value_text": null,
+    "where_text": ".ssh/authorized_keys",
+    "rule": "watched.ssh-access",
+    "confidence": "low",
+    "change": "changed",
+    "technique": "T1098.004"
+   },
+   {
+    "id": "f5d20b8e641",
+    "type": "finding",
+    "kind": "shell profile",
+    "severity": "medium",
+    "state": "open",
+    "first_seen": "2026-11-10T10:00:20Z",
+    "last_seen": "2026-11-10T10:00:20Z",
+    "title": "A file your terminal runs every time it starts was added, changed or removed.",
+    "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
+    "advice": "If you did not, open the file and look at its last lines.",
+    "value_text": null,
+    "where_text": ".zshrc",
+    "rule": "watched.shell-profile",
+    "confidence": "low",
+    "change": "changed",
+    "technique": "T1546.004"
+   },
+   {
+    "id": "f8a6c3d1e05",
+    "type": "finding",
+    "kind": "autostart item",
+    "severity": "medium",
+    "state": "open",
+    "first_seen": "2026-11-10T10:00:19Z",
+    "last_seen": "2026-11-10T10:00:19Z",
+    "title": "A program set to start by itself on this Mac was added, changed or removed.",
+    "meaning": "This is normal right after you install, update or remove an app that works in the background.",
+    "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
+    "value_text": null,
+    "where_text": "Library/LaunchAgents/org.example.helper.plist",
+    "rule": "watched.autostart",
+    "confidence": "low",
+    "change": "new",
+    "technique": "T1543"
+   },
+   {
+    "id": "h2e9f4a7c10",
+    "type": "health",
+    "kind": "machine not reached",
+    "severity": "low",
+    "state": "current",
+    "first_seen": "2026-11-09T22:00:05Z",
+    "last_seen": "2026-11-10T10:00:24Z",
+    "title": "A machine could not be reached.",
+    "meaning": "This is normal if it is switched off or offline; while it cannot be reached, changes on it go unseen.",
+    "advice": "If it should be on, check that you can connect to it.",
+    "value_text": "connection timed out after 10 s",
+    "where_text": "build-01.example.net"
+   }
+  ],
+  "needs_a_look_total": 4,
+  "answers_note": "Marking a finding expected or seen is the owner's answer: it hides the finding from him. An agent must not give it on the owner's behalf; it may show the owner the command to give it."
+ }
 }

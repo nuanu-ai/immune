@@ -1,7 +1,31 @@
-{ "format": 1, "operation": "status", "ok": true, "errors": [],
-  "result": { "generated_at": "2026-11-10T10:05:00Z", "running": false,
-    "store": { "path_text": "/Users/example/Library/Application Support/personal-soc/store.db", "exists": false },
-    "cannot_judge": [ "no threat is matched against the estate yet" ],
-    "not_computed": [
-      { "section": "last_run", "reason": "there is no store yet; `soc run` makes it" },
-      { "section": "coverage", "reason": "there is no store yet; `soc run` makes it" } ] } }
+{
+ "format": 1,
+ "operation": "status",
+ "ok": true,
+ "errors": [],
+ "result": {
+  "generated_at": "2026-11-10T10:05:00Z",
+  "running": false,
+  "store": {
+   "path_text": "/Users/example/Library/Application Support/personal-soc/store.db",
+   "exists": false
+  },
+  "cannot_judge": [
+   "no threat is matched against the estate yet"
+  ],
+  "not_computed": [
+   {
+    "section": "last_run",
+    "reason": "there is no store yet; `soc run` makes it"
+   },
+   {
+    "section": "coverage",
+    "reason": "there is no store yet; `soc run` makes it"
+   },
+   {
+    "section": "needs_a_look",
+    "reason": "there is no store yet; `soc run` makes it"
+   }
+  ]
+ }
+}

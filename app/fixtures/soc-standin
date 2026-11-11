@@ -9,6 +9,8 @@
 #   SOC_STANDIN_RUN_SLEEP    extra seconds `run` waits (default 2)
 #   `watch` plays the watcher; see its own comment below.
 #   SOC_STANDIN_VIEW_EXIT    exit code of `view`, which prints nothing and opens nothing (default 0)
+#   SOC_STANDIN_ANSWER_LOG   file `finding` writes its arguments to, each ended by a NUL byte
+#   SOC_STANDIN_ANSWER_EXIT  exit code of `finding` (default 0); 2 prints soc's refusal
 dir=$(dirname "$0")
 fixture=${SOC_STANDIN_FIXTURE:-$dir/status.json}
 code=${SOC_STANDIN_EXIT:-0}
@@ -54,6 +56,14 @@ if [ "${1:-}" = view ]; then
   sleep "${SOC_STANDIN_SLEEP:-0}"
   [ "${SOC_STANDIN_VIEW_EXIT:-0}" = 0 ] || echo "the page could not be written: disk full" >&2
   exit "${SOC_STANDIN_VIEW_EXIT:-0}"
+fi
+if [ "${1:-}" = finding ]; then
+  [ -n "${SOC_STANDIN_ANSWER_LOG:-}" ] && printf '%s\0' "$@" > "$SOC_STANDIN_ANSWER_LOG"
+  case "${SOC_STANDIN_ANSWER_EXIT:-0}" in
+    0) echo '{"format":1,"operation":"finding","ok":true,"errors":[],"result":{}}' ;;
+    2) echo '{"format":1,"operation":"finding","ok":false,"errors":[{"code":"finding_closed","message":"this finding is already closed; nothing was changed","example":"soc findings lists the open findings","detail_text":""}]}' ;;
+  esac
+  exit "${SOC_STANDIN_ANSWER_EXIT:-0}"
 fi
 if [ "${1:-}" = run ]; then
   sleep "${SOC_STANDIN_RUN_SLEEP:-2}"

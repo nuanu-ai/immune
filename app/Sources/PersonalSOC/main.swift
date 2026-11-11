@@ -44,7 +44,9 @@ final class Delegate: NSObject, NSApplicationDelegate {
     popover.behavior = .transient
 
     // @Published sends the new value before it is stored; paint from the value.
-    watching = model.$reading.sink { [weak self] reading in self?.paint(Light.of(reading)) }
+    watching = model.$reading.sink { [weak self] reading in
+      self?.paint(Light.of(reading), worst: Severity.worst(reading.status?.needsALook ?? []))
+    }
 
     // Every minute: read the status, then start the hourly check if it is due.
     timers.append(
@@ -92,7 +94,7 @@ final class Delegate: NSObject, NSApplicationDelegate {
     if await model.checkIfDue() { log("hourly check done") }
   }
 
-  private func paint(_ light: Light) {
+  private func paint(_ light: Light, worst: String?) {
     guard let button = item?.button else { return }
     let words: String
     switch light {
@@ -100,13 +102,15 @@ final class Delegate: NSObject, NSApplicationDelegate {
     case .attention(let n): words = n == 1 ? "1 thing needs a look" : "\(n) things need a look"
     case .cannotRead(let reason): words = "can't tell. " + reason
     }
+    // The worst severity shown decides the weight: filled for high or critical.
+    let symbol = Light.menuSymbol(light, worst: worst)
     let image = NSImage(
-      systemSymbolName: light.symbol, accessibilityDescription: "\(appName): \(words)")
+      systemSymbolName: symbol, accessibilityDescription: "\(appName): \(words)")
     image?.isTemplate = true
     button.image = image
     if case .attention(let n) = light { button.title = " \(n)" } else { button.title = "" }
     button.toolTip = "\(appName): \(words)"
-    log("state: \(light.symbol) \(words)")
+    log("state: \(symbol) \(words)")
   }
 
   @objc private func toggle() {
@@ -212,9 +216,22 @@ func printPanel(_ soc: any SocRunning, _ extra: [String]) -> Never {
 /// and the same panel as text to `panel.txt`, and exits. No screen capture: the view hierarchy is drawn into a bitmap. The
 /// popover's translucent material cannot be drawn this way; the window background
 /// colour stands in for it.
+///
+/// `--render-seen` first presses Seen on the first finding (so a refusal from the
+/// stand-in shows on its card); `--render-form <reason>` opens the Expected form on
+/// it with that reason typed.
 @MainActor
 func renderPanel(_ model: AppModel, _ watcher: Watcher, to folder: URL) async -> Never {
   await model.refresh()
+  let first = model.reading.status?.needsALook?.first { $0.type == "finding" }?.id
+  if CommandLine.arguments.contains("--render-seen"), let first {
+    await model.answerSeen(first)
+  }
+  if let i = CommandLine.arguments.firstIndex(of: "--render-form"),
+    i + 1 < CommandLine.arguments.count, let first
+  {
+    model.form = ExpectedForm(id: first, reason: CommandLine.arguments[i + 1])
+  }
   // Give the watcher a moment, so the panel shows what it says.
   watcher.start()
   try? await Task.sleep(for: .milliseconds(1500))
@@ -247,7 +264,8 @@ func renderPanel(_ model: AppModel, _ watcher: Watcher, to folder: URL) async ->
   // The same panel as text, beside the pictures.
   let panel = Panel.of(
     model.reading, now: Date(), checking: model.runInProgress, notes: model.notes,
-    notWatching: watcher.notWatching)
+    notWatching: watcher.notWatching, form: model.form, answering: model.answering,
+    refusals: model.refusals)
   try? (panel.lines.joined(separator: "\n") + "\n").write(
     to: folder.appendingPathComponent("panel.txt"), atomically: true, encoding: .utf8)
   watcher.stop()

@@ -34,6 +34,33 @@ public struct Status: Sendable, Equatable {
   public var cannotJudge: [String]?
   public var noReaderFor: [NoReader]?
   public var notComputed: [NotComputed]?
+  /// What needs the owner's look, as soc serves it, most severe first; at most 50.
+  public var needsALook: [Item]?
+  public var needsALookTotal: Int?
+  public var answersNote: String?
+}
+
+/// One thing that needs a look: a finding the owner can answer, or a health item.
+/// `title`, `meaning` and `advice` are the program's fixed words; `*_text` is data.
+public struct Item: Sendable, Equatable {
+  public var id: String?
+  /// `finding` or `health`.
+  public var type: String?
+  public var kind: String?
+  /// informational, low, medium, high, critical.
+  public var severity: String?
+  public var state: String?
+  public var firstSeen: Date?
+  public var lastSeen: Date?
+  public var title: String?
+  public var meaning: String?
+  public var advice: String?
+  public var valueText: String?
+  public var whereText: String?
+  public var rule: String?
+  public var confidence: String?
+  public var change: String?
+  public var technique: String?
 }
 
 public struct Store: Sendable, Equatable {
@@ -285,7 +312,21 @@ public enum Decoding {
       },
       notComputed: r["not_computed"].array?.compactMap { n in
         n.object.map { NotComputed(section: $0["section"].string, reason: $0["reason"].string) }
-      })
+      },
+      needsALook: r["needs_a_look"].array?.compactMap { i in i.object.map(item) },
+      needsALookTotal: r["needs_a_look_total"].count,
+      answersNote: r["answers_note"].string)
+  }
+
+  static func item(_ i: J) -> Item {
+    Item(
+      id: i["id"].string, type: i["type"].string, kind: i["kind"].string,
+      severity: i["severity"].string, state: i["state"].string, firstSeen: i["first_seen"].date,
+      lastSeen: i["last_seen"].date, title: i["title"].string, meaning: i["meaning"].string,
+      advice: i["advice"].string, valueText: i["value_text"].string,
+      whereText: i["where_text"].string, rule: i["rule"].string,
+      confidence: i["confidence"].string, change: i["change"].string,
+      technique: i["technique"].string)
   }
 
   static func finishedRun(_ f: J) -> FinishedRun {
