@@ -893,13 +893,17 @@ pub fn beyond(conn: &Connection, latest: &[Latest], now: i64) -> Result<String, 
         out.push_str("<p class=\"muted\">None.</p>\n");
     } else {
         out.push_str("<div class=\"scroll\"><table class=\"dense\">\n");
-        view::thead(&mut out, &["Machine", "You said", "Since", "Why"]);
+        view::thead(
+            &mut out,
+            &["Machine", "You said", "Since", "Why", "How it was given"],
+        );
         for s in &standing {
             out.push_str("<tr>");
             view::td(&mut out, "mono", s.name())?;
             view::td(&mut out, "", &s.word.said)?;
             view::td(&mut out, "nowrap", &utc(s.word.made_at))?;
             view::td(&mut out, "", &s.word.reason)?;
+            view::td(&mut out, "", view::given_by(s.word.via))?;
             out.push_str("</tr>\n");
         }
         out.push_str("</tbody></table></div>\n");

@@ -45,6 +45,27 @@ public struct Status: Sendable, Equatable {
   public var notCoveredTotal: Int?
   /// Answers that hide a finding now and were not given in the app.
   public var answeredOutsideApp: AnsweredOutside?
+  /// The owner's statements that set a machine aside and were not given in the app.
+  public var statementsOutsideApp: StatementsOutside?
+}
+
+/// The statements that stand and were given outside the app: soc's total and the latest.
+public struct StatementsOutside: Sendable, Equatable {
+  public var total: Int?
+  public var items: [StatementItem]
+}
+
+/// One statement given outside the app. `*_text` is data.
+public struct StatementItem: Sendable, Equatable {
+  /// The machine's name, and its full id, which soc takes back by.
+  public var machineText: String?
+  public var entityText: String?
+  /// `retired` or `not mine`.
+  public var said: String?
+  /// `agent` or `command`.
+  public var via: String?
+  public var at: Date?
+  public var reasonText: String?
 }
 
 /// The answers given outside the app that are in force: soc's total and the latest few.
@@ -428,6 +449,18 @@ public enum Decoding {
                 id: $0["id"].string, title: $0["title"].string, answer: $0["answer"].string,
                 until: $0["until"].date, via: $0["via"].string, at: $0["at"].date,
                 reasonText: $0["reason_text"].string, whereText: $0["where_text"].string)
+            }
+          })
+      },
+      statementsOutsideApp: r["statements_outside_app"].object.map { a in
+        StatementsOutside(
+          total: a["total"].count,
+          items: (a["items"].array ?? []).compactMap { i in
+            i.object.map {
+              StatementItem(
+                machineText: $0["machine_text"].string, entityText: $0["entity_text"].string,
+                said: $0["said"].string, via: $0["via"].string, at: $0["at"].date,
+                reasonText: $0["reason_text"].string)
             }
           })
       })

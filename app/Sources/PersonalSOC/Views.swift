@@ -413,17 +413,28 @@ struct PanelView: View {
               Text(verbatim: reason).font(.system(size: 11)).foregroundStyle(.secondary)
                 .lineLimit(2).truncationMode(.tail).textSelection(.enabled).help(reason)
             }
-            if let id = line.finding, let refused = p.refusals[id] {
+            if let id = line.target, let refused = p.refusals[id] {
               Plain(refused).font(.system(size: 11)).textSelection(.enabled)
             }
-            if let id = line.finding {
+            if let id = line.target {
               if p.answering == id {
                 Text(verbatim: "Saving…").font(.system(size: 11)).foregroundStyle(.secondary)
               } else {
-                Button("Take back") { Task { await model.takeBack(id) } }
-                  .buttonStyle(.borderless).foregroundStyle(.tint).font(.system(size: 11))
-                  .fixedSize().disabled(p.answering != nil)
-                  .help("Show it again as something that needs a look.")
+                Button("Take back") {
+                  Task {
+                    if line.finding != nil {
+                      await model.takeBack(id)
+                    } else {
+                      await model.withdrawStatement(id)
+                    }
+                  }
+                }
+                .buttonStyle(.borderless).foregroundStyle(.tint).font(.system(size: 11))
+                .fixedSize().disabled(p.answering != nil)
+                .help(
+                  line.finding != nil
+                    ? "Show it again as something that needs a look."
+                    : "Check this machine again at the next server check.")
               }
             }
           }

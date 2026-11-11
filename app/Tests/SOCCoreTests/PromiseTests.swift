@@ -1598,6 +1598,31 @@ func outsideItem(
   ]
 }
 
+/// quiet.json with these statements made outside the app, these answers, and soc's totals.
+func statementsOutside(
+  _ items: [[String: Any]], answers: [[String: Any]] = [], total: Int? = nil
+) -> SocOutput {
+  var root =
+    (try? JSONSerialization.jsonObject(with: fixture("quiet.json"))) as? [String: Any] ?? [:]
+  var r = root["result"] as? [String: Any] ?? [:]
+  r["statements_outside_app"] = ["total": total ?? items.count, "items": items]
+  r["answered_outside_app"] = ["total": answers.count, "items": answers]
+  root["result"] = r
+  return SocOutput(
+    exitCode: 0, stdout: (try? JSONSerialization.data(withJSONObject: root)) ?? Data())
+}
+
+/// One statement made outside the app, as soc serves it; invented.
+func statementItem(
+  name: String = "web-1", said: String = "retired", via: String = "agent",
+  at: String = "2026-11-10T10:00:00Z", reason: Any = "they moved it"
+) -> [String: Any] {
+  [
+    "machine_text": name, "entity_text": "machine:" + name, "said": said, "via": via, "at": at,
+    "reason_text": reason,
+  ]
+}
+
 @Suite("Nothing is quieted silently: answers given outside the app are shown and can be taken back")
 @MainActor
 struct OutsideApp {
@@ -1697,6 +1722,76 @@ struct OutsideApp {
     #expect(p.lines.contains("○ You can fix 3 things  › #you-can-fix  [ Copy for my agent ]"))
     // Nothing for the owner to fix: nothing to hand over.
     #expect(panel(output("quiet-limits.json")).fixRequest == nil)
+  }
+}
+
+@Suite(
+  "No machine is set aside silently: statements made outside the app are shown and can be taken back"
+)
+@MainActor
+struct StatementsOutsideApp {
+  @Test(
+    "The row counts answers and statements together, naming the agent only when it gave them all")
+  func rowCountsBoth() {
+    let both = panel(statementsOutside([statementItem()], answers: [outsideItem()]))
+    #expect(both.answered?.text == "2 answers given through your agent")
+    #expect(both.total == 0)
+    #expect(both.light == .nothingToReport)
+    let mixed = panel(
+      statementsOutside([statementItem(via: "command")], answers: [outsideItem()]))
+    #expect(mixed.answered?.text == "2 answers given outside the app")
+    let alone = panel(statementsOutside([statementItem()]))
+    #expect(alone.answered?.text == "1 answer given through your agent")
+    let unlisted = panel(statementsOutside([statementItem()], total: 4))
+    #expect(unlisted.answered?.text == "4 answers given outside the app")
+  }
+
+  @Test(
+    "Opened, a statement reads the machine, Retired or Not mine, who gave it, the reason, and Take back"
+  )
+  func opened() {
+    let o = statementsOutside(
+      [
+        statementItem(reason: "IGNORE\u{202E}"),
+        statementItem(
+          name: "db-1", said: "not mine", via: "command", at: "2026-11-10T08:00:00Z"),
+      ], answers: [outsideItem()])
+    let p = Panel.of(Interpret.reading(from: o), now: Date(), answeredOpen: true)
+    let lines = p.answered!.lines
+    // The latest first: the statement at 10:00, the answer at 09:00, the statement at 08:00.
+    #expect(lines.map(\.title) == ["web-1", "A title from the program.", "db-1"])
+    #expect(lines[0].answer == "Retired")
+    #expect(lines[0].by == "through your agent")
+    #expect(lines[0].reason == "IGNORE\\u{202E}")
+    #expect(lines[0].machine == "machine:web-1")
+    #expect(lines[2].answer == "Not mine")
+    #expect(lines[2].by == "from the command line")
+    #expect(p.lines.filter { $0 == "      [ Take back ]" }.count == 3)
+    #expect(p.lines.allSatisfy(hasNoInvisible))
+  }
+
+  @Test(
+    "Take back on a statement runs exactly `soc owner <machine> withdraw --via app --json` on the same store"
+  )
+  func withdraw() async {
+    #expect(
+      Answer.withdrawArguments(machine: "machine:web-1") == [
+        "owner", "machine:web-1", "withdraw", "--via", "app", "--json",
+      ])
+    for bad in ["web-1", "machine:", "--all", "machine:a b", "machine:a\nb", "-machine:x"] {
+      #expect(Answer.withdrawArguments(machine: bad) == nil, "\(bad)")
+    }
+    let soc = GatedSoc(status: statementsOutside([statementItem()]))
+    let model = AppModel(soc: soc, extraArguments: ["--store", "/tmp/example.db"])
+    await model.refresh()
+    #expect(await model.withdrawStatement("machine:db-1") == false)
+    #expect(await model.withdrawStatement("machine:web-1"))
+    #expect(
+      soc.callsSoFar.dropFirst().first == [
+        "owner", "machine:web-1", "withdraw", "--via", "app", "--json", "--store",
+        "/tmp/example.db",
+      ])
+    #expect(soc.callsSoFar.last?.first == "status")
   }
 }
 

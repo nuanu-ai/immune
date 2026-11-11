@@ -72,7 +72,10 @@ const USAGE: &str = "usage: soc run [--store <path>] [--machine-name <name>] [--
        soc servers [--store <path>] [--tailscale <path>]
        soc view [--store <path>] [--no-open]
        soc owner [<name> retired|not-mine --reason <text> | <name> withdraw]
-                 [--store <path>] [--tailscale <path>]
+                 [--via app|agent] [--store <path>] [--tailscale <path>] [--json]
+           retired and not-mine set a machine aside: it is no longer checked. --via says
+           who gave it; without it, the command line. An agent gives one only after the
+           owner has said so in this conversation, with --via agent and their reason.
        soc sample [--store <path>] [--sample-input <file>] [--json]
        soc watch [--store <path>] [--system-root <dir>] [--sample-input <file>]
                  [--sample-every <seconds>]
@@ -159,6 +162,10 @@ struct ServersArgs {
 struct OwnerArgs {
     servers: ServersArgs,
     act: Option<(String, Act)>,
+    /// Who makes or withdraws the statement: in the app, the owner's agent, or the command
+    /// line when neither is named.
+    via: findings::Via,
+    json: bool,
 }
 
 enum Act {
@@ -270,11 +277,14 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
         }
         "owner" => {
             let (mut tailscale, mut reason, mut words) = (None, None, Vec::new());
+            let (mut via, mut json) = (None, false);
             while let Some(arg) = it.next() {
                 match arg.as_str() {
                     "--store" => store = Some(value(&mut it, &arg)?.into()),
                     "--tailscale" => tailscale = Some(value(&mut it, &arg)?.into()),
                     "--reason" => reason = Some(value(&mut it, &arg)?),
+                    "--json" => json = true,
+                    "--via" => via = Some(via_value(&mut it, &arg)?),
                     _ if arg.starts_with("--") => {
                         return Err(format!("unexpected argument: {arg}"));
                     }
@@ -282,7 +292,13 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
                 }
             }
             let act = match (words.as_slice(), reason) {
-                ([], None) => None,
+                ([], None) if via.is_none() => None,
+                ([], _) => {
+                    return Err(
+                        "--reason and --via go with a statement: <name> retired, not-mine or withdraw"
+                            .to_string(),
+                    );
+                }
                 ([name, verb], None) if verb == "withdraw" => Some((name.clone(), Act::Withdraw)),
                 ([_, verb], Some(_)) if verb == "withdraw" => {
                     return Err("a withdrawal takes no reason".to_string());
@@ -297,6 +313,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
                             ));
                         }
                     };
+                    // Whoever gives it, and an agent above all, a statement says why.
                     let reason = reason.unwrap_or_default();
                     if reason.trim().is_empty() {
                         return Err("a statement needs a reason: --reason <text>".to_string());
@@ -312,6 +329,8 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
                     tailscale,
                 },
                 act,
+                via: via.unwrap_or(findings::Via::Command),
+                json,
             }))
         }
         "findings" => {
@@ -336,13 +355,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
                     "--json" => json = true,
                     "--reason" => reason = Some(value(&mut it, &arg)?),
                     "--days" => days = Some(value(&mut it, &arg)?),
-                    "--via" => {
-                        via = Some(match value(&mut it, &arg)?.as_str() {
-                            "app" => findings::Via::App,
-                            "agent" => findings::Via::Agent,
-                            _ => return Err("--via takes app or agent".to_string()),
-                        });
-                    }
+                    "--via" => via = Some(via_value(&mut it, &arg)?),
                     _ if arg.starts_with("--") => {
                         return Err(format!("unexpected argument: {arg}"));
                     }
@@ -458,6 +471,15 @@ fn value(it: &mut impl Iterator<Item = String>, arg: &str) -> Result<String, Str
     it.next().ok_or(format!("{arg} needs a value"))
 }
 
+/// The value of `--via`: who gives an answer or a statement.
+fn via_value(it: &mut impl Iterator<Item = String>, arg: &str) -> Result<findings::Via, String> {
+    match value(it, arg)?.as_str() {
+        "app" => Ok(findings::Via::App),
+        "agent" => Ok(findings::Via::Agent),
+        _ => Err("--via takes app or agent".to_string()),
+    }
+}
+
 /// Misuse of the command line.
 const EXIT_USAGE: u8 = 2;
 /// The store is there and cannot be read.
@@ -504,7 +526,10 @@ fn main() -> ExitCode {
             let op = args.first().map(String::as_str);
             if args.iter().any(|a| a == "--json") || op == Some("watch") {
                 let op = op.filter(|o| {
-                    ["run", "status", "findings", "finding", "sample", "watch"].contains(o)
+                    [
+                        "run", "status", "findings", "finding", "sample", "watch", "owner",
+                    ]
+                    .contains(o)
                 });
                 let example = match op {
                     Some("run") => "soc run --json",
@@ -512,6 +537,7 @@ fn main() -> ExitCode {
                     Some("finding") => "soc finding f0123456789 --json",
                     Some("watch") => "soc watch",
                     Some("sample") => "soc sample --json",
+                    Some("owner") => "soc owner --json",
                     _ => "soc status --json",
                 };
                 print_json(&status::failure(
@@ -555,7 +581,7 @@ fn main() -> ExitCode {
         },
         Cmd::Servers(args) => servers_cmd(&args),
         Cmd::View(args) => view(&args),
-        Cmd::Owner(args) => owner_cmd(&args),
+        Cmd::Owner(args) => return owner_cmd(&args),
         Cmd::Findings(args) => return findings_cmd(&args),
         Cmd::Finding(args) => return finding_cmd(&args),
         Cmd::Sample(args) => return sample_cmd(&args),
@@ -1768,15 +1794,59 @@ fn word_line(standing: &[owner::Standing]) -> Option<String> {
     Some(line)
 }
 
+/// A statement in the machine-readable form. The machine's names are the owner's or a
+/// source's text, so they are only in `_text` fields.
+fn statement_json(s: &owner::Standing) -> serde_json::Value {
+    serde_json::json!({
+        "machine_text": status::text(s.name()),
+        "entity_text": status::text(&s.word.entity),
+        "said": s.word.said,
+        "via": s.word.via.literal(),
+        "at": view::iso(s.word.made_at),
+        "reason_text": status::text(&s.word.reason),
+        "names_text": s.names[1..].iter().map(|n| status::text(n)).collect::<Vec<_>>(),
+        "seen_after": s.seen.as_ref().map(|e| serde_json::json!({
+            "at": view::iso(e.at),
+            "what_text": status::text(&e.what),
+        })),
+    })
+}
+
 /// Makes or withdraws a statement, or lists those that stand.
-fn owner_cmd(args: &OwnerArgs) -> Result<(), Box<dyn Error>> {
+fn owner_cmd(args: &OwnerArgs) -> ExitCode {
+    let refused = |code: &str, message: String, example: &str, exit: u8| {
+        refuse(args.json, "owner", code, &message, example, exit)
+    };
     let store_path = &args.servers.store;
     if !store_path.is_file() {
-        return Err(format!("no store at {}; run `soc run` first", store_path.display()).into());
+        return refused(
+            "no_store",
+            format!(
+                "there is no store at {}; `soc run` makes it",
+                store_path.display()
+            ),
+            "soc run --json",
+            EXIT_STORE,
+        );
     }
+    let failed =
+        |e: &dyn std::fmt::Display| store_failed(args.json, "owner", &Stop::Store(e.to_string()));
     let Some((name, act)) = &args.act else {
-        let conn = store::open_read_only(store_path)?;
-        let standing = owner::standing(&conn)?;
+        let listed = store::open_read_only(store_path)
+            .and_then(|conn| Ok((owner::standing(&conn)?, owner::withdrawn(&conn)?)));
+        let (standing, withdrawn) = match listed {
+            Ok(l) => l,
+            Err(e) => return failed(&e),
+        };
+        if args.json {
+            let r = serde_json::json!({
+                "statements": standing.iter().map(statement_json).collect::<Vec<_>>(),
+                "statements_total": standing.len(),
+                "withdrawn": withdrawn,
+            });
+            print_json(&status::envelope("owner", r));
+            return ExitCode::SUCCESS;
+        }
         say(&format!(
             "The owner's word: {}.",
             things(
@@ -1795,25 +1865,37 @@ fn owner_cmd(args: &OwnerArgs) -> Result<(), Box<dyn Error>> {
         let mut head = WORD_HEAD.to_vec();
         head.push("Seen alive after it");
         print_table(&head, &rows);
-        let withdrawn = owner::withdrawn(&conn)?;
         if withdrawn > 0 {
             say(&format!(
                 "{} withdrawn and kept.",
                 things(withdrawn, "statement was", "statements were")
             ));
         }
-        return Ok(());
+        return ExitCode::SUCCESS;
     };
-    let now = SystemTime::now().duration_since(UNIX_EPOCH)?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     let at = now.as_secs() as i64;
     let run_id = format!("owner-{}-{:09}", now.as_secs(), now.subsec_nanos());
-    let mut conn = store::open(store_path)?;
-    let (entity, machine) = match owner::find(&conn, name)? {
-        owner::Found::One(entity, machine) => (entity, machine),
-        owner::Found::Unknown => {
-            return Err(format!("the store knows no machine as {name}; nothing was said").into());
+    let mut conn = match store::open(store_path) {
+        Ok(c) => c,
+        Err(e) => return failed(&e),
+    };
+    let (entity, machine) = match owner::find(&conn, name) {
+        Ok(owner::Found::One(entity, machine)) => (entity, machine),
+        Ok(owner::Found::Unknown) => {
+            return refused(
+                "unknown_machine",
+                format!(
+                    "the store knows no machine as {}; nothing was said",
+                    view::shown(name)
+                ),
+                "soc servers lists the machines the store knows",
+                EXIT_USAGE,
+            );
         }
-        owner::Found::Several(groups) => {
+        Ok(owner::Found::Several(groups)) => {
             let list: Vec<String> = groups
                 .iter()
                 .map(|g| {
@@ -1821,54 +1903,117 @@ fn owner_cmd(args: &OwnerArgs) -> Result<(), Box<dyn Error>> {
                     names.join(" = ")
                 })
                 .collect();
-            return Err(format!(
-                "{name} fits {} machines that are not known to be one: {}. Name one of them; nothing was said",
-                list.len(),
-                list.join("; ")
-            )
-            .into());
+            return refused(
+                "several_machines",
+                format!(
+                    "{} fits {} machines that are not known to be one: {}. Name one of them; nothing was said",
+                    view::shown(name),
+                    list.len(),
+                    view::shown(&list.join("; "))
+                ),
+                "soc owner <full machine id> retired --reason <text>",
+                EXIT_USAGE,
+            );
         }
+        Err(e) => return failed(&e),
     };
     let names: Vec<&str> = machine.iter().map(|m| owner::bare(m)).collect();
+    let mut lines = Vec::new();
+    let mut r = serde_json::json!({
+        "machine_text": status::text(owner::bare(&entity)),
+        "names_text": names.iter().map(|n| status::text(n)).collect::<Vec<_>>(),
+        "via": args.via.literal(),
+    });
     match act {
         Act::Say(said, reason) => {
-            let replaced = owner::say(&mut conn, &entity, &machine, said, reason, at, &run_id)?;
-            say(&format!(
+            let replaced = match owner::say(
+                &mut conn, &entity, &machine, said, reason, args.via, at, &run_id,
+            ) {
+                Ok(n) => n,
+                Err(e) => return failed(&e),
+            };
+            lines.push(format!(
                 "Said: {} is {said}, {}: {reason}",
                 owner::bare(&entity),
                 view::utc(at)
             ));
             if replaced > 0 {
-                say("It replaces the statement that stood about the same machine, which is kept.");
-            }
-        }
-        Act::Withdraw => {
-            let withdrawn = owner::withdraw(&mut conn, &machine, at, &run_id)?;
-            if withdrawn.is_empty() {
-                return Err(
-                    format!("no statement stands about {name}; nothing was withdrawn").into(),
+                lines.push(
+                    "It replaces the statement that stood about the same machine, which is kept."
+                        .to_string(),
                 );
             }
-            for (entity, said) in withdrawn {
-                say(&format!(
+            r["done"] = serde_json::json!("said");
+            r["said"] = serde_json::json!(said);
+            r["at"] = serde_json::json!(view::iso(at));
+            r["reason_text"] = status::text(reason);
+            r["replaced"] = serde_json::json!(replaced);
+        }
+        Act::Withdraw => {
+            let withdrawn = match owner::withdraw(&mut conn, &machine, args.via, at, &run_id) {
+                Ok(w) => w,
+                Err(e) => return failed(&e),
+            };
+            if withdrawn.is_empty() {
+                return refused(
+                    "no_statement",
+                    format!(
+                        "no statement stands about {}; nothing was withdrawn",
+                        view::shown(name)
+                    ),
+                    "soc owner --json lists the statements that stand",
+                    EXIT_USAGE,
+                );
+            }
+            for (entity, said) in &withdrawn {
+                lines.push(format!(
                     "Withdrawn: the statement that {} is {said} no longer stands, and is kept.",
-                    owner::bare(&entity)
+                    owner::bare(entity)
                 ));
             }
+            r["done"] = serde_json::json!("withdrawn");
+            r["withdrawn"] = withdrawn
+                .iter()
+                .map(|(e, said)| {
+                    serde_json::json!({ "machine_text": status::text(owner::bare(e)), "said": said })
+                })
+                .collect();
         }
     }
-    say(&format!(
+    lines.push(format!(
         "It covers the machine under every name: {}.",
         names.join(", ")
     ));
     drop(conn);
-    let n =
-        rewrite_sweep(&args.servers).map_err(|e| format!("the owner's word was kept, but {e}"))?;
-    say(&format!(
-        "The sweep script was written again: it visits {}.",
-        things(n as i64, "server", "servers")
-    ));
-    Ok(())
+    match rewrite_sweep(&args.servers) {
+        Ok(n) => {
+            lines.push(format!(
+                "The sweep script was written again: it visits {}.",
+                things(n as i64, "server", "servers")
+            ));
+            r["sweep"] = serde_json::json!({ "servers": n });
+        }
+        Err(e) => {
+            let problem = format!("the owner's word was kept, but {e}");
+            if !args.json {
+                for line in &lines {
+                    say(line);
+                }
+                eprintln!("soc: {}", view::shown(&problem));
+                return ExitCode::FAILURE;
+            }
+            r["sweep"] =
+                serde_json::json!({ "servers": null, "problem_text": status::text(&problem) });
+        }
+    }
+    if args.json {
+        print_json(&status::envelope("owner", r));
+    } else {
+        for line in &lines {
+            say(line);
+        }
+    }
+    ExitCode::SUCCESS
 }
 
 /// Writes the sweep script again after the owner's word changed, the way `soc servers`

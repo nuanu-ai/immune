@@ -695,6 +695,22 @@ impl Via {
             Via::Unknown => "unknown",
         }
     }
+
+    /// How a stored answer or statement was given: one kept before this was recorded, or
+    /// with a value this build does not know, is `Unknown`.
+    pub fn stored(v: Option<&str>) -> Via {
+        match v {
+            Some("app") => Via::App,
+            Some("agent") => Via::Agent,
+            Some("command") => Via::Command,
+            _ => Via::Unknown,
+        }
+    }
+
+    /// Given outside the app, as far as is known: by an agent or from the command line.
+    pub fn outside_app(self) -> bool {
+        matches!(self, Via::Agent | Via::Command)
+    }
 }
 
 /// Why an answer was not taken.
@@ -833,11 +849,7 @@ pub fn answered(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Item
 pub fn outside_app_json(answered: &[Item], shown: usize) -> Value {
     let outside: Vec<&Item> = answered
         .iter()
-        .filter(|i| {
-            i.answer
-                .as_ref()
-                .is_some_and(|a| matches!(a.via, Via::Agent | Via::Command))
-        })
+        .filter(|i| i.answer.as_ref().is_some_and(|a| a.via.outside_app()))
         .collect();
     let items: Vec<Value> = outside
         .iter()
@@ -976,12 +988,7 @@ pub fn item(f: &Found) -> Option<Item> {
         answer: f.answered_at.map(|at| Answered {
             at,
             given: given(f),
-            via: match f.via.as_deref() {
-                Some("app") => Via::App,
-                Some("agent") => Via::Agent,
-                Some("command") => Via::Command,
-                _ => Via::Unknown,
-            },
+            via: Via::stored(f.via.as_deref()),
             reason: f.reason.clone(),
             until: f.until,
             in_force: f.in_force,

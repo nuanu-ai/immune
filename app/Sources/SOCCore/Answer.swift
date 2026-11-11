@@ -52,6 +52,26 @@ public enum Answer {
     return ["finding", id, "seen", "--via", "app", "--json"]
   }
 
+  /// A machine the app passes to soc: its full id, `machine:` and a name of letters,
+  /// digits and the marks host names and addresses use, so it is one argument that can
+  /// never be read as a flag.
+  public static func isUsable(machine: String?) -> Bool {
+    guard let machine, machine.count <= 300, machine.hasPrefix("machine:"),
+      machine.count > "machine:".count
+    else { return false }
+    return machine.unicodeScalars.allSatisfy {
+      ("a"..."z").contains($0) || ("A"..."Z").contains($0) || ("0"..."9").contains($0)
+        || ".-_:[]%@/".unicodeScalars.contains($0)
+    }
+  }
+
+  /// `soc owner <machine> withdraw --via app --json`: the owner takes back a statement
+  /// that set a machine aside. Nil for a machine that is not usable.
+  public static func withdrawArguments(machine: String) -> [String]? {
+    guard isUsable(machine: machine) else { return nil }
+    return ["owner", machine, "withdraw", "--via", "app", "--json"]
+  }
+
   /// `soc finding <id> reopen --via app --json`: the owner takes an answer back. Nil for
   /// an id that is not usable.
   public static func reopenArguments(id: String) -> [String]? {

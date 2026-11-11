@@ -46,9 +46,10 @@ pub const CANNOT_JUDGE: &[&str] = &[
     "no vulnerability from the catalogue is matched against the estate yet",
 ];
 /// The sections of a result that hold numbers, in the order of the result.
-const SECTIONS: [&str; 11] = [
+const SECTIONS: [&str; 12] = [
     "needs_a_look",
     "answered_outside_app",
+    "statements_outside_app",
     "not_covered",
     "last_run",
     "last_finished_run",
@@ -579,6 +580,8 @@ pub struct State {
     /// The findings whose answer is in force now, the latest answer first; `None` before
     /// any run of this build looked for findings.
     pub answered: Option<Vec<findings::Item>>,
+    /// The owner's statements that stand: machines set aside as retired or not theirs.
+    pub standing: Vec<crate::owner::Standing>,
     /// Is this Mac watched, and how.
     pub this_mac: crate::covered::ThisMac,
     /// What the program does not cover, aggregated for a person.
@@ -612,6 +615,7 @@ pub fn state(conn: &Connection, home: &Path, now: i64) -> Res<State> {
         files,
         needs,
         answered: findings::answered(conn, now)?,
+        standing: crate::owner::standing(conn)?,
         this_mac,
         not_covered,
     })
@@ -817,6 +821,10 @@ pub fn result(state: Option<&State>, running: bool, path: &Path, now: i64) -> Va
             "no run of this build has looked for findings yet; the next run does",
         ),
     }
+    out.insert(
+        "statements_outside_app".into(),
+        crate::owner::outside_app_json(&st.standing, NEEDS_SHOWN),
+    );
     out.insert("not_computed".into(), Value::Array(not_computed));
     Value::Object(out)
 }

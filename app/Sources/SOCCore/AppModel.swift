@@ -234,6 +234,18 @@ public final class AppModel: ObservableObject {
     return await save(id, args)
   }
 
+  /// The owner's "Take back" on a statement given outside the app: `soc owner <machine>
+  /// withdraw --via app`, then a refresh. Returns false, and runs nothing, for a machine
+  /// the panel does not list or while another change is being saved.
+  @discardableResult
+  public func withdrawStatement(_ machine: String) async -> Bool {
+    let listed = reading.status?.statementsOutsideApp?.items ?? []
+    guard let args = Answer.withdrawArguments(machine: machine),
+      listed.contains(where: { $0.entityText == machine })
+    else { return false }
+    return await save(machine, args)
+  }
+
   private func answer(_ id: String, _ args: [String]) async -> Bool {
     // Only a finding the panel shows takes an answer; a health item never does.
     let shown = reading.status?.needsALook ?? []

@@ -186,7 +186,8 @@ public struct Panel: Sendable, Equatable {
   /// nothing for the owner to fix.
   public var fixRequest: String?
   /// "N answers given through your agent" or "… outside the app": answers that hide a
-  /// finding now and were given outside the app. Never counted beside the icon.
+  /// finding now, and statements that set a machine aside, given outside the app. Never
+  /// counted beside the icon.
   public var answered: AnsweredRow?
   public var answeredOpen = false
   /// A check is running: the headline says so with a moving indicator.
@@ -309,7 +310,7 @@ public struct Panel: Sendable, Equatable {
           text: (limits == 1 ? "1 limit" : "\(limits) limits") + " of this version, nothing to do",
           symbol: "info.circle", section: "limits"))
     }
-    answered = s.answeredOutsideApp.flatMap(AnsweredRow.of)
+    answered = AnsweredRow.of(s.answeredOutsideApp, s.statementsOutsideApp)
   }
 
   /// A short task for the owner's coding agent about what they can fix: the soc this app
@@ -421,9 +422,9 @@ public struct Panel: Sendable, Equatable {
         for l in a.lines {
           out.append("    • " + l.title)
           out += [l.answer, l.by, l.reason].compactMap { $0 }.map { "      " + $0 }
-          if let id = l.finding, let refused = refusals[id] { out.append("      " + refused) }
-          if l.canTakeBack {
-            out.append("      " + (answering == l.finding ? "Saving…" : "[ Take back ]"))
+          if let id = l.target, let refused = refusals[id] { out.append("      " + refused) }
+          if let id = l.target {
+            out.append("      " + (answering == id ? "Saving…" : "[ Take back ]"))
           }
         }
         if a.more > 0 { out.append("    \(a.more) more in Details  › #" + AnsweredRow.section) }
@@ -446,19 +447,30 @@ public struct AnsweredRow: Sendable, Equatable {
   public static let section = "answered"
   public let text: String
   public let lines: [AnsweredLine]
-  /// How many of soc's total are not listed here.
+  /// How many of soc's totals are not listed here.
   public let more: Int
 
-  /// The row for soc's list, or nil when it holds nothing. The count is soc's total, and
-  /// never less than what it lists.
-  static func of(_ a: AnsweredOutside) -> AnsweredRow? {
-    let total = max(a.total ?? 0, a.items.count)
+  /// The row for soc's two lists, answers to findings and statements that set a machine
+  /// aside, or nil when both are empty. The count is soc's totals, and never less than
+  /// what they list. The latest are listed first.
+  static func of(_ a: AnsweredOutside?, _ w: StatementsOutside?) -> AnsweredRow? {
+    let answers = a?.items ?? []
+    let statements = w?.items ?? []
+    let total =
+      max(a?.total ?? 0, answers.count) + max(w?.total ?? 0, statements.count)
     guard total > 0 else { return nil }
-    let lines = a.items.prefix(Panel.rowsShown).enumerated().map {
-      AnsweredLine(key: $0.offset, $0.element)
+    let all =
+      answers.map { ($0.at, AnsweredLine.Kind.answer($0)) }
+      + statements.map { ($0.at, AnsweredLine.Kind.statement($0)) }
+    let latest = all.enumerated().sorted {
+      ($0.element.0 ?? .distantPast, -$0.offset) > ($1.element.0 ?? .distantPast, -$1.offset)
     }
-    // "Through your agent" only when every answer counted is listed and came that way.
-    let agent = a.items.count >= total && a.items.allSatisfy { $0.via == "agent" }
+    let lines = latest.prefix(Panel.rowsShown).enumerated().map {
+      AnsweredLine(key: $0.offset, $0.element.element.1)
+    }
+    // "Through your agent" only when everything counted is listed and came that way.
+    let vias = answers.map(\.via) + statements.map(\.via)
+    let agent = vias.count >= total && vias.allSatisfy { $0 == "agent" }
     let how = agent ? "through your agent" : "outside the app"
     return AnsweredRow(
       text: (total == 1 ? "1 answer" : "\(total) answers") + " given " + how,
@@ -466,39 +478,61 @@ public struct AnsweredRow: Sendable, Equatable {
   }
 }
 
-/// One answer given outside the app: what it is about, what was answered, by whom, and
-/// why, as the person wrote it.
+/// One answer or statement given outside the app: what it is about, what was said, by
+/// whom, and why, as the person wrote it.
 public struct AnsweredLine: Sendable, Equatable, Identifiable {
+  enum Kind {
+    case answer(AnsweredItem)
+    case statement(StatementItem)
+  }
+
   public let key: Int
   public var id: Int { key }
   /// The finding's id, when it is one the app passes to soc.
   public let finding: String?
-  /// soc's headline for the finding.
+  /// The machine a statement is about, by its full id, when the app can pass it to soc.
+  public let machine: String?
+  /// soc's headline for the finding, or the machine's name.
   public let title: String
-  /// "Seen", or "Expected until <date>".
+  /// "Seen", "Expected until <date>", "Retired" or "Not mine".
   public let answer: String
   /// "through your agent" or "from the command line".
   public let by: String?
   /// The reason as the person wrote it, inert.
   public let reason: String?
 
-  init(key: Int, _ item: AnsweredItem) {
+  init(key: Int, _ kind: Kind) {
     self.key = key
-    finding = Answer.isUsable(id: item.id) ? item.id : nil
-    title = Inert.text(item.title ?? "", limit: 400)
-    answer =
-      item.answer == "expected"
-      ? "Expected until " + (item.until.map(Clock.day) ?? "?") : "Seen"
+    let via: String?
+    switch kind {
+    case .answer(let item):
+      finding = Answer.isUsable(id: item.id) ? item.id : nil
+      machine = nil
+      title = Inert.text(item.title ?? "", limit: 400)
+      answer =
+        item.answer == "expected"
+        ? "Expected until " + (item.until.map(Clock.day) ?? "?") : "Seen"
+      via = item.via
+      reason = item.reasonText.map { Inert.text($0, limit: 240) }
+    case .statement(let item):
+      finding = nil
+      machine = Answer.isUsable(machine: item.entityText) ? item.entityText : nil
+      title = Inert.text(item.machineText ?? "", limit: 160)
+      answer = item.said == "not mine" ? "Not mine" : "Retired"
+      via = item.via
+      reason = item.reasonText.map { Inert.text($0, limit: 240) }
+    }
     by =
-      switch item.via {
+      switch via {
       case "agent": "through your agent"
       case "command": "from the command line"
       default: nil
       }
-    reason = item.reasonText.map { Inert.text($0, limit: 240) }
   }
 
-  public var canTakeBack: Bool { finding != nil }
+  /// What "Take back" names: the finding or the machine.
+  public var target: String? { finding ?? machine }
+  public var canTakeBack: Bool { target != nil }
 }
 
 /// A group of "What is watched": its header and one line per kind.

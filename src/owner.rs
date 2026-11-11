@@ -7,8 +7,10 @@
 //! learned about the machine later than the statement contradicts it, and the machine is
 //! counted and shown again. Only a withdrawal or a later statement clears that.
 
-use crate::{resolver, store};
+use crate::findings::Via;
+use crate::{resolver, status, store};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use serde_json::{Value, json};
 
 pub const RETIRED: &str = "retired";
 pub const NOT_MINE: &str = "not mine";
@@ -19,6 +21,8 @@ pub struct Word {
     pub said: String,
     pub reason: String,
     pub made_at: i64,
+    /// How it was given; `Unknown` for one made before this was kept.
+    pub via: Via,
 }
 
 /// Something read about the machine after the statement.
@@ -70,6 +74,23 @@ pub fn bare(id: &str) -> &str {
     id.strip_prefix("machine:").unwrap_or(id)
 }
 
+/// How a statement was given, kept with it. A table made before this was kept takes the
+/// column on open; a statement made before has none and is read as `unknown`.
+pub fn add_via(conn: &Connection) -> rusqlite::Result<()> {
+    if !has_via(conn)? {
+        conn.execute_batch("ALTER TABLE owner_statement ADD COLUMN via TEXT")?;
+    }
+    Ok(())
+}
+
+fn has_via(conn: &Connection) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('owner_statement') WHERE name = 'via')",
+        [],
+        |r| r.get(0),
+    )
+}
+
 fn has_table(conn: &Connection) -> rusqlite::Result<bool> {
     conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'owner_statement')",
@@ -83,17 +104,20 @@ pub fn standing(conn: &Connection) -> rusqlite::Result<Vec<Standing>> {
     if !has_table(conn)? {
         return Ok(Vec::new());
     }
+    // A store opened only for reading since this build keeps no `via` yet.
+    let via = if has_via(conn)? { "via" } else { "NULL" };
     let words: Vec<Word> = conn
-        .prepare(
-            "SELECT entity, said, reason, made_at FROM owner_statement
-             WHERE withdrawn_at IS NULL",
-        )?
+        .prepare(&format!(
+            "SELECT entity, said, reason, made_at, {via} FROM owner_statement
+             WHERE withdrawn_at IS NULL"
+        ))?
         .query_map([], |r| {
             Ok(Word {
                 entity: r.get(0)?,
                 said: r.get(1)?,
                 reason: r.get(2)?,
                 made_at: r.get(3)?,
+                via: Via::stored(r.get::<_, Option<String>>(4)?.as_deref()),
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
@@ -240,14 +264,16 @@ pub fn find(conn: &Connection, name: &str) -> rusqlite::Result<Found> {
     })
 }
 
-/// Withdraws every statement that stands about the machine, journals each, and returns
-/// what each said and about which entity. They are kept, with the time of withdrawal.
+/// Withdraws every statement that stands about the machine, journals each with how it was
+/// withdrawn, and returns what each said and about which entity. They are kept, with the
+/// time of withdrawal.
 fn withdraw_in(
     tx: &Transaction,
     machine: &[String],
     at: i64,
     run_id: &str,
     how: &str,
+    via: Via,
 ) -> rusqlite::Result<Vec<(String, String)>> {
     let mut out = Vec::new();
     for m in machine {
@@ -262,7 +288,16 @@ fn withdraw_in(
                 "UPDATE owner_statement SET withdrawn_at = ?1 WHERE id = ?2",
                 params![at, id],
             )?;
-            store::journal_owner(tx, at, run_id, "owner_withdrew", m, &said, how)?;
+            store::journal_owner(
+                tx,
+                at,
+                run_id,
+                "owner_withdrew",
+                m,
+                &said,
+                how,
+                via.literal(),
+            )?;
             out.push((m.clone(), said));
         }
     }
@@ -271,22 +306,42 @@ fn withdraw_in(
 
 /// Makes a statement about the entity. One that stood about the same machine is withdrawn
 /// in the same transaction: a machine has one standing statement.
+#[allow(clippy::too_many_arguments)]
 pub fn say(
     conn: &mut Connection,
     entity: &str,
     machine: &[String],
     said: &str,
     reason: &str,
+    via: Via,
     at: i64,
     run_id: &str,
 ) -> rusqlite::Result<usize> {
     let tx = conn.transaction()?;
-    let replaced = withdraw_in(&tx, machine, at, run_id, "replaced by a later statement")?.len();
+    let replaced = withdraw_in(
+        &tx,
+        machine,
+        at,
+        run_id,
+        "replaced by a later statement",
+        via,
+    )?
+    .len();
     tx.execute(
-        "INSERT INTO owner_statement (entity, said, reason, made_at) VALUES (?1, ?2, ?3, ?4)",
-        params![entity, said, reason, at],
+        "INSERT INTO owner_statement (entity, said, reason, made_at, via)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![entity, said, reason, at, via.literal()],
     )?;
-    store::journal_owner(&tx, at, run_id, "owner_said", entity, said, reason)?;
+    store::journal_owner(
+        &tx,
+        at,
+        run_id,
+        "owner_said",
+        entity,
+        said,
+        reason,
+        via.literal(),
+    )?;
     tx.commit()?;
     Ok(replaced)
 }
@@ -296,11 +351,12 @@ pub fn say(
 pub fn withdraw(
     conn: &mut Connection,
     machine: &[String],
+    via: Via,
     at: i64,
     run_id: &str,
 ) -> rusqlite::Result<Vec<(String, String)>> {
     let tx = conn.transaction()?;
-    let n = withdraw_in(&tx, machine, at, run_id, "withdrawn by the owner")?;
+    let n = withdraw_in(&tx, machine, at, run_id, "withdrawn by the owner", via)?;
     tx.commit()?;
     Ok(n)
 }
@@ -315,4 +371,36 @@ pub fn withdrawn(conn: &Connection) -> rusqlite::Result<i64> {
         [],
         |r| r.get(0),
     )
+}
+
+/// The statements that stand and are known to have been made outside the app, by the owner's
+/// agent or from the command line, the latest first: each sets a machine aside, so none is
+/// made silently. One made before `via` was kept is not among them. Never counted as
+/// something to look at.
+pub fn outside_app_json(standing: &[Standing], shown: usize) -> Value {
+    let mut outside: Vec<&Standing> = standing
+        .iter()
+        .filter(|s| s.word.via.outside_app())
+        .collect();
+    outside.sort_by(|a, b| {
+        b.word
+            .made_at
+            .cmp(&a.word.made_at)
+            .then_with(|| a.name().cmp(b.name()))
+    });
+    let items: Vec<Value> = outside
+        .iter()
+        .take(shown)
+        .map(|s| {
+            json!({
+                "machine_text": status::text(s.name()),
+                "entity_text": status::text(&s.word.entity),
+                "said": s.word.said,
+                "via": s.word.via.literal(),
+                "at": crate::view::iso(s.word.made_at),
+                "reason_text": status::text(&s.word.reason),
+            })
+        })
+        .collect();
+    json!({ "total": outside.len(), "items": items })
 }

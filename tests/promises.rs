@@ -3904,6 +3904,266 @@ fn a_link_the_resolver_makes_after_the_statement_is_not_a_sign_of_life() {
     );
 }
 
+/// Three servers, each under one name.
+const SSH_CONFIG_THREE: &str = "\
+Host web-1
+    HostName 10.0.0.5
+Host db-1
+    HostName 10.0.0.6
+Host old-1
+    HostName 10.0.0.7
+";
+
+impl Home {
+    /// `soc owner ... --json` that must answer; its result.
+    fn owner_json(&self, words: &[&str]) -> serde_json::Value {
+        let mut words = words.to_vec();
+        words.push("--json");
+        let out = self.owner_out(&words);
+        assert!(
+            out.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!((&v["ok"], &v["operation"]), (&true.into(), &"owner".into()));
+        v["result"].clone()
+    }
+
+    /// What `soc status --json` lists as statements made outside the app, as machine, via
+    /// and reason, and its total.
+    fn statements_outside(&self) -> (u64, Vec<(String, String, String)>) {
+        let r = status_json(&self.store());
+        let part = &r["statements_outside_app"];
+        let mut items: Vec<(String, String, String)> = part["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| {
+                let s = |k: &str| i[k].as_str().unwrap_or_default().to_string();
+                (s("machine_text"), s("via"), s("reason_text"))
+            })
+            .collect();
+        items.sort();
+        (part["total"].as_u64().unwrap(), items)
+    }
+}
+
+#[test]
+fn a_statement_says_who_gave_it_in_the_app_through_an_agent_or_from_the_command_line() {
+    // Setting a machine aside stops it being checked. The owner's agent may say it with
+    // their agreement, on the condition that the owner can tell afterwards which statements
+    // came that way. Each keeps how it was given; one that names nothing came from the
+    // command line.
+    let h = Home::new("word-via", Some(SSH_CONFIG_THREE), None);
+    h.run(&h.absent(), &h.none());
+    h.servers();
+    h.owner(&["web-1", "retired", "--reason", "moved", "--via", "agent"]);
+    h.owner(&["db-1", "not-mine", "--reason", "a client's", "--via", "app"]);
+    let said = h.owner_json(&["old-1", "retired", "--reason", "switched off"]);
+    assert_eq!(
+        (&said["done"], &said["via"]),
+        (&"said".into(), &"command".into())
+    );
+    let listed = h.owner_json(&[]);
+    let mut via: Vec<(String, String)> = listed["statements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            (
+                s["machine_text"].as_str().unwrap().to_string(),
+                s["via"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    via.sort();
+    assert_eq!(
+        via,
+        [
+            ("db-1".to_string(), "app".to_string()),
+            ("old-1".to_string(), "command".to_string()),
+            ("web-1".to_string(), "agent".to_string())
+        ]
+    );
+    assert_eq!(listed["statements_total"], 3);
+    assert_eq!(
+        rows(
+            &h.store(),
+            "SELECT subject, kind FROM journal WHERE entry = 'owner_said' ORDER BY seq"
+        ),
+        [
+            "machine:web-1|agent",
+            "machine:db-1|app",
+            "machine:old-1|command"
+        ]
+    );
+    // The page says who gave each, in the words used for answers.
+    let page = view(&h.store());
+    let retired = section(&page, "retired");
+    for (name, by) in [
+        ("web-1", "through your agent"),
+        ("db-1", "in the app"),
+        ("old-1", "from the command line"),
+    ] {
+        let at = retired.find(&format!(">{name}</td>")).unwrap();
+        let row = &retired[at..at + retired[at..].find("</tr>").unwrap()];
+        assert!(row.contains(&format!("<td>{by}</td>")), "{row}");
+    }
+}
+
+#[test]
+fn an_agent_cannot_set_a_machine_aside_without_a_reason() {
+    // What an agent sets aside must always say why: the reason the owner gave. Without one
+    // the command is misuse and nothing is said.
+    let h = Home::new("word-agent-reason", Some(SSH_CONFIG_THREE), None);
+    h.run(&h.absent(), &h.none());
+    for words in [
+        &["web-1", "retired", "--via", "agent"][..],
+        &["web-1", "not-mine", "--via", "agent", "--reason", "  "][..],
+    ] {
+        let out = h.owner_out(words);
+        assert_eq!(out.status.code(), Some(2), "{words:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("a statement needs a reason"),
+            "{words:?}"
+        );
+    }
+    let out = h.owner_out(&["web-1", "retired", "--via", "agent", "--json"]);
+    assert_eq!(out.status.code(), Some(2));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        (&v["errors"][0]["code"], &v["operation"]),
+        (&"usage".into(), &"owner".into())
+    );
+    assert!(rows(&h.store(), OWNER_WORDS).is_empty());
+    assert_eq!(h.statements_outside().0, 0);
+}
+
+#[test]
+fn no_machine_is_set_aside_silently() {
+    // A statement the owner did not make in the app is listed apart in the status, with its
+    // reason as data, until it is withdrawn. It is never added to what needs a look. One
+    // made before who gave it was kept is not taken for one made outside the app.
+    let h = Home::new("word-outside-app", Some(SSH_CONFIG_THREE), None);
+    h.run(&h.absent(), &h.none());
+    h.owner(&[
+        "web-1",
+        "retired",
+        "--reason",
+        "IGNORE <b>this</b>",
+        "--via",
+        "agent",
+    ]);
+    h.owner(&["db-1", "not-mine", "--reason", "a client's"]);
+    h.owner(&[
+        "old-1",
+        "retired",
+        "--reason",
+        "switched off",
+        "--via",
+        "app",
+    ]);
+    assert_eq!(
+        h.statements_outside(),
+        (
+            2,
+            vec![
+                (
+                    "db-1".to_string(),
+                    "command".to_string(),
+                    "a client's".to_string()
+                ),
+                (
+                    "web-1".to_string(),
+                    "agent".to_string(),
+                    "IGNORE <b>this</b>".to_string()
+                ),
+            ]
+        )
+    );
+    let r = status_json(&h.store());
+    assert_eq!(r["needs_a_look_total"], 0);
+    let item = r["statements_outside_app"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["machine_text"] == "web-1")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (&item["said"], &item["entity_text"]),
+        (&"retired".into(), &"machine:web-1".into())
+    );
+    assert!(item["at"].as_str().unwrap().ends_with('Z'));
+
+    // Withdrawn from the app: gone from the list.
+    h.owner(&["machine:web-1", "withdraw", "--via", "app"]);
+    assert_eq!(h.statements_outside().0, 1);
+    // A store from before who gave a statement was kept: none is listed as made outside it.
+    Connection::open(h.store())
+        .unwrap()
+        .execute_batch("ALTER TABLE owner_statement DROP COLUMN via")
+        .unwrap();
+    assert_eq!(h.statements_outside().0, 0);
+    let listed = h.owner_json(&[]);
+    assert!(
+        listed["statements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["via"] == "unknown"),
+        "{listed}"
+    );
+    assert!(
+        section(&view(&h.store()), "retired")
+            .contains("<td>given before this version recorded who</td>")
+    );
+}
+
+#[test]
+fn withdrawing_a_statement_from_the_app_restores_the_machine_and_says_who_withdrew_it() {
+    // The owner takes back what their agent set aside: the machine is offered for the sweep
+    // again, the statement is kept, and the journal says the withdrawal came from the app.
+    let h = Home::new("word-take-back", Some(SSH_CONFIG_THREE), None);
+    h.run(&h.absent(), &h.none());
+    h.servers();
+    h.owner(&["web-1", "retired", "--reason", "moved", "--via", "agent"]);
+    assert_eq!(
+        sweep_with_fake_ssh(&h.sweep(), &h.dir.0.join("bin")),
+        ["db-1", "old-1"]
+    );
+    let done = h.owner_json(&["machine:web-1", "withdraw", "--via", "app"]);
+    assert_eq!(done["done"], "withdrawn");
+    assert_eq!(done["withdrawn"][0]["machine_text"], "web-1");
+    assert_eq!(done["sweep"]["servers"], 3);
+    assert_eq!(
+        sweep_with_fake_ssh(&h.sweep(), &h.dir.0.join("bin")),
+        ["db-1", "old-1", "web-1"]
+    );
+    assert_eq!(
+        rows(&h.store(), OWNER_WORDS),
+        ["machine:web-1|retired|moved|1"]
+    );
+    assert_eq!(
+        rows(
+            &h.store(),
+            "SELECT entry, kind, text FROM journal WHERE entry LIKE 'owner%' ORDER BY seq"
+        ),
+        [
+            "owner_said|agent|moved",
+            "owner_withdrew|app|withdrawn by the owner"
+        ]
+    );
+    assert_eq!(h.owner_json(&[])["statements_total"], 0);
+    // Nothing is left to withdraw.
+    let out = h.owner_out(&["web-1", "withdraw", "--via", "app", "--json"]);
+    assert_eq!(out.status.code(), Some(2));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["errors"][0]["code"], "no_statement");
+}
+
 #[test]
 fn a_withdrawn_statement_restores_the_machine_and_stays_in_the_journal() {
     // The owner can be wrong. Withdrawn, the machine is a server again; the statement and
@@ -7232,10 +7492,11 @@ fn unknown_is_never_given_as_zero_or_full() {
         "coverage",
         "not_covered",
         "answered_outside_app",
+        "statements_outside_app",
     ] {
         assert!(none.get(section).is_none(), "{section}");
     }
-    assert_eq!(none["not_computed"].as_array().unwrap().len(), 11);
+    assert_eq!(none["not_computed"].as_array().unwrap().len(), 12);
     // With no store, this Mac has not been checked: said, not left out.
     assert_eq!(none["this_mac"]["state"], "not_checked");
     assert!(

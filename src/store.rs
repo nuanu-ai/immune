@@ -423,6 +423,7 @@ pub fn open(path: &Path) -> Res<Connection> {
     check_format(&conn, path)?;
     conn.execute_batch(VOCABULARY)?;
     conn.execute_batch(OWNER)?;
+    crate::owner::add_via(&conn)?;
     conn.execute_batch(THREATS)?;
     conn.execute_batch(crate::findings::SCHEMA)?;
     crate::findings::add_via(&conn)?;
@@ -938,7 +939,9 @@ pub fn journal_note(
 }
 
 /// One entry of the owner's word: `owner_said` with what was said and the reason, or
-/// `owner_withdrew` with what had been said and how it was withdrawn.
+/// `owner_withdrew` with what had been said and how it was withdrawn; `kind` is how it was
+/// given: app, agent or command.
+#[allow(clippy::too_many_arguments)]
 pub fn journal_owner(
     tx: &Transaction,
     at: i64,
@@ -947,6 +950,7 @@ pub fn journal_owner(
     entity: &str,
     said: &str,
     text: &str,
+    via: &str,
 ) -> rusqlite::Result<()> {
     let (old, new) = if entry == "owner_said" {
         (None, Some(said))
@@ -954,9 +958,9 @@ pub fn journal_owner(
         (Some(said), None)
     };
     tx.execute(
-        "INSERT INTO journal (at, run_id, entry, subject, old_value, new_value, text)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![at, run_id, entry, entity, old, new, text],
+        "INSERT INTO journal (at, run_id, entry, kind, subject, old_value, new_value, text)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![at, run_id, entry, via, entity, old, new, text],
     )?;
     Ok(())
 }
