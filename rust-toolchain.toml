@@ -1,0 +1,6 @@
+# The Rust that decides whether ./check passes: clippy with -D warnings and rustfmt change
+# between releases. rustup installs it on first use; raise it in its own commit.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
