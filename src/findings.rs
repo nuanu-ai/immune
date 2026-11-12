@@ -931,11 +931,14 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Found>>> 
                     f.became = Some(value);
                 }
             }
-            // A published rule's finding carries the rule and the starts it matched.
+            // A published rule's finding carries the rule and the events it matched.
             if let Some(l) = published(&f.rule)
                 && let Some(meta) = &l.meta
+                && let Some(kind) = l.kind
             {
-                f.detail = Some(crate::events::finding_detail(conn, &f.id, l.file, meta)?);
+                f.detail = Some(crate::events::finding_detail(
+                    conn, &f.id, l.file, meta, kind,
+                )?);
             }
             Ok(f)
         })
@@ -1290,8 +1293,10 @@ fn published(rule: &str) -> Option<&'static crate::sigma::Loaded> {
     crate::sigma::Rules::shipped().by_id(id)
 }
 
-/// What a finding from a published rule is about, as the item's `kind`.
+/// What a finding from a published rule is about, as the item's `kind`: a program start for a
+/// rule about program starts, a file for a rule about file events.
 pub const PUBLISHED_KIND: &str = "program start matched by a published rule";
+pub const PUBLISHED_FILE_KIND: &str = "file event matched by a published rule";
 
 /// The program's own words for every finding of a published rule. The rule's title, its
 /// authors and the start it matched are text from a source and stand beside these, in fields
@@ -1302,14 +1307,26 @@ pub const PUBLISHED_WORDS: Words = Words {
     advice: "Look at the program, its arguments and what started it, shown here. If you or a tool you use ran it, mark it expected; if nobody knows it, ask your agent to look into it.",
 };
 
+/// The same for a rule about file events: a file created or renamed into a place the rule
+/// names.
+pub const PUBLISHED_FILE_WORDS: Words = Words {
+    title: "A file was created or renamed on this Mac where a published detection rule marks it as high risk.",
+    meaning: "The rule, named with this finding, comes from SigmaHQ's public rule set and was written from attacks seen elsewhere. Installers, updaters and people put files in the same places for ordinary work, so a match is often harmless.",
+    advice: "Look at the file and the program that wrote it, shown here. If you or a tool you use put it there, mark it expected; if nobody knows it, ask your agent to look into it.",
+};
+
 /// A finding of a published rule as an item: how bad is the rule's level, how sure follows its
 /// status (`sigma::Status::confidence`), and its first ATT&CK technique stands as the item's;
 /// every technique, the authors and the evidence are in `detail`.
 fn published_item(f: &Found, l: &'static crate::sigma::Loaded) -> Option<Item> {
     let m = l.meta.as_ref()?;
+    let (kind, words) = match l.kind {
+        Some(crate::sigma::Kind::File) => (PUBLISHED_FILE_KIND, PUBLISHED_FILE_WORDS),
+        _ => (PUBLISHED_KIND, PUBLISHED_WORDS),
+    };
     Some(Item {
         id: f.id.clone(),
-        kind: PUBLISHED_KIND,
+        kind,
         rule: Some(m.finding_rule.as_str()),
         technique: m.techniques.first().map(String::as_str),
         severity: m.level.as_str(),
@@ -1318,7 +1335,7 @@ fn published_item(f: &Found, l: &'static crate::sigma::Loaded) -> Option<Item> {
         change: f.change.clone(),
         first_seen: Some(f.first_seen.0),
         last_seen: Some(f.last_seen.0),
-        words: PUBLISHED_WORDS,
+        words,
         // The rule's title with its authors: wherever the finding is shown, the page and the
         // app's card included, the authors travel with it, as the Detection Rule License asks.
         value: Some(match &m.author {
@@ -1495,6 +1512,14 @@ pub fn catalogue_json() -> Value {
             "title": PUBLISHED_WORDS.title,
             "meaning": PUBLISHED_WORDS.meaning,
             "advice": PUBLISHED_WORDS.advice,
+            // A rule about file events raises a finding of its own kind and words; the rest
+            // is the same.
+            "for_file_events": {
+                "kind": PUBLISHED_FILE_KIND,
+                "title": PUBLISHED_FILE_WORDS.title,
+                "meaning": PUBLISHED_FILE_WORDS.meaning,
+                "advice": PUBLISHED_FILE_WORDS.advice,
+            },
         },
         "not_covered": crate::covered::causes_json(),
         "levels": { "severity": SEVERITIES, "confidence": CONFIDENCES },

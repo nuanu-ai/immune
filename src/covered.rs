@@ -599,8 +599,22 @@ pub const EVENTS_SILENT: Cause = Cause {
     advice: "If it stays, ask your agent to look at why. Running the event level's install command again may help.",
 };
 
+pub const FILES_NOT_COLLECTED: Cause = Cause {
+    id: "file-events-not-seen",
+    who: YOU,
+    scope: "this_mac",
+    kind: "files created and renamed not seen",
+    title: [
+        "Files created and renamed on this Mac are not seen.",
+        "Files created and renamed on this Mac are not seen.",
+    ],
+    meaning: "The event level records program starts, but the collector installed here was set up by an earlier version or replaced since, so it does not record files created or renamed. The published rules that look for files appearing in places attackers use do not watch until it does.",
+    meaning_none: None,
+    advice: "Run the event level's install command again with your administrator password; it keeps the log and adds file events. Your agent can prepare it.",
+};
+
 /// Every cause, in the order items are listed: what the owner can fix first.
-pub const CAUSES: [&Cause; 16] = [
+pub const CAUSES: [&Cause; 17] = [
     &SERVERS_NOT_CHECKED,
     &SERVERS_NOT_OPENED,
     &NOT_PERMITTED,
@@ -609,6 +623,7 @@ pub const CAUSES: [&Cause; 16] = [
     &EVENTS_REFUSED,
     &EVENTS_FAILING,
     &EVENTS_SILENT,
+    &FILES_NOT_COLLECTED,
     &GUARDED,
     &NOT_UNDERSTOOD,
     &PROJECT_AUTORUN,
@@ -843,6 +858,13 @@ pub fn not_covered(
                 },
                 value: l.said.clone().filter(|s| !s.is_empty()),
                 ..Uncovered::new(cause, 1)
+            });
+        }
+        // Recording program starts, not files: the rules for files do not watch.
+        if l.state == crate::events::RUNNING && !l.files.collected {
+            out.push(Uncovered {
+                since: Some(l.read_at),
+                ..Uncovered::new(&FILES_NOT_COLLECTED, 1)
             });
         }
     }

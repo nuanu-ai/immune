@@ -1,10 +1,12 @@
-//! Published Sigma rules for macOS, evaluated in memory over one program start.
+//! Published Sigma rules for macOS, evaluated in memory over one program start or one file
+//! created or renamed: a process rule (`process_creation`) is asked only about a program start,
+//! a file rule (`file_event`) only about a file event.
 //!
 //! The rules are SigmaHQ's, unmodified, in `rules/sigma/` with its NOTICE, and compiled into
 //! the program. What Sigma means is the evaluator's to say, `sigma-rust`'s: conditions,
 //! modifiers, case folding, what an absent field or `null` means. Nothing here re-implements
 //! it; the tests below pin how it behaves on the shipped rules where the specification leaves
-//! room. What is ours is small: which Sigma field each part of a program start is, which rules
+//! room. What is ours is small: which Sigma field each part of an event is, which rules
 //! this level can evaluate, and naming the ones it cannot, so none is skipped silently and none
 //! is counted among the rules that watch when it does not.
 //!
@@ -110,11 +112,123 @@ pub const SHIPPED: &[(&str, &str)] = shipped![
 
 /// One program start: the event level's, `crate::events::ProcessStart`, read from
 /// `eslogger`'s `exec`. Which Sigma field each of its parts is, and why, is
-/// `crate::events::SIGMA_FIELDS`, beside where the line is read.
-pub use crate::events::ProcessStart;
+/// `crate::events::SIGMA_FIELDS`, beside where the line is read. A file created or renamed is
+/// `crate::events::FileEvent`, read from `create` and `rename`, its fields
+/// `crate::events::FILE_SIGMA_FIELDS`.
+pub use crate::events::{FileEvent, ProcessStart};
 
-/// The kind of event a rule's logsource must name for this level to evaluate it.
+/// The kinds of event a rule's logsource must name for this level to evaluate it: Sigma's
+/// `process_creation` for a program start, `file_event` for a file created or renamed.
 pub const CATEGORY: &str = "process_creation";
+pub const FILE_CATEGORY: &str = "file_event";
+
+/// The kind of event a rule is about, by its logsource category. A program start is asked
+/// only of process rules, a file event only of file rules.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Process,
+    File,
+}
+
+impl Kind {
+    fn of(category: &str) -> Option<Kind> {
+        match category {
+            CATEGORY => Some(Kind::Process),
+            FILE_CATEGORY => Some(Kind::File),
+            _ => None,
+        }
+    }
+
+    pub fn category(self) -> &'static str {
+        match self {
+            Kind::Process => CATEGORY,
+            Kind::File => FILE_CATEGORY,
+        }
+    }
+
+    /// Sigma's names for what an event of this kind gives.
+    pub fn fields(self) -> Vec<&'static str> {
+        match self {
+            Kind::Process => FIELDS.iter().map(|(n, _)| *n).collect(),
+            Kind::File => FILE_FIELDS.iter().map(|(n, _)| *n).collect(),
+        }
+    }
+
+    /// Where this kind's fields begin among the values of `Subject::forms`: a program start's
+    /// first, then a file event's, so that one search over the values serves both kinds.
+    fn offset(self) -> usize {
+        match self {
+            Kind::Process => 0,
+            Kind::File => FIELDS.len(),
+        }
+    }
+}
+
+/// Every field either kind gives, in the order of `Subject::forms`.
+const ALL_FIELDS: usize = FIELDS.len() + FILE_FIELDS.len();
+
+/// An event the rules are asked about.
+#[derive(Clone, Copy, Debug)]
+pub enum Subject<'a> {
+    Start(&'a ProcessStart),
+    File(&'a FileEvent),
+}
+
+impl<'a> From<&'a ProcessStart> for Subject<'a> {
+    fn from(s: &'a ProcessStart) -> Self {
+        Subject::Start(s)
+    }
+}
+
+impl<'a> From<&'a FileEvent> for Subject<'a> {
+    fn from(f: &'a FileEvent) -> Self {
+        Subject::File(f)
+    }
+}
+
+impl Subject<'_> {
+    pub fn kind(&self) -> Kind {
+        match self {
+            Subject::Start(_) => Kind::Process,
+            Subject::File(_) => Kind::File,
+        }
+    }
+
+    /// The values of every field, `ALL_FIELDS` long, the other kind's absent. A file event
+    /// gives one set of values for each name its file has (`FileEvent::names`): a rule matches
+    /// the event when it matches any of them.
+    pub fn forms(&self) -> Vec<Vec<Option<String>>> {
+        match self {
+            Subject::Start(s) => {
+                let mut values: Vec<Option<String>> =
+                    FIELDS.iter().map(|(_, take)| take(s)).collect();
+                values.resize(ALL_FIELDS, None);
+                vec![values]
+            }
+            Subject::File(f) => f
+                .names()
+                .iter()
+                .map(|name| {
+                    let mut values = vec![None; FIELDS.len()];
+                    values.extend(FILE_FIELDS.iter().map(|(_, take)| take(f, name)));
+                    values
+                })
+                .collect(),
+        }
+    }
+}
+
+/// The evaluator's event for one set of values of a kind: a field the event does not give
+/// stays absent, and an absent field matches nothing.
+fn event_of(kind: Kind, values: &[Option<String>]) -> sigma_rust::Event {
+    let mut event = sigma_rust::Event::new();
+    for (i, name) in kind.fields().into_iter().enumerate() {
+        if let Some(value) = &values[kind.offset() + i] {
+            event.insert(name, value.clone());
+        }
+    }
+    event
+}
 
 /// The drill: Atomic Red Team's tests ffe2346c-abd5-4b45-a713-bf5f1ebd573a and
 /// e22a9e89-69c7-410f-a473-e6c212cd2292 (T1027.001), as the program starts their commands
@@ -155,8 +269,10 @@ pub fn drill_start(image: &str, args: &[&str]) -> ProcessStart {
     }
 }
 
-/// Sigma's names for what a program start gives, and how each is taken from it. A field a rule
-/// names that is not here is one this level does not have.
+/// Sigma's names for what a program start gives, and how each is taken from it, and the same
+/// for a file event. A field a rule names that is not among its kind's is one this level does
+/// not have.
+pub use crate::events::FILE_SIGMA_FIELDS as FILE_FIELDS;
 pub use crate::events::SIGMA_FIELDS as FIELDS;
 
 /// How bad, Sigma's levels; their names are OCSF's severity names.
@@ -254,10 +370,12 @@ pub struct Meta {
     pub description: Option<String>,
 }
 
-/// What this level does with a rule.
+/// What this level does with a rule. Whether a rule it can evaluate watches this Mac now is
+/// another question, the level's state and what its collector records:
+/// `crate::status::rules_section`.
 #[derive(Debug, PartialEq)]
 pub enum Placement {
-    /// Every part of the rule can match a program start.
+    /// Every part of the rule can match an event of its kind.
     Evaluated,
     /// Evaluated, but these alternatives of its selections never match here, for a field this
     /// level does not have; the rest of the rule can.
@@ -269,17 +387,17 @@ pub enum Placement {
 #[derive(Debug, PartialEq)]
 pub struct Branch {
     pub selection: String,
-    /// The fields it needs that a program start does not give.
+    /// The fields it needs that an event of its kind does not give.
     pub fields: Vec<String>,
 }
 
 /// Why a rule is not evaluated. The codes are a closed vocabulary.
 #[derive(Debug, PartialEq)]
 pub enum Reason {
-    /// It is about another kind of event, named by its logsource category: `file_event` rules
-    /// need file events, which this level does not collect.
+    /// It is about another kind of event, named by its logsource category, which this level
+    /// does not read.
     NeedsEvents(String),
-    /// A selection it cannot do without needs fields a program start does not give.
+    /// A selection it cannot do without needs fields an event of its kind does not give.
     NeedsFields(Vec<String>),
     /// It searches the whole message for keywords, and this level has fields, not messages.
     KeywordSearch,
@@ -305,15 +423,26 @@ pub struct Loaded {
     /// `None` only when it could not be parsed.
     pub meta: Option<Meta>,
     pub placement: Placement,
+    /// The kind of event it is about; `None` for a kind this level does not read, or a rule
+    /// that could not be read.
+    pub kind: Option<Kind>,
     rule: Option<sigma_rust::Rule>,
-    /// What a start must hold for the rule to be able to match it.
+    /// What an event must hold for the rule to be able to match it.
     need: Need,
+}
+
+impl Loaded {
+    /// Evaluated, wholly or in part, over events of this kind.
+    fn asked_of(&self, kind: Kind) -> bool {
+        self.kind == Some(kind) && !matches!(self.placement, Placement::NotEvaluated(_))
+    }
 }
 
 /// A rule an event matched.
 pub struct Match<'a> {
     pub file: &'static str,
     pub meta: &'a Meta,
+    pub kind: Kind,
 }
 
 impl Match<'_> {
@@ -323,6 +452,7 @@ impl Match<'_> {
         let m = self.meta;
         json!({
             "file": self.file,
+            "events": self.kind.category(),
             "id_text": crate::status::text(&m.id),
             "title_text": crate::status::text(&m.title),
             "level": m.level.as_str(),
@@ -371,63 +501,75 @@ impl Rules {
         }
     }
 
-    /// The rules this program start matches, in the order they are shipped. Only rules that
-    /// are evaluated, wholly or in part, are asked, and of them only those whose `Need` the
-    /// start holds: a rule whose need it does not hold cannot match it, so the answer is the
-    /// one `evaluate_each` gives by asking every rule.
-    pub fn evaluate(&self, start: &ProcessStart) -> Vec<Match<'_>> {
-        let values: Vec<Option<String>> = FIELDS.iter().map(|(_, take)| take(start)).collect();
-        let asked = self.asked(&values);
-        let mut event = sigma_rust::Event::new();
-        for ((name, _), value) in FIELDS.iter().zip(values) {
-            // A field the start does not give stays absent, and an absent field matches
-            // nothing.
-            if let Some(value) = value {
-                event.insert(*name, value);
+    /// The rules this event matches, in the order they are shipped. Only rules of its kind
+    /// that are evaluated, wholly or in part, are asked, and of them only those whose `Need`
+    /// the event holds: a rule whose need it does not hold cannot match it, so the answer is
+    /// the one `evaluate_each` gives by asking every rule of its kind.
+    pub fn evaluate<'e>(&self, subject: impl Into<Subject<'e>>) -> Vec<Match<'_>> {
+        let subject = subject.into();
+        let kind = subject.kind();
+        let mut hit = vec![false; self.rules.len()];
+        for values in subject.forms() {
+            let asked = self.asked(kind, &values);
+            let event = event_of(kind, &values);
+            for (i, l) in self.rules.iter().enumerate() {
+                if !hit[i] && asked.iter().any(|a| std::ptr::eq(*a, l)) {
+                    hit[i] = l.rule.as_ref().is_some_and(|r| r.is_match(&event));
+                }
             }
         }
-        asked
-            .into_iter()
-            .filter_map(|l| match (&l.rule, &l.meta) {
-                (Some(rule), Some(meta)) if rule.is_match(&event) => {
-                    Some(Match { file: l.file, meta })
-                }
-                _ => None,
+        self.matched(kind, &hit)
+    }
+
+    /// The rules marked in `hit`, in the order they are shipped.
+    fn matched(&self, kind: Kind, hit: &[bool]) -> Vec<Match<'_>> {
+        self.rules
+            .iter()
+            .zip(hit)
+            .filter(|(_, hit)| **hit)
+            .filter_map(|(l, _)| {
+                Some(Match {
+                    file: l.file,
+                    meta: l.meta.as_ref()?,
+                    kind,
+                })
             })
             .collect()
     }
 
-    /// The rules to ask about a start with these values of `FIELDS`: those evaluated, wholly
-    /// or in part, whose need the values hold.
-    fn asked(&self, values: &[Option<String>]) -> Vec<&Loaded> {
+    /// The rules to ask about an event of `kind` with these values, as `Subject::forms` gives
+    /// them: those of its kind evaluated, wholly or in part, whose need the values hold.
+    fn asked(&self, kind: Kind, values: &[Option<String>]) -> Vec<&Loaded> {
         let held = self.texts.as_ref().map(|t| t.held(values));
         self.rules
             .iter()
-            .filter(|l| !matches!(l.placement, Placement::NotEvaluated(_)))
+            .filter(|l| l.asked_of(kind))
             .filter(|l| held.as_ref().is_none_or(|h| l.need.holds(h)))
             .collect()
     }
 
-    /// The same answer as `evaluate`, by asking every rule: the reference the faster path is
-    /// held to.
+    /// The same answer as `evaluate`, by asking every rule of the event's kind: the reference
+    /// the faster path is held to.
     #[cfg(test)]
-    pub fn evaluate_each(&self, start: &ProcessStart) -> Vec<Match<'_>> {
-        let mut event = sigma_rust::Event::new();
-        for (name, take) in FIELDS {
-            if let Some(value) = take(start) {
-                event.insert(name, value);
+    pub fn evaluate_each<'e>(&self, subject: impl Into<Subject<'e>>) -> Vec<Match<'_>> {
+        let subject = subject.into();
+        let kind = subject.kind();
+        let mut hit = vec![false; self.rules.len()];
+        for values in subject.forms() {
+            let event = event_of(kind, &values);
+            for (i, l) in self.rules.iter().enumerate() {
+                hit[i] |= l.asked_of(kind) && l.rule.as_ref().is_some_and(|r| r.is_match(&event));
             }
         }
+        self.matched(kind, &hit)
+    }
+
+    /// The rules evaluated in full over events of `kind`.
+    pub fn evaluated(&self, kind: Kind) -> usize {
         self.rules
             .iter()
-            .filter(|l| !matches!(l.placement, Placement::NotEvaluated(_)))
-            .filter_map(|l| match (&l.rule, &l.meta) {
-                (Some(rule), Some(meta)) if rule.is_match(&event) => {
-                    Some(Match { file: l.file, meta })
-                }
-                _ => None,
-            })
-            .collect()
+            .filter(|l| l.kind == Some(kind) && l.placement == Placement::Evaluated)
+            .count()
     }
 
     /// The summary of `soc rules --json`: how many are shipped, evaluated, evaluated in part
@@ -440,6 +582,7 @@ impl Rules {
                 "title_text": l.meta.as_ref().map(|m| crate::status::text(&m.title)),
                 "level": l.meta.as_ref().map(|m| m.level.as_str()),
                 "status": l.meta.as_ref().map(|m| m.status.as_str()),
+                "events": l.kind.map(Kind::category),
             });
             match &l.placement {
                 Placement::Evaluated => {}
@@ -476,7 +619,9 @@ impl Rules {
                 "folder": FOLDER,
             },
             "events": CATEGORY,
-            "fields": FIELDS.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+            "fields": Kind::Process.fields(),
+            "file_events": FILE_CATEGORY,
+            "file_fields": Kind::File.fields(),
             "totals": {
                 "shipped": self.rules.len(),
                 "evaluated": evaluated.len(),
@@ -534,7 +679,12 @@ impl Rules {
                 &COMMIT[..12],
                 COMMIT_DATE
             ),
-            format!("Evaluated on every program start: {}", evaluated.len()),
+            format!(
+                "Evaluated in full: {}, {} on every program start and {} on every file created or renamed",
+                evaluated.len(),
+                self.evaluated(Kind::Process),
+                self.evaluated(Kind::File)
+            ),
         ];
         lines.extend(evaluated.into_iter().map(row));
         lines.push(format!(
@@ -546,9 +696,10 @@ impl Rules {
             if let Placement::InPart(branches) = &l.placement {
                 for b in branches {
                     lines.push(format!(
-                        "      {} needs {}, which a program start does not give",
+                        "      {} needs {}, which {} does not give",
                         b.selection,
-                        b.fields.join(", ")
+                        b.fields.join(", "),
+                        given_by(l.kind)
                     ));
                 }
             }
@@ -562,8 +713,9 @@ impl Rules {
                     match reason {
                         Reason::NeedsEvents(c) => format!("needs {c} events"),
                         Reason::NeedsFields(f) => format!(
-                            "needs {}, which a program start does not give",
-                            f.join(", ")
+                            "needs {}, which {} does not give",
+                            f.join(", "),
+                            given_by(l.kind)
                         ),
                         Reason::KeywordSearch => "searches whole messages for keywords".into(),
                         Reason::NotParsed(said) => format!("could not be read: {said}"),
@@ -601,6 +753,14 @@ impl Rules {
     }
 }
 
+/// What gives a rule's fields, for a person: "a program start" or "a file event".
+pub fn given_by(kind: Option<Kind>) -> &'static str {
+    match kind {
+        Some(Kind::File) => "a file event",
+        _ => "a program start",
+    }
+}
+
 /// How many times, as a number with its thousands separated.
 pub fn times(n: i64) -> String {
     crate::view::counted(n, "time", "times")
@@ -618,6 +778,7 @@ fn load(file: &'static str, text: &str, texts: &mut Wanted) -> Loaded {
         file,
         meta: None,
         placement: Placement::NotEvaluated(Reason::NotParsed(said)),
+        kind: None,
         rule: None,
         need: Need::Any,
     };
@@ -633,12 +794,14 @@ fn load(file: &'static str, text: &str, texts: &mut Wanted) -> Loaded {
         Ok(m) => m,
         Err(said) => return not_parsed(said),
     };
+    let kind = Kind::of(yaml["logsource"]["category"].as_str().unwrap_or_default());
     Loaded {
         file,
         meta: Some(meta),
         placement: place(&yaml),
+        kind,
         rule: Some(rule),
-        need: need(&yaml, texts),
+        need: kind.map_or(Need::Any, |kind| need(&yaml, kind, texts)),
     }
 }
 
@@ -744,8 +907,9 @@ fn fold(s: &str) -> String {
     }
 }
 
-/// The need of a rule, from its YAML. `texts` numbers each text a field must hold.
-fn need(yaml: &Value, texts: &mut Wanted) -> Need {
+/// The need of a rule about events of `kind`, from its YAML. `texts` numbers each text a field
+/// must hold.
+fn need(yaml: &Value, kind: Kind, texts: &mut Wanted) -> Need {
     let Some(detection) = yaml["detection"].as_mapping() else {
         return Need::Any;
     };
@@ -757,7 +921,7 @@ fn need(yaml: &Value, texts: &mut Wanted) -> Need {
         match name.as_str() {
             Some("condition") => {}
             Some(name) => {
-                selections.insert(name.to_string(), selection_need(value, texts));
+                selections.insert(name.to_string(), selection_need(value, kind, texts));
             }
             None => return Need::Any,
         }
@@ -765,12 +929,12 @@ fn need(yaml: &Value, texts: &mut Wanted) -> Need {
     Condition::parse(condition, &selections).unwrap_or(Need::Any)
 }
 
-fn selection_need(value: &Value, texts: &mut Wanted) -> Need {
+fn selection_need(value: &Value, kind: Kind, texts: &mut Wanted) -> Need {
     let map_need = |m: &serde_norway::Mapping, texts: &mut Wanted| {
         all(m
             .iter()
             .map(|(k, v)| match k.as_str() {
-                Some(k) => field_need(k, v, texts),
+                Some(k) => field_need(k, v, kind, texts),
                 None => Need::Any,
             })
             .collect())
@@ -790,7 +954,7 @@ fn selection_need(value: &Value, texts: &mut Wanted) -> Need {
     }
 }
 
-fn field_need(key: &str, value: &Value, texts: &mut Wanted) -> Need {
+fn field_need(key: &str, value: &Value, kind: Kind, texts: &mut Wanted) -> Need {
     let mut parts = key.split('|');
     let name = parts.next().unwrap_or_default();
     let mut every = false;
@@ -806,9 +970,11 @@ fn field_need(key: &str, value: &Value, texts: &mut Wanted) -> Need {
             _ => return Need::Any,
         }
     }
-    let Some(field) = FIELDS.iter().position(|(n, _)| *n == name) else {
+    // Numbered among every kind's fields, as `Subject::forms` lays out the values.
+    let Some(field) = kind.fields().iter().position(|n| *n == name) else {
         return Need::Never;
     };
+    let field = kind.offset() + field;
     let values: Vec<&Value> = match value {
         Value::Sequence(items) => items.iter().collect(),
         v => vec![v],
@@ -1007,7 +1173,7 @@ impl Texts {
     /// `None` when an automaton cannot be built, and then every rule is asked.
     fn new(texts: Wanted) -> Option<Texts> {
         let mut fields = Vec::new();
-        for field in 0..FIELDS.len() {
+        for field in 0..ALL_FIELDS {
             let mine = || texts.iter().filter(move |((f, _, _), _)| *f == field);
             let (needles, ids): (Vec<&String>, Vec<usize>) = mine()
                 .filter(|((_, place, _), _)| *place == Place::Within)
@@ -1100,10 +1266,11 @@ fn meta(rule: &sigma_rust::Rule, yaml: &Value) -> Result<Meta, String> {
 /// still matches as the rule means, so the rule is evaluated in part and those maps are named.
 fn place(yaml: &Value) -> Placement {
     let category = yaml["logsource"]["category"].as_str().unwrap_or_default();
-    if category != CATEGORY {
+    let Some(kind) = Kind::of(category) else {
         return Placement::NotEvaluated(Reason::NeedsEvents(category.to_string()));
-    }
-    let given = |f: &&str| FIELDS.iter().any(|(n, _)| n == f);
+    };
+    let fields = kind.fields();
+    let given = |f: &&str| fields.contains(f);
     let mut dead = Vec::new();
     let mut lacking_all = BTreeSet::new();
     let mut a_selection_is_dead = false;
@@ -1160,7 +1327,18 @@ mod tests {
         }
     }
 
-    fn fired(rules: &Rules, s: &ProcessStart) -> Vec<String> {
+    /// A file created at `path`, or renamed there from `from`, by `image`.
+    fn file(image: &str, path: &str, from: Option<&str>) -> FileEvent {
+        FileEvent {
+            timestamp: "2026-10-04T00:00:02.000002Z".into(),
+            action: if from.is_some() { "rename" } else { "create" },
+            path: path.into(),
+            source: from.map(str::to_string),
+            executable: image.into(),
+        }
+    }
+
+    fn fired<'e>(rules: &Rules, s: impl Into<Subject<'e>>) -> Vec<String> {
         rules
             .evaluate(s)
             .iter()
@@ -1168,7 +1346,7 @@ mod tests {
             .collect()
     }
 
-    fn fires(rules: &Rules, id: &str, s: &ProcessStart) -> bool {
+    fn fires<'e>(rules: &Rules, id: &str, s: impl Into<Subject<'e>>) -> bool {
         fired(rules, s).iter().any(|f| f == id)
     }
 
@@ -1227,36 +1405,38 @@ mod tests {
         assert_eq!(t["shipped"], 75);
         assert_eq!(
             (t["evaluated"].clone(), t["in_part"].clone()),
-            (json!(69), json!(1))
+            (json!(74), json!(1))
         );
-        assert_eq!(t["not_evaluated"], 5);
-        let ids = |key: &str| -> Vec<String> {
-            s[key]
+        assert_eq!(t["not_evaluated"], 0);
+        let ids = |key: &str, events: &str| -> Vec<String> {
+            let mut ids: Vec<String> = s[key]
                 .as_array()
                 .unwrap()
                 .iter()
+                .filter(|r| r["events"] == events)
                 .map(|r| r["id_text"].as_str().unwrap().to_string())
-                .collect()
+                .collect();
+            ids.sort();
+            ids
         };
-        assert_eq!(ids("evaluated").len(), 69);
-        assert_eq!(ids("in_part"), [RENAMED_MESHAGENT]);
-        let mut not = ids("not_evaluated");
-        not.sort();
+        assert_eq!(ids("evaluated", CATEGORY).len(), 69);
+        assert_eq!(ids("in_part", CATEGORY), [RENAMED_MESHAGENT]);
+        // The five rules for file events, each evaluated in full over files created or renamed.
+        assert_eq!(ids("evaluated", FILE_CATEGORY), FILE_RULES);
         assert_eq!(
-            not,
-            [
-                "23c43900-e732-45a4-8354-63e4a6c187ce",
-                "2db0458c-05c9-4069-a26f-77becd9c8c13",
-                "4f394635-13ef-4599-b677-3353e0f84f55",
-                "dfe8b941-4e54-4242-b674-6b613d521962",
-                "e710a880-1f18-4417-b6a0-b5afdf7e3023",
-            ]
+            (rules.evaluated(Kind::Process), rules.evaluated(Kind::File)),
+            (69, 5)
         );
-        for r in s["not_evaluated"].as_array().unwrap() {
-            assert_eq!(r["reason"], "needs_events");
-            assert_eq!(r["events_text"], "file_event");
-        }
     }
+
+    /// The shipped rules for file events, by id.
+    const FILE_RULES: [&str; 5] = [
+        "23c43900-e732-45a4-8354-63e4a6c187ce",
+        "2db0458c-05c9-4069-a26f-77becd9c8c13",
+        "4f394635-13ef-4599-b677-3353e0f84f55",
+        "dfe8b941-4e54-4242-b674-6b613d521962",
+        "e710a880-1f18-4417-b6a0-b5afdf7e3023",
+    ];
 
     /// The Detection Rule License: the shipped rules carry the URI of the rule set and of the
     /// licence, and the commit they were copied at is the one the program reports.
@@ -1307,6 +1487,7 @@ mod tests {
             s["drill"][3]["matches"],
             json!([{
                 "file": "rules/macos/process_creation/proc_creation_macos_binary_padding.yml",
+                "events": "process_creation",
                 "id_text": BINARY_PADDING,
                 "title_text": "Binary Padding - MacOS",
                 "level": "high",
@@ -1569,13 +1750,45 @@ mod tests {
         ]
     }
 
-    /// Every rule that can raise a finding, high or critical and evaluated, has one start it
+    const AMOS_FILES: &str = "e710a880-1f18-4417-b6a0-b5afdf7e3023";
+    const AXIOS_FILES: &str = "2db0458c-05c9-4069-a26f-77becd9c8c13";
+
+    /// The same for the rules for file events, a file event each, as Endpoint Security gives
+    /// paths: resolved, `/private/tmp` for `/tmp`.
+    fn file_high_samples() -> Vec<(&'static str, FileEvent, FileEvent)> {
+        vec![
+            (
+                // Amos: its launch daemon renamed into place. Where it went is the target.
+                AMOS_FILES,
+                file(
+                    "/bin/mv",
+                    "/Library/LaunchDaemons/com.finder.helper.plist",
+                    Some("/private/tmp/7f3a.plist"),
+                ),
+                // The same file renamed away: where it came from is not the target.
+                file(
+                    "/bin/mv",
+                    "/private/tmp/7f3a.plist",
+                    Some("/Library/LaunchDaemons/com.finder.helper.plist"),
+                ),
+            ),
+            (
+                // Axios: node writes the dropper to /tmp, which macOS resolves to /private/tmp.
+                AXIOS_FILES,
+                file("/usr/local/bin/node", "/private/tmp/6202033", None),
+                file("/usr/local/bin/node", "/private/tmp/6202034", None),
+            ),
+        ]
+    }
+
+    /// Every rule that can raise a finding, high or critical and evaluated, has one event it
     /// must fire on and one near miss it must stay silent on, written from what the rule
     /// describes. A new such rule without samples fails here.
     #[test]
     fn every_high_rule_fires_on_its_sample_and_not_on_its_near_miss() {
         let rules = Rules::shipped();
         let samples = high_samples();
+        let files = file_high_samples();
         let high: BTreeSet<&str> = rules
             .rules
             .iter()
@@ -1584,7 +1797,11 @@ mod tests {
             .filter(|m| m.level >= Level::High)
             .map(|m| m.id.as_str())
             .collect();
-        let sampled: BTreeSet<&str> = samples.iter().map(|(id, _, _)| *id).collect();
+        let sampled: BTreeSet<&str> = samples
+            .iter()
+            .map(|(id, _, _)| *id)
+            .chain(files.iter().map(|(id, _, _)| *id))
+            .collect();
         assert_eq!(
             high, sampled,
             "every high rule that is evaluated has samples"
@@ -1596,6 +1813,50 @@ mod tests {
                 "{id} stays silent on its near miss"
             );
         }
+        for (id, hit, miss) in &files {
+            assert!(fires(rules, id, hit), "{id} fires on its sample");
+            assert!(
+                !fires(rules, id, miss),
+                "{id} stays silent on its near miss"
+            );
+        }
+    }
+
+    /// A rule's author writes `/tmp/x`; Endpoint Security gives `/private/tmp/x`, the path it
+    /// resolved through the link every Mac has. The file is known by both names, so the rule
+    /// sees it, and a rule written with `/private/var` still sees the path as given. Nothing
+    /// else is a name of it: a folder that merely ends in `private` gives no second name.
+    #[test]
+    fn a_file_is_known_by_its_path_and_through_macos_links_into_private() {
+        let rules = Rules::shipped();
+        let node = "/usr/local/bin/node";
+        assert!(fires(
+            rules,
+            AXIOS_FILES,
+            &file(node, "/private/tmp/6202033", None)
+        ));
+        assert!(fires(rules, AXIOS_FILES, &file(node, "/tmp/6202033", None)));
+        let emond = "23c43900-e732-45a4-8354-63e4a6c187ce";
+        let client = file("/bin/cp", "/private/var/db/emondClients/x", None);
+        assert!(fires(rules, emond, &client));
+        let names = |p: &str| -> Vec<String> {
+            file("/bin/cp", p, None)
+                .names()
+                .iter()
+                .map(|n| n.to_string())
+                .collect()
+        };
+        assert_eq!(
+            names("/private/etc/emond.d/rules/a.plist"),
+            [
+                "/private/etc/emond.d/rules/a.plist",
+                "/etc/emond.d/rules/a.plist"
+            ]
+        );
+        assert_eq!(names("/private/var/x"), ["/private/var/x", "/var/x"]);
+        assert_eq!(names("/Users/x/private/tmp/a"), ["/Users/x/private/tmp/a"]);
+        assert_eq!(names("/private/tmpx/a"), ["/private/tmpx/a"]);
+        assert_eq!(names("/private/Users/a"), ["/private/Users/a"]);
     }
 
     /// A start whose message names no program before the `exec` gives no `ParentImage`: the
@@ -1736,37 +1997,53 @@ mod tests {
     }
 
     /// File rules are about files written, and their `Image` is the writer, not a program
-    /// started: they are not evaluated, with the reason, and never match a program start, even
-    /// one whose fields would satisfy them.
+    /// started: they are asked only about a file event and never match a program start, even
+    /// one whose fields would satisfy them; a process rule is never asked about a file event.
+    /// A rule about another kind of event, which this level does not read, is not evaluated,
+    /// with the reason.
     #[test]
-    fn a_rule_for_file_events_is_not_evaluated_and_never_matches() {
-        let rules = Rules::load(&[(
-            "invented/file.yml",
-            "title: Invented file rule\nid: 00000000-0000-4000-8000-000000000001\nstatus: test\n\
-             level: high\nlogsource:\n    category: file_event\n    product: macos\n\
-             detection:\n    selection:\n        Image|endswith: '/curl'\n    condition: selection\n",
-        )]);
+    fn a_rule_is_asked_only_about_events_of_its_kind() {
+        let rule = |category: &str| -> &'static str {
+            Box::leak(
+                format!(
+                    "title: Invented\nid: 00000000-0000-4000-8000-000000000001\nstatus: test\n\
+                     level: high\nlogsource:\n    category: {category}\n    product: macos\n\
+                     detection:\n    selection:\n        Image|endswith: '/curl'\n    condition: selection\n"
+                )
+                .into_boxed_str(),
+            )
+        };
+        let rules = Rules::load(&[
+            ("invented/file.yml", rule("file_event")),
+            ("invented/process.yml", rule("process_creation")),
+            ("invented/network.yml", rule("network_connection")),
+        ]);
+        assert_eq!(rules.rules[0].kind, Some(Kind::File));
+        assert_eq!(rules.rules[1].kind, Some(Kind::Process));
         assert_eq!(
-            rules.rules[0].placement,
-            Placement::NotEvaluated(Reason::NeedsEvents("file_event".into()))
+            rules.rules[2].placement,
+            Placement::NotEvaluated(Reason::NeedsEvents("network_connection".into()))
         );
         let curl = start(
             "/usr/bin/curl",
             &["curl", "https://example.invalid"],
             "/bin/zsh",
         );
-        assert!(rules.evaluate(&curl).is_empty());
+        let wrote = file("/usr/bin/curl", "/Users/example/.helper", None);
+        let asked = |s: Subject| -> Vec<&str> {
+            let fast: Vec<&str> = rules.evaluate(s).iter().map(|m| m.file).collect();
+            let each: Vec<&str> = rules.evaluate_each(s).iter().map(|m| m.file).collect();
+            assert_eq!(fast, each);
+            fast
+        };
+        assert_eq!(asked(Subject::Start(&curl)), ["invented/process.yml"]);
+        assert_eq!(asked(Subject::File(&wrote)), ["invented/file.yml"]);
+        let m = rules.evaluate(&wrote);
+        assert_eq!(m[0].kind, Kind::File);
+        assert_eq!(m[0].json()["events"], "file_event");
         let shipped = Rules::shipped();
-        let amos = by_id(shipped, "e710a880-1f18-4417-b6a0-b5afdf7e3023");
-        assert_eq!(
-            amos.placement,
-            Placement::NotEvaluated(Reason::NeedsEvents("file_event".into()))
-        );
-        assert!(!fires(
-            shipped,
-            "e710a880-1f18-4417-b6a0-b5afdf7e3023",
-            &curl
-        ));
+        assert!(!fires(shipped, AMOS_FILES, &curl));
+        assert!(fires(shipped, AMOS_FILES, &wrote));
     }
 
     const HEAD: &str = "title: Invented\nid: 00000000-0000-4000-8000-000000000002\n";
@@ -1880,6 +2157,8 @@ mod tests {
         let s = Rules::shipped().summary_json();
         assert_eq!(s["events"], "process_creation");
         assert_eq!(s["fields"], json!(["Image", "CommandLine", "ParentImage"]));
+        assert_eq!(s["file_events"], "file_event");
+        assert_eq!(s["file_fields"], json!(["TargetFilename", "Image"]));
         assert_eq!(s["source"]["commit"], COMMIT);
         assert_eq!(s["source"]["licence"], "DRL-1.1");
         let evaluated = s["evaluated"].as_array().unwrap();
@@ -1897,6 +2176,7 @@ mod tests {
                 "title_text": "Binary Padding - MacOS",
                 "level": "high",
                 "status": "test",
+                "events": "process_creation",
             })
         );
         let lines = Rules::shipped().summary_lines(None);
@@ -1906,7 +2186,7 @@ mod tests {
                 .iter()
                 .any(|l| l.contains("selection_meshagent needs OriginalFileName"))
         );
-        assert!(lines.iter().any(|l| l.contains("needs file_event events")));
+        assert!(lines.iter().any(|l| l == "Evaluated in full: 74, 69 on every program start and 5 on every file created or renamed"));
     }
 
     /// A value as a text it stands for: a wildcard made a letter or nothing, an escape undone,
@@ -1937,9 +2217,10 @@ mod tests {
         out
     }
 
-    /// A start that gives each field the maps name its `k`-th value, or its last, placed as the
-    /// field's modifiers say: what it starts with first, what it holds, what it ends with.
-    fn start_from_maps(maps: &[&serde_norway::Mapping], k: usize) -> ProcessStart {
+    /// A start and a file event that give each field the maps name its `k`-th value, or its
+    /// last, placed as the field's modifiers say: what it starts with first, what it holds,
+    /// what it ends with.
+    fn start_from_maps(maps: &[&serde_norway::Mapping], k: usize) -> (ProcessStart, FileEvent) {
         type Parts = (Option<String>, Vec<String>, Option<String>, Option<String>);
         let mut fields: BTreeMap<&str, Parts> = BTreeMap::new();
         for (key, value) in maps.iter().flat_map(|m| m.iter()) {
@@ -1985,31 +2266,36 @@ mod tests {
                 .collect();
             Some(joined.join(" "))
         };
-        ProcessStart {
-            executable: value("Image").unwrap_or_else(|| "/usr/bin/true".into()),
+        let image = value("Image").unwrap_or_else(|| "/usr/bin/true".into());
+        let start = ProcessStart {
+            executable: image.clone(),
             args: vec![value("CommandLine").unwrap_or_else(|| "true".into())],
             parent_executable: value("ParentImage"),
             ..ProcessStart::default()
-        }
+        };
+        let path = value("TargetFilename").unwrap_or_else(|| "/private/tmp/x".into());
+        (start, file(&image, &path, None))
     }
 
-    /// Starts made from the shipped rules' own values: for each map of each selection, one
-    /// start per value; and for each rule, starts that meet every selection not named as a
-    /// filter at once, as most conditions ask. So every rule meets starts it matches or nearly
-    /// matches.
-    fn starts_from_rules() -> Vec<ProcessStart> {
+    /// Starts and file events made from the shipped rules' own values: for each map of each
+    /// selection, one per value; and for each rule, ones that meet every selection not named as
+    /// a filter at once, as most conditions ask. So every rule meets events it matches or
+    /// nearly matches: starts from the rules for program starts, file events from the rules
+    /// for file events.
+    fn starts_from_rules() -> (Vec<ProcessStart>, Vec<FileEvent>) {
         let widest = |map: &serde_norway::Mapping| {
             map.values()
                 .map(|v| v.as_sequence().map_or(1, Vec::len))
                 .max()
                 .unwrap_or(1)
         };
-        let mut starts = Vec::new();
+        let (mut all_starts, mut all_files) = (Vec::new(), Vec::new());
         for (_, text) in SHIPPED {
             let yaml: Value = serde_norway::from_str(text).unwrap();
             let Some(detection) = yaml["detection"].as_mapping() else {
                 continue;
             };
+            let mut starts = Vec::new();
             let mut together: Vec<Vec<&serde_norway::Mapping>> = Vec::new();
             for (name, selection) in detection {
                 let Some(name) = name.as_str().filter(|n| *n != "condition") else {
@@ -2033,8 +2319,14 @@ mod tests {
                     together.iter().map(|maps| maps[k % maps.len()]).collect();
                 starts.push(start_from_maps(&maps, k));
             }
+            let (s, f): (Vec<_>, Vec<_>) = starts.into_iter().unzip();
+            if yaml["logsource"]["category"].as_str() == Some(FILE_CATEGORY) {
+                all_files.extend(f);
+            } else {
+                all_starts.extend(s);
+            }
         }
-        starts
+        (all_starts, all_files)
     }
 
     /// A start with each of its texts changed the same way.
@@ -2094,21 +2386,71 @@ mod tests {
             .collect()
     }
 
+    /// The same file event written so that folding case and where a text stands are put to the
+    /// test, each field on its own and both at once, and with the path through and around
+    /// macOS's links into `/private`.
+    fn file_variants(f: &FileEvent) -> Vec<FileEvent> {
+        let both = |g: &dyn Fn(&str) -> String| FileEvent {
+            path: g(&f.path),
+            executable: g(&f.executable),
+            ..f.clone()
+        };
+        let path = |p: String| FileEvent {
+            path: p,
+            ..f.clone()
+        };
+        let image = |e: String| FileEvent {
+            executable: e,
+            ..f.clone()
+        };
+        let short = |t: &str| {
+            let mut t = t.to_string();
+            t.pop();
+            t
+        };
+        vec![
+            f.clone(),
+            path(format!("z {}", f.path)),
+            path(format!("{} z", f.path)),
+            path(format!("/private{}", f.path)),
+            path(f.path.trim_start_matches("/private").to_string()),
+            image(format!("z {}", f.executable)),
+            image(format!("{} z", f.executable)),
+            both(&str::to_uppercase),
+            both(&|t| t.replace(['k', 'K'], "\u{212A}")),
+            both(&|t| t.replace(['i', 'I'], "\u{130}")),
+            both(&|t| t.replace('s', "\u{17F}")),
+            both(&short),
+            both(&|_| String::new()),
+        ]
+    }
+
     /// The fast path is the evaluator's answer, not an estimate of it: for every shipped rule
-    /// and every start below, `evaluate`, which asks only the rules whose texts a start holds,
-    /// gives the same matches in the same order as `evaluate_each`, which asks them all. The
-    /// starts are made from each rule's own values, so that every rule meets starts it matches,
-    /// with their samples, the drills, and the same in every variant `variants` makes; a few
-    /// are padded to long lines.
+    /// and every event below, `evaluate`, which asks only the rules of its kind whose texts an
+    /// event holds, gives the same matches in the same order as `evaluate_each`, which asks
+    /// every rule of its kind. The events are made from each rule's own values, so that every
+    /// rule meets events it matches, with their samples, the drills, and the same in every
+    /// variant `variants` and `file_variants` make; a few are padded to long lines.
     #[test]
     fn asking_only_the_rules_a_start_can_match_gives_the_same_matches() {
         let rules = Rules::shipped();
         assert!(rules.texts.is_some(), "the texts' automata were built");
-        let mut base = starts_from_rules();
+        let (mut base, mut files) = starts_from_rules();
         for (_, hit, miss) in high_samples() {
             base.push(hit);
             base.push(miss);
         }
+        for (_, hit, miss) in file_high_samples() {
+            files.push(hit);
+            files.push(miss);
+        }
+        // A rule whose value is a regular expression meets a path it matches only when one is
+        // written for it: the `.pth` rule.
+        files.push(file(
+            "/usr/bin/python3",
+            "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages/x.pth",
+            None,
+        ));
         for (_, image, args) in DRILL {
             base.push(drill_start(image, args));
         }
@@ -2146,18 +2488,23 @@ mod tests {
                 s.parent_executable.clone(),
             ))
         });
+        let mut seen = BTreeSet::new();
+        files.retain(|f| seen.insert((f.path.clone(), f.executable.clone())));
         let corpus: Vec<ProcessStart> = base.iter().flat_map(variants).chain(padded).collect();
+        let file_corpus: Vec<FileEvent> = files.iter().flat_map(file_variants).collect();
 
-        let mut matched = 0;
         let mut rules_matched = BTreeSet::new();
-        for s in &corpus {
+        let mut same = |s: Subject| -> usize {
             let fast: Vec<&str> = rules.evaluate(s).iter().map(|m| m.file).collect();
             let each: Vec<&str> = rules.evaluate_each(s).iter().map(|m| m.file).collect();
             assert_eq!(fast, each, "{s:?}");
-            matched += each.len();
+            let n = each.len();
             rules_matched.extend(each);
-        }
-        // The corpus has teeth: every rule that is evaluated meets a start it matches.
+            n
+        };
+        let matched: usize = corpus.iter().map(|s| same(Subject::Start(s))).sum();
+        let file_matched: usize = file_corpus.iter().map(|f| same(Subject::File(f))).sum();
+        // The corpus has teeth: every rule that is evaluated meets an event it matches.
         let unmatched: Vec<&str> = rules
             .rules
             .iter()
@@ -2166,6 +2513,11 @@ mod tests {
             .filter(|f| !rules_matched.contains(f))
             .collect();
         assert!(matched > corpus.len() / 4, "{matched} of {}", corpus.len());
+        assert!(
+            file_matched > file_corpus.len() / 4,
+            "{file_matched} of {}",
+            file_corpus.len()
+        );
         assert_eq!(unmatched, Vec::<&str>::new());
     }
 
@@ -2176,8 +2528,12 @@ mod tests {
     fn a_start_asks_only_the_rules_whose_texts_it_holds() {
         let rules = Rules::shipped();
         let asked = |s: &ProcessStart| -> Vec<&str> {
-            let values: Vec<Option<String>> = FIELDS.iter().map(|(_, take)| take(s)).collect();
-            rules.asked(&values).iter().map(|l| l.file).collect()
+            let values = Subject::Start(s).forms().remove(0);
+            rules
+                .asked(Kind::Process, &values)
+                .iter()
+                .map(|l| l.file)
+                .collect()
         };
         let git = start("/usr/bin/git", &["git", "status", "--short"], "/bin/zsh");
         assert_eq!(asked(&git), Vec::<&str>::new());
@@ -2301,8 +2657,8 @@ mod tests {
         let ask = |detection: &str, image: &str, command_line: &str| -> bool {
             let rules = load(detection);
             let s = start(image, &[command_line], "/bin/sh");
-            let values: Vec<Option<String>> = FIELDS.iter().map(|(_, take)| take(&s)).collect();
-            let asked = !rules.asked(&values).is_empty();
+            let values = Subject::Start(&s).forms().remove(0);
+            let asked = !rules.asked(Kind::Process, &values).is_empty();
             assert!(asked || rules.evaluate_each(&s).is_empty(), "{detection}");
             asked
         };

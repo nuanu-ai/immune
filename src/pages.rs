@@ -1380,13 +1380,13 @@ pub fn threat_data(
 const PLACED: [(&str, &str, &str); 3] = [
     (
         "evaluated",
-        "Can be checked against a program start",
-        "Everything these rules look for is in what a program start gives: the program, its command line and the program that started it.",
+        "Can be checked in full",
+        "Everything these rules look for is in what the event level gives: for a program start, the program, its command line and the program that started it; for a file created or renamed, its path and the program that did it.",
     ),
     (
         "in-part",
         "Can be checked in part",
-        "Some alternatives in these rules need something a program start does not give. Those never match here; the rest of each rule can.",
+        "Some alternatives in these rules need something an event does not give. Those never match here; the rest of each rule can.",
     ),
     (
         "not-evaluated",
@@ -1410,12 +1410,24 @@ pub fn rules_said(r: &serde_json::Value) -> String {
             "{head} Once the event level is on, every program start on this Mac is checked against them. It is not on, so none of them is watching."
         );
     }
-    let mut said = format!(
-        "{head} The event level is on, so {} of them are watching every program start on this Mac, and {} more check it in part. In the last day they matched {}.",
-        r["watching_rules"],
-        r["in_part"],
-        crate::sigma::times(r["matches_last_day"].as_i64().unwrap_or(0))
-    );
+    let n = |key: &str| r[key].as_i64().unwrap_or(0);
+    let files = n("file_rules");
+    let mut said = if r["file_events_collected"] == true {
+        format!(
+            "{head} The event level is on, so {} of them are watching this Mac: {} every program start and {files} every file created or renamed; {} more check program starts in part. In the last day they matched {}.",
+            n("watching_rules"),
+            n("watching_rules") - files,
+            n("in_part"),
+            crate::sigma::times(n("matches_last_day"))
+        )
+    } else {
+        format!(
+            "{head} The event level is on, so {} of them are watching every program start on this Mac, and {} more check it in part. The {files} rules for files created or renamed are not watching: the collector installed here records program starts only, and installing the event level again adds file events. In the last day they matched {}.",
+            n("watching_rules"),
+            n("in_part"),
+            crate::sigma::times(n("matches_last_day"))
+        )
+    };
     if let Some(note) = r["judged_note"].as_str() {
         said.push(' ');
         said.push_str(note);
@@ -1491,22 +1503,33 @@ pub fn rules(r: &serde_json::Value, events: Option<&crate::events::Level>, now: 
                 .and_then(|m| events?.matches_last_day.get(&m.id))
                 .copied()
                 .unwrap_or(0);
+            // A rule for file events watches only while they are collected here; while the
+            // level runs and they are not, the rule says so by name.
+            let file_rule = l.kind == Some(sigma::Kind::File);
+            let unwatched = file_rule && r["file_events_collected"] != true;
             if matched > 0 {
                 w(format!(
                     "<p class=\"meta\">Matched {} in the last day.</p>\n",
                     sigma::times(matched)
                 ));
-            } else if r["watching"] == true && !matches!(l.placement, Placement::NotEvaluated(_)) {
+            } else if r["watching"] == true
+                && !unwatched
+                && !matches!(l.placement, Placement::NotEvaluated(_))
+            {
                 w("<p class=\"meta\">No match in the last day.</p>\n".to_string());
+            }
+            if unwatched && r["watching"] == true && l.placement == Placement::Evaluated {
+                w("<p class=\"missing\">Not watching on this Mac: the collector installed here records program starts only. Installing the event level again adds files created and renamed.</p>\n".to_string());
             }
             match &l.placement {
                 Placement::Evaluated => {}
                 Placement::InPart(branches) => {
                     for b in branches {
                         w(format!(
-                            "<p class=\"missing\">Never matches here: the alternative {} needs {}, which a program start does not give.</p>\n",
+                            "<p class=\"missing\">Never matches here: the alternative {} needs {}, which {} does not give.</p>\n",
                             mono(std::slice::from_ref(&b.selection)),
-                            mono(&b.fields)
+                            mono(&b.fields),
+                            sigma::given_by(l.kind)
                         ));
                     }
                 }
@@ -1517,10 +1540,13 @@ pub fn rules(r: &serde_json::Value, events: Option<&crate::events::Level>, now: 
                             "Needs {} events, which this version does not collect.",
                             mono(std::slice::from_ref(c))
                         ),
-                        Reason::NeedsFields(f) =>
-                            format!("Needs {}, which a program start does not give.", mono(f)),
+                        Reason::NeedsFields(f) => format!(
+                            "Needs {}, which {} does not give.",
+                            mono(f),
+                            sigma::given_by(l.kind)
+                        ),
                         Reason::KeywordSearch => {
-                            "Searches whole messages for words; this version has the parts of a program start, not messages.".to_string()
+                            "Searches whole messages for words; this version has the parts of an event, not messages.".to_string()
                         }
                         Reason::NotParsed(said) => format!("Could not be read: {}", source(said)),
                     }

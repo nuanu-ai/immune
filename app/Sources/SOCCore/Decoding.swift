@@ -92,13 +92,18 @@ public struct Caveat: Sendable, Equatable {
 }
 
 /// `published_rule` of a finding a published rule raised: the rule's title and authors,
-/// and the latest program start it matched. Every field is text from a source.
+/// and the latest event it matched. Every field is text from a source but `action`.
 public struct PublishedRule: Sendable, Equatable {
   public var titleText: String?
   public var authorText: String?
-  /// The latest start: the program, and the program that started it.
+  /// The latest start: the program, and the program that started it; for a file event, the
+  /// program that created or renamed the file.
   public var executableText: String?
   public var parentExecutableText: String?
+  /// The latest file event: the file, and soc's fixed name of what was done, `create` or
+  /// `rename`. Absent for a program start.
+  public var fileText: String? = nil
+  public var action: String? = nil
 }
 
 /// `result.rules`: how many published rules are shipped, how many are evaluated whole,
@@ -597,7 +602,8 @@ public enum Decoding {
         return PublishedRule(
           titleText: $0["title_text"].string, authorText: $0["author_text"].string,
           executableText: latest?["executable_text"].string,
-          parentExecutableText: latest?["parent_executable_text"].string)
+          parentExecutableText: latest?["parent_executable_text"].string,
+          fileText: latest?["file_text"].string, action: latest?["action"].string)
       },
       urgent: i["urgent"].bool ?? false)
   }

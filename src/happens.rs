@@ -150,17 +150,59 @@ fn named(rules: &Rules, which: impl Fn(&sigma::Loaded) -> bool) -> BTreeSet<&str
         .collect()
 }
 
+/// Which events the level records now, and so which rules evaluated in full watch: those for
+/// program starts while it runs, those for file events while it runs and its collector
+/// records them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Watching {
+    pub starts: bool,
+    pub files: bool,
+}
+
+impl Watching {
+    #[cfg(test)]
+    pub const NONE: Watching = Watching {
+        starts: false,
+        files: false,
+    };
+    #[cfg(test)]
+    pub const ALL: Watching = Watching {
+        starts: true,
+        files: true,
+    };
+
+    /// As the level's latest reading left it.
+    pub fn of(level: Option<&Level>) -> Watching {
+        let starts = level.is_some_and(|l| l.state == events::RUNNING);
+        Watching {
+            starts,
+            files: level.is_some_and(Level::files_watched),
+        }
+    }
+
+    /// Whether this rule watches now: evaluated in full, about events the level records.
+    pub fn watches(self, l: &sigma::Loaded) -> bool {
+        l.placement == Placement::Evaluated
+            && match l.kind {
+                Some(sigma::Kind::Process) => self.starts,
+                Some(sigma::Kind::File) => self.files,
+                None => false,
+            }
+    }
+}
+
 /// Every tactic with its techniques, each in its state, the most telling first and then by id.
-/// `running`: the level's latest state is running. `week`: matches by rule id this week.
+/// `watching`: which events the level records now. `week`: matches by rule id this week.
 /// `raised`: the ids of rules with an open finding. `rules`: the rules shipped.
 pub fn grid<'a>(
     attack: &'a Attack,
     rules: &Rules,
-    running: bool,
+    watching: Watching,
     week: &BTreeMap<String, i64>,
     raised: &BTreeSet<&str>,
 ) -> Vec<(&'a Tactic, Vec<(&'a str, Square)>)> {
     let watched = named(rules, |l| l.placement == Placement::Evaluated);
+    let now = named(rules, |l| watching.watches(l));
     fn id(l: &sigma::Loaded) -> Option<&str> {
         l.meta.as_ref().map(|m| m.id.as_str())
     }
@@ -183,7 +225,7 @@ pub fn grid<'a>(
                         Square::Matched
                     } else if !watched.contains(tech) {
                         Square::NoRule
-                    } else if running {
+                    } else if now.contains(tech) {
                         Square::Quiet
                     } else {
                         Square::Would
@@ -287,7 +329,7 @@ pub fn draw(out: &mut String, st: &crate::status::State, r: &Value, now: i64) ->
         )?;
         lost(out, l)?;
     }
-    watching(out, r, running)?;
+    watching(out, r, level)?;
     out.push_str("</div>\n");
     matched(out, st, level)?;
     cover(out, st, level, running)?;
@@ -374,6 +416,8 @@ pub fn live(l: Option<&Level>, now: i64) -> Value {
         "lost": lost_shown(&level.last_day),
         "caveats": said.caveats.iter().map(|c| serde_json::json!({ "kind": c.kind, "short": c.short })).collect::<Vec<_>>(),
         "matches_last_week": week,
+        // File events of the last day while the rules for them watch, else null.
+        "file_events_last_day": level.files_watched().then_some(level.files.last_day.files),
     })
 }
 
@@ -388,16 +432,24 @@ pub fn write_live(folder: &std::path::Path, l: Option<&Level>, now: i64) -> std:
 }
 
 /// How many rules watch, of how many shipped, with what the rest need.
-fn watching(out: &mut String, r: &Value, running: bool) -> Out {
+fn watching(out: &mut String, r: &Value, level: Option<&Level>) -> Out {
+    let running = level.is_some_and(|l| l.state == events::RUNNING);
     let rules = Rules::shipped();
     let (evaluated, in_part, not_evaluated) = rules.groups();
     let shipped = rules.rules.len();
-    let watching = if running { evaluated.len() } else { 0 };
+    let now = Watching::of(level);
+    let watching = evaluated.iter().filter(|l| now.watches(l)).count();
     let mut rest: Vec<String> = Vec::new();
     if !running {
         rest.push(format!(
             "{} would watch once program starts are seen",
             evaluated.len()
+        ));
+    } else if !now.files {
+        // Named on the rules page and in the status; here, how many and why, quietly.
+        let files = rules.evaluated(sigma::Kind::File);
+        rest.push(format!(
+            "{files} for files created or renamed do not watch: the collector here records program starts only"
         ));
     }
     if !in_part.is_empty() {
@@ -440,16 +492,33 @@ fn watching(out: &mut String, r: &Value, running: bool) -> Out {
     if let Some(note) = r["judged_note"].as_str().filter(|_| running) {
         notes.push(note.to_string());
     }
-    let meter = format!(
+    let mut meter = format!(
         "<span class=\"meter\" aria-hidden=\"true\"><span style=\"width:{}%\"></span></span>",
         watching * 100 / shipped.max(1)
     );
+    // File events, many a second, are said once, quietly, here, where the rules that read
+    // them are counted; never as a number beside program starts.
+    if let Some(l) = level.filter(|_| now.files) {
+        write!(
+            meter,
+            "<span class=\"ss\" data-live=\"files\">{}</span>",
+            esc(&files_said(l.files.last_day.files))
+        )?;
+    }
     stat(
         out,
         ("Rules watching", "watching"),
         &format!("{watching} of {shipped}"),
         &meter,
         &notes,
+    )
+}
+
+/// The file events of the last day, as the section says them.
+fn files_said(n: i64) -> String {
+    format!(
+        "{} checked in the last day",
+        crate::view::counted(n, "file event", "file events")
     )
 }
 
@@ -582,7 +651,7 @@ fn cover(out: &mut String, st: &crate::status::State, level: Option<&Level>, run
         .iter()
         .filter_map(|i| i.rule?.strip_prefix(sigma::FINDING_PREFIX))
         .collect();
-    let grid = grid(attack, Rules::shipped(), running, week, &raised);
+    let grid = grid(attack, Rules::shipped(), Watching::of(level), week, &raised);
     out.push_str("<div class=\"covers\">\n<div class=\"sh\"><h3>What the rules cover</h3><ul class=\"legend\">");
     let legend = [
         Square::Finding,
@@ -686,7 +755,7 @@ mod tests {
             }
         }
         let a = attack();
-        let grid = grid(a, rules, true, &BTreeMap::new(), &BTreeSet::new());
+        let grid = grid(a, rules, Watching::ALL, &BTreeMap::new(), &BTreeSet::new());
         let tactics = data["tactics"].as_array().unwrap();
         assert_eq!(grid.len(), tactics.len());
         for ((tactic, squares), raw) in grid.iter().zip(tactics) {
@@ -721,8 +790,8 @@ mod tests {
         // as what would be watched, never as watched and quiet.
         let a = attack();
         let none = BTreeMap::new();
-        let off = grid(a, Rules::shipped(), false, &none, &BTreeSet::new());
-        let on = grid(a, Rules::shipped(), true, &none, &BTreeSet::new());
+        let off = grid(a, Rules::shipped(), Watching::NONE, &none, &BTreeSet::new());
+        let on = grid(a, Rules::shipped(), Watching::ALL, &none, &BTreeSet::new());
         assert_eq!(counts(&off, Square::Quiet), 0);
         assert_eq!(counts(&on, Square::Would), 0);
         assert!(counts(&on, Square::Quiet) > 0);
@@ -737,7 +806,7 @@ mod tests {
         let a = attack();
         let week = BTreeMap::from([(SW_VERS.to_string(), 3), (PADDING.to_string(), 1)]);
         let raised = BTreeSet::from([PADDING]);
-        let g = grid(a, Rules::shipped(), true, &week, &raised);
+        let g = grid(a, Rules::shipped(), Watching::ALL, &week, &raised);
         let state = |tech: &str| -> Vec<Square> {
             g.iter()
                 .flat_map(|(_, s)| s.iter())
@@ -799,7 +868,7 @@ detection:
         let a = attack();
         let state = |files: &[(&'static str, &'static str)]| -> Vec<Square> {
             let rules = Rules::load(files);
-            grid(a, &rules, true, &BTreeMap::new(), &BTreeSet::new())
+            grid(a, &rules, Watching::ALL, &BTreeMap::new(), &BTreeSet::new())
                 .into_iter()
                 .flat_map(|(_, s)| s)
                 .filter(|(t, _)| *t == "T1021")
@@ -865,6 +934,7 @@ detection:
             matches_last_week: BTreeMap::new(),
             starts_by_hour: Series::default(),
             starts_by_minute: Series::default(),
+            files: crate::events::Files::default(),
         }
     }
 
@@ -1026,6 +1096,13 @@ print(JSON.stringify(out));
         // that says it no longer runs, and are not redrawn as if it did.
         let mut l = level(Tally::default());
         l.state = events::REFUSED.to_string();
+        // Nor a count of file events checked, though the collector here records them.
+        l.files.collected = true;
+        l.files.last_day.files = 9;
+        assert_eq!(
+            live(Some(&l), 0)["file_events_last_day"],
+            serde_json::Value::Null
+        );
         let page = page_after(events::RUNNING, Some(live(Some(&l), 0)), 5);
         assert_eq!(
             page["moved"],

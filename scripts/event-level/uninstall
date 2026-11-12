@@ -34,7 +34,7 @@ cat <<EOF
 This removes the event level:
   the launch daemons local.personal-soc.eslogger, local.personal-soc.event-filter and
   local.personal-soc.event-tidy, and their property lists in $DAEMONS
-  $LIB, with every log of program starts in it
+  $LIB, with every log of program starts and file events in it
   $TOP, if nothing else is in it
 EOF
 

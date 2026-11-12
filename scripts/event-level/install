@@ -5,9 +5,13 @@
 # and removes everything it installs, logs included, with:
 #   sudo /bin/sh scripts/event-level/uninstall
 #
-# Apple's eslogger, run by launchd as root, records every program start on this Mac. Apple's
-# jq keeps of each start only what the reader uses, so its environment and file descriptors
-# are never written, and Apple's rotatelogs appends that to one file per hour. A job every
+# Apple's eslogger, run by launchd as root, records every program start on this Mac, and
+# every file created or renamed. Apple's jq keeps of each only what the reader uses, so a
+# program's environment and file descriptors, and a file's contents, are never written, and
+# Apple's rotatelogs appends that to one file per hour. After the daemons are in place it
+# records what the collector records, `collects`: the eslogger arguments of the launch daemon
+# it installed, as Apple's plutil reads them, so the reader can tell a collector that records
+# file events from one installed before it did, whose log holds none. A job every
 # ten minutes deletes what is older than a day, and the oldest files while the log is larger
 # than 500 MiB. Only programs macOS ships run as root, and only from files this script copies
 # into a folder only root can write; nothing of ours is executed from a place
@@ -16,8 +20,10 @@
 # by no other account: an access-control entry for that one account, narrower than a group.
 #
 # It is idempotent: run again, it stops what it started before, puts every file back and
-# starts it again, keeping the logs. It says what it will put where before it does anything,
-# and stops with a reason and a non-zero exit when a step fails.
+# starts it again, keeping the logs. Run over an installation that records program starts
+# only, it is the upgrade: the hourly files keep their names, and those already written are
+# read as before. It says what it will put where before it does anything, and stops with a
+# reason and a non-zero exit when a step fails.
 
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
@@ -89,7 +95,8 @@ fi
 cat <<EOF
 This installs the event level, and changes nothing else on this Mac:
   $LIB
-      root, 755: collect.sh, filter.jq, tidy.sh (root, 644)
+      root, 755: collect.sh, filter.jq, tidy.sh, and collects, the arguments eslogger is
+      started with (root, 644)
   $RUN
       root, 700: events.fifo, the pipe from eslogger to the filter (root, 600)
   $LOG
@@ -97,21 +104,24 @@ This installs the event level, and changes nothing else on this Mac:
       exec-<hour>.jsonl, one file per hour (UTC); eslogger.err and scripts.err, what eslogger
       and these scripts print; removed, what was deleted and why
   $DAEMONS/local.personal-soc.eslogger.plist
-      runs /usr/bin/eslogger exec as root
+      runs /usr/bin/eslogger exec create rename as root
   $DAEMONS/local.personal-soc.event-filter.plist
       runs collect.sh as root: jq keeps what the reader uses, rotatelogs writes the log
   $DAEMONS/local.personal-soc.event-tidy.plist
       runs tidy.sh as root every ten minutes: deletes logs older than a day, and the oldest
       while the log is larger than 500 MiB
-It records every program start on this Mac, of every account, with its arguments; the
-environment of a program is never written. eslogger needs Full Disk Access, granted to
-/usr/bin/eslogger in System Settings > Privacy & Security > Full Disk Access; without it
-eslogger stops at once, nothing is recorded, and Personal SOC says macOS refuses it.
-What it costs on disk: about 600 bytes a program start. A quiet Mac starting 2 programs a
-second writes about 100 MB a day, and all of it is kept; one building at 100 a second, about
-5 GB a day, more than the cap, which then deletes the oldest hours first, so the log holds
-its last two hours or so. The log is a buffer: while the app is open it is read every half
-minute, and what is read is judged and counted. Hours deleted before they were read are
+It records every program start on this Mac, of every account, with its arguments, and every
+file created or renamed, with its path and the program that did it; the environment of a
+program and the contents of a file are never written; files changed in place, closed or
+removed are not recorded. eslogger needs Full Disk Access, granted to /usr/bin/eslogger in
+System Settings > Privacy & Security > Full Disk Access; without it eslogger stops at once,
+nothing is recorded, and Personal SOC says macOS refuses it.
+What it costs on disk: about 600 bytes a program start and about 350 bytes a file event. A
+quiet Mac starting 2 programs and creating 20 files a second writes about 700 MB a day; one
+building, at 100 starts and 200 files a second, about 11 GB a day, more than the cap, which
+then deletes the oldest hours first, so the log holds its last hour or so. The log is a
+buffer: while the app is open it is read every ten seconds, and what is read is judged and
+counted. Hours deleted before they were read are
 counted, and Personal SOC says the day is partial. The log never holds more than
 500 MiB, plus what ten minutes of writing add: at most about 0.6 GB of disk.
 EOF
@@ -161,21 +171,41 @@ step /usr/bin/find "$LOG" -type f -exec /bin/chmod +a "user:$user allow read,rea
 for l in $LABELS; do
     step /usr/bin/install -o root -g wheel -m 644 "$here/$l.plist" "$DAEMONS/$l.plist"
 done
+# What the collector records, as the launch daemon just installed says it, written after it so
+# that it is never older: the reader counts file events as collected only from this, and an
+# install that replaces the daemon without writing it again leaves it older, which counts for
+# nothing.
+step /usr/bin/plutil -extract ProgramArguments json -o "$LIB/collects" "$DAEMONS/local.personal-soc.eslogger.plist"
+step /usr/sbin/chown root:wheel "$LIB/collects"
+step /bin/chmod 644 "$LIB/collects"
 for l in $LABELS; do
     step /bin/launchctl bootstrap system "$DAEMONS/$l.plist"
 done
 
-# The verdict, in one line the owner can read at a glance: whether program starts are being
-# written. The programs this script starts are program starts themselves, so a level that
-# works has written within seconds; ten are given. Only what was written after this install
-# put its property lists in place counts, so an earlier install's log decides nothing.
+# The verdict, in one line the owner can read at a glance: whether program starts and file
+# events are being written. The programs this script starts are program starts themselves,
+# and each look below creates and removes a file in the level's own folder, so a level that
+# works has written both within seconds; ten are given. Only what was written after this
+# install put its property lists in place counts, so an earlier install's log decides nothing.
 mark="$DAEMONS/local.personal-soc.eslogger.plist"
+# Whether a log file written since holds a line with one of the given texts.
+written() {
+    found=$(/usr/bin/find "$LOG" -name 'exec-*.jsonl' -type f -newer "$mark" \
+        -exec /usr/bin/grep -q -F "$@" {} \; -print 2>/dev/null)
+    [ -n "$found" ]
+}
 n=0
+starts=
+files=
 verdict=
 while [ "$n" -lt 20 ] && [ -z "$verdict" ]; do
-    if [ -n "$(/usr/bin/find "$LOG" -name 'exec-*.jsonl' -type f -size +0 -newer "$mark" 2>/dev/null)" ]; then
+    probe=$(/usr/bin/mktemp "$RUN/probe.XXXXXX") && /bin/rm -f "$probe"
+    [ -n "$starts" ] || ! written -e '"event":{"exec":' || starts=1
+    [ -n "$files" ] || ! written -e '"event":{"create":{"destination":' \
+        -e '"event":{"rename":{"destination":' || files=1
+    if [ -n "$starts" ] && [ -n "$files" ]; then
         verdict=running
-    elif [ -n "$(/usr/bin/find "$LOG" -name eslogger.err -type f -newer "$mark" 2>/dev/null)" ] &&
+    elif [ -z "$starts" ] && [ -n "$(/usr/bin/find "$LOG" -name eslogger.err -type f -newer "$mark" 2>/dev/null)" ] &&
         /usr/bin/tail -c 4096 "$LOG/eslogger.err" | /usr/bin/grep -q ES_NEW_CLIENT_RESULT_ERR_NOT_PERMITTED; then
         verdict=refused
     else
@@ -183,12 +213,17 @@ while [ "$n" -lt 20 ] && [ -z "$verdict" ]; do
         /bin/sleep 0.5
     fi
 done
+[ -n "$verdict" ] || [ -z "$starts" ] || verdict=starts_only
 
 echo
 case $verdict in
 running)
-    echo "RESULT: RUNNING. Program starts are being recorded."
+    echo "RESULT: RUNNING. Program starts and file events are being recorded."
     echo "The panel and \`soc status\` say so within a minute while the app is open."
+    ;;
+starts_only)
+    echo "RESULT: RUNNING IN PART. Program starts are being recorded; no file event was in ten seconds."
+    echo "\`soc status\` says whether file events are collected after \`soc run\`."
     ;;
 refused)
     echo "RESULT: REFUSED. macOS does not give eslogger Full Disk Access, so nothing is recorded."

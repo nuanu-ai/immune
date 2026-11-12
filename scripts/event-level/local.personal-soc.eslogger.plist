@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- The event level's sensor: Apple's eslogger, subscribed to program starts alone, as root.
+<!-- The event level's sensor: Apple's eslogger, as root, subscribed to program starts (exec)
+     and to files created (create) and renamed (rename); not to files closed or removed, which
+     are many times more. One client for all three, so its sequence numbers count what the
+     kernel dropped of each kind. The installer records these arguments beside the scripts
+     (collects), so the reader knows file events are collected and not merely absent.
      It is the program launchd starts, so the Full Disk Access granted to /usr/bin/eslogger
      is the one macOS asks for. What it writes goes into the FIFO the filter reads, and
      nowhere else; what it prints as errors goes to a small file the reader can read.
@@ -13,6 +17,8 @@
 	<array>
 		<string>/usr/bin/eslogger</string>
 		<string>exec</string>
+		<string>create</string>
+		<string>rename</string>
 	</array>
 	<key>StandardOutPath</key>
 	<string>/Library/Application Support/personal-soc/event-level/run/events.fifo</string>

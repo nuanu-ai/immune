@@ -3142,4 +3142,35 @@ struct PublishedRuleCard {
     let other = panel(looking([lookItem(valueText: "a reason")])).opened
     #expect(other?.tag == nil && other?.started == nil && other?.reasonLabel == "Reason: ")
   }
+
+  @Test(
+    "A file event's card shows the file and the program that created or renamed it, both inert"
+  )
+  func cardShowsTheFileAndItsProgram() {
+    var item = lookItem(
+      kind: "file event matched by a published rule", severity: "high",
+      whereText: "studio", valueText: "Atomic MacOS Stealer - Persistence Indicators, by A. Author",
+      title:
+        "A file was created or renamed on this Mac where a published detection rule marks it as high risk."
+    )
+    item["published_rule"] = [
+      "title_text": "Atomic MacOS Stealer - Persistence Indicators", "author_text": "A. Author",
+      "evidence": [
+        [
+          "action": "rename", "file_text": "/Library/LaunchDaemons/x.plist\u{202E}",
+          "source_text": "/private/tmp/x.plist", "executable_text": "/bin/mv",
+        ],
+        ["action": "create", "file_text": "/tmp/older", "executable_text": "/usr/bin/curl"],
+      ],
+    ]
+    let row = panel(looking([item])).opened
+    #expect(row?.tag == "published rule")
+    #expect(row?.started.map(hasNoInvisible) == true)
+    #expect(row?.started?.hasPrefix("/Library/LaunchDaemons/x.plist") == true)
+    #expect(row?.started?.hasSuffix(" · renamed by /bin/mv") == true)
+    item["published_rule"] = [
+      "evidence": [["action": "create", "file_text": "/tmp/x", "executable_text": "/usr/bin/curl"]]
+    ]
+    #expect(panel(looking([item])).opened?.started == "/tmp/x · created by /usr/bin/curl")
+  }
 }

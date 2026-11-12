@@ -18,6 +18,8 @@ const LIB: &str = "/Library/Application Support/personal-soc/event-level";
 /// What the reader looks for under the system root, as the plists and the install place it.
 const PLIST: &str = "Library/LaunchDaemons/local.personal-soc.eslogger.plist";
 const LOG: &str = "Library/Application Support/personal-soc/event-level/log";
+/// The install's record of what the collector records.
+const COLLECTS: &str = "Library/Application Support/personal-soc/event-level/collects";
 const LABELS: [&str; 3] = [
     "local.personal-soc.eslogger",
     "local.personal-soc.event-filter",
@@ -57,8 +59,22 @@ impl Dir {
         self.root().join(LOG)
     }
 
-    /// Lays the system root out as an install does.
+    /// Lays the system root out as an install does: the launch daemon, then the record of what
+    /// it collects, extracted from it by Apple's plutil as the install extracts it.
     fn install(&self) {
+        self.install_before_file_events();
+        let out = Command::new("/usr/bin/plutil")
+            .args(["-extract", "ProgramArguments", "json", "-o"])
+            .arg(self.root().join(COLLECTS))
+            .arg(self.root().join(PLIST))
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+    }
+
+    /// Lays the system root out as an install before file events did: the launch daemon and
+    /// the log, no record of what it collects.
+    fn install_before_file_events(&self) {
         std::fs::create_dir_all(self.log()).unwrap();
         let plist = self.root().join(PLIST);
         std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
@@ -630,7 +646,8 @@ fn plist(label: &str) -> Value {
 #[test]
 fn the_daemons_run_only_what_macos_ships_from_a_folder_only_root_can_write_and_never_spin() {
     // A program of ours run as root from a place the owner's account can write would make any
-    // program running as the owner root. eslogger subscribes to program starts alone. A
+    // program running as the owner root. eslogger subscribes to program starts and to files
+    // created and renamed, and to nothing else: a file closed is four fifths of the events. A
     // daemon that fails at once is started again no sooner than launchd's throttle. The tidy
     // job is given the cap the install states.
     let install = std::fs::read_to_string(Path::new(SCRIPTS).join("install")).unwrap();
@@ -647,7 +664,7 @@ fn the_daemons_run_only_what_macos_ships_from_a_folder_only_root_can_write_and_n
             .map(|a| a.as_str().unwrap())
             .collect();
         match args[0] {
-            "/usr/bin/eslogger" => assert_eq!(args[1..], ["exec"]),
+            "/usr/bin/eslogger" => assert_eq!(args[1..], ["exec", "create", "rename"]),
             "/bin/sh" => {
                 let script = args[1].strip_prefix(&format!("{LIB}/")).unwrap();
                 // The script is one the install copies there, from this folder.
@@ -724,13 +741,22 @@ fn the_install_takes_its_one_reader_from_sudo_and_refuses_root_and_names_no_mach
     }
 }
 
-/// The status's coverage group of the event level, as `class|reason`.
+/// The status's coverage group of the event level's program starts, as `class|reason`.
 fn coverage_of(r: &Value) -> Option<String> {
+    coverage_kind(r, "program starts on this Mac, from Apple's eslogger")
+}
+
+/// The same for its file events.
+fn files_coverage_of(r: &Value) -> Option<String> {
+    coverage_kind(r, "file events on this Mac, from Apple's eslogger")
+}
+
+fn coverage_kind(r: &Value, kind: &str) -> Option<String> {
     r["coverage"]["problems"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|p| p["reader"] == "events")
+        .find(|p| p["reader"] == "events" && p["kind"] == kind)
         .map(|p| {
             format!(
                 "{}|{}",
@@ -1374,6 +1400,7 @@ fn a_binary_padding_start_raises_one_finding_with_its_authors_and_arguments_and_
         f["published_rule"],
         json!({
             "file": "rules/macos/process_creation/proc_creation_macos_binary_padding.yml",
+            "events": "process_creation",
             "id_text": PADDING,
             "title_text": "Binary Padding - MacOS",
             "level": "high",
@@ -1407,7 +1434,8 @@ fn a_binary_padding_start_raises_one_finding_with_its_authors_and_arguments_and_
             &rules["judged"],
             &rules["matches_last_day"]
         ),
-        (&json!(true), &json!(69), &json!("all"), &json!(1)),
+        // 69 for program starts and 5 for file events, which this install collects.
+        (&json!(true), &json!(74), &json!("all"), &json!(1)),
         "{rules:#}"
     );
     assert_eq!(
@@ -1566,6 +1594,7 @@ fn rules_judge_only_what_was_read_and_say_so_and_none_watches_while_the_level_is
     let note = "Over the last day some program starts were lost, could not be read or were deleted before they were read, so the rules judged only those that were read.";
     assert_eq!(rules["judged_note"], note);
     assert!(dir.soc(&["rules"]).contains(note));
+    assert_eq!(files_readings(&dir), 1);
 
     let hour_ago = SystemTime::now() - Duration::from_secs(3600);
     for path in [dir.log().join(h), dir.root().join(PLIST)] {
@@ -1593,6 +1622,21 @@ fn rules_judge_only_what_was_read_and_say_so_and_none_watches_while_the_level_is
         dir.soc(&["rules"])
             .contains("It is not on, so none of them is watching.")
     );
+    // Nor does any reading of file events stand: the coverage of file events this install
+    // collected while it ran is gone, so none is counted as full.
+    assert_eq!(files_readings(&dir), 0);
+}
+
+/// How many readings of file events the store holds, of any completeness.
+fn files_readings(dir: &Dir) -> i64 {
+    rusqlite::Connection::open(dir.store())
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM coverage WHERE reader = 'events' AND kind = ?1",
+            ["file events on this Mac, from Apple's eslogger"],
+            |r| r.get(0),
+        )
+        .unwrap()
 }
 
 #[test]
@@ -1663,4 +1707,621 @@ fn a_replay_over_the_log_on_disk_counts_per_rule_touches_no_store_and_prints_no_
         }
     }
     assert!(!dir.store().exists());
+}
+
+// ---- File events: files created and renamed. ----
+
+/// "Axios NPM Compromise File Creation Indicators - MacOS", high: `node` creating `/tmp/6202033`.
+const AXIOS: &str = "2db0458c-05c9-4069-a26f-77becd9c8c13";
+/// "Atomic MacOS Stealer - Persistence Indicators", high: among others, a file landing at
+/// `/Library/LaunchDaemons/com.finder.helper.plist`.
+const AMOS: &str = "e710a880-1f18-4417-b6a0-b5afdf7e3023";
+/// "Python Path Configuration File Creation - MacOS", medium.
+const PTH: &str = "4f394635-13ef-4599-b677-3353e0f84f55";
+/// The rules for file events SigmaHQ ships for macOS, all five evaluated in full.
+const FILE_RULES: [&str; 5] = [
+    "23c43900-e732-45a4-8354-63e4a6c187ce",
+    AXIOS,
+    PTH,
+    "dfe8b941-4e54-4242-b674-6b613d521962",
+    AMOS,
+];
+/// What the level says it cannot see while the collector here does not record file events.
+const FILES_NOT_SEEN: &str =
+    "files created and renamed: the collector installed here does not record them";
+
+/// A file event as the root side's filter writes it, with invented content and its newline:
+/// `kind` is `create` or `rename`, `from` a rename's source.
+fn file_event(seq: u64, kind: &str, program: &str, path: &str, from: Option<&str>) -> String {
+    let source = from
+        .map(|s| format!(r#","source":"{s}""#))
+        .unwrap_or_default();
+    format!(
+        r#"{{"schema_version":1,"seq_num":{seq},"time":"2026-10-04T00:00:03.000003Z","process":{{"executable":{{"path":"{program}"}}}},"event":{{"{kind}":{{"destination":"{path}"{source}}}}}}}"#
+    ) + "\n"
+}
+
+/// A file as eslogger describes one: its path, whether it was cut short, and its stat.
+fn es_file(path: &str, truncated: bool) -> Value {
+    json!({"path": path, "path_truncated": truncated, "stat": stat(4400, 220)})
+}
+
+/// A destination of a file created or renamed: an existing file (type 0), or a new path as
+/// the folder and the name (type 1), as `es_destination_type_t` gives them.
+fn existing(path: &str) -> (u64, Value) {
+    (0, json!({"existing_file": es_file(path, false)}))
+}
+
+fn new_path(dir: &str, name: &str) -> (u64, Value) {
+    (
+        1,
+        json!({"new_path": {"dir": es_file(dir, false), "filename": name, "mode": 420}}),
+    )
+}
+
+/// A whole `create` or `rename` message as eslogger writes it, message version 10, with
+/// invented content: the program that did it with every process field, and the event's own,
+/// the file's stat, mode and ACL among them.
+fn whole_file_event(
+    seq: u64,
+    kind: &str,
+    program: &str,
+    (destination_type, destination): (u64, Value),
+    from: Option<&str>,
+) -> Value {
+    let mut event = json!({"destination_type": destination_type, "destination": destination});
+    if kind == "create" {
+        event["acl"] = Value::Null;
+    }
+    if let Some(from) = from {
+        event["source"] = es_file(from, false);
+    }
+    json!({
+        "schema_version": 1, "mach_time": 7000000301u64,
+        "event_type": if kind == "create" { 13 } else { 25 },
+        "thread": {"thread_id": 8802}, "version": 10, "seq_num": seq, "global_seq_num": 300 + seq,
+        "action_type": 1, "time": "2026-10-04T00:00:03.000003Z",
+        "action": {"result": {"result": {"auth": 0}, "result_type": 0}},
+        "process": process(program, 401, token(402), "com.example.tool"),
+        "event": {kind: event}
+    })
+}
+
+#[test]
+fn a_file_created_or_renamed_reaches_the_disk_as_its_paths_and_its_program_and_nothing_else() {
+    // A busy Mac creates and renames files by the hundred a second. Of each the filter keeps
+    // the numbering, the time, the program that did it, and the file as one path, joined from
+    // eslogger's folder and name when the file is new, with a rename's source: the file's
+    // stat, mode and ACL and the program's ids never reach a disk. A file event whose shape it
+    // does not know, or whose path eslogger cut short, is written as its kind with nothing in
+    // it, so the reader counts it as one it could not make out, never as nothing; and a
+    // reading never fails on it.
+    let dir = Dir::new("file-filter");
+    let node = "/usr/local/bin/node";
+    let mut no_program = whole_file_event(5, "create", node, existing("/Users/example/a"), None);
+    no_program.as_object_mut().unwrap().remove("process");
+    let mut cut = whole_file_event(6, "create", node, existing("/Users/example/b"), None);
+    cut["event"]["create"]["destination"]["existing_file"]["path_truncated"] = json!(true);
+    let mut nameless = whole_file_event(7, "create", node, new_path("/Users", ""), None);
+    nameless["event"]["create"]["destination"]["new_path"]["filename"] = json!("");
+    let sent = [
+        whole_file_event(1, "create", node, new_path("/private/tmp", "6202033"), None),
+        whole_file_event(
+            2,
+            "create",
+            "/usr/bin/curl",
+            existing("/Users/example/.helper"),
+            None,
+        ),
+        whole_file_event(3, "create", "/usr/bin/touch", new_path("/", "x"), None),
+        whole_file_event(
+            1,
+            "rename",
+            "/bin/mv",
+            new_path("/Library/LaunchDaemons", "b.plist"),
+            Some("/private/tmp/a.plist"),
+        ),
+        whole_file_event(
+            2,
+            "rename",
+            "/usr/bin/vim",
+            existing("/Users/example/notes.txt"),
+            Some("/Users/example/.notes.txt.swp"),
+        ),
+        // A destination of a shape this does not know.
+        whole_file_event(4, "create", node, (2, json!({})), None),
+        // A rename with no source.
+        whole_file_event(3, "rename", "/bin/mv", existing("/Users/example/c"), None),
+        no_program,
+        cut,
+        nameless,
+    ];
+    let sent: Vec<String> = sent.iter().map(Value::to_string).collect();
+    let written = collect(&dir, &sent);
+    let empty = |seq: u64, kind: &str| {
+        format!(
+            r#"{{"schema_version":1,"seq_num":{seq},"time":"2026-10-04T00:00:03.000003Z","event":{{"{kind}":{{}}}}}}"#
+        ) + "\n"
+    };
+    let expected = [
+        file_event(1, "create", node, "/private/tmp/6202033", None),
+        file_event(2, "create", "/usr/bin/curl", "/Users/example/.helper", None),
+        file_event(3, "create", "/usr/bin/touch", "/x", None),
+        file_event(
+            1,
+            "rename",
+            "/bin/mv",
+            "/Library/LaunchDaemons/b.plist",
+            Some("/private/tmp/a.plist"),
+        ),
+        file_event(
+            2,
+            "rename",
+            "/usr/bin/vim",
+            "/Users/example/notes.txt",
+            Some("/Users/example/.notes.txt.swp"),
+        ),
+        empty(4, "create"),
+        empty(3, "rename"),
+        empty(5, "create"),
+        empty(6, "create"),
+        empty(7, "create"),
+    ]
+    .concat();
+    assert_eq!(written, expected);
+    for gone in [
+        "stat",
+        "mode",
+        "acl",
+        "audit_token",
+        "cdhash",
+        "signing_id",
+        "tty",
+        "thread",
+        "_type",
+        "\"version\"",
+    ] {
+        assert!(!written.contains(gone), "{gone}");
+    }
+
+    // Read: five file events made out, five counted as not, and nothing lost from the
+    // numbering of either kind.
+    dir.install();
+    dir.append("exec-20261004T00.jsonl", &written);
+    dir.run();
+    let r = dir.status();
+    let l = &r["event_level"];
+    assert_eq!(l["state"], "running", "{l:#}");
+    let f = &l["file_events"];
+    assert_eq!(
+        since_check(
+            f,
+            &["events", "unreadable_events", "lost", "unknown_losses"]
+        ),
+        [5, 5, 0, 0],
+        "{f:#}"
+    );
+    assert_eq!(
+        files_coverage_of(&r).unwrap(),
+        "failed|over the last day, file events that could not be made out: 5"
+    );
+    assert_eq!(coverage_of(&r), None);
+}
+
+#[test]
+fn a_projected_file_event_costs_what_the_install_says() {
+    // The install tells the owner what file events cost on disk before he grants it root; the
+    // figure it gives is not below what a projected line takes, for a file created and for one
+    // renamed, with paths of ordinary length. Printed with `--nocapture`.
+    let dir = Dir::new("file-measure");
+    let src = "/Users/example/dev/site/src/components";
+    let sent = [
+        whole_file_event(
+            1,
+            "create",
+            "/Users/example/.cargo/bin/rustc",
+            new_path(
+                "/Users/example/dev/site/target/debug/deps",
+                "site-4f1d2c3b5a697e80.0123abcdefgh.rcgu.o",
+            ),
+            None,
+        ),
+        whole_file_event(
+            1,
+            "rename",
+            "/Applications/Editor.app/Contents/MacOS/Editor",
+            existing(&format!("{src}/Header.tsx")),
+            Some(&format!("{src}/.Header.tsx.sb-4b1c9e2d-Xb2kQf")),
+        ),
+    ];
+    let sent: Vec<String> = sent.iter().map(Value::to_string).collect();
+    let written = collect(&dir, &sent);
+    let install = std::fs::read_to_string(Path::new(SCRIPTS).join("install")).unwrap();
+    let said: usize = install
+        .split(" bytes a file event")
+        .next()
+        .and_then(|s| s.rsplit("about ").next())
+        .and_then(|n| n.parse().ok())
+        .expect("the install says how many bytes a file event costs");
+    for (whole, line) in sent.iter().zip(written.lines()) {
+        let (from, to) = (whole.len() + 1, line.len() + 1);
+        println!("eslogger's file event: {from} bytes; the projected line: {to} bytes");
+        assert!(to <= said, "{to} bytes against the {said} the install says");
+    }
+}
+
+#[test]
+fn no_rule_for_files_watches_until_the_collector_here_is_established_to_record_file_events() {
+    // No false calm. The rules for files created and renamed count as watching only when the
+    // install's record of what the collector records names both kinds and is no older than
+    // the launch daemon installed. Until then each is named as not watching, with why, file
+    // events are a limit the owner can lift by installing again, and program starts are judged
+    // as before. A record that is there and cannot be read is a failed reading.
+    let dir = Dir::new("files-unproven");
+    dir.install_before_file_events();
+    let h = "exec-20261004T00.jsonl";
+    dir.append(h, &exec(1));
+    let unproven = |dir: &Dir, class: &str, why: &str| {
+        dir.run_apart();
+        let r = dir.status();
+        let rules = &r["rules"];
+        assert_eq!(
+            (
+                &rules["watching"],
+                &rules["watching_rules"],
+                &rules["file_events_collected"],
+                &rules["judged"]
+            ),
+            (&json!(true), &json!(69), &json!(false), &json!("all")),
+            "{rules:#}"
+        );
+        let mut named: Vec<&str> = rules["not_watching"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .inspect(|n| assert_eq!(n["reason"], "file_events_not_collected"))
+            .map(|n| n["id_text"].as_str().unwrap())
+            .collect();
+        named.sort();
+        let mut five = FILE_RULES;
+        five.sort();
+        assert_eq!(named, five);
+        let l = &r["event_level"];
+        assert_eq!(
+            (
+                &l["file_events"]["collected"],
+                &l["file_events"]["not_collected_reason"]
+            ),
+            (&json!(false), &json!(why)),
+            "{l:#}"
+        );
+        assert!(
+            l["cannot_see"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(FILES_NOT_SEEN))
+        );
+        assert_eq!(files_coverage_of(&r).unwrap(), format!("{class}|{why}"));
+        assert_eq!(
+            not_covered(&r, "file-events-not-seen").unwrap()["who"],
+            "you"
+        );
+        assert_eq!(coverage_of(&r), None);
+        assert_eq!(l["program_starts"]["last_day"], 1);
+    };
+    let starts_only = "the collector installed here records program starts only; installing the event level again adds files created and renamed";
+    unproven(&dir, "not_given", starts_only);
+    let collects = dir.root().join(COLLECTS);
+    for kinds in [
+        r#"["/usr/bin/eslogger","exec"]"#,
+        r#"["/usr/bin/eslogger","exec","create"]"#,
+    ] {
+        std::fs::write(&collects, kinds).unwrap();
+        unproven(&dir, "not_given", starts_only);
+    }
+    std::fs::write(&collects, "exec create rename").unwrap();
+    unproven(
+        &dir,
+        "failed",
+        "what the collector records could not be read: it is not a JSON list",
+    );
+    // A record from an install the launch daemon was replaced after, as an earlier version of
+    // the install would replace it without writing a record.
+    dir.install();
+    let daemon = std::fs::metadata(dir.root().join(PLIST))
+        .unwrap()
+        .modified()
+        .unwrap();
+    std::fs::File::options()
+        .append(true)
+        .open(&collects)
+        .unwrap()
+        .set_modified(daemon - Duration::from_secs(1))
+        .unwrap();
+    unproven(
+        &dir,
+        "not_given",
+        "the collector's launch daemon was replaced after the record of what it collects was written, so file events are not counted as collected; installing the event level again settles it",
+    );
+
+    // Installed again: every rule checked in full watches and nothing is named as not; the
+    // hour the old collector wrote is still read, and the numbering of file events, new, is no
+    // loss.
+    dir.install();
+    dir.append(h, &exec(2));
+    dir.append(
+        "exec-20261004T01.jsonl",
+        &(exec(3) + &file_event(1, "create", "/usr/bin/touch", "/Users/example/a.txt", None)),
+    );
+    dir.run_apart();
+    let r = dir.status();
+    let rules = &r["rules"];
+    assert_eq!(
+        (
+            &rules["watching_rules"],
+            &rules["file_events_collected"],
+            &rules["not_watching"]
+        ),
+        (&json!(74), &json!(true), &json!([])),
+        "{rules:#}"
+    );
+    let l = &r["event_level"];
+    assert_eq!(l["program_starts"]["last_day"], 3);
+    let f = &l["file_events"];
+    assert_eq!(
+        (&f["collected"], &f["not_collected_reason"]),
+        (&json!(true), &Value::Null)
+    );
+    assert_eq!(
+        since_check(f, &["events", "lost", "unknown_losses"]),
+        [1, 0, 0]
+    );
+    assert!(
+        !l["cannot_see"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(FILES_NOT_SEEN))
+    );
+    assert_eq!(files_coverage_of(&r), None);
+    assert_eq!(not_covered(&r, "file-events-not-seen"), None);
+}
+
+#[test]
+fn file_events_lost_or_unreadable_judge_files_in_part_and_leave_program_starts_whole() {
+    // As for program starts: file events missing from the numbering, one that could not be made
+    // out, or a start of the numbering again make the coverage of file events partial over the
+    // last day, and the rules judged only what was read; program starts read whole stay whole.
+    let dir = Dir::new("files-partial");
+    dir.install();
+    let h = "exec-20261004T00.jsonl";
+    let touch = |seq: u64, path: &str| file_event(seq, "create", "/usr/bin/touch", path, None);
+    dir.append(
+        h,
+        &(exec(1)
+            + &touch(1, "/Users/example/a")
+            + &touch(4, "/Users/example/b")
+            + &file_event(
+                1,
+                "rename",
+                "/bin/mv",
+                "/Users/example/c",
+                Some("/Users/example/d"),
+            )
+            + r#"{"schema_version":1,"seq_num":5,"time":"2026-10-04T00:00:03Z","event":{"create":{}}}"#
+            + "\n"
+            + &exec(2)),
+    );
+    dir.run();
+    let r = dir.status();
+    let l = &r["event_level"];
+    assert_eq!(l["state"], "running", "{l:#}");
+    assert_eq!(
+        since_check(
+            &l["file_events"],
+            &["events", "lost", "unknown_losses", "unreadable_events"]
+        ),
+        [3, 2, 0, 1],
+        "{l:#}"
+    );
+    assert_eq!(
+        files_coverage_of(&r).unwrap(),
+        "failed|over the last day, file events missing from the numbering: 2; file events that could not be made out: 1"
+    );
+    assert_eq!(coverage_of(&r), None);
+    let rules = &r["rules"];
+    assert_eq!(
+        (
+            &rules["watching_rules"],
+            &rules["judged"],
+            &rules["judged_note"]
+        ),
+        (
+            &json!(74),
+            &json!("part"),
+            &json!(
+                "Over the last day some file events were lost, could not be read or were deleted before they were read, so the rules judged only those that were read."
+            )
+        ),
+        "{rules:#}"
+    );
+
+    // The numbering of creations starts again: a loss of unknown size.
+    dir.append(h, &touch(1, "/Users/example/e"));
+    dir.run_apart();
+    let r = dir.status();
+    let l = &r["event_level"];
+    assert_eq!(
+        since_check(&l["file_events"], &["events", "lost", "unknown_losses"]),
+        [1, 0, 1],
+        "{l:#}"
+    );
+    assert!(
+        files_coverage_of(&r).unwrap().contains(
+            "times the numbering of file events started again, each a loss of unknown size: 1"
+        ),
+        "{r:#}"
+    );
+
+    // An hour deleted before it was read held file events too.
+    let other = Dir::new("files-removed");
+    other.install();
+    other.append(
+        "exec-20261004T02.jsonl",
+        &(exec(1) + &touch(1, "/Users/example/a")),
+    );
+    std::fs::write(
+        other.log().join("removed"),
+        format!("{} exec-20261004T01.jsonl 900 age\n", now_secs() + 1),
+    )
+    .unwrap();
+    other.run();
+    let r = other.status();
+    let unread = "log files deleted before this reader read them to their end: 1";
+    assert_eq!(
+        files_coverage_of(&r).unwrap(),
+        format!("not_given|over the last day, {unread}")
+    );
+    assert!(coverage_of(&r).unwrap().ends_with(unread));
+    assert_eq!(
+        r["rules"]["judged_note"],
+        "Over the last day some program starts and file events were lost, could not be read or were deleted before they were read, so the rules judged only those that were read."
+    );
+}
+
+#[test]
+fn a_file_a_high_rule_names_raises_one_finding_with_the_file_and_its_program_and_keeps_nothing_else()
+ {
+    // The drill for files, on invented lines: `node` creating `/tmp/6202033`, which macOS
+    // gives as `/private/tmp/6202033`, raises the Axios rule; a file renamed into place as a
+    // launch daemon raises the Atomic Stealer rule. Each finding keeps the latest five events,
+    // newest first, each only the file, a rename's source, the program and the time. A file
+    // no rule names, and the file a medium rule names, leave nothing of their paths.
+    let dir = Dir::new("file-drill");
+    dir.install();
+    let h = "exec-20261004T00.jsonl";
+    let daemon = "/Library/LaunchDaemons/com.finder.helper.plist";
+    let (built, venv) = ("obj-marker-7c3e", "venv-marker-5d2b");
+    dir.append(
+        h,
+        &(file_event(
+            1,
+            "create",
+            "/usr/local/bin/node",
+            "/private/tmp/6202033",
+            None,
+        ) + &file_event(
+            2,
+            "create",
+            "/usr/bin/cc",
+            &format!("/Users/example/dev/site/{built}.o"),
+            None,
+        ) + &file_event(
+            3,
+            "create",
+            "/usr/bin/python3",
+            &format!("/Users/example/{venv}/lib/python3.12/site-packages/x.pth"),
+            None,
+        ) + &file_event(
+            1,
+            "rename",
+            "/bin/mv",
+            daemon,
+            Some("/private/tmp/x1.plist"),
+        )),
+    );
+    let line = dir.run();
+    assert!(
+        line.contains("2 things need a look, 2 new in this run."),
+        "{line}"
+    );
+    let found = dir.soc_json(&["findings"]);
+    let list = found["findings"].as_array().unwrap();
+    assert_eq!(list.len(), 2, "{found:#}");
+    let axios = list
+        .iter()
+        .find(|f| f["rule"] == format!("sigma:{AXIOS}"))
+        .unwrap();
+    assert_eq!(axios["kind"], "file event matched by a published rule");
+    let p = &axios["published_rule"];
+    assert_eq!(
+        (&p["events"], &p["level"], &p["matches"]),
+        (&json!("file_event"), &json!("high"), &json!(1))
+    );
+    assert_eq!(
+        p["evidence"],
+        json!([{
+            "timestamp_text": "2026-10-04T00:00:03.000003Z",
+            "action": "create",
+            "file_text": "/private/tmp/6202033",
+            "source_text": null,
+            "executable_text": "/usr/local/bin/node",
+        }])
+    );
+    let rules = dir.status()["rules"].clone();
+    let matched: Vec<(&str, i64)> = rules["matched_last_day"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| {
+            (
+                m["id_text"].as_str().unwrap(),
+                m["matches"].as_i64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(matched, [(AXIOS, 1), (PTH, 1), (AMOS, 1)], "{rules:#}");
+
+    for seq in 2..=7 {
+        dir.append(
+            h,
+            &file_event(
+                seq,
+                "rename",
+                "/bin/mv",
+                daemon,
+                Some(&format!("/private/tmp/x{seq}.plist")),
+            ),
+        );
+    }
+    dir.run();
+    let found = dir.soc_json(&["findings"]);
+    let amos = found["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["rule"] == format!("sigma:{AMOS}"))
+        .unwrap()
+        .clone();
+    let p = &amos["published_rule"];
+    assert_eq!(p["matches"], 7);
+    let evidence = p["evidence"].as_array().unwrap();
+    assert_eq!(evidence.len(), 5);
+    assert_eq!(
+        evidence[0],
+        json!({
+            "timestamp_text": "2026-10-04T00:00:03.000003Z",
+            "action": "rename",
+            "file_text": daemon,
+            "source_text": "/private/tmp/x7.plist",
+            "executable_text": "/bin/mv",
+        })
+    );
+    assert_eq!(evidence[4]["source_text"], "/private/tmp/x3.plist");
+    let text = dir.soc(&["finding", amos["id"].as_str().unwrap()]);
+    for said in [
+        "Rule: Atomic MacOS Stealer - Persistence Indicators, by Jason Phang Vern - Onn, Robbin Ooi Zhen Heng (Gen Digital);",
+        "It matched 7 file events since this finding was raised; the latest:",
+        &format!(
+            "2026-10-04T00:00:03.000003Z {daemon}: renamed from /private/tmp/x7.plist by /bin/mv"
+        ),
+    ] {
+        assert!(text.contains(said), "{said}: {text}");
+    }
+    let text = dir.soc(&["finding", axios["id"].as_str().unwrap()]);
+    assert!(
+        text.contains("/private/tmp/6202033: created by /usr/local/bin/node"),
+        "{text}"
+    );
+    dir.nowhere_in_the_store(built);
+    dir.nowhere_in_the_store(venv);
 }

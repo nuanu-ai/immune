@@ -53,8 +53,27 @@
 //! start, as SIEMs group alerts by rule. A start is matched where it is read, inside the
 //! reading's transaction, so a reading that fails or is rolled back has matched nothing and a
 //! start read again after it is matched once.
+//!
+//! File events. The same collector subscribes to `create` and `rename` as well, and its filter
+//! writes each as one line in the same hourly files, `exec-…` though they hold more than
+//! `exec` now: the name stays, so the files an older collector wrote are read and deleted as
+//! before and nothing else changes. A file event is the file's path, a rename's source too,
+//! and the program that did it; it is asked only of the rules for file events, a program start
+//! only of the rules for program starts. A file event the filter could not make out is a line
+//! of its kind with nothing in it, and a file event this reader cannot make out is the same:
+//! counted as an unreadable file event, never a failed reading, since the reading goes on
+//! serving program starts. Its losses are counted from `seq_num` per event type, as for
+//! program starts.
+//!
+//! No false calm about files. A collector installed before this version records program
+//! starts only, and its log never holds a file event, which reads the same as a Mac where no
+//! file was created. So file events count as collected only when the installer's record of
+//! what the collector records, `collects`, is there, names `create` and `rename`, and is not
+//! older than the collector's launch daemon: an install that replaces the daemon without
+//! writing it again leaves a record that says nothing. Until then the rules for file events
+//! are said by name not to watch, with why, and coverage of file events is none.
 
-use crate::sigma::{Meta, Rules};
+use crate::sigma::{Meta, Rules, Subject};
 use crate::store::{Cause, Gap, Reading};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
@@ -67,6 +86,16 @@ use std::path::Path;
 pub const READER: &str = "events";
 /// The coverage kind of a reading.
 pub const KIND: &str = "program starts on this Mac, from Apple's eslogger";
+/// The coverage kind of a reading's file events, written while the level runs.
+pub const KIND_FILES: &str = "file events on this Mac, from Apple's eslogger";
+/// The installer's record of what the collector records: the eslogger arguments of the
+/// installed launch daemon, as Apple's `plutil` extracts them, a JSON array of strings.
+pub const COLLECTS: &str = "Library/Application Support/personal-soc/event-level/collects";
+/// The file events collected, as `eslogger` names them.
+pub const FILE_KINDS: [&str; 2] = ["create", "rename"];
+/// Why file events are not counted as collected, in the program's words.
+pub const STARTS_ONLY: &str = "the collector installed here records program starts only; installing the event level again adds files created and renamed";
+pub const REPLACED: &str = "the collector's launch daemon was replaced after the record of what it collects was written, so file events are not counted as collected; installing the event level again settles it";
 /// The level of access the events come from.
 pub const LEVEL: &str = "Apple's eslogger as administrator";
 /// How the run id of a watcher's reading begins.
@@ -120,15 +149,19 @@ pub const FAILING: &str = "failing";
 pub const SILENT: &str = "silent";
 pub const FAILED: &str = "failed";
 
-/// What this level cannot see, in its own words.
+/// What this level cannot see, in its own words; `cannot_see` adds what this Mac's collector
+/// does not record.
 pub const CANNOT_SEE: [&str; 6] = [
     "connections: eslogger gives no network event",
-    "file writes: only program starts are collected",
-    "program starts while the level is not running",
-    "program starts the kernel dropped: counted, not seen",
-    "program starts deleted to keep the log under its size cap before they were read: counted, not seen",
+    "changes to files that already exist, and files removed: only files created and renamed are collected",
+    "program starts and file events while the level is not running",
+    "program starts and file events the kernel dropped: counted, not seen",
+    "program starts and file events deleted to keep the log under its size cap before they were read: counted, not seen",
     "a program's environment: it is never written",
 ];
+/// What it cannot see while the collector installed here does not record file events.
+pub const FILES_NOT_SEEN: &str =
+    "files created and renamed: the collector installed here does not record them";
 
 /// Created at the first reading, in its transaction.
 pub const SCHEMA: &str = "
@@ -192,8 +225,37 @@ CREATE TABLE IF NOT EXISTS rule_evidence (
     team_id           TEXT,
     platform_binary   INTEGER
 );
+-- File events: whether the collector installed here is established to record them, why not,
+-- and the latest sequence number of each kind read, NULL before any.
+CREATE TABLE IF NOT EXISTS event_files (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    collected   INTEGER NOT NULL,
+    why         TEXT,              -- why they are not counted as collected, the program's words
+    last_create INTEGER,
+    last_rename INTEGER
+);
+-- What one reading read of file events, kept for two days beside event_count.
+CREATE TABLE IF NOT EXISTS event_file_count (
+    at           INTEGER NOT NULL,
+    files        INTEGER NOT NULL,  -- file events read
+    lost         INTEGER NOT NULL,  -- file events missing from the numbering
+    unknown_gaps INTEGER NOT NULL,  -- times their numbering started again
+    unreadable   INTEGER NOT NULL   -- file events that could not be made out
+);
+-- The latest file events a finding from a published rule rests on, at most five per finding:
+-- the file and the program, nothing more.
+CREATE TABLE IF NOT EXISTS rule_file_evidence (
+    finding    TEXT NOT NULL REFERENCES finding (id),
+    read_at    INTEGER NOT NULL,
+    timestamp  TEXT NOT NULL,
+    action     TEXT NOT NULL,  -- create or rename
+    path       TEXT NOT NULL,  -- the file created, or a rename's destination
+    source     TEXT,           -- a rename's source
+    executable TEXT NOT NULL   -- the program that did it
+);
 INSERT OR IGNORE INTO coverage_kind (name) VALUES
-    ('program starts on this Mac, from Apple''s eslogger');
+    ('program starts on this Mac, from Apple''s eslogger'),
+    ('file events on this Mac, from Apple''s eslogger');
 ";
 
 /// One program start, as the published rules (`src/sigma.rs`) read it and as a finding's
@@ -256,6 +318,63 @@ pub const SIGMA_FIELDS: [(&str, Take); 3] = [
     ("ParentImage", |s| s.parent_executable.clone()),
 ];
 
+/// One file created or renamed, as the published rules for file events read it and as a
+/// finding's evidence keeps it: the file, and the program that did it.
+///
+/// | eslogger | the filter writes | here | ECS | Sigma |
+/// |---|---|---|---|---|
+/// | `time` | `time` | `timestamp` | `@timestamp` | |
+/// | the event's name | `create` or `rename` | `action` | `event.action` | |
+/// | `create.destination`: `existing_file.path`, or `new_path.dir.path` and `.filename` | `create.destination`, one path | `path` | `file.path` | `TargetFilename` |
+/// | `rename.destination`, either form | `rename.destination` | `path` | `file.path` | `TargetFilename` |
+/// | `rename.source.path` | `rename.source` | `source` | `file.Ext.original.path` | |
+/// | `process.executable.path` | the same | `executable` | `process.executable` | `Image` |
+///
+/// For a rename, `TargetFilename` is where the file went: Sigma's own `file_rename` category
+/// on Windows names the destination so and the source `SourceFilename`; ECS's `file.path` is
+/// the destination in Elastic's rename events; pySigma's macOS pipeline for `eslogger` data
+/// maps `file_event` to every file event, `TargetFilename` to `file.path`. Every shipped file
+/// rule asks where a file appeared, which a rename into place is as much as a create.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FileEvent {
+    pub timestamp: String,
+    /// `create` or `rename`, one of `FILE_KINDS`.
+    pub action: &'static str,
+    pub path: String,
+    pub source: Option<String>,
+    pub executable: String,
+}
+
+/// The folders at the top of every Mac that are links into `/private`. Endpoint Security
+/// gives the path it resolved, `/private/tmp/x`, while a rule's author writes `/tmp/x`, as a
+/// person and a shell do.
+const LINKED: [&str; 3] = ["/private/etc/", "/private/tmp/", "/private/var/"];
+
+impl FileEvent {
+    /// The names a rule may know the file by: its path as Endpoint Security gives it, and,
+    /// under one of macOS's links into `/private`, the same path through the link. A rule
+    /// matches the event when it matches either: "Axios NPM Compromise File Creation
+    /// Indicators" asks for `/tmp/6202033`, which Endpoint Security reports as
+    /// `/private/tmp/6202033`, and "MacOS Emond Launch Daemon" asks for `/private/var/db/…`.
+    pub fn names(&self) -> Vec<&str> {
+        let mut names = vec![self.path.as_str()];
+        if LINKED.iter().any(|l| self.path.starts_with(l)) {
+            names.push(&self.path["/private".len()..]);
+        }
+        names
+    }
+}
+
+/// How a Sigma field's value is taken from a file event under one of its names.
+pub type FileTake = fn(&FileEvent, &str) -> Option<String>;
+
+/// The Sigma fields a file event gives the rules for file events, and how each is taken; the
+/// table above `FileEvent` says why.
+pub const FILE_SIGMA_FIELDS: [(&str, FileTake); 2] = [
+    ("TargetFilename", |_, name| Some(name.to_string())),
+    ("Image", |f, _| Some(f.executable.clone())),
+];
+
 /// One line of the log, as read.
 #[derive(Debug, PartialEq)]
 pub enum Line {
@@ -264,6 +383,13 @@ pub enum Line {
         seq: u64,
         version: Option<u64>,
         start: Box<ProcessStart>,
+    },
+    /// A file event: its kind by its place in `FILE_KINDS`, its sequence number when the line
+    /// has one, and the event, or `None` when the filter or this reader could not make it out.
+    File {
+        kind: usize,
+        seq: Option<u64>,
+        event: Option<Box<FileEvent>>,
     },
     /// A message of another kind.
     Other,
@@ -293,6 +419,18 @@ pub fn line(bytes: &[u8]) -> Result<Line, String> {
         .get("event")
         .and_then(Value::as_object)
         .ok_or_else(|| changed("an event"))?;
+    // A file event without its number is not made out: what was lost around it could not be
+    // counted.
+    if let Some(kind) = FILE_KINDS.iter().position(|k| event.contains_key(*k)) {
+        let seq = m.get("seq_num").and_then(Value::as_u64);
+        return Ok(Line::File {
+            kind,
+            seq,
+            event: seq
+                .and_then(|_| file(&m, event, FILE_KINDS[kind]))
+                .map(Box::new),
+        });
+    }
     if !event.contains_key("exec") {
         return Ok(Line::Other);
     }
@@ -306,6 +444,32 @@ pub fn line(bytes: &[u8]) -> Result<Line, String> {
         seq,
         version: v.get("version").and_then(Value::as_u64),
         start: Box::new(start),
+    })
+}
+
+/// The file event a `create` or `rename` line describes, as the filter writes it, or `None`
+/// when a part it needs is missing or is not an absolute path: the filter writes such a line
+/// for an event whose shape it did not know.
+fn file(
+    m: &serde_json::Map<String, Value>,
+    event: &serde_json::Map<String, Value>,
+    action: &'static str,
+) -> Option<FileEvent> {
+    let e = event.get(action)?;
+    let path = |v: Option<&Value>| {
+        v.and_then(Value::as_str)
+            .filter(|p| p.starts_with('/'))
+            .map(str::to_string)
+    };
+    Some(FileEvent {
+        timestamp: m.get("time")?.as_str()?.to_string(),
+        action,
+        path: path(e.get("destination"))?,
+        source: match action {
+            "rename" => Some(path(e.get("source"))?),
+            _ => None,
+        },
+        executable: path(m.get("process").and_then(|p| p.pointer("/executable/path")))?,
     })
 }
 
@@ -406,11 +570,54 @@ impl Tally {
         }
         said
     }
+
+    /// Nothing the log held was unreadable or deleted early, whatever its kind: what file
+    /// events share with program starts.
+    fn shared_whole(&self) -> bool {
+        self.unreadable + self.removed_cap + self.removed_unread == 0
+    }
 }
 
-/// What the published rules matched in a reading: per rule, how many program starts, and for
-/// a rule that raises a finding the latest `EVIDENCE` of them. Nothing else of a start is
-/// kept, so a lower rule's match leaves only its count.
+/// What a reading read of file events. Lines that could not be read at all, and hours deleted,
+/// are counted once in `Tally` and judge both kinds.
+#[derive(Debug, Default, PartialEq)]
+pub struct FileTally {
+    pub files: i64,
+    pub lost: i64,
+    pub unknown_gaps: i64,
+    pub unreadable: i64,
+}
+
+impl FileTally {
+    /// What was lost or could not be made out of file events, each with its count, in
+    /// coverage's words.
+    fn gaps(&self) -> Vec<String> {
+        let mut said = Vec::new();
+        if self.lost > 0 {
+            said.push(format!(
+                "file events missing from the numbering: {}",
+                self.lost
+            ));
+        }
+        if self.unknown_gaps > 0 {
+            said.push(format!(
+                "times the numbering of file events started again, each a loss of unknown size: {}",
+                self.unknown_gaps
+            ));
+        }
+        if self.unreadable > 0 {
+            said.push(format!(
+                "file events that could not be made out: {}",
+                self.unreadable
+            ));
+        }
+        said
+    }
+}
+
+/// What the published rules matched in a reading: per rule, how many events, and for a rule
+/// that raises a finding the latest `EVIDENCE` of them. Nothing else of an event is kept, so a
+/// lower rule's match leaves only its count.
 #[derive(Debug, Default)]
 pub struct Matched {
     pub rules: BTreeMap<&'static str, Hits>,
@@ -421,13 +628,20 @@ pub struct Matched {
 pub struct Hits {
     pub meta: &'static Meta,
     pub count: i64,
-    pub latest: VecDeque<ProcessStart>,
+    pub latest: VecDeque<Evidence>,
+}
+
+/// An event a finding rests on: a rule is about one kind, so its finding keeps one kind.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Evidence {
+    Start(ProcessStart),
+    File(FileEvent),
 }
 
 impl Matched {
-    /// Evaluates one start against every rule and counts what it matched.
-    fn add(&mut self, rules: &'static Rules, start: &ProcessStart) {
-        for m in rules.evaluate(start) {
+    /// Evaluates one event against the rules of its kind and counts what it matched.
+    fn add(&mut self, rules: &'static Rules, subject: Subject) {
+        for m in rules.evaluate(subject) {
             let hits = self.rules.entry(m.meta.id.as_str()).or_insert(Hits {
                 meta: m.meta,
                 count: 0,
@@ -438,7 +652,10 @@ impl Matched {
                 if hits.latest.len() == EVIDENCE {
                     hits.latest.pop_front();
                 }
-                hits.latest.push_back(start.clone());
+                hits.latest.push_back(match subject {
+                    Subject::Start(s) => Evidence::Start(s.clone()),
+                    Subject::File(f) => Evidence::File(f.clone()),
+                });
             }
         }
     }
@@ -450,7 +667,7 @@ enum Found {
     NotInstalled,
     /// The source is there and could not be read; nothing is taken as read.
     Failed(String),
-    Read(Log),
+    Read(Box<Log>),
 }
 
 /// A log that was read: what it held, where each file was read up to, the last sequence
@@ -458,21 +675,28 @@ enum Found {
 #[derive(Debug)]
 struct Log {
     tally: Tally,
+    file_tally: FileTally,
     matched: Matched,
     files: Vec<(String, u64, u64)>,
     last_seq: Option<u64>,
+    file_seq: [Option<u64>; 2],
     version: Option<u64>,
     written: Option<i64>,
     state: &'static str,
     said: Option<(&'static str, String)>,
+    /// Whether the collector installed here is established to record file events, or why not:
+    /// not given, or a record that is there and could not be read.
+    collects: Result<(), (Cause, String)>,
 }
 
-/// Where the last reading left off: each file's inode and offset, the last sequence number,
-/// and up to when the root side's notes of deletions were counted.
+/// Where the last reading left off: each file's inode and offset, the last sequence number of
+/// program starts and of each kind of file event, and up to when the root side's notes of
+/// deletions were counted.
 #[derive(Default)]
 struct Left {
     files: BTreeMap<String, (u64, u64)>,
     last_seq: Option<u64>,
+    file_seq: [Option<u64>; 2],
     counted: Option<i64>,
 }
 
@@ -480,11 +704,13 @@ struct Left {
 /// start read against `rules`.
 fn look(root: &Path, left: &Left, now: i64, rules: &'static Rules) -> Found {
     let plist = root.join(PLIST);
-    let installed_at = match std::fs::metadata(&plist) {
-        Ok(m) => m.mtime(),
+    let daemon = match std::fs::metadata(&plist) {
+        Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Found::NotInstalled,
         Err(e) => return Found::Failed(format!("the event level's launch daemon: {e}")),
     };
+    let installed_at = daemon.mtime();
+    let collects = collects(root, &daemon);
     let dir = root.join(LOG);
     let entries = match std::fs::read_dir(&dir) {
         Ok(entries) => entries,
@@ -504,11 +730,13 @@ fn look(root: &Path, left: &Left, now: i64, rules: &'static Rules) -> Found {
     }
     names.sort();
     let mut tally = Tally::default();
+    let mut file_tally = FileTally::default();
     let mut matched = Matched::default();
     if let Err(e) = removed(&dir, left, &mut tally) {
         return Found::Failed(format!("{REMOVED} in the event level's log: {e}"));
     }
     let mut last_seq = left.last_seq;
+    let mut file_seq = left.file_seq;
     let mut version = None;
     let mut files = Vec::new();
     let mut written: Option<i64> = None;
@@ -534,7 +762,9 @@ fn look(root: &Path, left: &Left, now: i64, rules: &'static Rules) -> Found {
         };
         let mut into = Into {
             tally: &mut tally,
+            file_tally: &mut file_tally,
             last_seq: &mut last_seq,
+            file_seq: &mut file_seq,
             version: &mut version,
             rules,
             matched: &mut matched,
@@ -556,16 +786,54 @@ fn look(root: &Path, left: &Left, now: i64, rules: &'static Rules) -> Found {
         }
     }
     let (state, said) = judge(&dir, written.unwrap_or(installed_at), written, now);
-    Found::Read(Log {
+    Found::Read(Box::new(Log {
         tally,
+        file_tally,
         matched,
         files,
         last_seq,
+        file_seq,
         version,
         written,
         state,
         said,
-    })
+        collects,
+    }))
+}
+
+/// Whether the collector installed here is established to record file events: the installer's
+/// record of what it collects names every kind in `FILE_KINDS` and was written no earlier than
+/// the launch daemon now installed. Otherwise why not, in the program's words: not given, or a
+/// record that is there and cannot be read, a failed reading with what failed.
+fn collects(root: &Path, daemon: &std::fs::Metadata) -> Result<(), (Cause, String)> {
+    let path = root.join(COLLECTS);
+    let unread = |e: String| {
+        (
+            Cause::Failed,
+            format!("what the collector records could not be read: {e}"),
+        )
+    };
+    let not_given = |why: &str| (Cause::NotGiven, why.to_string());
+    let meta = match std::fs::metadata(&path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(not_given(STARTS_ONLY)),
+        Err(e) => return Err(unread(e.to_string())),
+    };
+    if (meta.mtime(), meta.mtime_nsec()) < (daemon.mtime(), daemon.mtime_nsec()) {
+        return Err(not_given(REPLACED));
+    }
+    let bytes = std::fs::read(&path).map_err(|e| unread(e.to_string()))?;
+    let Ok(Value::Array(names)) = serde_json::from_slice::<Value>(&bytes) else {
+        return Err(unread("it is not a JSON list".into()));
+    };
+    if FILE_KINDS
+        .iter()
+        .all(|k| names.iter().any(|n| n.as_str() == Some(k)))
+    {
+        Ok(())
+    } else {
+        Err(not_given(STARTS_ONLY))
+    }
 }
 
 /// Counts what the root side's notes say it deleted since the last reading: files deleted to
@@ -609,7 +877,9 @@ enum Stop {
 /// Where a reading puts what it reads.
 struct Into<'a> {
     tally: &'a mut Tally,
+    file_tally: &'a mut FileTally,
     last_seq: &'a mut Option<u64>,
+    file_seq: &'a mut [Option<u64>; 2],
     version: &'a mut Option<u64>,
     rules: &'static Rules,
     matched: &'a mut Matched,
@@ -636,10 +906,25 @@ fn read_from(mut file: std::fs::File, from: u64, into: &mut Into) -> Result<u64,
                 version: v,
                 start,
             } => {
-                count_seq(seq, into.last_seq, into.tally);
-                into.tally.starts += 1;
+                let t = &mut *into.tally;
+                count_seq(seq, into.last_seq, (&mut t.lost, &mut t.unknown_gaps));
+                t.starts += 1;
                 *into.version = v.or(*into.version);
-                into.matched.add(into.rules, &start);
+                into.matched.add(into.rules, Subject::Start(&start));
+            }
+            Line::File { kind, seq, event } => {
+                let t = &mut *into.file_tally;
+                if let Some(seq) = seq {
+                    let last = &mut into.file_seq[kind];
+                    count_seq(seq, last, (&mut t.lost, &mut t.unknown_gaps));
+                }
+                match event {
+                    Some(e) => {
+                        t.files += 1;
+                        into.matched.add(into.rules, Subject::File(&e));
+                    }
+                    None => t.unreadable += 1,
+                }
             }
             Line::Other => into.tally.other += 1,
             Line::Unreadable => into.tally.unreadable += 1,
@@ -647,13 +932,14 @@ fn read_from(mut file: std::fs::File, from: u64, into: &mut Into) -> Result<u64,
     }
 }
 
-/// Counts what the sequence number says was lost since the last one.
-fn count_seq(seq: u64, last: &mut Option<u64>, tally: &mut Tally) {
+/// Counts what the sequence number says was lost since the last one of its kind: into `lost`
+/// a gap, into `unknown` a number that fell back.
+fn count_seq(seq: u64, last: &mut Option<u64>, (lost, unknown): (&mut i64, &mut i64)) {
     if let Some(l) = *last {
         if seq > l + 1 {
-            tally.lost += (seq - l - 1) as i64;
+            *lost += (seq - l - 1) as i64;
         } else if seq <= l {
-            tally.unknown_gaps += 1;
+            *unknown += 1;
         }
     }
     *last = Some(seq);
@@ -731,30 +1017,53 @@ pub fn state(conn: &Connection) -> rusqlite::Result<Option<String>> {
 }
 
 /// What the pages show of the level that moves with every program start read, and nothing
-/// that moves with the clock alone: the state, the latest start read, what the collector said
-/// and why a reading failed. Readings that took nothing leave it as it was.
+/// that moves with the clock alone: the state, the latest start read, what the collector said,
+/// why a reading failed, and whether file events are collected. File events alone, many a
+/// second, do not move it: the pages say their count as made, and the live file says it now.
+/// Readings that took nothing leave it as it was.
 pub fn basis(conn: &Connection) -> rusqlite::Result<String> {
     if !has(conn, "event_level")? {
         return Ok(String::new());
     }
-    conn.query_row(
-        "SELECT state, last_seq, said_by, said, reason FROM event_level WHERE id = 1",
-        [],
-        |r| {
-            Ok(format!(
-                "{:?}",
-                (
-                    r.get::<_, String>(0)?,
-                    r.get::<_, Option<i64>>(1)?,
-                    r.get::<_, Option<String>>(2)?,
-                    r.get::<_, Option<String>>(3)?,
-                    r.get::<_, Option<String>>(4)?,
-                )
-            ))
-        },
-    )
-    .optional()
-    .map(Option::unwrap_or_default)
+    let level = conn
+        .query_row(
+            "SELECT state, last_seq, said_by, said, reason FROM event_level WHERE id = 1",
+            [],
+            |r| {
+                Ok(format!(
+                    "{:?}",
+                    (
+                        r.get::<_, String>(0)?,
+                        r.get::<_, Option<i64>>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                        r.get::<_, Option<String>>(3)?,
+                        r.get::<_, Option<String>>(4)?,
+                    )
+                ))
+            },
+        )
+        .optional()?
+        .unwrap_or_default();
+    Ok(match collected(conn)?.0 {
+        true => format!("{level} files"),
+        false => level,
+    })
+}
+
+/// Whether file events are counted as collected, and why not, as the latest reading left it;
+/// not collected before any reading of this version.
+fn collected(conn: &Connection) -> rusqlite::Result<(bool, Option<String>)> {
+    if !has(conn, "event_files")? {
+        return Ok((false, None));
+    }
+    Ok(conn
+        .query_row(
+            "SELECT collected, why FROM event_files WHERE id = 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?
+        .unwrap_or((false, None)))
 }
 
 /// One reading of the event level under `root`, at `now`, recorded in `tx`: the state, the
@@ -780,6 +1089,7 @@ pub fn read(
         // Nothing to continue: an install after this starts its numbering anew.
         Found::NotInstalled => {
             put_level(tx, now, state, None, (None, None), (None, None, None))?;
+            tx.execute("DELETE FROM event_files", [])?;
         }
         // Nothing is taken as read.
         Found::Failed(why) => {
@@ -815,6 +1125,26 @@ pub fn read(
                     t.removed_unread
                 ],
             )?;
+            let f = &log.file_tally;
+            tx.execute(
+                "INSERT INTO event_file_count (at, files, lost, unknown_gaps, unreadable)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![now, f.files, f.lost, f.unknown_gaps, f.unreadable],
+            )?;
+            let seq = |k: usize| log.file_seq[k].map(|s| s as i64);
+            tx.execute(
+                "INSERT INTO event_files (id, collected, why, last_create, last_rename)
+                 VALUES (1, ?1, ?2, ?3, ?4)
+                 ON CONFLICT (id) DO UPDATE SET collected = excluded.collected,
+                     why = excluded.why, last_create = excluded.last_create,
+                     last_rename = excluded.last_rename",
+                params![
+                    log.collects.is_ok(),
+                    log.collects.as_ref().err().map(|e| &e.1),
+                    seq(0),
+                    seq(1)
+                ],
+            )?;
             opened = record(tx, run_id, machine, now, &log.matched)?;
             let (by, said) = match &log.said {
                 Some((by, said)) => (Some(*by), Some(said.as_str())),
@@ -835,6 +1165,7 @@ pub fn read(
         }
     }
     tx.execute("DELETE FROM event_count WHERE at < ?1", [now - KEEP])?;
+    tx.execute("DELETE FROM event_file_count WHERE at < ?1", [now - KEEP])?;
     tx.execute(
         "DELETE FROM rule_match WHERE hour < ?1",
         [(now - KEEP_MATCHES) / HOUR],
@@ -867,6 +1198,31 @@ pub fn read(
         reason.as_deref(),
         &Gap::when(cause),
     )?;
+    // File events have coverage of their own while the level runs; otherwise the level's
+    // state, above, says why nothing is recorded, once.
+    tx.execute(
+        "DELETE FROM coverage WHERE reader = ?1 AND scope = ?2 AND kind = ?3",
+        params![READER, machine, KIND_FILES],
+    )?;
+    if let Found::Read(log) = &found
+        && log.state == RUNNING
+    {
+        let (completeness, reason, cause) = files_covered(
+            &log.collects,
+            &tally_since(tx, now - DAY)?,
+            &file_tally_since(tx, now - DAY)?,
+        );
+        crate::store::put_coverage(
+            tx,
+            &Reading {
+                kind: KIND_FILES,
+                ..reading
+            },
+            completeness,
+            reason.as_deref(),
+            &Gap::when(cause),
+        )?;
+    }
     Ok(Outcome {
         state,
         starts: match &found {
@@ -931,35 +1287,55 @@ fn record(
              ON CONFLICT (finding) DO UPDATE SET matches = matches + excluded.matches",
             params![finding, hits.count],
         )?;
-        for s in &hits.latest {
+        for e in &hits.latest {
+            match e {
+                Evidence::Start(s) => tx.execute(
+                    "INSERT INTO rule_evidence (finding, read_at, timestamp, executable, args,
+                         parent_executable, working_directory, pid, parent_pid, user_id,
+                         signing_id, team_id, platform_binary)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                    params![
+                        finding,
+                        now,
+                        s.timestamp,
+                        s.executable,
+                        json!(s.args).to_string(),
+                        s.parent_executable,
+                        s.working_directory,
+                        s.pid,
+                        s.parent_pid,
+                        s.user_id,
+                        s.signing_id,
+                        s.team_id,
+                        s.platform_binary
+                    ],
+                )?,
+                Evidence::File(f) => tx.execute(
+                    "INSERT INTO rule_file_evidence (finding, read_at, timestamp, action, path,
+                         source, executable)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![
+                        finding,
+                        now,
+                        f.timestamp,
+                        f.action,
+                        f.path,
+                        f.source,
+                        f.executable
+                    ],
+                )?,
+            };
+        }
+        for table in ["rule_evidence", "rule_file_evidence"] {
             tx.execute(
-                "INSERT INTO rule_evidence (finding, read_at, timestamp, executable, args,
-                     parent_executable, working_directory, pid, parent_pid, user_id,
-                     signing_id, team_id, platform_binary)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-                params![
-                    finding,
-                    now,
-                    s.timestamp,
-                    s.executable,
-                    json!(s.args).to_string(),
-                    s.parent_executable,
-                    s.working_directory,
-                    s.pid,
-                    s.parent_pid,
-                    s.user_id,
-                    s.signing_id,
-                    s.team_id,
-                    s.platform_binary
-                ],
+                &format!(
+                    "DELETE FROM {table} WHERE finding = ?1 AND rowid NOT IN
+                         (SELECT rowid FROM {table} WHERE finding = ?1
+                          ORDER BY rowid DESC LIMIT ?2)"
+                ),
+                params![finding, EVIDENCE as i64],
             )?;
         }
-        tx.execute(
-            "DELETE FROM rule_evidence WHERE finding = ?1 AND rowid NOT IN
-                 (SELECT rowid FROM rule_evidence WHERE finding = ?1
-                  ORDER BY rowid DESC LIMIT ?2)",
-            params![finding, EVIDENCE as i64],
-        )?;
     }
     Ok(opened)
 }
@@ -976,19 +1352,29 @@ fn has(conn: &Connection, table: &str) -> rusqlite::Result<bool> {
 
 /// What a finding from a published rule carries beside its words, each in its own field: the
 /// rule as it describes itself, its authors among them, as the Detection Rule License asks of
-/// a message made from a match; how many program starts it counts since it was raised; and the
-/// latest of them, newest first. Text from the rule or from a start is only in `_text` fields.
+/// a message made from a match; the kind of event it is about, `events`; how many events it
+/// counts since it was raised; and the latest of them, newest first. Text from the rule or
+/// from an event is only in `_text` fields.
 pub fn finding_detail(
     conn: &Connection,
     finding: &str,
     file: &'static str,
     meta: &Meta,
+    kind: crate::sigma::Kind,
 ) -> rusqlite::Result<Value> {
-    let mut v = crate::sigma::Match { file, meta }.json();
+    let mut v = crate::sigma::Match { file, meta, kind }.json();
     v["licence"] = json!(crate::sigma::LICENCE);
     v["source"] = json!(crate::sigma::SOURCE);
-    let (matches, evidence) = if has(conn, "rule_evidence")? {
-        (counted(conn, finding)?, evidence(conn, finding)?)
+    let table = match kind {
+        crate::sigma::Kind::Process => "rule_evidence",
+        crate::sigma::Kind::File => "rule_file_evidence",
+    };
+    let (matches, evidence) = if has(conn, table)? {
+        let evidence = match kind {
+            crate::sigma::Kind::Process => evidence(conn, finding)?,
+            crate::sigma::Kind::File => file_evidence(conn, finding)?,
+        };
+        (counted(conn, finding)?, evidence)
     } else {
         (0, Vec::new())
     };
@@ -997,7 +1383,28 @@ pub fn finding_detail(
     Ok(v)
 }
 
-/// How many program starts a finding from a published rule counts.
+/// The file events a finding from a published rule keeps, newest first: the file, a rename's
+/// source, and the program, under ECS's names, with `action` the event's own fixed name.
+fn file_evidence(conn: &Connection, finding: &str) -> rusqlite::Result<Vec<Value>> {
+    let text = |s: Option<String>| s.as_deref().map(crate::status::text);
+    conn.prepare(
+        "SELECT timestamp, action, path, source, executable
+         FROM rule_file_evidence WHERE finding = ?1 ORDER BY rowid DESC",
+    )?
+    .query_map([finding], |r| {
+        let action: String = r.get(1)?;
+        Ok(json!({
+            "timestamp_text": crate::status::text(&r.get::<_, String>(0)?),
+            "action": FILE_KINDS.iter().find(|k| **k == action),
+            "file_text": crate::status::text(&r.get::<_, String>(2)?),
+            "source_text": text(r.get(3)?),
+            "executable_text": crate::status::text(&r.get::<_, String>(4)?),
+        }))
+    })?
+    .collect()
+}
+
+/// How many events a finding from a published rule counts.
 fn counted(conn: &Connection, finding: &str) -> rusqlite::Result<i64> {
     Ok(conn
         .query_row(
@@ -1040,7 +1447,11 @@ fn evidence(conn: &Connection, finding: &str) -> rusqlite::Result<Vec<Value>> {
 pub enum Replay {
     NotInstalled,
     Failed(String),
-    Read { tally: Tally, matched: Matched },
+    Read {
+        tally: Tally,
+        file_tally: FileTally,
+        matched: Matched,
+    },
 }
 
 /// Evaluates the rules over every line of the event log under `root` as it is now, from the
@@ -1051,9 +1462,49 @@ pub fn replay(root: &Path, now: i64) -> Replay {
         Found::Failed(why) => Replay::Failed(why),
         Found::Read(log) => Replay::Read {
             tally: log.tally,
+            file_tally: log.file_tally,
             matched: log.matched,
         },
     }
+}
+
+/// The coverage of file events while the level runs: none while the collector installed here
+/// is not established to record them, with why; else full unless a file event was lost or
+/// could not be made out, or a line could not be read or an hour was deleted early, over the
+/// last day.
+fn files_covered(
+    collects: &Result<(), (Cause, String)>,
+    t: &Tally,
+    f: &FileTally,
+) -> (&'static str, Option<String>, Option<Cause>) {
+    if let Err((cause, why)) = collects {
+        return ("none", Some(why.clone()), Some(*cause));
+    }
+    let mut said = f.gaps();
+    if !t.shared_whole() {
+        said.extend(
+            Tally {
+                unreadable: t.unreadable,
+                removed_cap: t.removed_cap,
+                removed_unread: t.removed_unread,
+                ..Tally::default()
+            }
+            .gaps(),
+        );
+    }
+    if said.is_empty() {
+        return ("full", None, None);
+    }
+    let cause = if f.unreadable + t.unreadable > 0 {
+        Cause::Failed
+    } else {
+        Cause::NotGiven
+    };
+    (
+        "partial",
+        Some(format!("over the last day, {}", said.join("; "))),
+        Some(cause),
+    )
 }
 
 /// The coverage of a log that was read. Running, it is full unless something was lost,
@@ -1145,9 +1596,18 @@ fn left(tx: &Transaction) -> rusqlite::Result<Left> {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?;
+    let file_seq: Option<(Option<i64>, Option<i64>)> = tx
+        .query_row(
+            "SELECT last_create, last_rename FROM event_files WHERE id = 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let seq = |s: Option<i64>| s.map(|s| s as u64);
     Ok(Left {
         files,
         last_seq: row.and_then(|r| r.0).map(|s| s as u64),
+        file_seq: file_seq.map_or([None, None], |(c, r)| [seq(c), seq(r)]),
         counted: row.and_then(|r| r.1),
     })
 }
@@ -1173,6 +1633,31 @@ pub struct Level {
     pub starts_by_hour: Series,
     /// Program starts read over the last hour, minute by minute.
     pub starts_by_minute: Series,
+    pub files: Files,
+}
+
+/// File events, as the latest reading left them.
+#[derive(Debug, Default)]
+pub struct Files {
+    /// The collector installed here is established to record them.
+    pub collected: bool,
+    /// Why not, in the program's words; `None` when collected or before any reading of them.
+    pub why: Option<String>,
+    pub since_check: FileTally,
+    pub last_day: FileTally,
+}
+
+impl Level {
+    /// The rules for file events watch: the level runs and its collector records file events.
+    pub fn files_watched(&self) -> bool {
+        self.state == RUNNING && self.files.collected
+    }
+
+    /// Every file event the log held over the last day was read: none lost, none that could
+    /// not be made out, no line unreadable and no hour deleted early.
+    pub fn files_whole(&self) -> bool {
+        self.files.last_day.gaps().is_empty() && self.last_day.shared_whole()
+    }
 }
 
 /// How many hours the series by hour counts: the last day.
@@ -1256,7 +1741,15 @@ pub fn level(conn: &Connection, now: i64) -> rusqlite::Result<Option<Level>> {
     };
     // The latest full check's own reading counts as since it.
     let check = crate::status::latest_finished(conn)?.map_or(0, |r| r.started_at);
+    let (collected, why) = collected(conn)?;
+    let files = Files {
+        collected,
+        why,
+        since_check: file_tally_since(conn, check)?,
+        last_day: file_tally_since(conn, now - DAY)?,
+    };
     Ok(Some(Level {
+        files,
         state,
         read_at,
         written,
@@ -1306,11 +1799,44 @@ fn tally_since(conn: &Connection, from: i64) -> rusqlite::Result<Tally> {
     )
 }
 
+/// The counts of file events of every reading at or after `from`; none in a store read before
+/// this version.
+fn file_tally_since(conn: &Connection, from: i64) -> rusqlite::Result<FileTally> {
+    if !has(conn, "event_file_count")? {
+        return Ok(FileTally::default());
+    }
+    conn.query_row(
+        "SELECT COALESCE(SUM(files), 0), COALESCE(SUM(lost), 0),
+                COALESCE(SUM(unknown_gaps), 0), COALESCE(SUM(unreadable), 0)
+         FROM event_file_count WHERE at >= ?1",
+        [from],
+        |r| {
+            Ok(FileTally {
+                files: r.get(0)?,
+                lost: r.get(1)?,
+                unknown_gaps: r.get(2)?,
+                unreadable: r.get(3)?,
+            })
+        },
+    )
+}
+
+/// What this level cannot see on this Mac: `CANNOT_SEE`, and file events while the collector
+/// installed here does not record them.
+pub fn cannot_see(l: &Level) -> Vec<&'static str> {
+    let mut said = CANNOT_SEE.to_vec();
+    if !l.files.collected {
+        said.push(FILES_NOT_SEEN);
+    }
+    said
+}
+
 /// `event_level` in `soc status --json`. What `eslogger` or the scripts printed, and why a
 /// reading failed, are text from a source, each in its own field.
 pub fn json(l: &Level) -> Value {
     let iso = |t: Option<i64>| t.map(crate::view::iso);
     let pair = |f: fn(&Tally) -> i64| json!({ "since_check": f(&l.since_check), "last_day": f(&l.last_day) });
+    let files = |f: fn(&FileTally) -> i64| json!({ "since_check": f(&l.files.since_check), "last_day": f(&l.files.last_day) });
     let said = words(l);
     json!({
         "state": l.state,
@@ -1329,7 +1855,20 @@ pub fn json(l: &Level) -> Value {
         "said_text": l.said.as_deref().map(crate::status::text),
         "reason_text": l.reason.as_deref().map(crate::status::text),
         "silent_after_seconds": SILENT_AFTER,
-        "cannot_see": CANNOT_SEE,
+        "cannot_see": cannot_see(l),
+        // Files created and renamed. `collected` is true only when the collector installed
+        // here is established to record them; else `not_collected_reason` says why, in the
+        // program's words, and the rules for file events do not watch. Lines that could not be
+        // read and hours deleted are in the counts above and judge file events too.
+        "file_events": {
+            "collected": l.files.collected,
+            "not_collected_reason": l.files.why.as_deref().filter(|_| !l.files.collected),
+            "kinds": FILE_KINDS,
+            "events": files(|f| f.files),
+            "lost": files(|f| f.lost),
+            "unknown_losses": files(|f| f.unknown_gaps),
+            "unreadable_events": files(|f| f.unreadable),
+        },
         // For a drawing: program starts read in each hour of the last day, oldest first, the
         // last hour ending at `ends_at`; they add up to `program_starts.last_day`.
         "program_starts_by_hour": {
@@ -1601,6 +2140,108 @@ mod tests {
         assert!(said.contains("event.exec.target.audit_token"), "{said}");
     }
 
+    /// A file event as the filter writes it, with invented content.
+    fn created(seq: u64, path: &str) -> String {
+        format!(
+            r#"{{"schema_version":1,"seq_num":{seq},"time":"2026-10-04T00:00:03.000003Z","process":{{"executable":{{"path":"/usr/bin/curl"}}}},"event":{{"create":{{"destination":"{path}"}}}}}}"#
+        )
+    }
+
+    #[test]
+    fn a_file_event_is_read_and_one_it_cannot_make_out_is_counted_never_a_failed_reading() {
+        // The reading goes on serving program starts whatever shape a file event comes in: a
+        // file event this reader cannot make out is counted as such, its number still counted
+        // for losses, and never fails the reading or passes as nothing. A file created is
+        // never told as renamed, whatever else its line holds.
+        let stray = created(7, "/private/tmp/6202033").replace(
+            r#""destination":"#,
+            r#""source":"/private/tmp/y","destination":"#,
+        );
+        let Ok(Line::File {
+            kind: 0,
+            seq: Some(7),
+            event: Some(f),
+        }) = line(stray.as_bytes())
+        else {
+            panic!("a create");
+        };
+        assert_eq!(
+            *f,
+            FileEvent {
+                timestamp: "2026-10-04T00:00:03.000003Z".into(),
+                action: "create",
+                path: "/private/tmp/6202033".into(),
+                source: None,
+                executable: "/usr/bin/curl".into(),
+            }
+        );
+        let renamed = r#"{"schema_version":1,"seq_num":2,"time":"t","process":{"executable":{"path":"/bin/mv"}},"event":{"rename":{"destination":"/Library/LaunchDaemons/b.plist","source":"/private/tmp/a.plist"}}}"#;
+        let Ok(Line::File {
+            kind: 1,
+            event: Some(f),
+            ..
+        }) = line(renamed.as_bytes())
+        else {
+            panic!("a rename");
+        };
+        assert_eq!(
+            (f.action, f.path.as_str(), f.source.as_deref()),
+            (
+                "rename",
+                "/Library/LaunchDaemons/b.plist",
+                Some("/private/tmp/a.plist")
+            )
+        );
+        for (why, text) in [
+            (
+                "the filter's line for a shape it did not know",
+                r#"{"schema_version":1,"seq_num":9,"time":"t","event":{"create":{}}}"#.to_string(),
+            ),
+            ("a path that is not absolute", created(9, "tmp/x")),
+            (
+                "no program",
+                created(9, "/x")
+                    .replace(r#""process":{"executable":{"path":"/usr/bin/curl"}},"#, ""),
+            ),
+            (
+                "no time",
+                created(9, "/x").replace(r#""time":"2026-10-04T00:00:03.000003Z","#, ""),
+            ),
+            (
+                "a rename without its source",
+                renamed
+                    .replace(r#","source":"/private/tmp/a.plist""#, "")
+                    .replace("2,", "9,"),
+            ),
+        ] {
+            assert_eq!(
+                line(text.as_bytes()),
+                Ok(Line::File {
+                    kind: FILE_KINDS
+                        .iter()
+                        .position(|k| text.contains(&format!("\"{k}\"")))
+                        .unwrap(),
+                    seq: Some(9),
+                    event: None
+                }),
+                "{why}"
+            );
+        }
+        // Without its number its losses cannot be counted: it is not made out either.
+        let bare = created(1, "/x").replace(r#""seq_num":1,"#, "");
+        assert_eq!(
+            line(bare.as_bytes()),
+            Ok(Line::File {
+                kind: 0,
+                seq: None,
+                event: None
+            })
+        );
+        // An unknown schema_version fails the reading whatever the event.
+        let two = created(1, "/x").replace(r#""schema_version":1"#, r#""schema_version":2"#);
+        assert!(line(two.as_bytes()).is_err());
+    }
+
     #[test]
     fn an_unknown_schema_version_fails_the_reading_with_its_reason() {
         // Apple says new events may come without a new schema_version; a new one means the
@@ -1712,10 +2353,19 @@ mod tests {
         let started = read(&mut conn, now + 10);
         assert_ne!(started, first);
         assert_eq!(read(&mut conn, now + 20), started);
+        // The collector is established to record file events: the pages that said the rules
+        // for files do not watch are written again.
+        std::fs::write(
+            dir.join("root").join(COLLECTS),
+            r#"["/usr/bin/eslogger","exec","create","rename"]"#,
+        )
+        .unwrap();
+        let collecting = read(&mut conn, now + 25);
+        assert_ne!(collecting, started);
         std::fs::remove_file(&plist).unwrap();
         let removed = read(&mut conn, now + 30);
         let _ = std::fs::remove_dir_all(&dir);
-        assert_ne!(removed, started);
+        assert_ne!(removed, collecting);
     }
 
     #[test]
@@ -1859,6 +2509,74 @@ mod tests {
     }
 
     #[test]
+    fn a_busy_mac_s_file_events_are_read_many_times_faster_than_they_happen() {
+        // A Mac under agents' builds creates and renames about 200 files a second, measured on
+        // the first owner's Mac, so the watcher's reading every ten seconds takes about 2,000.
+        // The bound is ten times that pace in a debug build and fifty in a release one, as for
+        // program starts. One file event in ten matches a high rule for file events, so its
+        // finding's evidence is taken, and only the latest few are kept. Each file event is
+        // asked only of the rules for file events.
+        let dir = std::env::temp_dir().join(format!("soc-events-files-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(LOG)).unwrap();
+        let plist = dir.join(PLIST);
+        std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
+        std::fs::write(&plist, "<plist/>").unwrap();
+        let n: u64 = 20_000;
+        let mut text = String::new();
+        for seq in 1..=n {
+            let path = match seq % 10 {
+                3 => "/Users/example/.helper".to_string(),
+                _ => format!("/Users/example/dev/site/target/debug/build/obj-{seq}.o"),
+            };
+            text.push_str(&created(seq, &path));
+            text.push('\n');
+        }
+        std::fs::write(dir.join(LOG).join("exec-20261004T00.jsonl"), &text).unwrap();
+        let t = std::time::Instant::now();
+        let found = look(&dir, &Left::default(), 1_791_000_000, Rules::shipped());
+        let took = t.elapsed();
+        let _ = std::fs::remove_dir_all(&dir);
+        let Found::Read(log) = found else {
+            panic!("{found:?}");
+        };
+        assert_eq!(
+            log.file_tally,
+            FileTally {
+                files: n as i64,
+                ..FileTally::default()
+            }
+        );
+        assert_eq!(log.tally.starts, 0);
+        let amos = "e710a880-1f18-4417-b6a0-b5afdf7e3023";
+        let counts: Vec<(&str, i64)> = log
+            .matched
+            .rules
+            .iter()
+            .map(|(id, h)| (*id, h.count))
+            .collect();
+        assert_eq!(counts, [(amos, n as i64 / 10)]);
+        let latest = &log.matched.rules[amos].latest;
+        assert_eq!(latest.len(), EVIDENCE);
+        assert!(
+            latest
+                .iter()
+                .all(|e| matches!(e, Evidence::File(f) if f.path == "/Users/example/.helper"))
+        );
+        let rate = n as f64 / took.as_secs_f64();
+        println!(
+            "read {n} file events of {} bytes each in {took:?}: {rate:.0} a second",
+            text.len() as u64 / n
+        );
+        let bound = if cfg!(debug_assertions) {
+            2_000.0
+        } else {
+            10_000.0
+        };
+        assert!(rate > bound, "{rate:.0} file events a second");
+    }
+
+    #[test]
     fn the_level_is_told_as_a_short_state_then_each_caveat_on_its_own() {
         // Form before text: a surface shows the state and the count at a glance and folds the
         // caveats under it. Counts read as a person says them, thousands separated.
@@ -1880,6 +2598,7 @@ mod tests {
             matches_last_week: BTreeMap::new(),
             starts_by_hour: Series::default(),
             starts_by_minute: Series::default(),
+            files: Files::default(),
         };
         let said = words(&l);
         assert_eq!(said.short(), "on, 49,842 in the last day");
@@ -1936,6 +2655,7 @@ mod tests {
                 step: MINUTE,
                 counts: vec![2, 0, 3],
             },
+            files: Files::default(),
         };
         let v = json(&l);
         assert_eq!(
@@ -1982,6 +2702,7 @@ mod tests {
             matches_last_week: BTreeMap::new(),
             starts_by_hour: Series::default(),
             starts_by_minute: Series::default(),
+            files: Files::default(),
         };
         let said = words(&l);
         let shorts: Vec<_> = said
@@ -2083,12 +2804,12 @@ mod tests {
         let mut t = Tally::default();
         let mut last = None;
         for seq in [1, 2, 5, 6, 1, 2] {
-            count_seq(seq, &mut last, &mut t);
+            count_seq(seq, &mut last, (&mut t.lost, &mut t.unknown_gaps));
         }
         assert_eq!((t.lost, t.unknown_gaps), (2, 1));
         // The first number ever read says nothing about what came before.
         let (mut t, mut last) = (Tally::default(), None);
-        count_seq(40, &mut last, &mut t);
+        count_seq(40, &mut last, (&mut t.lost, &mut t.unknown_gaps));
         assert_eq!((t.lost, t.unknown_gaps, last), (0, 0, Some(40)));
     }
 }

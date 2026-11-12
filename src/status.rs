@@ -1018,31 +1018,73 @@ fn watched_section(st: &State, s: &Summary, w: &Watched) -> Value {
 /// How many rules that matched in the last day the status lists; the rest are counted.
 const MATCHED_SHOWN: usize = 10;
 
-/// The published rules this build ships, counted by what a program start lets them do, and
+/// The published rules this build ships, counted by what the event level lets them do, and
 /// what they did. `watching` is true only while the event level's latest state is `running`:
-/// then every program start read is judged by the `watching_rules`, the rules evaluated in
-/// full; one evaluated in part or not at all is never counted as watching. `judged` says how
-/// much of the last day they judged: `all`, `part` when the log lost starts, could not read
-/// lines or deleted hours before they were read, or `none` while the level does not run, each
-/// but `all` with its fixed words in `judged_note`. Matches in the last day are served whether
-/// or not the level runs now: they happened.
+/// then every program start read is judged by the rules for program starts evaluated in full,
+/// and every file created or renamed by the rules for file events evaluated in full, but only
+/// while `file_events_collected`, the collector installed here being established to record
+/// them. `watching_rules` counts the rules that watch now; one evaluated in part or not at all
+/// is never among them, and a rule for file events whose events are not collected is named in
+/// `not_watching` with its reason. `judged` says how much of the last day the watching rules
+/// judged: `all`, `part` when the log lost events they read, could not read lines or deleted
+/// hours before they were read, or `none` while the level does not run, each but `all` with
+/// its fixed words in `judged_note`. Matches in the last day are served whether or not the
+/// level runs now: they happened.
 pub fn rules_section(level: Option<&crate::events::Level>) -> Value {
+    use crate::sigma::Kind;
     let rules = crate::sigma::Rules::shipped();
     let (evaluated, in_part, not_evaluated) = rules.groups();
     let watching = level.filter(|l| l.state == crate::events::RUNNING);
+    let files = watching.is_some_and(|l| l.files_watched());
+    let starts_whole = watching.is_none_or(|l| l.last_day.whole());
+    let files_whole = !files || watching.is_none_or(|l| l.files_whole());
     let (judged, note) = match watching {
         None => (
             "none",
             Some("The event level is not running, so no program start is judged now."),
         ),
-        Some(l) if l.last_day.whole() => ("all", None),
-        Some(_) => (
-            "part",
-            Some(
-                "Over the last day some program starts were lost, could not be read or were deleted before they were read, so the rules judged only those that were read.",
+        Some(_) => match (starts_whole, files_whole) {
+            (true, true) => ("all", None),
+            (false, true) => (
+                "part",
+                Some(
+                    "Over the last day some program starts were lost, could not be read or were deleted before they were read, so the rules judged only those that were read.",
+                ),
             ),
-        ),
+            (true, false) => (
+                "part",
+                Some(
+                    "Over the last day some file events were lost, could not be read or were deleted before they were read, so the rules judged only those that were read.",
+                ),
+            ),
+            (false, false) => (
+                "part",
+                Some(
+                    "Over the last day some program starts and file events were lost, could not be read or were deleted before they were read, so the rules judged only those that were read.",
+                ),
+            ),
+        },
     };
+    let file_rules = rules.evaluated(Kind::File);
+    let watching_rules = match watching {
+        None => 0,
+        Some(_) => rules.evaluated(Kind::Process) + if files { file_rules } else { 0 },
+    };
+    // While the level runs and file events are not collected, the rules for them are named.
+    let not_watching: Vec<Value> = evaluated
+        .iter()
+        .filter(|_| watching.is_some() && !files)
+        .filter(|l| l.kind == Some(Kind::File))
+        .filter_map(|l| l.meta.as_ref())
+        .map(|m| {
+            json!({
+                "id_text": text(&m.id),
+                "title_text": text(&m.title),
+                "level": m.level.as_str(),
+                "reason": "file_events_not_collected",
+            })
+        })
+        .collect();
     let empty = BTreeMap::new();
     let day = level.map_or(&empty, |l| &l.matches_last_day);
     let mut matched: Vec<(&String, &i64)> = day.iter().collect();
@@ -1066,7 +1108,10 @@ pub fn rules_section(level: Option<&crate::events::Level>) -> Value {
         "in_part": in_part.len(),
         "not_evaluated": not_evaluated.len(),
         "watching": watching.is_some(),
-        "watching_rules": if watching.is_some() { evaluated.len() } else { 0 },
+        "watching_rules": watching_rules,
+        "file_rules": file_rules,
+        "file_events_collected": files,
+        "not_watching": not_watching,
         "judged": judged,
         "judged_note": note,
         "matches_last_day": day.values().sum::<i64>(),

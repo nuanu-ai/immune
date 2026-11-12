@@ -3,8 +3,8 @@
 // A running watcher writes view/live.js after every reading of program starts: one object of
 // numbers, rule ids and fixed words, never text from an event or a rule. This loads it again
 // every ten seconds, as a script because a browser refuses to fetch a local file, and redraws
-// the section's numbers in place: the day's count and its bars, what was lost, and each rule's
-// count, found by its id; every title stays as the page wrote it. Without the file, or with
+// the section's numbers in place: the day's count and its bars, what was lost, the file events
+// checked, and each rule's count, found by its id; every title stays as the page wrote it. Without the file, or with
 // scripting off, the section is the page as it was made, and says when.
 (function () {
   "use strict";
@@ -123,6 +123,12 @@
         notes[i].hidden = i > 0;
       }
     }
+    var files = live.file_events_last_day;
+    if (typeof files === "number")
+      set(
+        "files",
+        num(files) + (files === 1 ? " file event" : " file events") + " checked in the last day"
+      );
     rules(live.matches_last_week || {});
   }
 

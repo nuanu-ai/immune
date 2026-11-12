@@ -10699,9 +10699,10 @@ fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_wh
         "{summary}"
     );
 
-    // The event level runs and has read the drill's start: the 69 rules checked in full
-    // watch, the one checked in part does not count among them, and the rule the start
-    // matched says so.
+    // The event level runs, installed before file events were collected, and has read the
+    // drill's start: the 69 rules for program starts checked in full watch, the one checked in
+    // part does not count among them, the 5 for file events are named as not watching with
+    // why, and the rule the start matched says so.
     put(
         &w.sys,
         "Library/LaunchDaemons/local.personal-soc.eslogger.plist",
@@ -10717,9 +10718,21 @@ fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_wh
     w.run();
     let r = status_json(&w.store())["rules"].clone();
     assert_eq!(
-        (&r["watching"], &r["watching_rules"]),
-        (&serde_json::json!(true), &r["evaluated"]),
+        (
+            &r["watching"],
+            &r["watching_rules"],
+            &r["file_events_collected"]
+        ),
+        (
+            &serde_json::json!(true),
+            &serde_json::json!(n(&r["evaluated"]) - n(&r["file_rules"])),
+            &serde_json::json!(false)
+        ),
         "{r}"
+    );
+    assert_eq!(
+        r["not_watching"].as_array().unwrap().len(),
+        n(&r["file_rules"])
     );
     let pages = view_pages(&w.store());
     let page = &pages
@@ -10727,16 +10740,24 @@ fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_wh
         .find(|(p, _)| p.ends_with("view/rules.html"))
         .unwrap()
         .1;
-    let told = "The event level is on, so 69 of them are watching every program start on this Mac, and 1 more check it in part. In the last day they matched 1 time.";
+    let told = "The event level is on, so 69 of them are watching every program start on this Mac, and 1 more check it in part. The 5 rules for files created or renamed are not watching: the collector installed here records program starts only, and installing the event level again adds file events. In the last day they matched 1 time.";
     let text = &page[page.find("<main>").unwrap()..];
     assert!(text.contains(told), "{text}");
-    assert_eq!(text.matches("watch").count(), 1, "{text}");
+    // Watching is said twice above, and each rule for file events says it does not.
+    let unwatched = "<p class=\"missing\">Not watching on this Mac: the collector installed here records program starts only.";
+    assert_eq!(text.matches(unwatched).count(), n(&r["file_rules"]));
+    assert_eq!(
+        text.matches("watch").count(),
+        2 + n(&r["file_rules"]),
+        "{text}"
+    );
     let summary = section(&pages[0].1, "as-it-happens");
     assert!(
         summary
             .contains("<span class=\"st\">Rules watching</span><span class=\"sv\" data-live=\"watching\">69 of 75</span>"),
         "{summary}"
     );
+    assert!(!summary.contains("data-live=\"files\""), "{summary}");
     let padding = &page[page.find("Binary Padding - MacOS").unwrap()..];
     let padding = &padding[..padding.find("</article>").unwrap()];
     assert!(
@@ -10746,7 +10767,7 @@ fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_wh
     let quiet = "<p class=\"meta\">No match in the last day.</p>";
     assert_eq!(
         section(page, "evaluated").matches(quiet).count(),
-        n(&r["evaluated"]) - 1
+        n(&r["evaluated"]) - n(&r["file_rules"]) - 1
     );
     assert_eq!(section(page, "in-part").matches(quiet).count(), 1);
     assert!(!section(page, "not-evaluated").contains("No match"));
@@ -10776,6 +10797,47 @@ fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_wh
         row(&view_pages(&w.store())[0].1),
         "Every program start, with its command line</span><span class=\"num\">on, 2 in the last day</span><span class=\"note\">The collector restarted once; program starts in that moment were not seen.</span>"
     );
+
+    // Installed again, the collector records file events and says so: every rule checked in
+    // full watches, and the section counts the file events in one quiet line.
+    put(
+        &w.sys
+            .join("Library/Application Support/personal-soc/event-level"),
+        "collects",
+        r#"["/usr/bin/eslogger","exec","create","rename"]"#,
+    );
+    let created = r#"{"schema_version":1,"seq_num":1,"time":"2026-10-04T00:00:03Z","process":{"executable":{"path":"/usr/bin/touch"}},"event":{"create":{"destination":"/Users/example/notes.txt"}}}"#;
+    put(
+        &w.sys
+            .join("Library/Application Support/personal-soc/event-level/log"),
+        "exec-20261004T00.jsonl",
+        &format!("{dd}\n{again}\n{created}\n"),
+    );
+    w.run();
+    let r = status_json(&w.store())["rules"].clone();
+    assert_eq!(
+        (&r["watching_rules"], &r["file_events_collected"]),
+        (&r["evaluated"], &serde_json::json!(true)),
+        "{r}"
+    );
+    assert_eq!(r["not_watching"], serde_json::json!([]));
+    let pages = view_pages(&w.store());
+    let page = &pages
+        .iter()
+        .find(|(p, _)| p.ends_with("view/rules.html"))
+        .unwrap()
+        .1;
+    let told = "The event level is on, so 74 of them are watching this Mac: 69 every program start and 5 every file created or renamed; 1 more check program starts in part.";
+    assert!(page.contains(told), "{page}");
+    assert!(!page.contains(unwatched), "{page}");
+    let summary = section(&pages[0].1, "as-it-happens");
+    assert!(
+        summary.contains("data-live=\"watching\">74 of 75</span>")
+            && summary.contains(
+                "<span class=\"ss\" data-live=\"files\">1 file event checked in the last day</span>"
+            ),
+        "{summary}"
+    );
 }
 
 #[test]
@@ -10804,6 +10866,13 @@ fn as_it_happens_draws_the_day_the_status_counts_and_a_published_rule_finding_wh
         &w.sys,
         "Library/LaunchDaemons/local.personal-soc.eslogger.plist",
         "<plist/>",
+    );
+    // Installed as this version installs it, recording file events too, so every rule
+    // checked in full watches.
+    put(
+        &w.sys,
+        "Library/Application Support/personal-soc/event-level/collects",
+        r#"["/usr/bin/eslogger","exec","create","rename"]"#,
     );
     let exec = |seq: u32, image: &str, args: &str| {
         format!(

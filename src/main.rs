@@ -874,25 +874,41 @@ pub fn read_events_held(path: &Path, system_root: &Path) -> Result<EventsRead, B
 }
 
 /// A published rule's finding for a person, from its `published_rule` detail: the rule with
-/// its authors and licence, and the latest starts it matched. Every value is already text from
-/// a source shown inert.
+/// its authors and licence, and the latest events it matched, program starts or, for a rule
+/// about file events, files created or renamed. Every value is already text from a source
+/// shown inert.
 fn published_rule_lines(d: &serde_json::Value) -> Vec<String> {
     let s = |v: &serde_json::Value| v.as_str().unwrap_or("unknown").to_string();
+    let files = d["events"] == sigma::FILE_CATEGORY;
     let mut lines = vec![format!(
         "Rule: {}, by {}; from SigmaHQ's rule set under the Detection Rule License 1.1, {}.",
         s(&d["title_text"]),
         s(&d["author_text"]),
         s(&d["file"])
     )];
+    let (one, many) = if files {
+        ("file event", "file events")
+    } else {
+        ("program start", "program starts")
+    };
     lines.push(format!(
         "It matched {} since this finding was raised; the latest:",
-        things(
-            d["matches"].as_i64().unwrap_or(0),
-            "program start",
-            "program starts"
-        )
+        things(d["matches"].as_i64().unwrap_or(0), one, many)
     ));
     for e in d["evidence"].as_array().into_iter().flatten() {
+        if files {
+            let how = match e["source_text"].as_str() {
+                Some(from) => format!("renamed from {from}"),
+                None => "created".to_string(),
+            };
+            lines.push(format!(
+                "  {} {}: {how} by {}",
+                s(&e["timestamp_text"]),
+                s(&e["file_text"]),
+                s(&e["executable_text"])
+            ));
+            continue;
+        }
         let args: Vec<String> = e["args_text"]
             .as_array()
             .into_iter()
@@ -933,6 +949,8 @@ fn rules_cmd(args: &RulesArgs) -> ExitCode {
         for key in [
             "watching",
             "watching_rules",
+            "file_events_collected",
+            "not_watching",
             "judged",
             "judged_note",
             "matches_last_day",
@@ -1028,7 +1046,11 @@ fn replay_cmd(root: &Path, json: bool) -> ExitCode {
             }
             ExitCode::FAILURE
         }
-        events::Replay::Read { tally, matched } => {
+        events::Replay::Read {
+            tally,
+            file_tally,
+            matched,
+        } => {
             let mut hits: Vec<&events::Hits> = matched.rules.values().collect();
             hits.sort_by(|a, b| {
                 b.meta
@@ -1047,14 +1069,18 @@ fn replay_cmd(root: &Path, json: bool) -> ExitCode {
                         "unreadable_lines": tally.unreadable,
                         "lost": tally.lost,
                         "unknown_losses": tally.unknown_gaps,
+                        "file_events": file_tally.files,
+                        "file_events_lost": file_tally.lost,
+                        "unreadable_file_events": file_tally.unreadable,
                         "matches_total": total,
                         "matched": hits.iter().map(|h| match_json(h)).collect::<Vec<_>>(),
                     }),
                 ));
             } else {
                 say(&format!(
-                    "The event log on disk holds {}; the rules matched {}. Nothing was stored.",
+                    "The event log on disk holds {} and {}; the rules matched {}. Nothing was stored.",
                     things(tally.starts, "program start", "program starts"),
+                    things(file_tally.files, "file event", "file events"),
                     sigma::times(total)
                 ));
                 for h in hits {

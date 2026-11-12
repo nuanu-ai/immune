@@ -41,11 +41,16 @@ public struct Row: Sendable, Equatable, Identifiable {
   public var reasonLabel: String { item.publishedRule == nil ? "Reason: " : "Rule: " }
   /// The tag a published rule's finding carries, in the app's words.
   public var tag: String? { item.publishedRule == nil ? nil : "published rule" }
-  /// For a published rule's finding, the latest program start it matched: the program
-  /// and the program that started it, both inert. "/bin/dd · started by /bin/zsh".
+  /// For a published rule's finding, the latest event it matched, inert. A program start:
+  /// the program and the program that started it, "/bin/dd · started by /bin/zsh". A file
+  /// event: the file and the program, "/tmp/x · created by /usr/bin/curl".
   public var started: String? {
     guard let rule = item.publishedRule, let program = rule.executableText else { return nil }
     let shown = Inert.text(program, limit: 160)
+    if let file = rule.fileText {
+      let done = rule.action == "rename" ? " · renamed by " : " · created by "
+      return Inert.text(file, limit: 160) + done + shown
+    }
     guard let parent = rule.parentExecutableText else { return shown }
     return shown + " · started by " + Inert.text(parent, limit: 160)
   }

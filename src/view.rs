@@ -1741,9 +1741,9 @@ fn changes(conn: &Connection, out: &mut String) -> Out {
         let partial = not_full.iter().any(|r| r.2 == "partial" && r.4);
         // The event level keeps no facts: a reading of it that read nothing hides no change.
         let nothing = not_repeated > 0
-            || not_full
-                .iter()
-                .any(|r| r.2 == "none" && r.1 != crate::events::KIND);
+            || not_full.iter().any(|r| {
+                r.2 == "none" && r.1 != crate::events::KIND && r.1 != crate::events::KIND_FILES
+            });
 
         // Counts things, not assertions, as the report does.
         let count = |kind: &str| {
