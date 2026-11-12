@@ -131,22 +131,26 @@ pub enum OnDisk {
     Nothing,
     /// The disk could not say, for want of permission.
     Unknown,
+    /// It leads into this folder macOS asks permission for, which was not entered.
+    Guarded(PathBuf),
 }
 
-/// The checkout a working folder is in. `home` is the home folder without symbolic links.
-/// The home folder itself is never taken for a checkout, as in the walk of the home folder,
-/// and nothing above it is looked at.
-pub fn checkout_of(folder: &str, home: &Path) -> OnDisk {
+/// The checkout a working folder is in. `home` is the home folder without symbolic links,
+/// and `homes` are its names, for the guarded folders. The home folder itself is never
+/// taken for a checkout, as in the walk of the home folder, and nothing above it is looked
+/// at.
+pub fn checkout_of(folder: &str, home: &Path, homes: &[&Path]) -> OnDisk {
     let folder = Path::new(folder);
     if !folder.is_absolute() {
         return OnDisk::Nothing;
     }
     // Paths are taken without symbolic links, so one folder has one id whichever way an
-    // agent reached it.
-    let real = match std::fs::canonicalize(folder) {
-        Ok(real) => real,
-        Err(e) if gone(&e) => return OnDisk::Nothing,
-        Err(_) => return OnDisk::Unknown,
+    // agent reached it; they are made real without entering a guarded folder.
+    let real = match crate::guarded::real(folder, homes) {
+        crate::guarded::Real::At(real) => real,
+        crate::guarded::Real::Guarded(g) => return OnDisk::Guarded(g),
+        crate::guarded::Real::Failed(e) if gone(&e) => return OnDisk::Nothing,
+        crate::guarded::Real::Failed(_) => return OnDisk::Unknown,
     };
     real.ancestors()
         .take_while(|dir| *dir != home)

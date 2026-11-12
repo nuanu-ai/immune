@@ -24,7 +24,11 @@ pub const BASIS: &str = "observed";
 pub const NOT_PRESENT: &str = "there is no known_hosts file on this machine";
 
 pub fn read(home: &Path) -> Found {
-    match std::fs::read(home.join(".ssh").join("known_hosts")) {
+    let path = match crate::traces::source(home, ".ssh/known_hosts", NOT_PRESENT) {
+        Ok(path) => path,
+        Err(found) => return *found,
+    };
+    match std::fs::read(path) {
         Ok(bytes) => Found::Read(parse(&String::from_utf8_lossy(&bytes))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Found::Absent(NOT_PRESENT),
         Err(e) => Found::Failed(format!("cannot read ~/.ssh/known_hosts: {e}")),
@@ -105,6 +109,7 @@ pub fn parse(text: &str) -> Seen {
         // Each reason is an entry that does not give the names of its hosts.
         gap: Gap::when((!reasons.is_empty()).then_some(Cause::NotGiven)),
         third_party,
+        guarded: Vec::new(),
     }
 }
 

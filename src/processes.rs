@@ -35,7 +35,7 @@ use std::ffi::{c_int, c_void};
 use std::mem::{offset_of, size_of};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::os::unix::fs::MetadataExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 /// Created when a sample is first recorded. One row per process the rule is tracking: an
@@ -461,12 +461,24 @@ pub fn take(
     tx.execute_batch(SCHEMA)?;
     let at = sample.at;
     let (mut tracked_new, mut tracked_again, mut seen) = (0, 0, Vec::new());
+    // An executable inside a folder macOS asks permission for is not looked at to learn who
+    // signed it: the watcher would touch that folder at every sample. The folders are named
+    // in the sample's coverage. The kernel gives the executable's real path.
+    let real_home = std::fs::canonicalize(w.home).unwrap_or_else(|_| w.home.to_path_buf());
+    let mut guarded = std::collections::BTreeSet::new();
     for p in &sample.processes {
         let (Some(i), Some(shape), Some(path), true) =
             (p.interpreter, p.shape, &p.executable, p.detached)
         else {
             continue;
         };
+        let inside = crate::guarded::folder_of(Path::new(path), w.home).or_else(|| {
+            crate::guarded::folder_of(Path::new(path), &real_home)
+                .map(|g| w.home.join(g.strip_prefix(&real_home).unwrap_or(&g)))
+        });
+        if let Some(g) = &inside {
+            guarded.insert(g.clone());
+        }
         let before: Option<Tracked> = tx
             .query_row(
                 "SELECT interactive, first_seen_at, last_seen_at FROM tracked_process
@@ -510,7 +522,11 @@ pub fn take(
                         i.kind,
                         shape,
                         p.terminal,
-                        signers.of(path),
+                        if inside.is_some() {
+                            None
+                        } else {
+                            signers.of(path)
+                        },
                         at,
                         w.run_id
                     ],
@@ -539,7 +555,7 @@ pub fn take(
         "DELETE FROM matched_connection WHERE last_seen_at < ?1",
         [at - KEEP],
     )?;
-    cover(tx, w, &sample)?;
+    cover(tx, w, &sample, &guarded)?;
     let findings_opened = crate::findings::detect(tx, w.run_id, at, &seen)?;
     Ok(Report {
         sample,
@@ -683,8 +699,40 @@ fn match_connections(
 
 /// The sample's coverage, one row per kind, in place of the one before, and the counts the
 /// status shows. A program or a socket that could not be read makes its kind partial.
-fn cover(tx: &Transaction, w: &At, s: &Sample) -> rusqlite::Result<()> {
+fn cover(
+    tx: &Transaction,
+    w: &At,
+    s: &Sample,
+    guarded: &std::collections::BTreeSet<PathBuf>,
+) -> rusqlite::Result<()> {
     use crate::store::{Cause, Gap, Reading as Covered};
+    // What the latest sample did not look into, while there is any.
+    tx.execute(
+        "DELETE FROM coverage WHERE reader = ?1 AND scope = ?2 AND kind = ?3",
+        params![READER, w.machine, crate::guarded::KIND],
+    )?;
+    if !guarded.is_empty() {
+        let shown: Vec<String> = guarded
+            .iter()
+            .map(|g| crate::guarded::shown(g, w.home))
+            .collect();
+        let reason = format!("{}{}", crate::guarded::NOT_LOOKED_INTO, shown.join(", "));
+        let reading = Covered {
+            reader: READER,
+            scope: w.machine,
+            kind: crate::guarded::KIND,
+            run_id: w.run_id,
+            at: s.at,
+            observed_at: s.at,
+        };
+        crate::store::put_coverage(
+            tx,
+            &reading,
+            "none",
+            Some(&reason),
+            &Gap::of(Cause::NotGiven),
+        )?;
+    }
     let kinds = [
         (PROGRAMS_KIND, s.unreadable, "programs"),
         (CONNECTIONS_KIND, s.sockets_unreadable, "sockets"),

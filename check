@@ -3,6 +3,7 @@
 set -e
 cd "$(dirname "$0")"
 . ./scripts/rust-path.sh
+. ./scripts/prerequisites.sh
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test

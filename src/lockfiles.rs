@@ -16,7 +16,7 @@ use crate::checkouts::Checkout;
 use crate::store::Statement;
 use crate::store::{Cause, Gap, Lack};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub const READER: &str = "lockfiles";
 pub const KIND: &str = "lockfile dependencies";
@@ -810,30 +810,53 @@ fn cargo(text: &str) -> Parsed {
     Parsed::Deps("crates.io", out, Vec::new())
 }
 
-/// The commit the checkout is at, read from `.git` by hand, or `unknown`.
-pub fn commit(checkout: &Path) -> String {
-    read_commit(checkout).unwrap_or_else(|| "unknown".to_string())
+/// The commit the checkout is at, read from `.git` by hand, or `unknown`. `Err` names the
+/// folder macOS asks permission for that the git folder is in, which is not entered; `homes`
+/// are the home folder's names.
+pub fn commit(checkout: &Path, homes: &[&Path]) -> Result<String, PathBuf> {
+    Ok(read_commit(checkout, homes)?.unwrap_or_else(|| "unknown".to_string()))
 }
 
-fn read_commit(checkout: &Path) -> Option<String> {
+fn read_commit(checkout: &Path, homes: &[&Path]) -> Result<Option<String>, PathBuf> {
     let dotgit = checkout.join(".git");
-    // A worktree or a submodule has a `.git` file that points at the real folder.
+    // A worktree or a submodule has a `.git` file that points at the real folder. Where it
+    // points is data, so it is made real without entering a guarded folder.
+    let real = |p: PathBuf| match crate::guarded::real(&p, homes) {
+        crate::guarded::Real::At(p) => Ok(Some(p)),
+        crate::guarded::Real::Guarded(g) => Err(g),
+        crate::guarded::Real::Failed(_) => Ok(None),
+    };
     let gitdir = if dotgit.is_dir() {
         dotgit
     } else {
-        let text = std::fs::read_to_string(&dotgit).ok()?;
-        checkout.join(text.trim().strip_prefix("gitdir:")?.trim())
+        let Some(to) = std::fs::read_to_string(&dotgit)
+            .ok()
+            .and_then(|text| Some(text.trim().strip_prefix("gitdir:")?.trim().to_string()))
+        else {
+            return Ok(None);
+        };
+        match real(checkout.join(to))? {
+            Some(p) => p,
+            None => return Ok(None),
+        }
     };
     let common = match std::fs::read_to_string(gitdir.join("commondir")) {
-        Ok(text) => gitdir.join(text.trim()),
+        Ok(text) => match real(gitdir.join(text.trim()))? {
+            Some(p) => p,
+            None => return Ok(None),
+        },
         Err(_) => gitdir.clone(),
     };
+    Ok(head_commit(&gitdir, &common))
+}
+
+fn head_commit(gitdir: &Path, common: &Path) -> Option<String> {
     let head = std::fs::read_to_string(gitdir.join("HEAD")).ok()?;
     let head = head.trim();
     let Some(name) = head.strip_prefix("ref:").map(str::trim) else {
         return is_hash(head).then(|| head.to_string());
     };
-    for dir in [&gitdir, &common] {
+    for dir in [gitdir, common] {
         if let Ok(hash) = std::fs::read_to_string(dir.join(name)) {
             let hash = hash.trim();
             return is_hash(hash).then(|| hash.to_string());

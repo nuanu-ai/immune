@@ -2,7 +2,7 @@
 //! The shape follows docs/facts.md.
 
 use crate::resolver;
-use rusqlite::{Connection, OpenFlags, Transaction, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 use std::collections::BTreeSet;
 use std::fs::{File, TryLockError};
 use std::path::Path;
@@ -985,6 +985,38 @@ pub fn set_raw(
         params![reader, input, path, run_id],
     )?;
     Ok(())
+}
+
+/// This Mac's id in the store, kept in `meta` from the store's first run, so that a new
+/// name of the Mac does not make it another machine. macOS changes its local host name by
+/// itself when another device on the network has it, and the owner can rename the Mac. A
+/// store made before the id was kept takes the machine its latest readings are of. `name`
+/// is the Mac's name now: it is kept beside the id, and it is what is shown.
+pub fn this_mac(tx: &Connection, name: &str) -> rusqlite::Result<String> {
+    let id = match held_mac(tx)? {
+        Some((id, _)) => id,
+        None => crate::covered::this_machine(tx)?.unwrap_or_else(|| format!("machine:{name}")),
+    };
+    tx.execute(
+        "INSERT INTO meta (key, value) VALUES ('machine', ?1), ('machine_name', ?2)
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        params![id, name],
+    )?;
+    Ok(id)
+}
+
+/// This Mac's id and its name at the latest run, as `this_mac` kept them.
+pub fn held_mac(conn: &Connection) -> rusqlite::Result<Option<(String, String)>> {
+    let get = |key: &str| {
+        conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| {
+            r.get::<_, String>(0)
+        })
+        .optional()
+    };
+    Ok(match (get("machine")?, get("machine_name")?) {
+        (Some(id), Some(name)) => Some((id, name)),
+        _ => None,
+    })
 }
 
 pub fn journal_note(

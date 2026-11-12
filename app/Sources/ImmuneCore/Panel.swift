@@ -768,10 +768,16 @@ public struct GapRow: Sendable, Equatable, Identifiable {
 /// Times for the owner. Relative only for the past; a time in the future is shown
 /// as an absolute date, never as "in 1 day".
 public enum Clock {
-  public static func ago(_ d: Date, now: Date) -> String {
+  /// "12 minutes ago". The app's words are English, so a relative time is English too,
+  /// whatever the Mac's region; `calendar` is the Mac's, which carries its region.
+  public static func ago(_ d: Date, now: Date, calendar: Calendar = .current) -> String {
     guard d <= now else { return "on " + full(d) }
+    var english = calendar
+    english.locale = Locale(identifier: "en_US")
     let f = RelativeDateTimeFormatter()
     f.unitsStyle = .full
+    f.calendar = english
+    f.locale = english.locale
     return f.localizedString(for: d, relativeTo: now)
   }
 

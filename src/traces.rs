@@ -8,6 +8,24 @@
 //! and settings that are not ours to copy.
 
 use crate::store::{Gap, Statement};
+use std::path::{Path, PathBuf};
+
+/// A file of the home folder made real without entering a folder macOS asks permission for:
+/// a link to a file in Documents is not followed there. `Err` is the trace's `Found` when it
+/// is not to be read.
+pub fn source(home: &Path, rel: &str, absent: &'static str) -> Result<PathBuf, Box<Found>> {
+    let real_home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+    match crate::guarded::real(&home.join(rel), &[home, &real_home]) {
+        crate::guarded::Real::At(p) => Ok(p),
+        crate::guarded::Real::Guarded(g) => Err(Box::new(Found::Guarded(g))),
+        crate::guarded::Real::Failed(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(Box::new(Found::Absent(absent)))
+        }
+        crate::guarded::Real::Failed(e) => {
+            Err(Box::new(Found::Failed(format!("cannot read ~/{rel}: {e}"))))
+        }
+    }
+}
 
 /// Code hosting and similar third parties. They are not the owner's machines: no reader
 /// makes an entity for them and the sweep never visits them.
@@ -48,6 +66,8 @@ pub enum Found {
     Read(Seen),
     /// The source is here and could not be read, with the reason.
     Failed(String),
+    /// The source leads into this folder macOS asks permission for, which was not entered.
+    Guarded(PathBuf),
 }
 
 pub struct Seen {
@@ -60,6 +80,9 @@ pub struct Seen {
     pub gap: Gap,
     /// Entries left out as code hosting.
     pub third_party: usize,
+    /// Folders macOS asks permission for that something the source names leads into, and
+    /// that were not entered.
+    pub guarded: Vec<PathBuf>,
 }
 
 impl Seen {

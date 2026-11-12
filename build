@@ -9,33 +9,7 @@
 set -eu
 cd "$(dirname "$0")"
 . ./scripts/rust-path.sh
-
-missing() {
-  echo "build: $1" >&2
-  exit 2
-}
-
-# The program is built and tested only on Apple Silicon with macOS 14 or later.
-only="this program is built and tested only on Apple Silicon Macs with macOS 14 or later"
-[ "$(uname -s)" = Darwin ] && [ "$(uname -m)" = arm64 ] || missing "$only."
-macos=$(sw_vers -productVersion)
-[ "${macos%%.*}" -ge 14 ] || missing "$only; this Mac has macOS $macos."
-
-# Asking xcode-select where the tools are never raises the install dialog that
-# running /usr/bin/swift without them would.
-dev=$(xcode-select -p 2>/dev/null) || dev=
-[ -x "$dev/usr/bin/swift" ] || [ -x "$dev/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift" ] ||
-  missing "Apple's Command Line Tools with swift are missing; install them with: xcode-select --install"
-
-rust_hint="install Rust from https://rustup.rs (the official page) or with: brew install rustup && rustup default stable"
-command -v cargo >/dev/null 2>&1 || missing "cargo, Rust's build tool, is not found; $rust_hint"
-version=$(cargo --version 2>/dev/null) ||
-  missing "cargo is there but has no toolchain to run; set one with: rustup default stable"
-# The locked rusqlite declares Rust 1.89 as its minimum, and the store uses File::try_lock,
-# stable since that release. Cargo.toml says the same, so cargo refuses an older one too.
-minor=$(echo "$version" | sed -n 's/^cargo 1\.\([0-9]*\)\..*/\1/p')
-[ "${minor:-0}" -ge 89 ] ||
-  missing "Rust 1.89 or later is needed and this is $version; update with: rustup update stable"
+. ./scripts/prerequisites.sh
 
 name=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' app/Info.plist)
 bundle="$(pwd)/target/app/$name.app"
@@ -51,10 +25,13 @@ refuse_if_running() {
 }
 refuse_if_running
 
-cargo build --release --locked >&2
+# Where cargo put the binary, as cargo says it.
+artifacts=$(cargo build --release --locked --message-format=json-render-diagnostics)
+immune=$(printf "%s\n" "$artifacts" | scripts/cargo-built.sh)
+[ -x "$immune" ] || missing "cargo finished without naming the immune it built"
 # Checked again: the build can take minutes, and the app may have been opened meanwhile.
 refuse_if_running
-built=$(app/build target/release/immune)
+built=$(app/build "$immune")
 
 echo "$built"
 echo "Built. Open it with: open \"$built\"" >&2

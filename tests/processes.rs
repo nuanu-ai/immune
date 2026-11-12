@@ -196,6 +196,73 @@ fn a_detached_interpreter_given_code_is_a_finding_once_two_samples_a_minute_apar
 }
 
 #[test]
+fn an_interpreter_inside_a_folder_macos_asks_permission_for_is_not_looked_at_and_that_is_said() {
+    // The watcher samples every 30 seconds. Looking up who signed an executable in Documents
+    // would make macOS ask the owner, again and again; the sample names what it left alone.
+    let dir = Dir::new("guarded-exe");
+    let inside = dir.0.join("Documents/bin/zsh");
+    let outside = dir.0.join("tools/zsh");
+    for exe in [&inside, &outside] {
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::copy("/bin/zsh", exe).unwrap();
+    }
+    let code = format!("print {MARKER}");
+    let table = [
+        process(
+            4400,
+            7,
+            1,
+            inside.to_str().unwrap(),
+            &["zsh", "-c", &code],
+            false,
+        ),
+        process(
+            4401,
+            7,
+            1,
+            outside.to_str().unwrap(),
+            &["zsh", "-c", &code],
+            false,
+        ),
+    ];
+    // The kernel names an executable by its real path, which may not be the home folder's
+    // name as HOME gives it.
+    let real = std::fs::canonicalize(&inside).unwrap();
+    let mut table = table.to_vec();
+    table.push(process(
+        4402,
+        7,
+        1,
+        real.to_str().unwrap(),
+        &["zsh", "-c", &code],
+        false,
+    ));
+    sample(&dir, T, &table);
+    let signed = |exe: &PathBuf| {
+        rows(
+            &dir,
+            &format!(
+                "SELECT ifnull(code_signature, 'not checked') FROM tracked_process
+                 WHERE executable = '{}'",
+                exe.display()
+            ),
+        )
+    };
+    assert_eq!(signed(&inside), ["not checked"]);
+    assert_eq!(signed(&real), ["not checked"]);
+    assert_ne!(signed(&outside), ["not checked"]);
+    let guarded = "SELECT completeness || '|' || reason FROM coverage
+                   WHERE reader = 'processes' AND kind = 'folders macOS asks permission for'";
+    assert_eq!(rows(&dir, guarded), ["none|not looked into: ~/Documents"]);
+
+    // Said while it runs, and no longer once it is gone.
+    sample(&dir, T + 30, &table);
+    assert_eq!(rows(&dir, guarded), ["none|not looked into: ~/Documents"]);
+    sample(&dir, T + 60, &table[1..2]);
+    assert!(rows(&dir, guarded).is_empty());
+}
+
+#[test]
 fn after_the_owner_has_seen_it_the_same_process_raises_nothing_and_another_one_does() {
     let dir = Dir::new("seen");
     let exe = dir.0.join(".local/bin/python3.12");

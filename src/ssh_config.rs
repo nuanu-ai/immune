@@ -50,14 +50,21 @@ const MAX_DEPTH: usize = 16;
 
 pub fn read(home: &Path) -> Found {
     let ssh = home.join(".ssh");
-    let text = match std::fs::read(ssh.join("config")) {
+    let config = match crate::traces::source(home, ".ssh/config", NOT_PRESENT) {
+        Ok(path) => path,
+        Err(found) => return *found,
+    };
+    let text = match std::fs::read(config) {
         Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Found::Absent(NOT_PRESENT),
         Err(e) => return Found::Failed(format!("cannot read ~/.ssh/config: {e}")),
     };
+    let real_home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
     let mut p = Parser {
         home,
+        homes: [home, &real_home],
         ssh: &ssh,
+        guarded: Vec::new(),
         lines: Vec::new(),
         unread: Vec::new(),
         problems: Vec::new(),
@@ -90,7 +97,11 @@ enum Line {
 
 struct Parser<'a> {
     home: &'a Path,
+    /// The home folder by its names, for the folders macOS asks permission for.
+    homes: [&'a Path; 2],
     ssh: &'a Path,
+    /// Guarded folders an `Include` leads into, not entered.
+    guarded: Vec<PathBuf>,
     lines: Vec<Line>,
     /// Files that are there and could not be read.
     unread: Vec<String>,
@@ -157,12 +168,23 @@ impl Parser<'_> {
         } else {
             format!("{}/{arg}", glob_escape(self.ssh))
         };
+        // glob(3) opens the folder the pattern starts in: not one that leads into a guarded
+        // folder.
+        if let Some(g) = self.guarded_start(&pattern) {
+            self.guard(at, arg, g);
+            return;
+        }
         let (paths, failed) = glob(&pattern);
         for dir in failed {
             let label = self.label(&dir);
             self.unread.push(label);
         }
         for path in paths {
+            // A file the pattern matched may be a link into a guarded folder.
+            if let crate::guarded::Real::Guarded(g) = crate::guarded::real(&path, &self.homes) {
+                self.guard(at, arg, g);
+                continue;
+            }
             // ssh reads a folder as an empty file.
             if path.is_dir() {
                 continue;
@@ -186,6 +208,33 @@ impl Parser<'_> {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(_) => self.unread.push(label),
             }
+        }
+    }
+
+    /// The guarded folder the folders before the pattern's first wildcard lead into, if
+    /// any. glob(3) opens the folder a pattern starts in; a part that cannot be followed is
+    /// left to glob(3), which then finds nothing there.
+    fn guarded_start(&self, pattern: &str) -> Option<PathBuf> {
+        let parts: Vec<&str> = pattern.split('/').collect();
+        let literal = parts
+            .iter()
+            .position(|p| p.contains(['*', '?', '[', '\\']))
+            .unwrap_or(parts.len().saturating_sub(1));
+        match crate::guarded::real(Path::new(&parts[..literal].join("/")), &self.homes) {
+            crate::guarded::Real::Guarded(g) => Some(g),
+            _ => None,
+        }
+    }
+
+    /// An `Include` that leads into a guarded folder: not read, and said.
+    fn guard(&mut self, at: &str, arg: &str, folder: PathBuf) {
+        let shown = crate::guarded::shown(&folder, self.home);
+        self.problems.push((
+            Cause::NotGiven,
+            format!("{at} Include {arg} was not read: it leads into {shown}, which macOS asks permission for"),
+        ));
+        if !self.guarded.contains(&folder) {
+            self.guarded.push(folder);
         }
     }
 
@@ -292,6 +341,7 @@ impl Parser<'_> {
             partial: (!reasons.is_empty()).then(|| reasons.join("; ")),
             gap,
             third_party,
+            guarded: std::mem::take(&mut self.guarded),
         }
     }
 }

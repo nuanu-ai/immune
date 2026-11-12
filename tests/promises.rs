@@ -3594,6 +3594,230 @@ fn a_checkout_in_a_place_macos_asks_permission_for_is_kept_by_a_reading_that_did
 }
 
 #[test]
+fn a_store_folder_that_cannot_be_made_is_named_in_the_error() {
+    // "Permission denied" alone leaves the owner, or his agent, to guess which folder.
+    let dir = Dir::new("store-folder");
+    let parent = dir.0.join("locked");
+    std::fs::create_dir_all(&parent).unwrap();
+    let _locked = Locked::new(parent.clone());
+    let store = parent.join("store").join("store.db");
+    let said = format!(
+        "cannot make the store's folder {}: Permission denied",
+        parent.join("store").display()
+    );
+
+    let out = immune_run(&dir.0, &store).output().unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains(&said), "{stderr}");
+
+    let out = immune_run(&dir.0, &store).arg("--json").output().unwrap();
+    assert!(!out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let error = &v["errors"][0];
+    assert_eq!(error["code"], "run_failed", "{v:#}");
+    assert!(
+        error["detail_text"].as_str().unwrap().contains(&said),
+        "{v:#}"
+    );
+}
+
+#[test]
+fn a_mac_stays_one_machine_in_its_store_when_its_name_changes() {
+    // macOS changes its local host name by itself on a clash on the network, and the owner
+    // can rename the Mac. The store goes on with the id of its first run; the name now is
+    // what is shown.
+    let dir = Dir::new("renamed");
+    let store = dir.store();
+    let brew = dir.input("brew.txt", SAMPLE);
+    let absent = dir.0.join("absent");
+    let root = dir.0.join("dev");
+    put(&checkout(&root, "shop"), "Cargo.lock", CARGO_LOCK);
+    let run = |name: &str| {
+        ok(immune_run(&dir.0, &store)
+            .args(["--machine-name", name, "--brew-input"])
+            .arg(&brew)
+            .arg("--servers-input")
+            .arg(&absent)
+            .arg("--checkouts-root")
+            .arg(&root))
+    };
+    let machines = || {
+        rows(
+            &store,
+            "SELECT DISTINCT scope FROM coverage WHERE scope LIKE 'machine:%' ORDER BY scope",
+        )
+    };
+    run("mac");
+    let before = status_json(&store);
+    run("mac-2");
+    assert_eq!(machines(), ["machine:mac"]);
+    let after = status_json(&store);
+    assert_eq!(after["estate"], before["estate"], "{after:#}");
+    assert_eq!(after["estate"]["machines"], 1, "{after:#}");
+    let page = view(&store);
+    assert!(page.contains("mac-2"), "the name now is shown");
+
+    // A store made before the id was kept goes on with the machine its readings are of.
+    Connection::open(&store)
+        .unwrap()
+        .execute(
+            "DELETE FROM meta WHERE key IN ('machine', 'machine_name')",
+            [],
+        )
+        .unwrap();
+    run("mac-3");
+    assert_eq!(machines(), ["machine:mac"]);
+}
+
+#[test]
+fn a_folder_macos_asks_permission_for_is_never_entered_through_a_link_and_what_was_skipped_is_named()
+ {
+    // A run the app starts must not make macOS ask the owner for his Documents, whatever name
+    // led there: a session's working folder through a link, a worktree's `.git` file, an
+    // ssh Include, a link in place of a file the program reads.
+    use std::os::unix::fs::symlink;
+    let a = Agents::new("agent-link-guarded");
+    let proj = checkout(&a.home, "Documents/proj");
+    put(&proj, "Cargo.lock", CARGO_LOCK);
+    std::fs::create_dir_all(proj.join("src")).unwrap();
+    symlink(&proj, a.home.join("proj-link")).unwrap();
+    session(&a.sessions, "s1", &[&a.home.join("proj-link/src")]);
+    // A worktree outside, whose git folder is in Documents, spelled another way.
+    let repo = checkout(&a.home, "Documents/repo");
+    put(
+        &repo,
+        ".git/worktrees/tree/HEAD",
+        "0123456789abcdef0123456789abcdef01234567\n",
+    );
+    let tree = a.home.join("dev/tree");
+    put(
+        &tree,
+        ".git",
+        &format!(
+            "gitdir: {}/documents/repo/.git/worktrees/tree\n",
+            a.home.display()
+        ),
+    );
+    put(&tree, "Cargo.lock", CARGO_LOCK);
+    // A worktree whose git folder is outside and names the common one in Documents.
+    let tree2 = a.home.join("dev/tree2");
+    let gitdir = a.home.join("dev/gitdirs/tree2");
+    put(&gitdir, "HEAD", "ref: refs/heads/main\n");
+    put(
+        &gitdir,
+        "commondir",
+        &format!("{}\n", repo.join(".git").display()),
+    );
+    put(&tree2, ".git", &format!("gitdir: {}\n", gitdir.display()));
+    put(&tree2, "Cargo.lock", CARGO_LOCK);
+    put(&a.home, "Documents/ssh/extra", "Host secret\n");
+    std::fs::create_dir_all(a.home.join(".ssh/conf.d")).unwrap();
+    symlink(
+        a.home.join("Documents/ssh/extra"),
+        a.home.join(".ssh/conf.d/extra"),
+    )
+    .unwrap();
+    put(
+        &a.home,
+        ".ssh/config",
+        "Include ~/Documents/ssh/extra\nInclude conf.d/*\nHost web\n",
+    );
+    put(
+        &a.home,
+        "Documents/known_hosts",
+        "box.example ssh-ed25519 AAAA\n",
+    );
+    symlink(
+        a.home.join("Documents/known_hosts"),
+        a.home.join(".ssh/known_hosts"),
+    )
+    .unwrap();
+
+    a.run();
+
+    let store = a.store();
+    assert_eq!(
+        rows(
+            &store,
+            "SELECT DISTINCT subject FROM assertion WHERE layer = 'live' AND predicate = 'located_on'
+               AND subject LIKE 'checkout:%' ORDER BY subject"
+        ),
+        ["checkout:machine:mac/dev/tree", "checkout:machine:mac/dev/tree2"]
+    );
+    assert_eq!(a.agent_coverage(), ["full|NULL"]);
+    // The commit of a worktree whose git folders are in Documents is not known.
+    let raw = store.parent().unwrap().join("raw");
+    let manifests: String = std::fs::read_dir(&raw)
+        .unwrap()
+        .map(|run| std::fs::read_to_string(run.unwrap().path().join("lockfiles.txt")).unwrap())
+        .collect();
+    assert_eq!(manifests.lines().count(), 2, "{manifests}");
+    assert!(
+        manifests.lines().all(|l| l.ends_with("\tunknown")),
+        "{manifests}"
+    );
+    let guarded = |reader: &str| {
+        rows(
+            &store,
+            &format!(
+                "SELECT completeness || '|' || ifnull(reason, 'NULL') FROM coverage
+                 WHERE reader = '{reader}' AND kind = 'folders macOS asks permission for'
+                 ORDER BY id DESC LIMIT 1"
+            ),
+        )
+    };
+    for reader in ["agent-folders", "lockfiles", "ssh-config", "known-hosts"] {
+        assert_eq!(
+            guarded(reader),
+            ["none|not looked into: ~/Documents"],
+            "{reader}"
+        );
+    }
+    let ssh = rows(
+        &store,
+        "SELECT completeness || '|' || reason FROM coverage
+         WHERE reader = 'ssh-config' AND kind = 'ssh configuration' ORDER BY id DESC LIMIT 1",
+    );
+    assert_eq!(
+        ssh,
+        [
+            "partial|config:1 Include ~/Documents/ssh/extra was not read: it leads into \
+          ~/Documents, which macOS asks permission for; config:2 Include conf.d/* was not \
+          read: it leads into ~/Documents, which macOS asks permission for"
+        ]
+    );
+    let machines = rows(
+        &store,
+        "SELECT DISTINCT subject FROM assertion WHERE layer = 'live' AND subject LIKE 'machine:%'
+         AND subject != 'machine:mac' ORDER BY subject",
+    );
+    assert_eq!(machines, ["machine:web"]);
+    let status: serde_json::Value = serde_json::from_str(&ok(immune_cmd(&a.home)
+        .args(["status", "--json", "--store"])
+        .arg(&store)))
+    .unwrap();
+    assert!(
+        status["result"]["not_covered"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|u| u["id"] == "protected-folders"
+                && u["examples_text"] == serde_json::json!(["Documents"])),
+        "{status:#}"
+    );
+
+    // Once nothing leads there, the readers say they entered no such folder.
+    put(&a.home, ".ssh/config", "Host web\n");
+    std::fs::remove_file(a.home.join(".ssh/known_hosts")).unwrap();
+    std::fs::remove_dir_all(a.home.join("dev")).unwrap();
+    a.run();
+    for reader in ["lockfiles", "ssh-config", "known-hosts"] {
+        assert_eq!(guarded(reader), ["full|NULL"], "{reader}");
+    }
+}
+
+#[test]
 fn a_store_of_the_current_format_learns_a_new_coverage_kind_without_a_rebuild() {
     // The vocabulary is data: a new reader must not cost the owner their store and journal.
     let a = Agents::new("agent-vocabulary");

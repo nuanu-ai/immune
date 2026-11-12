@@ -187,8 +187,11 @@ fn state(
         ),
     };
     let mut parts: Vec<String> = Vec::new();
-    if let Some(name) = covered::this_machine(conn)? {
-        parts.push(esc(name.strip_prefix("machine:").unwrap_or(&name)));
+    // Its name now, which can differ from the one in its id.
+    if let Some((_, name)) = crate::store::held_mac(conn)? {
+        parts.push(esc(&name));
+    } else if let Some(id) = covered::this_machine(conn)? {
+        parts.push(esc(id.strip_prefix("machine:").unwrap_or(&id)));
     }
     parts.push(match m.checked_at {
         Some(t) => format!("last full check {}", utc(t)),
@@ -1021,9 +1024,18 @@ fn vulnerabilities_summary(conn: &Connection, st: &crate::status::State, out: &m
         return Ok(());
     }
     if list.is_empty() {
+        // How many could not be compared is said beside it, so that none known never reads
+        // as calm when the data was not read.
+        let untold = match t.packages_unknown {
+            0 => String::new(),
+            n => format!(
+                " For {} whether one affects them cannot be told.",
+                crate::view::counted(n as i64, "package", "packages")
+            ),
+        };
         writeln!(
             out,
-            "<p class=\"muted\">None is known in the packages that could be compared. What could not be compared is under Limits of this version.</p>\n{said}\n<p>{all}</p>\n</section>"
+            "<p class=\"muted\">None is known in the packages that could be compared.{untold} What could not be compared is under Limits of this version.</p>\n{said}\n<p>{all}</p>\n</section>"
         )?;
         return Ok(());
     }

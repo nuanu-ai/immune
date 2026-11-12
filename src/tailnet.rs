@@ -351,6 +351,7 @@ pub fn parse(json: &str) -> Result<Seen, String> {
         partial: None,
         gap: Gap::default(),
         third_party,
+        guarded: Vec::new(),
     })
 }
 

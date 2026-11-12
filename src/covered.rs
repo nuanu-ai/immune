@@ -210,6 +210,10 @@ impl ThisMac {
 /// The machine the store's readings of this Mac are scoped to: the resolver's, which every
 /// full run makes, else the watched places', which a watcher makes.
 pub fn this_machine(conn: &Connection) -> rusqlite::Result<Option<String>> {
+    // The id the store keeps for this Mac, whatever its name is now.
+    if let Some((id, _)) = crate::store::held_mac(conn)? {
+        return Ok(Some(id));
+    }
     // The latest row of a reader is the latest reading of one of its scopes and kinds.
     conn.query_row(
         &format!(
@@ -975,7 +979,8 @@ pub fn not_covered(
         });
     }
     // Packages whose answer is "don't know", one count, with each reason and its count. The
-    // data not being current is the item above, not a reason here.
+    // data not being current is the item above, and here it is the reason for the packages
+    // it leaves untold.
     let t = crate::vulnerabilities::totals(conn)?;
     if t.packages_unknown > 0 {
         out.push(Uncovered {

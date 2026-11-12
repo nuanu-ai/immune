@@ -448,6 +448,58 @@ struct Entry {
     at: String,
 }
 
+/// The packages of the lockfiles: checkout, ecosystem and name, with their entries.
+type Packages = BTreeMap<(String, &'static str, String), Vec<Entry>>;
+
+/// Every package the lockfiles hold now, grouped by checkout, ecosystem and name.
+fn held_packages(conn: &Connection) -> rusqlite::Result<Packages> {
+    let mut packages: Packages = BTreeMap::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT subject, predicate, object, source_ref, scope FROM assertion
+             WHERE layer = 'live' AND reader = ?1 AND predicate IN ('has_version', 'part_of')
+             ORDER BY subject, predicate",
+        )?;
+        let rows = stmt.query_map([crate::lockfiles::READER], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+            ))
+        })?;
+        let mut versioned: HashSet<String> = HashSet::new();
+        for row in rows {
+            let (subject, predicate, object, at, scope) = row?;
+            let Some(rest) = subject.strip_prefix(&format!("component:{scope}/")) else {
+                continue;
+            };
+            let Some((eco, name)) = rest.split_once('/') else {
+                continue;
+            };
+            let Some(eco) = FEEDS.iter().map(|f| f.ecosystem).find(|e| *e == eco) else {
+                continue;
+            };
+            let (package, from) = crate::lockfiles::split_name(name);
+            let version = if predicate == "has_version" {
+                versioned.insert(subject.clone());
+                Some(object)
+            } else if versioned.contains(&subject) {
+                // Its versions were taken; `part_of` alone says nothing more.
+                continue;
+            } else {
+                None
+            };
+            packages
+                .entry((scope.clone(), eco, package.to_string()))
+                .or_default()
+                .push(Entry { from, version, at });
+        }
+    }
+    Ok(packages)
+}
+
 /// One answer as computed.
 struct Computed {
     checkout: String,
@@ -522,51 +574,7 @@ pub fn match_all(tx: &Transaction, run_id: &str, at: i64) -> rusqlite::Result<Ma
         }
     }
 
-    // Every package the lockfiles hold now, grouped by checkout, ecosystem and name.
-    let mut packages: BTreeMap<(String, &'static str, String), Vec<Entry>> = BTreeMap::new();
-    {
-        let mut stmt = tx.prepare(
-            "SELECT subject, predicate, object, source_ref, scope FROM assertion
-             WHERE layer = 'live' AND reader = ?1 AND predicate IN ('has_version', 'part_of')
-             ORDER BY subject, predicate",
-        )?;
-        let rows = stmt.query_map([crate::lockfiles::READER], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?,
-            ))
-        })?;
-        let mut versioned: HashSet<String> = HashSet::new();
-        for row in rows {
-            let (subject, predicate, object, at, scope) = row?;
-            let Some(rest) = subject.strip_prefix(&format!("component:{scope}/")) else {
-                continue;
-            };
-            let Some((eco, name)) = rest.split_once('/') else {
-                continue;
-            };
-            let Some(eco) = FEEDS.iter().map(|f| f.ecosystem).find(|e| *e == eco) else {
-                continue;
-            };
-            let (package, from) = crate::lockfiles::split_name(name);
-            let version = if predicate == "has_version" {
-                versioned.insert(subject.clone());
-                Some(object)
-            } else if versioned.contains(&subject) {
-                // Its versions were taken; `part_of` alone says nothing more.
-                continue;
-            } else {
-                None
-            };
-            packages
-                .entry((scope.clone(), eco, package.to_string()))
-                .or_default()
-                .push(Entry { from, version, at });
-        }
-    }
+    let packages = held_packages(tx)?;
 
     // What the data says of each package, once per ecosystem and name.
     let mut computed: Vec<Computed> = Vec::new();
@@ -1085,8 +1093,9 @@ pub struct Totals {
     pub records_by_label: Vec<(&'static str, usize)>,
     /// "Don't know" answers by reason, in the order of `REASONS`.
     pub by_reason: Vec<(&'static str, usize)>,
-    /// Packages with a "don't know" answer, each counted once, by reason; the feed's reason
-    /// apart, since it is told as its own item.
+    /// Packages with a "don't know" answer, each counted once, under the first of its reasons.
+    /// A package in a place whose data is not current is one, whether or not a record held
+    /// names it.
     pub packages_unknown: usize,
     pub packages_by_reason: Vec<(&'static str, usize)>,
     /// Informational advisories held, which this version does not answer.
@@ -1116,27 +1125,14 @@ pub fn totals(conn: &Connection) -> rusqlite::Result<Totals> {
         )?
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
         .collect::<rusqlite::Result<_>>()?;
-    for (answer, reason, n) in &counts {
+    for (answer, _, n) in &counts {
         let n = *n as usize;
         match answer.as_str() {
             "affected" => t.affected += n,
             "unknown" => t.unknown += n,
             _ => t.not_affected += n,
         }
-        let _ = reason;
     }
-    t.by_reason = REASONS
-        .iter()
-        .map(|code| {
-            let n = counts
-                .iter()
-                .filter(|(a, r, _)| a == "unknown" && r == code)
-                .map(|(_, _, n)| *n as usize)
-                .sum();
-            (*code, n)
-        })
-        .filter(|(_, n)| *n > 0)
-        .collect();
     let mut labels: BTreeMap<&'static str, usize> = BTreeMap::new();
     let mut records: BTreeMap<(String, String), &'static str> = BTreeMap::new();
     let mut packages: BTreeSet<(String, String)> = BTreeSet::new();
@@ -1164,21 +1160,57 @@ pub fn totals(conn: &Connection) -> rusqlite::Result<Totals> {
     let unknown: Vec<(String, String, String, String)> = conn
         .prepare(
             "SELECT checkout, ecosystem, package, reason FROM vulnerability_answer
-             WHERE answer = 'unknown' AND reason != ?1",
+             WHERE answer = 'unknown'",
         )?
-        .query_map([FEED_NOT_READ], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-        })?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
         .collect::<rusqlite::Result<_>>()?;
-    let mut first: BTreeMap<(String, String, String), usize> = BTreeMap::new();
-    for (c, e, p, reason) in unknown {
-        let rank = REASONS
+    let rank_of = |reason: &str| {
+        REASONS
             .iter()
             .position(|r| *r == reason)
-            .unwrap_or(REASONS.len());
+            .unwrap_or(REASONS.len())
+    };
+    let mut first: BTreeMap<(String, String, String), usize> = BTreeMap::new();
+    for (c, e, p, reason) in unknown {
+        let rank = rank_of(&reason);
         let slot = first.entry((c, e, p)).or_insert(rank);
         *slot = (*slot).min(rank);
     }
+    // Data that is not current, or was never read, may lack the record that names a package,
+    // so every package of such a place is "don't know" with the feed's reason. One that no
+    // record held names has no answer of its own and is one more "don't know" answer here,
+    // standing for the records the data lacks.
+    let stale: HashSet<(String, String)> = conn
+        .prepare("SELECT checkout, ecosystem FROM vulnerability_place WHERE feed = 'not_current'")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut unanswered = 0;
+    for (c, e, p) in held_packages(conn)?.into_keys() {
+        if !stale.contains(&(c.clone(), e.to_string())) {
+            continue;
+        }
+        if let std::collections::btree_map::Entry::Vacant(slot) = first.entry((c, e.to_string(), p))
+        {
+            slot.insert(rank_of(FEED_NOT_READ));
+            unanswered += 1;
+        }
+    }
+    t.unknown += unanswered;
+    t.by_reason = REASONS
+        .iter()
+        .map(|code| {
+            let mut n: usize = counts
+                .iter()
+                .filter(|(a, r, _)| a == "unknown" && r == code)
+                .map(|(_, _, n)| *n as usize)
+                .sum();
+            if *code == FEED_NOT_READ {
+                n += unanswered;
+            }
+            (*code, n)
+        })
+        .filter(|(_, n)| *n > 0)
+        .collect();
     t.packages_unknown = first.len();
     t.packages_by_reason = REASONS
         .iter()
@@ -1251,8 +1283,8 @@ pub fn reason_words(code: &str) -> (&'static str, &'static str) {
             "{n} are in a project whose lockfiles were not all read, such as a yarn or bun lockfile",
         ),
         FEED_NOT_READ => (
-            "1 is judged by a list of vulnerabilities that is not current",
-            "{n} are judged by a list of vulnerabilities that is not current",
+            "1 is in an ecosystem whose list of known vulnerabilities was never read or is not current",
+            "{n} are in an ecosystem whose list of known vulnerabilities was never read or is not current",
         ),
         _ => (
             "1 is in an ecosystem this version has no data for",
@@ -1344,6 +1376,8 @@ fn totals_json(t: &Totals) -> Value {
         "affected_projects": t.projects,
         "affected_records_by_label": by(&t.records_by_label),
         "unknown_by_reason": by(&t.by_reason),
+        "unknown_packages": t.packages_unknown,
+        "unknown_packages_by_reason": by(&t.packages_by_reason),
     })
 }
 

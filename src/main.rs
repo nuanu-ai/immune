@@ -733,10 +733,17 @@ struct SampleArgs {
     input: Option<PathBuf>,
 }
 
+/// Makes the store's folder, or says which folder could not be made: the error alone names
+/// no path.
+fn store_folder(folder: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(folder)
+        .map_err(|e| format!("cannot make the store's folder {}: {e}", folder.display()))
+}
+
 /// Takes one sample under the run lock, records what the rule tracks and raises what it finds.
 fn sample(args: &SampleArgs) -> Result<processes::Report, Box<dyn Error>> {
     let home = home(&args.store);
-    std::fs::create_dir_all(&home)?;
+    store_folder(&home)?;
     let _lock = store::lock_run(&home)?.ok_or(Stop::RunInProgress)?;
     let (report, _) = sample_held(
         &args.store,
@@ -1603,16 +1610,30 @@ fn vulnerabilities_cmd(args: &VulnerabilityArgs) -> ExitCode {
     match &args.id {
         None => {
             let t = &r["totals"];
+            // Packages whose answer cannot be told are said in the first sentence, so that
+            // nothing reads as calm where the data it needs was not read.
             say(&format!(
-                "{} in packages your projects use; {} cannot be told, {} known not to affect them.",
+                "{} in packages your projects use; for {} whether one affects them cannot be told; {} known not to affect them.",
                 things(
                     t["affected_records"].as_i64().unwrap_or_default(),
                     "known vulnerability",
                     "known vulnerabilities"
                 ),
-                grouped(t["unknown"].as_i64().unwrap_or_default()),
+                things(
+                    t["unknown_packages"].as_i64().unwrap_or_default(),
+                    "package",
+                    "packages"
+                ),
                 grouped(t["not_affected_known"].as_i64().unwrap_or_default()),
             ));
+            for f in r["feeds"].as_array().into_iter().flatten() {
+                if let Some(why) = f["not_current_why"].as_str() {
+                    say(&format!(
+                        "The {} data is not current: {why}.",
+                        s(&f["ecosystem"])
+                    ));
+                }
+            }
             let rows: Vec<Vec<String>> = r["affected"]
                 .as_array()
                 .into_iter()
@@ -2105,6 +2126,10 @@ fn survey(args: &ServersArgs) -> Result<Survey, Box<dyn Error>> {
             traces::Found::Failed(reason) => {
                 said.push(format!("{kind}: could not be read, {reason}"));
             }
+            traces::Found::Guarded(folder) => said.push(format!(
+                "{kind}: not read, it leads into {}, which macOS asks permission for",
+                guarded::shown(folder, &args.home)
+            )),
             traces::Found::Read(seen) => {
                 let n = seen.hosts.len() as i64;
                 let mut line = if *kind == tailnet::KIND {
@@ -2828,7 +2853,7 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
 
     // Raw input is kept next to the store so that the store can be rebuilt from it.
     let home = home(&args.store);
-    std::fs::create_dir_all(&home)?;
+    store_folder(&home)?;
     // The vulnerability data and the threat catalogue are asked for before the run lock is
     // taken, so that a download of minutes holds up no watcher's reading and no status. What
     // is asked comes from the feeds' own readings only, read first from the store opened to
@@ -2838,7 +2863,9 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
         true => Some(store::open_read_only(&args.store).map_err(|e| Stop::Store(e.to_string()))?),
         false => None,
     };
-    let _fetching = osv::lock_fetch(&home)?.ok_or(Stop::RunInProgress)?;
+    let _fetching = osv::lock_fetch(&home)
+        .map_err(|e| format!("cannot write in the store's folder {}: {e}", home.display()))?
+        .ok_or(Stop::RunInProgress)?;
     let feeds = get_feeds(read_only.as_ref(), args, &home, at)?;
     let catalogue = get_catalogue(read_only.as_ref(), args)?;
     drop(read_only);
@@ -2849,7 +2876,8 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     store::journal_note(&conn, at, &run_id, "run_started", "")?;
 
     let tx = conn.transaction()?;
-    let machine = format!("machine:{}", args.machine);
+    // The store keeps this Mac's id; its name now is kept beside it.
+    let machine = store::this_mac(&tx, &args.machine)?;
     store::put_entity(&tx, &machine)?;
     let mut run = Run {
         tx: &tx,
@@ -2872,7 +2900,7 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     let known: BTreeSet<String> = found.iter().map(|c| c.rel.clone()).collect();
     found.extend(from_agents.into_iter().filter(|c| !known.contains(&c.rel)));
     if any_checkouts {
-        read_lockfiles(&mut run, &found)?;
+        read_lockfiles(&mut run, args, &found)?;
     }
     let (watched, mut opened) = watch_places(&mut run, args, &found)?;
     read_other_autoruns(&mut run, &args.home, &found)?;
@@ -3264,23 +3292,21 @@ fn read_agent_folders(
     let home = std::fs::canonicalize(&args.home).unwrap_or_else(|_| args.home.clone());
     let mut found: BTreeMap<String, PathBuf> = BTreeMap::new();
     let mut unknown = BTreeSet::new();
-    // Folders macOS asks permission for are not looked into, as in the walk.
+    // Folders macOS asks permission for are not looked into, as in the walk, whatever name
+    // led to them: a working folder or a held checkout is made real without entering one.
     let mut guarded = BTreeSet::new();
-    let guard = |path: &Path| {
-        guarded::folder_of(path, &args.home).or_else(|| guarded::folder_of(path, &home))
-    };
+    let homes = [args.home.as_path(), home.as_path()];
     for folder in sessions.iter().flat_map(|s| &s.folders) {
-        if let Some(g) = guard(Path::new(folder)) {
-            guarded.insert(g);
-            continue;
-        }
-        match agent_folders::checkout_of(folder, &home) {
+        match agent_folders::checkout_of(folder, &home, &homes) {
             agent_folders::OnDisk::Checkout(path) => {
                 found.insert(checkouts::rel(&home, &path), path);
             }
             agent_folders::OnDisk::Nothing => {}
             agent_folders::OnDisk::Unknown => {
                 unknown.insert(folder.clone());
+            }
+            agent_folders::OnDisk::Guarded(g) => {
+                guarded.insert(g);
             }
         }
     }
@@ -3300,12 +3326,16 @@ fn read_agent_folders(
         } else {
             args.home.join(rel)
         };
-        if let Some(g) = guard(&path) {
-            guarded.insert(g);
-            carried.insert(rel.to_string());
-            continue;
-        }
-        match agent_folders::still_there(&path) {
+        let there = match guarded::real(&path, &homes) {
+            guarded::Real::Guarded(g) => {
+                guarded.insert(g);
+                carried.insert(rel.to_string());
+                continue;
+            }
+            guarded::Real::At(real) => agent_folders::still_there(&real),
+            guarded::Real::Failed(_) => agent_folders::still_there(&path),
+        };
+        match there {
             Some(true) => {
                 found.insert(rel.to_string(), path);
             }
@@ -3396,6 +3426,27 @@ fn read_agent_folders(
         .collect())
 }
 
+/// `not_looked_into` for a reader that seldom meets a guarded folder: written when it did,
+/// and once more when it no longer does, so that what the latest run did is what is said.
+fn not_looked_into_when_met(
+    run: &mut Run,
+    reader: &'static str,
+    folders: &[PathBuf],
+    home: &Path,
+) -> rusqlite::Result<()> {
+    let held: bool = run.tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM coverage c WHERE c.reader = ?1 AND c.kind = ?2
+           AND c.id = (SELECT MAX(l.id) FROM coverage l WHERE l.reader = ?1 AND l.kind = ?2)
+           AND c.completeness != 'full')",
+        rusqlite::params![reader, guarded::KIND],
+        |r| r.get(0),
+    )?;
+    if folders.is_empty() && !held {
+        return Ok(());
+    }
+    not_looked_into(run, reader, folders, home)
+}
+
 /// The reading of what a reader did not look into because macOS would have asked the owner's
 /// permission: none, with the folders named, or full when it entered none of them.
 fn not_looked_into(
@@ -3460,6 +3511,10 @@ fn read_traces(run: &mut Run, args: &Args) -> Result<(), Box<dyn Error>> {
             at: run.at,
             observed_at: run.at,
         };
+        let found_guarded = match &found {
+            traces::Found::Read(seen) => seen.guarded.clone(),
+            _ => Vec::new(),
+        };
         match found {
             // Read in full: there is nothing, so what was there before is gone.
             traces::Found::Absent(note) => {
@@ -3491,7 +3546,21 @@ fn read_traces(run: &mut Run, args: &Args) -> Result<(), Box<dyn Error>> {
                 run.notes
                     .push(format!("The {kind} could not be read: {reason}."));
             }
+            // Its file leads into a folder macOS asks permission for: not read, and what was
+            // known from it stays as it was.
+            traces::Found::Guarded(folder) => {
+                let reason = format!(
+                    "{}{}",
+                    guarded::NOT_LOOKED_INTO,
+                    guarded::shown(&folder, &args.home)
+                );
+                let gap = Gap::of(Cause::NotGiven);
+                run.apply(&reading, basis, "none", Some(&reason), &gap, &[])?;
+                not_looked_into(run, reader, &[folder], &args.home)?;
+                continue;
+            }
         }
+        not_looked_into_when_met(run, reader, &found_guarded, &args.home)?;
     }
     Ok(())
 }
@@ -3605,9 +3674,18 @@ fn server_counts(
     Ok(counts)
 }
 
-fn read_lockfiles(run: &mut Run, found: &[checkouts::Checkout]) -> Result<(), Box<dyn Error>> {
+fn read_lockfiles(
+    run: &mut Run,
+    args: &Args,
+    found: &[checkouts::Checkout],
+) -> Result<(), Box<dyn Error>> {
     run.readers += 1;
     let run_id = run.run_id.to_string();
+    let real_home = std::fs::canonicalize(&args.home).unwrap_or_else(|_| args.home.clone());
+    let homes = [args.home.as_path(), real_home.as_path()];
+    // A git folder in a folder macOS asks permission for is not entered: the commit is not
+    // known, and the folder is named.
+    let mut guarded = BTreeSet::new();
     // Lockfiles are under version control: the raw input is where they are and at which commit.
     let mut manifest = String::new();
     for checkout in found {
@@ -3615,7 +3693,10 @@ fn read_lockfiles(run: &mut Run, found: &[checkouts::Checkout]) -> Result<(), Bo
         let Some(o) = lockfiles::read(checkout, &id) else {
             continue;
         };
-        let commit = lockfiles::commit(&checkout.path);
+        let commit = lockfiles::commit(&checkout.path, &homes).unwrap_or_else(|g| {
+            guarded.insert(g);
+            "unknown".to_string()
+        });
         for (path, size) in &o.lockfiles {
             manifest.push_str(&format!("{path}\t{size}\t{commit}\n"));
         }
@@ -3636,6 +3717,8 @@ fn read_lockfiles(run: &mut Run, found: &[checkouts::Checkout]) -> Result<(), Bo
             &o.statements,
         )?;
     }
+    let guarded: Vec<PathBuf> = guarded.into_iter().collect();
+    not_looked_into_when_met(run, lockfiles::READER, &guarded, &args.home)?;
     let dir = run.home.join("raw").join(&run_id);
     std::fs::create_dir_all(&dir)?;
     std::fs::write(dir.join("lockfiles.txt"), manifest)?;

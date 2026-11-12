@@ -806,6 +806,18 @@ struct PanelPromises {
   }
 
   @Test(
+    "A relative time is in English, as every word of the app is, on a Mac set to another region")
+  func relativeTimesInEnglish() {
+    let now = Date()
+    for region in ["de_DE", "ru_RU", "ja_JP", "en_US@rg=ruzzzz"] {
+      var calendar = Calendar(identifier: .gregorian)
+      calendar.locale = Locale(identifier: region)
+      #expect(
+        Clock.ago(now.addingTimeInterval(-720), now: now, calendar: calendar) == "12 minutes ago")
+    }
+  }
+
+  @Test(
     "The request for the agent names the id and the command to read it, quotes every value as data, and leaves the answer to the owner"
   )
   func agentRequest() {

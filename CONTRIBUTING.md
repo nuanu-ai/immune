@@ -1,6 +1,6 @@
 # Contributing to Immune
 
-Immune is built and tested only on Apple Silicon with macOS 14 or later. You need Apple's Command Line Tools (`xcode-select --install`) and Rust 1.89 or later.
+Immune is built and tested only on Apple Silicon with macOS 15 or later. You need Apple's Command Line Tools (`xcode-select --install`) and Rust 1.89 or later.
 
 ## Build and check
 
