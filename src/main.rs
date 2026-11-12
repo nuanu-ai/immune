@@ -35,6 +35,7 @@ mod processes;
 mod resolver;
 mod servers;
 mod sha256;
+mod sigma;
 mod ssh_config;
 mod status;
 mod store;
@@ -86,6 +87,9 @@ const USAGE: &str = "usage: soc run [--store <path>] [--machine-name <name>] [--
            known vulnerabilities that affect packages the projects' lockfiles declare
        soc vulnerability <record id or CVE id> [--store <path>] [--json]
            the answer for one vulnerability in every project, with what it rests on
+       soc rules [--json]
+           the shipped Sigma rules for macOS: which are evaluated on every program
+           start, which in part, and which not, with the reason
        soc sample [--store <path>] [--sample-input <file>] [--json]
        soc watch [--store <path>] [--system-root <dir>] [--sample-input <file>]
                  [--sample-every <seconds>] [--alive-every <seconds>]
@@ -105,6 +109,8 @@ enum Cmd {
     Sample(SampleArgs),
     Vulnerabilities(VulnerabilityArgs),
     Vulnerability(VulnerabilityArgs),
+    /// `soc rules`, with `--json` or not.
+    Rules(bool),
 }
 
 /// `soc vulnerabilities`, and `soc vulnerability <id>` with the id.
@@ -490,6 +496,16 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
             }
         }
         "watch" => watch::parse(it).map(Cmd::Watch),
+        "rules" => {
+            let mut json = false;
+            for arg in it {
+                match arg.as_str() {
+                    "--json" => json = true,
+                    _ => return Err(format!("unexpected argument: {arg}")),
+                }
+            }
+            Ok(Cmd::Rules(json))
+        }
         "sample" => {
             let (mut json, mut input) = (false, None);
             while let Some(arg) = it.next() {
@@ -595,10 +611,12 @@ fn main() -> ExitCode {
                         "owner",
                         "vulnerabilities",
                         "vulnerability",
+                        "rules",
                     ]
                     .contains(o)
                 });
                 let example = match op {
+                    Some("rules") => "soc rules --json",
                     Some("run") => "soc run --json",
                     Some("vulnerabilities") => "soc vulnerabilities --json",
                     Some("vulnerability") => "soc vulnerability CVE-2023-4863 --json",
@@ -656,6 +674,15 @@ fn main() -> ExitCode {
         Cmd::Sample(args) => return sample_cmd(&args),
         Cmd::Vulnerabilities(args) | Cmd::Vulnerability(args) => {
             return vulnerabilities_cmd(&args);
+        }
+        Cmd::Rules(json) => {
+            let rules = sigma::Rules::shipped();
+            if json {
+                print_json(&status::envelope("rules", rules.summary_json()));
+            } else {
+                rules.summary_lines().iter().for_each(|l| say(l));
+            }
+            return ExitCode::SUCCESS;
         }
     };
     match result {
