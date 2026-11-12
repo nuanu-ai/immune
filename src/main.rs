@@ -78,7 +78,10 @@ const USAGE: &str = "usage: soc run [--store <path>] [--machine-name <name>] [--
            having been told what it is and what the options are. Pass --via agent and
            the reason the owner agreed to. The app shows every answer given this way.
        soc servers [--store <path>] [--tailscale <path>]
-       soc view [--store <path>] [--no-open]
+       soc view [--store <path>] [--no-open] [--if-stale]
+           writes every page and prints their paths, the summary first; with
+           --if-stale, writes only when something they show changed since they were
+           made, or they are an hour old, and prints the same paths
        soc owner [<name> retired|not-mine --reason <text> | <name> withdraw]
                  [--via app|agent] [--store <path>] [--tailscale <path>] [--json]
            retired and not-mine set a machine aside: it is no longer checked. --via says
@@ -206,6 +209,8 @@ enum Act {
 struct ViewArgs {
     store: PathBuf,
     open: bool,
+    /// Write only when the pages are not current (`--if-stale`).
+    if_stale: bool,
 }
 
 fn user_home() -> Result<PathBuf, String> {
@@ -299,16 +304,21 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
             }))
         }
         "view" => {
-            let mut open = true;
+            let (mut open, mut if_stale) = (true, false);
             while let Some(arg) = it.next() {
                 match arg.as_str() {
                     "--store" => store = Some(value(&mut it, &arg)?.into()),
                     "--no-open" => open = false,
+                    "--if-stale" => if_stale = true,
                     _ => return Err(format!("unexpected argument: {arg}")),
                 }
             }
             let store = store.map_or_else(default_store, Ok)?;
-            Ok(Cmd::View(ViewArgs { store, open }))
+            Ok(Cmd::View(ViewArgs {
+                store,
+                open,
+                if_stale,
+            }))
         }
         "owner" => {
             let (mut tailscale, mut reason, mut words) = (None, None, Vec::new());
@@ -1591,7 +1601,14 @@ fn view(args: &ViewArgs) -> Result<(), Box<dyn Error>> {
     if !args.store.is_file() {
         return Err(format!("no store at {}", args.store.display()).into());
     }
-    let written = write_view(&args.store)?;
+    let written = if args.if_stale {
+        match current_view(&args.store, now_secs())? {
+            Some(pages) => pages,
+            None => write_view(&args.store)?,
+        }
+    } else {
+        write_view(&args.store)?
+    };
     for path in &written {
         println!("{}", path.display());
     }
@@ -1608,6 +1625,9 @@ fn view(args: &ViewArgs) -> Result<(), Box<dyn Error>> {
 /// first is the page to open. Every link of the summary leads to a page written here.
 fn write_view(store: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
     let now = now_secs();
+    let folder = home(store);
+    // Taken before the pages are read, so that they hold at least what it names.
+    let basis = view::basis(&store::open_read_only(store)?, &folder)?;
     // The summary is built from what `soc status --json` answers, read the same way.
     let (running, state) = read_all(store)?;
     let state = state.ok_or("the store is gone")?;
@@ -1616,24 +1636,52 @@ fn write_view(store: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
     let conn = store::open_read_only(store)?;
     let pages = view::pages(&conn, &state, &result, &store.display().to_string(), now)?;
     drop(conn);
-    let folder = home(store);
     std::fs::create_dir_all(folder.join(view::DETAILS))?;
     let mut written = Vec::new();
+    let mut names = Vec::new();
     for (rel, html) in pages {
-        let path = std::path::absolute(folder.join(rel))?;
+        let path = std::path::absolute(folder.join(&rel))?;
         std::fs::write(&path, html)?;
         written.push(path);
+        names.push(rel);
     }
+    // Last, so that pages cut short by a failure are never named as current.
+    let made = serde_json::json!({ "basis": basis, "made_at": now, "pages": names });
+    std::fs::write(folder.join(view::MADE), made.to_string())?;
     Ok(written)
 }
 
-/// Brings the view up to date when the owner has made it once, so that a page left open
-/// shows what the store holds after a change; nothing is made that was never asked for.
-fn refresh_view(store: &Path) -> Result<(), Box<dyn Error>> {
-    if home(store).join(view::SUMMARY).is_file() {
-        write_view(store)?;
+/// The pages, the summary first, when they are current at `now`: every one is there, they
+/// are younger than `view::CURRENT_FOR`, and their basis has not moved since they were made.
+/// `None` when they must be written.
+fn current_view(store: &Path, now: i64) -> Result<Option<Vec<PathBuf>>, Box<dyn Error>> {
+    let folder = home(store);
+    let Ok(text) = std::fs::read_to_string(folder.join(view::MADE)) else {
+        return Ok(None);
+    };
+    let made: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+    let (Some(basis), Some(at), Some(pages)) = (
+        made["basis"].as_str(),
+        made["made_at"].as_i64(),
+        made["pages"].as_array(),
+    ) else {
+        return Ok(None);
+    };
+    if !(at..at + view::CURRENT_FOR).contains(&now) {
+        return Ok(None);
     }
-    Ok(())
+    let mut paths = Vec::new();
+    for page in pages {
+        let path = std::path::absolute(folder.join(page.as_str().unwrap_or_default()))?;
+        if !path.is_file() {
+            return Ok(None);
+        }
+        paths.push(path);
+    }
+    if view::basis(&store::open_read_only(store)?, &folder)? != basis {
+        return Ok(None);
+    }
+    Ok(Some(paths))
 }
 
 /// One server as `soc servers` lists it.

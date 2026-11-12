@@ -21,7 +21,7 @@ public final class AppModel: ObservableObject {
   @Published public private(set) var runFailure: String?
   /// What happened to the last press of Run now when it was not a failure.
   @Published public private(set) var runNote: String?
-  /// The program's page is being written and opened by `soc view`.
+  /// The program's page is being brought up to date by `soc view` and opened.
   @Published public private(set) var pageOpening = false
   /// Why the page could not be opened, in plain words. Cleared on the next try.
   @Published public private(set) var pageFailure: String?
@@ -29,9 +29,12 @@ public final class AppModel: ObservableObject {
   @Published public private(set) var pagePath: URL?
   /// Opens the page file; the app gives the system's opener, tests a recorder.
   public var opener: @MainActor (URL) -> Bool = { _ in false }
-  /// Ask soc where its page is as soon as a store is read, so the first click is
-  /// instant too. On in the app, off in tests.
-  public var learnPageEarly = false
+  /// Have soc keep the page current ahead of a click: once a store is read, then at most
+  /// every `PageAhead.every`. soc writes only when the page is not current, so a quiet
+  /// interval costs one quick look. On in the app, off in tests.
+  public var writePageAhead = false
+  /// When the app last had the page written ahead.
+  private var lastAhead: Date?
   private var pageTask: Task<SocOutput, Never>?
   /// "More" is open in the panel.
   @Published public var moreOpen = false
@@ -103,7 +106,10 @@ public final class AppModel: ObservableObject {
       notificationsOff = announcer.off
       if let s = reading.status { await announcer.saw(s) }
     }
-    if learnPageEarly, pagePath == nil, reading.status?.store?.exists == true {
+    if writePageAhead, reading.status?.store?.exists == true,
+      PageAhead.isDue(lastAhead: lastAhead, now: Date())
+    {
+      lastAhead = Date()
       Task { _ = await writePage(for: .app) }
     }
     refreshing = false
@@ -130,23 +136,22 @@ public final class AppModel: ObservableObject {
     return true
   }
 
-  /// Details and Show open the program's page at once. The page is written by
-  /// `soc view --no-open`, which says where it is; the app opens that file and never
-  /// waits on a rewrite in the click: with a page known, it opens it and has it
-  /// rewritten behind. With none known yet (soc has not been asked this session), the
-  /// click asks soc once, shows that it is opening, and opens the page when soc has
-  /// written it. Returns false, and starts nothing, while that first opening runs. A
-  /// failure is a plain line and never changes what the icon says.
+  /// Details and Show open the program's page as the store is now, never an older one.
+  /// Each click asks `soc view --no-open --if-stale`, which says where the page is and
+  /// answers at once when nothing on it changed since it was written; otherwise it writes
+  /// it first, and the panel shows that it is opening. A page being written ahead is
+  /// waited for, not written twice. Returns false, and starts nothing, while an opening
+  /// runs. A failure is a plain line and never changes what the icon says.
   @discardableResult
   public func openPage(at id: String? = nil, section: String? = nil) async -> Bool {
-    if let page = pagePath, FileManager.default.fileExists(atPath: page.path) {
-      pageFailure = opener(target(page, section: section)) ? nil : "Details could not be opened."
-      Task { _ = await writePage(for: .app) }
-      return true
-    }
     guard !pageOpening else { return false }
     pageOpening = true
     pageFailure = nil
+    if let ahead = pageTask {
+      _ = await ahead.value
+      // Ended: the click asks soc itself, whatever ran meanwhile.
+      if pageTask == ahead { pageTask = nil }
+    }
     let out = await writePage(for: .owner)
     if out.exitCode != 0 {
       pageFailure = "Details could not be opened. " + Self.viewFailure(out)
@@ -159,16 +164,16 @@ public final class AppModel: ObservableObject {
     return true
   }
 
-  /// `soc view --no-open` on the same store: rewrites the page and learns where it
-  /// is. One at a time; a second caller waits for the one running. Written ahead or
-  /// behind an open click, it is the app's own; the first opening is the owner's.
+  /// `soc view --no-open --if-stale` on the same store: brings the page up to date and
+  /// learns where it is. One at a time; a second caller waits for the one running.
+  /// Written ahead, it is the app's own; a click's is the owner's.
   func writePage(for whom: RunFor) async -> SocOutput {
     let task: Task<SocOutput, Never>
     if let running = pageTask {
       task = running
     } else {
       let soc = self.soc
-      let args = ["view", "--no-open"] + extraArguments
+      let args = ["view", "--no-open", "--if-stale"] + extraArguments
       task = Task { await soc.run(args, timeout: Self.viewTimeout, for: whom) }
       pageTask = task
     }
@@ -289,6 +294,19 @@ public final class AppModel: ObservableObject {
   static func otherRunInProgress(_ out: SocOutput) -> Bool {
     guard case .success(let env) = Decoding.envelope(from: out.stdout) else { return false }
     return env.ok == false && env.errors.contains { $0.code == "run_in_progress" }
+  }
+}
+
+/// When the app has the page written ahead of a click. A change read by the watcher can
+/// come every few seconds and writing the page costs seconds of processor time, so it is
+/// not written after each; a click on a page that is not current waits for it instead.
+public enum PageAhead {
+  public static let every: TimeInterval = 30 * 60
+
+  /// Due when the app has not had it written ahead within the interval, or never.
+  public static func isDue(lastAhead: Date?, now: Date) -> Bool {
+    guard let last = lastAhead else { return true }
+    return now.timeIntervalSince(last) >= every
   }
 }
 

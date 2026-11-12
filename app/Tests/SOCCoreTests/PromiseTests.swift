@@ -1246,10 +1246,10 @@ struct RunNow {
   }
 }
 
-@Suite("Details: the program's page, opened at once")
+@Suite("Details: the program's page, as the store is now")
 @MainActor
 struct Page {
-  /// A page file soc "wrote", and the output of `soc view --no-open` naming it.
+  /// A page file soc "wrote", and the output of `soc view --no-open --if-stale` naming it.
   func written() throws -> (URL, SocOutput) {
     let dir = FileManager.default.temporaryDirectory
       .appendingPathComponent("personal-soc-page-\(UUID().uuidString)")
@@ -1262,7 +1262,7 @@ struct Page {
   }
 
   @Test(
-    "With no page known, the first click asks soc once, on the same store, and opens the page it wrote"
+    "A click asks soc once, on the same store, to bring the page up to date, and opens the page it names"
   )
   func firstClick() async throws {
     let (page, out) = try written()
@@ -1279,13 +1279,15 @@ struct Page {
     #expect(await model.openPage() == false)  // a second click starts nothing
     soc.release()
     #expect(await task.value)
-    #expect(soc.callsSoFar == [["view", "--no-open", "--store", "/tmp/example.db"]])
+    #expect(soc.callsSoFar == [["view", "--no-open", "--if-stale", "--store", "/tmp/example.db"]])
     #expect(opened == [page])
     #expect(!model.pageOpening)
   }
 
-  @Test("With a page known, a click opens it at once and has it rewritten behind, never waiting")
-  func instant() async throws {
+  @Test(
+    "A click with a page known still opens it only once soc has brought it up to date, never an older one first"
+  )
+  func neverOlder() async throws {
     let (page, out) = try written()
     let soc = GatedSoc(status: quiet(), view: out)
     let model = AppModel(soc: soc)
@@ -1294,35 +1296,48 @@ struct Page {
       opened.append($0)
       return true
     }
-    let first = Task { await model.openPage() }
-    await waitUntil { soc.waiting }
-    soc.release()
-    _ = await first.value
-    // The rewrite behind is held at soc; the click still returns, the page opened.
-    #expect(await model.openPage())
+    for n in 1...2 {
+      let click = Task { await model.openPage() }
+      await waitUntil { soc.waiting }
+      // Held at soc: nothing is opened while the page may be older than the store.
+      #expect(opened.count == n - 1)
+      #expect(model.pageOpening)
+      soc.release()
+      #expect(await click.value)
+      #expect(opened.count == n)
+    }
     #expect(opened == [page, page])
     #expect(!model.pageOpening)
-    await waitUntil("the rewrite behind") { soc.waiting }
-    #expect(await model.openPage())  // a third click opens again, no second rewrite
-    #expect(opened.count == 3)
-    soc.release()
-    await waitUntil("the rewrite to end") { !soc.waiting }
+    // Nothing is written behind a click.
+    try await Task.sleep(for: .milliseconds(200))
     #expect(soc.callsSoFar.filter { $0.first == "view" }.count == 2)
   }
 
-  @Test("The app learns where the page is as soon as a store is read, when asked to")
-  func learnEarly() async throws {
+  @Test(
+    "The page is written ahead once a store is read, when asked to, and not again within the interval"
+  )
+  func writtenAhead() async throws {
     let (page, out) = try written()
     let soc = GatedSoc(status: quiet(), view: out, gated: [])
     let model = AppModel(soc: soc)
     await model.refresh()
     #expect(!soc.callsSoFar.contains { $0.first == "view" })
-    model.learnPageEarly = true
+    model.writePageAhead = true
     await model.refresh()
     await waitUntil("the page to be known") { model.pagePath == page }
+    // The status is read every minute and after every change the watcher reads.
+    await model.refresh()
+    await model.refresh()
+    try await Task.sleep(for: .milliseconds(200))
+    #expect(soc.callsSoFar.filter { $0.first == "view" }.count == 1)
+    #expect(soc.callsSoFar.contains(["view", "--no-open", "--if-stale"]))
+    let start = Date()
+    #expect(PageAhead.isDue(lastAhead: nil, now: start))
+    #expect(!PageAhead.isDue(lastAhead: start, now: start.addingTimeInterval(29 * 60)))
+    #expect(PageAhead.isDue(lastAhead: start, now: start.addingTimeInterval(30 * 60)))
     let none = GatedSoc(status: output("no-store.json"), view: out, gated: [])
     let fresh = AppModel(soc: none)
-    fresh.learnPageEarly = true
+    fresh.writePageAhead = true
     await fresh.refresh()
     try await Task.sleep(for: .milliseconds(200))
     #expect(!none.callsSoFar.contains { $0.first == "view" })
@@ -1351,7 +1366,9 @@ struct Page {
     #expect(failing.pagePath == nil)
   }
 
-  @Test("A click while the page is being learnt waits for that one `soc view`, it starts no second")
+  @Test(
+    "A click while the page is written ahead waits for that `soc view` instead of a second write beside it, then asks soc whether it is current"
+  )
   func sharedWrite() async throws {
     let (page, out) = try written()
     let soc = GatedSoc(status: quiet(), view: out)
@@ -1361,15 +1378,20 @@ struct Page {
       opened.append($0)
       return true
     }
-    model.learnPageEarly = true
+    model.writePageAhead = true
     await model.refresh()
-    await waitUntil("the early `soc view`") { soc.waiting }
+    await waitUntil("the `soc view` ahead") { soc.waiting }
     let click = Task { await model.openPage() }
     for _ in 0..<20 { await Task.yield() }
+    #expect(soc.callsSoFar.filter { $0.first == "view" }.count == 1)
+    soc.release()
+    // The click's own look, which soc answers at once when the page written ahead is current.
+    await waitUntil("the click's own `soc view`") { soc.waiting }
+    #expect(opened.isEmpty)
     soc.release()
     #expect(await click.value)
     #expect(opened == [page])
-    #expect(soc.callsSoFar.filter { $0.first == "view" }.count == 1)
+    #expect(soc.callsSoFar.filter { $0.first == "view" }.count == 2)
   }
 
   @Test(
@@ -2343,8 +2365,8 @@ struct Watching {
       #"{"format":1,"event":"problem","at":"2026-11-10T10:00:00Z","code":"place_not_watched","detail_text":"x"}"#
     let nested =
       #"{"format":1,"event":"problem","at":"2026-11-10T10:00:00Z","problem":{"code":"history_unusable","detail_text":"x"}}"#
-    let view =
-      #"{"format":1,"event":"problem","at":"2026-11-10T10:00:00Z","code":"view_failed","detail_text":"x"}"#
+    let events =
+      #"{"format":1,"event":"problem","at":"2026-11-10T10:00:00Z","code":"events_failed","detail_text":"x"}"#
     #expect(
       Decoding.watchLine(Data(flat.utf8)) == .problem(code: "place_not_watched", detailText: "x"))
     #expect(
@@ -2352,7 +2374,7 @@ struct Watching {
     let h = Harness()
     h.watcher.start()
     h.launcher.say(watchingLine)
-    for line in [flat, nested, view] { h.launcher.say(line) }
+    for line in [flat, nested, events] { h.launcher.say(line) }
     #expect(h.watcher.state == .watching)
     #expect(h.watcher.notWatching == nil)
   }
@@ -2829,7 +2851,7 @@ struct OwnerFirst {
   func whomEachRunIsFor() async {
     let soc = WhomSoc(status: looking([lookItem(id: "f1")]))
     let model = AppModel(soc: soc, launchedAt: Date().addingTimeInterval(-7200))
-    model.learnPageEarly = true
+    model.writePageAhead = true
     model.opener = { _ in true }
     // The app's own: the status on its timer, the page written ahead, the hourly check.
     await model.refresh()

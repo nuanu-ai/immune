@@ -308,7 +308,7 @@ public final class Watcher: ObservableObject {
       succeeded("sample")
       onRead()
     case .problem(let code, let detail):
-      // Another problem (a place it cannot watch, a view it could not bring up to date)
+      // Another problem (a place it cannot watch, a failed reading of the event level)
       // is news of life: the watcher still watches.
       guard let code, let f = Self.failures[code] else { break }
       // What the failure said is text from a source: shown inert, and only in brackets.

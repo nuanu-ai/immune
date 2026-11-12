@@ -337,10 +337,11 @@ let (soc, extra, socURL) = locate(overrides.0, overrides.1)
 let model = AppModel(soc: soc, extraArguments: extra)
 model.socCommand = SocCommand.at(socURL, extra: extra)
 // The program's page, a file soc wrote, opened by the system: the only other thing
-// the app opens. The app learns where it is early, so Details opens at once. A section
+// the app opens. The app has soc keep it current ahead now and then, so Details mostly
+// opens at once, and never on a page older than the store. A section
 // has a file of its own that soc names, so no file URL carries a "#section".
 model.opener = { page in NSWorkspace.shared.open(page) }
-model.learnPageEarly = true
+model.writePageAhead = true
 let delegate = Delegate(model: model, watcher: makeWatcher(socURL, extra, model))
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)

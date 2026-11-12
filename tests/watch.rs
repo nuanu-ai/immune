@@ -140,10 +140,20 @@ impl Mac {
 
     /// Every page `soc view` writes, joined.
     fn view(&self) -> String {
+        self.view_with(&[])
+    }
+
+    /// Every page as `soc view --if-stale` leaves it, joined: written only when not current.
+    fn view_if_stale(&self) -> String {
+        self.view_with(&["--if-stale"])
+    }
+
+    fn view_with(&self, args: &[&str]) -> String {
         let out = within(
             self.soc()
                 .args(["view", "--no-open", "--store"])
-                .arg(self.store()),
+                .arg(self.store())
+                .args(args),
         );
         assert!(out.status.success());
         String::from_utf8(out.stdout)
@@ -427,7 +437,7 @@ fn the_view_says_what_a_watcher_cannot_see_and_whether_one_runs_once_one_has_run
     let mut w = mac.watch().started();
     mac.put(".zshrc", "one\n");
     w.until("read", |v| count(v, "new") == 1);
-    let now = mac.view();
+    let now = mac.view_if_stale();
     assert!(now.contains(cannot), "{now}");
     assert!(
         now.contains("watched live: a change in what is watched all the time shows within seconds, last looked 2"),
@@ -441,8 +451,10 @@ fn the_view_says_what_a_watcher_cannot_see_and_whether_one_runs_once_one_has_run
             && now.contains(followed),
         "{now}"
     );
+    // A watcher that stopped leaves the journal as it was; the page asked for says so all the
+    // same.
     drop(w);
-    let after = mac.view();
+    let after = mac.view_if_stale();
     assert!(!after.contains(followed), "{after}");
     assert!(after.contains(cannot), "{after}");
     assert!(
@@ -1028,6 +1040,7 @@ fn a_failed_reading_or_sample_is_not_watched_live_with_its_reason_until_the_next
     w.next("watching");
     mac.put(".zprofile", "first\n");
     w.until("read", |v| count(v, "new") == 1);
+    mac.view_if_stale();
     let live = |mac: &Mac| {
         let r = mac.status()["result"].clone();
         (
@@ -1056,7 +1069,8 @@ fn a_failed_reading_or_sample_is_not_watched_live_with_its_reason_until_the_next
         "{failed}"
     );
     // The page and the text say a watcher runs but does not watch live, never that none runs.
-    let page = mac.view();
+    // The failed reading wrote nothing to the journal: the page asked for says it all the same.
+    let page = mac.view_if_stale();
     assert!(
         page.contains("a watcher runs, but its latest reading of the watched places failed")
             && page.contains("latest reading of the watched places failed</"),
@@ -1540,26 +1554,87 @@ fn this_mac_says_live_for_what_a_running_watcher_sees_and_hourly_for_the_rest() 
 }
 
 #[test]
-fn a_view_the_owner_has_made_is_brought_up_to_date_by_a_reading_that_changed_something() {
-    // A page left open after Details must not say "Nothing needs a look" while a change waits.
+fn the_watcher_writes_no_page_and_the_page_asked_for_after_a_change_shows_it() {
+    // A change can come every few seconds and writing the pages costs seconds of processor
+    // time, for pages nobody may have open: the watcher writes none. The page the owner asks
+    // for must never say "Nothing needs a look" while a change waits, and asking again with
+    // nothing new costs no writing.
     let mac = Mac::new("view-fresh");
     mac.put(".zshrc", "one\n");
     mac.put(".zprofile", "one\n");
     mac.run();
     let summary = mac.root.join("store/view.html");
     let mut w = mac.watch().started();
+    let page = mac.view_if_stale();
+    assert!(page.contains("<h1>Nothing needs a look</h1>"), "{page}");
+    std::fs::write(&summary, "as it was").unwrap();
+    assert!(mac.view_if_stale().starts_with("as it was"));
     mac.put(".zprofile", "two\n");
     w.until("read", |v| count(v, "changed") == 1);
-    // Never made, never written: nothing is made that the owner did not ask for.
-    assert!(!summary.exists());
-    mac.view();
-    let page = std::fs::read_to_string(&summary).unwrap();
+    assert_eq!(std::fs::read_to_string(&summary).unwrap(), "as it was");
+    let page = mac.view_if_stale();
     assert!(page.contains("<h1>1 thing needs a look</h1>"), "{page}");
-    mac.put(".zshrc", "two\n");
-    w.until("read", |v| count(v, "changed") == 1);
-    let page = std::fs::read_to_string(&summary).unwrap();
-    assert!(page.contains("<h1>2 things need a look</h1>"), "{page}");
+    // A watched file that can no longer be opened changes no fact, only what the reading
+    // covered: the page asked for says the Mac is watched in part.
+    use std::os::unix::fs::PermissionsExt;
+    let closed = mac.put(".zshrc.new", "two\n");
+    std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o000)).unwrap();
+    std::fs::rename(&closed, mac.home().join(".zshrc")).unwrap();
+    w.until("read", |_| true);
+    let page = mac.view_if_stale();
+    assert!(page.contains("This Mac is watched in part"), "{page}");
+    let _ = std::fs::set_permissions(
+        mac.home().join(".zshrc"),
+        std::fs::Permissions::from_mode(0o644),
+    );
     assert!(w.lines("problem").is_empty(), "{:?}", w.seen);
+}
+
+#[test]
+fn pages_asked_for_are_written_again_when_one_is_gone_or_they_are_an_hour_old() {
+    // What changes with time alone, such as an answer that expires, is shown at most an hour
+    // late; a page removed is never named as there.
+    let mac = Mac::new("view-old");
+    mac.run();
+    let summary = mac.root.join("store/view.html");
+    let made = mac.root.join("store/view/made.json");
+    mac.view_if_stale();
+    std::fs::write(&summary, "as it was").unwrap();
+    let mut basis: Value = serde_json::from_str(&std::fs::read_to_string(&made).unwrap()).unwrap();
+    let at = basis["made_at"].as_i64().unwrap();
+    basis["made_at"] = (at - 3590).into();
+    std::fs::write(&made, basis.to_string()).unwrap();
+    assert!(mac.view_if_stale().starts_with("as it was"));
+    basis["made_at"] = (now() - 3601).into();
+    std::fs::write(&made, basis.to_string()).unwrap();
+    assert!(mac.view_if_stale().starts_with("<!doctype html>"));
+    // Made in the future, by a clock set back since: not current either.
+    std::fs::write(&summary, "as it was").unwrap();
+    let mut basis: Value = serde_json::from_str(&std::fs::read_to_string(&made).unwrap()).unwrap();
+    basis["made_at"] = (now() + 600).into();
+    std::fs::write(&made, basis.to_string()).unwrap();
+    assert!(mac.view_if_stale().starts_with("<!doctype html>"));
+    let changes = mac.root.join("store/view/changes.html");
+    std::fs::write(&summary, "as it was").unwrap();
+    std::fs::remove_file(&changes).unwrap();
+    assert!(mac.view_if_stale().starts_with("<!doctype html>"));
+    assert!(changes.is_file());
+    // Another program writes its own pages.
+    std::fs::write(&summary, "as it was").unwrap();
+    let other = mac.root.join("soc-copy");
+    std::fs::copy(env!("CARGO_BIN_EXE_soc"), &other).unwrap();
+    let out = within(
+        Command::new(&other)
+            .env("HOME", mac.home())
+            .args(["view", "--no-open", "--if-stale", "--store"])
+            .arg(mac.store()),
+    );
+    assert!(out.status.success());
+    assert!(
+        std::fs::read_to_string(&summary)
+            .unwrap()
+            .starts_with("<!doctype html>")
+    );
 }
 
 fn now() -> i64 {
@@ -1624,8 +1699,7 @@ fn a_sample_that_opens_a_finding_says_so_in_one_line_and_a_quiet_sample_says_not
     mac.sample(t, &[detached_code()]);
     let mut w = sampling(&mac);
     until_row(&mac, "SELECT executable FROM tracked_process");
-    // A page the owner has made is up to date by the time the line says it.
-    mac.view();
+    mac.view_if_stale();
     // The later sample also sees a shell, so the count the status shows is the latest one.
     let shell = serde_json::json!({ "pid": 4243, "start": 7, "parent": 1,
                                     "executable": "/bin/zsh", "name": "zsh",
@@ -1636,13 +1710,15 @@ fn a_sample_that_opens_a_finding_says_so_in_one_line_and_a_quiet_sample_says_not
         (count(&said, "opened"), count(&said, "needs_a_look_total")),
         (1, 1)
     );
+    // The page asked for after the line shows what the sample opened.
+    mac.view_if_stale();
     let summary = std::fs::read_to_string(mac.root.join("store/view.html")).unwrap();
     assert!(
         summary.contains("<h1>1 thing needs a look</h1>"),
         "{summary}"
     );
-    // The pages refreshed then name the sample among the runs. It reads only programs: it is
-    // not a run that left out the server the full run read.
+    // The pages name the sample among the runs. It reads only programs: it is not a run that
+    // left out the server the full run read.
     let changes = std::fs::read_to_string(mac.root.join("store/view/changes.html")).unwrap();
     assert!(changes.contains("sample of running programs and their connections"));
     assert!(!changes.contains("were not read in this run"), "{changes}");
@@ -1902,8 +1978,8 @@ fn the_status_after_ten_thousand_readings_is_as_quick_as_on_the_first_day() {
 
 #[test]
 fn the_view_after_ten_thousand_readings_is_made_as_quickly_as_on_the_first_day() {
-    // The watcher brings the owner's pages up to date after every reading that changed
-    // something; they must not take longer the longer the app has been open.
+    // The owner's pages are written when he asks for them after a change; they must not take
+    // longer the longer the app has been open.
     let (first, later) = first_day_and_later("view-flat", &["view", "--no-open"]);
     assert!(
         later < first * 3 / 2 + Duration::from_millis(5),

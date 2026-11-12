@@ -25,6 +25,42 @@ pub const SUMMARY: &str = "view.html";
 /// The folder next to the summary page that holds the pages of details.
 pub const DETAILS: &str = "view";
 
+/// What the pages were made from and when, written after them, relative to the store's folder.
+pub const MADE: &str = "view/made.json";
+
+/// How long pages stand as current while nothing in their basis moved, in seconds. What
+/// changes with time alone, such as an answer that expires or how old the last check is, is
+/// shown at most this late; every page says when it was made.
+pub const CURRENT_FOR: i64 = 3600;
+
+/// What the pages rest on that changes without the clock: the journal's latest entry (every
+/// change, finding raised or answered, owner's word, run and reading of threat data), what
+/// each latest reading covered, the watcher that holds the store and what failed in it, and
+/// the program that writes the pages. Equal bases make the same pages, but for the time
+/// they were made, the latest sample's counts, and what the event level records, which pages
+/// show with their time. Cheap: a lookup by key, the latest readings and a lock.
+pub fn basis(conn: &Connection, folder: &std::path::Path) -> Result<String, Box<dyn Error>> {
+    use std::hash::{Hash, Hasher};
+    let journal: i64 = conn.query_row("SELECT COALESCE(MAX(seq), 0) FROM journal", [], |r| {
+        r.get(0)
+    })?;
+    // A reading's time and id are new at every reading; what it covered is not.
+    let mut covered = std::collections::hash_map::DefaultHasher::new();
+    for l in latest_coverage(conn)? {
+        (l.reader, l.scope, l.kind, l.completeness, l.reason, l.cause).hash(&mut covered);
+    }
+    let watcher = crate::watch::basis(conn, folder)?;
+    let program = std::env::current_exe()?;
+    let meta = std::fs::metadata(&program)?;
+    Ok(format!(
+        "journal {journal}; covered {:016x}; watcher {watcher}; program {} {} {:?}",
+        covered.finish(),
+        program.display(),
+        meta.len(),
+        meta.modified()?
+    ))
+}
+
 /// Every page the view writes, as its path relative to the store's folder and its HTML: the
 /// summary first, then the pages its links lead a person to (`pages.rs`), then one technical
 /// page for each of the big tables. The summary is built from the state and the

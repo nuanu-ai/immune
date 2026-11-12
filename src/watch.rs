@@ -44,8 +44,10 @@
 //!
 //! While it waits for the run lock, which a full run holds for as long as it runs, it says it
 //! is alive at its usual interval, so that a long run does not get it taken for dead.
-//! After a reading that changed something it brings the view up to date, when the owner has
-//! made it once; `view_failed` says when it could not. The watcher stops,
+//! It writes no page of the view: a change can come every few seconds and the pages cost
+//! seconds of processor time, mostly for pages nobody has open. A page is brought up to date
+//! when it is asked for, by `soc view --if-stale`, which writes only when something the pages
+//! rest on moved since they were made (`view::basis`). The watcher stops,
 //! with exit 0, when stdout is closed or its parent process is gone, so that an app that died
 //! leaves no watcher holding the store.
 
@@ -506,22 +508,7 @@ impl Watcher<'_> {
                 match self.read(d.latest) {
                     Ok(Some(counts)) => {
                         self.handled = Some(d.latest);
-                        let changed = ["new", "changed", "gone"]
-                            .iter()
-                            .any(|c| counts[*c].as_u64().unwrap_or_default() > 0);
-                        // A view the owner has open shows the change too, by the time the
-                        // line says it.
-                        let view = if changed {
-                            crate::refresh_view(&self.args.store).err()
-                        } else {
-                            None
-                        };
                         if !emit(&line("read", counts)) {
-                            return;
-                        }
-                        if let Some(e) = view
-                            && !emit(&problem("view_failed", &e.to_string()))
-                        {
                             return;
                         }
                     }
@@ -546,18 +533,8 @@ impl Watcher<'_> {
                     // A sample that opened a finding, or the first to succeed after one that
                     // failed, which the app takes as the end of that failure.
                     Ok(Some((opened, needs))) if opened > 0 || recovered => {
-                        let view = if opened > 0 {
-                            crate::refresh_view(&self.args.store).err()
-                        } else {
-                            None
-                        };
                         let said = json!({ "opened": opened, "needs_a_look_total": needs });
                         if !emit(&line("sample", said)) {
-                            return;
-                        }
-                        if let Some(e) = view
-                            && !emit(&problem("view_failed", &e.to_string()))
-                        {
                             return;
                         }
                     }
@@ -1052,6 +1029,19 @@ pub fn status(store: &Path) -> Value {
         "failed": failed,
         "cannot_see": CANNOT_SEE,
     })
+}
+
+/// What the pages of the view rest on about the watcher: when the one that holds the store
+/// started, and what has failed in it and not succeeded since; `none` while none holds it.
+pub fn basis(conn: &Connection, folder: &Path) -> rusqlite::Result<String> {
+    if !store::watch_in_progress(folder).unwrap_or(false) {
+        return Ok("none".into());
+    }
+    let failed: Vec<String> = failures(conn, folder)?
+        .into_iter()
+        .map(|f| f.what)
+        .collect();
+    Ok(format!("{:?} {}", started(folder), failed.join(",")))
 }
 
 /// When the watcher that holds the lock now started, from its lock file. A watcher that has

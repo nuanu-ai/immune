@@ -829,6 +829,31 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 "#;
 
 #[test]
+fn this_mac_lists_every_project_with_how_many_dependencies_are_known_none_known_as_0() {
+    // A project whose lockfiles name nothing is still a project on this Mac: left out, it
+    // would read as one the program never found.
+    let dir = Dir::new("projects");
+    let brew = dir.input("brew.txt", SAMPLE);
+    let absent = dir.0.join("absent");
+    let root = dir.0.join("dev");
+    let shop = checkout(&root, "shop");
+    put(&shop, "package-lock.json", PACKAGE_LOCK);
+    checkout(&root, "notes");
+    soc_all(&dir.store(), &brew, &absent, &root);
+    let pages = view_pages(&dir.store());
+    let this_mac = &pages
+        .iter()
+        .find(|(p, _)| p.ends_with("view/this-mac.html"))
+        .unwrap()
+        .1;
+    let projects = section(this_mac, "projects");
+    assert!(
+        projects.contains("notes</td><td>0</td>") && projects.contains("shop</td><td>2</td>"),
+        "{projects}"
+    );
+}
+
+#[test]
 fn under_partial_coverage_new_assertions_become_live_and_nothing_is_retracted() {
     // A checkout with a lockfile the reader cannot read is read partially: a dependency
     // that is no longer seen may still be there, so it must not be reported as gone.

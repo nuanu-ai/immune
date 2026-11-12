@@ -1198,12 +1198,15 @@ fn projects(conn: &Connection, this: Option<&str>) -> rusqlite::Result<Vec<(Stri
     let Some(this) = this else {
         return Ok(Vec::new());
     };
+    // The dependencies are counted in one pass over them, not once per project: no index
+    // leads from a project to what is part of it.
     let list: Vec<(String, i64)> = conn
         .prepare(
-            "SELECT a.subject,
-                    (SELECT COUNT(DISTINCT p.subject) FROM assertion p
-                     WHERE p.layer = 'live' AND p.predicate = 'part_of' AND p.object = a.subject)
+            "SELECT a.subject, COALESCE(p.n, 0)
              FROM assertion a
+             LEFT JOIN (SELECT object, COUNT(DISTINCT subject) AS n FROM assertion
+                        WHERE layer = 'live' AND predicate = 'part_of' GROUP BY object) p
+               ON p.object = a.subject
              WHERE a.layer = 'live' AND a.predicate = 'located_on' AND a.object = ?1
                AND a.subject LIKE 'checkout:%'
              GROUP BY a.subject ORDER BY a.subject",
