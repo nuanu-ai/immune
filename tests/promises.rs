@@ -8410,7 +8410,10 @@ fn lists_are_capped_with_their_totals_and_names_and_times_are_stable() {
         }
     }
     let (_, stdout, _) = status_out(&w.store(), &["--json"]);
-    assert!(stdout.len() < 64 * 1024, "{} bytes", stdout.len());
+    // An agent reads the status whole, so it stays bounded whatever the store holds. The bound
+    // is the capped lists plus the fixed sections, with room: it was 64 KiB until the event
+    // level and the published rules got sections of their own.
+    assert!(stdout.len() < 80 * 1024, "{} bytes", stdout.len());
     let r = &serde_json::from_str::<serde_json::Value>(&stdout).unwrap()["result"];
     let changes = r["watched"]["changes"].as_array().unwrap();
     assert_eq!(changes.len(), 50);
@@ -10191,6 +10194,7 @@ fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_f
         "vulnerabilities",
         "map",
         "watched-here",
+        "rules",
         "limits",
         "answered",
     ];
@@ -10474,6 +10478,7 @@ fn each_link_on_the_summary_shows_what_its_label_says_first_thing_on_arrival() {
             1,
         ),
         ("Technical details", 1),
+        ("Published rules, each with what it looks for", 1),
     ] {
         assert_eq!(
             labels.iter().filter(|l| **l == said).count(),
@@ -10560,6 +10565,65 @@ fn each_link_on_the_summary_shows_what_its_label_says_first_thing_on_arrival() {
 }
 
 #[test]
+fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_while_nothing_feeds_them()
+ {
+    // The owner asked to see the published rules. They are shipped and can be evaluated, but
+    // nothing feeds them program starts yet: no page says a rule is watching, a rule that is
+    // not checked is never listed among the checked, and the counts are the status's.
+    let w = Watch::new("rules-page");
+    w.run();
+    let r = status_json(&w.store())["rules"].clone();
+    assert_eq!(r["watching"], false, "{r}");
+    let out = Command::new(env!("CARGO_BIN_EXE_soc"))
+        .args(["rules", "--json"])
+        .output()
+        .unwrap();
+    let rules: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let rules = &rules["result"];
+    let pages = view_pages(&w.store());
+    let page = &pages
+        .iter()
+        .find(|(p, _)| p.ends_with("view/rules.html"))
+        .unwrap()
+        .1;
+    let n = |v: &serde_json::Value| v.as_u64().unwrap() as usize;
+    assert_eq!(
+        page.matches("<article class=\"rule\">").count(),
+        n(&r["shipped"])
+    );
+    for (anchor, key) in [
+        ("evaluated", "evaluated"),
+        ("in-part", "in_part"),
+        ("not-evaluated", "not_evaluated"),
+    ] {
+        let listed = section(page, anchor);
+        assert_eq!(
+            listed.matches("<article class=\"rule\">").count(),
+            n(&r[key]),
+            "{key}: {listed}"
+        );
+        assert!(
+            page.contains(&format!("<span class=\"num\">{}</span>", r[key])),
+            "{key}"
+        );
+        for rule in rules[key].as_array().unwrap() {
+            let file = format!(">{}<", rule["file"].as_str().unwrap());
+            assert_eq!(page.matches(&file).count(), 1, "{file}");
+            assert!(listed.contains(&file), "{file} is not under {anchor}");
+        }
+    }
+    // Nothing reads as a rule watching this Mac: the only word of watching says none is.
+    let told = "It is not on in this version yet, so none of them is watching.";
+    for text in [
+        section(&pages[0].1, "rules"),
+        &page[page.find("<main>").unwrap()..],
+    ] {
+        assert!(text.contains(told), "{text}");
+        assert_eq!(text.matches("watch").count(), 1, "{text}");
+    }
+}
+
+#[test]
 fn on_a_mac_where_nothing_was_found_and_no_watcher_ran_every_rule_is_on_the_summary() {
     // The summary says what the owner is told about. A rule about a thing appearing matters
     // most when there is none yet: a kind the last check looked for and found none of is
@@ -10629,7 +10693,8 @@ fn a_section_of_the_summary_can_be_opened_from_outside_as_a_file() {
             "vulnerabilities",
             "you-can-fix",
             "limits",
-            "answered"
+            "answered",
+            "rules"
         ]
     );
     for s in sections.as_array().unwrap() {

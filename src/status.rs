@@ -749,6 +749,8 @@ pub fn result(state: Option<&State>, running: bool, path: &Path, now: i64) -> Va
     }
     out.insert("store".into(), store);
     out.insert("cannot_judge".into(), json!(CANNOT_JUDGE));
+    // The published rules this build ships: `src/sigma.rs`. Not from the store.
+    out.insert("rules".into(), rules_section());
     // Whether a watcher runs on this store now: `soc watch`, src/watch.rs.
     out.insert("watching".into(), crate::watch::status(path));
     let mut not_computed: Vec<Value> = Vec::new();
@@ -1000,6 +1002,22 @@ fn watched_section(st: &State, s: &Summary, w: &Watched) -> Value {
         "content_not_read": content_not_read,
         "changes": changes,
         "changes_total": s.changes.len(),
+    })
+}
+
+/// The published rules this build ships, counted by what a program start lets them do, from
+/// the rules' own summary. `watching` says whether any of them watches this Mac. It is false
+/// while nothing feeds them program starts: the step that wires the event level to them sets
+/// it from the event level's state.
+fn rules_section() -> Value {
+    let summary = crate::sigma::Rules::shipped().summary_json();
+    let t = &summary["totals"];
+    json!({
+        "shipped": t["shipped"],
+        "evaluated": t["evaluated"],
+        "in_part": t["in_part"],
+        "not_evaluated": t["not_evaluated"],
+        "watching": false,
     })
 }
 

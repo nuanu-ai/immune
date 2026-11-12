@@ -63,6 +63,10 @@ pub fn pages(
             format!("{DETAILS}/{}.html", crate::pages::THREAT_DATA),
             crate::pages::threat_data(conn, result, now)?,
         ),
+        (
+            format!("{DETAILS}/{}.html", crate::pages::RULES),
+            crate::pages::rules(result, now),
+        ),
     ];
     for (name, title) in DETAIL_PAGES {
         let mut body = String::new();
@@ -92,7 +96,7 @@ pub fn pages(
 /// The sections of the summary something outside the page may ask for, by anchor and
 /// title. Each has a page of its own that only sends the browser on to it, because macOS
 /// can lose the `#section` of a file URL when it hands one to the browser.
-pub const SECTIONS: [(&str, &str); 5] = [
+pub const SECTIONS: [(&str, &str); 6] = [
     (
         "watched-here",
         "What is watched, and what you are told about",
@@ -104,6 +108,7 @@ pub const SECTIONS: [(&str, &str); 5] = [
     ("you-can-fix", "You can fix"),
     ("limits", "Limits of this version"),
     ("answered", "Answered"),
+    ("rules", "Published rules"),
 ];
 
 /// Where a section's own page is, relative to the store's folder.
@@ -1975,6 +1980,23 @@ ul.rules li { margin: 4px 0; }
 .scale p { margin: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--head);
   display: flex; flex-direction: column; gap: 2px; }
 .scale .num { font-size: 1.8rem; font-weight: 700; line-height: 1.15; }
+article.rule { border-top: 1px solid var(--line); padding: 10px 0; }
+article.rule h4 { font-size: .95rem; margin: 0 0 4px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.chip { display: inline-block; padding: 0 7px; border-radius: 4px; font-size: .75rem; font-weight: 600;
+  border: 1px solid var(--line); color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+.chip.lvl-critical, .chip.lvl-high { color: var(--bad-fg); border-color: var(--bad-fg); }
+.chip.lvl-medium { color: var(--changed); border-color: var(--changed); }
+article.rule .missing { margin: 2px 0 4px; font-size: .875rem; }
+article.rule details { margin: 0; }
+article.rule summary { color: var(--muted); font-size: .875rem; list-style: none; display: flex; gap: 6px; }
+article.rule summary::-webkit-details-marker { display: none; }
+article.rule summary::before { content: "\25B8"; flex: none; }
+article.rule details[open] summary::before { content: "\25BE"; }
+article.rule summary .desc { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+article.rule details[open] summary .desc { display: block; }
+article.rule ul.about { margin: 4px 0 0; padding-left: 18px; font-size: .875rem; }
+article.rule ul.about li { margin: 2px 0; overflow-wrap: anywhere; }
+footer.licence { margin-top: 32px; }
 
 /* The summary: a dashboard. Red is for findings only; what is not covered stays quiet. */
 :root {
@@ -2007,7 +2029,7 @@ body.summary { background: var(--grp); color: var(--ink);
 .summary .meta, .summary .muted, .summary .sub { color: var(--sec); }
 .summary .meta, .summary .sub { font-size: 13px; }
 .summary section, .summary .card { min-width: 0; }
-.summary .card, .summary #you-can-fix, .summary #vulnerabilities, .summary #map, .summary #watched-here { background: var(--card); border: 1px solid var(--ln); border-radius: 14px; padding: 20px; }
+.summary .card, .summary #you-can-fix, .summary #vulnerabilities, .summary #map, .summary #watched-here, .summary #rules { background: var(--card); border: 1px solid var(--ln); border-radius: 14px; padding: 20px; }
 .summary .head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin-bottom: 12px; }
 .summary .head h2 { flex: 1 1 auto; }
 .summary .head .n, .summary .head a { font-size: 14px; color: var(--sec); }
@@ -2077,6 +2099,7 @@ body.summary { background: var(--grp); color: var(--ink);
 .summary .s-low { background: var(--sev-low); } .summary .s-none { background: var(--sev-none); }
 .summary #vulnerabilities > p + p { margin-top: 10px; }
 .summary #vulnerabilities > .sub { margin: -8px 0 14px; }
+.summary #rules .cover { margin: 12px 0 8px; }
 .summary #vulnerabilities > p.used { margin-top: 4px; font-size: 15px; }
 .summary .used strong { font-weight: 600; }
 

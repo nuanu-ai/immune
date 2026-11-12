@@ -239,6 +239,8 @@ pub struct Meta {
     pub author: Option<String>,
     /// ATT&CK technique ids from its `attack.t…` tags, as `T1027.001`.
     pub techniques: Vec<String>,
+    /// The rule's `description`: what it looks for, in its author's words.
+    pub description: Option<String>,
 }
 
 /// What this level does with a rule.
@@ -500,7 +502,7 @@ impl Rules {
 
     /// The rules split by placement: evaluated, in part, not evaluated, each from the most
     /// severe down, in the order they are shipped within a level.
-    fn groups(&self) -> (Vec<&Loaded>, Vec<&Loaded>, Vec<&Loaded>) {
+    pub fn groups(&self) -> (Vec<&Loaded>, Vec<&Loaded>, Vec<&Loaded>) {
         let mut all: Vec<&Loaded> = self.rules.iter().collect();
         all.sort_by_key(|l| std::cmp::Reverse(l.meta.as_ref().map(|m| m.level)));
         let mut groups = (Vec::new(), Vec::new(), Vec::new());
@@ -573,6 +575,7 @@ fn meta(rule: &sigma_rust::Rule, yaml: &Value) -> Result<Meta, String> {
             .filter_map(|t| t.strip_prefix("attack.t"))
             .map(|t| format!("T{t}"))
             .collect(),
+        description: yaml["description"].as_str().map(str::to_string),
     })
 }
 

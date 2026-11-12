@@ -23,6 +23,10 @@ pub const THIS_MAC_TITLE: &str = "What is watched on this Mac";
 pub const BEYOND: &str = "beyond";
 /// Every source of threat data, with the list of vulnerabilities used in attacks.
 pub const THREAT_DATA: &str = "threats";
+/// Every published rule this build ships.
+pub const RULES: &str = "rules";
+/// The heading of that page and of the summary's section about it.
+const RULES_TITLE: &str = "Published rules";
 /// The heading of that page, which the tile leading to it is named by.
 const THREAT_DATA_TITLE: &str = "Threat data";
 pub const TECHNICAL: &str = "technical";
@@ -124,6 +128,7 @@ pub fn summary(
     let list = indicator_list(conn)?;
     let none = covered::none_here(conn, &latest, &st.this_mac)?;
     watched_section(&mut out, &st.this_mac, &none, list, st.event_level.as_ref())?;
+    rules_summary(&mut out, &r["rules"])?;
     out.push_str("<div class=\"card closed\">\n");
     limits(conn, &mut out, st)?;
     answered_section(conn, &mut out, now)?;
@@ -1348,6 +1353,192 @@ pub fn threat_data(
     }
     out.push_str(FOOT);
     Ok(out)
+}
+
+/// The three places of a rule, as the rules page names them: its anchor there, its heading,
+/// and what being there means.
+const PLACED: [(&str, &str, &str); 3] = [
+    (
+        "evaluated",
+        "Can be checked against a program start",
+        "Everything these rules look for is in what a program start gives: the program, its command line and the program that started it.",
+    ),
+    (
+        "in-part",
+        "Can be checked in part",
+        "Some alternatives in these rules need something a program start does not give. Those never match here; the rest of each rule can.",
+    ),
+    (
+        "not-evaluated",
+        "Cannot be checked in this version",
+        "These need events or details this version does not collect. They are listed so that none is counted without being checked.",
+    ),
+];
+
+/// What the published rules are and whether any of them watches this Mac, from the status's
+/// part `rules`. Nothing feeds them program starts in this version, so none is said to watch;
+/// the step that wires the event level to them changes these words with `watching`.
+fn rules_said(r: &serde_json::Value) -> String {
+    format!(
+        "{} rules for macOS from SigmaHQ's public rule set, as it was on {}. Once the event level is on, every program start on this Mac is checked against them. It is not on in this version yet, so none of them is watching.",
+        r["shipped"],
+        crate::sigma::COMMIT_DATE
+    )
+}
+
+/// The summary's section on the published rules: what they are, that none watches yet, how
+/// many are in each place, and the page with every one.
+fn rules_summary(out: &mut String, r: &serde_json::Value) -> Out {
+    writeln!(
+        out,
+        "<section id=\"rules\">\n<div class=\"head\"><h2>{RULES_TITLE}</h2></div>\n<p>{}</p>\n<div class=\"cover\">",
+        esc(&rules_said(r))
+    )?;
+    for ((_, title, _), key) in PLACED.iter().zip(["evaluated", "in_part", "not_evaluated"]) {
+        writeln!(
+            out,
+            "<div class=\"plain\"><span class=\"lbl\">{}</span><span class=\"num\">{}</span></div>",
+            esc(title),
+            r[key]
+        )?;
+    }
+    writeln!(
+        out,
+        "</div>\n<p><a href=\"{DETAILS}/{RULES}.html\">{RULES_TITLE}, each with what it looks for</a></p>\n</section>"
+    )?;
+    Ok(())
+}
+
+/// Every published rule this build ships, for a person: by place, then by level, the most
+/// severe first. Each with its title, its level, what it looks for in its author's words, its
+/// ATT&CK techniques and its authors, and, where it is not checked in full, what is missing.
+/// Everything from a rule file is the rule's own text, each in an element of its own. The
+/// counts at the top are the status's.
+pub fn rules(r: &serde_json::Value, now: i64) -> String {
+    use crate::sigma::{self, Placement, Reason};
+    let mut out = top(
+        RULES_TITLE,
+        &format!(
+            "From SigmaHQ, as published on {} · this page made {}",
+            sigma::COMMIT_DATE,
+            utc(now)
+        ),
+    );
+    let r = &r["rules"];
+    let mut w = |s: String| out.push_str(&s);
+    w(format!(
+        "<p>{}</p>\n<div class=\"scale\">\n",
+        esc(&rules_said(r))
+    ));
+    for ((anchor, title, _), key) in PLACED.iter().zip(["evaluated", "in_part", "not_evaluated"]) {
+        w(format!(
+            "<p><span class=\"num\">{}</span> <a href=\"#{anchor}\">{}</a></p>\n",
+            r[key],
+            esc(title)
+        ));
+    }
+    w("</div>\n".to_string());
+    let shipped = sigma::Rules::shipped();
+    let (evaluated, in_part, not_evaluated) = shipped.groups();
+    let source = |s: &str| format!("<span class=\"src\">{}</span>", esc(s));
+    let mono = |list: &[String]| {
+        list.iter()
+            .map(|s| format!("<span class=\"mono\">{}</span>", esc(s)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    for ((anchor, title, means), group) in PLACED.iter().zip([evaluated, in_part, not_evaluated]) {
+        w(format!(
+            "<section id=\"{anchor}\">\n<h2>{}</h2>\n<p class=\"muted\">{}</p>\n",
+            esc(title),
+            esc(means)
+        ));
+        if group.is_empty() {
+            w("<p class=\"muted\">None.</p>\n".to_string());
+        }
+        let mut level: Option<&str> = None;
+        for l in group {
+            let this = l.meta.as_ref().map_or("unknown", |m| m.level.as_str());
+            if level != Some(this) {
+                w(format!("<h3>{}</h3>\n", esc(&capital(this))));
+                level = Some(this);
+            }
+            let title = l.meta.as_ref().map_or(l.file, |m| m.title.as_str());
+            w(format!(
+                "<article class=\"rule\">\n<h4>{} <span class=\"chip lvl-{this}\">{this}</span></h4>\n",
+                source(title)
+            ));
+            match &l.placement {
+                Placement::Evaluated => {}
+                Placement::InPart(branches) => {
+                    for b in branches {
+                        w(format!(
+                            "<p class=\"missing\">Never matches here: the alternative {} needs {}, which a program start does not give.</p>\n",
+                            mono(std::slice::from_ref(&b.selection)),
+                            mono(&b.fields)
+                        ));
+                    }
+                }
+                Placement::NotEvaluated(reason) => w(format!(
+                    "<p class=\"missing\">{}</p>\n",
+                    match reason {
+                        Reason::NeedsEvents(c) => format!(
+                            "Needs {} events, which this version does not collect.",
+                            mono(std::slice::from_ref(c))
+                        ),
+                        Reason::NeedsFields(f) =>
+                            format!("Needs {}, which a program start does not give.", mono(f)),
+                        Reason::KeywordSearch => {
+                            "Searches whole messages for words; this version has the parts of a program start, not messages.".to_string()
+                        }
+                        Reason::NotParsed(said) => format!("Could not be read: {}", source(said)),
+                    }
+                )),
+            }
+            let Some(m) = &l.meta else {
+                w("</article>\n".to_string());
+                continue;
+            };
+            w(format!(
+                "<details>\n<summary>{}</summary>\n<ul class=\"about\">\n",
+                m.description
+                    .as_deref()
+                    .map_or("Details".to_string(), |d| format!(
+                        "<span class=\"src desc\">{}</span>",
+                        esc(&d.split_whitespace().collect::<Vec<_>>().join(" "))
+                    ))
+            ));
+            if !m.techniques.is_empty() {
+                w(format!("<li>ATT&amp;CK: {}</li>\n", mono(&m.techniques)));
+            }
+            if let Some(a) = &m.author {
+                w(format!("<li>Author: {}</li>\n", source(a)));
+            }
+            w(format!(
+                "<li>Published as {}, in <span class=\"mono\">{}</span></li>\n</ul>\n</details>\n</article>\n",
+                source(m.status.as_str()),
+                esc(l.file)
+            ));
+        }
+        w("</section>\n".to_string());
+    }
+    // The licence's address, as the rules' NOTICE gives it. Addresses are named, not linked:
+    // no page of the view carries a web address to follow.
+    let notice = include_str!("../rules/sigma/NOTICE");
+    let licence = notice
+        .split_whitespace()
+        .find(|word| word.contains("Detection-Rule-License"))
+        .map_or("", |word| word.trim_end_matches([',', '.']));
+    let bare = |url: &'static str| url.strip_prefix("https://").unwrap_or(url);
+    w(format!(
+        "<footer class=\"licence\">\n<p class=\"meta\">The rules are SigmaHQ's, copied unchanged from its rule set, <span class=\"mono\">{}</span>, at commit <span class=\"mono\">{}</span> of {}. They are licensed under the Detection Rule License 1.1, <span class=\"mono\">{}</span>, and each keeps its authors, shown with it.</p>\n</footer>\n",
+        esc(bare(sigma::SOURCE)),
+        sigma::COMMIT,
+        sigma::COMMIT_DATE,
+        esc(bare(licence))
+    ));
+    out.push_str(FOOT);
+    out
 }
 
 /// The top of a page of details for a person.
