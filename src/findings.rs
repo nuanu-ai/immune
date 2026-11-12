@@ -1191,6 +1191,8 @@ pub struct Item {
     pub value: Option<String>,
     /// Where: a path, a machine.
     pub place: Option<String>,
+    /// The entity it is about, by its id: what the map of the summary marks.
+    pub about: String,
     pub answer: Option<Answered>,
 }
 
@@ -1265,6 +1267,7 @@ pub fn item(f: &Found) -> Option<Item> {
         words: r.words,
         value: f.became.clone(),
         place: Some(f.place.clone()),
+        about: f.about.clone(),
         answer: f.answered_at.map(|at| Answered {
             at,
             given: given(f),

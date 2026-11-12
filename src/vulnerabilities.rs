@@ -959,7 +959,9 @@ impl Affecting {
     }
 }
 
-fn has_tables(conn: &Connection) -> rusqlite::Result<bool> {
+/// Whether the store holds the tables of the answers: a store an older build left, opened
+/// only for reading, does not.
+pub fn has_tables(conn: &Connection) -> rusqlite::Result<bool> {
     conn.query_row(
         "SELECT COUNT(*) = 3 FROM sqlite_master WHERE type = 'table'
          AND name IN ('vulnerability_answer', 'vulnerability_place', 'vulnerability_linked')",

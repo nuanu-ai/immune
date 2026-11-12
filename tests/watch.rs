@@ -430,7 +430,7 @@ fn the_view_says_what_a_watcher_cannot_see_and_whether_one_runs_once_one_has_run
     let now = mac.view();
     assert!(now.contains(cannot), "{now}");
     assert!(
-        now.contains("A watcher is running now: a change in what is watched all the time shows within seconds. It last looked 2"),
+        now.contains("watched live: a change in what is watched all the time shows within seconds, last looked 2"),
         "{now}"
     );
     drop(w);
@@ -438,7 +438,7 @@ fn the_view_says_what_a_watcher_cannot_see_and_whether_one_runs_once_one_has_run
     assert!(after.contains(cannot), "{after}");
     assert!(
         after.contains(
-            "No watcher is running now, so everything is checked every hour. A watcher last looked 2"
+            "no watcher is running now, so everything is checked every hour; a watcher last looked 2"
         ),
         "{after}"
     );
@@ -1366,9 +1366,12 @@ fn a_watched_file_its_permissions_keep_closed_leaves_this_mac_watched_in_part_an
     );
     // The page opens on it, not in green, and lists it under what he can fix.
     let page = mac.view();
+    let state = &page[page.find("<section id=\"this-mac\">").unwrap()..];
+    let state = &state[..state.find("</section>").unwrap()];
     assert!(
-        page.contains("<p class=\"alert\"><strong>This Mac is watched in part</strong>"),
-        "{page}"
+        state.contains("<strong>This Mac is watched in part</strong>")
+            && !state.contains("--green"),
+        "{state}"
     );
     let fix = &page[page.find("<section id=\"you-can-fix\">").unwrap()..];
     let fix = &fix[..fix.find("</section>").unwrap()];

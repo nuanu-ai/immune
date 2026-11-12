@@ -2904,10 +2904,13 @@ fn the_owners_phones_and_laptops_that_nothing_else_names_are_their_other_devices
         listed_servers.contains("1 of them is known only from your private network, which does not say what system it runs, so it is counted as a server."),
         "{listed_servers}"
     );
-    let beyond = section(&page, "beyond");
+    assert!(page.contains(" aria-label=\"Servers: 4\""), "{page}");
+    let map = section(&page, "map");
     assert!(
-        beyond.contains("Servers: 4</a>") && beyond.contains("Your other devices: 2</a>"),
-        "{beyond}"
+        map.contains("<h4>Your other devices <span>2</span></h4>")
+            && map.contains("title=\"Your other devices: pocket · not checked")
+            && map.contains("title=\"Your other devices: travel-laptop · not checked"),
+        "{map}"
     );
 }
 
@@ -10136,13 +10139,14 @@ fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_f
     assert!(page.contains("<h1>1 thing needs a look</h1>"), "{page}");
     assert_eq!(r["needs_a_look_total"], 1);
     // It opens with whether this Mac is watched, with the watcher and the last full check
-    // right there; then what needs a look; then what is watched, in plain words; then what
-    // the owner can fix and the limits of this version, each in full; then what is beyond.
+    // right there; then what needs a look; then what the owner can fix and the known
+    // vulnerabilities; then the map of what there is; then what is watched, in plain words;
+    // then, closed, the limits of this version and the answers, each in full.
     let this_mac = section(page, "this-mac");
     assert!(
         this_mac.contains("<strong>This Mac is watched</strong>")
-            && this_mac.contains("No watcher is running now, so everything is checked every hour.")
-            && this_mac.contains("The last full check was "),
+            && this_mac.contains("no watcher is running now, so everything is checked every hour")
+            && this_mac.contains("last full check 2"),
         "{this_mac}"
     );
     assert!(
@@ -10155,10 +10159,12 @@ fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_f
     let order = [
         "this-mac",
         "needs",
-        "watched-here",
         "you-can-fix",
+        "vulnerabilities",
+        "map",
+        "watched-here",
         "limits",
-        "beyond",
+        "answered",
     ];
     assert!(order.windows(2).all(|w| at(w[0]) < at(w[1])), "{page}");
     assert!(
@@ -10319,14 +10325,31 @@ fn each_link_on_the_summary_shows_what_its_label_says_first_thing_on_arrival() {
             "{anchor}"
         );
     }
-    // Every link as its target and the text it is shown as.
+    // Every link as its target and its name as a person is told it: its label where it has
+    // one, else its text, else its title. A tile names where it leads in its label, and a
+    // mark of the map in its title.
     let links = |html: &str| -> Vec<(String, String)> {
-        html.split("<a href=\"")
+        html.split("<a ")
             .skip(1)
             .map(|rest| {
-                let href = &rest[..rest.find('"').unwrap()];
-                let text = &rest[rest.find('>').unwrap() + 1..rest.find("</a>").unwrap()];
-                (href.to_string(), text.to_string())
+                let tag = &rest[..rest.find('>').unwrap()];
+                let attr = |name: &str| {
+                    tag.split(&format!("{name}=\"")).nth(1).map(|v| {
+                        v[..v.find('"').unwrap()]
+                            .replace("&#39;", "'")
+                            .replace("&amp;", "&")
+                    })
+                };
+                let inner = &rest[tag.len() + 1..rest.find("</a>").unwrap()];
+                let mut text = String::new();
+                for part in inner.split('<') {
+                    text.push_str(part.split_once('>').map_or(part, |(_, t)| t));
+                }
+                let name = attr("aria-label")
+                    .or_else(|| (!text.trim().is_empty()).then(|| text.trim().to_string()))
+                    .or_else(|| attr("title"))
+                    .unwrap_or_default();
+                (attr("href").unwrap(), name)
             })
             .collect()
     };
@@ -10395,16 +10418,18 @@ fn each_link_on_the_summary_shows_what_its_label_says_first_thing_on_arrival() {
         "Applications: 1",
         "Homebrew packages: 1",
         "npm packages: 1",
-        "Projects on this Mac: 1",
+        "Projects: 1",
         "Technical details",
     ] {
         assert!(labels.contains(&said), "{said}: {labels:?}");
     }
-    // A founder with no servers and no private network is told about his projects alone.
-    let beyond = section(page, "beyond");
+    // A founder with no servers and no private network is told about his projects alone: no
+    // tile and no group of the map speaks of servers or devices.
+    let areas =
+        &page[page.find("<main>").unwrap()..page.find("<section id=\"watched-here\">").unwrap()];
     assert!(
-        !beyond.contains("Servers") && !beyond.contains("Other devices"),
-        "{beyond}"
+        !areas.contains("Servers") && !areas.contains("devices"),
+        "{areas}"
     );
 
     // Who signed an application is beside its name, first.

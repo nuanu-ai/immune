@@ -163,28 +163,35 @@ pub fn counted(n: i64, one: &str, many: &str) -> String {
     format!("{out} {}", if n == 1 { one } else { many })
 }
 
-/// One thing that needs a look, in full: its three sentences, where, what the source says,
-/// when, how bad and how sure, its id and the command that reads it.
+/// One thing that needs a look, as a card: urgent or not, where, its title and what it means
+/// first; then, behind Details, what the source says, what to do, when, how bad and how sure,
+/// and the command that reads it.
 pub fn item(out: &mut String, i: &crate::findings::Item) -> Out {
+    let urgent = crate::findings::urgent(i.severity, i.confidence);
     writeln!(
         out,
-        "<article class=\"item {}\" id=\"{}\">\n<h2>{}</h2>",
+        "<article class=\"item card {}{}\" id=\"{}\">",
         esc(i.severity),
-        esc(&i.id),
-        esc(i.words.title)
+        if urgent { " urgent" } else { "" },
+        esc(&i.id)
     )?;
-    if let Some(place) = &i.place {
-        writeln!(out, "<p class=\"where mono\">{}</p>", esc(place))?;
+    out.push_str("<p class=\"top\">");
+    if urgent {
+        out.push_str("<span class=\"pill\">Urgent</span> ");
     }
+    if let Some(place) = &i.place {
+        write!(out, "<span class=\"where mono\">{}</span>", esc(place))?;
+    }
+    writeln!(
+        out,
+        "</p>\n<h3>{}</h3>\n<p>{}</p>\n<details>\n<summary>Details</summary>",
+        esc(i.words.title),
+        esc(i.words.meaning)
+    )?;
     if let Some(value) = &i.value {
         writeln!(out, "<p class=\"said\">{}</p>", esc(value))?;
     }
-    writeln!(
-        out,
-        "<p>{}</p>\n<p class=\"advice\">{}</p>",
-        esc(i.words.meaning),
-        esc(i.words.advice)
-    )?;
+    writeln!(out, "<p class=\"advice\">{}</p>", esc(i.words.advice))?;
     let mut facts = Vec::new();
     match (i.first_seen, i.last_seen) {
         (Some(f), Some(l)) if f != l => {
@@ -224,7 +231,7 @@ pub fn item(out: &mut String, i: &crate::findings::Item) -> Out {
     };
     writeln!(
         out,
-        "<p class=\"meta\">{} · <span class=\"mono\">{}</span></p>\n</article>",
+        "<p class=\"meta\">{} · <span class=\"mono\">{}</span></p>\n</details>\n</article>",
         esc(&facts.join(" · ")),
         esc(&command)
     )?;
@@ -1922,6 +1929,174 @@ ul.counts li { margin: 4px 0; }
 ul.rules { margin: 2px 0 12px; padding-left: 18px; font-size: .875rem; }
 ul.rules li { margin: 4px 0; }
 .badge.notify { border: 1px solid var(--line); font-weight: 500; }
+
+/* The summary: a dashboard. Red is for findings only; what is not covered stays quiet. */
+:root {
+  --ink: #1d1d1f; --sec: #55555a; --ln: #e5e5ea; --grp: #f5f5f7; --card: #ffffff;
+  --blue: #0064e0; --green: #2e9e5b; --orange: #c25e00; --red: #d92d20; --red-ink: #b42318;
+  --red-line: #f3c6c1; --calm: #c5cad3; --vuln: #e8a33d; --vuln-light: #f7dfb6;
+  --hollow: #8e8e93; --faint: #c7c7cc;
+  --sev-malicious: #3d1f0a; --sev-critical: #8a3a00; --sev-high: #c25e00;
+  --sev-moderate: #e3b25a; --sev-low: #c7c7cc; --sev-none: #e5e5ea;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #f2f2f5; --sec: #a8a8b0; --ln: #3a3a3f; --grp: #131315; --card: #1e1e21;
+    --blue: #5ea2ff; --green: #4cc27a; --orange: #ff9f43; --red: #ff5a4f; --red-ink: #ff7a70;
+    --red-line: #6b2a25; --calm: #5d636e; --vuln: #e0a043; --vuln-light: #5a4321;
+    --hollow: #9a9aa2; --faint: #55555c;
+    --sev-malicious: #f0c8a0; --sev-critical: #c9682c; --sev-high: #f0913a;
+    --sev-moderate: #d9b25e; --sev-low: #77777f; --sev-none: #48484e;
+  }
+}
+body.summary { background: var(--grp); color: var(--ink);
+  font: 15px/1.45 -apple-system, BlinkMacSystemFont, system-ui, "Segoe UI", sans-serif; }
+.summary main { max-width: 1120px; padding: 32px 20px 56px; display: flex; flex-direction: column; gap: 28px; }
+.summary a { color: var(--blue); text-decoration: none; }
+.summary a:hover { text-decoration: underline; }
+.summary a:focus-visible, .summary summary:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; border-radius: 4px; }
+.summary h2 { font-size: 20px; line-height: 26px; margin: 0; padding: 0; border: 0; }
+.summary h3 { font-size: 15px; margin: 0; }
+.summary p { margin: 0; }
+.summary .meta, .summary .muted, .summary .sub { color: var(--sec); }
+.summary .meta, .summary .sub { font-size: 13px; }
+.summary section, .summary .card { min-width: 0; }
+.summary .card, .summary #you-can-fix, .summary #vulnerabilities, .summary #map, .summary #watched-here { background: var(--card); border: 1px solid var(--ln); border-radius: 14px; padding: 20px; }
+.summary .head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin-bottom: 12px; }
+.summary .head h2 { flex: 1 1 auto; }
+.summary .head .n, .summary .head a { font-size: 14px; color: var(--sec); }
+.summary .head a { color: var(--blue); }
+
+/* The state, first. */
+.summary #this-mac { display: flex; align-items: center; gap: 20px; }
+.summary .glyph { width: 64px; height: 64px; flex: none; }
+.summary #this-mac > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.summary #this-mac h1 { font-size: 30px; line-height: 36px; margin: 0; }
+.summary #this-mac .sub { font-size: 15px; overflow-wrap: anywhere; }
+.summary #this-mac .sub strong { color: var(--ink); font-weight: 600; }
+
+/* Four tiles. */
+.summary .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+.summary .tile { display: flex; flex-direction: column; gap: 2px; min-height: 124px; padding: 16px;
+  background: var(--card); border: 1px solid var(--ln); border-radius: 14px; color: var(--ink); }
+.summary .tile:hover { text-decoration: none; border-color: var(--hollow); }
+.summary .tile.look { border-color: var(--red-line); }
+.summary .tile .th { display: flex; align-items: center; gap: 8px; margin-bottom: auto; padding-bottom: 10px; }
+.summary .tile svg { width: 22px; height: 22px; flex: none; stroke: var(--sec); fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.summary .tile .tn { font-size: 14px; font-weight: 600; flex: 1 1 auto; }
+.summary .tile .tv { font-size: 30px; font-weight: 700; line-height: 34px; }
+.summary .tile .tl { font-size: 13px; color: var(--sec); min-height: 36px; }
+.summary .pill { display: inline-block; padding: 1px 8px; border-radius: 11px; background: var(--red-ink); color: #fff;
+  font-size: 12px; font-weight: 700; white-space: nowrap; }
+.summary .quiet { font-size: 12px; color: var(--sec); white-space: nowrap; }
+
+/* What needs a look. */
+.summary .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(400px, 100%), 1fr)); gap: 16px; }
+.summary article.card { display: flex; flex-direction: column; gap: 8px; margin: 0; border-left-color: var(--ln); }
+.summary article.card.urgent { border-color: var(--red-line); }
+.summary article.card h3 { font-size: 18px; line-height: 24px; font-weight: 600; }
+.summary article.card > p:not(.top) { color: var(--sec); font-size: 14px; }
+.summary article.card .top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.summary article.card .pill { border-radius: 4px; text-transform: uppercase; letter-spacing: .04em; font-size: 12px; }
+.summary .where { color: var(--sec); overflow-wrap: anywhere; }
+.summary details > summary { cursor: pointer; color: var(--blue); font-size: 14px; padding: 2px 0; }
+.summary details[open] > summary { margin-bottom: 8px; }
+.summary details > :not(summary) + :not(summary) { margin-top: 8px; }
+.summary .said { color: var(--sec); overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+.summary .advice { font-weight: 600; }
+.summary .more { font-size: 13px; color: var(--sec); }
+
+/* Two cards side by side. */
+.summary .pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(400px, 100%), 1fr)); gap: 16px; align-items: start; }
+.summary .rows > details, .summary .rows > p { border-top: 1px solid var(--ln); }
+.summary .rows > details > summary { list-style: none; display: flex; align-items: center; gap: 12px; min-height: 52px;
+  color: var(--ink); font-size: 15px; padding: 0; }
+.summary .rows > details > summary::-webkit-details-marker { display: none; }
+.summary summary .t { flex: 1 1 auto; }
+.summary summary .n { font-weight: 600; }
+.summary summary .chev { width: 14px; height: 14px; flex: none; stroke: var(--hollow); fill: none; stroke-width: 2; transition: transform .15s; }
+.summary details[open] > summary .chev { transform: rotate(90deg); }
+.summary .rows > p { padding: 14px 0 4px; }
+.summary .rows article.item { margin: 0 0 14px; background: var(--grp); border: 0; border-radius: 10px; padding: 12px 14px; }
+.summary .rows article.item h3 { font-size: 15px; }
+.summary .big { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; color: var(--sec); font-size: 14px; }
+.summary .big .num { font-size: 38px; line-height: 42px; font-weight: 700; color: var(--ink); }
+.summary .bar { display: flex; gap: 2px; height: 12px; border-radius: 6px; overflow: hidden; background: var(--ln); margin: 14px 0 10px; }
+.summary .bar span { display: block; min-width: 3px; }
+.summary .keys { display: flex; flex-wrap: wrap; gap: 6px 18px; list-style: none; padding: 0; margin: 0 0 12px; font-size: 13px; }
+.summary .keys li { display: flex; align-items: center; gap: 6px; }
+.summary .keys i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.summary .s-malicious { background: var(--sev-malicious); } .summary .s-critical { background: var(--sev-critical); }
+.summary .s-high { background: var(--sev-high); } .summary .s-moderate { background: var(--sev-moderate); }
+.summary .s-low { background: var(--sev-low); } .summary .s-none { background: var(--sev-none); }
+.summary #vulnerabilities > p + p { margin-top: 10px; }
+
+/* The map of what the program has collected. */
+.summary .legend { display: flex; flex-wrap: wrap; gap: 8px 18px; list-style: none; padding: 0; margin: 0; font-size: 13px; color: var(--sec); }
+.summary .legend li { display: flex; align-items: center; gap: 6px; }
+.summary .groups { display: flex; flex-wrap: wrap; gap: 24px 32px; margin-top: 20px; }
+.summary .group { display: flex; flex-direction: column; gap: 8px; min-width: 0; flex: 1 1 300px; }
+.summary .group.wide { flex-basis: 100%; }
+.summary .groups > .note { flex-basis: 100%; }
+.summary .group h3 { font-size: 15px; }
+.summary .group h4 { font-size: 13px; font-weight: 400; color: var(--sec); margin: 6px 0 0; }
+.summary .group h3 span, .summary .group h4 span { color: var(--sec); font-weight: 400; }
+.summary .group .note { font-size: 13px; color: var(--sec); }
+.summary .marks { display: flex; flex-wrap: wrap; gap: 6px; }
+.summary .marks.small { gap: 3px; }
+.summary .marks.tiny { gap: 2px; }
+.summary .m { display: block; width: 20px; height: 20px; border-radius: 5px; background: var(--calm); }
+.summary .small .m { width: 10px; height: 10px; border-radius: 2px; }
+.summary .tiny .m { width: 7px; height: 7px; border-radius: 1.5px; }
+.summary .round .m { border-radius: 50%; }
+.summary .m.look { background: var(--red); box-shadow: 0 0 0 2px var(--card), 0 0 0 3.5px var(--red); }
+.summary .m.vuln { background: linear-gradient(135deg, var(--vuln-light) 0 45%, var(--vuln) 45% 100%); box-shadow: inset 0 0 0 1.5px var(--vuln); }
+.summary .m.open { background: transparent; border: 1.5px dashed var(--hollow); }
+.summary .m.theirs { background: transparent; border: 1.5px solid var(--faint); }
+.summary .small .m.open, .summary .tiny .m.open, .summary .small .m.theirs, .summary .tiny .m.theirs { border-width: 1px; border-style: solid; }
+.summary a.m:hover { outline: 2px solid var(--ink); outline-offset: 1px; text-decoration: none; }
+.summary .legend .m { width: 12px; height: 12px; border-radius: 3px; }
+.summary .legend .m.look { box-shadow: 0 0 0 1.5px var(--card), 0 0 0 3px var(--red); }
+.summary .means { margin-top: 20px; border-top: 1px solid var(--ln); padding-top: 12px; }
+.summary .means p { font-size: 13px; color: var(--sec); }
+.summary .means strong { color: var(--ink); font-weight: 600; }
+
+/* What is watched, as bars with their numbers. */
+.summary .cover { display: grid; grid-template-columns: minmax(0, 1fr); }
+.summary .cover > div { display: grid; grid-template-columns: minmax(180px, 1.2fr) minmax(120px, 1.6fr) minmax(150px, 1fr);
+  align-items: center; gap: 6px 16px; min-height: 46px; border-top: 1px solid var(--ln); padding: 8px 0; }
+.summary .cover .lbl { font-size: 15px; }
+.summary .cover .val { font-size: 13px; color: var(--sec); text-align: right; }
+.summary .meter { display: block; height: 8px; border-radius: 4px; background: var(--ln); overflow: hidden; }
+.summary .meter span { display: block; height: 8px; background: var(--blue); }
+.summary .told { border-top: 1px solid var(--ln); padding-top: 10px; }
+.summary .told h3 { margin: 16px 0 6px; font-size: 14px; }
+.summary .told ul.counts li { margin: 8px 0; }
+
+/* Collapsed rows at the bottom. */
+.summary .closed { padding: 0 20px; }
+.summary .closed section > details > summary, .summary .closed > p.tech { display: flex; align-items: center; gap: 12px; min-height: 56px;
+  list-style: none; color: var(--ink); font-size: 15px; padding: 0; margin: 0; }
+.summary .closed section > details > summary::-webkit-details-marker { display: none; }
+.summary .closed section > details > summary h2 { font-size: 15px; font-weight: 400; line-height: 20px; flex: 1 1 auto; }
+.summary .closed section > details > summary .n { color: var(--sec); font-weight: 400; }
+.summary .closed section + section, .summary .closed > p.tech { border-top: 1px solid var(--ln); }
+.summary .closed > p.tech { gap: 6px; flex-wrap: wrap; }
+.summary .closed section > details[open] { padding-bottom: 16px; }
+.summary .closed article.item { margin: 0 0 12px; background: var(--grp); border: 0; border-radius: 10px; padding: 12px 14px; }
+.summary .closed article.item h3 { font-size: 15px; }
+.summary footer { font-size: 13px; color: var(--sec); }
+@media (max-width: 760px) {
+  .summary main { padding: 20px 16px 40px; }
+  .summary #this-mac { align-items: flex-start; gap: 14px; }
+  .summary .glyph { width: 48px; height: 48px; }
+  .summary .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .summary .tile:last-child:nth-child(odd) { grid-column: 1 / -1; }
+  .summary #this-mac h1 { font-size: 24px; line-height: 30px; }
+  .summary .cover > div { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .summary .cover .lbl { grid-column: 1 / -1; }
+  .summary .cover .val { text-align: left; }
+}
 </style>
 </head>
 <body>

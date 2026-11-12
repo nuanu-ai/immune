@@ -27,6 +27,7 @@ mod jsonc;
 mod known_hosts;
 mod lifecycle;
 mod lockfiles;
+mod map;
 mod osv;
 mod owner;
 mod pages;
