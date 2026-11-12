@@ -2243,7 +2243,29 @@ struct Hourly {
 
 final class FakeChild: WatchChild, @unchecked Sendable {
   var stopped = false
+  var waited = false
   func stop(grace: TimeInterval) { stopped = true }
+  func stopAndWait(grace: TimeInterval) {
+    stopped = true
+    waited = true
+  }
+}
+
+/// The real launcher, keeping the child it started so a test can see its process.
+@MainActor
+final class KeepingLauncher: WatchLaunching, @unchecked Sendable {
+  let inner: ProcessWatchLauncher
+  var child: ProcessWatchChild?
+  init(_ inner: ProcessWatchLauncher) { self.inner = inner }
+
+  func launch(
+    _ arguments: [String], onLine: @escaping @MainActor (Data) -> Void,
+    onDropped: @escaping @MainActor (Int) -> Void, onExit: @escaping @MainActor (Int32?) -> Void
+  ) -> Result<any WatchChild, LaunchFailure> {
+    let result = inner.launch(arguments, onLine: onLine, onDropped: onDropped, onExit: onExit)
+    if case .success(let c) = result { child = c as? ProcessWatchChild }
+    return result
+  }
 }
 
 @MainActor
@@ -2300,23 +2322,100 @@ let aliveLine = #"{"format":1,"event":"alive","at":"2026-11-10T10:00:00Z"}"#
 @Suite("The watcher is kept running, and the panel says plainly when it is not")
 @MainActor
 struct Watching {
-  @Test("The lines of soc watch as built are understood; a problem is news of life, not a failure")
+  @Test(
+    "The lines of soc watch as built are understood; a problem other than a failed reading, sample or look is news of life"
+  )
   func realShapes() {
     #expect(Decoding.watchLine(Data(watchingLine.utf8)) == .watching(places: 12))
     #expect(Decoding.watchLine(Data(readLine.utf8)) == .read)
     #expect(Decoding.watchLine(Data(sampleLine.utf8)) == .sample)
     let flat =
-      #"{"format":1,"event":"problem","at":"2026-11-10T10:00:00Z","code":"read_failed","detail_text":"x"}"#
+      #"{"format":1,"event":"problem","at":"2026-11-10T10:00:00Z","code":"place_not_watched","detail_text":"x"}"#
     let nested =
       #"{"format":1,"event":"problem","at":"2026-11-10T10:00:00Z","problem":{"code":"history_unusable","detail_text":"x"}}"#
-    #expect(Decoding.watchLine(Data(flat.utf8)) == .problem(code: "read_failed"))
-    #expect(Decoding.watchLine(Data(nested.utf8)) == .problem(code: "history_unusable"))
+    let view =
+      #"{"format":1,"event":"problem","at":"2026-11-10T10:00:00Z","code":"view_failed","detail_text":"x"}"#
+    #expect(
+      Decoding.watchLine(Data(flat.utf8)) == .problem(code: "place_not_watched", detailText: "x"))
+    #expect(
+      Decoding.watchLine(Data(nested.utf8)) == .problem(code: "history_unusable", detailText: "x"))
     let h = Harness()
     h.watcher.start()
     h.launcher.say(watchingLine)
-    h.launcher.say(flat)
+    for line in [flat, nested, view] { h.launcher.say(line) }
     #expect(h.watcher.state == .watching)
     #expect(h.watcher.notWatching == nil)
+  }
+
+  @Test(
+    "A failed reading, sample or look at what to watch says it is not watching, with the reason, inert, until a line of that kind succeeds; nothing is restarted"
+  )
+  func failing() {
+    let problem = { (code: String, detail: String) in
+      #"{"format":1,"event":"problem","at":"2026-11-10T10:00:00Z","code":""# + code
+        + #"","detail_text":""# + detail + #""}"#
+    }
+    let h = Harness()
+    h.watcher.start()
+    h.launcher.say(watchingLine)
+    h.launcher.say(problem("read_failed", #"attempt to write a readonly database\n<b>"#))
+    let read =
+      "a reading of the watched places failed (attempt to write a readonly database\\n<b>)"
+    #expect(h.watcher.notWatching == "Not watching for changes right now: \(read).")
+    // The panel says it, and claims no live watching, though the status says live.
+    let p = Panel.of(
+      Interpret.reading(from: quiet()), now: Date(), notWatching: h.watcher.notWatching)
+    #expect(p.notWatching == h.watcher.notWatching)
+    #expect(p.glance?.hasSuffix(" · hourly only") == true)
+    #expect(p.checked?.contains("within seconds") == false)
+    #expect(p.watched.allSatisfy { $0.title == "Every hour" })
+
+    h.launcher.say(problem("sample_failed", "no sample"))
+    let sample = "a sample of running programs failed (no sample)"
+    #expect(h.watcher.notWatching == "Not watching for changes right now: \(read); \(sample).")
+    h.launcher.say(readLine)
+    #expect(h.watcher.notWatching == "Not watching for changes right now: \(sample).")
+    h.launcher.say(sampleLine)
+    #expect(h.watcher.state == .watching)
+    #expect(h.watcher.notWatching == nil)
+
+    // A look that failed ends with the watching line it prints again, not with a reading.
+    h.launcher.say(problem("resubscribe_failed", ""))
+    h.launcher.say(readLine)
+    #expect(
+      h.watcher.notWatching
+        == "Not watching for changes right now: the watcher could not look again at what to watch."
+    )
+    h.launcher.say(watchingLine)
+    #expect(h.watcher.notWatching == nil)
+    #expect(h.launcher.launches == 1)
+    #expect(h.scheduled.isEmpty)
+    #expect(!h.launcher.child.stopped)
+  }
+
+  @Test(
+    "The watchdog does not wait for a silent watcher that ignores termination; it is killed after the grace"
+  )
+  func tickDoesNotWait() async throws {
+    let shell = URL(fileURLWithPath: "/bin/sh")
+    let launcher = KeepingLauncher(ProcessWatchLauncher(executable: shell))
+    var now = Date()
+    let watcher = Watcher(
+      launcher: launcher, arguments: ["-c", "trap '' TERM; echo ready; exec /bin/sleep 30"],
+      onRead: {}, schedule: { _, _ in }, clock: { now })
+    watcher.start()
+    defer { watcher.stop() }
+    let pid = try #require(launcher.child).pid
+    // TERM is ignored from here on, by the shell and the sleep it becomes.
+    await waitUntil("the child to ignore TERM") { watcher.ignoredLines == 1 }
+    now += Watcher.silenceLimit + 1
+    let asked = Date()
+    watcher.tick()
+    #expect(Date().timeIntervalSince(asked) < 1)
+    #expect(
+      watcher.notWatching == "Not watching for changes right now: the watcher stopped answering.")
+    #expect(kill(pid, 0) == 0)
+    await waitUntil("the KILL after the grace") { kill(pid, 0) != 0 }
   }
 
   @Test("A read line refreshes the status at once")
@@ -2461,6 +2560,8 @@ struct Watching {
     let child = h.launcher.child
     h.watcher.stop()
     #expect(child.stopped)
+    // Waited for: once the app is gone nothing would send the KILL.
+    #expect(child.waited)
     h.launcher.exit?(0)
     #expect(h.scheduled.isEmpty)
     h.watcher.start()
@@ -2508,7 +2609,7 @@ struct Lines {
     #expect(kill(pid, 0) == 0)
     // Asked politely first: it is gone well before the two seconds of grace.
     let asked = Date()
-    child.stop(grace: 2)
+    child.stopAndWait(grace: 2)
     #expect(Date().timeIntervalSince(asked) < 1.5)
     #expect(kill(pid, 0) != 0)
   }
@@ -2554,7 +2655,10 @@ struct LauncherEnvironment {
     defer { child.stop(grace: 2) }
     await waitUntil("the problem line") { events.count >= 3 }
     #expect(
-      events.prefix(3) == [.watching(places: 12), .read, .problem(code: "place_not_watched")])
+      events.prefix(3) == [
+        .watching(places: 12), .read,
+        .problem(code: "place_not_watched", detailText: "/Library/LaunchDaemons: not found"),
+      ])
   }
 }
 

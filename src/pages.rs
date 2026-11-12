@@ -184,6 +184,10 @@ fn state(
         None => "no full check has finished yet".to_string(),
     });
     parts.push(match (m.live, m.live_read_at) {
+        (false, _) if !m.failed.is_empty() => format!(
+            "a watcher runs, but its latest {} failed, so everything is checked every hour until it succeeds again",
+            covered::watcher_failed(m)
+        ),
         (true, Some(t)) => format!(
             "watched live: a change in what is watched all the time shows within seconds, last looked {}",
             utc(t)
@@ -514,21 +518,19 @@ fn watched_section(
         };
         plain(out, "On this Mac", said, true)?;
     } else {
-        if m.live {
-            plain(
-                out,
-                "Watched all the time: a change shows within seconds",
-                &counted(live, "thing", "things"),
-                false,
-            )?;
+        let live_said = if m.live {
+            counted(live, "thing", "things")
+        } else if !m.failed.is_empty() {
+            format!("the watcher's latest {} failed", covered::watcher_failed(m))
         } else {
-            plain(
-                out,
-                "Watched all the time: a change shows within seconds",
-                "no watcher is running now",
-                true,
-            )?;
-        }
+            "no watcher is running now".to_string()
+        };
+        plain(
+            out,
+            "Watched all the time: a change shows within seconds",
+            &live_said,
+            !m.live,
+        )?;
         plain(
             out,
             "Checked every hour: a change shows at the next check",

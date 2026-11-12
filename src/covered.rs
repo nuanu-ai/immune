@@ -176,7 +176,8 @@ pub enum Count {
 pub struct ThisMac {
     /// `watched`, `watched_in_part` or `not_checked`.
     pub state: &'static str,
-    /// Whether a watcher runs on the store now.
+    /// Whether a watcher runs on the store now and nothing in it has failed since it last
+    /// succeeded: `failed` is empty.
     pub live: bool,
     /// When the latest full run finished.
     pub checked_at: Option<i64>,
@@ -184,6 +185,8 @@ pub struct ThisMac {
     pub live_read_at: Option<i64>,
     /// What is watched, its count, and `live`, `hourly` or `sampled`.
     pub watched: Vec<(&'static str, i64, &'static str)>,
+    /// What has failed in the watcher running now and not succeeded since.
+    pub failed: Vec<crate::watch::Failure>,
 }
 
 impl ThisMac {
@@ -195,6 +198,7 @@ impl ThisMac {
             checked_at: None,
             live_read_at: None,
             watched: Vec::new(),
+            failed: Vec::new(),
         }
     }
 }
@@ -314,7 +318,19 @@ pub fn this_mac(conn: &Connection, latest: &[Latest], live: bool) -> rusqlite::R
         checked_at,
         live_read_at,
         watched,
+        failed: Vec::new(),
     })
+}
+
+/// What has failed in the watcher, in words: "reading of the watched places and sample of
+/// running programs". The reasons are text from the failures and are not in it.
+pub fn watcher_failed(m: &ThisMac) -> String {
+    let words: Vec<&str> = m
+        .failed
+        .iter()
+        .map(|f| crate::watch::failed_words(&f.what))
+        .collect();
+    words.join(" and ")
 }
 
 pub fn this_mac_json(m: &ThisMac) -> Value {

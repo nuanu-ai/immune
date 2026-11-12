@@ -3,9 +3,17 @@
 // and starts it again with a growing delay when it stops or falls silent. No
 // logic of the program lives here: the watcher decides what changed.
 //
-// Quitting stops the watcher (TERM, then KILL after a grace). If the app is killed
+// The watchdog stops a watcher that fell silent without waiting for it: TERM now,
+// KILL after a grace from another queue, so a child that ignores TERM never holds up
+// the main thread. Quitting stops the watcher and waits for it (TERM, then KILL after
+// the grace), since nothing is left afterwards to send the KILL. If the app is killed
 // outright, `soc watch` stops by itself within a second or two: it looks for its
 // parent every second and stops when its stdout closes.
+//
+// A watcher that runs but whose reading, sample or look at what to watch failed is
+// not watching: what it said stays shown until a line of the same kind says it
+// succeeded. The status says so too, where the store could record it; the store may
+// be what failed, so the app keeps what the watcher said.
 
 import Foundation
 
@@ -48,9 +56,11 @@ public struct LineSplitter: Sendable {
 
 /// A running watcher process.
 public protocol WatchChild: AnyObject, Sendable {
-  /// SIGTERM, then SIGKILL when it has not stopped within `grace` seconds. Returns
-  /// when it is gone.
+  /// SIGTERM now, then SIGKILL when it has not stopped within `grace` seconds.
+  /// Returns at once: the SIGKILL is sent from another queue.
   func stop(grace: TimeInterval)
+  /// The same, and returns only when it is gone: for quitting.
+  func stopAndWait(grace: TimeInterval)
 }
 
 public protocol WatchLaunching: Sendable {
@@ -152,6 +162,14 @@ final class ProcessWatchChild: WatchChild, @unchecked Sendable {
   func stop(grace: TimeInterval) {
     guard process.isRunning else { return }
     process.terminate()
+    DispatchQueue.global().asyncAfter(deadline: .now() + grace) { [self] in
+      if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+    }
+  }
+
+  func stopAndWait(grace: TimeInterval) {
+    guard process.isRunning else { return }
+    process.terminate()
     let deadline = Date().addingTimeInterval(grace)
     while process.isRunning, Date() < deadline { usleep(20_000) }
     if process.isRunning {
@@ -168,6 +186,9 @@ public final class Watcher: ObservableObject {
     /// Started, not yet subscribed. Nothing is said.
     case starting
     case watching
+    /// Running, but what it watches with failed: not watching, with the plain reason.
+    /// Said as one quiet line; the watcher is not restarted for it.
+    case failing(String)
     /// Not watching, with the plain reason. Said as one quiet line.
     case down(String)
     /// Another watcher already watches this store. Nothing is said.
@@ -203,8 +224,19 @@ public final class Watcher: ObservableObject {
   private var startedAt = Date.distantPast
   private var lastLineAt = Date.distantPast
   private var failure: SocError?
+  /// What failed and has not succeeded since, by kind, in the order said.
+  private var failing: [(kind: String, reason: String)] = []
   private var sawWatching = false
   private var stopped = false
+
+  /// The `problem` codes that mean the watcher is not watching, the kind each is
+  /// of, what it is in plain words, and the line that says the kind succeeded again:
+  /// `read`, `sample`, or `watching` after a look at what to watch.
+  static let failures: [String: (kind: String, words: String)] = [
+    "read_failed": ("read", "a reading of the watched places failed"),
+    "sample_failed": ("sample", "a sample of running programs failed"),
+    "resubscribe_failed": ("watching", "the watcher could not look again at what to watch"),
+  ]
 
   public init(
     launcher: any WatchLaunching, arguments: [String],
@@ -221,8 +253,12 @@ public final class Watcher: ObservableObject {
 
   /// The quiet line for the panel, or nil while watching or starting.
   public var notWatching: String? {
-    if case .down(let reason) = state { return "Not watching for changes right now: \(reason)." }
-    return nil
+    switch state {
+    case .down(let reason), .failing(let reason):
+      return "Not watching for changes right now: \(reason)."
+    case .starting, .watching, .elsewhere:
+      return nil
+    }
   }
 
   public func start() {
@@ -233,6 +269,7 @@ public final class Watcher: ObservableObject {
     startedAt = clock()
     lastLineAt = startedAt
     failure = nil
+    failing = []
     sawWatching = false
     if state != .elsewhere { state = .starting }
     switch launcher.launch(
@@ -256,16 +293,36 @@ public final class Watcher: ObservableObject {
     switch event {
     case .watching:
       sawWatching = true
-      state = .watching
-    case .read, .sample:
+      succeeded("watching")
+    case .read:
       sawWatching = true
-      state = .watching
+      succeeded("read")
       onRead()
-    case .alive, .problem:
+    case .sample:
+      sawWatching = true
+      succeeded("sample")
+      onRead()
+    case .problem(let code, let detail):
+      // Another problem (a place it cannot watch, a view it could not bring up to date)
+      // is news of life: the watcher still watches.
+      guard let code, let f = Self.failures[code] else { break }
+      // What the failure said is text from a source: shown inert, and only in brackets.
+      let said = detail.flatMap { $0.isEmpty ? nil : " (" + Inert.text($0, limit: 160) + ")" }
+      let reason = f.words + (said ?? "")
+      failing.removeAll { $0.kind == f.kind }
+      failing.append((f.kind, reason))
+      state = .failing(failing.map(\.reason).joined(separator: "; "))
+    case .alive:
       break
     case .failure(let e):
       failure = e
     }
+  }
+
+  /// A line of this kind says it succeeded: its failure, if any, is over.
+  private func succeeded(_ kind: String) {
+    failing.removeAll { $0.kind == kind }
+    state = failing.isEmpty ? .watching : .failing(failing.map(\.reason).joined(separator: "; "))
   }
 
   func exited(_ code: Int32?, _ gen: Int) {
@@ -295,7 +352,7 @@ public final class Watcher: ObservableObject {
     guard !stopped, let c = child, clock().timeIntervalSince(lastLineAt) > Self.silenceLimit
     else { return }
     child = nil  // so its own exit is no longer news
-    c.stop(grace: 2)
+    c.stop(grace: 2)  // returns at once; a child that ignores TERM is killed later
     down("the watcher stopped answering")
   }
 
@@ -311,7 +368,8 @@ public final class Watcher: ObservableObject {
   public func stop() {
     stopped = true
     generation += 1
-    child?.stop(grace: 2)
+    // Waits: once the app is gone nothing is left to send the KILL.
+    child?.stopAndWait(grace: 2)
     child = nil
   }
 }

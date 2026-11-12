@@ -311,8 +311,8 @@ public enum WatchEvent: Sendable, Equatable {
   /// A sample of running programs opened a finding.
   case sample
   case alive
-  /// Something it survived.
-  case problem(code: String?)
+  /// Something it survived, with what the failure said as text from a source.
+  case problem(code: String?, detailText: String? = nil)
   /// It cannot watch: the error envelope it prints before it exits.
   case failure(SocError?)
 }
@@ -367,7 +367,10 @@ public enum Decoding {
     case "alive": return .alive
     // `soc watch` as built puts the code beside `event`; a nested `problem` object is
     // read too, so either shape is understood.
-    case "problem": return .problem(code: j["problem"]["code"].string ?? j["code"].string)
+    case "problem":
+      return .problem(
+        code: j["problem"]["code"].string ?? j["code"].string,
+        detailText: j["problem"]["detail_text"].string ?? j["detail_text"].string)
     default: return nil
     }
   }

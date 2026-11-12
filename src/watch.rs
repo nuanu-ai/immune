@@ -28,9 +28,18 @@
 //!
 //! Samples. Every `SAMPLE` the watcher takes a sample of this user's running programs and
 //! their connections (`processes.rs`), under the run lock like a reading, in one transaction.
-//! A `sample` line is printed only when a sample opened a finding; a quiet sample prints
-//! nothing. A sample that failed is a `problem` line, `sample_failed`, and the next is taken
-//! at its time.
+//! A `sample` line is printed only when a sample opened a finding, or is the first to succeed
+//! after one that failed; another quiet sample prints nothing. A sample that failed is a
+//! `problem` line, `sample_failed`, and the next is taken at its time.
+//!
+//! Failures. A reading, a sample or a look at what to watch that failed is a `problem` line,
+//! and is recorded in the `watcher_failed` table with what it said, under the run lock, where
+//! the store can hold it; the next success of the same kind clears it. While one stands,
+//! `soc status` does not say this Mac is watched live. A look at what to watch that succeeds
+//! after one that failed prints `watching` again and reads the watched places at once.
+//!
+//! While it waits for the run lock, which a full run holds for as long as it runs, it says it
+//! is alive at its usual interval, so that a long run does not get it taken for dead.
 //! After a reading that changed something it brings the view up to date, when the owner has
 //! made it once; `view_failed` says when it could not. The watcher stops,
 //! with exit 0, when stdout is closed or its parent process is gone, so that an app that died
@@ -92,6 +101,32 @@ CREATE TABLE IF NOT EXISTS watcher (
 );
 ";
 
+/// What failed in a watcher and has not succeeded since: one row per kind, made by its first
+/// failure, under the run lock, as `watcher` is. A row older than the watcher that holds the
+/// lock now is a past watcher's and is not read.
+const FAILED_TABLE: &str = "
+CREATE TABLE IF NOT EXISTS watcher_failed (
+    what   TEXT PRIMARY KEY,  -- `read`, `sample` or `resubscribe`
+    at     INTEGER NOT NULL,  -- when it failed, UTC seconds
+    detail TEXT NOT NULL      -- what the failure said
+);
+";
+
+/// The kinds of failure kept in `watcher_failed`: a reading of the watched places, a sample of
+/// running programs, a look at what to watch.
+pub const READ: &str = "read";
+pub const SAMPLED: &str = "sample";
+pub const RESUBSCRIBE: &str = "resubscribe";
+
+/// A kind of failure in words, for a person.
+pub fn failed_words(what: &str) -> &'static str {
+    match what {
+        READ => "reading of the watched places",
+        SAMPLED => "sample of running programs",
+        _ => "look at what to watch",
+    }
+}
+
 pub struct WatchArgs {
     pub store: PathBuf,
     pub system_root: PathBuf,
@@ -100,25 +135,30 @@ pub struct WatchArgs {
     /// system's: for tests, which set the clock in it.
     pub sample_input: Option<PathBuf>,
     pub sample_every: Duration,
+    /// How often it says it is alive and looks again at what to watch: `ALIVE`, shorter in
+    /// tests.
+    pub alive_every: Duration,
 }
 
 /// Parses what follows `soc watch`.
 pub fn parse(mut it: impl Iterator<Item = String>) -> Result<WatchArgs, String> {
     let (mut store, mut system_root) = (None, None);
-    let (mut sample_input, mut sample_every) = (None, SAMPLE);
+    let (mut sample_input, mut sample_every, mut alive_every) = (None, SAMPLE, ALIVE);
+    fn seconds(it: &mut impl Iterator<Item = String>, arg: &str) -> Result<Duration, String> {
+        crate::value(it, arg)?
+            .parse::<u64>()
+            .ok()
+            .filter(|s| (1..=3600).contains(s))
+            .map(Duration::from_secs)
+            .ok_or(format!("{arg} takes a number of seconds from 1 to 3600"))
+    }
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--store" => store = Some(crate::value(&mut it, &arg)?.into()),
             "--system-root" => system_root = Some(crate::value(&mut it, &arg)?.into()),
             "--sample-input" => sample_input = Some(crate::value(&mut it, &arg)?.into()),
-            "--sample-every" => {
-                let seconds = crate::value(&mut it, &arg)?
-                    .parse::<u64>()
-                    .ok()
-                    .filter(|s| (1..=3600).contains(s))
-                    .ok_or("--sample-every takes a number of seconds from 1 to 3600")?;
-                sample_every = Duration::from_secs(seconds);
-            }
+            "--sample-every" => sample_every = seconds(&mut it, &arg)?,
+            "--alive-every" => alive_every = seconds(&mut it, &arg)?,
             _ => return Err(format!("unexpected argument: {arg}")),
         }
     }
@@ -128,6 +168,7 @@ pub fn parse(mut it: impl Iterator<Item = String>) -> Result<WatchArgs, String> 
         home: crate::user_home()?,
         sample_input,
         sample_every,
+        alive_every,
     })
 }
 
@@ -203,6 +244,7 @@ pub fn watch(args: &WatchArgs) -> ExitCode {
         handled: None,
         parent,
         signers: crate::processes::Signers::default(),
+        standing: BTreeSet::new(),
     };
     let (problems, since) = match w.subscribe(stored) {
         Ok(found) => found,
@@ -270,7 +312,7 @@ fn stored(path: &Path) -> Result<Option<Stored>, Box<dyn Error>> {
         return Ok(None);
     }
     let conn = store::open_read_only(path)?;
-    if !has_table(&conn)? {
+    if !has_table(&conn, "watcher")? {
         return Ok(None);
     }
     let row: Option<(String, String)> = conn
@@ -283,10 +325,10 @@ fn stored(path: &Path) -> Result<Option<Stored>, Box<dyn Error>> {
     Ok(row.and_then(|(id, volumes)| id.parse().ok().map(|event_id| Stored { event_id, volumes })))
 }
 
-fn has_table(conn: &Connection) -> rusqlite::Result<bool> {
+fn has_table(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
     conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'watcher')",
-        [],
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        [name],
         |r| r.get(0),
     )
 }
@@ -327,6 +369,9 @@ struct Watcher<'a> {
     parent: libc::pid_t,
     /// Who signed what the samples track, kept across samples.
     signers: crate::processes::Signers,
+    /// The kinds whose latest attempt failed, or whose failure may still stand in the store
+    /// because clearing it failed: `READ`, `SAMPLED`, `RESUBSCRIBE`.
+    standing: BTreeSet<&'static str>,
 }
 
 /// A reading that is due: when, since which event it was first due, and the latest id it
@@ -420,7 +465,7 @@ impl Watcher<'_> {
             at: Instant::now(),
             latest,
         });
-        let mut alive = Instant::now() + ALIVE;
+        let mut alive = Instant::now() + self.args.alive_every;
         // The first sample is taken at start, after the reading due then.
         let mut sample = Instant::now();
         loop {
@@ -488,9 +533,16 @@ impl Watcher<'_> {
             }
             if sample <= Instant::now() {
                 sample = Instant::now() + self.args.sample_every;
+                let recovered = self.standing.contains(SAMPLED);
                 match self.sample() {
-                    Ok(Some((opened, needs))) if opened > 0 => {
-                        let view = crate::refresh_view(&self.args.store).err();
+                    // A sample that opened a finding, or the first to succeed after one that
+                    // failed, which the app takes as the end of that failure.
+                    Ok(Some((opened, needs))) if opened > 0 || recovered => {
+                        let view = if opened > 0 {
+                            crate::refresh_view(&self.args.store).err()
+                        } else {
+                            None
+                        };
                         let said = json!({ "opened": opened, "needs_a_look_total": needs });
                         if !emit(&line("sample", said)) {
                             return;
@@ -511,26 +563,44 @@ impl Watcher<'_> {
                 }
             }
             if alive <= now {
-                alive = now + ALIVE;
+                alive = now + self.args.alive_every;
                 if !emit(&line("alive", json!({}))) {
                     return;
                 }
-                match self.again() {
-                    Ok(Some(problems)) => {
-                        if problems.iter().any(|p| !emit(p)) {
+                let again = self.again();
+                // A look that failed counts as not watching what it would have watched: it is
+                // recorded until a look succeeds.
+                let recovered = self.standing.contains(RESUBSCRIBE);
+                if (again.is_err() || recovered)
+                    && let Ok(Some(_lock)) = self.lock()
+                {
+                    self.mark_held(RESUBSCRIBE, again.as_ref().err().cloned());
+                }
+                match again {
+                    Ok(found) => {
+                        if let Some(problems) = &found
+                            && problems.iter().any(|p| !emit(p))
+                        {
                             return;
                         }
-                        // What changed in a place newly watched is read now.
-                        let latest = due.as_ref().map_or(0, |d| d.latest);
-                        let latest = latest.max(self.handled.unwrap_or(0));
-                        due = Some(Due {
-                            first: now,
-                            at: now,
-                            latest,
-                        });
+                        // After a look that failed, the watcher says it watches again.
+                        if recovered && !emit(&self.watching_line()) {
+                            return;
+                        }
+                        // What changed in a place newly watched, or in one not watched while
+                        // looks failed, is read now.
+                        if found.is_some() || recovered {
+                            let latest = due.as_ref().map_or(0, |d| d.latest);
+                            let latest = latest.max(self.handled.unwrap_or(0));
+                            due = Some(Due {
+                                first: now,
+                                at: now,
+                                latest,
+                            });
+                        }
                     }
-                    Ok(None) => {}
                     Err(e) => {
+                        self.standing.insert(RESUBSCRIBE);
                         if !emit(&problem("resubscribe_failed", &e)) {
                             return;
                         }
@@ -560,22 +630,34 @@ impl Watcher<'_> {
     /// One reading of the watched places, as a small run of that reader alone, recording
     /// `latest` as handled. `None` when the watcher was stopped, or orphaned, while it waited for the run
     /// lock. The counts are of this reading, the baseline counting as nothing new.
-    fn read(&self, latest: EventId) -> Result<Option<Value>, Box<dyn Error>> {
+    fn read(&mut self, latest: EventId) -> Result<Option<Value>, Box<dyn Error>> {
         let Some(_lock) = self.lock()? else {
             return Ok(None);
         };
-        read_held(self.args, &self.folder, &self.volumes, latest).map(Some)
+        let read = read_held(self.args, &self.folder, &self.volumes, latest);
+        self.mark_held(READ, read.as_ref().err().map(|e| e.to_string()));
+        read.map(Some)
     }
 
-    /// The run lock, waited for; `None` when the watcher was stopped, or orphaned, meanwhile.
+    /// The run lock, waited for; `None` when the watcher was stopped, or orphaned, meanwhile,
+    /// or stdout is gone. A full run holds the lock for as long as it runs, minutes at times:
+    /// meanwhile the watcher says it is alive at its usual interval, since the app takes a
+    /// watcher that says nothing for three minutes for dead.
     fn lock(&self) -> std::io::Result<Option<std::fs::File>> {
+        let mut alive = Instant::now() + self.args.alive_every;
         loop {
             if STOP.load(Ordering::SeqCst) || self.orphaned() {
                 return Ok(None);
             }
-            // Waits a little each time; a full run holds the lock for as long as it runs.
+            // Waits a little each time.
             if let Some(lock) = store::lock_run(&self.folder)? {
                 return Ok(Some(lock));
+            }
+            if alive <= Instant::now() {
+                alive = Instant::now() + self.args.alive_every;
+                if !emit(&line("alive", json!({}))) {
+                    return Ok(None);
+                }
             }
         }
     }
@@ -586,13 +668,55 @@ impl Watcher<'_> {
         let Some(_lock) = self.lock()? else {
             return Ok(None);
         };
-        let (report, needs) = crate::sample_held(
+        let sampled = crate::sample_held(
             &self.args.store,
             self.args.sample_input.as_deref(),
             &mut self.signers,
-        )?;
+        );
+        self.mark_held(SAMPLED, sampled.as_ref().err().map(|e| e.to_string()));
+        let (report, needs) = sampled?;
         Ok(Some((report.findings_opened, needs)))
     }
+
+    /// Under the run lock the caller holds: records that `what` failed, with what the failure
+    /// said, or that it succeeded, which clears a failure recorded before. Where the store
+    /// cannot hold it, the `problem` line alone says it.
+    fn mark_held(&mut self, what: &'static str, failed: Option<String>) {
+        match failed {
+            Some(detail) => {
+                self.standing.insert(what);
+                let _ = mark(&self.args.store, what, Some(&detail));
+            }
+            None if self.standing.contains(what) && mark(&self.args.store, what, None).is_ok() => {
+                self.standing.remove(what);
+            }
+            None => {}
+        }
+    }
+
+    /// The `watching` line: how many places are watched, and what the watcher cannot see.
+    fn watching_line(&self) -> Value {
+        line(
+            "watching",
+            json!({ "places": self.paths.len(), "cannot_see": CANNOT_SEE }),
+        )
+    }
+}
+
+/// Records a failure of `what` with what it said, or with `None` clears it. The caller holds
+/// the run lock.
+fn mark(store: &Path, what: &str, failed: Option<&str>) -> Result<(), Box<dyn Error>> {
+    let conn = store::open(store)?;
+    conn.execute_batch(FAILED_TABLE)?;
+    match failed {
+        Some(detail) => conn.execute(
+            "INSERT INTO watcher_failed (what, at, detail) VALUES (?1, ?2, ?3)
+             ON CONFLICT (what) DO UPDATE SET at = excluded.at, detail = excluded.detail",
+            params![what, crate::now_secs(), detail],
+        )?,
+        None => conn.execute("DELETE FROM watcher_failed WHERE what = ?1", [what])?,
+    };
+    Ok(())
 }
 
 /// One reading of the watched places under the run lock the caller holds, as a small run of
@@ -871,32 +995,80 @@ extern "C" fn on_signal(_: libc::c_int) {
 
 /// What `soc status --json` says about the watcher: `null` unless one holds its lock on this
 /// store now, so a watcher that died never shows as watching. `since` is from the lock file;
-/// `last_read` is the latest reading of a watcher, if this one made it.
+/// `last_read` is the latest reading of a watcher, if this one made it; `failed` is what has
+/// failed in this one and not succeeded since, with what the failure said.
 pub fn status(store: &Path) -> Value {
     let folder = crate::home(store);
     if !store::watch_in_progress(&folder).unwrap_or(false) {
         return Value::Null;
     }
-    // A watcher that has just taken its lock may not have written its start yet.
-    let since: Option<i64> = std::fs::read_to_string(folder.join(store::WATCH_LOCK))
-        .ok()
-        .and_then(|s| s.trim().parse().ok());
-    let last = store::open_read_only(store)
-        .ok()
-        .and_then(|conn| last_read(&conn).ok().flatten());
+    let since = started(&folder);
+    let conn = store::open_read_only(store).ok();
+    let last = conn
+        .as_ref()
+        .and_then(|conn| last_read(conn).ok().flatten());
     let last = last.filter(|last| since.is_some_and(|since| *last >= since));
+    let failed = conn
+        .as_ref()
+        .and_then(|conn| failures(conn, &folder).ok())
+        .unwrap_or_default();
     let iso = |secs: i64| json!(crate::view::iso(secs));
+    let failed: Vec<Value> = failed
+        .iter()
+        .map(|f| json!({ "what": f.what, "at": iso(f.at), "detail_text": status::text(&f.detail) }))
+        .collect();
     json!({
         "since": since.map_or(Value::Null, iso),
         "last_read": last.map_or(Value::Null, iso),
+        "failed": failed,
         "cannot_see": CANNOT_SEE,
     })
+}
+
+/// When the watcher that holds the lock now started, from its lock file. A watcher that has
+/// just taken its lock may not have written its start yet.
+fn started(folder: &Path) -> Option<i64> {
+    std::fs::read_to_string(folder.join(store::WATCH_LOCK))
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+}
+
+/// A failure of the watcher that stands: what failed (`READ`, `SAMPLED`, `RESUBSCRIBE`), when,
+/// and what the failure said.
+pub struct Failure {
+    pub what: String,
+    pub at: i64,
+    pub detail: String,
+}
+
+/// What has failed in the watcher that holds its lock on this store now and not succeeded
+/// since. Empty while no watcher runs; a failure recorded before this one started is a past
+/// watcher's and is left out.
+pub fn failures(conn: &Connection, folder: &Path) -> rusqlite::Result<Vec<Failure>> {
+    if !store::watch_in_progress(folder).unwrap_or(false) {
+        return Ok(Vec::new());
+    }
+    let Some(since) = started(folder) else {
+        return Ok(Vec::new());
+    };
+    if !has_table(conn, "watcher_failed")? {
+        return Ok(Vec::new());
+    }
+    conn.prepare("SELECT what, at, detail FROM watcher_failed WHERE at >= ?1 ORDER BY what")?
+        .query_map([since], |r| {
+            Ok(Failure {
+                what: r.get(0)?,
+                at: r.get(1)?,
+                detail: r.get(2)?,
+            })
+        })?
+        .collect()
 }
 
 /// When a watcher last read the watched places of this store, whichever watcher it was;
 /// `None` when none ever did.
 pub fn last_read(conn: &Connection) -> rusqlite::Result<Option<i64>> {
-    if !has_table(conn)? {
+    if !has_table(conn, "watcher")? {
         return Ok(None);
     }
     conn.query_row("SELECT last_read FROM watcher WHERE id = 1", [], |r| {
@@ -976,6 +1148,7 @@ mod tests {
             home,
             sample_input: None,
             sample_every: SAMPLE,
+            alive_every: ALIVE,
         };
         let folder = crate::home(&store);
         // The quickest of a few, so that a busy moment of the Mac is not taken for the cost.

@@ -88,7 +88,7 @@ const USAGE: &str = "usage: soc run [--store <path>] [--machine-name <name>] [--
            the answer for one vulnerability in every project, with what it rests on
        soc sample [--store <path>] [--sample-input <file>] [--json]
        soc watch [--store <path>] [--system-root <dir>] [--sample-input <file>]
-                 [--sample-every <seconds>]
+                 [--sample-every <seconds>] [--alive-every <seconds>]
                  one JSON line per event: watching, read, sample, alive, problem;
                  a problem's code and detail_text sit beside event, flat
                  exits 5 when another watcher has the store";
@@ -908,6 +908,11 @@ fn this_mac_text(m: &covered::ThisMac) {
     };
     let live = if m.live {
         "a watcher runs now".to_string()
+    } else if !m.failed.is_empty() {
+        format!(
+            "a watcher runs, but its latest {} failed, so it does not watch live",
+            covered::watcher_failed(m)
+        )
     } else {
         "no watcher runs now".to_string()
     };
@@ -2397,10 +2402,10 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     // Raw input is kept next to the store so that the store can be rebuilt from it.
     let home = home(&args.store);
     std::fs::create_dir_all(&home)?;
-    // The vulnerability data is asked for before the run lock is taken, so that a download of
-    // minutes holds up no watcher's reading and no status. What is asked comes from the feeds'
-    // own readings only, read first from the store opened to read. A second run stops here,
-    // at the lock on the downloads, and writes nothing.
+    // The vulnerability data and the threat catalogue are asked for before the run lock is
+    // taken, so that a download of minutes holds up no watcher's reading and no status. What
+    // is asked comes from the feeds' own readings only, read first from the store opened to
+    // read. A second run stops here, at the lock on the downloads, and writes nothing.
     // A store this build cannot use is refused before anything is written next to it.
     let read_only = match args.store.exists() {
         true => Some(store::open_read_only(&args.store).map_err(|e| Stop::Store(e.to_string()))?),
@@ -2408,6 +2413,7 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     };
     let _fetching = osv::lock_fetch(&home)?.ok_or(Stop::RunInProgress)?;
     let feeds = get_feeds(read_only.as_ref(), args, &home, at)?;
+    let catalogue = get_catalogue(read_only.as_ref(), args)?;
     drop(read_only);
     // Held until the run returns: a second run stops here and writes nothing. A watcher's
     // reading, `soc watch`, is waited out.
@@ -2448,7 +2454,7 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     opened += findings::detect(run.tx, run.run_id, run.at, &changed)?;
     read_traces(&mut run, args)?;
     resolve(&mut run)?;
-    read_threats(&run, args)?;
+    read_threats(&run, catalogue)?;
     read_feeds(&run, feeds)?;
     opened += match_dependencies(&run)?;
 
@@ -3901,18 +3907,27 @@ fn read_indicators(
 
 // ---- End of what runs by itself and indicators. ----
 
-/// Reads the threat catalogue and brings the threat list in line with it. A catalogue that
-/// could not be fetched or parsed changes nothing: no threat is added or marked gone.
-fn read_threats(run: &Run, args: &Args) -> Result<(), Box<dyn Error>> {
-    let (tx, run_id, at) = (run.tx, run.run_id, run.at);
-    let last = threats::last_good(tx)?;
-    let fetched = match &args.threats_input {
+/// Asks for the threat catalogue, or takes the file given for it. Run before the run lock is
+/// taken, with the store open only to read, or with no store yet: the ETag to ask with is
+/// read first, and the download touches nothing in the store.
+fn get_catalogue(
+    conn: Option<&rusqlite::Connection>,
+    args: &Args,
+) -> Result<threats::Fetched, Box<dyn Error>> {
+    Ok(match &args.threats_input {
         Some(path) => threats::read_file(path),
         None => {
             let curl = args.curl.as_deref().unwrap_or(Path::new(threats::CURL));
-            threats::fetch(curl, last.as_ref().and_then(|(_, r)| r.etag.as_deref()))
+            threats::fetch(curl, threats::last_etag(conn)?.as_deref())
         }
-    };
+    })
+}
+
+/// Brings the threat list in line with the catalogue got. A catalogue that could not be
+/// fetched or parsed changes nothing: no threat is added or marked gone.
+fn read_threats(run: &Run, fetched: threats::Fetched) -> Result<(), Box<dyn Error>> {
+    let (tx, run_id, at) = (run.tx, run.run_id, run.at);
+    let last = threats::last_good(tx)?;
     let failed = |reason: String, sha256, raw_path| -> Result<(), Box<dyn Error>> {
         let reading = threats::Reading {
             outcome: "failed",

@@ -7599,9 +7599,12 @@ fn status_answers_while_a_run_is_in_progress_and_never_makes_it_fail() {
     // the run is never failed by a reader; a second run stops cleanly.
     let w = Watch::new("json-during-run");
     let brew = put(w.home(), "many.json", &many_formulae(6000, "1.0"));
+    // A run kept in progress, its transaction open: the tailscale command, which the run asks
+    // inside the run lock after Homebrew's packages are written, answers after 5 s. (The
+    // downloads are asked for before the lock and cannot keep a run in progress.)
     let slow = script(
-        &w.home().join("slow-curl"),
-        "sleep 5\necho 'curl: (6) Could not resolve host' >&2\nexit 6",
+        &w.home().join("slow-tailscale"),
+        "sleep 5\necho 'not running' >&2\nexit 1",
     );
     let run = |curl: &Path| {
         let mut cmd = soc_run_curl(w.home(), &w.store(), curl);
@@ -7628,7 +7631,9 @@ fn status_answers_while_a_run_is_in_progress_and_never_makes_it_fail() {
 
     // Every formula changes, so the run's transaction outgrows the page cache.
     put(w.home(), "many.json", &many_formulae(6000, "2.0"));
-    let child = run(&slow)
+    let child = run(&quick)
+        .arg("--tailscale")
+        .arg(&slow)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()

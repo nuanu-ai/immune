@@ -297,8 +297,11 @@ public struct Panel: Sendable, Equatable {
     checkedAt = lastCheck.map(Clock.full)
     let parts = (mac?.watched ?? []).filter { $0.count != 0 }
     let liveKinds = parts.filter { $0.how == "live" || $0.how == "sampled" }.compactMap(\.what)
-    checked = Self.how(live: mac?.live, liveKinds: liveKinds, lastCheck: lastCheck, now: now)
-    glance = Self.glance(live: mac?.live, lastCheck: lastCheck, now: now)
+    // While the watcher says it is not watching, live watching is not claimed, whatever
+    // the status says: the store may be what failed, and then the status cannot know.
+    let live = notWatching == nil ? mac?.live : mac?.live.map { _ in false }
+    checked = Self.how(live: live, liveKinds: liveKinds, lastCheck: lastCheck, now: now)
+    glance = Self.glance(live: live, lastCheck: lastCheck, now: now)
 
     if case .cannotRead(let r) = light {
       headline = "I can't tell: the program's answer is incomplete."
@@ -323,7 +326,7 @@ public struct Panel: Sendable, Equatable {
       busy = true
     }
 
-    watched = Self.groups(parts, live: mac?.live == true)
+    watched = Self.groups(parts, live: live == true)
     let list = s.notCovered ?? []
     let yours = list.filter { $0.who == "you" }.count
     let limits = list.count - yours

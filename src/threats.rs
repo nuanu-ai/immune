@@ -292,6 +292,24 @@ pub fn last_good(conn: &Connection) -> rusqlite::Result<Option<(i64, Reading)>> 
     .optional()
 }
 
+/// The ETag to ask the catalogue with: the one it sent with its latest reading that read it.
+/// Read before the run lock is taken, from the store opened to read, or with no store yet; a
+/// store made before the catalogue's readings were kept has none.
+pub fn last_etag(conn: Option<&Connection>) -> rusqlite::Result<Option<String>> {
+    let Some(conn) = conn else {
+        return Ok(None);
+    };
+    let kept: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'feed_reading')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !kept {
+        return Ok(None);
+    }
+    Ok(last_good(conn)?.and_then(|(_, r)| r.etag))
+}
+
 /// How many threats the catalogue held at its latest reading that read it.
 pub fn held(conn: &Connection) -> rusqlite::Result<usize> {
     conn.query_row(

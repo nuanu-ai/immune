@@ -974,6 +974,107 @@ fn a_reading_that_failed_is_a_problem_line_and_the_watcher_reads_again_later() {
 }
 
 #[test]
+fn a_watcher_waiting_for_a_long_full_run_keeps_saying_it_is_alive_and_reads_once_it_ends() {
+    // The app takes a watcher that says nothing for three minutes for dead and kills it; a
+    // full run can hold the store for minutes. While it waits for the run lock, the watcher
+    // says it is alive at its usual interval, here one second.
+    let mac = Mac::new("alive-waiting");
+    let mut cmd = mac.watch_cmd();
+    cmd.args(["--alive-every", "1"]);
+    let mut w = Watcher::start(cmd).started();
+    let folder = std::fs::File::open(mac.root.join("store")).unwrap();
+    folder.lock().unwrap();
+    mac.put(".zshrc", "one\n");
+    // Past the 0.2 s latency and 1 s quiet period: the reading now waits for the lock.
+    std::thread::sleep(Duration::from_millis(2500));
+    let before = w.lines("alive").len();
+    // Several alive intervals of waiting, and each lock attempt takes up to 2 s.
+    std::thread::sleep(Duration::from_secs(6));
+    let during = w.lines("alive").len() - before;
+    assert!(
+        w.lines("read").len() == 1,
+        "read while a run held the store"
+    );
+    assert!(
+        during >= 2,
+        "{during} alive lines in 6 s of waiting; saw {:?}",
+        w.seen
+    );
+    folder.unlock().unwrap();
+    w.until("read", |v| count(v, "new") == 1);
+}
+
+#[test]
+fn a_failed_reading_or_sample_is_not_watched_live_with_its_reason_until_the_next_success() {
+    // The first invariant: the owner is never told this Mac is watched live while the
+    // watcher's latest reading of the watched places, or its latest sample, failed. A store
+    // that refuses the reading's rows, and a sample that cannot be read, while the store can
+    // still record the failure.
+    let mac = Mac::new("failing");
+    mac.put(".zshrc", "zero\n");
+    mac.run();
+    let mut cmd = mac.watch_cmd();
+    cmd.args(["--sample-every", "1"]);
+    let mut w = Watcher::start(cmd);
+    w.next("watching");
+    mac.put(".zprofile", "first\n");
+    w.until("read", |v| count(v, "new") == 1);
+    let live = |mac: &Mac| {
+        let r = mac.status()["result"].clone();
+        (
+            r["this_mac"]["live"].clone(),
+            r["watching"]["failed"].clone(),
+        )
+    };
+    assert_eq!(live(&mac).0, true);
+
+    let conn = Connection::open(mac.store()).unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER refuse BEFORE INSERT ON coverage WHEN NEW.run_id LIKE 'watch-%'
+         BEGIN SELECT RAISE(ABORT, 'invented refusal'); END;",
+    )
+    .unwrap();
+    mac.put(".zshrc", "one\n");
+    w.until("problem", |v| v["code"] == "read_failed");
+    let (is_live, failed) = live(&mac);
+    assert_eq!(is_live, false, "{failed}");
+    assert_eq!(failed[0]["what"], "read", "{failed}");
+    assert!(
+        failed[0]["detail_text"]
+            .as_str()
+            .unwrap()
+            .contains("invented refusal"),
+        "{failed}"
+    );
+    // The page and the text say a watcher runs but does not watch live, never that none runs.
+    let page = mac.view();
+    assert!(
+        page.contains("a watcher runs, but its latest reading of the watched places failed")
+            && page.contains("latest reading of the watched places failed</"),
+        "{page}"
+    );
+    let text = within(mac.soc().args(["status", "--store"]).arg(mac.store()));
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(text.contains("so it does not watch live"), "{text}");
+    conn.execute_batch("DROP TRIGGER refuse").unwrap();
+    mac.put(".zshrc", "two\n");
+    w.until("read", |v| count(v, "changed") == 1);
+    assert_eq!(live(&mac), (true.into(), serde_json::json!([])));
+
+    std::fs::write(mac.root.join("sample.json"), "not a reading").unwrap();
+    w.until("problem", |v| v["code"] == "sample_failed");
+    let (is_live, failed) = live(&mac);
+    assert_eq!(is_live, false, "{failed}");
+    assert_eq!(failed[0]["what"], "sample", "{failed}");
+    assert!(!failed[0]["detail_text"].as_str().unwrap().is_empty());
+    // The first sample to succeed after it says so, though it opened nothing.
+    mac.sample(now(), &[]);
+    let said = w.next("sample");
+    assert_eq!(said["opened"], 0);
+    assert_eq!(live(&mac), (true.into(), serde_json::json!([])));
+}
+
+#[test]
 fn sigterm_while_waiting_for_a_full_run_stops_it_at_once() {
     let mac = Mac::new("waiting");
     let mut w = mac.watch().started();

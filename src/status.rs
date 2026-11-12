@@ -625,8 +625,12 @@ pub fn state(conn: &Connection, home: &Path, now: i64) -> Res<State> {
         files.insert(kind, n);
     }
     let (coverage, problems, needs) = looked(conn, now)?;
-    let live = store::watch_in_progress(home).unwrap_or(false);
-    let this_mac = crate::covered::this_mac(conn, &coverage, live)?;
+    // Watched live while a watcher runs and its latest reading, sample and look at what to
+    // watch did not fail.
+    let failed = crate::watch::failures(conn, home)?;
+    let live = store::watch_in_progress(home).unwrap_or(false) && failed.is_empty();
+    let mut this_mac = crate::covered::this_mac(conn, &coverage, live)?;
+    this_mac.failed = failed;
     let not_covered =
         crate::covered::not_covered(conn, &coverage, &problems, catalogue(conn)?.as_ref())?;
     Ok(State {
