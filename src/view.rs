@@ -1473,7 +1473,13 @@ fn threats(conn: &Connection, out: &mut String, now: i64) -> Out {
         }
         out.push_str(".</p>\n");
     }
-    out.push_str("<p class=\"alert\">None of these is matched against this estate yet: whether any of them affects it is unknown.</p>\n");
+    writeln!(
+        out,
+        "<p class=\"alert\">These are {}.</p>",
+        esc(&crate::vulnerabilities::catalogue_said(
+            &crate::vulnerabilities::catalogue_compared(conn)?
+        ))
+    )?;
 
     type Threat = (
         String,

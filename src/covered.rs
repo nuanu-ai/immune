@@ -630,7 +630,7 @@ fn numbers(words: &str, cause: &Cause) -> String {
 }
 
 /// `a`, `a and b`, `a, b and c`.
-fn listed(items: &[&str]) -> String {
+pub fn listed(items: &[&str]) -> String {
     match items {
         [] => String::new(),
         [one] => one.to_string(),

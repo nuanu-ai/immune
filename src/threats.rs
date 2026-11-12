@@ -6,7 +6,9 @@
 //! else in the store. The catalogue's content is untrusted: it is parsed under a size cap,
 //! no path or command is ever taken from it, and its text is escaped wherever it is shown.
 //!
-//! Threats are not facts and no answer is given about any of them yet.
+//! Threats are not facts, and nothing here judges one against the estate. An entry is judged
+//! only through the vulnerability records linked to it, against the projects' lockfiles
+//! (`vulnerabilities.rs`); against everything else whether it affects the estate is unknown.
 
 use crate::store;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};

@@ -970,6 +970,43 @@ pub fn has_tables(conn: &Connection) -> rusqlite::Result<bool> {
     )
 }
 
+/// The ecosystems whose lockfile packages the latest check compared with current data, in
+/// the order of `FEEDS`. Through the records linked to it, this is all of the catalogue that
+/// is compared with the estate: an ecosystem counts only where some checkout's lockfiles were
+/// read in that check and its data was current then. Empty: the catalogue is compared with
+/// nothing.
+pub fn catalogue_compared(conn: &Connection) -> rusqlite::Result<Vec<&'static str>> {
+    if !has_tables(conn)? {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for feed in &FEEDS {
+        let compared: bool = conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM vulnerability_place
+             WHERE ecosystem = ?1 AND feed = 'current' AND lockfiles != 'not_read')",
+            [feed.ecosystem],
+            |r| r.get(0),
+        )?;
+        if compared {
+            out.push(feed.ecosystem);
+        }
+    }
+    Ok(out)
+}
+
+/// What is said of the catalogue's entries against this estate, after "they are": what they
+/// are compared with, from `catalogue_compared`, and that for everything else whether any
+/// affects the estate is unknown. It never reads as "none affects me".
+pub fn catalogue_said(compared: &[&str]) -> String {
+    if compared.is_empty() {
+        return "not compared with anything in this estate, so whether any of them affects it is unknown".to_string();
+    }
+    format!(
+        "compared, through the vulnerability records linked to them, only with the {} packages in the projects' lockfiles, so whether any of them affects anything else in this estate is unknown",
+        crate::covered::listed(compared)
+    )
+}
+
 /// Every "affects me" answer, most severe first by the source's label, then by project.
 pub fn affecting(conn: &Connection) -> rusqlite::Result<Vec<Affecting>> {
     if !has_tables(conn)? {
@@ -1056,6 +1093,8 @@ pub struct Totals {
     pub informational: usize,
     /// Whether matching ever ran on this store.
     pub matched: bool,
+    /// What the catalogue is compared with: `catalogue_compared`.
+    pub catalogue_compared: Vec<&'static str>,
 }
 
 pub fn totals(conn: &Connection) -> rusqlite::Result<Totals> {
@@ -1068,6 +1107,7 @@ pub fn totals(conn: &Connection) -> rusqlite::Result<Totals> {
             [],
             |r| r.get(0),
         )?,
+        catalogue_compared: catalogue_compared(conn)?,
         ..Totals::default()
     };
     let counts: Vec<(String, String, i64)> = conn

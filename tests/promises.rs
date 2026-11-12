@@ -5381,8 +5381,12 @@ fn a_catalogue_that_could_not_be_read_is_reported_as_not_read_and_adds_nothing_a
         ),
         "{report}"
     );
+    // No false calm: with no lockfile compared, the entries it held are said to be compared
+    // with nothing, so whether any affects the estate is unknown.
     assert!(
-        report.contains("are not matched against this estate yet"),
+        report.contains(
+            "are not compared with anything in this estate, so whether any of them affects it is unknown."
+        ),
         "{report}"
     );
     assert_eq!(rows(&f.store(), THREATS), threats);

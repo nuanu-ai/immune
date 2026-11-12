@@ -4120,14 +4120,12 @@ fn feed_clause(s: &osv::State, run_id: &str) -> String {
     }
 }
 
-/// Said of every threat until matching is built. Nothing in the report may read as "does
-/// not affect me": no threat is judged against the estate yet.
-const NOT_JUDGED: &str =
-    "not matched against this estate yet, so whether any affects it is unknown";
-
-/// One sentence about the threat catalogue for the report line.
-fn catalogue_sentence(c: Option<&status::Catalogue>) -> String {
+/// One sentence about the threat catalogue for the report line. What its entries are
+/// compared with follows the store, `vulnerabilities::catalogue_compared`: nothing in the
+/// report may read as "does not affect me" where they are not compared.
+fn catalogue_sentence(c: Option<&status::Catalogue>, compared: &[&str]) -> String {
     use status::Catalogue;
+    let judged = vulnerabilities::catalogue_said(compared);
     let Some(c) = c else {
         return "CISA catalogue: never read; the program knows no exploited vulnerability yet, so whether any affects this estate is unknown.".to_string();
     };
@@ -4142,7 +4140,7 @@ fn catalogue_sentence(c: Option<&status::Catalogue>) -> String {
         Catalogue::Read {
             total, first: true, ..
         } => format!(
-            "CISA catalogue: {}, first reading, kept as the baseline; {NOT_JUDGED}.",
+            "CISA catalogue: {}, first reading, kept as the baseline; {judged}.",
             held(*total)
         ),
         Catalogue::Read {
@@ -4156,10 +4154,10 @@ fn catalogue_sentence(c: Option<&status::Catalogue>) -> String {
             if *gone > 0 {
                 s.push_str(&format!(", {} left the catalogue", grouped(*gone as i64)));
             }
-            format!("{s}; {NOT_JUDGED}.")
+            format!("{s}; {judged}.")
         }
         Catalogue::Unchanged { total, .. } => format!(
-            "CISA catalogue: {}, unchanged, 0 new since the last reading; {NOT_JUDGED}.",
+            "CISA catalogue: {}, unchanged, 0 new since the last reading; {judged}.",
             held(*total)
         ),
         Catalogue::Failed {
@@ -4167,7 +4165,7 @@ fn catalogue_sentence(c: Option<&status::Catalogue>) -> String {
             last: Some((at, total)),
             ..
         } => format!(
-            "CISA catalogue not read: {reason}; what is new is unknown, and the {} it held at its last reading, {}, are {NOT_JUDGED}.",
+            "CISA catalogue not read: {reason}; what is new is unknown, and the {} it held at its last reading, {}, are {judged}.",
             held(*total),
             view::utc(*at)
         ),
@@ -4307,7 +4305,10 @@ fn summary_sentences(s: &status::Summary) -> String {
     line.push(' ');
     line.push_str(&integrity::sentence(s.integrity.as_ref()));
     line.push(' ');
-    line.push_str(&catalogue_sentence(s.catalogue.as_ref()));
+    line.push_str(&catalogue_sentence(
+        s.catalogue.as_ref(),
+        &s.vulnerabilities.catalogue_compared,
+    ));
     line.push(' ');
     line.push_str(&feeds_sentence(&s.feeds, &s.run.id, &s.vulnerabilities));
     // What this build cannot read here is part of every report: in the clause of what is not

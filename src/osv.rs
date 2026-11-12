@@ -12,7 +12,8 @@
 //! any way changes nothing: the data read before stays in force, with its age, and the reason
 //! is named. Text from a record is kept as the record gives it and escaped wherever shown.
 //!
-//! Nothing is matched against the estate yet.
+//! Nothing is matched here: the projects' lockfiles are matched against this data in
+//! `vulnerabilities.rs`.
 
 use crate::sha256;
 use crate::threats::{self, Answer};
