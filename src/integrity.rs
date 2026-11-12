@@ -59,6 +59,10 @@ pub const RAW: &str = "integrity.txt";
 pub const PLUTIL: &str = "/usr/bin/plutil";
 /// Where Homebrew installs, Apple Silicon first, as paths from `/`.
 const PREFIXES: [&str; 2] = ["opt/homebrew", "usr/local"];
+/// Where Homebrew keeps kegs under a prefix.
+const CELLAR: &str = "Cellar";
+/// Where npm keeps global packages under a prefix.
+const NODE_MODULES: &str = "lib/node_modules";
 /// Folders a digest leaves out: Python writes them into a keg when it imports a module.
 const SKIPPED: [&str; 1] = ["__pycache__"];
 
@@ -518,14 +522,36 @@ struct Found {
     shown: String,
 }
 
+/// Where bundles are looked for, as ids name paths: the system's folder, and the home folder's.
+const BUNDLE_PLACES: [&str; 2] = ["/Applications", "Applications"];
+
+/// Whether the readings of this file that find programs look at the path `rel`, as ids name
+/// paths: inside a bundle they find (a folder named `*.app` directly in a place of bundles or one
+/// folder down), or under a Cellar or a global `node_modules` of one of Homebrew's prefixes.
+pub fn reads(rel: &str) -> bool {
+    let bundle = BUNDLE_PLACES.iter().any(|place| {
+        rel.strip_prefix(place)
+            .and_then(|rest| rest.strip_prefix('/'))
+            .is_some_and(|rest| {
+                let mut names = rest.split('/');
+                let app = |n: Option<&str>| n.is_some_and(|n| n.ends_with(".app"));
+                app(names.next()) || app(names.next())
+            })
+    });
+    bundle
+        || PREFIXES.iter().any(|p| {
+            [CELLAR, NODE_MODULES]
+                .iter()
+                .any(|under| crate::known::within(rel, &format!("/{p}/{under}")))
+        })
+}
+
 /// The bundles of both places, with the places that could not be listed.
 fn find_bundles(roots: &Roots, kind: &mut Kind) -> Vec<Found> {
+    let [system, home] = BUNDLE_PLACES;
     let places = [
-        (
-            roots.system.join("Applications"),
-            "/Applications".to_string(),
-        ),
-        (roots.home.join("Applications"), "Applications".to_string()),
+        (roots.system.join(&system[1..]), system.to_string()),
+        (roots.home.join(home), home.to_string()),
     ];
     let mut found = Vec::new();
     for (dir, shown) in places {
@@ -747,7 +773,7 @@ fn prefixes(roots: &Roots, under: &str) -> Vec<(PathBuf, String)> {
 
 fn kegs(roots: &Roots, machine: &str) -> Kind {
     let mut kind = Kind::new(KEGS, KEGS_CANNOT);
-    for (cellar, shown) in prefixes(roots, "Cellar") {
+    for (cellar, shown) in prefixes(roots, CELLAR) {
         if !reachable(&cellar, &shown, roots, &mut kind) {
             continue;
         }
@@ -806,7 +832,7 @@ fn npm(roots: &Roots, machine: &str) -> Kind {
     let mut kind = Kind::new(NPM, NPM_CANNOT);
     let homes = crate::watched::homes(roots.home);
     let mut names = BTreeSet::new();
-    for (root, shown) in prefixes(roots, "lib/node_modules") {
+    for (root, shown) in prefixes(roots, NODE_MODULES) {
         if !reachable(&root, &shown, roots, &mut kind) {
             continue;
         }

