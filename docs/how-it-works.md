@@ -207,6 +207,7 @@ Where the industry has a proven name, format or rule set, Immune takes it. Its o
 | An answer that hides a finding until an end date, with a reason | the industry's practice for alert exceptions |
 | Content judged by its checksum against what is already in force | file integrity monitoring baselines (Tripwire, OSSEC), allow-listing by hash (Santa, AppLocker), "first seen" state in detection rules |
 | Collector | Apple's `eslogger`, `jq` and `rotatelogs` |
+| Reading on from a position the reader keeps | journald's cursors (`journalctl --after-cursor`) and the offsets a log broker's consumer commits |
 
 Immune's own:
 
@@ -223,4 +224,4 @@ Immune's own:
 
 Not built: grouping related findings into cases, adding up weak rule matches, raising a finding's weight when something is seen on this Mac for the first time, and any reaction that stops or suspends a program. Immune reports and never blocks, suspends or kills anything.
 
-Part of the contract with the response layer is built. Its protobuf schema is in `contract/immune/v1/`, the core's types are generated from it, and one command prints it: `immune project` answers what the store knows of one project (see [reference.md](reference.md#the-contract)). Its message is general, so the questions about a program and a machine will use it unchanged. Those two questions are planned, and so are the queue of rule matches with the event each matched, the count of what was lost and the collector's state, and the verdict that comes back.
+Part of the contract with the response layer is built. Its protobuf schema is in `contract/immune/v1/`, the core's types are generated from it, and two commands print it (see [reference.md](reference.md#the-contract)). `immune project` answers what the store knows of one project. Its message is general, so the questions about a program and a machine will use it unchanged. `immune matches` is the queue of rule matches: every match of every level with the event it matched, what was read and lost on the way, the collector's state and the rules that judge nothing. It reads the collector's log again from a position the caller keeps, so the store holds no event for it. The questions about a program and a machine are planned, and so is the verdict that comes back.

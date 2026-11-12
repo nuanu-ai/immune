@@ -120,7 +120,7 @@ Reserved: `copy_of`, `reachable_from`.
 
 ## Commands
 
-Every report command that takes `--json` prints one envelope with `format`, `operation`, `ok`, `errors` and `result`; an error has a `code`, a `message` and an `example`. A command of the contract prints its own message instead and uses the envelope only for a failure (see [the contract](#the-contract)). Exit codes: 0 answered, 2 a misuse or an unknown id, 3 an unreadable store, 4 a check holding the store (ask again), 5 from `immune watch` when another watcher has the store. `--store <path>` points any command at another store.
+Every report command that takes `--json` prints one envelope with `format`, `operation`, `ok`, `errors` and `result`; an error has a `code`, a `message` and an `example`. A command of the contract prints its own message instead and uses the envelope only for a failure (see [the contract](#the-contract)). Exit codes: 0 answered, 1 from `immune matches` and `immune rules --over-log` when the event log cannot be read, 2 a misuse or an unknown id, 3 an unreadable store, 4 a check holding the store (ask again), 5 from `immune watch` when another watcher has the store. `--store <path>` points any command at another store.
 
 | Command | Does |
 |---|---|
@@ -136,6 +136,7 @@ Every report command that takes `--json` prints one envelope with `format`, `ope
 | `immune rules [--json]` | The shipped Sigma rules: evaluated in full, in part or not, whether they watch, how often each matched |
 | `immune rules --over-log [--system-root <dir>] [--json]` | Evaluates the rules over the log on disk now, without the store |
 | `immune project <path or id> [--json]` | What the store knows of one project, as the contract's `Known` message. The project is a path, absolute or starting with `~/`, or its id as the store names it (`checkout:machine:<name>/<path>`). It reads the store only and never looks inside the project's folder |
+| `immune matches [--after <position>] [--limit <n>] [--system-root <dir>] [--json]` | Every rule match over the event log, of every level, each with the event it matched, as the contract's `Matches` message. It reads the log again and the store only, and writes nothing |
 | `immune servers` | Lists the servers this Mac knows and writes the sweep script |
 | `immune owner [<name> retired\|not-mine --reason <text> \| <name> withdraw] [--via app\|agent] [--json]` | A statement that a machine is retired or not the user's, or the list of those that stand |
 | `immune view [--no-open] [--if-stale]` | Writes the HTML pages and opens the summary; with `--if-stale`, only when something they show changed or they are an hour old |
@@ -150,7 +151,9 @@ A program that runs Immune, such as the response layer, reads the commands of th
 
 A command of the contract prints one message on stdout: binary protobuf by default, and the same message as one line of JSON with `--json`. The generated types print the JSON. Field names are the schema's, an enum is the name of its value without the enum's prefix and in lower case (`CAUSE_NOT_GIVEN` prints as `not_given`, the store's own word), a 64-bit number is a JSON number, and an absent optional field is null. Times are seconds since the epoch, UTC, in fields ending in `_at`. A failure to answer is not a message: in binary nothing is printed on stdout, with `--json` the failure envelope is printed, and the exit codes are the ones above.
 
-One command uses the contract so far: `immune project`, which prints `Known`.
+Two commands use the contract so far: `immune project`, which prints `Known`, and `immune matches`, which prints `Matches`.
+
+### `immune project`
 
 | Field | Holds |
 |---|---|
@@ -163,6 +166,32 @@ One command uses the contract so far: `immune project`, which prints `Known`.
 A project the store has never heard of is `unknown`, and its coverage shows which readings looked for it. In a project that is known and read in full, every reading is `full`. A project in a folder macOS asks permission for keeps what was read there before, and its answer carries the reading `folders macOS asks permission for` with completeness `none`, naming that folder.
 
 As in every other answer, text from the Mac is only in fields ending in `_text`, with hidden characters escaped. Entity ids are such text, since they hold paths and names from the Mac. An id and the place a fact was read are references and are never cut, so they can be matched and asked about again; an id holding a hidden character is shown escaped and does not ask back as written. Other text from the Mac is cut to 256 characters.
+
+### `immune matches`
+
+The response layer looks into what the core is not sure of. `immune matches` gives it every match of every published rule, of every level, each with the event it matched, in the order of the log; events that matched no rule are left out. The store keeps no event and no match, so the command reads the collector's log again and evaluates each event with the same code the core's own reading uses: the two never disagree about what matched.
+
+A position is `<hour>:<offset>`, the hour of the log file in UTC as its name gives it and the byte offset where the line begins, such as `20261004T00:4096`. Log files are only appended to, so a position holds when `eslogger` restarts and its numbering starts again, and across the turn of the hour, until the file is deleted. The caller keeps its place. `--after` reads the lines after the one at that position, and without it the answer starts at the oldest line kept.
+
+| Field | Holds |
+|---|---|
+| `matches` | each match with `position`, `rule` (`file`, `id_text`, `title_text`, `level`, `techniques_text`, `author_text`), `event`, `raised` and `finding_id`. The position and the rule's file name the match |
+| `event` | `kind`, `program_start` or `file_event`, and the one it names. A program start has `happened_at` with `happened_nanos`, `executable_text`, `args_text`, `working_directory_text`, `pid`, `user_id`, `parent_pid`, `parent_executable_text`, `signing_id_text`, `team_id_text` and `platform_binary`. A file event has the time, `action` (`create` or `rename`), `path_text`, `source_text` for a rename, and `executable_text` |
+| `raised` | `below_high` for a rule below high, which raises nothing; `finding`, with `finding_id`; `not_read_yet` when the core's own reading has not reached the line; `untold` when the store cannot tell which of the rule's findings it went to |
+| `continue_after`, `more` | the position to pass as `--after` next, which is the last line read; and whether whole lines are left that the limit stopped short of |
+| `stretch` | what was read after `after`: program starts and file events evaluated, other messages, lines and file events that could not be read, program starts and file events missing from `eslogger`'s numbering, and restarts of the numbering, each a loss of unknown size. `gone` and `kept_from` say that lines after `after` were deleted before they were read |
+| `collector` | `state` judged from the log now, by the same rule as the core's reading; what `eslogger` or the scripts printed when it is `refused` or `failing`; when the log was last written; whether file events are collected; and `status_state` with `status_read_at`, the state `immune status` serves from the store |
+| `unevaluated` | the shipped rules that judge nothing here or only part of what they mean, by file, with the reason: `needs_events`, `needs_fields`, `keyword_search`, `not_parsed`, `in_part`, or `not_collected` for the rules for file events while the collector does not record them |
+
+Which finding a high match went to is found by time, since no event is stored. A rule raises one finding per Mac and a new one only after the person closes the last, so the findings of a rule follow one another, each last seen at the latest reading that matched it. The reading that read an event came after the event. If only one finding of the rule was last seen at or after the event's second, the match went to it; otherwise `raised` is `untold`. A clock set back between an event and its reading would mislead this.
+
+A gap in `eslogger`'s numbering at the seam between two answers is counted in the later one. Before it reads, the command looks back up to 16 MiB for the last number of each kind of event. When it does not find one there, and the look did not reach the start of the oldest file kept, the gap before the first event of that kind counts as one loss of unknown size.
+
+One answer holds at most `--limit` matches, 1,000 by default. It also stops once the lines it matched come to 4 MiB, since arguments are never cut and one command line can be a megabyte. On an invented busy hour, 1,000 matches were 763 KB of JSON and 342 KB of binary protobuf; twenty matched starts with half a megabyte of arguments each stopped at 8, about 4.2 MB of JSON.
+
+Text in an event is given whole. No argument or path is cut, each argument is a string of its own, and hidden characters are escaped as elsewhere. The environment is not in the log and not in the answer. On a Mac without the collector, the answer has no matches and the state `not_installed`, and the command exits with 0. A log that cannot be read is a failure with the code `log_unreadable` and exit code 1.
+
+The core cannot give these today: a process's start time or its parent's identity beyond the pid, which the collector does not keep; and how many lines a deleted file held, so `gone` says only that lines are gone.
 
 ## Files Immune keeps
 

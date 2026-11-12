@@ -1,0 +1,261 @@
+// The rule matches the core hands over: the answer to `immune matches`. Version 1 of the contract
+// between the core and a program that runs it. How a message is printed and read, and the
+// conventions for text, references, times and changes, are those of `known.proto`.
+//
+// The core evaluates SigmaHQ's published rules over the program starts and file events its
+// collector writes to a log that lives a day. This answer gives every match of every rule, of
+// every level, each with the event it matched, in the order of the log. A match of a rule marked
+// high or critical also raised a finding; the others are only counted in the store. Events that
+// matched no rule are not given.
+//
+// The queue is the log itself, read again. The store keeps no event and no match, and the caller
+// keeps its own place: it passes `continue_after` back as `--after` to read on. A position is the
+// core's own, `<hour>:<offset>`: the hour of the log file in UTC as its name gives it,
+// `YYYYMMDDTHH`, and the byte offset where the line begins, such as `20261004T00:4096`. A log
+// file is only appended to, so a position holds through a restart of the collector, whose own
+// numbering starts again, and through the turn of the hour, until the file is deleted.
+//
+// An answer with no matches is read with the rest of it. `stretch` says how many lines were read
+// and evaluated, how many could not be, what the collector's numbering says was lost, and whether
+// lines were deleted before they were read; `collector` says whether it records at all;
+// `unevaluated` names the rules that judge nothing here, or only in part, each with why.
+
+syntax = "proto3";
+
+package immune.v1;
+
+import "immune/v1/known.proto";
+
+// The answer to `immune matches`.
+message Matches {
+  // The version of this contract: 1. A reader that meets another number stops.
+  uint32 format = 1;
+  // When the answer was made.
+  int64 answered_at = 2;
+  // The position given with `--after`. Absent when the answer starts at the oldest line kept.
+  optional string after = 3;
+  // The matches after `after`, in the order of the log; the matches of one event in the order
+  // the rules are shipped.
+  repeated RuleMatch matches = 4;
+  // The position to pass as `--after` next time: the last line this answer read, or `after`
+  // when it read none. Absent when nothing was asked after and nothing was read.
+  optional string continue_after = 5;
+  // Whether whole lines are left after `continue_after` that this answer did not read because
+  // it stopped at its limit.
+  bool more = 6;
+  // What was read after `after` up to `continue_after`, and what was not.
+  Stretch stretch = 7;
+  Collector collector = 8;
+  // The shipped rules that are not evaluated over these events, or only in part, each with why.
+  repeated Unevaluated unevaluated = 9;
+}
+
+// A published rule matched an event. Its event's position and its rule's file name it.
+message RuleMatch {
+  // Where the event's line is.
+  string position = 1;
+  Rule rule = 2;
+  Event event = 3;
+  // What became of the match among the core's findings.
+  Raised raised = 4;
+  // The finding the core raised of this match or added it to, when `raised` is `finding`.
+  // `immune finding <id>` shows it.
+  optional string finding_id = 5;
+}
+
+// What became of a match among the core's findings.
+enum Raised {
+  RAISED_UNSPECIFIED = 0;
+  // The rule is marked below high: its matches are counted and raise nothing.
+  RAISED_BELOW_HIGH = 1;
+  // It raised `finding_id`, or added to it.
+  RAISED_FINDING = 2;
+  // The core's own reading has not read this line yet. When it does, the match raises the
+  // rule's finding or adds to it.
+  RAISED_NOT_READ_YET = 3;
+  // The core's own reading read it, and the store cannot tell which of the rule's findings on
+  // this Mac it went to. The store keeps no event; a match is tied to the one finding of its
+  // rule still seen at or after the event's second, and here more than one was.
+  RAISED_UNTOLD = 4;
+}
+
+// A published rule, as the core ships it.
+message Rule {
+  // Its path in the shipped set, under `rules/sigma/`: the core's own name for it.
+  string file = 1;
+  // Its `id` and `title` as published, whole.
+  string id_text = 2;
+  string title_text = 3;
+  Level level = 4;
+  // ATT&CK techniques from its `attack.t…` tags, such as `T1027.001`.
+  repeated string techniques_text = 5;
+  // Its `author`, which the Detection Rule License asks a message made from a match to keep.
+  optional string author_text = 6;
+}
+
+// An event as the collector's log holds it. Exactly one of `program_start` and `file_event` is
+// set, the one `kind` names.
+message Event {
+  EventKind kind = 1;
+  ProgramStart program_start = 2;
+  FileEvent file_event = 3;
+}
+
+enum EventKind {
+  EVENT_KIND_UNSPECIFIED = 0;
+  EVENT_KIND_PROGRAM_START = 1;
+  EVENT_KIND_FILE_EVENT = 2;
+}
+
+// A program started: an `exec` message from Apple's `eslogger`, as the collector keeps it. The
+// environment is never kept. The ids are numbers as Endpoint Security gives them; nothing here
+// identifies a process beyond its pid, which is reused once the process ends.
+message ProgramStart {
+  // When it happened, from `time`: seconds since the epoch, and the nanoseconds within that
+  // second. The log gives microseconds. Absent when the log's time is not in the form eslogger
+  // writes.
+  optional int64 happened_at = 1;
+  optional uint32 happened_nanos = 2;
+  // The program started, `event.exec.target.executable.path`. Whole.
+  string executable_text = 3;
+  // The arguments, `event.exec.args`, the first included, each whole and in its own string.
+  repeated string args_text = 4;
+  // `event.exec.cwd.path`.
+  optional string working_directory_text = 5;
+  // From the started process's audit token: its pid and its effective user id.
+  int64 pid = 6;
+  optional int64 user_id = 7;
+  // `event.exec.target.ppid`.
+  optional int64 parent_pid = 8;
+  // The program the process ran before this `exec`, `process.executable.path`. After a fork or
+  // `posix_spawn` it is the parent's program; after an `exec` without a fork it is a wrapper that
+  // replaced itself, such as `nohup` or `env`.
+  optional string parent_executable_text = 9;
+  // Who signed the program started: `signing_id`, `team_id` and `is_platform_binary`.
+  optional string signing_id_text = 10;
+  optional string team_id_text = 11;
+  optional bool platform_binary = 12;
+}
+
+// A file created or renamed: a `create` or `rename` message from `eslogger`, as the collector
+// keeps it.
+message FileEvent {
+  // As in ProgramStart.
+  optional int64 happened_at = 1;
+  optional uint32 happened_nanos = 2;
+  FileAction action = 3;
+  // The file created, or where a renamed file went. Whole.
+  string path_text = 4;
+  // Where a renamed file was. Absent for a file created.
+  optional string source_text = 5;
+  // The program that did it, `process.executable.path`.
+  string executable_text = 6;
+}
+
+// What happened to a file, as `eslogger` names the event.
+enum FileAction {
+  FILE_ACTION_UNSPECIFIED = 0;
+  FILE_ACTION_CREATE = 1;
+  FILE_ACTION_RENAME = 2;
+}
+
+// What was read after `after` up to `continue_after`, and what was not. Adding the stretches of
+// answers that follow one another gives what one reading of the whole log gives.
+message Stretch {
+  // Lines read and evaluated by the rules of their kind.
+  uint64 program_starts = 1;
+  uint64 file_events = 2;
+  // Lines read that hold a kind of message the rules are not asked about.
+  uint64 other = 3;
+  // Lines that are not a message, such as a line split at the turn of an hour: not evaluated.
+  uint64 unreadable_lines = 4;
+  // File events the collector or the core could not make out, such as one whose path eslogger
+  // marked as cut short: not evaluated.
+  uint64 unreadable_file_events = 5;
+  // Program starts missing from eslogger's numbering: dropped before they reached the log.
+  uint64 program_starts_lost = 6;
+  // Times the numbering of program starts started again, as it does when eslogger restarts:
+  // each a loss of unknown size. The gap before this stretch's first program start counts here
+  // too when the number before it lay further back than the core looks.
+  uint64 program_starts_unknown_losses = 7;
+  // The same for files created and renamed.
+  uint64 file_events_lost = 8;
+  uint64 file_events_unknown_losses = 9;
+  // The lines after `after` up to `kept_from` were deleted before this answer read them: they
+  // are gone, and nothing in them was evaluated here.
+  bool gone = 10;
+  // Where the log kept goes on after lines that are gone. Absent when nothing is kept.
+  optional string kept_from = 11;
+}
+
+// The collector and what it records.
+message Collector {
+  // Its state now, judged from its log the way the core's own reading judges it: what
+  // `immune status` serves after its next reading. Only while it is `running` does a quiet
+  // stretch mean that little happened.
+  CollectorState state = 1;
+  // What made it `refused` or `failing`: who printed it, `eslogger` or `scripts`, and the last
+  // line printed.
+  optional string said_by = 2;
+  optional string said_text = 3;
+  // When its log was last written to.
+  optional int64 written_at = 4;
+  // Whether the collector installed here is established to record files created and renamed.
+  // When it is not, the rules for file events are listed in `unevaluated`.
+  bool file_events_collected = 5;
+  // Its state as `immune status` serves it now, from the store's latest reading, and when that
+  // reading was made. Absent when the store holds no reading of it.
+  optional CollectorState status_state = 6;
+  optional int64 status_read_at = 7;
+}
+
+// The collector's states, as `immune status` names them.
+enum CollectorState {
+  COLLECTOR_STATE_UNSPECIFIED = 0;
+  // Its launch daemon is not installed. A limit the user can lift, not a failure.
+  COLLECTOR_STATE_NOT_INSTALLED = 1;
+  COLLECTOR_STATE_RUNNING = 2;
+  // macOS refuses eslogger Full Disk Access.
+  COLLECTOR_STATE_REFUSED = 3;
+  // Its scripts print errors.
+  COLLECTOR_STATE_FAILING = 4;
+  // Nothing was written for 15 minutes.
+  COLLECTOR_STATE_SILENT = 5;
+  // The core's reading failed. Only `status_state` holds this: an answer whose reading fails
+  // is not given.
+  COLLECTOR_STATE_FAILED = 6;
+}
+
+// A shipped rule that is not evaluated over the events here, or only in part.
+message Unevaluated {
+  // Its path in the shipped set.
+  string file = 1;
+  // Its `id`, `title` and level. Absent for a rule that could not be read.
+  optional string id_text = 2;
+  optional string title_text = 3;
+  optional Level level = 4;
+  UnevaluatedReason reason = 5;
+  // The fields it needs that the events here do not give: for `needs_fields`, and for `in_part`
+  // those of the alternatives that never match.
+  repeated string fields_text = 6;
+  // For `needs_events` the kind of event it is about; for `not_parsed` what the parser said; for
+  // `not_collected` why the collector here is not taken to record file events.
+  optional string detail_text = 7;
+}
+
+// Why a rule judges nothing here, or only part of what it means.
+enum UnevaluatedReason {
+  UNEVALUATED_REASON_UNSPECIFIED = 0;
+  // It is about a kind of event the collector does not record.
+  UNEVALUATED_REASON_NEEDS_EVENTS = 1;
+  // A selection it cannot do without needs fields the events do not give.
+  UNEVALUATED_REASON_NEEDS_FIELDS = 2;
+  // It searches whole messages for keywords; the core has fields, not messages.
+  UNEVALUATED_REASON_KEYWORD_SEARCH = 3;
+  // It could not be read.
+  UNEVALUATED_REASON_NOT_PARSED = 4;
+  // Evaluated, and some alternatives of its selections never match here.
+  UNEVALUATED_REASON_IN_PART = 5;
+  // A rule for file events, and the collector here is not established to record them.
+  UNEVALUATED_REASON_NOT_COLLECTED = 6;
+}

@@ -53,7 +53,7 @@ A file event the filter cannot make out, or whose path `eslogger` marks as trunc
 
 The log folder and its files belong to root with mode 700 and 600. An access-control entry lets the account that ran the installer through `sudo` list the folder and read the files, and no other account. The installer refuses to run from a root shell, since it needs that account.
 
-The log holds the arguments of every program started on the Mac, by every account, root included, for up to a day. Any program running as the installing account can read it. On a Mac with one person that is the person's own data. On a shared Mac it is other people's too; the installer says before it starts that it records the program starts of every account.
+The log holds the arguments of every program started on the Mac, by every account, root included, for up to a day. Any program running as the installing account can read it, and `immune matches`, run as that account, prints the whole command line of every program start that matched a rule, whoever started it. On a Mac with one person that is the person's own data. On a shared Mac it is other people's too; the installer says before it starts that it records the program starts of every account.
 
 ## The log's life and size
 
@@ -128,9 +128,9 @@ What a match does:
 - A rule marked high or critical raises one finding per rule on the Mac, `sigma:<rule id>`. A repeated match adds to its count and its evidence and raises nothing new.
 - Severity is the rule's level. Confidence follows the rule's status: medium for `stable`, low otherwise. None of the shipped rules is `stable`, so no published rule is urgent and the app does not notify on one.
 - The rule's title, authors, techniques and licence travel with the finding as data (`published_rule`), as the Detection Rule License asks.
-- Matches of lower rules are a quiet count. They never change the headline, the count of findings or the icon.
+- Matches of lower rules are a quiet count. They never change the headline, the count of findings or the icon. The store keeps nothing else of them; `immune matches` reads them from the log, with their events, for the response layer.
 
-`immune rules --over-log` evaluates the rules over the log on disk without the store and prints per rule its level and count, never a command line.
+`immune rules --over-log` evaluates the rules over the log on disk without the store and prints per rule its level and count, never a command line. `immune matches` evaluates the log with the same code and prints every match with the event it matched, arguments whole, from a position the caller keeps (see [reference.md](reference.md#immune-matches)).
 
 ## What published rules need that the level does not give
 
