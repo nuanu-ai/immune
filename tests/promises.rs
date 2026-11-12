@@ -9115,10 +9115,20 @@ fn status_without_json_is_a_short_summary_for_a_person() {
 
 // Findings: what a rule found, kept until the owner answers it.
 
-/// The result of `immune findings --json` with these arguments, which must answer.
+/// `immune findings --json` with these arguments, the contract's `Findings`, which must answer.
 fn findings_json(store: &Path, args: &[&str]) -> serde_json::Value {
+    contract_json(store, "findings", args)
+}
+
+/// `immune finding <id> --json`, the contract's `Finding`, which must answer.
+fn finding_json(store: &Path, id: &str) -> serde_json::Value {
+    contract_json(store, "finding", &[id])
+}
+
+/// `immune <command> <args> --json`, a command of the contract, which must answer.
+fn contract_json(store: &Path, command: &str, args: &[&str]) -> serde_json::Value {
     let out = immune_cmd(store.parent().unwrap())
-        .arg("findings")
+        .arg(command)
         .args(args)
         .arg("--json")
         .arg("--store")
@@ -9131,11 +9141,21 @@ fn findings_json(store: &Path, args: &[&str]) -> serde_json::Value {
         String::from_utf8_lossy(&out.stderr)
     );
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(
-        (v["ok"].clone(), v["operation"].clone()),
-        (true.into(), "findings".into())
-    );
-    v["result"].clone()
+    assert_eq!(v["format"], 1);
+    v
+}
+
+/// The catalogue in `immune rules --json`: every rule of the core's own and every cause of what
+/// is not covered, with its words.
+fn catalogue(store: &Path) -> serde_json::Value {
+    let out = immune_cmd(store.parent().unwrap())
+        .args(["rules", "--json", "--store"])
+        .arg(store)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    v["result"]["catalogue"].clone()
 }
 
 /// `immune finding` with these arguments, as its exit code, stdout and stderr.
@@ -9160,15 +9180,23 @@ fn answer(store: &Path, args: &[&str]) {
     assert_eq!(code, Some(0), "{stderr}");
 }
 
-/// The findings of `immune findings --json` (open ones unless `--all`) as rule, state and where.
+/// The findings of `immune findings --json`, open ones unless `--all` is among `args`, as id,
+/// rule, state and where.
 fn open_findings(store: &Path, args: &[&str]) -> Vec<(String, String, String, String)> {
     findings_json(store, args)["findings"]
         .as_array()
         .unwrap()
         .iter()
+        .filter(|f| args.contains(&"--all") || f["finding"]["state"] == "open")
         .map(|f| {
-            let s = |k: &str| f[k].as_str().unwrap_or_default().to_string();
-            (s("id"), s("rule"), s("state"), s("where_text"))
+            let s = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
+            let r = &f["finding"];
+            (
+                s(&r["id"]),
+                s(&r["rule"]),
+                s(&r["state"]),
+                s(&f["where_text"]),
+            )
         })
         .collect()
 }
@@ -9687,7 +9715,7 @@ fn every_rule_has_an_id_plain_wording_levels_and_two_samples_that_hold() {
     // is not known to fire, nor to stay quiet; wording with the program's own terms or with
     // text from a source tells the owner nothing or tells him what an attacker wrote.
     let w = Watch::new("rules");
-    let r = findings_json(&w.store(), &[]);
+    let r = catalogue(&w.store());
     let levels = &r["levels"];
     let ids: Vec<&str> = r["rules"]
         .as_array()
@@ -9803,7 +9831,7 @@ fn a_change_in_a_watched_place_stays_open_through_quiet_runs_and_is_the_number_t
         .find(|i| i["type"] == "finding")
         .unwrap()
         .clone();
-    let catalogue = findings_json(&w.store(), &[]);
+    let catalogue = catalogue(&w.store());
     let rule = &catalogue["rules"][0];
     for part in ["title", "meaning", "advice"] {
         assert_eq!(item[part], rule[part]);
@@ -9862,16 +9890,27 @@ fn a_change_in_a_watched_place_stays_open_through_quiet_runs_and_is_the_number_t
 
     // What it rests on is the journal's entries, by reference.
     let id = item["id"].as_str().unwrap();
-    let (code, shown, _) = finding_out(&w.store(), &[id, "--json"]);
-    assert_eq!(code, Some(0));
-    let shown: serde_json::Value = serde_json::from_str(&shown).unwrap();
-    let rests: Vec<&str> = shown["result"]["finding"]["rests_on"]
+    let shown = finding_json(&w.store(), id);
+    let rests: Vec<&str> = shown["rests_on"]
         .as_array()
         .unwrap()
         .iter()
         .map(|b| b["predicate"].as_str().unwrap())
         .collect();
     assert_eq!(rests, ["located_on", "watched_as", "has_content"]);
+    // Read through the contract, the finding carries what the status shows of it, whole.
+    for part in ["title", "meaning", "advice", "kind", "where_text"] {
+        assert_eq!(shown[part], item[part], "{part}");
+    }
+    for part in ["rule", "state", "severity", "confidence", "urgent"] {
+        assert_eq!(shown["finding"][part], item[part], "{part}");
+    }
+    assert_eq!(shown["technique_text"], item["technique"]);
+    assert_eq!(
+        shown["evidence"],
+        serde_json::json!({ "place_changed": { "change": "new" } })
+    );
+    assert_eq!(shown["answer"], serde_json::Value::Null);
     let (_, text, _) = finding_out(&w.store(), &[id]);
     for said in [
         rule["title"].as_str().unwrap(),
@@ -9881,7 +9920,7 @@ fn a_change_in_a_watched_place_stays_open_through_quiet_runs_and_is_the_number_t
     ] {
         assert!(text.contains(said), "{said}\n{text}");
     }
-    assert_eq!(shown["result"]["answers_note"], r["answers_note"]);
+    assert_eq!(shown["answers_note"], r["answers_note"]);
 
     // A severe one first however old; of two as severe, the newer first; `immune findings`
     // lists them in the same order.
@@ -9958,7 +9997,10 @@ fn the_same_file_changing_again_is_one_open_finding_seen_later() {
     assert_eq!(open.len(), 1, "{open:?}");
     assert_eq!(open[0].1, "watched.shell-profile");
     let f = &findings_json(&w.store(), &[])["findings"][0];
-    assert!(f["last_seen"].as_str() > f["first_seen"].as_str(), "{f}");
+    assert!(
+        f["last_seen_at"].as_i64() > f["first_seen_at"].as_i64(),
+        "{f}"
+    );
     assert_eq!(
         rows(
             &w.store(),
@@ -9972,7 +10014,7 @@ fn the_same_file_changing_again_is_one_open_finding_seen_later() {
     let open = open_findings(&w.store(), &[]);
     assert_eq!(open.len(), 1, "{open:?}");
     assert_eq!(
-        findings_json(&w.store(), &[])["findings"][0]["change"],
+        finding_json(&w.store(), &open[0].0)["evidence"]["place_changed"]["change"],
         "gone"
     );
 }
@@ -10041,9 +10083,7 @@ fn expected_hides_a_finding_until_its_end_and_only_a_change_after_the_mark_opens
     let (again, quiet) = (id_of(".zshrc"), id_of(".zlogin"));
     // Two files changed in one run: each finding rests on its own file's entries only.
     for (id, path) in [(&again, ".zshrc"), (&quiet, ".zlogin")] {
-        let (_, shown, _) = finding_out(&w.store(), &[id, "--json"]);
-        let shown: serde_json::Value = serde_json::from_str(&shown).unwrap();
-        let rests = shown["result"]["finding"]["rests_on"]
+        let rests = finding_json(&w.store(), id)["rests_on"]
             .as_array()
             .unwrap()
             .clone();
@@ -10072,11 +10112,15 @@ fn expected_hides_a_finding_until_its_end_and_only_a_change_after_the_mark_opens
         .as_array()
         .unwrap()
         .iter()
-        .find(|f| f["id"] == again.as_str())
+        .find(|f| f["finding"]["id"] == again.as_str())
         .unwrap();
-    assert_eq!(marked["state"], "expected");
+    assert_eq!(marked["finding"]["state"], "expected");
     assert_eq!(marked["answer"]["reason_text"], reason);
-    assert!(marked["answer"]["until"].as_str().unwrap() > marked["answer"]["at"].as_str().unwrap());
+    assert_eq!(
+        marked["answer"]["until_at"].as_i64().unwrap()
+            - marked["answer"]["given_at"].as_i64().unwrap(),
+        2_592_000
+    );
     assert!(
         rows(
             &w.store(),
@@ -10431,7 +10475,7 @@ fn an_answer_says_who_gave_it_in_the_app_through_an_agent_or_from_the_command_li
             .as_array()
             .unwrap()
             .iter()
-            .find(|f| f["id"] == id)
+            .find(|f| f["finding"]["id"] == id)
             .unwrap();
         (
             f["answer"]["via"].as_str().unwrap().to_string(),
@@ -10593,7 +10637,7 @@ fn an_answer_from_before_who_gave_it_was_kept_is_not_shown_as_given_outside_the_
         .as_array()
         .unwrap()
         .iter()
-        .find(|f| f["id"] == profile.as_str())
+        .find(|f| f["finding"]["id"] == profile.as_str())
         .unwrap();
     assert_eq!(f["answer"]["via"], "unknown");
     let (_, text, _) = finding_out(&w.store(), &[&profile]);
@@ -11462,7 +11506,7 @@ fn on_a_mac_where_nothing_was_found_and_no_watcher_ran_every_rule_is_on_the_summ
     w.run();
     let pages = view_pages(&w.store());
     let told = section(&pages[0].1, "watched-here");
-    let rules = findings_json(&w.store(), &[]);
+    let rules = catalogue(&w.store());
     let rules = rules["rules"].as_array().unwrap();
     assert_eq!(rules.len(), 20);
     for r in rules {

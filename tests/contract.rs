@@ -14,7 +14,13 @@ use prost_types::field_descriptor_proto::{Label, Type};
 use std::path::Path;
 
 /// The schema's files, relative to `contract/`.
-const SCHEMA: [&str; 2] = ["immune/v1/known.proto", "immune/v1/matches.proto"];
+const SCHEMA: [&str; 5] = [
+    "immune/v1/common.proto",
+    "immune/v1/event.proto",
+    "immune/v1/known.proto",
+    "immune/v1/matches.proto",
+    "immune/v1/findings.proto",
+];
 /// The generated file, relative to the crate.
 const GENERATED: &str = "src/contract/immune.v1.rs";
 

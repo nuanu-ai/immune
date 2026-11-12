@@ -2825,7 +2825,7 @@ func processes(naming text: String) async -> [String] {
 @MainActor
 struct RealImmune {
   @Test(
-    "The app sees immune watch start, a planted file gives a read line and one more thing to look at, and stopping leaves no process"
+    "The app sees immune watch start, a planted file gives a read line and one more thing to look at, which the command its card hands an agent reads whole, and stopping leaves no process"
   )
   func watchAndRead() async throws {
     let immune = try #require(realImmune)
@@ -2867,6 +2867,25 @@ struct RealImmune {
       status.needsALook?.contains { $0.whereText?.hasSuffix("org.example.planted.plist") == true }
         == true)
     #expect(status.needsALook?.allSatisfy { $0.urgent == false } == true)
+
+    // The command the card hands an agent reads that finding whole, as the contract's
+    // message, with the words and the place the card shows.
+    let planted = try #require(
+      status.needsALook?.first { $0.whereText?.hasSuffix("org.example.planted.plist") == true })
+    let id = try #require(planted.id)
+    let row = Row(
+      id: 0, item: planted, now: Date(),
+      immune: ImmuneCommand(path: immune.path, extra: ["--store", store]))
+    #expect(row.readCommand.contains(" finding \(id) --json "))
+    let read = await ProcessRunner(executable: immune, environment: env).run(
+      ["finding", id, "--json", "--store", store], timeout: 30)
+    #expect(read.exitCode == 0)
+    let message = try #require(
+      try JSONSerialization.jsonObject(with: read.stdout) as? [String: Any])
+    #expect(message["format"] as? Int == 1)
+    #expect((message["finding"] as? [String: Any])?["id"] as? String == id)
+    #expect(message["title"] as? String == planted.title)
+    #expect(message["where_text"] as? String == planted.whereText)
 
     // No full run has happened: the panel still shows what Immune serves.
     let p = Panel.of(model.reading, now: Date())

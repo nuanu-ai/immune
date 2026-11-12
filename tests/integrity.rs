@@ -130,21 +130,33 @@ impl Estate {
         self.0.join("home")
     }
 
-    /// The open findings, as rule, where and value.
-    fn findings(&self) -> Vec<(String, String, String)> {
+    /// `immune <args> --json --store <this store>`, as the contract's message.
+    fn contract(&self, args: &[&str]) -> serde_json::Value {
         let out = Command::new(env!("CARGO_BIN_EXE_immune"))
-            .args(["findings", "--json", "--store"])
+            .args(args)
+            .args(["--json", "--store"])
             .arg(self.store())
             .output()
             .unwrap();
-        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-        v["result"]["findings"]
+        assert!(out.status.success());
+        serde_json::from_slice(&out.stdout).unwrap()
+    }
+
+    /// The open findings, as rule, where and what the seal or the signer became.
+    fn findings(&self) -> Vec<(String, String, String)> {
+        let s = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
+        self.contract(&["findings"])["findings"]
             .as_array()
             .unwrap()
             .iter()
+            .filter(|f| f["finding"]["state"] == "open")
             .map(|f| {
-                let s = |k: &str| f[k].as_str().unwrap_or_default().to_string();
-                (s("rule"), s("where_text"), s("value_text"))
+                let one = self.contract(&["finding", f["finding"]["id"].as_str().unwrap()]);
+                (
+                    s(&f["finding"]["rule"]),
+                    s(&f["where_text"]),
+                    s(&one["evidence"]["changed_in_place"]["became_text"]),
+                )
             })
             .collect()
     }

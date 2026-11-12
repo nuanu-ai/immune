@@ -1024,13 +1024,14 @@ fn found(mac: &Mac) -> Vec<(String, String)> {
         .output()
         .unwrap();
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
-    let mut found: Vec<(String, String)> = v["result"]["findings"]
+    let mut found: Vec<(String, String)> = v["findings"]
         .as_array()
         .unwrap()
         .iter()
+        .filter(|f| f["finding"]["state"] == "open")
         .map(|f| {
-            let s = |k: &str| f[k].as_str().unwrap_or_default().to_string();
-            (s("rule"), s("where_text"))
+            let s = |v: &Value| v.as_str().unwrap_or_default().to_string();
+            (s(&f["finding"]["rule"]), s(&f["where_text"]))
         })
         .collect();
     found.sort();

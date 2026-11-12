@@ -477,6 +477,7 @@ pub fn open(path: &Path) -> Res<Connection> {
         tx.commit()?;
     }
     check_format(&conn, path)?;
+    give_id(&conn)?;
     conn.execute_batch(VOCABULARY)?;
     crate::autorun::add_kinds(&conn)?;
     conn.execute_batch(OWNER)?;
@@ -520,6 +521,39 @@ fn widen_journal(conn: &mut Connection) -> Res<()> {
          DROP TABLE journal_before_widening;",
     )?;
     tx.commit()?;
+    Ok(())
+}
+
+/// The store's own id, as every message of the contract carries it (`store_id`): a finding's id
+/// is unique only within one store, and a store deleted and made again can give it to another
+/// finding. `None` for a store an older build made that nothing has opened for writing since.
+pub fn id(conn: &Connection) -> rusqlite::Result<Option<String>> {
+    conn.query_row("SELECT value FROM meta WHERE key = 'store_id'", [], |r| {
+        r.get(0)
+    })
+    .optional()
+}
+
+/// Gives the store its id once: when it is made, or the first time this build opens an older
+/// store for writing. 16 random bytes from `getentropy`, which macOS ships, as hexadecimal. It is
+/// never derived from anything on the Mac, so it says nothing about it. An id already kept is
+/// never replaced, so two processes that open a store without one at once keep the first.
+fn give_id(conn: &Connection) -> Res<()> {
+    let mut bytes = [0u8; 16];
+    // SAFETY: the pointer and the length are those of `bytes`, which outlives the call;
+    // getentropy fills at most 256 bytes and writes nothing else.
+    if unsafe { libc::getentropy(bytes.as_mut_ptr().cast(), bytes.len()) } != 0 {
+        return Err(format!(
+            "no random bytes for the store's id: {}",
+            std::io::Error::last_os_error()
+        )
+        .into());
+    }
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    conn.execute(
+        "INSERT OR IGNORE INTO meta (key, value) VALUES ('store_id', ?1)",
+        [hex],
+    )?;
     Ok(())
 }
 

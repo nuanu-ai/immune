@@ -1,10 +1,7 @@
 // The rule matches the core hands over: the answer to `immune matches`. Version 1 of the contract
 // between the core and a program that runs it. How a message is printed and read, and the
-// conventions for text, references, times and changes, are those of `known.proto`. The JSON form
-// is Immune's own, made by the generated types: it is not protobuf's JSON mapping. A field is
-// named as here, an enum value prints as its name without the enum's prefix and in lower case,
-// an absent optional field prints as null, and a one-of prints as an object with one key, the
-// name of the case that is set, such as `{"program_start": {...}}`.
+// conventions for text, references, times and changes, are in `common.proto`; the rules and the
+// events are in `event.proto`.
 //
 // The core evaluates SigmaHQ's published rules over the program starts and file events its
 // collector writes to a log that lives a day. This answer gives every match of every rule, of
@@ -31,15 +28,16 @@
 //   the fields in its `fields_text`.
 // Otherwise the answer says what the core did not see, and the reader does not take it for calm.
 //
-// Values that will be added. A reader meets values of `Raised`, `CollectorState`,
-// `UnevaluatedReason` and `FileAction`, and cases of `Event`'s `body`, that it does not know: the
-// core adds them within version 1. It treats one it does not know as something it cannot judge.
+// Values that will be added. A reader meets values of `Raised`, `CollectorState` and
+// `UnevaluatedReason`, and those `event.proto` names, that it does not know: the core adds them
+// within version 1. It treats one it does not know as something it cannot judge.
 
 syntax = "proto3";
 
 package immune.v1;
 
-import "immune/v1/known.proto";
+import "immune/v1/common.proto";
+import "immune/v1/event.proto";
 
 // The answer to `immune matches`.
 message Matches {
@@ -65,6 +63,10 @@ message Matches {
   Collector collector = 8;
   // The shipped rules that are not evaluated over these events, or only in part, each with why.
   repeated Unevaluated unevaluated = 9;
+  // The store this answer was read from, as in every answer (`common.proto`): random, made once
+  // when the store was made. Absent for a store an older build made that no command has written
+  // to since: until one does, nothing tells it apart from another store.
+  optional string store_id = 10;
 }
 
 // A published rule matched an event. A match is named by its `position` and its rule's `name`.
@@ -104,92 +106,6 @@ enum Raised {
   // It went to one of the rule's findings on this Mac, and the core cannot tell which. The reader
   // judges the match itself; `immune findings --all` lists the rule's findings.
   RAISED_UNRECORDED = 5;
-}
-
-// A published rule, as the core ships it.
-message Rule {
-  // The name findings give the rule, `sigma:<id>`: the store's name for it.
-  string name = 1;
-  // Its path in the shipped set, under `rules/sigma/`, which moves between upstream commits.
-  string file = 2;
-  // Its `id` and `title` as published, whole.
-  string id_text = 3;
-  string title_text = 4;
-  Level level = 5;
-  // ATT&CK techniques from its `attack.t…` tags, such as `T1027.001`.
-  repeated string techniques_text = 6;
-  // Its `author`, which the Detection Rule License asks a message made from a match to keep.
-  optional string author_text = 7;
-}
-
-// An event as the collector's log holds it. The case of `body` that is set names its kind.
-message Event {
-  oneof body {
-    ProgramStart program_start = 1;
-    FileEvent file_event = 2;
-  }
-}
-
-// A process, as far as the collector keeps it. Only `executable_text` is always there; the rest
-// is absent where the event does not give it. Nothing here identifies a process beyond its pid,
-// which is reused once the process ends.
-message Process {
-  // Its program, the path of its executable. Whole.
-  string executable_text = 1;
-  // Its pid and its effective user id, from its audit token.
-  optional int64 pid = 2;
-  optional int64 user_id = 3;
-  // Who signed its program: `signing_id`, `team_id` and `is_platform_binary`.
-  optional string signing_id_text = 4;
-  optional string team_id_text = 5;
-  optional bool platform_binary = 6;
-}
-
-// A program started: an `exec` message from Apple's `eslogger`, as the collector keeps it. The
-// environment is never kept.
-message ProgramStart {
-  // When it happened, from `time`: seconds since the epoch, and the nanoseconds within that
-  // second. The log gives microseconds. Absent when the log's time is not in the form eslogger
-  // writes.
-  optional int64 happened_at = 1;
-  optional uint32 happened_nanos = 2;
-  // The process with the program started, `event.exec.target`: its executable, pid, user id and
-  // signature.
-  Process process = 3;
-  // The same process before this `exec`, `process` in eslogger's message: today only its
-  // program, `process.executable.path`. After a fork or `posix_spawn` that is the parent's
-  // program; after an `exec` without a fork it is a wrapper that replaced itself, such as `nohup`
-  // or `env`. Absent when the log does not give it.
-  Process instigator = 4;
-  // `event.exec.target.ppid`.
-  optional int64 parent_pid = 5;
-  // The arguments, `event.exec.args`, the first included, each whole and in its own string.
-  repeated string args_text = 6;
-  // `event.exec.cwd.path`.
-  optional string working_directory_text = 7;
-}
-
-// A file created or renamed: a `create` or `rename` message from `eslogger`, as the collector
-// keeps it.
-message FileEvent {
-  // As in ProgramStart.
-  optional int64 happened_at = 1;
-  optional uint32 happened_nanos = 2;
-  FileAction action = 3;
-  // The file created, or where a renamed file went. Whole.
-  string path_text = 4;
-  // Where a renamed file was. Absent for a file created.
-  optional string source_text = 5;
-  // The process that did it, `process` in eslogger's message: today only its program,
-  // `process.executable.path`.
-  Process instigator = 6;
-}
-
-// What happened to a file, as `eslogger` names the event.
-enum FileAction {
-  FILE_ACTION_UNSPECIFIED = 0;
-  FILE_ACTION_CREATE = 1;
-  FILE_ACTION_RENAME = 2;
 }
 
 // What was read after `after` up to `continue_after`, and what was not. Adding the stretches of

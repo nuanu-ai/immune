@@ -76,18 +76,27 @@ fn sample_with(dir: &Dir, at: i64, processes: &[Value], connections: &[Value]) -
     v["result"].clone()
 }
 
-fn findings(dir: &Dir) -> Vec<Value> {
-    let out = immune(dir, &["findings", "--all", "--json"]);
+/// `immune <args> --json`, which must answer.
+fn contract(dir: &Dir, args: &[&str]) -> Value {
+    let mut args = args.to_vec();
+    args.push("--json");
+    let out = immune(dir, &args);
     assert!(
         out.status.success(),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
-    v["result"]["findings"]
+    serde_json::from_slice(&out.stdout).unwrap()
+}
+
+/// Every finding, in every state, each read whole with `immune finding <id> --json`.
+fn findings(dir: &Dir) -> Vec<Value> {
+    contract(dir, &["findings"])["findings"]
         .as_array()
-        .cloned()
-        .unwrap_or_default()
+        .unwrap()
+        .iter()
+        .map(|f| contract(dir, &["finding", f["finding"]["id"].as_str().unwrap()]))
+        .collect()
 }
 
 /// A process as a reading gives it.
@@ -167,15 +176,19 @@ fn a_detached_interpreter_given_code_is_a_finding_once_two_samples_a_minute_apar
     let items = findings(&dir);
     assert_eq!(items.len(), 1, "{items:?}");
     let f = &items[0];
-    assert_eq!(f["rule"], "processes.detached-inline-code");
-    assert_eq!(f["technique"], "T1059");
+    assert_eq!(f["finding"]["rule"], "processes.detached-inline-code");
+    assert_eq!(f["technique_text"], "T1059");
     assert_eq!(
-        (&f["severity"], &f["confidence"]),
+        (&f["finding"]["severity"], &f["finding"]["confidence"]),
         (&json!("high"), &json!("medium"))
     );
-    assert_eq!(f["state"], "open");
+    assert_eq!(f["finding"]["state"], "open");
     assert_eq!(f["where_text"], "/opt/tools/bin/node");
-    assert_eq!(f["value_text"], Value::Null);
+    // The process by its pid and start, which name it; never its command line.
+    assert_eq!(
+        f["evidence"],
+        json!({ "detached_process": { "pid": 4242, "start_micros": 7 } })
+    );
 
     // It stays one finding while the process lives.
     let fourth = sample(&dir, T + 120, &table(T + 120));
@@ -292,7 +305,7 @@ fn after_the_owner_has_seen_it_the_same_process_raises_nothing_and_another_one_d
     let found = findings(&dir);
     // A program under the home folder is shown as the other readers show it.
     assert_eq!(found[0]["where_text"], "~/.local/bin/python3.12");
-    let id = found[0]["id"].as_str().unwrap().to_string();
+    let id = found[0]["finding"]["id"].as_str().unwrap().to_string();
     assert!(immune(&dir, &["finding", &id, "seen"]).status.success());
 
     assert_eq!(sample(&dir, T + 120, &one(10))["findings_opened"], 0);
@@ -300,9 +313,41 @@ fn after_the_owner_has_seen_it_the_same_process_raises_nothing_and_another_one_d
     assert_eq!(sample(&dir, T + 240, &one(11))["findings_opened"], 1);
     let open: Vec<_> = findings(&dir)
         .into_iter()
-        .filter(|f| f["state"] == "open")
+        .filter(|f| f["finding"]["state"] == "open")
         .collect();
     assert_eq!(open.len(), 1);
+    // The new finding names the process that raised it, not the one already seen.
+    assert_eq!(
+        open[0]["evidence"],
+        json!({ "detached_process": { "pid": 11, "start_micros": 7 } })
+    );
+}
+
+#[test]
+fn a_finding_still_open_names_the_latest_process_of_its_program_a_sample_saw() {
+    // A response layer that looks at the process looks at the one running now.
+    let dir = Dir::new("latest");
+    let exe = dir.0.join(".local/bin/python3.12");
+    let one = |pid| {
+        vec![process(
+            pid,
+            7,
+            1,
+            exe.to_str().unwrap(),
+            &["python3", "-c", "x"],
+            false,
+        )]
+    };
+    sample(&dir, T, &one(10));
+    sample(&dir, T + 60, &one(10));
+    sample(&dir, T + 120, &one(11));
+    sample(&dir, T + 180, &one(11));
+    let found = findings(&dir);
+    assert_eq!(found.len(), 1);
+    assert_eq!(
+        found[0]["evidence"],
+        json!({ "detached_process": { "pid": 11, "start_micros": 7 } })
+    );
 }
 
 #[test]
@@ -491,15 +536,18 @@ fn a_connection_to_a_listed_address_is_a_finding_once_and_a_listed_name_is_never
     assert_eq!(said["connections"]["matched_indicators"], 1);
     assert_eq!(said["findings_opened"], 1);
     let f = &findings(&dir)[0];
-    assert_eq!(f["rule"], "indicator.match");
+    assert_eq!(f["finding"]["rule"], "indicator.match");
     assert_eq!(f["where_text"], "/opt/tools/bin/agent");
-    assert_eq!(f["value_text"], "[ipv4-addr:value = '203.0.113.47']");
+    assert_eq!(
+        f["evidence"]["indicator_matched"]["indicators_text"],
+        "[ipv4-addr:value = '203.0.113.47']"
+    );
     // The connection stays: one finding, and once the owner has seen it, it stays quiet.
     assert_eq!(
         sample_with(&dir, T + 30, &[tool(60)], &conns[..1])["findings_opened"],
         0
     );
-    let id = f["id"].as_str().unwrap().to_string();
+    let id = f["finding"]["id"].as_str().unwrap().to_string();
     assert!(immune(&dir, &["finding", &id, "seen"]).status.success());
     assert_eq!(
         sample_with(&dir, T + 60, &[tool(60)], &conns[..1])["findings_opened"],

@@ -124,15 +124,15 @@ More detail: [how it works](docs/how-it-works.md), [what is read and every comma
 
 ## For AI agents
 
-The first user of Immune is your coding agent, and the commands are its interface. Every report command that takes `--json` prints one envelope with `ok`, `errors` and `result`. `immune project`, `immune program`, `immune machine` and `immune matches` each print one protobuf message, or the same message as JSON with `--json`, and use the envelope only for a failure. Exit code 0 means answered, 1 from `immune matches` that the event log could not be read, 2 a misuse or an unknown id, 3 an unreadable store, 4 a check holding the store (ask again), and 5 from `immune watch` means another watcher has the store. Nothing asks an interactive question.
+The first user of Immune is your coding agent, and the commands are its interface. Every report command that takes `--json` prints one envelope with `ok`, `errors` and `result`. `immune project`, `immune program`, `immune machine`, `immune matches`, `immune findings` and `immune finding <id>` each print one protobuf message with `--proto`, or the same message as JSON with `--json`, and use the envelope only for a failure. The first four print the protobuf message without either flag; the two about findings print text for a person. Exit code 0 means answered, 1 from `immune matches` that the event log could not be read, 2 a misuse or an unknown id, 3 an unreadable store, 4 a check holding the store (ask again), and 5 from `immune watch` means another watcher has the store. Nothing asks an interactive question.
 
 | Command | Answers |
 |---|---|
 | `immune status --json` | Whether this Mac is watched and quiet: what needs a look, what is not covered, what cannot be judged |
-| `immune findings --json`, `immune finding <id> --json` | Findings with the journal entries each rests on (`rests_on`) |
+| `immune findings --json`, `immune finding <id> --json` | Every finding in every state; one finding whole, with its evidence, the journal entries it rests on (`rests_on`) and your answer |
 | `immune finding <id> expected --reason <text> --via agent` | Your answer, given through the agent; also `seen` and `reopen` |
 | `immune vulnerabilities --json`, `immune vulnerability <id> --json` | Known vulnerabilities in your projects' packages, and the answer for one record or CVE in every project, with what it rests on |
-| `immune rules --json` | The shipped Sigma rules: which are evaluated in full, in part or not at all, with the reason, and how often each matched |
+| `immune rules --json` | The shipped Sigma rules: which are evaluated in full, in part or not at all, with the reason, and how often each matched; and the words of every rule of Immune's own |
 | `immune project <path> --json` | What Immune knows of one project: whether it knows it at all, its facts with what each rests on, which readings speak for it and whether each was full, and its findings |
 | `immune program <path or name> --json` | The same for one installed app, Homebrew package or global npm package, found by a path inside it or by its name |
 | `immune machine [<name>] --json` | The same for this Mac, or for a server or tailnet peer the Mac knows, with what is on it one level deep |
@@ -199,7 +199,7 @@ These are the only requests Immune makes. They go through `/usr/bin/curl` over H
 
 ## Artificial Immunity
 
-[Artificial Immunity](https://immunity.bot) is a closed product from Nuanu AI Lab built on top of Immune. It decides what to do about a finding: triage with a model, response, handing work to an agent. It runs this binary unchanged and shares no code with it. What it reads and writes is defined by a protobuf schema in this repository, in `contract/immune/v1/`. So far the schema holds two messages. `immune project`, `immune program` and `immune machine` print what Immune knows of one project, program or machine, and `immune matches` prints what Immune concluded and is not sure of: every rule match with the event it matched, and what was read and lost. Its first version will also hold a verdict. Immune does not stream every event out. The other commands print their own JSON, the same one an agent uses. Immune works on its own and does not need Artificial Immunity.
+[Artificial Immunity](https://immunity.bot) is a closed product from Nuanu AI Lab built on top of Immune. It decides what to do about a finding: triage with a model, response, handing work to an agent. It runs this binary unchanged and shares no code with it. What it reads and writes is defined by a protobuf schema in this repository, in `contract/immune/v1/`. So far the schema holds four messages. `immune project`, `immune program` and `immune machine` print what Immune knows of one project, program or machine. `immune matches` prints what Immune concluded and is not sure of: every rule match with the event it matched, and what was read and lost. `immune findings` lists every finding, and `immune finding <id>` gives one whole, with its evidence and the person's answer. Every message names the store it came from. Its first version will also hold a verdict. Immune does not stream every event out. The other commands print their own JSON, the same one an agent uses. Immune works on its own and does not need Artificial Immunity.
 
 ## Status
 

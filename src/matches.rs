@@ -58,12 +58,12 @@ pub struct MatchesArgs {
 
 /// Reads the arguments after `matches`.
 pub fn parse(mut it: impl Iterator<Item = String>) -> Result<MatchesArgs, String> {
-    let (mut store, mut json, mut after, mut limit, mut root) = (None, false, None, LIMIT, None);
+    let (mut store, mut form, mut after, mut limit, mut root) = (None, None, None, LIMIT, None);
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--store" => store = Some(crate::value(&mut it, &arg)?.into()),
             "--system-root" => root = Some(crate::value(&mut it, &arg)?.into()),
-            "--json" => json = true,
+            _ if known::take_form(&arg, &mut form)? => {}
             "--after" => {
                 let p = crate::value(&mut it, &arg)?;
                 let place = Place::parse(&p).ok_or(AFTER)?;
@@ -81,7 +81,7 @@ pub fn parse(mut it: impl Iterator<Item = String>) -> Result<MatchesArgs, String
     }
     Ok(MatchesArgs {
         store: store.map_or_else(crate::default_store, Ok)?,
-        json,
+        json: form == Some(known::Form::Json),
         after,
         limit,
         system_root: root.unwrap_or_else(|| PathBuf::from("/")),
@@ -187,6 +187,7 @@ fn read(args: &MatchesArgs, now: i64) -> Result<v1::Matches, Failure> {
         format: FORMAT,
         answered_at: now,
         after: after.map(|(text, _)| text.clone()),
+        store_id: store::id(&tx).map_err(|e| unreadable(&e))?,
         ..Default::default()
     };
     let status_state = |c: &mut v1::Collector| {
@@ -298,7 +299,7 @@ fn whole(s: &str) -> String {
     known::whole(s)
 }
 
-fn rule(file: &str, m: &Meta) -> v1::Rule {
+pub fn rule(file: &str, m: &Meta) -> v1::Rule {
     v1::Rule {
         name: m.finding_rule.clone(),
         file: file.to_string(),
@@ -319,7 +320,7 @@ fn program(executable: &str) -> v1::Process {
 }
 
 /// An event as the contract gives it: every field the log holds, each whole.
-fn event(e: &Evidence) -> v1::Event {
+pub fn event(e: &Evidence) -> v1::Event {
     use v1::event::Body;
     let when = happened(e);
     let (happened_at, happened_nanos) = (when.map(|w| w.0), when.map(|w| w.1));

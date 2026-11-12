@@ -1,0 +1,101 @@
+// The events the collector writes and the published rules that match them, as both `Matches`
+// (`matches.proto`) and a finding of a published rule (`findings.proto`) give them. Version 1 of
+// the contract; how a message is read is in `common.proto`.
+//
+// Values that will be added. A reader meets values of `FileAction`, and cases of `Event`'s
+// `body`, that it does not know: the core adds them within version 1. It treats one it does not
+// know as something it cannot judge.
+
+syntax = "proto3";
+
+package immune.v1;
+
+import "immune/v1/common.proto";
+
+// A published rule, as the core ships it.
+message Rule {
+  // The name findings give the rule, `sigma:<id>`: the store's name for it.
+  string name = 1;
+  // Its path in the shipped set, under `rules/sigma/`, which moves between upstream commits.
+  string file = 2;
+  // Its `id` and `title` as published, whole.
+  string id_text = 3;
+  string title_text = 4;
+  Level level = 5;
+  // ATT&CK techniques from its `attack.t…` tags, such as `T1027.001`.
+  repeated string techniques_text = 6;
+  // Its `author`, which the Detection Rule License asks a message made from a match to keep.
+  optional string author_text = 7;
+}
+
+// An event as the collector's log holds it. The case of `body` that is set names its kind; a
+// kind the reader does not know reads as no event.
+message Event {
+  oneof body {
+    ProgramStart program_start = 1;
+    FileEvent file_event = 2;
+  }
+}
+
+// A process, as far as the collector keeps it. Only `executable_text` is always there; the rest
+// is absent where the event does not give it. Nothing here identifies a process beyond its pid,
+// which is reused once the process ends.
+message Process {
+  // Its program, the path of its executable. Whole.
+  string executable_text = 1;
+  // Its pid and its effective user id, from its audit token.
+  optional int64 pid = 2;
+  optional int64 user_id = 3;
+  // Who signed its program: `signing_id`, `team_id` and `is_platform_binary`.
+  optional string signing_id_text = 4;
+  optional string team_id_text = 5;
+  optional bool platform_binary = 6;
+}
+
+// A program started: an `exec` message from Apple's `eslogger`, as the collector keeps it. The
+// environment is never kept.
+message ProgramStart {
+  // When it happened, from `time`: seconds since the epoch, and the nanoseconds within that
+  // second. The log gives microseconds. Absent when the log's time is not in the form eslogger
+  // writes.
+  optional int64 happened_at = 1;
+  optional uint32 happened_nanos = 2;
+  // The process with the program started, `event.exec.target`: its executable, pid, user id and
+  // signature.
+  Process process = 3;
+  // The same process before this `exec`, `process` in eslogger's message: today only its
+  // program, `process.executable.path`. After a fork or `posix_spawn` that is the parent's
+  // program; after an `exec` without a fork it is a wrapper that replaced itself, such as `nohup`
+  // or `env`. Absent when the log does not give it.
+  Process instigator = 4;
+  // `event.exec.target.ppid`.
+  optional int64 parent_pid = 5;
+  // The arguments, `event.exec.args`, the first included, each whole and in its own string.
+  repeated string args_text = 6;
+  // `event.exec.cwd.path`.
+  optional string working_directory_text = 7;
+}
+
+// A file created or renamed: a `create` or `rename` message from `eslogger`, as the collector
+// keeps it.
+message FileEvent {
+  // As in ProgramStart.
+  optional int64 happened_at = 1;
+  optional uint32 happened_nanos = 2;
+  FileAction action = 3;
+  // The file created, or where a renamed file went. Whole.
+  string path_text = 4;
+  // Where a renamed file was. Absent for a file created.
+  optional string source_text = 5;
+  // The process that did it, `process` in eslogger's message: today only its program,
+  // `process.executable.path`.
+  Process instigator = 6;
+}
+
+// What happened to a file, as `eslogger` names the event. `UNSPECIFIED`, or a value the reader
+// does not know, is read as something it cannot judge.
+enum FileAction {
+  FILE_ACTION_UNSPECIFIED = 0;
+  FILE_ACTION_CREATE = 1;
+  FILE_ACTION_RENAME = 2;
+}

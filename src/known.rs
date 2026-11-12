@@ -87,7 +87,31 @@ pub fn spelled_otherwise(ids: Vec<String>, example: &'static str) -> Refused {
     }
 }
 
-/// The words after the command: `--store`, `--json`, and the rest in order.
+/// The form a command of the contract prints its message in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Form {
+    /// Binary protobuf, `--proto`: what a command of the contract prints when no form is named.
+    Proto,
+    /// The same message as one line of JSON, `--json`.
+    Json,
+}
+
+/// Takes `--json` or `--proto` into `form`, so that a program can always name the form it
+/// wants; false for any other argument. Naming both is a misuse.
+pub fn take_form(arg: &str, form: &mut Option<Form>) -> Result<bool, String> {
+    let named = match arg {
+        "--json" => Form::Json,
+        "--proto" => Form::Proto,
+        _ => return Ok(false),
+    };
+    if form.is_some_and(|f| f != named) {
+        return Err("--json and --proto each name the form of the answer; give one".to_string());
+    }
+    *form = Some(named);
+    Ok(true)
+}
+
+/// The words after the command: `--store`, the form, and the rest in order.
 pub struct Words {
     pub store: PathBuf,
     pub json: bool,
@@ -96,18 +120,18 @@ pub struct Words {
 
 /// Reads the arguments after a command of the contract.
 pub fn words(mut it: impl Iterator<Item = String>) -> Result<Words, String> {
-    let (mut store, mut json, mut words) = (None, false, Vec::new());
+    let (mut store, mut form, mut words) = (None, None, Vec::new());
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--store" => store = Some(crate::value(&mut it, &arg)?.into()),
-            "--json" => json = true,
+            _ if take_form(&arg, &mut form)? => {}
             _ if arg.starts_with("--") => return Err(format!("unexpected argument: {arg}")),
             _ => words.push(arg),
         }
     }
     Ok(Words {
         store: store.map_or_else(crate::default_store, Ok)?,
-        json,
+        json: form == Some(Form::Json),
         words,
     })
 }
@@ -136,23 +160,26 @@ pub fn path_of(asked: &str, home: &Path) -> Option<String> {
 /// Answers a command of the contract: the message on stdout, binary or JSON; a refusal as a
 /// misuse; a store that cannot be read the way the report commands say it. `ask` turns the
 /// question into the answer, in one read transaction so that it is of one state of the store.
-pub fn command(
+pub fn command<M: Message + serde::Serialize>(
     op: &str,
     store: &Path,
     json: bool,
-    ask: impl FnOnce(&Connection, i64) -> rusqlite::Result<Result<v1::Known, Refused>>,
+    ask: impl FnOnce(&Connection, i64) -> rusqlite::Result<Result<M, Refused>>,
 ) -> ExitCode {
-    let known = match read(store, |conn| ask(conn, crate::now_secs())) {
-        Ok(Ok(known)) => known,
+    let answer = match read(store, |conn| ask(conn, crate::now_secs())) {
+        Ok(Ok(answer)) => answer,
         Ok(Err(refused)) => return refuse(op, json, &refused),
         Err(e) => return failed(op, json, &e),
     };
     if json {
-        match serde_json::to_string(&known) {
+        match serde_json::to_string(&answer) {
             Ok(line) => println!("{line}"),
             Err(e) => return failed(op, true, &Stop::Store(e.to_string())),
         }
-    } else if std::io::stdout().write_all(&known.encode_to_vec()).is_err() {
+    } else if std::io::stdout()
+        .write_all(&answer.encode_to_vec())
+        .is_err()
+    {
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
@@ -274,6 +301,7 @@ pub fn known_of(
         answered_at: now,
         presence: v1::Presence::Unknown as i32,
         latest_run_at: status::latest_finished(conn)?.and_then(|r| r.finished_at),
+        store_id: store::id(conn)?,
         ..Default::default()
     };
     let thing = match q.id {

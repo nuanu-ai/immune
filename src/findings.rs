@@ -953,13 +953,18 @@ pub struct Basis {
     pub at: i64,
     pub run_id: String,
     pub entry: String,
+    pub reader: Option<String>,
+    pub kind: Option<String>,
     pub predicate: Option<String>,
     pub subject: Option<String>,
+    pub old_value: Option<String>,
+    pub new_value: Option<String>,
 }
 
 pub fn basis(conn: &Connection, id: &str) -> rusqlite::Result<Vec<Basis>> {
     conn.prepare(
-        "SELECT j.seq, j.at, j.run_id, j.entry, j.predicate, j.subject
+        "SELECT j.seq, j.at, j.run_id, j.entry, j.reader, j.kind, j.predicate, j.subject,
+                j.old_value, j.new_value
          FROM finding_basis b JOIN journal j ON j.seq = b.journal
          WHERE b.finding = ?1 ORDER BY j.seq",
     )?
@@ -969,8 +974,12 @@ pub fn basis(conn: &Connection, id: &str) -> rusqlite::Result<Vec<Basis>> {
             at: r.get(1)?,
             run_id: r.get(2)?,
             entry: r.get(3)?,
-            predicate: r.get(4)?,
-            subject: r.get(5)?,
+            reader: r.get(4)?,
+            kind: r.get(5)?,
+            predicate: r.get(6)?,
+            subject: r.get(7)?,
+            old_value: r.get(8)?,
+            new_value: r.get(9)?,
         })
     })?
     .collect()
@@ -1314,7 +1323,7 @@ pub fn place(id: &str, this: Option<&This>) -> String {
 
 /// The shipped published rule a finding's rule names, `sigma:<id>`; `None` for any other rule
 /// and for a rule this build no longer ships.
-fn published(rule: &str) -> Option<&'static crate::sigma::Loaded> {
+pub fn published(rule: &str) -> Option<&'static crate::sigma::Loaded> {
     let id = rule.strip_prefix(crate::sigma::FINDING_PREFIX)?;
     crate::sigma::Rules::shipped().by_id(id)
 }

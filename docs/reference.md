@@ -126,19 +126,19 @@ Every report command that takes `--json` prints one envelope with `format`, `ope
 |---|---|
 | `immune run [--json]` | A full check. Flags for tests and special cases: `--machine-name`, `--brew`, `--brew-input`, `--servers-input`, `--checkouts-root`, `--sessions-root`, `--tailscale`, `--threats-input`, `--osv-crates-input`, `--osv-npm-input`, `--curl`, `--system-root`, `--indicators` |
 | `immune status [--json]` | What the last finished check left, read-only |
-| `immune findings [--all] [--json]` | Open findings, or every one with `--all` |
-| `immune finding <id> [--json]` | One finding with what it rests on |
+| `immune findings [--all] [--json \| --proto]` | Every finding, in every state, as the contract's `Findings` message; for a person, the open findings, or every one with `--all` |
+| `immune finding <id> [--json \| --proto]` | One finding whole, as the contract's `Finding` message: its words, where it is, its evidence, the journal entries it rests on and the person's answer; for a person, the same as text |
 | `immune finding <id> expected --reason <text> [--days <n>] [--via app\|agent]` | Hide it for 30 days or `--days` |
 | `immune finding <id> seen [--reason <text>] [--via app\|agent]` | Close it |
 | `immune finding <id> reopen [--via app\|agent]` | Take an answer back |
 | `immune vulnerabilities [--json]` | Known vulnerabilities that affect packages the lockfiles declare |
 | `immune vulnerability <record id or CVE id> [--json]` | The answer for one vulnerability in every project |
-| `immune rules [--json]` | The shipped Sigma rules: evaluated in full, in part or not, whether they watch, how often each matched |
+| `immune rules [--json]` | The shipped Sigma rules: evaluated in full, in part or not, whether they watch, how often each matched. With `--json`, also `catalogue`: every rule of the core's own with its words, the words of a published rule's finding, and every cause of what is not covered |
 | `immune rules --over-log [--system-root <dir>] [--json]` | Evaluates the rules over the log on disk now, without the store |
-| `immune project <path or id> [--json]` | What the store knows of one project, as the contract's `Known` message. The project is a path, absolute or starting with `~/`, which answers for the nearest project that holds it, or an id as the store names it: a project's (`checkout:machine:<name>/<path>`) or a file's (`file:machine:<name>/<path>`), which is the path it names. It reads the store, follows a symbolic link in the path only outside folders macOS asks permission for, and never looks inside the project's folder |
-| `immune program <path, name or id> [--json]` | The same for one program installed on this Mac: an application bundle, a Homebrew formula, cask or keg, a global npm package. It is a path (the bundle, the keg or the package's folder, or a file inside one), the name the store gives it (a bundle identifier, Homebrew's name, the package's name), or its id. No path is looked at on disk |
-| `immune machine [<name or id>] [--json]` | The same for this Mac, or for another machine the store knows: a name or address it is known by, as `immune owner` takes one, or its id (`machine:<name>`). A machine known under several ids that the resolver links with `same_as` is answered with what was read under every one of them, whichever name is asked |
-| `immune matches [--after <place>] [--limit <n>] [--system-root <dir>] [--json]` | Every rule match over the event log, of every level, each with the event it matched, as the contract's `Matches` message, read on from the place an earlier answer gave. It reads the log again and the store only, and writes nothing; without a store it fails |
+| `immune project <path or id> [--json \| --proto]` | What the store knows of one project, as the contract's `Known` message. The project is a path, absolute or starting with `~/`, which answers for the nearest project that holds it, or an id as the store names it: a project's (`checkout:machine:<name>/<path>`) or a file's (`file:machine:<name>/<path>`), which is the path it names. It reads the store, follows a symbolic link in the path only outside folders macOS asks permission for, and never looks inside the project's folder |
+| `immune program <path, name or id> [--json \| --proto]` | The same for one program installed on this Mac: an application bundle, a Homebrew formula, cask or keg, a global npm package. It is a path (the bundle, the keg or the package's folder, or a file inside one), the name the store gives it (a bundle identifier, Homebrew's name, the package's name), or its id. No path is looked at on disk |
+| `immune machine [<name or id>] [--json \| --proto]` | The same for this Mac, or for another machine the store knows: a name or address it is known by, as `immune owner` takes one, or its id (`machine:<name>`). A machine known under several ids that the resolver links with `same_as` is answered with what was read under every one of them, whichever name is asked |
+| `immune matches [--after <place>] [--limit <n>] [--system-root <dir>] [--json \| --proto]` | Every rule match over the event log, of every level, each with the event it matched, as the contract's `Matches` message, read on from the place an earlier answer gave. It reads the log again and the store only, and writes nothing; without a store it fails |
 | `immune servers` | Lists the servers this Mac knows and writes the sweep script |
 | `immune owner [<name> retired\|not-mine --reason <text> \| <name> withdraw] [--via app\|agent] [--json]` | A statement that a machine is retired or not the user's, or the list of those that stand |
 | `immune view [--no-open] [--if-stale]` | Writes the HTML pages and opens the summary; with `--if-stale`, only when something they show changed or they are an hour old |
@@ -151,13 +151,15 @@ In JSON output, `title`, `meaning` and `advice` are Immune's fixed words. Anythi
 
 A program that runs Immune, such as the response layer, reads the commands of the contract. Their messages are defined by a protobuf schema in `contract/immune/v1/`, package `immune.v1`. The Rust types are generated from it into `src/contract/immune.v1.rs`, which is committed. A test generates the file again and fails when the two differ, so a build needs neither `protoc` nor a generator.
 
-A command of the contract prints one message on stdout: binary protobuf by default, and the same message as one line of JSON with `--json`. The binary form is standard protobuf, and a program in another language reads that. The JSON is Immune's own and is not protobuf's JSON mapping. The generated types print it. Field names are the schema's, an enum is the name of its value without the enum's prefix and in lower case (`CAUSE_NOT_GIVEN` prints as `not_given`, the store's own word), a 64-bit number is a JSON number, and an absent optional field is null. Times are seconds since the epoch, UTC, in fields ending in `_at`.
+A command of the contract prints one message on stdout: binary protobuf by default, and the same message as one line of JSON with `--json`. Every command of the contract takes `--proto` too, so a program can always name the form it wants, and naming both is a misuse. `immune findings` and `immune finding <id>` are the exception to the default: without either flag they print the text for a person they printed before. The binary form is standard protobuf, and a program in another language reads that. The JSON is Immune's own and is not protobuf's JSON mapping. The generated types print it. Field names are the schema's, an enum is the name of its value without the enum's prefix and in lower case (`CAUSE_NOT_GIVEN` prints as `not_given`, the store's own word), a 64-bit number is a JSON number, and an absent optional field is null. Times are seconds since the epoch, UTC, in fields ending in `_at`.
 
-A failure to answer is not a message, and a reader checks the exit code before it parses. In binary nothing is printed on stdout. With `--json` the failure envelope is printed, and for `immune project`, `immune program` and `immune machine` it has no `format`, so a reader that parses it as `Known` all the same reads format 0 and stops. The exit codes are the ones above.
+A failure to answer is not a message, and a reader checks the exit code before it parses. In binary nothing is printed on stdout. With `--json` the failure envelope is printed without `format`, so a reader that parses it as the message all the same reads format 0 and stops. The exit codes are the ones above.
 
-An enum value a reader does not know, and the value `unspecified`, are read as the unsafe case, which the schema names for each enum: for `Presence` not known, for `Completeness` not full, for `Cause` failed, for `FindingState` open, for a severity the highest level and for a confidence the lowest. The generated types read a word they do not know as `unspecified`, so a value added within version 1 does not break an older reader.
+An enum value a reader does not know, and the value `unspecified`, are read as the unsafe case, which the schema names for each enum: for `Presence` not known, for `Completeness` not full, for `Cause` failed, for `FindingState` open, for a severity the highest level and for a confidence the lowest, for `AnswerKind` no answer, for `Via` not known who gave it, and for `Change` changed. The generated types read a word they do not know as `unspecified`, so a value added within version 1 does not break an older reader.
 
-Four commands use the contract so far. `immune project`, `immune program` and `immune machine` each print `Known`, about a project, a program or a machine. `immune matches` prints `Matches`.
+Six commands use the contract so far. `immune project`, `immune program` and `immune machine` each print `Known`, about a project, a program or a machine. `immune matches` prints `Matches`. `immune findings` prints `Findings`, and `immune finding <id>` prints `Finding`. The types every message shares are in `common.proto`, and the event a rule matched is in `event.proto`.
+
+Every message carries `store_id`, the id of the store it was read from. A finding's id is unique only within one store: a store deleted and made again can give the same id to another finding, so a reader that keeps a verdict keeps it by the store's id and the finding's id together. The id is 16 random bytes from `getentropy`, written as 32 hexadecimal characters. It is made once, when the store is made, and kept in the store's `meta` table, so it says nothing about the Mac. A store an older build made gets one the next time a command that writes opens it, such as `immune run` or `immune watch`. A command that only reads makes none: until then the field is absent, and nothing tells that store apart from another.
 
 ### `immune project`, `immune program` and `immune machine`
 
@@ -190,6 +192,41 @@ A path inside a project the store knows, held or gone, answers for that project,
 A question that fits more than one thing fails and names each of them. A name that fits two programs, such as a formula and a global npm package called the same, fails with `several_programs`; a name that fits machines not known to be one fails with `several_machines`. Both exit with code 2 and list every id the question fits, whole, in the error's `ids_text`, so each can be asked again.
 
 As in every other answer, text from the Mac is only in fields ending in `_text`. Entity ids are such text, since they hold paths and names from the Mac. An entity id is opaque: compare it whole and never take it apart. In the contract's text a hidden character is written `\u{...}` and so is the backslash itself, `\u{5c}`, so no two texts are shown alike. An id or a path given to a question is read the same way, so every id an answer prints asks back the same thing, and a path with a backslash in it is written with `\u{5c}`. These answers cut no text: an id, the place a fact was read and a coverage reason are given whole, so they can be matched and asked about again.
+
+### `immune findings` and `immune finding <id>`
+
+The response layer gives a verdict about a finding, so it reads one whole. Both answers read the same findings as the status and the pages, in the same order: the most severe first, then the latest seen, then by id. A finding of a rule this build does not have is left out, as it is everywhere else.
+
+`Findings` lists every finding the store holds, in every state, each as its reference (`finding`: `id`, `rule`, `about_text`, `state`, `severity`, `confidence`, `urgent`) with `kind`, `title`, `where_text`, `first_seen_at`, `last_seen_at` and the person's `answer`. `latest_run_at` is absent when no run has finished. `--all` changes only the text for a person; the message carries every state either way.
+
+`Finding` is one finding whole:
+
+| Field | Holds |
+|---|---|
+| `finding` | its reference, as in the list |
+| `kind`, `title`, `meaning`, `advice` | the core's own words, the same for every finding of its rule |
+| `technique_text` | the ATT&CK technique its rule names, or the first of a published rule's tags; absent when none fits |
+| `where_text` | where the thing is, as a person recognises it |
+| `first_seen_at`, `last_seen_at` | when it was first found and when last |
+| `answer` | the person's answer: `given` (`expected` or `seen`), `via` (`app`, `agent`, `command`, or `unknown` for one given before this was kept), `given_at`, `reason_text`, `until_at` for `expected`, and `in_force`, whether it hides the finding now. Absent when there is none, including after it was taken back |
+| `evidence` | one key, the kind of finding, holding what it rests on beside the journal |
+| `rests_on` | the journal entries it rests on, oldest first: `seq`, `recorded_at`, `run_id`, `entry`, `reader`, `kind`, `predicate`, `subject_text`, and the value before and after, `old_value_text` and `new_value_text` |
+| `answers_note` | when an agent may answer a finding, the same words as in `immune status --json` and the usage |
+
+The kinds of evidence, by rule:
+
+| Key | Rules | Holds |
+|---|---|---|
+| `place_changed` | `watched.*`, `autorun.*` | `change`: `new`, `changed`, `gone` or `first_read`. The digests before and after are in `rests_on` as `has_content`, never the content |
+| `changed_in_place` | `integrity.*` | `became_text`: what an application's seal or signer became, as the reader wrote it; absent when what changed is a digest, which is in `rests_on` |
+| `indicator_matched` | `indicator.match` | `indicators_text`: the indicators the file or the connection matches, as STIX comparisons |
+| `detached_process` | `processes.detached-inline-code` | `pid` and `start_micros` of the process the latest sample saw; its program is `about_text`. Its command line is never kept |
+| `vulnerable_package` | `lockfiles.*` | `project_text`, `ecosystem`, `package_text`; `releases`, each `version_text` with `at_text`, the lockfile line; `records`, each with `id_text`, `aliases_text`, `source`, `label`, `exploited`, `summary_text` and `fixed_text`. All are from the answers that stand now, so a cleared finding has none |
+| `published_rule_matched` | `sigma:<id>` | `rule` as in `Matches`; `matches`, how many events it matched since it was raised; `events`, the latest five at most, newest first, each as `Matches` gives an event; `source` and `licence` |
+
+Text from the Mac or a source is given whole, escaped as in every answer of the contract. A store with no table of findings, which an older build can leave, fails as a store written by an older build, with exit code 3, so an empty list always means that the store holds no finding. An id the store has no finding for is refused with `unknown_finding` and exit code 2.
+
+`immune finding <id> expected`, `seen` and `reopen` are not commands of the contract. With `--json` they print the report's envelope as before, and they take no `--proto`.
 
 ### `immune matches`
 
