@@ -503,13 +503,13 @@ fn order(marks: &mut [Mark]) {
 const LEGEND: [(&str, &str); 5] = [
     ("look", "Needs a look"),
     ("vuln", "Known vulnerabilities"),
-    ("calm", "Nothing to look at"),
-    ("open", "Not checked or not compared"),
+    ("calm", "Checked, nothing found"),
+    ("open", "Not checked"),
     ("theirs", "Not yours to check"),
 ];
 
 /// What the calm mark claims, group by group.
-const CALM_MEANS: &str = "Nothing to look at says only what was checked: for a project, that its dependencies were compared with known vulnerabilities and none affects it; for something on this Mac, that it is watched for change and no finding rests on it; for a server, that it was read in full at the last server check. Each mark is one thing; point at it to see its name, and follow it to where it is described.";
+const CALM_MEANS: &str = "Checked, nothing found says only what was checked: for a project, that its dependencies were compared with known vulnerabilities and none affects it; for something on this Mac, that it is watched for change and no finding rests on it; for a server, that it was read in full at the last server check. Each mark is one thing; point at it to see its name, and follow it to where it is described.";
 
 /// How large marks are drawn: large while a group fits about four rows of its width, then
 /// smaller, then smallest. Marks wrap; none is left out.
@@ -557,6 +557,40 @@ impl Map {
     }
 }
 
+/// A group's heading: its name, how many marks it has, and how many of them are in each state,
+/// in words, counted from the very marks that are drawn under it.
+fn heading<'a>(out: &mut String, name: &str, marks: impl Iterator<Item = &'a Mark> + Clone) -> Out {
+    let n = marks.clone().count();
+    let mut parts: Vec<String> = Vec::new();
+    for state in [
+        State::Look,
+        State::Vulnerable,
+        State::Calm,
+        State::Open,
+        State::Theirs,
+    ] {
+        let k = marks.clone().filter(|m| m.state == state).count();
+        if k == 0 {
+            continue;
+        }
+        let words = match state {
+            State::Look if k == 1 => "needs a look",
+            State::Look => "need a look",
+            State::Vulnerable => "with known vulnerabilities",
+            State::Calm => "checked, nothing found",
+            State::Open => "not checked",
+            State::Theirs => "not yours to check",
+        };
+        parts.push(format!(" · {k} {words}"));
+    }
+    writeln!(
+        out,
+        "<h3>{name} <span>{n}</span><span class=\"split\">{}</span></h3>",
+        parts.concat()
+    )?;
+    Ok(())
+}
+
 /// The map, as a card of its own: the legend, then each group with its count and its marks;
 /// what the marks and the groups mean is closed at the bottom. A Mac with nothing known beyond
 /// it has no group for servers.
@@ -571,11 +605,8 @@ pub fn draw(out: &mut String, map: &Map, own_devices_said: &str) -> Out {
     out.push_str("</ul>\n<div class=\"groups\">\n");
 
     // Projects, the main thing, across the whole width.
-    writeln!(
-        out,
-        "<div class=\"group wide\">\n<h3>Projects <span>{}</span></h3>",
-        map.projects.len()
-    )?;
+    out.push_str("<div class=\"group wide\">\n");
+    heading(out, "Projects", map.projects.iter())?;
     if map.projects.is_empty() {
         let said = if map.projects_looked {
             "None found on this Mac."
@@ -589,11 +620,8 @@ pub fn draw(out: &mut String, map: &Map, own_devices_said: &str) -> Out {
     out.push_str("</div>\n");
 
     // This Mac.
-    let total: usize = map.mac.iter().map(|k| k.marks.len()).sum();
-    writeln!(
-        out,
-        "<div class=\"group\">\n<h3>This Mac <span>{total}</span></h3>"
-    )?;
+    out.push_str("<div class=\"group\">\n");
+    heading(out, "This Mac", map.mac.iter().flat_map(|k| k.marks.iter()))?;
     if map.mac.is_empty() {
         out.push_str(if map.checked {
             "<p class=\"note\">Nothing to watch was found on this Mac at the last check.</p>\n"
@@ -614,11 +642,8 @@ pub fn draw(out: &mut String, map: &Map, own_devices_said: &str) -> Out {
 
     // Servers and devices, only where any is known.
     if map.beyond() {
-        writeln!(
-            out,
-            "<div class=\"group\">\n<h3>Servers <span>{}</span></h3>",
-            map.servers.len()
-        )?;
+        out.push_str("<div class=\"group\">\n");
+        heading(out, "Servers", map.servers.iter())?;
         if map.servers.is_empty() {
             out.push_str("<p class=\"note\">None known.</p>\n");
         } else {

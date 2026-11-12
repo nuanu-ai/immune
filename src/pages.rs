@@ -473,10 +473,10 @@ fn you_can_fix(out: &mut String, st: &crate::status::State) -> Out {
     Ok(())
 }
 
-/// What is watched, as a few lines with their numbers: how much is seen within seconds and how
-/// much every hour, running programs, how many of the known ways and places code runs by itself
-/// are read, and the list of signs of a known attack. Every kind with the rules about it is
-/// behind one `<details>`.
+/// What is watched, in two short lists. How often things are looked at, as plain rows with a
+/// number: within seconds, every hour, running programs, and the list of signs of a known
+/// attack. Then how much of what is known this version reads, the only rows with a bar, each
+/// "N of M". Every kind with the rules about it is behind one `<details>`.
 fn watched_section(
     out: &mut String,
     m: &covered::ThisMac,
@@ -485,7 +485,7 @@ fn watched_section(
 ) -> Out {
     writeln!(
         out,
-        "<section id=\"watched-here\">\n<div class=\"head\"><h2>What is watched, and what you are told about</h2></div>\n<div class=\"cover\">"
+        "<section id=\"watched-here\">\n<div class=\"head\"><h2>What is watched, and what you are told about</h2></div>\n<div class=\"cover\">\n<h3>How often things are looked at</h3>"
     )?;
     let sum = |how: &str| -> i64 {
         m.watched
@@ -495,87 +495,88 @@ fn watched_section(
             .sum()
     };
     let (live, hourly) = (sum("live"), sum("hourly"));
-    let all = live + hourly;
-    let row = |out: &mut String, label: &str, share: Option<(i64, i64)>, value: &str| -> Out {
-        let meter = match share {
-            Some((part, whole)) if whole > 0 => format!(
-                "<span class=\"meter\" aria-hidden=\"true\"><span style=\"width:{}%\"></span></span>",
-                part * 100 / whole
-            ),
-            Some(_) => "<span class=\"meter\" aria-hidden=\"true\"></span>".to_string(),
-            None => "<span></span>".to_string(),
-        };
+    // A plain row: what, and a number or, quiet, why there is none.
+    let plain = |out: &mut String, label: &str, value: &str, quiet: bool| -> Out {
         writeln!(
             out,
-            "<div><span class=\"lbl\">{}</span>{meter}<span class=\"val\">{}</span></div>",
+            "<div class=\"plain\"><span class=\"lbl\">{}</span><span class=\"{}\">{}</span></div>",
             esc(label),
+            if quiet { "val" } else { "num" },
             esc(value)
         )?;
         Ok(())
     };
-    if all == 0 {
+    if live + hourly == 0 {
         let said = if m.checked_at.is_some() {
             "nothing to watch was found at the last check"
         } else {
             "nothing has been read yet"
         };
-        row(out, "On this Mac", None, said)?;
+        plain(out, "On this Mac", said, true)?;
     } else {
-        let live_said = if m.live {
-            counted(live, "thing", "things")
+        if m.live {
+            plain(
+                out,
+                "Watched all the time: a change shows within seconds",
+                &counted(live, "thing", "things"),
+                false,
+            )?;
         } else {
-            "no watcher is running now".to_string()
-        };
-        row(
-            out,
-            "Watched all the time: a change shows within seconds",
-            Some((live, all)),
-            &live_said,
-        )?;
-        row(
+            plain(
+                out,
+                "Watched all the time: a change shows within seconds",
+                "no watcher is running now",
+                true,
+            )?;
+        }
+        plain(
             out,
             "Checked every hour: a change shows at the next check",
-            Some((hourly, all)),
             &counted(hourly, "thing", "things"),
+            false,
         )?;
     }
-    let sampled = match m.watched.iter().find(|w| w.0 == covered::SAMPLED) {
-        Some((_, n, _)) => format!(
-            "{} at the latest look, every {} seconds",
-            counted(*n, "running now", "running now"),
-            crate::watch::SAMPLE.as_secs()
-        ),
-        None => "looked at only while the app is open".to_string(),
-    };
-    row(
-        out,
-        "Running programs and their connections",
-        None,
-        &sampled,
-    )?;
-    for home in [false, true] {
-        let (read, known) = crate::autorun::counts(home);
-        let (label, unit) = if home {
-            (
-                "Places where a developer tool's own settings can make code run by itself",
-                "places",
-            )
-        } else {
-            ("Ways a project can make code run by itself", "ways")
-        };
-        row(
+    match m.watched.iter().find(|w| w.0 == covered::SAMPLED) {
+        Some((_, n, _)) => plain(
             out,
-            label,
-            Some((read as i64, known as i64)),
-            &format!("reads {read} of the {known} known {unit}"),
-        )?;
+            &format!(
+                "Running programs and their connections, looked at every {} seconds",
+                crate::watch::SAMPLE.as_secs()
+            ),
+            &counted(*n, "running now", "running now"),
+            false,
+        )?,
+        None => plain(
+            out,
+            "Running programs and their connections",
+            "looked at only while the app is open",
+            true,
+        )?,
     }
     let said = match list {
         Some(true) => "a list was read at the last check",
         Some(false) => "a list was given but could not be read",
         None => "no list given, so nothing is compared",
     };
-    row(out, "Signs of a known attack", None, said)?;
+    plain(out, "Signs of a known attack", said, true)?;
+    out.push_str("<h3>How much of what is known this version reads</h3>\n");
+    for home in [false, true] {
+        let (read, known) = crate::autorun::counts(home);
+        let (label, unit) = if home {
+            (
+                "Places where a developer tool's own settings can make code run by itself",
+                "known places",
+            )
+        } else {
+            ("Ways a project can make code run by itself", "known ways")
+        };
+        writeln!(
+            out,
+            "<div class=\"known\"><span class=\"lbl\">{}</span><span class=\"meter\" aria-hidden=\"true\"><span style=\"width:{}%\"></span></span><span class=\"val\"><span class=\"num\">{read} of {known}</span> {unit}</span></div>",
+            esc(label),
+            read * 100 / known.max(1)
+        )?;
+    }
     writeln!(
         out,
         "</div>\n<details class=\"told\">\n<summary>What you are told about, kind by kind: {} rules</summary>",
