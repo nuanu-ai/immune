@@ -340,6 +340,66 @@ pub const SIGMA_FIELDS: [(&str, Take); 3] = [
     ("ParentImage", |s| s.parent_executable.clone()),
 ];
 
+/// The last component of a path, as Elastic's `process.name` and `file.name` give it.
+fn basename(p: &str) -> &str {
+    p.rsplit('/').next().unwrap_or(p)
+}
+
+/// What follows the last dot of a file's name, as Elastic's `file.extension` gives it: none
+/// when the name has no dot, begins with its only one, or ends with one.
+fn extension(name: &str) -> Option<&str> {
+    match name.rfind('.') {
+        Some(i) if i > 0 && i + 1 < name.len() => Some(&name[i + 1..]),
+        _ => None,
+    }
+}
+
+/// The fields a program start gives the rules translated from Elastic's, under the Elastic
+/// Common Schema's names, and how each is taken. The translation into Sigma was checked on
+/// events built exactly this way (`rules/elastic/NOTICE`), so this is the mapping it rests on.
+/// Each is filled from what the event level records, as far as Elastic's own rules for macOS
+/// show how Elastic Defend fills it; how Elastic fills `process.name` and `process.command_line`
+/// on macOS is not documented, and these are assumptions, said in `docs/event-level.md`. Every
+/// text is also given folded (`crate::sigma::ECS`). `process.args_count` is a number.
+pub const ECS_FIELDS: [(&str, Take); 11] = [
+    // What Elastic Defend writes for every program start on macOS, as Elastic's rules ask for
+    // it: `event.type == "start" and event.action == "exec"`.
+    ("event.type", |_| Some("start".into())),
+    ("event.action", |_| Some("exec".into())),
+    ("process.executable", |s| Some(s.executable.clone())),
+    ("process.name", |s| {
+        Some(basename(&s.executable).to_string())
+    }),
+    // Elastic's `process.args` is an array, and a Sigma field holds one value. The arguments
+    // are one text here, each preceded by NUL and the last followed by one, so that a
+    // translated rule finds one argument whole between two NULs, or its start after one. Absent
+    // when there are none, as Elasticsearch treats an empty array.
+    ("process.args", |s| {
+        (!s.args.is_empty()).then(|| {
+            let mut text = String::from("\0");
+            for a in &s.args {
+                text.push_str(a);
+                text.push('\0');
+            }
+            text
+        })
+    }),
+    ("process.args_count", |s| Some(s.args.len().to_string())),
+    // The arguments joined by single spaces, as `CommandLine` is.
+    ("process.command_line", |s| Some(s.args.join(" "))),
+    // The image before the `exec`, as `ParentImage` is: the parent's program after a fork or
+    // `posix_spawn`, the wrapper after an `exec` without a fork.
+    ("process.parent.executable", |s| s.parent_executable.clone()),
+    ("process.parent.name", |s| {
+        s.parent_executable
+            .as_deref()
+            .map(|p| basename(p).to_string())
+    }),
+    ("process.working_directory", |s| s.working_directory.clone()),
+    // The effective user id, as text, as Elastic gives it.
+    ("user.id", |s| s.user_id.map(|u| u.to_string())),
+];
+
 /// One file created or renamed, as the published rules for file events read it and as a
 /// finding's evidence keeps it: the file, and the program that did it.
 ///
@@ -395,6 +455,43 @@ pub type FileTake = fn(&FileEvent, &str) -> Option<String>;
 pub const FILE_SIGMA_FIELDS: [(&str, FileTake); 2] = [
     ("TargetFilename", |_, name| Some(name.to_string())),
     ("Image", |f, _| Some(f.executable.clone())),
+];
+
+/// The fields a file event gives the rules translated from Elastic's, as `ECS_FIELDS` does for
+/// a program start. The path is given as Endpoint Security gives it, and only so: the translation
+/// was checked without a second name through macOS's links into `/private`, and Elastic's rules
+/// write `/private/...` where they mean it.
+pub const FILE_ECS_FIELDS: [(&str, FileTake); 7] = [
+    // What Elastic Defend writes for a file created, and for one renamed.
+    ("event.type", |f, _| {
+        Some(
+            if f.action == "rename" {
+                "change"
+            } else {
+                "creation"
+            }
+            .into(),
+        )
+    }),
+    ("event.action", |f, _| {
+        Some(
+            if f.action == "rename" {
+                "rename"
+            } else {
+                "creation"
+            }
+            .into(),
+        )
+    }),
+    ("file.path", |_, name| Some(name.to_string())),
+    ("file.name", |_, name| Some(basename(name).to_string())),
+    ("file.extension", |_, name| {
+        extension(basename(name)).map(str::to_string)
+    }),
+    ("process.executable", |f, _| Some(f.executable.clone())),
+    ("process.name", |f, _| {
+        Some(basename(&f.executable).to_string())
+    }),
 ];
 
 /// One line of the log, as read.
@@ -1648,8 +1745,8 @@ fn has(conn: &Connection, table: &str) -> rusqlite::Result<bool> {
 /// What a finding from a published rule carries beside its words, each in its own field: the
 /// rule as it describes itself, its authors among them, as the Detection Rule License asks of
 /// a message made from a match; the kind of event it is about, `events`; how many events it
-/// counts since it was raised; and the latest of them, newest first. Text from the rule or
-/// from an event is only in `_text` fields.
+/// counts since it was raised; and the latest of them, newest first; and where the rule's set
+/// comes from, with its licence. Text from the rule or from an event is only in `_text` fields.
 pub fn finding_detail(
     conn: &Connection,
     finding: &str,
@@ -1658,8 +1755,8 @@ pub fn finding_detail(
     kind: crate::sigma::Kind,
 ) -> rusqlite::Result<Value> {
     let mut v = crate::sigma::Match { file, meta, kind }.json();
-    v["licence"] = json!(crate::sigma::LICENCE);
-    v["source"] = json!(crate::sigma::SOURCE);
+    v["licence"] = json!(meta.source.licence);
+    v["source"] = json!(meta.source.url);
     let table = match kind {
         crate::sigma::Kind::Process => "rule_evidence",
         crate::sigma::Kind::File => "rule_file_evidence",

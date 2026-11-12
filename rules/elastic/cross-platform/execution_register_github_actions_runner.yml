@@ -1,0 +1,20 @@
+title: "Remote GitHub Actions Runner Registration"
+id: "57e118c1-19eb-4c20-93a6-8a6c30a5b48b"
+status: "test"
+description: "This rule detects the configuration of a GitHub Actions self-hosted runner using the Runner.Listener binary.\nWhen a machine is registered to a remote repository, its owner gains the ability to execute arbitrary workflow commands on that host.\nUnexpected or unauthorized runner registration may indicate adversarial activity aimed at establishing remote code execution\nvia malicious GitHub workflows."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/cross-platform/execution_register_github_actions_runner.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2025-11-26"
+modified: "2026-09-18"
+tags: ["attack.t1059", "attack.t1195.002", "attack.t1219"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["Runner.Listener", "Runner.Listener.exe"]}
+  s2: {"process.args|contains|cased": ["\u0000configure\u0000"]}
+  s3: {"process.args|contains|cased": ["\u0000--url\u0000"]}
+  s4: {"process.args|contains|cased": ["\u0000--token\u0000"]}
+  condition: "(s1 and s2 and s3 and s4)"
+level: "medium"
+elastic: {"rule_id": "57e118c1-19eb-4c20-93a6-8a6c30a5b48b", "severity": "medium", "risk_score": 47, "query_sha256": "dc35acab62acbc4c581c0e054a68ecb2a1e695910797e430b410ff8393bc59dd", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": ["ProcessRollup2", "exec_event", "executed", "process_started"], "null_sensitive": [], "folded_fields": []}
+falsepositives: ["Authorized github repository with no malicious workflow actions."]

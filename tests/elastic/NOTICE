@@ -1,0 +1,16 @@
+Invented events, each with the Elastic rules it matches, for the rules in `rules/elastic/`.
+
+The program that translated those rules made the events (see `rules/elastic/NOTICE`). For each
+rule it built events that match it, then near misses: one value changed, a field taken away,
+or every text in another case. Nothing in them comes from a real Mac. Each translation was
+checked against a reference that follows Elasticsearch's documented meaning of the upstream
+query, over 33,969 such events, and the two disagreed on none.
+
+`samples.jsonl` keeps 396 of them, one per line, unchanged apart from key order. `event` is the
+event as the translator wrote it. `matches` names, as findings do, every translated rule it
+matches by the translator's own evaluator, which gave the reference's answer on every one of
+the 33,969 events (the per-rule counts were checked against the reference's).
+
+Of the events made for each of the 66 rules, three it matches and three it does not are kept,
+spread over the order they were made in. The three it does not match are each one field away
+from an event made for it that it matches.

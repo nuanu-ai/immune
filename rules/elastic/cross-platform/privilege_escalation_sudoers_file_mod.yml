@@ -1,0 +1,20 @@
+title: "Sudoers File Activity"
+id: "931e25a5-0f5e-4ae0-ba0d-9e94eff7e3a4"
+status: "test"
+description: "A sudoers file specifies the commands that users or groups can run and from which terminals. Adversaries can take\nadvantage of these configurations to execute commands as other users or spawn processes with higher privileges."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/cross-platform/privilege_escalation_sudoers_file_mod.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2020-04-13"
+modified: "2026-09-18"
+tags: ["attack.t1548.003"]
+logsource: {"product": "macos", "category": "file_event"}
+detection:
+  s1: {"event.type|cased": ["creation", "change"]}
+  s2: {"file.path|cased": ["/etc/sudoers*", "/private/etc/sudoers*"]}
+  s3: {"process.name|cased": ["dpkg", "platform-python*", "puppet", "yum", "dnf", "python*"]}
+  s4: {"process.executable|cased": ["/opt/chef/embedded/bin/ruby", "/opt/puppetlabs/puppet/bin/ruby", "/usr/bin/dockerd", "/usr/bin/podman", "/opt/teleport/system/bin/teleport", "/usr/sbin/dockerd", "/usr/local/bin/dockerd", "/usr/local/bin/teleport", "./usr/bin/podman", "/dev/fd/5", "/usr/bin/rpm", "/usr/bin/microdnf", "/opt/morpheus-node/embedded/bin/chef-client", "/opt/puppetlabs/puppet/bin/ruby", "/usr/bin/salt-minion"]}
+  s5: {"process.executable|cased": ["./snap/snapd/*/usr/lib/snapd/snap-update-ns", "/opt/teleport/*/bin/teleport"]}
+  condition: "(s1 and s2 and (not s3 and not s4 and not s5))"
+level: "medium"
+elastic: {"rule_id": "931e25a5-0f5e-4ae0-ba0d-9e94eff7e3a4", "severity": "medium", "risk_score": 47, "query_sha256": "530765db743fdcf0c3caacd3fbad9e5be7ff2744e5465fb34b43ea85a0b62bac", "kinds": ["create", "rename"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": [], "folded_fields": []}

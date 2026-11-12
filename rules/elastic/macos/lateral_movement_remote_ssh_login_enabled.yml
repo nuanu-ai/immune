@@ -1,0 +1,24 @@
+title: "Remote SSH Login Enabled via systemsetup Command"
+id: "5ae4e6f8-d1bf-40fa-96ba-e29645e1e4dc"
+status: "test"
+description: "Detects use of the systemsetup command to enable remote SSH Login."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/macos/lateral_movement_remote_ssh_login_enabled.toml"]
+author: "Elastic, Massimo Bertocchi"
+license: "Elastic License v2"
+date: "2020-08-18"
+modified: "2026-09-18"
+tags: ["attack.t1021.004", "attack.t1133"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["systemsetup"]}
+  s2: {"process.args|contains": ["\u0000-setremotelogin\u0000"]}
+  s3: {"process.args|contains": ["\u0000on\u0000"]}
+  s4: {"process.name|cased": ["launchctl"]}
+  s5: {"process.args|contains|cased": ["\u0000load\u0000", "\u0000bootstrap\u0000"]}
+  s6: {"process.command_line": ["*/System/Library/LaunchDaemons/ssh.plist*"]}
+  s7: {"process.command_line": ["*com.openssh.sshd*"]}
+  s8: {"process.parent.executable|exists": true}
+  s9: {"process.parent.executable|cased": ["/usr/local/jamf/bin/jamf", "/usr/libexec/xpcproxy", "/usr/bin/sudo"]}
+  condition: "(((s1 and s2 and s3) or (s4 and s5 and (s6 or s7))) and s8 and (s8 and not s9))"
+level: "medium"
+elastic: {"rule_id": "5ae4e6f8-d1bf-40fa-96ba-e29645e1e4dc", "severity": "medium", "risk_score": 47, "query_sha256": "2143237bae21f7ab3e9e241d3c486cc84823cfe803859eb02b0374dfe85d5970", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": ["process_started"], "null_sensitive": ["process.parent.executable"], "folded_fields": []}

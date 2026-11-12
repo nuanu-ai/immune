@@ -1,0 +1,46 @@
+title: "Suspicious React Server Child Process"
+id: "ae3e9625-89ad-4fc3-a7bf-fced5e64f01b"
+status: "test"
+description: "This rule detects suspicious child process activity from a React server application. This could be related to successful\nexploitation of CVE-2025-55182 or CVE-2025-66478. These vulnerabilities allow attackers to execute remote code due to\ninsecure deserialization of React Server Components (RSC) Flight payloads, leading to unauthenticated RCE on servers\nrunning React 19.x or Next.js 14.3.0-canary+, 15.x, and 16.x with the App Router enabled"
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/cross-platform/initial_access_execution_susp_react_serv_child.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2025-12-04"
+modified: "2026-10-09"
+tags: ["attack.t1033", "attack.t1059.001", "attack.t1059.003", "attack.t1059.004", "attack.t1059.006", "attack.t1059.007", "attack.t1059.011", "attack.t1082", "attack.t1095", "attack.t1190"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["sh", "bash", "zsh", "dash", "curl", "wget", "id", "whoami", "uname", "cmd.exe", "cat", "powershell.exe", "java", "rundll32.exe", "wget.exe", "certutil.exe", "nc", "ncat", "netcat", "nc.openbsd", "nc.traditional", "socat", "busybox", "mkfifo", "nohup", "setsid", "xterm"]}
+  s2: {"process.name": ["python*"]}
+  s3: {"process.args|contains": ["\u0000-c\u0000"]}
+  s4: {"immune.folded.process.args|re": ["(?s)\\x00[^\\x00]*import[^\\x00]*pty[^\\x00]*spawn[^\\x00]*\\x00", "(?s)\\x00[^\\x00]*import[^\\x00]*subprocess[^\\x00]*call[^\\x00]*\\x00"]}
+  s5: {"process.name": ["perl*"]}
+  s6: {"process.args|contains": ["\u0000-e\u0000"]}
+  s7: {"process.args|contains": ["socket"]}
+  s8: {"process.args|contains": ["exec", "system"]}
+  s9: {"process.name": ["ruby*"]}
+  s10: {"process.args|contains": ["\u0000-e\u0000", "\u0000-rsocket\u0000"]}
+  s11: {"process.args|contains": ["TCPSocket.new", "TCPSocket.open"]}
+  s12: {"process.name": ["lua*"]}
+  s13: {"process.args|contains": ["socket.tcp"]}
+  s14: {"process.args|contains": ["io.popen", "os.execute"]}
+  s15: {"process.name": ["php*"]}
+  s16: {"process.args|contains": ["\u0000-r\u0000"]}
+  s17: {"process.args|contains": ["fsockopen"]}
+  s18: {"immune.folded.process.args|re": ["(?s)\\x00[^\\x00]*/bin/[^\\x00]*sh[^\\x00]*\\x00"]}
+  s19: {"process.name|cased": ["node"]}
+  s20: {"process.args|contains|cased": ["\u0000-e\u0000"]}
+  s21: {"immune.folded.process.args|re": ["(?s)\\x00[^\\x00]*spawn[^\\x00]*sh[^\\x00]*\\x00"]}
+  s22: {"process.args|contains": ["connect"]}
+  s23: {"process.name": ["awk", "gawk", "mawk", "nawk"]}
+  s24: {"process.args|contains": ["/inet/tcp/"]}
+  s25: {"process.name|cased": ["rvim", "vim", "vimdiff", "rview", "view"]}
+  s26: {"process.args|contains|cased": ["\u0000-c\u0000"]}
+  s27: {"process.working_directory": ["*react-dom*", "*.next*", "*node_modules/next*", "*react-server*", "*bin/next*", "*.pnpm/next*", "*next/dist/server*", "*react-scripts*"]}
+  s28: {"process.parent.executable|cased": ["./runc", "/opt/google/chrome/chrome"]}
+  s29: {"process.parent.executable|exists": true}
+  s30: {"process.command_line|cased": ["/bin/sh -c git config*"]}
+  s31: {"process.command_line|exists": true}
+  condition: "((s1 or (s2 and s3 and s4) or (s5 and s6 and s7 and s8) or (s9 and s10 and s11) or (s12 and s6 and s13 and s14) or (s15 and s16 and s17 and s18) or (s19 and s20 and s21 and s22) or (s23 and s24) or (s25 and s26 and s7)) and s27 and (((s29 and not s28) or not s29) and (not s30 or not s31)))"
+level: "high"
+elastic: {"rule_id": "ae3e9625-89ad-4fc3-a7bf-fced5e64f01b", "severity": "high", "risk_score": 73, "query_sha256": "f708cdcdaa7c3d6a9b94fd76e4bbf9389d66c0403c8fb0eeac4bd644dceaacca", "kinds": ["start"], "in_part_missing_fields": ["needs_fields process.parent.command_line"], "also_asks_events": ["executed", "process_started"], "null_sensitive": ["process.parent.executable"], "folded_fields": ["process.args"]}

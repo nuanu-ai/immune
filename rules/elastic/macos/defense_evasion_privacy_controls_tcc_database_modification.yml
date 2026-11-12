@@ -1,0 +1,18 @@
+title: "Potential Privacy Control Bypass via TCCDB Modification"
+id: "eea82229-b002-470e-a9e1-00be38b14d32"
+status: "test"
+description: "Identifies the use of sqlite3 to directly modify the Transparency, Consent, and Control (TCC) SQLite database. This may\nindicate an attempt to bypass macOS privacy controls, including access to sensitive resources like the system camera,\nmicrophone, address book, and calendar."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/macos/defense_evasion_privacy_controls_tcc_database_modification.toml"]
+author: "Elastic, Massimo Bertocchi"
+license: "Elastic License v2"
+date: "2020-12-23"
+modified: "2026-09-18"
+tags: ["attack.t1548.006", "attack.t1562.001"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name": ["sqlite*"]}
+  s2: {"process.args|re": ["(?s)\\x00/[^\\x00]*/Application Support/com\\.apple\\.TCC/TCC\\.db\\x00"]}
+  s3: {"process.parent.name": ["osascript", "bash", "sh", "zsh", "Terminal", "Python*"]}
+  condition: "(s1 and s2 and s3)"
+level: "medium"
+elastic: {"rule_id": "eea82229-b002-470e-a9e1-00be38b14d32", "severity": "medium", "risk_score": 47, "query_sha256": "af2d4eda9e946c0c36a193674bdff3855402764f269c39444d00f163ef5ea406", "kinds": ["start"], "in_part_missing_fields": ["needs_fields process.parent.code_signature.exists", "needs_fields process.parent.code_signature.trusted"], "also_asks_events": ["process_started"], "null_sensitive": [], "folded_fields": []}

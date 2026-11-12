@@ -1,0 +1,24 @@
+title: "Attempt to Mount SMB Share via Command Line"
+id: "661545b4-1a90-4f45-85ce-2ebd7c6a15d0"
+status: "test"
+description: "Identifies the execution of macOS built-in commands to mount a Server Message Block (SMB) network share. Adversaries may\nuse valid accounts to interact with a remote network share using SMB."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/macos/lateral_movement_mounting_smb_share.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2021-01-25"
+modified: "2026-09-18"
+tags: ["attack.t1021.002"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["mount_smbfs"]}
+  s2: {"process.name|cased": ["open"]}
+  s3: {"process.args|contains": ["\u0000smb://"]}
+  s4: {"process.name|cased": ["mount"]}
+  s5: {"process.args|contains": ["\u0000smbfs\u0000"]}
+  s6: {"process.name|cased": ["osascript"]}
+  s7: {"process.command_line": ["osascript*mount volume*smb://*"]}
+  s8: {"process.parent.executable|cased": ["/Applications/Google Drive.app/Contents/MacOS/Google Drive"]}
+  s9: {"process.parent.executable|exists": true}
+  condition: "((s1 or (s2 and s3) or (s4 and s5) or (s6 and s7)) and (s9 and not s8))"
+level: "low"
+elastic: {"rule_id": "661545b4-1a90-4f45-85ce-2ebd7c6a15d0", "severity": "low", "risk_score": 21, "query_sha256": "3d19bf48bec6bc4684fd09047710e9906fa37e0132a613cb5b9d6e58d900e1c3", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": ["process_started"], "null_sensitive": ["process.parent.executable"], "folded_fields": []}

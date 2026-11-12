@@ -1,0 +1,40 @@
+Detection rules for macOS from Elastic's rule set, https://github.com/elastic/detection-rules,
+at commit 032ac5ecb0b4035a12b03dd25164e2fbcfae9fad, translated into Sigma.
+
+Of the 185 rules there that apply to macOS, 66 are here as Sigma files, at the path their
+upstream rule has under that repository's `rules/` folder (`macos/` or `cross-platform/`),
+with `.yml` for `.toml`. Each file is a mechanical translation of the upstream rule it names,
+and is not the upstream file. Its `references` link to the upstream file at that commit, and
+its `elastic` block gives the upstream rule's `rule_id`, severity and risk score, the sha256 of
+its query, the kinds of event it is evaluated over, what the translation left out of it, and
+the fields it negates that may be absent. None is edited by hand. The translator is not part
+of this repository. `SHA256SUMS` holds the sha256 of every file as the translator wrote it,
+and a test fails when a file differs from it.
+
+Each translation was checked against a reference that follows Elasticsearch's documented
+meaning of the upstream query, on 33,969 invented events evaluated by `sigma-rust` 0.7.0, the
+evaluator this program uses, over events built as this program builds them. They disagreed on
+none.
+
+The 15 rules whose `null_sensitive` list is not empty negate a field that an event may lack:
+`process.args`, `process.parent.executable` or `user.id`. Their translation rests on an
+assumption about how Elasticsearch treats a missing field: that a comparison with a field the
+event does not have is false, so its negation holds.
+
+`not-taken.tsv` lists the other 119 rules, each with its upstream path, rule id, name,
+severity, the reason it was not taken and the translation's detail: `sequence` (it correlates
+several events), `not_eql` (it is written in KQL or ES|QL), `needs_events` (it is about events
+this program does not record), `needs_fields` (a part it cannot do without reads a field the
+events do not give), `backslash_in_wildcard` (a pattern holds a backslash among wildcards,
+whose meaning in Elasticsearch is not documented) and `spans_kinds` (it is about program
+starts and file events at once).
+
+The files are compiled into the program and evaluated by it. Nothing fetches rules at run
+time.
+
+The upstream rules are licensed under the Elastic License 2.0, as each file's `license` field
+says ("Elastic License v2"). Its text is at https://www.elastic.co/licensing/elastic-license
+and in the repository's `LICENSE.txt` at that commit,
+https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/LICENSE.txt.
+Each file names its authors in its `author` field, as the upstream rule does, and a message the
+program makes from a match with a rule carries that rule's authors.

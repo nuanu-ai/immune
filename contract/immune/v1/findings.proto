@@ -147,7 +147,7 @@ message Evidence {
     // `lockfiles.*`: a package a project's lockfile declares that a record says is malicious or
     // has a vulnerability attackers use.
     VulnerablePackage vulnerable_package = 5;
-    // `sigma:<id>`: events a published rule matched.
+    // `sigma:<id>` and `elastic:<rule_id>`: events a published rule matched.
     PublishedRuleMatched published_rule_matched = 6;
   }
 }
@@ -242,7 +242,8 @@ message PublishedRuleMatched {
   optional uint64 matches = 2;
   // The latest events it matched, newest first, at most five: the store keeps no more.
   repeated Event events = 3;
-  // Where the rule comes from, and its licence, in the core's words.
+  // Where the rule's set comes from, its repository, and the licence its files carry, by its
+  // SPDX identifier.
   string source = 4;
   string licence = 5;
 }

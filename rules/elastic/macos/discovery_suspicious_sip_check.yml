@@ -1,0 +1,22 @@
+title: "Suspicious SIP Check by macOS Application"
+id: "1615230f-beb7-48d8-9b3f-6d10674703bf"
+status: "test"
+description: "Detects the unusual use of csrutil by a macOS application to check System Integrity Protection (SIP) status. \nWhile not malicious in itself, this activity is highly indicative of malware verifying it is not running \nin a virtual machine or protected environment prior to executing its payload."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/macos/discovery_suspicious_sip_check.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2026-01-30"
+modified: "2026-09-18"
+tags: ["attack.t1082", "attack.t1497.001"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.command_line|cased": ["*csrutil*status*"]}
+  s2: {"process.command_line|cased": ["*enabled*"]}
+  s3: {"process.parent.executable|cased": ["/*.app/*"]}
+  s4: {"process.parent.executable|cased": ["/Applications/*.app/*"]}
+  s5: {"process.parent.executable|cased": ["/Volumes/*.app/*"]}
+  s6: {"process.parent.executable|cased": ["/Library/Application Support/Mosyle/MosyleMDM.app/Contents/MacOS/MosyleMDM"]}
+  s7: {"process.parent.executable|exists": true}
+  condition: "(s1 and s2 and (s3 or s4 or s5) and (s7 and not s6))"
+level: "medium"
+elastic: {"rule_id": "1615230f-beb7-48d8-9b3f-6d10674703bf", "severity": "medium", "risk_score": 47, "query_sha256": "b8325bafd81819576c9667287ac3883c1323318239be1d719228325d44068c5b", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": ["process.parent.executable"], "folded_fields": []}

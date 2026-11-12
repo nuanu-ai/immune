@@ -1,0 +1,17 @@
+title: "Potential Microsoft Office Sandbox Evasion"
+id: "d22a85c6-d2ad-4cc4-bf7b-54787473669a"
+status: "test"
+description: "Identifies the creation of a suspicious zip file prepended with special characters. Sandboxed Microsoft Office\napplications on macOS are allowed to write files that start with special characters, which can be combined with an\nAutoStart location to achieve sandbox evasion."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/macos/defense_evasion_sandboxed_office_app_suspicious_zip_file.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2021-01-11"
+modified: "2026-09-18"
+tags: ["attack.t1036.005", "attack.t1497"]
+logsource: {"product": "macos", "category": "file_event"}
+detection:
+  s1: {"event.action|cased": ["modification", "rename"]}
+  s2: {"file.name": ["~$*.zip"]}
+  condition: "(s1 and s2)"
+level: "high"
+elastic: {"rule_id": "d22a85c6-d2ad-4cc4-bf7b-54787473669a", "severity": "high", "risk_score": 73, "query_sha256": "04e926f058fe53b6c51c02c0809e326b17f4f369350f4cb5b525f76fee10368d", "kinds": ["rename"], "in_part_missing_fields": [], "also_asks_events": ["modification"], "null_sensitive": [], "folded_fields": []}

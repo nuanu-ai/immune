@@ -1,0 +1,17 @@
+title: "Potential Tunneling via Tailscaled"
+id: "482a5584-4ce4-4838-b806-0839a39b004f"
+status: "test"
+description: "Identifies the use of Tailscaled to potentially tunnel network traffic. This can be used by attackers to enable\nrouting of network packets that would otherwise not reach their intended destination, or to bypass network restrictions\nand/or hide traffic from network monitoring."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/cross-platform/command_and_control_tunneling_via_tailscaled.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2026-07-29"
+modified: "2026-09-18"
+tags: ["attack.t1090", "attack.t1219", "attack.t1572"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name": ["tailscaled", "tailscaled.exe"]}
+  s2: {"process.args|contains": ["--socks5-server", "--outbound-http-proxy-listen"]}
+  condition: "(s1 and s2)"
+level: "medium"
+elastic: {"rule_id": "482a5584-4ce4-4838-b806-0839a39b004f", "severity": "medium", "risk_score": 47, "query_sha256": "366b61213e2222898824fc7fedea63cd658fd562c3a2134a2aa1197a15b9e7ac", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": [], "folded_fields": []}

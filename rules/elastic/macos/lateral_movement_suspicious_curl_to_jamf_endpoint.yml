@@ -1,0 +1,19 @@
+title: "Suspicious Curl to Jamf Endpoint"
+id: "a8256685-9736-465b-b159-f25a172d08e8"
+status: "test"
+description: "Detects curl requests to JAMF Pro endpoints from suspicious processes like unsigned binaries or scripting \ninterpreters. This indicates potential abuse of stolen JAMF credentials for lateral movement in enterprise \nmacOS environments."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/macos/lateral_movement_suspicious_curl_to_jamf_endpoint.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2026-01-30"
+modified: "2026-09-18"
+tags: ["attack.t1059.002", "attack.t1059.006", "attack.t1059.007", "attack.t1072"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["curl", "nscurl"]}
+  s2: {"process.command_line|cased": ["*https://jamf.*"]}
+  s3: {"process.parent.name|cased": ["osascript", "node", "perl", "ruby"]}
+  s4: {"process.parent.name|cased": ["python*"]}
+  condition: "(s1 and s2 and (s3 or s4))"
+level: "high"
+elastic: {"rule_id": "a8256685-9736-465b-b159-f25a172d08e8", "severity": "high", "risk_score": 73, "query_sha256": "0cadf0c7f4fcda1eddaaf75b62ffa379abd10ac6560cc3e40b9e0b5cfb390211", "kinds": ["start"], "in_part_missing_fields": ["needs_fields process.parent.code_signature.exists", "needs_fields process.parent.code_signature.trusted"], "also_asks_events": [], "null_sensitive": [], "folded_fields": []}

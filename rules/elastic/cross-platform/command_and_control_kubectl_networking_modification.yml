@@ -1,0 +1,22 @@
+title: "Kubectl Network Configuration Modification"
+id: "877cc04a-3320-411d-bbe9-53266fa5e107"
+status: "test"
+description: "This rule detects potential kubectl network configuration modification activity by monitoring for process events\nwhere the kubectl command is executed with arguments that suggest an attempt to modify network configurations in\nKubernetes. This could indicate an adversary trying to manipulate network settings for malicious purposes, such as\nestablishing unauthorized access or exfiltrating data."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/cross-platform/command_and_control_kubectl_networking_modification.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2025-06-19"
+modified: "2026-11-03"
+tags: ["attack.t1090", "attack.t1572"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["kubectl"]}
+  s2: {"process.args|contains|cased": ["\u0000port-forward\u0000"]}
+  s3: {"process.args|contains|cased": [":"]}
+  s4: {"process.args|contains|cased": ["\u0000proxy\u0000", "\u0000expose\u0000"]}
+  s5: {"process.parent.name|cased": ["bash", "dash", "sh", "tcsh", "csh", "zsh", "ksh", "fish"]}
+  s6: {"process.parent.executable|cased": ["/tmp/*", "/private/tmp/*", "/var/tmp/*", "/private/var/tmp/*", "/dev/shm/*", "/root/*", "/home/*", "/Users/*"]}
+  s7: {"process.parent.name|cased": [".*", "*.sh", "python*"]}
+  condition: "(s1 and ((s2 and s3) or s4) and (s5 or (s6 or s7)))"
+level: "low"
+elastic: {"rule_id": "877cc04a-3320-411d-bbe9-53266fa5e107", "severity": "low", "risk_score": 21, "query_sha256": "72826542fa9004899ed3c521eba1f32e59b2aa5688cf0c0d8f9d9aab569cde55", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": ["ProcessRollup2", "exec_event"], "null_sensitive": [], "folded_fields": []}

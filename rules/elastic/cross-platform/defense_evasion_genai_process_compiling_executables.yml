@@ -1,0 +1,28 @@
+title: "GenAI Process Compiling or Generating Executables"
+id: "b2c3d4e5-f6a7-8901-bcde-f123456789ab"
+status: "test"
+description: "Detects when GenAI tools spawn compilers or packaging tools to generate executables. Attackers leverage local LLMs to\nautonomously generate and compile malware, droppers, or implants. Python packaging tools (pyinstaller, nuitka, pyarmor)\nare particularly high-risk as they create standalone executables that can be deployed without dependencies. This rule\nfocuses on compilation activity that produces output binaries, filtering out inspection-only operations."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/cross-platform/defense_evasion_genai_process_compiling_executables.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2025-12-04"
+modified: "2026-09-25"
+tags: ["attack.t1027.004", "attack.t1587.001"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.parent.name|cased": ["ollama.exe", "ollama", "Ollama", "textgen.exe", "textgen", "text-generation-webui.exe", "oobabooga.exe", "lmstudio.exe", "lmstudio", "LM Studio", "claude.exe", "claude", "Claude", "cursor.exe", "cursor", "Cursor", "Cursor Helper", "Cursor Helper (Plugin)", "copilot.exe", "copilot", "Copilot", "codex.exe", "codex", "Jan", "jan.exe", "jan", "Jan Helper", "gpt4all.exe", "gpt4all", "GPT4All", "gemini-cli.exe", "gemini-cli", "genaiscript.exe", "genaiscript", "grok.exe", "grok", "qwen.exe", "qwen", "koboldcpp.exe", "koboldcpp", "KoboldCpp", "llama-server", "llama-cli"]}
+  s2: {"process.name|cased": ["pyinstaller", "py2exe", "cx_Freeze", "nuitka", "pyarmor", "pkg"]}
+  s3: {"process.name|cased": ["gcc", "g++", "clang", "clang++", "cl.exe"]}
+  s4: {"process.command_line": ["*-o *"]}
+  s5: {"process.command_line": ["*.c *", "*.c", "*.cpp *", "*.cpp", "*.cc *", "*.cc", "*.m *", "*.m"]}
+  s6: {"process.command_line": ["*git*"]}
+  s7: {"process.name|cased": ["go"]}
+  s8: {"process.args|contains|cased": ["\u0000build\u0000"]}
+  s9: {"process.name|cased": ["cargo"]}
+  s10: {"process.name|cased": ["rustc"]}
+  s11: {"process.name|cased": ["csc.exe", "vbc.exe", "msbuild.exe"]}
+  s12: {"process.name|cased": ["dotnet"]}
+  s13: {"process.name|cased": ["javac"]}
+  condition: "(s1 and (s2 or (s3 and s4 and s5 and not s6) or (s7 and s8) or (s9 and s8) or (s10 and s4) or s11 or (s12 and s8) or s13))"
+level: "medium"
+elastic: {"rule_id": "b2c3d4e5-f6a7-8901-bcde-f123456789ab", "severity": "medium", "risk_score": 47, "query_sha256": "459db0d62607e803088dd6eb34efbc41a4db248bc9acf0cd64fc47dd72526eac", "kinds": ["start"], "in_part_missing_fields": ["needs_fields process.parent.command_line"], "also_asks_events": [], "null_sensitive": [], "folded_fields": []}

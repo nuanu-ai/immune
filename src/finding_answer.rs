@@ -133,8 +133,8 @@ fn evidence(conn: &Connection, f: &Found) -> rusqlite::Result<Option<v1::evidenc
             rule: Some(matches::rule(l.file, meta)),
             matches: rule_count(conn, &f.id)?,
             events: rule_events(conn, &f.id, kind)?,
-            source: sigma::SOURCE.to_string(),
-            licence: sigma::LICENCE.to_string(),
+            source: meta.source.url.to_string(),
+            licence: meta.source.licence.to_string(),
         })));
     }
     let became = || f.became.as_deref().map(whole);

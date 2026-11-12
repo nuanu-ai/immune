@@ -1321,11 +1321,10 @@ pub fn place(id: &str, this: Option<&This>) -> String {
     }
 }
 
-/// The shipped published rule a finding's rule names, `sigma:<id>`; `None` for any other rule
-/// and for a rule this build no longer ships.
+/// The shipped published rule a finding's rule names, `sigma:<id>` or `elastic:<id>`; `None`
+/// for any other rule and for a rule this build no longer ships.
 pub fn published(rule: &str) -> Option<&'static crate::sigma::Loaded> {
-    let id = rule.strip_prefix(crate::sigma::FINDING_PREFIX)?;
-    crate::sigma::Rules::shipped().by_id(id)
+    crate::sigma::Rules::shipped().by_finding_rule(rule)
 }
 
 /// What a finding from a published rule is about, as the item's `kind`: a program start for a
@@ -1338,7 +1337,7 @@ pub const PUBLISHED_FILE_KIND: &str = "file event matched by a published rule";
 /// of their own.
 pub const PUBLISHED_WORDS: Words = Words {
     title: "A program started on this Mac in a way that a published detection rule marks as high risk.",
-    meaning: "The rule, named with this finding, comes from SigmaHQ's public rule set and was written from attacks seen elsewhere. Coding agents, build tools and people run the same commands for ordinary work, so a match is often harmless.",
+    meaning: "The rule, named with this finding, comes from a published rule set and was written from attacks seen elsewhere. Coding agents, build tools and people run the same commands for ordinary work, so a match is often harmless.",
     advice: "Look at the program, its arguments and what started it, shown here. If you or a tool you use ran it, mark it expected; if nobody knows it, ask your agent to look into it.",
 };
 
@@ -1346,7 +1345,7 @@ pub const PUBLISHED_WORDS: Words = Words {
 /// names.
 pub const PUBLISHED_FILE_WORDS: Words = Words {
     title: "A file was created or renamed on this Mac where a published detection rule marks it as high risk.",
-    meaning: "The rule, named with this finding, comes from SigmaHQ's public rule set and was written from attacks seen elsewhere. Installers, updaters and people put files in the same places for ordinary work, so a match is often harmless.",
+    meaning: "The rule, named with this finding, comes from a published rule set and was written from attacks seen elsewhere. Installers, updaters and people put files in the same places for ordinary work, so a match is often harmless.",
     advice: "Look at the file and the program that wrote it, shown here. If you or a tool you use put it there, mark it expected; if nobody knows it, ask your agent to look into it.",
 };
 
@@ -1534,7 +1533,11 @@ pub fn catalogue_json() -> Value {
         "rules": rules,
         // Every finding of a published rule says the same words; the rule is in its own field.
         "published_rules": {
-            "rule": format!("{}<the rule's id>", crate::sigma::FINDING_PREFIX),
+            "rule": crate::sigma::SOURCES
+                .iter()
+                .map(|s| format!("{}:<the rule's id>", s.name))
+                .collect::<Vec<_>>()
+                .join(" or "),
             "kind": PUBLISHED_KIND,
             "raised_by_levels": ["high", "critical"],
             "severity": "the rule's level",

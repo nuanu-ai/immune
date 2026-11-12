@@ -1,0 +1,22 @@
+title: "Virtual Private Network Connection Attempt"
+id: "15dacaa0-5b90-466b-acab-63435a59701a"
+status: "test"
+description: "Identifies the execution of macOS built-in commands to connect to an existing Virtual Private Network (VPN). Adversaries\nmay use VPN connections to laterally move and control remote systems on a network."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/macos/lateral_movement_vpn_connection_attempt.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2020-01-25"
+modified: "2026-09-18"
+tags: ["attack.t1021", "attack.t1133"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["networksetup"]}
+  s2: {"process.args|contains": ["\u0000-connectpppoeservice\u0000"]}
+  s3: {"process.name|cased": ["scutil"]}
+  s4: {"process.args|contains": ["\u0000--nc\u0000"]}
+  s5: {"process.args|contains": ["\u0000start\u0000"]}
+  s6: {"process.name|cased": ["osascript"]}
+  s7: {"process.command_line": ["osascript*set VPN to service*"]}
+  condition: "((s1 and s2) or (s3 and s4 and s5) or (s6 and s7))"
+level: "low"
+elastic: {"rule_id": "15dacaa0-5b90-466b-acab-63435a59701a", "severity": "low", "risk_score": 21, "query_sha256": "40e6056c6e40d8714255d2151161cb78a1e8e3e9755da698bae4cc14c235e371", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": ["process_started"], "null_sensitive": [], "folded_fields": []}

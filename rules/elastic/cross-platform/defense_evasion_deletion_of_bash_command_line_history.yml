@@ -1,0 +1,32 @@
+title: "Tampering of Shell Command-Line History"
+id: "7bcbb3ac-e533-41ad-a612-d6c3bf666aba"
+status: "test"
+description: "Adversaries may attempt to clear or disable the Bash command-line history in an attempt to evade detection or forensic\ninvestigations."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/cross-platform/defense_evasion_deletion_of_bash_command_line_history.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2020-05-04"
+modified: "2026-09-18"
+tags: ["attack.t1070.003"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.args|contains": ["\u0000rm\u0000", "\u0000echo\u0000"]}
+  s2: {"process.args|contains": ["\u0000ln\u0000"]}
+  s3: {"process.args|contains": ["\u0000-sf\u0000"]}
+  s4: {"process.args|contains": ["\u0000/dev/null\u0000"]}
+  s5: {"process.args|contains": ["\u0000truncate\u0000"]}
+  s6: {"process.args|contains": ["\u0000-s0\u0000"]}
+  s7: [{"process.args|contains": ["\u0000.bash_history\u0000", "\u0000/root/.bash_history\u0000", "\u0000/Users/.bash_history\u0000", "\u0000.zsh_history\u0000", "\u0000/root/.zsh_history\u0000", "\u0000/Users/.zsh_history\u0000"]}, {"immune.folded.process.args|re": ["(?s)\\x00/home/[^\\x00]*/\\.bash_history\\x00", "(?s)\\x00/users/[^\\x00]*/\\.bash_history\\x00", "(?s)\\x00/home/[^\\x00]*/\\.zsh_history\\x00", "(?s)\\x00/users/[^\\x00]*/\\.zsh_history\\x00"]}]
+  s8: {"process.args|contains": ["\u0000history\u0000"]}
+  s9: {"process.args|contains": ["\u0000-c\u0000"]}
+  s10: {"process.args|contains": ["\u0000export\u0000"]}
+  s11: {"process.args|contains": ["\u0000HISTFILE=/dev/null\u0000", "\u0000HISTFILESIZE=0\u0000"]}
+  s12: {"process.args|contains": ["\u0000unset\u0000"]}
+  s13: {"process.args|contains": ["\u0000HISTFILE\u0000"]}
+  s14: {"process.args|contains": ["\u0000set\u0000"]}
+  s15: {"process.args|contains": ["\u0000+o\u0000"]}
+  s16: {"process.executable|cased": ["/usr/bin/timeout", "/usr/bin/kubectl", "/usr/bin/psql", "/usr/lib/postgresql/*/bin/psql", "/usr/bin/bazel", "/usr/bin/git", "/usr/bin/jq", "/bin/grep"]}
+  s17: {"process.command_line|cased": ["stat -c %s history"]}
+  condition: "((((s1 or (s2 and s3 and s4) or (s5 and s6)) and s7) or (s8 and s9) or (s10 and s11) or (s12 and s13) or (s14 and s8 and s15)) and (not s16 and not s17))"
+level: "medium"
+elastic: {"rule_id": "7bcbb3ac-e533-41ad-a612-d6c3bf666aba", "severity": "medium", "risk_score": 47, "query_sha256": "d02e471d632a0cc8ea6ec27cfd6036d7917e68a51d0e93145c00b8e63ce5a0a1", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": ["exec_event", "executed", "process_started"], "null_sensitive": [], "folded_fields": ["process.args"]}

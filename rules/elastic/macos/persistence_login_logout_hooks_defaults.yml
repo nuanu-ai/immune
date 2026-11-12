@@ -1,0 +1,20 @@
+title: "Persistence via Login or Logout Hook"
+id: "5d0265bf-dea9-41a9-92ad-48a8dcd05080"
+status: "test"
+description: "Identifies use of the Defaults command to install a login or logoff hook in MacOS. An adversary may abuse this\ncapability to establish persistence in an environment by inserting code to be executed at login or logout."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/macos/persistence_login_logout_hooks_defaults.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2020-12-07"
+modified: "2026-09-18"
+tags: ["attack.t1037.002"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["defaults"]}
+  s2: {"process.args|contains|cased": ["\u0000write\u0000"]}
+  s3: {"process.args|contains": ["\u0000LoginHook\u0000", "\u0000LogoutHook\u0000"]}
+  s4: {"process.args|contains": ["\u0000Support/JAMF/ManagementFrameworkScripts/logouthook.sh\u0000", "\u0000Support/JAMF/ManagementFrameworkScripts/loginhook.sh\u0000", "\u0000/Library/Application Support/JAMF/ManagementFrameworkScripts/logouthook.sh\u0000", "\u0000/Library/Application Support/JAMF/ManagementFrameworkScripts/loginhook.sh\u0000"]}
+  s5: {"process.args|exists": true}
+  condition: "(s1 and s2 and s3 and (s5 and not s4))"
+level: "medium"
+elastic: {"rule_id": "5d0265bf-dea9-41a9-92ad-48a8dcd05080", "severity": "medium", "risk_score": 47, "query_sha256": "8428ec4cfbd2abf078244d2e3d649ce8295a3befd151a2e1a3c85400257b90df", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": ["process.args"], "folded_fields": []}

@@ -1,0 +1,16 @@
+title: "Processes with Trailing Spaces"
+id: "0c093569-dff9-42b6-87b1-0242d9f7d9b4"
+status: "test"
+description: "Identify instances where adversaries include trailing space characters to mimic regular files, disguising their activity\nto evade default file handling mechanisms."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/cross-platform/defense_evasion_processes_with_trailing_spaces.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2023-08-24"
+modified: "2026-09-18"
+tags: ["attack.t1036.006"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name": ["* "]}
+  condition: "s1"
+level: "low"
+elastic: {"rule_id": "0c093569-dff9-42b6-87b1-0242d9f7d9b4", "severity": "low", "risk_score": 21, "query_sha256": "809efc385d426dbaa1e9bfcadf10649e581b19e0405223efb287331ee7ca9f8d", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": ["exec_event", "executed", "process_started"], "null_sensitive": [], "folded_fields": []}

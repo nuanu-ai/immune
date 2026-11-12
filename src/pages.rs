@@ -1413,11 +1413,7 @@ const PLACED: [(&str, &str, &str); 3] = [
 /// never one evaluated in part, and whether they judged every start of the last day. The
 /// summary, the rules page and `immune rules` say it in these words.
 pub fn rules_said(r: &serde_json::Value) -> String {
-    let head = format!(
-        "{} rules for macOS from SigmaHQ's public rule set, as it was on {}.",
-        r["shipped"],
-        crate::sigma::COMMIT_DATE
-    );
+    let head = crate::sigma::Rules::shipped().sources_said();
     if r["watching"] != true {
         return format!(
             "{head} Once the event level is on, every program start on this Mac is checked against them. It is not on, so none of them is watching."
@@ -1427,7 +1423,7 @@ pub fn rules_said(r: &serde_json::Value) -> String {
     let files = n("file_rules");
     let mut said = if r["file_events_collected"] == true {
         format!(
-            "{head} The event level is on, so {} of them are watching this Mac: {} every program start and {files} every file created or renamed; {} more check program starts in part. In the last day they matched {}.",
+            "{head} The event level is on, so {} of them are watching this Mac: {} every program start and {files} every file created or renamed; {} more are checked in part. In the last day they matched {}.",
             n("watching_rules"),
             n("watching_rules") - files,
             n("in_part"),
@@ -1435,7 +1431,7 @@ pub fn rules_said(r: &serde_json::Value) -> String {
         )
     } else {
         format!(
-            "{head} The event level is on, so {} of them are watching every program start on this Mac, and {} more check it in part. The {files} rules for files created or renamed are not watching: the collector installed here records program starts only, and installing the event level again adds file events. In the last day they matched {}.",
+            "{head} The event level is on, so {} of them are watching every program start on this Mac, and {} more are checked in part. The {files} rules for files created or renamed are not watching: the collector installed here records program starts only, and installing the event level again adds file events. In the last day they matched {}.",
             n("watching_rules"),
             n("in_part"),
             crate::sigma::times(n("matches_last_day"))
@@ -1456,13 +1452,18 @@ pub fn rules_said(r: &serde_json::Value) -> String {
 /// the event level's, `events`.
 pub fn rules(r: &serde_json::Value, events: Option<&crate::events::Level>, now: i64) -> String {
     use crate::sigma::{self, Placement, Reason};
+    let shipped = sigma::Rules::shipped();
+    let from: Vec<String> = shipped
+        .sources()
+        .iter()
+        .map(|s| match s.commit_date {
+            Some(date) => format!("{}, as published on {date}", s.publisher),
+            None => format!("{}, at commit {}", s.publisher, &s.commit[..12]),
+        })
+        .collect();
     let mut out = top(
         RULES_TITLE,
-        &format!(
-            "From SigmaHQ, as published on {} · this page made {}",
-            sigma::COMMIT_DATE,
-            utc(now)
-        ),
+        &format!("From {} · this page made {}", from.join(" and "), utc(now)),
     );
     let r = &r["rules"];
     let mut w = |s: String| out.push_str(&s);
@@ -1478,7 +1479,6 @@ pub fn rules(r: &serde_json::Value, events: Option<&crate::events::Level>, now: 
         ));
     }
     w("</div>\n".to_string());
-    let shipped = sigma::Rules::shipped();
     let (evaluated, in_part, not_evaluated) = shipped.groups();
     let source = |s: &str| format!("<span class=\"src\">{}</span>", esc(s));
     let mono = |list: &[String]| {
@@ -1538,12 +1538,23 @@ pub fn rules(r: &serde_json::Value, events: Option<&crate::events::Level>, now: 
                 Placement::Evaluated => {}
                 Placement::InPart(branches) => {
                     for b in branches {
-                        w(format!(
-                            "<p class=\"missing\">Never matches here: the alternative {} needs {}, which {} does not give.</p>\n",
-                            mono(std::slice::from_ref(&b.selection)),
-                            mono(&b.fields),
-                            sigma::given_by(l.kind)
-                        ));
+                        w(match (&b.selection, &b.said) {
+                            (Some(selection), _) => format!(
+                                "<p class=\"missing\">Never matches here: the alternative {} needs {}, which {} does not give.</p>\n",
+                                mono(std::slice::from_ref(selection)),
+                                mono(&b.fields),
+                                sigma::given_by(l.kind)
+                            ),
+                            (None, _) if !b.fields.is_empty() => format!(
+                                "<p class=\"missing\">Never matches here: an alternative of the upstream rule needs {}, which {} does not give.</p>\n",
+                                mono(&b.fields),
+                                sigma::given_by(l.kind)
+                            ),
+                            (None, said) => format!(
+                                "<p class=\"missing\">Never matches here: an alternative of the upstream rule was left out in translation, {}.</p>\n",
+                                source(said.as_deref().unwrap_or(""))
+                            ),
+                        });
                     }
                 }
                 Placement::NotEvaluated(reason) => w(format!(
@@ -1562,7 +1573,11 @@ pub fn rules(r: &serde_json::Value, events: Option<&crate::events::Level>, now: 
                             "Searches whole messages for words; this version has the parts of an event, not messages.".to_string()
                         }
                         Reason::NotParsed(said) => format!("Could not be read: {}", source(said)),
-                    }
+                        Reason::Sequence => "Correlates a sequence of events, which is not translated into Sigma.".to_string(),
+                        Reason::NotEql => "Not written in EQL, the only language translated into Sigma.".to_string(),
+                        Reason::BackslashInWildcard => "Has a backslash in a wildcard pattern, whose meaning in Elasticsearch is not documented, so it is not translated.".to_string(),
+                        Reason::SpansKinds => "Is about program starts and file events at once, which one Sigma rule cannot be.".to_string(),
+                    } + &l.detail.map_or(String::new(), |d| format!(" {}", source(d)))
                 )),
             }
             let Some(m) = &l.meta else {
@@ -1584,28 +1599,48 @@ pub fn rules(r: &serde_json::Value, events: Option<&crate::events::Level>, now: 
             if let Some(a) = &m.author {
                 w(format!("<li>Author: {}</li>\n", source(a)));
             }
-            w(format!(
-                "<li>Published as {}, in <span class=\"mono\">{}</span></li>\n</ul>\n</details>\n</article>\n",
-                source(m.status.as_str()),
-                esc(l.file)
-            ));
+            if l.detail.is_some() {
+                w(format!(
+                    "<li>{}'s rule, not taken, upstream in <span class=\"mono\">{}</span></li>\n</ul>\n</details>\n</article>\n",
+                    esc(l.source.publisher),
+                    esc(l.file)
+                ));
+            } else {
+                w(format!(
+                    "<li>Published as {}, in <span class=\"mono\">{}</span></li>\n</ul>\n</details>\n</article>\n",
+                    source(m.status.as_str()),
+                    esc(l.file)
+                ));
+            }
         }
         w("</section>\n".to_string());
     }
-    // The licence's address, as the rules' NOTICE gives it. Addresses are named, not linked:
+    // The licences' addresses, as the sets' NOTICEs give them. Addresses are named, not linked:
     // no page of the view carries a web address to follow.
-    let notice = include_str!("../rules/sigma/NOTICE");
-    let licence = notice
-        .split_whitespace()
-        .find(|word| word.contains("Detection-Rule-License"))
-        .map_or("", |word| word.trim_end_matches([',', '.']));
+    let named = |notice: &'static str, marker: &str| {
+        notice
+            .split_whitespace()
+            .find(|word| word.contains(marker))
+            .map_or("", |word| word.trim_end_matches([',', '.']))
+    };
+    let licence = named(
+        include_str!("../rules/sigma/NOTICE"),
+        "Detection-Rule-License",
+    );
+    let elastic_licence = named(
+        include_str!("../rules/elastic/NOTICE"),
+        "licensing/elastic-license",
+    );
     let bare = |url: &'static str| url.strip_prefix("https://").unwrap_or(url);
     w(format!(
-        "<footer class=\"licence\">\n<p class=\"meta\">The rules are SigmaHQ's, copied unchanged from its rule set, <span class=\"mono\">{}</span>, at commit <span class=\"mono\">{}</span> of {}. They are licensed under the Detection Rule License 1.1, <span class=\"mono\">{}</span>, and each keeps its authors, shown with it.</p>\n</footer>\n",
+        "<footer class=\"licence\">\n<p class=\"meta\">SigmaHQ's rules are copied unchanged from its rule set, <span class=\"mono\">{}</span>, at commit <span class=\"mono\">{}</span> of {}. They are licensed under the Detection Rule License 1.1, <span class=\"mono\">{}</span>, and each keeps its authors, shown with it.</p>\n<p class=\"meta\">Elastic's rules are translated mechanically into Sigma from its detection rules, <span class=\"mono\">{}</span>, at commit <span class=\"mono\">{}</span>; none is edited by hand. They carry Elastic License 2.0, <span class=\"mono\">{}</span>, and each keeps its authors, shown with it.</p>\n</footer>\n",
         esc(bare(sigma::SOURCE)),
         sigma::COMMIT,
         sigma::COMMIT_DATE,
-        esc(bare(licence))
+        esc(bare(licence)),
+        esc(bare(sigma::ELASTIC.url)),
+        sigma::ELASTIC.commit,
+        esc(bare(elastic_licence)),
     ));
     out.push_str(FOOT);
     out

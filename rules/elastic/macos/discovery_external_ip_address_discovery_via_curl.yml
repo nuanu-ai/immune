@@ -1,0 +1,19 @@
+title: "External IP Address Discovery via Curl"
+id: "3ad362a9-40cb-4536-8f8b-6a8b5cc24d3c"
+status: "test"
+description: "Detects applications making a curl request to a known public IP address lookup web service. Malware commonly \nperforms this action during reconnaissance to assess potential targets and identify the victim's external \nIP address."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/macos/discovery_external_ip_address_discovery_via_curl.toml"]
+author: "Elastic, Massimo Bertocchi"
+license: "Elastic License v2"
+date: "2026-01-30"
+modified: "2026-09-18"
+tags: ["attack.t1016.001"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.parent.executable|cased": ["/Applications/*", "/Volumes/*", "/private/var/folders/*"]}
+  s2: {"process.name|cased": ["curl", "nscurl"]}
+  s3: {"process.args_count|lte": 5}
+  s4: {"process.command_line|cased": ["*ip-api.com*", "*ipwho.is*", "*checkip.dyndns.org*", "*api.ipify.org*", "*whatismyip.akamai.com*", "*ifcfg.me*", "*ifconfig.me*", "*ident.me*", "*icanhazip.com*", "*ipecho.net*", "*api.myip.com*", "*checkip.amazonaws.com*", "*wtfismyip.com*", "*iplogger.*", "*freegeoip.net*", "*ipinfo.io*", "*geoplugin.net*", "*httpbin.org*", "*myip.opendns.com*"]}
+  condition: "(s1 and s2 and s3 and s4)"
+level: "low"
+elastic: {"rule_id": "3ad362a9-40cb-4536-8f8b-6a8b5cc24d3c", "severity": "low", "risk_score": 21, "query_sha256": "0f604fe00f318cc33e5a024c2d36eb6a87e865939e9cf184acba6020079686f2", "kinds": ["start"], "in_part_missing_fields": ["needs_fields process.code_signature.exists", "needs_fields process.parent.code_signature.exists", "needs_fields process.parent.code_signature.trusted", "needs_fields process.parent.command_line"], "also_asks_events": [], "null_sensitive": [], "folded_fields": []}

@@ -1,0 +1,21 @@
+title: "Finder Sync Plugin Registered and Enabled"
+id: "37f638ea-909d-4f94-9248-edd21e4a9906"
+status: "test"
+description: "Finder Sync plugins enable users to extend Finder\u2019s functionality by modifying the user interface. Adversaries may abuse\nthis feature by adding a rogue Finder Plugin to repeatedly execute malicious payloads for persistence."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/macos/persistence_finder_sync_plugin_pluginkit.toml"]
+author: "Elastic, Massimo Bertocchi"
+license: "Elastic License v2"
+date: "2020-12-18"
+modified: "2026-09-18"
+tags: ["attack.t1543"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["pluginkit"]}
+  s2: {"process.args|contains|cased": ["\u0000-e\u0000"]}
+  s3: {"process.args|contains": ["\u0000use\u0000"]}
+  s4: {"process.args|contains|cased": ["\u0000-i\u0000"]}
+  s5: {"process.parent.name": ["python*", "node", "osascript", "bash", "sh", "zsh"]}
+  condition: "(s1 and s2 and s3 and s4 and s5)"
+level: "medium"
+elastic: {"rule_id": "37f638ea-909d-4f94-9248-edd21e4a9906", "severity": "medium", "risk_score": 47, "query_sha256": "114dcdd682a2e6bc26b9c1acf9e1c35fd299b2cbe23d882a706cbd0c35e49def", "kinds": ["start"], "in_part_missing_fields": ["needs_fields process.parent.code_signature.exists", "needs_fields process.parent.code_signature.trusted"], "also_asks_events": ["process_started"], "null_sensitive": [], "folded_fields": []}
+falsepositives: ["Trusted Finder Sync Plugins"]

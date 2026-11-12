@@ -1,0 +1,19 @@
+title: "Attempt to Install Root Certificate"
+id: "bc1eeacf-2972-434f-b782-3a532b100d67"
+status: "test"
+description: "Adversaries may install a root certificate on a compromised system to avoid warnings when connecting to their command\nand control servers. Root certificates are used in public key cryptography to identify a root certificate authority\n(CA). When a root certificate is installed, the system or application will trust certificates in the root's chain of\ntrust that have been signed by the root certificate."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/macos/defense_evasion_install_root_certificate.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2021-01-13"
+modified: "2026-09-18"
+tags: ["attack.t1553.004"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["security"]}
+  s2: {"process.args|contains|cased": ["\u0000add-trusted-cert\u0000"]}
+  s3: {"process.parent.name": ["osascript", "bash", "sh", "zsh", "Terminal", "Python*"]}
+  condition: "(s1 and s2 and s3)"
+level: "medium"
+elastic: {"rule_id": "bc1eeacf-2972-434f-b782-3a532b100d67", "severity": "medium", "risk_score": 47, "query_sha256": "d35123e56bccb4e3fc49f17dd2e2fa2646f73afaa717c72447c5d815080fceb6", "kinds": ["start"], "in_part_missing_fields": ["needs_fields process.parent.code_signature.exists", "needs_fields process.parent.code_signature.trusted"], "also_asks_events": ["process_started"], "null_sensitive": [], "folded_fields": []}
+falsepositives: ["Certain applications may install root certificates for the purpose of inspecting SSL traffic."]

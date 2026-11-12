@@ -1,0 +1,18 @@
+title: "TCC Bypass via Mounted APFS Snapshot Access"
+id: "b00bcd89-000c-4425-b94c-716ef67762f6"
+status: "test"
+description: "Identifies the use of the mount_apfs command to mount the entire file system through Apple File System (APFS) snapshots\nas read-only and with the noowners flag set. This action enables the adversary to access almost any file in the file\nsystem, including all user data and files protected by Apple\u2019s privacy framework (TCC)."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/macos/defense_evasion_tcc_bypass_mounted_apfs_access.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2020-01-04"
+modified: "2026-09-18"
+tags: ["attack.t1005", "attack.t1006"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["mount_apfs"]}
+  s2: {"process.args|contains": ["\u0000/System/Volumes/Data\u0000"]}
+  s3: {"process.args|contains": ["\u0000noowners\u0000"]}
+  condition: "(s1 and s2 and s3)"
+level: "high"
+elastic: {"rule_id": "b00bcd89-000c-4425-b94c-716ef67762f6", "severity": "high", "risk_score": 73, "query_sha256": "e139c1b53d106a12a247399d1ad8b695b93833f9c924e6b76810f2e96dcfeade", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": ["process_started"], "null_sensitive": [], "folded_fields": []}

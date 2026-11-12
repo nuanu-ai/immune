@@ -11,7 +11,7 @@ Immune is the detection core of [Artificial Immunity](https://immunity.bot), a p
   </picture>
 </p>
 
-It is one Rust program with SQLite built in, a small menu-bar app, and an optional collector made only of programs that macOS ships. It finds what you have on the Mac: projects and their dependencies, installed apps and packages, the places where persistence lives, the servers your SSH configuration knows. It matches dependencies against published vulnerability data (OSV and CISA's catalogue of exploited vulnerabilities), checks every program start and every file created or renamed against SigmaHQ's published rules for macOS, and raises findings tagged with MITRE ATT&CK techniques. Each finding says how bad it would be and how sure Immune is, as two separate values. Every answer also says what Immune could not see. There is no model inside, and nothing about your Mac is sent anywhere.
+It is one Rust program with SQLite built in, a small menu-bar app, and an optional collector made only of programs that macOS ships. It finds what you have on the Mac: projects and their dependencies, installed apps and packages, the places where persistence lives, the servers your SSH configuration knows. It matches dependencies against published vulnerability data (OSV and CISA's catalogue of exploited vulnerabilities), checks every program start and every file created or renamed against published rules for macOS, SigmaHQ's and Elastic's, and raises findings tagged with MITRE ATT&CK techniques. Each finding says how bad it would be and how sure Immune is, as two separate values. Every answer also says what Immune could not see. There is no model inside, and nothing about your Mac is sent anywhere.
 
 The pictures here are drawn by the program from an invented Mac.
 
@@ -66,7 +66,7 @@ To remove Immune, quit it, delete `Immune.app` and its data folder, `~/Library/A
 | Files that make a tool run code by itself: install scripts in `package.json`, editor tasks that run when a folder opens, editor and dev container settings, coding agents' settings, hooks and MCP server lists, editor extensions | The part of the file that runs code, as a checksum. 13 of the 41 known ways in a project and 7 of the 11 known places in the home folder are read | Within seconds for most, hourly for the rest |
 | Dependencies in `package-lock.json`, `pnpm-lock.yaml` and `Cargo.lock` | Matched against OSV's data for npm and crates.io and against CISA's catalogue | Hourly |
 | Your running programs and their internet connections | Read without administrator rights. An interpreter given code on its command line and left running without a terminal is a finding | Every 30 seconds while the app is open |
-| Every program start and every file created or renamed, with the collector | Checked against the 75 SigmaHQ rules for macOS: 74 are evaluated in full and 1 in part | About every 10 seconds while the app is open, and at every check |
+| Every program start and every file created or renamed, with the collector | Checked against 141 published rules for macOS, the 75 of SigmaHQ and 66 of Elastic's translated into Sigma: 128 are evaluated in full and 13 in part | About every 10 seconds while the app is open, and at every check |
 | Indicators from an incident report that you give as `indicators.json`: SHA-256 hashes, domains, IPv4 addresses, URLs | Matched against watched files, lockfiles, editor tasks and connections | At every check |
 
 A finding stays open until you answer it. "Expected" hides it for 30 days or a time you choose, with a reason; if it is found again meanwhile, it opens again when that time ends. "Seen" closes it. A finding that is high or critical in how bad and medium or high in how sure is urgent, and only then does the app send a notification.
@@ -93,8 +93,8 @@ For a vulnerability there are four answers: affects me; does not affect me, know
 - A connection at the moment it is made, and the name behind an address. Immune samples connections every 30 seconds and sees addresses only; `eslogger` has no network event.
 - A file modified in place or removed. The collector records files created and renamed only.
 - `fork` and `exit`: a process that forks without starting a new program, and when a process ends.
-- One Sigma rule reads a field that `eslogger` does not give, so it is evaluated only in part.
-- Without the collector: the moment a program starts, its command line, who started it, and which program created a file. The 75 Sigma rules then do not watch.
+- One of SigmaHQ's rules and 12 of Elastic's translated rules have an alternative that needs a field `eslogger` does not give, or that the translation could not carry, so they are evaluated only in part. Of Elastic's other 119 rules for macOS, none is evaluated: 30 correlate a sequence of events, 40 are written in KQL or ES|QL, and 49 need events or fields the collector does not record or could not be translated exactly. `immune rules` names each with its reason.
+- Without the collector: the moment a program starts, its command line, who started it, and which program created a file. The published rules then do not watch.
 - Vulnerabilities in installed apps, Homebrew packages, what servers run, and projects in other languages. Lockfiles Immune has no reader for, such as `requirements.txt`, `uv.lock` or `go.sum`, are named in the report.
 - Folders macOS asks permission for: Desktop, Documents, Downloads, iCloud Drive, other cloud storage, other apps' containers and anything under `/Volumes`. Immune never enters them, so macOS never shows you a permission dialog because of it, and the report says what was skipped.
 - Which program changed a watched file in place.
@@ -109,7 +109,7 @@ flowchart TD
     feeds["Public data over HTTPS<br/>CISA KEV, OSV"] --> readers
     log --> readers["Readers<br/>facts with their source, and coverage"]
     readers --> store[("Store, SQLite<br/>facts, coverage, journal")]
-    store --> rules["Rules and matchers<br/>Immune's own, SigmaHQ, OSV"]
+    store --> rules["Rules and matchers<br/>Immune's own, SigmaHQ, Elastic, OSV"]
     rules --> findings["Findings<br/>how bad, how sure, ATT&CK, evidence"]
     findings --> store
     store --> commands["immune commands<br/>JSON"]
@@ -132,7 +132,7 @@ The first user of Immune is your coding agent, and the commands are its interfac
 | `immune findings --json`, `immune finding <id> --json` | Every finding in every state; one finding whole, with its evidence, the journal entries it rests on (`rests_on`) and your answer |
 | `immune finding <id> expected --reason <text> --via agent` | Your answer, given through the agent; also `seen` and `reopen` |
 | `immune vulnerabilities --json`, `immune vulnerability <id> --json` | Known vulnerabilities in your projects' packages, and the answer for one record or CVE in every project, with what it rests on |
-| `immune rules --json` | The shipped Sigma rules: which are evaluated in full, in part or not at all, with the reason, and how often each matched; and the words of every rule of Immune's own |
+| `immune rules --json` | The published rules of both sets: which are evaluated in full, in part or not at all, with the reason, and how often each matched; and the words of every rule of Immune's own |
 | `immune project <path> --json` | What Immune knows of one project: whether it knows it at all, its facts with what each rests on, which readings speak for it and whether each was full, and its findings |
 | `immune program <path or name> --json` | The same for one installed app, Homebrew package or global npm package, found by a path inside it or by its name |
 | `immune machine [<name>] --json` | The same for this Mac, or for a server or tailnet peer the Mac knows, with what is on it one level deep |
@@ -183,6 +183,7 @@ The program is inside the app at `Immune.app/Contents/MacOS/immune`, and after `
 | Source | What Immune takes | Licence | How it arrives |
 |---|---|---|---|
 | [SigmaHQ](https://github.com/SigmaHQ/sigma) | Every rule for macOS, 75 in all (70 over process starts, 5 over file events), byte for byte as published at commit `d7c9da1` | Detection Rule License 1.1, see [`rules/sigma/NOTICE`](rules/sigma/NOTICE) | Compiled into the program |
+| [Elastic detection rules](https://github.com/elastic/detection-rules) | 66 of its 185 detection rules for macOS (60 over process starts, 6 over file events) at commit `032ac5e`, each translated into Sigma by a program, not edited by hand, and checked against Elasticsearch's documented meaning on invented events; the other 119 are listed with the reason | Elastic License 2.0, see [`rules/elastic/NOTICE`](rules/elastic/NOTICE) | Compiled into the program |
 | [MITRE ATT&CK](https://attack.mitre.org) | The techniques for macOS and the 13 tactics of Enterprise ATT&CK, from release 20.1 | MITRE's ATT&CK licence, see [`rules/attack/NOTICE`](rules/attack/NOTICE) | Compiled into the program |
 | [OSV](https://osv.dev) | Vulnerability and malicious package records for npm and crates.io, from sources such as the GitHub Advisory Database, RustSec and OpenSSF Malicious Packages | Each record keeps its source's licence; Immune names the source beside every record it shows | Downloaded: crates.io at every check, npm once a day |
 | [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) | The catalogue of vulnerabilities known to be exploited | CC0 | Downloaded at every check |

@@ -1,0 +1,20 @@
+title: "Potential Traffic Tunneling using QEMU"
+id: "b29b7652-219f-468b-aa1f-5da7bcc24b03"
+status: "test"
+description: "Identifies the use of the QEMU hardware emulator to potentially tunnel network traffic between Virtual machines. This\ncan be used by attackers to enable routing of network packets that would otherwise not reach their intended destination."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/cross-platform/command_and_control_tunnel_qemu.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2026-02-09"
+modified: "2026-09-18"
+tags: ["attack.t1090", "attack.t1219", "attack.t1572"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.args|contains": ["\u0000-netdev\u0000"]}
+  s2: {"process.args|contains": ["\u0000-nographic\u0000"]}
+  s3: {"process.command_line": ["*connect=*"]}
+  s4: {"process.command_line": ["*restrict=off*"]}
+  s5: {"process.command_line": ["*hostfwd=*"]}
+  condition: "(s1 and ((s2 and s3 and s4) or s5))"
+level: "medium"
+elastic: {"rule_id": "b29b7652-219f-468b-aa1f-5da7bcc24b03", "severity": "medium", "risk_score": 47, "query_sha256": "b420f05faba3fd3dff445b15adb015ab68a468d820bbe4e523d247470e2fc50b", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": [], "folded_fields": []}

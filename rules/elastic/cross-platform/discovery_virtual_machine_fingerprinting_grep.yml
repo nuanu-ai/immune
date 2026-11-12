@@ -1,0 +1,23 @@
+title: "Virtual Machine Fingerprinting via Grep"
+id: "c85eb82c-d2c8-485c-a36f-534f914b7663"
+status: "test"
+description: "An adversary may attempt to get detailed information about the operating system and hardware. This rule identifies\ncommon locations used to discover virtual machine hardware by a non-root user. This technique has been used by the Pupy\nRAT and other malware."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/cross-platform/discovery_virtual_machine_fingerprinting_grep.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2021-09-29"
+modified: "2026-09-18"
+tags: ["attack.t1082", "attack.t1497.001"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["grep", "egrep"]}
+  s2: {"user.id|cased": ["0"]}
+  s3: {"user.id|exists": true}
+  s4: {"process.args|contains": ["\u0000parallels", "\u0000vmware", "\u0000virtualbox"]}
+  s5: {"process.args|contains": ["\u0000Manufacturer"]}
+  s6: {"process.parent.executable|cased": ["/Applications/Docker.app/Contents/MacOS/Docker", "/usr/libexec/kcare/virt-what"]}
+  s7: {"process.parent.executable|exists": true}
+  condition: "(s1 and (s3 and not s2) and s4 and s5 and (s7 and not s6))"
+level: "medium"
+elastic: {"rule_id": "c85eb82c-d2c8-485c-a36f-534f914b7663", "severity": "medium", "risk_score": 47, "query_sha256": "8f3a87df6aabb7483f35b82dd574c1681bf909a20018d3db31397cdef954cd7c", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": ["process.parent.executable", "user.id"], "folded_fields": []}
+falsepositives: ["    Certain tools or automated software may enumerate hardware information. These tools can be exempted via user name or\n    process arguments to eliminate potential noise.\n    "]

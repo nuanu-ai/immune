@@ -1,0 +1,22 @@
+title: "SoftwareUpdate Preferences Modification"
+id: "f683dcdf-a018-4801-b066-193d4ae6c8e5"
+status: "test"
+description: "Identifies changes to the SoftwareUpdate preferences using the built-in defaults command. Adversaries may abuse this in\nan attempt to disable security updates."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/macos/defense_evasion_apple_softupdates_modification.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2021-01-15"
+modified: "2026-09-18"
+tags: ["attack.t1562.001", "attack.t1647"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["defaults"]}
+  s2: {"process.args|contains|cased": ["\u0000write\u0000"]}
+  s3: {"process.args|contains|cased": ["\u0000-bool\u0000"]}
+  s4: {"process.args|contains": ["\u0000com.apple.SoftwareUpdate\u0000", "\u0000/Library/Preferences/com.apple.SoftwareUpdate.plist\u0000"]}
+  s5: {"process.args|contains|cased": ["\u0000TRUE\u0000", "\u0000true\u0000"]}
+  s6: {"process.args|exists": true}
+  condition: "(s1 and s2 and s3 and s4 and (s6 and not s5))"
+level: "medium"
+elastic: {"rule_id": "f683dcdf-a018-4801-b066-193d4ae6c8e5", "severity": "medium", "risk_score": 47, "query_sha256": "fb66c5180fe2976563fddc2fe7465b0bbe29e42c53359ffc2669936f5137183f", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": ["process_started"], "null_sensitive": ["process.args"], "folded_fields": []}
+falsepositives: ["Authorized SoftwareUpdate Settings Changes"]

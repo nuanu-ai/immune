@@ -1,0 +1,19 @@
+title: "Suspicious Apple Mail Rule Plist Modification"
+id: "d7b57cbd-de03-4c3b-8278-daa1ee4a6772"
+status: "test"
+description: "Detects suspicious creation or modification of the Apple Mail SyncedRules plist file by a non-Mail application. \nAn adversary could establish persistence by creating or modifying an Apple Mail rule to point to a script file \non disk, which will execute when an email matching the trigger is received."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/macos/persistence_apple_mail_rule_modification.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2026-01-30"
+modified: "2026-09-18"
+tags: ["attack.t1204", "attack.t1546", "attack.t1647"]
+logsource: {"product": "macos", "category": "file_event"}
+detection:
+  s1: {"event.type|cased": ["deletion"]}
+  s2: {"file.name|cased": ["SyncedRules.plist"]}
+  s3: {"file.path|cased": ["/Users/*/Library/Mail/*/MailData/SyncedRules.plist", "/Users/*/Library/Mobile Documents/com.apple.mail/Data/*/MailData/SyncedRules.plist"]}
+  s4: {"process.executable|cased": ["/System/Applications/Mail.app/Contents/MacOS/Mail", "/Applications/Mail.app/Contents/MacOS/Mail", "/System/Library/CoreServices/backupd.bundle/Contents/Resources/backupd", "/usr/libexec/xpcproxy", "/System/Library/Frameworks/FileProvider.framework/Support/fileproviderd", "/System/Library/PrivateFrameworks/CloudDocsDaemon.framework/Versions/A/Support/bird", "/sbin/launchd", "/System/Library/CoreServices/Finder.app/Contents/MacOS/Finder"]}
+  condition: "(not s1 and s2 and s3 and not s4)"
+level: "medium"
+elastic: {"rule_id": "d7b57cbd-de03-4c3b-8278-daa1ee4a6772", "severity": "medium", "risk_score": 47, "query_sha256": "8400df3dce9e9740139d6cea3426bc06f47703382f4b235e7cfe855f9fdd877c", "kinds": ["create", "rename"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": [], "folded_fields": []}

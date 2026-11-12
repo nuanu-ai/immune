@@ -1,0 +1,39 @@
+title: "GenAI CLI Started with Unsafe Permission Bypass"
+id: "c1326e45-6d3c-4a2d-9882-606a0c310299"
+status: "test"
+description: "Identifies GenAI agent CLIs started with permission-bypass or auto-approval flags that disable human-in-the-loop\nguardrails. These modes are intended for isolated sandboxes but are frequently misused on internet-connected developer\nworkstations, allowing prompt injection, compromised dependencies, or malicious skills to execute commands, modify\nfiles, or reach sensitive paths without confirmation."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/cross-platform/defense_evasion_genai_cli_unsafe_permission_bypass.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2026-06-24"
+modified: "2026-09-25"
+tags: ["attack.t1562.001"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.args|contains|cased": ["\u0000--dangerously-skip-permissions\u0000", "\u0000--allow-dangerously-skip-permissions\u0000", "\u0000--permission-mode=bypassPermissions\u0000"]}
+  s2: {"process.args|contains|cased": ["\u0000--permission-mode\u0000"]}
+  s3: {"process.args|contains|cased": ["\u0000bypassPermissions\u0000"]}
+  s4: {"process.name|cased": ["claude", "claude.exe"]}
+  s5: {"process.executable": ["*/.local/share/claude/versions/*", "*/.claude/downloads/*", "*Caskroom/claude-code/*"]}
+  s6: {"process.name|cased": ["node", "node.exe"]}
+  s7: {"process.args|contains": ["@anthropic-ai/claude-code"]}
+  s8: {"process.args|contains|cased": ["\u0000--dangerously-bypass-approvals-and-sandbox\u0000", "\u0000--full-auto\u0000", "\u0000--yolo\u0000"]}
+  s9: {"process.command_line": ["* -s danger-full-access*", "*--sandbox danger-full-access*", "*--sandbox=danger-full-access*", "*--ask-for-approval never*", "*--ask-for-approval=never*"]}
+  s10: {"process.name|cased": ["codex", "codex.exe", "codex-exec", "codex-aarch64-apple-darwin", "codex-x86_64-apple-darwin", "codex-linux-arm64", "codex-linux-x64"]}
+  s11: {"process.args|contains": ["@openai/codex", "/codex\u0000"]}
+  s12: {"process.args|contains|cased": ["\u0000--yolo\u0000", "\u0000-y\u0000"]}
+  s13: {"process.args|contains|cased": ["\u0000--approval-mode\u0000"]}
+  s14: {"process.args|contains|cased": ["\u0000yolo\u0000"]}
+  s15: {"process.args|contains|cased": ["\u0000--approval-mode=yolo\u0000"]}
+  s16: {"process.name|cased": ["gemini", "gemini-cli", "gemini.exe", "gemini-cli.exe"]}
+  s17: {"process.args|contains": ["@google/gemini-cli", "/gemini\u0000"]}
+  s18: {"process.args|contains|cased": ["\u0000--yolo\u0000", "\u0000--autopilot\u0000", "\u0000--allow-all\u0000", "\u0000--allow-all-tools\u0000", "\u0000--allow-all-paths\u0000", "\u0000--allow-all-urls\u0000"]}
+  s19: {"process.name|cased": ["copilot", "copilot.exe"]}
+  s20: {"process.args|contains": ["@github/copilot", "/copilot\u0000"]}
+  s21: {"process.args|contains|cased": ["\u0000--dangerously-skip-permissions\u0000"]}
+  s22: {"process.name|cased": ["opencode", "opencode.exe", ".opencode"]}
+  s23: {"process.executable": ["*opencode-ai*"]}
+  s24: {"process.args|contains": ["opencode-ai", "/opencode\u0000"]}
+  condition: "(((s1 or (s2 and s3)) and (s4 or s5 or (s6 and s7))) or ((s8 or s9) and (s10 or (s6 and s11))) or ((s12 or (s13 and s14) or s15) and (s16 or (s6 and s17))) or (s18 and (s19 or (s6 and s20))) or (s21 and (s22 or s23 or (s6 and s24))))"
+level: "medium"
+elastic: {"rule_id": "c1326e45-6d3c-4a2d-9882-606a0c310299", "severity": "medium", "risk_score": 47, "query_sha256": "5de70f22f0134e6a53157ebc2c78d4fc6b5a695225f13fa0a515e7bf73de9045", "kinds": ["start"], "in_part_missing_fields": ["backslash_in_wildcard process.args: *\\codex*", "backslash_in_wildcard process.args: *\\copilot*", "backslash_in_wildcard process.args: *\\gemini*", "backslash_in_wildcard process.args: *\\opencode*", "backslash_in_wildcard process.executable: *\\.opencode*", "backslash_in_wildcard process.executable: *\\Claude\\versions\\*"], "also_asks_events": [], "null_sensitive": [], "folded_fields": []}

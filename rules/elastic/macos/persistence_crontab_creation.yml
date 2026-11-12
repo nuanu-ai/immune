@@ -1,0 +1,19 @@
+title: "Suspicious CronTab Creation or Modification"
+id: "530178da-92ea-43ce-94c2-8877a826783d"
+status: "test"
+description: "Identifies attempts to create or modify a crontab via a process that is not crontab (i.e python, osascript, etc.). This\nactivity should not be highly prevalent and could indicate the use of cron as a persistence mechanism by a threat actor."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/macos/persistence_crontab_creation.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2022-04-25"
+modified: "2026-09-18"
+tags: ["attack.t1053.003"]
+logsource: {"product": "macos", "category": "file_event"}
+detection:
+  s1: {"event.type|cased": ["deletion"]}
+  s2: {"process.name|exists": true}
+  s3: {"file.path|cased": ["/private/var/at/tabs/*"]}
+  s4: {"process.executable|cased": ["/usr/bin/crontab"]}
+  condition: "(not s1 and s2 and s3 and not s4)"
+level: "medium"
+elastic: {"rule_id": "530178da-92ea-43ce-94c2-8877a826783d", "severity": "medium", "risk_score": 47, "query_sha256": "3e76350cdcc3aadd80fcf2b14500c3f7f391a963667f8f2aa83319c841bbb5fc", "kinds": ["create", "rename"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": [], "folded_fields": []}

@@ -232,8 +232,13 @@ impl Dir {
         out.stdout
     }
 
-    /// The findings of the published rule `id`, in every state.
+    /// The findings of SigmaHQ's rule `id`, in every state.
     fn findings_of(&self, id: &str) -> Vec<String> {
+        self.findings_named(&format!("sigma:{id}"))
+    }
+
+    /// The findings of the rule named `rule`, as findings name it, in every state.
+    fn findings_named(&self, rule: &str) -> Vec<String> {
         let out = self.command(&["findings", "--json"], &[]).output().unwrap();
         assert!(out.status.success());
         let all: Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -241,7 +246,7 @@ impl Dir {
             .as_array()
             .unwrap()
             .iter()
-            .filter(|f| f["finding"]["rule"] == format!("sigma:{id}"))
+            .filter(|f| f["finding"]["rule"] == rule)
             .map(|f| f["finding"]["id"].as_str().unwrap().to_string())
             .collect()
     }
@@ -1053,7 +1058,7 @@ fn no_collector_and_no_log_is_an_answer_that_says_so_and_names_the_rules_that_ju
         .iter()
         .filter(|u| u["reason"] == "not_collected")
         .collect();
-    assert_eq!(not_collected.len(), 5, "{m:#}");
+    assert_eq!(not_collected.len(), 11, "{m:#}");
     assert!(
         not_collected
             .iter()
@@ -1207,19 +1212,264 @@ fn unreadable_lines_are_counted_and_the_rules_that_judge_nothing_are_named_with_
         .iter()
         .filter(|u| u["reason"] == "not_collected")
         .collect();
-    assert_eq!(not_collected.len(), 5, "{unevaluated:#?}");
+    assert_eq!(not_collected.len(), 11, "{unevaluated:#?}");
     assert!(
         not_collected.iter().all(|u| u["detail_text"]
             == "the collector installed here records program starts only; installing the event level again adds files created and renamed"),
         "{not_collected:#?}"
     );
-    // Installed as today, the rules for file events judge, and only the one in part is named.
+    // Installed as today, the rules for file events judge, and only the rules in part and the
+    // upstream rules a translated set did not take are named, each with its reason.
     dir.install();
     let m = dir.matches(&[]);
     assert_eq!(m["collector"]["file_events_collected"], true);
-    let files: Vec<&Value> = m["unevaluated"].as_array().unwrap().iter().collect();
+    let mut reasons: std::collections::BTreeMap<&str, usize> = Default::default();
+    for u in m["unevaluated"].as_array().unwrap() {
+        *reasons.entry(u["reason"].as_str().unwrap()).or_default() += 1;
+    }
+    assert_eq!(
+        reasons,
+        [
+            ("backslash_in_wildcard", 2),
+            ("in_part", 13),
+            ("needs_events", 23),
+            ("needs_fields", 23),
+            ("not_eql", 40),
+            ("sequence", 30),
+            ("spans_kinds", 1),
+        ]
+        .into(),
+    );
+    let files: Vec<&Value> = m["unevaluated"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|u| u["reason"] == "in_part" && u["name"].as_str().unwrap().starts_with("sigma:"))
+        .collect();
     assert_eq!(files.len(), 1, "{files:#?}");
     assert_eq!(files[0]["file"], IN_PART);
+}
+
+/// "Pbpaste Execution via Unusual Parent Process", Elastic's, high.
+const PBPASTE: &str = "d7182e12-df8f-4ecf-b8f8-7cc0adcec425";
+
+#[test]
+fn a_high_translated_rule_raises_a_finding_named_elastic_and_its_match_is_handed_over_with_its_rule()
+ {
+    // A translated rule is a published rule like SigmaHQ's: its high match raises one finding,
+    // named by its set and Elastic's rule id, and `immune matches` gives the match with the
+    // rule as Elastic names it and the finding it went to. The same start under another parent
+    // matches nothing of Elastic's.
+    let dir = Dir::new("elastic");
+    dir.install();
+    dir.append(
+        H00,
+        &(start(
+            1,
+            T0,
+            "/usr/local/bin/node",
+            "/usr/bin/pbpaste",
+            &["pbpaste"],
+        ) + &start(2, T0, "/bin/zsh", "/usr/bin/pbpaste", &["pbpaste"])),
+    );
+    dir.run();
+    let raised = dir.findings_named(&format!("elastic:{PBPASTE}"));
+    assert_eq!(raised.len(), 1);
+    let finding = raised[0].as_str();
+    let m = dir.matches(&[]);
+    let elastic: Vec<&Value> = m["matches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|x| x["rule"]["name"].as_str().unwrap().starts_with("elastic:"))
+        .collect();
+    assert_eq!(elastic.len(), 1, "{m:#}");
+    assert_eq!(
+        elastic[0]["rule"],
+        json!({
+            "name": format!("elastic:{PBPASTE}"),
+            "file": "macos/collection_pbpaste_execution_via_unusual_parent.yml",
+            "id_text": PBPASTE,
+            "title_text": "Pbpaste Execution via Unusual Parent Process",
+            "level": "high",
+            "techniques_text": ["T1115"],
+            "author_text": "Elastic",
+        })
+    );
+    assert_eq!(elastic[0]["position"], dir.position(H00, 0));
+    assert_eq!(
+        (
+            &elastic[0]["raised"],
+            &elastic[0]["findings"][0]["id"],
+            &elastic[0]["findings"][0]["state"]
+        ),
+        (&json!("finding"), &json!(finding), &json!("open"))
+    );
+}
+
+#[test]
+fn immune_rules_lists_both_sets_and_names_every_rule_not_taken_with_its_reason() {
+    // `immune rules` says where each set comes from, and names every upstream rule a translated
+    // set did not take with the translation's reason and detail, and every translated rule in
+    // part with what its left-out alternatives need.
+    let dir = Dir::new("rules-sets");
+    dir.install();
+    dir.run();
+    let rules = dir.report(&["rules"]);
+    let sources: Vec<&Value> = rules["sources"].as_array().unwrap().iter().collect();
+    assert_eq!(
+        sources
+            .iter()
+            .map(|s| (
+                s["name"].clone(),
+                s["totals"]["shipped"].clone(),
+                s["totals"]["not_taken"].clone()
+            ))
+            .collect::<Vec<_>>(),
+        [
+            (json!("sigma"), json!(75), json!(0)),
+            (json!("elastic"), json!(66), json!(119)),
+        ]
+    );
+    let not_evaluated = rules["not_evaluated"].as_array().unwrap();
+    assert_eq!(not_evaluated.len(), 119);
+    assert!(not_evaluated.iter().all(|r| r["source"] == "elastic"));
+    let sequence = not_evaluated
+        .iter()
+        .find(|r| r["id_text"] == "a0fbd7a9-1923-4e05-92df-b484168f17bc")
+        .unwrap();
+    assert_eq!(
+        (
+            &sequence["reason"],
+            &sequence["detail_text"],
+            &sequence["name"]
+        ),
+        (
+            &json!("sequence"),
+            &json!("Sequence"),
+            &json!("elastic:a0fbd7a9-1923-4e05-92df-b484168f17bc")
+        )
+    );
+    let fields = not_evaluated
+        .iter()
+        .find(|r| r["reason"] == "needs_fields" && r["detail_text"] == "needs_fields user.name")
+        .unwrap();
+    assert_eq!(fields["fields_text"], json!(["user.name"]));
+    let in_part = rules["in_part"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id_text"] == "10a500bb-a28f-418e-ba29-ca4c8d1a9f2f")
+        .unwrap();
+    assert_eq!(
+        in_part["never_matches"],
+        json!([
+            {
+                "selection_text": null,
+                "fields_text": ["process.parent.code_signature.exists"],
+                "left_out_text": "needs_fields process.parent.code_signature.exists",
+            },
+            {
+                "selection_text": null,
+                "fields_text": ["process.parent.code_signature.trusted"],
+                "left_out_text": "needs_fields process.parent.code_signature.trusted",
+            },
+        ])
+    );
+    let plain = String::from_utf8(dir.command(&["rules"], &[]).output().unwrap().stdout).unwrap();
+    assert!(
+        plain.contains("      correlates a sequence of events, which is not translated (Sequence)"),
+        "{plain}"
+    );
+    assert!(
+        plain.contains("      an alternative of the upstream rule needs process.parent.code_signature.trusted, which a program start does not give"),
+        "{plain}"
+    );
+}
+
+#[test]
+fn a_rule_a_translated_set_did_not_take_is_named_with_its_reason_and_what_the_translation_said() {
+    // No rule of a set is skipped silently: an upstream rule the translation did not take is in
+    // the answer with its name, its upstream file, its level and the translation's reason and
+    // detail, and a translated rule in part says what it needs or what was left out.
+    let dir = Dir::new("not-taken");
+    dir.install();
+    dir.run();
+    let m = dir.matches(&[]);
+    let unevaluated = m["unevaluated"].as_array().unwrap();
+    let by_name = |name: &str| unevaluated.iter().find(|u| u["name"] == name).unwrap();
+    assert_eq!(
+        by_name("elastic:a0fbd7a9-1923-4e05-92df-b484168f17bc"),
+        &json!({
+            "file": "macos/collection_sensitive_file_access_followed_by_compression.toml",
+            "name": "elastic:a0fbd7a9-1923-4e05-92df-b484168f17bc",
+            "id_text": "a0fbd7a9-1923-4e05-92df-b484168f17bc",
+            "title_text": "Sensitive File Access followed by Compression",
+            "level": "high",
+            "reason": "sequence",
+            "fields_text": [],
+            "detail_text": "Sequence",
+        })
+    );
+    let fields = by_name("elastic:f85ce03f-d8a8-4c83-acdc-5c8cd0592be7");
+    assert_eq!(
+        (
+            &fields["reason"],
+            &fields["fields_text"],
+            &fields["detail_text"]
+        ),
+        (
+            &json!("needs_fields"),
+            &json!(["user.name"]),
+            &json!("needs_fields user.name")
+        )
+    );
+    let in_part = by_name("elastic:10a500bb-a28f-418e-ba29-ca4c8d1a9f2f");
+    assert_eq!(
+        (
+            &in_part["reason"],
+            &in_part["fields_text"],
+            &in_part["detail_text"]
+        ),
+        (
+            &json!("in_part"),
+            &json!([
+                "process.parent.code_signature.exists",
+                "process.parent.code_signature.trusted"
+            ]),
+            &Value::Null
+        )
+    );
+    let papercut = by_name("elastic:a2d4508e-e9c2-41f6-9466-0c3aed8cc2c9");
+    assert_eq!(
+        (
+            &papercut["reason"],
+            &papercut["fields_text"],
+            &papercut["level"]
+        ),
+        (&json!("in_part"), &json!([]), &json!("critical"))
+    );
+    assert!(
+        papercut["detail_text"]
+            .as_str()
+            .unwrap()
+            .starts_with("backslash_in_wildcard file.path: ")
+    );
+    // The same in the binary form: the reasons are the schema's values, not numbers made up.
+    let binary = v1::Matches::decode(dir.matches_binary(&[]).as_slice()).unwrap();
+    let reasons: std::collections::BTreeSet<i32> =
+        binary.unevaluated.iter().map(|u| u.reason).collect();
+    for why in [
+        v1::UnevaluatedReason::Sequence,
+        v1::UnevaluatedReason::NotEql,
+        v1::UnevaluatedReason::NeedsEvents,
+        v1::UnevaluatedReason::NeedsFields,
+        v1::UnevaluatedReason::BackslashInWildcard,
+        v1::UnevaluatedReason::SpansKinds,
+        v1::UnevaluatedReason::InPart,
+    ] {
+        assert!(reasons.contains(&(why as i32)), "{why:?}");
+    }
 }
 
 #[test]

@@ -393,23 +393,37 @@ fn unevaluated(collects: &Result<(), String>) -> Vec<v1::Unevaluated> {
         .rules
         .iter()
         .filter_map(|l| {
-            let (why, fields, detail): (Why, Vec<String>, Option<&String>) =
+            // For a rule a translated set did not take, what the translation said of it.
+            let said = l.detail.map(str::to_string);
+            let (why, fields, detail): (Why, Vec<String>, Option<String>) =
                 match (&l.placement, not_collected) {
                     (Placement::NotEvaluated(r), _) => match r {
-                        Reason::NeedsEvents(c) => (Why::NeedsEvents, Vec::new(), Some(c)),
-                        Reason::NeedsFields(f) => (Why::NeedsFields, texts(f), None),
+                        Reason::NeedsEvents(c) => (Why::NeedsEvents, Vec::new(), Some(c.clone())),
+                        Reason::NeedsFields(f) => (Why::NeedsFields, texts(f), said),
                         Reason::KeywordSearch => (Why::KeywordSearch, Vec::new(), None),
-                        Reason::NotParsed(said) => (Why::NotParsed, Vec::new(), Some(said)),
+                        Reason::NotParsed(s) => (Why::NotParsed, Vec::new(), Some(s.clone())),
+                        Reason::Sequence => (Why::Sequence, Vec::new(), said),
+                        Reason::NotEql => (Why::NotEql, Vec::new(), said),
+                        Reason::BackslashInWildcard => (Why::BackslashInWildcard, Vec::new(), said),
+                        Reason::SpansKinds => (Why::SpansKinds, Vec::new(), said),
                     },
                     (_, Some(why)) if l.kind == Some(Kind::File) => {
-                        (Why::NotCollected, Vec::new(), Some(why))
+                        (Why::NotCollected, Vec::new(), Some(why.clone()))
                     }
                     (Placement::InPart(branches), _) => {
                         let mut fields: Vec<String> =
                             branches.iter().flat_map(|b| b.fields.clone()).collect();
                         fields.sort();
                         fields.dedup();
-                        (Why::InPart, texts(&fields), None)
+                        // What a translation left out that is not a missing field, such as a
+                        // pattern it could not carry, as it wrote it.
+                        let left: Vec<&str> = branches
+                            .iter()
+                            .filter(|b| b.fields.is_empty())
+                            .filter_map(|b| b.said.as_deref())
+                            .collect();
+                        let detail = (!left.is_empty()).then(|| left.join("; "));
+                        (Why::InPart, texts(&fields), detail)
                     }
                     (Placement::Evaluated, _) => return None,
                 };
@@ -422,7 +436,7 @@ fn unevaluated(collects: &Result<(), String>) -> Vec<v1::Unevaluated> {
                 level: meta.map(|m| value_of::<v1::Level>(m.level.as_str())),
                 reason: why as i32,
                 fields_text: fields,
-                detail_text: detail.map(|d| whole(d)),
+                detail_text: detail.map(|d| whole(&d)),
             })
         })
         .collect()

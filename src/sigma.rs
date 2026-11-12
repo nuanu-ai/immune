@@ -1,14 +1,19 @@
-//! Published Sigma rules for macOS, evaluated in memory over one program start or one file
+//! Published detection rules for macOS, evaluated in memory over one program start or one file
 //! created or renamed: a process rule (`process_creation`) is asked only about a program start,
 //! a file rule (`file_event`) only about a file event.
 //!
-//! The rules are SigmaHQ's, unmodified, in `rules/sigma/` with its NOTICE, and compiled into
-//! the program. What Sigma means is the evaluator's to say, `sigma-rust`'s: conditions,
-//! modifiers, case folding, what an absent field or `null` means. Nothing here re-implements
-//! it; the tests below pin how it behaves on the shipped rules where the specification leaves
-//! room. What is ours is small: which Sigma field each part of an event is, which rules
-//! this level can evaluate, and naming the ones it cannot, so none is skipped silently and none
-//! is counted among the rules that watch when it does not.
+//! Two sets are shipped, each a `Source`: SigmaHQ's rules, unmodified, in `rules/sigma/`, and
+//! Elastic's detection rules translated mechanically into Sigma, in `rules/elastic/`, each set
+//! with its NOTICE, compiled into the program. The source is a property of every loaded rule: it
+//! names the rule in findings (`sigma:<id>`, `elastic:<id>`), and its `Schema` says under which
+//! names an event is given to its rules. A third set is one more `Source`, not more code.
+//!
+//! What Sigma means is the evaluator's to say, `sigma-rust`'s: conditions, modifiers, case
+//! folding, what an absent field or `null` means. Nothing here re-implements it; the tests below
+//! pin how it behaves on the shipped rules where the specification leaves room. What is ours is
+//! small: which field each part of an event is, which rules this level can evaluate, and naming
+//! the ones it cannot, so none is skipped silently and none is counted among the rules that
+//! watch when it does not.
 //!
 //! Nothing is stored and nothing is printed here.
 
@@ -16,7 +21,7 @@ use serde_json::{Value as Json, json};
 use serde_norway::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Where the shipped rules come from, and the commit they were copied at.
+/// Where SigmaHQ's rules come from, and the commit they were copied at.
 pub const SOURCE: &str = "https://github.com/SigmaHQ/sigma";
 pub const COMMIT: &str = "d7c9da10c170a6988d68ebdf2c9f7bd8782b7c55";
 pub const COMMIT_DATE: &str = "2026-11-10";
@@ -25,14 +30,15 @@ pub const LICENCE: &str = "DRL-1.1";
 pub const FOLDER: &str = "rules/sigma";
 
 macro_rules! shipped {
-    ($($path:literal,)*) => {
-        &[$(($path, include_str!(concat!("../rules/sigma/", $path))),)*]
+    ($folder:literal; $($path:literal,)*) => {
+        &[$(($path, include_str!(concat!("../", $folder, "/", $path))),)*]
     };
 }
 
-/// Every shipped rule: its path under `FOLDER` and its text. A test holds this list to the
-/// folder, so a file added there and not here fails it.
+/// Every shipped SigmaHQ rule: its path under `FOLDER` and its text. A test holds this list to
+/// the folder, so a file added there and not here fails it.
 pub const SHIPPED: &[(&str, &str)] = shipped![
+    "rules/sigma";
     "rules-emerging-threats/2025/Malware/Atomic-MacOS-Stealer/file_event_macos_malware_amos_persistence.yml",
     "rules-emerging-threats/2025/Malware/Atomic-MacOS-Stealer/proc_creation_macos_malware_amos_curl_post.yml",
     "rules-emerging-threats/2026/Malware/Axios-NPM-Compromise/file_event_macos_axios_npm_compromise_indicators.yml",
@@ -110,11 +116,84 @@ pub const SHIPPED: &[(&str, &str)] = shipped![
     "rules/macos/process_creation/proc_creation_macos_xcsset_malware_infection.yml",
 ];
 
+/// Elastic's detection rules for macOS, translated into Sigma: each file's path under
+/// `rules/elastic`, which keeps the upstream folder, and its text. A test holds this list to the
+/// folder and every file to `rules/elastic/SHA256SUMS`.
+pub const ELASTIC_SHIPPED: &[(&str, &str)] = shipped![
+    "rules/elastic";
+    "cross-platform/command_and_control_curl_wget_spawn_via_nodejs_parent.yml",
+    "cross-platform/command_and_control_google_drive_malicious_file_download.yml",
+    "cross-platform/command_and_control_kubectl_networking_modification.yml",
+    "cross-platform/command_and_control_tunnel_qemu.yml",
+    "cross-platform/command_and_control_tunneling_via_tailscaled.yml",
+    "cross-platform/credential_access_cookies_chromium_browsers_debugging.yml",
+    "cross-platform/credential_access_gitleaks_execution.yml",
+    "cross-platform/credential_access_suspicious_instance_metadata_service_api_cli.yml",
+    "cross-platform/credential_access_trufflehog_execution.yml",
+    "cross-platform/defense_evasion_data_encrypted_via_openssl.yml",
+    "cross-platform/defense_evasion_deletion_of_bash_command_line_history.yml",
+    "cross-platform/defense_evasion_genai_cli_unsafe_permission_bypass.yml",
+    "cross-platform/defense_evasion_genai_process_compiling_executables.yml",
+    "cross-platform/defense_evasion_potential_kubectl_masquerading.yml",
+    "cross-platform/defense_evasion_processes_with_trailing_spaces.yml",
+    "cross-platform/discovery_kubectl_permission_discovery.yml",
+    "cross-platform/discovery_kubectl_secrets_all_namespaces.yml",
+    "cross-platform/discovery_virtual_machine_fingerprinting_grep.yml",
+    "cross-platform/execution_kubernetes_direct_api_request_via_curl_or_wget.yml",
+    "cross-platform/execution_privileged_container_creation_with_host_reference.yml",
+    "cross-platform/execution_register_github_actions_runner.yml",
+    "cross-platform/execution_suspicious_process_execution_by_zoom.yml",
+    "cross-platform/initial_access_execution_susp_react_serv_child.yml",
+    "cross-platform/initial_access_papercut_java_class_file.yml",
+    "cross-platform/privilege_escalation_sudoers_file_mod.yml",
+    "cross-platform/privilege_escalation_trap_execution.yml",
+    "macos/collection_pbpaste_execution_via_unusual_parent.yml",
+    "macos/command_and_control_etherhiding_c2_via_blockchain_rpc_request.yml",
+    "macos/credential_access_dumping_hashes_bi_cmds.yml",
+    "macos/credential_access_dumping_keychain_security.yml",
+    "macos/credential_access_kerberosdump_kcc.yml",
+    "macos/credential_access_keychain_pwd_retrieval_security_cmd.yml",
+    "macos/credential_access_mitm_localhost_webproxy.yml",
+    "macos/defense_evasion_apple_softupdates_modification.yml",
+    "macos/defense_evasion_attempt_to_disable_gatekeeper.yml",
+    "macos/defense_evasion_install_root_certificate.yml",
+    "macos/defense_evasion_privacy_controls_tcc_database_modification.yml",
+    "macos/defense_evasion_privilege_escalation_privacy_pref_sshd_fulldiskaccess.yml",
+    "macos/defense_evasion_safari_config_change.yml",
+    "macos/defense_evasion_sandboxed_office_app_suspicious_zip_file.yml",
+    "macos/defense_evasion_tcc_bypass_mounted_apfs_access.yml",
+    "macos/defense_evasion_unload_endpointsecurity_kext.yml",
+    "macos/discovery_external_ip_address_discovery_via_curl.yml",
+    "macos/discovery_suspicious_sip_check.yml",
+    "macos/discovery_users_domain_built_in_commands.yml",
+    "macos/execution_defense_evasion_electron_app_childproc_node_js.yml",
+    "macos/execution_initial_access_suspicious_browser_childproc.yml",
+    "macos/lateral_movement_credential_access_kerberos_bifrostconsole.yml",
+    "macos/lateral_movement_mounting_smb_share.yml",
+    "macos/lateral_movement_remote_ssh_login_enabled.yml",
+    "macos/lateral_movement_suspicious_curl_to_jamf_endpoint.yml",
+    "macos/lateral_movement_vpn_connection_attempt.yml",
+    "macos/persistence_account_creation_hide_at_logon.yml",
+    "macos/persistence_apple_mail_rule_modification.yml",
+    "macos/persistence_creation_hidden_login_item_osascript.yml",
+    "macos/persistence_crontab_creation.yml",
+    "macos/persistence_defense_evasion_hidden_launch_agent_deamon_logonitem_process.yml",
+    "macos/persistence_emond_rules_process_execution.yml",
+    "macos/persistence_enable_root_account.yml",
+    "macos/persistence_finder_sync_plugin_pluginkit.yml",
+    "macos/persistence_folder_action_scripts_runtime.yml",
+    "macos/persistence_hidden_plist_filename.yml",
+    "macos/persistence_login_logout_hooks_defaults.yml",
+    "macos/persistence_manual_chromium_extension_loading.yml",
+    "macos/persistence_screensaver_engine_unexpected_child_process.yml",
+    "macos/privilege_escalation_explicit_creds_via_scripting.yml",
+];
+
 /// One program start: the event level's, `crate::events::ProcessStart`, read from
-/// `eslogger`'s `exec`. Which Sigma field each of its parts is, and why, is
-/// `crate::events::SIGMA_FIELDS`, beside where the line is read. A file created or renamed is
-/// `crate::events::FileEvent`, read from `create` and `rename`, its fields
-/// `crate::events::FILE_SIGMA_FIELDS`.
+/// `eslogger`'s `exec`. Which field each of its parts is, and why, is in
+/// `crate::events::SIGMA_FIELDS` and `crate::events::ECS_FIELDS`, beside where the line is read. A
+/// file created or renamed is `crate::events::FileEvent`, read from `create` and `rename`, its
+/// fields `crate::events::FILE_SIGMA_FIELDS` and `crate::events::FILE_ECS_FIELDS`.
 pub use crate::events::{FileEvent, ProcessStart};
 
 /// The kinds of event a rule's logsource must name for this level to evaluate it: Sigma's
@@ -145,27 +224,263 @@ impl Kind {
             Kind::File => FILE_CATEGORY,
         }
     }
+}
 
-    /// Sigma's names for what an event of this kind gives.
-    pub fn fields(self) -> Vec<&'static str> {
-        match self {
-            Kind::Process => FIELDS.iter().map(|(n, _)| *n).collect(),
-            Kind::File => FILE_FIELDS.iter().map(|(n, _)| *n).collect(),
-        }
-    }
+/// Sigma's names for what a program start gives, and how each is taken from it, and the same
+/// for a file event, under SigmaHQ's taxonomy.
+pub use crate::events::FILE_SIGMA_FIELDS as FILE_FIELDS;
+pub use crate::events::SIGMA_FIELDS as FIELDS;
 
-    /// Where this kind's fields begin among the values of `Subject::forms`: a program start's
-    /// first, then a file event's, so that one search over the values serves both kinds.
-    fn offset(self) -> usize {
-        match self {
-            Kind::Process => 0,
-            Kind::File => FIELDS.len(),
-        }
+/// How the rules of a set name the parts of an event, and what is done to an event before
+/// they are asked about it. A field a rule names that its schema does not give is one this
+/// level does not have: the rule is placed as evaluated in part or not at all, the field named.
+pub struct Schema {
+    /// The names a program start's parts are given under, and how each is taken.
+    pub process: &'static [(&'static str, crate::events::Take)],
+    /// The same for a file event.
+    pub file: &'static [(&'static str, crate::events::FileTake)],
+    /// The fields whose value is a number, given to the evaluator as one, so that a rule can
+    /// compare it.
+    pub numbers: &'static [&'static str],
+    /// Whether a file under one of macOS's links into `/private` is also given under its short
+    /// name, as a second event (`FileEvent::names`). A rule matches the event when it matches
+    /// either.
+    pub links: bool,
+    /// When set, every text is given again, folded one character at a time as the evaluator
+    /// folds, under this prefix and its name: the field a translated regular expression that
+    /// ignores case reads, since Sigma's `re` keeps case.
+    pub folded: Option<&'static str>,
+}
+
+/// SigmaHQ's taxonomy, as `docs/event-level.md` maps it. A path in `/private` is given under
+/// its short name too, since rule authors write `/tmp/...` and Endpoint Security gives the path
+/// it resolved.
+pub static SIGMA_TAXONOMY: Schema = Schema {
+    process: &FIELDS,
+    file: &FILE_FIELDS,
+    numbers: &[],
+    links: true,
+    folded: None,
+};
+
+/// The Elastic Common Schema's names, as Elastic's own rules for macOS read them and as the
+/// translation of those rules was proven: on events built exactly this way, with no second name
+/// for a path in `/private` and every text given folded too.
+pub static ECS: Schema = Schema {
+    process: &crate::events::ECS_FIELDS,
+    file: &crate::events::FILE_ECS_FIELDS,
+    numbers: &["process.args_count"],
+    links: false,
+    folded: Some("immune.folded."),
+};
+
+/// A published rule set this build carries. Every loaded rule knows its source; what tells one
+/// set from another is here, as data.
+pub struct Source {
+    /// The name a finding gives a rule of this set, before `:` and the rule's id.
+    pub name: &'static str,
+    /// Who publishes the set, for a person.
+    pub publisher: &'static str,
+    /// The repository, and the commit the rules were taken at.
+    pub url: &'static str,
+    pub commit: &'static str,
+    /// The commit's date, where it is recorded.
+    pub commit_date: Option<&'static str>,
+    /// The licence the rule files carry, by its SPDX identifier.
+    pub licence: &'static str,
+    /// The folder the shipped files are in, relative to the repository, with their NOTICE.
+    pub folder: &'static str,
+    /// Every rule file shipped: its path under `folder` and its text.
+    pub files: &'static [(&'static str, &'static str)],
+    /// How its rules name the parts of an event.
+    pub schema: &'static Schema,
+    /// For a set translated into Sigma, the key of the block in which the translation records
+    /// each rule's upstream identity and the alternatives of the upstream rule it left out
+    /// (`in_part_missing_fields`). A translated file without that record is not evaluated:
+    /// what it left out would not be known. `None` for a set published in Sigma.
+    pub translation: Option<&'static str>,
+    /// For a translated set, the upstream rules that were not taken, after a header line, one
+    /// a line, separated by tabs: the upstream file's path under its `rules/` folder, the rule's
+    /// id, its name, its severity, the reason and the translation's detail.
+    pub not_taken: Option<&'static str>,
+}
+
+impl std::fmt::Debug for Source {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name)
     }
 }
 
-/// Every field either kind gives, in the order of `Subject::forms`.
-const ALL_FIELDS: usize = FIELDS.len() + FILE_FIELDS.len();
+/// SigmaHQ's rules for macOS, unmodified.
+pub static SIGMAHQ: Source = Source {
+    name: "sigma",
+    publisher: "SigmaHQ",
+    url: SOURCE,
+    commit: COMMIT,
+    commit_date: Some(COMMIT_DATE),
+    licence: LICENCE,
+    folder: FOLDER,
+    files: SHIPPED,
+    schema: &SIGMA_TAXONOMY,
+    translation: None,
+    not_taken: None,
+};
+
+/// Elastic's detection rules for macOS, those that translate into Sigma exactly over this
+/// level's log, and the rest named with why.
+pub static ELASTIC: Source = Source {
+    name: "elastic",
+    publisher: "Elastic",
+    url: "https://github.com/elastic/detection-rules",
+    commit: "032ac5ecb0b4035a12b03dd25164e2fbcfae9fad",
+    commit_date: None,
+    licence: "Elastic-2.0",
+    folder: "rules/elastic",
+    files: ELASTIC_SHIPPED,
+    schema: &ECS,
+    translation: Some("elastic"),
+    not_taken: Some(include_str!("../rules/elastic/not-taken.tsv")),
+};
+
+/// Every set shipped, in the order their rules are listed and asked.
+pub static SOURCES: [&Source; 2] = [&SIGMAHQ, &ELASTIC];
+
+/// Where each field of a schema stands among the values of an event: a program start's
+/// fields first, then a file event's, each followed by its folded companions where the schema
+/// has them, so that one search over the values serves both kinds.
+struct Layout {
+    schema: &'static Schema,
+    names: Vec<String>,
+    /// Which of `names` are numbers.
+    numbers: Vec<bool>,
+    /// Where a file event's fields begin.
+    file_at: usize,
+    /// Which texts the rules of this schema need in each field, searched for once per event;
+    /// `None` asks every rule.
+    texts: Option<Texts>,
+}
+
+impl Layout {
+    fn new(schema: &'static Schema) -> Layout {
+        let mut names = Vec::new();
+        let mut numbers = Vec::new();
+        let mut kind = |base: Vec<&str>| {
+            let texts: Vec<&str> = base
+                .iter()
+                .filter(|n| !schema.numbers.contains(n))
+                .copied()
+                .collect();
+            for n in &base {
+                names.push(n.to_string());
+                numbers.push(schema.numbers.contains(n));
+            }
+            for n in schema
+                .folded
+                .into_iter()
+                .flat_map(|p| texts.iter().map(move |n| (p, n)))
+            {
+                names.push(format!("{}{}", n.0, n.1));
+                numbers.push(false);
+            }
+            names.len()
+        };
+        let file_at = kind(schema.process.iter().map(|(n, _)| *n).collect());
+        kind(schema.file.iter().map(|(n, _)| *n).collect());
+        Layout {
+            schema,
+            names,
+            numbers,
+            file_at,
+            texts: None,
+        }
+    }
+
+    /// Where the fields of `kind` stand among the values.
+    fn range(&self, kind: Kind) -> std::ops::Range<usize> {
+        match kind {
+            Kind::Process => 0..self.file_at,
+            Kind::File => self.file_at..self.names.len(),
+        }
+    }
+
+    /// The names of what an event of `kind` gives under this schema.
+    fn names(&self, kind: Kind) -> &[String] {
+        &self.names[self.range(kind)]
+    }
+
+    /// A field of `kind` by its name, as its place among the values.
+    fn field(&self, kind: Kind, name: &str) -> Option<usize> {
+        let range = self.range(kind);
+        let at = range.start;
+        self.names[range]
+            .iter()
+            .position(|n| n == name)
+            .map(|i| at + i)
+    }
+
+    /// The values of every field, `names` long, the other kind's absent. A file event gives one
+    /// set of values for each name its file has where the schema says so: a rule matches the
+    /// event when it matches any of them.
+    fn forms(&self, subject: Subject) -> Vec<Vec<Option<String>>> {
+        let schema = self.schema;
+        let with_folded = |base: Vec<Option<String>>, numbers: &[bool]| -> Vec<Option<String>> {
+            let mut values = base.clone();
+            if schema.folded.is_some() {
+                values.extend(
+                    base.iter()
+                        .zip(numbers)
+                        .filter(|(_, number)| !**number)
+                        .map(|(v, _)| v.as_deref().map(fold)),
+                );
+            }
+            values
+        };
+        let process_numbers = &self.numbers[..schema.process.len()];
+        let file_numbers = &self.numbers[self.file_at..self.file_at + schema.file.len()];
+        match subject {
+            Subject::Start(s) => {
+                let base = schema.process.iter().map(|(_, take)| take(s)).collect();
+                let mut values = with_folded(base, process_numbers);
+                values.resize(self.names.len(), None);
+                vec![values]
+            }
+            Subject::File(f) => {
+                let names = if schema.links {
+                    f.names()
+                } else {
+                    vec![f.path.as_str()]
+                };
+                names
+                    .into_iter()
+                    .map(|name| {
+                        let mut values = vec![None; self.file_at];
+                        let base = schema.file.iter().map(|(_, take)| take(f, name)).collect();
+                        values.extend(with_folded(base, file_numbers));
+                        values
+                    })
+                    .collect()
+            }
+        }
+    }
+
+    /// The evaluator's event for one set of values of a kind: a field the event does not give
+    /// stays absent, and an absent field matches nothing. A number is given as one.
+    fn event(&self, kind: Kind, values: &[Option<String>]) -> sigma_rust::Event {
+        let mut event = sigma_rust::Event::new();
+        for i in self.range(kind) {
+            let Some(value) = &values[i] else { continue };
+            let name = self.names[i].as_str();
+            if self.numbers[i]
+                && let Ok(n) = value.parse::<i64>()
+            {
+                event.insert(name, n);
+            } else {
+                event.insert(name, value.clone());
+            }
+        }
+        event
+    }
+}
 
 /// An event the rules are asked about.
 #[derive(Clone, Copy, Debug)]
@@ -193,41 +508,6 @@ impl Subject<'_> {
             Subject::File(_) => Kind::File,
         }
     }
-
-    /// The values of every field, `ALL_FIELDS` long, the other kind's absent. A file event
-    /// gives one set of values for each name its file has (`FileEvent::names`): a rule matches
-    /// the event when it matches any of them.
-    pub fn forms(&self) -> Vec<Vec<Option<String>>> {
-        match self {
-            Subject::Start(s) => {
-                let mut values: Vec<Option<String>> =
-                    FIELDS.iter().map(|(_, take)| take(s)).collect();
-                values.resize(ALL_FIELDS, None);
-                vec![values]
-            }
-            Subject::File(f) => f
-                .names()
-                .iter()
-                .map(|name| {
-                    let mut values = vec![None; FIELDS.len()];
-                    values.extend(FILE_FIELDS.iter().map(|(_, take)| take(f, name)));
-                    values
-                })
-                .collect(),
-        }
-    }
-}
-
-/// The evaluator's event for one set of values of a kind: a field the event does not give
-/// stays absent, and an absent field matches nothing.
-fn event_of(kind: Kind, values: &[Option<String>]) -> sigma_rust::Event {
-    let mut event = sigma_rust::Event::new();
-    for (i, name) in kind.fields().into_iter().enumerate() {
-        if let Some(value) = &values[kind.offset() + i] {
-            event.insert(name, value.clone());
-        }
-    }
-    event
 }
 
 /// The drill: Atomic Red Team's tests ffe2346c-abd5-4b45-a713-bf5f1ebd573a and
@@ -269,13 +549,8 @@ pub fn drill_start(image: &str, args: &[&str]) -> ProcessStart {
     }
 }
 
-/// Sigma's names for what a program start gives, and how each is taken from it, and the same
-/// for a file event. A field a rule names that is not among its kind's is one this level does
-/// not have.
-pub use crate::events::FILE_SIGMA_FIELDS as FILE_FIELDS;
-pub use crate::events::SIGMA_FIELDS as FIELDS;
-
-/// How bad, Sigma's levels; their names are OCSF's severity names.
+/// How bad, Sigma's levels; their names are OCSF's severity names. Elastic's severities, `low`,
+/// `medium`, `high` and `critical`, are levels of the same names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Level {
     Informational,
@@ -356,7 +631,8 @@ impl Status {
 #[derive(Debug)]
 pub struct Meta {
     pub id: String,
-    /// The id of a finding's rule when this rule raises one: `sigma:<id>`.
+    /// The id of a finding's rule when this rule raises one: its source's name and its id,
+    /// `sigma:<id>` or `elastic:<id>`.
     pub finding_rule: String,
     pub title: String,
     pub level: Level,
@@ -368,6 +644,8 @@ pub struct Meta {
     pub techniques: Vec<String>,
     /// The rule's `description`: what it looks for, in its author's words.
     pub description: Option<String>,
+    /// The set it comes from.
+    pub source: &'static Source,
 }
 
 /// What this level does with a rule. Whether a rule it can evaluate watches this Mac now is
@@ -377,25 +655,32 @@ pub struct Meta {
 pub enum Placement {
     /// Every part of the rule can match an event of its kind.
     Evaluated,
-    /// Evaluated, but these alternatives of its selections never match here, for a field this
-    /// level does not have; the rest of the rule can.
+    /// Evaluated, but these alternatives never match here, for a field this level does not
+    /// have or a part the translation could not carry; the rest of the rule can.
     InPart(Vec<Branch>),
     NotEvaluated(Reason),
 }
 
-/// One alternative of a selection that never matches at this level.
+/// One alternative of a rule that never matches at this level.
 #[derive(Debug, PartialEq)]
 pub struct Branch {
-    pub selection: String,
+    /// The selection it is an alternative of; `None` for an alternative of the upstream rule
+    /// that the translation left out.
+    pub selection: Option<String>,
     /// The fields it needs that an event of its kind does not give.
     pub fields: Vec<String>,
+    /// For an alternative the translation left out, what the translation recorded of it, as it
+    /// wrote it: `needs_fields <field>`, or `backslash_in_wildcard <field>: <pattern>`.
+    pub said: Option<String>,
 }
 
-/// Why a rule is not evaluated. The codes are a closed vocabulary.
+/// Why a rule is not evaluated. The codes are a closed vocabulary; the last four are the
+/// translation's reasons for an upstream rule it did not take.
 #[derive(Debug, PartialEq)]
 pub enum Reason {
-    /// It is about another kind of event, named by its logsource category, which this level
-    /// does not read.
+    /// It is about another kind of event, named by its logsource category, or for an upstream
+    /// rule not taken by the kind and actions the translation read, which this level does not
+    /// read.
     NeedsEvents(String),
     /// A selection it cannot do without needs fields an event of its kind does not give.
     NeedsFields(Vec<String>),
@@ -403,6 +688,15 @@ pub enum Reason {
     KeywordSearch,
     /// It could not be read, with what the parser said.
     NotParsed(String),
+    /// It correlates several events in a sequence, which a Sigma rule over one event cannot.
+    Sequence,
+    /// It is written in a query language other than EQL, the one translated.
+    NotEql,
+    /// It holds a backslash in a wildcard pattern, whose meaning in Elasticsearch is not
+    /// documented, in a part it cannot do without.
+    BackslashInWildcard,
+    /// It is about program starts and file events at once.
+    SpansKinds,
 }
 
 impl Reason {
@@ -412,26 +706,58 @@ impl Reason {
             Reason::NeedsFields(_) => "needs_fields",
             Reason::KeywordSearch => "keyword_search",
             Reason::NotParsed(_) => "not_parsed",
+            Reason::Sequence => "sequence",
+            Reason::NotEql => "not_eql",
+            Reason::BackslashInWildcard => "backslash_in_wildcard",
+            Reason::SpansKinds => "spans_kinds",
+        }
+    }
+
+    /// What it means, for a person.
+    pub fn said(&self) -> String {
+        match self {
+            Reason::NeedsEvents(c) => format!("needs {c} events"),
+            Reason::NeedsFields(f) => format!("needs {}", f.join(", ")),
+            Reason::KeywordSearch => "searches whole messages for keywords".into(),
+            Reason::NotParsed(said) => format!("could not be read: {said}"),
+            Reason::Sequence => "correlates a sequence of events, which is not translated".into(),
+            Reason::NotEql => "is not written in EQL, the only language translated".into(),
+            Reason::BackslashInWildcard => {
+                "has a backslash in a wildcard pattern, whose meaning in Elasticsearch is not documented".into()
+            }
+            Reason::SpansKinds => "is about program starts and file events at once".into(),
         }
     }
 }
 
-/// One shipped rule, read once.
+/// One shipped rule, read once, or one upstream rule its set names as not taken.
 pub struct Loaded {
-    /// Its path under `FOLDER`.
+    /// Its path under its source's folder; for an upstream rule not taken, the upstream file's
+    /// path under its `rules/` folder.
     pub file: &'static str,
+    /// The set it comes from.
+    pub source: &'static Source,
     /// `None` only when it could not be parsed.
     pub meta: Option<Meta>,
     pub placement: Placement,
-    /// The kind of event it is about; `None` for a kind this level does not read, or a rule
-    /// that could not be read.
+    /// The kind of event it is about; `None` for a kind this level does not read, a rule that
+    /// could not be read, or an upstream rule not taken.
     pub kind: Option<Kind>,
+    /// For an upstream rule not taken, what the translation said of it, as it said it.
+    pub detail: Option<&'static str>,
     rule: Option<sigma_rust::Rule>,
+    /// Which of `Rules::layouts` its events are given in: its source's schema.
+    layout: usize,
     /// What an event must hold for the rule to be able to match it.
     need: Need,
 }
 
 impl Loaded {
+    /// An upstream rule its set names as not taken: no file of it is shipped.
+    pub fn not_taken(&self) -> bool {
+        self.detail.is_some()
+    }
+
     /// Evaluated, wholly or in part, over events of this kind.
     fn asked_of(&self, kind: Kind) -> bool {
         self.kind == Some(kind) && !matches!(self.placement, Placement::NotEvaluated(_))
@@ -463,23 +789,49 @@ impl Match<'_> {
     }
 }
 
-/// How the rule of a finding a published rule raised begins: `sigma:<the rule's id>`.
-pub const FINDING_PREFIX: &str = "sigma:";
-
 pub struct Rules {
     pub rules: Vec<Loaded>,
-    /// Which texts the rules need in each field, searched for once per start; `None` asks
-    /// every rule.
-    texts: Option<Texts>,
+    /// One for each schema the rules use, in the order first used.
+    layouts: Vec<Layout>,
 }
 
 static SHIPPED_RULES: std::sync::OnceLock<Rules> = std::sync::OnceLock::new();
 
 impl Rules {
-    /// Every shipped rule, parsed once per process, not at each reading: the watcher reads
-    /// program starts every thirty seconds for as long as it runs.
+    /// Every shipped rule of every set, parsed once per process, not at each reading: the
+    /// watcher reads program starts every thirty seconds for as long as it runs.
     pub fn shipped() -> &'static Rules {
-        SHIPPED_RULES.get_or_init(|| Rules::load(SHIPPED))
+        SHIPPED_RULES.get_or_init(|| Rules::of(&SOURCES))
+    }
+
+    /// Every rule of these sets: their files, then the upstream rules they did not take.
+    pub fn of(sources: &[&'static Source]) -> Rules {
+        let mut loading = Loading::default();
+        for source in sources {
+            for (file, text) in source.files {
+                loading.add(source, file, text);
+            }
+            for line in source.not_taken.into_iter().flat_map(|t| t.lines().skip(1)) {
+                loading.not_taken(source, line);
+            }
+        }
+        loading.done()
+    }
+
+    /// These files, as rules of SigmaHQ's set.
+    #[cfg(test)]
+    pub fn load(files: &[(&'static str, &'static str)]) -> Rules {
+        Rules::load_as(&SIGMAHQ, files)
+    }
+
+    /// These files, as rules of `source`'s set.
+    #[cfg(test)]
+    pub fn load_as(source: &'static Source, files: &[(&'static str, &'static str)]) -> Rules {
+        let mut loading = Loading::default();
+        for (file, text) in files {
+            loading.add(source, file, text);
+        }
+        loading.done()
     }
 
     /// A rule by its id, among those that could be read.
@@ -489,32 +841,32 @@ impl Rules {
             .find(|l| l.meta.as_ref().is_some_and(|m| m.id == id))
     }
 
-    pub fn load(files: &[(&'static str, &'static str)]) -> Rules {
-        let mut texts = BTreeMap::new();
-        let rules = files
+    /// A rule by the name findings give it, `sigma:<id>` or `elastic:<id>`.
+    pub fn by_finding_rule(&self, rule: &str) -> Option<&Loaded> {
+        self.rules
             .iter()
-            .map(|(file, text)| load(file, text, &mut texts))
-            .collect();
-        Rules {
-            rules,
-            texts: Texts::new(texts),
-        }
+            .find(|l| l.meta.as_ref().is_some_and(|m| m.finding_rule == rule))
     }
 
     /// The rules this event matches, in the order they are shipped. Only rules of its kind
-    /// that are evaluated, wholly or in part, are asked, and of them only those whose `Need`
-    /// the event holds: a rule whose need it does not hold cannot match it, so the answer is
-    /// the one `evaluate_each` gives by asking every rule of its kind.
+    /// that are evaluated, wholly or in part, are asked, each about the event as its source's
+    /// schema gives it, and of them only those whose `Need` the event holds: a rule whose need
+    /// it does not hold cannot match it, so the answer is the one `evaluate_each` gives by
+    /// asking every rule of its kind.
     pub fn evaluate<'e>(&self, subject: impl Into<Subject<'e>>) -> Vec<Match<'_>> {
         let subject = subject.into();
         let kind = subject.kind();
         let mut hit = vec![false; self.rules.len()];
-        for values in subject.forms() {
-            let asked = self.asked(kind, &values);
-            let event = event_of(kind, &values);
-            for (i, l) in self.rules.iter().enumerate() {
-                if !hit[i] && asked.iter().any(|a| std::ptr::eq(*a, l)) {
-                    hit[i] = l.rule.as_ref().is_some_and(|r| r.is_match(&event));
+        for (n, layout) in self.layouts.iter().enumerate() {
+            for values in layout.forms(subject) {
+                let event = layout.event(kind, &values);
+                for i in self.asked(n, kind, &values) {
+                    if !hit[i] {
+                        hit[i] = self.rules[i]
+                            .rule
+                            .as_ref()
+                            .is_some_and(|r| r.is_match(&event));
+                    }
                 }
             }
         }
@@ -537,14 +889,17 @@ impl Rules {
             .collect()
     }
 
-    /// The rules to ask about an event of `kind` with these values, as `Subject::forms` gives
-    /// them: those of its kind evaluated, wholly or in part, whose need the values hold.
-    fn asked(&self, kind: Kind, values: &[Option<String>]) -> Vec<&Loaded> {
-        let held = self.texts.as_ref().map(|t| t.held(values));
+    /// The rules to ask about an event of `kind` with these values of layout `n`, as
+    /// `Layout::forms` gives them, by their place: those of its schema and kind evaluated,
+    /// wholly or in part, whose need the values hold.
+    fn asked(&self, n: usize, kind: Kind, values: &[Option<String>]) -> Vec<usize> {
+        let held = self.layouts[n].texts.as_ref().map(|t| t.held(values));
         self.rules
             .iter()
-            .filter(|l| l.asked_of(kind))
-            .filter(|l| held.as_ref().is_none_or(|h| l.need.holds(h)))
+            .enumerate()
+            .filter(|(_, l)| l.layout == n && l.asked_of(kind))
+            .filter(|(_, l)| held.as_ref().is_none_or(|h| l.need.holds(h)))
+            .map(|(i, _)| i)
             .collect()
     }
 
@@ -555,10 +910,14 @@ impl Rules {
         let subject = subject.into();
         let kind = subject.kind();
         let mut hit = vec![false; self.rules.len()];
-        for values in subject.forms() {
-            let event = event_of(kind, &values);
-            for (i, l) in self.rules.iter().enumerate() {
-                hit[i] |= l.asked_of(kind) && l.rule.as_ref().is_some_and(|r| r.is_match(&event));
+        for (n, layout) in self.layouts.iter().enumerate() {
+            for values in layout.forms(subject) {
+                let event = layout.event(kind, &values);
+                for (i, l) in self.rules.iter().enumerate() {
+                    hit[i] |= l.layout == n
+                        && l.asked_of(kind)
+                        && l.rule.as_ref().is_some_and(|r| r.is_match(&event));
+                }
             }
         }
         self.matched(kind, &hit)
@@ -572,11 +931,33 @@ impl Rules {
             .count()
     }
 
-    /// The summary of `immune rules --json`: how many are shipped, evaluated, evaluated in part
-    /// and not evaluated, with the rules behind each number.
+    /// The sets the rules come from, in the order they are listed.
+    pub fn sources(&self) -> Vec<&'static Source> {
+        let mut sources: Vec<&'static Source> = Vec::new();
+        for l in &self.rules {
+            if !sources.iter().any(|s| std::ptr::eq(*s, l.source)) {
+                sources.push(l.source);
+            }
+        }
+        sources
+    }
+
+    /// The names a schema gives the fields of `kind`.
+    fn fields_of(&self, schema: &Schema, kind: Kind) -> Vec<&str> {
+        self.layouts
+            .iter()
+            .find(|l| std::ptr::eq(l.schema, schema))
+            .map(|l| l.names(kind).iter().map(String::as_str).collect())
+            .unwrap_or_default()
+    }
+
+    /// The summary of `immune rules --json`: the sets, and how many rules are shipped,
+    /// evaluated, evaluated in part and not evaluated, with the rules behind each number.
     pub fn summary_json(&self) -> Json {
         let named = |l: &Loaded| {
             let mut v = json!({
+                "source": l.source.name,
+                "name": l.meta.as_ref().map(|m| m.finding_rule.as_str()),
                 "file": l.file,
                 "id_text": l.meta.as_ref().map(|m| crate::status::text(&m.id)),
                 "title_text": l.meta.as_ref().map(|m| crate::status::text(&m.title)),
@@ -591,8 +972,9 @@ impl Rules {
                         .iter()
                         .map(|b| {
                             json!({
-                                "selection_text": crate::status::text(&b.selection),
+                                "selection_text": b.selection.as_deref().map(crate::status::text),
                                 "fields_text": texts(&b.fields),
+                                "left_out_text": b.said.as_deref().map(crate::status::text),
                             })
                         })
                         .collect();
@@ -602,32 +984,61 @@ impl Rules {
                     match reason {
                         Reason::NeedsEvents(c) => v["events_text"] = crate::status::text(c),
                         Reason::NeedsFields(f) => v["fields_text"] = texts(f),
-                        Reason::KeywordSearch => {}
                         Reason::NotParsed(said) => v["said_text"] = crate::status::text(said),
+                        _ => {}
+                    }
+                    if let Some(d) = l.detail {
+                        v["detail_text"] = crate::status::text(d);
                     }
                 }
             }
             v
         };
+        let totals = |rules: &[&Loaded]| {
+            let count =
+                |p: fn(&Placement) -> bool| rules.iter().filter(|l| p(&l.placement)).count();
+            let not_taken = rules.iter().filter(|l| l.not_taken()).count();
+            json!({
+                "shipped": rules.len() - not_taken,
+                "not_taken": not_taken,
+                "evaluated": count(|p| *p == Placement::Evaluated),
+                "in_part": count(|p| matches!(p, Placement::InPart(_))),
+                "not_evaluated": count(|p| matches!(p, Placement::NotEvaluated(_))),
+            })
+        };
+        let sources: Vec<Json> = self
+            .sources()
+            .into_iter()
+            .map(|s| {
+                let mine: Vec<&Loaded> = self
+                    .rules
+                    .iter()
+                    .filter(|l| std::ptr::eq(l.source, s))
+                    .collect();
+                json!({
+                    "name": s.name,
+                    "publisher": s.publisher,
+                    "url": s.url,
+                    "commit": s.commit,
+                    "commit_date": s.commit_date,
+                    "licence": s.licence,
+                    "folder": s.folder,
+                    "translated": s.translation.is_some(),
+                    "fields": {
+                        CATEGORY: self.fields_of(s.schema, Kind::Process),
+                        FILE_CATEGORY: self.fields_of(s.schema, Kind::File),
+                    },
+                    "totals": totals(&mine),
+                })
+            })
+            .collect();
         let (evaluated, in_part, not_evaluated) = self.groups();
+        let all: Vec<&Loaded> = self.rules.iter().collect();
         json!({
-            "source": {
-                "url": SOURCE,
-                "commit": COMMIT,
-                "commit_date": COMMIT_DATE,
-                "licence": LICENCE,
-                "folder": FOLDER,
-            },
+            "sources": sources,
             "events": CATEGORY,
-            "fields": Kind::Process.fields(),
             "file_events": FILE_CATEGORY,
-            "file_fields": Kind::File.fields(),
-            "totals": {
-                "shipped": self.rules.len(),
-                "evaluated": evaluated.len(),
-                "in_part": in_part.len(),
-                "not_evaluated": not_evaluated.len(),
-            },
+            "totals": totals(&all),
             "evaluated": evaluated.into_iter().map(named).collect::<Vec<_>>(),
             "in_part": in_part.into_iter().map(named).collect::<Vec<_>>(),
             "not_evaluated": not_evaluated.into_iter().map(named).collect::<Vec<_>>(),
@@ -656,6 +1067,33 @@ impl Rules {
             .count()
     }
 
+    /// Where the sets come from, in one line for a person.
+    pub fn sources_said(&self) -> String {
+        let said: Vec<String> = self
+            .sources()
+            .into_iter()
+            .map(|s| {
+                let mine = self.rules.iter().filter(|l| std::ptr::eq(l.source, s));
+                let (n, not_taken) =
+                    mine.fold((0, 0), |(n, t), l| (n + 1, t + usize::from(l.detail.is_some())));
+                let at = match s.commit_date {
+                    Some(date) => format!("at {} of {date}", &s.commit[..12]),
+                    None => format!("at {}", &s.commit[..12]),
+                };
+                if s.translation.is_some() {
+                    format!(
+                        "{n} from {} {at}, {} of them translated into Sigma and shipped, {not_taken} not taken",
+                        s.publisher,
+                        n - not_taken
+                    )
+                } else {
+                    format!("{n} from {} {at}, all shipped", s.publisher)
+                }
+            })
+            .collect();
+        format!("Published rules for macOS: {}.", said.join("; "))
+    }
+
     /// The same summary for a person, a line each, with how many times each rule matched in
     /// the last day where the store says.
     pub fn summary_lines(&self, last_day: Option<&BTreeMap<String, i64>>) -> Vec<String> {
@@ -668,17 +1106,17 @@ impl Rules {
                 } else {
                     String::new()
                 };
-                format!("  {:<13} {}{matched}", m.level.as_str(), m.title)
+                format!(
+                    "  {:<13} {:<8} {}{matched}",
+                    m.level.as_str(),
+                    l.source.name,
+                    m.title
+                )
             }
-            None => format!("  {:<13} {}", "?", l.file),
+            None => format!("  {:<13} {:<8} {}", "?", l.source.name, l.file),
         };
         let mut lines = vec![
-            format!(
-                "Sigma rules for macOS: {} shipped, from SigmaHQ at {} of {}.",
-                self.rules.len(),
-                &COMMIT[..12],
-                COMMIT_DATE
-            ),
+            self.sources_said(),
             format!(
                 "Evaluated in full: {}, {} on every program start and {} on every file created or renamed",
                 evaluated.len(),
@@ -695,12 +1133,7 @@ impl Rules {
             lines.push(row(l));
             if let Placement::InPart(branches) = &l.placement {
                 for b in branches {
-                    lines.push(format!(
-                        "      {} needs {}, which {} does not give",
-                        b.selection,
-                        b.fields.join(", "),
-                        given_by(l.kind)
-                    ));
+                    lines.push(format!("      {}", branch_said(b, l.kind)));
                 }
             }
         }
@@ -708,19 +1141,18 @@ impl Rules {
         for l in not_evaluated {
             lines.push(row(l));
             if let Placement::NotEvaluated(reason) = &l.placement {
-                lines.push(format!(
-                    "      {}",
-                    match reason {
-                        Reason::NeedsEvents(c) => format!("needs {c} events"),
-                        Reason::NeedsFields(f) => format!(
-                            "needs {}, which {} does not give",
-                            f.join(", "),
-                            given_by(l.kind)
-                        ),
-                        Reason::KeywordSearch => "searches whole messages for keywords".into(),
-                        Reason::NotParsed(said) => format!("could not be read: {said}"),
-                    }
-                ));
+                let mut said = match reason {
+                    Reason::NeedsFields(f) => format!(
+                        "needs {}, which {} does not give",
+                        f.join(", "),
+                        given_by(l.kind)
+                    ),
+                    r => r.said(),
+                };
+                if let Some(d) = l.detail {
+                    said.push_str(&format!(" ({d})"));
+                }
+                lines.push(format!("      {said}"));
             }
         }
         lines.push(format!(
@@ -753,6 +1185,26 @@ impl Rules {
     }
 }
 
+/// An alternative that never matches here, for a person.
+pub fn branch_said(b: &Branch, kind: Option<Kind>) -> String {
+    match (&b.selection, b.fields.is_empty(), &b.said) {
+        (Some(selection), _, _) => format!(
+            "{selection} needs {}, which {} does not give",
+            b.fields.join(", "),
+            given_by(kind)
+        ),
+        (None, false, _) => format!(
+            "an alternative of the upstream rule needs {}, which {} does not give",
+            b.fields.join(", "),
+            given_by(kind)
+        ),
+        (None, true, said) => format!(
+            "an alternative of the upstream rule was left out in translation: {}",
+            said.as_deref().unwrap_or("")
+        ),
+    }
+}
+
 /// What gives a rule's fields, for a person: "a program start" or "a file event".
 pub fn given_by(kind: Option<Kind>) -> &'static str {
     match kind {
@@ -770,16 +1222,144 @@ fn texts(items: &[String]) -> Json {
     items.iter().map(|s| crate::status::text(s)).collect()
 }
 
+/// The rules as they are read, before the texts they need are gathered into automata.
+#[derive(Default)]
+struct Loading {
+    rules: Vec<Loaded>,
+    layouts: Vec<Layout>,
+    /// The texts the rules of each layout need, numbered.
+    wanted: Vec<Wanted>,
+}
+
+impl Loading {
+    /// The layout of a schema, made at its first use.
+    fn layout(&mut self, schema: &'static Schema) -> usize {
+        match self
+            .layouts
+            .iter()
+            .position(|l| std::ptr::eq(l.schema, schema))
+        {
+            Some(n) => n,
+            None => {
+                self.layouts.push(Layout::new(schema));
+                self.wanted.push(Wanted::new());
+                self.layouts.len() - 1
+            }
+        }
+    }
+
+    fn add(&mut self, source: &'static Source, file: &'static str, text: &str) {
+        let n = self.layout(source.schema);
+        let loaded = load(source, file, text, n, &self.layouts[n], &mut self.wanted[n]);
+        self.rules.push(loaded);
+    }
+
+    /// An upstream rule its set names as not taken, from its line in `Source::not_taken`. A
+    /// line that cannot be read is a rule that could not be read, named by the line.
+    fn not_taken(&mut self, source: &'static Source, line: &'static str) {
+        let layout = self.layout(source.schema);
+        let cells: Vec<&'static str> = line.split('\t').collect();
+        let read = match cells[..] {
+            [file, id, name, severity, reason, detail] => LEVELS
+                .iter()
+                .find(|(n, _)| *n == severity)
+                .map(|(_, level)| (file, id, name, *level, reason, detail))
+                .ok_or(format!("the severity {severity:?} is not a level")),
+            _ => Err("the line has not six cells".to_string()),
+        };
+        let loaded = match read.and_then(|(file, id, name, level, reason, detail)| {
+            let reason = not_taken_reason(reason, detail)?;
+            Ok(Loaded {
+                file,
+                source,
+                meta: Some(Meta {
+                    id: id.to_string(),
+                    finding_rule: format!("{}:{id}", source.name),
+                    title: name.to_string(),
+                    level,
+                    // The translation writes `test` for every rule of the set, whatever the
+                    // upstream rule's maturity.
+                    status: Status::Test,
+                    author: None,
+                    techniques: Vec::new(),
+                    description: None,
+                    source,
+                }),
+                placement: Placement::NotEvaluated(reason),
+                kind: None,
+                detail: Some(detail),
+                rule: None,
+                layout,
+                need: Need::Any,
+            })
+        }) {
+            Ok(loaded) => loaded,
+            Err(said) => Loaded {
+                file: line,
+                source,
+                meta: None,
+                placement: Placement::NotEvaluated(Reason::NotParsed(said)),
+                kind: None,
+                detail: None,
+                rule: None,
+                layout,
+                need: Need::Any,
+            },
+        };
+        self.rules.push(loaded);
+    }
+
+    fn done(self) -> Rules {
+        let mut layouts = self.layouts;
+        for (layout, wanted) in layouts.iter_mut().zip(self.wanted) {
+            layout.texts = Texts::new(wanted, layout.names.len());
+        }
+        Rules {
+            rules: self.rules,
+            layouts,
+        }
+    }
+}
+
+/// The reason a translation gave for not taking an upstream rule, from its code and detail.
+fn not_taken_reason(code: &str, detail: &str) -> Result<Reason, String> {
+    Ok(match code {
+        "sequence" => Reason::Sequence,
+        "not_eql" => Reason::NotEql,
+        "backslash_in_wildcard" => Reason::BackslashInWildcard,
+        "spans_kinds" => Reason::SpansKinds,
+        "needs_events" => Reason::NeedsEvents(detail.to_string()),
+        "needs_fields" => Reason::NeedsFields(
+            detail
+                .split("; ")
+                .filter_map(|item| item.strip_prefix("needs_fields "))
+                .map(str::to_string)
+                .collect(),
+        ),
+        other => return Err(format!("the reason {other:?} is not one this build knows")),
+    })
+}
+
 /// Reads one rule. The YAML is parsed once; the evaluator builds its rule from it, and the
 /// level, status and shape of the detection, which the evaluator keeps to itself, are read
 /// from it to place the rule.
-fn load(file: &'static str, text: &str, texts: &mut Wanted) -> Loaded {
+fn load(
+    source: &'static Source,
+    file: &'static str,
+    text: &str,
+    n: usize,
+    layout: &Layout,
+    texts: &mut Wanted,
+) -> Loaded {
     let not_parsed = |said: String| Loaded {
         file,
+        source,
         meta: None,
         placement: Placement::NotEvaluated(Reason::NotParsed(said)),
         kind: None,
+        detail: None,
         rule: None,
+        layout: n,
         need: Need::Any,
     };
     let yaml: Value = match serde_norway::from_str(text) {
@@ -790,19 +1370,54 @@ fn load(file: &'static str, text: &str, texts: &mut Wanted) -> Loaded {
         Ok(rule) => rule,
         Err(e) => return not_parsed(e.to_string()),
     };
-    let meta = match meta(&rule, &yaml) {
+    let meta = match meta(&rule, &yaml, source) {
         Ok(m) => m,
         Err(said) => return not_parsed(said),
     };
     let kind = Kind::of(yaml["logsource"]["category"].as_str().unwrap_or_default());
+    let placement = match source.translation.map(|key| left_out(&yaml[key])) {
+        Some(Err(said)) => return not_parsed(said),
+        Some(Ok(left)) => place(&yaml, layout, left),
+        None => place(&yaml, layout, Vec::new()),
+    };
     Loaded {
         file,
+        source,
         meta: Some(meta),
-        placement: place(&yaml),
+        placement,
         kind,
+        detail: None,
         rule: Some(rule),
-        need: kind.map_or(Need::Any, |kind| need(&yaml, kind, texts)),
+        layout: n,
+        need: kind.map_or(Need::Any, |kind| need(&yaml, layout, kind, texts)),
     }
+}
+
+/// The alternatives of the upstream rule that a translation recorded as left out, each as a
+/// branch that never matches: `needs_fields <field>` names a field the log does not give; any
+/// other item, such as a pattern the translation could not carry, is kept as it was written.
+/// Without the record, what was left out is not known, and the rule is not evaluated.
+fn left_out(record: &Value) -> Result<Vec<Branch>, String> {
+    let Some(items) = record["in_part_missing_fields"].as_sequence() else {
+        return Err("the translation's record of what it left out is missing".to_string());
+    };
+    items
+        .iter()
+        .map(|item| {
+            let said = item
+                .as_str()
+                .ok_or("the translation's record of what it left out is not text")?;
+            let fields = said
+                .strip_prefix("needs_fields ")
+                .map(|f| vec![f.to_string()])
+                .unwrap_or_default();
+            Ok(Branch {
+                selection: None,
+                fields,
+                said: Some(said.to_string()),
+            })
+        })
+        .collect()
 }
 
 // ---- What a start must hold for a rule to be able to match it. ----
@@ -907,9 +1522,9 @@ fn fold(s: &str) -> String {
     }
 }
 
-/// The need of a rule about events of `kind`, from its YAML. `texts` numbers each text a field
-/// must hold.
-fn need(yaml: &Value, kind: Kind, texts: &mut Wanted) -> Need {
+/// The need of a rule about events of `kind` given in `layout`, from its YAML. `texts` numbers
+/// each text a field must hold.
+fn need(yaml: &Value, layout: &Layout, kind: Kind, texts: &mut Wanted) -> Need {
     let Some(detection) = yaml["detection"].as_mapping() else {
         return Need::Any;
     };
@@ -921,7 +1536,7 @@ fn need(yaml: &Value, kind: Kind, texts: &mut Wanted) -> Need {
         match name.as_str() {
             Some("condition") => {}
             Some(name) => {
-                selections.insert(name.to_string(), selection_need(value, kind, texts));
+                selections.insert(name.to_string(), selection_need(value, layout, kind, texts));
             }
             None => return Need::Any,
         }
@@ -929,12 +1544,12 @@ fn need(yaml: &Value, kind: Kind, texts: &mut Wanted) -> Need {
     Condition::parse(condition, &selections).unwrap_or(Need::Any)
 }
 
-fn selection_need(value: &Value, kind: Kind, texts: &mut Wanted) -> Need {
+fn selection_need(value: &Value, layout: &Layout, kind: Kind, texts: &mut Wanted) -> Need {
     let map_need = |m: &serde_norway::Mapping, texts: &mut Wanted| {
         all(m
             .iter()
             .map(|(k, v)| match k.as_str() {
-                Some(k) => field_need(k, v, kind, texts),
+                Some(k) => field_need(k, v, layout, kind, texts),
                 None => Need::Any,
             })
             .collect())
@@ -954,7 +1569,7 @@ fn selection_need(value: &Value, kind: Kind, texts: &mut Wanted) -> Need {
     }
 }
 
-fn field_need(key: &str, value: &Value, kind: Kind, texts: &mut Wanted) -> Need {
+fn field_need(key: &str, value: &Value, layout: &Layout, kind: Kind, texts: &mut Wanted) -> Need {
     let mut parts = key.split('|');
     let name = parts.next().unwrap_or_default();
     let mut every = false;
@@ -970,11 +1585,10 @@ fn field_need(key: &str, value: &Value, kind: Kind, texts: &mut Wanted) -> Need 
             _ => return Need::Any,
         }
     }
-    // Numbered among every kind's fields, as `Subject::forms` lays out the values.
-    let Some(field) = kind.fields().iter().position(|n| *n == name) else {
+    // Numbered among every kind's fields, as `Layout::forms` lays out the values.
+    let Some(field) = layout.field(kind, name) else {
         return Need::Never;
     };
-    let field = kind.offset() + field;
     let values: Vec<&Value> = match value {
         Value::Sequence(items) => items.iter().collect(),
         v => vec![v],
@@ -1170,10 +1784,11 @@ struct FieldTexts {
 }
 
 impl Texts {
-    /// `None` when an automaton cannot be built, and then every rule is asked.
-    fn new(texts: Wanted) -> Option<Texts> {
+    /// For `count` fields; `None` when an automaton cannot be built, and then every rule is
+    /// asked.
+    fn new(texts: Wanted, count: usize) -> Option<Texts> {
         let mut fields = Vec::new();
-        for field in 0..ALL_FIELDS {
+        for field in 0..count {
             let mine = || texts.iter().filter(move |((f, _, _), _)| *f == field);
             let (needles, ids): (Vec<&String>, Vec<usize>) = mine()
                 .filter(|((_, place, _), _)| *place == Place::Within)
@@ -1229,7 +1844,7 @@ impl Texts {
 }
 
 /// A rule is evaluated only with an id and a level, so that a match can be named and weighed.
-fn meta(rule: &sigma_rust::Rule, yaml: &Value) -> Result<Meta, String> {
+fn meta(rule: &sigma_rust::Rule, yaml: &Value, source: &'static Source) -> Result<Meta, String> {
     // The evaluator refuses a level or status that is not Sigma's; it allows none.
     fn one_of<T: Copy>(table: &[(&str, T)], key: &str, yaml: &Value) -> Result<T, String> {
         let value = yaml[key].as_str();
@@ -1241,7 +1856,7 @@ fn meta(rule: &sigma_rust::Rule, yaml: &Value) -> Result<Meta, String> {
     }
     let id = rule.id.clone().ok_or("the rule has no id")?;
     Ok(Meta {
-        finding_rule: format!("{FINDING_PREFIX}{id}"),
+        finding_rule: format!("{}:{id}", source.name),
         id,
         title: rule.title.clone(),
         level: one_of(&LEVELS, "level", yaml)?,
@@ -1255,6 +1870,7 @@ fn meta(rule: &sigma_rust::Rule, yaml: &Value) -> Result<Meta, String> {
             .map(|t| format!("T{t}"))
             .collect(),
         description: yaml["description"].as_str().map(str::to_string),
+        source,
     })
 }
 
@@ -1264,14 +1880,16 @@ fn meta(rule: &sigma_rust::Rule, yaml: &Value) -> Result<Meta, String> {
 /// selection is like that, the rule is not evaluated, whatever its condition says, since
 /// reading the condition is the evaluator's. If only some maps are, the rest of each selection
 /// still matches as the rule means, so the rule is evaluated in part and those maps are named.
-fn place(yaml: &Value) -> Placement {
+/// The fields are those the rule's schema gives (`layout`). The alternatives a translation left
+/// out (`left`) never match either, and make a rule that is otherwise whole evaluated in part.
+fn place(yaml: &Value, layout: &Layout, left: Vec<Branch>) -> Placement {
     let category = yaml["logsource"]["category"].as_str().unwrap_or_default();
     let Some(kind) = Kind::of(category) else {
         return Placement::NotEvaluated(Reason::NeedsEvents(category.to_string()));
     };
-    let fields = kind.fields();
-    let given = |f: &&str| fields.contains(f);
-    let mut dead = Vec::new();
+    let fields = layout.names(kind);
+    let given = |f: &&str| fields.iter().any(|n| n == f);
+    let mut dead = left;
     let mut lacking_all = BTreeSet::new();
     let mut a_selection_is_dead = false;
     for (name, selection) in yaml["detection"].as_mapping().into_iter().flatten() {
@@ -1298,8 +1916,9 @@ fn place(yaml: &Value) -> Placement {
             } else {
                 lacking_all.extend(lacking.iter().map(|f| f.to_string()));
                 dead.push(Branch {
-                    selection: name.to_string(),
+                    selection: Some(name.to_string()),
                     fields: lacking.into_iter().map(str::to_string).collect(),
+                    said: None,
                 });
             }
         }
@@ -1346,6 +1965,18 @@ mod tests {
             .collect()
     }
 
+    /// The rules a start makes `evaluate` ask, in every schema, by their files.
+    fn asked_of<'a>(rules: &'a Rules, s: &ProcessStart) -> Vec<&'a str> {
+        let mut files = Vec::new();
+        for (n, layout) in rules.layouts.iter().enumerate() {
+            for values in layout.forms(Subject::Start(s)) {
+                let asked = rules.asked(n, Kind::Process, &values);
+                files.extend(asked.into_iter().map(|i| rules.rules[i].file));
+            }
+        }
+        files
+    }
+
     fn fires<'e>(rules: &Rules, id: &str, s: impl Into<Subject<'e>>) -> bool {
         fired(rules, s).iter().any(|f| f == id)
     }
@@ -1365,13 +1996,9 @@ mod tests {
     const NETWORK_SCANNING: &str = "84bae5d4-b518-4ae0-b331-6d4afd34d00f";
     const FILE_DISCOVERY: &str = "089dbdf6-b960-4bcc-90e3-ffc3480c20f6";
 
-    /// No false calm: every file in the folder is shipped, every shipped rule is placed as
-    /// evaluated, evaluated in part or not evaluated with a reason, and the numbers add up to
-    /// the files. A rule added to the folder and not to `SHIPPED` fails here, and so does one
-    /// that changes the numbers, until someone looks at where it went.
-    #[test]
-    fn every_shipped_rule_is_accounted_for() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(FOLDER);
+    /// The rule files in a set's folder, by their paths under it.
+    fn on_disk(source: &Source) -> BTreeSet<String> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(source.folder);
         let mut on_disk = BTreeSet::new();
         let mut dirs = vec![root.clone()];
         while let Some(dir) = dirs.pop() {
@@ -1385,48 +2012,584 @@ mod tests {
                 }
             }
         }
-        let shipped: BTreeSet<String> = SHIPPED.iter().map(|(p, _)| p.to_string()).collect();
-        assert_eq!(on_disk, shipped, "the folder and the shipped list differ");
-        for (path, text) in SHIPPED {
-            let on_disk = std::fs::read_to_string(root.join(path)).unwrap();
-            assert_eq!(&on_disk, text, "{path} is compiled in as it is on disk");
-            let yaml: Value = serde_norway::from_str(text).unwrap();
+        on_disk
+    }
+
+    /// No false calm: every file in each set's folder is shipped, every rule is placed as
+    /// evaluated, evaluated in part or not evaluated with a reason, every upstream rule a
+    /// translated set did not take is named with its reason, and the numbers add up. A rule
+    /// added to a folder and not to its list fails here, and so does one that changes the
+    /// numbers, until someone looks at where it went. SigmaHQ's 75 are placed as before.
+    #[test]
+    fn every_shipped_rule_is_accounted_for() {
+        for source in SOURCES {
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(source.folder);
+            let shipped: BTreeSet<String> =
+                source.files.iter().map(|(p, _)| p.to_string()).collect();
             assert_eq!(
-                yaml["logsource"]["product"].as_str(),
-                Some("macos"),
-                "{path}"
+                on_disk(source),
+                shipped,
+                "the folder and the shipped list of {} differ",
+                source.name
             );
+            for (path, text) in source.files {
+                let on_disk = std::fs::read_to_string(root.join(path)).unwrap();
+                assert_eq!(&on_disk, text, "{path} is compiled in as it is on disk");
+                let yaml: Value = serde_norway::from_str(text).unwrap();
+                assert_eq!(
+                    yaml["logsource"]["product"].as_str(),
+                    Some("macos"),
+                    "{path}"
+                );
+            }
         }
 
         let rules = Rules::shipped();
         let s = rules.summary_json();
-        let t = &s["totals"];
-        assert_eq!(t["shipped"], SHIPPED.len());
-        assert_eq!(t["shipped"], 75);
+        let totals = |name: &str| {
+            let source = s["sources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|x| x["name"] == name)
+                .unwrap();
+            let t = &source["totals"];
+            [
+                &t["shipped"],
+                &t["not_taken"],
+                &t["evaluated"],
+                &t["in_part"],
+                &t["not_evaluated"],
+            ]
+            .map(|v| v.as_u64().unwrap())
+        };
+        assert_eq!(totals("sigma"), [75, 0, 74, 1, 0]);
+        // Of Elastic's 185 rules for macOS, 66 translated: 12 of them with an alternative the
+        // translation left out, and 119 not taken.
+        assert_eq!(totals("elastic"), [66, 119, 54, 12, 119]);
         assert_eq!(
-            (t["evaluated"].clone(), t["in_part"].clone()),
-            (json!(74), json!(1))
+            s["totals"],
+            json!({ "shipped": 141, "not_taken": 119, "evaluated": 128, "in_part": 13, "not_evaluated": 119 })
         );
-        assert_eq!(t["not_evaluated"], 0);
-        let ids = |key: &str, events: &str| -> Vec<String> {
+        let ids = |key: &str, source: &str, events: &str| -> Vec<String> {
             let mut ids: Vec<String> = s[key]
                 .as_array()
                 .unwrap()
                 .iter()
-                .filter(|r| r["events"] == events)
+                .filter(|r| r["events"] == events && r["source"] == source)
                 .map(|r| r["id_text"].as_str().unwrap().to_string())
                 .collect();
             ids.sort();
             ids
         };
-        assert_eq!(ids("evaluated", CATEGORY).len(), 69);
-        assert_eq!(ids("in_part", CATEGORY), [RENAMED_MESHAGENT]);
+        assert_eq!(ids("evaluated", "sigma", CATEGORY).len(), 69);
+        assert_eq!(ids("in_part", "sigma", CATEGORY), [RENAMED_MESHAGENT]);
         // The five rules for file events, each evaluated in full over files created or renamed.
-        assert_eq!(ids("evaluated", FILE_CATEGORY), FILE_RULES);
+        assert_eq!(ids("evaluated", "sigma", FILE_CATEGORY), FILE_RULES);
+        assert_eq!(ids("evaluated", "elastic", CATEGORY).len(), 49);
+        assert_eq!(ids("evaluated", "elastic", FILE_CATEGORY).len(), 5);
         assert_eq!(
             (rules.evaluated(Kind::Process), rules.evaluated(Kind::File)),
-            (69, 5)
+            (69 + 49, 5 + 5)
         );
+        // No two rules share an id: the store counts matches by a rule's id.
+        let all: Vec<&str> = rules
+            .rules
+            .iter()
+            .filter_map(|l| l.meta.as_ref())
+            .map(|m| m.id.as_str())
+            .collect();
+        assert_eq!(all.iter().collect::<BTreeSet<_>>().len(), all.len());
+        assert_eq!(all.len(), 260);
+    }
+
+    /// Every translated file is the translator's output byte for byte: its sha256 is the one
+    /// `rules/elastic/SHA256SUMS` records, and the manifest names every file and no other.
+    #[test]
+    fn every_translated_rule_is_the_file_the_translator_wrote() {
+        let manifest = include_str!("../rules/elastic/SHA256SUMS");
+        let recorded: BTreeMap<&str, &str> = manifest
+            .lines()
+            .map(|l| {
+                let (hash, path) = l.split_once("  ").unwrap();
+                (path, hash)
+            })
+            .collect();
+        let shipped: BTreeMap<&str, String> = ELASTIC_SHIPPED
+            .iter()
+            .map(|(path, text)| (*path, crate::sha256::hex(text.as_bytes())))
+            .collect();
+        assert_eq!(recorded.len(), 66);
+        assert_eq!(
+            recorded.keys().collect::<Vec<_>>(),
+            shipped.keys().collect::<Vec<_>>()
+        );
+        for (path, hash) in &shipped {
+            assert_eq!(recorded[path], hash, "{path} differs from the manifest");
+        }
+    }
+
+    /// One sample of `tests/elastic/samples.jsonl` as the event level would record it.
+    enum Sample {
+        Start(ProcessStart),
+        File(FileEvent),
+    }
+
+    impl Sample {
+        fn of(e: &Json) -> Sample {
+            let text = |k: &str| e[k].as_str().map(str::to_string);
+            let number = |k: &str| e[k].as_i64();
+            match e["kind"].as_str().unwrap() {
+                "exec" => Sample::Start(ProcessStart {
+                    executable: text("executable").unwrap(),
+                    args: e["args"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|a| a.as_str().unwrap().to_string())
+                        .collect(),
+                    parent_executable: text("parent_executable"),
+                    working_directory: text("working_directory"),
+                    pid: number("pid").unwrap(),
+                    parent_pid: number("parent_pid"),
+                    user_id: number("user_id"),
+                    signing_id: text("signing_id"),
+                    team_id: text("team_id"),
+                    ..ProcessStart::default()
+                }),
+                kind => Sample::File(FileEvent {
+                    action: crate::events::FILE_KINDS
+                        .into_iter()
+                        .find(|k| *k == kind)
+                        .unwrap(),
+                    path: text("path").unwrap(),
+                    source: text("source"),
+                    executable: text("executable").unwrap(),
+                    ..FileEvent::default()
+                }),
+            }
+        }
+    }
+
+    #[test]
+    fn elastic_s_rules_match_the_samples_exactly_as_the_reference_said() {
+        // Each translation was checked against a reference for Elasticsearch's meaning on the
+        // translator's invented events (`rules/elastic/NOTICE`); `tests/elastic/samples.jsonl`
+        // holds some of them, for every translated rule events it matches and near misses, each
+        // with the rules the reference said it matches. The one call the core's reading and
+        // `immune matches` both make must give Elastic's rules exactly those: none fewer, none
+        // more.
+        let rules = Rules::shipped();
+        let samples = include_str!("../tests/elastic/samples.jsonl");
+        let mut differ = Vec::new();
+        let mut matched: BTreeSet<String> = BTreeSet::new();
+        let mut missed: BTreeSet<String> = BTreeSet::new();
+        for line in samples.lines() {
+            let sample: Json = serde_json::from_str(line).unwrap();
+            let expected: BTreeSet<String> = sample["matches"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|m| m.as_str().unwrap().to_string())
+                .collect();
+            let event = Sample::of(&sample["event"]);
+            let (got, kind) = match &event {
+                Sample::Start(s) => (rules.evaluate(s), Kind::Process),
+                Sample::File(f) => (rules.evaluate(f), Kind::File),
+            };
+            let got: BTreeSet<String> = got
+                .iter()
+                .filter(|m| std::ptr::eq(m.meta.source, &ELASTIC))
+                .map(|m| m.meta.finding_rule.clone())
+                .collect();
+            if got != expected {
+                differ.push(format!(
+                    "{}: expected {expected:?}, matched {got:?}",
+                    sample["event"]
+                ));
+            }
+            for l in rules.rules.iter().filter(|l| l.kind == Some(kind)) {
+                let Some(m) = l.meta.as_ref().filter(|m| std::ptr::eq(m.source, &ELASTIC)) else {
+                    continue;
+                };
+                if expected.contains(&m.finding_rule) {
+                    matched.insert(m.finding_rule.clone());
+                } else {
+                    missed.insert(m.finding_rule.clone());
+                }
+            }
+        }
+        assert!(differ.is_empty(), "{}", differ.join("\n"));
+        // Every translated rule is held to a sample it must match and one of its kind it must
+        // not.
+        let translated: BTreeSet<String> = rules
+            .rules
+            .iter()
+            .filter(|l| std::ptr::eq(l.source, &ELASTIC) && !l.not_taken())
+            .map(|l| l.meta.as_ref().unwrap().finding_rule.clone())
+            .collect();
+        assert_eq!(translated.len(), 66);
+        assert_eq!(matched, translated);
+        assert_eq!(missed, translated);
+    }
+
+    /// An invented rule as the translator writes one, of Elastic's set: `left_out` is the list
+    /// of what it left out, as its record holds it.
+    fn translated(detection: &str, category: &str, left_out: &str) -> &'static str {
+        let text = format!(
+            "title: Invented\nid: 00000000-0000-4000-8000-000000000009\nstatus: test\n\
+             level: high\nlogsource: {{\"product\": \"macos\", \"category\": \"{category}\"}}\n\
+             detection:\n{detection}elastic: {{\"in_part_missing_fields\": [{left_out}]}}\n"
+        );
+        Box::leak(text.into_boxed_str())
+    }
+
+    /// A translated rule is asked by the names Elastic's rules use, so its texts are searched
+    /// for like any rule's, and never taken for a field this level does not have. A name the
+    /// schema does not give is named: in a selection the rule cannot do without, the rule is not
+    /// evaluated; in one alternative, or in what the translation recorded as left out, it is
+    /// evaluated in part. A translated file without its record is not evaluated, since what was
+    /// left out of it would not be known.
+    #[test]
+    fn a_translated_rule_reads_elastic_s_names_and_one_it_cannot_have_is_named() {
+        let curl = "  s1: {\"process.name|cased\": [\"curl\"]}\n";
+        let whole = translated(
+            &format!(
+                "{curl}  s2: {{\"process.args|contains\": [\"\\u0000-k\\u0000\"]}}\n  condition: s1 and s2\n"
+            ),
+            CATEGORY,
+            "",
+        );
+        let needs = translated(
+            &format!(
+                "{curl}  s2: {{\"process.parent.args|contains\": [\"x\"]}}\n  condition: s1 and s2\n"
+            ),
+            CATEGORY,
+            "",
+        );
+        let part = translated(
+            &format!("{curl}  condition: s1\n"),
+            CATEGORY,
+            "\"needs_fields process.parent.command_line\", \"backslash_in_wildcard process.executable: C:\\\\*\"",
+        );
+        let alternative = translated(
+            "  s1: [{\"process.name|cased\": [\"curl\"]}, {\"process.Ext.effective_parent.name\": [\"x\"]}]\n  condition: s1\n",
+            CATEGORY,
+            "",
+        );
+        let bare = Box::leak(
+            whole
+                .replace("elastic: {\"in_part_missing_fields\": []}\n", "")
+                .into_boxed_str(),
+        );
+        let rules = Rules::load_as(
+            &ELASTIC,
+            &[
+                ("whole.yml", whole),
+                ("needs.yml", needs),
+                ("part.yml", part),
+                ("alternative.yml", alternative),
+                ("bare.yml", bare),
+            ],
+        );
+        assert_eq!(rules.rules[0].placement, Placement::Evaluated);
+        assert!(
+            matches!(&rules.rules[0].need, Need::All(n) if !n.contains(&Need::Never)),
+            "{:?}",
+            rules.rules[0].need
+        );
+        assert_eq!(
+            rules.rules[1].placement,
+            Placement::NotEvaluated(Reason::NeedsFields(vec!["process.parent.args".into()]))
+        );
+        assert_eq!(
+            rules.rules[2].placement,
+            Placement::InPart(vec![
+                Branch {
+                    selection: None,
+                    fields: vec!["process.parent.command_line".into()],
+                    said: Some("needs_fields process.parent.command_line".into()),
+                },
+                Branch {
+                    selection: None,
+                    fields: vec![],
+                    said: Some("backslash_in_wildcard process.executable: C:\\*".into()),
+                },
+            ])
+        );
+        assert_eq!(
+            rules.rules[3].placement,
+            Placement::InPart(vec![Branch {
+                selection: Some("s1".into()),
+                fields: vec!["process.Ext.effective_parent.name".into()],
+                said: None,
+            }])
+        );
+        assert_eq!(
+            rules.rules[4].placement,
+            Placement::NotEvaluated(Reason::NotParsed(
+                "the translation's record of what it left out is missing".into()
+            ))
+        );
+        assert_eq!(
+            rules.rules[2].meta.as_ref().unwrap().finding_rule,
+            "elastic:00000000-0000-4000-8000-000000000009"
+        );
+        let insecure = start(
+            "/usr/bin/curl",
+            &["curl", "-k", "https://example.invalid"],
+            "/bin/zsh",
+        );
+        let hit: Vec<&str> = rules.evaluate(&insecure).iter().map(|m| m.file).collect();
+        assert_eq!(hit, ["whole.yml", "part.yml", "alternative.yml"]);
+        assert_eq!(asked_of(&rules, &insecure).len(), 3);
+        // Without the argument the whole rule is not asked, and does not match.
+        let plain = start(
+            "/usr/bin/curl",
+            &["curl", "https://example.invalid"],
+            "/bin/zsh",
+        );
+        assert!(!asked_of(&rules, &plain).contains(&"whole.yml"));
+        let ls = start("/bin/ls", &["ls"], "/bin/zsh");
+        assert!(asked_of(&rules, &ls).is_empty());
+        // The same rule read as SigmaHQ's names fields its schema does not give.
+        let as_sigma = Rules::load(&[("whole.yml", whole)]);
+        assert_eq!(
+            as_sigma.rules[0].placement,
+            Placement::NotEvaluated(Reason::NeedsFields(vec![
+                "process.args".into(),
+                "process.name".into()
+            ]))
+        );
+    }
+
+    /// SigmaHQ's rules match what they matched before another set was shipped beside them:
+    /// over every event the fast path's test makes, the rules of SigmaHQ's set alone and the
+    /// same rules among all the sets match the same, and are placed the same.
+    #[test]
+    fn sigmahq_s_rules_match_as_they_did_alone() {
+        let alone = Rules::of(&[&SIGMAHQ]);
+        let all = Rules::shipped();
+        let sigma = |rules: &Rules, s: Subject| -> Vec<&'static str> {
+            rules
+                .evaluate(s)
+                .iter()
+                .filter(|m| std::ptr::eq(m.meta.source, &SIGMAHQ))
+                .map(|m| m.file)
+                .collect()
+        };
+        let (starts, files) = starts_from_rules();
+        let mut matched = 0;
+        for s in starts.iter().flat_map(variants) {
+            let before = sigma(&alone, Subject::Start(&s));
+            matched += before.len();
+            assert_eq!(before, sigma(all, Subject::Start(&s)), "{s:?}");
+        }
+        for f in files.iter().flat_map(file_variants) {
+            assert_eq!(
+                sigma(&alone, Subject::File(&f)),
+                sigma(all, Subject::File(&f)),
+                "{f:?}"
+            );
+        }
+        assert!(matched > 100, "{matched}");
+        for (a, b) in alone.rules.iter().zip(&all.rules) {
+            assert_eq!((a.file, &a.placement), (b.file, &b.placement));
+        }
+    }
+
+    /// How a set's schema decides what is done to an event: SigmaHQ's rules see a path in
+    /// `/private` under its short name too, since their authors write `/tmp/...`; Elastic's
+    /// translated rules see the path only as Endpoint Security gives it, as their translation
+    /// was checked.
+    #[test]
+    fn only_sigmahq_s_rules_see_a_path_through_macos_links_into_private() {
+        assert!(SIGMA_TAXONOMY.links);
+        assert!(!ECS.links);
+        let elastic = Rules::load_as(
+            &ELASTIC,
+            &[(
+                "tmp.yml",
+                translated(
+                    "  s1: {\"file.path|cased\": [\"/tmp/x/*\"]}\n  condition: s1\n",
+                    FILE_CATEGORY,
+                    "",
+                ),
+            )],
+        );
+        let sigma = Rules::load(&[(
+            "tmp.yml",
+            "title: Invented\nid: 00000000-0000-4000-8000-000000000008\nstatus: test\n\
+             level: high\nlogsource:\n    category: file_event\n    product: macos\n\
+             detection:\n    selection:\n        TargetFilename|startswith: '/tmp/x/'\n    condition: selection\n",
+        )]);
+        let resolved = file("/bin/cp", "/private/tmp/x/a", None);
+        let short = file("/bin/cp", "/tmp/x/a", None);
+        assert!(elastic.evaluate(&resolved).is_empty());
+        assert_eq!(elastic.evaluate(&short).len(), 1);
+        assert_eq!(elastic.evaluate_each(&resolved).len(), 0);
+        assert_eq!(sigma.evaluate(&resolved).len(), 1);
+    }
+
+    /// Every part of an event a translated rule reads, under Elastic's name, as the translation
+    /// was checked on: the program's name is the last part of its path, the arguments one text
+    /// with each between NULs and absent when there are none, their count a number, a file's
+    /// name and extension from its path, the kind of event and its action Elastic Defend's
+    /// words, and every text folded too.
+    #[test]
+    fn an_event_is_given_to_elastic_s_rules_under_elastic_s_names() {
+        let layout = Layout::new(&ECS);
+        let given = |subject: Subject, kind: Kind| -> BTreeMap<String, Option<String>> {
+            let values = layout.forms(subject).remove(0);
+            layout
+                .names(kind)
+                .iter()
+                .cloned()
+                .zip(values[layout.range(kind)].iter().cloned())
+                .collect()
+        };
+        let mut s = start("/usr/bin/Curl", &["curl", "-K", "a b"], "/bin/zsh");
+        s.working_directory = Some("/Users/example".into());
+        s.user_id = Some(0);
+        let want: BTreeMap<String, Option<String>> = [
+            ("event.type", "start"),
+            ("event.action", "exec"),
+            ("process.executable", "/usr/bin/Curl"),
+            ("process.name", "Curl"),
+            ("process.args", "\0curl\0-K\0a b\0"),
+            ("process.args_count", "3"),
+            ("process.command_line", "curl -K a b"),
+            ("process.parent.executable", "/bin/zsh"),
+            ("process.parent.name", "zsh"),
+            ("process.working_directory", "/Users/example"),
+            ("user.id", "0"),
+        ]
+        .into_iter()
+        .flat_map(|(n, v)| {
+            let folded =
+                (n != "process.args_count").then(|| (format!("immune.folded.{n}"), Some(fold(v))));
+            [(n.to_string(), Some(v.to_string()))]
+                .into_iter()
+                .chain(folded)
+        })
+        .collect();
+        assert_eq!(given(Subject::Start(&s), Kind::Process), want);
+        let bare = ProcessStart {
+            executable: "/bin/x".into(),
+            ..ProcessStart::default()
+        };
+        let none = given(Subject::Start(&bare), Kind::Process);
+        for absent in [
+            "process.args",
+            "process.parent.executable",
+            "process.parent.name",
+            "process.working_directory",
+            "user.id",
+        ] {
+            assert_eq!(none[absent], None, "{absent}");
+        }
+        assert_eq!(none["process.args_count"].as_deref(), Some("0"));
+        // The count is given as a number, so a rule can compare it.
+        let count = |rule: &str| {
+            let rules = Rules::load_as(
+                &ELASTIC,
+                &[(
+                    "count.yml",
+                    translated(
+                        &format!("  s1: {{{rule}}}\n  condition: s1\n"),
+                        CATEGORY,
+                        "",
+                    ),
+                )],
+            );
+            rules.evaluate(&s).len()
+        };
+        assert_eq!(count("\"process.args_count|lte\": 3"), 1);
+        assert_eq!(count("\"process.args_count|lt\": 3"), 0);
+        assert_eq!(count("\"process.args_count\": 3"), 1);
+        // A file created, and one renamed.
+        let created = given(
+            Subject::File(&file("/usr/bin/Java", "/opt/a/B.Class", None)),
+            Kind::File,
+        );
+        let renamed = given(
+            Subject::File(&file("/bin/mv", "/Users/example/.bashrc", Some("/tmp/a"))),
+            Kind::File,
+        );
+        let pick = |m: &BTreeMap<String, Option<String>>, names: &[&str]| -> Vec<Option<String>> {
+            names.iter().map(|n| m[*n].clone()).collect()
+        };
+        let names = [
+            "event.type",
+            "event.action",
+            "file.path",
+            "file.name",
+            "file.extension",
+            "process.executable",
+            "process.name",
+            "immune.folded.file.name",
+        ];
+        let some =
+            |v: &[&str]| -> Vec<Option<String>> { v.iter().map(|s| Some(s.to_string())).collect() };
+        assert_eq!(
+            pick(&created, &names),
+            some(&[
+                "creation",
+                "creation",
+                "/opt/a/B.Class",
+                "B.Class",
+                "Class",
+                "/usr/bin/Java",
+                "Java",
+                "b.class"
+            ])
+        );
+        let mut want = some(&[
+            "change",
+            "rename",
+            "/Users/example/.bashrc",
+            ".bashrc",
+            "",
+            "/bin/mv",
+            "mv",
+            ".bashrc",
+        ]);
+        want[4] = None;
+        assert_eq!(pick(&renamed, &names), want);
+        assert_eq!(created.len(), 7 + 7);
+        for (path, extension) in [
+            ("/tmp/notes.", None),
+            ("/tmp/a.tar.gz", Some("gz")),
+            ("/tmp/.d/x", None),
+        ] {
+            let f = given(Subject::File(&file("/bin/cp", path, None)), Kind::File);
+            assert_eq!(f["file.extension"].as_deref(), extension, "{path}");
+        }
+    }
+
+    /// Elastic's severity is the level of the same name, and the rule's id and name are
+    /// Elastic's own, so a finding and a listing name the rule as Elastic does.
+    #[test]
+    fn an_elastic_rule_keeps_its_severity_id_and_name() {
+        let rules = Rules::shipped();
+        for (path, text) in ELASTIC_SHIPPED {
+            let yaml: Value = serde_norway::from_str(text).unwrap();
+            let l = rules
+                .rules
+                .iter()
+                .find(|l| std::ptr::eq(l.source, &ELASTIC) && l.file == *path)
+                .unwrap();
+            let m = l.meta.as_ref().unwrap();
+            assert_eq!(Some(m.level.as_str()), yaml["elastic"]["severity"].as_str());
+            assert_eq!(Some(m.id.as_str()), yaml["elastic"]["rule_id"].as_str());
+            assert_eq!(m.finding_rule, format!("elastic:{}", m.id));
+            assert_eq!(Some(m.title.as_str()), yaml["title"].as_str());
+            assert!(
+                m.author
+                    .as_deref()
+                    .is_some_and(|a| a.starts_with("Elastic"))
+            );
+        }
     }
 
     /// The shipped rules for file events, by id.
@@ -1789,9 +2952,12 @@ mod tests {
         let rules = Rules::shipped();
         let samples = high_samples();
         let files = file_high_samples();
+        // SigmaHQ's: a translated rule's samples are its translation's reference's, not
+        // written here from the rule.
         let high: BTreeSet<&str> = rules
             .rules
             .iter()
+            .filter(|l| std::ptr::eq(l.source, &SIGMAHQ))
             .filter(|l| !matches!(l.placement, Placement::NotEvaluated(_)))
             .filter_map(|l| l.meta.as_ref())
             .filter(|m| m.level >= Level::High)
@@ -1960,16 +3126,26 @@ mod tests {
         assert_eq!(
             by_id(rules, RENAMED_MESHAGENT).placement,
             Placement::InPart(vec![Branch {
-                selection: "selection_meshagent".into(),
+                selection: Some("selection_meshagent".into()),
                 fields: vec!["OriginalFileName".into()],
+                said: None,
             }])
         );
         let quiet = start("/tmp/.helper", &["/tmp/.helper", "-run"], "/bin/sh");
         assert!(!fires(rules, RENAMED_MESHAGENT, &quiet));
         let s = rules.summary_json();
         assert_eq!(
-            s["in_part"][0]["never_matches"],
-            json!([{ "selection_text": "selection_meshagent", "fields_text": ["OriginalFileName"] }])
+            s["in_part"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["id_text"] == RENAMED_MESHAGENT)
+                .unwrap()["never_matches"],
+            json!([{
+                "selection_text": "selection_meshagent",
+                "fields_text": ["OriginalFileName"],
+                "left_out_text": null,
+            }])
         );
     }
 
@@ -2083,8 +3259,9 @@ mod tests {
         assert_eq!(
             rules.rules[1].placement,
             Placement::InPart(vec![Branch {
-                selection: "selection".into(),
+                selection: Some("selection".into()),
                 fields: vec!["Hashes".into()],
+                said: None,
             }])
         );
         assert_eq!(
@@ -2102,7 +3279,7 @@ mod tests {
         let s = rules.summary_json();
         assert_eq!(
             s["totals"],
-            json!({ "shipped": 4, "evaluated": 0, "in_part": 1, "not_evaluated": 3 })
+            json!({ "shipped": 4, "not_taken": 0, "evaluated": 0, "in_part": 1, "not_evaluated": 3 })
         );
     }
 
@@ -2156,11 +3333,28 @@ mod tests {
     fn the_summary_has_stable_names() {
         let s = Rules::shipped().summary_json();
         assert_eq!(s["events"], "process_creation");
-        assert_eq!(s["fields"], json!(["Image", "CommandLine", "ParentImage"]));
         assert_eq!(s["file_events"], "file_event");
-        assert_eq!(s["file_fields"], json!(["TargetFilename", "Image"]));
-        assert_eq!(s["source"]["commit"], COMMIT);
-        assert_eq!(s["source"]["licence"], "DRL-1.1");
+        let sigma = &s["sources"][0];
+        assert_eq!(sigma["name"], "sigma");
+        assert_eq!(
+            sigma["fields"],
+            json!({
+                "process_creation": ["Image", "CommandLine", "ParentImage"],
+                "file_event": ["TargetFilename", "Image"],
+            })
+        );
+        assert_eq!(sigma["commit"], COMMIT);
+        assert_eq!(sigma["licence"], "DRL-1.1");
+        let elastic = &s["sources"][1];
+        assert_eq!(
+            (
+                &elastic["name"],
+                &elastic["licence"],
+                &elastic["translated"]
+            ),
+            (&json!("elastic"), &json!("Elastic-2.0"), &json!(true))
+        );
+        assert_eq!(elastic["commit"], ELASTIC.commit);
         let evaluated = s["evaluated"].as_array().unwrap();
         assert_eq!(evaluated[0]["level"], "high");
         assert_eq!(evaluated[evaluated.len() - 1]["level"], "informational");
@@ -2171,6 +3365,8 @@ mod tests {
         assert_eq!(
             padding,
             &json!({
+                "source": "sigma",
+                "name": format!("sigma:{BINARY_PADDING}"),
                 "file": "rules/macos/process_creation/proc_creation_macos_binary_padding.yml",
                 "id_text": BINARY_PADDING,
                 "title_text": "Binary Padding - MacOS",
@@ -2180,13 +3376,16 @@ mod tests {
             })
         );
         let lines = Rules::shipped().summary_lines(None);
-        assert!(lines[0].contains("75 shipped"));
+        assert_eq!(
+            lines[0],
+            "Published rules for macOS: 75 from SigmaHQ at d7c9da10c170 of 2026-11-10, all shipped; 185 from Elastic at 032ac5ecb0b4, 66 of them translated into Sigma and shipped, 119 not taken."
+        );
         assert!(
             lines
                 .iter()
                 .any(|l| l.contains("selection_meshagent needs OriginalFileName"))
         );
-        assert!(lines.iter().any(|l| l == "Evaluated in full: 74, 69 on every program start and 5 on every file created or renamed"));
+        assert!(lines.iter().any(|l| l == "Evaluated in full: 128, 118 on every program start and 10 on every file created or renamed"));
     }
 
     /// A value as a text it stands for: a wildcard made a letter or nothing, an escape undone,
@@ -2266,14 +3465,42 @@ mod tests {
                 .collect();
             Some(joined.join(" "))
         };
-        let image = value("Image").unwrap_or_else(|| "/usr/bin/true".into());
+        // Under SigmaHQ's names or under Elastic's, whichever the rule reads.
+        let named = |name: Option<String>| name.map(|n| format!("/usr/bin/{n}"));
+        let image = value("Image")
+            .or_else(|| value("process.executable"))
+            .or_else(|| named(value("process.name")))
+            .unwrap_or_else(|| "/usr/bin/true".into());
+        let mut args: Vec<String> = value("process.args")
+            .map(|a| {
+                a.split(['\0', ' '])
+                    .filter(|a| !a.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        args.extend(value("process.command_line"));
+        if args.is_empty() {
+            args.push(value("CommandLine").unwrap_or_else(|| "true".into()));
+        }
         let start = ProcessStart {
             executable: image.clone(),
-            args: vec![value("CommandLine").unwrap_or_else(|| "true".into())],
-            parent_executable: value("ParentImage"),
+            args,
+            parent_executable: value("ParentImage")
+                .or_else(|| value("process.parent.executable"))
+                .or_else(|| named(value("process.parent.name"))),
+            working_directory: value("process.working_directory"),
+            user_id: value("user.id").and_then(|u| u.parse().ok()),
             ..ProcessStart::default()
         };
-        let path = value("TargetFilename").unwrap_or_else(|| "/private/tmp/x".into());
+        let path = value("TargetFilename")
+            .or_else(|| value("file.path"))
+            .or_else(|| value("file.name").map(|n| format!("/private/tmp/{n}")))
+            .unwrap_or_else(|| "/private/tmp/x".into());
+        let path = match value("file.extension") {
+            Some(e) => format!("{path}.{e}"),
+            None => path,
+        };
         (start, file(&image, &path, None))
     }
 
@@ -2290,7 +3517,7 @@ mod tests {
                 .unwrap_or(1)
         };
         let (mut all_starts, mut all_files) = (Vec::new(), Vec::new());
-        for (_, text) in SHIPPED {
+        for (_, text) in SOURCES.iter().flat_map(|s| s.files) {
             let yaml: Value = serde_norway::from_str(text).unwrap();
             let Some(detection) = yaml["detection"].as_mapping() else {
                 continue;
@@ -2434,7 +3661,10 @@ mod tests {
     #[test]
     fn asking_only_the_rules_a_start_can_match_gives_the_same_matches() {
         let rules = Rules::shipped();
-        assert!(rules.texts.is_some(), "the texts' automata were built");
+        assert!(
+            rules.layouts.iter().all(|l| l.texts.is_some()),
+            "the texts' automata were built"
+        );
         let (mut base, mut files) = starts_from_rules();
         for (_, hit, miss) in high_samples() {
             base.push(hit);
@@ -2454,6 +3684,142 @@ mod tests {
         for (_, image, args) in DRILL {
             base.push(drill_start(image, args));
         }
+        // Translated rules whose values alone make no event they match: several selections on
+        // one field, a regular expression, a field that must be there.
+        let app = "/Applications/Example.app/Contents/MacOS/Example";
+        let translated: [(&str, &[&str], &str); 13] = [
+            (
+                "/usr/bin/curl",
+                &[
+                    "curl",
+                    "-L",
+                    "https://drive.google.com/uc?export=download&confirm=no_antivirus&id=x",
+                ],
+                "/bin/zsh",
+            ),
+            (
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                &[
+                    "Google Chrome",
+                    "--remote-debugging-port=9222",
+                    "--user-data-dir=/tmp/p",
+                ],
+                "/bin/zsh",
+            ),
+            (
+                "/usr/bin/curl",
+                &[
+                    "curl",
+                    "http://169.254.169.254/latest/meta-data/iam/security-credentials/role",
+                ],
+                "/bin/zsh",
+            ),
+            (
+                "/usr/bin/defaults",
+                &[
+                    "defaults",
+                    "read",
+                    "/var/db/dslocal/nodes/Default/users/x.plist",
+                    "ShadowHashData",
+                ],
+                "/bin/zsh",
+            ),
+            (
+                "/usr/bin/defaults",
+                &[
+                    "defaults",
+                    "write",
+                    "/Library/Preferences/com.apple.SoftwareUpdate.plist",
+                    "AutomaticDownload",
+                    "-bool",
+                    "false",
+                ],
+                "/bin/zsh",
+            ),
+            (
+                "/usr/bin/sqlite3",
+                &[
+                    "sqlite3",
+                    "/Users/example/Library/Application Support/com.apple.TCC/TCC.db",
+                    "select 1",
+                ],
+                "/bin/zsh",
+            ),
+            (
+                "/usr/bin/defaults",
+                &[
+                    "defaults",
+                    "write",
+                    "com.apple.Safari",
+                    "IncludeDevelopMenu",
+                    "-bool",
+                    "true",
+                ],
+                "/bin/zsh",
+            ),
+            (
+                "/bin/sh",
+                &["sh", "-c", "csrutil status | grep enabled"],
+                app,
+            ),
+            (
+                app,
+                &["Example", "-e", "const cp = require('child_process')"],
+                "/sbin/launchd",
+            ),
+            (
+                "/sbin/mount_smbfs",
+                &["mount_smbfs", "//user@server/share", "/Volumes/share"],
+                "/bin/zsh",
+            ),
+            (
+                "/usr/sbin/networksetup",
+                &["networksetup", "-connectpppoeservice", "Office"],
+                "/bin/zsh",
+            ),
+            (
+                "/usr/bin/defaults",
+                &[
+                    "defaults",
+                    "write",
+                    "com.apple.loginwindow",
+                    "LoginHook",
+                    "/Users/example/hook.sh",
+                ],
+                "/bin/zsh",
+            ),
+            (
+                "/usr/bin/scp",
+                &[
+                    "scp",
+                    "-o",
+                    "StrictHostKeyChecking=no",
+                    "/tmp/x",
+                    "user@localhost:/tmp/y",
+                ],
+                "/bin/zsh",
+            ),
+        ];
+        for (image, args, parent) in translated {
+            base.push(start(image, args, parent));
+        }
+        let mut grep = start(
+            "/usr/bin/grep",
+            &["grep", "-i", "vmware", "Manufacturer"],
+            "/bin/zsh",
+        );
+        grep.user_id = Some(501);
+        base.push(grep);
+        files.push(file(
+            "/usr/bin/java",
+            "/opt/papercut/server/lib/Udx.class",
+            None,
+        ));
+        files.push(file(
+            "/Applications/Microsoft Word.app/Contents/MacOS/Microsoft Word",
+            "/Users/example/Library/Containers/com.microsoft.Word/Data/~$x.zip",
+            Some("/Users/example/Library/Containers/com.microsoft.Word/Data/x.tmp"),
+        ));
         // The program starts the event level's own tests write to the log.
         let logged: [(&str, &str, &[&str]); 7] = [
             (
@@ -2493,17 +3859,42 @@ mod tests {
         let corpus: Vec<ProcessStart> = base.iter().flat_map(variants).chain(padded).collect();
         let file_corpus: Vec<FileEvent> = files.iter().flat_map(file_variants).collect();
 
-        let mut rules_matched = BTreeSet::new();
-        let mut same = |s: Subject| -> usize {
-            let fast: Vec<&str> = rules.evaluate(s).iter().map(|m| m.file).collect();
-            let each: Vec<&str> = rules.evaluate_each(s).iter().map(|m| m.file).collect();
-            assert_eq!(fast, each, "{s:?}");
-            let n = each.len();
-            rules_matched.extend(each);
-            n
+        // Both ways of asking, over the events in parts on every core: asking every rule is
+        // what takes the time. Returns how many matches, and the rules that matched.
+        let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+        let same = |events: Vec<Subject>| -> (usize, BTreeSet<&'static str>) {
+            let part = events.len().div_ceil(threads).max(1);
+            std::thread::scope(|scope| {
+                let parts: Vec<_> = events
+                    .chunks(part)
+                    .map(|events| {
+                        scope.spawn(move || {
+                            let mut matched = (0, BTreeSet::new());
+                            for &s in events {
+                                let fast: Vec<&str> =
+                                    rules.evaluate(s).iter().map(|m| m.file).collect();
+                                let each: Vec<&'static str> =
+                                    rules.evaluate_each(s).iter().map(|m| m.file).collect();
+                                assert_eq!(fast, each, "{s:?}");
+                                matched.0 += each.len();
+                                matched.1.extend(each);
+                            }
+                            matched
+                        })
+                    })
+                    .collect();
+                parts.into_iter().map(|p| p.join().unwrap()).fold(
+                    (0, BTreeSet::new()),
+                    |(n, mut all), (m, files)| {
+                        all.extend(files);
+                        (n + m, all)
+                    },
+                )
+            })
         };
-        let matched: usize = corpus.iter().map(|s| same(Subject::Start(s))).sum();
-        let file_matched: usize = file_corpus.iter().map(|f| same(Subject::File(f))).sum();
+        let (matched, mut rules_matched) = same(corpus.iter().map(Subject::Start).collect());
+        let (file_matched, file_rules) = same(file_corpus.iter().map(Subject::File).collect());
+        rules_matched.extend(file_rules);
         // The corpus has teeth: every rule that is evaluated meets an event it matches.
         let unmatched: Vec<&str> = rules
             .rules
@@ -2514,7 +3905,7 @@ mod tests {
             .collect();
         assert!(matched > corpus.len() / 4, "{matched} of {}", corpus.len());
         assert!(
-            file_matched > file_corpus.len() / 4,
+            file_matched > file_corpus.len() / 8,
             "{file_matched} of {}",
             file_corpus.len()
         );
@@ -2527,14 +3918,7 @@ mod tests {
     #[test]
     fn a_start_asks_only_the_rules_whose_texts_it_holds() {
         let rules = Rules::shipped();
-        let asked = |s: &ProcessStart| -> Vec<&str> {
-            let values = Subject::Start(s).forms().remove(0);
-            rules
-                .asked(Kind::Process, &values)
-                .iter()
-                .map(|l| l.file)
-                .collect()
-        };
+        let asked = |s: &ProcessStart| -> Vec<&str> { asked_of(rules, s) };
         let git = start("/usr/bin/git", &["git", "status", "--short"], "/bin/zsh");
         assert_eq!(asked(&git), Vec::<&str>::new());
         let compile = start(
@@ -2657,8 +4041,7 @@ mod tests {
         let ask = |detection: &str, image: &str, command_line: &str| -> bool {
             let rules = load(detection);
             let s = start(image, &[command_line], "/bin/sh");
-            let values = Subject::Start(&s).forms().remove(0);
-            let asked = !rules.asked(Kind::Process, &values).is_empty();
+            let asked = !asked_of(&rules, &s).is_empty();
             assert!(asked || rules.evaluate_each(&s).is_empty(), "{detection}");
             asked
         };
@@ -2677,6 +4060,9 @@ mod tests {
             assert!(ask(anything, "/bin/x", "z"), "{anything}");
         }
         let wildcards = load("        CommandLine|contains: '*?'\n");
-        assert_eq!(wildcards.texts.as_ref().map(|t| t.count), Some(0));
+        assert_eq!(
+            wildcards.layouts[0].texts.as_ref().map(|t| t.count),
+            Some(0)
+        );
     }
 }

@@ -1,0 +1,21 @@
+title: "Pbpaste Execution via Unusual Parent Process"
+id: "d7182e12-df8f-4ecf-b8f8-7cc0adcec425"
+status: "test"
+description: "Detects when an unusual parent process like Node.js, Python, or osascript executes the pbpaste binary to \naccess clipboard data. This technique has been used by malware like OtterCookie to steal passwords and \nseed phrases from the clipboard."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/macos/collection_pbpaste_execution_via_unusual_parent.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2026-01-30"
+modified: "2026-09-18"
+tags: ["attack.t1115"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["pbpaste"]}
+  s2: {"process.args_count": 1}
+  s3: {"process.parent.name|cased": ["node", "osascript"]}
+  s4: {"process.parent.name|cased": ["python*"]}
+  s5: {"process.parent.executable|cased": ["/Users/*/.pyenv/versions/*/bin/python3*"]}
+  s6: {"process.parent.executable|exists": true}
+  condition: "(s1 and s2 and (s3 or s4) and (s6 and not s5))"
+level: "high"
+elastic: {"rule_id": "d7182e12-df8f-4ecf-b8f8-7cc0adcec425", "severity": "high", "risk_score": 73, "query_sha256": "361e2e110d93d17a2f9003d55856ce443d9f92da68aed42ebd3f31f00f6497ac", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": ["process.parent.executable"], "folded_fields": []}
