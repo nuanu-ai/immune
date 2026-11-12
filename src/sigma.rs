@@ -306,6 +306,8 @@ pub struct Loaded {
     pub meta: Option<Meta>,
     pub placement: Placement,
     rule: Option<sigma_rust::Rule>,
+    /// What a start must hold for the rule to be able to match it.
+    need: Need,
 }
 
 /// A rule an event matched.
@@ -336,6 +338,9 @@ pub const FINDING_PREFIX: &str = "sigma:";
 
 pub struct Rules {
     pub rules: Vec<Loaded>,
+    /// Which texts the rules need in each field, searched for once per start; `None` asks
+    /// every rule.
+    texts: Option<Texts>,
 }
 
 static SHIPPED_RULES: std::sync::OnceLock<Rules> = std::sync::OnceLock::new();
@@ -355,18 +360,60 @@ impl Rules {
     }
 
     pub fn load(files: &[(&'static str, &'static str)]) -> Rules {
+        let mut texts = BTreeMap::new();
+        let rules = files
+            .iter()
+            .map(|(file, text)| load(file, text, &mut texts))
+            .collect();
         Rules {
-            rules: files.iter().map(|(file, text)| load(file, text)).collect(),
+            rules,
+            texts: Texts::new(texts),
         }
     }
 
     /// The rules this program start matches, in the order they are shipped. Only rules that
-    /// are evaluated, wholly or in part, are asked.
+    /// are evaluated, wholly or in part, are asked, and of them only those whose `Need` the
+    /// start holds: a rule whose need it does not hold cannot match it, so the answer is the
+    /// one `evaluate_each` gives by asking every rule.
     pub fn evaluate(&self, start: &ProcessStart) -> Vec<Match<'_>> {
+        let values: Vec<Option<String>> = FIELDS.iter().map(|(_, take)| take(start)).collect();
+        let asked = self.asked(&values);
         let mut event = sigma_rust::Event::new();
-        for (name, take) in FIELDS {
+        for ((name, _), value) in FIELDS.iter().zip(values) {
             // A field the start does not give stays absent, and an absent field matches
             // nothing.
+            if let Some(value) = value {
+                event.insert(*name, value);
+            }
+        }
+        asked
+            .into_iter()
+            .filter_map(|l| match (&l.rule, &l.meta) {
+                (Some(rule), Some(meta)) if rule.is_match(&event) => {
+                    Some(Match { file: l.file, meta })
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The rules to ask about a start with these values of `FIELDS`: those evaluated, wholly
+    /// or in part, whose need the values hold.
+    fn asked(&self, values: &[Option<String>]) -> Vec<&Loaded> {
+        let held = self.texts.as_ref().map(|t| t.held(values));
+        self.rules
+            .iter()
+            .filter(|l| !matches!(l.placement, Placement::NotEvaluated(_)))
+            .filter(|l| held.as_ref().is_none_or(|h| l.need.holds(h)))
+            .collect()
+    }
+
+    /// The same answer as `evaluate`, by asking every rule: the reference the faster path is
+    /// held to.
+    #[cfg(test)]
+    pub fn evaluate_each(&self, start: &ProcessStart) -> Vec<Match<'_>> {
+        let mut event = sigma_rust::Event::new();
+        for (name, take) in FIELDS {
             if let Some(value) = take(start) {
                 event.insert(name, value);
             }
@@ -566,12 +613,13 @@ fn texts(items: &[String]) -> Json {
 /// Reads one rule. The YAML is parsed once; the evaluator builds its rule from it, and the
 /// level, status and shape of the detection, which the evaluator keeps to itself, are read
 /// from it to place the rule.
-fn load(file: &'static str, text: &str) -> Loaded {
+fn load(file: &'static str, text: &str, texts: &mut Wanted) -> Loaded {
     let not_parsed = |said: String| Loaded {
         file,
         meta: None,
         placement: Placement::NotEvaluated(Reason::NotParsed(said)),
         rule: None,
+        need: Need::Any,
     };
     let yaml: Value = match serde_norway::from_str(text) {
         Ok(v) => v,
@@ -590,6 +638,427 @@ fn load(file: &'static str, text: &str) -> Loaded {
         meta: Some(meta),
         placement: place(&yaml),
         rule: Some(rule),
+        need: need(&yaml, texts),
+    }
+}
+
+// ---- What a start must hold for a rule to be able to match it. ----
+//
+// Most starts match no rule, and asking the evaluator is most of the time spent on a start:
+// it folds both sides of every comparison anew. So each rule is reduced, once, to a condition
+// a start must meet for the rule to be able to match it, made only of texts that must occur in
+// a field. One pass of a multi-pattern search over each field of a start then says which texts
+// it holds, and only a rule whose condition holds is asked. The answer is the evaluator's.
+//
+// The condition is derived from the rule as the evaluator reads it (`sigma-rust` 0.7.0): a
+// string value, whatever its modifier among `contains`, `startswith`, `endswith`, `cased` and
+// `all`, becomes a wildcard pattern whose literal runs must each occur, in that order, in the
+// value folded one character at a time with `char::to_lowercase`, or as it is under `cased`; a
+// field the start does not give matches nothing; a selection is all of its fields, a list of
+// maps one of them; `not` binds closer than `and`, and `and` than `or`; `1 of` a name pattern
+// is one of every selection the pattern could name, `all of` all of those it surely names, the
+// names that begin with what stands before its last `*`. Each text here is a run
+// of a value cut at `*`, `?` and `\`, folded the same way, so it lies within one such run and
+// must occur wherever the value matches. The first run must also begin the field when nothing
+// stands before it, neither a wildcard nor the `*` that `contains` and `endswith` put there,
+// and the last must end it when nothing stands after it. Whatever is not read here exactly,
+// another modifier, a value that is not a string, a keyword list, a condition with any other
+// word, and whatever stands under `not`, needs nothing, and such a rule is asked as before.
+
+/// Where in a field's value a text must be.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Place {
+    Within,
+    Start,
+    End,
+}
+
+/// The texts the rules need, each numbered: in which field, where, and the text folded.
+type Wanted = BTreeMap<(usize, Place, String), usize>;
+
+/// A condition a start must meet for a rule to be able to match it.
+#[derive(Clone, Debug, PartialEq)]
+enum Need {
+    /// Nothing can be said: the rule is asked.
+    Any,
+    /// The rule matches no start.
+    Never,
+    /// The field's value, folded, holds this text where it must, by its number in `Wanted`.
+    Holds(usize),
+    All(Vec<Need>),
+    OneOf(Vec<Need>),
+}
+
+impl Need {
+    fn holds(&self, held: &[bool]) -> bool {
+        match self {
+            Need::Any => true,
+            Need::Never => false,
+            Need::Holds(i) => held[*i],
+            Need::All(all) => all.iter().all(|n| n.holds(held)),
+            Need::OneOf(any) => any.iter().any(|n| n.holds(held)),
+        }
+    }
+}
+
+/// All of them, made as small as what they say allows.
+fn all(parts: Vec<Need>) -> Need {
+    let mut kept = Vec::new();
+    for p in parts {
+        match p {
+            Need::Never => return Need::Never,
+            Need::Any => {}
+            p => kept.push(p),
+        }
+    }
+    match kept.len() {
+        0 => Need::Any,
+        1 => kept.remove(0),
+        _ => Need::All(kept),
+    }
+}
+
+/// One of them, made as small as what they say allows.
+fn one_of(parts: Vec<Need>) -> Need {
+    let mut kept = Vec::new();
+    for p in parts {
+        match p {
+            Need::Any => return Need::Any,
+            Need::Never => {}
+            p => kept.push(p),
+        }
+    }
+    match kept.len() {
+        0 => Need::Never,
+        1 => kept.remove(0),
+        _ => Need::OneOf(kept),
+    }
+}
+
+/// A value folded as the evaluator folds what it compares: each character on its own.
+fn fold(s: &str) -> String {
+    if s.is_ascii() {
+        s.to_ascii_lowercase()
+    } else {
+        s.chars().flat_map(char::to_lowercase).collect()
+    }
+}
+
+/// The need of a rule, from its YAML. `texts` numbers each text a field must hold.
+fn need(yaml: &Value, texts: &mut Wanted) -> Need {
+    let Some(detection) = yaml["detection"].as_mapping() else {
+        return Need::Any;
+    };
+    let Some(condition) = yaml["detection"]["condition"].as_str() else {
+        return Need::Any;
+    };
+    let mut selections = BTreeMap::new();
+    for (name, value) in detection {
+        match name.as_str() {
+            Some("condition") => {}
+            Some(name) => {
+                selections.insert(name.to_string(), selection_need(value, texts));
+            }
+            None => return Need::Any,
+        }
+    }
+    Condition::parse(condition, &selections).unwrap_or(Need::Any)
+}
+
+fn selection_need(value: &Value, texts: &mut Wanted) -> Need {
+    let map_need = |m: &serde_norway::Mapping, texts: &mut Wanted| {
+        all(m
+            .iter()
+            .map(|(k, v)| match k.as_str() {
+                Some(k) => field_need(k, v, texts),
+                None => Need::Any,
+            })
+            .collect())
+    };
+    match value {
+        Value::Mapping(m) => map_need(m, texts),
+        Value::Sequence(items) if !items.is_empty() && items.iter().all(Value::is_mapping) => {
+            one_of(
+                items
+                    .iter()
+                    .filter_map(Value::as_mapping)
+                    .map(|m| map_need(m, texts))
+                    .collect(),
+            )
+        }
+        _ => Need::Any,
+    }
+}
+
+fn field_need(key: &str, value: &Value, texts: &mut Wanted) -> Need {
+    let mut parts = key.split('|');
+    let name = parts.next().unwrap_or_default();
+    let mut every = false;
+    // Whether the value's first run begins the field and its last ends it.
+    let (mut start, mut end) = (true, true);
+    for modifier in parts {
+        match modifier.to_lowercase().as_str() {
+            "contains" => (start, end) = (false, false),
+            "startswith" => end = false,
+            "endswith" => start = false,
+            "cased" => {}
+            "all" => every = true,
+            _ => return Need::Any,
+        }
+    }
+    let Some(field) = FIELDS.iter().position(|(n, _)| *n == name) else {
+        return Need::Never;
+    };
+    let values: Vec<&Value> = match value {
+        Value::Sequence(items) => items.iter().collect(),
+        v => vec![v],
+    };
+    let needs = values
+        .into_iter()
+        .map(|v| match v {
+            Value::String(s) => text_need(field, s, start, end, texts),
+            _ => Need::Any,
+        })
+        .collect();
+    if every { all(needs) } else { one_of(needs) }
+}
+
+/// What a value needs of a field: its longest run between wildcards and escapes within it,
+/// its first run at the start when `start`, its last at the end when `end`, each folded. A run
+/// that is empty needs nothing.
+fn text_need(field: usize, value: &str, start: bool, end: bool, texts: &mut Wanted) -> Need {
+    let runs: Vec<&str> = value.split(['*', '?', '\\']).collect();
+    let longest = runs.iter().max_by_key(|run| run.chars().count());
+    let mut wanted = |place: Place, run: Option<&&str>| match run {
+        Some(run) if !run.is_empty() => {
+            let next = texts.len();
+            Need::Holds(*texts.entry((field, place, fold(run))).or_insert(next))
+        }
+        _ => Need::Any,
+    };
+    all(vec![
+        wanted(Place::Within, longest),
+        if start {
+            wanted(Place::Start, runs.first())
+        } else {
+            Need::Any
+        },
+        if end {
+            wanted(Place::End, runs.last())
+        } else {
+            Need::Any
+        },
+    ])
+}
+
+/// A rule's condition read for what it needs, by the evaluator's grammar: a selection by its
+/// name, `1 of` or `all of` a name pattern or `them`, `not`, `and`, `or` and parentheses. Any
+/// other word, or a condition left unread, gives `None`, and the rule needs nothing.
+struct Condition<'a> {
+    words: Vec<&'a str>,
+    at: usize,
+    selections: &'a BTreeMap<String, Need>,
+}
+
+impl<'a> Condition<'a> {
+    fn parse(text: &'a str, selections: &'a BTreeMap<String, Need>) -> Option<Need> {
+        // The evaluator's lexer counts characters where it cuts bytes, so it reads a condition
+        // that is not ASCII otherwise than its words say.
+        if !text.is_ascii() {
+            return None;
+        }
+        let mut words = Vec::new();
+        let mut start = None;
+        for (i, c) in text.char_indices() {
+            let cut = c == '(' || c == ')' || c.is_ascii_whitespace();
+            match (cut, start) {
+                (true, Some(s)) => {
+                    words.push(&text[s..i]);
+                    start = None;
+                }
+                (false, None) => start = Some(i),
+                _ => {}
+            }
+            if c == '(' || c == ')' {
+                words.push(&text[i..i + 1]);
+            }
+        }
+        if let Some(s) = start {
+            words.push(&text[s..]);
+        }
+        let mut c = Condition {
+            words,
+            at: 0,
+            selections,
+        };
+        let need = c.or()?;
+        (c.at == c.words.len()).then_some(need)
+    }
+
+    fn peek(&self) -> Option<String> {
+        self.words.get(self.at).map(|w| w.to_ascii_lowercase())
+    }
+
+    fn next(&mut self) -> Option<&'a str> {
+        let w = self.words.get(self.at).copied();
+        self.at += 1;
+        w
+    }
+
+    fn or(&mut self) -> Option<Need> {
+        let mut parts = vec![self.and()?];
+        while self.peek().as_deref() == Some("or") {
+            self.at += 1;
+            parts.push(self.and()?);
+        }
+        Some(one_of(parts))
+    }
+
+    fn and(&mut self) -> Option<Need> {
+        let mut parts = vec![self.unary()?];
+        while self.peek().as_deref() == Some("and") {
+            self.at += 1;
+            parts.push(self.unary()?);
+        }
+        Some(all(parts))
+    }
+
+    /// What stands under `not` needs nothing: its being false is not a text a start holds.
+    fn unary(&mut self) -> Option<Need> {
+        if self.peek().as_deref() == Some("not") {
+            self.at += 1;
+            self.unary()?;
+            return Some(Need::Any);
+        }
+        self.primary()
+    }
+
+    fn primary(&mut self) -> Option<Need> {
+        let word = self.next()?;
+        match word.to_ascii_lowercase().as_str() {
+            "(" => {
+                let need = self.or()?;
+                (self.next()? == ")").then_some(need)
+            }
+            q @ ("1" | "all") => {
+                if !self.next()?.eq_ignore_ascii_case("of") {
+                    return None;
+                }
+                let target = self.next()?;
+                let them = target.eq_ignore_ascii_case("them");
+                let every = q == "all";
+                let named: Vec<Need> = if them {
+                    self.selections.values().cloned().collect()
+                } else if every {
+                    // `all of` is held to names it surely covers: those that begin with what
+                    // stands before its last `*`, read as it is written.
+                    let prefix = target.strip_suffix('*')?;
+                    self.selections
+                        .iter()
+                        .filter(|(n, _)| n.starts_with(prefix))
+                        .map(|(_, need)| need.clone())
+                        .collect()
+                } else {
+                    // `1 of` takes every name the pattern could cover.
+                    self.selections
+                        .iter()
+                        .filter(|(n, _)| glob(target, n))
+                        .map(|(_, need)| need.clone())
+                        .collect()
+                };
+                if named.is_empty() {
+                    return Some(Need::Any);
+                }
+                Some(if every { all(named) } else { one_of(named) })
+            }
+            _ => self.selections.get(word).cloned(),
+        }
+    }
+}
+
+/// Whether a name matches a pattern in which `*` stands for any run of characters.
+fn glob(pattern: &str, name: &str) -> bool {
+    match pattern.split_once('*') {
+        None => pattern == name,
+        Some((head, rest)) => {
+            let Some(tail) = name.strip_prefix(head) else {
+                return false;
+            };
+            (0..=tail.len())
+                .filter(|i| tail.is_char_boundary(*i))
+                .any(|i| glob(rest, &tail[i..]))
+        }
+    }
+}
+
+/// The texts the rules need, per field: one automaton that finds every text wanted within the
+/// field in one pass, and the texts wanted at its start or end, each with its number.
+struct Texts {
+    count: usize,
+    fields: Vec<FieldTexts>,
+}
+
+struct FieldTexts {
+    within: Option<(aho_corasick::AhoCorasick, Vec<usize>)>,
+    ends: Vec<(Place, String, usize)>,
+}
+
+impl Texts {
+    /// `None` when an automaton cannot be built, and then every rule is asked.
+    fn new(texts: Wanted) -> Option<Texts> {
+        let mut fields = Vec::new();
+        for field in 0..FIELDS.len() {
+            let mine = || texts.iter().filter(move |((f, _, _), _)| *f == field);
+            let (needles, ids): (Vec<&String>, Vec<usize>) = mine()
+                .filter(|((_, place, _), _)| *place == Place::Within)
+                .map(|((_, _, text), id)| (text, *id))
+                .unzip();
+            // A DFA: a few hundred short texts make a small one, and it reads a long command
+            // line several times faster than the default automaton.
+            let within = if needles.is_empty() {
+                None
+            } else {
+                let automaton = aho_corasick::AhoCorasick::builder()
+                    .kind(Some(aho_corasick::AhoCorasickKind::DFA))
+                    .build(&needles)
+                    .ok()?;
+                Some((automaton, ids))
+            };
+            let ends = mine()
+                .filter(|((_, place, _), _)| *place != Place::Within)
+                .map(|((_, place, text), id)| (*place, text.clone(), *id))
+                .collect();
+            fields.push(FieldTexts { within, ends });
+        }
+        Some(Texts {
+            count: texts.len(),
+            fields,
+        })
+    }
+
+    /// Which texts the values of a start hold where they must, by their numbers. Every
+    /// occurrence of every text within is reported, those inside another included, so a text
+    /// is missed only if it is not there.
+    fn held(&self, values: &[Option<String>]) -> Vec<bool> {
+        let mut held = vec![false; self.count];
+        for (value, field) in values.iter().zip(&self.fields) {
+            let Some(value) = value else {
+                continue;
+            };
+            let folded = fold(value);
+            if let Some((automaton, ids)) = &field.within {
+                for m in automaton.find_overlapping_iter(folded.as_str()) {
+                    held[ids[m.pattern().as_usize()]] = true;
+                }
+            }
+            for (place, text, id) in &field.ends {
+                held[*id] = match place {
+                    Place::Start => folded.starts_with(text.as_str()),
+                    _ => folded.ends_with(text.as_str()),
+                };
+            }
+        }
+        held
     }
 }
 
@@ -872,13 +1341,10 @@ mod tests {
         );
     }
 
-    /// Every rule that can raise a finding, high or critical and evaluated, has one start it
-    /// must fire on and one near miss it must stay silent on, written from what the rule
-    /// describes. A new such rule without samples fails here.
-    #[test]
-    fn every_high_rule_fires_on_its_sample_and_not_on_its_near_miss() {
-        let rules = Rules::shipped();
-        let samples: Vec<(&str, ProcessStart, ProcessStart)> = vec![
+    /// For each rule that can raise a finding, by its id, a start it must fire on and a near
+    /// miss it must stay silent on, written from what the rule describes.
+    fn high_samples() -> Vec<(&'static str, ProcessStart, ProcessStart)> {
+        vec![
             (
                 // Amos: curl posting the archive it collected, with its build headers.
                 "e710a880-1f18-4417-b6a0-b5afdf7e33da",
@@ -1100,7 +1566,16 @@ mod tests {
                     "/bin/bash",
                 ),
             ),
-        ];
+        ]
+    }
+
+    /// Every rule that can raise a finding, high or critical and evaluated, has one start it
+    /// must fire on and one near miss it must stay silent on, written from what the rule
+    /// describes. A new such rule without samples fails here.
+    #[test]
+    fn every_high_rule_fires_on_its_sample_and_not_on_its_near_miss() {
+        let rules = Rules::shipped();
+        let samples = high_samples();
         let high: BTreeSet<&str> = rules
             .rules
             .iter()
@@ -1432,5 +1907,420 @@ mod tests {
                 .any(|l| l.contains("selection_meshagent needs OriginalFileName"))
         );
         assert!(lines.iter().any(|l| l.contains("needs file_event events")));
+    }
+
+    /// A value as a text it stands for: a wildcard made a letter or nothing, an escape undone,
+    /// as the evaluator reads them.
+    fn literal(value: &str) -> String {
+        let mut out = String::new();
+        let mut escaped = false;
+        for c in value.chars() {
+            match (c, escaped) {
+                ('\\', false) => escaped = true,
+                ('*', false) => {}
+                ('?', false) => out.push('x'),
+                ('*' | '?' | '\\', true) => {
+                    out.push(c);
+                    escaped = false;
+                }
+                (c, true) => {
+                    out.push('\\');
+                    out.push(c);
+                    escaped = false;
+                }
+                (c, false) => out.push(c),
+            }
+        }
+        if escaped {
+            out.push('\\');
+        }
+        out
+    }
+
+    /// A start that gives each field the maps name its `k`-th value, or its last, placed as the
+    /// field's modifiers say: what it starts with first, what it holds, what it ends with.
+    fn start_from_maps(maps: &[&serde_norway::Mapping], k: usize) -> ProcessStart {
+        type Parts = (Option<String>, Vec<String>, Option<String>, Option<String>);
+        let mut fields: BTreeMap<&str, Parts> = BTreeMap::new();
+        for (key, value) in maps.iter().flat_map(|m| m.iter()) {
+            let Some(key) = key.as_str() else { continue };
+            let mut it = key.split('|');
+            let field = it.next().unwrap_or_default();
+            let modifiers: Vec<String> = it.map(str::to_lowercase).collect();
+            let has = |m: &str| modifiers.iter().any(|x| x == m);
+            let values: Vec<String> = match value {
+                Value::Sequence(items) => items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(literal)
+                    .collect(),
+                v => v.as_str().map(literal).into_iter().collect(),
+            };
+            let Some(last) = values.last() else { continue };
+            let chosen = if has("all") {
+                values.join(" ")
+            } else {
+                values.get(k).unwrap_or(last).clone()
+            };
+            let parts = fields.entry(field).or_default();
+            if has("startswith") {
+                parts.0 = Some(chosen);
+            } else if has("endswith") {
+                parts.2 = Some(chosen);
+            } else if has("contains") || has("re") {
+                parts.1.push(chosen);
+            } else {
+                parts.3 = Some(chosen);
+            }
+        }
+        let value = |field: &str| -> Option<String> {
+            let (head, middle, tail, whole) = fields.get(field)?;
+            if let Some(whole) = whole {
+                return Some(whole.clone());
+            }
+            let middle = (!middle.is_empty()).then(|| middle.join(" "));
+            let joined: Vec<String> = [head.clone(), middle, tail.clone()]
+                .into_iter()
+                .flatten()
+                .collect();
+            Some(joined.join(" "))
+        };
+        ProcessStart {
+            executable: value("Image").unwrap_or_else(|| "/usr/bin/true".into()),
+            args: vec![value("CommandLine").unwrap_or_else(|| "true".into())],
+            parent_executable: value("ParentImage"),
+            ..ProcessStart::default()
+        }
+    }
+
+    /// Starts made from the shipped rules' own values: for each map of each selection, one
+    /// start per value; and for each rule, starts that meet every selection not named as a
+    /// filter at once, as most conditions ask. So every rule meets starts it matches or nearly
+    /// matches.
+    fn starts_from_rules() -> Vec<ProcessStart> {
+        let widest = |map: &serde_norway::Mapping| {
+            map.values()
+                .map(|v| v.as_sequence().map_or(1, Vec::len))
+                .max()
+                .unwrap_or(1)
+        };
+        let mut starts = Vec::new();
+        for (_, text) in SHIPPED {
+            let yaml: Value = serde_norway::from_str(text).unwrap();
+            let Some(detection) = yaml["detection"].as_mapping() else {
+                continue;
+            };
+            let mut together: Vec<Vec<&serde_norway::Mapping>> = Vec::new();
+            for (name, selection) in detection {
+                let Some(name) = name.as_str().filter(|n| *n != "condition") else {
+                    continue;
+                };
+                let maps: Vec<&serde_norway::Mapping> = match selection {
+                    Value::Mapping(m) => vec![m],
+                    Value::Sequence(items) => items.iter().filter_map(Value::as_mapping).collect(),
+                    _ => vec![],
+                };
+                for map in &maps {
+                    starts.extend((0..widest(map)).map(|k| start_from_maps(&[map], k)));
+                }
+                if !name.starts_with("filter") && !maps.is_empty() {
+                    together.push(maps);
+                }
+            }
+            let rounds = together.iter().flatten().map(|m| widest(m)).max();
+            for k in 0..rounds.unwrap_or(0) {
+                let maps: Vec<&serde_norway::Mapping> =
+                    together.iter().map(|maps| maps[k % maps.len()]).collect();
+                starts.push(start_from_maps(&maps, k));
+            }
+        }
+        starts
+    }
+
+    /// A start with each of its texts changed the same way.
+    fn changed(s: &ProcessStart, f: impl Fn(&str) -> String) -> ProcessStart {
+        ProcessStart {
+            executable: f(&s.executable),
+            args: s.args.iter().map(|a| f(a)).collect(),
+            parent_executable: s.parent_executable.as_deref().map(&f),
+            ..s.clone()
+        }
+    }
+
+    /// A start with one field, by its place in `FIELDS`, changed.
+    fn one_field(s: &ProcessStart, field: usize, f: impl Fn(&str) -> String) -> ProcessStart {
+        let mut s = s.clone();
+        match field {
+            0 => s.executable = f(&s.executable),
+            1 => s.args = vec![f(&s.args.join(" "))],
+            _ => s.parent_executable = s.parent_executable.as_deref().map(f),
+        }
+        s
+    }
+
+    /// The same start written so that folding case is put to the test: in capitals; with the
+    /// Kelvin sign, which folds to `k`; with `İ`, which folds to two characters; with the long
+    /// s, which folds to itself; with a final sigma; one character short; with no parent and no
+    /// arguments; with no texts at all. And with something before or after one field, so that
+    /// where a text must stand is put to the test.
+    fn variants(s: &ProcessStart) -> Vec<ProcessStart> {
+        let mut no_parent = s.clone();
+        no_parent.parent_executable = None;
+        let mut no_args = s.clone();
+        no_args.args.clear();
+        let around = (0..FIELDS.len()).flat_map(|field| {
+            [
+                one_field(s, field, |t| format!("z {t}")),
+                one_field(s, field, |t| format!("{t} z")),
+            ]
+        });
+        around
+            .chain([
+                s.clone(),
+                changed(s, str::to_uppercase),
+                changed(s, |t| t.replace(['k', 'K'], "\u{212A}")),
+                changed(s, |t| t.replace(['i', 'I'], "\u{130}")),
+                changed(s, |t| t.replace('s', "\u{17F}")),
+                changed(s, |t| format!("{t} ΟΔΟΣ")),
+                changed(s, |t| {
+                    let mut t = t.to_string();
+                    t.pop();
+                    t
+                }),
+                no_parent,
+                no_args,
+                changed(s, |_| String::new()),
+            ])
+            .collect()
+    }
+
+    /// The fast path is the evaluator's answer, not an estimate of it: for every shipped rule
+    /// and every start below, `evaluate`, which asks only the rules whose texts a start holds,
+    /// gives the same matches in the same order as `evaluate_each`, which asks them all. The
+    /// starts are made from each rule's own values, so that every rule meets starts it matches,
+    /// with their samples, the drills, and the same in every variant `variants` makes; a few
+    /// are padded to long lines.
+    #[test]
+    fn asking_only_the_rules_a_start_can_match_gives_the_same_matches() {
+        let rules = Rules::shipped();
+        assert!(rules.texts.is_some(), "the texts' automata were built");
+        let mut base = starts_from_rules();
+        for (_, hit, miss) in high_samples() {
+            base.push(hit);
+            base.push(miss);
+        }
+        for (_, image, args) in DRILL {
+            base.push(drill_start(image, args));
+        }
+        // The program starts the event level's own tests write to the log.
+        let logged: [(&str, &str, &[&str]); 7] = [
+            (
+                "/bin/sh",
+                "/bin/dd",
+                &["dd", "if=/dev/zero", "bs=1", "count=9"],
+            ),
+            ("/bin/zsh", "/bin/dd", &["dd", "if=a", "of=b"]),
+            (
+                "/bin/zsh",
+                "/usr/bin/sw_vers",
+                &["sw_vers", "-productVersion", "m"],
+            ),
+            ("/bin/zsh", "/usr/bin/base64", &["base64", "-d", "in.txt"]),
+            ("/bin/zsh", "/usr/bin/split", &["split", "big.bin"]),
+            ("/bin/zsh", "/usr/bin/git", &["git", "status", "--short"]),
+            ("/bin/zsh", "/usr/bin/curl", &["curl", "-u", "m"]),
+        ];
+        for (parent, image, args) in logged {
+            base.push(start(image, args, parent));
+        }
+        let long = "a".repeat(4096);
+        let padded: Vec<ProcessStart> = high_samples()
+            .into_iter()
+            .map(|(_, hit, _)| changed(&hit, |t| format!("{long} {t} {long}")))
+            .collect();
+        let mut seen = BTreeSet::new();
+        base.retain(|s| {
+            seen.insert((
+                s.executable.clone(),
+                s.args.clone(),
+                s.parent_executable.clone(),
+            ))
+        });
+        let corpus: Vec<ProcessStart> = base.iter().flat_map(variants).chain(padded).collect();
+
+        let mut matched = 0;
+        let mut rules_matched = BTreeSet::new();
+        for s in &corpus {
+            let fast: Vec<&str> = rules.evaluate(s).iter().map(|m| m.file).collect();
+            let each: Vec<&str> = rules.evaluate_each(s).iter().map(|m| m.file).collect();
+            assert_eq!(fast, each, "{s:?}");
+            matched += each.len();
+            rules_matched.extend(each);
+        }
+        // The corpus has teeth: every rule that is evaluated meets a start it matches.
+        let unmatched: Vec<&str> = rules
+            .rules
+            .iter()
+            .filter(|l| !matches!(l.placement, Placement::NotEvaluated(_)))
+            .map(|l| l.file)
+            .filter(|f| !rules_matched.contains(f))
+            .collect();
+        assert!(matched > corpus.len() / 4, "{matched} of {}", corpus.len());
+        assert_eq!(unmatched, Vec::<&str>::new());
+    }
+
+    /// Asking only the rules whose texts a start holds is what lets the watcher keep up with a
+    /// Mac that builds, where most starts match nothing: an ordinary start asks no rule, and
+    /// the drill asks its own and few others.
+    #[test]
+    fn a_start_asks_only_the_rules_whose_texts_it_holds() {
+        let rules = Rules::shipped();
+        let asked = |s: &ProcessStart| -> Vec<&str> {
+            let values: Vec<Option<String>> = FIELDS.iter().map(|(_, take)| take(s)).collect();
+            rules.asked(&values).iter().map(|l| l.file).collect()
+        };
+        let git = start("/usr/bin/git", &["git", "status", "--short"], "/bin/zsh");
+        assert_eq!(asked(&git), Vec::<&str>::new());
+        let compile = start(
+            "/usr/bin/clang",
+            &["clang", "-O2", "-c", "src/file1.c", "-o", "obj/file1.o"],
+            "/bin/zsh",
+        );
+        assert_eq!(asked(&compile), Vec::<&str>::new());
+        let (_, image, args) = DRILL[0];
+        let dd = asked(&drill_start(image, args));
+        assert!(dd.contains(&by_id(rules, BINARY_PADDING).file), "{dd:?}");
+        assert!(dd.len() <= 3, "{dd:?}");
+    }
+
+    /// Case is folded one character at a time, as the evaluator folds it, not as a word is
+    /// lower-cased: a capital sigma at the end of a word is a small sigma, not a final one.
+    #[test]
+    fn case_is_folded_one_character_at_a_time() {
+        let rules = Rules::load(&[(
+            "invented/sigma.yml",
+            invented(
+                "    selection:\n        CommandLine|contains: 'οσ'\n    condition: selection\n",
+            ),
+        )]);
+        let s = start("/bin/echo", &["echo", "ΟΣ"], "/bin/zsh");
+        assert_eq!(rules.evaluate(&s).len(), 1);
+        assert_eq!(rules.evaluate_each(&s).len(), 1);
+    }
+
+    /// A condition is read for what it needs only where it is read exactly as the evaluator
+    /// reads it; anything else, and whatever stands under `not`, needs nothing, so that the
+    /// rule is always asked.
+    #[test]
+    fn a_condition_not_read_exactly_needs_nothing() {
+        // `a` needs its text within the image, numbered 0, and at its end, 1; `b` its text
+        // within the command line, 2; `c` names a field a start does not give, so it never
+        // matches.
+        let rules = |condition: &str| {
+            Rules::load(&[(
+                "invented/condition.yml",
+                invented(&format!(
+                    "    selection_a:\n        Image|endswith: '/aaa'\n    \
+                     selection_b:\n        CommandLine|contains: 'bbb'\n    \
+                     selection_c:\n        OriginalFileName: 'ccc'\n    \
+                     condition: {condition}\n"
+                )),
+            )])
+        };
+        let need = |condition: &str| rules(condition).rules[0].need.clone();
+        let a = Need::All(vec![Need::Holds(0), Need::Holds(1)]);
+        let b = Need::Holds(2);
+        for (condition, needs) in [
+            ("selection_a", a.clone()),
+            (
+                "selection_a AND selection_b",
+                Need::All(vec![a.clone(), b.clone()]),
+            ),
+            (
+                "selection_a and selection_b",
+                Need::All(vec![a.clone(), b.clone()]),
+            ),
+            ("selection_a or selection_c", a.clone()),
+            ("selection_c", Need::Never),
+            ("selection_a and selection_c", Need::Never),
+            ("selection_a and not selection_b", a.clone()),
+            ("1 of selection_*", Need::OneOf(vec![a.clone(), b.clone()])),
+            ("1 of selection_a*", a.clone()),
+            ("1 of *_a", a.clone()),
+            ("all of selection_a*", a.clone()),
+            ("ALL of them", Need::Never),
+            ("1 OF them", Need::OneOf(vec![a.clone(), b.clone()])),
+        ] {
+            assert_eq!(need(condition), needs, "{condition}");
+        }
+        for condition in [
+            "not selection_a",
+            "selection_a or not selection_b",
+            "selection_a and selection_b)",
+            "1 of selection_?",
+            "all of sel*_a*",
+        ] {
+            assert_eq!(need(condition), Need::Any, "{condition}");
+        }
+        // `and` binds closer than `or`, on either side.
+        for condition in [
+            "selection_a or selection_b and selection_a",
+            "selection_a and selection_b or selection_b",
+        ] {
+            assert!(matches!(need(condition), Need::OneOf(_)), "{condition}");
+        }
+        // A selection may be called `1`, and then `1` without `of` is that selection.
+        let named_one = Rules::load(&[(
+            "invented/one.yml",
+            invented(
+                "    '1':\n        Image|endswith: '/one'\n    \
+                 selection_a:\n        Image|endswith: '/aaa'\n    \
+                 condition: 1 or selection_a\n",
+            ),
+        )]);
+        let one = start("/bin/one", &["one"], "/bin/sh");
+        assert_eq!(named_one.evaluate_each(&one).len(), 1);
+        assert_eq!(named_one.rules[0].need, Need::Any);
+    }
+
+    /// A rule is asked only when its texts stand where they must: a value's first run at the
+    /// start of the field unless something may stand before it, its last run at the end unless
+    /// something may stand after it, its longest run anywhere; under `all`, every value's. A
+    /// value of wildcards alone, or one that is not a string, wants no text, and its rule is
+    /// asked. Where a rule is not asked, the evaluator finds no match.
+    #[test]
+    fn a_rule_is_asked_when_its_texts_stand_where_they_must() {
+        let load = |detection: &str| {
+            Rules::load(&[(
+                "invented/values.yml",
+                invented(&format!(
+                    "    selection:\n{detection}    condition: selection\n"
+                )),
+            )])
+        };
+        let ask = |detection: &str, image: &str, command_line: &str| -> bool {
+            let rules = load(detection);
+            let s = start(image, &[command_line], "/bin/sh");
+            let values: Vec<Option<String>> = FIELDS.iter().map(|(_, take)| take(&s)).collect();
+            let asked = !rules.asked(&values).is_empty();
+            assert!(asked || rules.evaluate_each(&s).is_empty(), "{detection}");
+            asked
+        };
+        let begins = "        CommandLine|startswith: 'ab*cde'\n";
+        assert!(ask(begins, "/bin/x", "ab cde"));
+        assert!(ask(begins, "/bin/x", "ab cde z"));
+        assert!(!ask(begins, "/bin/x", "z ab cde"));
+        assert!(!ask(begins, "/bin/x", "ab cd"));
+        let ends = "        Image|endswith: '/xyz'\n";
+        assert!(ask(ends, "/bin/xyz", "x"));
+        assert!(!ask(ends, "/bin/xyz2", "x"));
+        let every = "        CommandLine|contains|all:\n            - 'xyz'\n            - 'uvw'\n";
+        assert!(ask(every, "/bin/x", "uvw xyz"));
+        assert!(!ask(every, "/bin/x", "xyz"));
+        for anything in ["        CommandLine|contains: '*'\n", "        Image: 1\n"] {
+            assert!(ask(anything, "/bin/x", "z"), "{anything}");
+        }
+        let wildcards = load("        CommandLine|contains: '*?'\n");
+        assert_eq!(wildcards.texts.as_ref().map(|t| t.count), Some(0));
     }
 }
