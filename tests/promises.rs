@@ -10464,6 +10464,37 @@ fn each_link_on_the_summary_shows_what_its_label_says_first_thing_on_arrival() {
             "{said}: {labels:?}"
         );
     }
+    // The tile of threat data leads to every source it counts, one section each, and a source
+    // never read says so and is never said to be compared.
+    let (href, said) = summary
+        .iter()
+        .find(|(_, t)| t.starts_with("Threat data: "))
+        .unwrap();
+    let total: usize = said
+        .split(" of ")
+        .nth(1)
+        .unwrap()
+        .split(' ')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let sources = &pages
+        .iter()
+        .find(|(p, _)| *p == folder.join(href))
+        .unwrap()
+        .1;
+    assert_eq!(sources.matches("<section id=").count(), total, "{sources}");
+    assert!(
+        sources.contains("<p class=\"quiet\">Never read in full, so which vulnerabilities attackers use is not known here.</p>")
+            && !sources.contains("<summary>The list:")
+            && sources
+                .matches("<p class=\"quiet\">Never read, so none of your ")
+                .count()
+                == total - 1
+            && !sources.contains("Compared at the last check"),
+        "{sources}"
+    );
     // A founder with no servers and no private network is told about his projects alone: no
     // tile and no group of the map speaks of servers or devices.
     let areas =

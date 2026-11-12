@@ -21,6 +21,10 @@ pub const THIS_MAC: &str = "this-mac";
 /// The heading of that page, which a link to it is named by.
 pub const THIS_MAC_TITLE: &str = "What is watched on this Mac";
 pub const BEYOND: &str = "beyond";
+/// Every source of threat data, with the list of vulnerabilities used in attacks.
+pub const THREAT_DATA: &str = "threats";
+/// The heading of that page, which the tile leading to it is named by.
+const THREAT_DATA_TITLE: &str = "Threat data";
 pub const TECHNICAL: &str = "technical";
 pub const VULNERABILITIES: &str = "vulnerabilities";
 
@@ -400,12 +404,10 @@ fn tiles(
         out,
         &Tile {
             id: "t-threats",
-            href: format!("{DETAILS}/threats.html#threats"),
-            label: format!(
-                "Exploited vulnerabilities and other threat data: {current} of {total} sources current"
-            ),
+            href: format!("{DETAILS}/{THREAT_DATA}.html"),
+            label: format!("{THREAT_DATA_TITLE}: {current} of {total} sources current"),
             icon: ICON_THREATS,
-            name: "Threat data",
+            name: THREAT_DATA_TITLE,
             look: 0,
             quiet: (current < total).then(|| format!("{} not current", total - current)),
             value: format!("{current} of {total}"),
@@ -1186,6 +1188,145 @@ fn projects(conn: &Connection, this: Option<&str>) -> rusqlite::Result<Vec<(Stri
         .collect())
 }
 
+/// Every source of threat data the summary's tile counts, from the same result the tile is
+/// built from: first the scale, the short list of vulnerabilities used in attacks beside every
+/// record of known vulnerabilities held; then the list, then each set of records, one section
+/// each, saying what it is, how much it holds, when it was read and whether that is current,
+/// and what it is compared with here. A source never read or not current says so, and nothing
+/// says it was compared.
+pub fn threat_data(
+    conn: &Connection,
+    r: &serde_json::Value,
+    now: i64,
+) -> Result<String, Box<dyn Error>> {
+    let mut out = top(THREAT_DATA_TITLE, &format!("This page made {}", utc(now)));
+    let fresh = r["vulnerabilities"]["feeds"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let held = |source: &str| -> serde_json::Value {
+        r["vulnerability_data"]["feeds"]
+            .as_array()
+            .and_then(|l| l.iter().find(|f| f["source"] == source).cloned())
+            .unwrap_or_default()
+    };
+    // The scale: only counts the program has, and none where a source was never read.
+    let read: Vec<(&str, i64)> = fresh
+        .iter()
+        .filter(|f| f["read_at"].is_string())
+        .filter_map(|f| {
+            let source = f["source"].as_str()?;
+            Some((
+                f["ecosystem"].as_str().unwrap_or(source),
+                held(source)["records"].as_i64().unwrap_or_default(),
+            ))
+        })
+        .collect();
+    // A count, big, and what it counts beside it.
+    let figure = |n: i64, one: &str, many: &str| {
+        format!(
+            "<p><span class=\"num\">{}</span> <span>{}</span></p>\n",
+            grouped(n),
+            esc(if n == 1 { one } else { many })
+        )
+    };
+    out.push_str("<div class=\"scale\">\n");
+    match r["threats"]["entries"].as_i64() {
+        Some(n) => out.push_str(&figure(
+            n,
+            "vulnerability known to be used in real attacks",
+            "vulnerabilities known to be used in real attacks",
+        )),
+        None => out.push_str("<p class=\"quiet\">The list of vulnerabilities used in real attacks has not been read.</p>\n"),
+    }
+    if read.is_empty() {
+        out.push_str("<p class=\"quiet\">No record of known vulnerabilities has been read.</p>\n");
+    } else {
+        let names: Vec<&str> = read.iter().map(|(e, _)| *e).collect();
+        let of = format!(
+            "of known vulnerabilities and malicious packages, for {} packages",
+            covered::listed(&names)
+        );
+        out.push_str(&figure(
+            read.iter().map(|(_, n)| n).sum(),
+            &format!("record {of}"),
+            &format!("records {of}"),
+        ));
+    }
+    out.push_str("</div>\n");
+    // The two side by side are explained only where both are counts.
+    if r["threats"]["entries"].is_i64() && !read.is_empty() {
+        out.push_str("<p class=\"muted\">The first is the short list of what attackers are known to use. The second is every record the program holds from OSV, the open database of published vulnerabilities, for the packages named; most of them are never used in an attack.</p>\n");
+    }
+
+    crate::view::catalogue(conn, &mut out, now)?;
+
+    let compared = crate::vulnerabilities::catalogue_compared(conn)?;
+    for f in &fresh {
+        let source = f["source"].as_str().unwrap_or_default();
+        let eco = f["ecosystem"].as_str().unwrap_or(source);
+        let h = held(source);
+        let asked = crate::osv::FEEDS
+            .iter()
+            .find(|feed| feed.source == source)
+            .map_or("", |feed| feed.asked);
+        writeln!(
+            out,
+            "<section id=\"{}\">\n<h2>Known vulnerabilities in {} packages</h2>\n<p>Records from OSV, the open database of published vulnerabilities, for {} packages, including packages known to be malicious. It is read {}.</p>",
+            anchor(source),
+            esc(eco),
+            esc(eco),
+            esc(asked)
+        )?;
+        let at = f["read_at"].as_str();
+        if let Some(at) = at {
+            writeln!(
+                out,
+                "<p class=\"facts\"><strong>{}</strong> {}, {} among them · last read {}{}</p>",
+                grouped(h["records"].as_i64().unwrap_or_default()),
+                if h["records"] == 1 {
+                    "record"
+                } else {
+                    "records"
+                },
+                counted(
+                    h["malicious_records"].as_i64().unwrap_or_default(),
+                    "malicious package",
+                    "malicious packages"
+                ),
+                esc(&iso_shown(at)),
+                if f["current"] == true {
+                    " · current"
+                } else {
+                    ""
+                }
+            )?;
+        }
+        let said = match (at, f["current"] == true) {
+            (None, _) => format!(
+                "<p class=\"quiet\">Never read, so none of your {} packages is compared with it.</p>",
+                esc(eco)
+            ),
+            (Some(_), false) => format!(
+                "<p class=\"quiet\">Not current: {}. Until it is read again, a {} package it says nothing about is not known to be clear.</p>",
+                esc(f["not_current_why"].as_str().unwrap_or("no reason given")),
+                esc(eco)
+            ),
+            (Some(_), true) if compared.contains(&eco) => format!(
+                "<p>Compared at the last check with the {} packages in your projects' lockfiles.</p>",
+                esc(eco)
+            ),
+            (Some(_), true) => format!(
+                "<p class=\"quiet\">No {} packages from your projects' lockfiles were compared with it at the last check.</p>",
+                esc(eco)
+            ),
+        };
+        writeln!(out, "{said}\n</section>")?;
+    }
+    out.push_str(FOOT);
+    Ok(out)
+}
+
 /// The top of a page of details for a person.
 fn top(title: &str, meta: &str) -> String {
     let mut out = view::head(title);
@@ -1738,6 +1879,9 @@ pub fn technical() -> String {
     // The page of servers is linked from the summary only where there are some.
     out.push_str(&format!(
         "<li><a href=\"{BEYOND}.html\">Beyond this Mac: servers, your other devices, other people's devices, and machines you set aside</a></li>\n"
+    ));
+    out.push_str(&format!(
+        "<li><a href=\"{THREAT_DATA}.html\">{THREAT_DATA_TITLE}: every source of known vulnerabilities, and the list of those used in attacks</a></li>\n"
     ));
     for (name, title) in view::DETAIL_PAGES {
         out.push_str(&format!(

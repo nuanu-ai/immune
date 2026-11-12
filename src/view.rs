@@ -59,6 +59,10 @@ pub fn pages(
             format!("{DETAILS}/{}.html", crate::pages::VULNERABILITIES),
             crate::pages::vulnerabilities(conn, now)?,
         ),
+        (
+            format!("{DETAILS}/{}.html", crate::pages::THREAT_DATA),
+            crate::pages::threat_data(conn, result, now)?,
+        ),
     ];
     for (name, title) in DETAIL_PAGES {
         let mut body = String::new();
@@ -66,7 +70,6 @@ pub fn pages(
             "coverage" => coverage(conn, &mut body, &latest, now)?,
             "machines" => machines(conn, &mut body, &latest, now)?,
             "watched" => watched(conn, &mut body, &latest, now)?,
-            "threats" => threats(conn, &mut body, now)?,
             "changes" => changes(conn, &mut body)?,
             "gone" => retracted(conn, &mut body)?,
             _ => vocabulary(conn, &mut body)?,
@@ -131,11 +134,10 @@ fn section_page(anchor: &str, title: &str) -> String {
 }
 
 /// The pages of details, by file name and title.
-pub const DETAIL_PAGES: [(&str, &str); 7] = [
+pub const DETAIL_PAGES: [(&str, &str); 6] = [
     ("coverage", "What was read and how completely"),
     ("machines", "Machines"),
     ("watched", "Watched places"),
-    ("threats", "Exploited vulnerabilities"),
     ("changes", "Changes"),
     ("gone", "No longer there"),
     ("vocabulary", "Vocabulary"),
@@ -1392,10 +1394,20 @@ fn watched(conn: &Connection, out: &mut String, latest: &[Latest], now: i64) -> 
     Ok(())
 }
 
-/// The threat list: the catalogue's latest reading, its threats newest first with those new
-/// in that reading marked, and those that left it. No threat is judged against the estate.
-fn threats(conn: &Connection, out: &mut String, now: i64) -> Out {
-    out.push_str("<section id=\"threats\">\n<h2>Exploited vulnerabilities</h2>\n");
+/// What the list of vulnerabilities used in attacks is, why it is short, and what the program
+/// does with it, in words a person without security training follows.
+pub const CATALOGUE_IS: &str = "A list kept by CISA, a US government agency, of vulnerabilities that attackers are known to have used in real attacks. It is short because most published vulnerabilities are never seen used in one. When a package your projects use has one of them, the program shows it as something that needs a look.";
+
+/// The list of vulnerabilities used in real attacks, as one source of threat data: what it is,
+/// how many it holds, when it was read and whether it is current, what it is compared with, and,
+/// closed, the list itself newest first with those new in the latest reading marked, and those
+/// that left it. No threat is judged against the estate.
+pub fn catalogue(conn: &Connection, out: &mut String, now: i64) -> Out {
+    writeln!(
+        out,
+        "<section id=\"threats\">\n<h2>Vulnerabilities used in real attacks</h2>\n<p>{}</p>",
+        esc(CATALOGUE_IS)
+    )?;
     // A store made before the threat list has no tables for it until a run opens it.
     let has_tables: bool = conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'feed_reading')",
@@ -1442,45 +1454,12 @@ fn threats(conn: &Connection, out: &mut String, now: i64) -> Out {
         reading("'read', 'unchanged', 'failed'")?,
         reading("'read', 'unchanged'")?,
     );
-    let Some((_, outcome, at, reason, _, _)) = latest else {
-        out.push_str("<p class=\"alert\">The catalogue of exploited vulnerabilities has never been read. Nothing is known about threats.</p>\n</section>\n");
+    let Some((_, outcome, _, reason, _, _)) = latest else {
+        out.push_str("<p class=\"quiet\">This list has never been read, so which vulnerabilities attackers use is not known here, and nothing is compared with it.</p>\n</section>\n");
         return Ok(());
     };
-    writeln!(
-        out,
-        "<p class=\"muted\">The CISA catalogue of known exploited vulnerabilities, read whole on every run. Latest reading {}: {}.</p>",
-        utc_age(at, now),
-        esc(&outcome)
-    )?;
-    if outcome == "failed" {
-        writeln!(
-            out,
-            "<p class=\"alert\">The latest reading of the catalogue failed: {}. What is new since {} is unknown.</p>",
-            esc(reason.as_deref().unwrap_or("no reason given")),
-            good.as_ref().map_or("then".to_string(), |g| utc(g.2))
-        )?;
-    }
     // Threats new in the latest reading that read the catalogue are marked.
-    let mut new_in = String::new();
-    if let Some((run_id, _, at, _, raw_path, sha256)) = &good {
-        new_in = run_id.clone();
-        write!(out, "<p class=\"muted\">Last read {}", utc_age(*at, now))?;
-        if let Some(path) = raw_path {
-            write!(out, ", raw copy <span class=\"mono\">{}</span>", esc(path))?;
-        }
-        if let Some(hash) = sha256 {
-            write!(out, ", SHA-256 <span class=\"mono\">{}</span>", esc(hash))?;
-        }
-        out.push_str(".</p>\n");
-    }
-    writeln!(
-        out,
-        "<p class=\"alert\">These are {}.</p>",
-        esc(&crate::vulnerabilities::catalogue_said(
-            &crate::vulnerabilities::catalogue_compared(conn)?
-        ))
-    )?;
-
+    let new_in = good.as_ref().map(|g| g.0.clone()).unwrap_or_default();
     type Threat = (
         String,
         String,
@@ -1514,6 +1493,36 @@ fn threats(conn: &Connection, out: &mut String, now: i64) -> Out {
         .collect::<rusqlite::Result<_>>()?;
     let (gone, present): (Vec<&Threat>, Vec<&Threat>) = list.iter().partition(|t| t.6.is_some());
     let new = present.iter().filter(|t| t.7).count();
+    // How many it holds, when it was read, and whether that is current.
+    match &good {
+        Some((_, _, at, ..)) => writeln!(
+            out,
+            "<p class=\"facts\"><strong>{}</strong> on the list · last read {}{}</p>",
+            counted(present.len() as i64, "", "").trim_end(),
+            utc_age(*at, now),
+            if outcome == "failed" {
+                ""
+            } else {
+                " · current"
+            }
+        )?,
+        None => out.push_str("<p class=\"quiet\">Never read in full, so which vulnerabilities attackers use is not known here.</p>\n"),
+    }
+    if outcome == "failed" {
+        writeln!(
+            out,
+            "<p class=\"quiet\">Not current. The latest reading of the catalogue failed: {}. What is new since {} is unknown.</p>",
+            esc(reason.as_deref().unwrap_or("no reason given")),
+            good.as_ref().map_or("then".to_string(), |g| utc(g.2))
+        )?;
+    }
+    writeln!(
+        out,
+        "<p>These are {}.</p>",
+        esc(&crate::vulnerabilities::catalogue_said(
+            &crate::vulnerabilities::catalogue_compared(conn)?
+        ))
+    )?;
     let table = |out: &mut String, rows: &[&Threat], last: &str| -> Out {
         out.push_str("<div class=\"scroll\"><table class=\"dense\">\n");
         thead(
@@ -1548,19 +1557,20 @@ fn threats(conn: &Connection, out: &mut String, now: i64) -> Out {
         out.push_str("</tbody></table></div>\n");
         Ok(())
     };
-    write!(
-        out,
-        "<details{}>\n<summary>{} in the catalogue, newest first; {} new when it was last read</summary>\n",
-        if new > 0 { " open" } else { "" },
-        plural(
-            present.len(),
-            "exploited vulnerability",
-            "exploited vulnerabilities"
-        ),
-        new
-    )?;
-    table(out, &present, "First seen here")?;
-    out.push_str("</details>\n");
+    if good.is_some() {
+        write!(
+            out,
+            "<details>\n<summary>The list: {}, newest first; {} new when it was last read</summary>\n",
+            plural(
+                present.len(),
+                "vulnerability used in attacks",
+                "vulnerabilities used in attacks"
+            ),
+            new
+        )?;
+        table(out, &present, "First seen here")?;
+        out.push_str("</details>\n");
+    }
     if !gone.is_empty() {
         write!(
             out,
@@ -1570,6 +1580,26 @@ fn threats(conn: &Connection, out: &mut String, now: i64) -> Out {
         )?;
         table(out, &gone, "Left the catalogue")?;
         out.push_str("</details>\n");
+    }
+    // The copy that was read, for a closer look.
+    if let Some((_, _, _, _, raw_path, sha256)) = &good {
+        let mut kept = Vec::new();
+        if let Some(path) = raw_path {
+            kept.push(format!(
+                "copy kept at <span class=\"mono\">{}</span>",
+                esc(path)
+            ));
+        }
+        if let Some(hash) = sha256 {
+            kept.push(format!("SHA-256 <span class=\"mono\">{}</span>", esc(hash)));
+        }
+        if !kept.is_empty() {
+            writeln!(
+                out,
+                "<p class=\"meta\">The reading: {}.</p>",
+                kept.join(", ")
+            )?;
+        }
     }
     out.push_str("</section>\n");
     Ok(())
@@ -1935,6 +1965,12 @@ ul.counts li { margin: 4px 0; }
 ul.rules { margin: 2px 0 12px; padding-left: 18px; font-size: .875rem; }
 ul.rules li { margin: 4px 0; }
 .badge.notify { border: 1px solid var(--line); font-weight: 500; }
+.quiet { color: var(--muted); }
+.facts { font-size: .95rem; }
+.scale { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap: 12px; margin: 20px 0 8px; }
+.scale p { margin: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--head);
+  display: flex; flex-direction: column; gap: 2px; }
+.scale .num { font-size: 1.8rem; font-weight: 700; line-height: 1.15; }
 
 /* The summary: a dashboard. Red is for findings only; what is not covered stays quiet. */
 :root {
