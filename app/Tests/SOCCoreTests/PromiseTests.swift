@@ -875,7 +875,10 @@ struct PanelPromises {
     let names =
       rows.map(\.symbol) + panel(quiet()).gaps.map(\.symbol)
       + ["eye", "chevron.down", "chevron.right", "ellipsis.circle", "bell.slash", "pause.circle"]
-      + ["person.badge.clock", "list.bullet", "text.bubble", "exclamationmark.circle.fill"]
+      + [
+        "person.badge.clock", "list.bullet", "text.bubble", "exclamationmark.circle.fill",
+        "checklist",
+      ]
       + [Light.nothingToReport, .attention(1), .cannotRead("x")].flatMap {
         [$0.symbol, $0.panelSymbol, Light.menuSymbol($0, worst: "critical")]
       }
@@ -2784,5 +2787,123 @@ struct RealSoc {
     }
     if !gone { kill(pid, SIGTERM) }
     #expect(gone)
+  }
+}
+
+// MARK: - The owner's work comes first
+
+/// A soc that records each run and whom it was for; nil when the caller did not say.
+final class WhomSoc: SocRunning, @unchecked Sendable {
+  private let lock = NSLock()
+  private var seen: [(String, RunFor?)] = []
+  let status: SocOutput
+  init(status: SocOutput) { self.status = status }
+
+  var runs: [(String, RunFor?)] { lock.withLock { seen } }
+
+  func run(_ arguments: [String], timeout: TimeInterval) async -> SocOutput {
+    answer(arguments, nil)
+  }
+
+  func run(_ arguments: [String], timeout: TimeInterval, for whom: RunFor) async -> SocOutput {
+    answer(arguments, whom)
+  }
+
+  private func answer(_ arguments: [String], _ whom: RunFor?) -> SocOutput {
+    lock.withLock { seen.append((arguments.first ?? "", whom)) }
+    switch arguments.first {
+    case "status": return status
+    case "view":
+      return SocOutput(exitCode: 0, stdout: Data("/nonexistent/example/index.html\n".utf8))
+    default: return SocOutput(exitCode: 0)
+    }
+  }
+}
+
+@Suite("The program yields to the owner's work")
+@MainActor
+struct OwnerFirst {
+  @Test(
+    "What the app starts on its own runs below the owner's own work; what he asked for by hand does not wait"
+  )
+  func whomEachRunIsFor() async {
+    let soc = WhomSoc(status: looking([lookItem(id: "f1")]))
+    let model = AppModel(soc: soc, launchedAt: Date().addingTimeInterval(-7200))
+    model.learnPageEarly = true
+    model.opener = { _ in true }
+    // The app's own: the status on its timer, the page written ahead, the hourly check.
+    await model.refresh()
+    await waitUntil("the page written ahead") { soc.runs.contains { $0.0 == "view" } }
+    #expect(await model.checkIfDue())
+    let own = soc.runs
+    #expect(own.map(\.0) == ["status", "view", "run", "status"])
+    #expect(own.allSatisfy { $0.1 == .app })
+    // The owner's: opening the panel, Check now, an answer, the first opening of Details.
+    await model.refresh(for: .owner)
+    await model.runNow()
+    await model.answerSeen("f1")
+    let first = AppModel(soc: soc)
+    first.opener = { _ in true }
+    await first.openPage()
+    let asked = Array(soc.runs.dropFirst(own.count))
+    #expect(asked.map(\.0) == ["status", "run", "status", "finding", "status", "view"])
+    #expect(asked.allSatisfy { $0.1 == .owner })
+    // The app's own runs below the owner's, and not in the background class, which the
+    // system may put off for long: a change must still be seen within seconds.
+    #expect(RunFor.app.quality == .utility)
+    #expect(RunFor.owner.quality == .userInitiated)
+    #expect(RunFor.app.quality.rawValue < RunFor.owner.quality.rawValue)
+    #expect(RunFor.app.quality.rawValue > QualityOfService.background.rawValue)
+    // The processes the app starts carry that class: soc for a run, and the watcher.
+    let runner = ProcessRunner(executable: URL(fileURLWithPath: "/usr/bin/true"))
+    #expect(runner.job(["status"], for: .app).quality == .utility)
+    #expect(runner.job(["run"], for: .owner).quality == .userInitiated)
+    let watcher = ProcessWatchChild(
+      executable: URL(fileURLWithPath: "/usr/bin/true"), arguments: ["watch"], cap: 1024,
+      environment: [:])
+    #expect(watcher.quality == .utility)
+  }
+}
+
+@Suite("The published rules: one quiet row, never an alarm, never false calm")
+struct PublishedRules {
+  func with(_ rules: Any?) -> Panel {
+    panel(quiet(removing: ["result", "rules"], setting: rules))
+  }
+
+  @Test(
+    "Rules are said to watch program starts only when soc says they do; otherwise the row counts what is shipped and says not yet"
+  )
+  func watchingOnlyWhenSaid() {
+    let notYet = with([
+      "shipped": 75, "evaluated": 0, "in_part": 0, "not_evaluated": 75, "watching": false,
+    ])
+    let row = notYet.gaps.last
+    #expect(row?.label == "Published rules, not watching yet")
+    #expect(row?.count == 75)
+    #expect(row?.section == "rules")
+    #expect(notYet.lines.contains("○ Published rules, not watching yet  75  › #rules"))
+    let watching = with([
+      "shipped": 75, "evaluated": 60, "in_part": 9, "not_evaluated": 6, "watching": true,
+    ])
+    #expect(watching.gaps.last?.label == "Rules watching program starts")
+    #expect(watching.gaps.last?.count == 69)
+    #expect(watching.gaps.last?.text == "69 of 75 published rules watch program starts")
+    // Missing, null or not a boolean is not watching.
+    for odd: Any in [NSNull(), "true", 1] {
+      let p = with(["shipped": 75, "evaluated": 60, "in_part": 9, "watching": odd])
+      #expect(p.gaps.last?.label == "Published rules, not watching yet")
+    }
+    let missing = with(["shipped": 75, "evaluated": 60, "in_part": 9])
+    #expect(missing.gaps.last?.label == "Published rules, not watching yet")
+    // A list, not an alarm: the count, the headline and the icon are what they were.
+    for p in [notYet, watching] {
+      #expect(p.total == 0)
+      #expect(p.light == .nothingToReport)
+      #expect(p.headline == "This Mac is watched. Nothing needs you.")
+      #expect(Light.menuSymbol(p.light, worst: p.worst, urgent: p.urgent) == "checkmark.shield")
+    }
+    // An older soc has no such part: no row.
+    #expect(!with(nil).gaps.contains { $0.section == "rules" })
   }
 }

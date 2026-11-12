@@ -138,7 +138,8 @@ final class Delegate: NSObject, NSApplicationDelegate {
       popover.performClose(nil)
       return
     }
-    Task { await model.refresh() }
+    // The owner opened the panel and is looking at it: this reading does not wait.
+    Task { await model.refresh(for: .owner) }
     popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
     NSApp.activate()
     log("panel shown: \(popover.isShown)")

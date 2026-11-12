@@ -77,7 +77,7 @@ public final class AppModel: ObservableObject {
       running: !canRun)
     guard due else { return false }
     lastAutoCheck = now
-    return await runNow()
+    return await runNow(for: .app)
   }
 
   public var light: Light { Light.of(reading) }
@@ -88,11 +88,14 @@ public final class AppModel: ObservableObject {
   public var canRun: Bool { !runInProgress && !socSaysRunning }
 
   /// Runs `soc status --json`. Not while another refresh is in flight, and not
-  /// while a run started here is in progress: the run refreshes when it ends.
-  public func refresh() async {
+  /// while a run started here is in progress: the run refreshes when it ends. By
+  /// default it is the app's own reading and yields to the owner's work; opening the
+  /// panel reads for the owner.
+  public func refresh(for whom: RunFor = .app) async {
     guard !runInProgress, !refreshing else { return }
     refreshing = true
-    let out = await soc.run(["status", "--json"] + extraArguments, timeout: Self.statusTimeout)
+    let out = await soc.run(
+      ["status", "--json"] + extraArguments, timeout: Self.statusTimeout, for: whom)
     reading = Interpret.reading(from: out)
     readAt = Date()
     if let announcer {
@@ -101,27 +104,29 @@ public final class AppModel: ObservableObject {
       if let s = reading.status { await announcer.saw(s) }
     }
     if learnPageEarly, pagePath == nil, reading.status?.store?.exists == true {
-      Task { _ = await writePage() }
+      Task { _ = await writePage(for: .app) }
     }
     refreshing = false
   }
 
   /// Runs `soc run --json`, then refreshes. Returns false, and starts nothing,
-  /// when a run is in progress, here or as soc last said.
+  /// when a run is in progress, here or as soc last said. Check now is the owner's;
+  /// the hourly check passes `.app`.
   @discardableResult
-  public func runNow() async -> Bool {
+  public func runNow(for whom: RunFor = .owner) async -> Bool {
     guard canRun else { return false }
     runInProgress = true
     runFailure = nil
     runNote = nil
-    let out = await soc.run(["run", "--json"] + extraArguments, timeout: Self.runTimeout)
+    let out = await soc.run(
+      ["run", "--json"] + extraArguments, timeout: Self.runTimeout, for: whom)
     if Self.otherRunInProgress(out) {
       runNote = "A check was already running; its result will show when it ends."
     } else if case .failed(let reason, let detail, _) = Interpret.reading(from: out) {
       runFailure = reason + (detail.map { " " + Inert.text($0) } ?? "")
     }
     runInProgress = false
-    await refresh()
+    await refresh(for: whom)
     return true
   }
 
@@ -136,13 +141,13 @@ public final class AppModel: ObservableObject {
   public func openPage(at id: String? = nil, section: String? = nil) async -> Bool {
     if let page = pagePath, FileManager.default.fileExists(atPath: page.path) {
       pageFailure = opener(target(page, section: section)) ? nil : "Details could not be opened."
-      Task { _ = await writePage() }
+      Task { _ = await writePage(for: .app) }
       return true
     }
     guard !pageOpening else { return false }
     pageOpening = true
     pageFailure = nil
-    let out = await writePage()
+    let out = await writePage(for: .owner)
     if out.exitCode != 0 {
       pageFailure = "Details could not be opened. " + Self.viewFailure(out)
     } else if let page = pagePath {
@@ -155,15 +160,16 @@ public final class AppModel: ObservableObject {
   }
 
   /// `soc view --no-open` on the same store: rewrites the page and learns where it
-  /// is. One at a time; a second caller waits for the one running.
-  func writePage() async -> SocOutput {
+  /// is. One at a time; a second caller waits for the one running. Written ahead or
+  /// behind an open click, it is the app's own; the first opening is the owner's.
+  func writePage(for whom: RunFor) async -> SocOutput {
     let task: Task<SocOutput, Never>
     if let running = pageTask {
       task = running
     } else {
       let soc = self.soc
       let args = ["view", "--no-open"] + extraArguments
-      task = Task { await soc.run(args, timeout: Self.viewTimeout) }
+      task = Task { await soc.run(args, timeout: Self.viewTimeout, for: whom) }
       pageTask = task
     }
     let out = await task.value
@@ -260,7 +266,7 @@ public final class AppModel: ObservableObject {
     guard answering == nil else { return false }
     answering = id
     refusals[id] = nil
-    let out = await soc.run(args + extraArguments, timeout: Self.answerTimeout)
+    let out = await soc.run(args + extraArguments, timeout: Self.answerTimeout, for: .owner)
     // Saved only when soc finished by itself with 0: a timed-out soc may still exit 0.
     if out.exitCode == 0, !out.timedOut {
       if form?.id == id { form = nil }
@@ -268,7 +274,7 @@ public final class AppModel: ObservableObject {
       refusals[id] = Answer.refusal(out)
     }
     answering = nil
-    await refresh()
+    await refresh(for: .owner)
     return true
   }
 

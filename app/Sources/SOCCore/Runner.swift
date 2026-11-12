@@ -29,6 +29,37 @@ public struct SocOutput: Sendable, Equatable {
 
 public protocol SocRunning: Sendable {
   func run(_ arguments: [String], timeout: TimeInterval) async -> SocOutput
+  /// The same, for whom it runs: the owner's own work comes first.
+  func run(_ arguments: [String], timeout: TimeInterval, for whom: RunFor) async -> SocOutput
+}
+
+extension SocRunning {
+  public func run(_ arguments: [String], timeout: TimeInterval, for whom: RunFor) async
+    -> SocOutput
+  {
+    await run(arguments, timeout: timeout)
+  }
+}
+
+/// Whom a run of `soc` is for, and so how it competes for the processor (Apple's
+/// quality-of-service classes). What the app starts on its own yields to the owner's
+/// work; what the owner asked for with a click does not wait.
+public enum RunFor: Sendable, Equatable {
+  /// A click: Check now, an answer, opening Details, opening the panel. The owner is
+  /// waiting for the result: user-initiated.
+  case owner
+  /// What the app starts by itself: the hourly check, the status every minute and after
+  /// each reading of the watcher, the page written ahead. Nobody waits on it, but its
+  /// result must not be put off for long: utility, not background, which the system may
+  /// defer for minutes and throttles hardest on battery.
+  case app
+
+  public var quality: QualityOfService {
+    switch self {
+    case .owner: .userInitiated
+    case .app: .utility
+    }
+  }
 }
 
 /// Where `soc` is, and which store it is pointed at. The binary inside the bundle
@@ -112,15 +143,26 @@ public struct ProcessRunner: SocRunning {
   }
 
   public func run(_ arguments: [String], timeout: TimeInterval) async -> SocOutput {
-    let job = Job(
-      executable: executable, arguments: arguments, limit: outputLimit,
-      environment: environment)
+    await run(arguments, timeout: timeout, for: .owner)
+  }
+
+  public func run(_ arguments: [String], timeout: TimeInterval, for whom: RunFor) async
+    -> SocOutput
+  {
+    let job = job(arguments, for: whom)
     return await withCheckedContinuation { job.start(timeout: timeout, then: $0) }
+  }
+
+  /// The child for one run, not yet started, at the class of whom it is for.
+  func job(_ arguments: [String], for whom: RunFor) -> Job {
+    Job(
+      executable: executable, arguments: arguments, limit: outputLimit,
+      environment: environment, quality: whom.quality)
   }
 }
 
 /// One child process. All state is behind the lock; the continuation is resumed once.
-private final class Job: @unchecked Sendable {
+final class Job: @unchecked Sendable {
   private let lock = NSLock()
   private let process = Process()
   private let outPipe = Pipe()
@@ -134,8 +176,12 @@ private final class Job: @unchecked Sendable {
   private var result = SocOutput()
   private var continuation: CheckedContinuation<SocOutput, Never>?
 
-  init(executable: URL, arguments: [String], limit: Int, environment: [String: String]) {
+  init(
+    executable: URL, arguments: [String], limit: Int, environment: [String: String],
+    quality: QualityOfService
+  ) {
     self.limit = limit
+    process.qualityOfService = quality
     process.executableURL = executable
     process.arguments = arguments
     process.environment = ProcessInfo.processInfo.environment.merging(environment) { $1 }
@@ -171,6 +217,9 @@ private final class Job: @unchecked Sendable {
     }
     DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [self] in timeUp() }
   }
+
+  /// The class the child is started with.
+  var quality: QualityOfService { process.qualityOfService }
 
   private func take(_ data: Data, out isOut: Bool) {
     var stop = false

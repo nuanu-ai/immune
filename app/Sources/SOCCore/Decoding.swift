@@ -51,6 +51,19 @@ public struct Status: Sendable, Equatable {
   /// something, each counted once however many projects it affects. Nil from a soc that
   /// does not count them.
   public var knownVulnerabilities: Int?
+  /// The published detection rules the program ships, and how many of them watch
+  /// program starts. Nil from a soc that has none.
+  public var rules: Rules?
+}
+
+/// `result.rules`: how many published rules are shipped, how many are evaluated whole,
+/// in part or not at all, and whether they watch program starts now.
+public struct Rules: Sendable, Equatable {
+  public var shipped: Int?
+  public var evaluated: Int?
+  public var inPart: Int?
+  public var notEvaluated: Int?
+  public var watching: Bool?
 }
 
 /// The statements that stand and were given outside the app: soc's total and the latest.
@@ -471,7 +484,13 @@ public enum Decoding {
             }
           })
       },
-      knownVulnerabilities: r["vulnerabilities"]["affected_records"].count)
+      knownVulnerabilities: r["vulnerabilities"]["affected_records"].count,
+      rules: r["rules"].object.map {
+        Rules(
+          shipped: $0["shipped"].count, evaluated: $0["evaluated"].count,
+          inPart: $0["in_part"].count, notEvaluated: $0["not_evaluated"].count,
+          watching: $0["watching"].bool)
+      })
   }
 
   static func item(_ i: J) -> Item {

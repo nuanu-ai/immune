@@ -123,6 +123,9 @@ final class ProcessWatchChild: WatchChild, @unchecked Sendable {
 
   init(executable: URL, arguments: [String], cap: Int, environment: [String: String]) {
     splitter = LineSplitter(cap: cap)
+    // The watcher is the app's own and runs all day, so it yields to the owner's work;
+    // at utility it still sees a change within seconds, where background may be deferred.
+    process.qualityOfService = RunFor.app.quality
     process.executableURL = executable
     process.arguments = arguments
     process.environment = ProcessInfo.processInfo.environment.merging(environment) { $1 }
@@ -158,6 +161,8 @@ final class ProcessWatchChild: WatchChild, @unchecked Sendable {
   }
 
   var pid: Int32 { process.processIdentifier }
+  /// The class the watcher is started with.
+  var quality: QualityOfService { process.qualityOfService }
 
   func stop(grace: TimeInterval) {
     guard process.isRunning else { return }

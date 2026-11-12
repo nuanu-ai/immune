@@ -191,7 +191,8 @@ public struct Panel: Sendable, Equatable {
     symbol: "text.bubble", section: "watched-here")
   /// What the program does not cover, as at most two quiet rows: what the owner can
   /// fix, and the limits of this version; then, when there are any, the known
-  /// vulnerabilities in packages the projects use. Never counted, never orange.
+  /// vulnerabilities in packages the projects use, and the published rules when soc
+  /// reports them. Never counted, never orange.
   public var gaps: [GapRow] = []
   /// The request "Copy for my agent" copies beside "You can fix", or nil when there is
   /// nothing for the owner to fix.
@@ -349,6 +350,7 @@ public struct Panel: Sendable, Equatable {
     if let known = s.knownVulnerabilities, known > 0 {
       gaps.append(Self.vulnerabilities(known))
     }
+    if let rules = s.rules { gaps.append(Self.rules(rules)) }
     answered = AnsweredRow.of(s.answeredOutsideApp, s.statementsOutsideApp)
   }
 
@@ -360,6 +362,26 @@ public struct Panel: Sendable, Equatable {
       text: (n == 1 ? "1 known vulnerability" : "\(n) known vulnerabilities")
         + " in packages your projects use",
       label: "Known vulnerabilities", count: n, symbol: "shippingbox", section: "vulnerabilities")
+  }
+
+  /// The published rules, one quiet row to the page's section. They are said to watch
+  /// program starts only when soc says `watching` is true; false, missing or not a
+  /// boolean is "not watching yet", counted by what is shipped. Never counted by the
+  /// icon or the headline.
+  static func rules(_ r: Rules) -> GapRow {
+    if r.watching == true {
+      let parts = [r.evaluated, r.inPart].compactMap { $0 }
+      let n = parts.isEmpty ? nil : parts.reduce(0, +)
+      let of = r.shipped.map { " of \($0) published" } ?? " published"
+      return GapRow(
+        text: (n.map(String.init) ?? "Some") + of + " rules watch program starts",
+        label: "Rules watching program starts", count: n, symbol: "checklist", section: "rules")
+    }
+    return GapRow(
+      text: (r.shipped.map { "\($0) published rules are" } ?? "Published rules are")
+        + " shipped and do not watch program starts yet",
+      label: "Published rules, not watching yet", count: r.shipped, symbol: "checklist",
+      section: "rules")
   }
 
   /// A short task for the owner's coding agent about what they can fix: the soc this app
