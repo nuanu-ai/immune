@@ -234,13 +234,15 @@ impl Dir {
 
     /// The findings of the published rule `id`, in every state.
     fn findings_of(&self, id: &str) -> Vec<String> {
-        let all = self.report(&["findings", "--all"]);
+        let out = self.command(&["findings", "--json"], &[]).output().unwrap();
+        assert!(out.status.success());
+        let all: Value = serde_json::from_slice(&out.stdout).unwrap();
         all["findings"]
             .as_array()
             .unwrap()
             .iter()
-            .filter(|f| f["rule"] == format!("sigma:{id}"))
-            .map(|f| f["id"].as_str().unwrap().to_string())
+            .filter(|f| f["finding"]["rule"] == format!("sigma:{id}"))
+            .map(|f| f["finding"]["id"].as_str().unwrap().to_string())
             .collect()
     }
 }

@@ -1,0 +1,268 @@
+// The core's own findings: the answers to `immune findings` and `immune finding <id>`. Version 1
+// of the contract between the core and a program that runs it. How a message is printed and
+// read, and the conventions for text, references, times and changes, are in `common.proto`.
+//
+// A finding is one thing a rule found, kept until the person answers it: open, then expected or
+// seen, or cleared by the core when a rule that finds a state no longer finds it. The core's
+// own words for it (`kind`, `title`, `meaning`, `advice`) are the same for every finding of its
+// rule and never hold text from the Mac. What the Mac or a source said is beside them, in `_text`
+// fields.
+//
+// Values that will be added. A reader meets values of `Change`, `AnswerKind` and `Via`, and
+// cases of `Evidence`'s `body`, that it does not know: the core adds them within version 1. It
+// treats one it does not know as something it cannot judge.
+
+syntax = "proto3";
+
+package immune.v1;
+
+import "immune/v1/common.proto";
+import "immune/v1/event.proto";
+
+// The answer to `immune findings`: every finding the store holds, in every state.
+message Findings {
+  // The version of this contract: 1. A reader that meets another number stops.
+  uint32 format = 1;
+  // When the answer was made.
+  int64 answered_at = 2;
+  // The store this answer was read from, as in every answer (`common.proto`): random, made once
+  // when the store was made. Absent for a store an older build made that no command has written
+  // to since: until one does, nothing tells it apart from another store.
+  optional string store_id = 3;
+  // When the core's latest run that finished ended. Absent when no run has finished: then only
+  // what the watcher found between runs can be here, and an empty list says nothing.
+  optional int64 latest_run_at = 4;
+  // Every finding, the most severe first, then the latest seen, then by id. A finding of a rule
+  // this build does not have is left out.
+  repeated ListedFinding findings = 5;
+  // When an agent may answer a finding, in the core's words: the same in the usage, in `immune
+  // status` and in every answer about findings.
+  string answers_note = 6;
+}
+
+// A finding as a list gives it. `immune finding <id>` gives it whole.
+message ListedFinding {
+  FindingRef finding = 1;
+  // What the rule is about, in the core's words, such as `shell profile`.
+  string kind = 2;
+  // What happened, in the core's words: the same for every finding of its rule.
+  string title = 3;
+  // Where the thing is, as a person recognises it: a path under the home folder as `~/…`, a
+  // machine by its name. Whole.
+  string where_text = 4;
+  // When it was first found, and when last.
+  int64 first_seen_at = 5;
+  int64 last_seen_at = 6;
+  // The person's answer, absent when it has none. A finding whose answer was taken back has none.
+  Answer answer = 7;
+}
+
+// The answer to `immune finding <id>`: one finding whole.
+message Finding {
+  // As in `Findings`.
+  uint32 format = 1;
+  int64 answered_at = 2;
+  optional string store_id = 3;
+  FindingRef finding = 4;
+  // What it is, in the core's words: the kind of thing its rule is about; what happened; when
+  // that is normal; and what to do. The same for every finding of its rule.
+  string kind = 5;
+  string title = 6;
+  string meaning = 7;
+  string advice = 8;
+  // The ATT&CK technique its rule names, where one fits: the core's own rule's, or the first of
+  // a published rule's tags. Absent when none fits.
+  optional string technique_text = 9;
+  // Where the thing is, as a person recognises it. Whole.
+  string where_text = 10;
+  // When it was first found, and when last.
+  int64 first_seen_at = 11;
+  int64 last_seen_at = 12;
+  // The person's answer, absent when it has none.
+  Answer answer = 13;
+  // What it rests on, by kind. Absent for a kind this build does not shape: the journal entries
+  // in `rests_on` are still there.
+  Evidence evidence = 14;
+  // The journal entries it rests on, oldest first: what a reader saw that raised it, or that it
+  // was found again. The journal only grows, so an entry is never changed after it is written.
+  repeated JournalEntry rests_on = 15;
+  // As in `Findings`.
+  string answers_note = 16;
+}
+
+// The person's answer to a finding.
+message Answer {
+  AnswerKind given = 1;
+  // How it was given.
+  Via via = 2;
+  // When it was given.
+  int64 given_at = 3;
+  // The reason given with it, as given. Absent when none was: `seen` takes one only if offered.
+  optional string reason_text = 4;
+  // When an `expected` answer ends. Absent for `seen`, which does not end.
+  optional int64 until_at = 5;
+  // Whether it hides the finding now: `seen`, or `expected` until a time still ahead, and no
+  // later finding of the same rule about the same thing was raised since.
+  bool in_force = 6;
+}
+
+// Which answer the person gave. `UNSPECIFIED`, or a value the reader does not know, is read as no
+// answer: the finding needs a look.
+enum AnswerKind {
+  ANSWER_KIND_UNSPECIFIED = 0;
+  // It is expected: hidden until `until_at`.
+  ANSWER_KIND_EXPECTED = 1;
+  // Looked at and closed.
+  ANSWER_KIND_SEEN = 2;
+}
+
+// Through what an answer came. `UNSPECIFIED`, or a value the reader does not know, is read as
+// `unknown`: it is not known who gave it, so it is not taken for one the person gave in the app.
+enum Via {
+  VIA_UNSPECIFIED = 0;
+  // In the app, by the person.
+  VIA_APP = 1;
+  // By the person's agent, with the person's agreement and the reason they agreed to.
+  VIA_AGENT = 2;
+  // On the command line, naming neither.
+  VIA_COMMAND = 3;
+  // Given before the store kept how answers came.
+  VIA_UNKNOWN = 4;
+}
+
+// What a finding rests on, by the kind of finding. The case of `body` that is set names the kind.
+message Evidence {
+  oneof body {
+    // `watched.*` and `autorun.*`: a watched place, or a file through which a tool runs code by
+    // itself, that appeared, changed, went, or was read for the first time.
+    PlaceChanged place_changed = 1;
+    // `integrity.*`: installed software whose files, seal or signer changed while its version
+    // stayed the same.
+    ChangedInPlace changed_in_place = 2;
+    // `indicator.match`: a file or a connection that matches the indicator list.
+    IndicatorMatched indicator_matched = 3;
+    // `processes.detached-inline-code`: an interpreter running code it was given when it
+    // started, on its own in the background.
+    DetachedProcess detached_process = 4;
+    // `lockfiles.*`: a package a project's lockfile declares that a record says is malicious or
+    // has a vulnerability attackers use.
+    VulnerablePackage vulnerable_package = 5;
+    // `sigma:<id>`: events a published rule matched.
+    PublishedRuleMatched published_rule_matched = 6;
+  }
+}
+
+// A watched place that changed. What was read of it before and after is in `rests_on`, as
+// `has_content` (a SHA-256, never the content), `links_to` and `watched_as`.
+message PlaceChanged {
+  // What its latest occurrence was.
+  Change change = 1;
+}
+
+// What happened to a watched place. `UNSPECIFIED`, or a value the reader does not know, is read
+// as `changed`.
+enum Change {
+  CHANGE_UNSPECIFIED = 0;
+  CHANGE_NEW = 1;
+  CHANGE_CHANGED = 2;
+  CHANGE_GONE = 3;
+  // It could be opened for the first time, so a change before now would have gone unseen. The
+  // store's word is `first read`.
+  CHANGE_FIRST_READ = 4;
+}
+
+// Installed software changed in place. The digests and verdicts before and after are in
+// `rests_on`, as `has_digest`, `has_seal` and `signed_by`.
+message ChangedInPlace {
+  // What an application's seal or signer became, as the reader wrote it: `does not verify:
+  // <why>`, or who signs it now. Absent for files of a package or code an app keeps outside
+  // itself, whose digest is what changed.
+  optional string became_text = 1;
+}
+
+// A match of the indicator list.
+message IndicatorMatched {
+  // The indicators matched, as STIX comparisons, as the list gives them, such as
+  // `[ipv4-addr:value = '203.0.113.7']`. Absent when the journal entry that holds them is gone.
+  optional string indicators_text = 1;
+}
+
+// A process a sample saw, as the latest entry `sampled` names it. Its program is the finding's
+// `about_text`. Its command line is never kept.
+message DetachedProcess {
+  // Its pid, and when it started, in microseconds since the epoch: together they name one
+  // process. Absent when the journal entry does not give them.
+  optional int64 pid = 1;
+  optional int64 start_micros = 2;
+}
+
+// A package a project depends on, as the answers that stand now name it. A finding that is
+// cleared, or one no answer names any more, has every field absent or empty: the finding's
+// `about_text` still names the package's entity.
+message VulnerablePackage {
+  // The project, by its checkout's id; the package's ecosystem, such as `npm`; and its name.
+  // Whole.
+  optional string project_text = 1;
+  optional string ecosystem = 2;
+  optional string package_text = 3;
+  // The releases the lockfiles declare that a record affects, each with where it is declared.
+  repeated PackageRelease releases = 4;
+  // The records that say so.
+  repeated PackageRecord records = 5;
+}
+
+message PackageRelease {
+  string version_text = 1;
+  // The lockfile and the line, a path under the home folder as `~/…`. Whole.
+  string at_text = 2;
+}
+
+message PackageRecord {
+  // The record's id, such as `GHSA-…` or `MAL-…`, and its other ids, as the record gives them.
+  string id_text = 1;
+  repeated string aliases_text = 2;
+  // The database it comes from, in the core's words, such as `GitHub Advisory Database`.
+  string source = 3;
+  // How the core labels it from the record's kind and severity: `malicious`, `critical`,
+  // `high`, `moderate`, `low` or `none`.
+  string label = 4;
+  // Whether CISA lists a vulnerability it names as used in attacks.
+  bool exploited = 5;
+  optional string summary_text = 6;
+  // The releases it is fixed in, where the record gives them.
+  repeated string fixed_text = 7;
+}
+
+// A published rule's matches. One finding stands for a rule on this Mac: a match of a rule whose
+// finding stands adds to it.
+message PublishedRuleMatched {
+  Rule rule = 1;
+  // How many events it matched since the finding was raised. Absent when the store holds no
+  // count for it.
+  optional uint64 matches = 2;
+  // The latest events it matched, newest first, at most five: the store keeps no more.
+  repeated Event events = 3;
+  // Where the rule comes from, and its licence, in the core's words.
+  string source = 4;
+  string licence = 5;
+}
+
+// One entry of the journal, which only grows.
+message JournalEntry {
+  // Its place in the journal.
+  int64 seq = 1;
+  int64 recorded_at = 2;
+  // The run, the sample or the answer that wrote it: the core's own id.
+  string run_id = 3;
+  // What it records, the store's word: `added`, `changed`, `removed`, `sampled` or `matched`.
+  string entry = 4;
+  // The reader, the coverage kind and the predicate, where the entry names them.
+  optional string reader = 5;
+  optional string kind = 6;
+  optional string predicate = 7;
+  // What it is about, an entity id, whole.
+  optional string subject_text = 8;
+  // The value before and after, as the reader wrote them. Whole.
+  optional string old_value_text = 9;
+  optional string new_value_text = 10;
+}

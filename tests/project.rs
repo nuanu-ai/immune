@@ -409,7 +409,7 @@ fn a_finding_about_a_file_inside_the_project_is_referenced_by_the_project() {
         .output()
         .unwrap();
     let shown: Value = serde_json::from_slice(&shown.stdout).unwrap();
-    assert_eq!(shown["result"]["finding"]["rule"], "watched.git-hook");
+    assert_eq!(shown["finding"]["rule"], "watched.git-hook");
     // Another project's answer does not carry it.
     assert!(h.known("~/dev/other").findings.is_empty());
 }

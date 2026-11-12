@@ -18,6 +18,7 @@ mod codesign;
 mod contract;
 mod covered;
 mod events;
+mod finding_answer;
 mod findings;
 mod fsevents;
 mod guarded;
@@ -74,8 +75,11 @@ const USAGE: &str = "usage: immune run [--store <path>] [--machine-name <name>] 
                   [--osv-npm-input <file>] [--curl <path>] [--system-root <dir>]
                   [--indicators <file>] [--json]
        immune status [--store <path>] [--json]
-       immune findings [--all] [--store <path>] [--json]
-       immune finding <id> [--store <path>] [--json]
+       immune findings [--all] [--store <path>] [--json | --proto]
+           every finding, in every state, as one protobuf message or the same as
+           JSON; for a person the open ones, or every one with --all
+       immune finding <id> [--store <path>] [--json | --proto]
+           one finding whole: its words, evidence, journal entries and answer
        immune finding <id> expected --reason <text> [--days <n>] [--via app|agent]
                       [--store <path>] [--json]
        immune finding <id> seen [--reason <text>] [--via app|agent] [--store <path>] [--json]
@@ -99,13 +103,13 @@ const USAGE: &str = "usage: immune run [--store <path>] [--machine-name <name>] 
            known vulnerabilities that affect packages the projects' lockfiles declare
        immune vulnerability <record id or CVE id> [--store <path>] [--json]
            the answer for one vulnerability in every project, with what it rests on
-       immune project <path or checkout id> [--store <path>] [--json]
+       immune project <path or checkout id> [--store <path>] [--json | --proto]
            what the store knows of one project: its facts, what was read and what was
            not, its findings; one protobuf message, or the same message as JSON
-       immune program <path, name or id> [--store <path>] [--json]
+       immune program <path, name or id> [--store <path>] [--json | --proto]
            the same for one program installed on this Mac: an application, a Homebrew
            package or keg, a global npm package
-       immune machine [<name or id>] [--store <path>] [--json]
+       immune machine [<name or id>] [--store <path>] [--json | --proto]
            the same for this Mac, or for another machine the store knows; its parts
            one level deep
        immune rules [--store <path>] [--json]
@@ -116,7 +120,7 @@ const USAGE: &str = "usage: immune run [--store <path>] [--machine-name <name>] 
            evaluates the rules over the event log on disk now, without the store, and
            prints per rule that matched its level and count, never a command line
        immune matches [--after <place>] [--limit <n>] [--store <path>]
-                      [--system-root <dir>] [--json]
+                      [--system-root <dir>] [--json | --proto]
            every rule match over the event log, of every level, each with the event
            it matched, command lines whole; what was read, lost and not evaluated; and
            the position to read on from; one protobuf message, or the same as JSON
@@ -163,17 +167,21 @@ struct VulnerabilityArgs {
     id: Option<String>,
 }
 
-/// `immune findings`: open findings, or every one with `--all`.
+/// `immune findings`: every finding as the contract's message, in the form named; for a person
+/// the open findings, or every one with `--all`.
 struct FindingsArgs {
     store: PathBuf,
-    json: bool,
+    form: Option<known::Form>,
     all: bool,
 }
 
 /// `immune finding <id>`: one finding with what it rests on, or the owner's answer to it.
 struct FindingArgs {
     store: PathBuf,
+    /// The answer's envelope as JSON: `--json` with an answer.
     json: bool,
+    /// The form of the contract's message, when the finding is only read.
+    form: Option<known::Form>,
     id: String,
     act: Option<findings::Act>,
     via: findings::Via,
@@ -418,25 +426,25 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
             }))
         }
         "findings" => {
-            let (mut json, mut all) = (false, false);
+            let (mut form, mut all) = (None, false);
             while let Some(arg) = it.next() {
                 match arg.as_str() {
                     "--store" => store = Some(value(&mut it, &arg)?.into()),
-                    "--json" => json = true,
                     "--all" => all = true,
+                    _ if known::take_form(&arg, &mut form)? => {}
                     _ => return Err(format!("unexpected argument: {arg}")),
                 }
             }
             let store = store.map_or_else(default_store, Ok)?;
-            Ok(Cmd::Findings(FindingsArgs { store, json, all }))
+            Ok(Cmd::Findings(FindingsArgs { store, form, all }))
         }
         "finding" => {
-            let (mut json, mut reason, mut days, mut words) = (false, None, None, Vec::new());
+            let (mut form, mut reason, mut days, mut words) = (None, None, None, Vec::new());
             let mut via = None;
             while let Some(arg) = it.next() {
                 match arg.as_str() {
                     "--store" => store = Some(value(&mut it, &arg)?.into()),
-                    "--json" => json = true,
+                    _ if known::take_form(&arg, &mut form)? => {}
                     "--reason" => reason = Some(value(&mut it, &arg)?),
                     "--days" => days = Some(value(&mut it, &arg)?),
                     "--via" => via = Some(via_value(&mut it, &arg)?),
@@ -507,9 +515,18 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
                     );
                 }
             };
+            // An answer prints the report's envelope, with --json; only reading a finding is a
+            // command of the contract.
+            if act.is_some() && form == Some(known::Form::Proto) {
+                return Err(
+                    "--proto is for reading a finding; an answer prints its envelope with --json"
+                        .to_string(),
+                );
+            }
             Ok(Cmd::Finding(FindingArgs {
                 store: store.map_or_else(default_store, Ok)?,
-                json,
+                json: form == Some(known::Form::Json),
+                form,
                 id: words[0].clone(),
                 act,
                 via: via.unwrap_or(findings::Via::Command),
@@ -708,11 +725,16 @@ fn main() -> ExitCode {
                     &e,
                 );
                 // A command of the contract fails in its own envelope, which no reader
-                // takes for an answer.
+                // takes for an answer. `immune finding` is one when it only reads.
+                let answering = args
+                    .iter()
+                    .skip(2)
+                    .any(|a| ["expected", "seen", "reopen"].contains(&a.as_str()));
                 match op {
-                    Some("project" | "program" | "machine" | "matches") => {
+                    Some("project" | "program" | "machine" | "matches" | "findings") => {
                         print_json(&known::envelope(v))
                     }
+                    Some("finding") if !answering => print_json(&known::envelope(v)),
                     _ => print_json(&v),
                 }
             }
@@ -990,7 +1012,9 @@ fn published_rule_lines(d: &serde_json::Value) -> Vec<String> {
 
 /// `immune rules`: the shipped rules, placed, with whether they watch and how many times each
 /// matched, from the store read without writing. A store that is not there, or holds no
-/// reading of the event level, gives no counts and says why in `not_computed`.
+/// reading of the event level, gives no counts and says why in `not_computed`. With `--json` it
+/// also carries the catalogue: the core's own rules and the causes of what is not covered, with
+/// their words.
 fn rules_cmd(args: &RulesArgs) -> ExitCode {
     if let Some(root) = &args.over_log {
         return replay_cmd(root, args.json);
@@ -1039,6 +1063,9 @@ fn rules_cmd(args: &RulesArgs) -> ExitCode {
                 v["not_computed"] = serde_json::json!([{ "section": "matches", "reason": reason }]);
             }
         }
+        // Every rule of the core's own and every cause of what is not covered, with its words, for
+        // an agent to learn what each can say.
+        v["catalogue"] = findings::catalogue_json();
         print_json(&status::envelope("rules", v));
         return ExitCode::SUCCESS;
     }
@@ -1547,12 +1574,21 @@ fn store_failed(json: bool, op: &str, e: &Stop) -> ExitCode {
 
 const NO_FINDINGS_YET: &str = "no run of this build has looked for findings in this store yet";
 
-/// `immune findings`: the open findings, or every one, with what each means and what to do.
+/// `immune findings`: every finding as the contract's `Findings`; for a person the open
+/// findings, or every one, with when each was last seen and where.
 fn findings_cmd(args: &FindingsArgs) -> ExitCode {
+    if let Some(form) = args.form {
+        return known::command(
+            "findings",
+            &args.store,
+            form == known::Form::Json,
+            |conn, now| finding_answer::list(conn, now).map(Ok),
+        );
+    }
     let now = now_secs();
     let found = match read_findings(&args.store, now) {
         Ok(found) => found,
-        Err(e) => return store_failed(args.json, "findings", &e),
+        Err(e) => return store_failed(false, "findings", &e),
     };
     let items: Option<Vec<findings::Item>> = found.map(|all| {
         let mut items: Vec<findings::Item> = all
@@ -1563,33 +1599,6 @@ fn findings_cmd(args: &FindingsArgs) -> ExitCode {
         findings::order(&mut items);
         items
     });
-    if args.json {
-        let mut r = findings::catalogue_json();
-        r["answers_note"] = serde_json::json!(findings::ANSWERS_NOTE);
-        match &items {
-            Some(items) => {
-                let shown: Vec<serde_json::Value> = items
-                    .iter()
-                    .take(FINDINGS_SHOWN)
-                    .map(findings::item_json)
-                    .collect();
-                r["findings"] = serde_json::Value::Array(shown);
-                r["findings_total"] = serde_json::json!(items.len());
-                r["not_computed"] = serde_json::json!([]);
-            }
-            None => {
-                let reason = if args.store.exists() {
-                    NO_FINDINGS_YET
-                } else {
-                    "there is no store yet; `immune run` makes it"
-                };
-                r["not_computed"] =
-                    serde_json::json!([{ "section": "findings", "reason": reason }]);
-            }
-        }
-        print_json(&status::envelope("findings", r));
-        return ExitCode::SUCCESS;
-    }
     let Some(items) = items else {
         say(&format!("No findings: {NO_FINDINGS_YET}."));
         return ExitCode::SUCCESS;
@@ -1784,6 +1793,14 @@ fn vulnerabilities_cmd(args: &VulnerabilityArgs) -> ExitCode {
 
 /// `immune finding <id>`: one finding with what it rests on, or the owner's answer to it.
 fn finding_cmd(args: &FindingArgs) -> ExitCode {
+    if let (None, Some(form)) = (&args.act, args.form) {
+        return known::command(
+            "finding",
+            &args.store,
+            form == known::Form::Json,
+            |conn, now| finding_answer::one(conn, &args.id, now),
+        );
+    }
     let unknown = |json: bool| {
         refuse(
             json,

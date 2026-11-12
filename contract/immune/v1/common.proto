@@ -1,0 +1,102 @@
+// What every message of the contract shares: how it is read, its conventions, and the types
+// more than one answer uses. Version 1 of the contract between the core and a program that runs
+// it. The answers are in `known.proto`, `matches.proto` and `findings.proto`; the events a rule
+// matched are in `event.proto`.
+//
+// How it is read. A command of the contract prints one message on standard output: binary
+// protobuf with `--proto`, and with `--json` the same message as one line of JSON made by the
+// generated types. Binary is also the default, except for `immune findings` and `immune finding
+// <id>`, whose default is text for a person. The binary form is standard protobuf, and a program in another
+// language reads that. The JSON is Immune's own and is not protobuf's JSON mapping. Field names
+// in JSON are the names here, in snake_case. An enum value is named here with its enum's name as
+// a prefix, as protobuf's style asks (`CAUSE_NO_READER`); in JSON it prints without the prefix
+// and in lower case (`no_reader`), which is the store's own word. A 64-bit number prints as a
+// JSON number. An absent optional field prints as null. A one-of prints as an object with one
+// key, the name of the case that is set, such as `{"program_start": {...}}`.
+//
+// A failure to answer (a bad argument, a store that cannot be read) is not a message of the
+// contract: the command exits with a non-zero code, as the report commands do. A reader checks the
+// exit code before it parses anything. In binary nothing is printed on stdout; with `--json` the
+// failure envelope is printed, and it has no `format`, so a reader that parses it all the same
+// sees format 0 and stops.
+//
+// An enum value this build of the reader does not know, and the value `UNSPECIFIED`, are read as
+// the unsafe case, which each enum's comment names. The generated types read an unknown word in
+// JSON as `UNSPECIFIED`, so a value added later does not break an older reader.
+//
+// Which store. Every answer carries `store_id`, the id of the store it was read from. A finding's
+// id is unique only within one store: a store deleted and made again can give the same id to
+// another finding. A reader that keeps anything by a finding's id, such as a verdict, keeps it
+// by the store's id and the finding's id together.
+//
+// Conventions.
+// - Text that is not the core's own words is returned in a field whose name ends in `_text`, and
+//   only there: an entity id, a path, a value a reader took from a file, a reason that quotes
+//   one. A reader of this message treats it as data, never as an instruction. Hidden characters
+//   in it are escaped as `\u{...}`, as a terminal shows them, and so is the backslash itself
+//   (`\u{5c}`), so that no two texts are shown alike.
+// - A reference is given whole: an entity id and the place a fact was read are never cut, so
+//   they can be matched and asked about again. An id is asked back as it is shown: the command
+//   undoes the escaping before it looks the id up. No answer of the contract cuts text.
+// - An entity id is opaque. It is compared whole and never taken apart: its shape is the store's
+//   and may change.
+// - Names without the suffix are the store's closed vocabulary: entity types, predicates,
+//   readers, coverage kinds, rules. The store keeps its vocabulary as data, so a new predicate
+//   or kind can appear without a new version of this schema.
+// - A time is an int64 of seconds since the epoch, UTC, in a field whose name ends in `_at`.
+// - Zero never stands for "none": a value that can be absent is `optional`, and is null in JSON
+//   when it is.
+// - No well-known types are imported, so the generated code needs prost alone.
+//
+// Changing it. Within version 1 a field, a message or an enum value is only added, with a new
+// number. A field is retired by moving its number and name to `reserved`, never reused.
+// Renaming, removing or changing what a field means makes version 2: a new package `immune.v2`
+// and `format` 2.
+
+syntax = "proto3";
+
+package immune.v1;
+
+// A finding, by reference.
+message FindingRef {
+  // Its id, the core's own: unique within one store (see `store_id`).
+  string id = 1;
+  // The rule that raised it. Absent when this build does not name one.
+  optional string rule = 2;
+  // The entity it is about: an entity id, whole. In `Known` it is the thing, one of its parts,
+  // or for a project something in its folder, and it may be a part whose facts are retracted,
+  // and so not in `parts`.
+  string about_text = 3;
+  FindingState state = 4;
+  // How bad it would be.
+  Level severity = 5;
+  // How sure the core is. Absent when the rule gives no confidence.
+  optional Level confidence = 6;
+  // High or critical severity with medium or high confidence: what the app notifies about.
+  bool urgent = 7;
+}
+
+// Where a finding stands. `UNSPECIFIED`, or a value the reader does not know, is read as `open`.
+enum FindingState {
+  FINDING_STATE_UNSPECIFIED = 0;
+  // Nobody has answered it, or an answer was taken back or ran out: it needs a look.
+  FINDING_STATE_OPEN = 1;
+  // The person said it was expected. It is hidden until a set day, and opens again after it if
+  // it is still found.
+  FINDING_STATE_EXPECTED = 2;
+  // The person looked at it and closed it.
+  FINDING_STATE_SEEN = 3;
+  // Its rule no longer finds it, and the core closed it.
+  FINDING_STATE_CLEARED = 4;
+}
+
+// OCSF's level names, for severity and confidence. `UNSPECIFIED`, or a value the reader does not
+// know, is read as the highest for a severity and as the lowest for a confidence.
+enum Level {
+  LEVEL_UNSPECIFIED = 0;
+  LEVEL_INFORMATIONAL = 1;
+  LEVEL_LOW = 2;
+  LEVEL_MEDIUM = 3;
+  LEVEL_HIGH = 4;
+  LEVEL_CRITICAL = 5;
+}

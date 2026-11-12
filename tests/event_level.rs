@@ -195,6 +195,23 @@ impl Dir {
         v["result"].clone()
     }
 
+    /// `immune <args> --json --store <this store>` for a command of the contract: its message.
+    fn contract(&self, args: &[&str]) -> Value {
+        let mut args = args.to_vec();
+        args.push("--json");
+        serde_json::from_str(&self.immune(&args)).unwrap()
+    }
+
+    /// Every finding, each read whole with `immune finding <id> --json`.
+    fn findings(&self) -> Vec<Value> {
+        self.contract(&["findings"])["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| self.contract(&["finding", f["finding"]["id"].as_str().unwrap()]))
+            .collect()
+    }
+
     /// `immune rules --over-log` over this system root, without a store: its exit status and
     /// stdout.
     fn replay(&self, args: &[&str]) -> (bool, String) {
@@ -1430,54 +1447,66 @@ fn a_binary_padding_start_raises_one_finding_with_its_authors_and_arguments_and_
         line.contains("1 thing needs a look, 1 new in this run."),
         "{line}"
     );
-    let found = dir.immune_json(&["findings"]);
-    let list = found["findings"].as_array().unwrap();
-    assert_eq!(list.len(), 1, "{found:#}");
+    let list = dir.findings();
+    assert_eq!(list.len(), 1, "{list:#?}");
     let f = &list[0];
-    assert_eq!(f["rule"], format!("sigma:{PADDING}"));
+    assert_eq!(f["finding"]["rule"], format!("sigma:{PADDING}"));
     assert_eq!(f["kind"], "program start matched by a published rule");
     // High by the rule's level; low sure, as a `test` rule never tuned to this Mac: shown, and
     // nothing alerts on it.
+    let r = &f["finding"];
     assert_eq!(
-        (&f["severity"], &f["confidence"], &f["urgent"], &f["state"]),
+        (&r["severity"], &r["confidence"], &r["urgent"], &r["state"]),
         (&json!("high"), &json!("low"), &json!(false), &json!("open"))
     );
-    assert_eq!(f["technique"], "T1027.001");
-    // The words are the program's own; the rule's title with its authors stands beside them
-    // as data, so the page and the app's card carry the authors too.
-    assert_eq!(
-        f["value_text"],
-        "Binary Padding - MacOS, by Igor Fits, Mikhail Larin, oscd.community"
-    );
+    assert_eq!(f["technique_text"], "T1027.001");
+    // The words are the program's own; the rule with its authors stands beside them as data.
     assert!(!f["title"].as_str().unwrap().contains("Padding"));
     assert_eq!(
-        f["published_rule"],
-        json!({
-            "file": "rules/macos/process_creation/proc_creation_macos_binary_padding.yml",
-            "events": "process_creation",
-            "id_text": PADDING,
-            "title_text": "Binary Padding - MacOS",
-            "level": "high",
-            "status": "test",
-            "techniques": ["T1027.001"],
-            "author_text": "Igor Fits, Mikhail Larin, oscd.community",
-            "licence": "DRL-1.1",
-            "source": "https://github.com/SigmaHQ/sigma",
+        f["evidence"],
+        json!({ "published_rule_matched": {
+            "rule": {
+                "name": format!("sigma:{PADDING}"),
+                "file": "rules/macos/process_creation/proc_creation_macos_binary_padding.yml",
+                "id_text": PADDING,
+                "title_text": "Binary Padding - MacOS",
+                "level": "high",
+                "techniques_text": ["T1027.001"],
+                "author_text": "Igor Fits, Mikhail Larin, oscd.community",
+            },
             "matches": 1,
-            "evidence": [{
-                "timestamp_text": "2026-10-04T00:00:02.000002Z",
-                "executable_text": "/bin/dd",
-                "args_text": DD,
-                "parent_executable_text": "/bin/sh",
-                "working_directory_text": CWD,
-                "pid": 402,
+            "events": [{ "program_start": {
+                // 2026-10-04T00:00:02.000002Z
+                "happened_at": 1_791_072_002,
+                "happened_nanos": 2000,
+                "process": {
+                    "executable_text": "/bin/dd",
+                    "pid": 402,
+                    "user_id": 501,
+                    "signing_id_text": "com.apple.git",
+                    "team_id_text": null,
+                    "platform_binary": true,
+                },
+                "instigator": {
+                    "executable_text": "/bin/sh",
+                    "pid": null,
+                    "user_id": null,
+                    "signing_id_text": null,
+                    "team_id_text": null,
+                    "platform_binary": null,
+                },
                 "parent_pid": 401,
-                "user_id": 501,
-                "signing_id_text": "com.apple.git",
-                "team_id_text": null,
-                "platform_binary": true,
-            }],
-        })
+                "args_text": DD,
+                "working_directory_text": CWD,
+            }}],
+            "source": "https://github.com/SigmaHQ/sigma",
+            "licence": "DRL-1.1",
+        }})
+    );
+    // The status, the page and the app's card carry the authors with the rule's title.
+    assert_eq!(
+        dir.status()["needs_a_look"][0]["value_text"],
+        "Binary Padding - MacOS, by Igor Fits, Mikhail Larin, oscd.community"
     );
     let r = dir.status();
     let rules = &r["rules"];
@@ -1531,16 +1560,15 @@ fn a_binary_padding_start_raises_one_finding_with_its_authors_and_arguments_and_
         );
     }
     dir.run();
-    let found = dir.immune_json(&["findings"]);
-    let list = found["findings"].as_array().unwrap();
-    assert_eq!(list.len(), 1, "{found:#}");
-    let p = &list[0]["published_rule"];
+    let list = dir.findings();
+    assert_eq!(list.len(), 1, "{list:#?}");
+    let p = &list[0]["evidence"]["published_rule_matched"];
     assert_eq!(p["matches"], 8);
-    let evidence = p["evidence"].as_array().unwrap();
+    let evidence = p["events"].as_array().unwrap();
     assert_eq!(evidence.len(), 5);
-    assert_eq!(evidence[0]["args_text"][3], "count=9");
-    assert_eq!(evidence[4]["args_text"][3], "count=5");
-    let id = list[0]["id"].as_str().unwrap().to_string();
+    assert_eq!(evidence[0]["program_start"]["args_text"][3], "count=9");
+    assert_eq!(evidence[4]["program_start"]["args_text"][3], "count=5");
+    let id = list[0]["finding"]["id"].as_str().unwrap().to_string();
     // For a person too: the rule with its authors, and the latest starts with their arguments.
     let text = dir.immune(&["finding", &id]);
     for said in [
@@ -1550,9 +1578,8 @@ fn a_binary_padding_start_raises_one_finding_with_its_authors_and_arguments_and_
     ] {
         assert!(text.contains(said), "{said}: {text}");
     }
-    let one = dir.immune_json(&["finding", &id]);
-    let rests = one["finding"]["rests_on"].as_array().unwrap();
-    assert_eq!(rests.len(), 1, "{one:#}");
+    let rests = list[0]["rests_on"].as_array().unwrap();
+    assert_eq!(rests.len(), 1, "{:#}", list[0]);
     assert_eq!(rests[0]["entry"], "matched");
 
     // Seen by the owner: the next match is a new finding, as for every rule that finds an
@@ -1561,11 +1588,14 @@ fn a_binary_padding_start_raises_one_finding_with_its_authors_and_arguments_and_
     assert_eq!(dir.status()["needs_a_look_total"], 0);
     dir.append(h, &started(10, "/bin/sh", "/bin/dd", &DD));
     dir.run();
-    let found = dir.immune_json(&["findings"]);
-    let list = found["findings"].as_array().unwrap();
-    assert_eq!(list.len(), 1, "{found:#}");
-    assert_ne!(list[0]["id"], id);
-    assert_eq!(list[0]["published_rule"]["matches"], 1);
+    let open: Vec<Value> = dir
+        .findings()
+        .into_iter()
+        .filter(|f| f["finding"]["state"] == "open")
+        .collect();
+    assert_eq!(open.len(), 1, "{open:#?}");
+    assert_ne!(open[0]["finding"]["id"], id);
+    assert_eq!(open[0]["evidence"]["published_rule_matched"]["matches"], 1);
     assert_eq!(dir.status()["rules"]["matches_last_day"], 9);
 }
 
@@ -1594,10 +1624,7 @@ fn a_medium_rule_s_match_is_counted_raises_nothing_and_keeps_no_argument() {
     }]);
     assert_eq!(r["rules"]["matched_last_day"], medium, "{:#}", r["rules"]);
     assert_eq!(r["needs_a_look_total"], 0);
-    assert_eq!(
-        dir.immune_json(&["findings", "--all"])["findings"],
-        json!([])
-    );
+    assert_eq!(dir.contract(&["findings"])["findings"], json!([]));
     dir.nowhere_in_the_store(marker);
     // A match two days ago counts in the week and not in the last day.
     rusqlite::Connection::open(dir.store())
@@ -2291,28 +2318,44 @@ fn a_file_a_high_rule_names_raises_one_finding_with_the_file_and_its_program_and
         line.contains("2 things need a look, 2 new in this run."),
         "{line}"
     );
-    let found = dir.immune_json(&["findings"]);
-    let list = found["findings"].as_array().unwrap();
-    assert_eq!(list.len(), 2, "{found:#}");
+    let list = dir.findings();
+    assert_eq!(list.len(), 2, "{list:#?}");
     let axios = list
         .iter()
-        .find(|f| f["rule"] == format!("sigma:{AXIOS}"))
+        .find(|f| f["finding"]["rule"] == format!("sigma:{AXIOS}"))
         .unwrap();
     assert_eq!(axios["kind"], "file event matched by a published rule");
-    let p = &axios["published_rule"];
+    let p = &axios["evidence"]["published_rule_matched"];
     assert_eq!(
-        (&p["events"], &p["level"], &p["matches"]),
-        (&json!("file_event"), &json!("high"), &json!(1))
+        (&p["rule"]["level"], &p["matches"]),
+        (&json!("high"), &json!(1))
     );
+    // 2026-10-04T00:00:03.000003Z
+    let at = |action: &str, path: &str, source: Option<&str>, program: &str| {
+        json!({ "file_event": {
+            "happened_at": 1_791_072_003,
+            "happened_nanos": 3000,
+            "action": action,
+            "path_text": path,
+            "source_text": source,
+            "instigator": {
+                "executable_text": program,
+                "pid": null,
+                "user_id": null,
+                "signing_id_text": null,
+                "team_id_text": null,
+                "platform_binary": null,
+            },
+        }})
+    };
     assert_eq!(
-        p["evidence"],
-        json!([{
-            "timestamp_text": "2026-10-04T00:00:03.000003Z",
-            "action": "create",
-            "file_text": "/private/tmp/6202033",
-            "source_text": null,
-            "executable_text": "/usr/local/bin/node",
-        }])
+        p["events"],
+        json!([at(
+            "create",
+            "/private/tmp/6202033",
+            None,
+            "/usr/local/bin/node"
+        )])
     );
     let rules = dir.status()["rules"].clone();
     let matched: Vec<(&str, i64)> = rules["matched_last_day"]
@@ -2341,30 +2384,24 @@ fn a_file_a_high_rule_names_raises_one_finding_with_the_file_and_its_program_and
         );
     }
     dir.run();
-    let found = dir.immune_json(&["findings"]);
-    let amos = found["findings"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|f| f["rule"] == format!("sigma:{AMOS}"))
-        .unwrap()
-        .clone();
-    let p = &amos["published_rule"];
+    let amos = dir
+        .findings()
+        .into_iter()
+        .find(|f| f["finding"]["rule"] == format!("sigma:{AMOS}"))
+        .unwrap();
+    let p = &amos["evidence"]["published_rule_matched"];
     assert_eq!(p["matches"], 7);
-    let evidence = p["evidence"].as_array().unwrap();
+    let evidence = p["events"].as_array().unwrap();
     assert_eq!(evidence.len(), 5);
     assert_eq!(
         evidence[0],
-        json!({
-            "timestamp_text": "2026-10-04T00:00:03.000003Z",
-            "action": "rename",
-            "file_text": daemon,
-            "source_text": "/private/tmp/x7.plist",
-            "executable_text": "/bin/mv",
-        })
+        at("rename", daemon, Some("/private/tmp/x7.plist"), "/bin/mv")
     );
-    assert_eq!(evidence[4]["source_text"], "/private/tmp/x3.plist");
-    let text = dir.immune(&["finding", amos["id"].as_str().unwrap()]);
+    assert_eq!(
+        evidence[4]["file_event"]["source_text"],
+        "/private/tmp/x3.plist"
+    );
+    let text = dir.immune(&["finding", amos["finding"]["id"].as_str().unwrap()]);
     for said in [
         "Rule: Atomic MacOS Stealer - Persistence Indicators, by Jason Phang Vern - Onn, Robbin Ooi Zhen Heng (Gen Digital);",
         "It matched 7 file events since this finding was raised; the latest:",
@@ -2374,7 +2411,7 @@ fn a_file_a_high_rule_names_raises_one_finding_with_the_file_and_its_program_and
     ] {
         assert!(text.contains(said), "{said}: {text}");
     }
-    let text = dir.immune(&["finding", axios["id"].as_str().unwrap()]);
+    let text = dir.immune(&["finding", axios["finding"]["id"].as_str().unwrap()]);
     assert!(
         text.contains("/private/tmp/6202033: created by /usr/local/bin/node"),
         "{text}"

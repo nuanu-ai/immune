@@ -162,22 +162,34 @@ impl Estate {
 
     /// Findings, open ones unless `all`, as rule, state, where and value.
     fn findings(&self, all: bool) -> Vec<(String, String, String, String)> {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_immune"));
-        cmd.args(["findings", "--json", "--store"])
-            .arg(self.store());
-        if all {
-            cmd.arg("--all");
-        }
-        let v: serde_json::Value = serde_json::from_slice(&cmd.output().unwrap().stdout).unwrap();
-        v["result"]["findings"]
+        let s = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
+        self.contract(&["findings"])["findings"]
             .as_array()
             .unwrap()
             .iter()
+            .filter(|f| all || f["finding"]["state"] == "open")
             .map(|f| {
-                let s = |k: &str| f[k].as_str().unwrap_or_default().to_string();
-                (s("rule"), s("state"), s("where_text"), s("value_text"))
+                let one = self.contract(&["finding", f["finding"]["id"].as_str().unwrap()]);
+                (
+                    s(&f["finding"]["rule"]),
+                    s(&f["finding"]["state"]),
+                    s(&f["where_text"]),
+                    s(&one["evidence"]["indicator_matched"]["indicators_text"]),
+                )
             })
             .collect()
+    }
+
+    /// `immune <args> --json --store <this store>`, as the contract's message.
+    fn contract(&self, args: &[&str]) -> serde_json::Value {
+        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+            .args(args)
+            .args(["--json", "--store"])
+            .arg(self.store())
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        serde_json::from_slice(&out.stdout).unwrap()
     }
 
     fn rules(&self) -> Vec<String> {
@@ -224,15 +236,20 @@ impl Estate {
 
     /// The owner says he has seen every open finding.
     fn seen(&self) {
-        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
-            .args(["findings", "--json", "--store"])
-            .arg(self.store())
-            .output()
-            .unwrap();
-        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-        for f in v["result"]["findings"].as_array().unwrap() {
+        let listed = self.contract(&["findings"]);
+        let open = listed["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|f| f["finding"]["state"] == "open");
+        for f in open {
             let out = Command::new(env!("CARGO_BIN_EXE_immune"))
-                .args(["finding", f["id"].as_str().unwrap(), "seen", "--store"])
+                .args([
+                    "finding",
+                    f["finding"]["id"].as_str().unwrap(),
+                    "seen",
+                    "--store",
+                ])
                 .arg(self.store())
                 .output()
                 .unwrap();
