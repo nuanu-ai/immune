@@ -1098,14 +1098,14 @@ fn a_refusal_is_served_with_what_eslogger_said_as_data_and_a_quiet_level_as_sile
     assert!(not_covered(&r, "event-level-failing").is_some());
 
     // A line written after the error: the level records again.
-    dir.append("exec-20261004T00.jsonl", &exec(1));
-    let later = SystemTime::now() + Duration::from_secs(2);
+    let earlier = SystemTime::now() - Duration::from_secs(10);
     std::fs::File::options()
         .append(true)
-        .open(dir.log().join("exec-20261004T00.jsonl"))
+        .open(dir.log().join("scripts.err"))
         .unwrap()
-        .set_modified(later)
+        .set_modified(earlier)
         .unwrap();
+    dir.append("exec-20261004T00.jsonl", &exec(1));
     dir.run();
     assert_eq!(dir.status()["event_level"]["state"], "running");
 
@@ -1128,6 +1128,55 @@ fn a_refusal_is_served_with_what_eslogger_said_as_data_and_a_quiet_level_as_sile
     assert_eq!(r["event_level"]["state"], "silent");
     assert!(not_covered(&r, "event-level-silent").is_some());
     assert_eq!(watched_starts(&r), None);
+}
+
+#[test]
+fn a_log_file_dated_later_than_now_is_no_sign_that_the_level_records() {
+    // A file's time can be set ahead, and a clock set back leaves the times it wrote ahead of
+    // it. Neither is the level writing now: with nothing written in the last quarter hour it
+    // is silent, not running.
+    let dir = Dir::new("future");
+    dir.install();
+    let hour_ago = SystemTime::now() - Duration::from_secs(3600);
+    std::fs::File::options()
+        .append(true)
+        .open(dir.root().join(PLIST))
+        .unwrap()
+        .set_modified(hour_ago)
+        .unwrap();
+    dir.append("exec-20261004T00.jsonl", &exec(1));
+    for (name, when) in [
+        ("exec-20261004T00.jsonl", hour_ago),
+        (
+            "exec-20261004T01.jsonl",
+            SystemTime::now() + Duration::from_secs(3 * 3600),
+        ),
+    ] {
+        dir.append(name, "");
+        std::fs::File::options()
+            .append(true)
+            .open(dir.log().join(name))
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
+    }
+    dir.run();
+    assert_eq!(dir.status()["event_level"]["state"], "silent");
+    // A line written now, beside the file dated ahead, as after a clock set back: running.
+    dir.append("exec-20261004T00.jsonl", &exec(2));
+    dir.run();
+    assert_eq!(dir.status()["event_level"]["state"], "running");
+    // Nor is a launch daemon dated ahead, before any line is written.
+    std::fs::remove_file(dir.log().join("exec-20261004T00.jsonl")).unwrap();
+    std::fs::remove_file(dir.log().join("exec-20261004T01.jsonl")).unwrap();
+    std::fs::File::options()
+        .append(true)
+        .open(dir.root().join(PLIST))
+        .unwrap()
+        .set_modified(SystemTime::now() + Duration::from_secs(3600))
+        .unwrap();
+    dir.run();
+    assert_eq!(dir.status()["event_level"]["state"], "silent");
 }
 
 #[test]

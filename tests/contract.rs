@@ -69,17 +69,37 @@ fn generate() -> String {
             }
         }
         for m in &file.message_type {
-            // A proto3 `optional` field is a one-of of its own in the descriptor; any other
-            // one-of would print in serde's shape, not protobuf's.
-            let oneof = m
-                .field
-                .iter()
-                .any(|f| f.oneof_index.is_some() && !f.proto3_optional());
             assert!(
-                m.nested_type.is_empty() && m.enum_type.is_empty() && !oneof,
-                "{}: the generator configures top-level messages and enums without one-ofs",
+                m.nested_type.is_empty() && m.enum_type.is_empty(),
+                "{}: the generator configures top-level messages and enums",
                 m.name()
             );
+            // A one-of prints as an object with one key, the name of its case that is set:
+            // `{"program_start": {...}}`. prost keeps it as an enum in a field of its own name,
+            // which serde flattens into the message. A case it does not know reads as none. A
+            // proto3 `optional` field is a one-of of its own in the descriptor and is left as it
+            // is.
+            for (i, o) in m.oneof_decl.iter().enumerate() {
+                let cases: Vec<_> = m
+                    .field
+                    .iter()
+                    .filter(|f| f.oneof_index == Some(i as i32) && !f.proto3_optional())
+                    .collect();
+                if cases.is_empty() {
+                    continue;
+                }
+                assert!(
+                    cases.iter().all(|f| f.r#type() == Type::Message),
+                    "{}.{}: a case of a one-of is a message, so it needs no JSON helper",
+                    m.name(),
+                    o.name()
+                );
+                let path = format!("{package}.{}.{}", m.name(), o.name());
+                // A path with a leading dot also matches every case of the one-of, as a prefix;
+                // without it, it matches the one-of's own field and nothing below it.
+                config.field_attribute(&path[1..], "#[serde(flatten)]");
+                config.enum_attribute(&path, "#[serde(rename_all = \"snake_case\")]");
+            }
             for f in m.field.iter().filter(|f| f.r#type() == Type::Enum) {
                 // An enum field is an i32 in prost; it prints as its value's name.
                 let rust = f.type_name().rsplit('.').next().unwrap();

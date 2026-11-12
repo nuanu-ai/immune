@@ -635,16 +635,18 @@ fn finding_refs(
         .filter_map(findings::item)
         .collect();
     findings::order(&mut items);
-    Ok(items
-        .iter()
-        .map(|i| v1::FindingRef {
-            id: i.id.clone(),
-            rule: i.rule.map(str::to_string),
-            about_text: whole(&i.about),
-            state: value_of::<v1::FindingState>(&i.state),
-            severity: value_of::<v1::Level>(i.severity),
-            confidence: i.confidence.map(value_of::<v1::Level>),
-            urgent: findings::urgent(i.severity, i.confidence),
-        })
-        .collect())
+    Ok(items.iter().map(finding_ref).collect())
+}
+
+/// A finding by reference, as every message of the contract names one.
+pub fn finding_ref(i: &findings::Item) -> v1::FindingRef {
+    v1::FindingRef {
+        id: i.id.clone(),
+        rule: i.rule.map(str::to_string),
+        about_text: whole(&i.about),
+        state: value_of::<v1::FindingState>(&i.state),
+        severity: value_of::<v1::Level>(i.severity),
+        confidence: i.confidence.map(value_of::<v1::Level>),
+        urgent: findings::urgent(i.severity, i.confidence),
+    }
 }

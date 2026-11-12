@@ -115,7 +115,7 @@ const USAGE: &str = "usage: immune run [--store <path>] [--machine-name <name>] 
        immune rules --over-log [--system-root <dir>] [--json]
            evaluates the rules over the event log on disk now, without the store, and
            prints per rule that matched its level and count, never a command line
-       immune matches [--after <position>] [--limit <n>] [--store <path>]
+       immune matches [--after <place>] [--limit <n>] [--store <path>]
                       [--system-root <dir>] [--json]
            every rule match over the event log, of every level, each with the event
            it matched, command lines whole; what was read, lost and not evaluated; and
@@ -707,10 +707,12 @@ fn main() -> ExitCode {
                     example,
                     &e,
                 );
-                // A question of the contract fails in its own envelope, which no reader takes
-                // for an answer.
+                // A command of the contract fails in its own envelope, which no reader
+                // takes for an answer.
                 match op {
-                    Some("project" | "program" | "machine") => print_json(&known::envelope(v)),
+                    Some("project" | "program" | "machine" | "matches") => {
+                        print_json(&known::envelope(v))
+                    }
                     _ => print_json(&v),
                 }
             }

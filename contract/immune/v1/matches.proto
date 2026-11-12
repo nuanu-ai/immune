@@ -1,6 +1,10 @@
 // The rule matches the core hands over: the answer to `immune matches`. Version 1 of the contract
 // between the core and a program that runs it. How a message is printed and read, and the
-// conventions for text, references, times and changes, are those of `known.proto`.
+// conventions for text, references, times and changes, are those of `known.proto`. The JSON form
+// is Immune's own, made by the generated types: it is not protobuf's JSON mapping. A field is
+// named as here, an enum value prints as its name without the enum's prefix and in lower case,
+// an absent optional field prints as null, and a one-of prints as an object with one key, the
+// name of the case that is set, such as `{"program_start": {...}}`.
 //
 // The core evaluates SigmaHQ's published rules over the program starts and file events its
 // collector writes to a log that lives a day. This answer gives every match of every rule, of
@@ -8,17 +12,28 @@
 // high or critical also raised a finding; the others are only counted in the store. Events that
 // matched no rule are not given.
 //
-// The queue is the log itself, read again. The store keeps no event and no match, and the caller
-// keeps its own place: it passes `continue_after` back as `--after` to read on. A position is the
-// core's own, `<hour>:<offset>`: the hour of the log file in UTC as its name gives it,
-// `YYYYMMDDTHH`, and the byte offset where the line begins, such as `20261004T00:4096`. A log
-// file is only appended to, so a position holds through a restart of the collector, whose own
-// numbering starts again, and through the turn of the hour, until the file is deleted.
+// The queue is the log itself, read again. The store keeps no event, and the caller keeps its
+// own place: it passes `continue_after` back as `--after` to read on. The place is the core's own
+// words and is opaque: a reader stores it and passes it back whole, and never parses or compares
+// it. It holds what the core's own reading keeps for itself: for each log file, the file's
+// identity and how far it was read. So a file that is replaced, a clock that was wrong, or a file
+// deleted before it was read is noticed, and nothing is skipped without the answer saying so. An
+// event may be given twice, after a file was replaced; it is never missed silently.
 //
-// An answer with no matches is read with the rest of it. `stretch` says how many lines were read
-// and evaluated, how many could not be, what the collector's numbering says was lost, and whether
-// lines were deleted before they were read; `collector` says whether it records at all;
-// `unevaluated` names the rules that judge nothing here, or only in part, each with why.
+// When an answer is quiet. An answer with no matches says that nothing matched only when all of
+// these hold:
+// - `collector.state` is `running`;
+// - the stretch shows nothing lost, unread or gone: every count in `stretch` other than
+//   `program_starts`, `file_events` and `other` is 0, and `gone` is false;
+// - `collector.file_events_collected` is true;
+// - no rule the reader cares about is in `unevaluated`. A rule there `in_part` is evaluated, and
+//   a match of it is a match; that it did not match says nothing of the alternatives that need
+//   the fields in its `fields_text`.
+// Otherwise the answer says what the core did not see, and the reader does not take it for calm.
+//
+// Values that will be added. A reader meets values of `Raised`, `CollectorState`,
+// `UnevaluatedReason` and `FileAction`, and cases of `Event`'s `body`, that it does not know: the
+// core adds them within version 1. It treats one it does not know as something it cannot judge.
 
 syntax = "proto3";
 
@@ -32,13 +47,15 @@ message Matches {
   uint32 format = 1;
   // When the answer was made.
   int64 answered_at = 2;
-  // The position given with `--after`. Absent when the answer starts at the oldest line kept.
+  // The place given with `--after`, as given. Absent when the answer starts at the oldest line
+  // kept.
   optional string after = 3;
   // The matches after `after`, in the order of the log; the matches of one event in the order
   // the rules are shipped.
   repeated RuleMatch matches = 4;
-  // The position to pass as `--after` next time: the last line this answer read, or `after`
-  // when it read none. Absent when nothing was asked after and nothing was read.
+  // The place to pass as `--after` next time, the core's own words: opaque, stored and passed
+  // back whole. Absent when the collector is not installed: the next answer starts at the oldest
+  // line kept.
   optional string continue_after = 5;
   // Whether whole lines are left after `continue_after` that this answer did not read because
   // it stopped at its limit.
@@ -50,91 +67,106 @@ message Matches {
   repeated Unevaluated unevaluated = 9;
 }
 
-// A published rule matched an event. Its event's position and its rule's file name it.
+// A published rule matched an event. A match is named by its `position` and its rule's `name`.
 message RuleMatch {
-  // Where the event's line is.
+  // Where the event's line is: the core's own reference, opaque, that includes the log file's
+  // identity, so it is never given to another line. Positions are not ordered as text: matches
+  // come in the order of the log.
   string position = 1;
   Rule rule = 2;
   Event event = 3;
   // What became of the match among the core's findings.
   Raised raised = 4;
-  // The finding the core raised of this match or added it to, when `raised` is `finding`.
-  // `immune finding <id>` shows it.
-  optional string finding_id = 5;
+  // The findings the match was added to, each with its state, when `raised` is `finding`. One
+  // today. A finding's state says whether the person has already answered it: a match added to a
+  // finding marked `expected`, or to one marked `seen` since, raises nothing the person sees.
+  // `immune finding <id>` shows one.
+  repeated FindingRef findings = 5;
 }
 
 // What became of a match among the core's findings.
 enum Raised {
   RAISED_UNSPECIFIED = 0;
-  // The rule is marked below high: its matches are counted and raise nothing.
+  // The rule is marked below high: its matches are counted and raise nothing. The reader judges
+  // the match itself.
   RAISED_BELOW_HIGH = 1;
-  // It raised `finding_id`, or added to it.
+  // The core's own reading raised a finding of the match or added it to one, as `findings` says.
   RAISED_FINDING = 2;
-  // The core's own reading has not read this line yet. When it does, the match raises the
-  // rule's finding or adds to it.
+  // The core's own reading has not read the line yet. This is not a promise of a finding. When
+  // the reading reaches the line, the match raises the rule's finding or adds to it, and a later
+  // answer says which. A line deleted before then is never read, and no finding holds it. The
+  // reader judges the match itself.
   RAISED_NOT_READ_YET = 3;
-  // The core's own reading read it, and the store cannot tell which of the rule's findings on
-  // this Mac it went to. The store keeps no event; a match is tied to the one finding of its
-  // rule still seen at or after the event's second, and here more than one was.
-  RAISED_UNTOLD = 4;
+  // The core's own reading read the line and no finding holds the match, as a build that lacked
+  // the rule leaves it. The reader judges the match itself.
+  RAISED_NO_FINDING = 4;
+  // The core's own reading read the line before the core kept which finding each match went to.
+  // It went to one of the rule's findings on this Mac, and the core cannot tell which. The reader
+  // judges the match itself; `immune findings --all` lists the rule's findings.
+  RAISED_UNRECORDED = 5;
 }
 
 // A published rule, as the core ships it.
 message Rule {
-  // Its path in the shipped set, under `rules/sigma/`: the core's own name for it.
-  string file = 1;
+  // The name findings give the rule, `sigma:<id>`: the store's name for it.
+  string name = 1;
+  // Its path in the shipped set, under `rules/sigma/`, which moves between upstream commits.
+  string file = 2;
   // Its `id` and `title` as published, whole.
-  string id_text = 2;
-  string title_text = 3;
-  Level level = 4;
+  string id_text = 3;
+  string title_text = 4;
+  Level level = 5;
   // ATT&CK techniques from its `attack.t…` tags, such as `T1027.001`.
-  repeated string techniques_text = 5;
+  repeated string techniques_text = 6;
   // Its `author`, which the Detection Rule License asks a message made from a match to keep.
-  optional string author_text = 6;
+  optional string author_text = 7;
 }
 
-// An event as the collector's log holds it. Exactly one of `program_start` and `file_event` is
-// set, the one `kind` names.
+// An event as the collector's log holds it. The case of `body` that is set names its kind.
 message Event {
-  EventKind kind = 1;
-  ProgramStart program_start = 2;
-  FileEvent file_event = 3;
+  oneof body {
+    ProgramStart program_start = 1;
+    FileEvent file_event = 2;
+  }
 }
 
-enum EventKind {
-  EVENT_KIND_UNSPECIFIED = 0;
-  EVENT_KIND_PROGRAM_START = 1;
-  EVENT_KIND_FILE_EVENT = 2;
+// A process, as far as the collector keeps it. Only `executable_text` is always there; the rest
+// is absent where the event does not give it. Nothing here identifies a process beyond its pid,
+// which is reused once the process ends.
+message Process {
+  // Its program, the path of its executable. Whole.
+  string executable_text = 1;
+  // Its pid and its effective user id, from its audit token.
+  optional int64 pid = 2;
+  optional int64 user_id = 3;
+  // Who signed its program: `signing_id`, `team_id` and `is_platform_binary`.
+  optional string signing_id_text = 4;
+  optional string team_id_text = 5;
+  optional bool platform_binary = 6;
 }
 
 // A program started: an `exec` message from Apple's `eslogger`, as the collector keeps it. The
-// environment is never kept. The ids are numbers as Endpoint Security gives them; nothing here
-// identifies a process beyond its pid, which is reused once the process ends.
+// environment is never kept.
 message ProgramStart {
   // When it happened, from `time`: seconds since the epoch, and the nanoseconds within that
   // second. The log gives microseconds. Absent when the log's time is not in the form eslogger
   // writes.
   optional int64 happened_at = 1;
   optional uint32 happened_nanos = 2;
-  // The program started, `event.exec.target.executable.path`. Whole.
-  string executable_text = 3;
-  // The arguments, `event.exec.args`, the first included, each whole and in its own string.
-  repeated string args_text = 4;
-  // `event.exec.cwd.path`.
-  optional string working_directory_text = 5;
-  // From the started process's audit token: its pid and its effective user id.
-  int64 pid = 6;
-  optional int64 user_id = 7;
+  // The process with the program started, `event.exec.target`: its executable, pid, user id and
+  // signature.
+  Process process = 3;
+  // The same process before this `exec`, `process` in eslogger's message: today only its
+  // program, `process.executable.path`. After a fork or `posix_spawn` that is the parent's
+  // program; after an `exec` without a fork it is a wrapper that replaced itself, such as `nohup`
+  // or `env`. Absent when the log does not give it.
+  Process instigator = 4;
   // `event.exec.target.ppid`.
-  optional int64 parent_pid = 8;
-  // The program the process ran before this `exec`, `process.executable.path`. After a fork or
-  // `posix_spawn` it is the parent's program; after an `exec` without a fork it is a wrapper that
-  // replaced itself, such as `nohup` or `env`.
-  optional string parent_executable_text = 9;
-  // Who signed the program started: `signing_id`, `team_id` and `is_platform_binary`.
-  optional string signing_id_text = 10;
-  optional string team_id_text = 11;
-  optional bool platform_binary = 12;
+  optional int64 parent_pid = 5;
+  // The arguments, `event.exec.args`, the first included, each whole and in its own string.
+  repeated string args_text = 6;
+  // `event.exec.cwd.path`.
+  optional string working_directory_text = 7;
 }
 
 // A file created or renamed: a `create` or `rename` message from `eslogger`, as the collector
@@ -148,8 +180,9 @@ message FileEvent {
   string path_text = 4;
   // Where a renamed file was. Absent for a file created.
   optional string source_text = 5;
-  // The program that did it, `process.executable.path`.
-  string executable_text = 6;
+  // The process that did it, `process` in eslogger's message: today only its program,
+  // `process.executable.path`.
+  Process instigator = 6;
 }
 
 // What happened to a file, as `eslogger` names the event.
@@ -172,41 +205,50 @@ message Stretch {
   // File events the collector or the core could not make out, such as one whose path eslogger
   // marked as cut short: not evaluated.
   uint64 unreadable_file_events = 5;
-  // Program starts missing from eslogger's numbering: dropped before they reached the log.
+  // Program starts missing from eslogger's numbering: dropped before they reached the log, or
+  // in lines deleted before they were read. The number before this stretch's first program start
+  // is the one `after` holds, so a gap at the seam between two answers is counted in the later
+  // one; without `after`, the first has nothing before it.
   uint64 program_starts_lost = 6;
   // Times the numbering of program starts started again, as it does when eslogger restarts:
-  // each a loss of unknown size. The gap before this stretch's first program start counts here
-  // too when the number before it lay further back than the core looks.
+  // each a loss of unknown size.
   uint64 program_starts_unknown_losses = 7;
   // The same for files created and renamed.
   uint64 file_events_lost = 8;
   uint64 file_events_unknown_losses = 9;
-  // The lines after `after` up to `kept_from` were deleted before this answer read them: they
-  // are gone, and nothing in them was evaluated here.
+  // Lines that `after` had not read were deleted, or their file replaced, before this answer
+  // could read them: they are gone, and nothing in them was evaluated here. The core cannot say
+  // how many.
   bool gone = 10;
-  // Where the log kept goes on after lines that are gone. Absent when nothing is kept.
+  // When `gone`, where the log kept goes on: the first line of the first file kept at or after
+  // the place of the lines that are gone, as a `position`. Absent when no such file is kept.
   optional string kept_from = 11;
 }
 
 // The collector and what it records.
 message Collector {
-  // Its state now, judged from its log the way the core's own reading judges it: what
-  // `immune status` serves after its next reading. Only while it is `running` does a quiet
-  // stretch mean that little happened.
+  // Its state, judged from its log when this answer was made, the way the core's own reading
+  // judges it. This is the state that speaks for the stretch just read. Only while it is
+  // `running` does a quiet stretch mean that little happened.
   CollectorState state = 1;
   // What made it `refused` or `failing`: who printed it, `eslogger` or `scripts`, and the last
   // line printed.
   optional string said_by = 2;
   optional string said_text = 3;
-  // When its log was last written to.
+  // When its log was last written to, as the files' times say. A time later than `answered_at`
+  // is not taken as a sign that it records.
   optional int64 written_at = 4;
   // Whether the collector installed here is established to record files created and renamed.
-  // When it is not, the rules for file events are listed in `unevaluated`.
+  // When it is not, or it is not installed, the rules for file events are listed in
+  // `unevaluated` with `not_collected`.
   bool file_events_collected = 5;
-  // Its state as `immune status` serves it now, from the store's latest reading, and when that
-  // reading was made. Absent when the store holds no reading of it.
+  // Its state as `immune status` serves it now, from the core's own latest reading, and when
+  // that reading was made. It speaks for the core's findings and for `raised`, not for the
+  // stretch. Absent when the store holds no reading of it.
   optional CollectorState status_state = 6;
   optional int64 status_read_at = 7;
+  // Files in the log folder that are not the collector's own, by their names: not read.
+  uint64 foreign_files = 8;
 }
 
 // The collector's states, as `immune status` names them.
@@ -230,17 +272,19 @@ enum CollectorState {
 message Unevaluated {
   // Its path in the shipped set.
   string file = 1;
+  // The name findings give it, `sigma:<id>`. Absent for a rule that could not be read.
+  optional string name = 2;
   // Its `id`, `title` and level. Absent for a rule that could not be read.
-  optional string id_text = 2;
-  optional string title_text = 3;
-  optional Level level = 4;
-  UnevaluatedReason reason = 5;
+  optional string id_text = 3;
+  optional string title_text = 4;
+  optional Level level = 5;
+  UnevaluatedReason reason = 6;
   // The fields it needs that the events here do not give: for `needs_fields`, and for `in_part`
   // those of the alternatives that never match.
-  repeated string fields_text = 6;
+  repeated string fields_text = 7;
   // For `needs_events` the kind of event it is about; for `not_parsed` what the parser said; for
   // `not_collected` why the collector here is not taken to record file events.
-  optional string detail_text = 7;
+  optional string detail_text = 8;
 }
 
 // Why a rule judges nothing here, or only part of what it means.
@@ -256,6 +300,7 @@ enum UnevaluatedReason {
   UNEVALUATED_REASON_NOT_PARSED = 4;
   // Evaluated, and some alternatives of its selections never match here.
   UNEVALUATED_REASON_IN_PART = 5;
-  // A rule for file events, and the collector here is not established to record them.
+  // A rule for file events, and the collector here is not installed or not established to
+  // record them.
   UNEVALUATED_REASON_NOT_COLLECTED = 6;
 }
