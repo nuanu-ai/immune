@@ -7,18 +7,18 @@
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>local.personal-soc.event-tidy</string>
+	<string>ai.nuanu.immune.event-tidy</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>/bin/sh</string>
-		<string>/Library/Application Support/personal-soc/event-level/tidy.sh</string>
-		<string>/Library/Application Support/personal-soc/event-level/log</string>
+		<string>/Library/Application Support/ai.nuanu.immune/event-level/tidy.sh</string>
+		<string>/Library/Application Support/ai.nuanu.immune/event-level/log</string>
 		<string>524288000</string>
 	</array>
 	<key>StandardOutPath</key>
 	<string>/dev/null</string>
 	<key>StandardErrorPath</key>
-	<string>/Library/Application Support/personal-soc/event-level/log/scripts.err</string>
+	<string>/Library/Application Support/ai.nuanu.immune/event-level/log/scripts.err</string>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>StartInterval</key>

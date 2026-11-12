@@ -14,16 +14,16 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const SCRIPTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/event-level");
 /// Where the install puts everything the daemons run or read: a folder only root can write.
-const LIB: &str = "/Library/Application Support/personal-soc/event-level";
+const LIB: &str = "/Library/Application Support/ai.nuanu.immune/event-level";
 /// What the reader looks for under the system root, as the plists and the install place it.
-const PLIST: &str = "Library/LaunchDaemons/local.personal-soc.eslogger.plist";
-const LOG: &str = "Library/Application Support/personal-soc/event-level/log";
+const PLIST: &str = "Library/LaunchDaemons/ai.nuanu.immune.eslogger.plist";
+const LOG: &str = "Library/Application Support/ai.nuanu.immune/event-level/log";
 /// The install's record of what the collector records.
-const COLLECTS: &str = "Library/Application Support/personal-soc/event-level/collects";
+const COLLECTS: &str = "Library/Application Support/ai.nuanu.immune/event-level/collects";
 const LABELS: [&str; 3] = [
-    "local.personal-soc.eslogger",
-    "local.personal-soc.event-filter",
-    "local.personal-soc.event-tidy",
+    "ai.nuanu.immune.eslogger",
+    "ai.nuanu.immune.event-filter",
+    "ai.nuanu.immune.event-tidy",
 ];
 /// The most bytes of log the tidy job keeps, as its plist gives it: 500 MiB.
 const CAP: &str = "524288000";
@@ -41,8 +41,10 @@ impl Dir {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("soc-events-{tag}-{}-{nanos}", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "immune-events-{tag}-{}-{nanos}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&path).unwrap();
         Dir(path)
     }
@@ -79,7 +81,7 @@ impl Dir {
         let plist = self.root().join(PLIST);
         std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
         std::fs::copy(
-            Path::new(SCRIPTS).join("local.personal-soc.eslogger.plist"),
+            Path::new(SCRIPTS).join("ai.nuanu.immune.eslogger.plist"),
             plist,
         )
         .unwrap();
@@ -106,7 +108,7 @@ impl Dir {
         let absent = self.0.join("absent");
         std::fs::write(self.0.join("brew.json"), r#"{"formulae": [], "casks": []}"#).unwrap();
         std::fs::create_dir_all(self.0.join("home")).unwrap();
-        let out = Command::new(env!("CARGO_BIN_EXE_soc"))
+        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
             .env("HOME", self.0.join("home"))
             .current_dir(&self.0)
             .args(["run", "--machine-name", "mac", "--store"])
@@ -140,9 +142,9 @@ impl Dir {
         self.run()
     }
 
-    /// The line about the level in `soc status` for a person.
+    /// The line about the level in `immune status` for a person.
     fn words(&self) -> String {
-        let out = Command::new(env!("CARGO_BIN_EXE_soc"))
+        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
             .env("HOME", self.0.join("home"))
             .args(["status", "--store"])
             .arg(self.store())
@@ -157,7 +159,7 @@ impl Dir {
     }
 
     fn status(&self) -> Value {
-        let out = Command::new(env!("CARGO_BIN_EXE_soc"))
+        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
             .env("HOME", self.0.join("home"))
             .args(["status", "--json", "--store"])
             .arg(self.store())
@@ -168,9 +170,9 @@ impl Dir {
         v["result"].clone()
     }
 
-    /// `soc <args> --store <this store>`: its stdout, after it succeeded.
-    fn soc(&self, args: &[&str]) -> String {
-        let out = Command::new(env!("CARGO_BIN_EXE_soc"))
+    /// `immune <args> --store <this store>`: its stdout, after it succeeded.
+    fn immune(&self, args: &[&str]) -> String {
+        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
             .env("HOME", self.0.join("home"))
             .args(args)
             .arg("--store")
@@ -185,18 +187,18 @@ impl Dir {
         String::from_utf8_lossy(&out.stdout).into_owned()
     }
 
-    /// The result of `soc <args> --json --store <this store>`.
-    fn soc_json(&self, args: &[&str]) -> Value {
+    /// The result of `immune <args> --json --store <this store>`.
+    fn immune_json(&self, args: &[&str]) -> Value {
         let mut args = args.to_vec();
         args.push("--json");
-        let v: Value = serde_json::from_str(&self.soc(&args)).unwrap();
+        let v: Value = serde_json::from_str(&self.immune(&args)).unwrap();
         v["result"].clone()
     }
 
-    /// `soc rules --over-log` over this system root, without a store: its exit status and
+    /// `immune rules --over-log` over this system root, without a store: its exit status and
     /// stdout.
     fn replay(&self, args: &[&str]) -> (bool, String) {
-        let out = Command::new(env!("CARGO_BIN_EXE_soc"))
+        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
             .env("HOME", self.0.join("home"))
             .args(["rules", "--over-log", "--system-root"])
             .arg(self.root())
@@ -1171,7 +1173,7 @@ fn a_running_watcher_reads_program_starts_every_few_seconds_and_a_failed_reading
             "unreadable": 0, "ended": 0, "sockets_unreadable": 0}"#,
     )
     .unwrap();
-    let mut watcher = Command::new(env!("CARGO_BIN_EXE_soc"))
+    let mut watcher = Command::new(env!("CARGO_BIN_EXE_immune"))
         .env("HOME", dir.0.join("home"))
         .args(["watch", "--events-every", "1", "--store"])
         .arg(dir.store())
@@ -1225,7 +1227,7 @@ fn the_watcher_says_new_starts_and_a_new_state_in_numbers_and_fixed_words_and_no
     let dir = Dir::new("watcher-says");
     dir.install();
     dir.run();
-    let mut watcher = Command::new(env!("CARGO_BIN_EXE_soc"))
+    let mut watcher = Command::new(env!("CARGO_BIN_EXE_immune"))
         .env("HOME", dir.0.join("home"))
         .args([
             "watch",
@@ -1289,7 +1291,7 @@ fn the_watcher_says_new_starts_and_a_new_state_in_numbers_and_fixed_words_and_no
     assert_eq!(v["program_starts_by_minute"]["last_hour"], 2, "{v:#}");
     let live = std::fs::read_to_string(dir.store().parent().unwrap().join("view/live.js")).unwrap();
     let object = live
-        .strip_prefix("window.socLive = ")
+        .strip_prefix("window.immuneLive = ")
         .and_then(|s| s.strip_suffix(";\n"))
         .unwrap_or_else(|| panic!("{live}"));
     let o: Value = serde_json::from_str(object).unwrap();
@@ -1376,7 +1378,7 @@ fn a_binary_padding_start_raises_one_finding_with_its_authors_and_arguments_and_
         line.contains("1 thing needs a look, 1 new in this run."),
         "{line}"
     );
-    let found = dir.soc_json(&["findings"]);
+    let found = dir.immune_json(&["findings"]);
     let list = found["findings"].as_array().unwrap();
     assert_eq!(list.len(), 1, "{found:#}");
     let f = &list[0];
@@ -1477,7 +1479,7 @@ fn a_binary_padding_start_raises_one_finding_with_its_authors_and_arguments_and_
         );
     }
     dir.run();
-    let found = dir.soc_json(&["findings"]);
+    let found = dir.immune_json(&["findings"]);
     let list = found["findings"].as_array().unwrap();
     assert_eq!(list.len(), 1, "{found:#}");
     let p = &list[0]["published_rule"];
@@ -1488,7 +1490,7 @@ fn a_binary_padding_start_raises_one_finding_with_its_authors_and_arguments_and_
     assert_eq!(evidence[4]["args_text"][3], "count=5");
     let id = list[0]["id"].as_str().unwrap().to_string();
     // For a person too: the rule with its authors, and the latest starts with their arguments.
-    let text = dir.soc(&["finding", &id]);
+    let text = dir.immune(&["finding", &id]);
     for said in [
         "Rule: Binary Padding - MacOS, by Igor Fits, Mikhail Larin, oscd.community;",
         "It matched 8 program starts since this finding was raised; the latest:",
@@ -1496,18 +1498,18 @@ fn a_binary_padding_start_raises_one_finding_with_its_authors_and_arguments_and_
     ] {
         assert!(text.contains(said), "{said}: {text}");
     }
-    let one = dir.soc_json(&["finding", &id]);
+    let one = dir.immune_json(&["finding", &id]);
     let rests = one["finding"]["rests_on"].as_array().unwrap();
     assert_eq!(rests.len(), 1, "{one:#}");
     assert_eq!(rests[0]["entry"], "matched");
 
     // Seen by the owner: the next match is a new finding, as for every rule that finds an
     // event, and is still counted.
-    dir.soc(&["finding", &id, "seen"]);
+    dir.immune(&["finding", &id, "seen"]);
     assert_eq!(dir.status()["needs_a_look_total"], 0);
     dir.append(h, &started(10, "/bin/sh", "/bin/dd", &DD));
     dir.run();
-    let found = dir.soc_json(&["findings"]);
+    let found = dir.immune_json(&["findings"]);
     let list = found["findings"].as_array().unwrap();
     assert_eq!(list.len(), 1, "{found:#}");
     assert_ne!(list[0]["id"], id);
@@ -1540,7 +1542,10 @@ fn a_medium_rule_s_match_is_counted_raises_nothing_and_keeps_no_argument() {
     }]);
     assert_eq!(r["rules"]["matched_last_day"], medium, "{:#}", r["rules"]);
     assert_eq!(r["needs_a_look_total"], 0);
-    assert_eq!(dir.soc_json(&["findings", "--all"])["findings"], json!([]));
+    assert_eq!(
+        dir.immune_json(&["findings", "--all"])["findings"],
+        json!([])
+    );
     dir.nowhere_in_the_store(marker);
     // A match two days ago counts in the week and not in the last day.
     rusqlite::Connection::open(dir.store())
@@ -1550,8 +1555,8 @@ fn a_medium_rule_s_match_is_counted_raises_nothing_and_keeps_no_argument() {
             rusqlite::params![(now_secs() / 3600 - 48) as i64, SW_VERS],
         )
         .unwrap();
-    // `soc rules` gives the same counts, in both forms.
-    let rules = dir.soc_json(&["rules"]);
+    // `immune rules` gives the same counts, in both forms.
+    let rules = dir.immune_json(&["rules"]);
     let entry = rules["evaluated"]
         .as_array()
         .unwrap()
@@ -1566,7 +1571,7 @@ fn a_medium_rule_s_match_is_counted_raises_nothing_and_keeps_no_argument() {
         (&rules["watching"], &rules["matches_last_day"]),
         (&json!(true), &json!(1))
     );
-    let plain = dir.soc(&["rules"]);
+    let plain = dir.immune(&["rules"]);
     assert!(
         plain.contains(
             "System Information Discovery Using sw_vers · matched 1 time in the last day"
@@ -1593,7 +1598,7 @@ fn rules_judge_only_what_was_read_and_say_so_and_none_watches_while_the_level_is
     );
     let note = "Over the last day some program starts were lost, could not be read or were deleted before they were read, so the rules judged only those that were read.";
     assert_eq!(rules["judged_note"], note);
-    assert!(dir.soc(&["rules"]).contains(note));
+    assert!(dir.immune(&["rules"]).contains(note));
     assert_eq!(files_readings(&dir), 1);
 
     let hour_ago = SystemTime::now() - Duration::from_secs(3600);
@@ -1619,7 +1624,7 @@ fn rules_judge_only_what_was_read_and_say_so_and_none_watches_while_the_level_is
         "{rules:#}"
     );
     assert!(
-        dir.soc(&["rules"])
+        dir.immune(&["rules"])
             .contains("It is not on, so none of them is watching.")
     );
     // Nor does any reading of file events stand: the coverage of file events this install
@@ -2234,7 +2239,7 @@ fn a_file_a_high_rule_names_raises_one_finding_with_the_file_and_its_program_and
         line.contains("2 things need a look, 2 new in this run."),
         "{line}"
     );
-    let found = dir.soc_json(&["findings"]);
+    let found = dir.immune_json(&["findings"]);
     let list = found["findings"].as_array().unwrap();
     assert_eq!(list.len(), 2, "{found:#}");
     let axios = list
@@ -2284,7 +2289,7 @@ fn a_file_a_high_rule_names_raises_one_finding_with_the_file_and_its_program_and
         );
     }
     dir.run();
-    let found = dir.soc_json(&["findings"]);
+    let found = dir.immune_json(&["findings"]);
     let amos = found["findings"]
         .as_array()
         .unwrap()
@@ -2307,7 +2312,7 @@ fn a_file_a_high_rule_names_raises_one_finding_with_the_file_and_its_program_and
         })
     );
     assert_eq!(evidence[4]["source_text"], "/private/tmp/x3.plist");
-    let text = dir.soc(&["finding", amos["id"].as_str().unwrap()]);
+    let text = dir.immune(&["finding", amos["id"].as_str().unwrap()]);
     for said in [
         "Rule: Atomic MacOS Stealer - Persistence Indicators, by Jason Phang Vern - Onn, Robbin Ooi Zhen Heng (Gen Digital);",
         "It matched 7 file events since this finding was raised; the latest:",
@@ -2317,7 +2322,7 @@ fn a_file_a_high_rule_names_raises_one_finding_with_the_file_and_its_program_and
     ] {
         assert!(text.contains(said), "{said}: {text}");
     }
-    let text = dir.soc(&["finding", axios["id"].as_str().unwrap()]);
+    let text = dir.immune(&["finding", axios["id"].as_str().unwrap()]);
     assert!(
         text.contains("/private/tmp/6202033: created by /usr/local/bin/node"),
         "{text}"

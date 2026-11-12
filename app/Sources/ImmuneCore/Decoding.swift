@@ -1,4 +1,4 @@
-// All decoding of what `soc ... --json` prints lives in this one file, so a change
+// All decoding of what `immune ... --json` prints lives in this one file, so a change
 // of shape is cheap. Every field is optional: a missing or mistyped field becomes
 // nil and is shown as "not reported", never as zero or as fine. Unknown fields are
 // ignored. The shape is the one `src/status.rs` writes.
@@ -9,11 +9,11 @@ public struct Envelope: Sendable, Equatable {
   public var format: Int?
   public var operation: String?
   public var ok: Bool?
-  public var errors: [SocError]
+  public var errors: [ImmuneError]
   public var result: Status?
 }
 
-public struct SocError: Sendable, Equatable {
+public struct ImmuneError: Sendable, Equatable {
   public var code: String?
   public var message: String?
   public var example: String?
@@ -34,7 +34,7 @@ public struct Status: Sendable, Equatable {
   public var cannotJudge: [String]?
   public var noReaderFor: [NoReader]?
   public var notComputed: [NotComputed]?
-  /// What needs the owner's look, as soc serves it, most severe first; at most 50.
+  /// What needs the owner's look, as Immune serves it, most severe first; at most 50.
   public var needsALook: [Item]?
   public var needsALookTotal: Int?
   public var answersNote: String?
@@ -48,19 +48,19 @@ public struct Status: Sendable, Equatable {
   /// The owner's statements that set a machine aside and were not given in the app.
   public var statementsOutsideApp: StatementsOutside?
   /// Known vulnerabilities in packages the projects use: distinct records that affect
-  /// something, each counted once however many projects it affects. Nil from a soc that
+  /// something, each counted once however many projects it affects. Nil from an immune binary that
   /// does not count them.
   public var knownVulnerabilities: Int?
   /// The published detection rules the program ships, and how many of them watch
-  /// program starts. Nil from a soc that has none.
+  /// program starts. Nil from an immune binary that has none.
   public var rules: Rules?
-  /// The event level: every program start on this Mac. Nil from a soc that has none, or
+  /// The event level: every program start on this Mac. Nil from an immune binary that has none, or
   /// before it was first looked for.
   public var eventLevel: EventLevel?
 }
 
 /// `result.event_level`, as much as the panel draws: the state, the count of the last
-/// day, the same day hour by hour, and soc's words for it.
+/// day, the same day hour by hour, and Immune's words for it.
 public struct EventLevel: Sendable, Equatable {
   /// not_installed, running, refused, failing, silent or failed.
   public var state: String?
@@ -69,14 +69,14 @@ public struct EventLevel: Sendable, Equatable {
   /// The last day hour by hour, oldest first (`program_starts_by_hour.counts`); nil
   /// unless every one of them is a count.
   public var startsByHour: [Int]?
-  /// soc's short state ("on", "not installed").
+  /// Immune's short state ("on", "not installed").
   public var stateWords: String?
-  /// soc's caveats, each a sentence: empty means none, nil means not said.
+  /// Immune's caveats, each a sentence: empty means none, nil means not said.
   public var notes: [String]?
   /// The last hour minute by minute, oldest first (`program_starts_by_minute.counts`); nil
   /// unless every one of them is a count.
   public var startsByMinute: [Int]? = nil
-  /// Program starts read in the last hour, as soc counts them.
+  /// Program starts read in the last hour, as Immune counts them.
   public var startsLastHour: Int? = nil
   /// When the level was last read.
   public var readAt: Date? = nil
@@ -85,7 +85,7 @@ public struct EventLevel: Sendable, Equatable {
   public var caveats: [Caveat]? = nil
 }
 
-/// A caveat as soc says it in a few words, under a stable name.
+/// A caveat as Immune says it in a few words, under a stable name.
 public struct Caveat: Sendable, Equatable {
   public var kind: String?
   public var short: String?
@@ -100,7 +100,7 @@ public struct PublishedRule: Sendable, Equatable {
   /// program that created or renamed the file.
   public var executableText: String?
   public var parentExecutableText: String?
-  /// The latest file event: the file, and soc's fixed name of what was done, `create` or
+  /// The latest file event: the file, and Immune's fixed name of what was done, `create` or
   /// `rename`. Absent for a program start.
   public var fileText: String? = nil
   public var action: String? = nil
@@ -118,7 +118,7 @@ public struct Rules: Sendable, Equatable {
   public var matchesLastDay: Int?
 }
 
-/// The statements that stand and were given outside the app: soc's total and the latest.
+/// The statements that stand and were given outside the app: Immune's total and the latest.
 public struct StatementsOutside: Sendable, Equatable {
   public var total: Int?
   public var items: [StatementItem]
@@ -126,7 +126,7 @@ public struct StatementsOutside: Sendable, Equatable {
 
 /// One statement given outside the app. `*_text` is data.
 public struct StatementItem: Sendable, Equatable {
-  /// The machine's name, and its full id, which soc takes back by.
+  /// The machine's name, and its full id, which Immune takes back by.
   public var machineText: String?
   public var entityText: String?
   /// `retired` or `not mine`.
@@ -137,13 +137,13 @@ public struct StatementItem: Sendable, Equatable {
   public var reasonText: String?
 }
 
-/// The answers given outside the app that are in force: soc's total and the latest few.
+/// The answers given outside the app that are in force: Immune's total and the latest few.
 public struct AnsweredOutside: Sendable, Equatable {
   public var total: Int?
   public var items: [AnsweredItem]
 }
 
-/// One answer given outside the app. `title` is soc's fixed words; `*_text` is data.
+/// One answer given outside the app. `title` is Immune's fixed words; `*_text` is data.
 public struct AnsweredItem: Sendable, Equatable {
   public var id: String?
   public var title: String?
@@ -157,7 +157,7 @@ public struct AnsweredItem: Sendable, Equatable {
   public var whereText: String?
 }
 
-/// The state of this Mac as soc judges it.
+/// The state of this Mac as Immune judges it.
 public struct ThisMac: Sendable, Equatable {
   /// watched, watched_in_part or not_checked.
   public var state: String?
@@ -218,7 +218,7 @@ public struct Item: Sendable, Equatable {
   public var technique: String?
   /// Present only for a finding a published rule raised.
   public var publishedRule: PublishedRule?
-  /// soc decided this needs the owner now, from how bad and how sure. Missing, or
+  /// Immune decided this needs the owner now, from how bad and how sure. Missing, or
   /// not a boolean, is false: the app never decides it.
   public var urgent = false
 }
@@ -226,7 +226,7 @@ public struct Item: Sendable, Equatable {
 public struct Store: Sendable, Equatable {
   public var pathText: String?
   public var exists: Bool?
-  /// The pages `soc view` writes for sections of its summary, by the section's name
+  /// The pages `immune view` writes for sections of its summary, by the section's name
   /// (`view_sections`). Only an absolute path to an HTML file is kept.
   public var viewSections: [String: URL] = [:]
 }
@@ -369,7 +369,7 @@ public struct NotComputed: Sendable, Equatable {
   public var reason: String?
 }
 
-/// One line from `soc watch`.
+/// One line from `immune watch`.
 public enum WatchEvent: Sendable, Equatable {
   /// Subscribed to the watched places.
   case watching(places: Int?)
@@ -378,13 +378,13 @@ public enum WatchEvent: Sendable, Equatable {
   /// A sample of running programs opened a finding.
   case sample
   /// A reading of program starts took some or changed the level's state: the level as it
-  /// left it, in numbers and soc's fixed words.
+  /// left it, in numbers and Immune's fixed words.
   case programStarts(EventLevel)
   case alive
   /// Something it survived, with what the failure said as text from a source.
   case problem(code: String?, detailText: String? = nil)
   /// It cannot watch: the error envelope it prints before it exits.
-  case failure(SocError?)
+  case failure(ImmuneError?)
 }
 
 public enum DecodeFailure: Error, Equatable {
@@ -407,7 +407,7 @@ public enum Decoding {
         operation: j["operation"].string,
         ok: j["ok"].bool,
         errors: (j["errors"].array ?? []).map {
-          SocError(
+          ImmuneError(
             code: $0["code"].string, message: $0["message"].string,
             example: $0["example"].string, detailText: $0["detail_text"].string)
         },
@@ -415,7 +415,7 @@ public enum Decoding {
       ))
   }
 
-  /// One line of `soc watch`, or nil when it is not understood.
+  /// One line of `immune watch`, or nil when it is not understood.
   public static func watchLine(_ data: Data) -> WatchEvent? {
     guard let any = try? JSONSerialization.jsonObject(with: data),
       any is [String: Any]
@@ -424,7 +424,7 @@ public enum Decoding {
     guard j["format"].count == knownFormat else { return nil }
     if j["ok"].bool == false {
       let e = j["errors"].array?.first.map {
-        SocError(
+        ImmuneError(
           code: $0["code"].string, message: $0["message"].string,
           example: $0["example"].string, detailText: $0["detail_text"].string)
       }
@@ -436,7 +436,7 @@ public enum Decoding {
     case "sample": return .sample
     case "program_starts": return .programStarts(programStarts(j))
     case "alive": return .alive
-    // `soc watch` as built puts the code beside `event`; a nested `problem` object is
+    // `immune watch` as built puts the code beside `event`; a nested `problem` object is
     // read too, so either shape is understood.
     case "problem":
       return .problem(
@@ -575,7 +575,7 @@ public enum Decoding {
     a.array.map { $0.map { Caveat(kind: $0["kind"].string, short: $0["short"].string) } }
   }
 
-  /// The `program_starts` line of `soc watch`: the level as that reading left it, as far as
+  /// The `program_starts` line of `immune watch`: the level as that reading left it, as far as
   /// the line says it; what it does not say (the day by the hour, the caveats' sentences) is
   /// nil.
   static func programStarts(_ j: J) -> EventLevel {

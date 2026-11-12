@@ -1,10 +1,10 @@
-// Running `soc`: by its absolute path, with an explicit argument list, never
+// Running `immune`: by its absolute path, with an explicit argument list, never
 // through a shell, with a time limit and a cap on what is read back.
 
 import Foundation
 
-/// What one run of `soc` gave back, before anything is decoded.
-public struct SocOutput: Sendable, Equatable {
+/// What one run of `immune` gave back, before anything is decoded.
+public struct ImmuneOutput: Sendable, Equatable {
   public var exitCode: Int32?
   public var signal: Int32?
   public var stdout: Data
@@ -27,21 +27,21 @@ public struct SocOutput: Sendable, Equatable {
   }
 }
 
-public protocol SocRunning: Sendable {
-  func run(_ arguments: [String], timeout: TimeInterval) async -> SocOutput
+public protocol ImmuneRunning: Sendable {
+  func run(_ arguments: [String], timeout: TimeInterval) async -> ImmuneOutput
   /// The same, for whom it runs: the owner's own work comes first.
-  func run(_ arguments: [String], timeout: TimeInterval, for whom: RunFor) async -> SocOutput
+  func run(_ arguments: [String], timeout: TimeInterval, for whom: RunFor) async -> ImmuneOutput
 }
 
-extension SocRunning {
+extension ImmuneRunning {
   public func run(_ arguments: [String], timeout: TimeInterval, for whom: RunFor) async
-    -> SocOutput
+    -> ImmuneOutput
   {
     await run(arguments, timeout: timeout)
   }
 }
 
-/// Whom a run of `soc` is for, and so how it competes for the processor (Apple's
+/// Whom a run of `immune` is for, and so how it competes for the processor (Apple's
 /// quality-of-service classes). What the app starts on its own yields to the owner's
 /// work; what the owner asked for with a click does not wait.
 public enum RunFor: Sendable, Equatable {
@@ -62,19 +62,19 @@ public enum RunFor: Sendable, Equatable {
   }
 }
 
-/// Where `soc` is, and which store it is pointed at. The binary inside the bundle
-/// and soc's own default store, unless a test passes absolute paths with
-/// `--soc-path <path>` / `PERSONAL_SOC_SOC_PATH` and `--store <path>` /
-/// `PERSONAL_SOC_STORE`. The app honours these only in a debug build (see
-/// main.swift). A relative path is refused, so `soc` is never looked up through
+/// Where `immune` is, and which store it is pointed at. The binary inside the bundle
+/// and Immune's own default store, unless a test passes absolute paths with
+/// `--immune-path <path>` / `IMMUNE_PATH` and `--store <path>` /
+/// `IMMUNE_STORE`. The app honours these only in a debug build (see
+/// main.swift). A relative path is refused, so `immune` is never looked up through
 /// PATH or the working folder.
-public enum SocLocation {
-  public static let argument = "--soc-path"
-  public static let environment = "PERSONAL_SOC_SOC_PATH"
+public enum ImmuneLocation {
+  public static let argument = "--immune-path"
+  public static let environment = "IMMUNE_PATH"
   public static let storeArgument = "--store"
-  public static let storeEnvironment = "PERSONAL_SOC_STORE"
+  public static let storeEnvironment = "IMMUNE_STORE"
 
-  /// The arguments that point soc at a store other than its default: none, or
+  /// The arguments that point Immune at a store other than its default: none, or
   /// `--store <absolute path>`.
   public static func store(arguments: [String], environment env: [String: String]) -> Result<
     [String], LocationProblem
@@ -102,7 +102,7 @@ public enum SocLocation {
       return .success(URL(fileURLWithPath: path))
     }
     guard let dir = executableDirectory else { return .failure(.noBundle) }
-    return .success(dir.appendingPathComponent("soc"))
+    return .success(dir.appendingPathComponent("immune"))
   }
 }
 
@@ -113,23 +113,23 @@ public enum LocationProblem: Error, Equatable, Sendable {
     switch self {
     case .missingValue: "A path option was given without a path."
     case .notAbsolute: "A path given for a trial is not absolute, so it is not used."
-    case .noBundle: "The app cannot find its own folder, so it cannot find soc."
+    case .noBundle: "The app cannot find its own folder, so it cannot find immune."
     }
   }
 }
 
-/// A runner that always fails, for when `soc` cannot be located at all.
-public struct UnlocatedSoc: SocRunning {
+/// A runner that always fails, for when `immune` cannot be located at all.
+public struct UnlocatedImmune: ImmuneRunning {
   public let problem: LocationProblem
   public init(problem: LocationProblem) { self.problem = problem }
-  public func run(_ arguments: [String], timeout: TimeInterval) async -> SocOutput {
-    SocOutput(launchFailure: problem.words)
+  public func run(_ arguments: [String], timeout: TimeInterval) async -> ImmuneOutput {
+    ImmuneOutput(launchFailure: problem.words)
   }
 }
 
-public struct ProcessRunner: SocRunning {
+public struct ProcessRunner: ImmuneRunning {
   public let executable: URL
-  /// More than this from `soc` is not read; the run is stopped and reported.
+  /// More than this from `immune` is not read; the run is stopped and reported.
   public let outputLimit: Int
   /// Added to the app's own environment; empty in the app, used by tests.
   public let environment: [String: String]
@@ -142,12 +142,12 @@ public struct ProcessRunner: SocRunning {
     self.environment = environment
   }
 
-  public func run(_ arguments: [String], timeout: TimeInterval) async -> SocOutput {
+  public func run(_ arguments: [String], timeout: TimeInterval) async -> ImmuneOutput {
     await run(arguments, timeout: timeout, for: .owner)
   }
 
   public func run(_ arguments: [String], timeout: TimeInterval, for whom: RunFor) async
-    -> SocOutput
+    -> ImmuneOutput
   {
     let job = job(arguments, for: whom)
     return await withCheckedContinuation { job.start(timeout: timeout, then: $0) }
@@ -173,8 +173,8 @@ final class Job: @unchecked Sendable {
   private var outDone = false
   private var errDone = false
   private var exited = false
-  private var result = SocOutput()
-  private var continuation: CheckedContinuation<SocOutput, Never>?
+  private var result = ImmuneOutput()
+  private var continuation: CheckedContinuation<ImmuneOutput, Never>?
 
   init(
     executable: URL, arguments: [String], limit: Int, environment: [String: String],
@@ -190,7 +190,7 @@ final class Job: @unchecked Sendable {
     process.standardError = errPipe
   }
 
-  func start(timeout: TimeInterval, then continuation: CheckedContinuation<SocOutput, Never>) {
+  func start(timeout: TimeInterval, then continuation: CheckedContinuation<ImmuneOutput, Never>) {
     lock.withLock { self.continuation = continuation }
     outPipe.fileHandleForReading.readabilityHandler = { [self] h in take(h.availableData, out: true)
     }
@@ -267,7 +267,7 @@ final class Job: @unchecked Sendable {
   }
 
   private func finish() {
-    let pending: (CheckedContinuation<SocOutput, Never>, SocOutput)? = lock.withLock {
+    let pending: (CheckedContinuation<ImmuneOutput, Never>, ImmuneOutput)? = lock.withLock {
       guard let c = continuation else { return nil }
       continuation = nil
       result.stdout = out

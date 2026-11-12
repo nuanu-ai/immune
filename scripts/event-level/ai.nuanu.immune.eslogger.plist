@@ -12,7 +12,7 @@
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>local.personal-soc.eslogger</string>
+	<string>ai.nuanu.immune.eslogger</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>/usr/bin/eslogger</string>
@@ -21,9 +21,9 @@
 		<string>rename</string>
 	</array>
 	<key>StandardOutPath</key>
-	<string>/Library/Application Support/personal-soc/event-level/run/events.fifo</string>
+	<string>/Library/Application Support/ai.nuanu.immune/event-level/run/events.fifo</string>
 	<key>StandardErrorPath</key>
-	<string>/Library/Application Support/personal-soc/event-level/log/eslogger.err</string>
+	<string>/Library/Application Support/ai.nuanu.immune/event-level/log/eslogger.err</string>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>

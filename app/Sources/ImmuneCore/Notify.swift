@@ -1,5 +1,5 @@
-// The owner hears about urgent things: a notification when an item soc marked
-// `urgent` is seen for the first time. soc decides what is urgent; the app only
+// The owner hears about urgent things: a notification when an item Immune marked
+// `urgent` is seen for the first time. Immune decides what is urgent; the app only
 // decides when it is new. The system's notification centre sits behind
 // `Notifying`, so tests use a recording stand-in and never ask the system anything.
 
@@ -14,7 +14,7 @@ public enum NotifyPermission: Sendable, Equatable {
   case off
 }
 
-/// One notification: fixed words or soc's title, and at most the place.
+/// One notification: fixed words or Immune's title, and at most the place.
 public struct Note: Sendable, Equatable {
   public let id: String
   public let title: String
@@ -47,12 +47,12 @@ public final class Forgetful: Remembering {
   public func set(_ value: Any?, forKey key: String) { values[key] = value }
 }
 
-/// Decides what to notify from soc's reading, and remembers it.
+/// Decides what to notify from Immune's reading, and remembers it.
 @MainActor
 public final class Announcer {
   /// Ids remembered as notified, newest last. Past the cap the oldest are
   /// forgotten; ids still served are moved to the newest on every reading, so only
-  /// an item gone from soc's list long ago could ever be notified again.
+  /// an item gone from Immune's list long ago could ever be notified again.
   nonisolated public static let rememberedIds = 1000
   /// Stores already read once, the first reading being the baseline.
   nonisolated public static let rememberedStores = 20
@@ -132,7 +132,7 @@ public final class Announcer {
   }
 
   /// One per item, or one for all when more than `burst` are new at once. Only
-  /// soc's title and the place go in, both inert; nothing else from a source.
+  /// Immune's title and the place go in, both inert; nothing else from a source.
   nonisolated static func notes(_ fresh: [Item]) -> [Note] {
     if fresh.count > burst {
       return [

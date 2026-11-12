@@ -1537,7 +1537,8 @@ snapshots:
 
     impl Dir {
         fn new(tag: &str, files: &[(&str, &str)]) -> Dir {
-            let dir = std::env::temp_dir().join(format!("soc-lock-{tag}-{}", std::process::id()));
+            let dir =
+                std::env::temp_dir().join(format!("immune-lock-{tag}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             for (name, text) in files {
                 let path = dir.join(name);

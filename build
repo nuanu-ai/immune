@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds the menu-bar app on this Mac: soc in release, then the bundle around it.
+# Builds the menu-bar app on this Mac: immune in release, then the bundle around it.
 # An app built here is not quarantined, so macOS opens it with the ad hoc signature
 # app/build makes; no developer account is needed.
 # Usage: ./build
@@ -53,7 +53,7 @@ refuse_if_running
 cargo build --release --locked >&2
 # Checked again: the build can take minutes, and the app may have been opened meanwhile.
 refuse_if_running
-built=$(app/build target/release/soc)
+built=$(app/build target/release/immune)
 
 echo "$built"
 echo "Built. Open it with: open \"$built\"" >&2

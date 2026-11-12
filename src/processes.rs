@@ -447,7 +447,7 @@ pub struct At<'a> {
 }
 
 /// Records a sample: the processes the rule tracks, the connections that match the indicator
-/// list, the sample's coverage, and the findings. The watcher calls this on a timer; `soc
+/// list, the sample's coverage, and the findings. The watcher calls this on a timer; `immune
 /// sample` calls it once.
 pub fn take(
     tx: &Transaction,
@@ -1423,7 +1423,7 @@ mod tests {
 
     #[test]
     fn a_signer_is_looked_up_once_per_file_and_again_when_the_file_is_replaced() {
-        let dir = std::env::temp_dir().join(format!("soc-signers-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("immune-signers-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("tool");
         std::fs::write(&file, "one").unwrap();

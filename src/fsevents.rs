@@ -301,8 +301,9 @@ impl Stream {
         unsafe { CFRelease(array) };
         // SAFETY: a valid label; a NULL attribute makes a serial queue. Owned here and
         // released exactly once: below on failure, else in `Drop`.
-        let queue =
-            unsafe { dispatch_queue_create(c"soc.watch.fsevents".as_ptr(), std::ptr::null()) };
+        let queue = unsafe {
+            dispatch_queue_create(c"ai.nuanu.immune.watch.fsevents".as_ptr(), std::ptr::null())
+        };
         if stream.is_null() || queue.is_null() {
             // SAFETY: each was created above, is released once, and no callback can run:
             // the stream, if there is one, was never started.
@@ -441,7 +442,8 @@ mod tests {
     use std::time::Duration;
 
     fn temp(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("soc-fsevents-{tag}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("immune-fsevents-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         // FSEvents names real paths; the temporary folder is behind a symbolic link.

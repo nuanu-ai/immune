@@ -60,7 +60,7 @@ mod tests {
         // What a found tool prints is stored as facts about this Mac. A relative entry of
         // PATH is resolved against whatever folder the program was started in.
         let cwd = std::env::current_dir().unwrap();
-        let rel = PathBuf::from("target").join(format!("soc-tools-{}", std::process::id()));
+        let rel = PathBuf::from("target").join(format!("immune-tools-{}", std::process::id()));
         let abs = cwd.join(&rel);
         let _ = std::fs::remove_dir_all(&abs);
         file(&abs.join("relative/tool"), 0o755);

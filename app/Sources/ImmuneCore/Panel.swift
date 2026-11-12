@@ -1,8 +1,8 @@
 // What the panel under the icon says, built here so it can be tested and printed
 // without a screen. It answers one question: is this Mac watched and quiet.
-// Everything else is on the program's own page (`soc view`).
+// Everything else is on the program's own page (`immune view`).
 //
-// What needs a look is said by soc, in its fixed words (`title`, `meaning`,
+// What needs a look is said by Immune, in its fixed words (`title`, `meaning`,
 // `advice`), item by item in the order it serves them. The app has words only for
 // its own states: cannot be read, checking, not watching, first launch. Text from a
 // source (`where_text`, `value_text`) appears only as an inert value on a card.
@@ -11,25 +11,25 @@ import Foundation
 
 /// One thing that needs a look, as one card.
 public struct Row: Sendable, Equatable, Identifiable {
-  /// Its place in the order soc served.
+  /// Its place in the order Immune served.
   public let id: Int
   public let item: Item
   /// When it was last seen, as a time in the past or an absolute date.
   public let when: String?
   /// The full date and time of `when`, for a tooltip.
   public let whenFull: String?
-  /// The soc this app runs, for the agent; nil when it was not located.
-  public let soc: SocCommand?
+  /// The immune binary this app runs, for the agent; nil when it was not located.
+  public let immune: ImmuneCommand?
 
-  init(id: Int, item: Item, now: Date, soc: SocCommand? = nil) {
+  init(id: Int, item: Item, now: Date, immune: ImmuneCommand? = nil) {
     self.id = id
     self.item = item
-    self.soc = soc
+    self.immune = immune
     when = item.lastSeen.map { Clock.at($0, now: now) }
     whenFull = item.lastSeen.map(Clock.full)
   }
 
-  /// soc's headline for it. soc's fixed words, still passed through `Inert` like
+  /// Immune's headline for it. Immune's fixed words, still passed through `Inert` like
   /// everything read from its output.
   public var title: String { Inert.text(item.title ?? "", limit: 400) }
   /// The path or machine, inert: one line under the headline.
@@ -54,7 +54,7 @@ public struct Row: Sendable, Equatable, Identifiable {
     guard let parent = rule.parentExecutableText else { return shown }
     return shown + " · started by " + Inert.text(parent, limit: 160)
   }
-  /// What it means and what to do, soc's fixed words.
+  /// What it means and what to do, Immune's fixed words.
   public var means: String {
     [item.meaning, item.advice].compactMap { $0 }.map { Inert.text($0, limit: 400) }
       .joined(separator: " ")
@@ -62,7 +62,7 @@ public struct Row: Sendable, Equatable, Identifiable {
 
   /// High and critical: the stronger weight.
   public var strong: Bool { Severity.isStrong(item.severity) }
-  /// soc marked it urgent: its card says so in words, not by colour alone.
+  /// Immune marked it urgent: its card says so in words, not by colour alone.
   public var urgent: Bool { item.urgent }
   /// Informational: the quietest.
   public var quiet: Bool { item.severity == "informational" }
@@ -92,13 +92,13 @@ public struct Row: Sendable, Equatable, Identifiable {
     return value.contains("/") ? Paths.shortened(value) : value
   }
 
-  /// What reads this one item, for an agent: the soc this app runs, by its path.
+  /// What reads this one item, for an agent: the immune binary this app runs, by its path.
   public var readCommand: String {
-    let soc = soc ?? SocCommand(path: "soc")
+    let immune = immune ?? ImmuneCommand(path: "immune")
     if item.type == "finding", let id = item.id, Answer.isUsable(id: id) {
-      return soc.line(["finding", id, "--json"])
+      return immune.line(["finding", id, "--json"])
     }
-    return soc.line(["status", "--json"])
+    return immune.line(["status", "--json"])
   }
 
   /// A short request for the owner's coding agent, in fixed words. It asks the agent
@@ -106,8 +106,8 @@ public struct Row: Sendable, Equatable, Identifiable {
   /// quoted as JSON strings and marked as data.
   public var agentRequest: String {
     var lines = [
-      "Please look into something soc, the security monitor on my Mac, reported.",
-      "If you have the skill named personal-soc, use it for this.",
+      "Please look into something Immune, the security monitor on my Mac, reported.",
+      "If you have the skill named immune, use it for this.",
       "Read it with `\(readCommand)`"
         + (canAnswer ? "." : ", under needs_a_look, by its id."),
       "Tell me what it is and what my options are, and do not change anything without asking"
@@ -137,10 +137,10 @@ public struct Row: Sendable, Equatable, Identifiable {
   }
 }
 
-/// The soc this app runs, as a command an agent can paste into a shell: its
-/// absolute path and the arguments that point it at the same store. soc is not on
+/// The immune binary this app runs, as a command an agent can paste into a shell: its
+/// absolute path and the arguments that point it at the same store. Immune is not on
 /// the agent's PATH; it lives inside the app.
-public struct SocCommand: Sendable, Equatable {
+public struct ImmuneCommand: Sendable, Equatable {
   public let path: String
   public let extra: [String]
 
@@ -154,11 +154,11 @@ public struct SocCommand: Sendable, Equatable {
     ([path] + arguments + extra).map(Shell.quoted).joined(separator: " ")
   }
 
-  /// The soc at this location, unless its path holds a character a pasted line
+  /// The immune binary at this location, unless its path holds a character a pasted line
   /// cannot carry (a control or format character).
-  public static func at(_ url: URL?, extra: [String]) -> SocCommand? {
+  public static func at(_ url: URL?, extra: [String]) -> ImmuneCommand? {
     guard let path = url?.path, Inert.text(path, limit: 4096) == path else { return nil }
-    return SocCommand(path: path, extra: extra)
+    return ImmuneCommand(path: path, extra: extra)
   }
 }
 
@@ -178,12 +178,12 @@ public enum Shell {
 
 public struct Panel: Sendable, Equatable {
   public static let rowsShown = 3
-  public static let statusCommand = "soc status"
+  public static let statusCommand = "immune status"
 
   public var light: Light
   public var headline: String
   /// The one line under the headline: when the last full check was, and whether this
-  /// Mac is watched live, as soc says. "Checked 12 minutes ago · watched live".
+  /// Mac is watched live, as Immune says. "Checked 12 minutes ago · watched live".
   public var glance: String?
   /// The whole sentence on how this Mac is watched: what is seen at once, what waits
   /// for the hourly check, and when the last full check was. Behind "More".
@@ -192,7 +192,7 @@ public struct Panel: Sendable, Equatable {
   public var checkedAt: String?
   /// What the owner can do when the program cannot be read.
   public var help: [String] = []
-  /// The reason in small type, with what soc said.
+  /// The reason in small type, with what Immune said.
   public var reason: String?
   /// Every row; the panel shows the first `rowsShown`.
   public var rows: [Row] = []
@@ -201,7 +201,7 @@ public struct Panel: Sendable, Equatable {
   public var watched: [WatchedGroup] = []
   /// "More" is open: how this Mac is watched, what is watched, what you are told about.
   public var moreOpen = false
-  /// The card the owner opened, by its place in the order soc served; nil is the first.
+  /// The card the owner opened, by its place in the order Immune served; nil is the first.
   public var openRow: Int?
   /// The link at the bottom of "More": the page's section that says, for each kind,
   /// what the owner is told about.
@@ -210,10 +210,10 @@ public struct Panel: Sendable, Equatable {
     symbol: "text.bubble", section: "watched-here")
   /// What the program does not cover, as at most two quiet rows: what the owner can
   /// fix, and the limits of this version; then, when there are any, the known
-  /// vulnerabilities in packages the projects use, and the published rules when soc
+  /// vulnerabilities in packages the projects use, and the published rules when Immune
   /// reports them. Never counted, never orange.
   public var gaps: [GapRow] = []
-  /// Program starts at the event level, one row above the quiet rows, or nil when soc
+  /// Program starts at the event level, one row above the quiet rows, or nil when Immune
   /// says nothing of the level. Never counted by the icon or the headline.
   public var starts: StartsRow?
   /// The request "Copy for my agent" copies beside "You can fix", or nil when there is
@@ -235,15 +235,15 @@ public struct Panel: Sendable, Equatable {
   public var form: ExpectedForm?
   /// The finding whose answer is being saved now.
   public var answering: String?
-  /// Why soc did not take an answer, by the finding's id.
+  /// Why Immune did not take an answer, by the finding's id.
   public var refusals: [String: String] = [:]
   public var footer: [String] { [canCheck ? "Check now" : "Checking…", "Details", "Quit"] }
 
-  /// How many things need a look, as soc counted them (it lists at most 50).
+  /// How many things need a look, as Immune counted them (it lists at most 50).
   public var total = 0
   /// The worst severity among the items served; the menu-bar icon follows it.
   public var worst: String?
-  /// soc marked something served urgent; the menu-bar icon takes its strongest form.
+  /// Immune marked something served urgent; the menu-bar icon takes its strongest form.
   public var urgent = false
   /// "Notifications are off, …", one quiet line with a button, or nil.
   public var notificationsOff: String?
@@ -254,7 +254,7 @@ public struct Panel: Sendable, Equatable {
   /// The one card shown open; the others are one line each. The card with the
   /// Expected form stays open; otherwise the one the owner opened; else one whose
   /// answer is being saved or was refused, so that is never folded away; else the
-  /// first, which is the most urgent as soc orders them.
+  /// first, which is the most urgent as Immune orders them.
   public var opened: Row? {
     if let id = form?.id, let row = shown.first(where: { $0.canAnswer && $0.item.id == id }) {
       return row
@@ -273,7 +273,7 @@ public struct Panel: Sendable, Equatable {
   public static func of(
     _ reading: Reading, now: Date, checking: Bool = false, notes: [String] = [],
     notWatching: String? = nil, form: ExpectedForm? = nil, answering: String? = nil,
-    refusals: [String: String] = [:], notificationsOff: Bool = false, soc: SocCommand? = nil,
+    refusals: [String: String] = [:], notificationsOff: Bool = false, immune: ImmuneCommand? = nil,
     moreOpen: Bool = false, answeredOpen: Bool = false, openRow: Int? = nil
   ) -> Panel {
     let light = Light.of(reading)
@@ -288,11 +288,11 @@ public struct Panel: Sendable, Equatable {
     case .failed(let reason, let detail, let plain):
       p.headline = "I can't tell: " + plain + "."
       p.help = [helpLine]
-      p.reason = reason + (detail.map { " soc said: " + Inert.text($0) } ?? "")
+      p.reason = reason + (detail.map { " immune said: " + Inert.text($0) } ?? "")
     case .read(let s, _):
-      let socChecking = s.running == true
-      p.canCheck = !(checking || socChecking)
-      p.fill(s, now: now, checking: checking || socChecking, soc: soc)
+      let immuneChecking = s.running == true
+      p.canCheck = !(checking || immuneChecking)
+      p.fill(s, now: now, checking: checking || immuneChecking, immune: immune)
     }
     return p
   }
@@ -300,7 +300,7 @@ public struct Panel: Sendable, Equatable {
   static let helpLine =
     "Press Check now, or run \(statusCommand) in a terminal to see what is wrong."
 
-  mutating func fill(_ s: Status, now: Date, checking: Bool, soc: SocCommand?) {
+  mutating func fill(_ s: Status, now: Date, checking: Bool, immune: ImmuneCommand?) {
     // The status is the judge of what may be shown. "Nothing has been checked yet" is
     // for a status that has not computed what needs a look and has no run at all, or
     // that says this Mac was never checked and nothing changed.
@@ -333,7 +333,7 @@ public struct Panel: Sendable, Equatable {
       return
     }
     let items = s.needsALook ?? []
-    rows = items.enumerated().map { Row(id: $0.offset, item: $0.element, now: now, soc: soc) }
+    rows = items.enumerated().map { Row(id: $0.offset, item: $0.element, now: now, immune: immune) }
     total = s.needsALookTotal ?? 0
     worst = Severity.worst(items)
     urgent = items.contains { $0.urgent }
@@ -360,7 +360,7 @@ public struct Panel: Sendable, Equatable {
           label: "You can fix", count: yours, symbol: "wrench.and.screwdriver",
           section: "you-can-fix"))
       fixRequest = Self.fixRequest(
-        ids: list.filter { $0.who == "you" }.compactMap(\.id), soc: soc)
+        ids: list.filter { $0.who == "you" }.compactMap(\.id), immune: immune)
     }
     if limits > 0 {
       gaps.append(
@@ -390,7 +390,7 @@ public struct Panel: Sendable, Equatable {
 
   /// The published rules, one quiet row to the page's section: while they watch, how
   /// many program starts they matched in the last day, counted and never an alarm. They
-  /// are said to watch only when soc says `watching` is true; false, missing or not a
+  /// are said to watch only when Immune says `watching` is true; false, missing or not a
   /// boolean is "not watching yet", counted by what is shipped. Only findings reach the
   /// headline, the total and the icon; a match never does.
   static func rules(_ r: Rules) -> GapRow {
@@ -409,17 +409,17 @@ public struct Panel: Sendable, Equatable {
       section: StartsRow.section)
   }
 
-  /// A short task for the owner's coding agent about what they can fix: the soc this app
+  /// A short task for the owner's coding agent about what they can fix: the immune binary this app
   /// runs, the skill, and the ids of the items to read. Nothing from a source is in it:
-  /// the agent reads the items' words from soc itself.
-  static func fixRequest(ids: [String], soc: SocCommand?) -> String {
-    let soc = soc ?? SocCommand(path: "soc")
+  /// the agent reads the items' words from Immune itself.
+  static func fixRequest(ids: [String], immune: ImmuneCommand?) -> String {
+    let immune = immune ?? ImmuneCommand(path: "immune")
     var usable: [String] = []
     for id in ids where Answer.isUsable(id: id) && !usable.contains(id) { usable.append(id) }
     var lines = [
-      "Please help me with what soc, the security monitor on my Mac, says I can fix.",
-      "If you have the skill named personal-soc, use it for this.",
-      "Run `\(soc.line(["status", "--json"]))` and read the items under not_covered whose who is"
+      "Please help me with what Immune, the security monitor on my Mac, says I can fix.",
+      "If you have the skill named immune, use it for this.",
+      "Run `\(immune.line(["status", "--json"]))` and read the items under not_covered whose who is"
         + " \"you\"" + (usable.isEmpty ? "." : ", by these ids:"),
     ]
     lines += usable.map { "id: " + Row.quoted($0) }
@@ -431,7 +431,7 @@ public struct Panel: Sendable, Equatable {
     return lines.joined(separator: "\n")
   }
 
-  /// Whether soc says a kind is seen all the time while a watcher runs: live, sampled,
+  /// Whether Immune says a kind is seen all the time while a watcher runs: live, sampled,
   /// or program starts the event level records, which the watcher reads at each sample.
   static func allTheTime(_ p: WatchedPart) -> Bool {
     p.how == "live" || p.how == "sampled" || p.how == "events"
@@ -440,7 +440,7 @@ public struct Panel: Sendable, Equatable {
   /// What is watched in two groups: seen all the time (live, sampled, or program starts)
   /// and checked every hour. Without a live watcher everything is in the hourly group.
   static func groups(_ parts: [WatchedPart], live: Bool) -> [WatchedGroup] {
-    // soc's own words as they are: no capitals added, so "npm" stays "npm".
+    // Immune's own words as they are: no capitals added, so "npm" stays "npm".
     func line(_ p: WatchedPart) -> String {
       Inert.text(p.what ?? "", limit: 80) + ": " + (p.count.map(String.init) ?? "?")
     }
@@ -453,8 +453,8 @@ public struct Panel: Sendable, Equatable {
   }
 
   /// The second line: what is seen at once, what waits for the hourly check, and when
-  /// the last full check was. Live watching is claimed only when soc says so, and only
-  /// for the kinds soc names as watched live.
+  /// the last full check was. Live watching is claimed only when Immune says so, and only
+  /// for the kinds Immune names as watched live.
   static func how(live: Bool?, liveKinds: [String] = [], lastCheck: Date?, now: Date) -> String {
     let last = lastCheck.map { Clock.ago($0, now: now) }
     switch live {
@@ -480,7 +480,7 @@ public struct Panel: Sendable, Equatable {
   }
 
   /// The line under the headline: when the last full check was, then "watched live"
-  /// or "hourly only" exactly when soc says whether this Mac is watched live.
+  /// or "hourly only" exactly when Immune says whether this Mac is watched live.
   static func glance(live: Bool?, lastCheck: Date?, now: Date) -> String {
     let when = lastCheck.map { "Checked " + Clock.ago($0, now: now) } ?? "No full check yet"
     switch live {
@@ -582,14 +582,14 @@ public struct AnsweredRow: Sendable, Equatable {
   public let text: String
   /// The row's short label, beside `count`: "Answered through your agent".
   public let label: String
-  /// soc's totals together.
+  /// Immune's totals together.
   public let count: Int
   public let lines: [AnsweredLine]
-  /// How many of soc's totals are not listed here.
+  /// How many of Immune's totals are not listed here.
   public let more: Int
 
-  /// The row for soc's two lists, answers to findings and statements that set a machine
-  /// aside, or nil when both are empty. The count is soc's totals, and never less than
+  /// The row for Immune's two lists, answers to findings and statements that set a machine
+  /// aside, or nil when both are empty. The count is Immune's totals, and never less than
   /// what they list. The latest are listed first.
   static func of(_ a: AnsweredOutside?, _ w: StatementsOutside?) -> AnsweredRow? {
     let answers = a?.items ?? []
@@ -626,11 +626,11 @@ public struct AnsweredLine: Sendable, Equatable, Identifiable {
 
   public let key: Int
   public var id: Int { key }
-  /// The finding's id, when it is one the app passes to soc.
+  /// The finding's id, when it is one the app passes to Immune.
   public let finding: String?
-  /// The machine a statement is about, by its full id, when the app can pass it to soc.
+  /// The machine a statement is about, by its full id, when the app can pass it to Immune.
   public let machine: String?
-  /// soc's headline for the finding, or the machine's name.
+  /// Immune's headline for the finding, or the machine's name.
   public let title: String
   /// "Seen", "Expected until <date>", "Retired" or "Not mine".
   public let answer: String
@@ -673,12 +673,12 @@ public struct AnsweredLine: Sendable, Equatable, Identifiable {
   public var canTakeBack: Bool { target != nil }
 }
 
-/// "Program starts": the event level as one row of two lines at most. While soc says it
+/// "Program starts": the event level as one row of two lines at most. While Immune says it
 /// runs: the last hour as a bar a minute with the last hour's count beside it, and under the
-/// label a few words: "last hour" and when it was read. A caveat soc reports is a short
-/// mark in soc's own few words ("2 restarts"), never a sentence and never left out; the
+/// label a few words: "last hour" and when it was read. A caveat Immune reports is a short
+/// mark in Immune's own few words ("2 restarts"), never a sentence and never left out; the
 /// sentences, the day's count and the time read are the row's help, and the click leads to
-/// the page. Otherwise soc's state in its own words, quietly: not installed is a limit,
+/// the page. Otherwise Immune's state in its own words, quietly: not installed is a limit,
 /// never an alarm. The number is the last hour's, so that it says what the bars draw.
 public struct StartsRow: Sendable, Equatable {
   public static let label = "Program starts"
@@ -687,12 +687,12 @@ public struct StartsRow: Sendable, Equatable {
   public let running: Bool
   /// Program starts in the last hour, while it runs.
   public let count: Int?
-  /// The last hour minute by minute, oldest first, while it runs; empty when soc gave none.
+  /// The last hour minute by minute, oldest first, while it runs; empty when Immune gave none.
   public let minutes: [Int]
   /// The second line, longest first: the row shows the first that fits on one line. The
   /// last is always short.
   public let lines: [String]
-  /// A caveat soc reports, in its few words, beside the second line; nil when soc reports
+  /// A caveat Immune reports, in its few words, beside the second line; nil when Immune reports
   /// none. More than one: the first and how many more.
   public let mark: String?
   /// What the row stands for in full, for its help.
@@ -701,8 +701,8 @@ public struct StartsRow: Sendable, Equatable {
   static func of(_ e: EventLevel?, now: Date) -> StartsRow? {
     guard let e, let state = e.state else { return nil }
     let notes = (e.notes ?? []).map { Inert.text($0, limit: 240) }
-    // The words from a line soc wrote, or from an older soc's sentences: a caveat is always
-    // marked when soc says there is one.
+    // The words from a line Immune wrote, or from an older Immune's sentences: a caveat is always
+    // marked when Immune says there is one.
     let shorts = (e.caveats ?? []).map { Inert.text($0.short ?? "a caveat", limit: 40) }
     let marks = shorts.isEmpty ? notes.map { _ in "a caveat" } : shorts
     let mark = marks.first.map { marks.count > 1 ? "\($0) +\(marks.count - 1)" : $0 }

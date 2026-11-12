@@ -367,7 +367,7 @@ mod tests {
 
     #[test]
     fn a_path_the_framework_cannot_make_code_of_is_an_error_not_a_verdict() {
-        let missing = std::env::temp_dir().join(format!("soc-no-code-{}", std::process::id()));
+        let missing = std::env::temp_dir().join(format!("immune-no-code-{}", std::process::id()));
         assert!(Code::at(&missing).is_err());
     }
 
@@ -384,7 +384,7 @@ mod tests {
     /// hoc with the system's tool when `sign` is set.
     fn bundle(tag: &str, sign: bool) -> (Dir, std::path::PathBuf) {
         let dir =
-            Dir(std::env::temp_dir().join(format!("soc-codesign-{tag}-{}", std::process::id())));
+            Dir(std::env::temp_dir().join(format!("immune-codesign-{tag}-{}", std::process::id())));
         let app = dir.0.join("Tiny.app");
         let contents = app.join("Contents");
         std::fs::create_dir_all(contents.join("MacOS")).unwrap();

@@ -141,9 +141,9 @@
     s.src = "view/live.js?" + Date.now();
     s.onload = s.onerror = function () {
       s.remove();
-      if (window.socLive) {
-        latest = window.socLive;
-        window.socLive = undefined;
+      if (window.immuneLive) {
+        latest = window.immuneLive;
+        window.immuneLive = undefined;
         draw(latest);
       }
       tell();

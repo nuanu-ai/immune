@@ -10,7 +10,7 @@
 
 import AppKit
 import Combine
-import SOCCore
+import ImmuneCore
 import SwiftUI
 
 enum Metrics {
@@ -45,7 +45,7 @@ extension Light {
   }
 }
 
-/// The colour of a finding's mark: red when soc marked it urgent, orange for high and
+/// The colour of a finding's mark: red when Immune marked it urgent, orange for high and
 /// critical, otherwise none of its own. Its words and symbol say the same.
 func markTint(_ row: Row) -> AnyShapeStyle {
   row.urgent
@@ -164,7 +164,7 @@ struct HelpLine: View {
 
 // MARK: - What needs a look
 
-/// "Urgent", in words: soc marked it so.
+/// "Urgent", in words: Immune marked it so.
 struct UrgentPill: View {
   var body: some View {
     Text(verbatim: "Urgent")
@@ -438,7 +438,7 @@ extension QuietRow where Trailing == EmptyView {
 // MARK: - Program starts
 
 /// "Program starts": two lines at most, the label and a few words under it. While the event
-/// level runs, the last hour with a bar a minute and its count beside them; otherwise soc's
+/// level runs, the last hour with a bar a minute and its count beside them; otherwise Immune's
 /// state, quiet. A caveat is a short mark, its sentence in the help. Opens the page's
 /// section. Never styled as a problem.
 struct StartsView: View {
@@ -550,7 +550,7 @@ struct PanelView: View {
       model.reading, now: now ?? Date(), checking: model.runInProgress, notes: model.notes,
       notWatching: watcher.watcher?.notWatching, form: model.form, answering: model.answering,
       refusals: model.refusals, notificationsOff: model.notificationsOff,
-      soc: model.socCommand, moreOpen: model.moreOpen, answeredOpen: model.answeredOpen,
+      immune: model.immuneCommand, moreOpen: model.moreOpen, answeredOpen: model.answeredOpen,
       openRow: model.openRow)
     let quiet = !p.gaps.isEmpty || p.answered != nil || p.hasMore
     VStack(alignment: .leading, spacing: 0) {

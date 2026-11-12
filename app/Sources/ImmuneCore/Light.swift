@@ -1,4 +1,4 @@
-// What the app knows after asking soc, and the icon's state derived from it.
+// What the app knows after asking Immune, and the icon's state derived from it.
 // The false-calm rule applies here: "nothing to report" is shown only when every
 // piece the icon judges by was reported. Anything unknown is "cannot be read".
 
@@ -6,11 +6,11 @@ import Foundation
 
 public enum Reading: Sendable, Equatable {
   case notYetRead
-  /// soc could not be read. `reason` is the app's own words; `detailText` is
-  /// what soc said, which is data and is shown inert; `plain` is the reason in
+  /// Immune could not be read. `reason` is the app's own words; `detailText` is
+  /// what Immune said, which is data and is shown inert; `plain` is the reason in
   /// words for the owner, which ends the headline "I can't tell: …".
   case failed(reason: String, detailText: String?, plain: String)
-  case read(Status, errors: [SocError])
+  case read(Status, errors: [ImmuneError])
 
   public var status: Status? {
     if case .read(let s, _) = self { return s }
@@ -18,7 +18,7 @@ public enum Reading: Sendable, Equatable {
   }
 }
 
-/// The levels of how bad, as soc names them (OCSF's), from least to worst.
+/// The levels of how bad, as Immune names them (OCSF's), from least to worst.
 public enum Severity {
   public static let levels = ["informational", "low", "medium", "high", "critical"]
 
@@ -53,7 +53,7 @@ public enum Light: Sendable, Equatable {
     case false?: return .cannotRead("There is no store yet. Run a full run to create it.")
     case nil: return .cannotRead("Whether the store exists is not reported.")
     }
-    // What needs a look is soc's to say, whether or not a full check has finished.
+    // What needs a look is Immune's to say, whether or not a full check has finished.
     // Not computed, or not said, is not calm.
     if let nc = s.notComputed?.first(where: { $0.section == "needs_a_look" }) {
       return .cannotRead(
@@ -68,7 +68,7 @@ public enum Light: Sendable, Equatable {
     }
     // A finding outranks everything else.
     if total > 0 { return .attention(total) }
-    // Calm only when soc says this Mac is watched, wholly or in part; not checked,
+    // Calm only when Immune says this Mac is watched, wholly or in part; not checked,
     // or anything else, is not calm. What it does not cover never raises the icon.
     switch s.thisMac?.state {
     case "watched", "watched_in_part": return .nothingToReport
@@ -77,7 +77,7 @@ public enum Light: Sendable, Equatable {
   }
 
   /// The menu-bar symbol: filled when the worst thing shown is high or critical, or
-  /// when soc marked something urgent.
+  /// when Immune marked something urgent.
   public static func menuSymbol(_ light: Light, worst: String?, urgent: Bool = false) -> String {
     if case .attention = light, urgent || Severity.isStrong(worst) { return light.symbol + ".fill" }
     return light.symbol
@@ -122,57 +122,59 @@ public enum Interpret {
   static let cannotReadRecords = "the program cannot read its records"
   static let reported = "the program reported a problem"
 
-  /// soc's raw output, turned into what the app knows. Any doubt is a failure.
-  public static func reading(from o: SocOutput) -> Reading {
+  /// Immune's raw output, turned into what the app knows. Any doubt is a failure.
+  public static func reading(from o: ImmuneOutput) -> Reading {
     if let why = o.launchFailure {
-      return .failed(reason: "soc could not be started.", detailText: why, plain: notStarted)
+      return .failed(reason: "immune could not be started.", detailText: why, plain: notStarted)
     }
     if o.timedOut {
       return .failed(
-        reason: "soc did not answer in time and was stopped.", detailText: nil, plain: tooSlow)
+        reason: "immune did not answer in time and was stopped.", detailText: nil, plain: tooSlow)
     }
     if o.tooLarge {
       return .failed(
-        reason: "soc printed more than the app reads.", detailText: nil, plain: notUnderstood)
+        reason: "immune printed more than the app reads.", detailText: nil, plain: notUnderstood)
     }
     let stderrText = String(decoding: o.stderr.prefix(2000), as: UTF8.self)
     let said = stderrText.isEmpty ? nil : stderrText
     if let sig = o.signal {
-      return .failed(reason: "soc was stopped by signal \(sig).", detailText: said, plain: stopped)
+      return .failed(
+        reason: "immune was stopped by signal \(sig).", detailText: said, plain: stopped)
     }
     let exit = o.exitCode ?? -1
     guard case .success(let env) = Decoding.envelope(from: o.stdout) else {
       return .failed(
         reason: exit == 0
-          ? "soc's answer is not understood."
-          : "soc failed with exit code \(exit) and its answer is not understood.",
+          ? "immune's answer is not understood."
+          : "immune failed with exit code \(exit) and its answer is not understood.",
         detailText: said, plain: notUnderstood)
     }
     guard env.format == Decoding.knownFormat else {
       let f = env.format.map { "format \($0)" } ?? "no format"
       return .failed(
-        reason: "soc's answer has \(f), which this app does not know.", detailText: nil,
+        reason: "immune's answer has \(f), which this app does not know.", detailText: nil,
         plain: notUnderstood)
     }
     if env.ok == false || exit != 0 {
       return .failed(
-        reason: exit != 0 ? "soc failed with exit code \(exit)." : "soc reported a failure.",
+        reason: exit != 0 ? "immune failed with exit code \(exit)." : "immune reported a failure.",
         detailText: env.errors.first.map(words) ?? said,
         plain: env.errors.first?.code == "store_unreadable" ? cannotReadRecords : reported)
     }
     guard env.ok == true else {
       return .failed(
-        reason: "soc's answer does not say whether it succeeded.", detailText: nil,
+        reason: "immune's answer does not say whether it succeeded.", detailText: nil,
         plain: notUnderstood)
     }
     guard let status = env.result else {
-      return .failed(reason: "soc's answer has no result.", detailText: nil, plain: notUnderstood)
+      return .failed(
+        reason: "immune's answer has no result.", detailText: nil, plain: notUnderstood)
     }
     return .read(status, errors: env.errors)
   }
 
   /// An error as one line: its code, its message, and what it said from the machine.
-  public static func words(_ e: SocError) -> String {
+  public static func words(_ e: ImmuneError) -> String {
     let head = [e.code, e.message].compactMap { $0 }.joined(separator: ": ")
     guard let d = e.detailText, !d.isEmpty else { return head }
     return head + " (" + d + ")"

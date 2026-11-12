@@ -400,7 +400,7 @@ mod tests {
     fn a_file_swapped_for_a_named_pipe_after_it_was_looked_at_never_holds_the_run() {
         // Between looking at a regular file and opening it, it may become a named pipe, which
         // a plain open waits on for a writer forever.
-        let dir = std::env::temp_dir().join(format!("soc-watched-swap-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("immune-watched-swap-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("profile");
         std::fs::write(&path, "regular\n").unwrap();

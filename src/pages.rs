@@ -106,7 +106,7 @@ fn about(what: &str) -> &'static str {
 /// what the owner can fix beside the known vulnerabilities; the map of what the program has
 /// collected; what is watched, as numbers; and, closed, the limits of this version, the
 /// answers given and the technical pages. Built from the state and the result
-/// `soc status --json` gives, so the two agree. Everything the page said before is still on
+/// `immune status --json` gives, so the two agree. Everything the page said before is still on
 /// it, the long parts behind `<details>`.
 pub fn summary(
     conn: &Connection,
@@ -445,7 +445,7 @@ fn needs(out: &mut String, st: &crate::status::State) -> Out {
     if items.len() > ITEMS_SHOWN {
         writeln!(
             out,
-            "<p class=\"meta\">{} more, the mildest; <span class=\"mono\">soc status --json</span> and <span class=\"mono\">soc findings</span> list them.</p>",
+            "<p class=\"meta\">{} more, the mildest; <span class=\"mono\">immune status --json</span> and <span class=\"mono\">immune findings</span> list them.</p>",
             items.len() - ITEMS_SHOWN
         )?;
     }
@@ -761,7 +761,7 @@ fn answered_section(conn: &Connection, out: &mut String, now: i64) -> Out {
         writeln!(
             out,
             "<p class=\"meta mono\">{}</p>\n</article>",
-            esc(&format!("soc finding {} reopen", i.id))
+            esc(&format!("immune finding {} reopen", i.id))
         )?;
     }
     out.push_str("</details>\n</section>\n");
@@ -1398,7 +1398,7 @@ const PLACED: [(&str, &str, &str); 3] = [
 /// What the published rules are and how many of them watch this Mac, from the status's part
 /// `rules`: none while the event level does not run; while it runs, those evaluated in full,
 /// never one evaluated in part, and whether they judged every start of the last day. The
-/// summary, the rules page and `soc rules` say it in these words.
+/// summary, the rules page and `immune rules` say it in these words.
 pub fn rules_said(r: &serde_json::Value) -> String {
     let head = format!(
         "{} rules for macOS from SigmaHQ's public rule set, as it was on {}.",
@@ -2175,7 +2175,7 @@ mod tests {
         // itself takes it from the table: a row read here that one of them missed would be
         // read and never told, or told and never watched live.
         use crate::autorun::{self, POINTS};
-        let dir = std::env::temp_dir().join(format!("soc-ways-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("immune-ways-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let conn = crate::store::open(&dir.join("store.db")).unwrap();

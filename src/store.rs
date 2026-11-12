@@ -255,7 +255,7 @@ INSERT OR IGNORE INTO coverage_kind (name) VALUES
 INSERT OR IGNORE INTO coverage_kind (name) VALUES ('folders macOS asks permission for');
 ";
 
-/// Indexes what `soc status` and the view read by, made on every open so that a store of the
+/// Indexes what `immune status` and the view read by, made on every open so that a store of the
 /// current format takes them. Without them the status of a store of tens of thousands of
 /// things took seconds: each finding looked up its subject and its basis by a full scan, and
 /// each latest reading looked for its last full one the same way.
@@ -269,8 +269,8 @@ INSERT OR IGNORE INTO coverage_kind (name) VALUES ('folders macOS asks permissio
 /// The status and the view ask for the latest reading of each reader, scope and kind, when
 /// each was last read in full, and what one run read. `LATEST` finds the first through
 /// `coverage_reading`, `coverage_full` answers the second in one look-up and `coverage_run`
-/// the third; `coverage_lack_of` finds what a latest reading names as not read. Without them `soc status` took 8 ms after ten watcher readings and 325 ms after
-/// ten thousand, and `soc view` 9 ms and 589 ms.
+/// the third; `coverage_lack_of` finds what a latest reading names as not read. Without them `immune status` took 8 ms after ten watcher readings and 325 ms after
+/// ten thousand, and `immune view` 9 ms and 589 ms.
 const INDEXES: &str = "
 CREATE INDEX IF NOT EXISTS coverage_reading ON coverage (reader, scope, kind);
 CREATE INDEX IF NOT EXISTS coverage_latest_of_kind ON coverage (reader, kind);
@@ -285,7 +285,7 @@ CREATE INDEX IF NOT EXISTS finding_basis_finding ON finding_basis (finding);
 /// or the catalogue changed. Every run, watcher reading and sample adds to the journal and
 /// nothing is ever removed from it, so without this each of those questions went through
 /// the whole journal: the page of threats asked it once for each of the catalogue's 1,450
-/// entries, 2.5 s of a full `soc view` on a journal of 40,000 entries. Made after the journal
+/// entries, 2.5 s of a full `immune view` on a journal of 40,000 entries. Made after the journal
 /// is widened, which makes the table again.
 const JOURNAL_INDEXES: &str = "
 CREATE INDEX IF NOT EXISTS journal_run ON journal (run_id, entry);
@@ -449,7 +449,7 @@ type Res<T> = Result<T, Box<dyn std::error::Error>>;
 /// Opens the store, creating it in an empty file. A store of another format is refused
 /// and left as it is: old stores are not converted.
 ///
-/// A run writes in one transaction that lasts the whole run. Readers such as `soc status`
+/// A run writes in one transaction that lasts the whole run. Readers such as `immune status`
 /// must be able to read the last committed state all that time, so the run never takes the
 /// exclusive lock before it commits: a cache that grew past its size would otherwise be
 /// spilled to the file, which takes the exclusive lock in the middle of the transaction and
@@ -568,7 +568,7 @@ fn check_format(conn: &Connection, path: &Path) -> Res<()> {
 }
 
 /// How long a run waits for the run lock before it says another run is in progress. A
-/// `soc status` holds the lock shared for a moment only; another run holds it for minutes.
+/// `immune status` holds the lock shared for a moment only; another run holds it for minutes.
 const LOCK_WAIT: Duration = Duration::from_secs(2);
 
 /// Takes the run lock on the store's folder, for as long as the handle returned stays open,
@@ -607,7 +607,7 @@ pub fn run_in_progress(folder: &Path) -> std::io::Result<bool> {
     }
 }
 
-// --- The watcher's lock, for `soc watch` (src/watch.rs). ---
+// --- The watcher's lock, for `immune watch` (src/watch.rs). ---
 
 /// The file in the store's folder that the watcher holds locked while it runs. The run lock is
 /// on the folder itself, so the watcher's needs a file of its own.

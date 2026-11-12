@@ -1,6 +1,6 @@
 //! The state the store holds after the last finished run, read back from the store alone.
 //!
-//! The run's report line, `soc status` and the machine-readable form of both are built from
+//! The run's report line, `immune status` and the machine-readable form of both are built from
 //! one `Summary`, so they cannot count differently. What a run learns while it runs is read
 //! back from what it wrote: its events from the journal, its readings from coverage, the
 //! catalogue from its reading. The one number of the report line the store does not hold is
@@ -244,7 +244,7 @@ fn no_reader_for(conn: &Connection) -> rusqlite::Result<Option<Vec<NoReader>>> {
 }
 
 /// Reads what `run` left. `home` is the store's folder, where the sweep's skip list is.
-/// The run calls this inside its transaction before it finishes; `soc status` calls it on
+/// The run calls this inside its transaction before it finishes; `immune status` calls it on
 /// the latest finished run.
 pub fn summary(conn: &Connection, run: RunMark, home: &Path) -> Res<Summary> {
     let base = baselines(conn)?;
@@ -589,7 +589,7 @@ pub fn unknown(t: &Totals) -> Vec<&'static str> {
     out
 }
 
-/// Everything `soc status` shows, read in one transaction.
+/// Everything `immune status` shows, read in one transaction.
 pub struct State {
     /// The latest run that started.
     pub last: Option<RunMark>,
@@ -679,7 +679,7 @@ fn looked(conn: &Connection, now: i64) -> Res<(Vec<Latest>, Problems, findings::
     Ok((coverage, problems, needs))
 }
 
-/// What needs a look at `now`, as `soc status --json` counts it; `soc watch` gives its total
+/// What needs a look at `now`, as `immune status --json` counts it; `immune watch` gives its total
 /// after each reading.
 pub fn needs(conn: &Connection, now: i64) -> Res<findings::Needs> {
     Ok(findings::needs(conn, now)?)
@@ -734,7 +734,7 @@ pub fn failure(
     })
 }
 
-/// The result of `soc status`, and of `soc run` once it finished. `state` is `None` when
+/// The result of `immune status`, and of `immune run` once it finished. `state` is `None` when
 /// there is no store. A section that cannot be computed is left out and named in
 /// `not_computed` with the reason; nothing unknown is given as zero.
 pub fn result(state: Option<&State>, running: bool, path: &Path, now: i64) -> Value {
@@ -744,7 +744,7 @@ pub fn result(state: Option<&State>, running: bool, path: &Path, now: i64) -> Va
     let mut store =
         json!({ "path_text": text(&path.display().to_string()), "exists": state.is_some() });
     if state.is_some() {
-        // The pages `soc view` writes for its sections, so the app opens a file and never
+        // The pages `immune view` writes for its sections, so the app opens a file and never
         // builds a path or depends on a `#section` surviving the hand-over to a browser.
         store["view_sections"] = view::section_files(path)
             .into_iter()
@@ -761,7 +761,7 @@ pub fn result(state: Option<&State>, running: bool, path: &Path, now: i64) -> Va
         "rules".into(),
         rules_section(state.and_then(|s| s.event_level.as_ref())),
     );
-    // Whether a watcher runs on this store now: `soc watch`, src/watch.rs.
+    // Whether a watcher runs on this store now: `immune watch`, src/watch.rs.
     out.insert("watching".into(), crate::watch::status(path));
     let mut not_computed: Vec<Value> = Vec::new();
     let mut absent = |section: &str, reason: &str| {
@@ -773,7 +773,7 @@ pub fn result(state: Option<&State>, running: bool, path: &Path, now: i64) -> Va
             crate::covered::this_mac_json(&crate::covered::ThisMac::unchecked(false)),
         );
         for section in SECTIONS {
-            absent(section, "there is no store yet; `soc run` makes it");
+            absent(section, "there is no store yet; `immune run` makes it");
         }
         out.insert("not_computed".into(), Value::Array(not_computed));
         return Value::Object(out);

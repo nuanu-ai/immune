@@ -76,6 +76,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
+name = "immune"
+version = "0.1.0"
+dependencies = [
+ "aho-corasick",
+ "jsonc-parser",
+ "libc",
+ "rusqlite",
+ "semver",
+ "serde_json",
+ "serde_norway",
+ "sigma-rust",
+]
+
+[[package]]
 name = "indexmap"
 version = "2.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -286,20 +300,6 @@ name = "smallvec"
 version = "1.16.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "149309498a5f7334b12ddae0cad8aba81ce785fe91755068867e017cf98fee46"
-
-[[package]]
-name = "soc"
-version = "0.1.0"
-dependencies = [
- "aho-corasick",
- "jsonc-parser",
- "libc",
- "rusqlite",
- "semver",
- "serde_json",
- "serde_norway",
- "sigma-rust",
-]
 
 [[package]]
 name = "strum"

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Installs the event level of Personal SOC. The owner runs it once, with his administrator
+# Installs the event level of Immune. The owner runs it once, with his administrator
 # password:
 #   sudo /bin/sh scripts/event-level/install
 # and removes everything it installs, logs included, with:
@@ -28,14 +28,14 @@
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
 
-LIB='/Library/Application Support/personal-soc/event-level'
-TOP='/Library/Application Support/personal-soc'
+LIB='/Library/Application Support/ai.nuanu.immune/event-level'
+TOP='/Library/Application Support/ai.nuanu.immune'
 RUN="$LIB/run"
 LOG="$LIB/log"
 FIFO="$RUN/events.fifo"
 DAEMONS=/Library/LaunchDaemons
 # In the order they are started: the filter is reading before eslogger writes.
-LABELS='local.personal-soc.event-filter local.personal-soc.eslogger local.personal-soc.event-tidy'
+LABELS='ai.nuanu.immune.event-filter ai.nuanu.immune.eslogger ai.nuanu.immune.event-tidy'
 SCRIPTS='collect.sh filter.jq tidy.sh'
 
 here=$(cd "$(/usr/bin/dirname "$0")" && pwd -P) || exit 1
@@ -103,11 +103,11 @@ This installs the event level, and changes nothing else on this Mac:
       root, 700, readable by $user alone through an access-control entry:
       exec-<hour>.jsonl, one file per hour (UTC); eslogger.err and scripts.err, what eslogger
       and these scripts print; removed, what was deleted and why
-  $DAEMONS/local.personal-soc.eslogger.plist
+  $DAEMONS/ai.nuanu.immune.eslogger.plist
       runs /usr/bin/eslogger exec create rename as root
-  $DAEMONS/local.personal-soc.event-filter.plist
+  $DAEMONS/ai.nuanu.immune.event-filter.plist
       runs collect.sh as root: jq keeps what the reader uses, rotatelogs writes the log
-  $DAEMONS/local.personal-soc.event-tidy.plist
+  $DAEMONS/ai.nuanu.immune.event-tidy.plist
       runs tidy.sh as root every ten minutes: deletes logs older than a day, and the oldest
       while the log is larger than 500 MiB
 It records every program start on this Mac, of every account, with its arguments, and every
@@ -115,14 +115,14 @@ file created or renamed, with its path and the program that did it; the environm
 program and the contents of a file are never written; files changed in place, closed or
 removed are not recorded. eslogger needs Full Disk Access, granted to /usr/bin/eslogger in
 System Settings > Privacy & Security > Full Disk Access; without it eslogger stops at once,
-nothing is recorded, and Personal SOC says macOS refuses it.
+nothing is recorded, and Immune says macOS refuses it.
 What it costs on disk: about 600 bytes a program start and about 350 bytes a file event. A
 quiet Mac starting 2 programs and creating 20 files a second writes about 700 MB a day; one
 building, at 100 starts and 200 files a second, about 11 GB a day, more than the cap, which
 then deletes the oldest hours first, so the log holds its last hour or so. The log is a
 buffer: while the app is open it is read every ten seconds, and what is read is judged and
 counted. Hours deleted before they were read are
-counted, and Personal SOC says the day is partial. The log never holds more than
+counted, and Immune says the day is partial. The log never holds more than
 500 MiB, plus what ten minutes of writing add: at most about 0.6 GB of disk.
 EOF
 
@@ -175,7 +175,7 @@ done
 # that it is never older: the reader counts file events as collected only from this, and an
 # install that replaces the daemon without writing it again leaves it older, which counts for
 # nothing.
-step /usr/bin/plutil -extract ProgramArguments json -o "$LIB/collects" "$DAEMONS/local.personal-soc.eslogger.plist"
+step /usr/bin/plutil -extract ProgramArguments json -o "$LIB/collects" "$DAEMONS/ai.nuanu.immune.eslogger.plist"
 step /usr/sbin/chown root:wheel "$LIB/collects"
 step /bin/chmod 644 "$LIB/collects"
 for l in $LABELS; do
@@ -187,7 +187,7 @@ done
 # and each look below creates and removes a file in the level's own folder, so a level that
 # works has written both within seconds; ten are given. Only what was written after this
 # install put its property lists in place counts, so an earlier install's log decides nothing.
-mark="$DAEMONS/local.personal-soc.eslogger.plist"
+mark="$DAEMONS/ai.nuanu.immune.eslogger.plist"
 # Whether a log file written since holds a line with one of the given texts.
 written() {
     found=$(/usr/bin/find "$LOG" -name 'exec-*.jsonl' -type f -newer "$mark" \
@@ -219,19 +219,19 @@ echo
 case $verdict in
 running)
     echo "RESULT: RUNNING. Program starts and file events are being recorded."
-    echo "The panel and \`soc status\` say so within a minute while the app is open."
+    echo "The panel and \`immune status\` say so within a minute while the app is open."
     ;;
 starts_only)
     echo "RESULT: RUNNING IN PART. Program starts are being recorded; no file event was in ten seconds."
-    echo "\`soc status\` says whether file events are collected after \`soc run\`."
+    echo "\`immune status\` says whether file events are collected after \`immune run\`."
     ;;
 refused)
     echo "RESULT: REFUSED. macOS does not give eslogger Full Disk Access, so nothing is recorded."
     echo "Grant it to /usr/bin/eslogger in System Settings > Privacy & Security > Full Disk"
-    echo "Access; it starts by itself within seconds, and the panel and \`soc status\` say so."
+    echo "Access; it starts by itself within seconds, and the panel and \`immune status\` say so."
     ;;
 *)
     echo "RESULT: INSTALLED, NOT RECORDING YET. Nothing was written in ten seconds, and eslogger"
-    echo "printed no refusal. \`soc status\` says what the level's state is after \`soc run\`."
+    echo "printed no refusal. \`immune status\` says what the level's state is after \`immune run\`."
     ;;
 esac

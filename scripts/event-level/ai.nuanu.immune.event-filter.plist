@@ -7,19 +7,19 @@
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>local.personal-soc.event-filter</string>
+	<string>ai.nuanu.immune.event-filter</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>/bin/sh</string>
-		<string>/Library/Application Support/personal-soc/event-level/collect.sh</string>
-		<string>/Library/Application Support/personal-soc/event-level</string>
-		<string>/Library/Application Support/personal-soc/event-level/run/events.fifo</string>
-		<string>/Library/Application Support/personal-soc/event-level/log</string>
+		<string>/Library/Application Support/ai.nuanu.immune/event-level/collect.sh</string>
+		<string>/Library/Application Support/ai.nuanu.immune/event-level</string>
+		<string>/Library/Application Support/ai.nuanu.immune/event-level/run/events.fifo</string>
+		<string>/Library/Application Support/ai.nuanu.immune/event-level/log</string>
 	</array>
 	<key>StandardOutPath</key>
 	<string>/dev/null</string>
 	<key>StandardErrorPath</key>
-	<string>/Library/Application Support/personal-soc/event-level/log/scripts.err</string>
+	<string>/Library/Application Support/ai.nuanu.immune/event-level/log/scripts.err</string>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>

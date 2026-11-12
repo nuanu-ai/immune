@@ -1,0 +1,84 @@
+#!/bin/sh
+# A stand-in for `immune` in tests and trial runs of the app: it prints a fixture
+# instead of reading anything. Invented data only.
+#   IMMUNE_STANDIN_FIXTURE      file `status` prints (default: status.json next to this script)
+#   IMMUNE_STANDIN_EXIT         exit code of `status` (default 0)
+#   IMMUNE_STANDIN_SLEEP        seconds to wait before printing (default 0)
+#   IMMUNE_STANDIN_RUN_FIXTURE  file `run` prints (default: the status fixture)
+#   IMMUNE_STANDIN_RUN_EXIT     exit code of `run` (default 0)
+#   IMMUNE_STANDIN_RUN_SLEEP    extra seconds `run` waits (default 2)
+#   `watch` plays the watcher; see its own comment below.
+#   IMMUNE_STANDIN_VIEW_EXIT    exit code of `view`, which prints nothing and opens nothing (default 0)
+#   IMMUNE_STANDIN_ANSWER_LOG   file `finding` writes its arguments to, each ended by a NUL byte
+#   IMMUNE_STANDIN_ANSWER_EXIT  exit code of `finding` (default 0); 2 prints immune's refusal
+dir=$(dirname "$0")
+fixture=${IMMUNE_STANDIN_FIXTURE:-$dir/status.json}
+code=${IMMUNE_STANDIN_EXIT:-0}
+if [ "${1:-}" = watch ]; then
+  # Plays `immune watch` as built (src/watch.rs). IMMUNE_STANDIN_WATCH_MODE: normal
+  # (default), silent, exit, refuse (store unreadable: envelope, exit 3), elsewhere
+  # (another watcher: envelope, exit 5), problem, sample, garbage, flood. A file at
+  # IMMUNE_STANDIN_TRIGGER makes it print one `read` line. IMMUNE_STANDIN_ALIVE: seconds
+  # between `alive` lines (default 60). Tests pass the mode as
+  # `watch --standin-mode <mode>` instead. Like immune, it reads once at start, and
+  # stops with 0 on TERM or INT, or within a second of its parent being gone.
+  [ "${2:-}" = --standin-mode ] && IMMUNE_STANDIN_WATCH_MODE=$3
+  at() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+  read_line() {
+    echo "{\"format\":1,\"event\":\"read\",\"at\":\"$(at)\",\"new\":$1,\"changed\":0,\"gone\":0,\"opened\":$1,\"needs_a_look_total\":$2}"
+  }
+  trap 'exit 0' TERM INT
+  case "${IMMUNE_STANDIN_WATCH_MODE:-normal}" in
+    exit) exit 1 ;;
+    refuse)
+      echo '{"format":1,"operation":"watch","ok":false,"errors":[{"code":"store_unreadable","message":"the store cannot be read","example":"immune status --json","detail_text":"database is locked"}]}'
+      exit 3 ;;
+    elsewhere)
+      echo '{"format":1,"operation":"watch","ok":false,"errors":[{"code":"watch_in_progress","message":"another watcher already watches this store","example":"immune status --json","detail_text":""}]}'
+      exit 5 ;;
+    silent) while kill -0 "$PPID" 2>/dev/null; do sleep 1 & wait $!; done; exit 0 ;;
+  esac
+  echo "{\"format\":1,\"event\":\"watching\",\"at\":\"$(at)\",\"places\":12,\"cannot_see\":[\"who made a change\",\"a change undone within a second\",\"a link pointed elsewhere for a moment\"]}"
+  read_line 0 0
+  case "${IMMUNE_STANDIN_WATCH_MODE:-normal}" in
+    problem) echo "{\"format\":1,\"event\":\"problem\",\"at\":\"$(at)\",\"code\":\"place_not_watched\",\"detail_text\":\"/Library/LaunchDaemons: not found\"}" ;;
+    sample) echo "{\"format\":1,\"event\":\"sample\",\"at\":\"$(at)\",\"opened\":1,\"needs_a_look_total\":1}" ;;
+    garbage) echo 'not json at all'; echo '{"format":1,"event":"unheard-of"}'; echo '[1,2,3]' ;;
+    flood) head -c 300000 /dev/zero | tr '\0' 'x'; echo; echo "{\"format\":1,\"event\":\"alive\",\"at\":\"$(at)\"}" ;;
+  esac
+  n=0
+  while kill -0 "$PPID" 2>/dev/null; do
+    sleep 1 & wait $!
+    n=$((n + 1))
+    if [ -n "${IMMUNE_STANDIN_TRIGGER:-}" ] && [ -e "$IMMUNE_STANDIN_TRIGGER" ]; then
+      rm -f "$IMMUNE_STANDIN_TRIGGER"
+      read_line 1 1
+    fi
+    if [ "$n" -ge "${IMMUNE_STANDIN_ALIVE:-60}" ]; then
+      n=0
+      echo "{\"format\":1,\"event\":\"alive\",\"at\":\"$(at)\"}"
+    fi
+  done
+  exit 0
+fi
+if [ "${1:-}" = view ]; then
+  sleep "${IMMUNE_STANDIN_SLEEP:-0}"
+  [ "${IMMUNE_STANDIN_VIEW_EXIT:-0}" = 0 ] || echo "the page could not be written: disk full" >&2
+  exit "${IMMUNE_STANDIN_VIEW_EXIT:-0}"
+fi
+if [ "${1:-}" = finding ]; then
+  [ -n "${IMMUNE_STANDIN_ANSWER_LOG:-}" ] && printf '%s\0' "$@" > "$IMMUNE_STANDIN_ANSWER_LOG"
+  case "${IMMUNE_STANDIN_ANSWER_EXIT:-0}" in
+    0) echo '{"format":1,"operation":"finding","ok":true,"errors":[],"result":{}}' ;;
+    2) echo '{"format":1,"operation":"finding","ok":false,"errors":[{"code":"finding_closed","message":"this finding is already closed; nothing was changed","example":"immune findings lists the open findings","detail_text":""}]}' ;;
+  esac
+  exit "${IMMUNE_STANDIN_ANSWER_EXIT:-0}"
+fi
+if [ "${1:-}" = run ]; then
+  sleep "${IMMUNE_STANDIN_RUN_SLEEP:-2}"
+  fixture=${IMMUNE_STANDIN_RUN_FIXTURE:-$fixture}
+  code=${IMMUNE_STANDIN_RUN_EXIT:-0}
+fi
+sleep "${IMMUNE_STANDIN_SLEEP:-0}"
+cat "$fixture"
+exit "$code"

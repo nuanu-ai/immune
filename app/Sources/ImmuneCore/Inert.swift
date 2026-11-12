@@ -1,4 +1,4 @@
-// Text taken from a source (every `*_text` field, and anything soc printed on
+// Text taken from a source (every `*_text` field, and anything Immune printed on
 // failure) is data. It is shown as plain characters: invisible and control
 // characters are spelled out instead of obeyed, its length is capped, and it is
 // never turned into markup, a command, a path to open or a URL. The views show

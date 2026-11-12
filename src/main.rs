@@ -1,8 +1,8 @@
-//! soc: read what is installed, keep it as facts, report what changed. One line.
-//! `soc view` writes a page that shows what is in the store. `soc servers` shows which
+//! Immune: read what is installed, keep it as facts, report what changed. One line.
+//! `immune view` writes a page that shows what is in the store. `immune servers` shows which
 //! servers this machine knows and writes the read-only sweep for the owner to run.
-//! `soc owner` keeps the owner's word: that a machine is retired or not theirs. `soc status`
-//! says what the last finished run left, read-only; with `--json`, `soc status` and `soc run`
+//! `immune owner` keeps the owner's word: that a machine is retired or not theirs. `immune status`
+//! says what the last finished run left, read-only; with `--json`, `immune status` and `immune run`
 //! answer in one machine-readable envelope.
 //!
 //! The program never connects to a server and never runs ssh. Its requests to the network
@@ -59,53 +59,53 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use store::{Cause, Event, Gap, Lack, Reading, Statement};
 
 /// The store's folder inside the home folder, where every default path points.
-const STORE_FOLDER: &str = "Library/Application Support/personal-soc";
-const USAGE: &str = "usage: soc run [--store <path>] [--machine-name <name>] [--brew <path>]
-               [--brew-input <file>] [--servers-input <dir>] [--checkouts-root <dir>]
-               [--sessions-root <dir>] [--tailscale <path>]
-               [--threats-input <file>] [--osv-crates-input <file>]
-               [--osv-npm-input <file>] [--curl <path>] [--system-root <dir>]
-               [--indicators <file>] [--json]
-       soc status [--store <path>] [--json]
-       soc findings [--all] [--store <path>] [--json]
-       soc finding <id> [--store <path>] [--json]
-       soc finding <id> expected --reason <text> [--days <n>] [--via app|agent]
-                   [--store <path>] [--json]
-       soc finding <id> seen [--reason <text>] [--via app|agent] [--store <path>] [--json]
-       soc finding <id> reopen [--via app|agent] [--store <path>] [--json]
+const STORE_FOLDER: &str = "Library/Application Support/ai.nuanu.immune";
+const USAGE: &str = "usage: immune run [--store <path>] [--machine-name <name>] [--brew <path>]
+                  [--brew-input <file>] [--servers-input <dir>] [--checkouts-root <dir>]
+                  [--sessions-root <dir>] [--tailscale <path>]
+                  [--threats-input <file>] [--osv-crates-input <file>]
+                  [--osv-npm-input <file>] [--curl <path>] [--system-root <dir>]
+                  [--indicators <file>] [--json]
+       immune status [--store <path>] [--json]
+       immune findings [--all] [--store <path>] [--json]
+       immune finding <id> [--store <path>] [--json]
+       immune finding <id> expected --reason <text> [--days <n>] [--via app|agent]
+                      [--store <path>] [--json]
+       immune finding <id> seen [--reason <text>] [--via app|agent] [--store <path>] [--json]
+       immune finding <id> reopen [--via app|agent] [--store <path>] [--json]
            expected and seen are the owner's answers: they hide the finding from him.
            reopen takes an answer back. --via says who gave it; without it, the command
            line. Answer a finding only after the owner has agreed in this conversation,
            having been told what it is and what the options are. Pass --via agent and
            the reason the owner agreed to. The app shows every answer given this way.
-       soc servers [--store <path>] [--tailscale <path>]
-       soc view [--store <path>] [--no-open] [--if-stale]
+       immune servers [--store <path>] [--tailscale <path>]
+       immune view [--store <path>] [--no-open] [--if-stale]
            writes every page and prints their paths, the summary first; with
            --if-stale, writes only when something they show changed since they were
            made, or they are an hour old, and prints the same paths
-       soc owner [<name> retired|not-mine --reason <text> | <name> withdraw]
-                 [--via app|agent] [--store <path>] [--tailscale <path>] [--json]
+       immune owner [<name> retired|not-mine --reason <text> | <name> withdraw]
+                    [--via app|agent] [--store <path>] [--tailscale <path>] [--json]
            retired and not-mine set a machine aside: it is no longer checked. --via says
            who gave it; without it, the command line. An agent gives one only after the
            owner has said so in this conversation, with --via agent and their reason.
-       soc vulnerabilities [--store <path>] [--json]
+       immune vulnerabilities [--store <path>] [--json]
            known vulnerabilities that affect packages the projects' lockfiles declare
-       soc vulnerability <record id or CVE id> [--store <path>] [--json]
+       immune vulnerability <record id or CVE id> [--store <path>] [--json]
            the answer for one vulnerability in every project, with what it rests on
-       soc rules [--store <path>] [--json]
+       immune rules [--store <path>] [--json]
            the shipped Sigma rules for macOS: which are evaluated on every program
            start, which in part, and which not, with the reason; whether they watch
            and how many times each matched in the last day and week
-       soc rules --over-log [--system-root <dir>] [--json]
+       immune rules --over-log [--system-root <dir>] [--json]
            evaluates the rules over the event log on disk now, without the store, and
            prints per rule that matched its level and count, never a command line
-       soc sample [--store <path>] [--sample-input <file>] [--json]
-       soc watch [--store <path>] [--system-root <dir>] [--sample-input <file>]
-                 [--sample-every <seconds>] [--events-every <seconds>]
-                 [--alive-every <seconds>]
-                 one JSON line per event: watching, read, sample, program_starts,
-                 alive, problem; a problem's code and detail_text sit beside event, flat;
-                 program starts are read every 10 seconds by default
+       immune sample [--store <path>] [--sample-input <file>] [--json]
+       immune watch [--store <path>] [--system-root <dir>] [--sample-input <file>]
+                    [--sample-every <seconds>] [--events-every <seconds>]
+                    [--alive-every <seconds>]
+                    one JSON line per event: watching, read, sample, program_starts,
+                    alive, problem; a problem's code and detail_text sit beside event, flat;
+                    program starts are read every 10 seconds by default
                  exits 5 when another watcher has the store";
 
 enum Cmd {
@@ -123,7 +123,7 @@ enum Cmd {
     Rules(RulesArgs),
 }
 
-/// `soc rules`: the shipped rules with what the store says they did, or with `over_log` a
+/// `immune rules`: the shipped rules with what the store says they did, or with `over_log` a
 /// replay of the event log under that system root.
 struct RulesArgs {
     store: PathBuf,
@@ -131,21 +131,21 @@ struct RulesArgs {
     over_log: Option<PathBuf>,
 }
 
-/// `soc vulnerabilities`, and `soc vulnerability <id>` with the id.
+/// `immune vulnerabilities`, and `immune vulnerability <id>` with the id.
 struct VulnerabilityArgs {
     store: PathBuf,
     json: bool,
     id: Option<String>,
 }
 
-/// `soc findings`: open findings, or every one with `--all`.
+/// `immune findings`: open findings, or every one with `--all`.
 struct FindingsArgs {
     store: PathBuf,
     json: bool,
     all: bool,
 }
 
-/// `soc finding <id>`: one finding with what it rests on, or the owner's answer to it.
+/// `immune finding <id>`: one finding with what it rests on, or the owner's answer to it.
 struct FindingArgs {
     store: PathBuf,
     json: bool,
@@ -192,7 +192,7 @@ struct Args {
     json: bool,
 }
 
-/// `soc status`: what the last finished run left, read without writing anything.
+/// `immune status`: what the last finished run left, read without writing anything.
 struct StatusArgs {
     store: PathBuf,
     json: bool,
@@ -204,8 +204,8 @@ struct ServersArgs {
     tailscale: Option<PathBuf>,
 }
 
-/// `soc owner`: without a statement, lists those that stand. Making or withdrawing one
-/// writes the sweep script again, so it needs what `soc servers` needs.
+/// `immune owner`: without a statement, lists those that stand. Making or withdrawing one
+/// writes the sweep script again, so it needs what `immune servers` needs.
 struct OwnerArgs {
     servers: ServersArgs,
     act: Option<(String, Act)>,
@@ -379,7 +379,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
                     }
                     Some((name.clone(), Act::Say(said, reason)))
                 }
-                _ => return Err("soc owner takes a name and what the owner says".to_string()),
+                _ => return Err("immune owner takes a name and what the owner says".to_string()),
             };
             Ok(Cmd::Owner(OwnerArgs {
                 servers: ServersArgs {
@@ -477,7 +477,8 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
                 }
                 _ => {
                     return Err(
-                        "soc finding takes an id, as in: soc finding f0123456789 seen".to_string(),
+                        "immune finding takes an id, as in: immune finding f0123456789 seen"
+                            .to_string(),
                     );
                 }
             };
@@ -514,10 +515,10 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
                     id: Some(id.clone()),
                 })),
                 ("vulnerability", _) => Err(
-                    "soc vulnerability takes one record id or CVE id, as in: soc vulnerability CVE-2023-4863"
+                    "immune vulnerability takes one record id or CVE id, as in: immune vulnerability CVE-2023-4863"
                         .to_string(),
                 ),
-                _ => Err("soc vulnerabilities takes no id; soc vulnerability <id> does".to_string()),
+                _ => Err("immune vulnerabilities takes no id; immune vulnerability <id> does".to_string()),
             }
         }
         "watch" => watch::parse(it).map(Cmd::Watch),
@@ -533,7 +534,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
                 }
             }
             if system_root.is_some() && !over_log {
-                return Err("--system-root is for soc rules --over-log".to_string());
+                return Err("--system-root is for immune rules --over-log".to_string());
             }
             Ok(Cmd::Rules(RulesArgs {
                 store: store.map_or_else(default_store, Ok)?,
@@ -632,7 +633,7 @@ fn main() -> ExitCode {
     let cmd = match parse_args(args.iter().cloned()) {
         Ok(cmd) => cmd,
         Err(e) => {
-            // `soc watch` answers only in machine-readable lines.
+            // `immune watch` answers only in machine-readable lines.
             let op = args.first().map(String::as_str);
             if args.iter().any(|a| a == "--json") || op == Some("watch") {
                 let op = op.filter(|o| {
@@ -651,26 +652,26 @@ fn main() -> ExitCode {
                     .contains(o)
                 });
                 let example = match op {
-                    Some("rules") => "soc rules --json",
-                    Some("run") => "soc run --json",
-                    Some("vulnerabilities") => "soc vulnerabilities --json",
-                    Some("vulnerability") => "soc vulnerability CVE-2023-4863 --json",
-                    Some("findings") => "soc findings --json",
-                    Some("finding") => "soc finding f0123456789 --json",
-                    Some("watch") => "soc watch",
-                    Some("sample") => "soc sample --json",
-                    Some("owner") => "soc owner --json",
-                    _ => "soc status --json",
+                    Some("rules") => "immune rules --json",
+                    Some("run") => "immune run --json",
+                    Some("vulnerabilities") => "immune vulnerabilities --json",
+                    Some("vulnerability") => "immune vulnerability CVE-2023-4863 --json",
+                    Some("findings") => "immune findings --json",
+                    Some("finding") => "immune finding f0123456789 --json",
+                    Some("watch") => "immune watch",
+                    Some("sample") => "immune sample --json",
+                    Some("owner") => "immune owner --json",
+                    _ => "immune status --json",
                 };
                 print_json(&status::failure(
                     op,
                     "usage",
-                    "the command line is not one soc understands; the usage is on stderr",
+                    "the command line is not one Immune understands; the usage is on stderr",
                     example,
                     &e,
                 ));
             }
-            eprintln!("soc: {}\n{USAGE}", view::shown(&e));
+            eprintln!("immune: {}\n{USAGE}", view::shown(&e));
             return ExitCode::from(EXIT_USAGE);
         }
     };
@@ -689,14 +690,14 @@ fn main() -> ExitCode {
             }
             // A second run used to fail with "database is locked"; it now says why.
             Err(e) if matches!(e.downcast_ref(), Some(Stop::RunInProgress)) => {
-                eprintln!("soc: {e}");
+                eprintln!("immune: {e}");
                 return ExitCode::from(EXIT_RUN_IN_PROGRESS);
             }
             Err(e) => Err(e),
         },
         Cmd::Status(args) => match status_text(&args.store) {
             Err(e) => {
-                eprintln!("soc: {}", view::shown(&e.to_string()));
+                eprintln!("immune: {}", view::shown(&e.to_string()));
                 return ExitCode::from(EXIT_STORE);
             }
             ok => ok.map_err(Into::into),
@@ -715,16 +716,16 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("soc: {}", view::shown(&e.to_string()));
+            eprintln!("immune: {}", view::shown(&e.to_string()));
             ExitCode::FAILURE
         }
     }
 }
 
-// ---- `soc sample`: one sample of this user's processes and connections, see
+// ---- `immune sample`: one sample of this user's processes and connections, see
 // `processes.rs`. ----
 
-/// `soc sample`.
+/// `immune sample`.
 struct SampleArgs {
     store: PathBuf,
     json: bool,
@@ -746,7 +747,7 @@ fn sample(args: &SampleArgs) -> Result<processes::Report, Box<dyn Error>> {
 }
 
 /// One sample, with the run lock held by the caller: of the system, or of the reading in
-/// `input`. Returns its report and how many things need a look after it. `soc sample` and
+/// `input`. Returns its report and how many things need a look after it. `immune sample` and
 /// the watcher both take their samples here.
 pub fn sample_held(
     path: &Path,
@@ -803,14 +804,14 @@ fn sample_cmd(args: &SampleArgs) -> ExitCode {
                             Some("sample"),
                             "sample_failed",
                             "the sample failed and nothing was committed to the store",
-                            "soc sample --json",
+                            "immune sample --json",
                             &e.to_string(),
                         ));
                         ExitCode::FAILURE
                     }
                 };
             }
-            eprintln!("soc: {}", view::shown(&e.to_string()));
+            eprintln!("immune: {}", view::shown(&e.to_string()));
             return ExitCode::from(match stop {
                 Some(Stop::RunInProgress) => EXIT_RUN_IN_PROGRESS,
                 Some(Stop::Store(_)) => EXIT_STORE,
@@ -821,7 +822,7 @@ fn sample_cmd(args: &SampleArgs) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-// ---- End of `soc sample`. ----
+// ---- End of `immune sample`. ----
 
 /// The event level at a full run: program starts as Apple's eslogger recorded them, judged by
 /// the published rules, see `events.rs`. A reading that failed is coverage with its reason,
@@ -929,9 +930,9 @@ fn published_rule_lines(d: &serde_json::Value) -> Vec<String> {
     lines
 }
 
-// ---- `soc rules`: the published rules, what they did, and a replay over the log. ----
+// ---- `immune rules`: the published rules, what they did, and a replay over the log. ----
 
-/// `soc rules`: the shipped rules, placed, with whether they watch and how many times each
+/// `immune rules`: the shipped rules, placed, with whether they watch and how many times each
 /// matched, from the store read without writing. A store that is not there, or holds no
 /// reading of the event level, gives no counts and says why in `not_computed`.
 fn rules_cmd(args: &RulesArgs) -> ExitCode {
@@ -976,7 +977,7 @@ fn rules_cmd(args: &RulesArgs) -> ExitCode {
                 let reason = if args.store.exists() {
                     "program starts have not been looked for yet; the next check does"
                 } else {
-                    "there is no store yet; `soc run` makes it"
+                    "there is no store yet; `immune run` makes it"
                 };
                 v["matches_last_day"] = serde_json::Value::Null;
                 v["not_computed"] = serde_json::json!([{ "section": "matches", "reason": reason }]);
@@ -1003,7 +1004,7 @@ fn read_level(store: &Path) -> Result<Option<events::Level>, Stop> {
     events::level(&conn, now_secs()).map_err(|e| Stop::Store(e.to_string()))
 }
 
-/// `soc rules --over-log`: the rules evaluated over the event log on disk now, from the start
+/// `immune rules --over-log`: the rules evaluated over the event log on disk now, from the start
 /// of every file, the store neither read nor written. Per rule that matched, its level and how
 /// many starts matched; never a command line, a path or an argument. A level that is not
 /// installed is not applicable, not a failure.
@@ -1035,12 +1036,12 @@ fn replay_cmd(root: &Path, json: bool) -> ExitCode {
                     Some("rules"),
                     "log_unreadable",
                     "the event log could not be read, so nothing was evaluated",
-                    "soc rules --over-log --json",
+                    "immune rules --over-log --json",
                     &why,
                 ));
             } else {
                 eprintln!(
-                    "soc: the event log could not be read: {}",
+                    "immune: the event log could not be read: {}",
                     view::shown(&why)
                 );
             }
@@ -1097,7 +1098,7 @@ fn replay_cmd(root: &Path, json: bool) -> ExitCode {
     }
 }
 
-// ---- End of `soc rules`. ----
+// ---- End of `immune rules`. ----
 
 /// Now, in UTC seconds.
 fn now_secs() -> i64 {
@@ -1106,7 +1107,7 @@ fn now_secs() -> i64 {
         .map_or(0, |d| d.as_secs() as i64)
 }
 
-/// What `soc status` shows, read-only and in one read transaction, so that every number is of
+/// What `immune status` shows, read-only and in one read transaction, so that every number is of
 /// one state of the store: a run that commits meanwhile waits for it, and it never sees half
 /// a run. `None` when there is no store. `now` is the one moment the whole answer is of, so
 /// that what the state counts up to and when the answer says it was made are the same second.
@@ -1130,7 +1131,7 @@ fn read_all(store: &Path, now: i64) -> Result<(bool, Option<status::State>), Sto
     Ok((running, read_status(store, now)?))
 }
 
-/// Answers `soc status --json`, or `soc run --json` once the run finished.
+/// Answers `immune status --json`, or `immune run --json` once the run finished.
 fn answer_json(operation: &str, store: &Path) -> ExitCode {
     let now = now_secs();
     match read_all(store, now) {
@@ -1149,14 +1150,14 @@ fn fail_json(operation: &str, e: &Stop) -> ExitCode {
         Stop::Store(detail) => (
             "store_unreadable",
             "the store cannot be read; nothing was changed",
-            "soc status --json --store <file>",
+            "immune status --json --store <file>",
             detail.as_str(),
             EXIT_STORE,
         ),
         Stop::RunInProgress => (
             "run_in_progress",
             "another run is in progress on this store; nothing was done",
-            "soc status --json",
+            "immune status --json",
             "",
             EXIT_RUN_IN_PROGRESS,
         ),
@@ -1175,7 +1176,7 @@ fn status_json(store: &Path) -> ExitCode {
     answer_json("status", store)
 }
 
-/// `soc run --json`: the run, then the same answer as `soc status --json`, read back from the
+/// `immune run --json`: the run, then the same answer as `immune status --json`, read back from the
 /// store it committed, so the two cannot differ.
 fn run_json(args: &Args) -> ExitCode {
     match run(args) {
@@ -1187,7 +1188,7 @@ fn run_json(args: &Args) -> ExitCode {
                     Some("run"),
                     "run_failed",
                     "the run failed and nothing it read was committed to the store",
-                    "soc run --json",
+                    "immune run --json",
                     &e.to_string(),
                 ));
                 ExitCode::FAILURE
@@ -1225,7 +1226,7 @@ fn needs_text(needs: &findings::Needs) {
     }
     if needs.items.len() > rows.len() {
         say(&format!(
-            "{} more; `soc status --json` lists them.",
+            "{} more; `immune status --json` lists them.",
             grouped((needs.items.len() - rows.len()) as i64)
         ));
     }
@@ -1282,12 +1283,12 @@ fn not_covered_text(list: &[covered::Uncovered]) {
     }
 }
 
-/// `soc status`: a short summary of what `soc status --json` gives, for a person.
+/// `immune status`: a short summary of what `immune status --json` gives, for a person.
 fn status_text(store: &Path) -> Result<(), Stop> {
     let (running, state) = read_all(store, now_secs())?;
     say(&format!("Store: {}.", store.display()));
     let Some(st) = state else {
-        say("There is no store yet; `soc run` makes it.");
+        say("There is no store yet; `immune run` makes it.");
         return Ok(());
     };
     match &st.last {
@@ -1358,7 +1359,7 @@ fn status_text(store: &Path) -> Result<(), Stop> {
             .collect();
         print_table(&["Not reached", "Since", "Why"], &rows);
     }
-    // The same groups as `soc status --json`: one line for many readings with one reason.
+    // The same groups as `immune status --json`: one line for many readings with one reason.
     let groups: Vec<Vec<String>> = p
         .groups
         .iter()
@@ -1388,7 +1389,7 @@ fn status_text(store: &Path) -> Result<(), Stop> {
         .count();
     if shown > groups.len() {
         say(&format!(
-            "{} more; `soc status --json` lists them.",
+            "{} more; `immune status --json` lists them.",
             things(
                 (shown - groups.len()) as i64,
                 "group of readings",
@@ -1431,11 +1432,11 @@ fn status_text(store: &Path) -> Result<(), Stop> {
         s.changes.len()
     ));
     print_table(&["When", "Change", "Kind", "Path"], &changes);
-    say("All of it, with every list, is in `soc status --json`.");
+    say("All of it, with every list, is in `immune status --json`.");
     Ok(())
 }
 
-/// The most rows of a table `soc status` prints.
+/// The most rows of a table `immune status` prints.
 const STATUS_ROWS: usize = 10;
 
 /// Prints one line. Text from a source never reaches the terminal raw: it could reorder or
@@ -1453,7 +1454,7 @@ fn home(store: &Path) -> PathBuf {
 }
 
 /// Writes the page next to the store, prints its path and opens it. Never writes to the store.
-/// At most this many findings are listed by `soc findings`; the total is always given.
+/// At most this many findings are listed by `immune findings`; the total is always given.
 const FINDINGS_SHOWN: usize = 200;
 
 /// Every finding in the store as it stands at `now`; `None` when there is no store or no run
@@ -1472,7 +1473,7 @@ fn refuse(json: bool, op: &str, code: &str, message: &str, example: &str, exit: 
     if json {
         print_json(&status::failure(Some(op), code, message, example, ""));
     } else {
-        eprintln!("soc: {message}. {example}");
+        eprintln!("immune: {message}. {example}");
     }
     ExitCode::from(exit)
 }
@@ -1481,13 +1482,13 @@ fn store_failed(json: bool, op: &str, e: &Stop) -> ExitCode {
     if json {
         return fail_json(op, e);
     }
-    eprintln!("soc: {}", view::shown(&e.to_string()));
+    eprintln!("immune: {}", view::shown(&e.to_string()));
     ExitCode::from(EXIT_STORE)
 }
 
 const NO_FINDINGS_YET: &str = "no run of this build has looked for findings in this store yet";
 
-/// `soc findings`: the open findings, or every one, with what each means and what to do.
+/// `immune findings`: the open findings, or every one, with what each means and what to do.
 fn findings_cmd(args: &FindingsArgs) -> ExitCode {
     let now = now_secs();
     let found = match read_findings(&args.store, now) {
@@ -1521,7 +1522,7 @@ fn findings_cmd(args: &FindingsArgs) -> ExitCode {
                 let reason = if args.store.exists() {
                     NO_FINDINGS_YET
                 } else {
-                    "there is no store yet; `soc run` makes it"
+                    "there is no store yet; `immune run` makes it"
                 };
                 r["not_computed"] =
                     serde_json::json!([{ "section": "findings", "reason": reason }]);
@@ -1560,11 +1561,11 @@ fn findings_cmd(args: &FindingsArgs) -> ExitCode {
         })
         .collect();
     print_table(&["Id", "State", "Last seen", "What", "Where"], &rows);
-    say("`soc finding <id>` shows one; expected and seen are the owner's answers.");
+    say("`immune finding <id>` shows one; expected and seen are the owner's answers.");
     ExitCode::SUCCESS
 }
 
-/// `soc vulnerabilities` and `soc vulnerability <id>`: the answers matching gave, read only.
+/// `immune vulnerabilities` and `immune vulnerability <id>`: the answers matching gave, read only.
 fn vulnerabilities_cmd(args: &VulnerabilityArgs) -> ExitCode {
     let op = if args.id.is_some() {
         "vulnerability"
@@ -1576,10 +1577,10 @@ fn vulnerabilities_cmd(args: &VulnerabilityArgs) -> ExitCode {
         if args.json {
             print_json(&status::envelope(
                 op,
-                serde_json::json!({ "not_computed": [{ "section": op, "reason": "there is no store yet; `soc run` makes it" }] }),
+                serde_json::json!({ "not_computed": [{ "section": op, "reason": "there is no store yet; `immune run` makes it" }] }),
             ));
         } else {
-            say("Nothing is known yet: there is no store; `soc run` makes it.");
+            say("Nothing is known yet: there is no store; `immune run` makes it.");
         }
         return ExitCode::SUCCESS;
     }
@@ -1708,7 +1709,7 @@ fn vulnerabilities_cmd(args: &VulnerabilityArgs) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `soc finding <id>`: one finding with what it rests on, or the owner's answer to it.
+/// `immune finding <id>`: one finding with what it rests on, or the owner's answer to it.
 fn finding_cmd(args: &FindingArgs) -> ExitCode {
     let unknown = |json: bool| {
         refuse(
@@ -1716,7 +1717,7 @@ fn finding_cmd(args: &FindingArgs) -> ExitCode {
             "finding",
             "unknown_finding",
             "the store has no finding with this id; nothing was changed",
-            "soc findings --all lists every finding with its id; then: soc finding <id> seen",
+            "immune findings --all lists every finding with its id; then: immune finding <id> seen",
             EXIT_USAGE,
         )
     };
@@ -1750,7 +1751,7 @@ fn finding_cmd(args: &FindingArgs) -> ExitCode {
                         "finding",
                         "finding_not_answered",
                         &format!("{refused}; nothing was changed"),
-                        "soc findings --all lists every finding with its state",
+                        "immune findings --all lists every finding with its state",
                         EXIT_USAGE,
                     )
                 }
@@ -1759,7 +1760,7 @@ fn finding_cmd(args: &FindingArgs) -> ExitCode {
                     "finding",
                     "finding_closed",
                     &format!("{refused}; nothing was changed"),
-                    "soc findings lists the open findings",
+                    "immune findings lists the open findings",
                     EXIT_USAGE,
                 ),
                 None => match e.downcast_ref::<Stop>() {
@@ -1895,7 +1896,7 @@ fn write_view(store: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
         let conn = store::open_read_only(store)?;
         (view::basis(&conn, &folder)?, events::basis(&conn)?)
     };
-    // The summary is built from what `soc status --json` answers, read the same way.
+    // The summary is built from what `immune status --json` answers, read the same way.
     let (running, state) = read_all(store, now)?;
     let state = state.ok_or("the store is gone")?;
     let absolute = std::path::absolute(store)?;
@@ -1995,7 +1996,7 @@ fn current_view(store: &Path, now: i64) -> Result<Current, Box<dyn Error>> {
     Ok(Current::Yes(paths))
 }
 
-/// One server as `soc servers` lists it.
+/// One server as `immune servers` lists it.
 struct ServerRow {
     name: String,
     others: Vec<String>,
@@ -2008,10 +2009,10 @@ struct ServerRow {
     read: bool,
 }
 
-/// Where `soc servers` says a machine known only from its sweep file is known from.
+/// Where `immune servers` says a machine known only from its sweep file is known from.
 const SWEEP_FILE: &str = "sweep file";
 
-/// What `soc servers` finds: the servers, the devices that are not servers, the machines
+/// What `immune servers` finds: the servers, the devices that are not servers, the machines
 /// the owner set aside, and the sweep to write.
 struct Survey {
     dir: PathBuf,
@@ -2168,7 +2169,7 @@ fn survey(args: &ServersArgs) -> Result<Survey, Box<dyn Error>> {
         }
     }
     // Servers the sweep has read, each under the name of its file, with the names and
-    // addresses it gives itself: the same machines `soc run` knows from these files.
+    // addresses it gives itself: the same machines `immune run` knows from these files.
     if dir.is_dir() {
         match servers::inputs(&dir) {
             Err(e) => said.push(format!("{SWEEP_FILE}s: could not be read, {e}")),
@@ -2450,19 +2451,21 @@ fn servers_cmd(args: &ServersArgs) -> Result<(), Box<dyn Error>> {
     ));
     say("To read the offered servers, run:");
     say(&format!("  sh {}", sweep::quoted(&s.dir.join("sweep.sh"))));
-    say("To say a server is retired or not yours, run `soc owner <name> retired --reason <text>`.");
+    say(
+        "To say a server is retired or not yours, run `immune owner <name> retired --reason <text>`.",
+    );
     say(&format!(
         "To visit only some of them again, such as those that failed, name their aliases: sh {} <alias>...",
         sweep::quoted(&s.dir.join("sweep.sh"))
     ));
     say(&format!(
-        "To choose which alias the sweep uses, add the others to {}, one per line. Then run `soc run`.",
+        "To choose which alias the sweep uses, add the others to {}, one per line. Then run `immune run`.",
         s.dir.join(sweep::SKIP).display()
     ));
     Ok(())
 }
 
-/// The columns of a statement as `soc servers` and `soc owner` print it.
+/// The columns of a statement as `immune servers` and `immune owner` print it.
 const WORD_HEAD: [&str; 5] = ["Machine", "Said", "Since", "Reason", "Also known as"];
 
 fn word_rows(words: &[&owner::Standing]) -> Vec<Vec<String>> {
@@ -2532,10 +2535,10 @@ fn owner_cmd(args: &OwnerArgs) -> ExitCode {
         return refused(
             "no_store",
             format!(
-                "there is no store at {}; `soc run` makes it",
+                "there is no store at {}; `immune run` makes it",
                 store_path.display()
             ),
-            "soc run --json",
+            "immune run --json",
             EXIT_STORE,
         );
     }
@@ -2601,7 +2604,7 @@ fn owner_cmd(args: &OwnerArgs) -> ExitCode {
                     "the store knows no machine as {}; nothing was said",
                     view::shown(name)
                 ),
-                "soc servers lists the machines the store knows",
+                "immune servers lists the machines the store knows",
                 EXIT_USAGE,
             );
         }
@@ -2621,7 +2624,7 @@ fn owner_cmd(args: &OwnerArgs) -> ExitCode {
                     list.len(),
                     view::shown(&list.join("; "))
                 ),
-                "soc owner <full machine id> retired --reason <text>",
+                "immune owner <full machine id> retired --reason <text>",
                 EXIT_USAGE,
             );
         }
@@ -2671,7 +2674,7 @@ fn owner_cmd(args: &OwnerArgs) -> ExitCode {
                         "no statement stands about {}; nothing was withdrawn",
                         view::shown(name)
                     ),
-                    "soc owner --json lists the statements that stand",
+                    "immune owner --json lists the statements that stand",
                     EXIT_USAGE,
                 );
             }
@@ -2709,7 +2712,7 @@ fn owner_cmd(args: &OwnerArgs) -> ExitCode {
                 for line in &lines {
                     say(line);
                 }
-                eprintln!("soc: {}", view::shown(&problem));
+                eprintln!("immune: {}", view::shown(&problem));
                 return ExitCode::FAILURE;
             }
             r["sweep"] =
@@ -2726,7 +2729,7 @@ fn owner_cmd(args: &OwnerArgs) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Writes the sweep script again after the owner's word changed, the way `soc servers`
+/// Writes the sweep script again after the owner's word changed, the way `immune servers`
 /// writes it, so that no script on disk visits a machine the owner set aside. A script that
 /// cannot be written again is removed. Returns how many servers it visits.
 fn rewrite_sweep(args: &ServersArgs) -> Result<usize, Box<dyn Error>> {
@@ -2740,7 +2743,7 @@ fn rewrite_sweep(args: &ServersArgs) -> Result<usize, Box<dyn Error>> {
         let left = if script.exists() {
             format!("delete {} before you run it", script.display())
         } else {
-            "no sweep script is left; run `soc servers`".to_string()
+            "no sweep script is left; run `immune servers`".to_string()
         };
         format!("the sweep script could not be written again ({e}); {left}").into()
     })
@@ -2840,7 +2843,7 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     let catalogue = get_catalogue(read_only.as_ref(), args)?;
     drop(read_only);
     // Held until the run returns: a second run stops here and writes nothing. A watcher's
-    // reading, `soc watch`, is waited out.
+    // reading, `immune watch`, is waited out.
     let _lock = store::lock_run_past_watcher(&home)?.ok_or(Stop::RunInProgress)?;
     let mut conn = store::open(&args.store).map_err(|e| Stop::Store(e.to_string()))?;
     store::journal_note(&conn, at, &run_id, "run_started", "")?;
@@ -2883,7 +2886,7 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     read_feeds(&run, feeds)?;
     opened += match_dependencies(&run)?;
 
-    // What the line counts is read back from what the run wrote, by the code `soc status`
+    // What the line counts is read back from what the run wrote, by the code `immune status`
     // reads it with after the run.
     let mark = status::RunMark {
         id: run_id.clone(),
@@ -2891,7 +2894,7 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
         finished_at: None,
     };
     let summary = status::summary(&tx, mark, &home)?;
-    // What needs a look is counted by the code `soc status` counts it with, at the run's time.
+    // What needs a look is counted by the code `immune status` counts it with, at the run's time.
     let latest = view::latest_coverage(&tx)?;
     let problems = status::problems(&tx, &latest)?;
     let needs = findings::needs(&tx, at)?;
@@ -3658,7 +3661,7 @@ struct Placed {
 }
 
 /// Reads the watched places, moves what they hold through the lifecycle and raises what the
-/// rules find, all in the run's transaction. `soc run` calls it among the other readers; a
+/// rules find, all in the run's transaction. `immune run` calls it among the other readers; a
 /// small run of the watched places alone calls it with nothing else. Returns the rows printed
 /// under the report line and how many findings it opened.
 fn watch_places(
@@ -4026,13 +4029,14 @@ fn watched_sentence(w: Option<&status::Watched>) -> String {
 
 /// Reads application bundles, Homebrew kegs, global npm packages and applications' code under
 /// Application Support, one reading per kind scoped to this machine. A first reading of a kind
-/// is its baseline, which `soc status` counts as nothing new. Returns what changed while its
+/// is its baseline, which `immune status` counts as nothing new. Returns what changed while its
 /// version stayed, for the rules.
 fn read_integrity(run: &mut Run, args: &Args) -> Result<Vec<findings::Observed>, Box<dyn Error>> {
     let (run_id, machine) = (run.run_id.to_string(), run.machine.to_string());
     let roots = integrity::Roots {
         home: &args.home,
         system: &args.system_root,
+        store: &args.store,
     };
     let kinds = integrity::read(run.tx, &roots, &machine)?;
     let (raw, lines) = integrity::raw(&kinds);
@@ -4620,7 +4624,7 @@ fn catalogue_sentence(c: Option<&status::Catalogue>, compared: &[&str]) -> Strin
 /// The one line: how many readers had input, what the run left, and its notes. It never says
 /// "no changes" unless every reading this run was full and every scope read before was read
 /// again.
-/// How many things need a look, the number `soc status` and the app show, and how many
+/// How many things need a look, the number `immune status` and the app show, and how many
 /// findings this run opened.
 fn needs_sentence(total: usize, opened: usize) -> String {
     if total == 0 {
@@ -4650,7 +4654,7 @@ fn report(readers: usize, notes: &[String], s: &status::Summary, needs: &str) ->
     line
 }
 
-/// What a finished run left, in the words of the report line; `soc status` says the same.
+/// What a finished run left, in the words of the report line; `immune status` says the same.
 fn summary_sentences(s: &status::Summary) -> String {
     let (t, servers) = (&s.totals, &s.servers);
     // Servers and other devices are counted apart, never as one number of machines.
@@ -4752,7 +4756,7 @@ fn summary_sentences(s: &status::Summary) -> String {
     line.push(' ');
     line.push_str(&feeds_sentence(&s.feeds, &s.run.id, &s.vulnerabilities));
     // What this build cannot read here is part of every report: in the clause of what is not
-    // covered, and named by `soc status`.
+    // covered, and named by `immune status`.
     line
 }
 

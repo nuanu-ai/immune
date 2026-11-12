@@ -1,5 +1,5 @@
 // The owner's answers to a finding: the first things the app does that change the
-// store. Each is one `soc finding` command, run without a shell, with every value
+// store. Each is one `immune finding` command, run without a shell, with every value
 // as one argument of its own. Health items take no answer.
 
 import Foundation
@@ -26,10 +26,10 @@ public enum Answer {
   /// How long an expected finding stays quiet, in days, as the panel offers it.
   public static let days = [7, 30, 90]
   public static let defaultDays = 30
-  /// soc's ids are short; anything longer is not one.
+  /// Immune's ids are short; anything longer is not one.
   static let idLimit = 64
 
-  /// An id the app passes to soc: short, letters, digits, dots, underscores and
+  /// An id the app passes to Immune: short, letters, digits, dots, underscores and
   /// dashes only, and not starting with a dash, so it can never be read as a flag.
   public static func isUsable(id: String?) -> Bool {
     guard let id, !id.isEmpty, id.count <= idLimit, !id.hasPrefix("-") else { return false }
@@ -39,20 +39,20 @@ public enum Answer {
     }
   }
 
-  /// What soc tells an agent about answering, in its fixed words; the request copied
+  /// What Immune tells an agent about answering, in its fixed words; the request copied
   /// for the agent carries the same sentence.
   public static let agentNote =
     "Answer a finding only after the owner has agreed in this conversation, having been told"
     + " what it is and what the options are. Pass --via agent and the reason the owner agreed"
     + " to. The app shows every answer given this way."
 
-  /// `soc finding <id> seen --via app --json`, or nil for an id that is not usable.
+  /// `immune finding <id> seen --via app --json`, or nil for an id that is not usable.
   public static func seenArguments(id: String) -> [String]? {
     guard isUsable(id: id) else { return nil }
     return ["finding", id, "seen", "--via", "app", "--json"]
   }
 
-  /// A machine the app passes to soc: its full id, `machine:` and a name of letters,
+  /// A machine the app passes to Immune: its full id, `machine:` and a name of letters,
   /// digits and the marks host names and addresses use, so it is one argument that can
   /// never be read as a flag.
   public static func isUsable(machine: String?) -> Bool {
@@ -65,24 +65,24 @@ public enum Answer {
     }
   }
 
-  /// `soc owner <machine> withdraw --via app --json`: the owner takes back a statement
+  /// `immune owner <machine> withdraw --via app --json`: the owner takes back a statement
   /// that set a machine aside. Nil for a machine that is not usable.
   public static func withdrawArguments(machine: String) -> [String]? {
     guard isUsable(machine: machine) else { return nil }
     return ["owner", machine, "withdraw", "--via", "app", "--json"]
   }
 
-  /// `soc finding <id> reopen --via app --json`: the owner takes an answer back. Nil for
+  /// `immune finding <id> reopen --via app --json`: the owner takes an answer back. Nil for
   /// an id that is not usable.
   public static func reopenArguments(id: String) -> [String]? {
     guard isUsable(id: id) else { return nil }
     return ["finding", id, "reopen", "--via", "app", "--json"]
   }
 
-  /// `soc finding <id> expected --reason <reason> --days <n> --via app --json`, or nil when the
+  /// `immune finding <id> expected --reason <reason> --days <n> --via app --json`, or nil when the
   /// id is not usable, the reason is blank or the length is not one offered.
   ///
-  /// The reason is the value of `--reason`, one argument exactly as typed: soc takes
+  /// The reason is the value of `--reason`, one argument exactly as typed: Immune takes
   /// the argument after `--reason` as the reason whatever it starts with, so a reason
   /// that starts with `--` stays a reason and never becomes a flag.
   public static func expectedArguments(id: String, reason: String, days: Int) -> [String]? {
@@ -95,9 +95,9 @@ public enum Answer {
     ]
   }
 
-  /// What the card says when soc did not take the answer: its own message when it
+  /// What the card says when Immune did not take the answer: its own message when it
   /// sent one, inert; otherwise the app's plain words.
-  static func refusal(_ out: SocOutput) -> String {
+  static func refusal(_ out: ImmuneOutput) -> String {
     if out.launchFailure != nil { return "Not saved: the program could not be started." }
     if out.timedOut { return "Not saved: the program did not finish in time." }
     if case .success(let env) = Decoding.envelope(from: out.stdout),

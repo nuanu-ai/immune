@@ -1,6 +1,6 @@
 //! The sweep: which servers are offered for it, and the script the owner runs. The program
 //! never connects to a server and never runs ssh. It writes the probe and the script next to
-//! the store; the owner runs the script, which leaves one file per server for `soc run`.
+//! the store; the owner runs the script, which leaves one file per server for `immune run`.
 //!
 //! Only servers with a current, explicit way in are offered: literal aliases of `Host`
 //! lines as OpenSSH reads them, whose block ssh applies to them, from a reader that has
@@ -12,7 +12,7 @@
 //! visited either, and the machine's next alias is used instead.
 //!
 //! A visit that fails never destroys the reading an earlier one left: it leaves
-//! `<alias>.failed` with its time and reason instead, which `soc run` reads.
+//! `<alias>.failed` with its time and reason instead, which `immune run` reads.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -63,9 +63,9 @@ pub const FAILED: &str = "failed";
 pub fn script(machines: &[Vec<String>]) -> String {
     let mut out = String::from(
         "#!/bin/sh
-# Written by `soc servers`. Run it yourself: it visits each server below over ssh and
+# Written by `immune servers`. Run it yourself: it visits each server below over ssh and
 # runs probe.sh there, which only reads. Each server leaves <alias>.txt next to this
-# script for `soc run`, replaced only by a complete reading. A visit that fails keeps the
+# script for `immune run`, replaced only by a complete reading. A visit that fails keeps the
 # earlier <alias>.txt, leaves <alias>.failed with its time and what ssh said, and is
 # reported while the others go on. A later visit that succeeds removes it.
 # Each line below is one machine and its aliases, comma separated. The machine is visited

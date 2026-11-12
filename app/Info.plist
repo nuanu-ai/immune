@@ -2,14 +2,15 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- CFBundleName and CFBundleIdentifier are provisional and live only here:
-	     app/build and the app read them from this file. -->
+	<!-- CFBundleName and CFBundleIdentifier live only here: app/build and the app
+	     read them from this file. CFBundleExecutable is not "Immune": the bundle also
+	     holds `immune`, and on a case-insensitive volume the two would be one file. -->
 	<key>CFBundleName</key>
-	<string>Personal SOC</string>
+	<string>Immune</string>
 	<key>CFBundleIdentifier</key>
-	<string>org.example.personal-soc</string>
+	<string>ai.nuanu.immune</string>
 	<key>CFBundleExecutable</key>
-	<string>PersonalSOC</string>
+	<string>ImmuneApp</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleInfoDictionaryVersion</key>

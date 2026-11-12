@@ -91,10 +91,11 @@ const APP_SUPPORT_CANNOT: &str = "compared by the metadata of code files between
 const NPM_CANNOT: &str = "compared by files' metadata between readings, since npm keeps no record of a global package's files to verify against; a global folder set in npm's configuration or by a version manager is not looked for, and a linked package is not read";
 
 /// Where places are resolved: the home folder, and the root of the system, `/` unless a test
-/// gives another.
+/// gives another. `store` is the store this run writes, whose folder is the program's own.
 pub struct Roots<'a> {
     pub home: &'a Path,
     pub system: &'a Path,
+    pub store: &'a Path,
 }
 
 /// One thing read: its entity, its path as ids name it, its facts, and how its verdict was
@@ -276,6 +277,11 @@ fn walk_code(
 /// Apple's, so a folder named after an application from another developer is not one of them.
 /// Each matched folder is one `file` entity with the version of its application, so a change
 /// of its code while that version stayed is a `changed` digest with no `has_version` event.
+///
+/// The folder that holds the store in use is left out, whatever application it is named after.
+/// It holds the program's own output: pages rewritten every few seconds and the scripts it
+/// writes for the owner, so a change there says nothing about an application. And whoever can
+/// write there can rewrite the store itself, which is not guarded against yet (`AGENTS.md`).
 fn app_support(roots: &Roots, machine: &str, bundles: &Kind) -> Kind {
     let mut kind = Kind::new(APP_SUPPORT, APP_SUPPORT_CANNOT);
     // Each name of an application not signed by Apple, lowercased, with its version.
@@ -313,6 +319,7 @@ fn app_support(roots: &Roots, machine: &str, bundles: &Kind) -> Kind {
         }
         Some(Ok(entries)) => entries,
     };
+    let own = roots.store.parent().map(same_place);
     kind.present += 1;
     let (mut matched, mut files) = (0, 0);
     for entry in entries {
@@ -321,7 +328,7 @@ fn app_support(roots: &Roots, machine: &str, bundles: &Kind) -> Kind {
             continue;
         };
         let path = base.join(&entry);
-        if !real_folder(&path) {
+        if !real_folder(&path) || own.as_ref() == Some(&same_place(&path)) {
             continue;
         }
         let shown = format!("Library/Application Support/{text}");
@@ -432,6 +439,12 @@ fn list(dir: &Path) -> Option<std::io::Result<Vec<OsString>>> {
 /// Whether a path is a folder itself, not a link to one.
 fn real_folder(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir())
+}
+
+/// A path by what it resolves to, so that one folder reached through a link or a relative
+/// path is still one folder; as it is given when it cannot be resolved.
+fn same_place(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// One value of a property list, asked of the system's tool, or `None` when it has none.
@@ -884,7 +897,7 @@ pub const SIGNER_CHANGED: &str = "application signed by someone else";
 pub const FILES_CHANGED: &str = "installed package changed in place";
 pub const CODE_OUTSIDE_CHANGED: &str = "application code changed outside its bundle";
 
-/// What the last run learned of what is installed, for the report line and `soc status`.
+/// What the last run learned of what is installed, for the report line and `immune status`.
 pub struct Summary {
     /// No reading of this reader was made before this run: this one is the baseline.
     pub first: bool,
@@ -1039,7 +1052,7 @@ pub fn sentence(s: Option<&Summary>) -> String {
     line
 }
 
-/// The section of `soc status --json`: counts only, and each reading's own words as text.
+/// The section of `immune status --json`: counts only, and each reading's own words as text.
 pub fn section(s: &Summary) -> serde_json::Value {
     let readings: Vec<serde_json::Value> = s
         .readings

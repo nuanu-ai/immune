@@ -1,4 +1,4 @@
-// The app's only state: the latest reading of `soc status --json`, and whether a
+// The app's only state: the latest reading of `immune status --json`, and whether a
 // run started from the app is in progress. No logic of the program lives here.
 
 import Combine
@@ -17,28 +17,28 @@ public final class AppModel: ObservableObject {
   /// A run started from this app is in progress.
   @Published public private(set) var runInProgress = false
   /// Why the last run started from the app failed, in the app's words plus what
-  /// soc said (inert). Cleared when the next run starts.
+  /// Immune said (inert). Cleared when the next run starts.
   @Published public private(set) var runFailure: String?
   /// What happened to the last press of Run now when it was not a failure.
   @Published public private(set) var runNote: String?
-  /// The program's page is being brought up to date by `soc view` and opened.
+  /// The program's page is being brought up to date by `immune view` and opened.
   @Published public private(set) var pageOpening = false
   /// Why the page could not be opened, in plain words. Cleared on the next try.
   @Published public private(set) var pageFailure: String?
-  /// Where the program's page is, as `soc view` last said.
+  /// Where the program's page is, as `immune view` last said.
   @Published public private(set) var pagePath: URL?
   /// Opens the page file; the app gives the system's opener, tests a recorder.
   public var opener: @MainActor (URL) -> Bool = { _ in false }
-  /// Have soc keep the page current ahead of a click: once a store is read, then at most
-  /// every `PageAhead.every`. soc writes only when the page is not current, so a quiet
+  /// Have Immune keep the page current ahead of a click: once a store is read, then at most
+  /// every `PageAhead.every`. Immune writes only when the page is not current, so a quiet
   /// interval costs one quick look. On in the app, off in tests.
   public var writePageAhead = false
   /// When the app last had the page written ahead.
   private var lastAhead: Date?
-  private var pageTask: Task<SocOutput, Never>?
+  private var pageTask: Task<ImmuneOutput, Never>?
   /// "More" is open in the panel.
   @Published public var moreOpen = false
-  /// The card the owner opened, by its place in the order soc served; nil is the first.
+  /// The card the owner opened, by its place in the order Immune served; nil is the first.
   @Published public var openRow: Int?
   /// The answers given through the owner's agent are open in the panel.
   @Published public var answeredOpen = false
@@ -46,24 +46,24 @@ public final class AppModel: ObservableObject {
   @Published public var form: ExpectedForm?
   /// The id of the finding whose answer is being saved now.
   @Published public private(set) var answering: String?
-  /// Why soc did not take the last answer to a finding, by its id, in plain words.
+  /// Why Immune did not take the last answer to a finding, by its id, in plain words.
   @Published public private(set) var refusals: [String: String] = [:]
   /// Notifications cannot reach the owner: the panel says so in one quiet line.
   @Published public private(set) var notificationsOff = false
-  /// The soc this app runs, for "Copy for my agent".
-  public var socCommand: SocCommand?
+  /// The immune binary this app runs, for "Copy for my agent".
+  public var immuneCommand: ImmuneCommand?
   /// Tells the owner about urgent things; nil in tests, renders and `--print-panel`.
   public var announcer: Announcer?
 
-  private let soc: any SocRunning
+  private let immune: any ImmuneRunning
   private let launchedAt: Date
   /// When the app last started a check by itself.
   private var lastAutoCheck: Date?
   /// Appended to every command; empty except in trials (`--store <path>`).
   private let extraArguments: [String]
 
-  public init(soc: any SocRunning, extraArguments: [String] = [], launchedAt: Date = Date()) {
-    self.soc = soc
+  public init(immune: any ImmuneRunning, extraArguments: [String] = [], launchedAt: Date = Date()) {
+    self.immune = immune
     self.extraArguments = extraArguments
     self.launchedAt = launchedAt
   }
@@ -85,19 +85,19 @@ public final class AppModel: ObservableObject {
 
   public var light: Light { Light.of(reading) }
 
-  /// soc said a run is in progress, started here or anywhere else.
-  public var socSaysRunning: Bool { reading.status?.running == true }
+  /// Immune said a run is in progress, started here or anywhere else.
+  public var immuneSaysRunning: Bool { reading.status?.running == true }
 
-  public var canRun: Bool { !runInProgress && !socSaysRunning }
+  public var canRun: Bool { !runInProgress && !immuneSaysRunning }
 
-  /// Runs `soc status --json`. Not while another refresh is in flight, and not
+  /// Runs `immune status --json`. Not while another refresh is in flight, and not
   /// while a run started here is in progress: the run refreshes when it ends. By
   /// default it is the app's own reading and yields to the owner's work; opening the
   /// panel reads for the owner.
   public func refresh(for whom: RunFor = .app) async {
     guard !runInProgress, !refreshing else { return }
     refreshing = true
-    let out = await soc.run(
+    let out = await immune.run(
       ["status", "--json"] + extraArguments, timeout: Self.statusTimeout, for: whom)
     reading = Interpret.reading(from: out)
     readAt = Date()
@@ -116,7 +116,7 @@ public final class AppModel: ObservableObject {
   }
 
   /// Takes what the watcher said after a reading of program starts into the status read
-  /// last, as soc said it: the panel's row shows it without a run of `soc status`. What the
+  /// last, as Immune said it: the panel's row shows it without a run of `immune status`. What the
   /// line does not carry stays as the status said it; the caveats' sentences stay only while
   /// the caveats are the same, and the next status brings them back.
   public func took(_ said: EventLevel) {
@@ -129,8 +129,8 @@ public final class AppModel: ObservableObject {
     reading = .read(s, errors: errors)
   }
 
-  /// Runs `soc run --json`, then refreshes. Returns false, and starts nothing,
-  /// when a run is in progress, here or as soc last said. Check now is the owner's;
+  /// Runs `immune run --json`, then refreshes. Returns false, and starts nothing,
+  /// when a run is in progress, here or as Immune last said. Check now is the owner's;
   /// the hourly check passes `.app`.
   @discardableResult
   public func runNow(for whom: RunFor = .owner) async -> Bool {
@@ -138,7 +138,7 @@ public final class AppModel: ObservableObject {
     runInProgress = true
     runFailure = nil
     runNote = nil
-    let out = await soc.run(
+    let out = await immune.run(
       ["run", "--json"] + extraArguments, timeout: Self.runTimeout, for: whom)
     if Self.otherRunInProgress(out) {
       runNote = "A check was already running; its result will show when it ends."
@@ -151,7 +151,7 @@ public final class AppModel: ObservableObject {
   }
 
   /// Details and Show open the program's page as the store is now, never an older one.
-  /// Each click asks `soc view --no-open --if-stale`, which says where the page is and
+  /// Each click asks `immune view --no-open --if-stale`, which says where the page is and
   /// answers at once when nothing on it changed since it was written; otherwise it writes
   /// it first, and the panel shows that it is opening. A page being written ahead is
   /// waited for, not written twice. Returns false, and starts nothing, while an opening
@@ -163,7 +163,7 @@ public final class AppModel: ObservableObject {
     pageFailure = nil
     if let ahead = pageTask {
       _ = await ahead.value
-      // Ended: the click asks soc itself, whatever ran meanwhile.
+      // Ended: the click asks Immune itself, whatever ran meanwhile.
       if pageTask == ahead { pageTask = nil }
     }
     let out = await writePage(for: .owner)
@@ -178,17 +178,17 @@ public final class AppModel: ObservableObject {
     return true
   }
 
-  /// `soc view --no-open --if-stale` on the same store: brings the page up to date and
+  /// `immune view --no-open --if-stale` on the same store: brings the page up to date and
   /// learns where it is. One at a time; a second caller waits for the one running.
   /// Written ahead, it is the app's own; a click's is the owner's.
-  func writePage(for whom: RunFor) async -> SocOutput {
-    let task: Task<SocOutput, Never>
+  func writePage(for whom: RunFor) async -> ImmuneOutput {
+    let task: Task<ImmuneOutput, Never>
     if let running = pageTask {
       task = running
     } else {
-      let soc = self.soc
+      let immune = self.immune
       let args = ["view", "--no-open", "--if-stale"] + extraArguments
-      task = Task { await soc.run(args, timeout: Self.viewTimeout, for: whom) }
+      task = Task { await immune.run(args, timeout: Self.viewTimeout, for: whom) }
       pageTask = task
     }
     let out = await task.value
@@ -198,7 +198,7 @@ public final class AppModel: ObservableObject {
     return out
   }
 
-  /// What a click opens: the file soc names for the section when it is there, otherwise
+  /// What a click opens: the file Immune names for the section when it is there, otherwise
   /// the summary. A file is opened as it is, never with a `#section`: macOS can lose
   /// that on the way to the browser.
   func target(_ page: URL, section: String?) -> URL {
@@ -208,7 +208,7 @@ public final class AppModel: ObservableObject {
     return file
   }
 
-  /// The page `soc view` printed first: an absolute path to an HTML file, as a file
+  /// The page `immune view` printed first: an absolute path to an HTML file, as a file
   /// URL, or nil for anything else.
   static func pagePath(_ stdout: Data) -> URL? {
     String(decoding: stdout.prefix(4096), as: UTF8.self)
@@ -222,7 +222,7 @@ public final class AppModel: ObservableObject {
     return URL(fileURLWithPath: path)
   }
 
-  static func viewFailure(_ out: SocOutput) -> String {
+  static func viewFailure(_ out: ImmuneOutput) -> String {
     if out.launchFailure != nil { return "The program could not be started." }
     if out.timedOut { return "The program did not finish in time." }
     let said = String(decoding: out.stderr.prefix(300), as: UTF8.self)
@@ -231,7 +231,7 @@ public final class AppModel: ObservableObject {
       ?? "The program reported a problem."
   }
 
-  /// The owner's "Seen" on a finding: `soc finding <id> seen`, then a refresh.
+  /// The owner's "Seen" on a finding: `immune finding <id> seen`, then a refresh.
   /// Returns false, and runs nothing, for an id the app does not pass or while
   /// another answer is being saved.
   @discardableResult
@@ -240,7 +240,7 @@ public final class AppModel: ObservableObject {
     return await answer(id, args)
   }
 
-  /// The owner's "Expected…" on a finding, from the open form: `soc finding <id>
+  /// The owner's "Expected…" on a finding, from the open form: `immune finding <id>
   /// expected --reason <reason> --days <n>`, then a refresh. Returns false, and runs
   /// nothing, unless the form is complete.
   @discardableResult
@@ -250,7 +250,7 @@ public final class AppModel: ObservableObject {
     return await answer(form.id, args)
   }
 
-  /// The owner's "Take back" on an answer given outside the app: `soc finding <id>
+  /// The owner's "Take back" on an answer given outside the app: `immune finding <id>
   /// reopen --via app`, then a refresh. Returns false, and runs nothing, for an answer
   /// the panel does not list or while another answer is being saved.
   @discardableResult
@@ -261,7 +261,7 @@ public final class AppModel: ObservableObject {
     return await save(id, args)
   }
 
-  /// The owner's "Take back" on a statement given outside the app: `soc owner <machine>
+  /// The owner's "Take back" on a statement given outside the app: `immune owner <machine>
   /// withdraw --via app`, then a refresh. Returns false, and runs nothing, for a machine
   /// the panel does not list or while another change is being saved.
   @discardableResult
@@ -285,8 +285,8 @@ public final class AppModel: ObservableObject {
     guard answering == nil else { return false }
     answering = id
     refusals[id] = nil
-    let out = await soc.run(args + extraArguments, timeout: Self.answerTimeout, for: .owner)
-    // Saved only when soc finished by itself with 0: a timed-out soc may still exit 0.
+    let out = await immune.run(args + extraArguments, timeout: Self.answerTimeout, for: .owner)
+    // Saved only when Immune finished by itself with 0: a timed-out Immune may still exit 0.
     if out.exitCode == 0, !out.timedOut {
       if form?.id == id { form = nil }
     } else {
@@ -304,8 +304,8 @@ public final class AppModel: ObservableObject {
     }
   }
 
-  /// soc refused to start because a run is already in progress: not a failure.
-  static func otherRunInProgress(_ out: SocOutput) -> Bool {
+  /// Immune refused to start because a run is already in progress: not a failure.
+  static func otherRunInProgress(_ out: ImmuneOutput) -> Bool {
     guard case .success(let env) = Decoding.envelope(from: out.stdout) else { return false }
     return env.ok == false && env.errors.contains { $0.code == "run_in_progress" }
   }

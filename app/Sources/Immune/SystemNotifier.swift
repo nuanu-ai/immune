@@ -1,9 +1,9 @@
 // The system's notification centre, as thin as it can be: what to notify and when
-// is decided by `Announcer` in SOCCore. Made only by the running app, never by
+// is decided by `Announcer` in ImmuneCore. Made only by the running app, never by
 // tests, renders or `--print-panel`, so nothing else can ask the system.
 
 import Foundation
-import SOCCore
+import ImmuneCore
 import UserNotifications
 
 @MainActor

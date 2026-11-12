@@ -1,4 +1,4 @@
-// Keeping `soc watch` running while the app is open. The app starts it, reads what
+// Keeping `immune watch` running while the app is open. The app starts it, reads what
 // it says line by line, refreshes the status when it re-read the watched places,
 // and starts it again with a growing delay when it stops or falls silent. No
 // logic of the program lives here: the watcher decides what changed.
@@ -7,7 +7,7 @@
 // KILL after a grace from another queue, so a child that ignores TERM never holds up
 // the main thread. Quitting stops the watcher and waits for it (TERM, then KILL after
 // the grace), since nothing is left afterwards to send the KILL. If the app is killed
-// outright, `soc watch` stops by itself within a second or two: it looks for its
+// outright, `immune watch` stops by itself within a second or two: it looks for its
 // parent every second and stops when its stdout closes.
 //
 // A watcher that runs but whose reading, sample or look at what to watch failed is
@@ -64,7 +64,7 @@ public protocol WatchChild: AnyObject, Sendable {
 }
 
 public protocol WatchLaunching: Sendable {
-  /// Starts `soc` with `arguments`. Lines and the exit arrive on the main queue,
+  /// Starts `immune` with `arguments`. Lines and the exit arrive on the main queue,
   /// in order.
   @MainActor
   func launch(
@@ -79,7 +79,7 @@ public struct LaunchFailure: Error, Equatable, Sendable {
   public init(_ words: String) { self.words = words }
 }
 
-/// The real launcher: `soc` by its absolute path, an argument list, no shell.
+/// The real launcher: `immune` by its absolute path, an argument list, no shell.
 public struct ProcessWatchLauncher: WatchLaunching {
   public let executable: URL
   public let lineCap: Int
@@ -221,7 +221,7 @@ public final class Watcher: ObservableObject {
   private let arguments: [String]
   private let onRead: @MainActor () -> Void
   /// A reading of program starts the watcher said: the panel's row takes it as it is,
-  /// without asking soc for the status.
+  /// without asking Immune for the status.
   private let onStarts: @MainActor (EventLevel) -> Void
   private let schedule: @MainActor (TimeInterval, @escaping @MainActor () -> Void) -> Void
   private let clock: @MainActor () -> Date
@@ -231,7 +231,7 @@ public final class Watcher: ObservableObject {
   private var attempt = 0
   private var startedAt = Date.distantPast
   private var lastLineAt = Date.distantPast
-  private var failure: SocError?
+  private var failure: ImmuneError?
   /// What failed and has not succeeded since, by kind, in the order said.
   private var failing: [(kind: String, reason: String)] = []
   private var sawWatching = false

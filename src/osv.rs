@@ -65,7 +65,7 @@ CREATE INDEX IF NOT EXISTS advisory_affects_advisory ON advisory_affects (source
 -- What the status, the view and every run ask of the records held now: how many there are of
 -- each kind (`held`), the newest change (`freshness`) and how many are informational. Each was
 -- a read of the whole table, about 235,000 rows and 40 MB for npm, several times per
--- `soc status`. Each index holds what its question reads, so it is answered from the index
+-- `immune status`. Each index holds what its question reads, so it is answered from the index
 -- alone: `advisory_held` by a pass over its entries for one feed, the other two by a look-up.
 CREATE INDEX IF NOT EXISTS advisory_held ON advisory (source, gone_at, kind, withdrawn);
 CREATE INDEX IF NOT EXISTS advisory_newest ON advisory (source, gone_at, modified);
@@ -197,7 +197,7 @@ pub fn request(feed: &Feed, output: &Path, etag: Option<&str>) -> Vec<String> {
 
 /// The lock a run holds on the feeds' folder from before its downloads until it ends, so that
 /// two runs never write the same partial download. It is not the run lock: a download, which
-/// can take minutes, holds up no watcher's reading and no `soc status`. `None` when another
+/// can take minutes, holds up no watcher's reading and no `immune status`. `None` when another
 /// run holds it.
 pub fn lock_fetch(home: &Path) -> std::io::Result<Option<std::fs::File>> {
     let dir = home.join(FOLDER);
@@ -1348,7 +1348,7 @@ mod tests {
 
     impl Dir {
         fn new(tag: &str) -> Dir {
-            let dir = std::env::temp_dir().join(format!("soc-osv-{tag}-{}", std::process::id()));
+            let dir = std::env::temp_dir().join(format!("immune-osv-{tag}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             Dir(dir)

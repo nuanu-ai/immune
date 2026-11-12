@@ -572,7 +572,7 @@ impl Rules {
             .count()
     }
 
-    /// The summary of `soc rules --json`: how many are shipped, evaluated, evaluated in part
+    /// The summary of `immune rules --json`: how many are shipped, evaluated, evaluated in part
     /// and not evaluated, with the rules behind each number.
     pub fn summary_json(&self) -> Json {
         let named = |l: &Loaded| {

@@ -1,4 +1,4 @@
-//! Promises of `soc watch`, the watcher on file-system events. Each test runs the real binary
+//! Promises of `immune watch`, the watcher on file-system events. Each test runs the real binary
 //! against the real FSEvents on an invented Mac: a temporary home folder and a temporary system
 //! root, never the real watched places. Waits are for a line the watcher prints, with a
 //! generous timeout. Where a test must show that something did not happen, it makes one more
@@ -27,7 +27,7 @@ impl Mac {
             .unwrap()
             .as_nanos();
         let root =
-            std::env::temp_dir().join(format!("soc-watch-{tag}-{}-{nanos}", std::process::id()));
+            std::env::temp_dir().join(format!("immune-watch-{tag}-{}-{nanos}", std::process::id()));
         for dir in ["home", "sys/etc", "store"] {
             std::fs::create_dir_all(root.join(dir)).unwrap();
         }
@@ -55,21 +55,21 @@ impl Mac {
         path
     }
 
-    fn soc(&self) -> Command {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_soc"));
+    fn immune(&self) -> Command {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_immune"));
         cmd.env("HOME", self.home()).current_dir(self.home());
         cmd
     }
 
-    /// `soc run` on this Mac for the machine `mac`, asking nothing outside it.
+    /// `immune run` on this Mac for the machine `mac`, asking nothing outside it.
     fn run_cmd(&self) -> Command {
         self.run_cmd_servers(&self.root.join("absent"))
     }
 
-    /// `soc run` as above, reading the servers' files in `servers`.
+    /// `immune run` as above, reading the servers' files in `servers`.
     fn run_cmd_servers(&self, servers: &std::path::Path) -> Command {
         let absent = self.root.join("absent");
-        let mut cmd = self.soc();
+        let mut cmd = self.immune();
         cmd.args(["run", "--machine-name", "mac", "--store"])
             .arg(self.store())
             .arg("--brew-input")
@@ -98,14 +98,14 @@ impl Mac {
         );
     }
 
-    /// `soc watch` on this Mac. Its samples are of the reading in `sample.json`, which a test
+    /// `immune watch` on this Mac. Its samples are of the reading in `sample.json`, which a test
     /// rewrites; by default no process, so that no test reads the real ones.
     fn watch_cmd(&self) -> Command {
         let reading = self.root.join("sample.json");
         if !reading.exists() {
             self.sample(now(), &[]);
         }
-        let mut cmd = self.soc();
+        let mut cmd = self.immune();
         cmd.args(["watch", "--store"])
             .arg(self.store())
             .arg("--system-root")
@@ -129,7 +129,7 @@ impl Mac {
 
     fn status(&self) -> Value {
         let out = self
-            .soc()
+            .immune()
             .args(["status", "--json", "--store"])
             .arg(self.store())
             .output()
@@ -138,19 +138,19 @@ impl Mac {
         serde_json::from_slice(&out.stdout).unwrap()
     }
 
-    /// Every page `soc view` writes, joined.
+    /// Every page `immune view` writes, joined.
     fn view(&self) -> String {
         self.view_with(&[])
     }
 
-    /// Every page as `soc view --if-stale` leaves it, joined: written only when not current.
+    /// Every page as `immune view --if-stale` leaves it, joined: written only when not current.
     fn view_if_stale(&self) -> String {
         self.view_with(&["--if-stale"])
     }
 
     fn view_with(&self, args: &[&str]) -> String {
         let out = within(
-            self.soc()
+            self.immune()
                 .args(["view", "--no-open", "--store"])
                 .arg(self.store())
                 .args(args),
@@ -190,7 +190,7 @@ impl Drop for Mac {
     }
 }
 
-/// A running `soc watch` and every line it printed so far.
+/// A running `immune watch` and every line it printed so far.
 struct Watcher {
     child: Child,
     rx: mpsc::Receiver<Value>,
@@ -342,7 +342,7 @@ fn a_file_changed_in_a_watched_place_is_a_changed_event_within_seconds_and_the_r
     assert!(written.elapsed() < Duration::from_secs(10), "read too late");
     assert_eq!((count(&read, "new"), count(&read, "gone")), (0, 0));
     assert_eq!(mac.journaled(".zshrc", "changed"), vec!["has_content"]);
-    // The change is the store's: `soc status` lists it after a full run, under the
+    // The change is the store's: `immune status` lists it after a full run, under the
     // watcher's reading.
     drop(w);
     mac.run();
@@ -354,7 +354,7 @@ fn a_file_changed_in_a_watched_place_is_a_changed_event_within_seconds_and_the_r
 
 #[test]
 fn a_change_the_watcher_sees_is_an_open_finding_at_once_and_its_read_line_counts_as_status_does() {
-    // The app learns of a change from the `read` line and then shows `soc status --json`:
+    // The app learns of a change from the `read` line and then shows `immune status --json`:
     // with no full run in between, the finding is there and both give the same number.
     let mac = Mac::new("finding");
     mac.put(".zshrc", "export A=1\n");
@@ -1076,7 +1076,7 @@ fn a_failed_reading_or_sample_is_not_watched_live_with_its_reason_until_the_next
             && page.contains("latest reading of the watched places failed</"),
         "{page}"
     );
-    let text = within(mac.soc().args(["status", "--store"]).arg(mac.store()));
+    let text = within(mac.immune().args(["status", "--store"]).arg(mac.store()));
     let text = String::from_utf8(text.stdout).unwrap();
     assert!(text.contains("so it does not watch live"), "{text}");
     conn.execute_batch("DROP TRIGGER refuse").unwrap();
@@ -1187,7 +1187,7 @@ fn a_watcher_whose_parent_is_gone_stops_and_frees_the_store() {
         .current_dir(mac.home())
         .arg("-c")
         .arg(r#""$0" watch --store "$1" --system-root "$2" > "$3" & echo $! > "$4"; wait"#)
-        .arg(env!("CARGO_BIN_EXE_soc"))
+        .arg(env!("CARGO_BIN_EXE_immune"))
         .arg(mac.store())
         .arg(mac.sys())
         .arg(&out)
@@ -1227,7 +1227,7 @@ fn a_watcher_whose_parent_is_gone_before_it_starts_stops_at_once() {
         .current_dir(mac.home())
         .arg("-c")
         .arg(r#""$0" watch --store "$1" --system-root "$2" > "$3" & echo $! > "$4""#)
-        .arg(env!("CARGO_BIN_EXE_soc"))
+        .arg(env!("CARGO_BIN_EXE_immune"))
         .arg(mac.store())
         .arg(mac.sys())
         .arg(&out)
@@ -1257,7 +1257,7 @@ fn a_watcher_whose_parent_is_gone_before_it_starts_stops_at_once() {
 // What the status answers first: whether this Mac is watched and quiet. What is not covered
 // is apart, aggregated, and never a thing to look at.
 
-/// The results of `soc status --json` as a person's questions: what needs a look, the state
+/// The results of `immune status --json` as a person's questions: what needs a look, the state
 /// of this Mac, and the ids of what is not covered, what the owner can fix first.
 fn answered(r: &Value) -> (u64, String, Vec<String>) {
     let kinds = r["not_covered"]
@@ -1621,8 +1621,8 @@ fn pages_asked_for_are_written_again_when_one_is_gone_or_they_are_an_hour_old() 
     assert!(changes.is_file());
     // Another program writes its own pages.
     std::fs::write(&summary, "as it was").unwrap();
-    let other = mac.root.join("soc-copy");
-    std::fs::copy(env!("CARGO_BIN_EXE_soc"), &other).unwrap();
+    let other = mac.root.join("immune-copy");
+    std::fs::copy(env!("CARGO_BIN_EXE_immune"), &other).unwrap();
     let out = within(
         Command::new(&other)
             .env("HOME", mac.home())
@@ -1986,7 +1986,7 @@ fn first_day_and_later(tag: &str, args: &[&str]) -> (Duration, Duration) {
     let later = watched_for_a_while(&format!("{tag}-later"));
     add_watcher_history(&later, 10_000);
     let time = |mac: &Mac| {
-        let mut cmd = mac.soc();
+        let mut cmd = mac.immune();
         cmd.args(args).arg("--store").arg(mac.store());
         let started = Instant::now();
         let out = within(&mut cmd);

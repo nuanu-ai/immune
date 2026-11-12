@@ -1,5 +1,5 @@
 # The event level's retention, run by launchd as root every ten minutes
-# (local.personal-soc.event-tidy):
+# (ai.nuanu.immune.event-tidy):
 #   /bin/sh tidy.sh <log folder> <most bytes of log>
 # A log file holds one hour. One not written to for a day holds only lines older than a day,
 # and is deleted. Then, while the log files together are larger than the cap, the oldest is

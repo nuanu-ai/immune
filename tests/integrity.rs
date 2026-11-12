@@ -14,7 +14,8 @@ const BUNDLE: &str = "component:machine:mac/macos-app/org.example.tiny";
 const KEG: &str = "file:machine:mac//opt/homebrew/Cellar/tool/1.0";
 const PACKAGE: &str = "component:machine:mac/npm/tool";
 
-struct Estate(PathBuf);
+/// The estate's folder, and the store when it is kept somewhere else than in it.
+struct Estate(PathBuf, Option<PathBuf>);
 
 impl Estate {
     fn new(tag: &str) -> Estate {
@@ -23,14 +24,14 @@ impl Estate {
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "soc-integrity-{tag}-{}-{nanos}",
+            "immune-integrity-{tag}-{}-{nanos}",
             std::process::id()
         ));
         for dir in ["home", "system", "empty"] {
             std::fs::create_dir_all(path.join(dir)).unwrap();
         }
         std::fs::write(path.join("brew.json"), "{\"formulae\": [], \"casks\": []}").unwrap();
-        Estate(path)
+        Estate(path, None)
     }
 
     fn system(&self) -> PathBuf {
@@ -38,7 +39,7 @@ impl Estate {
     }
 
     fn store(&self) -> PathBuf {
-        self.0.join("store.db")
+        self.1.clone().unwrap_or_else(|| self.0.join("store.db"))
     }
 
     fn app(&self) -> PathBuf {
@@ -53,10 +54,10 @@ impl Estate {
         self.system().join("opt/homebrew/lib/node_modules/tool")
     }
 
-    /// `soc run` on this estate alone, with PATH as given, returning the report line.
+    /// `immune run` on this estate alone, with PATH as given, returning the report line.
     fn run_with_path(&self, path: &str) -> String {
         let empty = self.0.join("empty");
-        let out = Command::new(env!("CARGO_BIN_EXE_soc"))
+        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
             .env("HOME", self.0.join("home"))
             .env("PATH", path)
             .current_dir(&self.0)
@@ -131,7 +132,7 @@ impl Estate {
 
     /// The open findings, as rule, where and value.
     fn findings(&self) -> Vec<(String, String, String)> {
-        let out = Command::new(env!("CARGO_BIN_EXE_soc"))
+        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
             .args(["findings", "--json", "--store"])
             .arg(self.store())
             .output()
@@ -148,9 +149,9 @@ impl Estate {
             .collect()
     }
 
-    /// The `integrity` section of `soc status --json`.
+    /// The `integrity` section of `immune status --json`.
     fn status(&self) -> serde_json::Value {
-        let out = Command::new(env!("CARGO_BIN_EXE_soc"))
+        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
             .args(["status", "--json", "--store"])
             .arg(self.store())
             .output()
@@ -798,6 +799,53 @@ fn code_an_application_keeps_outside_its_bundle_changed_while_its_version_stayed
     sign(&e.app());
     e.run();
     assert_eq!(e.status()["changed_while_version_stayed"], 0);
+}
+
+#[test]
+fn the_folder_that_holds_the_store_is_not_an_applications_code_while_another_named_alike_is() {
+    // Tiny stands for this program: its store is in a folder named by its identifier, beside
+    // pages and scripts the program rewrites. Other is any application with a folder named
+    // the same way.
+    let mut e = Estate::new("own");
+    bundle(&e.app(), "1.0");
+    let other = e.system().join("Applications/Other.app");
+    bundle(&other, "1.0");
+    let info = other.join("Contents/Info.plist");
+    let text = std::fs::read_to_string(&info).unwrap();
+    std::fs::write(&info, text.replace("org.example.tiny", "org.example.other")).unwrap();
+    sign(&other);
+    let support = e.home().join("Library/Application Support");
+    let own = support.join("org.example.tiny");
+    std::fs::create_dir_all(&own).unwrap();
+    e.1 = Some(own.join("store.db"));
+    let live = own.join("pages/live.js");
+    put(&live, "window.immuneLive = {};\n");
+    put(&own.join("sweep.sh"), "#!/bin/sh\n");
+    let js = module(&e, "org.example.other");
+    put(&js, "start();\n");
+    e.run();
+    // The code files there change between the two runs, as they do while the program works.
+    append(&live, "window.immuneLive = {};\n");
+    append(&own.join("sweep.sh"), "exit 0\n");
+    append(&js, "steal();\n");
+    e.run();
+    let own_folder = "file:machine:mac/Library/Application Support/org.example.tiny";
+    let other_folder = "file:machine:mac/Library/Application Support/org.example.other";
+    assert!(of(&e.events(), own_folder).is_empty(), "{:?}", e.events());
+    assert!(e.live(own_folder, "has_digest").is_empty());
+    assert!(e.live(own_folder, "located_on").is_empty());
+    assert_eq!(
+        of(&e.events(), other_folder),
+        [pair("changed", "has_digest")]
+    );
+    assert_eq!(
+        e.findings(),
+        [(
+            "integrity.app-code-outside".to_string(),
+            "~/Library/Application Support/org.example.other".to_string(),
+            String::new()
+        )]
+    );
 }
 
 #[test]

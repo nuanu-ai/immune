@@ -1,14 +1,14 @@
-//! `soc watch`: learns within seconds that a watched place changed and records it, so that a
+//! `immune watch`: learns within seconds that a watched place changed and records it, so that a
 //! change does not wait for the next full run. It runs until it is told to stop, as a child of
 //! the menu-bar app, and installs nothing.
 //!
 //! The mechanism is FSEvents (`fsevents.rs`). An event is not trusted: it only says that
 //! something under the watched paths changed. After a quiet period the watcher runs the
-//! watched-places reading of `soc run` and its rules, through the same code (`watch_places`),
+//! watched-places reading of `immune run` and its rules, through the same code (`watch_places`),
 //! as a small run of that reader alone, under the same run lock, in one transaction. The
 //! lifecycle makes the events and the rules the findings, as in a full run; the reading opens
 //! nothing that is not a regular file and keeps no content. A small run writes no
-//! `run_started` or `run_finished`: those mark full runs, which `soc status` reports on.
+//! `run_started` or `run_finished`: those mark full runs, which `immune status` reports on.
 //!
 //! The last event id handled is kept with the identity of the FSEvents history of each volume
 //! watched, in the `watcher` table, and written in the transaction of the reading that handled
@@ -45,14 +45,14 @@
 //! Failures. A reading, a sample or a look at what to watch that failed is a `problem` line,
 //! and is recorded in the `watcher_failed` table with what it said, under the run lock, where
 //! the store can hold it; the next success of the same kind clears it. While one stands,
-//! `soc status` does not say this Mac is watched live. A look at what to watch that succeeds
+//! `immune status` does not say this Mac is watched live. A look at what to watch that succeeds
 //! after one that failed prints `watching` again and reads the watched places at once.
 //!
 //! While it waits for the run lock, which a full run holds for as long as it runs, it says it
 //! is alive at its usual interval, so that a long run does not get it taken for dead.
 //! It writes no page of the view, only that small file: a change can come every few seconds and the pages cost
 //! seconds of processor time, mostly for pages nobody has open. A page is brought up to date
-//! when it is asked for, by `soc view --if-stale`, which writes only when something the pages
+//! when it is asked for, by `immune view --if-stale`, which writes only when something the pages
 //! rest on moved since they were made (`view::basis`). The watcher stops,
 //! with exit 0, when stdout is closed or its parent process is gone, so that an app that died
 //! leaves no watcher holding the store.
@@ -161,7 +161,7 @@ pub struct WatchArgs {
     pub alive_every: Duration,
 }
 
-/// Parses what follows `soc watch`.
+/// Parses what follows `immune watch`.
 pub fn parse(mut it: impl Iterator<Item = String>) -> Result<WatchArgs, String> {
     let (mut store, mut system_root) = (None, None);
     let (mut sample_input, mut sample_every, mut alive_every) = (None, SAMPLE, ALIVE);
@@ -207,7 +207,7 @@ static STOP: AtomicBool = AtomicBool::new(false);
 static SIGNAL_FD: AtomicI32 = AtomicI32::new(-1);
 
 /// Runs the watcher until it is stopped. Exit 0 on SIGTERM or SIGINT; the error envelope of
-/// `soc status --json` and a non-zero exit when it cannot watch at all.
+/// `immune status --json` and a non-zero exit when it cannot watch at all.
 pub fn watch(args: &WatchArgs) -> ExitCode {
     // The parent is taken before anything else: taken later, a parent that died meanwhile
     // would leave launchd recorded as the parent, and the watcher would never stop. A parent
@@ -246,7 +246,7 @@ pub fn watch(args: &WatchArgs) -> ExitCode {
                 Some("watch"),
                 "watch_in_progress",
                 "another watcher is running on this store; nothing was done",
-                "soc status --json",
+                "immune status --json",
                 "",
             ));
             return ExitCode::from(EXIT_WATCHING);
@@ -294,7 +294,7 @@ fn failed(detail: &str) -> ExitCode {
         Some("watch"),
         "watch_failed",
         "the watcher could not subscribe to file-system events; nothing is watched",
-        "soc watch",
+        "immune watch",
         detail,
     ));
     ExitCode::FAILURE
@@ -813,9 +813,9 @@ fn read_held(
         notes: Vec::new(),
         readers: 0,
     };
-    // The reading and the rules of `soc run`: a change seen here is a finding at once.
+    // The reading and the rules of `immune run`: a change seen here is a finding at once.
     let (rows, opened) = crate::watch_places(&mut run, &reader_args(args), &found)?;
-    // What needs a look after it, counted by the code `soc status --json` counts it with.
+    // What needs a look after it, counted by the code `immune status --json` counts it with.
     let needs = status::needs(&tx, at)?.items.len();
     tx.execute_batch(TABLE)?;
     tx.execute(
@@ -1061,7 +1061,7 @@ extern "C" fn on_signal(_: libc::c_int) {
     }
 }
 
-/// What `soc status --json` says about the watcher: `null` unless one holds its lock on this
+/// What `immune status --json` says about the watcher: `null` unless one holds its lock on this
 /// store now, so a watcher that died never shows as watching. `since` is from the lock file;
 /// `last_read` is the latest reading of a watcher, if this one made it; `failed` is what has
 /// failed in this one and not succeeded since, with what the failure said.
@@ -1175,7 +1175,7 @@ mod tests {
         // adds to the history of what was looked through. A reading that grew with that
         // history would after months take longer than the quiet second it waits, and hold
         // the store from a full run and from the owner's status for as long.
-        let dir = std::env::temp_dir().join(format!("soc-watch-flat-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("immune-watch-flat-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let (home, sys) = (dir.join("home"), dir.join("sys"));
         let put = |p: PathBuf, s: &str| {
@@ -1287,7 +1287,7 @@ mod tests {
 
     #[test]
     fn a_place_is_named_by_the_real_path_of_its_folder_even_before_it_exists() {
-        let dir = std::env::temp_dir().join(format!("soc-watch-real-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("immune-watch-real-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("real")).unwrap();
         let _ = std::fs::remove_file(dir.join("link"));
         std::os::unix::fs::symlink(dir.join("real"), dir.join("link")).unwrap();

@@ -8,11 +8,11 @@
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
 
-LIB='/Library/Application Support/personal-soc/event-level'
-TOP='/Library/Application Support/personal-soc'
+LIB='/Library/Application Support/ai.nuanu.immune/event-level'
+TOP='/Library/Application Support/ai.nuanu.immune'
 DAEMONS=/Library/LaunchDaemons
 # The reverse of the order install starts them in.
-LABELS='local.personal-soc.event-tidy local.personal-soc.eslogger local.personal-soc.event-filter'
+LABELS='ai.nuanu.immune.event-tidy ai.nuanu.immune.eslogger ai.nuanu.immune.event-filter'
 
 here=$(cd "$(/usr/bin/dirname "$0")" && pwd -P) || exit 1
 
@@ -32,8 +32,8 @@ fi
 
 cat <<EOF
 This removes the event level:
-  the launch daemons local.personal-soc.eslogger, local.personal-soc.event-filter and
-  local.personal-soc.event-tidy, and their property lists in $DAEMONS
+  the launch daemons ai.nuanu.immune.eslogger, ai.nuanu.immune.event-filter and
+  ai.nuanu.immune.event-tidy, and their property lists in $DAEMONS
   $LIB, with every log of program starts and file events in it
   $TOP, if nothing else is in it
 EOF
@@ -61,7 +61,7 @@ if [ -d "$TOP" ] && [ ! -L "$TOP" ]; then
 fi
 
 if [ "$found" -eq 1 ]; then
-    echo "Removed. \`soc status\` says the event level is not installed after its next reading."
+    echo "Removed. \`immune status\` says the event level is not installed after its next reading."
 else
     echo "Nothing was installed; nothing was removed."
 fi

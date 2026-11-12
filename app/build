@@ -1,10 +1,10 @@
 #!/bin/sh
 # Builds the menu-bar app with Apple's Command Line Tools alone and assembles
-# target/app/<CFBundleName>.app with the given soc inside, signed ad hoc.
-# Usage: app/build [--debug] <path to soc>
+# target/app/<CFBundleName>.app with the given immune inside, signed ad hoc.
+# Usage: app/build [--debug] <path to immune>
 # --debug builds a bundle for trials into target/app/debug/: only a debug build
-# honours --soc-path, --store and their environment variables. The release
-# bundle always runs its own soc on soc's default store.
+# honours --immune-path, --store and their environment variables. The release
+# bundle always runs its own immune on immune's default store.
 # Prints the path of the bundle on stdout; everything else goes to stderr.
 set -eu
 
@@ -16,14 +16,14 @@ if [ "${1:-}" = --debug ]; then
   shift
 fi
 if [ $# -ne 1 ]; then
-  echo "usage: app/build [--debug] <path to soc>" >&2
+  echo "usage: app/build [--debug] <path to immune>" >&2
   exit 2
 fi
 if [ ! -f "$1" ] || [ ! -x "$1" ]; then
   echo "app/build: not an executable file: $1" >&2
   exit 2
 fi
-soc=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
+immune=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
 
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/.." && pwd)
@@ -43,11 +43,11 @@ mkdir -p "$bundle/Contents/MacOS"
 cp "$plist" "$bundle/Contents/Info.plist"
 plutil -lint -s "$bundle/Contents/Info.plist" >&2
 cp "$bin/$exe" "$bundle/Contents/MacOS/$exe"
-cp "$soc" "$bundle/Contents/MacOS/soc"
-chmod 755 "$bundle/Contents/MacOS/$exe" "$bundle/Contents/MacOS/soc"
+cp "$immune" "$bundle/Contents/MacOS/immune"
+chmod 755 "$bundle/Contents/MacOS/$exe" "$bundle/Contents/MacOS/immune"
 
 # Ad hoc: enough for the Mac it was built on. Inner code first, then the bundle.
-codesign --force --sign - --timestamp=none "$bundle/Contents/MacOS/soc" >&2
+codesign --force --sign - --timestamp=none "$bundle/Contents/MacOS/immune" >&2
 codesign --force --sign - --timestamp=none "$bundle" >&2
 codesign --verify --deep --strict "$bundle" >&2
 

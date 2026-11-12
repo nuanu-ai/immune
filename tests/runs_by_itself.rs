@@ -58,7 +58,7 @@ impl Estate {
             .unwrap()
             .as_nanos();
         let path =
-            std::env::temp_dir().join(format!("soc-runs-{tag}-{}-{nanos}", std::process::id()));
+            std::env::temp_dir().join(format!("immune-runs-{tag}-{}-{nanos}", std::process::id()));
         for dir in ["home", "system", "empty"] {
             std::fs::create_dir_all(path.join(dir)).unwrap();
         }
@@ -88,7 +88,7 @@ impl Estate {
 
     fn run(&self) -> String {
         let empty = self.0.join("empty");
-        let out = Command::new(env!("CARGO_BIN_EXE_soc"))
+        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
             .env("HOME", self.home())
             .env("PATH", "/usr/bin:/bin")
             .current_dir(&self.0)
@@ -152,7 +152,7 @@ impl Estate {
 
     /// Findings, open ones unless `all`, as rule, state, where and value.
     fn findings(&self, all: bool) -> Vec<(String, String, String, String)> {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_soc"));
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_immune"));
         cmd.args(["findings", "--json", "--store"])
             .arg(self.store());
         if all {
@@ -174,9 +174,9 @@ impl Estate {
         self.findings(false).into_iter().map(|f| f.0).collect()
     }
 
-    /// `soc status --json`'s result.
+    /// `immune status --json`'s result.
     fn status(&self) -> serde_json::Value {
-        let out = Command::new(env!("CARGO_BIN_EXE_soc"))
+        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
             .args(["status", "--json", "--store"])
             .arg(self.store())
             .output()
@@ -186,7 +186,7 @@ impl Estate {
 
     /// The page of what is watched on this Mac.
     fn this_mac_page(&self) -> String {
-        let out = Command::new(env!("CARGO_BIN_EXE_soc"))
+        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
             .args(["view", "--no-open", "--store"])
             .arg(self.store())
             .output()
@@ -214,14 +214,14 @@ impl Estate {
 
     /// The owner says he has seen every open finding.
     fn seen(&self) {
-        let out = Command::new(env!("CARGO_BIN_EXE_soc"))
+        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
             .args(["findings", "--json", "--store"])
             .arg(self.store())
             .output()
             .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
         for f in v["result"]["findings"].as_array().unwrap() {
-            let out = Command::new(env!("CARGO_BIN_EXE_soc"))
+            let out = Command::new(env!("CARGO_BIN_EXE_immune"))
                 .args(["finding", f["id"].as_str().unwrap(), "seen", "--store"])
                 .arg(self.store())
                 .output()

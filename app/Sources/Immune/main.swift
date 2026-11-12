@@ -1,14 +1,14 @@
 // The menu-bar app: an AppKit status item and a popover around a SwiftUI view.
-// While it is open it keeps the program running: `soc watch` as a child process,
+// While it is open it keeps the program running: `immune watch` as a child process,
 // and a full check every hour (`HourlyCheck`).
 // AppKit owns the icon so that opening the panel is one known call (which
 // refreshes) and the count beside the icon is plain button text. There is no
 // window of the app's own: Details is the program's page, written and opened by
-// `soc view`.
+// `immune view`.
 
 import AppKit
 import Combine
-import SOCCore
+import ImmuneCore
 import SwiftUI
 
 /// The app's name, from Info.plist: kept there and nowhere else.
@@ -159,55 +159,55 @@ func openNotificationSettings() {
 /// terminal. No text taken from a source goes here.
 func log(_ line: String) {
   let at = Date().formatted(.iso8601)
-  FileHandle.standardError.write(Data("personal-soc: \(at) \(line)\n".utf8))
+  FileHandle.standardError.write(Data("Immune: \(at) \(line)\n".utf8))
 }
 
-// Overrides of where soc is and which store it reads are for tests and trials, and
-// only a debug build honours them. A release bundle always runs its own soc on
-// soc's default store.
+// Overrides of where Immune is and which store it reads are for tests and trials, and
+// only a debug build honours them. A release bundle always runs its own Immune on
+// Immune's default store.
 #if DEBUG
   let overrides = (CommandLine.arguments, ProcessInfo.processInfo.environment)
-  log("debug build: --soc-path, --store and their environment variables are honoured")
+  log("debug build: --immune-path, --store and their environment variables are honoured")
 #else
   let overrides: ([String], [String: String]) = ([], [:])
 #endif
 
-/// The soc to run and the arguments that point it at a store.
+/// The immune binary to run and the arguments that point it at a store.
 func locate(_ arguments: [String], _ environment: [String: String]) -> (
-  any SocRunning, [String], URL?
+  any ImmuneRunning, [String], URL?
 ) {
-  let soc: any SocRunning
+  let immune: any ImmuneRunning
   let found: URL
-  switch SocLocation.resolve(
+  switch ImmuneLocation.resolve(
     arguments: arguments, environment: environment,
     executableDirectory: Bundle.main.executableURL?.deletingLastPathComponent())
   {
   case .success(let url):
-    log("soc: \(url.path)")
-    soc = ProcessRunner(executable: url)
+    log("immune: \(url.path)")
+    immune = ProcessRunner(executable: url)
     found = url
   case .failure(let problem):
-    log("soc: not located: \(problem.words)")
-    return (UnlocatedSoc(problem: problem), [], nil)
+    log("immune: not located: \(problem.words)")
+    return (UnlocatedImmune(problem: problem), [], nil)
   }
-  switch SocLocation.store(arguments: arguments, environment: environment) {
+  switch ImmuneLocation.store(arguments: arguments, environment: environment) {
   case .success(let extra):
-    log(extra.isEmpty ? "store: soc's default" : "store: \(extra[1])")
-    return (soc, extra, found)
+    log(extra.isEmpty ? "store: immune's default" : "store: \(extra[1])")
+    return (immune, extra, found)
   case .failure(let problem):
     // Never fall back to the default store when a trial asked for another one.
     log("store: refused: \(problem.words)")
-    return (UnlocatedSoc(problem: problem), [], nil)
+    return (UnlocatedImmune(problem: problem), [], nil)
   }
 }
 
-/// A launcher that cannot start anything, for when soc was not located.
+/// A launcher that cannot start anything, for when Immune was not located.
 struct NoWatch: WatchLaunching {
   @MainActor
   func launch(
     _ arguments: [String], onLine: @escaping @MainActor (Data) -> Void,
     onDropped: @escaping @MainActor (Int) -> Void, onExit: @escaping @MainActor (Int32?) -> Void
-  ) -> Result<any WatchChild, LaunchFailure> { .failure(LaunchFailure("soc was not located")) }
+  ) -> Result<any WatchChild, LaunchFailure> { .failure(LaunchFailure("immune was not located")) }
 }
 
 @MainActor
@@ -223,20 +223,20 @@ func makeWatcher(_ url: URL?, _ extra: [String], _ model: AppModel) -> Watcher {
     })
 }
 
-/// Debug only: prints the lines the panel shows for soc's current answer, as plain
+/// Debug only: prints the lines the panel shows for Immune's current answer, as plain
 /// text on stdout, and exits. Lets the panel be read without a screen.
-func printPanel(_ soc: any SocRunning, _ extra: [String]) -> Never {
+func printPanel(_ immune: any ImmuneRunning, _ extra: [String]) -> Never {
   final class Box: @unchecked Sendable {
-    var out: SocOutput?
+    var out: ImmuneOutput?
   }
   let box = Box()
   Task.detached {
-    let out = await soc.run(["status", "--json"] + extra, timeout: AppModel.statusTimeout)
+    let out = await immune.run(["status", "--json"] + extra, timeout: AppModel.statusTimeout)
     DispatchQueue.main.async { box.out = out }
   }
-  // Keep the main run loop turning while soc answers.
+  // Keep the main run loop turning while Immune answers.
   while box.out == nil { RunLoop.main.run(until: Date() + 0.05) }
-  let panel = Panel.of(Interpret.reading(from: box.out ?? SocOutput()), now: Date())
+  let panel = Panel.of(Interpret.reading(from: box.out ?? ImmuneOutput()), now: Date())
   print(panel.lines.joined(separator: "\n"))
   exit(0)
 }
@@ -312,7 +312,7 @@ func renderPanel(_ model: AppModel, _ watcher: Watcher, to folder: URL) async ->
   let panel = Panel.of(
     model.reading, now: Date(), checking: model.runInProgress, notes: model.notes,
     notWatching: watcher.notWatching, form: model.form, answering: model.answering,
-    refusals: model.refusals, notificationsOff: model.notificationsOff, soc: model.socCommand,
+    refusals: model.refusals, notificationsOff: model.notificationsOff, immune: model.immuneCommand,
     moreOpen: model.moreOpen, answeredOpen: model.answeredOpen, openRow: model.openRow)
   try? (panel.lines.joined(separator: "\n") + "\n").write(
     to: folder.appendingPathComponent("panel.txt"), atomically: true, encoding: .utf8)
@@ -320,30 +320,30 @@ func renderPanel(_ model: AppModel, _ watcher: Watcher, to folder: URL) async ->
   exit(0)
 }
 
-let (soc, extra, socURL) = locate(overrides.0, overrides.1)
+let (immune, extra, immuneURL) = locate(overrides.0, overrides.1)
 #if DEBUG
-  if CommandLine.arguments.contains("--print-panel") { printPanel(soc, extra) }
+  if CommandLine.arguments.contains("--print-panel") { printPanel(immune, extra) }
   if let i = CommandLine.arguments.firstIndex(of: "--render-panel"),
     i + 1 < CommandLine.arguments.count
   {
     let folder = URL(fileURLWithPath: CommandLine.arguments[i + 1])
-    let model = AppModel(soc: soc, extraArguments: extra)
-    model.socCommand = SocCommand.at(socURL, extra: extra)
-    let watcher = makeWatcher(socURL, extra, model)
+    let model = AppModel(immune: immune, extraArguments: extra)
+    model.immuneCommand = ImmuneCommand.at(immuneURL, extra: extra)
+    let watcher = makeWatcher(immuneURL, extra, model)
     NSApplication.shared.setActivationPolicy(.prohibited)
     Task { @MainActor in await renderPanel(model, watcher, to: folder) }
     NSApplication.shared.run()
   }
 #endif
-let model = AppModel(soc: soc, extraArguments: extra)
-model.socCommand = SocCommand.at(socURL, extra: extra)
-// The program's page, a file soc wrote, opened by the system: the only other thing
-// the app opens. The app has soc keep it current ahead now and then, so Details mostly
+let model = AppModel(immune: immune, extraArguments: extra)
+model.immuneCommand = ImmuneCommand.at(immuneURL, extra: extra)
+// The program's page, a file Immune wrote, opened by the system: the only other thing
+// the app opens. The app has Immune keep it current ahead now and then, so Details mostly
 // opens at once, and never on a page older than the store. A section
-// has a file of its own that soc names, so no file URL carries a "#section".
+// has a file of its own that Immune names, so no file URL carries a "#section".
 model.opener = { page in NSWorkspace.shared.open(page) }
 model.writePageAhead = true
-let delegate = Delegate(model: model, watcher: makeWatcher(socURL, extra, model))
+let delegate = Delegate(model: model, watcher: makeWatcher(immuneURL, extra, model))
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 app.delegate = delegate

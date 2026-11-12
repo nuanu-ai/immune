@@ -1376,10 +1376,10 @@ pub fn status_json(conn: &Connection, now: i64) -> rusqlite::Result<Value> {
     Ok(v)
 }
 
-/// The most "affects me" answers `soc vulnerabilities` lists; the total is always given.
+/// The most "affects me" answers `immune vulnerabilities` lists; the total is always given.
 pub const SHOWN: usize = 200;
 
-/// `soc vulnerabilities --json`: the "affects me" answers, most severe first.
+/// `immune vulnerabilities --json`: the "affects me" answers, most severe first.
 pub fn list_json(conn: &Connection, now: i64) -> rusqlite::Result<Value> {
     let this = crate::covered::this_machine(conn)?;
     let list = affecting(conn)?;
@@ -1395,7 +1395,7 @@ pub fn list_json(conn: &Connection, now: i64) -> rusqlite::Result<Value> {
     }))
 }
 
-/// A record the data holds, as `soc vulnerability` reads it.
+/// A record the data holds, as `immune vulnerability` reads it.
 struct Held {
     source: String,
     id: String,
@@ -1450,7 +1450,7 @@ type Place = (
     Option<i64>,
 );
 
-/// `soc vulnerability <id> --json`: the answer for one record id or CVE id in every checkout
+/// `immune vulnerability <id> --json`: the answer for one record id or CVE id in every checkout
 /// whose lockfiles were read, with what it rests on. An id the data does not hold is said as
 /// such, never as "not affected".
 pub fn one_json(conn: &Connection, id: &str, now: i64) -> rusqlite::Result<Value> {

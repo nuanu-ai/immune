@@ -90,7 +90,7 @@ pub const KIND: &str = "program starts on this Mac, from Apple's eslogger";
 pub const KIND_FILES: &str = "file events on this Mac, from Apple's eslogger";
 /// The installer's record of what the collector records: the eslogger arguments of the
 /// installed launch daemon, as Apple's `plutil` extracts them, a JSON array of strings.
-pub const COLLECTS: &str = "Library/Application Support/personal-soc/event-level/collects";
+pub const COLLECTS: &str = "Library/Application Support/ai.nuanu.immune/event-level/collects";
 /// The file events collected, as `eslogger` names them.
 pub const FILE_KINDS: [&str; 2] = ["create", "rename"];
 /// Why file events are not counted as collected, in the program's words.
@@ -101,9 +101,9 @@ pub const LEVEL: &str = "Apple's eslogger as administrator";
 /// How the run id of a watcher's reading begins.
 pub const RUN_PREFIX: &str = "events-";
 /// The launch daemon's property list, under the system root: there when the level is installed.
-pub const PLIST: &str = "Library/LaunchDaemons/local.personal-soc.eslogger.plist";
+pub const PLIST: &str = "Library/LaunchDaemons/ai.nuanu.immune.eslogger.plist";
 /// The log folder, under the system root.
-pub const LOG: &str = "Library/Application Support/personal-soc/event-level/log";
+pub const LOG: &str = "Library/Application Support/ai.nuanu.immune/event-level/log";
 /// What `eslogger` prints, and what the root side's own scripts print, in the log folder.
 pub const ESLOGGER_SAID: &str = "eslogger.err";
 pub const SCRIPTS_SAID: &str = "scripts.err";
@@ -1831,7 +1831,7 @@ pub fn cannot_see(l: &Level) -> Vec<&'static str> {
     said
 }
 
-/// `event_level` in `soc status --json`. What `eslogger` or the scripts printed, and why a
+/// `event_level` in `immune status --json`. What `eslogger` or the scripts printed, and why a
 /// reading failed, are text from a source, each in its own field.
 pub fn json(l: &Level) -> Value {
     let iso = |t: Option<i64>| t.map(crate::view::iso);
@@ -1907,7 +1907,7 @@ pub fn in_words(said: &Said) -> Value {
 
 /// The level for a person: a short state, the count of program starts while it records them,
 /// and each caveat as a short sentence of its own, so that a surface shows the state at a
-/// glance and the caveats under it, quieter, or folded. The page's row, `soc status` and
+/// glance and the caveats under it, quieter, or folded. The page's row, `immune status` and
 /// anything else that tells the level take these words. None names `eslogger`: a person reads
 /// "the collector".
 pub struct Said {
@@ -1941,7 +1941,7 @@ impl Said {
         }
     }
 
-    /// One line, with what is counted named, then the caveats: what `soc status` prints.
+    /// One line, with what is counted named, then the caveats: what `immune status` prints.
     pub fn line(&self) -> String {
         let head = match self.last_day {
             Some(n) => format!(
@@ -2300,7 +2300,7 @@ mod tests {
     #[test]
     fn counts_older_than_two_days_are_deleted_so_the_store_does_not_grow_with_the_readings() {
         // The watcher reads at every sample for as long as the Mac runs.
-        let dir = std::env::temp_dir().join(format!("soc-events-keep-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("immune-events-keep-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("root").join(LOG)).unwrap();
         let plist = dir.join("root").join(PLIST);
@@ -2332,7 +2332,7 @@ mod tests {
     fn the_pages_basis_moves_with_a_start_read_or_a_new_state_and_not_with_a_reading_alone() {
         // A click after new program starts writes the pages that count them again; a reading
         // every ten seconds that took nothing writes nothing, or every click would.
-        let dir = std::env::temp_dir().join(format!("soc-events-basis-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("immune-events-basis-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let log = dir.join("root").join(LOG);
         std::fs::create_dir_all(&log).unwrap();
@@ -2373,7 +2373,7 @@ mod tests {
         // The owner tunes the rules on a week of counts; the status serves the last day. Both
         // are kept by the hour of the reading, so the hour that holds the start of the span
         // counts whole, and an hour older than the week is deleted.
-        let dir = std::env::temp_dir().join(format!("soc-events-hours-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("immune-events-hours-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("root").join(LOG)).unwrap();
         let plist = dir.join("root").join(PLIST);
@@ -2429,7 +2429,7 @@ mod tests {
         // matches a high rule, so a finding's evidence is taken too, and one in ten a medium
         // rule. Measured and printed with `--nocapture`, with the share of the time the rules
         // take, measured over the same starts apart from the reading.
-        let dir = std::env::temp_dir().join(format!("soc-events-speed-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("immune-events-speed-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(LOG)).unwrap();
         let plist = dir.join(PLIST);
@@ -2516,7 +2516,7 @@ mod tests {
         // program starts. One file event in ten matches a high rule for file events, so its
         // finding's evidence is taken, and only the latest few are kept. Each file event is
         // asked only of the rules for file events.
-        let dir = std::env::temp_dir().join(format!("soc-events-files-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("immune-events-files-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(LOG)).unwrap();
         let plist = dir.join(PLIST);
@@ -2627,8 +2627,8 @@ mod tests {
 
     #[test]
     fn the_status_serves_the_series_ending_when_asked_and_the_words_a_surface_shows() {
-        // The app holds no logic: it draws the series soc gives, says where the day ends as
-        // soc says, and takes "none lost" only from an empty list of caveats.
+        // The app holds no logic: it draws the series Immune gives, says where the day ends as
+        // Immune says, and takes "none lost" only from an empty list of caveats.
         let l = Level {
             state: RUNNING.to_string(),
             read_at: 1_000,

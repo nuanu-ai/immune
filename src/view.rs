@@ -68,7 +68,7 @@ pub fn basis(conn: &Connection, folder: &std::path::Path) -> Result<String, Box<
 /// Every page the view writes, as its path relative to the store's folder and its HTML: the
 /// summary first, then the pages its links lead a person to (`pages.rs`), then one technical
 /// page for each of the big tables. The summary is built from the state and the
-/// machine-readable result `soc status --json` gives, so the two say the same; the technical
+/// machine-readable result `immune status --json` gives, so the two say the same; the technical
 /// pages are what the store holds, reached from one line at the bottom of the summary.
 pub fn pages(
     conn: &Connection,
@@ -178,7 +178,7 @@ pub fn section_file(anchor: &str) -> String {
 }
 
 /// The files of the sections for a store, as anchor and absolute path: what
-/// `soc status --json` names so that nothing outside builds these paths.
+/// `immune status --json` names so that nothing outside builds these paths.
 pub fn section_files(store: &std::path::Path) -> Vec<(&'static str, std::path::PathBuf)> {
     let folder = store.parent().unwrap_or(std::path::Path::new("."));
     SECTIONS
@@ -293,9 +293,9 @@ pub fn item(out: &mut String, i: &crate::findings::Item) -> Out {
         facts.push(format!("ATT&CK {t}"));
     }
     let command = if i.rule.is_some() {
-        format!("soc finding {}", i.id)
+        format!("immune finding {}", i.id)
     } else {
-        "soc status".to_string()
+        "immune status".to_string()
     };
     writeln!(
         out,
@@ -528,7 +528,7 @@ pub struct Latest {
 
 /// The latest record for each reader, scope and kind, and its latest full one.
 /// Readings that are not full come first. Readings inside a container or checkout that
-/// is gone no longer count and are left out. `soc status` counts coverage from this too.
+/// is gone no longer count and are left out. `immune status` counts coverage from this too.
 pub fn latest_coverage(conn: &Connection) -> rusqlite::Result<Vec<Latest>> {
     // A store opened read-only may predate the column: its readings have no cause.
     let has_cause: bool = conn.query_row(
@@ -1729,7 +1729,7 @@ fn changes(conn: &Connection, out: &mut String) -> Out {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
             })?
             .collect::<rusqlite::Result<_>>()?;
-        // A watcher's reading, `soc watch`, reads only the watched places and never finishes
+        // A watcher's reading, `immune watch`, reads only the watched places and never finishes
         // a run: it is shown as a watcher's reading, not as a run that did not finish.
         let sampled = run_id.starts_with(crate::processes::RUN_PREFIX);
         let watcher = run_id.starts_with(crate::watch::RUN_PREFIX) || sampled;

@@ -1,7 +1,7 @@
-# The event level's filter, run by launchd as root (local.personal-soc.event-filter):
+# The event level's filter, run by launchd as root (ai.nuanu.immune.event-filter):
 #   /bin/sh collect.sh <folder of the installed scripts> <events FIFO> <log folder>
 # eslogger writes every program start, and every file created or renamed, into the FIFO
-# (local.personal-soc.eslogger). Apple's jq keeps of each line only what the reader uses
+# (ai.nuanu.immune.eslogger). Apple's jq keeps of each line only what the reader uses
 # (filter.jq), so a program's environment and file descriptors never reach a disk, and Apple's
 # rotatelogs appends that to one file per hour, named by the hour in UTC:
 # exec-YYYYMMDDTHH.jsonl, the name it had when it held program starts alone, so that files an
