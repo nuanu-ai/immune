@@ -429,3 +429,518 @@ impl Level {
         }
     }
 }
+/// The answer to `immune matches`.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Matches {
+    /// The version of this contract: 1. A reader that meets another number stops.
+    #[prost(uint32, tag = "1")]
+    pub format: u32,
+    /// When the answer was made.
+    #[prost(int64, tag = "2")]
+    pub answered_at: i64,
+    /// The position given with `--after`. Absent when the answer starts at the oldest line kept.
+    #[prost(string, optional, tag = "3")]
+    pub after: ::core::option::Option<::prost::alloc::string::String>,
+    /// The matches after `after`, in the order of the log; the matches of one event in the order
+    /// the rules are shipped.
+    #[prost(message, repeated, tag = "4")]
+    pub matches: ::prost::alloc::vec::Vec<RuleMatch>,
+    /// The position to pass as `--after` next time: the last line this answer read, or `after`
+    /// when it read none. Absent when nothing was asked after and nothing was read.
+    #[prost(string, optional, tag = "5")]
+    pub continue_after: ::core::option::Option<::prost::alloc::string::String>,
+    /// Whether whole lines are left after `continue_after` that this answer did not read because
+    /// it stopped at its limit.
+    #[prost(bool, tag = "6")]
+    pub more: bool,
+    /// What was read after `after` up to `continue_after`, and what was not.
+    #[prost(message, optional, tag = "7")]
+    pub stretch: ::core::option::Option<Stretch>,
+    #[prost(message, optional, tag = "8")]
+    pub collector: ::core::option::Option<Collector>,
+    /// The shipped rules that are not evaluated over these events, or only in part, each with why.
+    #[prost(message, repeated, tag = "9")]
+    pub unevaluated: ::prost::alloc::vec::Vec<Unevaluated>,
+}
+/// A published rule matched an event. Its event's position and its rule's file name it.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RuleMatch {
+    /// Where the event's line is.
+    #[prost(string, tag = "1")]
+    pub position: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "2")]
+    pub rule: ::core::option::Option<Rule>,
+    #[prost(message, optional, tag = "3")]
+    pub event: ::core::option::Option<Event>,
+    /// What became of the match among the core's findings.
+    #[prost(enumeration = "Raised", tag = "4")]
+    #[serde(
+        serialize_with = "crate::contract::enum_name::<Raised, _>",
+        deserialize_with = "crate::contract::enum_from_name::<Raised, _>"
+    )]
+    pub raised: i32,
+    /// The finding the core raised of this match or added it to, when `raised` is `finding`.
+    /// `immune finding <id>` shows it.
+    #[prost(string, optional, tag = "5")]
+    pub finding_id: ::core::option::Option<::prost::alloc::string::String>,
+}
+/// A published rule, as the core ships it.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Rule {
+    /// Its path in the shipped set, under `rules/sigma/`: the core's own name for it.
+    #[prost(string, tag = "1")]
+    pub file: ::prost::alloc::string::String,
+    /// Its `id` and `title` as published, whole.
+    #[prost(string, tag = "2")]
+    pub id_text: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub title_text: ::prost::alloc::string::String,
+    #[prost(enumeration = "Level", tag = "4")]
+    #[serde(
+        serialize_with = "crate::contract::enum_name::<Level, _>",
+        deserialize_with = "crate::contract::enum_from_name::<Level, _>"
+    )]
+    pub level: i32,
+    /// ATT&CK techniques from its `attack.t…` tags, such as `T1027.001`.
+    #[prost(string, repeated, tag = "5")]
+    pub techniques_text: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Its `author`, which the Detection Rule License asks a message made from a match to keep.
+    #[prost(string, optional, tag = "6")]
+    pub author_text: ::core::option::Option<::prost::alloc::string::String>,
+}
+/// An event as the collector's log holds it. Exactly one of `program_start` and `file_event` is
+/// set, the one `kind` names.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Event {
+    #[prost(enumeration = "EventKind", tag = "1")]
+    #[serde(
+        serialize_with = "crate::contract::enum_name::<EventKind, _>",
+        deserialize_with = "crate::contract::enum_from_name::<EventKind, _>"
+    )]
+    pub kind: i32,
+    #[prost(message, optional, tag = "2")]
+    pub program_start: ::core::option::Option<ProgramStart>,
+    #[prost(message, optional, tag = "3")]
+    pub file_event: ::core::option::Option<FileEvent>,
+}
+/// A program started: an `exec` message from Apple's `eslogger`, as the collector keeps it. The
+/// environment is never kept. The ids are numbers as Endpoint Security gives them; nothing here
+/// identifies a process beyond its pid, which is reused once the process ends.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProgramStart {
+    /// When it happened, from `time`: seconds since the epoch, and the nanoseconds within that
+    /// second. The log gives microseconds. Absent when the log's time is not in the form eslogger
+    /// writes.
+    #[prost(int64, optional, tag = "1")]
+    pub happened_at: ::core::option::Option<i64>,
+    #[prost(uint32, optional, tag = "2")]
+    pub happened_nanos: ::core::option::Option<u32>,
+    /// The program started, `event.exec.target.executable.path`. Whole.
+    #[prost(string, tag = "3")]
+    pub executable_text: ::prost::alloc::string::String,
+    /// The arguments, `event.exec.args`, the first included, each whole and in its own string.
+    #[prost(string, repeated, tag = "4")]
+    pub args_text: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// `event.exec.cwd.path`.
+    #[prost(string, optional, tag = "5")]
+    pub working_directory_text: ::core::option::Option<::prost::alloc::string::String>,
+    /// From the started process's audit token: its pid and its effective user id.
+    #[prost(int64, tag = "6")]
+    pub pid: i64,
+    #[prost(int64, optional, tag = "7")]
+    pub user_id: ::core::option::Option<i64>,
+    /// `event.exec.target.ppid`.
+    #[prost(int64, optional, tag = "8")]
+    pub parent_pid: ::core::option::Option<i64>,
+    /// The program the process ran before this `exec`, `process.executable.path`. After a fork or
+    /// `posix_spawn` it is the parent's program; after an `exec` without a fork it is a wrapper that
+    /// replaced itself, such as `nohup` or `env`.
+    #[prost(string, optional, tag = "9")]
+    pub parent_executable_text: ::core::option::Option<::prost::alloc::string::String>,
+    /// Who signed the program started: `signing_id`, `team_id` and `is_platform_binary`.
+    #[prost(string, optional, tag = "10")]
+    pub signing_id_text: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "11")]
+    pub team_id_text: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(bool, optional, tag = "12")]
+    pub platform_binary: ::core::option::Option<bool>,
+}
+/// A file created or renamed: a `create` or `rename` message from `eslogger`, as the collector
+/// keeps it.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct FileEvent {
+    /// As in ProgramStart.
+    #[prost(int64, optional, tag = "1")]
+    pub happened_at: ::core::option::Option<i64>,
+    #[prost(uint32, optional, tag = "2")]
+    pub happened_nanos: ::core::option::Option<u32>,
+    #[prost(enumeration = "FileAction", tag = "3")]
+    #[serde(
+        serialize_with = "crate::contract::enum_name::<FileAction, _>",
+        deserialize_with = "crate::contract::enum_from_name::<FileAction, _>"
+    )]
+    pub action: i32,
+    /// The file created, or where a renamed file went. Whole.
+    #[prost(string, tag = "4")]
+    pub path_text: ::prost::alloc::string::String,
+    /// Where a renamed file was. Absent for a file created.
+    #[prost(string, optional, tag = "5")]
+    pub source_text: ::core::option::Option<::prost::alloc::string::String>,
+    /// The program that did it, `process.executable.path`.
+    #[prost(string, tag = "6")]
+    pub executable_text: ::prost::alloc::string::String,
+}
+/// What was read after `after` up to `continue_after`, and what was not. Adding the stretches of
+/// answers that follow one another gives what one reading of the whole log gives.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Stretch {
+    /// Lines read and evaluated by the rules of their kind.
+    #[prost(uint64, tag = "1")]
+    pub program_starts: u64,
+    #[prost(uint64, tag = "2")]
+    pub file_events: u64,
+    /// Lines read that hold a kind of message the rules are not asked about.
+    #[prost(uint64, tag = "3")]
+    pub other: u64,
+    /// Lines that are not a message, such as a line split at the turn of an hour: not evaluated.
+    #[prost(uint64, tag = "4")]
+    pub unreadable_lines: u64,
+    /// File events the collector or the core could not make out, such as one whose path eslogger
+    /// marked as cut short: not evaluated.
+    #[prost(uint64, tag = "5")]
+    pub unreadable_file_events: u64,
+    /// Program starts missing from eslogger's numbering: dropped before they reached the log.
+    #[prost(uint64, tag = "6")]
+    pub program_starts_lost: u64,
+    /// Times the numbering of program starts started again, as it does when eslogger restarts:
+    /// each a loss of unknown size. The gap before this stretch's first program start counts here
+    /// too when the number before it lay further back than the core looks.
+    #[prost(uint64, tag = "7")]
+    pub program_starts_unknown_losses: u64,
+    /// The same for files created and renamed.
+    #[prost(uint64, tag = "8")]
+    pub file_events_lost: u64,
+    #[prost(uint64, tag = "9")]
+    pub file_events_unknown_losses: u64,
+    /// The lines after `after` up to `kept_from` were deleted before this answer read them: they
+    /// are gone, and nothing in them was evaluated here.
+    #[prost(bool, tag = "10")]
+    pub gone: bool,
+    /// Where the log kept goes on after lines that are gone. Absent when nothing is kept.
+    #[prost(string, optional, tag = "11")]
+    pub kept_from: ::core::option::Option<::prost::alloc::string::String>,
+}
+/// The collector and what it records.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Collector {
+    /// Its state now, judged from its log the way the core's own reading judges it: what
+    /// `immune status` serves after its next reading. Only while it is `running` does a quiet
+    /// stretch mean that little happened.
+    #[prost(enumeration = "CollectorState", tag = "1")]
+    #[serde(
+        serialize_with = "crate::contract::enum_name::<CollectorState, _>",
+        deserialize_with = "crate::contract::enum_from_name::<CollectorState, _>"
+    )]
+    pub state: i32,
+    /// What made it `refused` or `failing`: who printed it, `eslogger` or `scripts`, and the last
+    /// line printed.
+    #[prost(string, optional, tag = "2")]
+    pub said_by: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "3")]
+    pub said_text: ::core::option::Option<::prost::alloc::string::String>,
+    /// When its log was last written to.
+    #[prost(int64, optional, tag = "4")]
+    pub written_at: ::core::option::Option<i64>,
+    /// Whether the collector installed here is established to record files created and renamed.
+    /// When it is not, the rules for file events are listed in `unevaluated`.
+    #[prost(bool, tag = "5")]
+    pub file_events_collected: bool,
+    /// Its state as `immune status` serves it now, from the store's latest reading, and when that
+    /// reading was made. Absent when the store holds no reading of it.
+    #[prost(enumeration = "CollectorState", optional, tag = "6")]
+    #[serde(
+        serialize_with = "crate::contract::optional_enum_name::<CollectorState, _>",
+        deserialize_with = "crate::contract::optional_enum_from_name::<CollectorState, _>"
+    )]
+    pub status_state: ::core::option::Option<i32>,
+    #[prost(int64, optional, tag = "7")]
+    pub status_read_at: ::core::option::Option<i64>,
+}
+/// A shipped rule that is not evaluated over the events here, or only in part.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Unevaluated {
+    /// Its path in the shipped set.
+    #[prost(string, tag = "1")]
+    pub file: ::prost::alloc::string::String,
+    /// Its `id`, `title` and level. Absent for a rule that could not be read.
+    #[prost(string, optional, tag = "2")]
+    pub id_text: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "3")]
+    pub title_text: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(enumeration = "Level", optional, tag = "4")]
+    #[serde(
+        serialize_with = "crate::contract::optional_enum_name::<Level, _>",
+        deserialize_with = "crate::contract::optional_enum_from_name::<Level, _>"
+    )]
+    pub level: ::core::option::Option<i32>,
+    #[prost(enumeration = "UnevaluatedReason", tag = "5")]
+    #[serde(
+        serialize_with = "crate::contract::enum_name::<UnevaluatedReason, _>",
+        deserialize_with = "crate::contract::enum_from_name::<UnevaluatedReason, _>"
+    )]
+    pub reason: i32,
+    /// The fields it needs that the events here do not give: for `needs_fields`, and for `in_part`
+    /// those of the alternatives that never match.
+    #[prost(string, repeated, tag = "6")]
+    pub fields_text: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// For `needs_events` the kind of event it is about; for `not_parsed` what the parser said; for
+    /// `not_collected` why the collector here is not taken to record file events.
+    #[prost(string, optional, tag = "7")]
+    pub detail_text: ::core::option::Option<::prost::alloc::string::String>,
+}
+/// What became of a match among the core's findings.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum Raised {
+    #[serde(rename = "unspecified")]
+    Unspecified = 0,
+    /// The rule is marked below high: its matches are counted and raise nothing.
+    #[serde(rename = "below_high")]
+    BelowHigh = 1,
+    /// It raised `finding_id`, or added to it.
+    #[serde(rename = "finding")]
+    Finding = 2,
+    /// The core's own reading has not read this line yet. When it does, the match raises the
+    /// rule's finding or adds to it.
+    #[serde(rename = "not_read_yet")]
+    NotReadYet = 3,
+    /// The core's own reading read it, and the store cannot tell which of the rule's findings on
+    /// this Mac it went to. The store keeps no event; a match is tied to the one finding of its
+    /// rule still seen at or after the event's second, and here more than one was.
+    #[serde(rename = "untold")]
+    Untold = 4,
+}
+impl Raised {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "RAISED_UNSPECIFIED",
+            Self::BelowHigh => "RAISED_BELOW_HIGH",
+            Self::Finding => "RAISED_FINDING",
+            Self::NotReadYet => "RAISED_NOT_READ_YET",
+            Self::Untold => "RAISED_UNTOLD",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "RAISED_UNSPECIFIED" => Some(Self::Unspecified),
+            "RAISED_BELOW_HIGH" => Some(Self::BelowHigh),
+            "RAISED_FINDING" => Some(Self::Finding),
+            "RAISED_NOT_READ_YET" => Some(Self::NotReadYet),
+            "RAISED_UNTOLD" => Some(Self::Untold),
+            _ => None,
+        }
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum EventKind {
+    #[serde(rename = "unspecified")]
+    Unspecified = 0,
+    #[serde(rename = "program_start")]
+    ProgramStart = 1,
+    #[serde(rename = "file_event")]
+    FileEvent = 2,
+}
+impl EventKind {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "EVENT_KIND_UNSPECIFIED",
+            Self::ProgramStart => "EVENT_KIND_PROGRAM_START",
+            Self::FileEvent => "EVENT_KIND_FILE_EVENT",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "EVENT_KIND_UNSPECIFIED" => Some(Self::Unspecified),
+            "EVENT_KIND_PROGRAM_START" => Some(Self::ProgramStart),
+            "EVENT_KIND_FILE_EVENT" => Some(Self::FileEvent),
+            _ => None,
+        }
+    }
+}
+/// What happened to a file, as `eslogger` names the event.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum FileAction {
+    #[serde(rename = "unspecified")]
+    Unspecified = 0,
+    #[serde(rename = "create")]
+    Create = 1,
+    #[serde(rename = "rename")]
+    Rename = 2,
+}
+impl FileAction {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "FILE_ACTION_UNSPECIFIED",
+            Self::Create => "FILE_ACTION_CREATE",
+            Self::Rename => "FILE_ACTION_RENAME",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "FILE_ACTION_UNSPECIFIED" => Some(Self::Unspecified),
+            "FILE_ACTION_CREATE" => Some(Self::Create),
+            "FILE_ACTION_RENAME" => Some(Self::Rename),
+            _ => None,
+        }
+    }
+}
+/// The collector's states, as `immune status` names them.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum CollectorState {
+    #[serde(rename = "unspecified")]
+    Unspecified = 0,
+    /// Its launch daemon is not installed. A limit the user can lift, not a failure.
+    #[serde(rename = "not_installed")]
+    NotInstalled = 1,
+    #[serde(rename = "running")]
+    Running = 2,
+    /// macOS refuses eslogger Full Disk Access.
+    #[serde(rename = "refused")]
+    Refused = 3,
+    /// Its scripts print errors.
+    #[serde(rename = "failing")]
+    Failing = 4,
+    /// Nothing was written for 15 minutes.
+    #[serde(rename = "silent")]
+    Silent = 5,
+    /// The core's reading failed. Only `status_state` holds this: an answer whose reading fails
+    /// is not given.
+    #[serde(rename = "failed")]
+    Failed = 6,
+}
+impl CollectorState {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "COLLECTOR_STATE_UNSPECIFIED",
+            Self::NotInstalled => "COLLECTOR_STATE_NOT_INSTALLED",
+            Self::Running => "COLLECTOR_STATE_RUNNING",
+            Self::Refused => "COLLECTOR_STATE_REFUSED",
+            Self::Failing => "COLLECTOR_STATE_FAILING",
+            Self::Silent => "COLLECTOR_STATE_SILENT",
+            Self::Failed => "COLLECTOR_STATE_FAILED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "COLLECTOR_STATE_UNSPECIFIED" => Some(Self::Unspecified),
+            "COLLECTOR_STATE_NOT_INSTALLED" => Some(Self::NotInstalled),
+            "COLLECTOR_STATE_RUNNING" => Some(Self::Running),
+            "COLLECTOR_STATE_REFUSED" => Some(Self::Refused),
+            "COLLECTOR_STATE_FAILING" => Some(Self::Failing),
+            "COLLECTOR_STATE_SILENT" => Some(Self::Silent),
+            "COLLECTOR_STATE_FAILED" => Some(Self::Failed),
+            _ => None,
+        }
+    }
+}
+/// Why a rule judges nothing here, or only part of what it means.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum UnevaluatedReason {
+    #[serde(rename = "unspecified")]
+    Unspecified = 0,
+    /// It is about a kind of event the collector does not record.
+    #[serde(rename = "needs_events")]
+    NeedsEvents = 1,
+    /// A selection it cannot do without needs fields the events do not give.
+    #[serde(rename = "needs_fields")]
+    NeedsFields = 2,
+    /// It searches whole messages for keywords; the core has fields, not messages.
+    #[serde(rename = "keyword_search")]
+    KeywordSearch = 3,
+    /// It could not be read.
+    #[serde(rename = "not_parsed")]
+    NotParsed = 4,
+    /// Evaluated, and some alternatives of its selections never match here.
+    #[serde(rename = "in_part")]
+    InPart = 5,
+    /// A rule for file events, and the collector here is not established to record them.
+    #[serde(rename = "not_collected")]
+    NotCollected = 6,
+}
+impl UnevaluatedReason {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "UNEVALUATED_REASON_UNSPECIFIED",
+            Self::NeedsEvents => "UNEVALUATED_REASON_NEEDS_EVENTS",
+            Self::NeedsFields => "UNEVALUATED_REASON_NEEDS_FIELDS",
+            Self::KeywordSearch => "UNEVALUATED_REASON_KEYWORD_SEARCH",
+            Self::NotParsed => "UNEVALUATED_REASON_NOT_PARSED",
+            Self::InPart => "UNEVALUATED_REASON_IN_PART",
+            Self::NotCollected => "UNEVALUATED_REASON_NOT_COLLECTED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "UNEVALUATED_REASON_UNSPECIFIED" => Some(Self::Unspecified),
+            "UNEVALUATED_REASON_NEEDS_EVENTS" => Some(Self::NeedsEvents),
+            "UNEVALUATED_REASON_NEEDS_FIELDS" => Some(Self::NeedsFields),
+            "UNEVALUATED_REASON_KEYWORD_SEARCH" => Some(Self::KeywordSearch),
+            "UNEVALUATED_REASON_NOT_PARSED" => Some(Self::NotParsed),
+            "UNEVALUATED_REASON_IN_PART" => Some(Self::InPart),
+            "UNEVALUATED_REASON_NOT_COLLECTED" => Some(Self::NotCollected),
+            _ => None,
+        }
+    }
+}

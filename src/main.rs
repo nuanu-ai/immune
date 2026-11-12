@@ -31,6 +31,7 @@ mod known_hosts;
 mod lifecycle;
 mod lockfiles;
 mod map;
+mod matches;
 mod osv;
 mod owner;
 mod pages;
@@ -105,6 +106,11 @@ const USAGE: &str = "usage: immune run [--store <path>] [--machine-name <name>] 
        immune rules --over-log [--system-root <dir>] [--json]
            evaluates the rules over the event log on disk now, without the store, and
            prints per rule that matched its level and count, never a command line
+       immune matches [--after <position>] [--limit <n>] [--store <path>]
+                      [--system-root <dir>] [--json]
+           every rule match over the event log, of every level, each with the event
+           it matched, command lines whole; what was read, lost and not evaluated; and
+           the position to read on from; one protobuf message, or the same as JSON
        immune sample [--store <path>] [--sample-input <file>] [--json]
        immune watch [--store <path>] [--system-root <dir>] [--sample-input <file>]
                     [--sample-every <seconds>] [--events-every <seconds>]
@@ -128,6 +134,7 @@ enum Cmd {
     Vulnerability(VulnerabilityArgs),
     Rules(RulesArgs),
     Project(project::ProjectArgs),
+    Matches(matches::MatchesArgs),
 }
 
 /// `immune rules`: the shipped rules with what the store says they did, or with `over_log` a
@@ -530,6 +537,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
         }
         "watch" => watch::parse(it).map(Cmd::Watch),
         "project" => project::parse(it).map(Cmd::Project),
+        "matches" => matches::parse(it).map(Cmd::Matches),
         "rules" => {
             let (mut json, mut over_log, mut system_root) = (false, false, None);
             while let Some(arg) = it.next() {
@@ -657,6 +665,7 @@ fn main() -> ExitCode {
                         "vulnerability",
                         "rules",
                         "project",
+                        "matches",
                     ]
                     .contains(o)
                 });
@@ -671,6 +680,7 @@ fn main() -> ExitCode {
                     Some("sample") => "immune sample --json",
                     Some("owner") => "immune owner --json",
                     Some("project") => "immune project ~/<folder> --json",
+                    Some("matches") => "immune matches --json",
                     _ => "immune status --json",
                 };
                 print_json(&status::failure(
@@ -723,6 +733,7 @@ fn main() -> ExitCode {
         }
         Cmd::Rules(args) => return rules_cmd(&args),
         Cmd::Project(args) => return project::project_cmd(&args),
+        Cmd::Matches(args) => return matches::matches_cmd(&args),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
