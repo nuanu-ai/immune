@@ -1,0 +1,56 @@
+# Every change reaches main through a pull request that passed ./check here.
+#
+# A security tool's workflow is itself a target. So: pull_request, never pull_request_target,
+# so a pull request from a fork runs its own code with a read-only token and no secret; no
+# secret is used; the token may only read the repository; the one action is pinned by commit;
+# and no cache, so nothing a pull request writes is restored by a later run.
+name: check
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A new push to a pull request replaces its run; runs on main are never cancelled.
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    # Apple Silicon (M1, 3 cores, 7 GB), macOS 26. A label that names its version, so the
+    # macOS under the check changes only in a commit here.
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      # The Xcode whose Swift (6.3) runs `swift format lint --strict` and the app's tests, the
+      # same Swift as the Command Line Tools 26.6 a contributor installs. Chosen without sudo:
+      # xcode-select -p, swift and xcrun all follow DEVELOPER_DIR.
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Tools
+        run: |
+          if [ ! -d "$DEVELOPER_DIR" ]; then
+            echo "::error::$DEVELOPER_DIR is not on this image; choose an Xcode it has in .github/workflows/check.yml"
+            exit 1
+          fi
+          sw_vers
+          xcode-select -p
+          swift --version
+          # The Rust that rust-toolchain.toml names, with rustfmt and clippy, from rustup,
+          # which the image has.
+          rustup toolchain install
+          rustc --version
+          cargo clippy --version
+          cargo fmt --version
+
+      - name: ./check
+        run: ./check

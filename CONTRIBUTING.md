@@ -9,7 +9,7 @@ Immune is built and tested only on Apple Silicon with macOS 15 or later. You nee
 ./build     # the release program and the menu-bar app, in target/app
 ```
 
-`./check` runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test`, then `swift format lint --strict` over the app's sources, and the app's tests through `app/test`. Every commit has to pass it.
+`./check` runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test`, then `swift format lint --strict` over the app's sources, and the app's tests through `app/test`. Every commit has to pass it. Changes reach `main` only through a pull request that passed `./check` on a Mac hosted by GitHub.
 
 To try a debug build of the program on its own, run `cargo build` and call `./target/debug/immune` with `--store <path>`, so that it does not touch the store the app uses. Tests run the real binary over a temporary home folder and a temporary system root (`--system-root`), so nothing real is read; `tests/event_level.rs` is a good example to start from.
 
