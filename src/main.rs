@@ -15,6 +15,7 @@ mod beyond;
 mod brew;
 mod checkouts;
 mod codesign;
+mod contract;
 mod covered;
 mod events;
 mod findings;
@@ -34,6 +35,7 @@ mod osv;
 mod owner;
 mod pages;
 mod processes;
+mod project;
 mod resolver;
 mod servers;
 mod sha256;
@@ -92,6 +94,9 @@ const USAGE: &str = "usage: immune run [--store <path>] [--machine-name <name>] 
            known vulnerabilities that affect packages the projects' lockfiles declare
        immune vulnerability <record id or CVE id> [--store <path>] [--json]
            the answer for one vulnerability in every project, with what it rests on
+       immune project <path or checkout id> [--store <path>] [--json]
+           what the store knows of one project: its facts, what was read and what was
+           not, its findings; one protobuf message, or the same message as JSON
        immune rules [--store <path>] [--json]
            the shipped Sigma rules for macOS: which are evaluated on every program
            start, which in part, and which not, with the reason; whether they watch
@@ -121,6 +126,7 @@ enum Cmd {
     Vulnerabilities(VulnerabilityArgs),
     Vulnerability(VulnerabilityArgs),
     Rules(RulesArgs),
+    Project(project::ProjectArgs),
 }
 
 /// `immune rules`: the shipped rules with what the store says they did, or with `over_log` a
@@ -522,6 +528,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
             }
         }
         "watch" => watch::parse(it).map(Cmd::Watch),
+        "project" => project::parse(it).map(Cmd::Project),
         "rules" => {
             let (mut json, mut over_log, mut system_root) = (false, false, None);
             while let Some(arg) = it.next() {
@@ -648,6 +655,7 @@ fn main() -> ExitCode {
                         "vulnerabilities",
                         "vulnerability",
                         "rules",
+                        "project",
                     ]
                     .contains(o)
                 });
@@ -661,6 +669,7 @@ fn main() -> ExitCode {
                     Some("watch") => "immune watch",
                     Some("sample") => "immune sample --json",
                     Some("owner") => "immune owner --json",
+                    Some("project") => "immune project ~/<folder> --json",
                     _ => "immune status --json",
                 };
                 print_json(&status::failure(
@@ -712,6 +721,7 @@ fn main() -> ExitCode {
             return vulnerabilities_cmd(&args);
         }
         Cmd::Rules(args) => return rules_cmd(&args),
+        Cmd::Project(args) => return project::project_cmd(&args),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
