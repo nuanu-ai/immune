@@ -1,0 +1,25 @@
+title: "Privileged Container Creation with Host Directory Mount"
+id: "d1f310cb-5921-4d37-bbdf-cfdab7a6df9c"
+status: "test"
+description: "This rule detects the creation of privileged containers that mount host directories into the container's filesystem.\nSuch configurations can be exploited by attackers to escape the container isolation and gain access to the host system,\npotentially leading to privilege escalation and lateral movement within the environment."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/cross-platform/execution_privileged_container_creation_with_host_reference.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2025-11-27"
+modified: "2026-09-18"
+tags: ["attack.t1059.004", "attack.t1609", "attack.t1610", "attack.t1611"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["docker"]}
+  s2: {"process.args|contains|cased": ["\u0000--privileged\u0000"]}
+  s3: {"process.args|contains|cased": ["\u0000run\u0000"]}
+  s4: {"process.args|contains|cased": ["\u0000-v\u0000"]}
+  s5: {"process.args|contains|cased": ["\u0000/:/"]}
+  s6: {"process.args|contains|cased": ["\u0000aktosecurity/mirror-api-logging:k8s_ebpf\u0000"]}
+  s7: {"process.args|exists": true}
+  s8: {"process.args|contains|cased": ["\u0000akto-api-security-traffic-collector\u0000"]}
+  s9: {"process.args|contains|cased": ["\u0000goharbor/prepare:"]}
+  s10: {"process.args|contains|cased": ["\u0000/:/hostfs\u0000", "\u0000/:/hostfs/\u0000"]}
+  condition: "(s1 and s2 and s3 and s4 and s5 and (((s7 and not s6) or (s7 and not s8)) and ((s7 and not s9) or (s7 and not s10))))"
+level: "high"
+elastic: {"rule_id": "d1f310cb-5921-4d37-bbdf-cfdab7a6df9c", "severity": "high", "risk_score": 73, "query_sha256": "7ea7130c2e0468d3c0641549c8b49957660378eb62a13f097397787f3618b50d", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": ["ProcessRollup2", "exec_event", "executed", "process_started"], "null_sensitive": ["process.args"], "folded_fields": []}

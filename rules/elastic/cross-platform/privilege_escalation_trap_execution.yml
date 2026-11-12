@@ -1,0 +1,17 @@
+title: "Trap Signals Execution"
+id: "cf6995ec-32a9-4b2d-9340-f8e61acf3f4e"
+status: "test"
+description: "Identify activity related where adversaries can include a trap command which then allows programs and shells to specify\ncommands that will be executed upon receiving interrupt signals."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/cross-platform/privilege_escalation_trap_execution.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2023-08-24"
+modified: "2026-09-18"
+tags: ["attack.t1546.005"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["trap"]}
+  s2: {"process.args|contains": ["\u0000SIG"]}
+  condition: "(s1 and s2)"
+level: "low"
+elastic: {"rule_id": "cf6995ec-32a9-4b2d-9340-f8e61acf3f4e", "severity": "low", "risk_score": 21, "query_sha256": "9550306b47b46524f4dce1d712390f4c2bb5e5af7180a01fcc057dc8264dfefc", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": ["exec_event", "executed", "process_started"], "null_sensitive": [], "folded_fields": []}

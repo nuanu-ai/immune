@@ -11198,7 +11198,7 @@ fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_wh
     let n = |v: &serde_json::Value| v.as_u64().unwrap() as usize;
     assert_eq!(
         page.matches("<article class=\"rule\">").count(),
-        n(&r["shipped"])
+        n(&r["shipped"]) + n(&r["not_taken"])
     );
     for (anchor, key) in [
         ("evaluated", "evaluated"),
@@ -11277,7 +11277,7 @@ fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_wh
         .find(|(p, _)| p.ends_with("view/rules.html"))
         .unwrap()
         .1;
-    let told = "The event level is on, so 69 of them are watching every program start on this Mac, and 1 more check it in part. The 5 rules for files created or renamed are not watching: the collector installed here records program starts only, and installing the event level again adds file events. In the last day they matched 1 time.";
+    let told = "The event level is on, so 118 of them are watching every program start on this Mac, and 13 more are checked in part. The 10 rules for files created or renamed are not watching: the collector installed here records program starts only, and installing the event level again adds file events. In the last day they matched 1 time.";
     let text = &page[page.find("<main>").unwrap()..];
     assert!(text.contains(told), "{text}");
     // Watching is said twice above, and each rule for file events says it does not.
@@ -11291,7 +11291,7 @@ fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_wh
     let summary = section(&pages[0].1, "as-it-happens");
     assert!(
         summary
-            .contains("<span class=\"st\">Rules watching</span><span class=\"sv\" data-live=\"watching\">69 of 75</span>"),
+            .contains("<span class=\"st\">Rules watching</span><span class=\"sv\" data-live=\"watching\">118 of 260</span>"),
         "{summary}"
     );
     assert!(!summary.contains("data-live=\"files\""), "{summary}");
@@ -11306,7 +11306,11 @@ fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_wh
         section(page, "evaluated").matches(quiet).count(),
         n(&r["evaluated"]) - n(&r["file_rules"]) - 1
     );
-    assert_eq!(section(page, "in-part").matches(quiet).count(), 1);
+    // Every rule in part but the one for file events, which does not watch here.
+    assert_eq!(
+        section(page, "in-part").matches(quiet).count(),
+        n(&r["in_part"]) - 1
+    );
     assert!(!section(page, "not-evaluated").contains("No match"));
 
     // The summary's row for program starts: the state and the count at a glance, and a
@@ -11364,12 +11368,12 @@ fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_wh
         .find(|(p, _)| p.ends_with("view/rules.html"))
         .unwrap()
         .1;
-    let told = "The event level is on, so 74 of them are watching this Mac: 69 every program start and 5 every file created or renamed; 1 more check program starts in part.";
+    let told = "The event level is on, so 128 of them are watching this Mac: 118 every program start and 10 every file created or renamed; 13 more are checked in part.";
     assert!(page.contains(told), "{page}");
     assert!(!page.contains(unwatched), "{page}");
     let summary = section(&pages[0].1, "as-it-happens");
     assert!(
-        summary.contains("data-live=\"watching\">74 of 75</span>")
+        summary.contains("data-live=\"watching\">128 of 260</span>")
             && summary.contains(
                 "<span class=\"ss\" data-live=\"files\">1 file event checked in the last day</span>"
             ),
@@ -11395,7 +11399,7 @@ fn as_it_happens_draws_the_day_the_status_counts_and_a_published_rule_finding_wh
     assert!(
         quiet.contains("<p class=\"first\"><strong>Program starts: not installed.</strong>")
             && quiet.contains(
-                "<span class=\"st\">Rules watching</span><span class=\"sv\" data-live=\"watching\">0 of 75</span>"
+                "<span class=\"st\">Rules watching</span><span class=\"sv\" data-live=\"watching\">0 of 260</span>"
             ),
         "{quiet}"
     );

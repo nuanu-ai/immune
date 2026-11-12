@@ -1,0 +1,19 @@
+title: "Potential Privacy Control Bypass via Localhost Secure Copy"
+id: "c02c8b9f-5e1d-463c-a1b0-04edcdfe1a3d"
+status: "test"
+description: "Identifies use of the Secure Copy Protocol (SCP) to copy files locally by abusing the auto addition of the Secure Shell\nDaemon (sshd) to the authorized application list for Full Disk Access. This may indicate attempts to bypass macOS\nprivacy controls to access sensitive files."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/macos/defense_evasion_privilege_escalation_privacy_pref_sshd_fulldiskaccess.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2020-01-11"
+modified: "2026-10-06"
+tags: ["attack.t1005", "attack.t1548"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["scp"]}
+  s2: {"process.args|contains": ["\u0000StrictHostKeyChecking=no\u0000"]}
+  s3: [{"process.command_line": ["*scp *localhost:/*"]}, {"immune.folded.process.command_line|re": ["(?s)\\A.*scp .*127\\.0\\.0\\..:/.*\\z"]}]
+  s4: {"process.command_line": ["*vagrant@*127.0.0.1*"]}
+  condition: "(s1 and s2 and s3 and not s4)"
+level: "high"
+elastic: {"rule_id": "c02c8b9f-5e1d-463c-a1b0-04edcdfe1a3d", "severity": "high", "risk_score": 73, "query_sha256": "d7cb932b7889409d0153f218f2e48699d57582bbdb3c1996a550a020023b8022", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": ["process_started"], "null_sensitive": [], "folded_fields": ["process.command_line"]}

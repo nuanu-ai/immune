@@ -1,0 +1,17 @@
+title: "Execution with Explicit Credentials via Scripting"
+id: "f0eb70e9-71e9-40cd-813f-bf8e8c812cb1"
+status: "test"
+description: "Identifies execution of the security_authtrampoline process via a scripting interpreter. This occurs when programs use\nAuthorizationExecute-WithPrivileges from the Security.framework to run another program with root privileges. It should\nnot be run by itself, as this is a sign of execution with explicit logon credentials."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/macos/privilege_escalation_explicit_creds_via_scripting.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2020-12-07"
+modified: "2026-09-18"
+tags: ["attack.t1059.001", "attack.t1059.002", "attack.t1059.004", "attack.t1059.006", "attack.t1078", "attack.t1548.004"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["security_authtrampoline"]}
+  s2: {"process.parent.name": ["osascript", "com.apple.automator.runner", "sh", "bash", "dash", "zsh", "python*", "perl*", "php*", "ruby", "pwsh"]}
+  condition: "(s1 and s2)"
+level: "medium"
+elastic: {"rule_id": "f0eb70e9-71e9-40cd-813f-bf8e8c812cb1", "severity": "medium", "risk_score": 47, "query_sha256": "2862ca72e1b8c9c0341e8c8fd73e890dfc117266f586384a56f19cc6019f3cd8", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": ["process_started"], "null_sensitive": [], "folded_fields": []}

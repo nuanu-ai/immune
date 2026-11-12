@@ -142,10 +142,12 @@ impl Level {
 #[serde(default)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Rule {
-    /// The name findings give the rule, `sigma:<id>`: the store's name for it.
+    /// The name findings give the rule, its set's name and its id: `sigma:<id>` for SigmaHQ's,
+    /// `elastic:<rule_id>` for Elastic's. The store's name for it.
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
-    /// Its path in the shipped set, under `rules/sigma/`, which moves between upstream commits.
+    /// Its path in the shipped set, under the set's folder, `rules/sigma/` or `rules/elastic/`, as
+    /// the prefix of `name` says. It moves between upstream commits.
     #[prost(string, tag = "2")]
     pub file: ::prost::alloc::string::String,
     /// Its `id` and `title` as published, whole.
@@ -162,7 +164,8 @@ pub struct Rule {
     /// ATT&CK techniques from its `attack.t…` tags, such as `T1027.001`.
     #[prost(string, repeated, tag = "6")]
     pub techniques_text: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-    /// Its `author`, which the Detection Rule License asks a message made from a match to keep.
+    /// Its `author`, which a message made from a match keeps, as the Detection Rule License asks
+    /// for SigmaHQ's rules.
     #[prost(string, optional, tag = "7")]
     pub author_text: ::core::option::Option<::prost::alloc::string::String>,
 }
@@ -857,15 +860,18 @@ pub struct Collector {
     #[prost(uint64, tag = "8")]
     pub foreign_files: u64,
 }
-/// A shipped rule that is not evaluated over the events here, or only in part.
+/// A shipped rule that is not evaluated over the events here, or only in part, or a rule of a
+/// translated set that was not taken.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Unevaluated {
-    /// Its path in the shipped set.
+    /// Its path in the shipped set; for a rule not taken, the upstream file's path under its
+    /// repository's `rules/` folder.
     #[prost(string, tag = "1")]
     pub file: ::prost::alloc::string::String,
-    /// The name findings give it, `sigma:<id>`. Absent for a rule that could not be read.
+    /// The name findings give it, `sigma:<id>` or `elastic:<rule_id>`. Absent for a rule that
+    /// could not be read.
     #[prost(string, optional, tag = "2")]
     pub name: ::core::option::Option<::prost::alloc::string::String>,
     /// Its `id`, `title` and level. Absent for a rule that could not be read.
@@ -890,7 +896,9 @@ pub struct Unevaluated {
     #[prost(string, repeated, tag = "7")]
     pub fields_text: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// For `needs_events` the kind of event it is about; for `not_parsed` what the parser said; for
-    /// `not_collected` why the collector here is not taken to record file events.
+    /// `not_collected` why the collector here is not taken to record file events. For a rule a
+    /// translated set did not take, what the translation said of it, and for `in_part` what a
+    /// translation left out that is not a missing field, such as a pattern it could not carry.
     #[prost(string, optional, tag = "8")]
     pub detail_text: ::core::option::Option<::prost::alloc::string::String>,
 }
@@ -1034,6 +1042,20 @@ pub enum UnevaluatedReason {
     /// record them.
     #[serde(rename = "not_collected")]
     NotCollected = 6,
+    /// The four below are a translation's reasons for not taking a rule of a set translated into
+    /// Sigma. It correlates several events in a sequence.
+    #[serde(rename = "sequence")]
+    Sequence = 7,
+    /// It is written in a query language other than EQL, the one translated.
+    #[serde(rename = "not_eql")]
+    NotEql = 8,
+    /// A part it cannot do without holds a backslash in a wildcard pattern, whose meaning in
+    /// Elasticsearch is not documented.
+    #[serde(rename = "backslash_in_wildcard")]
+    BackslashInWildcard = 9,
+    /// It is about program starts and file events at once.
+    #[serde(rename = "spans_kinds")]
+    SpansKinds = 10,
 }
 impl UnevaluatedReason {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1049,6 +1071,10 @@ impl UnevaluatedReason {
             Self::NotParsed => "UNEVALUATED_REASON_NOT_PARSED",
             Self::InPart => "UNEVALUATED_REASON_IN_PART",
             Self::NotCollected => "UNEVALUATED_REASON_NOT_COLLECTED",
+            Self::Sequence => "UNEVALUATED_REASON_SEQUENCE",
+            Self::NotEql => "UNEVALUATED_REASON_NOT_EQL",
+            Self::BackslashInWildcard => "UNEVALUATED_REASON_BACKSLASH_IN_WILDCARD",
+            Self::SpansKinds => "UNEVALUATED_REASON_SPANS_KINDS",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1061,6 +1087,10 @@ impl UnevaluatedReason {
             "UNEVALUATED_REASON_NOT_PARSED" => Some(Self::NotParsed),
             "UNEVALUATED_REASON_IN_PART" => Some(Self::InPart),
             "UNEVALUATED_REASON_NOT_COLLECTED" => Some(Self::NotCollected),
+            "UNEVALUATED_REASON_SEQUENCE" => Some(Self::Sequence),
+            "UNEVALUATED_REASON_NOT_EQL" => Some(Self::NotEql),
+            "UNEVALUATED_REASON_BACKSLASH_IN_WILDCARD" => Some(Self::BackslashInWildcard),
+            "UNEVALUATED_REASON_SPANS_KINDS" => Some(Self::SpansKinds),
             _ => None,
         }
     }
@@ -1237,7 +1267,7 @@ pub mod evidence {
         /// has a vulnerability attackers use.
         #[prost(message, tag = "5")]
         VulnerablePackage(super::VulnerablePackage),
-        /// `sigma:<id>`: events a published rule matched.
+        /// `sigma:<id>` and `elastic:<rule_id>`: events a published rule matched.
         #[prost(message, tag = "6")]
         PublishedRuleMatched(super::PublishedRuleMatched),
     }
@@ -1363,7 +1393,8 @@ pub struct PublishedRuleMatched {
     /// The latest events it matched, newest first, at most five: the store keeps no more.
     #[prost(message, repeated, tag = "3")]
     pub events: ::prost::alloc::vec::Vec<Event>,
-    /// Where the rule comes from, and its licence, in the core's words.
+    /// Where the rule's set comes from, its repository, and the licence its files carry, by its
+    /// SPDX identifier.
     #[prost(string, tag = "4")]
     pub source: ::prost::alloc::string::String,
     #[prost(string, tag = "5")]

@@ -1,0 +1,19 @@
+title: "Data Encrypted via OpenSSL Utility"
+id: "feba48f6-40ca-4d04-b41f-5dfa327de865"
+status: "test"
+description: "Identifies the execution of the OpenSSL utility to encrypt data. Adversaries may use OpenSSL to encrypt data to\ndisrupt the availability of their target's data and may attempt to hold the organization's data to ransom for the\npurposes of extortion."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/cross-platform/defense_evasion_data_encrypted_via_openssl.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2026-03-26"
+modified: "2026-09-18"
+tags: ["attack.t1027.013", "attack.t1074.001"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name": ["openssl*"]}
+  s2: {"process.args|contains": ["\u0000enc\u0000"]}
+  s3: {"process.args|contains": ["\u0000-in\u0000"]}
+  s4: {"process.args|contains": ["\u0000-out\u0000"]}
+  condition: "(s1 and s2 and s3 and s4)"
+level: "low"
+elastic: {"rule_id": "feba48f6-40ca-4d04-b41f-5dfa327de865", "severity": "low", "risk_score": 21, "query_sha256": "9ad0efebc2a81131a3f74ac1cfb3a432ad481f38d66ec58ea5efb9520d4f64bb", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": ["ProcessRollup2", "exec_event", "executed"], "null_sensitive": [], "folded_fields": []}

@@ -1,0 +1,18 @@
+title: "Attempt to Enable the Root Account"
+id: "cc2fd2d0-ba3a-4939-b87f-2901764ed036"
+status: "test"
+description: "Identifies attempts to enable the root account using the dsenableroot command. This command may be abused by adversaries\nfor persistence, as the root account is disabled by default."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/macos/persistence_enable_root_account.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2020-01-04"
+modified: "2026-09-18"
+tags: ["attack.t1078.003"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["dsenableroot"]}
+  s2: {"process.args|contains|cased": ["\u0000-d\u0000"]}
+  s3: {"process.args|exists": true}
+  condition: "(s1 and (s3 and not s2))"
+level: "medium"
+elastic: {"rule_id": "cc2fd2d0-ba3a-4939-b87f-2901764ed036", "severity": "medium", "risk_score": 47, "query_sha256": "cb12458f01836776720b695c0286caa71168c70c5c1c5411eff7bc23320c3a39", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": ["process_started"], "null_sensitive": ["process.args"], "folded_fields": []}

@@ -3,8 +3,9 @@
 // conventions for text, references, times and changes, are in `common.proto`; the rules and the
 // events are in `event.proto`.
 //
-// The core evaluates SigmaHQ's published rules over the program starts and file events its
-// collector writes to a log that lives a day. This answer gives every match of every rule, of
+// The core evaluates published rules over the program starts and file events its collector
+// writes to a log that lives a day: SigmaHQ's rules for macOS, and Elastic's detection rules for
+// macOS translated into Sigma. This answer gives every match of every rule, of
 // every level, each with the event it matched, in the order of the log. A match of a rule marked
 // high or critical also raised a finding; the others are only counted in the store. Events that
 // matched no rule are not given.
@@ -184,11 +185,14 @@ enum CollectorState {
   COLLECTOR_STATE_FAILED = 6;
 }
 
-// A shipped rule that is not evaluated over the events here, or only in part.
+// A shipped rule that is not evaluated over the events here, or only in part, or a rule of a
+// translated set that was not taken.
 message Unevaluated {
-  // Its path in the shipped set.
+  // Its path in the shipped set; for a rule not taken, the upstream file's path under its
+  // repository's `rules/` folder.
   string file = 1;
-  // The name findings give it, `sigma:<id>`. Absent for a rule that could not be read.
+  // The name findings give it, `sigma:<id>` or `elastic:<rule_id>`. Absent for a rule that
+  // could not be read.
   optional string name = 2;
   // Its `id`, `title` and level. Absent for a rule that could not be read.
   optional string id_text = 3;
@@ -199,7 +203,9 @@ message Unevaluated {
   // those of the alternatives that never match.
   repeated string fields_text = 7;
   // For `needs_events` the kind of event it is about; for `not_parsed` what the parser said; for
-  // `not_collected` why the collector here is not taken to record file events.
+  // `not_collected` why the collector here is not taken to record file events. For a rule a
+  // translated set did not take, what the translation said of it, and for `in_part` what a
+  // translation left out that is not a missing field, such as a pattern it could not carry.
   optional string detail_text = 8;
 }
 
@@ -219,4 +225,14 @@ enum UnevaluatedReason {
   // A rule for file events, and the collector here is not installed or not established to
   // record them.
   UNEVALUATED_REASON_NOT_COLLECTED = 6;
+  // The four below are a translation's reasons for not taking a rule of a set translated into
+  // Sigma. It correlates several events in a sequence.
+  UNEVALUATED_REASON_SEQUENCE = 7;
+  // It is written in a query language other than EQL, the one translated.
+  UNEVALUATED_REASON_NOT_EQL = 8;
+  // A part it cannot do without holds a backslash in a wildcard pattern, whose meaning in
+  // Elasticsearch is not documented.
+  UNEVALUATED_REASON_BACKSLASH_IN_WILDCARD = 9;
+  // It is about program starts and file events at once.
+  UNEVALUATED_REASON_SPANS_KINDS = 10;
 }

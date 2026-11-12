@@ -1,0 +1,22 @@
+title: "Curl or Wget Spawned via Node.js"
+id: "d9af2479-ad13-4471-a312-f586517f1243"
+status: "test"
+description: "This rule detects when Node.js, directly or via a shell, spawns the curl or wget command. This may indicate\ncommand and control behavior. Adversaries may use Node.js to download additional tools or payloads onto\nthe system."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/cross-platform/command_and_control_curl_wget_spawn_via_nodejs_parent.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2025-09-18"
+modified: "2026-09-18"
+tags: ["attack.t1071.001", "attack.t1105"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.parent.name|cased": ["node", "bun", "node.exe", "bun.exe"]}
+  s2: {"process.name|cased": ["bash", "dash", "sh", "tcsh", "csh", "zsh", "ksh", "fish", "cmd.exe", "bash.exe", "powershell.exe"]}
+  s3: {"process.command_line": ["*curl*http*", "*wget*http*"]}
+  s4: {"process.name|cased": ["curl", "wget", "curl.exe", "wget.exe"]}
+  s5: {"process.command_line|cased": ["*127.0.0.1*", "*localhost*", "*/home/*/.claude/shell-snapshots/*", "*/root/.claude/shell-snapshots/snapshot*", "*/Users/*/.claude/shell-snapshots/*"]}
+  s6: {"process.parent.executable|cased": ["/*/.cursor-server/*node", "/home/*/cursor-agent/*/node"]}
+  s7: {"process.parent.executable|exists": true}
+  condition: "(s1 and ((s2 and s3) or s4) and (not s5 and (s7 and not s6)))"
+level: "medium"
+elastic: {"rule_id": "d9af2479-ad13-4471-a312-f586517f1243", "severity": "medium", "risk_score": 47, "query_sha256": "584e52691005975a75fa26466d8f2543b33741a7839ab237976f1544c3ed1d4e", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": ["ProcessRollup2", "exec_event", "executed", "process_started"], "null_sensitive": ["process.parent.executable"], "folded_fields": []}

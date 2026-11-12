@@ -463,13 +463,11 @@ fn watching(out: &mut String, r: &Value, level: Option<&Level>) -> Out {
     let mut needs: BTreeMap<(String, String), usize> = BTreeMap::new();
     for l in not_evaluated {
         let (one, many) = match &l.placement {
-            Placement::NotEvaluated(Reason::NeedsEvents(c)) => {
-                let what = format!(
-                    "{} events, not collected",
-                    c.trim_end_matches("_event").replace('_', " ")
-                );
-                (format!("needs {what}"), format!("need {what}"))
-            }
+            // Which kinds is said on the rules page; here, only that they are not collected.
+            Placement::NotEvaluated(Reason::NeedsEvents(_)) => (
+                "needs a kind of event not collected".to_string(),
+                "need kinds of event not collected".to_string(),
+            ),
             Placement::NotEvaluated(Reason::NeedsFields(_)) => (
                 "needs details a program start does not give".to_string(),
                 "need details a program start does not give".to_string(),
@@ -477,6 +475,18 @@ fn watching(out: &mut String, r: &Value, level: Option<&Level>) -> Out {
             Placement::NotEvaluated(Reason::KeywordSearch) => (
                 "searches whole messages".to_string(),
                 "search whole messages".to_string(),
+            ),
+            Placement::NotEvaluated(Reason::Sequence) => (
+                "is a sequence of events, not translated".to_string(),
+                "are sequences of events, not translated".to_string(),
+            ),
+            Placement::NotEvaluated(Reason::NotEql) => (
+                "is not in EQL, not translated".to_string(),
+                "are not in EQL, not translated".to_string(),
+            ),
+            Placement::NotEvaluated(Reason::BackslashInWildcard | Reason::SpansKinds) => (
+                "could not be translated exactly".to_string(),
+                "could not be translated exactly".to_string(),
             ),
             _ => (
                 "could not be read".to_string(),
@@ -649,7 +659,10 @@ fn cover(out: &mut String, st: &crate::status::State, level: Option<&Level>, run
         .needs
         .items
         .iter()
-        .filter_map(|i| i.rule?.strip_prefix(sigma::FINDING_PREFIX))
+        .filter_map(|i| {
+            let rule = Rules::shipped().by_finding_rule(i.rule?)?;
+            Some(rule.meta.as_ref()?.id.as_str())
+        })
         .collect();
     let grid = grid(attack, Rules::shipped(), Watching::of(level), week, &raised);
     out.push_str("<div class=\"covers\">\n<div class=\"sh\"><h3>What the rules cover</h3><ul class=\"legend\">");
@@ -747,8 +760,10 @@ mod tests {
             .iter()
             .filter(|l| l.placement == Placement::Evaluated)
         {
-            let text = sigma::SHIPPED.iter().find(|(f, _)| *f == l.file).unwrap().1;
+            let text = l.source.files.iter().find(|(f, _)| *f == l.file).unwrap().1;
             for word in text.split_whitespace() {
+                // A tag in a YAML list or in a JSON one, as the translated rules write theirs.
+                let word = word.trim_matches(['[', ']', '"', ',']);
                 if let Some(t) = word.strip_prefix("attack.t") {
                     tagged.insert(format!("T{}", t.split('.').next().unwrap()));
                 }
@@ -897,6 +912,7 @@ detection:
             author: None,
             techniques: Vec::new(),
             description: None,
+            source: &sigma::SIGMAHQ,
         };
         let mut out = String::new();
         let row = Row {

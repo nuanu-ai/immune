@@ -1,0 +1,17 @@
+title: "Suspicious Emond Child Process"
+id: "3e3d15c6-1509-479a-b125-21718372157e"
+status: "test"
+description: "Identifies the execution of a suspicious child process of the Event Monitor Daemon (emond). Adversaries may abuse this\nservice by writing a rule to execute commands when a defined event occurs, such as system start up or user\nauthentication."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/macos/persistence_emond_rules_process_execution.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2021-01-11"
+modified: "2026-09-18"
+tags: ["attack.t1059.001", "attack.t1059.002", "attack.t1059.004", "attack.t1059.006", "attack.t1546.014"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.parent.name|cased": ["emond"]}
+  s2: {"process.name": ["bash", "dash", "sh", "tcsh", "csh", "zsh", "ksh", "fish", "Python", "python*", "perl*", "php*", "osascript", "pwsh", "curl", "wget", "cp", "mv", "touch", "echo", "base64", "launchctl"]}
+  condition: "(s1 and s2)"
+level: "medium"
+elastic: {"rule_id": "3e3d15c6-1509-479a-b125-21718372157e", "severity": "medium", "risk_score": 47, "query_sha256": "ad907b72273140f6e99806fd84e3c5177447951667472e6a7fa06675498c854b", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": ["process_started"], "null_sensitive": [], "folded_fields": []}

@@ -14,9 +14,11 @@ import "immune/v1/common.proto";
 
 // A published rule, as the core ships it.
 message Rule {
-  // The name findings give the rule, `sigma:<id>`: the store's name for it.
+  // The name findings give the rule, its set's name and its id: `sigma:<id>` for SigmaHQ's,
+  // `elastic:<rule_id>` for Elastic's. The store's name for it.
   string name = 1;
-  // Its path in the shipped set, under `rules/sigma/`, which moves between upstream commits.
+  // Its path in the shipped set, under the set's folder, `rules/sigma/` or `rules/elastic/`, as
+  // the prefix of `name` says. It moves between upstream commits.
   string file = 2;
   // Its `id` and `title` as published, whole.
   string id_text = 3;
@@ -24,7 +26,8 @@ message Rule {
   Level level = 5;
   // ATT&CK techniques from its `attack.t…` tags, such as `T1027.001`.
   repeated string techniques_text = 6;
-  // Its `author`, which the Detection Rule License asks a message made from a match to keep.
+  // Its `author`, which a message made from a match keeps, as the Detection Rule License asks
+  // for SigmaHQ's rules.
   optional string author_text = 7;
 }
 

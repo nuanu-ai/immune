@@ -1,0 +1,20 @@
+title: "Potential Kubectl Masquerading via Unexpected Process"
+id: "2388c687-cb2c-4b7b-be8f-6864a2385048"
+status: "test"
+description: "This rule detects potential kubectl masquerading activity by monitoring for process events where the process name\nis not \"kubectl\" but the command line arguments include kubectl-related commands. This could indicate an adversary\nattempting to masquerade as legitimate kubectl activity to evade detection. This rule covers evasion gaps\nintroduced by renaming the kubectl binary, or placing it in an unusual directory."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/cross-platform/defense_evasion_potential_kubectl_masquerading.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2025-06-19"
+modified: "2026-11-03"
+tags: ["attack.t1036.003", "attack.t1564.001", "attack.t1609", "attack.t1610", "attack.t1613"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.executable": ["/tmp/*", "/private/tmp/*", "/var/tmp/*", "/private/var/tmp/*", "/dev/shm/*", "/root/*", "/var/www/*", "/home/*", "/Users/*", "./kubectl"]}
+  s2: {"process.name|cased": [".*"]}
+  s3: [{"process.args|contains": ["get po", "get deploy", "get node", "get svc", "get service", "get secret", "get clusterrole", "get ingress", "get configmap", "describe po", "describe deploy", "describe node", "describe svc", "describe service", "describe secret", "describe configmap", "describe clusterrole", "describe ingress", "exec -it", "exec --stdin", "exec --tty", "proxy --port", "run --image=", "expose", "auth can-i", "--kubeconfig", "--as ", "--as=", "--as-group", "--as-uid"]}, {"immune.folded.process.args|re": ["(?s)\\x00[^\\x00]*port\\-forward[^\\x00]* \\x00"]}]
+  s4: {"process.executable|cased": ["/tmp/newroot/*"]}
+  s5: {"process.name|cased": [".flatpak-wrapped"]}
+  condition: "((s1 or s2) and s3 and (not s4 and not s5))"
+level: "medium"
+elastic: {"rule_id": "2388c687-cb2c-4b7b-be8f-6864a2385048", "severity": "medium", "risk_score": 47, "query_sha256": "3341855363d4921208e5ebf3e92d59db112126f3c4afbf8439351d0a8b32af31", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": ["exec_event", "executed", "process_started"], "null_sensitive": [], "folded_fields": ["process.args"]}

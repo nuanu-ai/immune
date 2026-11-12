@@ -1,0 +1,17 @@
+title: "Creation of Hidden Login Item via Apple Script"
+id: "f24bcae1-8980-4b30-b5dd-f851b055c9e7"
+status: "test"
+description: "Identifies the execution of osascript to create a hidden login item. This may indicate an attempt to persist a malicious\nprogram while concealing its presence."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/macos/persistence_creation_hidden_login_item_osascript.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2020-01-05"
+modified: "2026-09-18"
+tags: ["attack.t1059.002", "attack.t1547.015", "attack.t1647"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["osascript"]}
+  s2: {"process.command_line": ["osascript*login item*hidden:true*"]}
+  condition: "(s1 and s2)"
+level: "medium"
+elastic: {"rule_id": "f24bcae1-8980-4b30-b5dd-f851b055c9e7", "severity": "medium", "risk_score": 47, "query_sha256": "2b316e2508a399238141d69f4625bb51e69bd372cd97194e426547349417f9d8", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": ["process_started"], "null_sensitive": [], "folded_fields": []}

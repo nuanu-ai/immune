@@ -1108,7 +1108,10 @@ pub fn rules_section(level: Option<&crate::events::Level>) -> Value {
         })
         .collect();
     json!({
-        "shipped": rules.rules.len(),
+        // Shipped as files; an upstream rule a translated set did not take is counted apart,
+        // and as not evaluated.
+        "shipped": rules.rules.iter().filter(|l| !l.not_taken()).count(),
+        "not_taken": rules.rules.iter().filter(|l| l.not_taken()).count(),
         "evaluated": evaluated.len(),
         "in_part": in_part.len(),
         "not_evaluated": not_evaluated.len(),

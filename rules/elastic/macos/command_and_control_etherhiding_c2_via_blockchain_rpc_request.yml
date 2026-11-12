@@ -1,0 +1,18 @@
+title: "Potential EtherHiding C2 via Curl JSON-RPC Request"
+id: "54285d96-2b7c-4345-890e-3c40e173f099"
+status: "test"
+description: "Detects when curl or nscurl is spawned by a shell or osascript to make a JSON-RPC request to a blockchain\nendpoint for command and control purposes. Adversaries may leverage blockchain smart contracts as a covert\nC2 channel to retrieve commands or payload staging information, as observed in ClickFix campaigns."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/macos/command_and_control_etherhiding_c2_via_blockchain_rpc_request.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2026-09-08"
+modified: "2026-09-18"
+tags: ["attack.t1059.002", "attack.t1059.004", "attack.t1102.001", "attack.t1102.002"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["curl", "nscurl"]}
+  s2: {"process.parent.name|cased": ["osascript", "bash", "sh", "zsh"]}
+  s3: {"process.command_line": ["*eth_call*", "*\"jsonrpc\"*"]}
+  condition: "(s1 and s2 and s3)"
+level: "high"
+elastic: {"rule_id": "54285d96-2b7c-4345-890e-3c40e173f099", "severity": "high", "risk_score": 73, "query_sha256": "ad9ff324a45de82739937f6c323e8be1ae6f4c58c302dbdd5912b00c43191501", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": [], "folded_fields": []}

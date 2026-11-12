@@ -1,0 +1,17 @@
+title: "Kubernetes Direct API Request via Curl or Wget"
+id: "b53f1d73-150d-484d-8f02-222abeb5d5fa"
+status: "test"
+description: "This rule monitors for the execution of curl or wget commands that directly access Kubernetes API endpoints,\nwhich may indicate an attempt to interact with Kubernetes resources in a potentially unauthorized manner. This\ntechnique is often used by adversaries to gather information about the Kubernetes environment, such as secrets,\nconfig maps, and other sensitive data, without using the official Kubernetes client tools such as \"kubectl\"."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/cross-platform/execution_kubernetes_direct_api_request_via_curl_or_wget.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2025-06-23"
+modified: "2026-11-03"
+tags: ["attack.t1059.004", "attack.t1069", "attack.t1552.007", "attack.t1613"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name": ["curl", "wget", "curl.exe", "wget.exe"]}
+  s2: {"process.command_line": ["*http*//*/apis/authorization.k8s.io/*", "*http*//*/apis/rbac.authorization.k8s.io/*", "*http*//*/api/v1/secrets*", "*http*//*/api/v1/namespaces/*/secrets*", "*http*//*/api/v1/configmaps*", "*http*//*/api/v1/pods*", "*http*//*/apis/apps/v1/deployments*"]}
+  condition: "(s1 and s2)"
+level: "medium"
+elastic: {"rule_id": "b53f1d73-150d-484d-8f02-222abeb5d5fa", "severity": "medium", "risk_score": 47, "query_sha256": "f58f16d380954feefbc809ae9991424dfac6e02aa5f94a0d2b5a22a914d351ba", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": ["ProcessRollup2", "exec_event", "executed", "process_started"], "null_sensitive": [], "folded_fields": []}

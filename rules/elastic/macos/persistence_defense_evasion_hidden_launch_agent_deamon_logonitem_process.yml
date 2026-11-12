@@ -1,0 +1,17 @@
+title: "Suspicious Hidden Child Process of Launchd"
+id: "083fa162-e790-4d85-9aeb-4fea04188adb"
+status: "test"
+description: "Identifies the execution of a launchd child process with a hidden file. An adversary can establish persistence by\ninstalling a new logon item, launch agent, or daemon that executes upon login."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/macos/persistence_defense_evasion_hidden_launch_agent_deamon_logonitem_process.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2020-01-07"
+modified: "2026-09-18"
+tags: ["attack.t1543.001", "attack.t1543.004", "attack.t1564.001"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name": [".*"]}
+  s2: {"process.parent.name|cased": ["launchd"]}
+  condition: "(s1 and s2)"
+level: "medium"
+elastic: {"rule_id": "083fa162-e790-4d85-9aeb-4fea04188adb", "severity": "medium", "risk_score": 47, "query_sha256": "bbb083165a5c7f6425d317eeb6a11a1446bceda9c3d938d702edb0f0d83b233b", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": ["process_started"], "null_sensitive": [], "folded_fields": []}

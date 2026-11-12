@@ -1,0 +1,20 @@
+title: "Suspicious File Downloaded from Google Drive"
+id: "a8afdce2-0ec1-11ee-b843-f661ea17fbcd"
+status: "test"
+description: "Identifies suspicious file download activity from a Google Drive URL. This could indicate an attempt to deliver phishing\npayloads via a trusted webservice."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/cross-platform/command_and_control_google_drive_malicious_file_download.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2023-06-19"
+modified: "2026-09-18"
+tags: ["attack.t1102.003", "attack.t1105"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name": ["Microsoft Edge", "chrome.exe", "Google Chrome", "google-chrome-stable", "google-chrome-beta", "google-chrome", "msedge.exe", "firefox.exe", "brave.exe", "whale.exe", "browser.exe", "dragon.exe", "vivaldi.exe", "opera.exe", "firefox", "powershell.exe", "curl", "curl.exe", "wget", "wget.exe"]}
+  s2: {"process.command_line": ["*drive.google.com*"]}
+  s3: {"process.command_line": ["*export=download*"]}
+  s4: {"process.command_line": ["*confirm=no_antivirus*"]}
+  condition: "(s1 and (s2 and s3 and s4))"
+level: "medium"
+elastic: {"rule_id": "a8afdce2-0ec1-11ee-b843-f661ea17fbcd", "severity": "medium", "risk_score": 47, "query_sha256": "82d0f55fb0efdacfe0835e5048d565568f9eeba81c91e4c64e659a15d408269c", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": ["fork"], "null_sensitive": [], "folded_fields": []}
+falsepositives: ["Approved third-party applications that use Google Drive download URLs.", "Legitimate publicly shared files from Google Drive."]

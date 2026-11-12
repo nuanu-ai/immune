@@ -1,0 +1,22 @@
+title: "Manual Loading of a Suspicious Chromium Extension"
+id: "f1f3070e-045c-4e03-ae58-d11d43d2ee51"
+status: "test"
+description: "Detects the manual loading of a Chromium-based browser extension via command line arguments. This activity \nis suspicious and could indicate a threat actor loading a malicious extension to persist or collect browsing \nsecrets such as cookies and authentication tokens."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/macos/persistence_manual_chromium_extension_loading.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2026-01-30"
+modified: "2026-09-18"
+tags: ["attack.t1176.001", "attack.t1185", "attack.t1539"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["Google Chrome", "Brave Browser", "Microsoft Edge"]}
+  s2: {"process.args|contains|cased": ["\u0000--load-extension=/"]}
+  s3: {"process.args|re": ["(?s)\\x00\\-\\-load\\-extension=/Users/[^\\x00]*/Library/Application Support/Cypress/[^\\x00]*\\x00"]}
+  s4: {"process.args|exists": true}
+  s5: {"process.parent.executable|cased": ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/Users/*/Library/Caches/Cypress/*/Cypress.app/Contents/MacOS/Cypress"]}
+  s6: {"process.parent.executable|exists": true}
+  s7: {"process.parent.executable|cased": ["/opt/homebrew/Caskroom/chromedriver/*/chromedriver", "/Applications/Cypress.app/Contents/MacOS/Cypress", "/usr/local/bin/chromedriver"]}
+  condition: "(s1 and s2 and ((s4 and not s3) or (s6 and not s5)) and (s6 and not s7))"
+level: "high"
+elastic: {"rule_id": "f1f3070e-045c-4e03-ae58-d11d43d2ee51", "severity": "high", "risk_score": 73, "query_sha256": "32cd164c473f76d8bfb71a7e32bf36b4c2f20c28c726af2d91f4495d9e8acb1f", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": ["process.args", "process.parent.executable"], "folded_fields": []}

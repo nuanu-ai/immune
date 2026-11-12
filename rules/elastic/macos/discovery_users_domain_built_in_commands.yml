@@ -1,0 +1,21 @@
+title: "Enumeration of Users or Groups via Built-in Commands"
+id: "6e9b351e-a531-4bdc-b73e-7034d6eed7ff"
+status: "test"
+description: "Identifies the execution of macOS built-in commands related to account or group enumeration. Adversaries may use account\nand group information to orient themselves before deciding how to act."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/macos/discovery_users_domain_built_in_commands.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2021-01-12"
+modified: "2026-09-18"
+tags: ["attack.t1069.001", "attack.t1069.002", "attack.t1087.001", "attack.t1087.002"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["ldapsearch", "dsmemberutil"]}
+  s2: {"process.name|cased": ["dscl"]}
+  s3: {"process.args|contains|cased": ["\u0000read\u0000", "\u0000-read\u0000", "\u0000list\u0000", "\u0000-list\u0000", "\u0000ls\u0000", "\u0000search\u0000", "\u0000-search\u0000"]}
+  s4: {"process.args|contains|cased": ["\u0000/Active Directory/", "\u0000/Users", "\u0000/Groups"]}
+  s5: {"process.parent.executable|cased": ["/Volumes/*"]}
+  s6: {"process.parent.name": [".*"]}
+  condition: "((s1 or (s2 and s3 and s4)) and (s5 or s6))"
+level: "low"
+elastic: {"rule_id": "6e9b351e-a531-4bdc-b73e-7034d6eed7ff", "severity": "low", "risk_score": 21, "query_sha256": "3d848d40a7672e939cc4b9f468e8d074484b922cff59dce1272ce5290dc59554", "kinds": ["start"], "in_part_missing_fields": ["needs_fields process.Ext.effective_parent.executable", "needs_fields process.Ext.effective_parent.name", "needs_fields process.parent.code_signature.exists", "needs_fields process.parent.code_signature.trusted"], "also_asks_events": ["process_started"], "null_sensitive": [], "folded_fields": []}

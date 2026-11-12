@@ -1,0 +1,21 @@
+title: "Persistence via a Hidden Plist Filename"
+id: "e3f5a566-df31-40cc-987c-24bc4bb94ba5"
+status: "test"
+description: "Identifies the creation of a hidden launch agent or daemon property list file. An adversary may establish \npersistence by installing a new launch agent or daemon which executes at login. Hidden plist files with \nfilenames starting with a dot are particularly suspicious."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/macos/persistence_hidden_plist_filename.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2026-01-30"
+modified: "2026-10-26"
+tags: ["attack.t1543.001", "attack.t1547", "attack.t1564.001", "attack.t1647"]
+logsource: {"product": "macos", "category": "file_event"}
+detection:
+  s1: {"event.type|cased": ["deletion"]}
+  s2: {"file.path": ["/System/Library/LaunchAgents/.*.plist", "/Library/LaunchAgents/.*.plist", "/Users/*/Library/LaunchAgents/.*.plist", "/System/Library/LaunchDaemons/.*.plist", "/Library/LaunchDaemons/.*.plist"]}
+  s3: {"file.name|cased": [".chef-com*.plist"]}
+  s4: {"process.executable|cased": ["/opt/chef/embedded/bin/ruby"]}
+  s5: {"process.executable|cased": ["/usr/bin/sed", "/bin/bash"]}
+  s6: {"file.name|cased": [".!*!*.plist"]}
+  condition: "(not s1 and s2 and (not s3 or not s4) and (not s5 or not s6))"
+level: "high"
+elastic: {"rule_id": "e3f5a566-df31-40cc-987c-24bc4bb94ba5", "severity": "high", "risk_score": 73, "query_sha256": "9855336118830fcb990bb8a8caa5b3478505086d6bace5379aa285007258da44", "kinds": ["create", "rename"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": [], "folded_fields": []}

@@ -960,9 +960,11 @@ fn published_rule_lines(d: &serde_json::Value) -> Vec<String> {
     let s = |v: &serde_json::Value| v.as_str().unwrap_or("unknown").to_string();
     let files = d["events"] == sigma::FILE_CATEGORY;
     let mut lines = vec![format!(
-        "Rule: {}, by {}; from SigmaHQ's rule set under the Detection Rule License 1.1, {}.",
+        "Rule: {}, by {}; from {} under the licence {}, {}.",
         s(&d["title_text"]),
         s(&d["author_text"]),
+        s(&d["source"]),
+        s(&d["licence"]),
         s(&d["file"])
     )];
     let (one, many) = if files {
@@ -1069,11 +1071,11 @@ fn rules_cmd(args: &RulesArgs) -> ExitCode {
         print_json(&status::envelope("rules", v));
         return ExitCode::SUCCESS;
     }
+    // The sets the rules come from open both the summary and the status's sentence, which
+    // says them once.
     let lines = rules.summary_lines(level.as_ref().map(|l| &l.matches_last_day));
-    let mut lines = lines.into_iter();
-    lines.next().iter().for_each(|l| say(l));
     say(&crate::pages::rules_said(&section));
-    lines.for_each(|l| say(&l));
+    lines.into_iter().skip(1).for_each(|l| say(&l));
     ExitCode::SUCCESS
 }
 

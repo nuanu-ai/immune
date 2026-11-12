@@ -1,0 +1,20 @@
+title: "Suspicious Browser Child Process"
+id: "080bc66a-5d56-4d1f-8071-817671716db9"
+status: "test"
+description: "Identifies the execution of a suspicious browser child process. Adversaries may gain access to a system through a user\nvisiting a website over the normal course of browsing. With this technique, the user's web browser is typically targeted\nfor exploitation."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/macos/execution_initial_access_suspicious_browser_childproc.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2020-12-23"
+modified: "2026-09-18"
+tags: ["attack.t1059.001", "attack.t1059.002", "attack.t1059.004", "attack.t1059.006", "attack.t1105", "attack.t1189", "attack.t1203"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.parent.name": ["Google Chrome", "Google Chrome Helper*", "firefox", "Opera", "Safari", "com.apple.WebKit.WebContent", "Microsoft Edge"]}
+  s2: {"process.name": ["sh", "bash", "dash", "ksh", "tcsh", "zsh"]}
+  s3: {"process.command_line": ["*curl*", "*nscurl*", "*wget*", "*whoami*", "*pwd*"]}
+  s4: {"process.name": ["curl", "wget", "python*", "perl*", "php*", "osascript", "pwsh"]}
+  s5: {"process.command_line|exists": true}
+  condition: "(s1 and ((s2 and s3) or s4) and s5)"
+level: "high"
+elastic: {"rule_id": "080bc66a-5d56-4d1f-8071-817671716db9", "severity": "high", "risk_score": 73, "query_sha256": "0e597068114e97c23772318d421919f29d5d74246a681150e61afc096456fe41", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": ["process_started"], "null_sensitive": [], "folded_fields": []}

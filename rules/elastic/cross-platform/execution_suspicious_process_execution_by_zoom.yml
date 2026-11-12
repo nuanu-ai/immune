@@ -1,0 +1,18 @@
+title: "Suspicious Process Execution by Zoom"
+id: "84b81b96-58dd-4c0d-9b2e-35023ab5ee88"
+status: "test"
+description: "Identifies suspicious process execution associated with the Zoom desktop client on macOS and Linux. The rule detects\nshells, script interpreters, downloaders, and network utilities spawned by Zoom on either platform. On Linux, it also\ndetects Zoom replacing its own process image with an executable outside the Zoom installation directory. These behaviors\nmay indicate successful exploitation of a Zoom client vulnerability, including CVE-2026-53413."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/cross-platform/execution_suspicious_process_execution_by_zoom.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2026-08-12"
+modified: "2026-09-18"
+tags: ["attack.t1059.002", "attack.t1059.004", "attack.t1059.006", "attack.t1203"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.parent.executable": ["*/zoom.us.app/Contents/MacOS/zoom.us"]}
+  s2: {"process.name": ["sh", "bash", "zsh", "dash", "ksh", "fish", "ash", "mksh", "tsh", "tcsh", "pwsh", "python*", "perl*", "ruby*", "php*", "lua*", "node", "nodejs", "osascript", "curl", "nscurl", "wget", "nc", "ncat", "netcat", "netcat.openbsd", "netcat.traditional", "nc.openbsd", "nc.traditional", "socat", "openssl", "chmod", "xattr"]}
+  condition: "(s1 and s2)"
+level: "high"
+elastic: {"rule_id": "84b81b96-58dd-4c0d-9b2e-35023ab5ee88", "severity": "high", "risk_score": 73, "query_sha256": "0aade96a8eac78c18324cfb71a4975ecc1a8accfded2a7694004e36eded44527", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": [], "folded_fields": []}
+falsepositives: ["    Legitimate support, diagnostic, accessibility, update, or enterprise management workflows may cause Zoom to launch\n    command-line utilities. Verify the executable path, command line, code signature, and surrounding user activity\n    before adding exceptions.\n    "]

@@ -1,0 +1,18 @@
+title: "Kubectl Permission Discovery"
+id: "1600f9e2-5be6-4742-8593-1ba50cd94069"
+status: "test"
+description: "This rule detects the use of the \"kubectl auth --can-i\" command, which is used to check permissions in Kubernetes clusters.\nAttackers may use this command to enumerate permissions and discover potential misconfigurations in the cluster, allowing\nthem to gain unauthorized access or escalate privileges."
+references: ["https://github.com/elastic/detection-rules/blob/032ac5ecb0b4035a12b03dd25164e2fbcfae9fad/rules/cross-platform/discovery_kubectl_permission_discovery.toml"]
+author: "Elastic"
+license: "Elastic License v2"
+date: "2025-06-17"
+modified: "2026-11-03"
+tags: ["attack.t1069", "attack.t1613"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["kubectl"]}
+  s2: {"process.args|contains|cased": ["\u0000auth\u0000"]}
+  s3: {"process.args|contains|cased": ["\u0000can-i\u0000"]}
+  condition: "(s1 and s2 and s3)"
+level: "medium"
+elastic: {"rule_id": "1600f9e2-5be6-4742-8593-1ba50cd94069", "severity": "medium", "risk_score": 47, "query_sha256": "240858c78b37cbf757ac5bffa7c3afc543bab988a4253ed0aaa639fe877537bd", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": ["ProcessRollup2", "exec_event", "executed", "process_started"], "null_sensitive": [], "folded_fields": []}
