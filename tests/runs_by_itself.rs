@@ -87,6 +87,11 @@ impl Estate {
     }
 
     fn run(&self) -> String {
+        self.run_in(&self.home())
+    }
+
+    /// A run whose walk for checkouts is pointed at `root`.
+    fn run_in(&self, root: &Path) -> String {
         let empty = self.0.join("empty");
         let out = Command::new(env!("CARGO_BIN_EXE_immune"))
             .env("HOME", self.home())
@@ -101,7 +106,7 @@ impl Estate {
             .args(["--tailscale", "none", "--threats-input", "none"])
             .args(["--osv-crates-input", "none", "--osv-npm-input", "none"])
             .arg("--checkouts-root")
-            .arg(self.home())
+            .arg(root)
             .arg("--sessions-root")
             .arg(&empty)
             .arg("--servers-input")
@@ -643,6 +648,37 @@ fn a_way_read_for_the_first_time_on_a_store_that_never_read_it_is_its_baseline()
         [pair(
             "autorun.package-install",
             "~/dev/shop/package.json#/scripts/preinstall"
+        )]
+    );
+}
+
+#[test]
+fn a_run_pointed_at_one_folder_speaks_only_for_its_projects_and_the_next_run_finds_nothing_old() {
+    // A reading of the checkouts is of those it looked into. A run the owner points at one
+    // folder did not look at the projects elsewhere: what they hold is not gone, and the next
+    // full run does not find it again as new, one alarm per project. What is planted there
+    // meanwhile is still found.
+    let e = Estate::new("pointed");
+    let shop = e.checkout("dev/shop");
+    let blog = e.checkout("dev/blog");
+    let site = e.checkout("work/site");
+    for c in [&shop, &blog, &site] {
+        package(c, "\"postinstall\": \"node setup.js\"");
+        agent(c, HOOK);
+    }
+    e.run();
+    e.run_in(&e.home().join("work"));
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+    package(
+        &blog,
+        "\"postinstall\": \"node setup.js\", \"preinstall\": \"node x.js\"",
+    );
+    e.run();
+    assert_eq!(
+        e.found(),
+        [pair(
+            "autorun.package-install",
+            "~/dev/blog/package.json#/scripts/preinstall"
         )]
     );
 }

@@ -3658,6 +3658,101 @@ struct Placed {
     git_file: bool,
     /// The completeness and reason the reading says, where its reader gives them.
     coverage: Option<(&'static str, Option<String>)>,
+    /// What the reading held about checkouts it did not look into, made again as it was.
+    kept: Vec<Statement>,
+}
+
+/// A reading of this machine over its checkouts speaks only for the checkouts it looked into.
+/// What the store holds about the others, in a folder macOS asks permission for, outside the
+/// folder a run was pointed at, or not checked, is kept as it was: read as gone by one
+/// reading, it would be read as new by the next, a finding about every project there.
+struct Visited {
+    /// The checkouts the store holds on this machine, by their path as ids name them.
+    held: BTreeSet<String>,
+    /// The checkouts the reading looked into.
+    looked: BTreeSet<String>,
+    /// Whether checkouts were ever looked for on this machine, by this run or before it.
+    looked_for: bool,
+}
+
+impl Visited {
+    fn of(
+        tx: &rusqlite::Transaction,
+        machine: &str,
+        looked: &[checkouts::Checkout],
+    ) -> rusqlite::Result<Visited> {
+        let prefix = format!("checkout:{machine}/");
+        let held = tx
+            .prepare(
+                "SELECT DISTINCT subject FROM assertion
+                 WHERE layer = 'live' AND predicate = 'located_on'
+                   AND substr(subject, 1, length(?1)) = ?1",
+            )?
+            .query_map([&prefix], |r| r.get::<_, String>(0))?
+            .map(|id| id.map(|id| id[prefix.len()..].to_string()))
+            .collect::<rusqlite::Result<_>>()?;
+        let looked_for = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM coverage WHERE scope = ?1 AND reader IN (?2, ?3))",
+            rusqlite::params![machine, checkouts::READER, agent_folders::READER],
+            |r| r.get(0),
+        )?;
+        Ok(Visited {
+            held,
+            looked: looked.iter().map(|c| c.rel.clone()).collect(),
+            looked_for,
+        })
+    }
+
+    /// Whether a file, by its path as ids name it, is in a checkout the reading did not look
+    /// into: the deepest checkout whose folder holds it.
+    fn unvisited(&self, path: &str) -> bool {
+        self.held
+            .iter()
+            .chain(&self.looked)
+            .filter(|rel| {
+                path.strip_prefix(rel.as_str())
+                    .is_some_and(|rest| rest.starts_with('/'))
+            })
+            .max_by_key(|rel| rel.len())
+            .is_some_and(|rel| !self.looked.contains(rel))
+    }
+
+    /// What a reading holds live about files in checkouts it did not look into, as the
+    /// statements to make again, with what they rested on.
+    fn kept(
+        &self,
+        tx: &rusqlite::Transaction,
+        r: &Reading,
+        predicates: &[&'static str],
+    ) -> rusqlite::Result<Vec<Statement>> {
+        let prefix = format!("file:{}/", r.scope);
+        let mut kept = Vec::new();
+        let mut stmt = tx.prepare(
+            "SELECT subject, predicate, object, source_ref FROM assertion
+             WHERE layer = 'live' AND reader = ?1 AND scope = ?2 AND kind = ?3",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![r.reader, r.scope, r.kind], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })?;
+        for row in rows {
+            let (subject, predicate, object, source_ref): (String, String, String, String) = row?;
+            let Some(predicate) = predicates.iter().find(|p| **p == predicate) else {
+                continue;
+            };
+            if subject
+                .strip_prefix(&prefix)
+                .is_some_and(|path| self.unvisited(path))
+            {
+                kept.push(Statement {
+                    subject,
+                    predicate,
+                    object,
+                    source_ref,
+                });
+            }
+        }
+        Ok(kept)
+    }
 }
 
 /// Reads the watched places, moves what they hold through the lifecycle and raises what the
@@ -3711,6 +3806,7 @@ fn read_watched(
             look: watched::look_machine(&roots, kind),
             git_file: false,
             coverage: None,
+            kept: Vec::new(),
         });
     }
     for c in checkouts {
@@ -3728,20 +3824,42 @@ fn read_watched(
             look,
             git_file,
             coverage: None,
+            kept: Vec::new(),
         });
     }
     // Each way code runs by itself that is read here, in every checkout or in the home
     // folder, as one reading of this machine: its first is the baseline, and a checkout that
-    // arrives later with such a part is new, which is what its trigger's rule is for.
+    // arrives later with such a part is new, which is what its trigger's rule is for. A
+    // reading of the checkouts is of those it was given: before checkouts were ever looked
+    // for on this machine it would know none and become the baseline, and every project the
+    // first full run finds would be new. That happens when the watcher reads while the first
+    // run is still asking for its data, so it is not read then; and what is held about a
+    // checkout not looked into is kept as it was.
+    let visited = Visited::of(run.tx, &machine, checkouts)?;
     for point in autorun::POINTS.iter().filter(|p| p.read_here()) {
-        let looked = match point.scope {
-            autorun::Scope::Home => {
-                autorun::look_all(point, [(args.home.as_path(), "")].into_iter())
-            }
-            _ => autorun::look_all(
-                point,
-                checkouts.iter().map(|c| (c.path.as_path(), c.rel.as_str())),
+        let (looked, kept) = match point.scope {
+            autorun::Scope::Home => (
+                autorun::look_all(point, [(args.home.as_path(), "")].into_iter()),
+                Vec::new(),
             ),
+            _ if !visited.looked_for => continue,
+            _ => {
+                let reading = Reading {
+                    reader: watched::READER,
+                    scope: &machine,
+                    kind: &point.kind(),
+                    run_id: &run_id,
+                    at: run.at,
+                    observed_at: run.at,
+                };
+                (
+                    autorun::look_all(
+                        point,
+                        checkouts.iter().map(|c| (c.path.as_path(), c.rel.as_str())),
+                    ),
+                    visited.kept(run.tx, &reading, &["watched_as", "located_on"])?,
+                )
+            }
         };
         placed.push(Placed {
             scope: machine.clone(),
@@ -3750,6 +3868,7 @@ fn read_watched(
             coverage: Some(looked.coverage(point)),
             look: looked.look,
             git_file: false,
+            kept,
         });
     }
 
@@ -3805,6 +3924,12 @@ fn read_watched(
                 source_ref,
             });
         }
+        statements.extend(p.kept.iter().map(|s| Statement {
+            subject: s.subject.clone(),
+            predicate: s.predicate,
+            object: s.object.clone(),
+            source_ref: s.source_ref.clone(),
+        }));
         let (completeness, reason) = if p.git_file {
             ("partial", Some(watched::GIT_FILE.to_string()))
         } else if p.kind == watched::HOOK_KIND && p.look.entries.is_empty() {
@@ -4794,4 +4919,32 @@ fn grouped(n: i64) -> String {
         out.push(c);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn what_is_kept_is_of_the_deepest_checkout_holding_a_file_and_never_of_one_no_longer_held() {
+        // A reading keeps what it did not look into, and only that: a project inside one it
+        // looked into is not, and neither is a project gone from the store whose name begins
+        // as one kept does, or its entries would stay forever.
+        let set = |rels: &[&str]| rels.iter().map(|r| r.to_string()).collect();
+        let v = Visited {
+            held: set(&["dev/shop", "dev/shop/vendor/lib", "Documents/notes"]),
+            looked: set(&["dev/shop"]),
+            looked_for: true,
+        };
+        assert!(v.unvisited("Documents/notes/package.json"));
+        assert!(v.unvisited("dev/shop/vendor/lib/package.json"));
+        assert!(!v.unvisited("dev/shop/package.json"));
+        assert!(!v.unvisited("Documents/notes-old/package.json"));
+        let v = Visited {
+            looked: set(&["dev/shop/vendor/lib"]),
+            ..v
+        };
+        assert!(!v.unvisited("dev/shop/vendor/lib/package.json"));
+        assert!(v.unvisited("dev/shop/package.json"));
+    }
 }

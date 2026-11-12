@@ -68,9 +68,30 @@ impl Mac {
 
     /// `immune run` as above, reading the servers' files in `servers`.
     fn run_cmd_servers(&self, servers: &std::path::Path) -> Command {
-        let absent = self.root.join("absent");
         let mut cmd = self.immune();
-        cmd.args(["run", "--machine-name", "mac", "--store"])
+        cmd.args(["run", "--machine-name", "mac"]);
+        self.run_args(cmd, servers)
+    }
+
+    /// `immune run` as the app starts it: on this Mac's own name, the one a watcher takes
+    /// while the store names no machine. The name is never looked at.
+    fn app_run(&self) {
+        let mut cmd = self.immune();
+        cmd.arg("run");
+        let out = self
+            .run_args(cmd, &self.root.join("absent"))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn run_args(&self, mut cmd: Command, servers: &std::path::Path) -> Command {
+        let absent = self.root.join("absent");
+        cmd.arg("--store")
             .arg(self.store())
             .arg("--brew-input")
             .arg(self.root.join("brew.json"))
@@ -953,6 +974,118 @@ fn a_file_its_tool_rewrites_all_the_time_wakes_no_reading_and_what_is_planted_in
             "\"autorun.agent-settings\"".to_string(),
             "\"~/.claude.json#/mcpServers/x\"".to_string()
         )]
+    );
+}
+
+// The first check of a Mac.
+
+/// A project as developers keep them for weeks: settings of Claude Code with a hook it runs
+/// when a session starts and commands it runs without asking, and a script the package
+/// manager runs at install.
+fn project(mac: &Mac, rel: &str) {
+    mac.put(&format!("{rel}/.git/HEAD"), "ref: refs/heads/main\n");
+    mac.put(
+        &format!("{rel}/.claude/settings.json"),
+        r#"{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "node .invented/start.js"}]}]}}"#,
+    );
+    mac.put(
+        &format!("{rel}/.claude/settings.local.json"),
+        r#"{"permissions": {"allow": ["Bash(make:*)"]}}"#,
+    );
+    mac.put(
+        &format!("{rel}/package.json"),
+        r#"{"name": "x", "scripts": {"postinstall": "node .invented/setup.js"}}"#,
+    );
+}
+
+/// The open findings, as rule and where, sorted.
+fn found(mac: &Mac) -> Vec<(String, String)> {
+    let out = mac
+        .immune()
+        .args(["findings", "--json", "--store"])
+        .arg(mac.store())
+        .output()
+        .unwrap();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let mut found: Vec<(String, String)> = v["result"]["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            let s = |k: &str| f[k].as_str().unwrap_or_default().to_string();
+            (s("rule"), s("where_text"))
+        })
+        .collect();
+    found.sort();
+    found
+}
+
+/// A Mac with three projects that hold what runs by itself, and an empty store.
+fn with_projects(tag: &str) -> Mac {
+    let mac = Mac::new(tag);
+    for rel in ["dev/api", "dev/shop", "work/site"] {
+        project(&mac, rel);
+    }
+    mac
+}
+
+#[test]
+fn the_first_check_of_a_mac_finds_nothing_in_what_was_there_whoever_writes_first() {
+    // The app starts its watcher next to the first full run, and the run asks for its data
+    // before it takes the store, so the watcher's first reading can come first, when the
+    // store knows no project. What a Mac held before its first check is its baseline, not
+    // one alarm per project: the order in which the two write cannot change that.
+    let mac = with_projects("first-watcher");
+    let w = mac.watch().started();
+    mac.app_run();
+    assert!(found(&mac).is_empty(), "{:?}", found(&mac));
+    assert!(w.stop().success());
+
+    let mac = with_projects("first-run");
+    mac.app_run();
+    let w = mac.watch().started();
+    assert!(w.stop().success());
+    mac.app_run();
+    assert!(found(&mac).is_empty(), "{:?}", found(&mac));
+}
+
+#[test]
+fn after_a_first_check_the_watcher_read_first_what_arrives_later_is_still_found() {
+    // The baseline is the Mac at its first check, not "nothing is ever found in a project":
+    // a hook planted later in a project the store holds, and a project that arrives later
+    // with a script that runs at install, are findings as on any other Mac.
+    let mac = with_projects("first-then-later");
+    let w = mac.watch().started();
+    mac.app_run();
+    assert!(w.stop().success());
+    assert!(found(&mac).is_empty(), "{:?}", found(&mac));
+    // A watcher started now watches the projects the run found.
+    let mut w = mac.watch();
+    w.next("watching");
+    mac.put(
+        "dev/api/.claude/settings.local.json",
+        r#"{"permissions": {"allow": ["Bash(make:*)"]}, "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "sh x"}]}]}}"#,
+    );
+    w.until("read", |v| count(v, "opened") == 1);
+    assert!(w.stop().success());
+    mac.put("dev/new/.git/HEAD", "ref: refs/heads/main\n");
+    mac.put(
+        "dev/new/package.json",
+        r#"{"scripts": {"preinstall": "node x.js"}}"#,
+    );
+    mac.app_run();
+    assert_eq!(
+        found(&mac),
+        [
+            (
+                "autorun.agent-start".to_string(),
+                "~/dev/api/.claude/settings.local.json#/hooks".to_string()
+            ),
+            (
+                "autorun.package-install".to_string(),
+                "~/dev/new/package.json#/scripts/preinstall".to_string()
+            ),
+        ]
     );
 }
 

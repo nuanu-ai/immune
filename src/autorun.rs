@@ -17,7 +17,11 @@
 //! its first reading on this Mac is the baseline, and an entry that appears later, in a
 //! checkout the store held or in one that is new, or whose part changes, is a finding of the
 //! rule of its trigger and scope. A row read for the first time after an upgrade is a kind
-//! read for the first time: a baseline too.
+//! read for the first time: a baseline too. A project row is not read before checkouts were
+//! ever looked for on this Mac, as when the watcher reads while the first full run is still
+//! asking for its data: knowing no checkout, that reading would be the baseline and every
+//! project the run then finds would be new. A reading speaks only for the checkouts it looked
+//! into: what the store holds about the others is kept as it was.
 //!
 //! How the part that counts is taken, a closed set:
 //!
