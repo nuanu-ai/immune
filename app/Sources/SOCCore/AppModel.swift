@@ -115,6 +115,20 @@ public final class AppModel: ObservableObject {
     refreshing = false
   }
 
+  /// Takes what the watcher said after a reading of program starts into the status read
+  /// last, as soc said it: the panel's row shows it without a run of `soc status`. What the
+  /// line does not carry stays as the status said it; the caveats' sentences stay only while
+  /// the caveats are the same, and the next status brings them back.
+  public func took(_ said: EventLevel) {
+    guard case .read(var s, let errors) = reading else { return }
+    let before = s.eventLevel
+    var e = said
+    e.startsByHour = before?.startsByHour
+    e.notes = before?.caveats == said.caveats ? before?.notes : nil
+    s.eventLevel = e
+    reading = .read(s, errors: errors)
+  }
+
   /// Runs `soc run --json`, then refreshes. Returns false, and starts nothing,
   /// when a run is in progress, here or as soc last said. Check now is the owner's;
   /// the hourly check passes `.app`.

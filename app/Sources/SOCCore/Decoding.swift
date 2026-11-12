@@ -73,6 +73,22 @@ public struct EventLevel: Sendable, Equatable {
   public var stateWords: String?
   /// soc's caveats, each a sentence: empty means none, nil means not said.
   public var notes: [String]?
+  /// The last hour minute by minute, oldest first (`program_starts_by_minute.counts`); nil
+  /// unless every one of them is a count.
+  public var startsByMinute: [Int]? = nil
+  /// Program starts read in the last hour, as soc counts them.
+  public var startsLastHour: Int? = nil
+  /// When the level was last read.
+  public var readAt: Date? = nil
+  /// The same caveats in a few words each ("2 restarts"): empty means none, nil means not
+  /// said.
+  public var caveats: [Caveat]? = nil
+}
+
+/// A caveat as soc says it in a few words, under a stable name.
+public struct Caveat: Sendable, Equatable {
+  public var kind: String?
+  public var short: String?
 }
 
 /// `published_rule` of a finding a published rule raised: the rule's title and authors,
@@ -356,6 +372,9 @@ public enum WatchEvent: Sendable, Equatable {
   case read
   /// A sample of running programs opened a finding.
   case sample
+  /// A reading of program starts took some or changed the level's state: the level as it
+  /// left it, in numbers and soc's fixed words.
+  case programStarts(EventLevel)
   case alive
   /// Something it survived, with what the failure said as text from a source.
   case problem(code: String?, detailText: String? = nil)
@@ -410,6 +429,7 @@ public enum Decoding {
     case "watching": return .watching(places: j["places"].count)
     case "read": return .read
     case "sample": return .sample
+    case "program_starts": return .programStarts(programStarts(j))
     case "alive": return .alive
     // `soc watch` as built puts the code beside `event`; a nested `problem` object is
     // read too, so either shape is understood.
@@ -528,13 +548,39 @@ public enum Decoding {
   }
 
   static func eventLevel(_ e: J) -> EventLevel {
-    let hours = e["program_starts_by_hour"]["counts"].array
-    let counts = hours?.compactMap(\.count)
-    return EventLevel(
+    EventLevel(
       state: e["state"].string, startsLastDay: e["program_starts"]["last_day"].count,
-      startsByHour: counts?.count == hours?.count ? counts : nil,
+      startsByHour: counts(e["program_starts_by_hour"]["counts"]),
       stateWords: e["in_words"]["state"].string,
-      notes: e["in_words"]["notes"].array.map { $0.compactMap(\.string) })
+      notes: e["in_words"]["notes"].array.map { $0.compactMap(\.string) },
+      startsByMinute: counts(e["program_starts_by_minute"]["counts"]),
+      startsLastHour: e["program_starts_by_minute"]["last_hour"].count,
+      readAt: e["read_at"].date,
+      caveats: caveats(e["in_words"]["caveats"]))
+  }
+
+  /// A series of counts, or nil unless every one is a count.
+  static func counts(_ a: J) -> [Int]? {
+    let all = a.array
+    let counts = all?.compactMap(\.count)
+    return counts?.count == all?.count ? counts : nil
+  }
+
+  static func caveats(_ a: J) -> [Caveat]? {
+    a.array.map { $0.map { Caveat(kind: $0["kind"].string, short: $0["short"].string) } }
+  }
+
+  /// The `program_starts` line of `soc watch`: the level as that reading left it, as far as
+  /// the line says it; what it does not say (the day by the hour, the caveats' sentences) is
+  /// nil.
+  static func programStarts(_ j: J) -> EventLevel {
+    EventLevel(
+      state: j["state"].string, startsLastDay: j["program_starts_last_day"].count,
+      startsByHour: nil, stateWords: j["in_words"]["state"].string, notes: nil,
+      startsByMinute: counts(j["program_starts_by_minute"]["counts"]),
+      startsLastHour: j["program_starts_by_minute"]["last_hour"].count,
+      readAt: j["read_at"].date,
+      caveats: caveats(j["in_words"]["caveats"]))
   }
 
   static func item(_ i: J) -> Item {

@@ -128,7 +128,7 @@ pub fn summary(
     let list = indicator_list(conn)?;
     let none = covered::none_here(conn, &latest, &st.this_mac)?;
     watched_section(&mut out, &st.this_mac, &none, list, st.event_level.as_ref())?;
-    crate::happens::draw(&mut out, st, &r["rules"])?;
+    crate::happens::draw(&mut out, st, &r["rules"], now)?;
     out.push_str("<div class=\"card closed\">\n");
     limits(conn, &mut out, st)?;
     answered_section(conn, &mut out, now)?;

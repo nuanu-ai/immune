@@ -216,6 +216,7 @@ func makeWatcher(_ url: URL?, _ extra: [String], _ model: AppModel) -> Watcher {
   return Watcher(
     launcher: launcher, arguments: ["watch"] + extra,
     onRead: { Task { await model.refresh() } },
+    onStarts: { model.took($0) },
     schedule: { wait, action in
       log("watcher: next start in \(Int(wait)) s")
       DispatchQueue.main.asyncAfter(deadline: .now() + wait) { MainActor.assumeIsolated(action) }

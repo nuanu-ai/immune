@@ -220,6 +220,9 @@ public final class Watcher: ObservableObject {
   private let launcher: any WatchLaunching
   private let arguments: [String]
   private let onRead: @MainActor () -> Void
+  /// A reading of program starts the watcher said: the panel's row takes it as it is,
+  /// without asking soc for the status.
+  private let onStarts: @MainActor (EventLevel) -> Void
   private let schedule: @MainActor (TimeInterval, @escaping @MainActor () -> Void) -> Void
   private let clock: @MainActor () -> Date
 
@@ -246,12 +249,14 @@ public final class Watcher: ObservableObject {
   public init(
     launcher: any WatchLaunching, arguments: [String],
     onRead: @escaping @MainActor () -> Void,
+    onStarts: @escaping @MainActor (EventLevel) -> Void = { _ in },
     schedule: @escaping @MainActor (TimeInterval, @escaping @MainActor () -> Void) -> Void,
     clock: @escaping @MainActor () -> Date = { Date() }
   ) {
     self.launcher = launcher
     self.arguments = arguments
     self.onRead = onRead
+    self.onStarts = onStarts
     self.schedule = schedule
     self.clock = clock
   }
@@ -307,6 +312,9 @@ public final class Watcher: ObservableObject {
       sawWatching = true
       succeeded("sample")
       onRead()
+    case .programStarts(let level):
+      sawWatching = true
+      onStarts(level)
     case .problem(let code, let detail):
       // Another problem (a place it cannot watch, a failed reading of the event level)
       // is news of life: the watcher still watches.

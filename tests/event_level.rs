@@ -1131,9 +1131,9 @@ fn nothing_from_an_argument_or_the_environment_reaches_the_store() {
 }
 
 #[test]
-fn a_running_watcher_reads_program_starts_at_each_sample_and_a_failed_reading_stands_alone() {
-    // While the app is open the level is read every sample, not only at the hourly check. A
-    // reading that failed is recorded as the watcher's and program starts are not claimed as
+fn a_running_watcher_reads_program_starts_every_few_seconds_and_a_failed_reading_stands_alone() {
+    // While the app is open the level is read every few seconds, not only at the hourly check.
+    // A reading that failed is recorded as the watcher's and program starts are not claimed as
     // seen, while what is watched live otherwise still is.
     let dir = Dir::new("watcher");
     dir.install();
@@ -1147,7 +1147,7 @@ fn a_running_watcher_reads_program_starts_at_each_sample_and_a_failed_reading_st
     .unwrap();
     let mut watcher = Command::new(env!("CARGO_BIN_EXE_soc"))
         .env("HOME", dir.0.join("home"))
-        .args(["watch", "--sample-every", "1", "--store"])
+        .args(["watch", "--events-every", "1", "--store"])
         .arg(dir.store())
         .arg("--system-root")
         .arg(dir.root())
@@ -1186,6 +1186,148 @@ fn a_running_watcher_reads_program_starts_at_each_sample_and_a_failed_reading_st
     });
     assert_eq!(r["this_mac"]["live"], true, "{r:#}");
     assert_eq!(watched_starts(&r), None);
+    let _ = watcher.kill();
+    let _ = watcher.wait();
+}
+
+#[test]
+fn the_watcher_says_new_starts_and_a_new_state_in_numbers_and_fixed_words_and_nothing_from_an_event()
+ {
+    // The app shows program starts as they are read, from the watcher's line, and an open
+    // page from the small file beside it. Both are read by an agent and a browser: neither
+    // carries anything an event said. A reading that took nothing says nothing.
+    let dir = Dir::new("watcher-says");
+    dir.install();
+    dir.run();
+    let mut watcher = Command::new(env!("CARGO_BIN_EXE_soc"))
+        .env("HOME", dir.0.join("home"))
+        .args([
+            "watch",
+            "--events-every",
+            "1",
+            "--alive-every",
+            "1",
+            "--store",
+        ])
+        .arg(dir.store())
+        .arg("--system-root")
+        .arg(dir.root())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let out = watcher.stdout.take().unwrap();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(out).lines() {
+            if tx.send(line.unwrap()).is_err() {
+                return;
+            }
+        }
+    });
+    let next = |what: &dyn Fn(&Value) -> bool| -> (String, Vec<Value>) {
+        let mut before = Vec::new();
+        // Bounded in all: an alive line every second must not keep the wait going.
+        let end = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let line = rx
+                .recv_timeout(end.saturating_duration_since(std::time::Instant::now()))
+                .unwrap_or_else(|_| panic!("no such line after {before:?}"));
+            let v: Value = serde_json::from_str(&line).unwrap();
+            if what(&v) {
+                return (line, before);
+            }
+            before.push(v);
+        }
+    };
+    next(&|v| v["event"] == "watching");
+    let mut marked = full(1, &["curl", "-u", "arg-marker-7f3a"], token(402));
+    marked["event"]["exec"]["cwd"]["path"] = json!("/tmp/cwd-marker-2b8e");
+    marked["event"]["exec"]["target"]["executable"]["path"] = json!("/tmp/path-marker-5e1a");
+    marked["event"]["exec"]["target"]["signing_id"] = json!("signing-marker-41d0");
+    dir.append(
+        "exec-20261004T00.jsonl",
+        &format!("{marked}\n{}\n", full(2, &["ls"], token(403))),
+    );
+    let (line, _) = next(&|v| v["event"] == "program_starts" && v["starts"] == 2);
+    let v: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(
+        (&v["state"], &v["program_starts_last_day"], &v["in_words"]),
+        (
+            &json!("running"),
+            &json!(2),
+            &json!({ "state": "on", "caveats": [] })
+        ),
+        "{v:#}"
+    );
+    assert_eq!(v["program_starts_by_minute"]["last_hour"], 2, "{v:#}");
+    let live = std::fs::read_to_string(dir.store().parent().unwrap().join("view/live.js")).unwrap();
+    let object = live
+        .strip_prefix("window.socLive = ")
+        .and_then(|s| s.strip_suffix(";\n"))
+        .unwrap_or_else(|| panic!("{live}"));
+    let o: Value = serde_json::from_str(object).unwrap();
+    assert_eq!(
+        (&o["state"], &o["last_day"]),
+        (&json!("running"), &json!(2))
+    );
+    for text in [&line, &live] {
+        for marker in [
+            "arg-marker-7f3a",
+            "cwd-marker-2b8e",
+            "path-marker-5e1a",
+            "signing-marker-41d0",
+            "curl",
+        ] {
+            assert!(!text.contains(marker), "{marker} in {text}");
+        }
+    }
+    // Numbers and fixed words: no string in the file could be a path or a command.
+    let mut stack = vec![&o];
+    while let Some(v) = stack.pop() {
+        match v {
+            Value::String(s) => assert!(
+                s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || " ,+_-".contains(c)),
+                "{s}"
+            ),
+            Value::Array(a) => stack.extend(a),
+            Value::Object(m) => stack.extend(m.values()),
+            _ => {}
+        }
+    }
+    // Readings that take nothing say nothing; a new state is said, with nothing taken.
+    for _ in 0..3 {
+        let (_, before) = next(&|v| v["event"] == "alive");
+        assert!(
+            before.iter().all(|b| b["event"] != "program_starts"),
+            "{before:?}"
+        );
+    }
+    // Read at the interval asked for, a second here, not at the default's ten.
+    dir.append(
+        "exec-20261004T00.jsonl",
+        &format!("{}\n", full(3, &["ls"], token(404))),
+    );
+    let appended = std::time::Instant::now();
+    next(&|v| v["event"] == "program_starts" && v["starts"] == 1);
+    assert!(
+        appended.elapsed() < Duration::from_secs(6),
+        "{:?}",
+        appended.elapsed()
+    );
+    dir.uninstall();
+    let (line, before) = next(&|v| v["event"] == "program_starts");
+    let v: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(
+        (&v["state"], &v["starts"]),
+        (&json!("not_installed"), &json!(0)),
+        "{v:#}"
+    );
+    assert!(
+        before.iter().all(|b| b["event"] != "program_starts"),
+        "{before:?}"
+    );
     let _ = watcher.kill();
     let _ = watcher.wait();
 }

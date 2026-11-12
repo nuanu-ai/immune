@@ -709,12 +709,52 @@ fn tail(path: &Path) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// What a reading came to, for the caller: the state, the reason when it failed, and how
-/// many findings the rules opened.
+/// What a reading came to, for the caller: the state, the reason when it failed, how many
+/// program starts it took, and how many findings the rules opened.
 pub struct Outcome {
     pub state: &'static str,
     pub failed: Option<String>,
+    pub starts: i64,
     pub opened: usize,
+}
+
+/// The level's state as the latest reading left it, without reading anything else; `None`
+/// before any reading.
+pub fn state(conn: &Connection) -> rusqlite::Result<Option<String>> {
+    if !has(conn, "event_level")? {
+        return Ok(None);
+    }
+    conn.query_row("SELECT state FROM event_level WHERE id = 1", [], |r| {
+        r.get(0)
+    })
+    .optional()
+}
+
+/// What the pages show of the level that moves with every program start read, and nothing
+/// that moves with the clock alone: the state, the latest start read, what the collector said
+/// and why a reading failed. Readings that took nothing leave it as it was.
+pub fn basis(conn: &Connection) -> rusqlite::Result<String> {
+    if !has(conn, "event_level")? {
+        return Ok(String::new());
+    }
+    conn.query_row(
+        "SELECT state, last_seq, said_by, said, reason FROM event_level WHERE id = 1",
+        [],
+        |r| {
+            Ok(format!(
+                "{:?}",
+                (
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<i64>>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                )
+            ))
+        },
+    )
+    .optional()
+    .map(Option::unwrap_or_default)
 }
 
 /// One reading of the event level under `root`, at `now`, recorded in `tx`: the state, the
@@ -829,6 +869,10 @@ pub fn read(
     )?;
     Ok(Outcome {
         state,
+        starts: match &found {
+            Found::Read(log) => log.tally.starts,
+            _ => 0,
+        },
         failed: match found {
             Found::Failed(why) => Some(why),
             _ => None,
@@ -1126,39 +1170,61 @@ pub struct Level {
     pub matches_last_day: BTreeMap<String, i64>,
     pub matches_last_week: BTreeMap<String, i64>,
     /// Program starts read over the last day, hour by hour.
-    pub starts_by_hour: ByHour,
+    pub starts_by_hour: Series,
+    /// Program starts read over the last hour, minute by minute.
+    pub starts_by_minute: Series,
 }
 
-/// How many hours `ByHour` counts: the last day.
+/// How many hours the series by hour counts: the last day.
 pub const HOURS: usize = 24;
+/// How many minutes the series by minute counts: the last hour.
+pub const MINUTES: usize = 60;
+const MINUTE: i64 = 60;
 
-/// Program starts read over the last day, hour by hour, for a drawing: `HOURS` counts, oldest
-/// first, the last hour ending at `ends_at`, the time it was asked at. A reading is counted
-/// in the hour it was made, as `last_day` counts it, so the counts add up to `last_day.starts`:
-/// the first hour also holds the readings at its very start, and one stamped later than
-/// `ends_at`, by a clock set back, is in the last hour.
+/// Program starts read over a span, step by step, for a drawing: counts oldest first, each
+/// `step` seconds, the last ending at `ends_at`, the time it was asked at. A reading is
+/// counted in the step it was made in; one stamped later than `ends_at`, by a clock set back,
+/// is in the last step.
+///
+/// By the hour (`starts_by_hour`), the counts add up to `last_day.starts`: the first hour also
+/// holds the readings at the very start of the day. By the minute (`starts_by_minute`), they
+/// hold exactly the readings of the last hour by the hour, so the two series never disagree:
+/// the minutes add up to the last hour.
 #[derive(Debug, Default, PartialEq)]
-pub struct ByHour {
+pub struct Series {
     pub ends_at: i64,
+    pub step: i64,
     pub counts: Vec<i64>,
 }
 
-/// Program starts read hour by hour over the day before `now`, see `ByHour`.
-pub fn starts_by_hour(conn: &Connection, now: i64) -> rusqlite::Result<ByHour> {
-    let mut counts = vec![0; HOURS];
-    let last = HOURS as i64 - 1;
+/// Program starts read hour by hour over the day before `now`, see `Series`.
+pub fn starts_by_hour(conn: &Connection, now: i64) -> rusqlite::Result<Series> {
+    series(conn, now, HOUR, HOURS, now - DAY)
+}
+
+/// Program starts read minute by minute over the hour before `now`, see `Series`: the readings
+/// less than an hour old, which are the last hour's by the hour.
+pub fn starts_by_minute(conn: &Connection, now: i64) -> rusqlite::Result<Series> {
+    series(conn, now, MINUTE, MINUTES, now - HOUR + 1)
+}
+
+/// Program starts read since `from`, in `n` steps of `step` seconds ending at `now`.
+fn series(conn: &Connection, now: i64, step: i64, n: usize, from: i64) -> rusqlite::Result<Series> {
+    let mut counts = vec![0; n];
+    let last = n as i64 - 1;
     let mut stmt = conn.prepare(
         "SELECT MIN(MAX((?1 - at) / ?2, 0), ?3), SUM(starts) FROM event_count
          WHERE at >= ?4 GROUP BY 1",
     )?;
-    for row in stmt.query_map(params![now, HOUR, last, now - DAY], |r| {
+    for row in stmt.query_map(params![now, step, last, from], |r| {
         Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
     })? {
         let (ago, n) = row?;
         counts[(last - ago) as usize] += n;
     }
-    Ok(ByHour {
+    Ok(Series {
         ends_at: now,
+        step,
         counts,
     })
 }
@@ -1203,6 +1269,7 @@ pub fn level(conn: &Connection, now: i64) -> rusqlite::Result<Option<Level>> {
         matches_last_day: matches_since(conn, now - DAY)?,
         matches_last_week: matches_since(conn, now - KEEP_MATCHES)?,
         starts_by_hour: starts_by_hour(conn, now)?,
+        starts_by_minute: starts_by_minute(conn, now)?,
     }))
 }
 
@@ -1270,12 +1337,32 @@ pub fn json(l: &Level) -> Value {
             "hour_seconds": HOUR,
             "counts": l.starts_by_hour.counts,
         },
+        // The same minute by minute over the last hour, oldest first; they add up to the last
+        // of the hours above.
+        "program_starts_by_minute": minutes(&l.starts_by_minute),
         // The level for a person, the words every surface takes: a short state, and each
-        // caveat a sentence of its own, none when nothing was lost. The program's own words.
-        "in_words": {
-            "state": said.state,
-            "notes": said.notes,
-        },
+        // caveat a sentence of its own, none when nothing was lost; `caveats` holds the same
+        // caveats in a few words each, under stable names. The program's own words.
+        "in_words": in_words(&said),
+    })
+}
+
+/// `program_starts_by_minute`, in the status and in what a watcher says after a reading.
+pub fn minutes(s: &Series) -> Value {
+    json!({
+        "ends_at": crate::view::iso(s.ends_at),
+        "minute_seconds": MINUTE,
+        "counts": s.counts,
+        "last_hour": s.counts.iter().sum::<i64>(),
+    })
+}
+
+/// `in_words`, see `Said`.
+pub fn in_words(said: &Said) -> Value {
+    json!({
+        "state": said.state,
+        "notes": said.notes,
+        "caveats": said.caveats.iter().map(|c| json!({ "kind": c.kind, "short": c.short })).collect::<Vec<_>>(),
     })
 }
 
@@ -1289,6 +1376,16 @@ pub struct Said {
     /// Program starts read in the last day, while the level records them.
     pub last_day: Option<i64>,
     pub notes: Vec<String>,
+    /// The same caveats, one for each note while the level records program starts, each with
+    /// a stable name and a few words: for a row that has room for a mark and not a sentence.
+    pub caveats: Vec<Caveat>,
+}
+
+/// A caveat in a few words, "2 restarts", "12 lost"; `kind` is a stable name.
+#[derive(Debug, PartialEq)]
+pub struct Caveat {
+    pub kind: &'static str,
+    pub short: String,
 }
 
 impl Said {
@@ -1341,12 +1438,21 @@ pub fn words(l: &Level) -> Said {
         state,
         last_day: None,
         notes: vec![why],
+        caveats: Vec::new(),
     };
     match l.state.as_str() {
         RUNNING => {
             let d = &l.last_day;
             let mut notes = Vec::new();
+            let mut caveats = Vec::new();
+            let mut short = |kind, n, one, many| {
+                caveats.push(Caveat {
+                    kind,
+                    short: counted(n, one, many),
+                })
+            };
             if d.unknown_gaps > 0 {
+                short("restarts", d.unknown_gaps, "restart", "restarts");
                 notes.push(format!(
                     "The collector restarted {}; program starts in {} were not seen.",
                     how_often(d.unknown_gaps),
@@ -1358,18 +1464,31 @@ pub fn words(l: &Level) -> Said {
                 ));
             }
             if d.lost > 0 {
+                short("lost", d.lost, "lost", "lost");
                 notes.push(format!(
                     "{} missed because the collector fell behind.",
                     counted(d.lost, "program start was", "program starts were")
                 ));
             }
             if d.unreadable > 0 {
+                short(
+                    "unreadable",
+                    d.unreadable,
+                    "unreadable line",
+                    "unreadable lines",
+                );
                 notes.push(format!(
                     "{} of the log could not be read.",
                     counted(d.unreadable, "line", "lines")
                 ));
             }
             if d.removed_cap > 0 {
+                short(
+                    "deleted_early",
+                    d.removed_cap,
+                    "hour deleted early",
+                    "hours deleted early",
+                );
                 notes.push(format!(
                     "{} deleted early to keep the log under its size limit.",
                     counted(
@@ -1380,6 +1499,12 @@ pub fn words(l: &Level) -> Said {
                 ));
             }
             if d.removed_unread > 0 {
+                short(
+                    "deleted_unread",
+                    d.removed_unread,
+                    "hour deleted unread",
+                    "hours deleted unread",
+                );
                 notes.push(format!(
                     "{} deleted before they were read.",
                     counted(
@@ -1393,6 +1518,7 @@ pub fn words(l: &Level) -> Said {
                 state: "on",
                 last_day: Some(d.starts),
                 notes,
+                caveats,
             }
         }
         NOT_INSTALLED => not_seen(
@@ -1562,6 +1688,37 @@ mod tests {
     }
 
     #[test]
+    fn the_pages_basis_moves_with_a_start_read_or_a_new_state_and_not_with_a_reading_alone() {
+        // A click after new program starts writes the pages that count them again; a reading
+        // every ten seconds that took nothing writes nothing, or every click would.
+        let dir = std::env::temp_dir().join(format!("soc-events-basis-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let log = dir.join("root").join(LOG);
+        std::fs::create_dir_all(&log).unwrap();
+        let plist = dir.join("root").join(PLIST);
+        std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
+        std::fs::write(&plist, "<plist/>").unwrap();
+        let mut conn = crate::store::open(&dir.join("store.db")).unwrap();
+        let read = |conn: &mut rusqlite::Connection, at: i64| {
+            let tx = conn.transaction().unwrap();
+            crate::store::put_entity(&tx, "machine:mac").unwrap();
+            read(&tx, "events-1", "machine:mac", &dir.join("root"), at).unwrap();
+            tx.commit().unwrap();
+            basis(conn).unwrap()
+        };
+        let now = crate::now_secs();
+        let first = read(&mut conn, now);
+        std::fs::write(log.join("exec-20261004T00.jsonl"), exec(1, OBJECT) + "\n").unwrap();
+        let started = read(&mut conn, now + 10);
+        assert_ne!(started, first);
+        assert_eq!(read(&mut conn, now + 20), started);
+        std::fs::remove_file(&plist).unwrap();
+        let removed = read(&mut conn, now + 30);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_ne!(removed, started);
+    }
+
+    #[test]
     fn matches_are_served_by_the_hour_for_the_last_day_and_the_week_and_deleted_after_a_week() {
         // The owner tunes the rules on a week of counts; the status serves the last day. Both
         // are kept by the hour of the reading, so the hour that holds the start of the span
@@ -1721,13 +1878,21 @@ mod tests {
             },
             matches_last_day: BTreeMap::new(),
             matches_last_week: BTreeMap::new(),
-            starts_by_hour: ByHour::default(),
+            starts_by_hour: Series::default(),
+            starts_by_minute: Series::default(),
         };
         let said = words(&l);
         assert_eq!(said.short(), "on, 49,842 in the last day");
         assert_eq!(
             said.notes,
             ["The collector restarted twice; program starts in those moments were not seen."]
+        );
+        assert_eq!(
+            said.caveats,
+            [Caveat {
+                kind: "restarts",
+                short: "2 restarts".to_string()
+            }]
         );
         assert_eq!(
             said.line(),
@@ -1761,9 +1926,15 @@ mod tests {
             },
             matches_last_day: BTreeMap::new(),
             matches_last_week: BTreeMap::new(),
-            starts_by_hour: ByHour {
+            starts_by_hour: Series {
                 ends_at: 1_791_000_000,
+                step: HOUR,
                 counts: vec![7],
+            },
+            starts_by_minute: Series {
+                ends_at: 1_791_000_000,
+                step: MINUTE,
+                counts: vec![2, 0, 3],
             },
         };
         let v = json(&l);
@@ -1772,9 +1943,63 @@ mod tests {
             json!({ "ends_at": crate::view::iso(1_791_000_000), "hour_seconds": 3600, "counts": [7] })
         );
         assert_eq!(
-            v["in_words"],
-            json!({ "state": "on", "notes": ["The collector restarted once; program starts in that moment were not seen."] })
+            v["program_starts_by_minute"],
+            json!({ "ends_at": crate::view::iso(1_791_000_000), "minute_seconds": 60, "counts": [2, 0, 3], "last_hour": 5 })
         );
+        assert_eq!(
+            v["in_words"],
+            json!({
+                "state": "on",
+                "notes": ["The collector restarted once; program starts in that moment were not seen."],
+                "caveats": [{ "kind": "restarts", "short": "1 restart" }],
+            })
+        );
+    }
+
+    #[test]
+    fn every_caveat_has_a_few_words_under_a_stable_name_beside_its_sentence() {
+        // A row has room for a mark, not a sentence: it shows the few words and leads to the
+        // sentence. A caveat with a sentence and no mark would let the row read as calm.
+        let l = Level {
+            state: RUNNING.to_string(),
+            read_at: 0,
+            written: None,
+            said_by: None,
+            said: None,
+            reason: None,
+            version: None,
+            since_check: Tally::default(),
+            last_day: Tally {
+                starts: 10,
+                lost: 12,
+                unknown_gaps: 1,
+                unreadable: 3,
+                removed_cap: 2,
+                removed_unread: 1,
+                ..Tally::default()
+            },
+            matches_last_day: BTreeMap::new(),
+            matches_last_week: BTreeMap::new(),
+            starts_by_hour: Series::default(),
+            starts_by_minute: Series::default(),
+        };
+        let said = words(&l);
+        let shorts: Vec<_> = said
+            .caveats
+            .iter()
+            .map(|c| (c.kind, c.short.as_str()))
+            .collect();
+        assert_eq!(
+            shorts,
+            [
+                ("restarts", "1 restart"),
+                ("lost", "12 lost"),
+                ("unreadable", "3 unreadable lines"),
+                ("deleted_early", "2 hours deleted early"),
+                ("deleted_unread", "1 hour deleted unread"),
+            ]
+        );
+        assert_eq!(said.caveats.len(), said.notes.len());
     }
 
     #[test]
@@ -1816,6 +2041,41 @@ mod tests {
         );
         assert_eq!((h.counts[0], h.counts[1]), (8, 3));
         assert_eq!((h.counts[21], h.counts[22], h.counts[23]), (11, 0, 11));
+    }
+
+    #[test]
+    fn the_minutes_of_the_last_hour_add_up_to_the_last_hour_of_the_day() {
+        // The panel draws the last hour by the minute and the page the day by the hour: the
+        // two drawings must not disagree about the same hour.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE event_count (at INTEGER NOT NULL, starts INTEGER NOT NULL,
+                 lost INTEGER NOT NULL, unknown_gaps INTEGER NOT NULL,
+                 unreadable INTEGER NOT NULL, other INTEGER NOT NULL,
+                 removed_cap INTEGER NOT NULL, removed_unread INTEGER NOT NULL);",
+        )
+        .unwrap();
+        let now = 1_791_000_000;
+        for (at, starts) in [
+            (now - HOUR, 1_000),  // an hour old: the hour before, in neither
+            (now - HOUR + 1, 5),  // the first minute
+            (now - HOUR + 61, 3), // the second
+            (now - 61, 2),        // the minute before the last
+            (now - 59, 7),        // the last minute
+            (now + 90, 4),        // a clock set back: the last minute
+        ] {
+            conn.execute(
+                "INSERT INTO event_count VALUES (?1, ?2, 0, 0, 0, 0, 0, 0)",
+                params![at, starts],
+            )
+            .unwrap();
+        }
+        let m = starts_by_minute(&conn, now).unwrap();
+        let h = starts_by_hour(&conn, now).unwrap();
+        assert_eq!((m.ends_at, m.step, m.counts.len()), (now, MINUTE, MINUTES));
+        assert_eq!(m.counts.iter().sum::<i64>(), h.counts[HOURS - 1]);
+        assert_eq!((m.counts[0], m.counts[1]), (5, 3));
+        assert_eq!((m.counts[58], m.counts[59]), (2, 11));
     }
 
     #[test]

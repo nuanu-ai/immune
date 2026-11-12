@@ -24,7 +24,9 @@
 //! line has `format`, `event` and `at`, and its fields flat beside them:
 //! `watching` (`places`, `cannot_see`), `read` (`new`, `changed`, `gone`, `opened`,
 //! `needs_a_look_total`, open findings only), `sample` (`opened`, `needs_a_look_total`),
-//! `alive`, and `problem` (`code`, `detail_text`).
+//! `program_starts` (`state`, `starts`, `read_at`, `program_starts_last_day`,
+//! `program_starts_by_minute`, `in_words` with `state` and `caveats`: numbers and fixed words
+//! only), `alive`, and `problem` (`code`, `detail_text`).
 //!
 //! Samples. Every `SAMPLE` the watcher takes a sample of this user's running programs and
 //! their connections (`processes.rs`), under the run lock like a reading, in one transaction.
@@ -32,9 +34,13 @@
 //! after one that failed; another quiet sample prints nothing. A sample that failed is a
 //! `problem` line, `sample_failed`, and the next is taken at its time.
 //!
-//! Program starts. At every sample the watcher also reads the event level's log
-//! (`events.rs`), under the run lock in its own transaction. A reading that failed is a
-//! `problem` line, `events_failed`; a reading prints nothing otherwise.
+//! Program starts. Every `EVENTS_EVERY` (`--events-every`) the watcher reads the event level's
+//! log (`events.rs`), under the run lock in its own transaction. A reading that took program
+//! starts or changed the level's state prints a `program_starts` line, so that the app shows
+//! it without asking for the status; a reading that failed is a `problem` line,
+//! `events_failed`; one that took nothing prints nothing. After every reading it writes the
+//! numbers of "As it happens" to `view/live.js` for a summary page that is open
+//! (`happens::live`).
 //!
 //! Failures. A reading, a sample or a look at what to watch that failed is a `problem` line,
 //! and is recorded in the `watcher_failed` table with what it said, under the run lock, where
@@ -44,7 +50,7 @@
 //!
 //! While it waits for the run lock, which a full run holds for as long as it runs, it says it
 //! is alive at its usual interval, so that a long run does not get it taken for dead.
-//! It writes no page of the view: a change can come every few seconds and the pages cost
+//! It writes no page of the view, only that small file: a change can come every few seconds and the pages cost
 //! seconds of processor time, mostly for pages nobody has open. A page is brought up to date
 //! when it is asked for, by `soc view --if-stale`, which writes only when something the pages
 //! rest on moved since they were made (`view::basis`). The watcher stops,
@@ -83,6 +89,9 @@ const PARENT: Duration = Duration::from_secs(1);
 /// How often the watcher takes a sample of running programs. The rule over them wants two
 /// samples a minute apart, so three samples at this cadence; a sample costs 10 to 20 ms.
 pub const SAMPLE: Duration = Duration::from_secs(30);
+/// How often the watcher reads the event level's log. A reading that took nothing costs a
+/// look at the log's files and one row of `event_count`, see `--events-every`.
+pub const EVENTS_EVERY: Duration = Duration::from_secs(10);
 /// Another watcher holds the store.
 pub const EXIT_WATCHING: u8 = 5;
 /// How the run id of a watcher's reading begins; it writes no `run_started` or `run_finished`.
@@ -145,6 +154,8 @@ pub struct WatchArgs {
     /// system's: for tests, which set the clock in it.
     pub sample_input: Option<PathBuf>,
     pub sample_every: Duration,
+    /// How often it reads the event level's log: `EVENTS_EVERY`.
+    pub events_every: Duration,
     /// How often it says it is alive and looks again at what to watch: `ALIVE`, shorter in
     /// tests.
     pub alive_every: Duration,
@@ -154,6 +165,7 @@ pub struct WatchArgs {
 pub fn parse(mut it: impl Iterator<Item = String>) -> Result<WatchArgs, String> {
     let (mut store, mut system_root) = (None, None);
     let (mut sample_input, mut sample_every, mut alive_every) = (None, SAMPLE, ALIVE);
+    let mut events_every = EVENTS_EVERY;
     fn seconds(it: &mut impl Iterator<Item = String>, arg: &str) -> Result<Duration, String> {
         crate::value(it, arg)?
             .parse::<u64>()
@@ -168,6 +180,7 @@ pub fn parse(mut it: impl Iterator<Item = String>) -> Result<WatchArgs, String> 
             "--system-root" => system_root = Some(crate::value(&mut it, &arg)?.into()),
             "--sample-input" => sample_input = Some(crate::value(&mut it, &arg)?.into()),
             "--sample-every" => sample_every = seconds(&mut it, &arg)?,
+            "--events-every" => events_every = seconds(&mut it, &arg)?,
             "--alive-every" => alive_every = seconds(&mut it, &arg)?,
             _ => return Err(format!("unexpected argument: {arg}")),
         }
@@ -178,6 +191,7 @@ pub fn parse(mut it: impl Iterator<Item = String>) -> Result<WatchArgs, String> 
         home: crate::user_home()?,
         sample_input,
         sample_every,
+        events_every,
         alive_every,
     })
 }
@@ -298,6 +312,26 @@ fn line(event: &str, mut fields: Value) -> Value {
     fields["event"] = json!(event);
     fields["at"] = json!(crate::view::iso(crate::now_secs()));
     fields
+}
+
+/// The `program_starts` line's fields: the level's state as a fixed word and in the words a
+/// surface shows, the program starts this reading took, those of the last hour by the minute
+/// and of the last day, and each caveat in a few words. Numbers and fixed words only: nothing
+/// read from an event, and not what the collector said.
+fn starts_line(read: &crate::EventsRead) -> Value {
+    let Some(l) = &read.level else {
+        return json!({ "state": crate::happens::known(None), "starts": read.starts });
+    };
+    let said = crate::events::words(l);
+    let words = crate::events::in_words(&said);
+    json!({
+        "state": crate::happens::known(Some(l)),
+        "starts": read.starts,
+        "read_at": crate::view::iso(l.read_at),
+        "program_starts_last_day": l.last_day.starts,
+        "program_starts_by_minute": crate::events::minutes(&l.starts_by_minute),
+        "in_words": { "state": words["state"], "caveats": words["caveats"] },
+    })
 }
 
 fn problem(code: &str, detail: &str) -> Value {
@@ -476,10 +510,13 @@ impl Watcher<'_> {
             latest,
         });
         let mut alive = Instant::now() + self.args.alive_every;
-        // The first sample is taken at start, after the reading due then.
+        // The first sample is taken at start, after the reading due then, and the first
+        // reading of program starts after it.
         let mut sample = Instant::now();
+        let mut starts = Instant::now();
         loop {
             let next = due.as_ref().map_or(alive, |d| d.at.min(alive)).min(sample);
+            let next = next.min(starts);
             let next = next.min(Instant::now() + PARENT);
             match rx.recv_timeout(next.saturating_duration_since(Instant::now())) {
                 Ok(Msg::Stop) | Err(RecvTimeoutError::Disconnected) => return,
@@ -546,8 +583,24 @@ impl Watcher<'_> {
                         }
                     }
                 }
+            }
+            if starts <= Instant::now() {
+                starts = Instant::now() + self.args.events_every;
                 match self.events() {
-                    Ok(Some(())) => {}
+                    // A reading that took program starts or changed the level's state is said,
+                    // so that the app shows it without asking for the status.
+                    Ok(Some(read)) => {
+                        if (read.starts > 0 || read.changed)
+                            && !emit(&line("program_starts", starts_line(&read)))
+                        {
+                            return;
+                        }
+                        if let Some(why) = read.failed
+                            && !emit(&problem("events_failed", &why))
+                        {
+                            return;
+                        }
+                    }
                     // Stopped while it waited: the loop ends at its next turn.
                     Ok(None) => {}
                     Err(e) => {
@@ -673,15 +726,24 @@ impl Watcher<'_> {
         Ok(Some((report.findings_opened, needs)))
     }
 
-    /// One reading of the event level under the run lock. `None` when the watcher was
-    /// stopped while it waited for the lock.
-    fn events(&mut self) -> Result<Option<()>, Box<dyn Error>> {
+    /// One reading of the event level under the run lock, and then the numbers of
+    /// "As it happens" written beside the pages for a page that is open (`happens::live`).
+    /// `None` when the watcher was stopped while it waited for the lock.
+    fn events(&mut self) -> Result<Option<crate::EventsRead>, Box<dyn Error>> {
         let Some(_lock) = self.lock()? else {
             return Ok(None);
         };
         let read = crate::read_events_held(&self.args.store, &self.args.system_root);
-        self.mark_held(EVENTS, read.as_ref().err().map(|e| e.to_string()));
-        read.map(Some)
+        let failed = match &read {
+            Ok(r) => r.failed.clone(),
+            Err(e) => Some(e.to_string()),
+        };
+        self.mark_held(EVENTS, failed);
+        let read = read?;
+        // A page that is open shows these numbers; one that could not be written is a page
+        // that says it is not updating, not a failed reading.
+        let _ = crate::happens::write_live(&self.folder, read.level.as_ref(), read.at);
+        Ok(Some(read))
     }
 
     /// Under the run lock the caller holds: records that `what` failed, with what the failure
@@ -1167,6 +1229,7 @@ mod tests {
             home,
             sample_input: None,
             sample_every: SAMPLE,
+            events_every: EVENTS_EVERY,
             alive_every: ALIVE,
         };
         let folder = crate::home(&store);

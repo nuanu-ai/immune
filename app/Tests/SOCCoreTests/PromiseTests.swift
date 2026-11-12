@@ -2331,8 +2331,10 @@ final class Harness {
   var now = Date(timeIntervalSince1970: 1_800_000_000)
   var scheduled: [(TimeInterval, @MainActor () -> Void)] = []
   var reads = 0
+  var took: [EventLevel] = []
   lazy var watcher = Watcher(
     launcher: launcher, arguments: ["watch"], onRead: { [unowned self] in reads += 1 },
+    onStarts: { [unowned self] in took.append($0) },
     schedule: { [unowned self] in scheduled.append(($0, $1)) }, clock: { [unowned self] in now })
 
   /// Runs the next scheduled start, as the timer would.
@@ -2448,6 +2450,52 @@ struct Watching {
       watcher.notWatching == "Not watching for changes right now: the watcher stopped answering.")
     #expect(kill(pid, 0) == 0)
     await waitUntil("the KILL after the grace") { kill(pid, 0) != 0 }
+  }
+
+  @Test(
+    "A program_starts line updates the row at once without asking soc for the status; the day's bars and the sentences stay as soc said them"
+  )
+  func programStartsUpdateTheRow() async throws {
+    let line =
+      #"{"format":1,"event":"program_starts","at":"2026-11-10T10:00:10Z","state":"running","starts":3,"read_at":"2026-11-10T10:00:10Z","program_starts_last_day":4815,"program_starts_by_minute":{"ends_at":"2026-11-10T10:00:10Z","minute_seconds":60,"counts":[1,0,2],"last_hour":3},"in_words":{"state":"on","caveats":[{"kind":"restarts","short":"1 restart"}]}}"#
+    let h = Harness()
+    h.watcher.start()
+    h.launcher.say(watchingLine)
+    h.launcher.say(line)
+    #expect(h.reads == 0)
+    #expect(h.watcher.state == .watching)
+    #expect(h.took.count == 1)
+    let said = try #require(h.took.first)
+    #expect(said.startsLastHour == 3 && said.startsByMinute == [1, 0, 2])
+    #expect(said.startsLastDay == 4815 && said.state == "running")
+    #expect(said.caveats == [Caveat(kind: "restarts", short: "1 restart")])
+
+    let hours = Array(repeating: 200, count: 24)
+    let level: [String: Any] = [
+      "state": "running", "program_starts": ["last_day": 4800],
+      "program_starts_by_hour": ["counts": hours],
+      "in_words": [
+        "state": "on", "notes": ["The collector restarted once; program starts were not seen."],
+        "caveats": [["kind": "restarts", "short": "1 restart"]],
+      ],
+    ]
+    let soc = GatedSoc(
+      status: quiet(removing: ["result", "event_level"], setting: level), gated: [])
+    let model = AppModel(soc: soc)
+    await model.refresh()
+    model.took(said)
+    let after = model.reading.status?.eventLevel
+    #expect(after?.startsLastHour == 3 && after?.startsLastDay == 4815)
+    #expect(after?.startsByHour == hours)
+    // The same caveats: their sentences stay; other caveats: not shown for them.
+    #expect(after?.notes?.count == 1)
+    var other = said
+    other.caveats = [Caveat(kind: "lost", short: "2 lost")]
+    model.took(other)
+    #expect(model.reading.status?.eventLevel?.notes == nil)
+    #expect(soc.callsSoFar.filter { $0.first == "status" }.count == 1)
+    let row = Panel.of(model.reading, now: Date()).starts
+    #expect(row?.countText == "3" && row?.mark == "2 lost")
   }
 
   @Test("A read line refreshes the status at once")
@@ -2953,39 +3001,76 @@ struct ProgramStarts {
     panel(quiet(removing: ["result", "event_level"], setting: level))
   }
 
-  func running(notes: Any?) -> [String: Any] {
+  static let restart =
+    "The collector restarted twice; program starts in those moments were not seen."
+
+  func running(notes: [String]? = [], caveats: [[String: Any]]? = []) -> [String: Any] {
     var hours = Array(repeating: 0, count: 24)
     hours[10] = 4000
     hours[23] = 812
-    var level: [String: Any] = [
+    var minutes = Array(repeating: 0, count: 60)
+    minutes[0] = 800
+    minutes[59] = 12
+    var words: [String: Any] = ["state": "on"]
+    if let notes { words["notes"] = notes }
+    if let caveats { words["caveats"] = caveats }
+    return [
       "state": "running", "program_starts": ["last_day": 4812, "since_check": 12],
+      "read_at": Date().addingTimeInterval(-12).formatted(.iso8601),
       "program_starts_by_hour": ["ends_at": "2026-11-10T10:00:00Z", "counts": hours],
+      "program_starts_by_minute": [
+        "ends_at": "2026-11-10T10:00:00Z", "counts": minutes, "last_hour": 812,
+      ],
+      "in_words": words,
     ]
-    if let notes { level["in_words"] = ["state": "on", "notes": notes] }
-    return level
   }
 
   @Test(
-    "While it runs: the count of the day, its 24 hours as soc gives them, and none lost only when soc lists no caveat"
+    "While it runs: the last hour a bar a minute with its count, when it was read, and the day in the help"
   )
   func whileRunning() {
-    let calm = with(running(notes: [String]())).starts
+    let calm = with(running()).starts
     #expect(calm?.running == true)
-    #expect(calm?.countText == "4,812")
-    #expect(calm?.hours.count == 24 && calm?.hours.reduce(0, +) == 4812)
-    #expect(calm?.line == "seen as they happen · none lost")
-    let restart = "The collector restarted once; program starts in that moment were not seen."
-    let lost = with(running(notes: [restart])).starts
-    #expect(lost?.line == "seen as they happen · " + restart)
-    // Words soc does not give claim nothing about losses.
-    #expect(with(running(notes: nil)).starts?.line == "seen as they happen")
-    let p = with(running(notes: [String]()))
-    #expect(p.lines.contains { $0.hasPrefix("≈ Program starts  4,812  ") })
-    #expect(p.lines.contains("    seen as they happen · none lost"))
+    #expect(calm?.countText == "812")
+    #expect(calm?.minutes.count == 60 && calm?.minutes.reduce(0, +) == 812)
+    #expect(calm?.lines == ["last hour · read 12 seconds ago", "last hour"])
+    #expect(calm?.mark == nil)
+    #expect(calm?.help == "4,812 program starts in the last day. Read 12 seconds ago.")
+    let p = with(running())
+    #expect(p.lines.contains { $0.hasPrefix("≈ Program starts  812  ") })
+    #expect(p.lines.contains("    last hour · read 12 seconds ago"))
     // A series with something that is not a count is not drawn.
-    var odd = running(notes: [String]())
-    odd["program_starts_by_hour"] = ["counts": [1, "2", 3]]
-    #expect(with(odd).starts?.hours == [])
+    var odd = running()
+    odd["program_starts_by_minute"] = ["counts": [1, "2", 3]]
+    #expect(with(odd).starts?.minutes == [])
+  }
+
+  @Test(
+    "The row never claims what soc does not: a caveat soc reports is always a mark in its own few words, the sentence in the help"
+  )
+  func caveatsAreMarked() {
+    let caveats: [[String: Any]] = [
+      ["kind": "restarts", "short": "2 restarts"], ["kind": "lost", "short": "12 lost"],
+    ]
+    let two = with(
+      running(notes: [Self.restart, "12 program starts were missed."], caveats: caveats)
+    )
+    .starts
+    #expect(two?.mark == "2 restarts +1")
+    #expect(two?.help.contains(Self.restart) == true)
+    let one = with(running(notes: [Self.restart], caveats: [caveats[0]])).starts
+    #expect(one?.mark == "2 restarts")
+    // A soc that gives the sentences and not the few words: still marked.
+    #expect(with(running(notes: [Self.restart], caveats: nil)).starts?.mark == "a caveat")
+    for row in [two, one] {
+      for line in row?.lines ?? [] {
+        #expect(!line.contains("seen as they happen") && !line.contains("none lost"), "\(line)")
+      }
+    }
+    #expect(with(running()).lines.contains("    last hour · read 12 seconds ago"))
+    #expect(
+      with(running(notes: [Self.restart], caveats: [caveats[0]])).lines.contains(
+        "    last hour · read 12 seconds ago  ◦ 2 restarts"))
   }
 
   @Test(
@@ -2998,9 +3083,9 @@ struct ProgramStarts {
       "in_words": ["state": "not installed", "notes": [note]],
     ])
     #expect(p.starts?.running == false)
-    #expect(p.starts?.state == "not installed")
-    #expect(p.starts?.line == note)
-    #expect(p.starts?.count == nil && p.starts?.hours == [])
+    #expect(p.starts?.lines == ["not installed"])
+    #expect(p.starts?.help == note)
+    #expect(p.starts?.count == nil && p.starts?.minutes == [] && p.starts?.mark == nil)
     #expect(p.lines.contains("≈ Program starts  not installed  › #as-it-happens"))
     #expect(p.light == .nothingToReport && p.total == 0)
     // An earlier soc, or a level never looked for: no row.
@@ -3009,7 +3094,7 @@ struct ProgramStarts {
     let refused = with([
       "state": "refused", "in_words": ["state": "refused\u{202E} by macOS", "notes": []],
     ])
-    #expect(refused.starts.map { hasNoInvisible($0.state ?? "") } == true)
+    #expect(refused.starts.map { $0.lines.allSatisfy(hasNoInvisible) } == true)
     // Only "running" is running: every other state, known or not, draws no count.
     for state in ["refused", "failing", "silent", "failed", "something new"] {
       let p = with([

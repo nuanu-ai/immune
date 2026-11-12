@@ -369,7 +369,7 @@ public struct Panel: Sendable, Equatable {
     }
     // The rules' matches first among the quiet rows, under program starts.
     if let rules = s.rules { gaps.insert(Self.rules(rules), at: 0) }
-    starts = StartsRow.of(s.eventLevel)
+    starts = StartsRow.of(s.eventLevel, now: now)
     answered = AnsweredRow.of(s.answeredOutsideApp, s.statementsOutsideApp)
   }
 
@@ -526,9 +526,10 @@ public struct Panel: Sendable, Equatable {
     }
     if more > 0 { out.append("\(more) more in Details") }
     if let s = starts {
-      let right = s.running ? (s.countText ?? "?") + "  " + s.sparkline : (s.state ?? "")
+      let right = s.running ? (s.countText ?? "?") + "  " + s.sparkline : (s.lines.last ?? "")
       out.append("≈ " + StartsRow.label + "  " + right + "  › #" + StartsRow.section)
-      if let line = s.line, !line.isEmpty { out.append("    " + line) }
+      out.append("    " + (s.lines.first ?? "") + (s.mark.map { "  ◦ " + $0 } ?? ""))
+      if !s.help.isEmpty { out.append("    help: " + s.help) }
     }
     if !gaps.isEmpty || answered != nil { out.append("----") }
     for g in gaps {
@@ -667,48 +668,69 @@ public struct AnsweredLine: Sendable, Equatable, Identifiable {
   public var canTakeBack: Bool { target != nil }
 }
 
-/// "Program starts": the event level as one row. While soc says it runs, the count of
-/// the last day with a bar for each hour and a quiet line: seen as they happen, and none
-/// lost or what was, in soc's words. Otherwise soc's state in its own words, quietly, with
-/// its note under it: not installed is a limit, never an alarm.
+/// "Program starts": the event level as one row of two lines at most. While soc says it
+/// runs: the last hour as a bar a minute with the last hour's count beside it, and under the
+/// label a few words: "last hour" and when it was read. A caveat soc reports is a short
+/// mark in soc's own few words ("2 restarts"), never a sentence and never left out; the
+/// sentences, the day's count and the time read are the row's help, and the click leads to
+/// the page. Otherwise soc's state in its own words, quietly: not installed is a limit,
+/// never an alarm. The number is the last hour's, so that it says what the bars draw.
 public struct StartsRow: Sendable, Equatable {
   public static let label = "Program starts"
   /// The page's section it opens.
   public static let section = "as-it-happens"
   public let running: Bool
-  /// Program starts in the last day, while it runs.
+  /// Program starts in the last hour, while it runs.
   public let count: Int?
-  /// The last day hour by hour, oldest first, while it runs; empty when soc gave none.
-  public let hours: [Int]
-  /// soc's state when it does not run ("not installed"), inert.
-  public let state: String?
-  /// The quiet second line.
-  public let line: String?
+  /// The last hour minute by minute, oldest first, while it runs; empty when soc gave none.
+  public let minutes: [Int]
+  /// The second line, longest first: the row shows the first that fits on one line. The
+  /// last is always short.
+  public let lines: [String]
+  /// A caveat soc reports, in its few words, beside the second line; nil when soc reports
+  /// none. More than one: the first and how many more.
+  public let mark: String?
+  /// What the row stands for in full, for its help.
+  public let help: String
 
-  static func of(_ e: EventLevel?) -> StartsRow? {
+  static func of(_ e: EventLevel?, now: Date) -> StartsRow? {
     guard let e, let state = e.state else { return nil }
-    let notes = e.notes?.map { Inert.text($0, limit: 240) }
+    let notes = (e.notes ?? []).map { Inert.text($0, limit: 240) }
+    // The words from a line soc wrote, or from an older soc's sentences: a caveat is always
+    // marked when soc says there is one.
+    let shorts = (e.caveats ?? []).map { Inert.text($0.short ?? "a caveat", limit: 40) }
+    let marks = shorts.isEmpty ? notes.map { _ in "a caveat" } : shorts
+    let mark = marks.first.map { marks.count > 1 ? "\($0) +\(marks.count - 1)" : $0 }
+    let read = e.readAt.map { Clock.ago(min($0, now.addingTimeInterval(-1)), now: now) }
     if state == "running" {
-      // "None lost" only when soc says there is no caveat; nothing about losses when it
-      // says nothing.
-      let lost = notes.map { $0.isEmpty ? "none lost" : $0.joined(separator: " ") }
+      let day = e.startsLastDay.map {
+        Number.grouped($0) + ($0 == 1 ? " program start" : " program starts") + " in the last day"
+      }
+      let help =
+        [
+          day.map { $0 + "." }, read.map { "Read " + $0 + "." },
+        ].compactMap { $0 } + notes
       return StartsRow(
-        running: true, count: e.startsLastDay, hours: e.startsByHour ?? [], state: nil,
-        line: (["seen as they happen"] + [lost].compactMap { $0 }).joined(separator: " · "))
+        running: true, count: e.startsLastHour ?? e.startsByMinute.map { $0.reduce(0, +) },
+        minutes: e.startsByMinute ?? [],
+        lines: (read.map { ["last hour · read " + $0] } ?? []) + ["last hour"],
+        mark: mark, help: help.joined(separator: " "))
     }
+    let words = Inert.text(e.stateWords ?? state, limit: 80)
     return StartsRow(
-      running: false, count: nil, hours: [],
-      state: Inert.text(e.stateWords ?? state, limit: 80),
-      line: notes?.joined(separator: " "))
+      running: false, count: nil, minutes: [],
+      lines: (read.map { [words + " · checked " + $0] } ?? []) + [words],
+      mark: nil,
+      help: (notes + [read.map { "Checked " + $0 + "." }].compactMap { $0 }).joined(separator: " "))
   }
 
   public var countText: String? { count.map(Number.grouped) }
 
   /// The bars as text, for the panel's text form: one block a bar.
   public var sparkline: String {
-    let top = max(hours.max() ?? 0, 1)
+    let top = max(minutes.max() ?? 0, 1)
     let blocks = Array("▁▂▃▄▅▆▇█")
-    return String(hours.map { $0 == 0 ? " " : blocks[min(7, $0 * 8 / (top + 1))] })
+    return String(minutes.map { $0 == 0 ? " " : blocks[min(7, $0 * 8 / (top + 1))] })
   }
 }
 

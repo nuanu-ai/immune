@@ -271,10 +271,20 @@ fn view(store: &Path) -> String {
         .collect()
 }
 
+/// The one script tag the program writes into the summary: fixed, naming a file the program
+/// writes from its own source (`src/happens.js`), with nothing from the store in either.
+const FIXED_SCRIPT: &str = "<script src=\"view/happens.js\"></script>";
+
+/// The pages with that one fixed tag taken out: whatever script is left came from somewhere
+/// else.
+fn but_the_fixed_script(page: &str) -> String {
+    page.replace(FIXED_SCRIPT, "")
+}
+
 /// One section of the page, by its id.
 fn section<'a>(page: &'a str, id: &str) -> &'a str {
     let start = page
-        .find(&format!("<section id=\"{id}\">"))
+        .find(&format!("<section id=\"{id}\""))
         .unwrap_or_else(|| panic!("no section {id}"));
     let end = start + page[start..].find("</section>").unwrap();
     &page[start..end]
@@ -475,7 +485,15 @@ fn text_from_the_store_never_becomes_markup() {
     soc(&store, &dir.input("brew.txt", &evil));
     let page = view(&store);
 
-    assert!(!page.contains("<script"), "a script tag reached the page");
+    assert_eq!(
+        page.matches(FIXED_SCRIPT).count(),
+        1,
+        "one fixed script tag"
+    );
+    assert!(
+        !but_the_fixed_script(&page).contains("<script"),
+        "a script tag reached the page"
+    );
     assert!(
         !page.contains("<b>"),
         "a tag from a version reached the page"
@@ -6314,6 +6332,7 @@ fn the_release_the_source_and_the_kernel_package_are_shown_under_the_machine_esc
             "{shown} is not under the machine: {web}"
         );
     }
+    let page = but_the_fixed_script(&page);
     for raw in ["<b>", "<u>", "<script", "<i>"] {
         assert!(!page.contains(raw), "{raw} reached the page");
     }
@@ -10715,7 +10734,7 @@ fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_wh
     let summary = section(&pages[0].1, "as-it-happens");
     assert!(
         summary
-            .contains("<span class=\"st\">Rules watching</span><span class=\"sv\">69 of 75</span>"),
+            .contains("<span class=\"st\">Rules watching</span><span class=\"sv\" data-live=\"watching\">69 of 75</span>"),
         "{summary}"
     );
     let padding = &page[page.find("Binary Padding - MacOS").unwrap()..];
@@ -10777,7 +10796,7 @@ fn as_it_happens_draws_the_day_the_status_counts_and_a_published_rule_finding_wh
     assert!(
         quiet.contains("<p class=\"first\"><strong>Program starts: not installed.</strong>")
             && quiet.contains(
-                "<span class=\"st\">Rules watching</span><span class=\"sv\">0 of 75</span>"
+                "<span class=\"st\">Rules watching</span><span class=\"sv\" data-live=\"watching\">0 of 75</span>"
             ),
         "{quiet}"
     );
@@ -10820,8 +10839,16 @@ fn as_it_happens_draws_the_day_the_status_counts_and_a_published_rule_finding_wh
     assert_eq!(e["program_starts_by_hour"]["ends_at"], r["generated_at"]);
     assert_eq!(
         e["in_words"],
-        serde_json::json!({ "state": "on", "notes": [] })
+        serde_json::json!({ "state": "on", "notes": [], "caveats": [] })
     );
+    let minutes: i64 = e["program_starts_by_minute"]["counts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n.as_i64().unwrap())
+        .sum();
+    assert_eq!(minutes, counts[23]);
+    assert_eq!(e["program_starts_by_minute"]["last_hour"], 4);
     assert_eq!(r["rules"]["matches_last_day"], 3);
     let finding = r["needs_a_look"]
         .as_array()
@@ -10836,13 +10863,13 @@ fn as_it_happens_draws_the_day_the_status_counts_and_a_published_rule_finding_wh
     let page = &view_pages(&w.store())[0].1;
     let s = section(page, "as-it-happens");
     assert!(
-        s.contains("<span class=\"st\">Program starts in the last day</span><span class=\"sv\">4</span><svg")
-            && s.contains("<span class=\"st\">Lost</span><span class=\"sv\">0</span>"),
+        s.contains("<span class=\"st\">Program starts in the last day</span><span class=\"sv\" data-live=\"last_day\">4</span><svg")
+            && s.contains("<span class=\"st\">Lost</span><span class=\"sv\" data-live=\"lost\">0</span>"),
         "{s}"
     );
     // Most severe first: the finding's row leads to its card on the same page.
     let id = finding["id"].as_str().unwrap();
-    let rows: Vec<&str> = s.split("<div class=\"rr\">").skip(1).collect();
+    let rows: Vec<&str> = s.split("<div class=\"rr\" data-rule=\"").skip(1).collect();
     assert_eq!(rows.len(), 2, "{s}");
     assert!(
         rows[0].contains("Binary Padding - MacOS")
@@ -10859,7 +10886,7 @@ fn as_it_happens_draws_the_day_the_status_counts_and_a_published_rule_finding_wh
         s.contains("class=\"m look\" title=\"T1027 Obfuscated Files or Information: a rule for it raised a finding\"")
             && s.contains("class=\"m calm\"")
             && !s.contains("class=\"m would\"")
-            && !s.contains("class=\"first\""),
+            && !s.contains("<p class=\"first\"><strong>"),
         "{s}"
     );
 }

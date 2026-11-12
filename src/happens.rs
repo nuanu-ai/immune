@@ -3,7 +3,15 @@
 //! for each hour, what was lost, and how many rules watch. Then the rules that matched this week,
 //! the most severe first, and a grid of ATT&CK techniques for macOS, one square each, grouped by
 //! tactic in the matrix's order, saying which the rules cover and what they found. Drawn in Rust
-//! as inline SVG and plain elements, as `src/map.rs` draws the map; no script.
+//! as inline SVG and plain elements, as `src/map.rs` draws the map.
+//!
+//! Alive while open. A running watcher writes `view/live.js` after every reading of program
+//! starts (`live`): numbers, rule ids of shipped rules and fixed words, nothing from an event,
+//! a rule's text or the store's free text. One fixed script, `src/happens.js`, written beside
+//! the pages, loads it every ten seconds and redraws the numbers in place; the header says how
+//! fresh they are, or "not updating: no watcher is running" once the file is a minute old. It is
+//! the page's only script, and it adds no text but its own words and numbers. Without it the
+//! section is complete as made, and says when it was made.
 //!
 //! No false calm, the project's first invariant. Nothing is drawn as watching unless the event
 //! level's latest state is `running`: while it is not, the section says so first, and the rules
@@ -31,6 +39,13 @@ pub const ANCHOR: &str = "as-it-happens";
 pub const TITLE: &str = "As it happens";
 /// How many rules that matched this week the section lists; the rest are counted.
 const ROWS_SHOWN: usize = 10;
+/// The section's script, and where it is written, relative to the store's folder, beside the
+/// pages; the summary names it in its one script tag.
+pub const SCRIPT: &str = include_str!("happens.js");
+pub const SCRIPT_FILE: &str = "view/happens.js";
+pub const SCRIPT_TAG: &str = "<script src=\"view/happens.js\"></script>";
+/// What a running watcher writes after each reading of program starts, for the script.
+pub const LIVE_FILE: &str = "view/live.js";
 /// MITRE's techniques for macOS, as `rules/attack/NOTICE` says they were made.
 const ATTACK: &str = include_str!("../rules/attack/macos.json");
 /// MITRE's copyright designation, which its licence asks every copy to carry.
@@ -195,13 +210,51 @@ fn num(n: i64) -> String {
     crate::view::counted(n, "", "").trim_end().to_string()
 }
 
-/// The section, from the state and the status's part `rules`.
-pub fn draw(out: &mut String, st: &crate::status::State, r: &Value) -> Out {
+/// The level's state as one of the fixed words `events` names: the store is not trusted to
+/// hold only those.
+pub fn known(l: Option<&Level>) -> &'static str {
+    let states = [
+        events::NOT_INSTALLED,
+        events::RUNNING,
+        events::REFUSED,
+        events::FAILING,
+        events::SILENT,
+        events::FAILED,
+    ];
+    match l {
+        None => "none",
+        Some(l) => states
+            .into_iter()
+            .find(|s| *s == l.state)
+            .unwrap_or(events::FAILED),
+    }
+}
+
+/// The ids of shipped rules that matched this week: what the page was made with, for the
+/// script to tell a rule that matched since.
+fn matched_ids(level: Option<&Level>) -> Vec<&'static str> {
+    let rules = Rules::shipped();
+    level
+        .map(|l| {
+            l.matches_last_week
+                .iter()
+                .filter(|(_, n)| **n > 0)
+                .filter_map(|(id, _)| Some(rules.by_id(id)?.meta.as_ref()?.id.as_str()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The section, from the state and the status's part `rules`, made at `now`.
+pub fn draw(out: &mut String, st: &crate::status::State, r: &Value, now: i64) -> Out {
     let level = st.event_level.as_ref();
     let running = level.is_some_and(|l| l.state == events::RUNNING);
     writeln!(
         out,
-        "<section id=\"{ANCHOR}\">\n<div class=\"head\"><h2>{TITLE}</h2><span class=\"n\">every program start, checked against published rules</span></div>"
+        "<section id=\"{ANCHOR}\" data-state=\"{}\" data-matched=\"{}\">\n<div class=\"head\"><h2>{TITLE}</h2><span class=\"n\">every program start, checked against published rules</span><span class=\"n live\" data-live=\"said\">as made, {}</span></div>\n<p class=\"first\" data-live=\"moved\" hidden></p>",
+        known(level),
+        esc(&matched_ids(level).join(" ")),
+        crate::view::utc(now)
     )?;
     // Not running: said first, before anything is drawn.
     if !running {
@@ -227,7 +280,7 @@ pub fn draw(out: &mut String, st: &crate::status::State, r: &Value) -> Out {
     if let Some(l) = level.filter(|_| running) {
         stat(
             out,
-            "Program starts in the last day",
+            ("Program starts in the last day", "last_day"),
             &num(l.last_day.starts),
             &bars(&l.starts_by_hour),
             &["by hour, last 24 hours".to_string()],
@@ -238,46 +291,100 @@ pub fn draw(out: &mut String, st: &crate::status::State, r: &Value) -> Out {
     out.push_str("</div>\n");
     matched(out, st, level)?;
     cover(out, st, level, running)?;
-    out.push_str("</section>\n");
+    out.push_str(SCRIPT_TAG);
+    out.push_str("\n</section>\n");
     Ok(())
 }
 
 /// One of the three numbers: what it counts, the number, a drawing under it, and quieter lines.
-fn stat(out: &mut String, title: &str, big: &str, drawing: &str, notes: &[String]) -> Out {
+/// `live` names the number for the script, and its lines as `<live>-note`.
+fn stat(
+    out: &mut String,
+    (title, live): (&str, &str),
+    big: &str,
+    drawing: &str,
+    notes: &[String],
+) -> Out {
     write!(
         out,
-        "<div class=\"stat\"><span class=\"st\">{}</span><span class=\"sv\">{}</span>{drawing}",
+        "<div class=\"stat\"><span class=\"st\">{}</span><span class=\"sv\" data-live=\"{live}\">{}</span>{drawing}",
         esc(title),
         esc(big)
     )?;
     for n in notes {
-        write!(out, "<span class=\"ss\">{}</span>", esc(n))?;
+        write!(
+            out,
+            "<span class=\"ss\" data-live=\"{live}-note\">{}</span>",
+            esc(n)
+        )?;
     }
     out.push_str("</div>\n");
     Ok(())
 }
 
-/// What was lost over the last day. "0" only when nothing was lost, unreadable or deleted before
-/// it was read; a restart of the collector is a loss of unknown size, said as "some" or as "at
-/// least", with the reader's own caveats under it.
-fn lost(out: &mut String, l: &Level) -> Out {
-    let d = &l.last_day;
+/// What was lost over the last day as the big number says it. "0" only when nothing was lost,
+/// unreadable or deleted before it was read; a restart of the collector is a loss of unknown
+/// size, said as "some" or as "at least".
+fn lost_shown(d: &events::Tally) -> String {
     if d.whole() {
-        return stat(
-            out,
-            "Lost",
-            "0",
-            "",
-            &["program starts the system could not hand over".to_string()],
-        );
+        return "0".to_string();
     }
     let unknown = d.unknown_gaps + d.unreadable + d.removed_cap + d.removed_unread > 0;
-    let big = match (d.lost, unknown) {
+    match (d.lost, unknown) {
         (0, _) => "some".to_string(),
         (n, true) => format!("{}+", num(n)),
         (n, false) => num(n),
+    }
+}
+
+/// What was lost over the last day, with the reader's own caveats under it.
+fn lost(out: &mut String, l: &Level) -> Out {
+    let notes = if l.last_day.whole() {
+        vec!["program starts the system could not hand over".to_string()]
+    } else {
+        events::words(l).notes
     };
-    stat(out, "Lost", &big, "", &events::words(l).notes)
+    stat(out, ("Lost", "lost"), &lost_shown(&l.last_day), "", &notes)
+}
+
+/// What a running watcher writes to `LIVE_FILE` after a reading of program starts, at `now`:
+/// the level's numbers, its state as a fixed word, the caveats in their few words, and how
+/// many program starts matched each shipped rule this week, by id. Nothing else: a title or
+/// anything read from an event stays in the page as it was made.
+pub fn live(l: Option<&Level>, now: i64) -> Value {
+    let series = |s: &events::Series| serde_json::json!({ "ends_at_seconds": s.ends_at, "step": s.step, "counts": s.counts });
+    let Some(level) = l else {
+        return serde_json::json!({ "written_at_seconds": now, "state": known(None) });
+    };
+    let said = events::words(level);
+    let rules = Rules::shipped();
+    let week: BTreeMap<&str, i64> = level
+        .matches_last_week
+        .iter()
+        .filter_map(|(id, n)| Some((rules.by_id(id)?.meta.as_ref()?.id.as_str(), *n)))
+        .collect();
+    serde_json::json!({
+        "written_at_seconds": now,
+        "state": known(l),
+        "state_words": said.state,
+        "last_day": level.last_day.starts,
+        "last_hour": level.starts_by_minute.counts.iter().sum::<i64>(),
+        "by_hour": series(&level.starts_by_hour),
+        "by_minute": series(&level.starts_by_minute),
+        "lost": lost_shown(&level.last_day),
+        "caveats": said.caveats.iter().map(|c| serde_json::json!({ "kind": c.kind, "short": c.short })).collect::<Vec<_>>(),
+        "matches_last_week": week,
+    })
+}
+
+/// `live` as the script file the page loads: one assignment. Written whole and then moved into
+/// place, so that the page never loads half of one.
+pub fn write_live(folder: &std::path::Path, l: Option<&Level>, now: i64) -> std::io::Result<()> {
+    let path = folder.join(LIVE_FILE);
+    std::fs::create_dir_all(path.parent().unwrap_or(folder))?;
+    let part = path.with_extension("js.part");
+    std::fs::write(&part, format!("window.socLive = {};\n", live(l, now)))?;
+    std::fs::rename(&part, &path)
 }
 
 /// How many rules watch, of how many shipped, with what the rest need.
@@ -339,7 +446,7 @@ fn watching(out: &mut String, r: &Value, running: bool) -> Out {
     );
     stat(
         out,
-        "Rules watching",
+        ("Rules watching", "watching"),
         &format!("{watching} of {shipped}"),
         &meter,
         &notes,
@@ -348,7 +455,7 @@ fn watching(out: &mut String, r: &Value, running: bool) -> Out {
 
 /// Program starts by hour as bars, the last hour on the right, each with its hours and count in
 /// its title. An hour with none is drawn as a faint line, never as a bar of the colour.
-fn bars(h: &events::ByHour) -> String {
+fn bars(h: &events::Series) -> String {
     const W: f64 = 220.0;
     const H: f64 = 40.0;
     const GAP: f64 = 2.0;
@@ -356,7 +463,7 @@ fn bars(h: &events::ByHour) -> String {
     let bw = (W - GAP * (n as f64 - 1.0)) / n as f64;
     let top = h.counts.iter().copied().max().unwrap_or(0).max(1) as f64;
     let mut svg = format!(
-        "<svg class=\"hours\" viewBox=\"0 0 {W} {H}\" role=\"img\" aria-label=\"Program starts by hour over the last 24 hours; the most in one hour: {}\">",
+        "<svg class=\"hours\" data-live=\"hours\" viewBox=\"0 0 {W} {H}\" role=\"img\" aria-label=\"Program starts by hour over the last 24 hours; the most in one hour: {}\">",
         num(top as i64)
     );
     let hhmm = |t: i64| crate::view::utc(t)[11..16].to_string();
@@ -393,7 +500,8 @@ fn rule_row(out: &mut String, row: &Row, most: i64) -> Out {
     };
     writeln!(
         out,
-        "<div class=\"rr\"><span class=\"rt src\">{}</span><span><span class=\"lv lv-{level}\">{}</span></span><span class=\"rb\" aria-hidden=\"true\"><span style=\"width:{}%\"></span></span><span class=\"rc\">{}</span><span class=\"rs\">{state}</span></div>",
+        "<div class=\"rr\" data-rule=\"{}\"><span class=\"rt src\">{}</span><span class=\"rl\"><span class=\"lv lv-{level}\">{}</span></span><span class=\"rb\" aria-hidden=\"true\"><span style=\"width:{}%\"></span></span><span class=\"rc\">{}</span><span class=\"rs\">{state}</span></div>",
+        esc(&row.meta.id),
         esc(&row.meta.title),
         esc(&crate::pages::capital(level)),
         (row.count * 100 / most.max(1)).max(1),
@@ -439,7 +547,7 @@ fn matched(out: &mut String, st: &crate::status::State, level: Option<&Level>) -
     });
     out.push_str("<div class=\"matched\">\n<div class=\"sh\"><h3>Rules that matched this week</h3><span class=\"n\">only a rule marked high raises a finding; the rest are counted</span></div>\n");
     if rows.is_empty() {
-        out.push_str("<p class=\"none\">No rule matched this week.</p>\n");
+        out.push_str("<p class=\"none\" data-live=\"none\">No rule matched this week.</p>\n");
     }
     let most = rows.iter().map(|r| r.count).max().unwrap_or(1).max(1);
     for row in rows.iter().take(ROWS_SHOWN) {
@@ -455,7 +563,7 @@ fn matched(out: &mut String, st: &crate::status::State, level: Option<&Level>) -
     };
     writeln!(
         out,
-        "<p class=\"all\">{shown}<a href=\"{DETAILS}/{}.html\">Published rules, each with what it looks for</a> · all {}</p>\n</div>",
+        "<p class=\"all\" data-live=\"more\" hidden></p>\n<p class=\"all\">{shown}<a href=\"{DETAILS}/{}.html\">Published rules, each with what it looks for</a> · all {}</p>\n</div>",
         crate::pages::RULES,
         rules.rules.len()
     )?;
@@ -543,7 +651,7 @@ fn cover(out: &mut String, st: &crate::status::State, level: Option<&Level>, run
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::{ByHour, Tally};
+    use crate::events::{Series, Tally};
 
     const PADDING: &str = "95361ce5-c891-4b0a-87ca-e24607884a96";
     const SW_VERS: &str = "5de06a6f-673a-4fc0-8d48-bcfe3837b033";
@@ -755,7 +863,8 @@ detection:
             last_day,
             matches_last_day: BTreeMap::new(),
             matches_last_week: BTreeMap::new(),
-            starts_by_hour: ByHour::default(),
+            starts_by_hour: Series::default(),
+            starts_by_minute: Series::default(),
         }
     }
 
@@ -766,7 +875,8 @@ detection:
         let big = |t: Tally| {
             let mut out = String::new();
             lost(&mut out, &level(t)).unwrap();
-            let at = out.find("<span class=\"sv\">").unwrap() + 17;
+            let tag = "<span class=\"sv\" data-live=\"lost\">";
+            let at = out.find(tag).unwrap() + tag.len();
             out[at..at + out[at..].find('<').unwrap()].to_string()
         };
         assert_eq!(big(Tally::default()), "0");
@@ -800,8 +910,9 @@ detection:
         let mut counts = vec![0; events::HOURS];
         counts[0] = 1_500;
         counts[23] = 3;
-        let svg = bars(&ByHour {
+        let svg = bars(&Series {
             ends_at: 1_791_000_000,
+            step: 3600,
             counts,
         });
         assert_eq!(svg.matches("<rect").count(), events::HOURS);
@@ -810,5 +921,151 @@ detection:
         assert!(svg.contains("UTC: 1,500 program starts</title>"), "{svg}");
         assert!(svg.contains("UTC: 3 program starts</title>"), "{svg}");
         assert!(svg.contains("most in one hour: 1,500"), "{svg}");
+    }
+
+    /// JavaScriptCore's shell, which macOS ships.
+    const JSC: &str =
+        "/System/Library/Frameworks/JavaScriptCore.framework/Versions/Current/Helpers/jsc";
+
+    /// Runs the section's script over a stand-in for the page made while the level was
+    /// `state`, with `live` as the file holds it, written `age` seconds ago, or no file. Returns
+    /// the text the script left in each element it names, by name, and whether it is hidden.
+    fn page_after(state: &str, live: Option<Value>, age: i64) -> Value {
+        let stand_in = format!(
+            r#"var window = globalThis;
+var LIVE = {};
+var made = {{}};
+function el() {{
+  return {{ textContent: "", hidden: false, style: {{}}, a: {{}},
+    getAttribute: function (n) {{ return n in this.a ? this.a[n] : null; }},
+    setAttribute: function (n, v) {{ this.a[n] = String(v); }},
+    querySelector: function () {{ return null; }},
+    querySelectorAll: function () {{ return []; }} }};
+}}
+var sec = el();
+sec.a["data-state"] = "{state}";
+sec.a["data-matched"] = "";
+sec.querySelector = function (sel) {{
+  var m = /data-live="([^"]+)"/.exec(sel);
+  return m ? (made[m[1]] = made[m[1]] || el()) : null;
+}};
+sec.querySelectorAll = function (sel) {{
+  var e = sec.querySelector(sel);
+  return e ? [e] : [];
+}};
+var document = {{
+  getElementById: function (id) {{ return id === "as-it-happens" ? sec : null; }},
+  createElement: function () {{ return {{ remove: function () {{}} }}; }},
+  head: {{ appendChild: function (s) {{
+    if (LIVE) {{ LIVE.written_at_seconds = Date.now() / 1000 - {age}; window.socLive = LIVE; }}
+    LIVE ? s.onload() : s.onerror();
+  }} }},
+}};
+function setInterval() {{}}
+{SCRIPT}
+var out = {{}};
+for (var k in made) out[k] = {{ text: made[k].textContent, hidden: made[k].hidden }};
+print(JSON.stringify(out));
+"#,
+            live.map_or("null".to_string(), |v| v.to_string()),
+        );
+        static RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "soc-happens-{}-{}.js",
+            std::process::id(),
+            RUNS.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        std::fs::write(&path, stand_in).unwrap();
+        let out = std::process::Command::new(JSC).arg(&path).output().unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice(&out.stdout).unwrap()
+    }
+
+    fn running_live() -> Value {
+        let mut l = level(Tally {
+            starts: 154_358,
+            unknown_gaps: 2,
+            ..Tally::default()
+        });
+        l.starts_by_hour = Series {
+            ends_at: 1_791_000_000,
+            step: 3600,
+            counts: vec![0; events::HOURS],
+        };
+        live(Some(&l), 0)
+    }
+
+    #[test]
+    fn the_page_says_how_fresh_its_numbers_are_and_that_it_is_not_updating_once_the_file_is_a_minute_old()
+     {
+        // A page that keeps showing numbers nobody updates would read as watched: once the
+        // watcher's file is a minute old, or there is none, the page says so in its header.
+        let fresh = page_after(events::RUNNING, Some(running_live()), 5);
+        assert_eq!(fresh["said"]["text"], "updated 5 seconds ago", "{fresh}");
+        assert_eq!(fresh["last_day"]["text"], "154,358", "{fresh}");
+        assert_eq!(fresh["lost"]["text"], "some", "{fresh}");
+        assert_eq!(fresh["lost-note"]["text"], "2 restarts", "{fresh}");
+        assert_eq!(fresh["moved"]["hidden"], true, "{fresh}");
+        let old = page_after(events::RUNNING, Some(running_live()), 61);
+        assert_eq!(old["said"]["text"], "not updating: no watcher is running");
+        let within = page_after(events::RUNNING, Some(running_live()), 50);
+        assert_eq!(within["said"]["text"], "updated 50 seconds ago");
+        let none = page_after(events::RUNNING, None, 0);
+        assert_eq!(none["said"]["text"], "not updating: no watcher is running");
+        assert!(none.get("last_day").is_none(), "{none}");
+    }
+
+    #[test]
+    fn a_page_made_while_the_level_ran_never_shows_its_numbers_as_current_once_it_stopped() {
+        // No false calm: the numbers of a running level stay on the page only beside the line
+        // that says it no longer runs, and are not redrawn as if it did.
+        let mut l = level(Tally::default());
+        l.state = events::REFUSED.to_string();
+        let page = page_after(events::RUNNING, Some(live(Some(&l), 0)), 5);
+        assert_eq!(
+            page["moved"],
+            serde_json::json!({ "text": "Program starts are refused by macOS now. The rest of this section is as the page was made; open it again from the app.", "hidden": false }),
+            "{page}"
+        );
+        assert!(page.get("last_day").is_none(), "{page}");
+    }
+
+    #[test]
+    fn the_file_for_an_open_page_holds_numbers_ids_of_shipped_rules_and_fixed_words_only() {
+        // A browser runs what the file holds: a rule id the store holds that no shipped rule
+        // has, or a state the program never writes, does not reach it.
+        let mut l = level(Tally {
+            starts: 7,
+            lost: 3,
+            ..Tally::default()
+        });
+        l.state = "<img src=x onerror=alert(1)>".to_string();
+        l.matches_last_week = BTreeMap::from([
+            (PADDING.to_string(), 2),
+            ("</script><script>alert(1)//".to_string(), 1),
+        ]);
+        let v = live(Some(&l), 1_791_000_000);
+        assert_eq!(v["state"], events::FAILED);
+        assert_eq!(v["matches_last_week"], serde_json::json!({ PADDING: 2 }));
+        assert_eq!(v["written_at_seconds"], 1_791_000_000);
+        l.state = events::RUNNING.to_string();
+        let v = live(Some(&l), 0);
+        assert_eq!(
+            (&v["state"], &v["state_words"]),
+            (&serde_json::json!("running"), &serde_json::json!("on"))
+        );
+        assert_eq!(
+            (&v["last_day"], &v["lost"]),
+            (&serde_json::json!(7), &serde_json::json!("3"))
+        );
+        assert_eq!(
+            live(None, 5),
+            serde_json::json!({ "written_at_seconds": 5, "state": "none" })
+        );
     }
 }

@@ -1637,6 +1637,47 @@ fn pages_asked_for_are_written_again_when_one_is_gone_or_they_are_an_hour_old() 
     );
 }
 
+#[test]
+fn after_new_program_starts_a_page_asked_for_writes_again_the_summary_and_the_rules_page_alone() {
+    // A click after program starts were read shows them: the pages that count them are
+    // written again, once, and the rest, which cost the most, are not.
+    let mac = Mac::new("view-events");
+    mac.run();
+    let page = |name: &str| mac.root.join("store").join(name);
+    let made = page("view/made.json");
+    mac.view_if_stale();
+    assert!(
+        std::fs::read_to_string(page("view/happens.js"))
+            .unwrap()
+            .contains("\"view/live.js?\"")
+    );
+    let as_made: Value = serde_json::from_str(&std::fs::read_to_string(&made).unwrap()).unwrap();
+    for name in ["view.html", "view/rules.html", "view/changes.html"] {
+        std::fs::write(page(name), "as it was").unwrap();
+    }
+    let mut moved = as_made.clone();
+    moved["events"] = "a reading before the latest".into();
+    std::fs::write(&made, moved.to_string()).unwrap();
+    assert!(mac.view_if_stale().starts_with("<!doctype html>"));
+    assert!(
+        std::fs::read_to_string(page("view/rules.html"))
+            .unwrap()
+            .starts_with("<!doctype html>")
+    );
+    assert_eq!(
+        std::fs::read_to_string(page("view/changes.html")).unwrap(),
+        "as it was"
+    );
+    let after: Value = serde_json::from_str(&std::fs::read_to_string(&made).unwrap()).unwrap();
+    assert_eq!(
+        after, as_made,
+        "the event basis is kept as now, the rest as made"
+    );
+    // Current again: nothing is written.
+    std::fs::write(page("view.html"), "as it was").unwrap();
+    assert!(mac.view_if_stale().starts_with("as it was"));
+}
+
 fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

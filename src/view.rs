@@ -1,6 +1,8 @@
 //! The view: a small summary page that answers what the app answers, and pages of details
-//! next to it with the big tables. It only reads. No scripts, nothing from the network:
-//! plain HTML, `<details>` and inline CSS.
+//! next to it with the big tables. It only reads. Nothing from the network: plain HTML,
+//! `<details>` and inline CSS. One script, fixed in the program and named by one fixed tag,
+//! keeps the numbers of "As it happens" fresh while the summary is open (`happens.rs`); no
+//! other page has one, and nothing from the store ever becomes script.
 //!
 //! Invariant: every piece of text that comes from the store goes through `esc`
 //! before it enters the page. Names, versions, reasons and source references are
@@ -38,7 +40,9 @@ pub const CURRENT_FOR: i64 = 3600;
 /// each latest reading covered, the watcher that holds the store and what failed in it, and
 /// the program that writes the pages. Equal bases make the same pages, but for the time
 /// they were made, the latest sample's counts, and what the event level records, which pages
-/// show with their time. Cheap: a lookup by key, the latest readings and a lock.
+/// show with their time. What the event level records has a basis of its own,
+/// `events::basis`, kept beside this one in `MADE`: when only it moved, the pages that show it
+/// are written again (`event_pages`). Cheap: a lookup by key, the latest readings and a lock.
 pub fn basis(conn: &Connection, folder: &std::path::Path) -> Result<String, Box<dyn Error>> {
     use std::hash::{Hash, Hasher};
     let journal: i64 = conn.query_row("SELECT COALESCE(MAX(seq), 0) FROM journal", [], |r| {
@@ -127,6 +131,27 @@ pub fn pages(
         pages.push((section_file(anchor), section_page(anchor, title)));
     }
     Ok(pages)
+}
+
+/// The pages that show what the event level counts, as `pages` makes them: the summary and the
+/// page of rules. When only `events::basis` moved since the pages were made, these alone are
+/// written again.
+pub fn event_pages(
+    conn: &Connection,
+    st: &crate::status::State,
+    result: &serde_json::Value,
+    now: i64,
+) -> Result<Vec<(String, String)>, Box<dyn Error>> {
+    Ok(vec![
+        (
+            SUMMARY.to_string(),
+            crate::pages::summary(conn, st, result, now)?,
+        ),
+        (
+            format!("{DETAILS}/{}.html", crate::pages::RULES),
+            crate::pages::rules(result, st.event_level.as_ref(), now),
+        ),
+    ])
 }
 
 /// The sections of the summary something outside the page may ask for, by anchor and
@@ -2231,8 +2256,13 @@ body.summary { background: var(--grp); color: var(--ink);
 .summary .sh h3 { font-size: 15px; font-weight: 600; }
 .summary .sh .n { font-size: 13px; color: var(--sec); }
 .summary .matched .none { font-size: 14px; color: var(--sec); padding: 10px 0; border-top: 1px solid var(--ln); }
-.summary .rr { display: grid; grid-template-columns: minmax(0, 1fr) 72px 84px 56px 132px; align-items: center; gap: 12px;
+.summary #as-it-happens .head .live { margin-left: auto; font-variant-numeric: tabular-nums; }
+.summary #as-it-happens[data-moved="yes"] .stats, .summary #as-it-happens[data-moved="yes"] .matched { opacity: .5; }
+.summary #as-it-happens [hidden] { display: none; }
+/* The level column holds the widest chip, "Informational", whole. */
+.summary .rr { display: grid; grid-template-columns: minmax(0, 1fr) 112px 84px 56px 132px; align-items: center; gap: 12px;
   padding: 10px 0; border-top: 1px solid var(--ln); font-size: 14px; }
+.summary .rr .rl { min-width: 0; }
 .summary .rr .rt { overflow-wrap: anywhere; }
 .summary .rr .rc { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
 .summary .rr .rs { text-align: right; font-size: 13px; color: var(--sec); }

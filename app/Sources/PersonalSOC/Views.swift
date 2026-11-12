@@ -437,45 +437,34 @@ extension QuietRow where Trailing == EmptyView {
 
 // MARK: - Program starts
 
-/// "Program starts": while the event level runs, the day's count with a bar for each
-/// hour and a quiet line under it; otherwise soc's state, quiet, with its note. Opens the
-/// page's section. Never styled as a problem.
+/// "Program starts": two lines at most, the label and a few words under it. While the event
+/// level runs, the last hour with a bar a minute and its count beside them; otherwise soc's
+/// state, quiet. A caveat is a short mark, its sentence in the help. Opens the page's
+/// section. Never styled as a problem.
 struct StartsView: View {
   let row: StartsRow
   let open: () -> Void
 
   var body: some View {
     Button(action: open) {
-      Group {
-        if row.running {
-          // As agreed: the two lines, then the bars and the count.
-          HStack(spacing: 10) {
-            symbol
-            VStack(alignment: .leading, spacing: 1) {
-              label
-              note
+      // The label with the bars and the count beside it; the few words under them, across
+      // the row, so that they never wrap.
+      VStack(alignment: .leading, spacing: 2) {
+        HStack(spacing: 10) {
+          symbol
+          label
+          Spacer(minLength: 4)
+          if row.running {
+            if !row.minutes.isEmpty {
+              Sparkline(values: row.minutes, gap: 0.5).frame(width: 104, height: 20)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            if !row.hours.isEmpty { Sparkline(values: row.hours).frame(width: 96, height: 26) }
             Text(verbatim: row.countText ?? "?")
               .font(.system(size: 13).monospacedDigit())
-              .frame(minWidth: 40, alignment: .trailing)
-          }
-        } else {
-          // Not running: the state at a glance beside the label, its note under it.
-          VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 10) {
-              symbol
-              label
-              Spacer(minLength: 4)
-              if let state = row.state {
-                Text(verbatim: state).font(.system(size: 12)).foregroundStyle(.secondary)
-                  .lineLimit(1)
-              }
-            }
-            note.padding(.leading, 30)
+              .lineLimit(1).fixedSize()
+              .frame(minWidth: 36, alignment: .trailing)
           }
         }
+        second.padding(.leading, 30)
       }
       .padding(.horizontal, 12).padding(.vertical, 10)
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -486,7 +475,29 @@ struct StartsView: View {
     }
     .buttonStyle(.plain)
     .accessibilityElement(children: .combine)
-    .help(row.line ?? "")
+    .help(row.help)
+  }
+
+  /// The few words under the label, on one line: the longest form that fits, the mark of a
+  /// caveat with it; the shortest keeps the mark as a hollow dot.
+  var second: some View {
+    ViewThatFits(in: .horizontal) {
+      if let first = row.lines.first { words(first, mark: row.mark) }
+      if let last = row.lines.last { words(last, mark: row.mark) }
+      if let last = row.lines.last { words(last, mark: row.mark.map { _ in "" }) }
+    }
+    .font(.system(size: 11))
+    .foregroundStyle(.secondary)
+  }
+
+  func words(_ line: String, mark: String?) -> some View {
+    HStack(spacing: 4) {
+      Text(verbatim: line).lineLimit(1).fixedSize()
+      if let mark {
+        Image(systemName: "circle").font(.system(size: 6, weight: .bold)).accessibilityHidden(true)
+        if !mark.isEmpty { Text(verbatim: mark).lineLimit(1).fixedSize() }
+      }
+    }
   }
 
   var symbol: some View {
@@ -498,24 +509,16 @@ struct StartsView: View {
   var label: some View {
     Text(verbatim: StartsRow.label).font(.system(size: 13)).lineLimit(1).fixedSize()
   }
-
-  @ViewBuilder var note: some View {
-    if let line = row.line, !line.isEmpty {
-      Text(verbatim: line).font(.system(size: 11)).foregroundStyle(.secondary)
-        .lineLimit(4).truncationMode(.tail).multilineTextAlignment(.leading)
-        .fixedSize(horizontal: false, vertical: true)
-    }
-  }
 }
 
-/// Bars for a day hour by hour, oldest on the left. An hour with none is a faint line,
+/// Bars for a span step by step, oldest on the left. A step with none is a faint line,
 /// never a bar of the colour.
 struct Sparkline: View {
   let values: [Int]
+  var gap: CGFloat = 2
   var body: some View {
     GeometryReader { geo in
       let n = CGFloat(max(values.count, 1))
-      let gap: CGFloat = 2
       let width = max((geo.size.width - gap * (n - 1)) / n, 1)
       let top = CGFloat(max(values.max() ?? 0, 1))
       HStack(alignment: .bottom, spacing: gap) {

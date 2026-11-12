@@ -101,9 +101,11 @@ const USAGE: &str = "usage: soc run [--store <path>] [--machine-name <name>] [--
            prints per rule that matched its level and count, never a command line
        soc sample [--store <path>] [--sample-input <file>] [--json]
        soc watch [--store <path>] [--system-root <dir>] [--sample-input <file>]
-                 [--sample-every <seconds>] [--alive-every <seconds>]
-                 one JSON line per event: watching, read, sample, alive, problem;
-                 a problem's code and detail_text sit beside event, flat
+                 [--sample-every <seconds>] [--events-every <seconds>]
+                 [--alive-every <seconds>]
+                 one JSON line per event: watching, read, sample, program_starts,
+                 alive, problem; a problem's code and detail_text sit beside event, flat;
+                 program starts are read every 10 seconds by default
                  exits 5 when another watcher has the store";
 
 enum Cmd {
@@ -832,11 +834,22 @@ fn read_events(run: &mut Run, args: &Args) -> Result<usize, Box<dyn Error>> {
     Ok(outcome.opened)
 }
 
+/// What one reading of the event level by the watcher came to: the program starts it took,
+/// whether it changed the level's state, the level as it left it, and why it failed.
+pub struct EventsRead {
+    pub starts: i64,
+    pub changed: bool,
+    pub level: Option<events::Level>,
+    pub failed: Option<String>,
+    pub at: i64,
+}
+
 /// One reading of the event level, with the run lock held by the caller: what the watcher
-/// does at each sample. It commits what it read, the state and the coverage, and then fails
-/// with the reason when the reading failed, so that the watcher records the failure.
-pub fn read_events_held(path: &Path, system_root: &Path) -> Result<(), Box<dyn Error>> {
+/// does at every `--events-every`. It commits what it read, the state and the coverage, and
+/// returns the reason when the reading failed, so that the watcher records the failure.
+pub fn read_events_held(path: &Path, system_root: &Path) -> Result<EventsRead, Box<dyn Error>> {
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?;
+    let at = now.as_secs() as i64;
     let run_id = format!(
         "{}{}-{:09}",
         events::RUN_PREFIX,
@@ -848,12 +861,16 @@ pub fn read_events_held(path: &Path, system_root: &Path) -> Result<(), Box<dyn E
     let machine =
         covered::this_machine(&tx)?.unwrap_or_else(|| format!("machine:{}", machine_name()));
     store::put_entity(&tx, &machine)?;
-    let outcome = events::read(&tx, &run_id, &machine, system_root, now.as_secs() as i64)?;
+    let before = events::state(&tx)?;
+    let outcome = events::read(&tx, &run_id, &machine, system_root, at)?;
     tx.commit()?;
-    match outcome.failed {
-        Some(why) => Err(why.into()),
-        None => Ok(()),
-    }
+    Ok(EventsRead {
+        starts: outcome.starts,
+        changed: before.as_deref() != Some(outcome.state),
+        level: events::level(&conn, at)?,
+        failed: outcome.failed,
+        at,
+    })
 }
 
 /// A published rule's finding for a person, from its `published_rule` detail: the rule with
@@ -1823,8 +1840,9 @@ fn view(args: &ViewArgs) -> Result<(), Box<dyn Error>> {
     }
     let written = if args.if_stale {
         match current_view(&args.store, now_secs())? {
-            Some(pages) => pages,
-            None => write_view(&args.store)?,
+            Current::Yes(pages) => pages,
+            Current::Events(pages) => write_event_pages(&args.store, pages)?,
+            Current::No => write_view(&args.store)?,
         }
     } else {
         write_view(&args.store)?
@@ -1847,7 +1865,10 @@ fn write_view(store: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
     let now = now_secs();
     let folder = home(store);
     // Taken before the pages are read, so that they hold at least what it names.
-    let basis = view::basis(&store::open_read_only(store)?, &folder)?;
+    let (basis, events_basis) = {
+        let conn = store::open_read_only(store)?;
+        (view::basis(&conn, &folder)?, events::basis(&conn)?)
+    };
     // The summary is built from what `soc status --json` answers, read the same way.
     let (running, state) = read_all(store, now)?;
     let state = state.ok_or("the store is gone")?;
@@ -1865,19 +1886,59 @@ fn write_view(store: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
         written.push(path);
         names.push(rel);
     }
+    std::fs::write(folder.join(happens::SCRIPT_FILE), happens::SCRIPT)?;
     // Last, so that pages cut short by a failure are never named as current.
-    let made = serde_json::json!({ "basis": basis, "made_at": now, "pages": names });
+    let made = serde_json::json!({
+        "basis": basis,
+        "events": events_basis,
+        "made_at": now,
+        "pages": names,
+    });
     std::fs::write(folder.join(view::MADE), made.to_string())?;
     Ok(written)
 }
 
-/// The pages, the summary first, when they are current at `now`: every one is there, they
-/// are younger than `view::CURRENT_FOR`, and their basis has not moved since they were made.
-/// `None` when they must be written.
-fn current_view(store: &Path, now: i64) -> Result<Option<Vec<PathBuf>>, Box<dyn Error>> {
+/// Writes again only the pages that show what the event level counts (`view::event_pages`),
+/// when nothing else they rest on moved, and returns every page, the summary first.
+fn write_event_pages(store: &Path, pages: Vec<PathBuf>) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    let now = now_secs();
+    let folder = home(store);
+    let events_basis = events::basis(&store::open_read_only(store)?)?;
+    let (running, state) = read_all(store, now)?;
+    let state = state.ok_or("the store is gone")?;
+    let absolute = std::path::absolute(store)?;
+    let result = status::result(Some(&state), running, &absolute, now);
+    let conn = store::open_read_only(store)?;
+    let written = view::event_pages(&conn, &state, &result, now)?;
+    drop(conn);
+    for (rel, html) in written {
+        std::fs::write(folder.join(rel), html)?;
+    }
+    let mut made: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(folder.join(view::MADE))?)?;
+    made["events"] = events_basis.into();
+    std::fs::write(folder.join(view::MADE), made.to_string())?;
+    Ok(pages)
+}
+
+/// Whether the pages are current, see `current_view`.
+enum Current {
+    /// Current: every page, the summary first.
+    Yes(Vec<PathBuf>),
+    /// Current but for what the event level counts: the summary and the rules page are written
+    /// again. Every page, the summary first.
+    Events(Vec<PathBuf>),
+    /// Every page must be written.
+    No,
+}
+
+/// Whether the pages are current at `now`: every one is there, they are younger than
+/// `view::CURRENT_FOR`, and their basis has not moved since they were made. When only the
+/// event level's basis moved, the pages that show it are written again, not every page.
+fn current_view(store: &Path, now: i64) -> Result<Current, Box<dyn Error>> {
     let folder = home(store);
     let Ok(text) = std::fs::read_to_string(folder.join(view::MADE)) else {
-        return Ok(None);
+        return Ok(Current::No);
     };
     let made: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
     let (Some(basis), Some(at), Some(pages)) = (
@@ -1885,23 +1946,27 @@ fn current_view(store: &Path, now: i64) -> Result<Option<Vec<PathBuf>>, Box<dyn 
         made["made_at"].as_i64(),
         made["pages"].as_array(),
     ) else {
-        return Ok(None);
+        return Ok(Current::No);
     };
     if !(at..at + view::CURRENT_FOR).contains(&now) {
-        return Ok(None);
+        return Ok(Current::No);
     }
     let mut paths = Vec::new();
     for page in pages {
         let path = std::path::absolute(folder.join(page.as_str().unwrap_or_default()))?;
         if !path.is_file() {
-            return Ok(None);
+            return Ok(Current::No);
         }
         paths.push(path);
     }
-    if view::basis(&store::open_read_only(store)?, &folder)? != basis {
-        return Ok(None);
+    let conn = store::open_read_only(store)?;
+    if view::basis(&conn, &folder)? != basis {
+        return Ok(Current::No);
     }
-    Ok(Some(paths))
+    if made["events"].as_str() != Some(events::basis(&conn)?.as_str()) {
+        return Ok(Current::Events(paths));
+    }
+    Ok(Current::Yes(paths))
 }
 
 /// One server as `soc servers` lists it.
