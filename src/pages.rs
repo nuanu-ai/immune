@@ -511,11 +511,14 @@ fn watched_section(
     let (live, hourly) = (sum("live"), sum("hourly"));
     // A plain row: what, and a number or, quiet, why there is none. A number of things leads
     // to where they are listed, named by the heading it opens at.
-    let plain = |out: &mut String,
-                 label: &str,
-                 value: &str,
-                 quiet: bool,
-                 to: Option<(String, String)>|
+    // A row may carry quieter lines under it, each a short sentence, present only when there
+    // is something to say.
+    let row = |out: &mut String,
+               label: &str,
+               value: &str,
+               quiet: bool,
+               to: Option<(String, String)>,
+               notes: &[String]|
      -> Out {
         let value = match to {
             Some((href, name)) => format!(
@@ -526,14 +529,24 @@ fn watched_section(
             ),
             None => esc(value),
         };
+        let notes: String = notes
+            .iter()
+            .map(|n| format!("<span class=\"note\">{}</span>", esc(n)))
+            .collect();
         writeln!(
             out,
-            "<div class=\"plain\"><span class=\"lbl\">{}</span><span class=\"{}\">{value}</span></div>",
+            "<div class=\"plain\"><span class=\"lbl\">{}</span><span class=\"{}\">{value}</span>{notes}</div>",
             esc(label),
             if quiet { "val" } else { "num" },
         )?;
         Ok(())
     };
+    let plain = |out: &mut String,
+                 label: &str,
+                 value: &str,
+                 quiet: bool,
+                 to: Option<(String, String)>|
+     -> Out { row(out, label, value, quiet, to, &[]) };
     let this_mac = format!("{DETAILS}/{THIS_MAC}.html");
     let things = |n: i64, how: &str| {
         (n > 0).then(|| {
@@ -605,13 +618,17 @@ fn watched_section(
     // Every program start, as the event level's latest reading left it; quiet unless it
     // records them.
     match events {
-        Some(l) => plain(
-            out,
-            "Every program start, with its command line",
-            &crate::events::words(l),
-            l.state != crate::events::RUNNING,
-            None,
-        )?,
+        Some(l) => {
+            let said = crate::events::words(l);
+            row(
+                out,
+                "Every program start, with its command line",
+                &said.short(),
+                l.state != crate::events::RUNNING,
+                None,
+                &said.notes,
+            )?
+        }
         None => plain(
             out,
             "Every program start, with its command line",
@@ -1378,15 +1395,32 @@ const PLACED: [(&str, &str, &str); 3] = [
     ),
 ];
 
-/// What the published rules are and whether any of them watches this Mac, from the status's
-/// part `rules`. Nothing feeds them program starts in this version, so none is said to watch;
-/// the step that wires the event level to them changes these words with `watching`.
-fn rules_said(r: &serde_json::Value) -> String {
-    format!(
-        "{} rules for macOS from SigmaHQ's public rule set, as it was on {}. Once the event level is on, every program start on this Mac is checked against them. It is not on in this version yet, so none of them is watching.",
+/// What the published rules are and how many of them watch this Mac, from the status's part
+/// `rules`: none while the event level does not run; while it runs, those evaluated in full,
+/// never one evaluated in part, and whether they judged every start of the last day. The
+/// summary, the rules page and `soc rules` say it in these words.
+pub fn rules_said(r: &serde_json::Value) -> String {
+    let head = format!(
+        "{} rules for macOS from SigmaHQ's public rule set, as it was on {}.",
         r["shipped"],
         crate::sigma::COMMIT_DATE
-    )
+    );
+    if r["watching"] != true {
+        return format!(
+            "{head} Once the event level is on, every program start on this Mac is checked against them. It is not on, so none of them is watching."
+        );
+    }
+    let mut said = format!(
+        "{head} The event level is on, so {} of them are watching every program start on this Mac, and {} more check it in part. In the last day they matched {}.",
+        r["watching_rules"],
+        r["in_part"],
+        crate::sigma::times(r["matches_last_day"].as_i64().unwrap_or(0))
+    );
+    if let Some(note) = r["judged_note"].as_str() {
+        said.push(' ');
+        said.push_str(note);
+    }
+    said
 }
 
 /// The summary's section on the published rules: what they are, that none watches yet, how
@@ -1416,8 +1450,9 @@ fn rules_summary(out: &mut String, r: &serde_json::Value) -> Out {
 /// severe first. Each with its title, its level, what it looks for in its author's words, its
 /// ATT&CK techniques and its authors, and, where it is not checked in full, what is missing.
 /// Everything from a rule file is the rule's own text, each in an element of its own. The
-/// counts at the top are the status's.
-pub fn rules(r: &serde_json::Value, now: i64) -> String {
+/// counts at the top are the status's; how many times each rule matched in the last day is
+/// the event level's, `events`.
+pub fn rules(r: &serde_json::Value, events: Option<&crate::events::Level>, now: i64) -> String {
     use crate::sigma::{self, Placement, Reason};
     let mut out = top(
         RULES_TITLE,
@@ -1471,6 +1506,22 @@ pub fn rules(r: &serde_json::Value, now: i64) -> String {
                 "<article class=\"rule\">\n<h4>{} <span class=\"chip lvl-{this}\">{this}</span></h4>\n",
                 source(title)
             ));
+            // How many times it matched in the last day: any count there is, and while the
+            // rules watch, that a rule they evaluate did not match.
+            let matched = l
+                .meta
+                .as_ref()
+                .and_then(|m| events?.matches_last_day.get(&m.id))
+                .copied()
+                .unwrap_or(0);
+            if matched > 0 {
+                w(format!(
+                    "<p class=\"meta\">Matched {} in the last day.</p>\n",
+                    sigma::times(matched)
+                ));
+            } else if r["watching"] == true && !matches!(l.placement, Placement::NotEvaluated(_)) {
+                w("<p class=\"meta\">No match in the last day.</p>\n".to_string());
+            }
             match &l.placement {
                 Placement::Evaluated => {}
                 Placement::InPart(branches) => {

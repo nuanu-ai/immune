@@ -151,6 +151,66 @@ impl Dir {
         let v: Value = serde_json::from_slice(&out.stdout).unwrap();
         v["result"].clone()
     }
+
+    /// `soc <args> --store <this store>`: its stdout, after it succeeded.
+    fn soc(&self, args: &[&str]) -> String {
+        let out = Command::new(env!("CARGO_BIN_EXE_soc"))
+            .env("HOME", self.0.join("home"))
+            .args(args)
+            .arg("--store")
+            .arg(self.store())
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// The result of `soc <args> --json --store <this store>`.
+    fn soc_json(&self, args: &[&str]) -> Value {
+        let mut args = args.to_vec();
+        args.push("--json");
+        let v: Value = serde_json::from_str(&self.soc(&args)).unwrap();
+        v["result"].clone()
+    }
+
+    /// `soc rules --over-log` over this system root, without a store: its exit status and
+    /// stdout.
+    fn replay(&self, args: &[&str]) -> (bool, String) {
+        let out = Command::new(env!("CARGO_BIN_EXE_soc"))
+            .env("HOME", self.0.join("home"))
+            .args(["rules", "--over-log", "--system-root"])
+            .arg(self.root())
+            .args(args)
+            .output()
+            .unwrap();
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+        )
+    }
+
+    /// Asserts that `marker` is in no file of the store's folder.
+    fn nowhere_in_the_store(&self, marker: &str) {
+        let mut stack = vec![self.store().parent().unwrap().to_path_buf()];
+        let mut seen = 0;
+        while let Some(p) = stack.pop() {
+            if p.is_dir() {
+                stack.extend(std::fs::read_dir(&p).unwrap().map(|e| e.unwrap().path()));
+                continue;
+            }
+            seen += 1;
+            let bytes = std::fs::read(&p).unwrap();
+            assert!(
+                !bytes.windows(marker.len()).any(|w| w == marker.as_bytes()),
+                "{marker} in {p:?}"
+            );
+        }
+        assert!(seen > 0);
+    }
 }
 
 impl Drop for Dir {
@@ -179,6 +239,29 @@ fn projected_with(seq: u64, args: &[&str], token: &str) -> String {
 fn exec(seq: u64) -> String {
     projected_with(seq, &["git", "status", "--short"], OBJECT) + "\n"
 }
+
+/// A projected `exec` line of `image` started with `args` by a process that ran `parent`, with
+/// its newline.
+fn started(seq: u64, parent: &str, image: &str, args: &[&str]) -> String {
+    projected_with(seq, args, OBJECT)
+        .replace(
+            r#"{"path":"/bin/zsh"}"#,
+            &format!(r#"{{"path":"{parent}"}}"#),
+        )
+        .replace(
+            r#"{"path":"/usr/bin/git"}"#,
+            &format!(r#"{{"path":"{image}"}}"#),
+        )
+        + "\n"
+}
+
+/// "Binary Padding - MacOS", high, and the start Atomic Red Team's test
+/// ffe2346c-abd5-4b45-a713-bf5f1ebd573a makes: its `sh` runs `dd if=/dev/zero bs=1 count=1 >>
+/// <file>`, and the redirection is the shell's, so `dd` gets only these arguments.
+const PADDING: &str = "95361ce5-c891-4b0a-87ca-e24607884a96";
+const DD: [&str; 4] = ["dd", "if=/dev/zero", "bs=1", "count=1"];
+/// "System Information Discovery Using sw_vers", medium.
+const SW_VERS: &str = "5de06a6f-673a-4fc0-8d48-bcfe3837b033";
 
 fn stat(ino: u64, size: u64) -> Value {
     let at = "2026-09-20T07:12:01.000000000Z";
@@ -709,7 +792,7 @@ fn not_installed_is_a_limit_the_owner_can_lift_and_never_a_failure_or_a_claim_of
     assert_eq!(watched_starts(&r), None);
     assert_eq!(
         dir.words(),
-        "Event level: not installed, so program starts are not seen."
+        "Event level: not installed. Program starts are not seen until it is installed."
     );
 }
 
@@ -790,10 +873,11 @@ fn whole_lines_are_read_once_through_rotation_and_deletion_and_losses_are_counte
     );
     // A line this reader could not read is its own failure.
     assert!(coverage_of(&r).unwrap().starts_with("failed|"));
-    let words = dir.words();
-    assert!(
-        words.contains(", 3 lost, and an unknown number lost when eslogger started again 1 time, 2 lines could not be read."),
-        "{words}"
+    // One short state, then each caveat as a sentence of its own, in words a person knows
+    // without knowing what eslogger is; a restart is a moment not seen, said once.
+    assert_eq!(
+        dir.words(),
+        "Event level: on, 11 program starts in the last day. The collector restarted once; program starts in that moment were not seen. 3 program starts were missed because the collector fell behind. 2 lines of the log could not be read."
     );
 
     // Another file under a name already read, longer than where the old one was left: read
@@ -861,7 +945,7 @@ fn hours_the_root_side_deleted_early_or_before_they_were_read_are_partial_covera
     );
     assert_eq!(
         dir.words(),
-        "Event level: on: 4 program starts read in the last day, 1 lost; the size cap deleted 1 hour of the log before its day was over; 2 hours of the log were deleted before they were read, to keep the log small."
+        "Event level: on, 4 program starts in the last day. 1 program start was missed because the collector fell behind. 1 hour of the log was deleted early to keep the log under its size limit. 2 hours of the log were deleted before they were read."
     );
     // The same notes, read again, are not counted again; the day still has its hole.
     dir.run_apart();
@@ -962,7 +1046,7 @@ fn a_refusal_is_served_with_what_eslogger_said_as_data_and_a_quiet_level_as_sile
     assert!(!item["title"].as_str().unwrap().contains("ignore"));
     assert_eq!(
         dir.words(),
-        "Event level: installed, but macOS refuses eslogger Full Disk Access, so program starts are not seen."
+        "Event level: refused by macOS. macOS does not give the collector Full Disk Access, so program starts are not seen."
     );
     assert_eq!(watched_starts(&r), None);
 
@@ -1104,4 +1188,337 @@ fn a_running_watcher_reads_program_starts_at_each_sample_and_a_failed_reading_st
     assert_eq!(watched_starts(&r), None);
     let _ = watcher.kill();
     let _ = watcher.wait();
+}
+
+#[test]
+fn a_binary_padding_start_raises_one_finding_with_its_authors_and_arguments_and_a_copy_raises_nothing()
+ {
+    // The first slice's drill, on invented lines: the start Atomic Red Team's binary padding
+    // test makes raises "Binary Padding - MacOS" at the next reading, carrying the rule's
+    // authors, as its licence asks of a message made from a match, and the start itself as
+    // evidence; copying a file with `dd` raises nothing. One finding per rule on this Mac,
+    // however many starts match it, each start counted once.
+    let dir = Dir::new("drill");
+    dir.install();
+    let h = "exec-20261004T00.jsonl";
+    let copy = started(2, "/bin/zsh", "/bin/dd", &["dd", "if=a", "of=b"]);
+    dir.append(h, &(started(1, "/bin/sh", "/bin/dd", &DD) + &copy));
+    let line = dir.run();
+    assert!(
+        line.contains("1 thing needs a look, 1 new in this run."),
+        "{line}"
+    );
+    let found = dir.soc_json(&["findings"]);
+    let list = found["findings"].as_array().unwrap();
+    assert_eq!(list.len(), 1, "{found:#}");
+    let f = &list[0];
+    assert_eq!(f["rule"], format!("sigma:{PADDING}"));
+    assert_eq!(f["kind"], "program start matched by a published rule");
+    // High by the rule's level; low sure, as a `test` rule never tuned to this Mac: shown, and
+    // nothing alerts on it.
+    assert_eq!(
+        (&f["severity"], &f["confidence"], &f["urgent"], &f["state"]),
+        (&json!("high"), &json!("low"), &json!(false), &json!("open"))
+    );
+    assert_eq!(f["technique"], "T1027.001");
+    // The words are the program's own; the rule's title with its authors stands beside them
+    // as data, so the page and the app's card carry the authors too.
+    assert_eq!(
+        f["value_text"],
+        "Binary Padding - MacOS, by Igor Fits, Mikhail Larin, oscd.community"
+    );
+    assert!(!f["title"].as_str().unwrap().contains("Padding"));
+    assert_eq!(
+        f["published_rule"],
+        json!({
+            "file": "rules/macos/process_creation/proc_creation_macos_binary_padding.yml",
+            "id_text": PADDING,
+            "title_text": "Binary Padding - MacOS",
+            "level": "high",
+            "status": "test",
+            "techniques": ["T1027.001"],
+            "author_text": "Igor Fits, Mikhail Larin, oscd.community",
+            "licence": "DRL-1.1",
+            "source": "https://github.com/SigmaHQ/sigma",
+            "matches": 1,
+            "evidence": [{
+                "timestamp_text": "2026-10-04T00:00:02.000002Z",
+                "executable_text": "/bin/dd",
+                "args_text": DD,
+                "parent_executable_text": "/bin/sh",
+                "working_directory_text": CWD,
+                "pid": 402,
+                "parent_pid": 401,
+                "user_id": 501,
+                "signing_id_text": "com.apple.git",
+                "team_id_text": null,
+                "platform_binary": true,
+            }],
+        })
+    );
+    let r = dir.status();
+    let rules = &r["rules"];
+    assert_eq!(
+        (
+            &rules["watching"],
+            &rules["watching_rules"],
+            &rules["judged"],
+            &rules["matches_last_day"]
+        ),
+        (&json!(true), &json!(69), &json!("all"), &json!(1)),
+        "{rules:#}"
+    );
+    assert_eq!(
+        rules["matched_last_day"],
+        json!([{
+            "id_text": PADDING,
+            "title_text": "Binary Padding - MacOS",
+            "level": "high",
+            "matches": 1,
+        }])
+    );
+    assert_eq!(rules["matched_last_day_total"], 1);
+    assert_eq!(r["needs_a_look_total"], 1);
+
+    // Read again with nothing new, then a start half written at one reading and whole at the
+    // next: each start is matched once.
+    dir.run();
+    let next = started(3, "/bin/sh", "/bin/dd", &DD);
+    let (head, tail) = next.split_at(100);
+    dir.append(h, head);
+    dir.run();
+    assert_eq!(dir.status()["rules"]["matches_last_day"], 1);
+    dir.append(h, tail);
+    dir.run();
+    assert_eq!(dir.status()["rules"]["matches_last_day"], 2);
+
+    // More matches add to the one finding and raise nothing new; it keeps the latest five
+    // starts, newest first, and rests on the one journal entry it was raised on.
+    for seq in 4..=9 {
+        let count = format!("count={seq}");
+        dir.append(
+            h,
+            &started(
+                seq,
+                "/bin/sh",
+                "/bin/dd",
+                &["dd", "if=/dev/zero", "bs=1", &count],
+            ),
+        );
+    }
+    dir.run();
+    let found = dir.soc_json(&["findings"]);
+    let list = found["findings"].as_array().unwrap();
+    assert_eq!(list.len(), 1, "{found:#}");
+    let p = &list[0]["published_rule"];
+    assert_eq!(p["matches"], 8);
+    let evidence = p["evidence"].as_array().unwrap();
+    assert_eq!(evidence.len(), 5);
+    assert_eq!(evidence[0]["args_text"][3], "count=9");
+    assert_eq!(evidence[4]["args_text"][3], "count=5");
+    let id = list[0]["id"].as_str().unwrap().to_string();
+    // For a person too: the rule with its authors, and the latest starts with their arguments.
+    let text = dir.soc(&["finding", &id]);
+    for said in [
+        "Rule: Binary Padding - MacOS, by Igor Fits, Mikhail Larin, oscd.community;",
+        "It matched 8 program starts since this finding was raised; the latest:",
+        "/bin/dd: dd if=/dev/zero bs=1 count=9 · started by /bin/sh",
+    ] {
+        assert!(text.contains(said), "{said}: {text}");
+    }
+    let one = dir.soc_json(&["finding", &id]);
+    let rests = one["finding"]["rests_on"].as_array().unwrap();
+    assert_eq!(rests.len(), 1, "{one:#}");
+    assert_eq!(rests[0]["entry"], "matched");
+
+    // Seen by the owner: the next match is a new finding, as for every rule that finds an
+    // event, and is still counted.
+    dir.soc(&["finding", &id, "seen"]);
+    assert_eq!(dir.status()["needs_a_look_total"], 0);
+    dir.append(h, &started(10, "/bin/sh", "/bin/dd", &DD));
+    dir.run();
+    let found = dir.soc_json(&["findings"]);
+    let list = found["findings"].as_array().unwrap();
+    assert_eq!(list.len(), 1, "{found:#}");
+    assert_ne!(list[0]["id"], id);
+    assert_eq!(list[0]["published_rule"]["matches"], 1);
+    assert_eq!(dir.status()["rules"]["matches_last_day"], 9);
+}
+
+#[test]
+fn a_medium_rule_s_match_is_counted_raises_nothing_and_keeps_no_argument() {
+    // Below high a match is only counted: no finding, and nothing of the start in the store.
+    let dir = Dir::new("medium");
+    dir.install();
+    let marker = "arg-marker-5e1a";
+    dir.append(
+        "exec-20261004T00.jsonl",
+        &started(
+            1,
+            "/bin/zsh",
+            "/usr/bin/sw_vers",
+            &["sw_vers", "-productVersion", marker],
+        ),
+    );
+    dir.run();
+    let r = dir.status();
+    let medium = json!([{
+        "id_text": SW_VERS,
+        "title_text": "System Information Discovery Using sw_vers",
+        "level": "medium",
+        "matches": 1,
+    }]);
+    assert_eq!(r["rules"]["matched_last_day"], medium, "{:#}", r["rules"]);
+    assert_eq!(r["needs_a_look_total"], 0);
+    assert_eq!(dir.soc_json(&["findings", "--all"])["findings"], json!([]));
+    dir.nowhere_in_the_store(marker);
+    // A match two days ago counts in the week and not in the last day.
+    rusqlite::Connection::open(dir.store())
+        .unwrap()
+        .execute(
+            "INSERT INTO rule_match (hour, rule, matches) VALUES (?1, ?2, 1)",
+            rusqlite::params![(now_secs() / 3600 - 48) as i64, SW_VERS],
+        )
+        .unwrap();
+    // `soc rules` gives the same counts, in both forms.
+    let rules = dir.soc_json(&["rules"]);
+    let entry = rules["evaluated"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id_text"] == SW_VERS)
+        .unwrap();
+    assert_eq!(
+        (&entry["matches_last_day"], &entry["matches_last_week"]),
+        (&json!(1), &json!(2))
+    );
+    assert_eq!(
+        (&rules["watching"], &rules["matches_last_day"]),
+        (&json!(true), &json!(1))
+    );
+    let plain = dir.soc(&["rules"]);
+    assert!(
+        plain.contains(
+            "System Information Discovery Using sw_vers · matched 1 time in the last day"
+        ),
+        "{plain}"
+    );
+    assert_eq!(plain.matches(" · matched ").count(), 1, "{plain}");
+}
+
+#[test]
+fn rules_judge_only_what_was_read_and_say_so_and_none_watches_while_the_level_is_quiet() {
+    // No false calm: a day with starts lost is judged in part and says so; a level that does
+    // not record has no rule watching.
+    let dir = Dir::new("judged");
+    dir.install();
+    let h = "exec-20261004T00.jsonl";
+    dir.append(h, &(exec(1) + &exec(3)));
+    dir.run();
+    let rules = &dir.status()["rules"];
+    assert_eq!(
+        (&rules["watching"], &rules["judged"]),
+        (&json!(true), &json!("part")),
+        "{rules:#}"
+    );
+    let note = "Over the last day some program starts were lost, could not be read or were deleted before they were read, so the rules judged only those that were read.";
+    assert_eq!(rules["judged_note"], note);
+    assert!(dir.soc(&["rules"]).contains(note));
+
+    let hour_ago = SystemTime::now() - Duration::from_secs(3600);
+    for path in [dir.log().join(h), dir.root().join(PLIST)] {
+        std::fs::File::options()
+            .append(true)
+            .open(path)
+            .unwrap()
+            .set_modified(hour_ago)
+            .unwrap();
+    }
+    dir.run();
+    let r = dir.status();
+    assert_eq!(r["event_level"]["state"], "silent");
+    let rules = &r["rules"];
+    assert_eq!(
+        (
+            &rules["watching"],
+            &rules["watching_rules"],
+            &rules["judged"]
+        ),
+        (&json!(false), &json!(0), &json!("none")),
+        "{rules:#}"
+    );
+    assert!(
+        dir.soc(&["rules"])
+            .contains("It is not on, so none of them is watching.")
+    );
+}
+
+#[test]
+fn a_replay_over_the_log_on_disk_counts_per_rule_touches_no_store_and_prints_no_command_line() {
+    // For tuning before the findings are trusted: what the rules would match in the log as it
+    // is, per rule its level and count, and never what was run.
+    let dir = Dir::new("replay");
+    let (ok, out) = dir.replay(&["--json"]);
+    assert!(ok, "{out}");
+    let v: Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["result"]["over_log"], "not_applicable");
+    dir.install();
+    dir.append(
+        "exec-20261004T00.jsonl",
+        &(started(1, "/bin/sh", "/bin/dd", &DD)
+            + &started(
+                2,
+                "/bin/zsh",
+                "/usr/bin/sw_vers",
+                &["sw_vers", "-productVersion"],
+            )
+            + &exec(3)
+            + &started(
+                4,
+                "/bin/zsh",
+                "/usr/bin/base64",
+                &["base64", "-d", "in.txt"],
+            )
+            + &started(5, "/bin/zsh", "/usr/bin/split", &["split", "big.bin"])
+            + &started(6, "/bin/zsh", "/usr/bin/split", &["split", "big.bin"])),
+    );
+    let (ok, out) = dir.replay(&["--json"]);
+    assert!(ok, "{out}");
+    let v: Value = serde_json::from_str(&out).unwrap();
+    let r = &v["result"];
+    assert_eq!(
+        (&r["over_log"], &r["program_starts"], &r["matches_total"]),
+        (&json!("read"), &json!(6), &json!(5))
+    );
+    // The most severe first, and within a level the rule that matched most.
+    let matched: Vec<(&str, i64)> = r["matched"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| (m["level"].as_str().unwrap(), m["matches"].as_i64().unwrap()))
+        .collect();
+    assert_eq!(
+        matched,
+        [("high", 1), ("medium", 1), ("low", 2), ("low", 1)],
+        "{r:#}"
+    );
+    assert_eq!(
+        r["matched"][0],
+        json!({ "id_text": PADDING, "title_text": "Binary Padding - MacOS", "level": "high",
+                "status": "test", "matches": 1 })
+    );
+    assert_eq!(
+        r["matched"][1],
+        json!({ "id_text": SW_VERS, "title_text": "System Information Discovery Using sw_vers",
+                "level": "medium", "status": "test", "matches": 1 })
+    );
+    let (ok, plain) = dir.replay(&[]);
+    assert!(ok);
+    assert!(plain.contains("Binary Padding - MacOS"), "{plain}");
+    for text in [&out, &plain] {
+        for never in ["if=/dev/zero", "-productVersion", CWD, "/bin/dd"] {
+            assert!(!text.contains(never), "{never} in {text}");
+        }
+    }
+    assert!(!dir.store().exists());
 }

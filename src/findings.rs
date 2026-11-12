@@ -690,62 +690,7 @@ fn raise(
     run_id: &str,
     at: i64,
 ) -> rusqlite::Result<bool> {
-    let latest: Option<(String, i64, String, Option<i64>)> = tx
-        .query_row(
-            "SELECT id, occurrence, state, until_at FROM finding
-             WHERE rule = ?1 AND about = ?2 ORDER BY occurrence DESC LIMIT 1",
-            params![rule.id, o.file],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-        )
-        .optional()?;
-    let (id, opened) = match latest {
-        // Still open, or marked expected: the same finding, seen again. A mark that has ended
-        // opens it again.
-        Some((id, _, state, until)) if state == "open" || state == "expected" => {
-            let ended = state == "expected" && until.is_some_and(|u| u <= at);
-            tx.execute(
-                "UPDATE finding SET last_seen_at = ?2, last_seen_run = ?3, change = ?4,
-                        state = CASE WHEN ?5 THEN 'open' ELSE state END
-                 WHERE id = ?1",
-                params![id, at, run_id, o.change, ended],
-            )?;
-            if ended {
-                journal(
-                    tx,
-                    at,
-                    run_id,
-                    "finding_reopened",
-                    &id,
-                    rule.id,
-                    &o.file,
-                    json!({}),
-                )?;
-            }
-            (id, ended)
-        }
-        // Never found, or the owner has seen the one before: a new finding.
-        latest => {
-            let n = latest.map_or(1, |(_, n, _, _)| n + 1);
-            let id = short_id('f', &[rule.id, &o.file, &n.to_string()]);
-            tx.execute(
-                "INSERT INTO finding (id, rule, about, occurrence, state, change, first_seen_at,
-                                      first_seen_run, last_seen_at, last_seen_run)
-                 VALUES (?1, ?2, ?3, ?4, 'open', ?5, ?6, ?7, ?6, ?7)",
-                params![id, rule.id, o.file, n, o.change, at, run_id],
-            )?;
-            journal(
-                tx,
-                at,
-                run_id,
-                "finding_raised",
-                &id,
-                rule.id,
-                &o.file,
-                json!({}),
-            )?;
-            (id, true)
-        }
-    };
+    let (id, opened) = occur(tx, rule.id, &o.file, o.change, run_id, at)?;
     tx.execute(
         "INSERT INTO finding_basis (finding, journal)
          SELECT ?1, seq FROM journal
@@ -762,6 +707,76 @@ fn raise(
         ],
     )?;
     Ok(opened)
+}
+
+/// One occurrence of what `rule` finds about `about`: the finding that stands seen again, or a
+/// new one. Returns the finding's id and whether it opened. Every rule that finds an event
+/// raises here, the published rules over program starts included, so they share one
+/// lifecycle.
+pub fn occur(
+    tx: &Transaction,
+    rule: &str,
+    about: &str,
+    change: &str,
+    run_id: &str,
+    at: i64,
+) -> rusqlite::Result<(String, bool)> {
+    let latest: Option<(String, i64, String, Option<i64>)> = tx
+        .query_row(
+            "SELECT id, occurrence, state, until_at FROM finding
+             WHERE rule = ?1 AND about = ?2 ORDER BY occurrence DESC LIMIT 1",
+            params![rule, about],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()?;
+    Ok(match latest {
+        // Still open, or marked expected: the same finding, seen again. A mark that has ended
+        // opens it again.
+        Some((id, _, state, until)) if state == "open" || state == "expected" => {
+            let ended = state == "expected" && until.is_some_and(|u| u <= at);
+            tx.execute(
+                "UPDATE finding SET last_seen_at = ?2, last_seen_run = ?3, change = ?4,
+                        state = CASE WHEN ?5 THEN 'open' ELSE state END
+                 WHERE id = ?1",
+                params![id, at, run_id, change, ended],
+            )?;
+            if ended {
+                journal(
+                    tx,
+                    at,
+                    run_id,
+                    "finding_reopened",
+                    &id,
+                    rule,
+                    about,
+                    json!({}),
+                )?;
+            }
+            (id, ended)
+        }
+        // Never found, or the owner has seen the one before: a new finding.
+        latest => {
+            let n = latest.map_or(1, |(_, n, _, _)| n + 1);
+            let id = short_id('f', &[rule, about, &n.to_string()]);
+            tx.execute(
+                "INSERT INTO finding (id, rule, about, occurrence, state, change, first_seen_at,
+                                      first_seen_run, last_seen_at, last_seen_run)
+                 VALUES (?1, ?2, ?3, ?4, 'open', ?5, ?6, ?7, ?6, ?7)",
+                params![id, rule, about, n, change, at, run_id],
+            )?;
+            journal(
+                tx,
+                at,
+                run_id,
+                "finding_raised",
+                &id,
+                rule,
+                about,
+                json!({}),
+            )?;
+            (id, true)
+        }
+    })
 }
 
 /// One journal entry about a finding: its id is the subject, its rule the kind, the thing it
@@ -812,6 +827,9 @@ pub struct Found {
     /// code directory the signature gives: told as text from a source.
     /// For a match of indicators, the indicators the file matches, as the list gives them.
     pub became: Option<String>,
+    /// For a published rule's finding, the rule, its count and its evidence, as
+    /// `events::finding_detail` gives them.
+    pub detail: Option<Value>,
 }
 
 /// The state of a finding at `now`. An `expected` mark hides the finding until it ends; at
@@ -893,10 +911,11 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Found>>> 
             via: r.get(14)?,
             superseded: r.get(15)?,
             in_force: false,
+            detail: None,
         })
     })?
     .map(|f| {
-        f.map(|mut f| {
+        f.and_then(|mut f| {
             f.in_force = in_force(&f, now);
             // A finding about a dependency says where its lockfile lines are and what records
             // it rests on, from the answers that stand now.
@@ -906,7 +925,13 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Found>>> 
                 f.place = place;
                 f.became = Some(value);
             }
-            f
+            // A published rule's finding carries the rule and the starts it matched.
+            if let Some(l) = published(&f.rule)
+                && let Some(meta) = &l.meta
+            {
+                f.detail = Some(crate::events::finding_detail(conn, &f.id, l.file, meta)?);
+            }
+            Ok(f)
         })
     })
     .collect::<rusqlite::Result<_>>()
@@ -1194,6 +1219,8 @@ pub struct Item {
     /// The entity it is about, by its id: what the map of the summary marks.
     pub about: String,
     pub answer: Option<Answered>,
+    /// For a published rule's finding, the rule and the starts it matched, served as they are.
+    pub detail: Option<Value>,
 }
 
 /// The answer a finding has.
@@ -1250,8 +1277,72 @@ pub fn place(id: &str, this: Option<&str>) -> String {
     }
 }
 
+/// The shipped published rule a finding's rule names, `sigma:<id>`; `None` for any other rule
+/// and for a rule this build no longer ships.
+fn published(rule: &str) -> Option<&'static crate::sigma::Loaded> {
+    let id = rule.strip_prefix(crate::sigma::FINDING_PREFIX)?;
+    crate::sigma::Rules::shipped().by_id(id)
+}
+
+/// What a finding from a published rule is about, as the item's `kind`.
+pub const PUBLISHED_KIND: &str = "program start matched by a published rule";
+
+/// The program's own words for every finding of a published rule. The rule's title, its
+/// authors and the start it matched are text from a source and stand beside these, in fields
+/// of their own.
+pub const PUBLISHED_WORDS: Words = Words {
+    title: "A program started on this Mac in a way that a published detection rule marks as high risk.",
+    meaning: "The rule, named with this finding, comes from SigmaHQ's public rule set and was written from attacks seen elsewhere. Coding agents, build tools and people run the same commands for ordinary work, so a match is often harmless.",
+    advice: "Look at the program, its arguments and what started it, shown here. If you or a tool you use ran it, mark it expected; if nobody knows it, ask your agent to look into it.",
+};
+
+/// A finding of a published rule as an item: how bad is the rule's level, how sure follows its
+/// status (`sigma::Status::confidence`), and its first ATT&CK technique stands as the item's;
+/// every technique, the authors and the evidence are in `detail`.
+fn published_item(f: &Found, l: &'static crate::sigma::Loaded) -> Option<Item> {
+    let m = l.meta.as_ref()?;
+    Some(Item {
+        id: f.id.clone(),
+        kind: PUBLISHED_KIND,
+        rule: Some(m.finding_rule.as_str()),
+        technique: m.techniques.first().map(String::as_str),
+        severity: m.level.as_str(),
+        confidence: Some(m.status.confidence()),
+        state: f.state.clone(),
+        change: f.change.clone(),
+        first_seen: Some(f.first_seen.0),
+        last_seen: Some(f.last_seen.0),
+        words: PUBLISHED_WORDS,
+        // The rule's title with its authors: wherever the finding is shown, the page and the
+        // app's card included, the authors travel with it, as the Detection Rule License asks.
+        value: Some(match &m.author {
+            Some(a) => format!("{}, by {a}", m.title),
+            None => m.title.clone(),
+        }),
+        place: Some(f.place.clone()),
+        about: f.about.clone(),
+        answer: answered_of(f),
+        detail: f.detail.clone(),
+    })
+}
+
+/// The answer a finding has, as an item carries it.
+fn answered_of(f: &Found) -> Option<Answered> {
+    f.answered_at.map(|at| Answered {
+        at,
+        given: given(f),
+        via: Via::stored(f.via.as_deref()),
+        reason: f.reason.clone(),
+        until: f.until,
+        in_force: f.in_force,
+    })
+}
+
 /// A finding as an item; `None` for a rule this build does not have.
 pub fn item(f: &Found) -> Option<Item> {
+    if let Some(l) = published(&f.rule) {
+        return published_item(f, l);
+    }
     let r = rule(&f.rule)?;
     Some(Item {
         id: f.id.clone(),
@@ -1268,14 +1359,8 @@ pub fn item(f: &Found) -> Option<Item> {
         value: f.became.clone(),
         place: Some(f.place.clone()),
         about: f.about.clone(),
-        answer: f.answered_at.map(|at| Answered {
-            at,
-            given: given(f),
-            via: Via::stored(f.via.as_deref()),
-            reason: f.reason.clone(),
-            until: f.until,
-            in_force: f.in_force,
-        }),
+        answer: answered_of(f),
+        detail: None,
     })
 }
 
@@ -1351,6 +1436,9 @@ pub fn item_json(i: &Item) -> Value {
     if let Some(t) = i.technique {
         v["technique"] = json!(t);
     }
+    if let Some(d) = &i.detail {
+        v["published_rule"] = d.clone();
+    }
     if let Some(a) = &i.answer {
         v["answer"] = json!({
             "given": a.given,
@@ -1386,6 +1474,22 @@ pub fn catalogue_json() -> Value {
         .collect();
     json!({
         "rules": rules,
+        // Every finding of a published rule says the same words; the rule is in its own field.
+        "published_rules": {
+            "rule": format!("{}<the rule's id>", crate::sigma::FINDING_PREFIX),
+            "kind": PUBLISHED_KIND,
+            "raised_by_levels": ["high", "critical"],
+            "severity": "the rule's level",
+            "confidence_by_status": {
+                "stable": crate::sigma::Status::Stable.confidence(),
+                "test": crate::sigma::Status::Test.confidence(),
+                "experimental": crate::sigma::Status::Experimental.confidence(),
+            },
+            "finds": "event",
+            "title": PUBLISHED_WORDS.title,
+            "meaning": PUBLISHED_WORDS.meaning,
+            "advice": PUBLISHED_WORDS.advice,
+        },
         "not_covered": crate::covered::causes_json(),
         "levels": { "severity": SEVERITIES, "confidence": CONFIDENCES },
     })

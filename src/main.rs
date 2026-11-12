@@ -91,9 +91,13 @@ const USAGE: &str = "usage: soc run [--store <path>] [--machine-name <name>] [--
            known vulnerabilities that affect packages the projects' lockfiles declare
        soc vulnerability <record id or CVE id> [--store <path>] [--json]
            the answer for one vulnerability in every project, with what it rests on
-       soc rules [--json]
+       soc rules [--store <path>] [--json]
            the shipped Sigma rules for macOS: which are evaluated on every program
-           start, which in part, and which not, with the reason
+           start, which in part, and which not, with the reason; whether they watch
+           and how many times each matched in the last day and week
+       soc rules --over-log [--system-root <dir>] [--json]
+           evaluates the rules over the event log on disk now, without the store, and
+           prints per rule that matched its level and count, never a command line
        soc sample [--store <path>] [--sample-input <file>] [--json]
        soc watch [--store <path>] [--system-root <dir>] [--sample-input <file>]
                  [--sample-every <seconds>] [--alive-every <seconds>]
@@ -113,8 +117,15 @@ enum Cmd {
     Sample(SampleArgs),
     Vulnerabilities(VulnerabilityArgs),
     Vulnerability(VulnerabilityArgs),
-    /// `soc rules`, with `--json` or not.
-    Rules(bool),
+    Rules(RulesArgs),
+}
+
+/// `soc rules`: the shipped rules with what the store says they did, or with `over_log` a
+/// replay of the event log under that system root.
+struct RulesArgs {
+    store: PathBuf,
+    json: bool,
+    over_log: Option<PathBuf>,
 }
 
 /// `soc vulnerabilities`, and `soc vulnerability <id>` with the id.
@@ -508,14 +519,24 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
         }
         "watch" => watch::parse(it).map(Cmd::Watch),
         "rules" => {
-            let mut json = false;
-            for arg in it {
+            let (mut json, mut over_log, mut system_root) = (false, false, None);
+            while let Some(arg) = it.next() {
                 match arg.as_str() {
                     "--json" => json = true,
+                    "--store" => store = Some(value(&mut it, &arg)?.into()),
+                    "--over-log" => over_log = true,
+                    "--system-root" => system_root = Some(value(&mut it, &arg)?.into()),
                     _ => return Err(format!("unexpected argument: {arg}")),
                 }
             }
-            Ok(Cmd::Rules(json))
+            if system_root.is_some() && !over_log {
+                return Err("--system-root is for soc rules --over-log".to_string());
+            }
+            Ok(Cmd::Rules(RulesArgs {
+                store: store.map_or_else(default_store, Ok)?,
+                json,
+                over_log: over_log.then(|| system_root.unwrap_or_else(|| PathBuf::from("/"))),
+            }))
         }
         "sample" => {
             let (mut json, mut input) = (false, None);
@@ -686,15 +707,7 @@ fn main() -> ExitCode {
         Cmd::Vulnerabilities(args) | Cmd::Vulnerability(args) => {
             return vulnerabilities_cmd(&args);
         }
-        Cmd::Rules(json) => {
-            let rules = sigma::Rules::shipped();
-            if json {
-                print_json(&status::envelope("rules", rules.summary_json()));
-            } else {
-                rules.summary_lines().iter().for_each(|l| say(l));
-            }
-            return ExitCode::SUCCESS;
-        }
+        Cmd::Rules(args) => return rules_cmd(&args),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -807,14 +820,15 @@ fn sample_cmd(args: &SampleArgs) -> ExitCode {
 
 // ---- End of `soc sample`. ----
 
-/// The event level at a full run: program starts as Apple's eslogger recorded them, see
-/// `events.rs`. A reading that failed is coverage with its reason, never a failed run.
-fn read_events(run: &mut Run, args: &Args) -> Result<(), Box<dyn Error>> {
+/// The event level at a full run: program starts as Apple's eslogger recorded them, judged by
+/// the published rules, see `events.rs`. A reading that failed is coverage with its reason,
+/// never a failed run. Returns how many findings the rules opened.
+fn read_events(run: &mut Run, args: &Args) -> Result<usize, Box<dyn Error>> {
     let outcome = events::read(run.tx, run.run_id, run.machine, &args.system_root, run.at)?;
     if outcome.state != events::NOT_INSTALLED {
         run.readers += 1;
     }
-    Ok(())
+    Ok(outcome.opened)
 }
 
 /// One reading of the event level, with the run lock held by the caller: what the watcher
@@ -840,6 +854,206 @@ pub fn read_events_held(path: &Path, system_root: &Path) -> Result<(), Box<dyn E
         None => Ok(()),
     }
 }
+
+/// A published rule's finding for a person, from its `published_rule` detail: the rule with
+/// its authors and licence, and the latest starts it matched. Every value is already text from
+/// a source shown inert.
+fn published_rule_lines(d: &serde_json::Value) -> Vec<String> {
+    let s = |v: &serde_json::Value| v.as_str().unwrap_or("unknown").to_string();
+    let mut lines = vec![format!(
+        "Rule: {}, by {}; from SigmaHQ's rule set under the Detection Rule License 1.1, {}.",
+        s(&d["title_text"]),
+        s(&d["author_text"]),
+        s(&d["file"])
+    )];
+    lines.push(format!(
+        "It matched {} since this finding was raised; the latest:",
+        things(
+            d["matches"].as_i64().unwrap_or(0),
+            "program start",
+            "program starts"
+        )
+    ));
+    for e in d["evidence"].as_array().into_iter().flatten() {
+        let args: Vec<String> = e["args_text"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(s)
+            .collect();
+        lines.push(format!(
+            "  {} {}: {} · started by {} · in {} · pid {} · signed {}",
+            s(&e["timestamp_text"]),
+            s(&e["executable_text"]),
+            args.join(" "),
+            s(&e["parent_executable_text"]),
+            s(&e["working_directory_text"]),
+            e["pid"],
+            s(&e["signing_id_text"])
+        ));
+    }
+    lines
+}
+
+// ---- `soc rules`: the published rules, what they did, and a replay over the log. ----
+
+/// `soc rules`: the shipped rules, placed, with whether they watch and how many times each
+/// matched, from the store read without writing. A store that is not there, or holds no
+/// reading of the event level, gives no counts and says why in `not_computed`.
+fn rules_cmd(args: &RulesArgs) -> ExitCode {
+    if let Some(root) = &args.over_log {
+        return replay_cmd(root, args.json);
+    }
+    let rules = sigma::Rules::shipped();
+    let level = match read_level(&args.store) {
+        Ok(level) => level,
+        Err(e) => return store_failed(args.json, "rules", &e),
+    };
+    let section = status::rules_section(level.as_ref());
+    if args.json {
+        let mut v = rules.summary_json();
+        for key in [
+            "watching",
+            "watching_rules",
+            "judged",
+            "judged_note",
+            "matches_last_day",
+        ] {
+            v[key] = section[key].clone();
+        }
+        match &level {
+            Some(l) => {
+                v["matches_last_week"] =
+                    serde_json::json!(l.matches_last_week.values().sum::<i64>());
+                for key in ["evaluated", "in_part"] {
+                    for r in v[key].as_array_mut().into_iter().flatten() {
+                        let id = r["id_text"].as_str().unwrap_or_default().to_string();
+                        r["matches_last_day"] =
+                            serde_json::json!(l.matches_last_day.get(&id).unwrap_or(&0));
+                        r["matches_last_week"] =
+                            serde_json::json!(l.matches_last_week.get(&id).unwrap_or(&0));
+                    }
+                }
+                v["not_computed"] = serde_json::json!([]);
+            }
+            None => {
+                let reason = if args.store.exists() {
+                    "program starts have not been looked for yet; the next check does"
+                } else {
+                    "there is no store yet; `soc run` makes it"
+                };
+                v["matches_last_day"] = serde_json::Value::Null;
+                v["not_computed"] = serde_json::json!([{ "section": "matches", "reason": reason }]);
+            }
+        }
+        print_json(&status::envelope("rules", v));
+        return ExitCode::SUCCESS;
+    }
+    let lines = rules.summary_lines(level.as_ref().map(|l| &l.matches_last_day));
+    let mut lines = lines.into_iter();
+    lines.next().iter().for_each(|l| say(l));
+    say(&crate::pages::rules_said(&section));
+    lines.for_each(|l| say(&l));
+    ExitCode::SUCCESS
+}
+
+/// The event level as the store holds it, read without writing; `None` when there is no store
+/// or no reading of the level.
+fn read_level(store: &Path) -> Result<Option<events::Level>, Stop> {
+    if !store.exists() {
+        return Ok(None);
+    }
+    let conn = store::open_read_only(store).map_err(|e| Stop::Store(e.to_string()))?;
+    events::level(&conn, now_secs()).map_err(|e| Stop::Store(e.to_string()))
+}
+
+/// `soc rules --over-log`: the rules evaluated over the event log on disk now, from the start
+/// of every file, the store neither read nor written. Per rule that matched, its level and how
+/// many starts matched; never a command line, a path or an argument. A level that is not
+/// installed is not applicable, not a failure.
+fn replay_cmd(root: &Path, json: bool) -> ExitCode {
+    let match_json = |h: &events::Hits| {
+        serde_json::json!({
+            "id_text": status::text(&h.meta.id),
+            "title_text": status::text(&h.meta.title),
+            "level": h.meta.level.as_str(),
+            "status": h.meta.status.as_str(),
+            "matches": h.count,
+        })
+    };
+    match events::replay(root, now_secs()) {
+        events::Replay::NotInstalled => {
+            if json {
+                print_json(&status::envelope(
+                    "rules",
+                    serde_json::json!({ "over_log": "not_applicable", "reason": "the event level is not installed" }),
+                ));
+            } else {
+                say("The event level is not installed here, so there is no log to replay.");
+            }
+            ExitCode::SUCCESS
+        }
+        events::Replay::Failed(why) => {
+            if json {
+                print_json(&status::failure(
+                    Some("rules"),
+                    "log_unreadable",
+                    "the event log could not be read, so nothing was evaluated",
+                    "soc rules --over-log --json",
+                    &why,
+                ));
+            } else {
+                eprintln!(
+                    "soc: the event log could not be read: {}",
+                    view::shown(&why)
+                );
+            }
+            ExitCode::FAILURE
+        }
+        events::Replay::Read { tally, matched } => {
+            let mut hits: Vec<&events::Hits> = matched.rules.values().collect();
+            hits.sort_by(|a, b| {
+                b.meta
+                    .level
+                    .cmp(&a.meta.level)
+                    .then_with(|| b.count.cmp(&a.count))
+                    .then_with(|| a.meta.id.cmp(&b.meta.id))
+            });
+            let total: i64 = hits.iter().map(|h| h.count).sum();
+            if json {
+                print_json(&status::envelope(
+                    "rules",
+                    serde_json::json!({
+                        "over_log": "read",
+                        "program_starts": tally.starts,
+                        "unreadable_lines": tally.unreadable,
+                        "lost": tally.lost,
+                        "unknown_losses": tally.unknown_gaps,
+                        "matches_total": total,
+                        "matched": hits.iter().map(|h| match_json(h)).collect::<Vec<_>>(),
+                    }),
+                ));
+            } else {
+                say(&format!(
+                    "The event log on disk holds {}; the rules matched {}. Nothing was stored.",
+                    things(tally.starts, "program start", "program starts"),
+                    sigma::times(total)
+                ));
+                for h in hits {
+                    say(&format!(
+                        "  {:<13} {:>7}  {}",
+                        h.meta.level.as_str(),
+                        h.count,
+                        h.meta.title
+                    ));
+                }
+            }
+            ExitCode::SUCCESS
+        }
+    }
+}
+
+// ---- End of `soc rules`. ----
 
 /// Now, in UTC seconds.
 fn now_secs() -> i64 {
@@ -1062,7 +1276,7 @@ fn status_text(store: &Path) -> Result<(), Stop> {
     say(&summary_sentences(s));
     this_mac_text(&st.this_mac);
     if let Some(l) = &st.event_level {
-        say(&format!("Event level: {}.", events::words(l)));
+        say(&format!("Event level: {}", events::words(l).line()));
     }
     needs_text(&st.needs);
     not_covered_text(&st.not_covered);
@@ -1588,6 +1802,9 @@ fn finding_cmd(args: &FindingArgs) -> ExitCode {
         "Where: {}.",
         view::shown(item.place.as_deref().unwrap_or_default())
     ));
+    if let Some(d) = &item.detail {
+        published_rule_lines(d).iter().for_each(|l| say(l));
+    }
     let seqs: Vec<String> = basis.iter().map(|b| b.seq.to_string()).collect();
     say(&format!(
         "Rests on {}: {}.",
@@ -2565,7 +2782,7 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     let mut changed = read_integrity(&mut run, args)?;
     changed.extend(read_indicators(&mut run, args, &found)?);
     opened += findings::detect(run.tx, run.run_id, run.at, &changed)?;
-    read_events(&mut run, args)?;
+    opened += read_events(&mut run, args)?;
     read_traces(&mut run, args)?;
     resolve(&mut run)?;
     read_threats(&run, catalogue)?;

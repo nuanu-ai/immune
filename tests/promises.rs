@@ -8433,6 +8433,19 @@ fn lists_are_capped_with_their_totals_and_names_and_times_are_stable() {
             )
             .unwrap();
         }
+        // Every rule that can be evaluated matched in the last day.
+        let hour = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            / 3600;
+        for i in 0..70 {
+            conn.execute(
+                "INSERT INTO rule_match (hour, rule, matches) VALUES (?1, ?2, ?3)",
+                rusqlite::params![hour as i64, format!("invented-rule-{i:02}"), i + 1],
+            )
+            .unwrap();
+        }
     }
     let (_, stdout, _) = status_out(&w.store(), &["--json"]);
     // An agent reads the status whole, so it stays bounded whatever the store holds. The bound
@@ -8440,6 +8453,16 @@ fn lists_are_capped_with_their_totals_and_names_and_times_are_stable() {
     // level and the published rules got sections of their own.
     assert!(stdout.len() < 80 * 1024, "{} bytes", stdout.len());
     let r = &serde_json::from_str::<serde_json::Value>(&stdout).unwrap()["result"];
+    // The rules that matched: the ten that matched most, with the total of rules and of
+    // matches.
+    let matched = r["rules"]["matched_last_day"].as_array().unwrap();
+    assert_eq!(matched.len(), 10);
+    assert_eq!(
+        (&matched[0]["id_text"], &matched[0]["matches"]),
+        (&"invented-rule-69".into(), &70.into())
+    );
+    assert_eq!(r["rules"]["matched_last_day_total"], 70);
+    assert_eq!(r["rules"]["matches_last_day"], 70 * 71 / 2);
     let changes = r["watched"]["changes"].as_array().unwrap();
     assert_eq!(changes.len(), 50);
     assert_eq!(r["watched"]["changes_total"], 61);
@@ -10592,15 +10615,18 @@ fn each_link_on_the_summary_shows_what_its_label_says_first_thing_on_arrival() {
 #[test]
 fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_while_nothing_feeds_them()
  {
-    // The owner asked to see the published rules. They are shipped and can be evaluated, but
-    // nothing feeds them program starts yet: no page says a rule is watching, a rule that is
-    // not checked is never listed among the checked, and the counts are the status's.
+    // The owner asked to see the published rules. While the event level does not run nothing
+    // feeds them program starts: no page says a rule is watching, a rule that is not checked
+    // is never listed among the checked, and the counts are the status's. Once it runs, the
+    // pages say how many watch, never counting one checked only in part, and how many times
+    // each matched in the last day.
     let w = Watch::new("rules-page");
     w.run();
     let r = status_json(&w.store())["rules"].clone();
     assert_eq!(r["watching"], false, "{r}");
     let out = Command::new(env!("CARGO_BIN_EXE_soc"))
-        .args(["rules", "--json"])
+        .args(["rules", "--json", "--store"])
+        .arg(w.store())
         .output()
         .unwrap();
     let rules: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -10638,7 +10664,45 @@ fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_wh
         }
     }
     // Nothing reads as a rule watching this Mac: the only word of watching says none is.
-    let told = "It is not on in this version yet, so none of them is watching.";
+    let told = "It is not on, so none of them is watching.";
+    for text in [
+        section(&pages[0].1, "rules"),
+        &page[page.find("<main>").unwrap()..],
+    ] {
+        assert!(text.contains(told), "{text}");
+        assert_eq!(text.matches("watch").count(), 1, "{text}");
+        assert!(!text.contains("No match"), "{text}");
+    }
+
+    // The event level runs and has read the drill's start: the 69 rules checked in full
+    // watch, the one checked in part does not count among them, and the rule the start
+    // matched says so.
+    put(
+        &w.sys,
+        "Library/LaunchDaemons/local.personal-soc.eslogger.plist",
+        "<plist/>",
+    );
+    let dd = r#"{"schema_version":1,"version":10,"seq_num":1,"global_seq_num":1,"time":"2026-10-04T00:00:02.000002Z","process":{"executable":{"path":"/bin/sh"}},"event":{"exec":{"args":["dd","if=/dev/zero","bs=1","count=1"],"cwd":{"path":"/tmp"},"target":{"executable":{"path":"/bin/dd"},"audit_token":{"pid":402,"euid":501},"ppid":401,"signing_id":"com.apple.dd","team_id":null,"is_platform_binary":true}}}}"#;
+    put(
+        &w.sys
+            .join("Library/Application Support/personal-soc/event-level/log"),
+        "exec-20261004T00.jsonl",
+        &format!("{dd}\n"),
+    );
+    w.run();
+    let r = status_json(&w.store())["rules"].clone();
+    assert_eq!(
+        (&r["watching"], &r["watching_rules"]),
+        (&serde_json::json!(true), &r["evaluated"]),
+        "{r}"
+    );
+    let pages = view_pages(&w.store());
+    let page = &pages
+        .iter()
+        .find(|(p, _)| p.ends_with("view/rules.html"))
+        .unwrap()
+        .1;
+    let told = "The event level is on, so 69 of them are watching every program start on this Mac, and 1 more check it in part. In the last day they matched 1 time.";
     for text in [
         section(&pages[0].1, "rules"),
         &page[page.find("<main>").unwrap()..],
@@ -10646,6 +10710,45 @@ fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_wh
         assert!(text.contains(told), "{text}");
         assert_eq!(text.matches("watch").count(), 1, "{text}");
     }
+    let padding = &page[page.find("Binary Padding - MacOS").unwrap()..];
+    let padding = &padding[..padding.find("</article>").unwrap()];
+    assert!(
+        padding.contains("<p class=\"meta\">Matched 1 time in the last day.</p>"),
+        "{padding}"
+    );
+    let quiet = "<p class=\"meta\">No match in the last day.</p>";
+    assert_eq!(
+        section(page, "evaluated").matches(quiet).count(),
+        n(&r["evaluated"]) - 1
+    );
+    assert_eq!(section(page, "in-part").matches(quiet).count(), 1);
+    assert!(!section(page, "not-evaluated").contains("No match"));
+
+    // The summary's row for program starts: the state and the count at a glance, and a
+    // restart of the collector as a quieter line under it, only when there is one.
+    let row = |page: &str| -> String {
+        let told = section(page, "watched-here");
+        let at = told
+            .find("Every program start, with its command line")
+            .unwrap();
+        told[at..at + told[at..].find("</div>").unwrap()].to_string()
+    };
+    assert_eq!(
+        row(&pages[0].1),
+        "Every program start, with its command line</span><span class=\"num\">on, 1 in the last day</span>"
+    );
+    let again = dd.replace("\"dd\",\"if=/dev/zero\"", "\"dd\",\"if=a\"");
+    put(
+        &w.sys
+            .join("Library/Application Support/personal-soc/event-level/log"),
+        "exec-20261004T00.jsonl",
+        &format!("{dd}\n{again}\n"),
+    );
+    w.run();
+    assert_eq!(
+        row(&view_pages(&w.store())[0].1),
+        "Every program start, with its command line</span><span class=\"num\">on, 2 in the last day</span><span class=\"note\">The collector restarted once; program starts in that moment were not seen.</span>"
+    );
 }
 
 #[test]

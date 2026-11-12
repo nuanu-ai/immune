@@ -5,9 +5,12 @@
 //! `rotatelogs` appends that to one file per hour in a folder only root and the installing
 //! account can read; the root side deletes files older than a day, and the oldest while the
 //! log is over its size cap, and notes each deletion in `removed`. This reader runs as the
-//! owner, without rights, on the collection path: no model and no network. It is stage 1: it reads the log honestly and counts. No rule runs
-//! over the events yet, and the store keeps none of them: only where each log file was read
-//! up to, the last sequence number, counts per reading, the state, and coverage.
+//! owner, without rights, on the collection path: no model and no network. It reads the log
+//! honestly and counts, and evaluates every program start it reads against SigmaHQ's published
+//! rules for macOS (`src/sigma.rs`), loaded once per process. The store keeps no event: only
+//! where each log file was read up to, the last sequence number, counts per reading, the
+//! state, coverage, how many starts matched each rule, and for a rule that raises a finding
+//! the latest few starts it matched, as the finding's evidence.
 //!
 //! A reader first finds out whether its source exists. The level is installed when its launch
 //! daemon's property list is in `/Library/LaunchDaemons`; when it is not, that is "not
@@ -43,12 +46,19 @@
 //! of deletions count apart.
 //!
 //! The typed event names its fields after the Elastic Common Schema where it has one, as the
-//! samples do. Stage 2, rules over these events, consumes it.
+//! samples do.
+//!
+//! Every match of every rule evaluated is counted per rule, by the hour of the reading, for a
+//! week. A match of a `high` rule is also a finding: one per rule on this Mac, not one per
+//! start, as SIEMs group alerts by rule. A start is matched where it is read, inside the
+//! reading's transaction, so a reading that fails or is rolled back has matched nothing and a
+//! start read again after it is matched once.
 
+use crate::sigma::{Meta, Rules};
 use crate::store::{Cause, Gap, Reading};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
@@ -85,6 +95,15 @@ const DAY: i64 = 24 * 60 * 60;
 /// How long counts per reading are kept: a day is served, and the reading since the last
 /// full check.
 const KEEP: i64 = 2 * DAY;
+/// How long counts of matches per rule are kept: the week `docs/research/event-level.md`
+/// counts every match before rules are promoted or tuned. A row is a rule's id, an hour and a
+/// number, so a week is at most 168 rows per rule.
+const KEEP_MATCHES: i64 = 7 * DAY;
+/// Counts of matches are kept by the hour of the reading, so the last day is served by the
+/// hour: the hour that holds its start is counted whole.
+const HOUR: i64 = 60 * 60;
+/// The most program starts a finding from a published rule keeps as its evidence, the latest.
+pub const EVIDENCE: usize = 5;
 /// The `schema_version`s this reader knows.
 pub const SCHEMA_VERSIONS: [u64; 1] = [1];
 /// What `eslogger` prints when macOS refuses it Full Disk Access: the result code of
@@ -142,39 +161,100 @@ CREATE TABLE IF NOT EXISTS event_count (
     removed_cap  INTEGER NOT NULL,  -- log files deleted to stay under the size cap
     removed_unread INTEGER NOT NULL -- log files deleted before they were read to their end
 );
+-- How many program starts matched each published rule, by the hour of the reading that read
+-- them, kept a week. A rule's id and a number: nothing of the start.
+CREATE TABLE IF NOT EXISTS rule_match (
+    hour    INTEGER NOT NULL,  -- the reading's time, UTC seconds divided by 3600
+    rule    TEXT NOT NULL,     -- the rule's id
+    matches INTEGER NOT NULL,
+    PRIMARY KEY (hour, rule)
+);
+-- How many program starts a finding from a published rule counts since it was raised.
+CREATE TABLE IF NOT EXISTS rule_finding (
+    finding TEXT PRIMARY KEY REFERENCES finding (id),
+    matches INTEGER NOT NULL
+);
+-- The latest program starts a finding from a published rule rests on, at most five per
+-- finding. The one place arguments enter the store, by the owner's decision of 12 November
+-- 2026; the environment never does. Field names are the Elastic Common Schema's.
+CREATE TABLE IF NOT EXISTS rule_evidence (
+    finding           TEXT NOT NULL REFERENCES finding (id),
+    read_at           INTEGER NOT NULL,
+    timestamp         TEXT NOT NULL,
+    executable        TEXT NOT NULL,
+    args              TEXT NOT NULL,  -- a JSON array of strings
+    parent_executable TEXT,
+    working_directory TEXT,
+    pid               INTEGER NOT NULL,
+    parent_pid        INTEGER,
+    user_id           INTEGER,
+    signing_id        TEXT,
+    team_id           TEXT,
+    platform_binary   INTEGER
+);
 INSERT OR IGNORE INTO coverage_kind (name) VALUES
     ('program starts on this Mac, from Apple''s eslogger');
 ";
 
-/// One program start, as rules over events will read it. Built from an `exec` message: the
-/// new image is `event.exec.target`, and `process` is the image before the exec, which is the
-/// parent program as coreSigma and pySigma's macOS pipeline take it.
-#[derive(Debug, PartialEq)]
-#[cfg_attr(not(test), allow(dead_code))] // Rules over events read every field in stage 2.
+/// One program start, as the published rules (`src/sigma.rs`) read it and as a finding's
+/// evidence keeps it. Built from an `exec` message, whose `event.exec.target` is the program
+/// started. Each field is named after the Elastic Common Schema; the rules read three of them
+/// under Sigma's names, and `SIGMA_FIELDS` below is the one place that says which.
+///
+/// | eslogger, as the filter projects it | here | ECS | Sigma |
+/// |---|---|---|---|
+/// | `time` | `timestamp` | `@timestamp` | |
+/// | `event.exec.target.executable.path` | `executable` | `process.executable` | `Image` |
+/// | `event.exec.args` | `args` | `process.args` | `CommandLine`, joined by spaces |
+/// | `process.executable.path` | `parent_executable` | `process.parent.executable` | `ParentImage` |
+/// | `event.exec.cwd.path` | `working_directory` | `process.working_directory` | |
+/// | the pid of `event.exec.target.audit_token` | `pid` | `process.pid` | |
+/// | `event.exec.target.ppid` | `parent_pid` | `process.parent.pid` | |
+/// | the euid of `event.exec.target.audit_token` | `user_id` | `process.user.id` | |
+/// | `event.exec.target.signing_id`, `.team_id` | `signing_id`, `team_id` | `process.code_signature.*` | |
+/// | `event.exec.target.is_platform_binary` | `platform_binary` | none | |
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ProcessStart {
-    /// `@timestamp`: the message's `time`, as `eslogger` writes it, in UTC.
     pub timestamp: String,
-    /// `process.executable`: `event.exec.target.executable.path`.
     pub executable: String,
-    /// `process.args`: `event.exec.args`.
     pub args: Vec<String>,
-    /// `process.parent.executable`: `process.executable.path`.
+    /// The program the process ran before this `exec`, not always its parent: see
+    /// `SIGMA_FIELDS`.
     pub parent_executable: Option<String>,
-    /// `process.working_directory`: `event.exec.cwd.path`.
     pub working_directory: Option<String>,
-    /// `process.pid`: the pid of `event.exec.target.audit_token`.
     pub pid: i64,
-    /// `process.parent.pid`: `event.exec.target.ppid`.
     pub parent_pid: Option<i64>,
-    /// `process.user.id`: the effective user id of the target's audit token.
     pub user_id: Option<i64>,
-    /// `process.code_signature.signing_id`.
     pub signing_id: Option<String>,
-    /// `process.code_signature.team_id`.
     pub team_id: Option<String>,
-    /// Whether the program is part of macOS: `is_platform_binary`. ECS has no field for it.
     pub platform_binary: Option<bool>,
 }
+
+/// How a Sigma field's value is taken from a program start; `None` leaves the field absent,
+/// and an absent field matches nothing.
+pub type Take = fn(&ProcessStart) -> Option<String>;
+
+/// The Sigma fields a program start gives the published rules, and how each is taken. Sigma's
+/// taxonomy names no macOS fields; these are the three of Windows' `process_creation` that
+/// `eslogger` can fill, as `docs/research/event-level.md` maps them. A field a rule names that
+/// is not here is one this level does not have, and `src/sigma.rs` names such rules.
+pub const SIGMA_FIELDS: [(&str, Take); 3] = [
+    ("Image", |s| Some(s.executable.clone())),
+    // The arguments joined by single spaces, the first included: Sigma's command lines on
+    // other systems hold the program too. An argument holding a space is not quoted, as
+    // `eslogger` gives the arguments apart and no shell's quoting is the right one.
+    ("CommandLine", |s| Some(s.args.join(" "))),
+    // `process` in an `exec` message is the process that called `exec`, described as it was
+    // before the call: the same pid as the program started, with its old image. After a fork
+    // or `posix_spawn`, which is how a shell, a build tool or an agent starts a program, that
+    // old image is a copy of the parent, so this is the parent's program. After an `exec`
+    // without a fork it is not: a wrapper that replaces itself with the program (`nohup`,
+    // `env`, `exec` in a shell script, `xcrun`) is named here, and whatever started the
+    // wrapper is not, though `ppid` is its pid. coreSigma's collector takes the parent the same
+    // way. So a rule on `ParentImage` can miss a start one wrapper away from the parent it
+    // names, and never sees a parent this field does not name.
+    ("ParentImage", |s| s.parent_executable.clone()),
+];
 
 /// One line of the log, as read.
 #[derive(Debug, PartialEq)]
@@ -287,6 +367,83 @@ pub struct Tally {
     pub removed_unread: i64,
 }
 
+impl Tally {
+    /// Nothing the log held was lost, unreadable or deleted before it was read: every start
+    /// it held was read, and so judged by the rules. The same test as full coverage.
+    pub fn whole(&self) -> bool {
+        self.gaps().is_empty()
+    }
+
+    /// What was lost, unreadable or deleted early, each with its count, in coverage's words.
+    fn gaps(&self) -> Vec<String> {
+        let mut said = Vec::new();
+        if self.lost > 0 {
+            said.push(format!(
+                "program starts missing from the numbering: {}",
+                self.lost
+            ));
+        }
+        if self.unknown_gaps > 0 {
+            said.push(format!(
+                "times eslogger started again, each a loss of unknown size: {}",
+                self.unknown_gaps
+            ));
+        }
+        if self.unreadable > 0 {
+            said.push(format!("lines that could not be read: {}", self.unreadable));
+        }
+        if self.removed_cap > 0 {
+            said.push(format!(
+                "log files deleted to stay under the size cap before their day was over: {}",
+                self.removed_cap
+            ));
+        }
+        if self.removed_unread > 0 {
+            said.push(format!(
+                "log files deleted before this reader read them to their end: {}",
+                self.removed_unread
+            ));
+        }
+        said
+    }
+}
+
+/// What the published rules matched in a reading: per rule, how many program starts, and for
+/// a rule that raises a finding the latest `EVIDENCE` of them. Nothing else of a start is
+/// kept, so a lower rule's match leaves only its count.
+#[derive(Debug, Default)]
+pub struct Matched {
+    pub rules: BTreeMap<&'static str, Hits>,
+}
+
+/// One rule's matches in a reading.
+#[derive(Debug)]
+pub struct Hits {
+    pub meta: &'static Meta,
+    pub count: i64,
+    pub latest: VecDeque<ProcessStart>,
+}
+
+impl Matched {
+    /// Evaluates one start against every rule and counts what it matched.
+    fn add(&mut self, rules: &'static Rules, start: &ProcessStart) {
+        for m in rules.evaluate(start) {
+            let hits = self.rules.entry(m.meta.id.as_str()).or_insert(Hits {
+                meta: m.meta,
+                count: 0,
+                latest: VecDeque::new(),
+            });
+            hits.count += 1;
+            if m.meta.level.raises() {
+                if hits.latest.len() == EVIDENCE {
+                    hits.latest.pop_front();
+                }
+                hits.latest.push_back(start.clone());
+            }
+        }
+    }
+}
+
 /// What a look at the source found.
 #[derive(Debug)]
 enum Found {
@@ -301,6 +458,7 @@ enum Found {
 #[derive(Debug)]
 struct Log {
     tally: Tally,
+    matched: Matched,
     files: Vec<(String, u64, u64)>,
     last_seq: Option<u64>,
     version: Option<u64>,
@@ -318,8 +476,9 @@ struct Left {
     counted: Option<i64>,
 }
 
-/// Reads the log under `root` from where `left` says, at `now`.
-fn look(root: &Path, left: &Left, now: i64) -> Found {
+/// Reads the log under `root` from where `left` says, at `now`, and evaluates every program
+/// start read against `rules`.
+fn look(root: &Path, left: &Left, now: i64, rules: &'static Rules) -> Found {
     let plist = root.join(PLIST);
     let installed_at = match std::fs::metadata(&plist) {
         Ok(m) => m.mtime(),
@@ -345,6 +504,7 @@ fn look(root: &Path, left: &Left, now: i64) -> Found {
     }
     names.sort();
     let mut tally = Tally::default();
+    let mut matched = Matched::default();
     if let Err(e) = removed(&dir, left, &mut tally) {
         return Found::Failed(format!("{REMOVED} in the event level's log: {e}"));
     }
@@ -372,7 +532,14 @@ fn look(root: &Path, left: &Left, now: i64) -> Found {
             Some((inode, offset)) if *inode == meta.ino() && *offset <= meta.len() => *offset,
             _ => 0,
         };
-        match read_from(file, from, &mut tally, &mut last_seq, &mut version) {
+        let mut into = Into {
+            tally: &mut tally,
+            last_seq: &mut last_seq,
+            version: &mut version,
+            rules,
+            matched: &mut matched,
+        };
+        match read_from(file, from, &mut into) {
             // A file of an hour that is over is not written to again. rotatelogs moves to the
             // next hour's file at whatever it read from the pipe, so a line can end in the old
             // file without its newline and go on at the start of the new one: the end left
@@ -391,6 +558,7 @@ fn look(root: &Path, left: &Left, now: i64) -> Found {
     let (state, said) = judge(&dir, written.unwrap_or(installed_at), written, now);
     Found::Read(Log {
         tally,
+        matched,
         files,
         last_seq,
         version,
@@ -438,15 +606,18 @@ enum Stop {
     Schema(String),
 }
 
-/// Reads the whole lines of `file` from `from` on into the tally and returns the offset after
-/// the last whole line.
-fn read_from(
-    mut file: std::fs::File,
-    from: u64,
-    tally: &mut Tally,
-    last_seq: &mut Option<u64>,
-    version: &mut Option<u64>,
-) -> Result<u64, Stop> {
+/// Where a reading puts what it reads.
+struct Into<'a> {
+    tally: &'a mut Tally,
+    last_seq: &'a mut Option<u64>,
+    version: &'a mut Option<u64>,
+    rules: &'static Rules,
+    matched: &'a mut Matched,
+}
+
+/// Reads the whole lines of `file` from `from` on, counts them, evaluates each program start
+/// against the rules, and returns the offset after the last whole line.
+fn read_from(mut file: std::fs::File, from: u64, into: &mut Into) -> Result<u64, Stop> {
     file.seek(SeekFrom::Start(from)).map_err(Stop::Io)?;
     let mut lines = BufReader::new(file);
     let mut at = from;
@@ -461,14 +632,17 @@ fn read_from(
         at += n as u64;
         match line(&buf[..n - 1]).map_err(Stop::Schema)? {
             Line::Exec {
-                seq, version: v, ..
+                seq,
+                version: v,
+                start,
             } => {
-                count_seq(seq, last_seq, tally);
-                tally.starts += 1;
-                *version = v.or(*version);
+                count_seq(seq, into.last_seq, into.tally);
+                into.tally.starts += 1;
+                *into.version = v.or(*into.version);
+                into.matched.add(into.rules, &start);
             }
-            Line::Other => tally.other += 1,
-            Line::Unreadable => tally.unreadable += 1,
+            Line::Other => into.tally.other += 1,
+            Line::Unreadable => into.tally.unreadable += 1,
         }
     }
 }
@@ -535,10 +709,12 @@ fn tail(path: &Path) -> std::io::Result<String> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// What a reading came to, for the caller: the state, and the reason when it failed.
+/// What a reading came to, for the caller: the state, the reason when it failed, and how
+/// many findings the rules opened.
 pub struct Outcome {
     pub state: &'static str,
     pub failed: Option<String>,
+    pub opened: usize,
 }
 
 /// One reading of the event level under `root`, at `now`, recorded in `tx`: the state, the
@@ -553,7 +729,8 @@ pub fn read(
 ) -> rusqlite::Result<Outcome> {
     tx.execute_batch(SCHEMA)?;
     let left = left(tx)?;
-    let found = look(root, &left, now);
+    let found = look(root, &left, now, Rules::shipped());
+    let mut opened = 0;
     let state = match &found {
         Found::NotInstalled => NOT_INSTALLED,
         Found::Failed(_) => FAILED,
@@ -598,6 +775,7 @@ pub fn read(
                     t.removed_unread
                 ],
             )?;
+            opened = record(tx, run_id, machine, now, &log.matched)?;
             let (by, said) = match &log.said {
                 Some((by, said)) => (Some(*by), Some(said.as_str())),
                 None => (None, None),
@@ -617,6 +795,10 @@ pub fn read(
         }
     }
     tx.execute("DELETE FROM event_count WHERE at < ?1", [now - KEEP])?;
+    tx.execute(
+        "DELETE FROM rule_match WHERE hour < ?1",
+        [(now - KEEP_MATCHES) / HOUR],
+    )?;
     let (completeness, reason, cause): (&str, Option<String>, Option<Cause>) = match &found {
         Found::NotInstalled => (
             "none",
@@ -651,7 +833,183 @@ pub fn read(
             Found::Failed(why) => Some(why),
             _ => None,
         },
+        opened,
     })
+}
+
+/// Records what the rules matched in a reading: every rule's count by the hour, and for a rule
+/// that raises a finding, the finding, its count and its latest starts. Returns how many
+/// findings were opened.
+fn record(
+    tx: &Transaction,
+    run_id: &str,
+    machine: &str,
+    now: i64,
+    matched: &Matched,
+) -> rusqlite::Result<usize> {
+    let mut opened = 0;
+    for (id, hits) in &matched.rules {
+        tx.execute(
+            "INSERT INTO rule_match (hour, rule, matches) VALUES (?1, ?2, ?3)
+             ON CONFLICT (hour, rule) DO UPDATE SET matches = matches + excluded.matches",
+            params![now / HOUR, id, hits.count],
+        )?;
+        if !hits.meta.level.raises() {
+            continue;
+        }
+        // One finding per rule on this Mac: a repeated match of a rule whose finding stands
+        // adds to its count and its examples and raises nothing new.
+        let rule = hits.meta.finding_rule.as_str();
+        let (finding, raised) = crate::findings::occur(tx, rule, machine, "new", run_id, now)?;
+        if raised {
+            // What the finding rests on: a journal entry naming the rule and how many starts
+            // matched it, never what they were.
+            tx.execute(
+                "INSERT INTO journal (at, run_id, entry, reader, scope, kind, subject, text)
+                 VALUES (?1, ?2, 'matched', ?3, ?4, ?5, ?4, ?6)",
+                params![
+                    now,
+                    run_id,
+                    READER,
+                    machine,
+                    rule,
+                    json!({ "rule_id": id, "matches": hits.count }).to_string()
+                ],
+            )?;
+            tx.execute(
+                "INSERT INTO finding_basis (finding, journal) VALUES (?1, ?2)",
+                params![finding, tx.last_insert_rowid()],
+            )?;
+            opened += 1;
+        }
+        tx.execute(
+            "INSERT INTO rule_finding (finding, matches) VALUES (?1, ?2)
+             ON CONFLICT (finding) DO UPDATE SET matches = matches + excluded.matches",
+            params![finding, hits.count],
+        )?;
+        for s in &hits.latest {
+            tx.execute(
+                "INSERT INTO rule_evidence (finding, read_at, timestamp, executable, args,
+                     parent_executable, working_directory, pid, parent_pid, user_id,
+                     signing_id, team_id, platform_binary)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                params![
+                    finding,
+                    now,
+                    s.timestamp,
+                    s.executable,
+                    json!(s.args).to_string(),
+                    s.parent_executable,
+                    s.working_directory,
+                    s.pid,
+                    s.parent_pid,
+                    s.user_id,
+                    s.signing_id,
+                    s.team_id,
+                    s.platform_binary
+                ],
+            )?;
+        }
+        tx.execute(
+            "DELETE FROM rule_evidence WHERE finding = ?1 AND rowid NOT IN
+                 (SELECT rowid FROM rule_evidence WHERE finding = ?1
+                  ORDER BY rowid DESC LIMIT ?2)",
+            params![finding, EVIDENCE as i64],
+        )?;
+    }
+    Ok(opened)
+}
+
+/// Whether the store has a table: one this build creates at the first reading may be missing
+/// from a store read before it.
+fn has(conn: &Connection, table: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        [table],
+        |r| r.get(0),
+    )
+}
+
+/// What a finding from a published rule carries beside its words, each in its own field: the
+/// rule as it describes itself, its authors among them, as the Detection Rule License asks of
+/// a message made from a match; how many program starts it counts since it was raised; and the
+/// latest of them, newest first. Text from the rule or from a start is only in `_text` fields.
+pub fn finding_detail(
+    conn: &Connection,
+    finding: &str,
+    file: &'static str,
+    meta: &Meta,
+) -> rusqlite::Result<Value> {
+    let mut v = crate::sigma::Match { file, meta }.json();
+    v["licence"] = json!(crate::sigma::LICENCE);
+    v["source"] = json!(crate::sigma::SOURCE);
+    let (matches, evidence) = if has(conn, "rule_evidence")? {
+        (counted(conn, finding)?, evidence(conn, finding)?)
+    } else {
+        (0, Vec::new())
+    };
+    v["matches"] = json!(matches);
+    v["evidence"] = json!(evidence);
+    Ok(v)
+}
+
+/// How many program starts a finding from a published rule counts.
+fn counted(conn: &Connection, finding: &str) -> rusqlite::Result<i64> {
+    Ok(conn
+        .query_row(
+            "SELECT matches FROM rule_finding WHERE finding = ?1",
+            [finding],
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or(0))
+}
+
+/// The starts a finding from a published rule keeps, newest first, under ECS's names.
+fn evidence(conn: &Connection, finding: &str) -> rusqlite::Result<Vec<Value>> {
+    let text = |s: Option<String>| s.as_deref().map(crate::status::text);
+    conn.prepare(
+        "SELECT timestamp, executable, args, parent_executable, working_directory, pid,
+                parent_pid, user_id, signing_id, team_id, platform_binary
+         FROM rule_evidence WHERE finding = ?1 ORDER BY rowid DESC",
+    )?
+    .query_map([finding], |r| {
+        let args: Vec<String> = serde_json::from_str(&r.get::<_, String>(2)?).unwrap_or_default();
+        Ok(json!({
+            "timestamp_text": crate::status::text(&r.get::<_, String>(0)?),
+            "executable_text": crate::status::text(&r.get::<_, String>(1)?),
+            "args_text": args.iter().map(|a| crate::status::text(a)).collect::<Vec<_>>(),
+            "parent_executable_text": text(r.get(3)?),
+            "working_directory_text": text(r.get(4)?),
+            "pid": r.get::<_, i64>(5)?,
+            "parent_pid": r.get::<_, Option<i64>>(6)?,
+            "user_id": r.get::<_, Option<i64>>(7)?,
+            "signing_id_text": text(r.get(8)?),
+            "team_id_text": text(r.get(9)?),
+            "platform_binary": r.get::<_, Option<bool>>(10)?,
+        }))
+    })?
+    .collect()
+}
+
+/// What a replay of the log on disk found. Nothing is read from the store or written to it.
+pub enum Replay {
+    NotInstalled,
+    Failed(String),
+    Read { tally: Tally, matched: Matched },
+}
+
+/// Evaluates the rules over every line of the event log under `root` as it is now, from the
+/// start of each file: what would have matched, for tuning before the findings are trusted.
+pub fn replay(root: &Path, now: i64) -> Replay {
+    match look(root, &Left::default(), now, Rules::shipped()) {
+        Found::NotInstalled => Replay::NotInstalled,
+        Found::Failed(why) => Replay::Failed(why),
+        Found::Read(log) => Replay::Read {
+            tally: log.tally,
+            matched: log.matched,
+        },
+    }
 }
 
 /// The coverage of a log that was read. Running, it is full unless something was lost,
@@ -661,31 +1019,7 @@ pub fn read(
 fn covered(state: &str, t: &Tally) -> (&'static str, Option<String>, Option<Cause>) {
     match state {
         RUNNING => {
-            let mut said = Vec::new();
-            if t.lost > 0 {
-                said.push(format!("program starts missing from the numbering: {}", t.lost));
-            }
-            if t.unknown_gaps > 0 {
-                said.push(format!(
-                    "times eslogger started again, each a loss of unknown size: {}",
-                    t.unknown_gaps
-                ));
-            }
-            if t.unreadable > 0 {
-                said.push(format!("lines that could not be read: {}", t.unreadable));
-            }
-            if t.removed_cap > 0 {
-                said.push(format!(
-                    "log files deleted to stay under the size cap before their day was over: {}",
-                    t.removed_cap
-                ));
-            }
-            if t.removed_unread > 0 {
-                said.push(format!(
-                    "log files deleted before this reader read them to their end: {}",
-                    t.removed_unread
-                ));
-            }
+            let said = t.gaps();
             if said.is_empty() {
                 ("full", None, None)
             } else {
@@ -787,16 +1121,15 @@ pub struct Level {
     pub version: Option<i64>,
     pub since_check: Tally,
     pub last_day: Tally,
+    /// How many program starts matched each rule, by its id, over the last day and the last
+    /// week, by the hour of the reading.
+    pub matches_last_day: BTreeMap<String, i64>,
+    pub matches_last_week: BTreeMap<String, i64>,
 }
 
 /// The level, or `None` before any reading of it.
 pub fn level(conn: &Connection, now: i64) -> rusqlite::Result<Option<Level>> {
-    let exists: bool = conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'event_level')",
-        [],
-        |r| r.get(0),
-    )?;
-    if !exists {
+    if !has(conn, "event_level")? {
         return Ok(None);
     }
     let row = conn
@@ -831,7 +1164,19 @@ pub fn level(conn: &Connection, now: i64) -> rusqlite::Result<Option<Level>> {
         version,
         since_check: tally_since(conn, check)?,
         last_day: tally_since(conn, now - DAY)?,
+        matches_last_day: matches_since(conn, now - DAY)?,
+        matches_last_week: matches_since(conn, now - KEEP_MATCHES)?,
     }))
+}
+
+/// How many program starts matched each rule in readings from the hour that holds `from` on.
+fn matches_since(conn: &Connection, from: i64) -> rusqlite::Result<BTreeMap<String, i64>> {
+    if !has(conn, "rule_match")? {
+        return Ok(BTreeMap::new());
+    }
+    conn.prepare("SELECT rule, SUM(matches) FROM rule_match WHERE hour >= ?1 GROUP BY rule")?
+        .query_map([from / HOUR], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect()
 }
 
 /// The counts of every reading at or after `from`.
@@ -883,40 +1228,109 @@ pub fn json(l: &Level) -> Value {
     })
 }
 
-/// The level in words, for a person: the line `soc status` prints and the page's row.
-pub fn words(l: &Level) -> String {
+/// The level for a person: a short state, the count of program starts while it records them,
+/// and each caveat as a short sentence of its own, so that a surface shows the state at a
+/// glance and the caveats under it, quieter, or folded. The page's row, `soc status` and
+/// anything else that tells the level take these words. None names `eslogger`: a person reads
+/// "the collector".
+pub struct Said {
+    pub state: &'static str,
+    /// Program starts read in the last day, while the level records them.
+    pub last_day: Option<i64>,
+    pub notes: Vec<String>,
+}
+
+impl Said {
+    /// The state with its count, for a row whose label already says what is counted:
+    /// "on, 49,842 in the last day".
+    pub fn short(&self) -> String {
+        match self.last_day {
+            Some(n) => format!(
+                "{}, {} in the last day",
+                self.state,
+                crate::view::counted(n, "", "").trim_end()
+            ),
+            None => self.state.to_string(),
+        }
+    }
+
+    /// One line, with what is counted named, then the caveats: what `soc status` prints.
+    pub fn line(&self) -> String {
+        let head = match self.last_day {
+            Some(n) => format!(
+                "{}, {} in the last day.",
+                self.state,
+                crate::view::counted(n, "program start", "program starts")
+            ),
+            None => format!("{}.", self.state),
+        };
+        std::iter::once(head)
+            .chain(self.notes.iter().cloned())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+/// How many times, as a person says it: once, twice, then a number.
+fn how_often(n: i64) -> String {
+    match n {
+        1 => "once".to_string(),
+        2 => "twice".to_string(),
+        n => crate::view::counted(n, "time", "times"),
+    }
+}
+
+/// The level in words, see `Said`. A restart of the collector is counted only after a start
+/// it continued from (`count_seq`), so installing the level is never one; each restart after
+/// that is a short moment in which program starts were not seen, and is said so, neither
+/// hidden nor made more of.
+pub fn words(l: &Level) -> Said {
     let counted = crate::view::counted;
+    let not_seen = |state: &'static str, why: String| Said {
+        state,
+        last_day: None,
+        notes: vec![why],
+    };
     match l.state.as_str() {
         RUNNING => {
             let d = &l.last_day;
-            let mut said = format!(
-                "on: {} read in the last day",
-                counted(d.starts, "program start", "program starts")
-            );
-            if d.lost > 0 {
-                said.push_str(&format!(", {} lost", counted(d.lost, "", "").trim_end()));
-            }
+            let mut notes = Vec::new();
             if d.unknown_gaps > 0 {
-                said.push_str(&format!(
-                    ", and an unknown number lost when eslogger started again {}",
-                    counted(d.unknown_gaps, "time", "times")
+                notes.push(format!(
+                    "The collector restarted {}; program starts in {} were not seen.",
+                    how_often(d.unknown_gaps),
+                    if d.unknown_gaps == 1 {
+                        "that moment"
+                    } else {
+                        "those moments"
+                    }
+                ));
+            }
+            if d.lost > 0 {
+                notes.push(format!(
+                    "{} missed because the collector fell behind.",
+                    counted(d.lost, "program start was", "program starts were")
                 ));
             }
             if d.unreadable > 0 {
-                said.push_str(&format!(
-                    ", {} could not be read",
+                notes.push(format!(
+                    "{} of the log could not be read.",
                     counted(d.unreadable, "line", "lines")
                 ));
             }
             if d.removed_cap > 0 {
-                said.push_str(&format!(
-                    "; the size cap deleted {} before its day was over",
-                    counted(d.removed_cap, "hour of the log", "hours of the log")
+                notes.push(format!(
+                    "{} deleted early to keep the log under its size limit.",
+                    counted(
+                        d.removed_cap,
+                        "hour of the log was",
+                        "hours of the log were"
+                    )
                 ));
             }
             if d.removed_unread > 0 {
-                said.push_str(&format!(
-                    "; {} deleted before they were read, to keep the log small",
+                notes.push(format!(
+                    "{} deleted before they were read.",
                     counted(
                         d.removed_unread,
                         "hour of the log was",
@@ -924,23 +1338,40 @@ pub fn words(l: &Level) -> String {
                     )
                 ));
             }
-            said
+            Said {
+                state: "on",
+                last_day: Some(d.starts),
+                notes,
+            }
         }
-        NOT_INSTALLED => "not installed, so program starts are not seen".to_string(),
-        REFUSED => {
-            "installed, but macOS refuses eslogger Full Disk Access, so program starts are not seen"
-                .to_string()
-        }
-        FAILING => "installed, but it printed an error, so program starts are not seen".to_string(),
-        SILENT => format!(
-            "installed, but nothing has been written {}, so program starts are not seen",
-            l.written
-                .map_or("since it was installed".to_string(), |t| format!(
-                    "since {}",
-                    crate::view::utc(t)
-                ))
+        NOT_INSTALLED => not_seen(
+            "not installed",
+            "Program starts are not seen until it is installed.".to_string(),
         ),
-        _ => "its log could not be read, so program starts are not seen".to_string(),
+        REFUSED => not_seen(
+            "refused by macOS",
+            "macOS does not give the collector Full Disk Access, so program starts are not seen."
+                .to_string(),
+        ),
+        FAILING => not_seen(
+            "stopped by an error",
+            "The collector reported an error, so program starts are not seen.".to_string(),
+        ),
+        SILENT => not_seen(
+            "silent",
+            format!(
+                "Nothing has been recorded {}, so program starts are not seen.",
+                l.written
+                    .map_or("since it was installed".to_string(), |t| format!(
+                        "since {}",
+                        crate::view::utc(t)
+                    ))
+            ),
+        ),
+        _ => not_seen(
+            "cannot be read",
+            "Its log could not be read, so program starts are not seen.".to_string(),
+        ),
     }
 }
 
@@ -1080,40 +1511,182 @@ mod tests {
     }
 
     #[test]
+    fn matches_are_served_by_the_hour_for_the_last_day_and_the_week_and_deleted_after_a_week() {
+        // The owner tunes the rules on a week of counts; the status serves the last day. Both
+        // are kept by the hour of the reading, so the hour that holds the start of the span
+        // counts whole, and an hour older than the week is deleted.
+        let dir = std::env::temp_dir().join(format!("soc-events-hours-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("root").join(LOG)).unwrap();
+        let plist = dir.join("root").join(PLIST);
+        std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
+        std::fs::write(&plist, "<plist/>").unwrap();
+        let mut conn = crate::store::open(&dir.join("store.db")).unwrap();
+        // On the hour, so that each reading below is in an hour of its own.
+        let now = 1_791_000_000;
+        assert_eq!(now % HOUR, 0);
+        let log = dir.join("root").join(LOG).join("exec-20261004T00.jsonl");
+        let mut text = String::new();
+        for (seq, at) in [
+            (1, now - KEEP_MATCHES - HOUR),
+            (2, now - KEEP_MATCHES),
+            (3, now - DAY - HOUR),
+            (4, now - DAY),
+            (5, now),
+        ] {
+            text.push_str(
+                &exec(seq, OBJECT)
+                    .replace(
+                        r#"["git","status","--short"]"#,
+                        r#"["sw_vers","-productVersion"]"#,
+                    )
+                    .replace("/usr/bin/git", "/usr/bin/sw_vers"),
+            );
+            text.push('\n');
+            std::fs::write(&log, &text).unwrap();
+            let tx = conn.transaction().unwrap();
+            crate::store::put_entity(&tx, "machine:mac").unwrap();
+            read(&tx, "events-1", "machine:mac", &dir.join("root"), at).unwrap();
+            tx.commit().unwrap();
+        }
+        let l = level(&conn, now).unwrap().unwrap();
+        let hours: i64 = conn
+            .query_row("SELECT COUNT(*) FROM rule_match", [], |r| r.get(0))
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let sw_vers = "5de06a6f-673a-4fc0-8d48-bcfe3837b033";
+        assert_eq!(l.matches_last_day[sw_vers], 2);
+        assert_eq!(l.matches_last_week[sw_vers], 4);
+        assert_eq!(hours, 4);
+    }
+
+    #[test]
     fn a_busy_mac_is_read_many_times_faster_than_it_starts_programs() {
         // The watcher reads at every sample, every thirty seconds, and a full run reads what
-        // accumulated since the last one, under the lock. 100,000 projected lines are about 17
-        // minutes at 100 starts a second; at the bound, 5,000 lines a second, the thirty
-        // seconds a sample adds at that pace are read in under a second. Measured, and printed with `--nocapture`; the bound is loose, so
-        // that a Mac busy with other builds does not fail it, and catches a reader that
-        // became quadratic or reads a line twice.
+        // accumulated since the last one, under the lock, each start evaluated against every
+        // published rule. A busy Mac starts about 100 programs a second, so a sample adds
+        // about 3,000 lines. The bound is ten times that pace in a debug build and fifty times
+        // in a release one: loose, so that a Mac busy with other builds does not fail it, and
+        // it catches a reader that became quadratic or reads a line twice. One start in ten
+        // matches a high rule, so a finding's evidence is taken too, and one in ten a medium
+        // rule. Measured and printed with `--nocapture`, with the share of the time the rules
+        // take, measured over the same starts apart from the reading.
         let dir = std::env::temp_dir().join(format!("soc-events-speed-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(LOG)).unwrap();
         let plist = dir.join(PLIST);
         std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
         std::fs::write(&plist, "<plist/>").unwrap();
-        let n: u64 = 100_000;
+        let git = r#"["git","status","--short"]"#;
+        let n: u64 = 5_000;
         let mut text = String::new();
         for seq in 1..=n {
-            text.push_str(&exec(seq, OBJECT));
+            let line = exec(seq, OBJECT);
+            text.push_str(&match seq % 10 {
+                0 => line
+                    .replace(git, r#"["grep","-r","password","."]"#)
+                    .replace("/usr/bin/git", "/usr/bin/grep"),
+                5 => line
+                    .replace(git, r#"["sw_vers","-productVersion"]"#)
+                    .replace("/usr/bin/git", "/usr/bin/sw_vers"),
+                _ => line,
+            });
             text.push('\n');
         }
         std::fs::write(dir.join(LOG).join("exec-20261004T00.jsonl"), &text).unwrap();
+        let rules = Rules::shipped();
         let t = std::time::Instant::now();
-        let found = look(&dir, &Left::default(), 1_791_000_000);
+        let found = look(&dir, &Left::default(), 1_791_000_000, rules);
         let took = t.elapsed();
         let _ = std::fs::remove_dir_all(&dir);
         let Found::Read(log) = found else {
             panic!("{found:?}");
         };
         assert_eq!((log.tally.starts, log.tally.lost), (n as i64, 0));
+        let counts: Vec<(&str, i64)> = log
+            .matched
+            .rules
+            .iter()
+            .map(|(id, h)| (*id, h.count))
+            .collect();
+        assert_eq!(
+            counts,
+            [
+                ("53b1b378-9b06-4992-b972-dde6e423d2b4", n as i64 / 10),
+                ("5de06a6f-673a-4fc0-8d48-bcfe3837b033", n as i64 / 10),
+            ]
+        );
+        // However many starts a high rule matched, a reading holds only the latest few.
+        let credentials = &log.matched.rules["53b1b378-9b06-4992-b972-dde6e423d2b4"];
+        assert_eq!(credentials.latest.len(), EVIDENCE);
+        assert_eq!(
+            log.matched.rules["5de06a6f-673a-4fc0-8d48-bcfe3837b033"]
+                .latest
+                .len(),
+            0
+        );
+        let starts: Vec<ProcessStart> = text
+            .lines()
+            .map(|l| match line(l.as_bytes()) {
+                Ok(Line::Exec { start, .. }) => *start,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        let t = std::time::Instant::now();
+        let matched: usize = starts.iter().map(|s| rules.evaluate(s).len()).sum();
+        let evaluating = t.elapsed();
+        assert_eq!(matched as u64, n / 5);
         let rate = n as f64 / took.as_secs_f64();
         println!(
-            "read {n} lines of {} bytes each in {took:?}: {rate:.0} lines a second",
-            text.len() as u64 / n
+            "read {n} lines of {} bytes each in {took:?}: {rate:.0} lines a second; evaluating {} rules over them alone took {evaluating:?}",
+            text.len() as u64 / n,
+            rules.groups().0.len() + rules.groups().1.len()
         );
-        assert!(rate > 5_000.0, "{rate:.0} lines a second");
+        let bound = if cfg!(debug_assertions) {
+            1_000.0
+        } else {
+            5_000.0
+        };
+        assert!(rate > bound, "{rate:.0} lines a second");
+    }
+
+    #[test]
+    fn the_level_is_told_as_a_short_state_then_each_caveat_on_its_own() {
+        // Form before text: a surface shows the state and the count at a glance and folds the
+        // caveats under it. Counts read as a person says them, thousands separated.
+        let mut l = Level {
+            state: RUNNING.to_string(),
+            read_at: 0,
+            written: None,
+            said_by: None,
+            said: None,
+            reason: None,
+            version: None,
+            since_check: Tally::default(),
+            last_day: Tally {
+                starts: 49_842,
+                unknown_gaps: 2,
+                ..Tally::default()
+            },
+            matches_last_day: BTreeMap::new(),
+            matches_last_week: BTreeMap::new(),
+        };
+        let said = words(&l);
+        assert_eq!(said.short(), "on, 49,842 in the last day");
+        assert_eq!(
+            said.notes,
+            ["The collector restarted twice; program starts in those moments were not seen."]
+        );
+        assert_eq!(
+            said.line(),
+            "on, 49,842 program starts in the last day. The collector restarted twice; program starts in those moments were not seen."
+        );
+        l.last_day.unknown_gaps = 1_200;
+        assert!(words(&l).notes[0].starts_with("The collector restarted 1,200 times;"));
+        l.last_day = Tally::default();
+        assert!(words(&l).notes.is_empty());
+        l.state = NOT_INSTALLED.to_string();
+        assert_eq!(words(&l).short(), "not installed");
     }
 
     #[test]

@@ -97,7 +97,7 @@ CREATE TABLE raw_input (
 /// What the journal records. The list only grows: a store whose journal was made with a
 /// shorter list is made again with this one when it is opened, so a new kind of entry is a
 /// new word here and nothing else.
-const JOURNAL_ENTRIES: [&str; 18] = [
+const JOURNAL_ENTRIES: [&str; 19] = [
     "run_started",
     "added",
     "changed",
@@ -118,6 +118,8 @@ const JOURNAL_ENTRIES: [&str; 18] = [
     "sampled",
     // One reading of a vulnerability data feed with its counts, see `osv.rs`.
     "advisories_read",
+    // A published rule's match that a finding rests on: the rule and a count, see `events.rs`.
+    "matched",
 ];
 
 /// The journal. It cannot be rebuilt from raw input, so it only grows. Its entries are the

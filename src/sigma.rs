@@ -12,7 +12,7 @@
 
 use serde_json::{Value as Json, json};
 use serde_norway::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Where the shipped rules come from, and the commit they were copied at.
 pub const SOURCE: &str = "https://github.com/SigmaHQ/sigma";
@@ -108,17 +108,10 @@ pub const SHIPPED: &[(&str, &str)] = shipped![
     "rules/macos/process_creation/proc_creation_macos_xcsset_malware_infection.yml",
 ];
 
-/// One program start, as the event level reads it from `eslogger`'s `exec`.
-pub struct ProcessStart {
-    /// The program started: the path of its executable (`target.executable.path`).
-    pub image: String,
-    /// Its arguments as `exec` passed them (`args`): the first is the name it was started by,
-    /// a bare name or a path, as the caller wrote it.
-    pub args: Vec<String>,
-    /// The program that started it: the executable of the process before `exec`
-    /// (`process.executable.path`).
-    pub parent_image: String,
-}
+/// One program start: the event level's, `crate::events::ProcessStart`, read from
+/// `eslogger`'s `exec`. Which Sigma field each of its parts is, and why, is
+/// `crate::events::SIGMA_FIELDS`, beside where the line is read.
+pub use crate::events::ProcessStart;
 
 /// The kind of event a rule's logsource must name for this level to evaluate it.
 pub const CATEGORY: &str = "process_creation";
@@ -155,24 +148,16 @@ pub const DRILL: [(&str, &str, &[&str]); 4] = [
 /// A drill start: started by `sh`, as Atomic Red Team's `sh` executor starts it.
 pub fn drill_start(image: &str, args: &[&str]) -> ProcessStart {
     ProcessStart {
-        image: image.to_string(),
+        executable: image.to_string(),
         args: args.iter().map(|a| a.to_string()).collect(),
-        parent_image: "/bin/sh".to_string(),
+        parent_executable: Some("/bin/sh".to_string()),
+        ..ProcessStart::default()
     }
 }
 
-/// How a field's value is taken from a program start.
-type Take = fn(&ProcessStart) -> String;
-
 /// Sigma's names for what a program start gives, and how each is taken from it. A field a rule
 /// names that is not here is one this level does not have.
-pub const FIELDS: [(&str, Take); 3] = [
-    ("Image", |e| e.image.clone()),
-    // The arguments joined by single spaces, the first included, as `docs/research/event-level.md`
-    // maps `eslogger`'s `args`. Sigma's command lines on other systems hold the program too.
-    ("CommandLine", |e| e.args.join(" ")),
-    ("ParentImage", |e| e.parent_image.clone()),
-];
+pub use crate::events::SIGMA_FIELDS as FIELDS;
 
 /// How bad, Sigma's levels; their names are OCSF's severity names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -193,6 +178,13 @@ const LEVELS: [(&str, Level); 5] = [
 ];
 
 impl Level {
+    /// Whether a match of a rule of this level raises a finding. Sigma's specification says a
+    /// `high` rule "should trigger an internal alert" and that lower levels are rarely an
+    /// incident; every lower match is counted only.
+    pub fn raises(self) -> bool {
+        self >= Level::High
+    }
+
     pub fn as_str(self) -> &'static str {
         LEVELS
             .iter()
@@ -220,6 +212,22 @@ const STATUSES: [(&str, Status); 5] = [
 ];
 
 impl Status {
+    /// How sure a finding from a rule of this status is, as OCSF's confidence names it. A
+    /// published rule is written from attacks seen elsewhere and was never tuned to this Mac,
+    /// where coding agents and build tools start `grep`, `curl`, `osascript` and `dd` all day,
+    /// so no status makes a match sure. SigmaHQ calls a rule `stable` once it has been used in
+    /// several environments for some time with its false positives listed: medium. `test`,
+    /// which is 67 of the 69 macOS rules, says false positives may still be found, and
+    /// `experimental` that it is new: low. No published false-positive rate for these rules
+    /// on developer Macs was found (`docs/research/event-level.md`). So a finding from a
+    /// shipped `test` rule is never urgent: it is shown, and the app does not alert on it.
+    pub fn confidence(self) -> &'static str {
+        match self {
+            Status::Stable => "medium",
+            Status::Test | Status::Experimental | Status::Deprecated | Status::Unsupported => "low",
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         STATUSES
             .iter()
@@ -229,8 +237,11 @@ impl Status {
 }
 
 /// What a rule says about itself. Text from the rule, returned as data.
+#[derive(Debug)]
 pub struct Meta {
     pub id: String,
+    /// The id of a finding's rule when this rule raises one: `sigma:<id>`.
+    pub finding_rule: String,
     pub title: String,
     pub level: Level,
     pub status: Status,
@@ -320,14 +331,27 @@ impl Match<'_> {
     }
 }
 
+/// How the rule of a finding a published rule raised begins: `sigma:<the rule's id>`.
+pub const FINDING_PREFIX: &str = "sigma:";
+
 pub struct Rules {
     pub rules: Vec<Loaded>,
 }
 
+static SHIPPED_RULES: std::sync::OnceLock<Rules> = std::sync::OnceLock::new();
+
 impl Rules {
-    /// Every shipped rule, each parsed once.
-    pub fn shipped() -> Rules {
-        Rules::load(SHIPPED)
+    /// Every shipped rule, parsed once per process, not at each reading: the watcher reads
+    /// program starts every thirty seconds for as long as it runs.
+    pub fn shipped() -> &'static Rules {
+        SHIPPED_RULES.get_or_init(|| Rules::load(SHIPPED))
+    }
+
+    /// A rule by its id, among those that could be read.
+    pub fn by_id(&self, id: &str) -> Option<&Loaded> {
+        self.rules
+            .iter()
+            .find(|l| l.meta.as_ref().is_some_and(|m| m.id == id))
     }
 
     pub fn load(files: &[(&'static str, &'static str)]) -> Rules {
@@ -341,7 +365,11 @@ impl Rules {
     pub fn evaluate(&self, start: &ProcessStart) -> Vec<Match<'_>> {
         let mut event = sigma_rust::Event::new();
         for (name, take) in FIELDS {
-            event.insert(name, take(start));
+            // A field the start does not give stays absent, and an absent field matches
+            // nothing.
+            if let Some(value) = take(start) {
+                event.insert(name, value);
+            }
         }
         self.rules
             .iter()
@@ -436,11 +464,20 @@ impl Rules {
             .count()
     }
 
-    /// The same summary for a person, a line each.
-    pub fn summary_lines(&self) -> Vec<String> {
+    /// The same summary for a person, a line each, with how many times each rule matched in
+    /// the last day where the store says.
+    pub fn summary_lines(&self, last_day: Option<&BTreeMap<String, i64>>) -> Vec<String> {
         let (evaluated, in_part, not_evaluated) = self.groups();
         let row = |l: &Loaded| match &l.meta {
-            Some(m) => format!("  {:<13} {}", m.level.as_str(), m.title),
+            Some(m) => {
+                let n = last_day.and_then(|d| d.get(&m.id)).copied().unwrap_or(0);
+                let matched = if n > 0 {
+                    format!(" · matched {} in the last day", times(n))
+                } else {
+                    String::new()
+                };
+                format!("  {:<13} {}{matched}", m.level.as_str(), m.title)
+            }
             None => format!("  {:<13} {}", "?", l.file),
         };
         let mut lines = vec![
@@ -517,6 +554,11 @@ impl Rules {
     }
 }
 
+/// How many times, as a number with its thousands separated.
+pub fn times(n: i64) -> String {
+    crate::view::counted(n, "time", "times")
+}
+
 fn texts(items: &[String]) -> Json {
     items.iter().map(|s| crate::status::text(s)).collect()
 }
@@ -562,8 +604,10 @@ fn meta(rule: &sigma_rust::Rule, yaml: &Value) -> Result<Meta, String> {
             .map(|(_, v)| *v)
             .ok_or(format!("the rule has no {key}"))
     }
+    let id = rule.id.clone().ok_or("the rule has no id")?;
     Ok(Meta {
-        id: rule.id.clone().ok_or("the rule has no id")?,
+        finding_rule: format!("{FINDING_PREFIX}{id}"),
+        id,
         title: rule.title.clone(),
         level: one_of(&LEVELS, "level", yaml)?,
         status: one_of(&STATUSES, "status", yaml)?,
@@ -640,9 +684,10 @@ mod tests {
 
     fn start(image: &str, args: &[&str], parent: &str) -> ProcessStart {
         ProcessStart {
-            image: image.to_string(),
+            executable: image.to_string(),
             args: args.iter().map(|a| a.to_string()).collect(),
-            parent_image: parent.to_string(),
+            parent_executable: Some(parent.to_string()),
+            ..ProcessStart::default()
         }
     }
 
@@ -774,7 +819,7 @@ mod tests {
         );
         for (_, image, args) in DRILL {
             assert!(
-                fires(&rules, BINARY_PADDING, &drill_start(image, args)),
+                fires(rules, BINARY_PADDING, &drill_start(image, args)),
                 "{args:?}"
             );
         }
@@ -784,7 +829,7 @@ mod tests {
         }
         assert!(
             rules
-                .summary_lines()
+                .summary_lines(None)
                 .iter()
                 .any(|l| l == "Drill, Atomic Red Team T1027.001: 4 of 4 program starts raise Binary Padding - MacOS.")
         );
@@ -803,13 +848,13 @@ mod tests {
         );
 
         let copy = start("/bin/dd", &["dd", "if=a", "of=b"], "/bin/zsh");
-        assert!(!fires(&rules, BINARY_PADDING, &copy));
+        assert!(!fires(rules, BINARY_PADDING, &copy));
         let cut = start(
             "/usr/bin/truncate",
             &["truncate", "-s", "0", "f"],
             "/bin/zsh",
         );
-        assert!(!fires(&rules, BINARY_PADDING, &cut));
+        assert!(!fires(rules, BINARY_PADDING, &cut));
 
         let m = rules.evaluate(&truncate);
         let m = m.iter().find(|m| m.meta.id == BINARY_PADDING).unwrap();
@@ -1070,12 +1115,43 @@ mod tests {
             "every high rule that is evaluated has samples"
         );
         for (id, hit, miss) in &samples {
-            assert!(fires(&rules, id, hit), "{id} fires on its sample");
+            assert!(fires(rules, id, hit), "{id} fires on its sample");
             assert!(
-                !fires(&rules, id, miss),
+                !fires(rules, id, miss),
                 "{id} stays silent on its near miss"
             );
         }
+    }
+
+    /// A start whose message names no program before the `exec` gives no `ParentImage`: the
+    /// field is absent, not empty, so a rule asking for an empty parent does not take it for
+    /// one.
+    #[test]
+    fn a_parent_the_start_does_not_give_is_absent_not_empty() {
+        let rules = Rules::load(&[(
+            "empty-parent.yml",
+            invented("    selection:\n        ParentImage: ''\n    condition: selection\n"),
+        )]);
+        let mut s = start("/bin/x", &["x"], "");
+        assert_eq!(rules.evaluate(&s).len(), 1);
+        s.parent_executable = None;
+        assert!(rules.evaluate(&s).is_empty());
+    }
+
+    /// How sure a finding from a published rule is follows the rule's status: a high match of
+    /// a rule SigmaHQ calls stable is urgent, one of a rule still in test or experimental is
+    /// not, and no published rule is ever sure, since none was tuned to this Mac.
+    #[test]
+    fn only_a_stable_rule_s_high_match_is_urgent_and_none_is_sure() {
+        for (status, urgent) in [
+            (Status::Stable, true),
+            (Status::Test, false),
+            (Status::Experimental, false),
+        ] {
+            let sure = Some(status.confidence());
+            assert_eq!(crate::findings::urgent("high", sure), urgent, "{status:?}");
+        }
+        assert!(STATUSES.iter().all(|(_, s)| s.confidence() != "high"));
     }
 
     /// The command line is the arguments joined by single spaces, the first included, so a
@@ -1089,11 +1165,11 @@ mod tests {
             "/bin/sh",
         );
         let (_, command_line) = FIELDS.iter().find(|(n, _)| *n == "CommandLine").unwrap();
-        assert_eq!(command_line(&s), "truncate -s +1 f");
+        assert_eq!(command_line(&s).as_deref(), Some("truncate -s +1 f"));
         let rules = Rules::shipped();
-        assert!(fires(&rules, BINARY_PADDING, &s));
+        assert!(fires(rules, BINARY_PADDING, &s));
         let glued = start("/usr/bin/truncate", &["truncate", "-s+1", "f"], "/bin/sh");
-        assert!(!fires(&rules, BINARY_PADDING, &glued));
+        assert!(!fires(rules, BINARY_PADDING, &glued));
     }
 
     /// Sigma's values are case-insensitive, and macOS's default file system is too, so
@@ -1103,12 +1179,12 @@ mod tests {
     fn values_match_whatever_their_case() {
         let rules = Rules::shipped();
         let shouted = start("/BIN/DD", &["DD", "IF=/DEV/ZERO"], "/bin/sh");
-        assert!(fires(&rules, BINARY_PADDING, &shouted));
+        assert!(fires(rules, BINARY_PADDING, &shouted));
         let find = start("/USR/BIN/FIND", &["find", "."], "/bin/zsh");
-        assert!(fires(&rules, FILE_DISCOVERY, &find));
+        assert!(fires(rules, FILE_DISCOVERY, &find));
         // `endswith: '/dd'` holds the slash: another program whose name ends in dd is not dd.
         let gdd = start("/usr/local/bin/gdd", &["gdd", "if=/dev/zero"], "/bin/sh");
-        assert!(!fires(&rules, BINARY_PADDING, &gdd));
+        assert!(!fires(rules, BINARY_PADDING, &gdd));
     }
 
     /// Regular expressions are case-sensitive, as the specification says, unlike every other
@@ -1118,9 +1194,9 @@ mod tests {
     fn regular_expressions_keep_case() {
         let rules = Rules::shipped();
         let listen = start("/usr/bin/nc", &["nc", "-l", "8080"], "/bin/zsh");
-        assert!(!fires(&rules, NETWORK_SCANNING, &listen));
+        assert!(!fires(rules, NETWORK_SCANNING, &listen));
         let upper = start("/usr/bin/nc", &["nc", "-L", "8080"], "/bin/zsh");
-        assert!(fires(&rules, NETWORK_SCANNING, &upper));
+        assert!(fires(rules, NETWORK_SCANNING, &upper));
     }
 
     /// A regular expression is searched for anywhere in the value, not matched against the
@@ -1135,7 +1211,7 @@ mod tests {
             &["dscl", ".", "-create", "/Users/example", "UniqueID", "501"],
             "/bin/zsh",
         );
-        assert!(fires(&rules, HIDDEN_USER, &create));
+        assert!(fires(rules, HIDDEN_USER, &create));
     }
 
     /// A field a program start does not give is absent, and an absent field matches nothing.
@@ -1146,14 +1222,14 @@ mod tests {
     fn a_field_this_level_does_not_have_never_matches_and_is_named() {
         let rules = Rules::shipped();
         assert_eq!(
-            by_id(&rules, RENAMED_MESHAGENT).placement,
+            by_id(rules, RENAMED_MESHAGENT).placement,
             Placement::InPart(vec![Branch {
                 selection: "selection_meshagent".into(),
                 fields: vec!["OriginalFileName".into()],
             }])
         );
         let quiet = start("/tmp/.helper", &["/tmp/.helper", "-run"], "/bin/sh");
-        assert!(!fires(&rules, RENAMED_MESHAGENT, &quiet));
+        assert!(!fires(rules, RENAMED_MESHAGENT, &quiet));
         let s = rules.summary_json();
         assert_eq!(
             s["in_part"][0]["never_matches"],
@@ -1170,9 +1246,9 @@ mod tests {
         let rules = Rules::shipped();
         let parent = "/Applications/Safari.app/Contents/MacOS/Safari";
         let shell = start("/bin/zsh", &["zsh", "-c", "id"], parent);
-        assert!(fires(&rules, BROWSER_CHILD, &shell));
+        assert!(fires(rules, BROWSER_CHILD, &shell));
         let bare = start("/bin/zsh", &[], parent);
-        assert!(!fires(&rules, BROWSER_CHILD, &bare));
+        assert!(!fires(rules, BROWSER_CHILD, &bare));
         let update = start(
             "/bin/sh",
             &[
@@ -1181,7 +1257,7 @@ mod tests {
             ],
             parent,
         );
-        assert!(!fires(&rules, BROWSER_CHILD, &update));
+        assert!(!fires(rules, BROWSER_CHILD, &update));
     }
 
     /// File rules are about files written, and their `Image` is the writer, not a program
@@ -1206,13 +1282,13 @@ mod tests {
         );
         assert!(rules.evaluate(&curl).is_empty());
         let shipped = Rules::shipped();
-        let amos = by_id(&shipped, "e710a880-1f18-4417-b6a0-b5afdf7e3023");
+        let amos = by_id(shipped, "e710a880-1f18-4417-b6a0-b5afdf7e3023");
         assert_eq!(
             amos.placement,
             Placement::NotEvaluated(Reason::NeedsEvents("file_event".into()))
         );
         assert!(!fires(
-            &shipped,
+            shipped,
             "e710a880-1f18-4417-b6a0-b5afdf7e3023",
             &curl
         ));
@@ -1348,7 +1424,7 @@ mod tests {
                 "status": "test",
             })
         );
-        let lines = Rules::shipped().summary_lines();
+        let lines = Rules::shipped().summary_lines(None);
         assert!(lines[0].contains("75 shipped"));
         assert!(
             lines

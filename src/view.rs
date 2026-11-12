@@ -101,7 +101,7 @@ pub fn pages(
         ),
         (
             format!("{DETAILS}/{}.html", crate::pages::RULES),
-            crate::pages::rules(result, now),
+            crate::pages::rules(result, st.event_level.as_ref(), now),
         ),
     ];
     for (name, title) in DETAIL_PAGES {
@@ -2182,6 +2182,7 @@ body.summary { background: var(--grp); color: var(--ink);
 .summary .cover .lbl { font-size: 15px; }
 .summary .cover .val { font-size: 13px; color: var(--sec); text-align: right; }
 .summary .cover .num { font-size: 15px; font-weight: 600; color: var(--ink); text-align: right; }
+.summary .cover .note { grid-column: 1 / -1; font-size: 13px; color: var(--sec); margin-top: -4px; }
 .summary .meter { display: block; height: 8px; border-radius: 4px; background: var(--ln); overflow: hidden; }
 .summary .meter span { display: block; height: 8px; background: var(--blue); }
 .summary .told { border-top: 1px solid var(--ln); padding-top: 10px; }

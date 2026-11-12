@@ -749,8 +749,12 @@ pub fn result(state: Option<&State>, running: bool, path: &Path, now: i64) -> Va
     }
     out.insert("store".into(), store);
     out.insert("cannot_judge".into(), json!(CANNOT_JUDGE));
-    // The published rules this build ships: `src/sigma.rs`. Not from the store.
-    out.insert("rules".into(), rules_section());
+    // The published rules this build ships, `src/sigma.rs`, and what they did over the program
+    // starts the event level read.
+    out.insert(
+        "rules".into(),
+        rules_section(state.and_then(|s| s.event_level.as_ref())),
+    );
     // Whether a watcher runs on this store now: `soc watch`, src/watch.rs.
     out.insert("watching".into(), crate::watch::status(path));
     let mut not_computed: Vec<Value> = Vec::new();
@@ -1005,19 +1009,63 @@ fn watched_section(st: &State, s: &Summary, w: &Watched) -> Value {
     })
 }
 
-/// The published rules this build ships, counted by what a program start lets them do, from
-/// the rules' own summary. `watching` says whether any of them watches this Mac. It is false
-/// while nothing feeds them program starts: the step that wires the event level to them sets
-/// it from the event level's state.
-fn rules_section() -> Value {
-    let summary = crate::sigma::Rules::shipped().summary_json();
-    let t = &summary["totals"];
+/// How many rules that matched in the last day the status lists; the rest are counted.
+const MATCHED_SHOWN: usize = 10;
+
+/// The published rules this build ships, counted by what a program start lets them do, and
+/// what they did. `watching` is true only while the event level's latest state is `running`:
+/// then every program start read is judged by the `watching_rules`, the rules evaluated in
+/// full; one evaluated in part or not at all is never counted as watching. `judged` says how
+/// much of the last day they judged: `all`, `part` when the log lost starts, could not read
+/// lines or deleted hours before they were read, or `none` while the level does not run, each
+/// but `all` with its fixed words in `judged_note`. Matches in the last day are served whether
+/// or not the level runs now: they happened.
+pub fn rules_section(level: Option<&crate::events::Level>) -> Value {
+    let rules = crate::sigma::Rules::shipped();
+    let (evaluated, in_part, not_evaluated) = rules.groups();
+    let watching = level.filter(|l| l.state == crate::events::RUNNING);
+    let (judged, note) = match watching {
+        None => (
+            "none",
+            Some("The event level is not running, so no program start is judged now."),
+        ),
+        Some(l) if l.last_day.whole() => ("all", None),
+        Some(_) => (
+            "part",
+            Some(
+                "Over the last day some program starts were lost, could not be read or were deleted before they were read, so the rules judged only those that were read.",
+            ),
+        ),
+    };
+    let empty = BTreeMap::new();
+    let day = level.map_or(&empty, |l| &l.matches_last_day);
+    let mut matched: Vec<(&String, &i64)> = day.iter().collect();
+    matched.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+    let shown: Vec<Value> = matched
+        .iter()
+        .take(MATCHED_SHOWN)
+        .map(|(id, n)| {
+            let meta = rules.by_id(id).and_then(|l| l.meta.as_ref());
+            json!({
+                "id_text": text(id),
+                "title_text": meta.map(|m| text(&m.title)),
+                "level": meta.map(|m| m.level.as_str()),
+                "matches": n,
+            })
+        })
+        .collect();
     json!({
-        "shipped": t["shipped"],
-        "evaluated": t["evaluated"],
-        "in_part": t["in_part"],
-        "not_evaluated": t["not_evaluated"],
-        "watching": false,
+        "shipped": rules.rules.len(),
+        "evaluated": evaluated.len(),
+        "in_part": in_part.len(),
+        "not_evaluated": not_evaluated.len(),
+        "watching": watching.is_some(),
+        "watching_rules": if watching.is_some() { evaluated.len() } else { 0 },
+        "judged": judged,
+        "judged_note": note,
+        "matches_last_day": day.values().sum::<i64>(),
+        "matched_last_day": shown,
+        "matched_last_day_total": matched.len(),
     })
 }
 
