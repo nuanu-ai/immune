@@ -334,13 +334,19 @@ fn journaled(
     reader: Option<&str>,
     base: &HashMap<(String, String), String>,
 ) -> rusqlite::Result<Vec<Journaled>> {
-    let mut stmt = conn.prepare(
+    // One run is asked for by a plain comparison, so that its differences are found through
+    // `journal_run` and not by going through the whole journal, which `?1 IS NULL OR` would.
+    let run = if run_id.is_some() {
+        "run_id = ?1"
+    } else {
+        "?1 IS NULL"
+    };
+    let mut stmt = conn.prepare(&format!(
         "SELECT at, run_id, entry, reader, scope, kind, subject, predicate, old_value, new_value
          FROM journal
-         WHERE entry IN ('added', 'changed', 'removed')
-           AND (?1 IS NULL OR run_id = ?1) AND (?2 IS NULL OR reader = ?2)
-         ORDER BY seq",
-    )?;
+         WHERE {run} AND entry IN ('added', 'changed', 'removed') AND (?2 IS NULL OR reader = ?2)
+         ORDER BY seq"
+    ))?;
     let rows = stmt.query_map(params![run_id, reader], |r| {
         let reader: Option<String> = r.get(3)?;
         let kind: Option<String> = r.get(5)?;

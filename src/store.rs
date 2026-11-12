@@ -281,6 +281,16 @@ CREATE INDEX IF NOT EXISTS assertion_subject ON assertion (subject, predicate);
 CREATE INDEX IF NOT EXISTS finding_basis_finding ON finding_basis (finding);
 ";
 
+/// The journal by run: what one run found, how it started and ended, what a reading of a feed
+/// or the catalogue changed. Every run, watcher reading and sample adds to the journal and
+/// nothing is ever removed from it, so without this each of those questions went through
+/// the whole journal: the page of threats asked it once for each of the catalogue's 1,450
+/// entries, 2.5 s of a full `soc view` on a journal of 40,000 entries. Made after the journal
+/// is widened, which makes the table again.
+const JOURNAL_INDEXES: &str = "
+CREATE INDEX IF NOT EXISTS journal_run ON journal (run_id, entry);
+";
+
 /// The start of a query that names two tables: `reading (reader, scope, kind)`, one row for
 /// each reader, scope and kind ever read, and `latest`, the coverage row of the latest
 /// reading of each, with every column of `coverage`. It is what `coverage WHERE id IN (SELECT
@@ -476,6 +486,7 @@ pub fn open(path: &Path) -> Res<Connection> {
     add_causes(&conn)?;
     conn.execute_batch(INDEXES)?;
     widen_journal(&mut conn)?;
+    conn.execute_batch(JOURNAL_INDEXES)?;
     Ok(conn)
 }
 
