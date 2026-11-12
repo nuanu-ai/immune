@@ -34,3 +34,8 @@ sigma-rust = { version = "0.7.0", default-features = false }
 # detection can be read: sigma-rust parses both but keeps level, status and selections in
 # private types. It brings no crate sigma-rust does not already bring.
 serde_norway = "0.9.42"
+# Before the evaluator is asked, one pass over each field of a program start finds which texts
+# the rules need there, so that a rule that cannot match is not asked (`sigma.rs`). This is
+# the multi-pattern search `regex`, which sigma-rust brings, is built on: BurntSushi's, with
+# `memchr` as its one dependency, both already compiled in, so no crate is added.
+aho-corasick = "1.1.5"
