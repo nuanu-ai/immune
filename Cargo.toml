@@ -24,3 +24,13 @@ semver = "1.0.28"
 # property of an object in order in its tree, so equal keys stay visible. No feature is on,
 # and with none it has no dependencies.
 jsonc-parser = { version = "0.34.0", default-features = false }
+# The event level evaluates SigmaHQ's published rules for macOS, unmodified, over each program
+# start in memory. sigma-rust parses Sigma rules and evaluates them over key-value events:
+# conditions, `1 of`/`all of`, and every modifier the shipped rules use. Of the two Rust
+# evaluators it brings the fewer crates and parses all 75 shipped rules; without default
+# features it leaves out JSON events, which the level does not need.
+sigma-rust = { version = "0.7.0", default-features = false }
+# The YAML parser sigma-rust itself uses, named so the rules' metadata and the shape of their
+# detection can be read: sigma-rust parses both but keeps level, status and selections in
+# private types. It brings no crate sigma-rust does not already bring.
+serde_norway = "0.9.42"
