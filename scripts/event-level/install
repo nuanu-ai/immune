@@ -163,10 +163,38 @@ for l in $LABELS; do
     step /bin/launchctl bootstrap system "$DAEMONS/$l.plist"
 done
 
-cat <<EOF
-Installed. While the app is open, within a minute \`soc status\` and the panel say the event
-level is on, with how many program starts it read; otherwise they say it after the next
-full check, or at once after \`soc run\`. If macOS refuses
-eslogger Full Disk Access, they say so instead, with what eslogger printed
-(ES_NEW_CLIENT_RESULT_ERR_NOT_PERMITTED), and nothing is recorded until it is granted.
-EOF
+# The verdict, in one line the owner can read at a glance: whether program starts are being
+# written. The programs this script starts are program starts themselves, so a level that
+# works has written within seconds; ten are given. Only what was written after this install
+# put its property lists in place counts, so an earlier install's log decides nothing.
+mark="$DAEMONS/local.personal-soc.eslogger.plist"
+n=0
+verdict=
+while [ "$n" -lt 20 ] && [ -z "$verdict" ]; do
+    if [ -n "$(/usr/bin/find "$LOG" -name 'exec-*.jsonl' -type f -size +0 -newer "$mark" 2>/dev/null)" ]; then
+        verdict=running
+    elif [ -n "$(/usr/bin/find "$LOG" -name eslogger.err -type f -newer "$mark" 2>/dev/null)" ] &&
+        /usr/bin/tail -c 4096 "$LOG/eslogger.err" | /usr/bin/grep -q ES_NEW_CLIENT_RESULT_ERR_NOT_PERMITTED; then
+        verdict=refused
+    else
+        n=$((n + 1))
+        /bin/sleep 0.5
+    fi
+done
+
+echo
+case $verdict in
+running)
+    echo "RESULT: RUNNING. Program starts are being recorded."
+    echo "The panel and \`soc status\` say so within a minute while the app is open."
+    ;;
+refused)
+    echo "RESULT: REFUSED. macOS does not give eslogger Full Disk Access, so nothing is recorded."
+    echo "Grant it to /usr/bin/eslogger in System Settings > Privacy & Security > Full Disk"
+    echo "Access; it starts by itself within seconds, and the panel and \`soc status\` say so."
+    ;;
+*)
+    echo "RESULT: INSTALLED, NOT RECORDING YET. Nothing was written in ten seconds, and eslogger"
+    echo "printed no refusal. \`soc status\` says what the level's state is after \`soc run\`."
+    ;;
+esac
