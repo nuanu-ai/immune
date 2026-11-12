@@ -124,7 +124,7 @@ More detail: [how it works](docs/how-it-works.md), [what is read and every comma
 
 ## For AI agents
 
-The first user of Immune is your coding agent, and the commands are its interface. Every command that takes `--json` prints one envelope with `ok`, `errors` and `result`. Exit code 0 means answered, 2 a misuse or an unknown id, 3 an unreadable store, 4 a check holding the store (ask again), and 5 from `immune watch` means another watcher has the store. Nothing asks an interactive question.
+The first user of Immune is your coding agent, and the commands are its interface. Every report command that takes `--json` prints one envelope with `ok`, `errors` and `result`. `immune project` prints one protobuf message, or the same message as JSON with `--json`, and uses the envelope only for a failure. Exit code 0 means answered, 2 a misuse or an unknown id, 3 an unreadable store, 4 a check holding the store (ask again), and 5 from `immune watch` means another watcher has the store. Nothing asks an interactive question.
 
 | Command | Answers |
 |---|---|
@@ -133,6 +133,7 @@ The first user of Immune is your coding agent, and the commands are its interfac
 | `immune finding <id> expected --reason <text> --via agent` | Your answer, given through the agent; also `seen` and `reopen` |
 | `immune vulnerabilities --json`, `immune vulnerability <id> --json` | Known vulnerabilities in your projects' packages, and the answer for one record or CVE in every project, with what it rests on |
 | `immune rules --json` | The shipped Sigma rules: which are evaluated in full, in part or not at all, with the reason, and how often each matched |
+| `immune project <path> --json` | What Immune knows of one project: whether it knows it at all, its facts with what each rests on, which readings speak for it and whether each was full, and its findings |
 | `immune watch` | One JSON line per event while it runs |
 
 A trimmed answer from the invented Mac in the pictures:
@@ -195,7 +196,7 @@ These are the only requests Immune makes. They go through `/usr/bin/curl` over H
 
 ## Artificial Immunity
 
-[Artificial Immunity](https://immunity.bot) is a closed product from Nuanu AI Lab built on top of Immune. It decides what to do about a finding: triage with a model, response, handing work to an agent. It runs this binary unchanged and shares no code with it. A protobuf schema for what it reads and writes is planned in this repository; its first version will hold what Immune concluded and is not sure of (rule matches with the event each matched, and what was lost), answers to questions about the Mac and its surroundings, and a verdict. Immune does not stream every event out. Today Immune's interface is the JSON its commands print, the same one an agent uses. Immune works on its own and does not need Artificial Immunity.
+[Artificial Immunity](https://immunity.bot) is a closed product from Nuanu AI Lab built on top of Immune. It decides what to do about a finding: triage with a model, response, handing work to an agent. It runs this binary unchanged and shares no code with it. What it reads and writes is defined by a protobuf schema in this repository, in `contract/immune/v1/`. So far the schema holds one message: what Immune knows of one project, printed by `immune project`. Its first version will also hold what Immune concluded and is not sure of (rule matches with the event each matched, and what was lost), answers about a program and a machine, and a verdict. Immune does not stream every event out. The other commands print their own JSON, the same one an agent uses. Immune works on its own and does not need Artificial Immunity.
 
 ## Status
 

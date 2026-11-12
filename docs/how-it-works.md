@@ -11,7 +11,7 @@ Readers → Store → Rules and matchers → Findings → Store → Commands →
 - Readers look at one kind of source each: launch agents, shell profiles, lockfiles, installed applications, the SSH configuration, the collector's log, and so on. A reader writes statements about what it saw and a record of what it looked through.
 - The store is one SQLite file, by default `~/Library/Application Support/ai.nuanu.immune/store.db`. Raw input the readers keep, the downloaded vulnerability data and the HTML pages live in the same folder.
 - Rules and matchers read the store and write findings into it. Immune's own rules are plain Rust code. Published rules (SigmaHQ's rules for macOS) are shipped unchanged and evaluated by the `sigma-rust` crate. Matchers compare what the readers found with vulnerability data and indicator lists.
-- Commands read the store and print what they find, as text or as one JSON envelope with `--json`. The app, the user's AI agent and the HTML pages all read the same commands.
+- Commands read the store and print what they find, as text or as one JSON envelope with `--json`. A command of the contract with the response layer prints one protobuf message instead, or the same message as JSON. The app, the user's AI agent and the HTML pages all read the same commands.
 
 The store is the one seam between the parts. What a reader saw, what a rule found and what a person answered are all rows in it, and the commands, the app and the pages read nothing else. No other layer or interface sits between the parts. That keeps any one of them replaceable: a collector, for example, can be swapped for another that writes the same facts.
 
@@ -216,3 +216,5 @@ Immune's own:
 ## Planned
 
 Not built: grouping related findings into cases, adding up weak rule matches, raising a finding's weight when something is seen on this Mac for the first time, and any reaction that stops or suspends a program. Immune reports and never blocks, suspends or kills anything.
+
+Part of the contract with the response layer is built. Its protobuf schema is in `contract/immune/v1/`, the core's types are generated from it, and one command prints it: `immune project` answers what the store knows of one project (see [reference.md](reference.md#the-contract)). Its message is general, so the questions about a program and a machine will use it unchanged. Those two questions are planned, and so are the queue of rule matches with the event each matched, the count of what was lost and the collector's state, and the verdict that comes back.

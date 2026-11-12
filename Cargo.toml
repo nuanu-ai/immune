@@ -41,3 +41,24 @@ serde_norway = "0.9.42"
 # the multi-pattern search `regex`, which sigma-rust brings, is built on: BurntSushi's, with
 # `memchr` as its one dependency, both already compiled in, so no crate is added.
 aho-corasick = "1.1.5"
+# The contract with a program that runs the core is a protobuf schema (`contract/`), and a
+# command of the contract prints binary protobuf. Protobuf's wire format is someone else's, so
+# it is not written by hand. prost is the protobuf runtime in general use in Rust (tokio-rs);
+# the types it derives for are generated from the schema and committed (`src/contract.rs`).
+# It links `bytes` into the program and runs `prost-derive` at build time, which brings
+# `anyhow`, `itertools` and `either`. Its default features are `derive` and `std`. The version is
+# the latest that had been published for at least two weeks.
+prost = "0.14.4"
+# The same messages as JSON with `--json`: serde's derives, put on the generated types by the
+# generator, print them with serde_json. serde and serde_derive were already compiled in for
+# sigma-rust; naming serde here adds no crate.
+serde = { version = "1.0.229", features = ["derive"] }
+
+[dev-dependencies]
+# The test that keeps the committed types equal to what the schema gives generates them again
+# (`tests/contract.rs`). prost-build is prost's generator. protox compiles the schema in Rust,
+# so neither a build nor a test needs `protoc`. prost-types is named to read the compiled
+# schema; protox and prost-build bring it anyway. None of the three is linked into the program.
+prost-build = "0.14.4"
+protox = "0.10.0"
+prost-types = "0.14.4"

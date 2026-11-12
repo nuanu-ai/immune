@@ -1,6 +1,6 @@
 # Reference
 
-What Immune reads on a Mac, where it looks, what it records and when; the vocabulary of facts; the commands; and the files it keeps. [how-it-works.md](how-it-works.md) explains the terms used here.
+What Immune reads on a Mac, where it looks, what it records and when; the vocabulary of facts; the commands and the contract; and the files it keeps. [how-it-works.md](how-it-works.md) explains the terms used here.
 
 ## When readers run
 
@@ -120,7 +120,7 @@ Reserved: `copy_of`, `reachable_from`.
 
 ## Commands
 
-Every command that takes `--json` prints one envelope with `format`, `operation`, `ok`, `errors` and `result`; an error has a `code`, a `message` and an `example`. Exit codes: 0 answered, 2 a misuse or an unknown id, 3 an unreadable store, 4 a check holding the store (ask again), 5 from `immune watch` when another watcher has the store. `--store <path>` points any command at another store.
+Every report command that takes `--json` prints one envelope with `format`, `operation`, `ok`, `errors` and `result`; an error has a `code`, a `message` and an `example`. A command of the contract prints its own message instead and uses the envelope only for a failure (see [the contract](#the-contract)). Exit codes: 0 answered, 2 a misuse or an unknown id, 3 an unreadable store, 4 a check holding the store (ask again), 5 from `immune watch` when another watcher has the store. `--store <path>` points any command at another store.
 
 | Command | Does |
 |---|---|
@@ -135,6 +135,7 @@ Every command that takes `--json` prints one envelope with `format`, `operation`
 | `immune vulnerability <record id or CVE id> [--json]` | The answer for one vulnerability in every project |
 | `immune rules [--json]` | The shipped Sigma rules: evaluated in full, in part or not, whether they watch, how often each matched |
 | `immune rules --over-log [--system-root <dir>] [--json]` | Evaluates the rules over the log on disk now, without the store |
+| `immune project <path or id> [--json]` | What the store knows of one project, as the contract's `Known` message. The project is a path, absolute or starting with `~/`, or its id as the store names it (`checkout:machine:<name>/<path>`). It reads the store only and never looks inside the project's folder |
 | `immune servers` | Lists the servers this Mac knows and writes the sweep script |
 | `immune owner [<name> retired\|not-mine --reason <text> \| <name> withdraw] [--via app\|agent] [--json]` | A statement that a machine is retired or not the user's, or the list of those that stand |
 | `immune view [--no-open] [--if-stale]` | Writes the HTML pages and opens the summary; with `--if-stale`, only when something they show changed or they are an hour old |
@@ -142,6 +143,26 @@ Every command that takes `--json` prints one envelope with `format`, `operation`
 | `immune watch [--sample-every <s>] [--events-every <s>] [--alive-every <s>]` | Runs until stopped, printing one JSON line per event: `watching`, `read`, `sample`, `program_starts`, `alive`, `problem` |
 
 In JSON output, `title`, `meaning` and `advice` are Immune's fixed words. Anything taken from the machine or a feed is only in a field whose name ends in `_text`.
+
+## The contract
+
+A program that runs Immune, such as the response layer, reads the commands of the contract. Their messages are defined by a protobuf schema in `contract/immune/v1/`, package `immune.v1`. The Rust types are generated from it into `src/contract/immune.v1.rs`, which is committed. A test generates the file again and fails when the two differ, so a build needs neither `protoc` nor a generator.
+
+A command of the contract prints one message on stdout: binary protobuf by default, and the same message as one line of JSON with `--json`. The generated types print the JSON. Field names are the schema's, an enum is the name of its value without the enum's prefix and in lower case (`CAUSE_NOT_GIVEN` prints as `not_given`, the store's own word), a 64-bit number is a JSON number, and an absent optional field is null. Times are seconds since the epoch, UTC, in fields ending in `_at`. A failure to answer is not a message: in binary nothing is printed on stdout, with `--json` the failure envelope is printed, and the exit codes are the ones above.
+
+One command uses the contract so far: `immune project`, which prints `Known`.
+
+| Field | Holds |
+|---|---|
+| `presence` | `unknown` when the store has never heard of the project, `held` when it has facts in force about it, `gone` when it was there and what was read of it is retracted |
+| `thing`, `parts` | the project's entity, and what is inside it: components `part_of` it, files `located_on` it, and files whose path is in its folder |
+| `facts` | the facts in force about the project and its parts, each with the assertions it rests on: `reader`, `basis`, `source_ref_text`, `observed_at`, and the reading's scope and kind |
+| `coverage` | the latest reading of each reader, scope and kind that speaks for the project: the readings of it and its parts, those that wrote its facts, those that look for projects on this Mac, and one that names a folder macOS asks permission for that holds it. Each has `completeness`, `reason_text`, `cause` and `observed_at`, and lists what it has no reader for |
+| `findings` | the findings about the project or its parts in every state, by id, with `rule`, `state`, `severity`, `confidence` and `urgent` |
+
+A project the store has never heard of is `unknown`, and its coverage shows which readings looked for it. In a project that is known and read in full, every reading is `full`. A project in a folder macOS asks permission for keeps what was read there before, and its answer carries the reading `folders macOS asks permission for` with completeness `none`, naming that folder.
+
+As in every other answer, text from the Mac is only in fields ending in `_text`, with hidden characters escaped. Entity ids are such text, since they hold paths and names from the Mac. An id and the place a fact was read are references and are never cut, so they can be matched and asked about again; an id holding a hidden character is shown escaped and does not ask back as written. Other text from the Mac is cut to 256 characters.
 
 ## Files Immune keeps
 

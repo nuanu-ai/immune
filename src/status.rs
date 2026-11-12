@@ -688,13 +688,18 @@ pub fn needs(conn: &Connection, now: i64) -> Res<findings::Needs> {
 /// Text from a source as a field's value: hidden characters as the terminal shows them,
 /// and at most `TEXT_CAP` characters.
 pub fn text(s: &str) -> Value {
+    Value::String(text_string(s))
+}
+
+/// The same as a string, for the contract's `_text` fields.
+pub fn text_string(s: &str) -> String {
     let shown = view::shown(s);
     if shown.chars().count() <= TEXT_CAP {
-        return Value::String(shown);
+        return shown;
     }
     let mut cut: String = shown.chars().take(TEXT_CAP - 1).collect();
     cut.push('…');
-    Value::String(cut)
+    cut
 }
 
 fn iso(secs: i64) -> Value {
