@@ -1652,9 +1652,9 @@ pub fn one_json(conn: &Connection, id: &str, now: i64) -> rusqlite::Result<Value
 
 /// Where a finding about a component is and what it rests on, as a person reads them: the
 /// lockfile lines of the releases, and the package, its releases and the records with their
-/// sources and summaries. `None` when no answer affects it now.
-pub fn finding_detail(conn: &Connection, about: &str) -> Option<(String, String)> {
-    let list = affecting(conn).ok()?;
+/// sources and summaries, from `list`, what `affecting` gives. `None` when no answer affects it
+/// now.
+pub fn finding_detail(list: &[Affecting], about: &str) -> Option<(String, String)> {
     let mine: Vec<&Affecting> = list
         .iter()
         .filter(|a| format!("component:{}/{}/{}", a.checkout, a.ecosystem, a.package) == about)

@@ -867,6 +867,7 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Found>>> 
     let this = this_machine(conn)?;
     // A store opened only for reading since this build keeps no `via` yet.
     let via = if has_via(conn)? { "via" } else { "NULL" };
+    let mut affecting: Option<Vec<crate::vulnerabilities::Affecting>> = None;
     conn.prepare(&format!(
         "SELECT id, rule, about, state, change, first_seen_at, first_seen_run, last_seen_at,
                 last_seen_run, answered_at, reason, until_at,
@@ -918,12 +919,17 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Found>>> 
         f.and_then(|mut f| {
             f.in_force = in_force(&f, now);
             // A finding about a dependency says where its lockfile lines are and what records
-            // it rests on, from the answers that stand now.
-            if f.rule.starts_with("lockfiles.")
-                && let Some((place, value)) = crate::vulnerabilities::finding_detail(conn, &f.about)
-            {
-                f.place = place;
-                f.became = Some(value);
+            // it rests on, from the answers that stand now. They are read once for all such
+            // findings, not once for each.
+            if f.rule.starts_with("lockfiles.") {
+                let list = affecting.get_or_insert_with(|| {
+                    crate::vulnerabilities::affecting(conn).unwrap_or_default()
+                });
+                if let Some((place, value)) = crate::vulnerabilities::finding_detail(list, &f.about)
+                {
+                    f.place = place;
+                    f.became = Some(value);
+                }
             }
             // A published rule's finding carries the rule and the starts it matched.
             if let Some(l) = published(&f.rule)
