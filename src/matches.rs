@@ -3,33 +3,30 @@
 //! (`contract/immune/v1/matches.proto`). The response layer reads it to look into what the core
 //! is not sure of.
 //!
-//! Nothing is written to the store, per event, per match or at all. The queue is the day's log
-//! read again from the caller's position by `events::queue`, which evaluates every event with
-//! the same call the core's own reading makes (`Into::judge` in `src/events.rs`), so the two
-//! cannot disagree about what matched. The store is only read: whether the core's own reading
-//! has read a line yet, which finding a high rule's match went to, and the collector's state as
-//! `immune status` serves it.
+//! Nothing is written to the store. The queue is the day's log read again from the caller's
+//! place by `events::queue`, which evaluates every event with the same call the core's own
+//! reading makes (`Into::judge` in `src/events.rs`), so the two cannot disagree about what
+//! matched. The place is the one the core's own reading keeps for itself, per log file its
+//! identity and how far it was read, printed as an opaque token (`events::Place`). The store is
+//! only read: whether the core's own reading has read a line yet, which finding its match went
+//! to, and the collector's state as `immune status` serves it.
 //!
 //! No false calm. An answer with no matches says how many lines were read and evaluated, how
 //! many could not be, what eslogger's numbering says was lost, whether lines were deleted
 //! before they were read, the collector's state, and which rules judge nothing here and why. A
-//! collector that is not installed is an answer that says so, not a failure.
+//! collector that is not installed is an answer that says so, not a failure. A store that is not
+//! there, or cannot be read, is a failure: without it the answer could not say what became of a
+//! match.
 //!
-//! Which finding a match went to. The store keeps no event, so a match is tied to a finding by
-//! time: a rule raises one finding per Mac, and a new one only after the owner closes the last,
-//! so the findings of a rule follow one another, each seen from `first_seen_at` to
-//! `last_seen_at`, the times of the readings that matched it. The reading that read an event
-//! came after the event, so it went to a finding last seen no earlier than the event. When only
-//! one finding of the rule was last seen at or after the event's second, that is the one;
-//! otherwise the answer says it cannot tell. A clock set back between the event and its reading
-//! would mislead this.
+//! Which finding a match went to is what the core's own reading recorded when it read the line
+//! (`rule_line`), never a guess.
 
 use crate::contract::{v1, value_of};
-use crate::events::{self, Evidence, Hit, Position, Queue, Stretch};
+use crate::events::{self, Evidence, Hit, LineAt, Place, Queue, Stretch, WentTo};
 use crate::sigma::{Kind, Meta, Placement, Reason, Rules};
-use crate::{Stop, status, store, view};
+use crate::{findings, known, status, store, view};
 use prost::Message;
-use rusqlite::{Connection, params};
+use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
@@ -43,14 +40,17 @@ const FORMAT: u32 = 1;
 /// small too.
 pub const LIMIT: usize = 1000;
 
-const AFTER: &str =
-    "--after takes a position as immune matches prints it, <hour>:<offset>, as in 20261004T00:4096";
+const AFTER: &str = "--after takes the place an answer of immune matches printed in continue_after, whole and as printed";
+
+/// Why rules for file events judge nothing while the collector is not installed.
+const NOT_INSTALLED: &str = "the event level is not installed";
 
 /// `immune matches`.
 pub struct MatchesArgs {
     pub store: PathBuf,
     pub json: bool,
-    pub after: Option<Position>,
+    /// The place given with `--after`, as given, and as read.
+    pub after: Option<(String, Place)>,
     pub limit: usize,
     /// The folder `/Library` is resolved under: `/` unless a test gives another.
     pub system_root: PathBuf,
@@ -66,7 +66,8 @@ pub fn parse(mut it: impl Iterator<Item = String>) -> Result<MatchesArgs, String
             "--json" => json = true,
             "--after" => {
                 let p = crate::value(&mut it, &arg)?;
-                after = Some(Position::parse(&p).ok_or(AFTER)?);
+                let place = Place::parse(&p).ok_or(AFTER)?;
+                after = Some((p, place));
             }
             "--limit" => {
                 limit = crate::value(&mut it, &arg)?
@@ -89,39 +90,45 @@ pub fn parse(mut it: impl Iterator<Item = String>) -> Result<MatchesArgs, String
 
 /// Why an answer could not be given.
 enum Failure {
-    Store(Stop),
+    Store(String),
     Log(String),
 }
 
-/// Answers `immune matches`: the message on stdout, binary or JSON, or a failure the way the
-/// report commands give one.
+/// Answers `immune matches`: the message on stdout, binary or JSON, or a failure: nothing on
+/// stdout in binary, the envelope with `--json`, and the exit codes the report commands use.
 pub fn matches_cmd(args: &MatchesArgs) -> ExitCode {
     let answer = match read(args, crate::now_secs()) {
         Ok(answer) => answer,
-        Err(Failure::Store(e)) => return crate::store_failed(args.json, "matches", &e),
+        Err(Failure::Store(why)) => {
+            return fail(
+                args.json,
+                "store_unreadable",
+                "the store cannot be read, so what became of a match cannot be told; nothing was evaluated",
+                why,
+                crate::EXIT_STORE,
+            );
+        }
         Err(Failure::Log(why)) => {
-            if args.json {
-                crate::print_json(&status::failure(
-                    Some("matches"),
-                    "log_unreadable",
-                    "the event log could not be read, so nothing was evaluated",
-                    "immune matches --json",
-                    &why,
-                ));
-            } else {
-                eprintln!(
-                    "immune: the event log could not be read: {}",
-                    view::shown(&why)
-                );
-            }
-            return ExitCode::FAILURE;
+            return fail(
+                args.json,
+                "log_unreadable",
+                "the event log could not be read, so nothing was evaluated",
+                why,
+                1,
+            );
         }
     };
     if args.json {
         match serde_json::to_string(&answer) {
             Ok(line) => println!("{line}"),
             Err(e) => {
-                return crate::store_failed(true, "matches", &Stop::Store(e.to_string()));
+                return fail(
+                    true,
+                    "store_unreadable",
+                    "the answer could not be printed",
+                    e.to_string(),
+                    crate::EXIT_STORE,
+                );
             }
         }
     } else if std::io::stdout()
@@ -133,43 +140,53 @@ pub fn matches_cmd(args: &MatchesArgs) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+fn fail(json: bool, code: &str, message: &str, why: String, exit: u8) -> ExitCode {
+    if json {
+        let failure = status::failure(
+            Some("matches"),
+            code,
+            message,
+            "immune matches --json",
+            &why,
+        );
+        println!("{}", known::envelope(failure));
+    } else {
+        eprintln!("immune: {message}: {}", view::shown(&why));
+    }
+    ExitCode::from(exit)
+}
+
 /// What the store says about the log, read in one transaction.
-#[derive(Default)]
 struct Held {
-    /// This Mac as the store names it: what a finding from a published rule is about.
-    machine: Option<String>,
     /// Where the core's own reading has read each log file up to.
     read_to: BTreeMap<String, (u64, u64)>,
     /// The collector's state as the latest reading left it, and when.
     state: Option<(String, i64)>,
+    /// The findings by id, as a match names them.
+    findings: BTreeMap<String, v1::FindingRef>,
 }
 
 fn read(args: &MatchesArgs, now: i64) -> Result<v1::Matches, Failure> {
-    let unreadable = |e: &dyn std::fmt::Display| Failure::Store(Stop::Store(e.to_string()));
-    // No store is a store that has read nothing: every high match is not read yet.
-    let conn = if args.store.is_file() {
-        Some(store::open_read_only(&args.store).map_err(|e| unreadable(&e))?)
-    } else {
-        None
+    if !args.store.is_file() {
+        return Err(Failure::Store(format!(
+            "there is no store at {}; `immune run` makes it",
+            args.store.display()
+        )));
+    }
+    let unreadable = |e: &dyn std::fmt::Display| Failure::Store(e.to_string());
+    let conn = store::open_read_only(&args.store).map_err(|e| unreadable(&e))?;
+    let tx = conn.unchecked_transaction().map_err(|e| unreadable(&e))?;
+    let held = Held {
+        read_to: events::read_up_to(&tx).map_err(|e| unreadable(&e))?,
+        state: events::state_read(&tx).map_err(|e| unreadable(&e))?,
+        findings: finding_refs(&tx, now).map_err(|e| unreadable(&e))?,
     };
-    let tx = match &conn {
-        Some(c) => Some(c.unchecked_transaction().map_err(|e| unreadable(&e))?),
-        None => None,
-    };
-    let held = match &tx {
-        Some(tx) => Held {
-            machine: crate::covered::this_machine(tx).map_err(|e| unreadable(&e))?,
-            read_to: events::read_up_to(tx).map_err(|e| unreadable(&e))?,
-            state: events::state_read(tx).map_err(|e| unreadable(&e))?,
-        },
-        None => Held::default(),
-    };
-    let queue = events::queue(&args.system_root, args.after.as_ref(), args.limit, now);
+    let after = args.after.as_ref();
+    let queue = events::queue(&args.system_root, after.map(|(_, p)| p), args.limit, now);
     let mut answer = v1::Matches {
         format: FORMAT,
         answered_at: now,
-        after: args.after.as_ref().map(Position::to_string),
-        continue_after: args.after.as_ref().map(Position::to_string),
+        after: after.map(|(text, _)| text.clone()),
         ..Default::default()
     };
     let status_state = |c: &mut v1::Collector| {
@@ -181,8 +198,7 @@ fn read(args: &MatchesArgs, now: i64) -> Result<v1::Matches, Failure> {
     };
     match queue {
         Queue::Failed(why) => return Err(Failure::Log(why)),
-        // Uninstalling deletes the log: what came after a position is gone.
-        Queue::NotInstalled => {
+        Queue::NotInstalled { gone } => {
             let mut collector = v1::Collector {
                 state: v1::CollectorState::NotInstalled as i32,
                 ..Default::default()
@@ -190,72 +206,82 @@ fn read(args: &MatchesArgs, now: i64) -> Result<v1::Matches, Failure> {
             status_state(&mut collector);
             answer.collector = Some(collector);
             answer.stretch = Some(v1::Stretch {
-                gone: args.after.is_some(),
+                gone,
                 ..Default::default()
             });
-            answer.unevaluated = unevaluated(None);
+            answer.unevaluated = unevaluated(&Err(NOT_INSTALLED.to_string()));
         }
         Queue::Read(s) => {
+            let mut collector = collector(&s);
+            status_state(&mut collector);
             for hit in &s.hits {
                 let event = event(&hit.event);
                 for (file, meta) in &hit.matched {
-                    let (raised, finding_id) =
-                        raised(tx.as_deref(), &held, hit, meta).map_err(|e| unreadable(&e))?;
+                    let (raised, findings) =
+                        raised(&tx, &held, hit, meta).map_err(|e| unreadable(&e))?;
                     answer.matches.push(v1::RuleMatch {
                         position: hit.at.to_string(),
                         rule: Some(rule(file, meta)),
                         event: Some(event.clone()),
                         raised: raised as i32,
-                        finding_id,
+                        findings,
                     });
                 }
             }
-            let mut collector = collector(&s);
-            status_state(&mut collector);
             answer.collector = Some(collector);
             answer.stretch = Some(stretch(&s));
-            answer.unevaluated = unevaluated(Some(&s.collects));
-            answer.continue_after = s.last.as_ref().map(Position::to_string);
+            answer.unevaluated = unevaluated(&s.collects.clone().map_err(|(_, why)| why));
+            answer.continue_after = Some(s.place.to_string());
             answer.more = s.more;
         }
     }
     Ok(answer)
 }
 
-/// What became of a match among the findings, and the finding when it can be told.
+/// What became of a match among the findings, and the findings it went to.
 fn raised(
-    conn: Option<&Connection>,
+    conn: &Connection,
     held: &Held,
     hit: &Hit,
     meta: &Meta,
-) -> rusqlite::Result<(v1::Raised, Option<String>)> {
+) -> rusqlite::Result<(v1::Raised, Vec<v1::FindingRef>)> {
     if !meta.level.raises() {
-        return Ok((v1::Raised::BelowHigh, None));
+        return Ok((v1::Raised::BelowHigh, Vec::new()));
     }
+    let at: &LineAt = &hit.at;
     let read = held
         .read_to
-        .get(&hit.at.file())
-        .is_some_and(|(inode, to)| *inode == hit.inode && hit.at.offset < *to);
+        .get(&at.file)
+        .is_some_and(|(inode, to)| *inode == at.inode && at.offset < *to);
     if !read {
-        return Ok((v1::Raised::NotReadYet, None));
+        return Ok((v1::Raised::NotReadYet, Vec::new()));
     }
-    let (Some(conn), Some(machine)) = (conn, &held.machine) else {
-        return Ok((v1::Raised::Untold, None));
-    };
-    // The reading that read the event came after it, so its finding was last seen no earlier
-    // than the event's second. A time that cannot be read leaves every finding of the rule.
-    let since = happened(&hit.event).map_or(i64::MIN, |(secs, _)| secs);
-    let ids: Vec<String> = conn
-        .prepare(
-            "SELECT id FROM finding WHERE rule = ?1 AND about = ?2 AND last_seen_at >= ?3
-             LIMIT 2",
-        )?
-        .query_map(params![meta.finding_rule, machine, since], |r| r.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
-    Ok(match <[String; 1]>::try_from(ids) {
-        Ok([id]) => (v1::Raised::Finding, Some(id)),
-        Err(_) => (v1::Raised::Untold, None),
+    Ok(match events::went_to(conn, at, &meta.finding_rule)? {
+        WentTo::Finding(id) => {
+            // Every finding of a shipped rule is among them; the id alone stands for one that
+            // is not.
+            let finding = held.findings.get(&id).cloned();
+            let finding = finding.unwrap_or(v1::FindingRef {
+                id,
+                ..Default::default()
+            });
+            (v1::Raised::Finding, vec![finding])
+        }
+        WentTo::None => (v1::Raised::NoFinding, Vec::new()),
+        WentTo::Unrecorded => (v1::Raised::Unrecorded, Vec::new()),
     })
+}
+
+/// Every finding in the store, by id, as `immune project` and the others name one.
+fn finding_refs(conn: &Connection, now: i64) -> rusqlite::Result<BTreeMap<String, v1::FindingRef>> {
+    let Some(found) = findings::all(conn, now)? else {
+        return Ok(BTreeMap::new());
+    };
+    Ok(found
+        .iter()
+        .filter_map(findings::item)
+        .map(|i| (i.id.clone(), known::finding_ref(&i)))
+        .collect())
 }
 
 /// When an event happened, as seconds and nanoseconds.
@@ -266,13 +292,15 @@ fn happened(e: &Evidence) -> Option<(i64, u32)> {
     })
 }
 
-/// Text from the Mac or from a rule, whole, with hidden characters escaped.
+/// Text from the Mac or from a rule, whole, with hidden characters escaped. Every `_text` value
+/// of the answer passes through here.
 fn whole(s: &str) -> String {
-    view::shown(s)
+    known::whole(s)
 }
 
 fn rule(file: &str, m: &Meta) -> v1::Rule {
     v1::Rule {
+        name: m.finding_rule.clone(),
         file: file.to_string(),
         id_text: whole(&m.id),
         title_text: whole(&m.title),
@@ -282,41 +310,46 @@ fn rule(file: &str, m: &Meta) -> v1::Rule {
     }
 }
 
+/// A process the log gives only the program of.
+fn program(executable: &str) -> v1::Process {
+    v1::Process {
+        executable_text: whole(executable),
+        ..Default::default()
+    }
+}
+
 /// An event as the contract gives it: every field the log holds, each whole.
 fn event(e: &Evidence) -> v1::Event {
+    use v1::event::Body;
     let when = happened(e);
     let (happened_at, happened_nanos) = (when.map(|w| w.0), when.map(|w| w.1));
-    match e {
-        Evidence::Start(s) => v1::Event {
-            kind: v1::EventKind::ProgramStart as i32,
-            program_start: Some(v1::ProgramStart {
+    v1::Event {
+        body: Some(match e {
+            Evidence::Start(s) => Body::ProgramStart(v1::ProgramStart {
                 happened_at,
                 happened_nanos,
-                executable_text: whole(&s.executable),
+                process: Some(v1::Process {
+                    executable_text: whole(&s.executable),
+                    pid: Some(s.pid),
+                    user_id: s.user_id,
+                    signing_id_text: s.signing_id.as_deref().map(whole),
+                    team_id_text: s.team_id.as_deref().map(whole),
+                    platform_binary: s.platform_binary,
+                }),
+                instigator: s.parent_executable.as_deref().map(program),
+                parent_pid: s.parent_pid,
                 args_text: s.args.iter().map(|a| whole(a)).collect(),
                 working_directory_text: s.working_directory.as_deref().map(whole),
-                pid: s.pid,
-                user_id: s.user_id,
-                parent_pid: s.parent_pid,
-                parent_executable_text: s.parent_executable.as_deref().map(whole),
-                signing_id_text: s.signing_id.as_deref().map(whole),
-                team_id_text: s.team_id.as_deref().map(whole),
-                platform_binary: s.platform_binary,
             }),
-            file_event: None,
-        },
-        Evidence::File(f) => v1::Event {
-            kind: v1::EventKind::FileEvent as i32,
-            program_start: None,
-            file_event: Some(v1::FileEvent {
+            Evidence::File(f) => Body::FileEvent(v1::FileEvent {
                 happened_at,
                 happened_nanos,
                 action: value_of::<v1::FileAction>(f.action),
                 path_text: whole(&f.path),
                 source_text: f.source.as_deref().map(whole),
-                executable_text: whole(&f.executable),
+                instigator: Some(program(&f.executable)),
             }),
-        },
+        }),
     }
 }
 
@@ -333,7 +366,7 @@ fn stretch(s: &Stretch) -> v1::Stretch {
         file_events_lost: n(s.file_tally.lost),
         file_events_unknown_losses: n(s.file_tally.unknown_gaps),
         gone: s.gone,
-        kept_from: s.kept_from.as_ref().map(Position::to_string),
+        kept_from: s.kept_from.as_ref().map(LineAt::to_string),
     }
 }
 
@@ -341,20 +374,20 @@ fn collector(s: &Stretch) -> v1::Collector {
     v1::Collector {
         state: value_of::<v1::CollectorState>(s.state),
         said_by: s.said.as_ref().map(|(by, _)| by.to_string()),
-        said_text: s.said.as_ref().map(|(_, said)| status::text_string(said)),
+        said_text: s.said.as_ref().map(|(_, said)| whole(said)),
         written_at: s.written,
         file_events_collected: s.collects.is_ok(),
+        foreign_files: s.foreign,
         ..Default::default()
     }
 }
 
 /// The shipped rules that judge nothing here, or only in part, each with why, in the order they
-/// are shipped. `collects` is whether the collector here records file events, `None` when there
-/// is no collector to ask.
-fn unevaluated(collects: Option<&Result<(), (store::Cause, String)>>) -> Vec<v1::Unevaluated> {
+/// are shipped. `collects` is whether file events are collected here, or why not.
+fn unevaluated(collects: &Result<(), String>) -> Vec<v1::Unevaluated> {
     use v1::UnevaluatedReason as Why;
-    let not_collected = collects.and_then(|c| c.as_ref().err()).map(|(_, why)| why);
-    let texts = |items: &[String]| items.iter().map(|s| status::text_string(s)).collect();
+    let not_collected = collects.as_ref().err();
+    let texts = |items: &[String]| items.iter().map(|s| whole(s)).collect();
     Rules::shipped()
         .rules
         .iter()
@@ -382,12 +415,13 @@ fn unevaluated(collects: Option<&Result<(), (store::Cause, String)>>) -> Vec<v1:
             let meta = l.meta.as_ref();
             Some(v1::Unevaluated {
                 file: l.file.to_string(),
+                name: meta.map(|m| m.finding_rule.clone()),
                 id_text: meta.map(|m| whole(&m.id)),
                 title_text: meta.map(|m| whole(&m.title)),
                 level: meta.map(|m| value_of::<v1::Level>(m.level.as_str())),
                 reason: why as i32,
                 fields_text: fields,
-                detail_text: detail.map(|d| status::text_string(d)),
+                detail_text: detail.map(|d| whole(d)),
             })
         })
         .collect()

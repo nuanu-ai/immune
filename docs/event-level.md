@@ -69,11 +69,13 @@ The installer's estimate of the cost: about 600 bytes per program start and 350 
 
 Immune reads the log at every full check, and every 10 seconds while `immune watch` runs (`--events-every`). A reading that finds nothing new costs a look at the log's files and one row.
 
+- Only a file named exactly as `rotatelogs` names a log file, `exec-YYYYMMDDTHH.jsonl` with an hour of a date, is read. Any other file in the folder is not the collector's and is never read; `immune matches` counts them.
 - Lines are read whole, from where the last reading stopped in each file, by the file's name and inode. A line still being written is left for the next reading. A file that is gone is forgotten; one with the same name and a new inode is read from its start.
-- A line that is not a JSON object, such as the two halves of a line split between two hourly files, is counted as unreadable and skipped.
+- A file's hour is over once a file of a later hour has been written to at or after the time the file was last written to. A line without its newline at the end of such a file is never finished, as when a line is split between two hourly files, and is counted as unreadable and skipped. The end of a file whose hour is not over is left for the next reading. That includes a file of an earlier hour written to again after a clock set ahead was put back.
+- A line that is not a JSON object is counted as unreadable and skipped.
 - A message with an unknown `schema_version`, or without a field the reader needs, means the format changed. The reading fails with the reason and nothing is taken as read, so a build that knows the new format reads the same lines. Today `schema_version` 1 is known. The message `version` alone fails nothing: Apple raises it with macOS releases as it adds fields.
 
-The store keeps no event. It keeps where each file was read up to, counts per reading for two days, the level's state, coverage (one row, replaced at every reading), and per rule how many starts or file events matched, by the hour, for a week. The one place arguments enter the store is the evidence of a finding from a published rule: the latest five program starts it matched, or the latest five file events with the file and the program. The environment never does.
+The store keeps no event. It keeps where each file was read up to, counts per reading for two days, the level's state, coverage (one row, replaced at every reading), and per rule how many starts or file events matched, by the hour, for a week. For every match of a rule marked high or critical it keeps which finding the match went to, by the line's file, inode and offset, until the file is no longer there; `immune matches` reads it. The one place arguments enter the store is the evidence of a finding from a published rule: the latest five program starts it matched, or the latest five file events with the file and the program. The environment never does.
 
 Secrets in those arguments are kept as they were. Cutting tokens and passwords out of what Immune keeps and prints, with patterns from a published set, is planned.
 
@@ -98,7 +100,7 @@ Coverage of program starts is judged over the last day. After any loss, unreadab
 | `running` | The log is being written and read |
 | `refused` | macOS denies `eslogger` Full Disk Access. What `eslogger` printed is returned as data |
 | `failing` | The scripts print errors. What they printed is returned as data |
-| `silent` | Nothing was written for 15 minutes. The tidy job's own programs are program starts, so a running level on an awake Mac writes at least every ten minutes; right after waking from sleep this can show once |
+| `silent` | Nothing was written for 15 minutes. The tidy job's own programs are program starts, so a running level on an awake Mac writes at least every ten minutes; right after waking from sleep this can show once. A log file or launch daemon dated later than now does not count as written: a file's time can be set ahead, and a clock set back leaves the times it wrote ahead of it |
 | `failed` | The reading itself failed, with its reason |
 
 File events count as collected only when the installer's record of the collector's arguments, `collects`, names `create` and `rename` and is not older than the installed launch daemon. A collector installed before file events existed writes a log with none in it, which would read the same as a Mac where no file was created. Until the record says otherwise, the five file rules are listed as not watching, with the reason, and `event_level.file_events.collected` is false.
@@ -130,7 +132,7 @@ What a match does:
 - The rule's title, authors, techniques and licence travel with the finding as data (`published_rule`), as the Detection Rule License asks.
 - Matches of lower rules are a quiet count. They never change the headline, the count of findings or the icon. The store keeps nothing else of them; `immune matches` reads them from the log, with their events, for the response layer.
 
-`immune rules --over-log` evaluates the rules over the log on disk without the store and prints per rule its level and count, never a command line. `immune matches` evaluates the log with the same code and prints every match with the event it matched, arguments whole, from a position the caller keeps (see [reference.md](reference.md#immune-matches)).
+`immune rules --over-log` evaluates the rules over the log on disk without the store and prints per rule its level and count, never a command line. `immune matches` evaluates the log with the same code and prints every match with the event it matched, arguments whole, and for a high match the finding the core's own reading put it in. The caller keeps its place in the log, which holds per file what the core's reading keeps for itself (see [reference.md](reference.md#immune-matches)).
 
 ## What published rules need that the level does not give
 

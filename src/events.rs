@@ -236,6 +236,26 @@ CREATE TABLE IF NOT EXISTS event_files (
     last_create INTEGER,
     last_rename INTEGER
 );
+-- Which finding each match of a rule that raises one went to, so `immune matches` says it
+-- exactly: the line, by its log file's name and inode and the offset where it begins; the rule
+-- as findings name it; and the finding. Only rules marked high or critical raise one. A row of
+-- a log file the reading no longer finds is removed, so a row lives as long as its line.
+CREATE TABLE IF NOT EXISTS rule_line (
+    file    TEXT NOT NULL,
+    inode   INTEGER NOT NULL,
+    offset  INTEGER NOT NULL,
+    rule    TEXT NOT NULL,
+    finding TEXT NOT NULL REFERENCES finding (id),
+    PRIMARY KEY (file, inode, offset, rule)
+) WITHOUT ROWID;
+-- Where each log file had been read up to when this store began keeping rule_line: a match on
+-- a line before that went to a finding the store cannot name. Removed with its file.
+CREATE TABLE IF NOT EXISTS rule_line_from (
+    file   TEXT NOT NULL,
+    inode  INTEGER NOT NULL,
+    offset INTEGER NOT NULL,
+    PRIMARY KEY (file, inode)
+);
 -- What one reading read of file events, kept for two days beside event_count.
 CREATE TABLE IF NOT EXISTS event_file_count (
     at           INTEGER NOT NULL,
@@ -631,6 +651,9 @@ pub struct Hits {
     pub meta: &'static Meta,
     pub count: i64,
     pub latest: VecDeque<Evidence>,
+    /// For a rule that raises a finding, where every line it matched is, so that the store keeps
+    /// which finding each went to (`rule_line`).
+    pub lines: Vec<LineAt>,
 }
 
 /// An event a finding rests on: a rule is about one kind, so its finding keeps one kind.
@@ -641,16 +664,18 @@ pub enum Evidence {
 }
 
 impl Matched {
-    /// Counts what one event matched, as `Into::judge` evaluated it.
-    fn add(&mut self, matches: &[Match<'static>], subject: Subject) {
+    /// Counts what one event, the line at `at`, matched, as `Into::judge` evaluated it.
+    fn add(&mut self, matches: &[Match<'static>], subject: Subject, at: &LineAt) {
         for m in matches {
             let hits = self.rules.entry(m.meta.id.as_str()).or_insert(Hits {
                 meta: m.meta,
                 count: 0,
                 latest: VecDeque::new(),
+                lines: Vec::new(),
             });
             hits.count += 1;
             if m.meta.level.raises() {
+                hits.lines.push(at.clone());
                 if hits.latest.len() == EVIDENCE {
                     hits.latest.pop_front();
                 }
@@ -714,7 +739,8 @@ fn look(root: &Path, left: &Left, now: i64, rules: &'static Rules) -> Found {
         installed_at,
         collects,
         dir,
-        names,
+        files: listed,
+        ..
     } = opened;
     let mut tally = Tally::default();
     let mut file_tally = FileTally::default();
@@ -726,9 +752,9 @@ fn look(root: &Path, left: &Left, now: i64, rules: &'static Rules) -> Found {
     let mut file_seq = left.file_seq;
     let mut version = None;
     let mut files = Vec::new();
-    let mut written: Option<i64> = None;
-    let newest = names.len().checked_sub(1);
-    for (i, name) in names.iter().enumerate() {
+    let mut times = Vec::new();
+    for f in &listed {
+        let name = &f.name;
         let mut into = Into {
             tally: &mut tally,
             file_tally: &mut file_tally,
@@ -737,6 +763,8 @@ fn look(root: &Path, left: &Left, now: i64, rules: &'static Rules) -> Found {
             version: &mut version,
             rules,
             matched: &mut matched,
+            file: String::new(),
+            inode: 0,
             queue: None,
         };
         // The same file is read on from where it was left; another file of that name, or one
@@ -745,9 +773,9 @@ fn look(root: &Path, left: &Left, now: i64, rules: &'static Rules) -> Found {
             Some((inode, offset)) if *inode == meta.ino() && *offset <= meta.len() => *offset,
             _ => 0,
         };
-        match read_file(&dir, name, from, Some(i) == newest, &mut into) {
+        match read_file(&dir, name, from, f.over, &mut into) {
             Ok(Some(f)) => {
-                written = written.max(Some(f.mtime));
+                times.push(f.mtime);
                 files.push((name.clone(), f.inode, f.to));
             }
             // Deleted by the root side between the listing and now.
@@ -755,7 +783,8 @@ fn look(root: &Path, left: &Left, now: i64, rules: &'static Rules) -> Found {
             Err(why) => return Found::Failed(why),
         }
     }
-    let (state, said) = judge(&dir, written.unwrap_or(installed_at), written, now);
+    let written = times.iter().copied().max();
+    let (state, said) = judge(&dir, installed_at, times, now);
     Found::Read(Box::new(Log {
         tally,
         file_tally,
@@ -806,22 +835,35 @@ fn collects(root: &Path, daemon: &std::fs::Metadata) -> Result<(), (Cause, Strin
     }
 }
 
+/// The root side's notes of what it deleted, `<when> <file> <bytes> age|cap` a line; a note
+/// not in that form is skipped. Empty when it has deleted nothing.
+fn notes(dir: &Path) -> std::io::Result<Vec<(i64, String, u64, String)>> {
+    let text = match std::fs::read_to_string(dir.join(REMOVED)) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    Ok(text
+        .lines()
+        .filter_map(|note| {
+            let words: Vec<&str> = note.split(' ').collect();
+            let [when, name, bytes, why] = words[..] else {
+                return None;
+            };
+            Some((
+                when.parse().ok()?,
+                name.to_string(),
+                bytes.parse().ok()?,
+                why.to_string(),
+            ))
+        })
+        .collect())
+}
+
 /// Counts what the root side's notes say it deleted since the last reading: files deleted to
 /// stay under the size cap, and files deleted before this reader read them to their end.
 fn removed(dir: &Path, left: &Left, tally: &mut Tally) -> std::io::Result<()> {
-    let text = match std::fs::read_to_string(dir.join(REMOVED)) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(e),
-    };
-    for note in text.lines() {
-        let words: Vec<&str> = note.split(' ').collect();
-        let [when, name, bytes, why] = words[..] else {
-            continue;
-        };
-        let (Ok(when), Ok(bytes)) = (when.parse::<i64>(), bytes.parse::<u64>()) else {
-            continue;
-        };
+    for (when, name, bytes, why) in notes(dir)? {
         if left.counted.is_some_and(|at| when <= at) {
             continue;
         }
@@ -830,7 +872,7 @@ fn removed(dir: &Path, left: &Left, tally: &mut Tally) -> std::io::Result<()> {
         }
         if left
             .files
-            .get(name)
+            .get(&name)
             .is_none_or(|(_, offset)| *offset < bytes)
         {
             tally.removed_unread += 1;
@@ -853,6 +895,9 @@ struct Into<'a> {
     version: &'a mut Option<u64>,
     rules: &'static Rules,
     matched: &'a mut Matched,
+    /// The log file being read, by its name and inode: where each line evaluated is.
+    file: String,
+    inode: u64,
     /// For `immune matches`: every event that matched, with where its line is, and when to
     /// stop. The core's own reading keeps none.
     queue: Option<&'a mut Sink>,
@@ -865,26 +910,28 @@ impl Into<'_> {
     /// the event's line begins and `len` its length. Returns whether the queue is full.
     fn judge(&mut self, subject: Subject, line: u64, len: usize) -> bool {
         let matches = self.rules.evaluate(subject);
-        self.matched.add(&matches, subject);
+        if matches.is_empty() {
+            return false;
+        }
+        let at = LineAt {
+            file: self.file.clone(),
+            inode: self.inode,
+            offset: line,
+        };
+        self.matched.add(&matches, subject, &at);
         let Some(q) = self.queue.as_deref_mut() else {
             return false;
         };
-        if !matches.is_empty() {
-            q.matches += matches.len();
-            q.bytes += len * matches.len();
-            q.hits.push(Hit {
-                at: Position {
-                    hour: q.hour.clone(),
-                    offset: line,
-                },
-                inode: q.inode,
-                event: match subject {
-                    Subject::Start(s) => Evidence::Start(s.clone()),
-                    Subject::File(f) => Evidence::File(f.clone()),
-                },
-                matched: matches.iter().map(|m| (m.file, m.meta)).collect(),
-            });
-        }
+        q.matches += matches.len();
+        q.bytes += len * matches.len();
+        q.hits.push(Hit {
+            at,
+            event: match subject {
+                Subject::Start(s) => Evidence::Start(s.clone()),
+                Subject::File(f) => Evidence::File(f.clone()),
+            },
+            matched: matches.iter().map(|m| (m.file, m.meta)).collect(),
+        });
         q.matches >= q.limit || q.bytes >= BYTES
     }
 }
@@ -974,6 +1021,8 @@ fn read_from(mut file: std::fs::File, from: u64, into: &mut Into) -> Result<Upto
 struct FileRead {
     inode: u64,
     mtime: i64,
+    /// Its length when it was read.
+    len: u64,
     /// Every byte before this was read.
     to: u64,
     /// Where the last line read begins, a line that could not be read included.
@@ -983,13 +1032,14 @@ struct FileRead {
 }
 
 /// Reads one log file of `dir` from the offset `from` gives for it, as the core's reading and
-/// `immune matches` both do. `None` when the root side deleted it between the listing and
-/// now. A failure is the reason, in the program's words.
+/// `immune matches` both do. `over` says that its hour is over (`LogFile::over`). `None` when
+/// the root side deleted it between the listing and now. A failure is the reason, in the
+/// program's words.
 fn read_file(
     dir: &Path,
     name: &str,
     from: impl FnOnce(&std::fs::Metadata) -> u64,
-    newest: bool,
+    over: bool,
     into: &mut Into,
 ) -> Result<Option<FileRead>, String> {
     let failed = |e: &dyn std::fmt::Display| format!("{name} in the event level's log: {e}");
@@ -1000,10 +1050,8 @@ fn read_file(
     };
     let meta = file.metadata().map_err(|e| failed(&e))?;
     let from = from(&meta);
-    if let Some(q) = into.queue.as_deref_mut() {
-        q.hour = hour_of(name).to_string();
-        q.inode = meta.ino();
-    }
+    into.file = name.to_string();
+    into.inode = meta.ino();
     let upto = match read_from(file, from, into) {
         Ok(upto) => upto,
         Err(Stop::Io(e)) => return Err(failed(&e)),
@@ -1012,6 +1060,7 @@ fn read_file(
     let mut read = FileRead {
         inode: meta.ino(),
         mtime: meta.mtime(),
+        len: meta.len(),
         to: upto.to,
         last: upto.last,
         full: upto.full,
@@ -1020,7 +1069,7 @@ fn read_file(
     // hour's file at whatever it read from the pipe, so a line can end in the old file without
     // its newline and go on at the start of the new one: the end left here is counted as a
     // line that could not be read, once.
-    if !upto.full && upto.to < meta.len() && !newest {
+    if !upto.full && upto.to < meta.len() && over {
         into.tally.unreadable += 1;
         read.last = Some(upto.to);
         read.to = meta.len();
@@ -1030,12 +1079,65 @@ fn read_file(
 
 /// The log as a look at the source finds it: when the collector was installed, whether it is
 /// established to record file events, the log folder and its files in the order of their
-/// hours.
+/// hours, and how many other files the folder holds.
 struct Opened {
     installed_at: i64,
     collects: Result<(), (Cause, String)>,
     dir: std::path::PathBuf,
-    names: Vec<String>,
+    files: Vec<LogFile>,
+    /// Files in the log folder that are not the collector's own, by their names: not read.
+    foreign: u64,
+}
+
+/// One of the collector's log files, as listed.
+struct LogFile {
+    name: String,
+    /// The hour its name gives, `YYYYMMDDHH` as a number.
+    hour: u64,
+    /// When it was last written to: seconds, and nanoseconds within the second.
+    mtime: (i64, i64),
+    /// Its hour is over: a file of a later hour was written to at or after this one was last.
+    /// rotatelogs moves to the next hour's file and does not come back, so a line left without
+    /// its newline at the end of this one is never finished. The file of the latest hour is
+    /// never over, nor one written after it, as when the clock was set back.
+    over: bool,
+}
+
+/// The files the root side writes in the log folder beside the log: what eslogger and the
+/// scripts print, and the notes of deletions. tidy.sh shortens each through a copy named with
+/// `.new` added.
+const SIDE_FILES: [&str; 3] = [ESLOGGER_SAID, SCRIPTS_SAID, REMOVED];
+
+/// The hour a log file's name gives, `YYYYMMDDHH` as a number, for a name in exactly the form
+/// rotatelogs writes, `exec-YYYYMMDDTHH.jsonl`, of an hour of a date. `None` for any other name:
+/// such a file is not the collector's and is never read.
+fn hour_of(name: &str) -> Option<u64> {
+    let b = name.strip_prefix(PREFIX)?.strip_suffix(SUFFIX)?.as_bytes();
+    let form = b.len() == 11
+        && b.iter().enumerate().all(|(i, c)| match i {
+            8 => *c == b'T',
+            _ => c.is_ascii_digit(),
+        });
+    if !form {
+        return None;
+    }
+    let hour = b
+        .iter()
+        .filter(|c| c.is_ascii_digit())
+        .fold(0, |n, c| n * 10 + u64::from(c - b'0'));
+    real_hour(hour).then_some(hour)
+}
+
+/// Whether `YYYYMMDDHH` is an hour of a date: a month from 1 to 12, a day from 1 to 31, an hour
+/// from 0 to 23.
+fn real_hour(hour: u64) -> bool {
+    let (month, day, h) = (hour / 10_000 % 100, hour / 100 % 100, hour % 100);
+    hour < 10_000_000_000 && (1..=12).contains(&month) && (1..=31).contains(&day) && h < 24
+}
+
+/// The name of the log file of an hour, `YYYYMMDDHH` as a number.
+fn name_of(hour: u64) -> String {
+    format!("{PREFIX}{:08}T{:02}{SUFFIX}", hour / 100, hour % 100)
 }
 
 /// Looks at the source without reading a line. `Err(None)` is a level not installed, `Err` with
@@ -1050,20 +1152,41 @@ fn open(root: &Path) -> Result<Opened, Option<String>> {
     let collects = collects(root, &daemon);
     let dir = root.join(LOG);
     let failed = |e: std::io::Error| Some(format!("the event level's log: {e}"));
-    let mut names: Vec<String> = Vec::new();
+    let mut files: Vec<LogFile> = Vec::new();
+    let mut foreign = 0;
     for entry in std::fs::read_dir(&dir).map_err(failed)? {
         let name = entry.map_err(failed)?.file_name();
+        // A log file's name is ASCII, so a name that is not text is another file.
         let name = name.to_string_lossy();
-        if name.starts_with(PREFIX) && name.ends_with(SUFFIX) {
-            names.push(name.into_owned());
-        }
+        let Some(hour) = hour_of(&name) else {
+            let side = |s: &&str| name == *s || name.strip_suffix(".new") == Some(*s);
+            if !SIDE_FILES.iter().any(side) {
+                foreign += 1;
+            }
+            continue;
+        };
+        let meta = match std::fs::metadata(dir.join(&*name)) {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(failed(e)),
+        };
+        files.push(LogFile {
+            name: name.to_string(),
+            hour,
+            mtime: (meta.mtime(), meta.mtime_nsec()),
+            over: false,
+        });
     }
-    names.sort();
+    files.sort_by_key(|f| f.hour);
+    for i in 0..files.len() {
+        files[i].over = files[i + 1..].iter().any(|g| g.mtime >= files[i].mtime);
+    }
     Ok(Opened {
         installed_at: daemon.mtime(),
         collects,
         dir,
-        names,
+        files,
+        foreign,
     })
 }
 
@@ -1082,14 +1205,17 @@ fn count_seq(seq: u64, last: &mut Option<u64>, (lost, unknown): (&mut i64, &mut 
 
 /// The state the root side's own evidence gives: refused or failing when `eslogger` or the
 /// scripts printed something after the log was last written to, silent when nothing has been
-/// written for `SILENT_AFTER` since `quiet_since` (the last write, or the install), else
-/// running.
+/// written for `SILENT_AFTER` since the last write or, before any, the install, else running.
+/// `written` is when each log file was last written to. A time later than `now` is no sign of
+/// life: a file's time can be set ahead, and a clock set back leaves the times written before
+/// ahead of it.
 fn judge(
     dir: &Path,
-    quiet_since: i64,
-    written: Option<i64>,
+    installed_at: i64,
+    written: impl IntoIterator<Item = i64>,
     now: i64,
 ) -> (&'static str, Option<(&'static str, String)>) {
+    let written = written.into_iter().filter(|w| *w <= now).max();
     for (by, name) in [("eslogger", ESLOGGER_SAID), ("scripts", SCRIPTS_SAID)] {
         let path = dir.join(name);
         let Ok(meta) = std::fs::metadata(&path) else {
@@ -1113,7 +1239,8 @@ fn judge(
         };
         return (state, Some((by, last)));
     }
-    if now - quiet_since > SILENT_AFTER {
+    let quiet_since = written.unwrap_or(installed_at);
+    if now - quiet_since > SILENT_AFTER || quiet_since > now {
         (SILENT, None)
     } else {
         (RUNNING, None)
@@ -1211,7 +1338,17 @@ pub fn read(
     root: &Path,
     now: i64,
 ) -> rusqlite::Result<Outcome> {
+    let recorded = has(tx, "rule_line")?;
     tx.execute_batch(SCHEMA)?;
+    if !recorded {
+        // The store begins to keep which finding each match went to. What was read before is
+        // not in it, and is told apart from a line no finding holds.
+        tx.execute(
+            "INSERT INTO rule_line_from (file, inode, offset)
+             SELECT name, inode, offset FROM event_file",
+            [],
+        )?;
+    }
     let left = left(tx)?;
     let found = look(root, &left, now, Rules::shipped());
     let mut opened = 0;
@@ -1281,6 +1418,16 @@ pub fn read(
                 ],
             )?;
             opened = record(tx, run_id, machine, now, &log.matched)?;
+            // A line of a file the reading no longer finds cannot be asked about again.
+            for table in ["rule_line", "rule_line_from"] {
+                tx.execute(
+                    &format!(
+                        "DELETE FROM {table} WHERE NOT EXISTS (SELECT 1 FROM event_file e
+                             WHERE e.name = {table}.file AND e.inode = {table}.inode)"
+                    ),
+                    [],
+                )?;
+            }
             let (by, said) = match &log.said {
                 Some((by, said)) => (Some(*by), Some(said.as_str())),
                 None => (None, None),
@@ -1422,6 +1569,19 @@ fn record(
              ON CONFLICT (finding) DO UPDATE SET matches = matches + excluded.matches",
             params![finding, hits.count],
         )?;
+        let mut line = tx.prepare(
+            "INSERT OR REPLACE INTO rule_line (file, inode, offset, rule, finding)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+        for l in &hits.lines {
+            line.execute(params![
+                l.file,
+                l.inode as i64,
+                l.offset as i64,
+                rule,
+                finding
+            ])?;
+        }
         for e in &hits.latest {
             match e {
                 Evidence::Start(s) => tx.execute(
@@ -1603,78 +1763,153 @@ pub fn replay(root: &Path, now: i64) -> Replay {
     }
 }
 
-// ---- The queue of matches: `immune matches` reads the log again from a caller's position. ----
+// ---- The queue of matches: `immune matches` reads the log again from a caller's place. ----
 //
-// The store keeps no event and no match. The queue is the day's log read again, evaluated by
-// the same `Into::judge` as the core's own reading, from a position the caller keeps.
+// The store keeps no event. The queue is the day's log read again, evaluated by the same
+// `Into::judge` as the core's own reading, from a place the caller keeps. The place holds what
+// the core's own reading keeps for itself in `event_file`: per log file, its identity and how far
+// it was read. One point in an ordering of the files by name would not do: a clock set ahead
+// leaves a file of a later hour while lines go on into an earlier one, a reinstall within an
+// hour starts a file of the same name again, and a file can be deleted before it was read.
 
 /// The most bytes of matched lines one answer of `immune matches` holds, each line counted once
 /// for every rule it matched. An argument list is never cut and can be a megabyte, so the
 /// count of matches alone does not keep an answer small.
 pub const BYTES: usize = 4 << 20;
-/// How far back `immune matches` looks for the numbers eslogger gave the events before where it
-/// starts, so that a gap at the seam between two answers is counted.
-const SEAM: u64 = 16 << 20;
+/// The most log files a place holds. The root side deletes a file not written to for a day, so
+/// the log holds about 25; a log of more cannot be read on from a place, and an answer fails
+/// rather than leave files out of it.
+const MAX_FILES: usize = 256;
+/// The version of a place's encoding, its first number.
+const PLACE_VERSION: u64 = 1;
 
-/// Where a line of the log is: the hour of its file, `YYYYMMDDTHH` in UTC as in the file's
-/// name, and the byte offset where the line begins. The core's own, not eslogger's numbering,
-/// which starts again whenever eslogger does. A log file is only ever appended to, through the
-/// turn of the hour too, so a line keeps its place until its file is deleted, and reading back
-/// from one is a seek.
+/// Where a line of the log is: its file's name and inode, and the byte offset where the line
+/// begins. A log file is only appended to, so a line keeps its place until its file is deleted,
+/// and the inode tells the file from another of the same name made after it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Position {
-    pub hour: String,
+pub struct LineAt {
+    pub file: String,
+    pub inode: u64,
     pub offset: u64,
 }
 
-impl Position {
-    /// A position as `immune matches` prints it, `<hour>:<offset>`; `None` for any other text.
-    pub fn parse(s: &str) -> Option<Position> {
-        let (hour, offset) = s.split_once(':')?;
-        let b = hour.as_bytes();
-        let hour_ok = b.len() == 11
-            && b.iter().enumerate().all(|(i, c)| {
-                if i == 8 {
-                    *c == b'T'
-                } else {
-                    c.is_ascii_digit()
-                }
-            });
-        if !hour_ok || offset.is_empty() || !offset.bytes().all(|c| c.is_ascii_digit()) {
+/// A line's place as `immune matches` gives it in `position`: the hour its file's name gives,
+/// the file's inode and the offset, such as `20261004T00-48151623-4096`. The core's own words,
+/// for a reader to keep and compare whole; nothing reads it back.
+impl std::fmt::Display for LineAt {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let hour = self
+            .file
+            .strip_prefix(PREFIX)
+            .and_then(|n| n.strip_suffix(SUFFIX))
+            .unwrap_or(&self.file);
+        write!(f, "{hour}-{}-{}", self.inode, self.offset)
+    }
+}
+
+/// A caller's place in the log, as `immune matches` prints it in `continue_after` and takes it
+/// in `--after`: for each log file, its hour, its inode, how far it was read, and whether its
+/// hour was over (`LogFile::over`) when it was read to its end; and the last number eslogger
+/// gave each kind of event read, so that a gap at the seam between two answers is counted.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Place {
+    /// The last `seq_num` of a program start, a file created and a file renamed.
+    seq: [Option<u64>; 3],
+    /// In the order of their hours, each hour once.
+    files: Vec<Kept>,
+}
+
+/// One log file in a place.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Kept {
+    hour: u64,
+    inode: u64,
+    /// Every byte before it was read.
+    offset: u64,
+    /// Read to its end with its hour over: no line is left in it unread.
+    finished: bool,
+}
+
+/// A place is printed as lower-case hexadecimal of a run of numbers, each an unsigned varint in
+/// protobuf's encoding, written and read by prost: the encoding's version, 1; each of the three
+/// last numbers plus one, 0 for none; how many files; then for each file the difference of its
+/// hour (`YYYYMMDDHH` as a number) from the file's before, from 0 for the first, doubled, plus
+/// one when it is finished; its inode; and its offset. Hexadecimal, because sixteen characters
+/// pass through a shell and an argument parser untouched and are checked one by one, and it
+/// needs no encoder of someone else's format but the varint, which is prost's. A day of 25 files
+/// is about 270 bytes, so about 540 characters.
+impl std::fmt::Display for Place {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let mut bytes = Vec::new();
+        let mut put = |n: u64| prost::encoding::encode_varint(n, &mut bytes);
+        put(PLACE_VERSION);
+        for s in self.seq {
+            put(s.map_or(0, |s| s + 1));
+        }
+        put(self.files.len() as u64);
+        let mut hour = 0;
+        for k in &self.files {
+            put(((k.hour - hour) << 1) | u64::from(k.finished));
+            put(k.inode);
+            put(k.offset);
+            hour = k.hour;
+        }
+        bytes.iter().try_for_each(|b| write!(f, "{b:02x}"))
+    }
+}
+
+impl Place {
+    /// A place as `immune matches` prints it; `None` for any other text. Read strictly: the
+    /// version this build writes, at most `MAX_FILES` files, each a real hour and later than the
+    /// one before, and the text exactly as this build prints the place it reads. That last
+    /// check also holds the text to lower-case hexadecimal, to its length, and to nothing left
+    /// over, and no two texts are one place. A place never names a path: a file is only looked
+    /// up among those the log folder lists.
+    pub fn parse(text: &str) -> Option<Place> {
+        let bytes: Vec<u8> = text
+            .as_bytes()
+            .chunks(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok())
+            .collect::<Option<_>>()?;
+        let mut buf = bytes.as_slice();
+        let mut next = || prost::encoding::decode_varint(&mut buf).ok();
+        // The version: another than this build's prints differently below.
+        next()?;
+        let mut seq = [None; 3];
+        for s in &mut seq {
+            *s = next()?.checked_sub(1);
+        }
+        let n = next()?;
+        if n > MAX_FILES as u64 {
             return None;
         }
-        Some(Position {
-            hour: hour.to_string(),
-            offset: offset.parse().ok()?,
-        })
+        let mut files = Vec::new();
+        let mut hour: u64 = 0;
+        for _ in 0..n {
+            let step = next()?;
+            if step >> 1 == 0 {
+                return None;
+            }
+            hour = hour.checked_add(step >> 1)?;
+            if !real_hour(hour) {
+                return None;
+            }
+            files.push(Kept {
+                hour,
+                finished: step & 1 == 1,
+                inode: next()?,
+                offset: next()?,
+            });
+        }
+        let place = Place { seq, files };
+        (place.to_string() == text).then_some(place)
     }
-
-    /// The name of its log file.
-    pub fn file(&self) -> String {
-        format!("{PREFIX}{}{SUFFIX}", self.hour)
-    }
-}
-
-impl std::fmt::Display for Position {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}:{}", self.hour, self.offset)
-    }
-}
-
-/// The hour a log file's name gives.
-fn hour_of(name: &str) -> &str {
-    name.strip_prefix(PREFIX)
-        .and_then(|n| n.strip_suffix(SUFFIX))
-        .unwrap_or(name)
 }
 
 /// One event that matched, with the rules it matched.
 #[derive(Debug)]
 pub struct Hit {
-    pub at: Position,
-    /// The inode of its file when it was read, to tell whether the core's own reading has read
-    /// this line.
-    pub inode: u64,
+    pub at: LineAt,
     pub event: Evidence,
     /// The rules it matched, each by its file and what it says of itself, in the order they
     /// are shipped.
@@ -1687,111 +1922,120 @@ struct Sink {
     matches: usize,
     bytes: usize,
     limit: usize,
-    /// The file being read: its hour and inode.
-    hour: String,
-    inode: u64,
 }
 
-/// What `immune matches` read of the log after a position.
+/// What `immune matches` read of the log after a place.
 #[derive(Debug)]
 pub struct Stretch {
     pub hits: Vec<Hit>,
     pub tally: Tally,
     pub file_tally: FileTally,
-    /// The last line read, whole or not; the position asked after when nothing was read.
-    pub last: Option<Position>,
+    /// The place to read on from.
+    pub place: Place,
     /// It stopped at its limit with whole lines left to read.
     pub more: bool,
-    /// The lines after the position asked after are gone: deleted, and never evaluated here.
+    /// Lines the place asked after had not read are gone: deleted, or their file replaced, and
+    /// never evaluated here.
     pub gone: bool,
-    /// When they are gone, where the log kept goes on.
-    pub kept_from: Option<Position>,
+    /// When they are gone, where the log kept goes on: the first line of the first file kept at
+    /// or after the hour of the lines that are gone.
+    pub kept_from: Option<LineAt>,
     pub state: &'static str,
     pub said: Option<(&'static str, String)>,
     pub written: Option<i64>,
     pub collects: Result<(), (Cause, String)>,
+    /// Files in the log folder that are not the collector's own: not read.
+    pub foreign: u64,
 }
 
 /// What `immune matches` found.
 #[derive(Debug)]
 pub enum Queue {
-    NotInstalled,
+    /// The collector is not installed. Uninstalling deletes the log, so lines a place had not
+    /// read are `gone`.
+    NotInstalled {
+        gone: bool,
+    },
     Failed(String),
     Read(Box<Stretch>),
 }
 
-/// Reads the log under `root` after the line at `after`, or from the oldest line kept, until it
-/// ends or `limit` matches are taken, evaluating every program start and file event as the
-/// core's own reading does. Nothing is read from the store or written to it.
-pub fn queue(root: &Path, after: Option<&Position>, limit: usize, now: i64) -> Queue {
+/// Reads the log under `root` on from `after`, or from the oldest line kept, until it ends or
+/// `limit` matches are taken, evaluating every program start and file event as the core's own
+/// reading does. Nothing is read from the store or written to it.
+///
+/// A file the place holds with the same inode is read on from its offset. A file it does not
+/// hold is read from its start, whatever its name; so is one of a held name with another inode,
+/// or shorter than the offset, which is another file. A held file that is gone, or replaced,
+/// had lines the place had not read when the root side's note of its deletion says it held
+/// more than the offset, or, with no note, when it was not finished: then the answer says the
+/// lines are `gone`.
+pub fn queue(root: &Path, after: Option<&Place>, limit: usize, now: i64) -> Queue {
     let Opened {
         installed_at,
         collects,
         dir,
-        names,
+        files,
+        foreign,
     } = match open(root) {
         Ok(opened) => opened,
-        Err(None) => return Queue::NotInstalled,
+        Err(None) => {
+            return Queue::NotInstalled {
+                gone: after.is_some_and(|p| p.files.iter().any(|k| !k.finished)),
+            };
+        }
         Err(Some(why)) => return Queue::Failed(why),
     };
+    if files.len() > MAX_FILES {
+        return Queue::Failed(format!(
+            "the event level's log holds {} files, more than the {MAX_FILES} a place in it holds",
+            files.len()
+        ));
+    }
     let failed = |name: &str, e: std::io::Error| format!("{name} in the event level's log: {e}");
-    // Where to begin: the file, the offset in it, and the line asked after when it is there.
-    let (mut first, mut from, mut asked) = (0, 0, None);
-    let mut gone = false;
-    if let Some(p) = after {
-        let name = p.file();
-        match names.binary_search(&name) {
-            Ok(k) => {
-                first = k;
-                match std::fs::metadata(dir.join(&name)) {
-                    Ok(m) if p.offset < m.len() => (from, asked) = (p.offset, Some(p.offset)),
-                    // Shorter than the position: another file of that name, the one it was in
-                    // deleted. Read from the start.
-                    Ok(_) => gone = true,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => gone = true,
-                    Err(e) => return Queue::Failed(failed(&name, e)),
-                }
+    let held = after.cloned().unwrap_or_default();
+    // The most each deleted file held, as the root side noted it.
+    let mut deleted: BTreeMap<String, u64> = BTreeMap::new();
+    match notes(&dir) {
+        Ok(notes) => {
+            for (_, name, bytes, _) in notes {
+                let most = deleted.entry(name).or_default();
+                *most = (*most).max(bytes);
             }
-            // Not there. The root side deletes the oldest files first, so a position older
-            // than every file kept was in one deleted; a later one is in an hour nothing was
-            // written in.
-            Err(k) => (first, gone) = (k, k == 0),
         }
+        Err(e) => return Queue::Failed(failed(REMOVED, e)),
     }
-    // The line asked after was read by an earlier answer: it is skipped, and it and the lines
-    // before it give the numbers the first events read now are counted on from.
-    let mut seam = Seam::default();
-    if let Some(at) = asked {
-        let name = &names[first];
-        from = match past_line(&dir.join(name), at) {
-            Ok(past) => past,
-            Err(e) => return Queue::Failed(failed(name, e)),
-        };
-        seam = match seam_before(&dir, &names, first, from) {
-            Ok(seam) => seam,
-            Err(why) => return Queue::Failed(why),
-        };
-    }
+    // Whether a file the place held, now gone or replaced, had lines the place did not read. The
+    // root side's note says how much it held when it was deleted; without one, as after an
+    // uninstall, only a file read to its end with its hour over held no more.
+    let unread = |k: &Kept| match deleted.get(&name_of(k.hour)) {
+        Some(bytes) => *bytes > k.offset,
+        None => !k.finished,
+    };
+    let held_of: BTreeMap<u64, &Kept> = held.files.iter().map(|k| (k.hour, k)).collect();
+    // The hours of files the place held whose unread lines are gone.
+    let mut gone: Vec<u64> = held
+        .files
+        .iter()
+        .filter(|k| files.binary_search_by_key(&k.hour, |f| f.hour).is_err() && unread(k))
+        .map(|k| k.hour)
+        .collect();
     let mut tally = Tally::default();
     let mut file_tally = FileTally::default();
     let mut matched = Matched::default();
-    let mut last_seq = seam.seq[0];
-    let mut file_seq = [seam.seq[1], seam.seq[2]];
+    let mut last_seq = held.seq[0];
+    let mut file_seq = [held.seq[1], held.seq[2]];
     let mut version = None;
     let mut sink = Sink {
         hits: Vec::new(),
         matches: 0,
         bytes: 0,
         limit,
-        hour: String::new(),
-        inode: 0,
     };
-    let mut last = after.cloned();
-    let mut kept_from = None;
+    let mut place = Place::default();
     let mut more = false;
-    let newest = names.len().checked_sub(1);
-    for (k, name) in names.iter().enumerate().skip(first) {
-        let start = if k == first { from } else { 0 };
+    let mut stopped = files.len();
+    for (k, f) in files.iter().enumerate() {
         let mut into = Into {
             tally: &mut tally,
             file_tally: &mut file_tally,
@@ -1800,79 +2044,91 @@ pub fn queue(root: &Path, after: Option<&Position>, limit: usize, now: i64) -> Q
             version: &mut version,
             rules: Rules::shipped(),
             matched: &mut matched,
+            file: String::new(),
+            inode: 0,
             queue: Some(&mut sink),
         };
-        let read = match read_file(&dir, name, |_| start, Some(k) == newest, &mut into) {
+        // The same file is read on from where the place left it. Another of its name, or one
+        // shorter than the place read, is another file, read from its start, and the one the
+        // place held is replaced.
+        let was = held_of.get(&f.hour).copied();
+        let mut replaced = false;
+        let from = |m: &std::fs::Metadata| match was {
+            Some(k) if k.inode == m.ino() && k.offset <= m.len() => k.offset,
+            other => {
+                replaced = other.is_some();
+                0
+            }
+        };
+        let read = match read_file(&dir, &f.name, from, f.over, &mut into) {
             Ok(Some(read)) => read,
-            Ok(None) => continue,
+            // Deleted between the listing and now.
+            Ok(None) => {
+                gone.extend(was.filter(|k| unread(k)).map(|k| k.hour));
+                continue;
+            }
             Err(why) => return Queue::Failed(why),
         };
-        let at = |offset| Position {
-            hour: hour_of(name).to_string(),
-            offset,
-        };
-        if gone && kept_from.is_none() {
-            kept_from = Some(at(start));
+        if replaced {
+            gone.extend(was.filter(|k| unread(k)).map(|k| k.hour));
         }
-        if let Some(l) = read.last {
-            last = Some(at(l));
-        }
+        place.files.push(Kept {
+            hour: f.hour,
+            inode: read.inode,
+            offset: read.to,
+            finished: f.over && read.to == read.len,
+        });
         if read.full {
-            more = match more_after(&dir, &names, k, read.to) {
+            more = match more_after(&dir, &files, k, read.to) {
                 Ok(more) => more,
-                Err(e) => return Queue::Failed(failed(name, e)),
+                Err(e) => return Queue::Failed(failed(&f.name, e)),
             };
+            stopped = k + 1;
             break;
         }
     }
-    // A kind whose number before the stretch was not found within reach: what was lost before
-    // its first event here is unknown, and is never counted as nothing.
-    if seam.unknown[0] && last_seq.is_some() {
-        tally.unknown_gaps += 1;
-    }
-    file_tally.unknown_gaps += seam.unknown[1..]
-        .iter()
-        .zip(file_seq)
-        .filter(|(unknown, seq)| **unknown && seq.is_some())
-        .count() as i64;
-    let written = names
-        .iter()
-        .filter_map(|n| std::fs::metadata(dir.join(n)).ok())
-        .map(|m| m.mtime())
-        .max();
-    let (state, said) = judge(&dir, written.unwrap_or(installed_at), written, now);
+    // The files after where it stopped keep what the place held of them; the next answer tells
+    // whether they are still the same files.
+    place.files.extend(
+        files[stopped..]
+            .iter()
+            .filter_map(|f| held_of.get(&f.hour).map(|k| (*k).clone())),
+    );
+    place.seq = [last_seq, file_seq[0], file_seq[1]];
+    let gone_at = gone.into_iter().min();
+    let kept_from = gone_at.and_then(|g| {
+        let f = files.iter().find(|f| f.hour >= g)?;
+        let inode = std::fs::metadata(dir.join(&f.name)).ok()?.ino();
+        Some(LineAt {
+            file: f.name.clone(),
+            inode,
+            offset: 0,
+        })
+    });
+    let times: Vec<i64> = files.iter().map(|f| f.mtime.0).collect();
+    let written = times.iter().copied().max();
+    let (state, said) = judge(&dir, installed_at, times, now);
     Queue::Read(Box::new(Stretch {
         hits: sink.hits,
         tally,
         file_tally,
-        last,
+        place,
         more,
-        gone,
+        gone: gone_at.is_some(),
         kept_from,
         state,
         said,
         written,
         collects,
+        foreign,
     }))
 }
 
-/// The offset after the line that begins at `at`: past its newline, or the end of the file.
-fn past_line(path: &Path, at: u64) -> std::io::Result<u64> {
-    let mut file = std::fs::File::open(path)?;
-    file.seek(SeekFrom::Start(at))?;
-    let mut buf = Vec::new();
-    let n = BufReader::new(file).read_until(b'\n', &mut buf)?;
-    Ok(at + n as u64)
-}
-
-/// Whether a whole line is left after `to` in `names[k]`, or anything in a file after it. A
-/// line still being written at the end of the newest file is not.
-fn more_after(dir: &Path, names: &[String], k: usize, to: u64) -> std::io::Result<bool> {
-    let mut file = std::fs::File::open(dir.join(&names[k]))?;
+/// Whether a whole line is left after `to` in `files[k]`, or anything in a file after it. A
+/// line still being written at the end of the file is not.
+fn more_after(dir: &Path, files: &[LogFile], k: usize, to: u64) -> std::io::Result<bool> {
+    let mut file = std::fs::File::open(dir.join(&files[k].name))?;
     if to < file.metadata()?.len() {
-        if k + 1 < names.len() {
-            return Ok(true);
-        }
         file.seek(SeekFrom::Start(to))?;
         let mut buf = Vec::new();
         BufReader::new(file).read_until(b'\n', &mut buf)?;
@@ -1880,86 +2136,49 @@ fn more_after(dir: &Path, names: &[String], k: usize, to: u64) -> std::io::Resul
             return Ok(true);
         }
     }
-    Ok(names[k + 1..]
+    Ok(files[k + 1..]
         .iter()
-        .any(|n| std::fs::metadata(dir.join(n)).is_ok_and(|m| m.len() > 0)))
+        .any(|f| std::fs::metadata(dir.join(&f.name)).is_ok_and(|m| m.len() > 0)))
 }
 
-/// The numbers eslogger gave the last program start, file created and file renamed before a
-/// stretch, by `seq_num`, and the kinds whose number was not found within reach.
-#[derive(Debug, Default)]
-struct Seam {
-    seq: [Option<u64>; 3],
-    unknown: [bool; 3],
+/// Which finding the core's own reading recorded a match as going to.
+pub enum WentTo {
+    Finding(String),
+    /// Read with the record kept, and no finding holds it.
+    None,
+    /// Read before the store kept the record.
+    Unrecorded,
 }
 
-/// Finds the last number of each kind in the lines before `upto` in `names[k]`, looking at
-/// most `SEAM` bytes back, into earlier files when this one begins within reach: eslogger's
-/// numbering runs on across the turn of the hour. A kind not found when the look reached the
-/// start of the oldest file kept has nothing before it, as at the start of a reading; one not
-/// found within reach otherwise is unknown.
-fn seam_before(dir: &Path, names: &[String], k: usize, upto: u64) -> Result<Seam, String> {
-    let failed = |name: &str, e: std::io::Error| format!("{name} in the event level's log: {e}");
-    let mut windows = Vec::new();
-    let (mut k, mut end, mut reach) = (k, upto, SEAM);
-    let oldest_reached = loop {
-        let start = end.saturating_sub(reach);
-        windows.push((k, start, end));
-        reach -= end - start;
-        if start > 0 || reach == 0 {
-            break false;
-        }
-        if k == 0 {
-            break true;
-        }
-        k -= 1;
-        end = match std::fs::metadata(dir.join(&names[k])) {
-            Ok(m) => m.len(),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
-            Err(e) => return Err(failed(&names[k], e)),
-        };
-    };
-    let mut seam = Seam::default();
-    for (k, start, end) in windows.into_iter().rev() {
-        let name = &names[k];
-        let mut file = match std::fs::File::open(dir.join(name)) {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(failed(name, e)),
-        };
-        file.seek(SeekFrom::Start(start))
-            .map_err(|e| failed(name, e))?;
-        let mut lines = BufReader::new(file);
-        let mut buf = Vec::new();
-        let mut at = start;
-        if start > 0 {
-            // The line the reach begins in.
-            at += lines
-                .read_until(b'\n', &mut buf)
-                .map_err(|e| failed(name, e))? as u64;
-        }
-        while at < end {
-            buf.clear();
-            let n = lines
-                .read_until(b'\n', &mut buf)
-                .map_err(|e| failed(name, e))?;
-            if n == 0 || buf.last() != Some(&b'\n') {
-                break;
-            }
-            at += n as u64;
-            match line(&buf[..n - 1])? {
-                Line::Exec { seq, .. } => seam.seq[0] = Some(seq),
-                Line::File {
-                    kind,
-                    seq: Some(seq),
-                    ..
-                } => seam.seq[1 + kind] = Some(seq),
-                _ => {}
-            }
-        }
+/// Which finding the core's own reading recorded the match of `rule` (as findings name it) on
+/// the line at `at` as going to, for a line it has read.
+pub fn went_to(conn: &Connection, at: &LineAt, rule: &str) -> rusqlite::Result<WentTo> {
+    if !has(conn, "rule_line")? {
+        return Ok(WentTo::Unrecorded);
     }
-    seam.unknown = seam.seq.map(|seq| seq.is_none() && !oldest_reached);
-    Ok(seam)
+    let (inode, offset) = (at.inode as i64, at.offset as i64);
+    let finding: Option<String> = conn
+        .query_row(
+            "SELECT finding FROM rule_line
+             WHERE file = ?1 AND inode = ?2 AND offset = ?3 AND rule = ?4",
+            params![at.file, inode, offset, rule],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if let Some(f) = finding {
+        return Ok(WentTo::Finding(f));
+    }
+    let from: Option<i64> = conn
+        .query_row(
+            "SELECT offset FROM rule_line_from WHERE file = ?1 AND inode = ?2",
+            params![at.file, inode],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(match from {
+        Some(from) if offset < from => WentTo::Unrecorded,
+        _ => WentTo::None,
+    })
 }
 
 /// Where the core's own reading has read each log file up to, by name: the file's inode and the
@@ -2650,29 +2869,124 @@ pub fn words(l: &Level) -> Said {
 mod tests {
     use super::*;
 
+    /// Bytes as lower-case hexadecimal, as a place is printed.
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// Numbers as varints, as a place encodes them.
+    fn varints(numbers: &[u64]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for n in numbers {
+            prost::encoding::encode_varint(*n, &mut out);
+        }
+        out
+    }
+
     #[test]
-    fn a_position_is_only_ever_an_hour_and_an_offset_so_no_other_file_is_named_by_one() {
-        // `--after` comes from a caller and names a file in the log folder: anything but the
-        // form the core prints is refused, so it can never name a path of its own.
-        let p = Position::parse("20261004T00:4096").unwrap();
-        assert_eq!(
-            (p.file().as_str(), p.offset),
-            ("exec-20261004T00.jsonl", 4096)
-        );
-        assert_eq!(p.to_string(), "20261004T00:4096");
+    fn a_place_is_taken_back_only_as_the_core_printed_it_and_a_day_of_it_is_short() {
+        // `--after` comes from a caller. Only the text the core printed is taken: anything
+        // else is refused as a misuse, and nothing in a place names a path. A day of 25 hourly
+        // files fits a command line.
+        let day = Place {
+            seq: [Some(4_000_000), None, Some(0)],
+            files: (0..25u64)
+                .map(|i| Kept {
+                    hour: 2026100300 + if i < 24 { i } else { 100 },
+                    inode: 150_000_000 + i * 40_000,
+                    offset: 300_000_000 + i,
+                    finished: i < 24,
+                })
+                .collect(),
+        };
+        let text = day.to_string();
+        assert_eq!(Place::parse(&text), Some(day.clone()));
+        assert!(text.len() < 600, "{} characters", text.len());
+        println!("a place of a day of 25 files: {} characters", text.len());
+        let empty = Place::default().to_string();
+        assert_eq!(empty, "0100000000");
+        assert_eq!(Place::parse(&empty), Some(Place::default()));
+        let one = |step: u64| hex(&varints(&[1, 0, 0, 0, 1, step, 7, 9]));
+        assert!(Place::parse(&one(2026100400 << 1)).is_some());
+        let two = |step: u64| {
+            hex(&varints(&[
+                1,
+                0,
+                0,
+                0,
+                2,
+                2026100400 << 1,
+                7,
+                9,
+                step,
+                8,
+                9,
+            ]))
+        };
+        assert!(Place::parse(&two(2)).is_some());
+        let most = |n: u64| Place {
+            seq: [None; 3],
+            files: (0..n)
+                .map(|i| Kept {
+                    hour: 2026100100 + i / 24 * 100 + i % 24,
+                    inode: i,
+                    offset: i,
+                    finished: false,
+                })
+                .collect(),
+        };
+        let full = most(MAX_FILES as u64);
+        assert_eq!(Place::parse(&full.to_string()), Some(full));
+        let too_many = most(MAX_FILES as u64 + 1).to_string();
         for bad in [
-            "../../../etc/x:0",
-            "20261004T0:1",
-            "20261004T000:1",
-            "20261004X00:1",
-            "2026100aT00:1",
-            "20261004T00:",
-            "20261004T00:+1",
-            "20261004T00:-1",
-            "20261004T00",
-            "20261004T00:99999999999999999999999",
+            String::new(),
+            "../../../etc/x".to_string(),
+            text.to_uppercase(),
+            format!("{text}00"),
+            text[..text.len() - 1].to_string(),
+            format!(" {text}"),
+            hex(&varints(&[2, 0, 0, 0, 0])),
+            // The same numbers in a longer varint: one place, one text.
+            "810000000000".to_string(),
+            // Hours that are not hours, and one that does not follow the one before.
+            one(2026130400 << 1),
+            one(2026100424 << 1),
+            one(2026100000 << 1),
+            one(12026100400 << 1),
+            one(0),
+            two(0),
+            two(1),
+            too_many,
+            "0".repeat(20_000),
         ] {
-            assert_eq!(Position::parse(bad), None, "{bad}");
+            assert_eq!(Place::parse(&bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn only_a_file_named_as_rotatelogs_names_an_hour_is_a_log_file() {
+        // A file in the log folder is the collector's only in the exact form it writes, of an
+        // hour of a date; any other is never read, and a place can name no other.
+        assert_eq!(hour_of("exec-20261004T00.jsonl"), Some(2026100400));
+        assert_eq!(hour_of("exec-20261231T23.jsonl"), Some(2026123123));
+        assert_eq!(name_of(2026100409), "exec-20261004T09.jsonl");
+        for bad in [
+            "exec-20261004T24.jsonl",
+            "exec-20261304T00.jsonl",
+            "exec-20260004T00.jsonl",
+            "exec-20261000T00.jsonl",
+            "exec-20261032T00.jsonl",
+            "exec-2026100T00.jsonl",
+            "exec-202610040T00.jsonl",
+            "exec-20261004X00.jsonl",
+            "exec-20261004T00.jsonl.bak",
+            "exec-20261004T00.json",
+            "Exec-20261004T00.jsonl",
+            "exec-zz.jsonl",
+            "exec-2026100\u{0663}T00.jsonl",
+            "exec-../../x.jsonl",
+        ] {
+            assert_eq!(hour_of(bad), None, "{bad}");
         }
     }
 

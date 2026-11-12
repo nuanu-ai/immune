@@ -136,7 +136,7 @@ The first user of Immune is your coding agent, and the commands are its interfac
 | `immune project <path> --json` | What Immune knows of one project: whether it knows it at all, its facts with what each rests on, which readings speak for it and whether each was full, and its findings |
 | `immune program <path or name> --json` | The same for one installed app, Homebrew package or global npm package, found by a path inside it or by its name |
 | `immune machine [<name>] --json` | The same for this Mac, or for a server or tailnet peer the Mac knows, with what is on it one level deep |
-| `immune matches --json` | Every rule match over the collector's log, of every level, each with the program start or file event it matched and command lines whole; what was read, lost or not evaluated; and the position to read on from with `--after` |
+| `immune matches --json` | Every rule match over the collector's log, of every level, each with the program start or file event it matched and command lines whole; what was read, lost or not evaluated; and the place to read on from with `--after` |
 | `immune watch` | One JSON line per event while it runs |
 
 A trimmed answer from the invented Mac in the pictures:
