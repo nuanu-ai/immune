@@ -4399,7 +4399,7 @@ fn match_dependencies(run: &Run) -> Result<usize, Box<dyn Error>> {
 fn feeds_sentence(states: &[osv::State], run_id: &str, t: &vulnerabilities::Totals) -> String {
     let clauses: Vec<String> = states.iter().map(|s| feed_clause(s, run_id)).collect();
     let mut matched = format!(
-        "matched against the projects' package-lock.json and Cargo.lock: {} in packages they use",
+        "matched against the projects' package-lock.json, pnpm-lock.yaml and Cargo.lock: {} in packages they use",
         things(
             t.records as i64,
             "known vulnerability",

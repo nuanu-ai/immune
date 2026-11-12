@@ -1247,8 +1247,8 @@ pub fn reason_words(code: &str) -> (&'static str, &'static str) {
             "{n} are newer than the last release a record names as affected, and no fix is named",
         ),
         PLACE_NOT_READ => (
-            "1 is in a project whose lockfiles were not all read, such as a pnpm, yarn or bun lockfile",
-            "{n} are in a project whose lockfiles were not all read, such as a pnpm, yarn or bun lockfile",
+            "1 is in a project whose lockfiles were not all read, such as a yarn or bun lockfile",
+            "{n} are in a project whose lockfiles were not all read, such as a yarn or bun lockfile",
         ),
         FEED_NOT_READ => (
             "1 is judged by a list of vulnerabilities that is not current",
