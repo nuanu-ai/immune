@@ -54,6 +54,35 @@ public struct Status: Sendable, Equatable {
   /// The published detection rules the program ships, and how many of them watch
   /// program starts. Nil from a soc that has none.
   public var rules: Rules?
+  /// The event level: every program start on this Mac. Nil from a soc that has none, or
+  /// before it was first looked for.
+  public var eventLevel: EventLevel?
+}
+
+/// `result.event_level`, as much as the panel draws: the state, the count of the last
+/// day, the same day hour by hour, and soc's words for it.
+public struct EventLevel: Sendable, Equatable {
+  /// not_installed, running, refused, failing, silent or failed.
+  public var state: String?
+  /// Program starts read in the last day.
+  public var startsLastDay: Int?
+  /// The last day hour by hour, oldest first (`program_starts_by_hour.counts`); nil
+  /// unless every one of them is a count.
+  public var startsByHour: [Int]?
+  /// soc's short state ("on", "not installed").
+  public var stateWords: String?
+  /// soc's caveats, each a sentence: empty means none, nil means not said.
+  public var notes: [String]?
+}
+
+/// `published_rule` of a finding a published rule raised: the rule's title and authors,
+/// and the latest program start it matched. Every field is text from a source.
+public struct PublishedRule: Sendable, Equatable {
+  public var titleText: String?
+  public var authorText: String?
+  /// The latest start: the program, and the program that started it.
+  public var executableText: String?
+  public var parentExecutableText: String?
 }
 
 /// `result.rules`: how many published rules are shipped, how many are evaluated whole,
@@ -64,6 +93,8 @@ public struct Rules: Sendable, Equatable {
   public var inPart: Int?
   public var notEvaluated: Int?
   public var watching: Bool?
+  /// How many program starts the rules matched in the last day.
+  public var matchesLastDay: Int?
 }
 
 /// The statements that stand and were given outside the app: soc's total and the latest.
@@ -164,6 +195,8 @@ public struct Item: Sendable, Equatable {
   public var confidence: String?
   public var change: String?
   public var technique: String?
+  /// Present only for a finding a published rule raised.
+  public var publishedRule: PublishedRule?
   /// soc decided this needs the owner now, from how bad and how sure. Missing, or
   /// not a boolean, is false: the app never decides it.
   public var urgent = false
@@ -489,8 +522,19 @@ public enum Decoding {
         Rules(
           shipped: $0["shipped"].count, evaluated: $0["evaluated"].count,
           inPart: $0["in_part"].count, notEvaluated: $0["not_evaluated"].count,
-          watching: $0["watching"].bool)
-      })
+          watching: $0["watching"].bool, matchesLastDay: $0["matches_last_day"].count)
+      },
+      eventLevel: r["event_level"].object.map(eventLevel))
+  }
+
+  static func eventLevel(_ e: J) -> EventLevel {
+    let hours = e["program_starts_by_hour"]["counts"].array
+    let counts = hours?.compactMap(\.count)
+    return EventLevel(
+      state: e["state"].string, startsLastDay: e["program_starts"]["last_day"].count,
+      startsByHour: counts?.count == hours?.count ? counts : nil,
+      stateWords: e["in_words"]["state"].string,
+      notes: e["in_words"]["notes"].array.map { $0.compactMap(\.string) })
   }
 
   static func item(_ i: J) -> Item {
@@ -501,7 +545,15 @@ public enum Decoding {
       advice: i["advice"].string, valueText: i["value_text"].string,
       whereText: i["where_text"].string, rule: i["rule"].string,
       confidence: i["confidence"].string, change: i["change"].string,
-      technique: i["technique"].string, urgent: i["urgent"].bool ?? false)
+      technique: i["technique"].string,
+      publishedRule: i["published_rule"].object.map {
+        let latest = $0["evidence"].array?.first
+        return PublishedRule(
+          titleText: $0["title_text"].string, authorText: $0["author_text"].string,
+          executableText: latest?["executable_text"].string,
+          parentExecutableText: latest?["parent_executable_text"].string)
+      },
+      urgent: i["urgent"].bool ?? false)
   }
 
   static func finishedRun(_ f: J) -> FinishedRun {

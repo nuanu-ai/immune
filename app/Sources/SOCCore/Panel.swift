@@ -34,8 +34,21 @@ public struct Row: Sendable, Equatable, Identifiable {
   public var title: String { Inert.text(item.title ?? "", limit: 400) }
   /// The path or machine, inert: one line under the headline.
   public var value: String? { item.whereText.map { Inert.text($0, limit: 160) } }
-  /// A source's reason, inert, shown under "Reason:".
+  /// A source's reason, inert, shown under "Reason:"; for a published rule's finding, the
+  /// rule's title with its authors, under "Rule:".
   public var reason: String? { item.valueText.map { Inert.text($0, limit: 240) } }
+  /// The app's label before `reason`.
+  public var reasonLabel: String { item.publishedRule == nil ? "Reason: " : "Rule: " }
+  /// The tag a published rule's finding carries, in the app's words.
+  public var tag: String? { item.publishedRule == nil ? nil : "published rule" }
+  /// For a published rule's finding, the latest program start it matched: the program
+  /// and the program that started it, both inert. "/bin/dd · started by /bin/zsh".
+  public var started: String? {
+    guard let rule = item.publishedRule, let program = rule.executableText else { return nil }
+    let shown = Inert.text(program, limit: 160)
+    guard let parent = rule.parentExecutableText else { return shown }
+    return shown + " · started by " + Inert.text(parent, limit: 160)
+  }
   /// What it means and what to do, soc's fixed words.
   public var means: String {
     [item.meaning, item.advice].compactMap { $0 }.map { Inert.text($0, limit: 400) }
@@ -62,6 +75,7 @@ public struct Row: Sendable, Equatable, Identifiable {
     case "ssh access file": "key"
     case "git hook": "arrow.triangle.branch"
     case "file read for the first time": "doc.text.magnifyingglass"
+    case "program start matched by a published rule": "play.circle"
     default: "exclamationmark.circle"
     }
   }
@@ -194,6 +208,9 @@ public struct Panel: Sendable, Equatable {
   /// vulnerabilities in packages the projects use, and the published rules when soc
   /// reports them. Never counted, never orange.
   public var gaps: [GapRow] = []
+  /// Program starts at the event level, one row above the quiet rows, or nil when soc
+  /// says nothing of the level. Never counted by the icon or the headline.
+  public var starts: StartsRow?
   /// The request "Copy for my agent" copies beside "You can fix", or nil when there is
   /// nothing for the owner to fix.
   public var fixRequest: String?
@@ -350,7 +367,9 @@ public struct Panel: Sendable, Equatable {
     if let known = s.knownVulnerabilities, known > 0 {
       gaps.append(Self.vulnerabilities(known))
     }
-    if let rules = s.rules { gaps.append(Self.rules(rules)) }
+    // The rules' matches first among the quiet rows, under program starts.
+    if let rules = s.rules { gaps.insert(Self.rules(rules), at: 0) }
+    starts = StartsRow.of(s.eventLevel)
     answered = AnsweredRow.of(s.answeredOutsideApp, s.statementsOutsideApp)
   }
 
@@ -364,24 +383,25 @@ public struct Panel: Sendable, Equatable {
       label: "Known vulnerabilities", count: n, symbol: "shippingbox", section: "vulnerabilities")
   }
 
-  /// The published rules, one quiet row to the page's section. They are said to watch
-  /// program starts only when soc says `watching` is true; false, missing or not a
-  /// boolean is "not watching yet", counted by what is shipped. Never counted by the
-  /// icon or the headline.
+  /// The published rules, one quiet row to the page's section: while they watch, how
+  /// many program starts they matched in the last day, counted and never an alarm. They
+  /// are said to watch only when soc says `watching` is true; false, missing or not a
+  /// boolean is "not watching yet", counted by what is shipped. Only findings reach the
+  /// headline, the total and the icon; a match never does.
   static func rules(_ r: Rules) -> GapRow {
     if r.watching == true {
-      let parts = [r.evaluated, r.inPart].compactMap { $0 }
-      let n = parts.isEmpty ? nil : parts.reduce(0, +)
-      let of = r.shipped.map { " of \($0) published" } ?? " published"
+      let n = r.matchesLastDay
       return GapRow(
-        text: (n.map(String.init) ?? "Some") + of + " rules watch program starts",
-        label: "Rules watching program starts", count: n, symbol: "checklist", section: "rules")
+        text: (n.map { $0 == 1 ? "1 match" : Number.grouped($0) + " matches" } ?? "Matches")
+          + " of published rules in the last day, counted and not alarms",
+        label: "Rule matches, not alarms", count: n, symbol: "text.alignleft",
+        section: StartsRow.section)
     }
     return GapRow(
       text: (r.shipped.map { "\($0) published rules are" } ?? "Published rules are")
         + " shipped and do not watch program starts yet",
       label: "Published rules, not watching yet", count: r.shipped, symbol: "checklist",
-      section: "rules")
+      section: StartsRow.section)
   }
 
   /// A short task for the owner's coding agent about what they can fix: the soc this app
@@ -484,9 +504,11 @@ public struct Panel: Sendable, Equatable {
         out.append("▸ " + mark + " " + urgent + r.title)
         continue
       }
-      out.append(mark + " " + urgent + (r.when.map { $0 + " — " } ?? "") + r.title + "  [ Show ]")
-      if let v = r.shownValue { out.append("    › " + v) }
-      if let why = r.reason { out.append("    Reason: " + why) }
+      out.append(
+        mark + " " + urgent + (r.when.map { $0 + " — " } ?? "") + r.title
+          + (r.tag.map { "  (" + $0 + ")" } ?? "") + "  [ Show ]")
+      if let v = r.started ?? r.shownValue { out.append("    › " + v) }
+      if let why = r.reason { out.append("    " + r.reasonLabel + why) }
       if !r.means.isEmpty { out.append("    " + r.means) }
       if let id = r.item.id, let refused = refusals[id] { out.append("    " + refused) }
       if r.canAnswer, let form, form.id == r.item.id {
@@ -503,10 +525,17 @@ public struct Panel: Sendable, Equatable {
       }
     }
     if more > 0 { out.append("\(more) more in Details") }
+    if let s = starts {
+      let right = s.running ? (s.countText ?? "?") + "  " + s.sparkline : (s.state ?? "")
+      out.append("≈ " + StartsRow.label + "  " + right + "  › #" + StartsRow.section)
+      if let line = s.line, !line.isEmpty { out.append("    " + line) }
+    }
     if !gaps.isEmpty || answered != nil { out.append("----") }
     for g in gaps {
       let copy = g.section == "you-can-fix" && fixRequest != nil ? "  [ Copy for my agent ]" : ""
-      out.append("○ " + g.label + copy + (g.count.map { "  \($0)" } ?? "") + "  › #" + g.section)
+      out.append(
+        "○ " + g.label + copy + (g.count.map { "  " + Number.grouped($0) } ?? "") + "  › #"
+          + g.section)
     }
     if let a = answered {
       out.append((answeredOpen ? "▾ " : "▸ ") + a.label + "  \(a.count)")
@@ -636,6 +665,58 @@ public struct AnsweredLine: Sendable, Equatable, Identifiable {
   /// What "Take back" names: the finding or the machine.
   public var target: String? { finding ?? machine }
   public var canTakeBack: Bool { target != nil }
+}
+
+/// "Program starts": the event level as one row. While soc says it runs, the count of
+/// the last day with a bar for each hour and a quiet line: seen as they happen, and none
+/// lost or what was, in soc's words. Otherwise soc's state in its own words, quietly, with
+/// its note under it: not installed is a limit, never an alarm.
+public struct StartsRow: Sendable, Equatable {
+  public static let label = "Program starts"
+  /// The page's section it opens.
+  public static let section = "as-it-happens"
+  public let running: Bool
+  /// Program starts in the last day, while it runs.
+  public let count: Int?
+  /// The last day hour by hour, oldest first, while it runs; empty when soc gave none.
+  public let hours: [Int]
+  /// soc's state when it does not run ("not installed"), inert.
+  public let state: String?
+  /// The quiet second line.
+  public let line: String?
+
+  static func of(_ e: EventLevel?) -> StartsRow? {
+    guard let e, let state = e.state else { return nil }
+    let notes = e.notes?.map { Inert.text($0, limit: 240) }
+    if state == "running" {
+      // "None lost" only when soc says there is no caveat; nothing about losses when it
+      // says nothing.
+      let lost = notes.map { $0.isEmpty ? "none lost" : $0.joined(separator: " ") }
+      return StartsRow(
+        running: true, count: e.startsLastDay, hours: e.startsByHour ?? [], state: nil,
+        line: (["seen as they happen"] + [lost].compactMap { $0 }).joined(separator: " · "))
+    }
+    return StartsRow(
+      running: false, count: nil, hours: [],
+      state: Inert.text(e.stateWords ?? state, limit: 80),
+      line: notes?.joined(separator: " "))
+  }
+
+  public var countText: String? { count.map(Number.grouped) }
+
+  /// The bars as text, for the panel's text form: one block a bar.
+  public var sparkline: String {
+    let top = max(hours.max() ?? 0, 1)
+    let blocks = Array("▁▂▃▄▅▆▇█")
+    return String(hours.map { $0 == 0 ? " " : blocks[min(7, $0 * 8 / (top + 1))] })
+  }
+}
+
+/// Numbers as the panel shows them, in English: thousands separated, "4,812".
+public enum Number {
+  public static func grouped(_ n: Int) -> String {
+    n.formatted(.number.grouping(.automatic).locale(Locale(identifier: "en_US")))
+  }
 }
 
 /// A group of "What is watched": its header and one line per kind.

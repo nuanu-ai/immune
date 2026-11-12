@@ -20,6 +20,7 @@ mod events;
 mod findings;
 mod fsevents;
 mod guarded;
+mod happens;
 mod icu;
 mod indicators;
 mod integrity;
@@ -1064,8 +1065,9 @@ fn now_secs() -> i64 {
 
 /// What `soc status` shows, read-only and in one read transaction, so that every number is of
 /// one state of the store: a run that commits meanwhile waits for it, and it never sees half
-/// a run. `None` when there is no store.
-fn read_status(store: &Path) -> Result<Option<status::State>, Stop> {
+/// a run. `None` when there is no store. `now` is the one moment the whole answer is of, so
+/// that what the state counts up to and when the answer says it was made are the same second.
+fn read_status(store: &Path, now: i64) -> Result<Option<status::State>, Stop> {
     if !store.exists() {
         return Ok(None);
     }
@@ -1074,23 +1076,24 @@ fn read_status(store: &Path) -> Result<Option<status::State>, Stop> {
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| Stop::Store(e.to_string()))?;
-    status::state(&tx, &home(store), now_secs())
+    status::state(&tx, &home(store), now)
         .map(Some)
         .map_err(unreadable)
 }
 
 /// Whether a run is in progress on the store, and what the store holds.
-fn read_all(store: &Path) -> Result<(bool, Option<status::State>), Stop> {
+fn read_all(store: &Path, now: i64) -> Result<(bool, Option<status::State>), Stop> {
     let running = store::run_in_progress(&home(store)).map_err(|e| Stop::Store(e.to_string()))?;
-    Ok((running, read_status(store)?))
+    Ok((running, read_status(store, now)?))
 }
 
 /// Answers `soc status --json`, or `soc run --json` once the run finished.
 fn answer_json(operation: &str, store: &Path) -> ExitCode {
-    match read_all(store) {
+    let now = now_secs();
+    match read_all(store, now) {
         Ok((running, state)) => {
             let path = std::path::absolute(store).unwrap_or_else(|_| store.to_path_buf());
-            let result = status::result(state.as_ref(), running, &path, now_secs());
+            let result = status::result(state.as_ref(), running, &path, now);
             print_json(&status::envelope(operation, result));
             ExitCode::SUCCESS
         }
@@ -1238,7 +1241,7 @@ fn not_covered_text(list: &[covered::Uncovered]) {
 
 /// `soc status`: a short summary of what `soc status --json` gives, for a person.
 fn status_text(store: &Path) -> Result<(), Stop> {
-    let (running, state) = read_all(store)?;
+    let (running, state) = read_all(store, now_secs())?;
     say(&format!("Store: {}.", store.display()));
     let Some(st) = state else {
         say("There is no store yet; `soc run` makes it.");
@@ -1846,7 +1849,7 @@ fn write_view(store: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
     // Taken before the pages are read, so that they hold at least what it names.
     let basis = view::basis(&store::open_read_only(store)?, &folder)?;
     // The summary is built from what `soc status --json` answers, read the same way.
-    let (running, state) = read_all(store)?;
+    let (running, state) = read_all(store, now)?;
     let state = state.ok_or("the store is gone")?;
     let absolute = std::path::absolute(store)?;
     let result = status::result(Some(&state), running, &absolute, now);

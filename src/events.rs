@@ -1125,6 +1125,42 @@ pub struct Level {
     /// week, by the hour of the reading.
     pub matches_last_day: BTreeMap<String, i64>,
     pub matches_last_week: BTreeMap<String, i64>,
+    /// Program starts read over the last day, hour by hour.
+    pub starts_by_hour: ByHour,
+}
+
+/// How many hours `ByHour` counts: the last day.
+pub const HOURS: usize = 24;
+
+/// Program starts read over the last day, hour by hour, for a drawing: `HOURS` counts, oldest
+/// first, the last hour ending at `ends_at`, the time it was asked at. A reading is counted
+/// in the hour it was made, as `last_day` counts it, so the counts add up to `last_day.starts`:
+/// the first hour also holds the readings at its very start, and one stamped later than
+/// `ends_at`, by a clock set back, is in the last hour.
+#[derive(Debug, Default, PartialEq)]
+pub struct ByHour {
+    pub ends_at: i64,
+    pub counts: Vec<i64>,
+}
+
+/// Program starts read hour by hour over the day before `now`, see `ByHour`.
+pub fn starts_by_hour(conn: &Connection, now: i64) -> rusqlite::Result<ByHour> {
+    let mut counts = vec![0; HOURS];
+    let last = HOURS as i64 - 1;
+    let mut stmt = conn.prepare(
+        "SELECT MIN(MAX((?1 - at) / ?2, 0), ?3), SUM(starts) FROM event_count
+         WHERE at >= ?4 GROUP BY 1",
+    )?;
+    for row in stmt.query_map(params![now, HOUR, last, now - DAY], |r| {
+        Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+    })? {
+        let (ago, n) = row?;
+        counts[(last - ago) as usize] += n;
+    }
+    Ok(ByHour {
+        ends_at: now,
+        counts,
+    })
 }
 
 /// The level, or `None` before any reading of it.
@@ -1166,6 +1202,7 @@ pub fn level(conn: &Connection, now: i64) -> rusqlite::Result<Option<Level>> {
         last_day: tally_since(conn, now - DAY)?,
         matches_last_day: matches_since(conn, now - DAY)?,
         matches_last_week: matches_since(conn, now - KEEP_MATCHES)?,
+        starts_by_hour: starts_by_hour(conn, now)?,
     }))
 }
 
@@ -1207,6 +1244,7 @@ fn tally_since(conn: &Connection, from: i64) -> rusqlite::Result<Tally> {
 pub fn json(l: &Level) -> Value {
     let iso = |t: Option<i64>| t.map(crate::view::iso);
     let pair = |f: fn(&Tally) -> i64| json!({ "since_check": f(&l.since_check), "last_day": f(&l.last_day) });
+    let said = words(l);
     json!({
         "state": l.state,
         "level": LEVEL,
@@ -1225,6 +1263,19 @@ pub fn json(l: &Level) -> Value {
         "reason_text": l.reason.as_deref().map(crate::status::text),
         "silent_after_seconds": SILENT_AFTER,
         "cannot_see": CANNOT_SEE,
+        // For a drawing: program starts read in each hour of the last day, oldest first, the
+        // last hour ending at `ends_at`; they add up to `program_starts.last_day`.
+        "program_starts_by_hour": {
+            "ends_at": crate::view::iso(l.starts_by_hour.ends_at),
+            "hour_seconds": HOUR,
+            "counts": l.starts_by_hour.counts,
+        },
+        // The level for a person, the words every surface takes: a short state, and each
+        // caveat a sentence of its own, none when nothing was lost. The program's own words.
+        "in_words": {
+            "state": said.state,
+            "notes": said.notes,
+        },
     })
 }
 
@@ -1670,6 +1721,7 @@ mod tests {
             },
             matches_last_day: BTreeMap::new(),
             matches_last_week: BTreeMap::new(),
+            starts_by_hour: ByHour::default(),
         };
         let said = words(&l);
         assert_eq!(said.short(), "on, 49,842 in the last day");
@@ -1687,6 +1739,83 @@ mod tests {
         assert!(words(&l).notes.is_empty());
         l.state = NOT_INSTALLED.to_string();
         assert_eq!(words(&l).short(), "not installed");
+    }
+
+    #[test]
+    fn the_status_serves_the_series_ending_when_asked_and_the_words_a_surface_shows() {
+        // The app holds no logic: it draws the series soc gives, says where the day ends as
+        // soc says, and takes "none lost" only from an empty list of caveats.
+        let l = Level {
+            state: RUNNING.to_string(),
+            read_at: 1_000,
+            written: None,
+            said_by: None,
+            said: None,
+            reason: None,
+            version: None,
+            since_check: Tally::default(),
+            last_day: Tally {
+                starts: 7,
+                unknown_gaps: 1,
+                ..Tally::default()
+            },
+            matches_last_day: BTreeMap::new(),
+            matches_last_week: BTreeMap::new(),
+            starts_by_hour: ByHour {
+                ends_at: 1_791_000_000,
+                counts: vec![7],
+            },
+        };
+        let v = json(&l);
+        assert_eq!(
+            v["program_starts_by_hour"],
+            json!({ "ends_at": crate::view::iso(1_791_000_000), "hour_seconds": 3600, "counts": [7] })
+        );
+        assert_eq!(
+            v["in_words"],
+            json!({ "state": "on", "notes": ["The collector restarted once; program starts in that moment were not seen."] })
+        );
+    }
+
+    #[test]
+    fn the_series_by_hour_adds_up_to_the_count_of_the_day_and_puts_each_reading_in_its_hour() {
+        // The panel and the page draw the day as 24 bars beside its count. A bar that loses a
+        // reading at the edge of the day, or counts one twice, makes the drawing disagree
+        // with the number next to it.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE event_count (at INTEGER NOT NULL, starts INTEGER NOT NULL,
+                 lost INTEGER NOT NULL, unknown_gaps INTEGER NOT NULL,
+                 unreadable INTEGER NOT NULL, other INTEGER NOT NULL,
+                 removed_cap INTEGER NOT NULL, removed_unread INTEGER NOT NULL);",
+        )
+        .unwrap();
+        let now = 1_791_000_000;
+        for (at, starts) in [
+            (now - DAY - 1, 1_000),    // older than the day: in neither
+            (now - DAY, 7),            // the very start of the day: the first hour
+            (now - DAY + HOUR, 1),     // the end of the first hour: still the first
+            (now - DAY + HOUR + 1, 3), // just after: the second
+            (now - 2 * HOUR, 11),      // the end of the hour that ends two hours ago
+            (now - HOUR + 1, 5),       // within the last hour
+            (now, 2),                  // this reading: the last hour
+            (now + 90, 4),             // a clock set back: the last hour, as the day counts it
+        ] {
+            conn.execute(
+                "INSERT INTO event_count VALUES (?1, ?2, 0, 0, 0, 0, 0, 0)",
+                params![at, starts],
+            )
+            .unwrap();
+        }
+        let h = starts_by_hour(&conn, now).unwrap();
+        assert_eq!(h.ends_at, now);
+        assert_eq!(h.counts.len(), HOURS);
+        assert_eq!(
+            h.counts.iter().sum::<i64>(),
+            tally_since(&conn, now - DAY).unwrap().starts
+        );
+        assert_eq!((h.counts[0], h.counts[1]), (8, 3));
+        assert_eq!((h.counts[21], h.counts[22], h.counts[23]), (11, 0, 11));
     }
 
     #[test]

@@ -10242,7 +10242,7 @@ fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_f
         "vulnerabilities",
         "map",
         "watched-here",
-        "rules",
+        "as-it-happens",
         "limits",
         "answered",
     ];
@@ -10505,7 +10505,9 @@ fn each_link_on_the_summary_shows_what_its_label_says_first_thing_on_arrival() {
         text.push_str(part.split_once('>').map_or(part, |(_, t)| t));
         text.push(' ');
     }
-    let text = text.to_lowercase();
+    // "Matched this week" is how the section on the published rules speaks of their matches,
+    // in the words of its mockup, which the owner agreed on 12 November 2026.
+    let text = text.to_lowercase().replace("matched this week", "");
     for term in PERSON_NEVER_READS {
         assert!(!text.contains(term), "{term}: {text}");
     }
@@ -10663,16 +10665,20 @@ fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_wh
             assert!(listed.contains(&file), "{file} is not under {anchor}");
         }
     }
-    // Nothing reads as a rule watching this Mac: the only word of watching says none is.
-    let told = "It is not on, so none of them is watching.";
-    for text in [
-        section(&pages[0].1, "rules"),
-        &page[page.find("<main>").unwrap()..],
-    ] {
-        assert!(text.contains(told), "{text}");
-        assert_eq!(text.matches("watch").count(), 1, "{text}");
-        assert!(!text.contains("No match"), "{text}");
-    }
+    // Nothing reads as a rule watching this Mac: the only word of watching says none is. The
+    // summary says so first, before it draws what the rules would watch.
+    let text = &page[page.find("<main>").unwrap()..];
+    assert!(
+        text.contains("It is not on, so none of them is watching."),
+        "{text}"
+    );
+    assert_eq!(text.matches("watch").count(), 1, "{text}");
+    assert!(!text.contains("No match"), "{text}");
+    let summary = section(&pages[0].1, "as-it-happens");
+    assert!(
+        summary.contains("<p class=\"first\"><strong>Program starts: not installed.</strong>"),
+        "{summary}"
+    );
 
     // The event level runs and has read the drill's start: the 69 rules checked in full
     // watch, the one checked in part does not count among them, and the rule the start
@@ -10703,13 +10709,15 @@ fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_wh
         .unwrap()
         .1;
     let told = "The event level is on, so 69 of them are watching every program start on this Mac, and 1 more check it in part. In the last day they matched 1 time.";
-    for text in [
-        section(&pages[0].1, "rules"),
-        &page[page.find("<main>").unwrap()..],
-    ] {
-        assert!(text.contains(told), "{text}");
-        assert_eq!(text.matches("watch").count(), 1, "{text}");
-    }
+    let text = &page[page.find("<main>").unwrap()..];
+    assert!(text.contains(told), "{text}");
+    assert_eq!(text.matches("watch").count(), 1, "{text}");
+    let summary = section(&pages[0].1, "as-it-happens");
+    assert!(
+        summary
+            .contains("<span class=\"st\">Rules watching</span><span class=\"sv\">69 of 75</span>"),
+        "{summary}"
+    );
     let padding = &page[page.find("Binary Padding - MacOS").unwrap()..];
     let padding = &padding[..padding.find("</article>").unwrap()];
     assert!(
@@ -10748,6 +10756,111 @@ fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_wh
     assert_eq!(
         row(&view_pages(&w.store())[0].1),
         "Every program start, with its command line</span><span class=\"num\">on, 2 in the last day</span><span class=\"note\">The collector restarted once; program starts in that moment were not seen.</span>"
+    );
+}
+
+#[test]
+fn as_it_happens_draws_the_day_the_status_counts_and_a_published_rule_finding_where_it_is() {
+    // The owner agreed a drawing of program starts and the rules: the bars beside the day's
+    // count, the rules that matched with the finding one raised, and the techniques they
+    // cover. The status carries the series the panel draws, adding up to the count, and the
+    // words for the second line; the page draws nothing as watching while the level is not
+    // running, and once it runs the finding's row leads to its card.
+    let w = Watch::new("as-it-happens");
+    w.run();
+    let quiet = section(&view_pages(&w.store())[0].1, "as-it-happens").to_string();
+    assert!(
+        !quiet.contains("class=\"m calm\"") && quiet.contains("class=\"m would\""),
+        "{quiet}"
+    );
+    assert!(!quiet.contains("Program starts in the last day"), "{quiet}");
+    assert!(
+        quiet.contains("<p class=\"first\"><strong>Program starts: not installed.</strong>")
+            && quiet.contains(
+                "<span class=\"st\">Rules watching</span><span class=\"sv\">0 of 75</span>"
+            ),
+        "{quiet}"
+    );
+    put(
+        &w.sys,
+        "Library/LaunchDaemons/local.personal-soc.eslogger.plist",
+        "<plist/>",
+    );
+    let exec = |seq: u32, image: &str, args: &str| {
+        format!(
+            r#"{{"schema_version":1,"version":10,"seq_num":{seq},"global_seq_num":{seq},"time":"2026-10-04T00:00:02.000002Z","process":{{"executable":{{"path":"/bin/zsh"}}}},"event":{{"exec":{{"args":{args},"cwd":{{"path":"/tmp"}},"target":{{"executable":{{"path":"{image}"}},"audit_token":{{"pid":402,"euid":501}},"ppid":401,"signing_id":"com.apple.example","team_id":null,"is_platform_binary":true}}}}}}}}"#
+        )
+    };
+    let log = [
+        exec(1, "/bin/dd", r#"["dd","if=/dev/zero","bs=1","count=1"]"#),
+        exec(2, "/usr/bin/sw_vers", r#"["sw_vers","-productVersion"]"#),
+        exec(3, "/usr/bin/sw_vers", r#"["sw_vers","-productVersion"]"#),
+        exec(4, "/usr/bin/git", r#"["git","status"]"#),
+    ]
+    .join("\n");
+    put(
+        &w.sys
+            .join("Library/Application Support/personal-soc/event-level/log"),
+        "exec-20261004T00.jsonl",
+        &format!("{log}\n"),
+    );
+    w.run();
+    let r = status_json(&w.store());
+    let e = &r["event_level"];
+    let counts: Vec<i64> = e["program_starts_by_hour"]["counts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n.as_i64().unwrap())
+        .collect();
+    assert_eq!(counts.len(), 24);
+    assert_eq!(counts.iter().sum::<i64>(), 4);
+    assert_eq!(e["program_starts"]["last_day"], 4);
+    assert_eq!(counts[23], 4, "{counts:?}");
+    assert_eq!(e["program_starts_by_hour"]["ends_at"], r["generated_at"]);
+    assert_eq!(
+        e["in_words"],
+        serde_json::json!({ "state": "on", "notes": [] })
+    );
+    assert_eq!(r["rules"]["matches_last_day"], 3);
+    let finding = r["needs_a_look"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["published_rule"].is_object())
+        .unwrap();
+    assert_eq!(
+        finding["published_rule"]["evidence"][0]["executable_text"],
+        "/bin/dd"
+    );
+    let page = &view_pages(&w.store())[0].1;
+    let s = section(page, "as-it-happens");
+    assert!(
+        s.contains("<span class=\"st\">Program starts in the last day</span><span class=\"sv\">4</span><svg")
+            && s.contains("<span class=\"st\">Lost</span><span class=\"sv\">0</span>"),
+        "{s}"
+    );
+    // Most severe first: the finding's row leads to its card on the same page.
+    let id = finding["id"].as_str().unwrap();
+    let rows: Vec<&str> = s.split("<div class=\"rr\">").skip(1).collect();
+    assert_eq!(rows.len(), 2, "{s}");
+    assert!(
+        rows[0].contains("Binary Padding - MacOS")
+            && rows[0].contains(&format!("<a class=\"look\" href=\"#{id}\">Finding</a>"))
+            && page.contains(&format!("id=\"{id}\">")),
+        "{s}"
+    );
+    assert!(
+        rows[1].contains("System Information Discovery Using sw_vers")
+            && rows[1].contains("<span class=\"rc\">2</span><span class=\"rs\">Counted</span>"),
+        "{s}"
+    );
+    assert!(
+        s.contains("class=\"m look\" title=\"T1027 Obfuscated Files or Information: a rule for it raised a finding\"")
+            && s.contains("class=\"m calm\"")
+            && !s.contains("class=\"m would\"")
+            && !s.contains("class=\"first\""),
+        "{s}"
     );
 }
 
@@ -10822,7 +10935,7 @@ fn a_section_of_the_summary_can_be_opened_from_outside_as_a_file() {
             "you-can-fix",
             "limits",
             "answered",
-            "rules"
+            "as-it-happens"
         ]
     );
     for s in sections.as_array().unwrap() {

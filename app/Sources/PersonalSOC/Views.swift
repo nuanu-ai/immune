@@ -199,13 +199,28 @@ struct FindingCard: View {
             .help(row.whenFull ?? "")
         }
         Spacer(minLength: 0)
+        if let tag = row.tag {
+          // What raised it, in the app's words: a quiet outline, not a colour of alarm.
+          Text(verbatim: tag)
+            .font(.system(size: 11)).foregroundStyle(.secondary)
+            .padding(.horizontal, 7).padding(.vertical, 2)
+            .overlay(Capsule().strokeBorder(Color.secondary.opacity(0.5)))
+            .fixedSize()
+        }
         Button("Show", action: show)
           .buttonStyle(.link).font(.system(size: 12)).fixedSize()
           .help("Show it on the program's page")
       }
       Plain(row.title)
         .font(.system(size: 14, weight: .semibold))
-      if let value = row.value, let shown = row.shownValue {
+      if let started = row.started {
+        // The program and what started it, as data: too long, it loses its middle.
+        Text(verbatim: started)
+          .font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
+          .lineLimit(1).truncationMode(.middle)
+          .textSelection(.enabled)
+          .help(started)
+      } else if let value = row.value, let shown = row.shownValue {
         // A path is already cut at its head at a folder boundary; anything still
         // too long loses its head too, never the file's name.
         Text(verbatim: shown)
@@ -216,7 +231,7 @@ struct FindingCard: View {
       }
       if let reason = row.reason {
         // The app's label, then the machine's words as data.
-        (Text("Reason: ").fontWeight(.medium) + Text(verbatim: reason))
+        (Text(verbatim: row.reasonLabel).fontWeight(.medium) + Text(verbatim: reason))
           .font(.system(size: 12)).foregroundStyle(.secondary)
           .lineLimit(2).truncationMode(.tail)
           .fixedSize(horizontal: false, vertical: true)
@@ -391,7 +406,7 @@ struct QuietRow<Trailing: View>: View {
       Button(action: open) {
         HStack(spacing: 8) {
           if let count {
-            Text(verbatim: String(count)).font(.system(size: 13).monospacedDigit())
+            Text(verbatim: Number.grouped(count)).font(.system(size: 13).monospacedDigit())
               .foregroundStyle(.secondary)
           }
           Image(systemName: chevron).font(.system(size: 11, weight: .semibold))
@@ -420,6 +435,102 @@ extension QuietRow where Trailing == EmptyView {
   }
 }
 
+// MARK: - Program starts
+
+/// "Program starts": while the event level runs, the day's count with a bar for each
+/// hour and a quiet line under it; otherwise soc's state, quiet, with its note. Opens the
+/// page's section. Never styled as a problem.
+struct StartsView: View {
+  let row: StartsRow
+  let open: () -> Void
+
+  var body: some View {
+    Button(action: open) {
+      Group {
+        if row.running {
+          // As agreed: the two lines, then the bars and the count.
+          HStack(spacing: 10) {
+            symbol
+            VStack(alignment: .leading, spacing: 1) {
+              label
+              note
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if !row.hours.isEmpty { Sparkline(values: row.hours).frame(width: 96, height: 26) }
+            Text(verbatim: row.countText ?? "?")
+              .font(.system(size: 13).monospacedDigit())
+              .frame(minWidth: 40, alignment: .trailing)
+          }
+        } else {
+          // Not running: the state at a glance beside the label, its note under it.
+          VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 10) {
+              symbol
+              label
+              Spacer(minLength: 4)
+              if let state = row.state {
+                Text(verbatim: state).font(.system(size: 12)).foregroundStyle(.secondary)
+                  .lineLimit(1)
+              }
+            }
+            note.padding(.leading, 30)
+          }
+        }
+      }
+      .padding(.horizontal, 12).padding(.vertical, 10)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(
+        .quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+      )
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityElement(children: .combine)
+    .help(row.line ?? "")
+  }
+
+  var symbol: some View {
+    Image(systemName: "waveform.path.ecg").font(.system(size: 15))
+      .foregroundStyle(row.running ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
+      .frame(width: 20).accessibilityHidden(true)
+  }
+
+  var label: some View {
+    Text(verbatim: StartsRow.label).font(.system(size: 13)).lineLimit(1).fixedSize()
+  }
+
+  @ViewBuilder var note: some View {
+    if let line = row.line, !line.isEmpty {
+      Text(verbatim: line).font(.system(size: 11)).foregroundStyle(.secondary)
+        .lineLimit(4).truncationMode(.tail).multilineTextAlignment(.leading)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+  }
+}
+
+/// Bars for a day hour by hour, oldest on the left. An hour with none is a faint line,
+/// never a bar of the colour.
+struct Sparkline: View {
+  let values: [Int]
+  var body: some View {
+    GeometryReader { geo in
+      let n = CGFloat(max(values.count, 1))
+      let gap: CGFloat = 2
+      let width = max((geo.size.width - gap * (n - 1)) / n, 1)
+      let top = CGFloat(max(values.max() ?? 0, 1))
+      HStack(alignment: .bottom, spacing: gap) {
+        ForEach(Array(values.enumerated()), id: \.offset) { _, v in
+          RoundedRectangle(cornerRadius: 1)
+            .fill(v > 0 ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.quaternary))
+            .frame(width: width, height: max(1.5, CGFloat(v) / top * geo.size.height))
+        }
+      }
+      .frame(width: geo.size.width, height: geo.size.height, alignment: .bottomLeading)
+    }
+    .accessibilityHidden(true)
+  }
+}
+
 // MARK: - The panel
 
 struct PanelView: View {
@@ -445,6 +556,11 @@ struct PanelView: View {
         .padding(.top, Metrics.padding)
         .padding(.bottom, 14)
       if !p.shown.isEmpty { findings(p).padding(.bottom, 12) }
+      if let starts = p.starts {
+        StartsView(row: starts) { Task { await model.openPage(section: StartsRow.section) } }
+          .padding(.horizontal, Metrics.padding)
+          .padding(.bottom, 12)
+      }
       if quiet {
         Divider().padding(.horizontal, Metrics.padding)
         quietRows(p).padding(.vertical, 6)

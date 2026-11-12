@@ -2899,33 +2899,162 @@ struct PublishedRules {
   func watchingOnlyWhenSaid() {
     let notYet = with([
       "shipped": 75, "evaluated": 0, "in_part": 0, "not_evaluated": 75, "watching": false,
+      "matches_last_day": 12,
     ])
-    let row = notYet.gaps.last
+    let row = notYet.gaps.first
     #expect(row?.label == "Published rules, not watching yet")
     #expect(row?.count == 75)
-    #expect(row?.section == "rules")
-    #expect(notYet.lines.contains("○ Published rules, not watching yet  75  › #rules"))
-    let watching = with([
-      "shipped": 75, "evaluated": 60, "in_part": 9, "not_evaluated": 6, "watching": true,
-    ])
-    #expect(watching.gaps.last?.label == "Rules watching program starts")
-    #expect(watching.gaps.last?.count == 69)
-    #expect(watching.gaps.last?.text == "69 of 75 published rules watch program starts")
+    #expect(row?.section == "as-it-happens")
+    #expect(
+      notYet.lines.contains("○ Published rules, not watching yet  75  › #as-it-happens"))
     // Missing, null or not a boolean is not watching.
     for odd: Any in [NSNull(), "true", 1] {
-      let p = with(["shipped": 75, "evaluated": 60, "in_part": 9, "watching": odd])
-      #expect(p.gaps.last?.label == "Published rules, not watching yet")
+      let p = with(["shipped": 75, "matches_last_day": 3, "watching": odd])
+      #expect(p.gaps.first?.label == "Published rules, not watching yet")
     }
-    let missing = with(["shipped": 75, "evaluated": 60, "in_part": 9])
-    #expect(missing.gaps.last?.label == "Published rules, not watching yet")
-    // A list, not an alarm: the count, the headline and the icon are what they were.
-    for p in [notYet, watching] {
-      #expect(p.total == 0)
-      #expect(p.light == .nothingToReport)
-      #expect(p.headline == "This Mac is watched. Nothing needs you.")
+    let missing = with(["shipped": 75, "evaluated": 60, "matches_last_day": 3])
+    #expect(missing.gaps.first?.label == "Published rules, not watching yet")
+    // An older soc has no such part: no row.
+    #expect(!with(nil).gaps.contains { $0.section == "as-it-happens" })
+  }
+
+  @Test(
+    "While the rules watch, the row is the matches of the last day as soc counts them, first among the quiet rows, thousands separated"
+  )
+  func matchesWhileWatching() {
+    let p = with(["shipped": 75, "watching": true, "matches_last_day": 4812])
+    #expect(p.gaps.first?.label == "Rule matches, not alarms")
+    #expect(p.gaps.first?.count == 4812)
+    #expect(p.lines.contains("○ Rule matches, not alarms  4,812  › #as-it-happens"))
+    #expect(
+      p.gaps.first?.text
+        == "4,812 matches of published rules in the last day, counted and not alarms")
+    // A count soc does not give is not shown as zero.
+    #expect(with(["shipped": 75, "watching": true]).gaps.first?.count == nil)
+  }
+
+  @Test("Rule matches never change the headline, the total or the menu-bar icon; only findings do")
+  func matchesAreNeverAlarms() {
+    let none = with(["shipped": 75, "watching": true, "matches_last_day": 0])
+    for n in [1, 37, 1_000_000] {
+      let p = with(["shipped": 75, "watching": true, "matches_last_day": n])
+      #expect(p.total == none.total && p.total == 0)
+      #expect(p.light == none.light && p.light == .nothingToReport)
+      #expect(p.headline == none.headline)
+      #expect(p.urgent == false && p.worst == nil)
       #expect(Light.menuSymbol(p.light, worst: p.worst, urgent: p.urgent) == "checkmark.shield")
     }
-    // An older soc has no such part: no row.
-    #expect(!with(nil).gaps.contains { $0.section == "rules" })
+  }
+}
+
+@Suite("Program starts: the day at a glance while the level runs, its state quietly when not")
+struct ProgramStarts {
+  func with(_ level: Any?) -> Panel {
+    panel(quiet(removing: ["result", "event_level"], setting: level))
+  }
+
+  func running(notes: Any?) -> [String: Any] {
+    var hours = Array(repeating: 0, count: 24)
+    hours[10] = 4000
+    hours[23] = 812
+    var level: [String: Any] = [
+      "state": "running", "program_starts": ["last_day": 4812, "since_check": 12],
+      "program_starts_by_hour": ["ends_at": "2026-11-10T10:00:00Z", "counts": hours],
+    ]
+    if let notes { level["in_words"] = ["state": "on", "notes": notes] }
+    return level
+  }
+
+  @Test(
+    "While it runs: the count of the day, its 24 hours as soc gives them, and none lost only when soc lists no caveat"
+  )
+  func whileRunning() {
+    let calm = with(running(notes: [String]())).starts
+    #expect(calm?.running == true)
+    #expect(calm?.countText == "4,812")
+    #expect(calm?.hours.count == 24 && calm?.hours.reduce(0, +) == 4812)
+    #expect(calm?.line == "seen as they happen · none lost")
+    let restart = "The collector restarted once; program starts in that moment were not seen."
+    let lost = with(running(notes: [restart])).starts
+    #expect(lost?.line == "seen as they happen · " + restart)
+    // Words soc does not give claim nothing about losses.
+    #expect(with(running(notes: nil)).starts?.line == "seen as they happen")
+    let p = with(running(notes: [String]()))
+    #expect(p.lines.contains { $0.hasPrefix("≈ Program starts  4,812  ") })
+    #expect(p.lines.contains("    seen as they happen · none lost"))
+    // A series with something that is not a count is not drawn.
+    var odd = running(notes: [String]())
+    odd["program_starts_by_hour"] = ["counts": [1, "2", 3]]
+    #expect(with(odd).starts?.hours == [])
+  }
+
+  @Test(
+    "Not installed, refused or failing: soc's state in its own words and its note, no count and no bars, never an alarm"
+  )
+  func whenNotRunning() {
+    let note = "Program starts are not seen until it is installed."
+    let p = with([
+      "state": "not_installed", "program_starts": ["last_day": 0],
+      "in_words": ["state": "not installed", "notes": [note]],
+    ])
+    #expect(p.starts?.running == false)
+    #expect(p.starts?.state == "not installed")
+    #expect(p.starts?.line == note)
+    #expect(p.starts?.count == nil && p.starts?.hours == [])
+    #expect(p.lines.contains("≈ Program starts  not installed  › #as-it-happens"))
+    #expect(p.light == .nothingToReport && p.total == 0)
+    // An earlier soc, or a level never looked for: no row.
+    #expect(with(nil).starts == nil)
+    // Text from soc is inert.
+    let refused = with([
+      "state": "refused", "in_words": ["state": "refused\u{202E} by macOS", "notes": []],
+    ])
+    #expect(refused.starts.map { hasNoInvisible($0.state ?? "") } == true)
+    // Only "running" is running: every other state, known or not, draws no count.
+    for state in ["refused", "failing", "silent", "failed", "something new"] {
+      let p = with([
+        "state": state, "program_starts": ["last_day": 9],
+        "in_words": ["state": "a state", "notes": []],
+      ])
+      #expect(p.starts?.running == false && p.starts?.count == nil, "\(state)")
+    }
+  }
+}
+
+@Suite("A finding a published rule raised: the rule and the start, as data")
+struct PublishedRuleCard {
+  @Test(
+    "The open card carries the tag, the latest program and what started it, and the rule's title with its authors, all inert"
+  )
+  func cardShowsTheRuleAndTheStart() {
+    var item = lookItem(
+      kind: "program start matched by a published rule", severity: "high",
+      whereText: "studio", valueText: "Binary Padding - MacOS, by Igor Fits",
+      title:
+        "A program started on this Mac in a way that a published detection rule marks as high risk."
+    )
+    item["published_rule"] = [
+      "title_text": "Binary Padding - MacOS", "author_text": "Igor Fits",
+      "evidence": [
+        ["executable_text": "/bin/dd\u{202E}", "parent_executable_text": "/bin/zsh"],
+        ["executable_text": "/bin/older", "parent_executable_text": "/bin/sh"],
+      ],
+    ]
+    let p = panel(looking([item]))
+    let row = p.opened
+    #expect(row?.tag == "published rule")
+    #expect(row?.started.map(hasNoInvisible) == true)
+    #expect(row?.started?.hasSuffix(" · started by /bin/zsh") == true)
+    #expect(row?.started?.hasPrefix("/bin/dd") == true)
+    #expect(row?.reasonLabel == "Rule: ")
+    #expect(p.lines.contains("    Rule: Binary Padding - MacOS, by Igor Fits"))
+    // The start replaces the machine's name under the title.
+    #expect(!p.lines.contains("    › studio"))
+    // Without a parent, the program alone.
+    item["published_rule"] = ["evidence": [["executable_text": "/bin/dd"]]]
+    #expect(panel(looking([item])).opened?.started == "/bin/dd")
+    // Any other finding keeps its own labels.
+    let other = panel(looking([lookItem(valueText: "a reason")])).opened
+    #expect(other?.tag == nil && other?.started == nil && other?.reasonLabel == "Reason: ")
   }
 }

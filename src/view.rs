@@ -144,7 +144,7 @@ pub const SECTIONS: [(&str, &str); 6] = [
     ("you-can-fix", "You can fix"),
     ("limits", "Limits of this version"),
     ("answered", "Answered"),
-    ("rules", "Published rules"),
+    ("as-it-happens", "As it happens"),
 ];
 
 /// Where a section's own page is, relative to the store's folder.
@@ -2211,6 +2211,61 @@ body.summary { background: var(--grp); color: var(--ink);
   .summary #this-mac h1 { font-size: 24px; line-height: 30px; }
   .summary .cover > .known { grid-template-columns: minmax(0, 1fr) auto; }
   .summary .cover > .known .lbl { grid-column: 1 / -1; }
+}
+
+/* As it happens: program starts and the published rules, src/happens.rs. */
+.summary #as-it-happens { background: var(--card); border: 1px solid var(--ln); border-radius: 14px; padding: 24px;
+  display: flex; flex-direction: column; gap: 22px; }
+.summary #as-it-happens .head { margin-bottom: 0; }
+.summary #as-it-happens .head h2 { flex: 0 1 auto; }
+.summary #as-it-happens .first { font-size: 15px; color: var(--sec); }
+.summary #as-it-happens .first strong { color: var(--ink); font-weight: 600; }
+.summary .stats { display: flex; flex-wrap: wrap; gap: 24px; }
+.summary .stat { flex: 1 1 200px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.summary .stat .st, .summary .stat .ss { font-size: 13px; color: var(--sec); }
+.summary .stat .sv { font-size: 28px; font-weight: 700; line-height: 32px; font-variant-numeric: tabular-nums; }
+.summary .stat svg.hours { display: block; width: 220px; max-width: 100%; height: 40px; }
+.summary .stat .meter { max-width: 220px; height: 6px; border-radius: 3px; }
+.summary .stat .meter span { height: 6px; }
+.summary .sh { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 18px; padding-bottom: 8px; }
+.summary .sh h3 { font-size: 15px; font-weight: 600; }
+.summary .sh .n { font-size: 13px; color: var(--sec); }
+.summary .matched .none { font-size: 14px; color: var(--sec); padding: 10px 0; border-top: 1px solid var(--ln); }
+.summary .rr { display: grid; grid-template-columns: minmax(0, 1fr) 72px 84px 56px 132px; align-items: center; gap: 12px;
+  padding: 10px 0; border-top: 1px solid var(--ln); font-size: 14px; }
+.summary .rr .rt { overflow-wrap: anywhere; }
+.summary .rr .rc { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
+.summary .rr .rs { text-align: right; font-size: 13px; color: var(--sec); }
+.summary .rr .rs a { color: var(--sec); }
+.summary .rr .rs a.look { color: var(--red); font-weight: 600; }
+.summary .rb { display: block; height: 8px; border-radius: 4px; background: var(--ln); overflow: hidden; }
+.summary .rb span { display: block; height: 8px; border-radius: 4px; background: var(--hollow); }
+.summary .lv { display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border-radius: 10px;
+  font-size: 12px; font-weight: 600; white-space: nowrap; }
+.summary .lv-critical { background: var(--sev-critical); color: var(--card); }
+.summary .lv-high { background: var(--sev-high); color: var(--card); }
+.summary .lv-medium { background: var(--vuln-light); color: var(--ink); }
+.summary .lv-low, .summary .lv-informational { background: var(--grp); color: var(--sec); box-shadow: inset 0 0 0 1px var(--ln); }
+.summary .matched .all { padding-top: 10px; border-top: 1px solid var(--ln); font-size: 13px; color: var(--sec); }
+.summary .covers { display: flex; flex-direction: column; gap: 12px; }
+.summary .covers .sh { padding-bottom: 0; }
+.summary .covers .legend .m { width: 12px; height: 12px; border-radius: 3px; }
+.summary .tactics { display: grid; grid-template-columns: repeat(auto-fill, minmax(86px, 1fr)); gap: 16px 10px; }
+.summary .tactic { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.summary .tactic h4 { font-size: 12px; font-weight: 600; line-height: 15px; min-height: 30px; margin: 0; }
+.summary .tactic .sq { display: flex; flex-wrap: wrap; gap: 4px; max-width: 76px; }
+.summary .tactic .m { width: 12px; height: 12px; border-radius: 3px; box-shadow: inset 0 0 0 1px var(--calm-edge); }
+.summary .tactic .m.look, .summary .covers .legend .m.look { box-shadow: 0 0 0 1.5px var(--card), 0 0 0 3px var(--red); }
+.summary .m.hit { background: var(--vuln); box-shadow: none; }
+.summary .m.would { background: transparent; border: 1.5px solid var(--hollow); box-shadow: none; }
+.summary .tactic .m.open, .summary .tactic .m.would, .summary .covers .legend .m.open, .summary .covers .legend .m.would { border-width: 1px; box-shadow: none; }
+.summary .tactic .nm { font-size: 12px; color: var(--sec); font-variant-numeric: tabular-nums; }
+.summary .covers > .meta { font-size: 13px; }
+@media (max-width: 760px) {
+  .summary #as-it-happens { padding: 20px 16px; }
+  .summary .rr { grid-template-columns: minmax(0, 1fr) auto auto; }
+  .summary .rr .rb { display: none; }
+  .summary .rr .rs { grid-column: 1 / -1; text-align: left; margin-top: -6px; }
 }
 </style>
 </head>

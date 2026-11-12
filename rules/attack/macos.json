@@ -1,0 +1,884 @@
+{
+ "source": "https://github.com/mitre-attack/attack-stix-data",
+ "release": "v20.1",
+ "file": "enterprise-attack/enterprise-attack-20.1.json",
+ "sha256": "539a843a7b53ed9749740b2123dddae3726b1a4831841c32aca740b011b910b5",
+ "platform": "macOS",
+ "tactics": [
+  {
+   "id": "TA0001",
+   "name": "Initial Access",
+   "techniques": [
+    "T1078",
+    "T1133",
+    "T1189",
+    "T1190",
+    "T1195",
+    "T1199",
+    "T1200",
+    "T1566",
+    "T1659",
+    "T1669"
+   ]
+  },
+  {
+   "id": "TA0002",
+   "name": "Execution",
+   "techniques": [
+    "T1053",
+    "T1059",
+    "T1072",
+    "T1106",
+    "T1129",
+    "T1203",
+    "T1204",
+    "T1559",
+    "T1569",
+    "T1574",
+    "T1674"
+   ]
+  },
+  {
+   "id": "TA0003",
+   "name": "Persistence",
+   "techniques": [
+    "T1037",
+    "T1053",
+    "T1078",
+    "T1098",
+    "T1133",
+    "T1136",
+    "T1176",
+    "T1205",
+    "T1505",
+    "T1542",
+    "T1543",
+    "T1546",
+    "T1547",
+    "T1554",
+    "T1556",
+    "T1653",
+    "T1668"
+   ]
+  },
+  {
+   "id": "TA0004",
+   "name": "Privilege Escalation",
+   "techniques": [
+    "T1037",
+    "T1053",
+    "T1055",
+    "T1068",
+    "T1078",
+    "T1098",
+    "T1543",
+    "T1546",
+    "T1547",
+    "T1548"
+   ]
+  },
+  {
+   "id": "TA0005",
+   "name": "Stealth",
+   "techniques": [
+    "T1014",
+    "T1027",
+    "T1036",
+    "T1055",
+    "T1070",
+    "T1078",
+    "T1140",
+    "T1205",
+    "T1211",
+    "T1218",
+    "T1480",
+    "T1497",
+    "T1542",
+    "T1564",
+    "T1574",
+    "T1620",
+    "T1622",
+    "T1678",
+    "T1684"
+   ]
+  },
+  {
+   "id": "TA0112",
+   "name": "Defense Impairment",
+   "techniques": [
+    "T1222",
+    "T1553",
+    "T1556",
+    "T1647",
+    "T1685",
+    "T1686",
+    "T1687",
+    "T1689",
+    "T1690"
+   ]
+  },
+  {
+   "id": "TA0006",
+   "name": "Credential Access",
+   "techniques": [
+    "T1003",
+    "T1040",
+    "T1056",
+    "T1110",
+    "T1111",
+    "T1212",
+    "T1539",
+    "T1552",
+    "T1555",
+    "T1556",
+    "T1557",
+    "T1558",
+    "T1606",
+    "T1621",
+    "T1649"
+   ]
+  },
+  {
+   "id": "TA0007",
+   "name": "Discovery",
+   "techniques": [
+    "T1007",
+    "T1010",
+    "T1016",
+    "T1018",
+    "T1033",
+    "T1040",
+    "T1046",
+    "T1049",
+    "T1057",
+    "T1069",
+    "T1082",
+    "T1083",
+    "T1087",
+    "T1120",
+    "T1124",
+    "T1135",
+    "T1201",
+    "T1217",
+    "T1497",
+    "T1518",
+    "T1614",
+    "T1622",
+    "T1652",
+    "T1654",
+    "T1673",
+    "T1680"
+   ]
+  },
+  {
+   "id": "TA0008",
+   "name": "Lateral Movement",
+   "techniques": [
+    "T1021",
+    "T1072",
+    "T1080",
+    "T1210",
+    "T1534",
+    "T1563",
+    "T1570"
+   ]
+  },
+  {
+   "id": "TA0009",
+   "name": "Collection",
+   "techniques": [
+    "T1005",
+    "T1025",
+    "T1039",
+    "T1056",
+    "T1074",
+    "T1113",
+    "T1114",
+    "T1115",
+    "T1119",
+    "T1123",
+    "T1125",
+    "T1213",
+    "T1557",
+    "T1560"
+   ]
+  },
+  {
+   "id": "TA0011",
+   "name": "Command and Control",
+   "techniques": [
+    "T1001",
+    "T1008",
+    "T1071",
+    "T1090",
+    "T1092",
+    "T1095",
+    "T1102",
+    "T1104",
+    "T1105",
+    "T1132",
+    "T1205",
+    "T1219",
+    "T1568",
+    "T1571",
+    "T1572",
+    "T1573",
+    "T1659",
+    "T1665"
+   ]
+  },
+  {
+   "id": "TA0010",
+   "name": "Exfiltration",
+   "techniques": [
+    "T1011",
+    "T1020",
+    "T1029",
+    "T1030",
+    "T1041",
+    "T1048",
+    "T1052",
+    "T1567"
+   ]
+  },
+  {
+   "id": "TA0040",
+   "name": "Impact",
+   "techniques": [
+    "T1485",
+    "T1486",
+    "T1489",
+    "T1490",
+    "T1491",
+    "T1495",
+    "T1496",
+    "T1498",
+    "T1499",
+    "T1529",
+    "T1531",
+    "T1561",
+    "T1565",
+    "T1657",
+    "T1667"
+   ]
+  }
+ ],
+ "techniques": [
+  {
+   "id": "T1001",
+   "name": "Data Obfuscation"
+  },
+  {
+   "id": "T1003",
+   "name": "OS Credential Dumping"
+  },
+  {
+   "id": "T1005",
+   "name": "Data from Local System"
+  },
+  {
+   "id": "T1007",
+   "name": "System Service Discovery"
+  },
+  {
+   "id": "T1008",
+   "name": "Fallback Channels"
+  },
+  {
+   "id": "T1010",
+   "name": "Application Window Discovery"
+  },
+  {
+   "id": "T1011",
+   "name": "Exfiltration Over Other Network Medium"
+  },
+  {
+   "id": "T1014",
+   "name": "Rootkit"
+  },
+  {
+   "id": "T1016",
+   "name": "System Network Configuration Discovery"
+  },
+  {
+   "id": "T1018",
+   "name": "Remote System Discovery"
+  },
+  {
+   "id": "T1020",
+   "name": "Automated Exfiltration"
+  },
+  {
+   "id": "T1021",
+   "name": "Remote Services"
+  },
+  {
+   "id": "T1025",
+   "name": "Data from Removable Media"
+  },
+  {
+   "id": "T1027",
+   "name": "Obfuscated Files or Information"
+  },
+  {
+   "id": "T1029",
+   "name": "Scheduled Transfer"
+  },
+  {
+   "id": "T1030",
+   "name": "Data Transfer Size Limits"
+  },
+  {
+   "id": "T1033",
+   "name": "System Owner/User Discovery"
+  },
+  {
+   "id": "T1036",
+   "name": "Masquerading"
+  },
+  {
+   "id": "T1037",
+   "name": "Boot or Logon Initialization Scripts"
+  },
+  {
+   "id": "T1039",
+   "name": "Data from Network Shared Drive"
+  },
+  {
+   "id": "T1040",
+   "name": "Network Sniffing"
+  },
+  {
+   "id": "T1041",
+   "name": "Exfiltration Over C2 Channel"
+  },
+  {
+   "id": "T1046",
+   "name": "Network Service Discovery"
+  },
+  {
+   "id": "T1048",
+   "name": "Exfiltration Over Alternative Protocol"
+  },
+  {
+   "id": "T1049",
+   "name": "System Network Connections Discovery"
+  },
+  {
+   "id": "T1052",
+   "name": "Exfiltration Over Physical Medium"
+  },
+  {
+   "id": "T1053",
+   "name": "Scheduled Task/Job"
+  },
+  {
+   "id": "T1055",
+   "name": "Process Injection"
+  },
+  {
+   "id": "T1056",
+   "name": "Input Capture"
+  },
+  {
+   "id": "T1057",
+   "name": "Process Discovery"
+  },
+  {
+   "id": "T1059",
+   "name": "Command and Scripting Interpreter"
+  },
+  {
+   "id": "T1068",
+   "name": "Exploitation for Privilege Escalation"
+  },
+  {
+   "id": "T1069",
+   "name": "Permission Groups Discovery"
+  },
+  {
+   "id": "T1070",
+   "name": "Indicator Removal"
+  },
+  {
+   "id": "T1071",
+   "name": "Application Layer Protocol"
+  },
+  {
+   "id": "T1072",
+   "name": "Software Deployment Tools"
+  },
+  {
+   "id": "T1074",
+   "name": "Data Staged"
+  },
+  {
+   "id": "T1078",
+   "name": "Valid Accounts"
+  },
+  {
+   "id": "T1080",
+   "name": "Taint Shared Content"
+  },
+  {
+   "id": "T1082",
+   "name": "System Information Discovery"
+  },
+  {
+   "id": "T1083",
+   "name": "File and Directory Discovery"
+  },
+  {
+   "id": "T1087",
+   "name": "Account Discovery"
+  },
+  {
+   "id": "T1090",
+   "name": "Proxy"
+  },
+  {
+   "id": "T1092",
+   "name": "Communication Through Removable Media"
+  },
+  {
+   "id": "T1095",
+   "name": "Non-Application Layer Protocol"
+  },
+  {
+   "id": "T1098",
+   "name": "Account Manipulation"
+  },
+  {
+   "id": "T1102",
+   "name": "Web Service"
+  },
+  {
+   "id": "T1104",
+   "name": "Multi-Stage Channels"
+  },
+  {
+   "id": "T1105",
+   "name": "Ingress Tool Transfer"
+  },
+  {
+   "id": "T1106",
+   "name": "Native API"
+  },
+  {
+   "id": "T1110",
+   "name": "Brute Force"
+  },
+  {
+   "id": "T1111",
+   "name": "Multi-Factor Authentication Interception"
+  },
+  {
+   "id": "T1113",
+   "name": "Screen Capture"
+  },
+  {
+   "id": "T1114",
+   "name": "Email Collection"
+  },
+  {
+   "id": "T1115",
+   "name": "Clipboard Data"
+  },
+  {
+   "id": "T1119",
+   "name": "Automated Collection"
+  },
+  {
+   "id": "T1120",
+   "name": "Peripheral Device Discovery"
+  },
+  {
+   "id": "T1123",
+   "name": "Audio Capture"
+  },
+  {
+   "id": "T1124",
+   "name": "System Time Discovery"
+  },
+  {
+   "id": "T1125",
+   "name": "Video Capture"
+  },
+  {
+   "id": "T1129",
+   "name": "Shared Modules"
+  },
+  {
+   "id": "T1132",
+   "name": "Data Encoding"
+  },
+  {
+   "id": "T1133",
+   "name": "External Remote Services"
+  },
+  {
+   "id": "T1135",
+   "name": "Network Share Discovery"
+  },
+  {
+   "id": "T1136",
+   "name": "Create Account"
+  },
+  {
+   "id": "T1140",
+   "name": "Deobfuscate/Decode Files or Information"
+  },
+  {
+   "id": "T1176",
+   "name": "Software Extensions"
+  },
+  {
+   "id": "T1189",
+   "name": "Drive-by Compromise"
+  },
+  {
+   "id": "T1190",
+   "name": "Exploit Public-Facing Application"
+  },
+  {
+   "id": "T1195",
+   "name": "Supply Chain Compromise"
+  },
+  {
+   "id": "T1199",
+   "name": "Trusted Relationship"
+  },
+  {
+   "id": "T1200",
+   "name": "Hardware Additions"
+  },
+  {
+   "id": "T1201",
+   "name": "Password Policy Discovery"
+  },
+  {
+   "id": "T1203",
+   "name": "Exploitation for Client Execution"
+  },
+  {
+   "id": "T1204",
+   "name": "User Execution"
+  },
+  {
+   "id": "T1205",
+   "name": "Traffic Signaling"
+  },
+  {
+   "id": "T1210",
+   "name": "Exploitation of Remote Services"
+  },
+  {
+   "id": "T1211",
+   "name": "Exploitation for Stealth"
+  },
+  {
+   "id": "T1212",
+   "name": "Exploitation for Credential Access"
+  },
+  {
+   "id": "T1213",
+   "name": "Data from Information Repositories"
+  },
+  {
+   "id": "T1217",
+   "name": "Browser Information Discovery"
+  },
+  {
+   "id": "T1218",
+   "name": "System Binary Proxy Execution"
+  },
+  {
+   "id": "T1219",
+   "name": "Remote Access Tools"
+  },
+  {
+   "id": "T1222",
+   "name": "File and Directory Permissions Modification"
+  },
+  {
+   "id": "T1480",
+   "name": "Execution Guardrails"
+  },
+  {
+   "id": "T1485",
+   "name": "Data Destruction"
+  },
+  {
+   "id": "T1486",
+   "name": "Data Encrypted for Impact"
+  },
+  {
+   "id": "T1489",
+   "name": "Service Stop"
+  },
+  {
+   "id": "T1490",
+   "name": "Inhibit System Recovery"
+  },
+  {
+   "id": "T1491",
+   "name": "Defacement"
+  },
+  {
+   "id": "T1495",
+   "name": "Firmware Corruption"
+  },
+  {
+   "id": "T1496",
+   "name": "Resource Hijacking"
+  },
+  {
+   "id": "T1497",
+   "name": "Virtualization/Sandbox Evasion"
+  },
+  {
+   "id": "T1498",
+   "name": "Network Denial of Service"
+  },
+  {
+   "id": "T1499",
+   "name": "Endpoint Denial of Service"
+  },
+  {
+   "id": "T1505",
+   "name": "Server Software Component"
+  },
+  {
+   "id": "T1518",
+   "name": "Software Discovery"
+  },
+  {
+   "id": "T1529",
+   "name": "System Shutdown/Reboot"
+  },
+  {
+   "id": "T1531",
+   "name": "Account Access Removal"
+  },
+  {
+   "id": "T1534",
+   "name": "Internal Spearphishing"
+  },
+  {
+   "id": "T1539",
+   "name": "Steal Web Session Cookie"
+  },
+  {
+   "id": "T1542",
+   "name": "Pre-OS Boot"
+  },
+  {
+   "id": "T1543",
+   "name": "Create or Modify System Process"
+  },
+  {
+   "id": "T1546",
+   "name": "Event Triggered Execution"
+  },
+  {
+   "id": "T1547",
+   "name": "Boot or Logon Autostart Execution"
+  },
+  {
+   "id": "T1548",
+   "name": "Abuse Elevation Control Mechanism"
+  },
+  {
+   "id": "T1552",
+   "name": "Unsecured Credentials"
+  },
+  {
+   "id": "T1553",
+   "name": "Subvert Trust Controls"
+  },
+  {
+   "id": "T1554",
+   "name": "Compromise Host Software Binary"
+  },
+  {
+   "id": "T1555",
+   "name": "Credentials from Password Stores"
+  },
+  {
+   "id": "T1556",
+   "name": "Modify Authentication Process"
+  },
+  {
+   "id": "T1557",
+   "name": "Adversary-in-the-Middle"
+  },
+  {
+   "id": "T1558",
+   "name": "Steal or Forge Kerberos Tickets"
+  },
+  {
+   "id": "T1559",
+   "name": "Inter-Process Communication"
+  },
+  {
+   "id": "T1560",
+   "name": "Archive Collected Data"
+  },
+  {
+   "id": "T1561",
+   "name": "Disk Wipe"
+  },
+  {
+   "id": "T1563",
+   "name": "Remote Service Session Hijacking"
+  },
+  {
+   "id": "T1564",
+   "name": "Hide Artifacts"
+  },
+  {
+   "id": "T1565",
+   "name": "Data Manipulation"
+  },
+  {
+   "id": "T1566",
+   "name": "Phishing"
+  },
+  {
+   "id": "T1567",
+   "name": "Exfiltration Over Web Service"
+  },
+  {
+   "id": "T1568",
+   "name": "Dynamic Resolution"
+  },
+  {
+   "id": "T1569",
+   "name": "System Services"
+  },
+  {
+   "id": "T1570",
+   "name": "Lateral Tool Transfer"
+  },
+  {
+   "id": "T1571",
+   "name": "Non-Standard Port"
+  },
+  {
+   "id": "T1572",
+   "name": "Protocol Tunneling"
+  },
+  {
+   "id": "T1573",
+   "name": "Encrypted Channel"
+  },
+  {
+   "id": "T1574",
+   "name": "Hijack Execution Flow"
+  },
+  {
+   "id": "T1606",
+   "name": "Forge Web Credentials"
+  },
+  {
+   "id": "T1614",
+   "name": "System Location Discovery"
+  },
+  {
+   "id": "T1620",
+   "name": "Reflective Code Loading"
+  },
+  {
+   "id": "T1621",
+   "name": "Multi-Factor Authentication Request Generation"
+  },
+  {
+   "id": "T1622",
+   "name": "Debugger Evasion"
+  },
+  {
+   "id": "T1647",
+   "name": "Plist File Modification"
+  },
+  {
+   "id": "T1649",
+   "name": "Steal or Forge Authentication Certificates"
+  },
+  {
+   "id": "T1652",
+   "name": "Device Driver Discovery"
+  },
+  {
+   "id": "T1653",
+   "name": "Power Settings"
+  },
+  {
+   "id": "T1654",
+   "name": "Log Enumeration"
+  },
+  {
+   "id": "T1657",
+   "name": "Financial Theft"
+  },
+  {
+   "id": "T1659",
+   "name": "Content Injection"
+  },
+  {
+   "id": "T1665",
+   "name": "Hide Infrastructure"
+  },
+  {
+   "id": "T1667",
+   "name": "Email Bombing"
+  },
+  {
+   "id": "T1668",
+   "name": "Exclusive Control"
+  },
+  {
+   "id": "T1669",
+   "name": "Wi-Fi Networks"
+  },
+  {
+   "id": "T1673",
+   "name": "Virtual Machine Discovery"
+  },
+  {
+   "id": "T1674",
+   "name": "Input Injection"
+  },
+  {
+   "id": "T1678",
+   "name": "Delay Execution"
+  },
+  {
+   "id": "T1680",
+   "name": "Local Storage Discovery"
+  },
+  {
+   "id": "T1684",
+   "name": "Social Engineering"
+  },
+  {
+   "id": "T1685",
+   "name": "Disable or Modify Tools"
+  },
+  {
+   "id": "T1686",
+   "name": "Disable or Modify System Firewall"
+  },
+  {
+   "id": "T1687",
+   "name": "Exploitation for Defense Impairment"
+  },
+  {
+   "id": "T1689",
+   "name": "Downgrade Attack"
+  },
+  {
+   "id": "T1690",
+   "name": "Prevent Command History Logging"
+  }
+ ]
+}

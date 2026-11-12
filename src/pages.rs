@@ -128,7 +128,7 @@ pub fn summary(
     let list = indicator_list(conn)?;
     let none = covered::none_here(conn, &latest, &st.this_mac)?;
     watched_section(&mut out, &st.this_mac, &none, list, st.event_level.as_ref())?;
-    rules_summary(&mut out, &r["rules"])?;
+    crate::happens::draw(&mut out, st, &r["rules"])?;
     out.push_str("<div class=\"card closed\">\n");
     limits(conn, &mut out, st)?;
     answered_section(conn, &mut out, now)?;
@@ -1421,29 +1421,6 @@ pub fn rules_said(r: &serde_json::Value) -> String {
         said.push_str(note);
     }
     said
-}
-
-/// The summary's section on the published rules: what they are, that none watches yet, how
-/// many are in each place, and the page with every one.
-fn rules_summary(out: &mut String, r: &serde_json::Value) -> Out {
-    writeln!(
-        out,
-        "<section id=\"rules\">\n<div class=\"head\"><h2>{RULES_TITLE}</h2></div>\n<p>{}</p>\n<div class=\"cover\">",
-        esc(&rules_said(r))
-    )?;
-    for ((_, title, _), key) in PLACED.iter().zip(["evaluated", "in_part", "not_evaluated"]) {
-        writeln!(
-            out,
-            "<div class=\"plain\"><span class=\"lbl\">{}</span><span class=\"num\">{}</span></div>",
-            esc(title),
-            r[key]
-        )?;
-    }
-    writeln!(
-        out,
-        "</div>\n<p><a href=\"{DETAILS}/{RULES}.html\">{RULES_TITLE}, each with what it looks for</a></p>\n</section>"
-    )?;
-    Ok(())
 }
 
 /// Every published rule this build ships, for a person: by place, then by level, the most
