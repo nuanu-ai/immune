@@ -25,12 +25,17 @@ pub struct Known {
         deserialize_with = "crate::contract::enum_from_name::<Presence, _>"
     )]
     pub presence: i32,
-    /// The thing asked for. Absent when the presence is `unknown`.
+    /// The thing asked for, by the id the question named. Absent when the presence is `unknown`.
+    /// A machine the store knows under several ids linked by `same_as` is one thing: its parts,
+    /// facts, coverage and findings are those of every one of its ids, each fact under its own
+    /// `subject_text`.
     #[prost(message, optional, tag = "5")]
     pub thing: ::core::option::Option<Entity>,
-    /// The things inside it: what is `part_of` or `located_on` it, and files whose path lies in its
-    /// folder. Only those with facts in force. For a project that is every depth there is; a thing
-    /// whose parts have parts of their own is answered when that question is built.
+    /// The things inside it: what is `part_of` or `located_on` it, and for a project the files whose
+    /// path lies in its folder. Only those with facts in force, and one level: in a project that is
+    /// every depth there is, and a machine's parts (its containers, packages, checkouts and watched
+    /// files) come without their own parts, which the question for that part gives, such as
+    /// `immune project` for a checkout.
     #[prost(message, repeated, tag = "6")]
     pub parts: ::prost::alloc::vec::Vec<Entity>,
     /// The facts in force about the thing and its parts.
@@ -38,7 +43,11 @@ pub struct Known {
     pub facts: ::prost::alloc::vec::Vec<Fact>,
     /// The latest reading of each reader, scope and kind that speaks for the thing: of the thing
     /// and its parts, of what found them, and of folders that were not looked into and hold it.
+    /// For a thing the store never heard of, every reading that looks for things of its kind.
     /// Anything not full here was not read, or not read in full, and nothing is known of it since.
+    /// A machine other than this Mac that the server check never visited carries one reading made
+    /// by rule rather than read from the store: `servers`, `sweep visit`, completeness `none`,
+    /// `observed_at` 0.
     #[prost(message, repeated, tag = "8")]
     pub coverage: ::prost::alloc::vec::Vec<Coverage>,
     /// The findings about the thing or its parts, in every state. `immune finding <id>` shows one.
@@ -128,6 +137,7 @@ pub struct Coverage {
         deserialize_with = "crate::contract::optional_enum_from_name::<Cause, _>"
     )]
     pub cause: ::core::option::Option<i32>,
+    /// When it was read; 0 when the reading was never made.
     #[prost(int64, tag = "7")]
     pub observed_at: i64,
     /// What this build has no reader for, found in this reading.
