@@ -780,18 +780,20 @@ struct PanelPromises {
 
   @Test("A card's time is short and its full date is at hand: the time today, the day this year")
   func shortTimes() {
-    let now = Date()
+    // A fixed noon, whenever the test runs: a minute and a half earlier is the same day, and
+    // 40 days earlier and the fixture's card, seen on 10 November, are the same year.
+    let noon = DateComponents(year: 2026, month: 11, day: 20, hour: 12)
+    let now = Calendar.current.date(from: noon) ?? Date()
     let today = now.addingTimeInterval(-60)
     #expect(Clock.at(today, now: now) == today.formatted(date: .omitted, time: .shortened))
     let earlier = Calendar.current.date(byAdding: .day, value: -40, to: now) ?? now
-    if Calendar.current.isDate(earlier, equalTo: now, toGranularity: .year) {
-      #expect(Clock.at(earlier, now: now).count < Clock.full(earlier).count)
-    }
-    let row = panel(output("two.json")).rows[0]
+    #expect(Clock.at(earlier, now: now).count < Clock.full(earlier).count)
+    let row = Panel.of(Interpret.reading(from: output("two.json")), now: now).rows[0]
     #expect(row.when != nil && row.whenFull != nil && row.whenFull != row.when)
     // A card seen today says the time of day.
     let recent = now.addingTimeInterval(-90)
-    let todays = panel(looking([lookItem(lastSeen: recent.formatted(.iso8601))])).rows[0]
+    let reading = Interpret.reading(from: looking([lookItem(lastSeen: recent.formatted(.iso8601))]))
+    let todays = Panel.of(reading, now: now).rows[0]
     #expect(todays.when == recent.formatted(date: .omitted, time: .shortened))
   }
 

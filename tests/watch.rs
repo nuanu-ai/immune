@@ -522,6 +522,23 @@ fn an_atomic_replace_is_seen() {
 
 #[test]
 fn a_thousand_changes_are_one_reading() {
+    // Writing the burst takes about a quarter of a second, well inside the quiet second, but
+    // its reading came 7 s after it at background priority, and later still on a loaded
+    // machine, past WAIT. Its waits here are longer.
+    const LONG: Duration = Duration::from_secs(300);
+    let next_read = |w: &mut Watcher| {
+        let end = Instant::now() + LONG;
+        loop {
+            let left = end.saturating_duration_since(Instant::now());
+            let v =
+                w.rx.recv_timeout(left)
+                    .unwrap_or_else(|_| panic!("no read line in {LONG:?}; saw {:?}", w.seen));
+            w.seen.push(v.clone());
+            if v["event"] == "read" {
+                return v;
+            }
+        }
+    };
     let mac = Mac::new("burst");
     let mut w = mac.watch().started();
     for i in 0..1000 {
@@ -530,11 +547,11 @@ fn a_thousand_changes_are_one_reading() {
             "<plist/>\n",
         );
     }
-    let burst = w.next("read");
+    let burst = next_read(&mut w);
     assert_eq!(count(&burst, "new"), 1000);
     // One more change: had the burst made a second reading, its line would come first.
     mac.put(".zprofile", "a\n");
-    let after = w.next("read");
+    let after = next_read(&mut w);
     assert_eq!((count(&after, "new"), count(&after, "changed")), (1, 0));
     assert_eq!(w.lines("read").len(), 3);
 }

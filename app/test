@@ -11,8 +11,10 @@
 # this scratch path that was not there before the run, is stopped; and a helper
 # still there at the end is stopped, named, and fails the run.
 set -u
-here=$(cd "$(dirname "$0")" && pwd)
-scratch="$here/../target/app/swift"
+here=$(cd "$(dirname "$0")" && pwd -P)
+# Without "..": the helper names its test bundle by a path swift has normalized, and the
+# helpers of this run are found by that path.
+scratch="$(cd "$here/.." && pwd -P)/target/app/swift"
 limit=${APP_TEST_LIMIT:-600}
 tools=$(xcode-select -p)
 set --
@@ -23,7 +25,13 @@ if [ -d "$tools/Library/Developer/Frameworks/Testing.framework" ]; then
     -Xlinker -rpath -Xlinker "$fw" -Xlinker -rpath -Xlinker "$lib"
 fi
 
-helpers() { pgrep -f "swiftpm-testing-helper --test-bundle-path $scratch" | sort; }
+# Matched as plain text, not as a pattern, so a path with regex characters still matches; the
+# text reaches awk through the environment, where no escape in it is read.
+helpers() {
+  ps -axww -o pid= -o command= |
+    want="swiftpm-testing-helper --test-bundle-path $scratch/" \
+      /usr/bin/awk 'index($0, ENVIRON["want"]) { print $1 }' | sort
+}
 tree() { for c in $(pgrep -P "$1"); do tree "$c"; echo "$c"; done; }
 stop() {
   [ -n "$*" ] || return 0

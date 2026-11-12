@@ -350,7 +350,7 @@ fn files(dir: &Path) -> Vec<String> {
 
 /// Runs collect.sh as installed, with a FIFO and a log folder of its own and an environment
 /// with no PATH it could look a program up in, feeds it `lines` and returns what it wrote:
-/// one file, since this takes less than the hour it rotates by.
+/// one file, or two when the run crosses the UTC hour it rotates by, read in their order.
 fn collect(dir: &Dir, lines: &[String]) -> String {
     let (fifo, log) = (dir.0.join("events.fifo"), dir.0.join("log"));
     std::fs::create_dir_all(&log).unwrap();
@@ -379,14 +379,17 @@ fn collect(dir: &Dir, lines: &[String]) -> String {
         String::from_utf8_lossy(&out.stderr)
     );
     let names = files(&log);
-    assert_eq!(names.len(), 1, "{names:?}");
-    let name = &names[0];
-    // exec-YYYYMMDDTHH.jsonl: the hour, in the names the reader reads.
-    assert!(
-        name.starts_with("exec-") && name.ends_with(".jsonl") && name.len() == 22,
-        "{name}"
-    );
-    std::fs::read_to_string(log.join(name)).unwrap()
+    assert!(matches!(names.len(), 1 | 2), "{names:?}");
+    let mut written = String::new();
+    for name in &names {
+        // exec-YYYYMMDDTHH.jsonl: the hour, in the names the reader reads.
+        assert!(
+            name.starts_with("exec-") && name.ends_with(".jsonl") && name.len() == 22,
+            "{name}"
+        );
+        written.push_str(&std::fs::read_to_string(log.join(name)).unwrap());
+    }
+    written
 }
 
 #[test]

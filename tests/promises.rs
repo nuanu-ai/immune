@@ -2086,9 +2086,9 @@ fn only_a_literal_alias_of_a_host_line_as_openssh_reads_it_is_ever_visited() {
 /// includes through glob(3) from `~/.ssh`, the home folder and an absolute path, pattern
 /// blocks first, a negation, an include inside a block that does not apply, files and a
 /// folder that cannot be read, and `Match` blocks that cannot be evaluated without running
-/// ssh. `{ABS}` is replaced with an absolute folder.
+/// ssh. `{ABS}` is replaced with an absolute folder, quoted as ssh reads a path with a space.
 const SSH_CONFIG_RESOLVED: &str = "\
-Include hosts/*/config conf[0-9] ~/.ssh/home.d/* locked.d/* {ABS}/*
+Include hosts/*/config conf[0-9] ~/.ssh/home.d/* locked.d/* \"{ABS}/*\"
 Include %d/extra ${EXTRA}/config ~nobody/config
 Host pat*
     HostName %h.example.org
@@ -3616,10 +3616,14 @@ fn a_store_folder_that_cannot_be_made_is_named_in_the_error() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let error = &v["errors"][0];
     assert_eq!(error["code"], "run_failed", "{v:#}");
-    assert!(
-        error["detail_text"].as_str().unwrap().contains(&said),
-        "{v:#}"
-    );
+    // Under a long TMPDIR the folder's path takes the field past its cap, and it ends in "…".
+    let detail = error["detail_text"].as_str().unwrap();
+    let whole = detail.contains(&said);
+    let cut = detail.strip_suffix('…').is_some_and(|d| {
+        d.find("cannot make the store's folder ")
+            .is_some_and(|i| said.starts_with(&d[i..]))
+    });
+    assert!(whole || cut, "{v:#}");
 }
 
 #[test]
@@ -5312,38 +5316,54 @@ fn named_aliases_restrict_the_sweep_and_a_name_the_script_does_not_list_or_skips
 fn a_sweep_that_is_stopped_starts_no_further_visit() {
     // Stopping the sweep stops access to servers: the visits under way end on their own,
     // and no machine waiting its turn is visited after the script was told to stop.
+    use std::os::unix::process::CommandExt;
     let h = Home::new("sweep-stop", Some(SSH_CONFIG_SEVEN), None);
     h.servers();
     let (sweep, bin) = (h.sweep(), h.dir.0.join("bin"));
-    let log = h.dir.0.join("visited.log");
+    let (log, go) = (h.dir.0.join("visited.log"), h.dir.0.join("go"));
+    // A visit holds until the test lets it end, so no visit can end, and no worker can take
+    // its next machine, before the script has been stopped, however slow the machine is.
     fake_ssh(
         &bin,
         &format!(
-            "echo \"$5\" >> '{}'\n/bin/sleep 1\necho '##end'",
-            log.display()
+            "echo \"$5\" >> '{}'\nwhile [ ! -e '{}' ]; do /bin/sleep 0.05; done\necho '##end'",
+            log.display(),
+            go.display()
         ),
     );
+    // A group of its own, so the test can tell when every worker and visit has ended.
     let mut child = Command::new("/bin/sh")
         .arg(sweep.join("sweep.sh"))
         .env_clear()
         .env("PATH", &bin)
         .stdout(std::process::Stdio::null())
+        .process_group(0)
         .spawn()
         .unwrap();
-    // Stopped once the first visit is under way.
-    for _ in 0..200 {
-        if log.exists() {
-            break;
+    let group = child.id() as i32;
+    let stopped = |what: &str, done: &dyn Fn() -> bool| {
+        let start = std::time::Instant::now();
+        while !done() {
+            if start.elapsed() > std::time::Duration::from_secs(120) {
+                unsafe { libc::kill(-group, libc::SIGKILL) };
+                panic!("{what} within 120 s");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
+    };
+    // Stopped once the first visit is under way.
+    stopped("no visit started", &|| log.exists());
     ok(Command::new("/bin/kill").args(["-TERM", &child.id().to_string()]));
     child.wait().unwrap();
-    // Long enough for the machines left to be visited, were anything still taking them.
-    std::thread::sleep(std::time::Duration::from_millis(2500));
+    // The visits under way end; once nothing of the sweep is left, nothing can visit later.
+    std::fs::write(&go, "").unwrap();
+    stopped("the sweep's workers did not end", &|| unsafe {
+        libc::kill(-group, 0) != 0
+    });
 
     let visited = std::fs::read_to_string(&log).unwrap();
-    assert!(visited.lines().count() < 7, "{visited}");
+    // Only the first visit of each worker: four at once, of seven machines.
+    assert!(visited.lines().count() <= 4, "{visited}");
     let left: Vec<String> = std::fs::read_dir(&sweep)
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -6291,6 +6311,11 @@ fn a_server_whose_package_manager_the_program_cannot_read_is_a_reading_that_read
     );
 }
 
+/// A path as one word of a shell line, whatever folder the tests run in.
+fn sh_word(path: &Path) -> String {
+    format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
+}
+
 /// The lines of the probe from the one that starts with `from` to the one that starts with
 /// `to`, both included.
 fn probe_part(from: &str, to: &str) -> String {
@@ -6348,14 +6373,14 @@ HOME_URL=`touch '{m}'`
     let part = probe_part("F=/etc/os-release", "echo \"##os_release\"");
     let expected = "##os\nUbuntu 24.04.1 LTS \"x\" $HOME `id` a\\b\n##os_release\n\
                     ID\tubuntu\nVERSION_ID\t24.04\nVERSION_CODENAME\tnoble";
-    let file = file.display().to_string();
+    let file = sh_word(&file);
     let printed = ok(Command::new("/bin/sh")
         .arg("-c")
         .arg(part.replace("/etc/os-release", &file)));
     assert!(!marker.exists(), "reading os-release ran a command from it");
     assert_eq!(printed, expected);
     // A system that keeps the file only in /usr/lib, as the format allows, is read the same.
-    let missing = dir.0.join("missing").display().to_string();
+    let missing = sh_word(&dir.0.join("missing"));
     let printed = ok(Command::new("/bin/sh").arg("-c").arg(
         part.replace("/etc/os-release", &missing)
             .replace("/usr/lib/os-release", &file),
@@ -6479,7 +6504,7 @@ fn the_release_of_real_distributions_is_read_as_they_give_it_and_a_value_not_ful
         let file = put(&dir.0, &format!("os-release-{name}"), text);
         let printed = ok(Command::new("/bin/sh")
             .arg("-c")
-            .arg(part.replace("/etc/os-release", &file.display().to_string())));
+            .arg(part.replace("/etc/os-release", &sh_word(&file))));
         let fields = printed.split_once("##os_release\n").map_or("", |(_, f)| f);
         servers.push((
             *name,
@@ -7105,8 +7130,9 @@ fn nothing_but_a_regular_file_is_read_and_a_named_pipe_or_a_link_loop_never_hold
     // Every Mac has these devices; they are looked at, never opened.
     link(Path::new("/dev/null"), "null").unwrap();
     link(Path::new("/dev/disk0"), "disk").unwrap();
-    // A socket's path must be short, so it is made beside the test folder.
-    let socket = std::env::temp_dir().join(format!("immune-s{}", std::process::id()));
+    // A socket's path must be shorter than 104 bytes, which under a long TMPDIR it is not, so
+    // it is made in /tmp, which every Mac has.
+    let socket = Path::new("/tmp").join(format!("immune-s{}", std::process::id()));
     let _ = std::fs::remove_file(&socket);
     let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
     link(&socket, "socket").unwrap();
@@ -7709,10 +7735,13 @@ fn assert_agrees(line: &str, store: &Path) {
             held(&t["entries"])
         )),
         "failed" => {
-            said.push(format!(
-                "CISA catalogue not read: {};",
-                t["reason_text"].as_str().unwrap()
-            ));
+            // A reason over the field's cap ends in "…", where the line may say more: a long
+            // TMPDIR makes the path in it long.
+            let reason = t["reason_text"].as_str().unwrap();
+            said.push(match reason.strip_suffix('…') {
+                Some(cut) => format!("CISA catalogue not read: {cut}"),
+                None => format!("CISA catalogue not read: {reason};"),
+            });
             assert!(t.get("new").is_none() && t.get("gone").is_none(), "{t}");
             said.push(if t["entries"].is_null() {
                 "the program knows no exploited vulnerability yet".to_string()
