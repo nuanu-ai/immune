@@ -62,6 +62,14 @@ CREATE TABLE IF NOT EXISTS advisory_affects (
 );
 CREATE INDEX IF NOT EXISTS advisory_affects_name ON advisory_affects (ecosystem, normalized);
 CREATE INDEX IF NOT EXISTS advisory_affects_advisory ON advisory_affects (source, advisory);
+-- What the status, the view and every run ask of the records held now: how many there are of
+-- each kind (`held`), the newest change (`freshness`) and how many are informational. Each was
+-- a read of the whole table, about 235,000 rows and 40 MB for npm, several times per
+-- `soc status`. Each index holds what its question reads, so it is answered from the index
+-- alone: `advisory_held` by a pass over its entries for one feed, the other two by a look-up.
+CREATE INDEX IF NOT EXISTS advisory_held ON advisory (source, gone_at, kind, withdrawn);
+CREATE INDEX IF NOT EXISTS advisory_newest ON advisory (source, gone_at, modified);
+CREATE INDEX IF NOT EXISTS advisory_informational ON advisory (kind, withdrawn, gone_at);
 ";
 
 /// One feed of vulnerability data.
