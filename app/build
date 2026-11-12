@@ -41,6 +41,13 @@ bundle="$out$place/$name.app"
 rm -rf "$bundle"
 mkdir -p "$bundle/Contents/MacOS"
 cp "$plist" "$bundle/Contents/Info.plist"
+# A trial bundle carries an identifier of its own. macOS opens whichever bundle it has
+# registered under an identifier when a notification of that identifier is clicked, and a
+# trial bundle was once opened that way in place of the real app, with the real store.
+if [ "$config" = debug ]; then
+  id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")
+  /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $id.debug" "$bundle/Contents/Info.plist"
+fi
 plutil -lint -s "$bundle/Contents/Info.plist" >&2
 cp "$bin/$exe" "$bundle/Contents/MacOS/$exe"
 cp "$immune" "$bundle/Contents/MacOS/immune"
