@@ -9,7 +9,7 @@
 # jq keeps of each start only what the reader uses, so its environment and file descriptors
 # are never written, and Apple's rotatelogs appends that to one file per hour. A job every
 # ten minutes deletes what is older than a day, and the oldest files while the log is larger
-# than 2 GiB. Only programs macOS ships run as root, and only from files this script copies
+# than 500 MiB. Only programs macOS ships run as root, and only from files this script copies
 # into a folder only root can write; nothing of ours is executed from a place
 # the owner's account can change. It only collects: it acts on no process, file or
 # connection. The log is readable by root and by the account that ran this through sudo, and
@@ -102,16 +102,18 @@ This installs the event level, and changes nothing else on this Mac:
       runs collect.sh as root: jq keeps what the reader uses, rotatelogs writes the log
   $DAEMONS/local.personal-soc.event-tidy.plist
       runs tidy.sh as root every ten minutes: deletes logs older than a day, and the oldest
-      while the log is larger than 2 GiB
+      while the log is larger than 500 MiB
 It records every program start on this Mac, of every account, with its arguments; the
 environment of a program is never written. eslogger needs Full Disk Access, granted to
 /usr/bin/eslogger in System Settings > Privacy & Security > Full Disk Access; without it
 eslogger stops at once, nothing is recorded, and Personal SOC says macOS refuses it.
 What it costs on disk: about 600 bytes a program start. A quiet Mac starting 2 programs a
-second writes about 100 MB a day; one building at 100 a second, about 5 GB a day, more than
-the cap, which then deletes the oldest hours first, so such a day keeps its last 10 hours or
-so, and Personal SOC says the day is partial. The log never holds more than
-2 GiB, plus what ten minutes of writing add: at most about 2.2 GB of disk.
+second writes about 100 MB a day, and all of it is kept; one building at 100 a second, about
+5 GB a day, more than the cap, which then deletes the oldest hours first, so the log holds
+its last two hours or so. The log is a buffer: while the app is open it is read every half
+minute, and what is read is judged and counted. Hours deleted before they were read are
+counted, and Personal SOC says the day is partial. The log never holds more than
+500 MiB, plus what ten minutes of writing add: at most about 0.6 GB of disk.
 EOF
 
 # What an earlier install started is stopped, so that it is replaced whole.

@@ -23,8 +23,8 @@ const LABELS: [&str; 3] = [
     "local.personal-soc.event-filter",
     "local.personal-soc.event-tidy",
 ];
-/// The most bytes of log the tidy job keeps, as its plist gives it: 2 GiB.
-const CAP: &str = "2147483648";
+/// The most bytes of log the tidy job keeps, as its plist gives it: 500 MiB.
+const CAP: &str = "524288000";
 const CWD: &str = "/Users/example/dev/site";
 /// The started program's audit token as eslogger writes it on macOS 26, and as the eight words
 /// of `audit_token_t` some builds wrote: pid 402, effective user 501 in both.
@@ -593,7 +593,7 @@ fn the_daemons_run_only_what_macos_ships_from_a_folder_only_root_can_write_and_n
     }
     // What collect.sh reads is installed beside it.
     assert!(listed.split(['\'', ' ']).any(|w| w == "filter.jq"));
-    assert!(install.contains("never holds more than\n2 GiB"));
+    assert!(install.contains("never holds more than\n500 MiB"));
 }
 
 #[test]

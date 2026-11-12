@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- The event level's retention: every ten minutes /bin/sh runs tidy.sh, which deletes log
-     files older than a day, then the oldest while the log is larger than its cap of 2 GiB
-     (2147483648 bytes), and keeps what eslogger and the scripts print small. It was copied
+     files older than a day, then the oldest while the log is larger than its cap of 500 MiB
+     (524288000 bytes), and keeps what eslogger and the scripts print small. It was copied
      by the installer into a folder only root can write. -->
 <plist version="1.0">
 <dict>
@@ -13,7 +13,7 @@
 		<string>/bin/sh</string>
 		<string>/Library/Application Support/personal-soc/event-level/tidy.sh</string>
 		<string>/Library/Application Support/personal-soc/event-level/log</string>
-		<string>2147483648</string>
+		<string>524288000</string>
 	</array>
 	<key>StandardOutPath</key>
 	<string>/dev/null</string>
