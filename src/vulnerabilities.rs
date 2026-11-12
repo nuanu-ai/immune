@@ -1330,7 +1330,7 @@ pub fn at_shown(at: &str) -> String {
     }
 }
 
-fn affecting_json(a: &Affecting, this: Option<&str>) -> Value {
+fn affecting_json(a: &Affecting, this: Option<&crate::findings::This>) -> Value {
     let releases: Vec<Value> = a
         .affected()
         .iter()
@@ -1414,14 +1414,14 @@ pub const SHOWN: usize = 200;
 
 /// `immune vulnerabilities --json`: the "affects me" answers, most severe first.
 pub fn list_json(conn: &Connection, now: i64) -> rusqlite::Result<Value> {
-    let this = crate::covered::this_machine(conn)?;
+    let this = crate::findings::This::of(conn, crate::covered::this_machine(conn)?)?;
     let list = affecting(conn)?;
     let t = totals(conn)?;
     Ok(json!({
         "generated_at": crate::view::iso(now),
         "totals": totals_json(&t),
         "feeds": feeds_json(conn, now)?,
-        "affected": list.iter().take(SHOWN).map(|a| affecting_json(a, this.as_deref())).collect::<Vec<_>>(),
+        "affected": list.iter().take(SHOWN).map(|a| affecting_json(a, this.as_ref())).collect::<Vec<_>>(),
         "affected_total": list.len(),
         "not_answered": { "informational_records": t.informational },
         "declared_note": DECLARED,
@@ -1487,8 +1487,8 @@ type Place = (
 /// whose lockfiles were read, with what it rests on. An id the data does not hold is said as
 /// such, never as "not affected".
 pub fn one_json(conn: &Connection, id: &str, now: i64) -> rusqlite::Result<Value> {
-    let this = crate::covered::this_machine(conn)?;
-    let place_of = |c: &str| crate::status::text(&crate::findings::place(c, this.as_deref()));
+    let this = crate::findings::This::of(conn, crate::covered::this_machine(conn)?)?;
+    let place_of = |c: &str| crate::status::text(&crate::findings::place(c, this.as_ref()));
     let records = held_records(conn, id)?;
     let in_catalogue: bool = conn
         .query_row(

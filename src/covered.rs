@@ -439,12 +439,12 @@ pub const GUARDED: Cause = Cause {
     id: "protected-folders",
     who: NOTHING,
     scope: "projects",
-    kind: "projects in folders macOS protects",
+    kind: "what is in folders macOS protects",
     title: [
-        "Projects inside {examples} are not checked.",
-        "Projects inside {examples} are not checked.",
+        "{what} inside {examples} are not checked.",
+        "{what} inside {examples} are not checked.",
     ],
-    meaning: "macOS asks for permission before a program may look there, and this program does not ask on its own. If you keep no code there, nothing is missed.",
+    meaning: "macOS asks for permission before a program may look there, and this program does not ask on its own. If nothing of these is kept there, nothing is missed.",
     meaning_none: None,
     advice: "Nothing to do for now. Including them from the app comes in a later version.",
 };
@@ -661,6 +661,9 @@ pub struct Uncovered {
     pub examples: Vec<String>,
     /// Why, clause by clause in the program's words, where the words say `{reasons}`.
     pub reasons: Vec<String>,
+    /// What it is, each in a few words, where the words say `{what}`: a list that begins
+    /// the sentence.
+    pub what: Vec<&'static str>,
 }
 
 impl Uncovered {
@@ -673,6 +676,7 @@ impl Uncovered {
             value: None,
             examples: Vec::new(),
             reasons: Vec::new(),
+            what: Vec::new(),
         }
     }
 
@@ -687,11 +691,18 @@ impl Uncovered {
             .since
             .map_or("the first check".to_string(), crate::view::utc);
         let reasons = self.reasons.join("; ");
+        let what = listed(&self.what);
+        let mut chars = what.chars();
+        let what: String = chars
+            .next()
+            .map(|c| c.to_uppercase().chain(chars).collect())
+            .unwrap_or_default();
         numbers(words, self.cause)
             .replace("{n}", &self.count.to_string())
             .replace("{examples}", &listed(&shown))
             .replace("{date}", &date)
             .replace("{reasons}", &reasons)
+            .replace("{what}", &what)
     }
 
     pub fn title(&self) -> String {
@@ -780,9 +791,9 @@ pub fn not_covered(
     p: &Problems,
     catalogue: Option<&Catalogue>,
 ) -> rusqlite::Result<Vec<Uncovered>> {
-    let this = this_machine(conn)?;
-    let this = this.as_deref();
-    let place = |s: &str| findings::place(s, this);
+    let mac = findings::This::of(conn, this_machine(conn)?)?;
+    let this = mac.as_ref().map(|m| m.id.as_str());
+    let place = |s: &str| findings::place(s, mac.as_ref());
     let mut out = Vec::new();
 
     // Servers: those the last server check did not finish on, and apart, those it could not
@@ -873,8 +884,10 @@ pub fn not_covered(
         }
     }
 
-    // Folders macOS protects, whichever reader did not look into them.
+    // Folders macOS protects, whichever reader did not look into them, and what each reader
+    // looks at, in the order of `GUARDED_WHAT`.
     let mut folders = BTreeSet::new();
+    let mut what = BTreeSet::new();
     let mut at = None;
     for r in latest.iter().filter(|r| r.kind == guarded::KIND) {
         let named = r
@@ -888,12 +901,22 @@ pub fn not_covered(
                 .filter(|f| !f.is_empty())
                 .map(plain_folder),
         );
+        if !named.is_empty() {
+            what.insert(guarded_what(&r.reader));
+        }
         at = at.max(Some(r.at));
     }
     if !folders.is_empty() {
+        let what: Vec<&'static str> = what.into_iter().map(|i| GUARDED_WHAT[i].1).collect();
         out.push(Uncovered {
             since: at,
             examples: folders.iter().cloned().collect(),
+            scope: if what == ["projects"] {
+                GUARDED.scope
+            } else {
+                "this_mac"
+            },
+            what,
             ..Uncovered::new(&GUARDED, folders.len())
         });
     }
@@ -1005,6 +1028,36 @@ fn names_first(kinds: &BTreeSet<String>) -> Vec<String> {
     named.into_iter().chain(said).collect()
 }
 
+/// What each reader that can meet a folder macOS protects looks at, as a person names it, in
+/// the order the words list them. A reader not named here looks at files.
+const GUARDED_WHAT: [(&[&str], &str); 7] = [
+    (
+        &[
+            crate::checkouts::READER,
+            crate::agent_folders::READER,
+            crate::lockfiles::READER,
+        ],
+        "projects",
+    ),
+    (
+        &[crate::ssh_config::READER, crate::known_hosts::READER],
+        "ssh settings",
+    ),
+    (&[watched::READER], "watched files"),
+    (&[crate::integrity::READER], "installed apps and packages"),
+    (&[crate::processes::READER], "programs"),
+    (&[crate::brew::READER, crate::tailnet::READER], "tools"),
+    (&[], "files"),
+];
+
+/// Where a reader is in `GUARDED_WHAT`.
+fn guarded_what(reader: &str) -> usize {
+    GUARDED_WHAT
+        .iter()
+        .position(|(readers, _)| readers.contains(&reader))
+        .unwrap_or(GUARDED_WHAT.len() - 1)
+}
+
 /// A folder macOS protects, as a person names it.
 fn plain_folder(shown: &str) -> String {
     match shown {
@@ -1087,7 +1140,8 @@ pub fn uncovered_json(u: &Uncovered) -> Value {
 }
 
 /// Every cause with its words, for an agent to learn what each can say. `{n}` and
-/// `{examples}` stand for the count and the examples of an item.
+/// `{examples}` stand for the count and the examples of an item, and `{what}` for what it
+/// is, as a list.
 pub fn causes_json() -> Value {
     Value::Array(
         CAUSES

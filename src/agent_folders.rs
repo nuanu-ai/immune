@@ -14,7 +14,7 @@
 use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader, ErrorKind};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 pub const READER: &str = "agent-folders";
 pub const KIND: &str = "checkouts in agent working folders";
@@ -31,6 +31,9 @@ pub enum Found {
     Read(Sessions),
     /// The session folder is here and could not be listed, with the reason.
     Failed(String),
+    /// The session folder leads into this folder macOS asks permission for, which was not
+    /// entered.
+    Guarded(PathBuf),
 }
 
 #[derive(Default)]
@@ -44,16 +47,26 @@ pub struct Sessions {
     pub unparsed: usize,
     /// Every distinct working folder, as recorded.
     pub folders: BTreeSet<String>,
+    /// Folders macOS asks permission for that a session file, a link, leads into: not read.
+    pub guarded: BTreeSet<PathBuf>,
 }
 
-/// Reads the working folders from every session file under `dir`.
-pub fn sessions(dir: &Path) -> Found {
+/// Reads the working folders from every session file under `dir`. The folder, and a session
+/// file, may be a link: it is not followed into a folder macOS asks permission for. `homes`
+/// are the home folder's names.
+pub fn sessions(dir: &Path, homes: &[&Path]) -> Found {
+    let listed = match crate::guarded::real(dir, homes) {
+        crate::guarded::Real::At(real) => real,
+        crate::guarded::Real::Guarded(g) => return Found::Guarded(g),
+        // Looking at it fails where making it real failed, before any guarded folder.
+        crate::guarded::Real::Failed(_) => dir.to_path_buf(),
+    };
     match std::fs::symlink_metadata(dir) {
         Err(e) if e.kind() == ErrorKind::NotFound => return Found::Absent,
         Err(e) => return Found::Failed(format!("{}: {e}", dir.display())),
         Ok(_) => {}
     }
-    let projects = match std::fs::read_dir(dir) {
+    let projects = match std::fs::read_dir(listed) {
         Ok(entries) => entries,
         Err(e) => return Found::Failed(format!("{}: {e}", dir.display())),
     };
@@ -79,6 +92,13 @@ pub fn sessions(dir: &Path) -> Found {
             if path.extension().is_none_or(|e| e != "jsonl") {
                 continue;
             }
+            let path = match crate::guarded::followed(&path, homes) {
+                Ok(path) => path,
+                Err(g) => {
+                    out.guarded.insert(g);
+                    continue;
+                }
+            };
             out.files += 1;
             if read_file(&path, &mut out).is_err() {
                 out.unreadable += 1;
@@ -160,9 +180,6 @@ pub fn checkout_of(folder: &str, home: &Path, homes: &[&Path]) -> OnDisk {
 
 /// Whether a checkout this reader holds is still there. `None` when the disk cannot say.
 pub fn still_there(path: &Path) -> Option<bool> {
-    if unmounted(path) {
-        return None;
-    }
     match std::fs::symlink_metadata(path.join(".git")) {
         Ok(_) => Some(true),
         Err(e) if gone(&e) => Some(false),
@@ -172,17 +189,4 @@ pub fn still_there(path: &Path) -> Option<bool> {
 
 fn gone(e: &std::io::Error) -> bool {
     e.kind() == ErrorKind::NotFound
-}
-
-/// A path on another volume whose volume is not mounted: the folder is not known to be gone.
-fn unmounted(path: &Path) -> bool {
-    let mut parts = path.components();
-    match (parts.next(), parts.next(), parts.next()) {
-        (Some(Component::RootDir), Some(Component::Normal(v)), Some(Component::Normal(name)))
-            if v == "Volumes" =>
-        {
-            !Path::new("/Volumes").join(name).exists()
-        }
-        _ => false,
-    }
 }

@@ -3023,7 +3023,30 @@ fn read_brew(run: &mut Run, args: &Args) -> Result<(), Box<dyn Error>> {
         at,
         observed_at: at,
     };
-    match brew::read(args.brew_input.as_deref(), args.brew.as_deref()) {
+    let mut met = Vec::new();
+    match brew::read(args.brew_input.as_deref(), args.brew.as_deref(), &args.home) {
+        // Not found, and PATH names a folder macOS asks permission for: what was known stays.
+        brew::Found::NotLookedInto(folders) => {
+            run.readers += 1;
+            let shown: Vec<String> = folders
+                .iter()
+                .map(|g| guarded::shown(g, &args.home))
+                .collect();
+            let reason = format!(
+                "{}Homebrew was not found elsewhere, and PATH names {}, which macOS asks permission for",
+                guarded::NOT_LOOKED_INTO,
+                shown.join(", ")
+            );
+            run.apply(
+                &reading,
+                brew::BASIS,
+                "none",
+                Some(&reason),
+                &Gap::of(Cause::NotGiven),
+                &[],
+            )?;
+            met = folders;
+        }
         brew::Found::Output(raw) => {
             run.readers += 1;
             let raw_file = run.keep_raw(brew::READER, brew::RAW, raw.as_bytes())?;
@@ -3061,6 +3084,7 @@ fn read_brew(run: &mut Run, args: &Args) -> Result<(), Box<dyn Error>> {
                 .push(format!("Homebrew could not be read: {reason}."));
         }
     }
+    not_looked_into_when_met(run, brew::READER, &met, &args.home)?;
     Ok(())
 }
 
@@ -3267,7 +3291,30 @@ fn read_agent_folders(
         .sessions_root
         .clone()
         .unwrap_or_else(|| args.home.join(agent_folders::SESSIONS));
-    let sessions = match agent_folders::sessions(&dir) {
+    let home = std::fs::canonicalize(&args.home).unwrap_or_else(|_| args.home.clone());
+    let homes = [args.home.as_path(), home.as_path()];
+    let sessions = match agent_folders::sessions(&dir, &homes) {
+        // Its sessions lead into a folder macOS asks permission for: not read, and what was
+        // known from them stays as it was.
+        agent_folders::Found::Guarded(folder) => {
+            run.readers += 1;
+            let reason = format!(
+                "{}{}",
+                guarded::NOT_LOOKED_INTO,
+                guarded::leads_into(&folder, &args.home)
+            );
+            let gap = Gap::of(Cause::NotGiven);
+            run.apply(
+                &reading,
+                agent_folders::BASIS,
+                "none",
+                Some(&reason),
+                &gap,
+                &[],
+            )?;
+            not_looked_into(run, agent_folders::READER, &[folder], &args.home)?;
+            return Ok(Vec::new());
+        }
         agent_folders::Found::Failed(reason) => {
             run.readers += 1;
             let gap = Gap::of(Cause::Failed);
@@ -3289,13 +3336,14 @@ fn read_agent_folders(
             Some(sessions)
         }
     };
-    let home = std::fs::canonicalize(&args.home).unwrap_or_else(|_| args.home.clone());
     let mut found: BTreeMap<String, PathBuf> = BTreeMap::new();
     let mut unknown = BTreeSet::new();
     // Folders macOS asks permission for are not looked into, as in the walk, whatever name
     // led to them: a working folder or a held checkout is made real without entering one.
-    let mut guarded = BTreeSet::new();
-    let homes = [args.home.as_path(), home.as_path()];
+    let mut guarded: BTreeSet<PathBuf> = sessions
+        .iter()
+        .flat_map(|s| s.guarded.iter().cloned())
+        .collect();
     for folder in sessions.iter().flat_map(|s| &s.folders) {
         match agent_folders::checkout_of(folder, &home, &homes) {
             agent_folders::OnDisk::Checkout(path) => {
@@ -3402,9 +3450,27 @@ fn read_agent_folders(
             if kept == 1 { "is" } else { "are" }
         ));
     }
-    // Every reason above is a session, a folder or a checkout that could not be read.
+    // Every reason above is a session, a folder or a checkout that could not be read; a
+    // session file that leads into a folder macOS asks permission for was not given.
+    let failed = !reasons.is_empty();
+    if let Some(s) = sessions.as_ref().filter(|s| !s.guarded.is_empty()) {
+        let folders: Vec<String> = s
+            .guarded
+            .iter()
+            .map(|g| guarded::leads_into(g, &args.home))
+            .collect();
+        reasons.push(format!(
+            "session files not looked into: {}",
+            folders.join("; ")
+        ));
+    }
+    let cause = if failed {
+        Cause::Failed
+    } else {
+        Cause::NotGiven
+    };
     let (completeness, reason, gap) = match (reasons.is_empty(), &sessions) {
-        (false, _) => ("partial", Some(reasons.join("; ")), Gap::of(Cause::Failed)),
+        (false, _) => ("partial", Some(reasons.join("; ")), Gap::of(cause)),
         (true, None) => (
             "full",
             Some(agent_folders::NOT_HERE.to_string()),
@@ -3894,7 +3960,7 @@ fn read_watched(
     }
     for c in checkouts {
         let scope = format!("checkout:{machine}/{}", c.rel);
-        let (look, git_file) = match watched::look_checkout(&c.path, &c.rel) {
+        let (look, git_file) = match watched::look_checkout(&c.path, &c.rel, &args.home) {
             watched::Hooks::GitFile => (watched::Look::default(), true),
             watched::Hooks::Looked(look) => (look, false),
         };
@@ -3922,7 +3988,7 @@ fn read_watched(
     for point in autorun::POINTS.iter().filter(|p| p.read_here()) {
         let (looked, kept) = match point.scope {
             autorun::Scope::Home => (
-                autorun::look_all(point, [(args.home.as_path(), "")].into_iter()),
+                autorun::look_all(point, [(args.home.as_path(), "")].into_iter(), &args.home),
                 Vec::new(),
             ),
             _ if !visited.looked_for => continue,
@@ -3939,6 +4005,7 @@ fn read_watched(
                     autorun::look_all(
                         point,
                         checkouts.iter().map(|c| (c.path.as_path(), c.rel.as_str())),
+                        &args.home,
                     ),
                     visited.kept(run.tx, &reading, &["watched_as", "located_on"])?,
                 )
@@ -4025,14 +4092,15 @@ fn read_watched(
         } else {
             p.look.completeness()
         };
-        // A place that could not be looked at failed; hooks kept elsewhere have no reader.
+        // A place that could not be looked at failed; one that leads into a folder macOS asks
+        // permission for was not given; hooks kept elsewhere have no reader.
         let gap = if p.git_file {
             Gap {
                 cause: Some(Cause::NoReader),
                 lacks: vec![Lack::new(watched::HOOKS_ELSEWHERE, None)],
             }
         } else {
-            Gap::when((completeness != "full").then_some(Cause::Failed))
+            Gap::when((completeness != "full").then(|| p.look.cause()))
         };
         let prefix = format!("file:{machine}/");
         let path_of = |id: &str| id.strip_prefix(&prefix).unwrap_or(id).to_string();
@@ -4077,6 +4145,14 @@ fn read_watched(
                 why.clone(),
             ]);
         }
+        for (path, why) in &p.look.unreached {
+            rows.push(vec![
+                "not read".to_string(),
+                p.watched_as.to_string(),
+                path.clone(),
+                format!("{}{why}", guarded::NOT_LOOKED_INTO),
+            ]);
+        }
 
         for (e, line) in p.look.entries.iter().zip(mine) {
             let id = file_id(&e.path);
@@ -4099,6 +4175,11 @@ fn read_watched(
                 });
             }
             let (completeness, reason, gap) = match &e.content {
+                // A link into a folder macOS asks permission for: where it points is read,
+                // what it leads to is not, and what was known of that stays.
+                watched::Content::Unread(Cause::NotGiven, why) if e.link.is_some() => {
+                    ("partial", Some(why.as_str()), Gap::of(Cause::NotGiven))
+                }
                 watched::Content::Unread(cause, why) => {
                     let mut gap = Gap::of(*cause);
                     if *cause == Cause::NoReader {
@@ -4146,10 +4227,19 @@ fn read_watched(
             }
         }
     }
-    if placed
+    let mut guarded: Vec<PathBuf> = placed
         .iter()
-        .any(|p| !p.look.entries.is_empty() || !p.look.failed.is_empty() || p.git_file)
-    {
+        .flat_map(|p| p.look.guarded.iter().cloned())
+        .collect();
+    guarded.sort();
+    guarded.dedup();
+    not_looked_into_when_met(run, watched::READER, &guarded, &args.home)?;
+    if placed.iter().any(|p| {
+        !p.look.entries.is_empty()
+            || !p.look.failed.is_empty()
+            || !p.look.unreached.is_empty()
+            || p.git_file
+    }) {
         run.readers += 1;
     }
     Ok((rows, seen))
@@ -4272,6 +4362,10 @@ fn read_integrity(run: &mut Run, args: &Args) -> Result<Vec<findings::Observed>,
     if kinds.iter().any(|k| k.present > 0) {
         run.readers += 1;
     }
+    let mut guarded: Vec<PathBuf> = kinds.iter().flat_map(|k| k.guarded.clone()).collect();
+    guarded.sort();
+    guarded.dedup();
+    not_looked_into_when_met(run, integrity::READER, &guarded, &args.home)?;
     Ok(integrity::observed(run.tx, &run_id)?)
 }
 
@@ -4294,7 +4388,7 @@ fn read_other_autoruns(
     let mut statements = Vec::new();
     for c in found {
         let checkout = format!("checkout:{machine}/{}", c.rel);
-        for point in autorun::present(&c.path, autorun::Scope::Checkout) {
+        for point in autorun::present(&c.path, autorun::Scope::Checkout, home) {
             statements.push(Statement {
                 subject: checkout.clone(),
                 predicate: autorun::HOLDS,
@@ -4307,7 +4401,7 @@ fn read_other_autoruns(
         }
     }
     let mut in_home = Vec::new();
-    for point in autorun::present(home, autorun::Scope::Home) {
+    for point in autorun::present(home, autorun::Scope::Home, home) {
         statements.push(Statement {
             subject: machine.clone(),
             predicate: autorun::HOLDS,

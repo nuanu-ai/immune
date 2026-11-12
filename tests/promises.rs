@@ -3822,6 +3822,246 @@ fn a_folder_macos_asks_permission_for_is_never_entered_through_a_link_and_what_w
 }
 
 #[test]
+fn a_project_whose_git_folder_is_a_link_into_documents_is_found_and_its_git_folder_not_entered() {
+    // The walk takes a folder that holds `.git` for a project, a link too. Its commit and its
+    // hooks are behind the link: with Documents shut, as macOS keeps it, a reader that
+    // followed it would lose the commit without a word.
+    use std::os::unix::fs::symlink;
+    let dir = Dir::new("git-link-guarded");
+    let home = dir.0.join("home");
+    let repo = checkout(&home, "Documents/shop-git");
+    let shop = home.join("dev/shop");
+    put(&shop, "Cargo.lock", CARGO_LOCK);
+    symlink(repo.join(".git"), shop.join(".git")).unwrap();
+    let _shut = Locked::new(home.join("Documents"));
+    ok(immune_run(&home, &dir.store())
+        .arg("--brew-input")
+        .arg(dir.input("brew.txt", SAMPLE))
+        .arg("--servers-input")
+        .arg(dir.0.join("absent")));
+    let store = dir.store();
+    for reader in ["lockfiles", "watched-places"] {
+        assert_eq!(
+            rows(
+                &store,
+                &format!(
+                    "SELECT completeness || '|' || reason FROM coverage
+                     WHERE reader = '{reader}' AND kind = 'folders macOS asks permission for'
+                     ORDER BY id DESC LIMIT 1"
+                )
+            ),
+            ["none|not looked into: ~/Documents"],
+            "{reader}"
+        );
+    }
+    let denied = rows(
+        &store,
+        "SELECT reader || '|' || kind || '|' || reason FROM coverage WHERE reason LIKE '%denied%'",
+    );
+    assert!(denied.is_empty(), "{denied:#?}");
+}
+
+#[test]
+fn an_ssh_include_whose_wildcard_matches_a_link_into_documents_does_not_pass_through_it() {
+    // glob(3) looks at every folder a pattern's wildcard matches before the parts after it:
+    // `*/config` would look inside a folder of `~/.ssh` that is a link into Documents. Shut,
+    // as macOS keeps it, Documents would make the include find nothing and say nothing.
+    use std::os::unix::fs::symlink;
+    let h = Home::new(
+        "ssh-wildcard-link",
+        Some("Include */config\nHost web\n"),
+        None,
+    );
+    put(&h.home, ".ssh/hosts/config", "Host box\n");
+    put(&h.home, "Documents/more/config", "Host hidden\n");
+    symlink(h.home.join("Documents/more"), h.home.join(".ssh/linked")).unwrap();
+    let _shut = Locked::new(h.home.join("Documents"));
+    h.run(&h.dir.0.join("absent"), &h.dir.0.join("no-tailscale"));
+    assert_eq!(
+        rows(
+            &h.store(),
+            "SELECT completeness || '|' || cause || '|' || reason FROM coverage
+             WHERE kind = 'ssh configuration'"
+        ),
+        [
+            "partial|not_given|config:1 Include */config was not read: it leads into \
+             ~/Documents, which macOS asks permission for"
+        ]
+    );
+    assert_eq!(
+        rows(
+            &h.store(),
+            "SELECT DISTINCT subject FROM assertion WHERE layer = 'live' AND reader = 'ssh-config'
+             ORDER BY subject"
+        ),
+        ["machine:box", "machine:web"]
+    );
+}
+
+#[test]
+fn a_watched_place_moved_into_documents_and_linked_back_is_not_looked_into_and_reads_neither_gone_nor_unchanged()
+ {
+    // Dotfiles kept in Documents and linked from the home folder are common. A run the app
+    // starts must not enter Documents through such a link, and a place it did not look into
+    // must not read as unchanged, nor what was known there as gone. Documents is shut here,
+    // as macOS keeps it: a reader that entered it would say "Permission denied" instead.
+    use std::os::unix::fs::symlink;
+    let dir = Dir::new("linked-into-documents");
+    let home = dir.0.join("home");
+    let docs = home.join("Documents");
+    std::fs::create_dir_all(&docs).unwrap();
+    let shop = checkout(&home, "dev/shop");
+    put(&shop, ".git/hooks/pre-commit", "#!/bin/sh\n");
+    put(&home, ".zshrc", "export A=1\n");
+    put(
+        &home,
+        "Library/LaunchAgents/org.example.sync.plist",
+        "<plist/>\n",
+    );
+    let brew = dir.input("brew.txt", SAMPLE);
+    let run = || {
+        ok(immune_run(&home, &dir.store())
+            .arg("--brew-input")
+            .arg(&brew)
+            .arg("--servers-input")
+            .arg(dir.0.join("absent")))
+    };
+    run();
+
+    // Moved into Documents and linked back, with more that lives there from the start.
+    let moved = |from: &str, to: &str| {
+        std::fs::rename(home.join(from), docs.join(to)).unwrap();
+        symlink(docs.join(to), home.join(from)).unwrap();
+    };
+    moved(".zshrc", "zshrc");
+    moved("Library/LaunchAgents", "LaunchAgents");
+    moved("dev/shop/.git/hooks", "shop-hooks");
+    put(&docs, "ssh/config", "Host web\n");
+    symlink(docs.join("ssh"), home.join(".ssh")).unwrap();
+    put(
+        &docs,
+        "claude/settings.json",
+        r#"{"hooks": {"Stop": [{"command": "x"}]}}"#,
+    );
+    std::fs::create_dir_all(docs.join("claude/skills")).unwrap();
+    std::fs::create_dir_all(docs.join("claude/projects")).unwrap();
+    symlink(docs.join("claude"), home.join(".claude")).unwrap();
+    put(
+        &docs,
+        "shop-vscode/tasks.json",
+        r#"{"tasks": [{"label": "dev", "runOptions": {"runOn": "folderOpen"}}]}"#,
+    );
+    symlink(docs.join("shop-vscode"), shop.join(".vscode")).unwrap();
+    let shut = Locked::new(docs.clone());
+    run();
+    drop(shut);
+
+    let store = dir.store();
+    let denied = rows(
+        &store,
+        "SELECT reader || '|' || kind || '|' || reason FROM coverage WHERE reason LIKE '%denied%'",
+    );
+    assert!(denied.is_empty(), "{denied:#?}");
+    // Nothing known before is gone and no file reads as changed. That the project now holds
+    // an editor's folder is new, and true.
+    let journal = rows(
+        &store,
+        "SELECT entry || '|' || subject || '|' || predicate FROM journal
+         WHERE entry = 'removed' OR (entry = 'changed' AND subject LIKE 'file:%')",
+    );
+    assert!(journal.is_empty(), "{journal:#?}");
+    let latest = |reader: &str, kind: &str, scope: &str| {
+        rows(
+            &store,
+            &format!(
+                "SELECT completeness || '|' || ifnull(cause, 'NULL') || '|' || ifnull(reason, 'NULL')
+                 FROM coverage WHERE reader = '{reader}' AND kind = '{}'
+                   AND scope LIKE '%{scope}' ORDER BY id DESC LIMIT 1",
+                kind.replace('\'', "''")
+            ),
+        )
+    };
+    const INTO: &str = "it leads into ~/Documents, which macOS asks permission for";
+    assert_eq!(
+        latest("watched-places", "content of a watched file", "/.zshrc"),
+        [format!("partial|not_given|not looked into: {INTO}")]
+    );
+    assert_eq!(
+        latest("watched-places", "launch agents and daemons", "machine:mac"),
+        [format!(
+            "none|not_given|not looked into: Library/LaunchAgents: {INTO}"
+        )]
+    );
+    assert_eq!(
+        latest(
+            "watched-places",
+            "hooks in the checkout's .git folder",
+            "/dev/shop"
+        ),
+        [format!(
+            "none|not_given|not looked into: dev/shop/.git/hooks: {INTO}"
+        )]
+    );
+    assert_eq!(
+        latest("watched-places", "ssh access files", "machine:mac"),
+        [format!(
+            "none|not_given|not looked into: .ssh/config: {INTO}; .ssh/authorized_keys: {INTO}; \
+             .ssh/rc: {INTO}"
+        )]
+    );
+    assert_eq!(
+        latest(
+            "watched-places",
+            "editor tasks set to run when a checkout's folder is opened",
+            "machine:mac"
+        ),
+        [format!(
+            "none|not_given|not looked into: dev/shop/.vscode/tasks.json: {INTO}"
+        )]
+    );
+    for reader in ["watched-places", "agent-folders"] {
+        assert_eq!(
+            latest(reader, "folders macOS asks permission for", "machine:mac"),
+            ["none|not_given|not looked into: ~/Documents"],
+            "{reader}"
+        );
+    }
+    // The link itself is known, and what its file held before is kept.
+    assert_eq!(
+        rows(
+            &store,
+            "SELECT predicate || '|' || CASE predicate WHEN 'has_content'
+                 THEN substr(object, 1, 7) ELSE object END FROM assertion
+             WHERE layer = 'live' AND subject = 'file:machine:mac/.zshrc'
+               AND predicate IN ('has_content', 'links_to') ORDER BY predicate"
+        ),
+        [
+            "has_content|sha256:".to_string(),
+            format!("links_to|{}", docs.join("zshrc").display())
+        ]
+    );
+    let status: serde_json::Value = serde_json::from_str(&ok(immune_cmd(&home)
+        .args(["status", "--json", "--store"])
+        .arg(&store)))
+    .unwrap();
+    let item = status["result"]["not_covered"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["id"] == "protected-folders")
+        .unwrap_or_else(|| panic!("{status:#}"))
+        .clone();
+    assert_eq!(
+        (&item["title"], &item["scope"]),
+        (
+            &"Projects, ssh settings and watched files inside Documents are not checked.".into(),
+            &"this_mac".into()
+        ),
+        "{item:#}"
+    );
+}
+
+#[test]
 fn a_store_of_the_current_format_learns_a_new_coverage_kind_without_a_rebuild() {
     // The vocabulary is data: a new reader must not cost the owner their store and journal.
     let a = Agents::new("agent-vocabulary");

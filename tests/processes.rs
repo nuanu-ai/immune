@@ -254,6 +254,17 @@ fn an_interpreter_inside_a_folder_macos_asks_permission_for_is_not_looked_at_and
     let guarded = "SELECT completeness || '|' || reason FROM coverage
                    WHERE reader = 'processes' AND kind = 'folders macOS asks permission for'";
     assert_eq!(rows(&dir, guarded), ["none|not looked into: ~/Documents"]);
+    // The words say it is programs that were not looked at.
+    let out = immune(&dir, &["status", "--json"]);
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let titles: Vec<&str> = v["result"]["not_covered"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|u| u["id"] == "protected-folders")
+        .map(|u| u["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(titles, ["Programs inside Documents are not checked."]);
 
     // Said while it runs, and no longer once it is gone.
     sample(&dir, T + 30, &table);

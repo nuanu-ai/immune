@@ -946,3 +946,69 @@ fn a_bundle_that_starts_to_verify_at_the_same_version_raises_no_broken_seal() {
     let rules: Vec<String> = e.findings().into_iter().map(|f| f.0).collect();
     assert_eq!(rules, ["integrity.app-signer"]);
 }
+
+#[test]
+fn a_place_of_apps_or_a_packages_file_linked_into_documents_is_not_looked_into_and_is_said() {
+    // A run the app starts must not make macOS ask the owner for his Documents because
+    // ~/Applications, or a package's own file, is a link into it. Documents is shut here, as
+    // macOS keeps it: a reader that entered it would say "Permission denied" instead, or
+    // lose the package's version without a word.
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let e = Estate::new("linked-guarded");
+    let docs = e.home().join("Documents");
+    std::fs::create_dir_all(docs.join("Apps/Other.app/Contents")).unwrap();
+    symlink(docs.join("Apps"), e.home().join("Applications")).unwrap();
+    package(&e.package(), "1.0");
+    std::fs::rename(e.package().join("package.json"), docs.join("package.json")).unwrap();
+    symlink(docs.join("package.json"), e.package().join("package.json")).unwrap();
+    std::fs::set_permissions(&docs, std::fs::Permissions::from_mode(0o000)).unwrap();
+    e.run();
+    std::fs::set_permissions(&docs, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let latest = |kind: &str| -> String {
+        e.db()
+            .query_row(
+                "SELECT completeness || '|' || ifnull(cause, 'NULL') || '|' || reason FROM coverage
+                 WHERE reader = 'integrity' AND kind = ?1 ORDER BY id DESC LIMIT 1",
+                [kind],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    const INTO: &str = "it leads into ~/Documents, which macOS asks permission for";
+    let bundles = latest("application bundles in /Applications and ~/Applications");
+    assert!(
+        bundles.starts_with(&format!(
+            "none|not_given|not looked into: Applications: {INTO}"
+        )),
+        "{bundles}"
+    );
+    let npm = latest("global npm packages");
+    assert!(
+        npm.starts_with(&format!(
+            "partial|not_given|not looked into: /opt/homebrew/lib/node_modules/tool/package.json: {INTO}"
+        )),
+        "{npm}"
+    );
+    assert_eq!(
+        latest("folders macOS asks permission for"),
+        "none|not_given|not looked into: ~/Documents"
+    );
+    // The words say what was not looked into.
+    let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+        .args(["status", "--json", "--store"])
+        .arg(e.store())
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let titles: Vec<&str> = v["result"]["not_covered"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|u| u["id"] == "protected-folders")
+        .map(|u| u["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        titles,
+        ["Installed apps and packages inside Documents are not checked."]
+    );
+}

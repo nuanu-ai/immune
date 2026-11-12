@@ -785,7 +785,10 @@ struct PanelPromises {
     let noon = DateComponents(year: 2026, month: 11, day: 20, hour: 12)
     let now = Calendar.current.date(from: noon) ?? Date()
     let today = now.addingTimeInterval(-60)
-    #expect(Clock.at(today, now: now) == today.formatted(date: .omitted, time: .shortened))
+    // In English, in this Mac's time zone, whatever its region.
+    let time = Date.FormatStyle(
+      date: .omitted, time: .shortened, locale: Locale(identifier: "en_US"), timeZone: .current)
+    #expect(Clock.at(today, now: now) == today.formatted(time))
     let earlier = Calendar.current.date(byAdding: .day, value: -40, to: now) ?? now
     #expect(Clock.at(earlier, now: now).count < Clock.full(earlier).count)
     let row = Panel.of(Interpret.reading(from: output("two.json")), now: now).rows[0]
@@ -794,7 +797,7 @@ struct PanelPromises {
     let recent = now.addingTimeInterval(-90)
     let reading = Interpret.reading(from: looking([lookItem(lastSeen: recent.formatted(.iso8601))]))
     let todays = Panel.of(reading, now: now).rows[0]
-    #expect(todays.when == recent.formatted(date: .omitted, time: .shortened))
+    #expect(todays.when == recent.formatted(time))
   }
 
   @Test("A time in the future is shown as a date, never as 'in 1 day'; the past is relative")
@@ -805,6 +808,31 @@ struct PanelPromises {
     #expect(Clock.ago(future, now: now).hasPrefix("on "))
     #expect(Clock.ago(now.addingTimeInterval(-720), now: now).contains("ago"))
     #expect(Clock.at(future, now: now) != Clock.at(future.addingTimeInterval(86_400), now: now))
+  }
+
+  @Test(
+    "A date and a time are in English, as every word of the app is, in the Mac's own time zone and calendar, on a Mac set to another region"
+  )
+  func absoluteTimesInEnglish() {
+    // 5 March 2026, 14:07 UTC: 15:07 in Berlin, 23:07 in Tokyo.
+    let d = Date(timeIntervalSince1970: 1_772_719_620)
+    for (region, zone, hour) in [
+      ("de_DE", "Europe/Berlin", "3:07"), ("ru_RU", "Europe/Berlin", "3:07"),
+      ("ja_JP", "Asia/Tokyo", "11:07"),
+    ] {
+      var calendar = Calendar(identifier: .gregorian)
+      calendar.locale = Locale(identifier: region)
+      calendar.timeZone = TimeZone(identifier: zone)!
+      let full = Clock.full(d, calendar: calendar)
+      #expect(
+        full.hasPrefix("Mar 5, 2026") && full.contains(hour) && full.hasSuffix("PM"), "\(full)")
+      #expect(Clock.day(d, calendar: calendar) == "Mar 5, 2026")
+      let later = d.addingTimeInterval(1800)
+      let today = Clock.at(d, now: later, calendar: calendar)
+      #expect(today.hasPrefix(hour) && today.hasSuffix("PM"), "\(today)")
+      #expect(Clock.at(d, now: d.addingTimeInterval(86400 * 40), calendar: calendar) == "Mar 5")
+      #expect(Clock.ago(later, now: d, calendar: calendar).hasPrefix("on Mar 5, 2026"))
+    }
   }
 
   @Test(

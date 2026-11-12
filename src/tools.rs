@@ -25,17 +25,37 @@ pub fn runnable(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
+/// What looking for a program found.
+#[derive(Debug, PartialEq)]
+pub struct Found {
+    /// The program to run, by the path it was found at.
+    pub at: Option<PathBuf>,
+    /// Folders macOS asks permission for that a place to look led into, not looked into.
+    pub guarded: Vec<PathBuf>,
+}
+
 /// The first runnable program among `known`, else the first `name` in an absolute folder of
-/// `path`, a value in the form of PATH. Relative and empty entries are skipped.
-pub fn find(name: &str, known: &[PathBuf], path: &OsStr) -> Option<PathBuf> {
+/// `path`, a value in the form of PATH. Relative and empty entries are skipped, and so is a
+/// place that leads into a folder macOS asks permission for, whatever name leads there: it
+/// is named in `guarded`. `homes` are the home folder's names.
+pub fn find(name: &str, known: &[PathBuf], path: &OsStr, homes: &[&Path]) -> Found {
     let on_path = std::env::split_paths(path)
         .filter(|dir| dir.is_absolute())
         .map(|dir| dir.join(name));
-    known
-        .iter()
-        .cloned()
-        .chain(on_path)
-        .find(|candidate| runnable(candidate))
+    let mut guarded = Vec::new();
+    for candidate in known.iter().cloned().chain(on_path) {
+        match crate::guarded::real(&candidate, homes) {
+            crate::guarded::Real::At(real) if runnable(&real) => {
+                return Found {
+                    at: Some(candidate),
+                    guarded,
+                };
+            }
+            crate::guarded::Real::Guarded(g) if !guarded.contains(&g) => guarded.push(g),
+            _ => {}
+        }
+    }
+    Found { at: None, guarded }
 }
 
 /// PATH of this process.
@@ -78,13 +98,37 @@ mod tests {
             abs.join("real"),
         ];
         let path = std::env::join_paths(&entries).unwrap();
-        assert_eq!(find("tool", &[], &path), Some(abs.join("real/tool")));
+        let at = |known: &[PathBuf], path: &OsStr| find("tool", known, path, &[&abs]).at;
+        assert_eq!(at(&[], &path), Some(abs.join("real/tool")));
         let only_relative = std::env::join_paths(&entries[..5]).unwrap();
-        assert_eq!(find("tool", &[], &only_relative), None);
+        assert_eq!(at(&[], &only_relative), None);
         // The places an installer puts the tool come before PATH, and are checked the same way.
         let known = [abs.join("folder/tool"), abs.join("known/tool")];
-        assert_eq!(find("tool", &known, &path), Some(abs.join("known/tool")));
+        assert_eq!(at(&known, &path), Some(abs.join("known/tool")));
         let _ = std::fs::remove_dir_all(&abs);
+    }
+
+    #[test]
+    fn a_folder_of_path_in_a_folder_macos_asks_permission_for_is_not_looked_into_whatever_name_leads_there()
+     {
+        // A run the app starts must not make macOS ask the owner for his Documents because
+        // PATH names a folder there, directly or through a link.
+        let base =
+            std::env::temp_dir().join(format!("immune-tools-guarded-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        file(&base.join("Documents/bin/tool"), 0o755);
+        std::os::unix::fs::symlink(base.join("Documents/bin"), base.join("bin")).unwrap();
+        let path = std::env::join_paths([base.join("bin"), base.join("Documents/bin")]).unwrap();
+        let real = std::fs::canonicalize(&base).unwrap();
+        let found = find("tool", &[], &path, &[&base, &real]);
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(
+            found,
+            Found {
+                at: None,
+                guarded: vec![base.join("Documents")]
+            }
+        );
     }
 
     #[test]

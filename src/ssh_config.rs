@@ -168,13 +168,7 @@ impl Parser<'_> {
         } else {
             format!("{}/{arg}", glob_escape(self.ssh))
         };
-        // glob(3) opens the folder the pattern starts in: not one that leads into a guarded
-        // folder.
-        if let Some(g) = self.guarded_start(&pattern) {
-            self.guard(at, arg, g);
-            return;
-        }
-        let (paths, failed) = glob(&pattern);
+        let (paths, failed) = self.glob_guarded(at, arg, &pattern);
         for dir in failed {
             let label = self.label(&dir);
             self.unread.push(label);
@@ -211,28 +205,62 @@ impl Parser<'_> {
         }
     }
 
-    /// The guarded folder the folders before the pattern's first wildcard lead into, if
-    /// any. glob(3) opens the folder a pattern starts in; a part that cannot be followed is
-    /// left to glob(3), which then finds nothing there.
-    fn guarded_start(&self, pattern: &str) -> Option<PathBuf> {
-        let parts: Vec<&str> = pattern.split('/').collect();
-        let literal = parts
-            .iter()
-            .position(|p| p.contains(['*', '?', '[', '\\']))
-            .unwrap_or(parts.len().saturating_sub(1));
-        match crate::guarded::real(Path::new(&parts[..literal].join("/")), &self.homes) {
-            crate::guarded::Real::Guarded(g) => Some(g),
-            _ => None,
+    /// What glob(3) gives ssh for an absolute pattern, without passing through a folder that
+    /// leads into a guarded one. glob(3) looks at every folder on the way to the pattern's
+    /// last part, those its wildcards match included, so it is run one wildcard at a time:
+    /// before each run the folder it starts in is made real, and one that leads into a
+    /// guarded folder is not looked into, and said. A part that cannot be followed is left
+    /// to glob(3), which then finds nothing there. The paths are sorted as one glob(3) sorts
+    /// them, by their bytes in the C locale ssh reads it in.
+    fn glob_guarded(&mut self, at: &str, arg: &str, pattern: &str) -> (Vec<PathBuf>, Vec<PathBuf>) {
+        let parts: Vec<&str> = pattern.split('/').skip(1).collect();
+        if parts.is_empty() {
+            return (Vec::new(), Vec::new());
         }
+        // The pattern in runs, each ending at a wildcard or at the last part. The parts
+        // before a run's end hold no wildcard, nor an escape.
+        let mut runs: Vec<&[&str]> = Vec::new();
+        let mut from = 0;
+        for (i, part) in parts.iter().enumerate() {
+            if part.contains(['*', '?', '[', '\\']) || i == parts.len() - 1 {
+                runs.push(&parts[from..=i]);
+                from = i + 1;
+            }
+        }
+        let (mut reached, mut failed) = (vec![PathBuf::from("/")], Vec::new());
+        for run in runs {
+            let mut next = Vec::new();
+            for start in &reached {
+                let folder = start.join(run[..run.len() - 1].join("/"));
+                if let crate::guarded::Real::Guarded(g) = crate::guarded::real(&folder, &self.homes)
+                {
+                    self.guard(at, arg, g);
+                    continue;
+                }
+                let start = glob_escape(start);
+                let (paths, dirs) = glob(&format!(
+                    "{}/{}",
+                    start.trim_end_matches('/'),
+                    run.join("/")
+                ));
+                next.extend(paths);
+                failed.extend(dirs);
+            }
+            reached = next;
+        }
+        reached.sort_by(|a, b| a.as_os_str().as_bytes().cmp(b.as_os_str().as_bytes()));
+        (reached, failed)
     }
 
     /// An `Include` that leads into a guarded folder: not read, and said.
     fn guard(&mut self, at: &str, arg: &str, folder: PathBuf) {
-        let shown = crate::guarded::shown(&folder, self.home);
-        self.problems.push((
-            Cause::NotGiven,
-            format!("{at} Include {arg} was not read: it leads into {shown}, which macOS asks permission for"),
-        ));
+        let said = format!(
+            "{at} Include {arg} was not read: {}",
+            crate::guarded::leads_into(&folder, self.home)
+        );
+        if !self.problems.iter().any(|(_, p)| *p == said) {
+            self.problems.push((Cause::NotGiven, said));
+        }
         if !self.guarded.contains(&folder) {
             self.guarded.push(folder);
         }

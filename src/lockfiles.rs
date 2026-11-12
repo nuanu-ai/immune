@@ -818,7 +818,8 @@ pub fn commit(checkout: &Path, homes: &[&Path]) -> Result<String, PathBuf> {
 }
 
 fn read_commit(checkout: &Path, homes: &[&Path]) -> Result<Option<String>, PathBuf> {
-    let dotgit = checkout.join(".git");
+    // `.git` itself may be a link, which is not followed into a guarded folder.
+    let dotgit = crate::guarded::followed(&checkout.join(".git"), homes)?;
     // A worktree or a submodule has a `.git` file that points at the real folder. Where it
     // points is data, so it is made real without entering a guarded folder.
     let real = |p: PathBuf| match crate::guarded::real(&p, homes) {
@@ -847,26 +848,37 @@ fn read_commit(checkout: &Path, homes: &[&Path]) -> Result<Option<String>, PathB
         },
         Err(_) => gitdir.clone(),
     };
-    Ok(head_commit(&gitdir, &common))
+    head_commit(&gitdir, &common, homes)
 }
 
-fn head_commit(gitdir: &Path, common: &Path) -> Option<String> {
-    let head = std::fs::read_to_string(gitdir.join("HEAD")).ok()?;
+fn head_commit(gitdir: &Path, common: &Path, homes: &[&Path]) -> Result<Option<String>, PathBuf> {
+    let Ok(head) = std::fs::read_to_string(gitdir.join("HEAD")) else {
+        return Ok(None);
+    };
     let head = head.trim();
     let Some(name) = head.strip_prefix("ref:").map(str::trim) else {
-        return is_hash(head).then(|| head.to_string());
+        return Ok(is_hash(head).then(|| head.to_string()));
     };
     for dir in [gitdir, common] {
-        if let Ok(hash) = std::fs::read_to_string(dir.join(name)) {
+        // The name of the ref is data: the file it names is not looked for in a guarded
+        // folder.
+        let path = match crate::guarded::real(&dir.join(name), homes) {
+            crate::guarded::Real::Guarded(g) => return Err(g),
+            crate::guarded::Real::At(path) => path,
+            crate::guarded::Real::Failed(_) => continue,
+        };
+        if let Ok(hash) = std::fs::read_to_string(path) {
             let hash = hash.trim();
-            return is_hash(hash).then(|| hash.to_string());
+            return Ok(is_hash(hash).then(|| hash.to_string()));
         }
     }
-    let packed = std::fs::read_to_string(common.join("packed-refs")).ok()?;
-    packed.lines().find_map(|line| {
+    let Ok(packed) = std::fs::read_to_string(common.join("packed-refs")) else {
+        return Ok(None);
+    };
+    Ok(packed.lines().find_map(|line| {
         let (hash, refname) = line.split_once(' ')?;
         (refname.trim() == name && is_hash(hash)).then(|| hash.to_string())
-    })
+    }))
 }
 
 fn is_hash(s: &str) -> bool {

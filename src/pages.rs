@@ -971,7 +971,7 @@ fn vulnerability_row(
     out: &mut String,
     a: &crate::vulnerabilities::Affecting,
     project: bool,
-    this: Option<&str>,
+    this: Option<&findings::This>,
 ) -> Out {
     let releases: Vec<String> = a.affected().into_iter().map(|(v, _)| v).collect();
     out.push_str("<tr>");
@@ -1132,9 +1132,9 @@ fn vulnerabilities_summary(conn: &Connection, st: &crate::status::State, out: &m
         list.len().min(VULNERABILITIES_SHOWN)
     )?;
     view::thead(out, &["Package", "Project", "Label", "Fixed in", "Record"]);
-    let this = covered::this_machine(conn)?;
+    let this = findings::This::of(conn, covered::this_machine(conn)?)?;
     for a in list.iter().take(VULNERABILITIES_SHOWN) {
-        vulnerability_row(out, a, true, this.as_deref())?;
+        vulnerability_row(out, a, true, this.as_ref())?;
     }
     out.push_str("</tbody></table></div>\n</details>\n");
     // No number here: the page lists each record once per project it affects, and a number
@@ -1155,7 +1155,7 @@ pub fn vulnerabilities(conn: &Connection, now: i64) -> Result<String, Box<dyn Er
         esc(VULNERABILITIES_SAY),
         esc(crate::vulnerabilities::DECLARED)
     )?;
-    let this = covered::this_machine(conn)?;
+    let this = findings::This::of(conn, covered::this_machine(conn)?)?;
     let list = crate::vulnerabilities::affecting(conn)?;
     if list.is_empty() {
         out.push_str("<p class=\"muted\">None is known.</p>\n");
@@ -1168,11 +1168,11 @@ pub fn vulnerabilities(conn: &Connection, now: i64) -> Result<String, Box<dyn Er
         writeln!(
             out,
             "<h3 class=\"mono\">{}</h3>\n<div class=\"scroll\"><table class=\"dense\">",
-            esc(&findings::place(checkout, this.as_deref()))
+            esc(&findings::place(checkout, this.as_ref()))
         )?;
         view::thead(&mut out, &["Package", "Label", "Fixed in", "Record"]);
         for a in of {
-            vulnerability_row(&mut out, a, false, this.as_deref())?;
+            vulnerability_row(&mut out, a, false, this.as_ref())?;
         }
         out.push_str("</tbody></table></div>\n");
     }
@@ -1227,6 +1227,7 @@ fn projects(conn: &Connection, this: Option<&str>) -> rusqlite::Result<Vec<(Stri
     let Some(this) = this else {
         return Ok(Vec::new());
     };
+    let mac = findings::This::of(conn, Some(this.to_string()))?;
     // The dependencies are counted in one pass over them, not once per project: no index
     // leads from a project to what is part of it.
     let list: Vec<(String, i64)> = conn
@@ -1244,7 +1245,7 @@ fn projects(conn: &Connection, this: Option<&str>) -> rusqlite::Result<Vec<(Stri
         .collect::<rusqlite::Result<_>>()?;
     Ok(list
         .into_iter()
-        .map(|(id, n)| (findings::place(&id, Some(this)), n))
+        .map(|(id, n)| (findings::place(&id, mac.as_ref()), n))
         .collect())
 }
 
@@ -1818,6 +1819,7 @@ fn ways(conn: &Connection, out: &mut String, this: Option<&str>) -> Out {
 /// The watched files of one kind: where each is, when it was first seen and when it last
 /// changed. Only checksums are kept, never content.
 fn files(conn: &Connection, out: &mut String, as_: &str, this: Option<&str>) -> Out {
+    let mac = findings::This::of(conn, this.map(str::to_string))?;
     let first: Vec<(String, i64)> = conn
         .prepare(
             "SELECT subject, MIN(observed_at) FROM assertion
@@ -1848,7 +1850,7 @@ fn files(conn: &Connection, out: &mut String, as_: &str, this: Option<&str>) -> 
     view::thead(out, &["File", "First seen", "Last changed"]);
     for (id, at) in first {
         out.push_str("<tr>");
-        view::td(out, "mono", &findings::place(&id, this))?;
+        view::td(out, "mono", &findings::place(&id, mac.as_ref()))?;
         view::td(out, "nowrap", &utc(at))?;
         let last = changed
             .get(&id)
@@ -1876,6 +1878,7 @@ fn installed_list(
     kind: &str,
     this: Option<&str>,
 ) -> rusqlite::Result<Vec<(String, Installed)>> {
+    let mac = findings::This::of(conn, this.map(str::to_string))?;
     let mut things: BTreeMap<String, Installed> = BTreeMap::new();
     let mut stmt = conn.prepare(
         "SELECT subject, predicate, object FROM assertion
@@ -1906,7 +1909,7 @@ fn installed_list(
         .into_iter()
         .map(|(subject, mut t)| {
             if t.at.is_empty() {
-                t.at = findings::place(&subject, this);
+                t.at = findings::place(&subject, mac.as_ref());
             }
             let path = t.at.trim_end_matches('/');
             let last = path.rsplit('/').next().unwrap_or(path);

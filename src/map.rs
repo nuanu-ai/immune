@@ -254,6 +254,7 @@ pub fn read(
             ..Map::default()
         });
     };
+    let mac = crate::findings::This::of(conn, Some(this.clone()))?;
     let mut map = Map {
         checked,
         projects_looked: latest
@@ -294,7 +295,7 @@ pub fn read(
     let projects_page = format!("{DETAILS}/{THIS_MAC}.html#projects");
     for (i, c) in checkouts.iter().enumerate() {
         let (n, calm) = judged.get(c).copied().unwrap_or_default();
-        let name = crate::findings::place(c, Some(&this));
+        let name = crate::findings::place(c, mac.as_ref());
         let mark = if look_projects.contains(&i) {
             looked(name)
         } else if affected.contains(c) {
@@ -360,7 +361,7 @@ pub fn read(
                             .iter()
                             .any(|r| r.scope == f && r.completeness != "full");
                     marks.push(on_mac(
-                        crate::findings::place(&f, Some(&this)),
+                        crate::findings::place(&f, mac.as_ref()),
                         look_mac.contains(f.as_str()),
                         failed,
                         &href,

@@ -489,14 +489,13 @@ impl Watcher<'_> {
     /// and a problem line for each place that cannot be watched.
     fn derive(&self) -> Result<(Vec<PathBuf>, Vec<Value>), Box<dyn Error>> {
         let (_, found) = holds(self.args)?;
+        let homes = watched::homes(&self.args.home);
+        let homes = [homes[0].as_path(), homes[1].as_path()];
         let mut wanted = BTreeSet::new();
         let mut problems = Vec::new();
         for (place, folder) in places(&self.args.home, &self.args.system_root, &found) {
-            match real(&place) {
-                Ok(path) => {
-                    wanted.insert(path);
-                    wanted.extend(link_targets(&place, folder));
-                }
+            match subscribed(&place, folder, &homes) {
+                Ok(paths) => wanted.extend(paths),
                 Err(why) => problems.push(place_problem(&place, &why)),
             }
         }
@@ -902,6 +901,8 @@ fn held_checkouts(
     let ids: Vec<String> = stmt
         .query_map([&prefix], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;
+    let homes = watched::homes(home);
+    let homes = [homes[0].as_path(), homes[1].as_path()];
     Ok(ids
         .into_iter()
         .map(|id| {
@@ -913,8 +914,15 @@ fn held_checkouts(
             };
             checkouts::Checkout { rel, path }
         })
-        // A watcher started by the app never looks into a folder macOS asks permission for.
-        .filter(|c| crate::guarded::folder_of(&c.path, home).is_none())
+        // A watcher started by the app never looks into a folder macOS asks permission for,
+        // whatever name leads there: a checkout may have been moved there and linked back
+        // since the run that found it. What is held about it is kept as it was.
+        .filter(|c| {
+            !matches!(
+                crate::guarded::real(&c.path, &homes),
+                crate::guarded::Real::Guarded(_)
+            )
+        })
         .collect())
 }
 
@@ -946,47 +954,71 @@ fn places(home: &Path, system: &Path, found: &[checkouts::Checkout]) -> Vec<(Pat
     out
 }
 
+/// The paths FSEvents is given for one place: the place by the real path of its folder, and
+/// where symbolic links among it lead, the place itself when it is a link and each link in a
+/// watched folder; a change at a target is reported under the target. Nothing that leads
+/// into a folder macOS asks permission for: FSEvents resolves the paths it is given, and the
+/// reading of the place says it was not looked into. Made real without entering one.
+fn subscribed(place: &Path, folder: bool, homes: &[&Path]) -> Result<Vec<PathBuf>, String> {
+    let Some(at) = real(place, homes)? else {
+        return Ok(Vec::new());
+    };
+    let target = |link: &Path| -> Result<Option<PathBuf>, ()> {
+        if !std::fs::symlink_metadata(link).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Ok(None);
+        }
+        match crate::guarded::real(link, homes) {
+            crate::guarded::Real::At(t) => Ok(Some(t)),
+            crate::guarded::Real::Guarded(_) => Err(()),
+            crate::guarded::Real::Failed(_) => Ok(None),
+        }
+    };
+    let Ok(own) = target(&at) else {
+        return Ok(Vec::new());
+    };
+    let mut out = vec![at.clone()];
+    if folder && let Ok(entries) = std::fs::read_dir(own.as_ref().unwrap_or(&at)) {
+        for entry in entries.flatten() {
+            out.extend(target(&at.join(entry.file_name())).ok().flatten());
+        }
+    }
+    out.extend(own);
+    Ok(out)
+}
+
 /// The path as FSEvents names it: the real path of its folder, which need not exist yet, and
-/// its own name. FSEvents reports real paths, and `/etc` is a link to `/private/etc`.
-fn real(path: &Path) -> Result<PathBuf, String> {
+/// its own name. FSEvents reports real paths, and `/etc` is a link to `/private/etc`. `None`
+/// when its folder leads into a folder macOS asks permission for, which is not entered.
+fn real(path: &Path, homes: &[&Path]) -> Result<Option<PathBuf>, String> {
     let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
-        return Ok(path.to_path_buf());
+        return Ok(Some(path.to_path_buf()));
     };
     let mut missing = Vec::new();
     let mut existing = parent.to_path_buf();
-    loop {
-        match std::fs::symlink_metadata(&existing) {
-            Ok(_) => break,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+    let mut out = loop {
+        match crate::guarded::real(&existing, homes) {
+            crate::guarded::Real::At(real) => break real,
+            crate::guarded::Real::Guarded(_) => return Ok(None),
+            // A folder that is not there yet: its own folder is watched. Looking at it
+            // without following it fails only where making it real failed.
+            crate::guarded::Real::Failed(e)
+                if e.kind() == std::io::ErrorKind::NotFound
+                    && matches!(std::fs::symlink_metadata(&existing),
+                                Err(e) if e.kind() == std::io::ErrorKind::NotFound) =>
+            {
                 let Some(last) = existing.file_name() else {
                     return Err(e.to_string());
                 };
                 missing.push(last.to_os_string());
                 existing.pop();
             }
-            // Any other error, such as a folder that cannot be searched, comes back from
-            // resolving the path below.
-            Err(_) => break,
+            // Any other error, such as a folder that cannot be searched.
+            crate::guarded::Real::Failed(e) => return Err(e.to_string()),
         }
-    }
-    let mut out = std::fs::canonicalize(&existing).map_err(|e| e.to_string())?;
+    };
     out.extend(missing.iter().rev());
     out.push(name);
-    Ok(out)
-}
-
-/// Where symbolic links among the watched places lead: the place itself when it is a link,
-/// and each link in a watched folder. A change at the target is reported under the target.
-fn link_targets(place: &Path, folder: bool) -> Vec<PathBuf> {
-    let mut links = vec![place.to_path_buf()];
-    if folder && let Ok(entries) = std::fs::read_dir(place) {
-        links.extend(entries.flatten().map(|e| e.path()));
-    }
-    links
-        .into_iter()
-        .filter(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink()))
-        .filter_map(|p| std::fs::canonicalize(p).ok())
-        .collect()
+    Ok(Some(out))
 }
 
 fn place_problem(place: &Path, why: &str) -> Value {
@@ -1292,12 +1324,16 @@ mod tests {
         let _ = std::fs::remove_file(dir.join("link"));
         std::os::unix::fs::symlink(dir.join("real"), dir.join("link")).unwrap();
         let base = std::fs::canonicalize(&dir).unwrap();
+        let homes = [base.as_path()];
         assert_eq!(
-            real(&dir.join("link/not/yet/there")).unwrap(),
-            base.join("real/not/yet/there")
+            real(&dir.join("link/not/yet/there"), &homes).unwrap(),
+            Some(base.join("real/not/yet/there"))
         );
         // The place itself is not resolved: a link there is watched as a link.
-        assert_eq!(real(&dir.join("link")).unwrap(), base.join("link"));
+        assert_eq!(
+            real(&dir.join("link"), &homes).unwrap(),
+            Some(base.join("link"))
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

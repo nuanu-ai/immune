@@ -864,7 +864,7 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Found>>> 
     if !has_table(conn)? {
         return Ok(None);
     }
-    let this = this_machine(conn)?;
+    let this = This::of(conn, this_machine(conn)?)?;
     // A store opened only for reading since this build keeps no `via` yet.
     let via = if has_via(conn)? { "via" } else { "NULL" };
     let mut affecting: Option<Vec<crate::vulnerabilities::Affecting>> = None;
@@ -898,7 +898,7 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Found>>> 
             place: match installed {
                 Some(path) if path.starts_with('/') => path,
                 Some(path) => format!("~/{path}"),
-                None => place(&about, this.as_deref()),
+                None => place(&about, this.as_ref()),
             },
             about,
             state: state_at(state, answered_at, until, last, now),
@@ -1254,13 +1254,39 @@ fn this_machine(conn: &Connection) -> rusqlite::Result<Option<String>> {
     .optional()
 }
 
+/// This Mac as a place names it: its id in the store, and its name now where the store
+/// keeps one, which differs from the name in its id once the Mac was renamed.
+pub struct This {
+    pub id: String,
+    pub name: Option<String>,
+}
+
+impl This {
+    /// The Mac whose id is `id`, with its name now as the store keeps it.
+    pub fn of(conn: &Connection, id: Option<String>) -> rusqlite::Result<Option<This>> {
+        let Some(id) = id else {
+            return Ok(None);
+        };
+        let name = crate::store::held_mac(conn)?
+            .filter(|(held, _)| *held == id)
+            .map(|(_, name)| name);
+        Ok(Some(This { id, name }))
+    }
+}
+
 /// Where a thing is, from its entity id, as a person recognises it: a path under the home
-/// folder as `~/…`, a path outside it as it is, a machine by its name, a container with its
-/// machine, and the machine first for a file or checkout on a machine other than `this`.
-/// Anything else is shown as its id.
-pub fn place(id: &str, this: Option<&str>) -> String {
+/// folder as `~/…`, a path outside it as it is, a machine by its name, this Mac by its name
+/// now, a container with its machine, and the machine first for a file or checkout on a
+/// machine other than `this`. Anything else is shown as its id.
+pub fn place(id: &str, this: Option<&This>) -> String {
     if let Some(name) = id.strip_prefix("machine:") {
-        return name.to_string();
+        return match this {
+            Some(This {
+                id: mine,
+                name: Some(now),
+            }) if mine == id => now.clone(),
+            _ => name.to_string(),
+        };
     }
     if let Some(rest) = id.strip_prefix("container:")
         && let Some((machine, name)) = rest.rsplit_once('/')
@@ -1279,7 +1305,7 @@ pub fn place(id: &str, this: Option<&str>) -> String {
     } else {
         format!("~/{path}")
     };
-    if this.is_some_and(|t| t != machine) {
+    if this.is_some_and(|t| t.id != machine) {
         format!("{}: {path}", place(machine, this))
     } else {
         path
@@ -1528,7 +1554,7 @@ pub fn catalogue_json() -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{CONFIDENCES, SEVERITIES, place, urgent};
+    use super::{CONFIDENCES, Connection, SEVERITIES, This, place, urgent};
 
     #[test]
     fn only_a_finding_both_bad_and_sure_is_urgent_and_the_programs_health_never_is() {
@@ -1551,7 +1577,10 @@ mod tests {
     #[test]
     fn where_a_thing_is_reads_as_a_person_knows_it() {
         // The owner recognises `~/.zshrc` and a project's folder, not an entity id.
-        let this = Some("machine:mac");
+        let this = Some(This {
+            id: "machine:mac".to_string(),
+            name: None,
+        });
         for (id, said) in [
             ("file:machine:mac/.zshrc", "~/.zshrc"),
             ("file:machine:mac//etc/zshrc", "/etc/zshrc"),
@@ -1575,9 +1604,43 @@ mod tests {
                 "component:machine:mac/brew/jq",
             ),
         ] {
-            assert_eq!(place(id, this), said, "{id}");
+            assert_eq!(place(id, this.as_ref()), said, "{id}");
         }
         // Not knowing which machine this is, a file is shown without one.
         assert_eq!(place("file:machine:web-1/.zshrc", None), "~/.zshrc");
+    }
+
+    #[test]
+    fn this_mac_is_shown_by_its_name_now_after_it_was_renamed() {
+        // The store keeps the id of its first run; the owner knows the Mac by its new name.
+        let this = Some(This {
+            id: "machine:mac".to_string(),
+            name: Some("mac-2".to_string()),
+        });
+        assert_eq!(place("machine:mac", this.as_ref()), "mac-2");
+        assert_eq!(
+            place("container:machine:mac/blog", this.as_ref()),
+            "blog on mac-2"
+        );
+        assert_eq!(place("machine:db-1", this.as_ref()), "db-1");
+        assert_eq!(
+            place("file:machine:web-1/.zshrc", this.as_ref()),
+            "web-1: ~/.zshrc"
+        );
+        // The name now is the one the store keeps beside this Mac's id, and no other's.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO meta VALUES ('machine', 'machine:mac'), ('machine_name', 'mac-2');",
+        )
+        .unwrap();
+        let named = |id: &str| {
+            This::of(&conn, Some(id.to_string()))
+                .unwrap()
+                .and_then(|t| t.name)
+        };
+        assert_eq!(named("machine:mac"), Some("mac-2".to_string()));
+        assert_eq!(named("machine:other"), None);
+        assert!(This::of(&conn, None).unwrap().is_none());
     }
 }

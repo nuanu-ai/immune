@@ -148,6 +148,38 @@ pub fn real(path: &Path, homes: &[&Path]) -> Real {
     Real::At(done)
 }
 
+/// `path` with its last part made real by `real` when that part is a symbolic link, and as
+/// written otherwise. A reader that goes down from a folder it has reached adds one part at
+/// a time, and only the part it adds can lead elsewhere. `Err` is the guarded folder the
+/// link leads into. A link that cannot be followed is left as written: looking at it fails
+/// where `real` failed, before any guarded folder.
+pub fn followed(path: &Path, homes: &[&Path]) -> Result<PathBuf, PathBuf> {
+    match std::fs::symlink_metadata(path) {
+        Ok(m) if m.file_type().is_symlink() => match real(path, homes) {
+            Real::At(p) => Ok(p),
+            Real::Guarded(g) => Err(g),
+            Real::Failed(_) => Ok(path.to_path_buf()),
+        },
+        _ => Ok(path.to_path_buf()),
+    }
+}
+
+/// `rel` under `base`, each of its parts `followed` in turn. `base` is a folder the reader
+/// was given, taken as it is.
+pub fn under(base: &Path, rel: &Path, homes: &[&Path]) -> Result<PathBuf, PathBuf> {
+    rel.components().try_fold(base.to_path_buf(), |at, part| {
+        followed(&at.join(part), homes)
+    })
+}
+
+/// Why something was not looked into, as a reason says it.
+pub fn leads_into(folder: &Path, home: &Path) -> String {
+    format!(
+        "it leads into {}, which macOS asks permission for",
+        shown(folder, home)
+    )
+}
+
 /// A guarded folder as a person reads it: `~/Documents`, `/Volumes/Backup`.
 pub fn shown(folder: &Path, home: &Path) -> String {
     match folder.strip_prefix(home) {

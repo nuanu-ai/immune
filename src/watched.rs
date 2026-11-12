@@ -15,7 +15,7 @@
 use std::fs::{FileType, Metadata, OpenOptions};
 use std::io::{ErrorKind, Read};
 use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::store::Cause;
 
@@ -178,25 +178,70 @@ pub struct Look {
     pub failed: Vec<(String, String)>,
     /// Places that are there and were looked at.
     pub present: usize,
+    /// Places not looked into because they lead into a folder macOS asks permission for,
+    /// each with why: whether they hold anything is not known.
+    pub unreached: Vec<(String, String)>,
+    /// Every such folder met, a link's target among them, for the reader's coverage.
+    pub guarded: Vec<PathBuf>,
 }
 
 impl Look {
     /// The completeness of the reading of which entries are there, and its reason or note.
     pub fn completeness(&self) -> (&'static str, Option<String>) {
-        if self.failed.is_empty() {
+        if self.failed.is_empty() && self.unreached.is_empty() {
             let note = (self.present == 0).then(|| NOT_HERE.to_string());
             return ("full", note);
         }
-        let failed: Vec<String> = self
-            .failed
-            .iter()
-            .map(|(path, why)| format!("{path} ({why})"))
-            .collect();
-        let reason = format!("could not be read: {}", failed.join("; "));
+        let mut reasons = Vec::new();
+        if !self.failed.is_empty() {
+            let failed: Vec<String> = self
+                .failed
+                .iter()
+                .map(|(path, why)| format!("{path} ({why})"))
+                .collect();
+            reasons.push(format!("could not be read: {}", failed.join("; ")));
+        }
+        if !self.unreached.is_empty() {
+            let unreached: Vec<String> = self
+                .unreached
+                .iter()
+                .map(|(path, why)| format!("{path}: {why}"))
+                .collect();
+            reasons.push(format!(
+                "{}{}",
+                crate::guarded::NOT_LOOKED_INTO,
+                unreached.join("; ")
+            ));
+        }
+        let reason = Some(reasons.join("; "));
         if self.present == 0 {
-            ("none", Some(reason))
+            ("none", reason)
         } else {
-            ("partial", Some(reason))
+            ("partial", reason)
+        }
+    }
+
+    /// Why a reading that is not full is not: it failed, or what it did not look into is
+    /// only what macOS asks permission for, which the owner did not give.
+    pub fn cause(&self) -> Cause {
+        if self.failed.is_empty() && !self.unreached.is_empty() {
+            Cause::NotGiven
+        } else {
+            Cause::Failed
+        }
+    }
+
+    /// A place that leads into a guarded folder: not looked into, and said.
+    pub fn not_into(&mut self, shown: String, folder: PathBuf, home: &Path) {
+        self.unreached
+            .push((shown, crate::guarded::leads_into(&folder, home)));
+        self.met(folder);
+    }
+
+    /// A guarded folder met, for the reader's coverage.
+    pub fn met(&mut self, folder: PathBuf) {
+        if !self.guarded.contains(&folder) {
+            self.guarded.push(folder);
         }
     }
 }
@@ -207,17 +252,28 @@ pub struct Roots<'a> {
     pub system: &'a Path,
 }
 
+/// The home folder by its names, as `guarded::real` takes them: as given and made real.
+pub fn homes(home: &Path) -> [PathBuf; 2] {
+    let real = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+    [home.to_path_buf(), real]
+}
+
 /// Looks at every place of one kind on this machine. A system place is named by its path
 /// from `/` whatever root it was read under.
 pub fn look_machine(roots: &Roots, kind: &str) -> Look {
     let mut look = Look::default();
+    let homes = homes(roots.home);
+    let at = Where {
+        homes: [homes[0].as_path(), homes[1].as_path()],
+        home: roots.home,
+    };
     for p in PLACES.iter().filter(|p| p.kind == kind) {
-        let (path, shown) = match p.base {
-            Base::Home => (roots.home.join(p.path), p.path.to_string()),
-            Base::System => (roots.system.join(p.path), format!("/{}", p.path)),
+        let (base, shown) = match p.base {
+            Base::Home => (roots.home, p.path.to_string()),
+            Base::System => (roots.system, format!("/{}", p.path)),
             Base::Checkout => continue,
         };
-        look_place(&mut look, p, &path, &shown);
+        look_place(&mut look, p, base, &shown, &at);
     }
     look
 }
@@ -230,28 +286,55 @@ pub enum Hooks {
 }
 
 /// Looks at the hooks folder of one checkout. `rel` is the checkout's path as ids name it.
-pub fn look_checkout(checkout: &Path, rel: &str) -> Hooks {
+pub fn look_checkout(checkout: &Path, rel: &str, home: &Path) -> Hooks {
+    let homes = homes(home);
+    let at = Where {
+        homes: [homes[0].as_path(), homes[1].as_path()],
+        home,
+    };
+    let mut look = Look::default();
+    // `.git` is not looked at where it leads into a folder macOS asks permission for.
+    let dotgit = match crate::guarded::followed(&checkout.join(".git"), &at.homes) {
+        Ok(dotgit) => dotgit,
+        Err(folder) => {
+            for p in PLACES.iter().filter(|p| p.base == Base::Checkout) {
+                look.not_into(format!("{rel}/{}", p.path), folder.clone(), home);
+            }
+            return Hooks::Looked(look);
+        }
+    };
     // When `.git` cannot be looked at, its hooks folder cannot be either, and says so.
-    match std::fs::metadata(checkout.join(".git")) {
+    match std::fs::metadata(dotgit) {
         Ok(m) if !m.is_dir() => Hooks::GitFile,
         _ => {
-            let mut look = Look::default();
             for p in PLACES.iter().filter(|p| p.base == Base::Checkout) {
-                look_place(
-                    &mut look,
-                    p,
-                    &checkout.join(p.path),
-                    &format!("{rel}/{}", p.path),
-                );
+                look_place(&mut look, p, checkout, &format!("{rel}/{}", p.path), &at);
             }
             Hooks::Looked(look)
         }
     }
 }
 
-fn look_place(look: &mut Look, p: &Place, path: &Path, shown: &str) {
+/// What a look needs to tell a guarded folder: the home folder by its names, and as ids
+/// name it.
+struct Where<'a> {
+    homes: [&'a Path; 2],
+    home: &'a Path,
+}
+
+/// Looks at one place under `base`. Its folder is reached one part at a time and a link on
+/// the way is made real, so that nothing in a folder macOS asks permission for is looked at.
+fn look_place(look: &mut Look, p: &Place, base: &Path, shown: &str, at: &Where) {
+    let rel = Path::new(p.path);
+    let (Some(folder), Some(name)) = (rel.parent(), rel.file_name()) else {
+        return;
+    };
+    let path = match crate::guarded::under(base, folder, &at.homes) {
+        Ok(folder) => folder.join(name),
+        Err(guarded) => return look.not_into(shown.to_string(), guarded, at.home),
+    };
     if !p.folder {
-        match examine(path) {
+        match examine(&path, look, at) {
             Examined::Absent => {}
             Examined::Unknown(why) => look.failed.push((shown.to_string(), why)),
             Examined::Present(content, link) => {
@@ -266,8 +349,12 @@ fn look_place(look: &mut Look, p: &Place, path: &Path, shown: &str) {
         }
         return;
     }
+    let path = match crate::guarded::followed(&path, &at.homes) {
+        Ok(path) => path,
+        Err(guarded) => return look.not_into(shown.to_string(), guarded, at.home),
+    };
     // Listing what is not a folder, a named pipe included, fails at once without waiting.
-    let listing = std::fs::read_dir(path).and_then(|entries| {
+    let listing = std::fs::read_dir(&path).and_then(|entries| {
         entries
             .map(|entry| entry.map(|e| e.file_name()))
             .collect::<std::io::Result<Vec<_>>>()
@@ -284,7 +371,7 @@ fn look_place(look: &mut Look, p: &Place, path: &Path, shown: &str) {
             continue;
         }
         let entry = format!("{shown}/{text}");
-        match examine(&path.join(&name)) {
+        match examine(&path.join(&name), look, at) {
             Examined::Absent => {}
             Examined::Unknown(why) => look.failed.push((entry, why)),
             Examined::Present(content, link) => look.entries.push(Entry {
@@ -308,8 +395,10 @@ enum Examined {
     Present(Content, Option<String>),
 }
 
-/// What is at a path. A symbolic link is followed to its final target for the content.
-fn examine(path: &Path) -> Examined {
+/// What is at a path, whose folder was reached. A symbolic link is followed to its final
+/// target for the content, unless that target is in a folder macOS asks permission for:
+/// then the link is there and what it leads to was not looked into.
+fn examine(path: &Path, look: &mut Look, at: &Where) -> Examined {
     let own = std::fs::symlink_metadata(path).and_then(|m| {
         if !m.file_type().is_symlink() {
             return Ok((m, None));
@@ -323,8 +412,20 @@ fn examine(path: &Path) -> Examined {
         Err(e) if absent(&e) => return Examined::Absent,
         Err(e) => return Examined::Unknown(e.to_string()),
     };
-    let content = match std::fs::metadata(path) {
-        Ok(target) => content(path, &target),
+    let target = match crate::guarded::followed(path, &at.homes) {
+        Ok(target) => target,
+        Err(guarded) => {
+            let why = format!(
+                "{}{}",
+                crate::guarded::NOT_LOOKED_INTO,
+                crate::guarded::leads_into(&guarded, at.home)
+            );
+            look.met(guarded);
+            return Examined::Present(Content::Unread(Cause::NotGiven, why), Some(link));
+        }
+    };
+    let content = match std::fs::metadata(&target) {
+        Ok(meta) => content(&target, &meta),
         Err(e) if absent(&e) => Content::Dangling,
         Err(e) => Content::Unread(Cause::Failed, reason(&e)),
     };

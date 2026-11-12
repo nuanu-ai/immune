@@ -121,6 +121,11 @@ pub struct Kind {
     pub present: usize,
     /// What the full reading's note says besides what it cannot judge.
     pub notes: Vec<String>,
+    /// Places not looked into because they lead into a folder macOS asks permission for,
+    /// with why.
+    pub unreached: Vec<(String, String)>,
+    /// Those folders, for the reader's coverage.
+    pub guarded: Vec<PathBuf>,
     cannot: &'static str,
 }
 
@@ -134,6 +139,8 @@ impl Kind {
             capped: Vec::new(),
             present: 0,
             notes: Vec::new(),
+            unreached: Vec::new(),
+            guarded: Vec::new(),
             cannot,
         }
     }
@@ -165,7 +172,20 @@ impl Kind {
                 .collect();
             said.push(format!("not recorded, over a cap: {}", capped.join("; ")));
         }
-        let unrecorded = !self.shared.is_empty() || !self.capped.is_empty();
+        if !self.unreached.is_empty() {
+            let unreached: Vec<String> = self
+                .unreached
+                .iter()
+                .map(|(path, why)| format!("{path}: {why}"))
+                .collect();
+            said.push(format!(
+                "{}{}",
+                crate::guarded::NOT_LOOKED_INTO,
+                unreached.join("; ")
+            ));
+        }
+        let unrecorded =
+            !self.shared.is_empty() || !self.capped.is_empty() || !self.unreached.is_empty();
         let cause = Cause::worst(
             (!self.failed.is_empty())
                 .then_some(Cause::Failed)
@@ -310,6 +330,9 @@ fn app_support(roots: &Roots, machine: &str, bundles: &Kind) -> Kind {
         ));
     }
     let base = roots.home.join("Library/Application Support");
+    if !reachable(&base, "Library/Application Support", roots, &mut kind) {
+        return kind;
+    }
     let entries = match list(&base) {
         None => return kind,
         Some(Err(e)) => {
@@ -419,6 +442,24 @@ fn walk(dir: &Path, rel: &[u8], out: &mut Vec<u8>) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Whether a place this reader starts at may be looked into: not when it leads into a folder
+/// macOS asks permission for, through a link or as it is, which `kind` then says. Inside a
+/// place no link is followed.
+fn reachable(dir: &Path, shown: &str, roots: &Roots, kind: &mut Kind) -> bool {
+    let homes = crate::watched::homes(roots.home);
+    match crate::guarded::real(dir, &[&homes[0], &homes[1]]) {
+        crate::guarded::Real::Guarded(g) => {
+            let why = crate::guarded::leads_into(&g, roots.home);
+            kind.unreached.push((shown.to_string(), why));
+            if !kind.guarded.contains(&g) {
+                kind.guarded.push(g);
+            }
+            false
+        }
+        _ => true,
+    }
+}
+
 /// The names in a folder, sorted, or `None` when it is not there.
 fn list(dir: &Path) -> Option<std::io::Result<Vec<OsString>>> {
     let listing = std::fs::read_dir(dir).and_then(|entries| {
@@ -488,6 +529,9 @@ fn find_bundles(roots: &Roots, kind: &mut Kind) -> Vec<Found> {
     ];
     let mut found = Vec::new();
     for (dir, shown) in places {
+        if !reachable(&dir, &shown, roots, kind) {
+            continue;
+        }
         let names = match list(&dir) {
             None => continue,
             Some(Err(e)) => {
@@ -704,6 +748,9 @@ fn prefixes(roots: &Roots, under: &str) -> Vec<(PathBuf, String)> {
 fn kegs(roots: &Roots, machine: &str) -> Kind {
     let mut kind = Kind::new(KEGS, KEGS_CANNOT);
     for (cellar, shown) in prefixes(roots, "Cellar") {
+        if !reachable(&cellar, &shown, roots, &mut kind) {
+            continue;
+        }
         let names = match list(&cellar) {
             None => continue,
             Some(Err(e)) => {
@@ -748,17 +795,21 @@ fn kegs(roots: &Roots, machine: &str) -> Kind {
     kind
 }
 
-/// The version a package's `package.json` gives, if it gives one.
-fn package_version(folder: &Path) -> Option<String> {
-    let text = std::fs::read(folder.join("package.json")).ok()?;
+/// The version a package's `package.json`, `file`, gives, if it gives one.
+fn package_version(file: &Path) -> Option<String> {
+    let text = std::fs::read(file).ok()?;
     let v: serde_json::Value = serde_json::from_slice(&text).ok()?;
     v.get("version")?.as_str().map(str::to_string)
 }
 
 fn npm(roots: &Roots, machine: &str) -> Kind {
     let mut kind = Kind::new(NPM, NPM_CANNOT);
+    let homes = crate::watched::homes(roots.home);
     let mut names = BTreeSet::new();
     for (root, shown) in prefixes(roots, "lib/node_modules") {
+        if !reachable(&root, &shown, roots, &mut kind) {
+            continue;
+        }
         let entries = match list(&root) {
             None => continue,
             Some(Err(e)) => {
@@ -809,7 +860,17 @@ fn npm(roots: &Roots, machine: &str) -> Kind {
                 ("part_of", machine.to_string()),
                 ("installed_at", here.clone()),
             ];
-            facts.extend(package_version(&path).map(|v| ("has_version", v)));
+            // Its `package.json` may be a link: not followed into a guarded folder.
+            match crate::guarded::followed(&path.join("package.json"), &[&homes[0], &homes[1]]) {
+                Ok(file) => facts.extend(package_version(&file).map(|v| ("has_version", v))),
+                Err(g) => {
+                    let why = crate::guarded::leads_into(&g, roots.home);
+                    kind.unreached.push((format!("{here}/package.json"), why));
+                    if !kind.guarded.contains(&g) {
+                        kind.guarded.push(g);
+                    }
+                }
+            }
             facts.push(("has_digest", d));
             kind.things.push(Thing {
                 subject: format!("component:{machine}/npm/{name}"),

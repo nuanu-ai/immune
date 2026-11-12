@@ -1601,6 +1601,60 @@ fn a_folder_macos_asks_permission_for_is_never_entered_and_what_was_known_there_
 }
 
 #[test]
+fn a_watched_place_linked_into_documents_is_neither_entered_nor_subscribed_to_and_is_said() {
+    // Dotfiles kept in Documents and linked from the home folder are common, and a project
+    // may be moved there and linked back between two full runs. FSEvents resolves a path it
+    // is given, so subscribing to such a link would enter Documents too. Documents is shut
+    // here first, as macOS keeps it: a watcher that entered it would say a place cannot be
+    // watched. Then it is open: what is behind the links is still not subscribed to.
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let mac = Mac::new("linked-guarded");
+    let docs = mac.home().join("Documents");
+    mac.put("dev/shop/.git/HEAD", "ref: refs/heads/main\n");
+    std::fs::create_dir_all(mac.home().join("dev/shop/.git/hooks")).unwrap();
+    std::fs::create_dir_all(&docs).unwrap();
+    mac.run();
+    std::fs::rename(mac.home().join("dev/shop"), docs.join("shop")).unwrap();
+    symlink(docs.join("shop"), mac.home().join("dev/shop")).unwrap();
+    mac.put("Documents/zshrc", "export A=1\n");
+    symlink(docs.join("zshrc"), mac.home().join(".zshrc")).unwrap();
+    mac.put("Documents/ssh/config", "Host web\n");
+    symlink(docs.join("ssh"), mac.home().join(".ssh")).unwrap();
+    mac.put("Documents/claude/settings.json", "{}\n");
+    symlink(docs.join("claude"), mac.home().join(".claude")).unwrap();
+    struct Open(PathBuf);
+    impl Drop for Open {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+    // The table's places but the shell file and the three ssh files, the home folder's but
+    // the agent's settings, and none of the project's.
+    let places = 27 - 4 + HOME_PLACES - 1;
+    let open = Open(docs.clone());
+    std::fs::set_permissions(&docs, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let mut w = mac.watch();
+    assert_eq!(w.next("watching")["places"], places);
+    // Its first reading, at start, follows the lines of places it cannot watch.
+    w.next("read");
+    assert!(w.lines("problem").is_empty(), "{:?}", w.seen);
+    assert!(w.stop().success());
+    drop(open);
+    assert_eq!(
+        mac.rows(
+            "SELECT completeness || '|' || reason FROM coverage
+             WHERE reader = 'watched-places' AND kind = 'folders macOS asks permission for'
+             ORDER BY id DESC LIMIT 1"
+        ),
+        ["none|not looked into: ~/Documents"]
+    );
+    // Open, the targets of the links are not subscribed to either.
+    let mut w = mac.watch();
+    assert_eq!(w.next("watching")["places"], places);
+    assert!(w.stop().success());
+}
+
+#[test]
 fn a_watched_file_its_permissions_keep_closed_leaves_this_mac_watched_in_part_and_is_the_owners_to_fix()
  {
     // A watched place that is there and cannot be read because of its permissions is the

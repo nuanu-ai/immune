@@ -97,7 +97,17 @@ const SHORT: usize = 80;
 pub fn read(at: Option<&Path>, home: &Path) -> Found {
     let cli = match at {
         Some(at) => at.is_file().then(|| at.to_path_buf()),
-        None => crate::tools::find("tailscale", &installed(home), &crate::tools::path()),
+        None => {
+            let homes = crate::watched::homes(home);
+            let homes = [homes[0].as_path(), homes[1].as_path()];
+            let found =
+                crate::tools::find("tailscale", &installed(home), &crate::tools::path(), &homes);
+            // Found nowhere else, it may be where it was not looked for.
+            if let (None, Some(g)) = (&found.at, found.guarded.first()) {
+                return Found::Guarded(g.clone());
+            }
+            found.at
+        }
     };
     read_from(cli.as_deref(), processes)
 }

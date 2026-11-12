@@ -26,7 +26,7 @@ public struct Row: Sendable, Equatable, Identifiable {
     self.item = item
     self.immune = immune
     when = item.lastSeen.map { Clock.at($0, now: now) }
-    whenFull = item.lastSeen.map(Clock.full)
+    whenFull = item.lastSeen.map { Clock.full($0) }
   }
 
   /// Immune's headline for it. Immune's fixed words, still passed through `Inert` like
@@ -317,7 +317,7 @@ public struct Panel: Sendable, Equatable {
     }
 
     let lastCheck = mac?.checkedAt ?? s.lastFinishedRun?.finishedAt
-    checkedAt = lastCheck.map(Clock.full)
+    checkedAt = lastCheck.map { Clock.full($0) }
     let parts = (mac?.watched ?? []).filter { $0.count != 0 }
     let liveKinds = parts.filter { Self.allTheTime($0) }.compactMap(\.what)
     // While the watcher says it is not watching, live watching is not claimed, whatever
@@ -649,7 +649,7 @@ public struct AnsweredLine: Sendable, Equatable, Identifiable {
       title = Inert.text(item.title ?? "", limit: 400)
       answer =
         item.answer == "expected"
-        ? "Expected until " + (item.until.map(Clock.day) ?? "?") : "Seen"
+        ? "Expected until " + (item.until.map { Clock.day($0) } ?? "?") : "Seen"
       via = item.via
       reason = item.reasonText.map { Inert.text($0, limit: 240) }
     case .statement(let item):
@@ -771,32 +771,54 @@ public enum Clock {
   /// "12 minutes ago". The app's words are English, so a relative time is English too,
   /// whatever the Mac's region; `calendar` is the Mac's, which carries its region.
   public static func ago(_ d: Date, now: Date, calendar: Calendar = .current) -> String {
-    guard d <= now else { return "on " + full(d) }
-    var english = calendar
-    english.locale = Locale(identifier: "en_US")
+    guard d <= now else { return "on " + full(d, calendar: calendar) }
     let f = RelativeDateTimeFormatter()
     f.unitsStyle = .full
-    f.calendar = english
-    f.locale = english.locale
+    f.calendar = english(calendar)
+    f.locale = english(calendar).locale
     return f.localizedString(for: d, relativeTo: now)
   }
 
   /// A short absolute time: the time alone today, the day alone this year, the
-  /// full date otherwise or when it lies in the future.
-  public static func at(_ d: Date, now: Date) -> String {
-    let cal = Calendar.current
-    guard d <= now else { return full(d) }
-    if cal.isDate(d, inSameDayAs: now) { return d.formatted(date: .omitted, time: .shortened) }
-    if cal.isDate(d, equalTo: now, toGranularity: .year) {
-      return d.formatted(.dateTime.month(.abbreviated).day())
+  /// full date otherwise or when it lies in the future. In English, as every word of the
+  /// app is, in the time zone and calendar of `calendar`, the Mac's.
+  public static func at(_ d: Date, now: Date, calendar: Calendar = .current) -> String {
+    guard d <= now else { return full(d, calendar: calendar) }
+    if calendar.isDate(d, inSameDayAs: now) {
+      return d.formatted(style(calendar, date: .omitted, time: .shortened))
     }
-    return full(d)
+    if calendar.isDate(d, equalTo: now, toGranularity: .year) {
+      return d.formatted(style(calendar).month(.abbreviated).day())
+    }
+    return full(d, calendar: calendar)
   }
 
-  static func full(_ d: Date) -> String { d.formatted(date: .abbreviated, time: .shortened) }
+  static func full(_ d: Date, calendar: Calendar = .current) -> String {
+    d.formatted(style(calendar, date: .abbreviated, time: .shortened))
+  }
 
   /// The day alone, for an end such as "Expected until".
-  static func day(_ d: Date) -> String { d.formatted(date: .abbreviated, time: .omitted) }
+  static func day(_ d: Date, calendar: Calendar = .current) -> String {
+    d.formatted(style(calendar, date: .abbreviated, time: .omitted))
+  }
+
+  /// The Mac's calendar, with its time zone, speaking English.
+  private static func english(_ calendar: Calendar) -> Calendar {
+    var english = calendar
+    english.locale = Locale(identifier: "en_US")
+    return english
+  }
+
+  /// Dates in English, in the time zone and calendar of `calendar`.
+  private static func style(
+    _ calendar: Calendar, date: Date.FormatStyle.DateStyle? = nil,
+    time: Date.FormatStyle.TimeStyle? = nil
+  ) -> Date.FormatStyle {
+    let english = english(calendar)
+    return Date.FormatStyle(
+      date: date, time: time, locale: english.locale ?? Locale(identifier: "en_US"),
+      calendar: english, timeZone: calendar.timeZone)
+  }
 
   static func iso(_ d: Date) -> String { d.formatted(.iso8601) }
 }

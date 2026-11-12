@@ -45,19 +45,24 @@ pub enum Found {
     NotInstalled,
     /// `brew` is here and could not be read, with the reason.
     Failed(String),
+    /// `brew` was not found, and a place to look for it leads into these folders macOS asks
+    /// permission for, which were not looked into: it may be there.
+    NotLookedInto(Vec<PathBuf>),
 }
 
 /// `input` is a saved answer of brew to read instead of running it. `brew` is the one place
-/// to look for brew instead of the standard places and PATH.
-pub fn read(input: Option<&Path>, brew: Option<&Path>) -> Found {
+/// to look for brew instead of the standard places and PATH. `home` is the home folder.
+pub fn read(input: Option<&Path>, brew: Option<&Path>, home: &Path) -> Found {
     let json = match input {
         Some(path) => match std::fs::read_to_string(path) {
             Ok(text) => text,
             Err(e) => return Found::Failed(format!("cannot read {}: {e}", path.display())),
         },
         None => {
-            let Some(brew) = find(brew) else {
-                return Found::NotInstalled;
+            let brew = match find(brew, home) {
+                Ok(Some(brew)) => brew,
+                Ok(None) => return Found::NotInstalled,
+                Err(guarded) => return Found::NotLookedInto(guarded),
             };
             match run(&brew) {
                 Ok(text) => text,
@@ -90,12 +95,20 @@ fn run(brew: &Path) -> Result<String, String> {
     String::from_utf8(out.stdout).map_err(|_| "brew output is not UTF-8".to_string())
 }
 
-fn find(at: Option<&Path>) -> Option<PathBuf> {
+/// Where brew is, if anywhere; `Err` with the folders macOS asks permission for that were not
+/// looked into when it was found nowhere else.
+fn find(at: Option<&Path>, home: &Path) -> Result<Option<PathBuf>, Vec<PathBuf>> {
     if let Some(path) = at {
-        return path.is_file().then(|| path.to_path_buf());
+        return Ok(path.is_file().then(|| path.to_path_buf()));
     }
     let standard: Vec<PathBuf> = STANDARD.iter().map(PathBuf::from).collect();
-    crate::tools::find("brew", &standard, &crate::tools::path())
+    let homes = crate::watched::homes(home);
+    let homes = [homes[0].as_path(), homes[1].as_path()];
+    let found = crate::tools::find("brew", &standard, &crate::tools::path(), &homes);
+    match found.at {
+        None if !found.guarded.is_empty() => Err(found.guarded),
+        at => Ok(at),
+    }
 }
 
 /// The raw copy made from brew's answer, in its order. Anything out of the shape

@@ -761,9 +761,16 @@ impl Looked {
 
 /// Looks at one row read here in every place given, each as its folder and its path as ids
 /// name it: a checkout, or the home folder with an empty path. A place in the home folder that
-/// macOS asks permission for is never looked into.
-pub fn look_all<'a>(p: &Point, places: impl Iterator<Item = (&'a Path, &'a str)>) -> Looked {
+/// macOS asks permission for is never looked into, nor one a link leads into: that one is
+/// said. `home` is the home folder.
+pub fn look_all<'a>(
+    p: &Point,
+    places: impl Iterator<Item = (&'a Path, &'a str)>,
+    home: &Path,
+) -> Looked {
     let mut all = Looked::default();
+    let homes = watched::homes(home);
+    let homes = [homes[0].as_path(), homes[1].as_path()];
     for (base, rel) in places {
         for pattern in p.paths {
             if p.scope == Scope::Home
@@ -771,22 +778,39 @@ pub fn look_all<'a>(p: &Point, places: impl Iterator<Item = (&'a Path, &'a str)>
             {
                 continue;
             }
-            for file in matching(base, rel, pattern, &mut all) {
-                look(p, base, rel, &file, &mut all);
+            let (folder, _) = pattern.rsplit_once('/').unwrap_or(("", pattern));
+            let dir = match crate::guarded::under(base, Path::new(folder), &homes) {
+                Ok(dir) => dir,
+                Err(g) => {
+                    all.look.not_into(shown(rel, pattern), g, home);
+                    continue;
+                }
+            };
+            for file in matching(&dir, rel, pattern, &mut all) {
+                let name = file.rsplit_once('/').map_or(file.as_str(), |(_, n)| n);
+                look(
+                    p,
+                    &dir.join(name),
+                    &shown(rel, &file),
+                    &mut all,
+                    &homes,
+                    home,
+                );
             }
         }
     }
     all
 }
 
-/// The files a path names under `base`: itself, or for a `*` in its last segment, every entry
-/// of its folder that begins and ends as it does. A folder that cannot be listed is a failure.
-fn matching(base: &Path, rel: &str, pattern: &str, out: &mut Looked) -> Vec<String> {
+/// The files a path names in `dir`, the folder it was reached at: itself, or for a `*` in
+/// its last segment, every entry of its folder that begins and ends as it does. A folder that
+/// cannot be listed is a failure.
+fn matching(dir: &Path, rel: &str, pattern: &str, out: &mut Looked) -> Vec<String> {
     let (folder, name) = pattern.rsplit_once('/').unwrap_or(("", pattern));
     let Some((before, after)) = name.split_once('*') else {
         return vec![pattern.to_string()];
     };
-    let names = match std::fs::read_dir(base.join(folder)) {
+    let names = match std::fs::read_dir(dir) {
         Ok(entries) => entries.filter_map(|e| e.ok()).map(|e| e.file_name()),
         Err(e) if absent(&e) => return Vec::new(),
         Err(e) => {
@@ -821,23 +845,27 @@ fn shown(rel: &str, file: &str) -> String {
     }
 }
 
-/// Looks at one file of a row in one place. Only a file whose part is there is an entry; one
-/// that cannot be read, or whose task file cannot be parsed, is a failure with its reason, and
-/// is not counted as looked at.
-fn look(p: &Point, base: &Path, rel: &str, file: &str, out: &mut Looked) {
-    let shown = shown(rel, file);
-    let path = base.join(file);
-    let link = match std::fs::symlink_metadata(&path) {
+/// Looks at one file of a row in one place, at `path` in a folder that was reached. Only a
+/// file whose part is there is an entry; one that cannot be read, or whose task file cannot
+/// be parsed, is a failure with its reason, and is not counted as looked at. A link into a
+/// folder macOS asks permission for is not followed, and is said.
+fn look(p: &Point, path: &Path, shown: &str, out: &mut Looked, homes: &[&Path], home: &Path) {
+    let shown = shown.to_string();
+    let link = match std::fs::symlink_metadata(path) {
         Err(e) if absent(&e) => return,
         Err(e) => return out.look.failed.push((shown, e.to_string())),
-        Ok(m) if m.file_type().is_symlink() => std::fs::read_link(&path)
+        Ok(m) if m.file_type().is_symlink() => std::fs::read_link(path)
             .ok()
             .map(|t| t.to_string_lossy().into_owned()),
         Ok(_) => None,
     };
+    let path = match crate::guarded::followed(path, homes) {
+        Ok(path) => path,
+        Err(g) => return out.look.not_into(shown, g, home),
+    };
     let mut found: Vec<(String, Content)> = Vec::new();
     if let Folders(ident) = p.part {
-        match folders(&path, ident) {
+        match folders(&path, ident, &shown, out, homes, home) {
             Err(why) => return out.look.failed.push((shown, why)),
             Ok(names) => {
                 for name in names {
@@ -899,12 +927,31 @@ fn push(p: &Point, out: &mut Looked, found: Vec<(String, Content)>, link: Option
 
 /// The folders in a folder, each by what identifies it apart from its version, sorted and once
 /// each. Files, and entries whose name begins with a dot, are the editor's own bookkeeping.
-fn folders(path: &Path, ident: Ident) -> Result<Vec<String>, String> {
+/// An entry that is a link into a folder macOS asks permission for is not looked at, and is
+/// said in `looked`.
+fn folders(
+    path: &Path,
+    ident: Ident,
+    shown: &str,
+    looked: &mut Looked,
+    homes: &[&Path],
+    home: &Path,
+) -> Result<Vec<String>, String> {
     let mut out = Vec::new();
     for entry in std::fs::read_dir(path).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with('.') || !std::fs::metadata(entry.path()).is_ok_and(|m| m.is_dir()) {
+        if name.starts_with('.') {
+            continue;
+        }
+        let at = match crate::guarded::followed(&entry.path(), homes) {
+            Ok(at) => at,
+            Err(g) => {
+                looked.look.not_into(format!("{shown}/{name}"), g, home);
+                continue;
+            }
+        };
+        if !std::fs::metadata(at).is_ok_and(|m| m.is_dir()) {
             continue;
         }
         let id = ident.of(&name).to_string();
@@ -1100,29 +1147,39 @@ pub fn runs_on_open(bytes: &[u8]) -> Result<bool, String> {
 /// The rows of a scope a place holds a file of, read or not: a checkout's, or the home
 /// folder's. One that cannot be looked at is counted too: it may be there. A row named by
 /// another file is not looked for, nor a place in the home folder macOS asks permission for.
-pub fn present(base: &Path, scope: Scope) -> Vec<&'static Point> {
+/// One a link leads into such a folder through is not looked into either, and is counted:
+/// it may be there. `home` is the home folder.
+pub fn present(base: &Path, scope: Scope, home: &Path) -> Vec<&'static Point> {
+    let homes = watched::homes(home);
+    let homes = [homes[0].as_path(), homes[1].as_path()];
     POINTS
         .iter()
-        .filter(|p| p.scope == scope && holds(base, p))
+        .filter(|p| p.scope == scope && holds(base, p, &homes))
         .collect()
 }
 
 /// Whether a place holds a file of a row.
-fn holds(base: &Path, p: &Point) -> bool {
+fn holds(base: &Path, p: &Point, homes: &[&Path]) -> bool {
     p.paths.iter().any(|path| {
         if p.scope == Scope::Home && crate::guarded::folder_of(&base.join(path), base).is_some() {
             return false;
         }
         let segments: Vec<&str> = path.split('/').collect();
-        exists(base, &segments)
+        exists(base, &segments, homes)
     })
 }
 
-/// Whether a path of segments is there under `base`; a segment with a `*` matches every
-/// entry that begins and ends as it does.
-fn exists(base: &Path, segments: &[&str]) -> bool {
+/// Whether a path of segments is there under `base`, a folder that was reached; a segment
+/// with a `*` matches every entry that begins and ends as it does. A folder on the way is
+/// reached through a link only where the link does not lead into a folder macOS asks
+/// permission for; one that does may hold it.
+fn exists(base: &Path, segments: &[&str], homes: &[&Path]) -> bool {
     let Some((first, rest)) = segments.split_first() else {
         return true;
+    };
+    let down = |path: &Path| match crate::guarded::followed(path, homes) {
+        Ok(path) => exists(&path, rest, homes),
+        Err(_) => true,
     };
     let Some((before, after)) = first.split_once('*') else {
         let path = base.join(first);
@@ -1131,7 +1188,7 @@ fn exists(base: &Path, segments: &[&str]) -> bool {
             return !matches!(std::fs::symlink_metadata(&path),
                              Err(e) if absent(&e));
         }
-        return exists(&path, rest);
+        return down(&path);
     };
     let names = match std::fs::read_dir(base) {
         Ok(entries) => entries.filter_map(|e| e.ok()).map(|e| e.file_name()),
@@ -1142,7 +1199,7 @@ fn exists(base: &Path, segments: &[&str]) -> bool {
         if text.len() >= before.len() + after.len()
             && text.starts_with(before)
             && text.ends_with(after)
-            && exists(&base.join(&name), rest)
+            && down(&base.join(&name))
         {
             return true;
         }
@@ -1454,8 +1511,8 @@ mod tests {
                 "",
             )
         };
-        let looked = look_all(&p, [(home.as_path(), "")].into_iter());
-        let held = holds(&home, &p);
+        let looked = look_all(&p, [(home.as_path(), "")].into_iter(), &home);
+        let held = holds(&home, &p, &[&home]);
         std::fs::set_permissions(home.join("Documents"), mode(0o755)).unwrap();
         let _ = std::fs::remove_dir_all(&home);
         let l = &looked.look;
@@ -1511,7 +1568,7 @@ mod tests {
             let path = dir.join(p.paths[0]);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, serde_json::to_vec(&file).unwrap()).unwrap();
-            let looked = look_all(p, [(dir.as_path(), "dev/a")].into_iter());
+            let looked = look_all(p, [(dir.as_path(), "dev/a")].into_iter(), &dir);
             assert_eq!(looked.look.entries.len(), keys.len(), "{}", p.name());
             assert!(
                 looked
@@ -1531,7 +1588,7 @@ mod tests {
         std::fs::create_dir_all(dir.join(".venv/lib/python3.12/site-packages")).unwrap();
         std::fs::write(dir.join(".venv/lib/python3.12/site-packages/a.pth"), "").unwrap();
         std::fs::write(dir.join("w.code-workspace"), "{}").unwrap();
-        let names: Vec<String> = present(&dir, Scope::Checkout)
+        let names: Vec<String> = present(&dir, Scope::Checkout, &dir)
             .iter()
             .map(|p| p.name())
             .collect();
@@ -1541,7 +1598,7 @@ mod tests {
             dir.join(".venv/lib/python3.12/site-packages/a.txt"),
         )
         .unwrap();
-        let after = present(&dir, Scope::Checkout).len();
+        let after = present(&dir, Scope::Checkout, &dir).len();
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(
             names,
@@ -1582,8 +1639,8 @@ mod tests {
             )
         };
         let at = [(dir.as_path(), "dev/a")];
-        let b = look_all(&bytes, at.iter().copied());
-        let l = look_all(&lines, at.iter().copied());
+        let b = look_all(&bytes, at.iter().copied(), &dir);
+        let l = look_all(&lines, at.iter().copied(), &dir);
         let _ = std::fs::remove_dir_all(&dir);
         let content = |x: &Looked| {
             x.look
