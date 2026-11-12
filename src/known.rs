@@ -14,9 +14,11 @@
 //! first by `presence`, the other two by the coverage that comes with every answer. An unknown
 //! thing carries the readings that could have found it, so "unknown because nothing looked" is
 //! visible. A thing in a folder macOS asks permission for carries the reading that says the folder
-//! was not looked into, whatever was read in it before.
+//! was not looked into, whatever was read in it before. A path that none of those readings looks
+//! at, answered `unknown`, carries a reading made by rule that says so, since "every reading
+//! full" would otherwise read as "looked, and not there".
 
-use crate::contract::{v1, value_of};
+use crate::contract::{self, v1, value_of};
 use crate::{Stop, checkouts, findings, guarded, status, store};
 use prost::Message;
 use rusqlite::{Connection, OptionalExtension};
@@ -30,6 +32,8 @@ const FORMAT: u32 = 1;
 
 /// One question, as the store can answer it.
 pub struct Question<'a> {
+    /// Which question it is.
+    pub question: v1::Question,
     /// What was asked for, as given.
     pub asked: &'a str,
     /// The entity asked for; `None` when the store cannot name it.
@@ -38,14 +42,27 @@ pub struct Question<'a> {
     /// found to be one (`same_as`). What the store knows under each is the thing's own.
     pub also: &'a [String],
     /// The machine and the path of the folder it lies in, as ids name paths, where it has one:
-    /// files whose path is in it are its parts, and a folder macOS asks permission for that
-    /// holds it speaks for it.
+    /// files whose path is in it are its parts, findings about anything in it are its findings,
+    /// and a folder macOS asks permission for that holds it speaks for it.
     pub folder: Option<(&'a str, &'a str)>,
+    /// The path asked about, as ids name paths, when the question was a path on this Mac: a
+    /// folder macOS asks permission for that holds it speaks for the answer.
+    pub place: Option<&'a str>,
+    /// When the question was a path that no reading in `found_by` looks at: why, in the core's
+    /// words. The answer carries a reading made by rule with it. Such a path names nothing the
+    /// store knows, since what the store knows was found by those readings.
+    pub unread: Option<&'static str>,
     /// This Mac: its latest readings in `found_by` speak for the thing, known or not.
     pub machine: Option<&'a str>,
     /// The readings, as reader and kind, that find things of its kind on this Mac.
     pub found_by: &'a [(&'a str, &'a str)],
+    /// The readings of this Mac, as reader and kind, that read inside every thing of its kind:
+    /// they speak for every one the store knows, whatever was found in it.
+    pub inside: &'a [(&'a str, String)],
 }
+
+/// The reader of the reading made by rule for a path no reading looks at: the core itself.
+pub const RULE_READER: &str = "immune";
 
 /// A question the store cannot answer with one thing of the kind asked for: a misuse, told with
 /// the ids of what it found, so that the caller can ask again for one.
@@ -56,6 +73,18 @@ pub struct Refused {
     pub example: &'static str,
     /// The entities the question fits, whole.
     pub ids: Vec<String>,
+}
+
+/// A path that names nothing the store knows as written, and something it knows when the two are
+/// compared without regard to case. On a volume that ignores case, as a Mac's do by default, it
+/// may be the same place; answering `unknown` would say that nothing is known of it.
+pub fn spelled_otherwise(ids: Vec<String>, example: &'static str) -> Refused {
+    Refused {
+        code: "spelled_otherwise",
+        message: "the path names nothing the store knows as written, and these when case is ignored; nothing was answered",
+        example,
+        ids,
+    }
 }
 
 /// The words after the command: `--store`, `--json`, and the rest in order.
@@ -116,17 +145,28 @@ pub fn command(
     let known = match read(store, |conn| ask(conn, crate::now_secs())) {
         Ok(Ok(known)) => known,
         Ok(Err(refused)) => return refuse(op, json, &refused),
-        Err(e) => return crate::store_failed(json, op, &e),
+        Err(e) => return failed(op, json, &e),
     };
     if json {
         match serde_json::to_string(&known) {
             Ok(line) => println!("{line}"),
-            Err(e) => return crate::store_failed(true, op, &Stop::Store(e.to_string())),
+            Err(e) => return failed(op, true, &Stop::Store(e.to_string())),
         }
     } else if std::io::stdout().write_all(&known.encode_to_vec()).is_err() {
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
+}
+
+/// A store that cannot be read, said as the report commands say it, in the envelope of the
+/// contract with `--json`.
+fn failed(op: &str, json: bool, e: &Stop) -> ExitCode {
+    if !json {
+        return crate::store_failed(false, op, e);
+    }
+    let (v, exit) = crate::failure_of(op, e);
+    println!("{}", envelope(v));
+    ExitCode::from(exit)
 }
 
 fn read<T>(store: &Path, ask: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T, Stop> {
@@ -144,6 +184,16 @@ fn read<T>(store: &Path, ask: impl FnOnce(&Connection) -> rusqlite::Result<T>) -
     ask(&tx).map_err(|e| Stop::Store(older(e.to_string())))
 }
 
+/// The failure envelope of a command of the contract: the report commands' envelope without
+/// `format`. Parsed with the contract's types all the same, it reads as format 0, which no
+/// reader takes for an answer.
+pub fn envelope(mut v: serde_json::Value) -> serde_json::Value {
+    if let Some(fields) = v.as_object_mut() {
+        fields.remove("format");
+    }
+    v
+}
+
 /// A refusal as a misuse: nothing on stdout in binary, the failure envelope with `--json`, whose
 /// error lists the ids it fits in `ids_text`, whole.
 fn refuse(op: &str, json: bool, r: &Refused) -> ExitCode {
@@ -151,7 +201,7 @@ fn refuse(op: &str, json: bool, r: &Refused) -> ExitCode {
     if json {
         let mut v = status::failure(Some(op), r.code, r.message, r.example, &ids.join(", "));
         v["errors"][0]["ids_text"] = serde_json::json!(ids);
-        println!("{v}");
+        println!("{}", envelope(v));
     } else {
         eprintln!("immune: {}. {}", r.message, r.example);
         for id in &ids {
@@ -219,33 +269,26 @@ pub fn known_of(
 ) -> rusqlite::Result<v1::Known> {
     let mut known = v1::Known {
         format: FORMAT,
-        asked_text: status::text_string(q.asked),
+        question: q.question as i32,
+        asked_text: whole(q.asked),
         answered_at: now,
         presence: v1::Presence::Unknown as i32,
+        latest_run_at: status::latest_finished(conn)?.and_then(|r| r.finished_at),
         ..Default::default()
     };
     let thing = match q.id {
-        Some(id) => conn
-            .query_row("SELECT type FROM entity WHERE id = ?1", [id], |r| {
-                r.get::<_, String>(0)
-            })
-            .optional()?
-            .map(|ty| (id, ty)),
+        Some(id) => type_of(conn, id)?.map(|ty| (id, ty)),
         None => None,
     };
     // The thing under each of its ids, and its parts, by id: whose facts are given and whose
-    // readings speak.
+    // readings speak. Findings are those about these, and about what was ever inside the thing.
     let mut subjects: BTreeMap<String, String> = BTreeMap::new();
+    let mut ever: BTreeSet<String> = BTreeSet::new();
     if let Some((id, ty)) = &thing {
         let mut own: Parts = Parts::new();
         own.insert(id.to_string(), ty.clone());
         for other in q.also {
-            let ty = conn
-                .query_row("SELECT type FROM entity WHERE id = ?1", [other], |r| {
-                    r.get::<_, String>(0)
-                })
-                .optional()?;
-            own.extend(ty.map(|ty| (other.clone(), ty)));
+            own.extend(type_of(conn, other)?.map(|ty| (other.clone(), ty)));
         }
         let mut all = Parts::new();
         let mut held = false;
@@ -263,6 +306,7 @@ pub fn known_of(
                 )?;
             all.extend(inside);
             all.extend(in_folder);
+            ever.extend(ever_inside(conn, own_id)?);
         }
         known.presence = if held {
             v1::Presence::Held
@@ -270,32 +314,101 @@ pub fn known_of(
             v1::Presence::Gone
         } as i32;
         known.thing = Some(entity(id, ty));
+        known.same_as = own
+            .iter()
+            .filter(|(other, _)| other.as_str() != *id)
+            .map(|(other, ty)| entity(other, ty))
+            .collect();
         known.parts = all.iter().map(|(id, ty)| entity(id, ty)).collect();
         subjects.extend(own);
         subjects.extend(all);
     }
     known.facts = facts(conn, subjects.keys())?;
     let read_by = reading_keys(conn, subjects.keys())?;
-    let folder = q.folder.and_then(|(_, rel)| guarded_folder(rel, home));
+    let guarded = q
+        .folder
+        .map(|(_, rel)| rel)
+        .or(q.place)
+        .and_then(|rel| guarded_folder(rel, home));
     known.coverage = latest(conn)?
         .into_iter()
         .filter(|r| {
+            let this = Some(r.scope.as_str()) == q.machine;
+            let key = (r.reader.as_str(), r.kind.as_str());
             subjects.contains_key(&r.scope)
                 || read_by.contains(&(r.reader.clone(), r.scope.clone(), r.kind.clone()))
-                || (Some(r.scope.as_str()) == q.machine
-                    && (q.found_by.contains(&(r.reader.as_str(), r.kind.as_str()))
-                        || folder.as_deref().is_some_and(|f| not_looked_into(r, f))))
+                || (this
+                    && (q.found_by.contains(&key)
+                        || (thing.is_some()
+                            && q.inside
+                                .iter()
+                                .any(|(reader, kind)| (*reader, kind.as_str()) == key))
+                        || guarded.as_deref().is_some_and(|f| not_looked_into(r, f))))
         })
         .map(|r| coverage(conn, r))
         .collect::<rusqlite::Result<_>>()?;
-    known.findings = finding_refs(conn, &subjects, now)?;
+    if let (Some(reason), Some(machine)) = (q.unread, q.machine) {
+        by_rule(
+            &mut known,
+            RULE_READER,
+            unread_kind(q.question),
+            machine,
+            reason,
+        );
+    }
+    known.findings = finding_refs(conn, now, |about| {
+        subjects.contains_key(about)
+            || ever.contains(about)
+            || q.folder.is_some_and(|(machine, rel)| {
+                place_of(about).is_some_and(|(m, at)| m == machine && within(at, rel))
+            })
+    })?;
     Ok(known)
 }
 
-/// A reference, an entity id or the place a fact was read, given whole so that it can be matched
-/// and asked about again. Hidden characters are escaped, as in all text from a source.
+/// The kind of the reading made by rule for a path no reading that finds things of the kind
+/// looks at.
+fn unread_kind(question: v1::Question) -> &'static str {
+    match question {
+        v1::Question::Program => "places the readings that find programs look in",
+        _ => "places the readings that find projects look in",
+    }
+}
+
+/// Adds to the answer a reading made by rule rather than read from the store: not made, with
+/// the core's own words for why, in its place in the order of scope, reader and kind.
+pub fn by_rule(known: &mut v1::Known, reader: &str, kind: &str, scope: &str, reason: &str) {
+    let reading = v1::Coverage {
+        reader: reader.to_string(),
+        kind: kind.to_string(),
+        scope_text: whole(scope),
+        completeness: v1::Completeness::None as i32,
+        reason_text: Some(reason.to_string()),
+        cause: Some(v1::Cause::NotGiven as i32),
+        observed_at: None,
+        lacks: Vec::new(),
+    };
+    let key = |c: &v1::Coverage| (c.scope_text.clone(), c.reader.clone(), c.kind.clone());
+    let at = known.coverage.partition_point(|c| key(c) < key(&reading));
+    known.coverage.insert(at, reading);
+}
+
+/// The type of the entity with this id, if the store has one.
+pub fn type_of(conn: &Connection, id: &str) -> rusqlite::Result<Option<String>> {
+    conn.query_row("SELECT type FROM entity WHERE id = ?1", [id], |r| r.get(0))
+        .optional()
+}
+
+/// Whether the path `rel` is the folder `folder` or lies in it, as ids name paths.
+pub fn within(rel: &str, folder: &str) -> bool {
+    rel.strip_prefix(folder)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
+/// Text from the Mac as the contract gives it: hidden characters and the backslash escaped, so
+/// that the shown form is unique and asks back the same thing (`contract::unescape`).
 pub fn whole(s: &str) -> String {
-    crate::view::shown(s)
+    contract::escape(s, crate::icu::hidden)
 }
 
 fn entity(id: &str, ty: &str) -> v1::Entity {
@@ -342,6 +455,18 @@ fn parts(
         None => Parts::new(),
     };
     Ok((inside, in_folder))
+}
+
+/// What was ever `part_of` or `located_on` `id`, whether that is in force or retracted: a finding
+/// about a part stays the thing's after the part is gone, as it stays open until it is answered.
+fn ever_inside(conn: &Connection, id: &str) -> rusqlite::Result<BTreeSet<String>> {
+    conn.prepare(
+        "SELECT DISTINCT subject FROM assertion
+         WHERE layer IN ('live', 'retracted') AND predicate IN ('part_of', 'located_on')
+           AND object = ?1",
+    )?
+    .query_map([id], |r| r.get(0))?
+    .collect()
 }
 
 /// The machine and the path an id of a checkout or a file names.
@@ -466,7 +591,8 @@ fn latest(conn: &Connection) -> rusqlite::Result<Vec<Reading>> {
 }
 
 /// A reading as the contract gives it, with what it names as having no reader. A reading that
-/// is not full and was written before causes were kept failed, as the status reads it.
+/// is not full and was written before causes were kept failed, as the status reads it. Its
+/// reason is given whole: what was cut off could be what the reading did not cover.
 fn coverage(conn: &Connection, r: Reading) -> rusqlite::Result<v1::Coverage> {
     let cause = match (r.completeness.as_str(), r.cause.as_deref()) {
         ("full", c) => c,
@@ -478,15 +604,15 @@ fn coverage(conn: &Connection, r: Reading) -> rusqlite::Result<v1::Coverage> {
             let (what, name): (String, Option<String>) = (row.get(0)?, row.get(1)?);
             Ok(v1::Lack {
                 what,
-                name_text: name.as_deref().map(status::text_string),
+                name_text: name.as_deref().map(whole),
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
     Ok(v1::Coverage {
         completeness: value_of::<v1::Completeness>(&r.completeness),
-        reason_text: r.reason.as_deref().map(status::text_string),
+        reason_text: r.reason.as_deref().map(whole),
         cause: cause.map(value_of::<v1::Cause>),
-        observed_at: r.at,
+        observed_at: Some(r.at),
         scope_text: whole(&r.scope),
         reader: r.reader,
         kind: r.kind,
@@ -494,18 +620,18 @@ fn coverage(conn: &Connection, r: Reading) -> rusqlite::Result<v1::Coverage> {
     })
 }
 
-/// The findings about these subjects, in every state, the most severe first.
+/// The findings about what `about` takes, in every state, the most severe first.
 fn finding_refs(
     conn: &Connection,
-    subjects: &BTreeMap<String, String>,
     now: i64,
+    about: impl Fn(&str) -> bool,
 ) -> rusqlite::Result<Vec<v1::FindingRef>> {
     let Some(found) = findings::all(conn, now)? else {
         return Ok(Vec::new());
     };
     let mut items: Vec<findings::Item> = found
         .iter()
-        .filter(|f| subjects.contains_key(&f.about))
+        .filter(|f| about(&f.about))
         .filter_map(findings::item)
         .collect();
     findings::order(&mut items);
@@ -513,11 +639,11 @@ fn finding_refs(
         .iter()
         .map(|i| v1::FindingRef {
             id: i.id.clone(),
-            rule: i.rule.unwrap_or_default().to_string(),
+            rule: i.rule.map(str::to_string),
             about_text: whole(&i.about),
             state: value_of::<v1::FindingState>(&i.state),
             severity: value_of::<v1::Level>(i.severity),
-            confidence: value_of::<v1::Level>(i.confidence.unwrap_or_default()),
+            confidence: i.confidence.map(value_of::<v1::Level>),
             urgent: findings::urgent(i.severity, i.confidence),
         })
         .collect())

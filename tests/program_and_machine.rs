@@ -54,8 +54,13 @@ impl Estate {
 
     /// An application bundle under the system root's `/Applications`.
     fn app(&self, folder: &str, identifier: &str, version: &str) {
+        self.app_in("system/Applications", folder, identifier, version);
+    }
+
+    /// An application bundle in a folder of the estate.
+    fn app_in(&self, dir: &str, folder: &str, identifier: &str, version: &str) {
         self.put(
-            &format!("system/Applications/{folder}/Contents/Info.plist"),
+            &format!("{dir}/{folder}/Contents/Info.plist"),
             &format!(
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\
                  <key>CFBundleIdentifier</key><string>{identifier}</string>\
@@ -65,7 +70,7 @@ impl Estate {
         );
         let stem = folder.trim_end_matches(".app");
         self.put(
-            &format!("system/Applications/{folder}/Contents/MacOS/{stem}"),
+            &format!("{dir}/{folder}/Contents/MacOS/{stem}"),
             "invented\n",
         );
     }
@@ -399,6 +404,8 @@ fn a_name_that_fits_two_programs_is_refused_with_their_ids() {
             &Value::from("several_programs")
         )
     );
+    // A refusal is never read as an answer: it has no format.
+    assert!(v.get("format").is_none());
     assert_eq!(error["ids_text"], serde_json::json!(ids));
     for id in ids {
         assert_eq!(thing(&e.program(id)), id);
@@ -505,7 +512,7 @@ fn unknown_known_and_read_in_full_and_known_but_not_read_are_three_different_mac
 fn never_visited(k: &v1::Known) -> Option<&v1::Coverage> {
     k.coverage
         .iter()
-        .find(|c| c.reader == "servers" && c.kind == "sweep visit" && c.observed_at == 0)
+        .find(|c| c.reader == "servers" && c.kind == "sweep visit" && c.observed_at.is_none())
 }
 
 /// The promise against false calm for a server known only by its name: the server check never
@@ -614,16 +621,27 @@ fn a_machine_asked_by_any_name_it_is_known_by_gives_what_was_read_of_it() {
     // What known hosts read under the other id is in it, with the id it is about.
     assert!(has_fact(&by_alias, "machine:web.example.org", "known_as"));
     assert!(by_alias.coverage.iter().any(|c| c.reader == "known-hosts"));
-    for (what, id) in [
-        ("web.example.org", "machine:web.example.org"),
-        ("machine:web.example.org", "machine:web.example.org"),
-        ("machine:web", "machine:web"),
+    // Its other ids are named, so a fact under one is told from a fact about something else.
+    let ids =
+        |k: &v1::Known| -> Vec<String> { k.same_as.iter().map(|e| e.id_text.clone()).collect() };
+    assert_eq!(ids(&by_alias), ["machine:web.example.org"]);
+    assert_eq!(by_alias.question(), v1::Question::Machine);
+    for (what, id, same_as) in [
+        ("web.example.org", "machine:web.example.org", "machine:web"),
+        (
+            "machine:web.example.org",
+            "machine:web.example.org",
+            "machine:web",
+        ),
+        ("machine:web", "machine:web", "machine:web.example.org"),
     ] {
         let mut other = e.machine(Some(what));
         assert_eq!(thing(&other), id, "{what}");
         assert_eq!(other.asked_text, what);
+        assert_eq!(ids(&other), [same_as], "{what}");
         other.asked_text = by_alias.asked_text.clone();
         other.thing = by_alias.thing.clone();
+        other.same_as = by_alias.same_as.clone();
         other.answered_at = by_alias.answered_at;
         assert_eq!(other, by_alias, "{what}");
     }
@@ -813,8 +831,14 @@ fn a_failure_to_answer_a_program_or_a_machine_is_not_a_message_of_the_contract()
         );
         let out = e.ask(question, Some("web"), &["db", "--json"]);
         assert_eq!(out.status.code(), Some(2));
-        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
-        assert_eq!(v["errors"][0]["code"], "usage");
+        let usage: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(usage["errors"][0]["code"], "usage");
+        // Parsed as an answer all the same, neither failure is one: it reads as format 0.
+        for v in [v, usage] {
+            assert!(v.get("format").is_none(), "{v}");
+            let parsed: v1::Known = serde_json::from_value(v).unwrap();
+            assert_eq!(parsed.format, 0);
+        }
     }
     // Two servers that call themselves by the same bare name are not known to be one machine.
     for (alias, address) in [("a", "203.0.113.10"), ("b", "203.0.113.20")] {
@@ -834,5 +858,220 @@ fn a_failure_to_answer_a_program_or_a_machine_is_not_a_message_of_the_contract()
     assert_eq!(
         v["errors"][0]["ids_text"],
         serde_json::json!(["machine:a", "machine:b"])
+    );
+}
+
+/// The reading made by rule that says no reading looks at the place asked about.
+fn unread(k: &v1::Known) -> Option<&v1::Coverage> {
+    k.coverage.iter().find(|c| c.reader == "immune")
+}
+
+/// A refusal of a question: exit 2, no format, and the envelope's error.
+fn refused(e: &Estate, question: &str, what: &str) -> Value {
+    let out = e.ask(question, Some(what), &["--json"]);
+    assert_eq!(out.status.code(), Some(2), "{what}");
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(v.get("format").is_none(), "{v}");
+    v["errors"][0].clone()
+}
+
+/// The promise against false calm for a program in a place no reading looks at: a tool in
+/// `/usr/local/bin`, an application in `/Users/Shared`, in `~/Downloads` or two folders down in
+/// `/Applications` answers `unknown` with a reading made by rule that is not full, and in
+/// `~/Downloads` with the reading that says the folder was not looked into. A path a reading
+/// looks at has no such reading.
+#[test]
+fn a_program_path_no_reading_looks_at_is_never_unknown_with_every_reading_full() {
+    let e = Estate::new("program-unread");
+    // A folder macOS asks permission for, which the walk names as not looked into.
+    std::fs::create_dir_all(e.home().join("Downloads")).unwrap();
+    e.run();
+    for asked in [
+        "/usr/local/bin/tool",
+        "/Users/Shared/Tool.app",
+        "~/Downloads/Tool.app",
+        "/Applications/Suite/Extra/Tool.app",
+        "/ApplicationsExtra/Tool.app",
+    ] {
+        let k = e.program(asked);
+        assert_eq!(k.presence(), v1::Presence::Unknown, "{asked}");
+        assert!(!all_full(&k), "{asked}");
+        let rule = unread(&k).unwrap();
+        assert_eq!(
+            (
+                rule.kind.as_str(),
+                rule.scope_text.as_str(),
+                rule.completeness(),
+                rule.cause(),
+                rule.observed_at
+            ),
+            (
+                "places the readings that find programs look in",
+                "machine:mac",
+                v1::Completeness::None,
+                v1::Cause::NotGiven,
+                None
+            ),
+            "{asked}"
+        );
+    }
+    let downloads = e.program("~/Downloads/Tool.app");
+    assert!(downloads.coverage.iter().any(|c| {
+        c.kind == "folders macOS asks permission for"
+            && c.reason_text.as_deref() == Some("not looked into: ~/Downloads")
+    }));
+    for asked in [
+        "/Applications/Ghost.app",
+        "/Applications/Suite/Ghost.app/Contents/MacOS/Ghost",
+        "~/Applications/Ghost.app",
+        "/opt/homebrew/Cellar/ghost/1.0",
+        "/usr/local/lib/node_modules/ghost",
+    ] {
+        let k = e.program(asked);
+        assert!(unread(&k).is_none() && all_full(&k), "{asked}");
+    }
+}
+
+/// A program that moved away is still the program at the folder it left: one of two copies of
+/// an application with the same identifier moved out of `/Applications`, and its old path answers
+/// for the application, not `unknown`. A program that is at that path now answers instead.
+#[test]
+fn a_program_that_moved_answers_at_the_folder_it_left() {
+    let e = Estate::new("program-moved");
+    e.app("Tiny.app", "org.example.tiny", "2.0");
+    e.app_in("home/Applications", "Tiny.app", "org.example.tiny", "1.0");
+    e.run();
+    std::fs::create_dir_all(e.0.join("system/Users/Shared")).unwrap();
+    std::fs::rename(
+        e.0.join("system/Applications/Tiny.app"),
+        e.0.join("system/Users/Shared/Tiny.app"),
+    )
+    .unwrap();
+    e.run();
+    let left = e.program("/Applications/Tiny.app");
+    assert_eq!(left.presence(), v1::Presence::Held);
+    assert_eq!(thing(&left), TINY);
+    e.app("Tiny.app", "org.example.other", "1.0");
+    e.run();
+    assert_eq!(
+        thing(&e.program("/Applications/Tiny.app")),
+        "component:machine:mac/macos-app/org.example.other"
+    );
+}
+
+/// An id holding a hidden character is shown escaped, and given back as shown it asks for the
+/// same program and the same machine.
+#[test]
+fn an_id_with_a_hidden_character_asks_back_the_same_program_and_machine() {
+    let e = Estate::new("ask-back");
+    e.app("Odd.app", "org.example.a\u{202e}b", "1.0");
+    e.put("home/.ssh/config", "Host we\u{202e}b\n");
+    e.run();
+    let program = e.program("/Applications/Odd.app");
+    assert_eq!(
+        thing(&program),
+        "component:machine:mac/macos-app/org.example.a\\u{202e}b"
+    );
+    let machine = e.machine(Some("we\u{202e}b"));
+    assert_eq!(thing(&machine), "machine:we\\u{202e}b");
+    assert_eq!(e.program(thing(&program)).thing, program.thing);
+    assert_eq!(e.machine(Some(thing(&machine))).thing, machine.thing);
+}
+
+/// A program path the store knows only under another case is refused with the ids it knows,
+/// never answered `unknown`: on a volume that ignores case it may be the same application.
+#[test]
+fn a_program_path_spelled_with_another_case_is_refused_not_unknown() {
+    let e = Estate::new("program-case");
+    e.app("Tiny.app", "org.example.tiny", "2.0");
+    e.run();
+    let error = refused(&e, "program", "/applications/tiny.app/Contents");
+    assert_eq!(error["code"], "spelled_otherwise");
+    assert_eq!(error["ids_text"], serde_json::json!([TINY]));
+}
+
+/// An id the store holds that is not a machine is refused, not answered as a machine never heard
+/// of: a project, or a package on a server.
+#[test]
+fn an_id_that_is_not_a_machine_is_refused_not_unknown() {
+    let e = Estate::new("machine-other-kind");
+    e.put("home/.ssh/config", "Host web\n");
+    e.put("servers/web.txt", &server("dpkg\n", BASH));
+    e.checkout("dev/shop");
+    e.run();
+    for id in [
+        "checkout:machine:mac/dev/shop",
+        "component:machine:web/deb/bash",
+    ] {
+        let error = refused(&e, "machine", id);
+        assert_eq!(error["code"], "not_a_machine", "{id}");
+        assert_eq!(error["ids_text"], serde_json::json!([id]));
+    }
+}
+
+/// The promise against false calm for a machine the owner set aside: it is no longer checked,
+/// and its answer says so with a reading made by rule, naming what the owner said and the day,
+/// and nothing of the owner's reason. Taking the statement back takes the reading away.
+#[test]
+fn a_machine_the_owner_set_aside_says_it_is_no_longer_checked() {
+    let e = Estate::new("machine-aside");
+    e.put("home/.ssh/config", "Host web\n");
+    e.put("servers/web.txt", &server("dpkg\n", BASH));
+    e.run();
+    assert!(all_full(&e.machine(Some("web"))));
+    let owner = |words: &[&str]| -> Value {
+        let out = e
+            .immune()
+            .arg("owner")
+            .args(words)
+            .args(["--json", "--store"])
+            .arg(e.store())
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice(&out.stdout).unwrap()
+    };
+    owner(&["web", "retired", "--reason", "invented reason"]);
+    e.run();
+    let k = e.machine(Some("web"));
+    assert!(!all_full(&k));
+    let aside = k
+        .coverage
+        .iter()
+        .find(|c| c.kind == "sweep of a machine set aside by the owner")
+        .unwrap();
+    // The day the statement was made, as the list of statements gives its time.
+    let made = owner(&[]);
+    let day = &made["result"]["statements"][0]["at"].as_str().unwrap()[..10];
+    assert_eq!(
+        (
+            aside.reader.as_str(),
+            aside.scope_text.as_str(),
+            aside.completeness(),
+            aside.cause(),
+            aside.observed_at,
+            aside.reason_text.clone(),
+        ),
+        (
+            "servers",
+            "machine:web",
+            v1::Completeness::None,
+            v1::Cause::NotGiven,
+            None,
+            Some(format!(
+                "the owner set this machine aside as retired on {day}, so the server check no longer visits it"
+            )),
+        )
+    );
+    owner(&["web", "withdraw"]);
+    assert!(
+        e.machine(Some("web"))
+            .coverage
+            .iter()
+            .all(|c| c.kind != aside.kind)
     );
 }

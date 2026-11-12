@@ -12,7 +12,7 @@ pub struct Known {
     /// The version of this contract: 1. A reader that meets another number stops.
     #[prost(uint32, tag = "1")]
     pub format: u32,
-    /// What was asked for, as given on the command line.
+    /// What was asked for, as given on the command line. Whole.
     #[prost(string, tag = "2")]
     pub asked_text: ::prost::alloc::string::String,
     /// When the answer was made.
@@ -25,7 +25,8 @@ pub struct Known {
         deserialize_with = "crate::contract::enum_from_name::<Presence, _>"
     )]
     pub presence: i32,
-    /// The thing asked for, by the id the question named. Absent when the presence is `unknown`.
+    /// The thing asked for. Absent when the presence is `unknown`. A path names the project or the
+    /// program that holds it, the nearest one; an id names the thing with that id.
     /// A machine the store knows under several ids linked by `same_as` is one thing: its parts,
     /// facts, coverage and findings are those of every one of its ids, each fact under its own
     /// `subject_text`.
@@ -42,17 +43,40 @@ pub struct Known {
     #[prost(message, repeated, tag = "7")]
     pub facts: ::prost::alloc::vec::Vec<Fact>,
     /// The latest reading of each reader, scope and kind that speaks for the thing: of the thing
-    /// and its parts, of what found them, and of folders that were not looked into and hold it.
-    /// For a thing the store never heard of, every reading that looks for things of its kind.
+    /// and its parts, of what found them, of folders that were not looked into and hold it, and for
+    /// a project the readings of this Mac that read inside every project. For a thing the store
+    /// never heard of, every reading that looks for things of its kind.
     /// Anything not full here was not read, or not read in full, and nothing is known of it since.
-    /// A machine other than this Mac that the server check never visited carries one reading made
-    /// by rule rather than read from the store: `servers`, `sweep visit`, completeness `none`,
-    /// `observed_at` 0.
+    /// Some readings are made by rule rather than read from the store; they have no `observed_at`:
+    /// - a machine other than this Mac that the server check never visited: `servers`,
+    ///    `sweep visit`, completeness `none`;
+    /// - a machine the owner set aside as retired or not theirs: `servers`, `sweep of a machine set
+    ///    aside by the owner`, completeness `none`, the reason naming what the owner said and the day;
+    /// - a path that no reading looking for things of its kind looks at, answered `unknown`:
+    ///    `immune`, `places the readings that find projects look in` (or programs), completeness
+    ///    `none`.
     #[prost(message, repeated, tag = "8")]
     pub coverage: ::prost::alloc::vec::Vec<Coverage>,
-    /// The findings about the thing or its parts, in every state. `immune finding <id>` shows one.
+    /// The findings about the thing, about its parts whether what was read of them is in force or
+    /// retracted, and for a project about anything whose id lies in its folder; in every state.
+    /// `immune finding <id>` shows one.
     #[prost(message, repeated, tag = "9")]
     pub findings: ::prost::alloc::vec::Vec<FindingRef>,
+    /// The other ids the store knows the thing by, such as a machine's names linked by `same_as`.
+    /// A fact whose subject is one of these is about the thing; any other subject is a part.
+    #[prost(message, repeated, tag = "10")]
+    pub same_as: ::prost::alloc::vec::Vec<Entity>,
+    /// Which question was asked, so that an `unknown` answer says of what kind.
+    #[prost(enumeration = "Question", tag = "11")]
+    #[serde(
+        serialize_with = "crate::contract::enum_name::<Question, _>",
+        deserialize_with = "crate::contract::enum_from_name::<Question, _>"
+    )]
+    pub question: i32,
+    /// When the core's latest run that finished ended. A reading older than it was not made again
+    /// in that run. Absent when no run has finished.
+    #[prost(int64, optional, tag = "12")]
+    pub latest_run_at: ::core::option::Option<i64>,
 }
 /// A thing as the store names it.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -127,7 +151,8 @@ pub struct Coverage {
         deserialize_with = "crate::contract::enum_from_name::<Completeness, _>"
     )]
     pub completeness: i32,
-    /// Why it was not full; on a full reading, an optional note such as why there was nothing to read.
+    /// Why it was not full; on a full reading, an optional note such as why there was nothing to
+    /// read. Whole.
     #[prost(string, optional, tag = "5")]
     pub reason_text: ::core::option::Option<::prost::alloc::string::String>,
     /// Why it was not full, as a closed word; absent on a full reading.
@@ -137,9 +162,9 @@ pub struct Coverage {
         deserialize_with = "crate::contract::optional_enum_from_name::<Cause, _>"
     )]
     pub cause: ::core::option::Option<i32>,
-    /// When it was read; 0 when the reading was never made.
-    #[prost(int64, tag = "7")]
-    pub observed_at: i64,
+    /// When it was read. Absent for a reading made by rule, which was never made.
+    #[prost(int64, optional, tag = "7")]
+    pub observed_at: ::core::option::Option<i64>,
     /// What this build has no reader for, found in this reading.
     #[prost(message, repeated, tag = "8")]
     pub lacks: ::prost::alloc::vec::Vec<Lack>,
@@ -163,9 +188,11 @@ pub struct Lack {
 pub struct FindingRef {
     #[prost(string, tag = "1")]
     pub id: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub rule: ::prost::alloc::string::String,
-    /// The entity it is about, the thing or one of its parts: an entity id, whole.
+    /// The rule that raised it. Absent when this build does not name one.
+    #[prost(string, optional, tag = "2")]
+    pub rule: ::core::option::Option<::prost::alloc::string::String>,
+    /// The entity it is about, the thing, one of its parts, or for a project something in its
+    /// folder: an entity id, whole. It may be a part whose facts are retracted, and so not in `parts`.
     #[prost(string, tag = "3")]
     pub about_text: ::prost::alloc::string::String,
     #[prost(enumeration = "FindingState", tag = "4")]
@@ -181,18 +208,60 @@ pub struct FindingRef {
         deserialize_with = "crate::contract::enum_from_name::<Level, _>"
     )]
     pub severity: i32,
-    /// How sure the core is.
-    #[prost(enumeration = "Level", tag = "6")]
+    /// How sure the core is. Absent when the rule gives no confidence.
+    #[prost(enumeration = "Level", optional, tag = "6")]
     #[serde(
-        serialize_with = "crate::contract::enum_name::<Level, _>",
-        deserialize_with = "crate::contract::enum_from_name::<Level, _>"
+        serialize_with = "crate::contract::optional_enum_name::<Level, _>",
+        deserialize_with = "crate::contract::optional_enum_from_name::<Level, _>"
     )]
-    pub confidence: i32,
+    pub confidence: ::core::option::Option<i32>,
     /// High or critical severity with medium or high confidence: what the app notifies about.
     #[prost(bool, tag = "7")]
     pub urgent: bool,
 }
-/// Whether the store knows a thing.
+/// The question a `Known` answers. `UNSPECIFIED` is read as a question this reader cannot answer.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum Question {
+    #[serde(rename = "unspecified")]
+    Unspecified = 0,
+    /// `immune project`.
+    #[serde(rename = "project")]
+    Project = 1,
+    /// `immune program`.
+    #[serde(rename = "program")]
+    Program = 2,
+    /// `immune machine`.
+    #[serde(rename = "machine")]
+    Machine = 3,
+}
+impl Question {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "QUESTION_UNSPECIFIED",
+            Self::Project => "QUESTION_PROJECT",
+            Self::Program => "QUESTION_PROGRAM",
+            Self::Machine => "QUESTION_MACHINE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "QUESTION_UNSPECIFIED" => Some(Self::Unspecified),
+            "QUESTION_PROJECT" => Some(Self::Project),
+            "QUESTION_PROGRAM" => Some(Self::Program),
+            "QUESTION_MACHINE" => Some(Self::Machine),
+            _ => None,
+        }
+    }
+}
+/// Whether the store knows a thing. `UNSPECIFIED`, or a value the reader does not know, is read
+/// as not known.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -233,7 +302,8 @@ impl Presence {
         }
     }
 }
-/// How the source knows what it says, strongest first.
+/// How the source knows what it says, strongest first. `UNSPECIFIED`, or a value the reader does
+/// not know, is read as `mentioned`, the weakest.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -274,6 +344,8 @@ impl Basis {
         }
     }
 }
+/// How much of what was looked for was read. `UNSPECIFIED`, or a value the reader does not know,
+/// is read as not full.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -311,6 +383,8 @@ impl Completeness {
         }
     }
 }
+/// Why a reading was not full. `UNSPECIFIED`, or a value the reader does not know, is read as
+/// `failed`.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -352,18 +426,24 @@ impl Cause {
         }
     }
 }
+/// Where a finding stands. `UNSPECIFIED`, or a value the reader does not know, is read as `open`.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum FindingState {
     #[serde(rename = "unspecified")]
     Unspecified = 0,
+    /// Nobody has answered it, or an answer was taken back or ran out: it needs a look.
     #[serde(rename = "open")]
     Open = 1,
+    /// The person said it was expected. It is hidden until a set day, and opens again after it if
+    /// it is still found.
     #[serde(rename = "expected")]
     Expected = 2,
+    /// The person looked at it and closed it.
     #[serde(rename = "seen")]
     Seen = 3,
+    /// Its rule no longer finds it, and the core closed it.
     #[serde(rename = "cleared")]
     Cleared = 4,
 }
@@ -393,7 +473,8 @@ impl FindingState {
         }
     }
 }
-/// OCSF's level names, for severity and confidence.
+/// OCSF's level names, for severity and confidence. `UNSPECIFIED`, or a value the reader does not
+/// know, is read as the highest for a severity and as the lowest for a confidence.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]

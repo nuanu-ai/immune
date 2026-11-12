@@ -6,21 +6,24 @@
 //! Without `<what>` it is this Mac. Otherwise `<what>` is a machine's name as the store shows it,
 //! a name or address the store knows it by, or its id: found the way `immune owner` finds one,
 //! so the two commands name machines alike. A name that fits several machines not known to be
-//! one is refused with their ids.
+//! one is refused with their ids, and an id the store holds of another type is refused as not a
+//! machine.
 //!
 //! A machine other than this Mac that the server check never visited, under any of its ids,
-//! carries a reading of that visit made here by rule, `none` with `observed_at` 0: otherwise a
+//! carries a reading of that visit made here by rule, `none` with no `observed_at`: otherwise a
 //! server known only by its name would be answered with every reading full and nothing on it
-//! read.
+//! read. A machine the owner set aside carries one too, since the server check no longer visits
+//! it and what was read of it last stays in force.
 //!
 //! A machine the resolver found under several ids (`same_as`) is one machine: asked by any of
-//! its names, the answer holds what was read under every one of them, and names the id asked.
+//! its names, the answer holds what was read under every one of them, names the id asked, and
+//! lists the others.
 //!
 //! Its parts are one level: what is `part_of` or `located_on` the machine, such as its
 //! containers, packages, checkouts and watched files. Their own parts are not given; a project
 //! is asked about with `immune project`.
 
-use crate::contract::v1;
+use crate::contract::{self, v1};
 use crate::known::{self, Question, Refused};
 use crate::{covered, known_hosts, owner, servers, ssh_config, tailnet};
 use rusqlite::Connection;
@@ -68,8 +71,9 @@ pub fn parse(it: impl Iterator<Item = String>) -> Result<MachineArgs, String> {
 pub fn machine_cmd(args: &MachineArgs) -> ExitCode {
     known::command("machine", &args.store, args.json, |conn, now| {
         let this = covered::this_machine(conn)?;
+        let asked = args.asked.as_deref().map(contract::unescape);
         // The machine asked for, and every id the resolver found to be the same machine.
-        let (id, group) = match &args.asked {
+        let (id, group) = match &asked {
             None => (this.clone(), this.iter().cloned().collect()),
             Some(asked) => match owner::find(conn, asked)? {
                 owner::Found::One(id, group) => (Some(id), group),
@@ -85,6 +89,12 @@ pub fn machine_cmd(args: &MachineArgs) -> ExitCode {
                 // now, and its id still names it: it is gone, not unknown. The server check never
                 // visited it, since a machine a reading was ever scoped to stays known.
                 owner::Found::Unknown => {
+                    // An id of something else the store holds is not a machine it never heard of.
+                    if let Some(ty) = known::type_of(conn, asked)?
+                        && ty != TYPE
+                    {
+                        return Ok(Err(not_a_machine(asked)));
+                    }
                     let id = if asked.starts_with("machine:") {
                         asked.clone()
                     } else {
@@ -96,23 +106,69 @@ pub fn machine_cmd(args: &MachineArgs) -> ExitCode {
         };
         let found_by = known::found_by(conn, id.as_deref(), &FOUND_BY)?;
         let q = Question {
+            question: v1::Question::Machine,
             asked: args.asked.as_deref().unwrap_or_default(),
             id: id.as_deref(),
             // The machine under its other ids is the same machine.
             also: &group,
             folder: None,
+            place: None,
+            unread: None,
             machine: this.as_deref(),
             found_by: &found_by,
+            inside: &[],
         };
         let mut known = known::known_of(conn, &q, &args.home, now)?;
-        if let Some(id) = &id
-            && !group.iter().any(|m| Some(m) == this.as_ref())
-            && !visited(conn, &group)?
-        {
-            never_visited(&mut known, id);
+        if let Some(id) = &id {
+            // Without it a server known only by its name would be answered with every reading
+            // full, and nothing on it read: false calm.
+            if !group.iter().any(|m| Some(m) == this.as_ref()) && !visited(conn, &group)? {
+                known::by_rule(
+                    &mut known,
+                    servers::READER,
+                    servers::VISIT,
+                    id,
+                    NEVER_VISITED,
+                );
+            }
+            // A machine with a statement is always found with its group, gone or not.
+            if let Some(s) = owner::standing(conn)?
+                .iter()
+                .find(|s| group.iter().any(|m| s.covers(m)))
+            {
+                known::by_rule(&mut known, servers::READER, SET_ASIDE, id, &set_aside(s));
+            }
         }
         Ok(Ok(known))
     })
+}
+
+/// The entity type of a machine.
+const TYPE: &str = "machine";
+
+/// The kind of the reading made by rule for a machine the owner set aside: the server check
+/// no longer visits it.
+const SET_ASIDE: &str = "sweep of a machine set aside by the owner";
+
+/// Why a machine the owner set aside carries that reading, in the core's own words: what the
+/// owner said, of the closed words a statement takes, and the day. Nothing else of the
+/// statement, whose reason is the owner's own text.
+fn set_aside(s: &owner::Standing) -> String {
+    let day = crate::view::iso(s.word.made_at);
+    format!(
+        "the owner set this machine aside as {} on {}, so the server check no longer visits it",
+        s.word.said,
+        &day[..10]
+    )
+}
+
+fn not_a_machine(id: &str) -> Refused {
+    Refused {
+        code: "not_a_machine",
+        message: "the store holds this id, and it is not a machine",
+        example: "immune project asks about a project, immune program about a program",
+        ids: vec![id.to_string()],
+    }
 }
 
 /// Why a machine the server check never visited carries a reading of its visit: the core's own
@@ -131,23 +187,4 @@ fn visited(conn: &Connection, group: &[String]) -> rusqlite::Result<bool> {
         }
     }
     Ok(false)
-}
-
-/// Adds to the answer the reading of a visit that was never made, in its place in the order of
-/// scope, reader and kind. Without it a server known only by its name would be answered with
-/// every reading full, and nothing on it read: false calm.
-fn never_visited(known: &mut v1::Known, id: &str) {
-    let reading = v1::Coverage {
-        reader: servers::READER.to_string(),
-        kind: servers::VISIT.to_string(),
-        scope_text: known::whole(id),
-        completeness: v1::Completeness::None as i32,
-        reason_text: Some(NEVER_VISITED.to_string()),
-        cause: Some(v1::Cause::NotGiven as i32),
-        observed_at: 0,
-        lacks: Vec::new(),
-    };
-    let key = |c: &v1::Coverage| (c.scope_text.clone(), c.reader.clone(), c.kind.clone());
-    let at = known.coverage.partition_point(|c| key(c) < key(&reading));
-    known.coverage.insert(at, reading);
 }

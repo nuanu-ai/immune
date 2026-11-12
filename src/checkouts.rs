@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 pub const READER: &str = "checkouts";
 pub const KIND: &str = "checkouts under the home folder";
 pub const BASIS: &str = "observed";
+/// The entity type of a checkout, which the questions call a project.
+pub const TYPE: &str = "checkout";
 /// Why a walk of a folder given instead of the home folder is partial.
 pub const ONLY_GIVEN: &str = "only the given folder was walked";
 
@@ -52,6 +54,20 @@ pub fn rel(home: &Path, path: &Path) -> String {
         Ok(p) => p.to_string_lossy().into_owned(),
         Err(_) => path.to_string_lossy().into_owned(),
     }
+}
+
+/// Whether a walk of the home folder looks at the folder `rel`, a path as ids name it, for a
+/// checkout: it is inside the home folder, no deeper than the walk goes, and not pruned. Two
+/// things the walk does not enter are left to the caller: a folder macOS asks permission for,
+/// and a folder inside a checkout.
+pub fn reaches(rel: &str) -> bool {
+    let names: Vec<&str> = rel.split('/').collect();
+    !rel.starts_with('/')
+        && names.len() <= MAX_DEPTH
+        && !PRUNED_IN_HOME.contains(&names[0])
+        && names
+            .iter()
+            .all(|n| !n.starts_with('.') && !PRUNED.contains(n))
 }
 
 /// The folders inside `dir` to descend into, and whether every entry could be read.

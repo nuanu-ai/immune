@@ -709,6 +709,21 @@ pub fn fires(place: &str, change: &str, watched_as: &str) -> bool {
     place == watched_as && (change == "new" || change == "changed")
 }
 
+/// The coverage kinds of the readings of this table that look inside every checkout on this
+/// machine, each scoped to the machine: the rows of a checkout, what is present in each, and what
+/// is present and not read. One that is not full may be about any checkout. A row that is not
+/// read here has a kind no reading writes.
+pub fn checkout_kinds() -> Vec<String> {
+    let mut kinds: Vec<String> = POINTS
+        .iter()
+        .filter(|p| p.scope != Scope::Home)
+        .map(Point::kind)
+        .collect();
+    kinds.push(PRESENT_KIND.to_string());
+    kinds.push(OTHERS_KIND.to_string());
+    kinds
+}
+
 /// Registers the kinds of reading and the predicate this table needs, on every open.
 pub fn add_kinds(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
     let mut kinds: Vec<String> = POINTS

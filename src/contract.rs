@@ -45,13 +45,15 @@ where
     }
 }
 
-/// An enum field from the name of its value.
+/// An enum field from the name of its value. A word this build does not know reads as the
+/// enum's unspecified value, so that a value added to the schema later does not make an older
+/// reader fail on the whole message; the schema says how each enum reads that value.
 pub fn enum_from_name<'de, E, D>(d: D) -> Result<i32, D::Error>
 where
-    E: Deserialize<'de> + Into<i32>,
+    E: DeserializeOwned + Into<i32>,
     D: Deserializer<'de>,
 {
-    E::deserialize(d).map(Into::into)
+    String::deserialize(d).map(|word| value_of::<E>(&word))
 }
 
 /// An optional enum field as the name of its value, or null.
@@ -66,11 +68,62 @@ where
     }
 }
 
-/// An optional enum field from the name of its value, or null.
+/// An optional enum field from the name of its value, or null. A word this build does not know
+/// reads as the enum's unspecified value, as in `enum_from_name`.
 pub fn optional_enum_from_name<'de, E, D>(d: D) -> Result<Option<i32>, D::Error>
 where
-    E: Deserialize<'de> + Into<i32>,
+    E: DeserializeOwned + Into<i32>,
     D: Deserializer<'de>,
 {
-    Option::<E>::deserialize(d).map(|e| e.map(Into::into))
+    Option::<String>::deserialize(d).map(|word| word.map(|w| value_of::<E>(&w)))
+}
+
+/// Text from a source as the contract gives it: each character `hidden` names, and the
+/// backslash itself, written as `\u{...}`. Escaping the backslash makes the shown form unique:
+/// a name holding a hidden character and a name that spells its escape out are shown apart, and
+/// `unescape` gives back exactly what was escaped. `hidden` is the core's own test of a character
+/// that could hide or rearrange what is shown (`icu::hidden`); it is passed in so that this file
+/// needs nothing else of the core.
+pub fn escape(s: &str, hidden: impl Fn(char) -> bool) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c == '\\' || hidden(c) {
+            out.extend(c.escape_unicode());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Text as `escape` shows it, back as it was: every `\u{...}` that names a character becomes
+/// that character, and anything else is kept as written. An id the core printed asks back the
+/// same thing.
+pub fn unescape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(at) = rest.find("\\u{") {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + 3..];
+        // Hex digits alone: `from_str_radix` would also take a sign.
+        let named = after.split_once('}').and_then(|(hex, tail)| {
+            hex.bytes()
+                .all(|b| b.is_ascii_hexdigit())
+                .then(|| u32::from_str_radix(hex, 16).ok().and_then(char::from_u32))
+                .flatten()
+                .map(|c| (c, tail))
+        });
+        match named {
+            Some((c, tail)) => {
+                out.push(c);
+                rest = tail;
+            }
+            None => {
+                out.push('\\');
+                rest = &rest[at + 1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }

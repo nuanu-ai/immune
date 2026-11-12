@@ -700,13 +700,19 @@ fn main() -> ExitCode {
                     Some("matches") => "immune matches --json",
                     _ => "immune status --json",
                 };
-                print_json(&status::failure(
+                let v = status::failure(
                     op,
                     "usage",
                     "the command line is not one Immune understands; the usage is on stderr",
                     example,
                     &e,
-                ));
+                );
+                // A question of the contract fails in its own envelope, which no reader takes
+                // for an answer.
+                match op {
+                    Some("project" | "program" | "machine") => print_json(&known::envelope(v)),
+                    _ => print_json(&v),
+                }
             }
             eprintln!("immune: {}\n{USAGE}", view::shown(&e));
             return ExitCode::from(EXIT_USAGE);
@@ -1194,6 +1200,13 @@ fn answer_json(operation: &str, store: &Path) -> ExitCode {
 }
 
 fn fail_json(operation: &str, e: &Stop) -> ExitCode {
+    let (v, exit) = failure_of(operation, e);
+    print_json(&v);
+    ExitCode::from(exit)
+}
+
+/// The failure envelope for a stop, and the exit code that goes with it.
+fn failure_of(operation: &str, e: &Stop) -> (serde_json::Value, u8) {
     let (code, message, example, detail, exit) = match e {
         Stop::Store(detail) => (
             "store_unreadable",
@@ -1210,14 +1223,10 @@ fn fail_json(operation: &str, e: &Stop) -> ExitCode {
             EXIT_RUN_IN_PROGRESS,
         ),
     };
-    print_json(&status::failure(
-        Some(operation),
-        code,
-        message,
-        example,
-        detail,
-    ));
-    ExitCode::from(exit)
+    (
+        status::failure(Some(operation), code, message, example, detail),
+        exit,
+    )
 }
 
 fn status_json(store: &Path) -> ExitCode {

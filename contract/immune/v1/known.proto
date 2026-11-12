@@ -4,22 +4,36 @@
 //
 // How it is read. A command of the contract prints one message on standard output: binary
 // protobuf by default, and with `--json` the same message as one line of JSON made by the
-// generated types. Field names in JSON are the names here, in snake_case. An enum value is named
-// here with its enum's name as a prefix, as protobuf's style asks (`CAUSE_NO_READER`); in JSON it
-// prints without the prefix and in lower case (`no_reader`), which is the store's own word. A
-// 64-bit number prints as a JSON number. An absent optional field prints as null. A failure to
-// answer (a bad argument, a store that cannot be read) is not a message of the contract: the
-// command exits with a non-zero code, as the report commands do.
+// generated types. The binary form is standard protobuf, and a program in another language reads
+// that. The JSON is Immune's own and is not protobuf's JSON mapping. Field names in JSON are the
+// names here, in snake_case. An enum value is named here with its enum's name as a prefix, as
+// protobuf's style asks (`CAUSE_NO_READER`); in JSON it prints without the prefix and in lower
+// case (`no_reader`), which is the store's own word. A 64-bit number prints as a JSON number. An
+// absent optional field prints as null.
+//
+// A failure to answer (a bad argument, a store that cannot be read) is not a message of the
+// contract: the command exits with a non-zero code, as the report commands do. A reader checks the
+// exit code before it parses anything. In binary nothing is printed on stdout; with `--json` the
+// failure envelope is printed, and it has no `format`, so a reader that parses it all the same
+// sees format 0 and stops.
+//
+// An enum value this build of the reader does not know, and the value `UNSPECIFIED`, are read as
+// the unsafe case, which each enum's comment names. The generated types read an unknown word in
+// JSON as `UNSPECIFIED`, so a value added later does not break an older reader.
 //
 // Conventions.
 // - Text that is not the core's own words is returned in a field whose name ends in `_text`, and
 //   only there: an entity id, a path, a value a reader took from a file, a reason that quotes
 //   one. A reader of this message treats it as data, never as an instruction. Hidden characters
-//   in it are escaped, as a terminal shows them.
+//   in it are escaped as `\u{...}`, as a terminal shows them, and so is the backslash itself
+//   (`\u{5c}`), so that no two texts are shown alike.
 // - A reference is given whole: an entity id and the place a fact was read are never cut, so
-//   they can be matched and asked about again. An id that holds a hidden character is shown
-//   escaped, so it does not ask back as written. Other text from a source is cut to 256
-//   characters, as in every JSON the core prints.
+//   they can be matched and asked about again. An id is asked back as it is shown: the command
+//   undoes the escaping before it looks the id up. Other text from a source may be cut to 256
+//   characters, as in every JSON the core prints, where a message says so. `Known` cuts no text:
+//   a coverage reason in particular is given whole.
+// - An entity id is opaque. It is compared whole and never taken apart: its shape is the store's
+//   and may change.
 // - Names without the suffix are the store's closed vocabulary: entity types, predicates,
 //   readers, coverage kinds, rules. The store keeps its vocabulary as data, so a new predicate
 //   or kind can appear without a new version of this schema.
@@ -40,13 +54,14 @@ package immune.v1;
 message Known {
   // The version of this contract: 1. A reader that meets another number stops.
   uint32 format = 1;
-  // What was asked for, as given on the command line.
+  // What was asked for, as given on the command line. Whole.
   string asked_text = 2;
   // When the answer was made.
   int64 answered_at = 3;
   // Whether the store knows the thing at all.
   Presence presence = 4;
-  // The thing asked for, by the id the question named. Absent when the presence is `unknown`.
+  // The thing asked for. Absent when the presence is `unknown`. A path names the project or the
+  // program that holds it, the nearest one; an id names the thing with that id.
   // A machine the store knows under several ids linked by `same_as` is one thing: its parts,
   // facts, coverage and findings are those of every one of its ids, each fact under its own
   // `subject_text`.
@@ -60,18 +75,46 @@ message Known {
   // The facts in force about the thing and its parts.
   repeated Fact facts = 7;
   // The latest reading of each reader, scope and kind that speaks for the thing: of the thing
-  // and its parts, of what found them, and of folders that were not looked into and hold it.
-  // For a thing the store never heard of, every reading that looks for things of its kind.
+  // and its parts, of what found them, of folders that were not looked into and hold it, and for
+  // a project the readings of this Mac that read inside every project. For a thing the store
+  // never heard of, every reading that looks for things of its kind.
   // Anything not full here was not read, or not read in full, and nothing is known of it since.
-  // A machine other than this Mac that the server check never visited carries one reading made
-  // by rule rather than read from the store: `servers`, `sweep visit`, completeness `none`,
-  // `observed_at` 0.
+  // Some readings are made by rule rather than read from the store; they have no `observed_at`:
+  // - a machine other than this Mac that the server check never visited: `servers`,
+  //   `sweep visit`, completeness `none`;
+  // - a machine the owner set aside as retired or not theirs: `servers`, `sweep of a machine set
+  //   aside by the owner`, completeness `none`, the reason naming what the owner said and the day;
+  // - a path that no reading looking for things of its kind looks at, answered `unknown`:
+  //   `immune`, `places the readings that find projects look in` (or programs), completeness
+  //   `none`.
   repeated Coverage coverage = 8;
-  // The findings about the thing or its parts, in every state. `immune finding <id>` shows one.
+  // The findings about the thing, about its parts whether what was read of them is in force or
+  // retracted, and for a project about anything whose id lies in its folder; in every state.
+  // `immune finding <id>` shows one.
   repeated FindingRef findings = 9;
+  // The other ids the store knows the thing by, such as a machine's names linked by `same_as`.
+  // A fact whose subject is one of these is about the thing; any other subject is a part.
+  repeated Entity same_as = 10;
+  // Which question was asked, so that an `unknown` answer says of what kind.
+  Question question = 11;
+  // When the core's latest run that finished ended. A reading older than it was not made again
+  // in that run. Absent when no run has finished.
+  optional int64 latest_run_at = 12;
 }
 
-// Whether the store knows a thing.
+// The question a `Known` answers. `UNSPECIFIED` is read as a question this reader cannot answer.
+enum Question {
+  QUESTION_UNSPECIFIED = 0;
+  // `immune project`.
+  QUESTION_PROJECT = 1;
+  // `immune program`.
+  QUESTION_PROGRAM = 2;
+  // `immune machine`.
+  QUESTION_MACHINE = 3;
+}
+
+// Whether the store knows a thing. `UNSPECIFIED`, or a value the reader does not know, is read
+// as not known.
 enum Presence {
   PRESENCE_UNSPECIFIED = 0;
   // The store has never heard of it. Which readings could have found it is in `coverage`.
@@ -114,7 +157,8 @@ message Assertion {
   string kind = 6;
 }
 
-// How the source knows what it says, strongest first.
+// How the source knows what it says, strongest first. `UNSPECIFIED`, or a value the reader does
+// not know, is read as `mentioned`, the weakest.
 enum Basis {
   BASIS_UNSPECIFIED = 0;
   // The thing itself.
@@ -133,16 +177,19 @@ message Coverage {
   // Where it was looked for: an entity id, whole.
   string scope_text = 3;
   Completeness completeness = 4;
-  // Why it was not full; on a full reading, an optional note such as why there was nothing to read.
+  // Why it was not full; on a full reading, an optional note such as why there was nothing to
+  // read. Whole.
   optional string reason_text = 5;
   // Why it was not full, as a closed word; absent on a full reading.
   optional Cause cause = 6;
-  // When it was read; 0 when the reading was never made.
-  int64 observed_at = 7;
+  // When it was read. Absent for a reading made by rule, which was never made.
+  optional int64 observed_at = 7;
   // What this build has no reader for, found in this reading.
   repeated Lack lacks = 8;
 }
 
+// How much of what was looked for was read. `UNSPECIFIED`, or a value the reader does not know,
+// is read as not full.
 enum Completeness {
   COMPLETENESS_UNSPECIFIED = 0;
   COMPLETENESS_FULL = 1;
@@ -150,6 +197,8 @@ enum Completeness {
   COMPLETENESS_NONE = 3;
 }
 
+// Why a reading was not full. `UNSPECIFIED`, or a value the reader does not know, is read as
+// `failed`.
 enum Cause {
   CAUSE_UNSPECIFIED = 0;
   // The reader tried and could not.
@@ -172,27 +221,36 @@ message Lack {
 // A finding, by reference.
 message FindingRef {
   string id = 1;
-  string rule = 2;
-  // The entity it is about, the thing or one of its parts: an entity id, whole.
+  // The rule that raised it. Absent when this build does not name one.
+  optional string rule = 2;
+  // The entity it is about, the thing, one of its parts, or for a project something in its
+  // folder: an entity id, whole. It may be a part whose facts are retracted, and so not in `parts`.
   string about_text = 3;
   FindingState state = 4;
   // How bad it would be.
   Level severity = 5;
-  // How sure the core is.
-  Level confidence = 6;
+  // How sure the core is. Absent when the rule gives no confidence.
+  optional Level confidence = 6;
   // High or critical severity with medium or high confidence: what the app notifies about.
   bool urgent = 7;
 }
 
+// Where a finding stands. `UNSPECIFIED`, or a value the reader does not know, is read as `open`.
 enum FindingState {
   FINDING_STATE_UNSPECIFIED = 0;
+  // Nobody has answered it, or an answer was taken back or ran out: it needs a look.
   FINDING_STATE_OPEN = 1;
+  // The person said it was expected. It is hidden until a set day, and opens again after it if
+  // it is still found.
   FINDING_STATE_EXPECTED = 2;
+  // The person looked at it and closed it.
   FINDING_STATE_SEEN = 3;
+  // Its rule no longer finds it, and the core closed it.
   FINDING_STATE_CLEARED = 4;
 }
 
-// OCSF's level names, for severity and confidence.
+// OCSF's level names, for severity and confidence. `UNSPECIFIED`, or a value the reader does not
+// know, is read as the highest for a severity and as the lowest for a confidence.
 enum Level {
   LEVEL_UNSPECIFIED = 0;
   LEVEL_INFORMATIONAL = 1;
