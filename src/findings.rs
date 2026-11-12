@@ -427,9 +427,9 @@ fn detached_inline_code() -> Rule {
         // Command and Scripting Interpreter. The sub-technique depends on the interpreter
         // and is named for each in `processes::INTERPRETERS`; a rule carries one technique.
         technique: Some("T1059"),
-        // Not one such process was found on the first Mac in the research's samples: high
-        // because it is how hidden code is kept running, medium because twelve minutes of
-        // samples are not a week.
+        // Not one such process was seen in twelve minutes of samples on a developer's Mac:
+        // high because it is how hidden code is kept running, medium because twelve minutes
+        // of samples are not a week.
         severity: "high",
         confidence: "medium",
         finds: "event",

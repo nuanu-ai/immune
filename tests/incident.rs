@@ -1,5 +1,5 @@
-//! The acceptance of the first pass: the incident of 7 October 2026, replayed on an invented
-//! estate through the real binary (docs/skeleton.md, "Acceptance" and item 6 of the order).
+//! An attack through a cloned project on a developer's Mac, replayed step by step on an
+//! invented estate through the real binary.
 //!
 //! The estate: a temporary home folder with a few checkouts, a system root with one signed
 //! application whose code is inside its bundle and under Application Support, a global npm
@@ -13,10 +13,10 @@
 //! 3. Code is added to an application inside its bundle.
 //! 4. Code is added to the application's code outside its bundle.
 //! 5. Code is added to a global package.
-//! 6. The incident's indicator list arrives and is matched.
+//! 6. An indicator list for the attack arrives and is matched.
 //!
-//! On the day none of this was noticed for 13 days. A step the program does not catch yet is
-//! not skipped: it is a named expectation that the status says what it cannot see there.
+//! A step the program does not catch yet is not skipped: it is a named expectation that the
+//! status says what it cannot see there.
 //!
 //! Running programs are read by samples, as the watcher takes them; here a sample is fed a
 //! reading made of invented processes through the same code a reading of the system takes,
@@ -488,8 +488,8 @@ fn the_incident_of_7_october_is_reported_step_by_step() {
         .unwrap()["value_text"]
         .clone();
     assert_eq!(matched, format!("[ipv4-addr:value = '{C2_ADDRESS}']"));
-    // GAP: the loader's hash is not matched, since only watched files are; closed by
-    // matching hashes against checkouts' files (second pass).
+    // GAP: the loader's hash is not matched, since only watched files are; closed once
+    // hashes are matched against checkouts' files, which is planned (docs/threats.md).
     assert!(names(
         &e,
         NOT_AGAINST,

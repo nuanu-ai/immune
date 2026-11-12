@@ -1,6 +1,6 @@
 //! Open vulnerability data of the ecosystems whose lockfiles are read: OSV.dev's export of
-//! each, `crates.io/all.zip` and `npm/all.zip`, fetched whole. The research behind it is in
-//! docs/research/vulnerability-matching.md; the contract in docs/threats.md.
+//! each, `crates.io/all.zip` and `npm/all.zip`, fetched whole. The contract is in
+//! docs/threats.md.
 //!
 //! What is asked of the network never depends on the estate: each request is built from the
 //! feed's address and from the feed's own readings (the ETag it sent, when it was last read),

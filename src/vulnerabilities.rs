@@ -1,6 +1,5 @@
 //! Matching: what the projects' lockfiles declare against the open vulnerability data of their
-//! ecosystem (`osv.rs`), with the four answers of docs/threats.md. The research behind it is
-//! docs/research/vulnerability-matching.md, sections 3 to 7.
+//! ecosystem (`osv.rs`), with the four answers of docs/threats.md.
 //!
 //! A match is the OSV schema's own `IsVulnerable`, on SemVer precedence, on an entry from the
 //! ecosystem's public registry only. Versions are parsed strictly and never coerced. Whatever

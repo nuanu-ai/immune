@@ -1,5 +1,5 @@
 //! The store: vocabulary, entities, the three assertion layers, coverage and the journal.
-//! The shape follows docs/facts.md.
+//! The shape is described in docs/how-it-works.md.
 
 use crate::resolver;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};

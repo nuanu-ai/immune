@@ -238,7 +238,7 @@ fn state(
     Ok(())
 }
 
-/// The icons of the tiles, from the mockup: a laptop, a folder, two servers and a shield.
+/// The icons of the tiles: a laptop, a folder, two servers and a shield.
 const ICON_MAC: &str = "<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><rect x=\"5\" y=\"5\" width=\"14\" height=\"10\" rx=\"1.5\"/><path d=\"M3 19h18\"/></svg>";
 const ICON_PROJECTS: &str = "<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5z\"/></svg>";
 const ICON_SERVERS: &str = "<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><rect x=\"4\" y=\"4\" width=\"16\" height=\"7\" rx=\"1.5\"/><rect x=\"4\" y=\"13\" width=\"16\" height=\"7\" rx=\"1.5\"/><path d=\"M8 7.5h.01M8 16.5h.01\"/></svg>";

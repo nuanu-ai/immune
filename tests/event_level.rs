@@ -314,7 +314,7 @@ fn process(path: &str, ppid: u64, audit_token: Value, signing_id: &str) -> Value
 
 /// A whole `exec` message as eslogger writes it, message version 10, with invented content:
 /// forty variables in the environment, three descriptors, and every process field, as the
-/// lines measured on the owner's Mac carry them.
+/// lines measured on a developer's Mac carry them.
 fn full(seq: u64, args: &[&str], target_token: Value) -> Value {
     let env: Vec<String> = (0..40)
         .map(|n| format!("INVENTED_VARIABLE_{n:02}=/opt/example/value/number/{n:02}/of/forty"))
@@ -444,7 +444,7 @@ fn only_what_the_reader_uses_reaches_the_disk_and_a_missing_field_stays_missing(
 fn a_projected_line_costs_what_the_install_says_and_a_tenth_of_eslogger_s() {
     // The install tells the owner what the level costs on disk before he grants it root, from
     // bytes per program start; the figure it gives is not below what a line takes. Measured
-    // on a whole message of the size the owner's Mac writes, about 5.6 KB, with a command
+    // on a whole message of the size a developer's Mac writes, about 5.6 KB, with a command
     // line of ordinary length; printed with `--nocapture`.
     let dir = Dir::new("measure");
     let args = [
@@ -597,8 +597,8 @@ fn a_log_file_is_kept_one_day_and_what_the_root_side_prints_stays_small() {
 
 #[test]
 fn over_the_cap_the_oldest_hours_go_first_and_never_the_one_being_written() {
-    // A Mac building at a hundred starts a second writes more in a day than the owner agreed
-    // to give: the oldest hours are deleted first, each noted with `cap`, and the hour being
+    // A Mac building at a hundred starts a second writes more in a day than the cap allows:
+    // the oldest hours are deleted first, each noted with `cap`, and the hour being
     // written is never deleted.
     let dir = Dir::new("cap");
     let log = dir.0.join("log");
@@ -1129,7 +1129,7 @@ fn a_refusal_is_served_with_what_eslogger_said_as_data_and_a_quiet_level_as_sile
 
 #[test]
 fn nothing_from_an_argument_or_the_environment_reaches_the_store() {
-    // By the owner's decision the store keeps no events: an argument, a working directory or
+    // The store keeps no events: an argument, a working directory or
     // an environment value, even in a whole line the filter did not cut, is nowhere in it.
     let dir = Dir::new("nothing-kept");
     dir.install();
@@ -1363,7 +1363,7 @@ fn the_watcher_says_new_starts_and_a_new_state_in_numbers_and_fixed_words_and_no
 #[test]
 fn a_binary_padding_start_raises_one_finding_with_its_authors_and_arguments_and_a_copy_raises_nothing()
  {
-    // The first slice's drill, on invented lines: the start Atomic Red Team's binary padding
+    // A drill on invented lines: the start Atomic Red Team's binary padding
     // test makes raises "Binary Padding - MacOS" at the next reading, carrying the rule's
     // authors, as its licence asks of a message made from a match, and the start itself as
     // evidence; copying a file with `dd` raises nothing. One finding per rule on this Mac,

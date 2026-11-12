@@ -1,16 +1,18 @@
-//! The event level: every program start on this Mac, as Apple's `eslogger` records it. This is
-//! level of access (b) in `docs/scheme.md`. The collecting side runs as root and is data in
-//! `scripts/event-level/`: launchd runs `/usr/bin/eslogger exec` into a FIFO, Apple's `jq`
-//! keeps of each message only what this reader uses, under `eslogger`'s own names, and Apple's
-//! `rotatelogs` appends that to one file per hour in a folder only root and the installing
-//! account can read; the root side deletes files older than a day, and the oldest while the
-//! log is over its size cap, and notes each deletion in `removed`. This reader runs as the
-//! owner, without rights, on the collection path: no model and no network. It reads the log
-//! honestly and counts, and evaluates every program start it reads against SigmaHQ's published
-//! rules for macOS (`src/sigma.rs`), loaded once per process. The store keeps no event: only
-//! where each log file was read up to, the last sequence number, counts per reading, the
-//! state, coverage, how many starts matched each rule, and for a rule that raises a finding
-//! the latest few starts it matched, as the finding's evidence.
+//! The event level: every program start, and every file created or renamed, on this Mac, as
+//! Apple's `eslogger` records them. This is the level of access "Apple's `eslogger` as
+//! administrator" in `docs/how-it-works.md`. The collecting side runs as root and is data in
+//! `scripts/event-level/`: launchd runs `/usr/bin/eslogger exec create rename` into a FIFO,
+//! Apple's `jq` keeps of each message only what this reader uses, under `eslogger`'s own
+//! names, and Apple's `rotatelogs` appends that to one file per hour in a folder only root and
+//! the installing account can read; the root side deletes files older than a day, and the
+//! oldest while the log is over its size cap, and notes each deletion in `removed`. This
+//! reader runs as the owner, without rights, on the collection path: no model and no network.
+//! It reads the log honestly and counts, and evaluates every program start and file event it
+//! reads against SigmaHQ's published rules for macOS (`src/sigma.rs`), loaded once per
+//! process. The store keeps no event: only where each log file was read up to, the last
+//! sequence numbers, counts per reading, the state, coverage, how many starts or file events
+//! matched each rule, and for a rule that raises a finding the latest few it matched, as the
+//! finding's evidence.
 //!
 //! A reader first finds out whether its source exists. The level is installed when its launch
 //! daemon's property list is in `/Library/LaunchDaemons`; when it is not, that is "not
@@ -21,8 +23,8 @@
 //! and inode; a line still being written is left for the next reading. A file that is gone is
 //! forgotten, so a deleted file is never read again and one with the same name and another
 //! inode is read from its start. A line that is not a JSON object, such as the two halves of
-//! a line `rotatelogs` split between two files, is counted and skipped. A message of another
-//! kind than `exec` is counted and ignored. A message without a field this reader needs, or
+//! a line `rotatelogs` split between two files, is counted and skipped. A message of a kind
+//! other than `exec`, `create` and `rename` is counted and ignored. A message without a field this reader needs, or
 //! with an unknown `schema_version`, means the format changed: the reading fails with the
 //! reason, never with a default, and nothing is taken as read, so a build that knows the new
 //! format reads the same lines. The message `version` alone fails nothing: Apple raises it
@@ -38,8 +40,8 @@
 //! Losses are counted from `seq_num`, not `global_seq_num`. `ESMessage.h` defines `seq_num` as
 //! per client and per event type, incrementing by one for each message of that type, with the
 //! number dropped equal to the difference from the last seen plus one; it exists from message
-//! version 2, `global_seq_num` from 4. With `exec` alone the two move together; `seq_num` stays
-//! a count of lost program starts if another event type is subscribed later. The numbers belong
+//! version 2, `global_seq_num` from 4. `global_seq_num` runs across every subscribed type, so
+//! only `seq_num` counts lost program starts apart from lost file events. The numbers belong
 //! to one run of `eslogger`: a number at or below the last one means it started again, and
 //! what was lost across that is a gap of unknown size, counted as such and never as zero.
 //! A gap also takes in starts that were deleted before any reading saw them, which the notes
@@ -49,7 +51,7 @@
 //! samples do.
 //!
 //! Every match of every rule evaluated is counted per rule, by the hour of the reading, for a
-//! week. A match of a `high` rule is also a finding: one per rule on this Mac, not one per
+//! week. A match of a rule marked high or critical is also a finding: one per rule on this Mac, not one per
 //! start, as SIEMs group alerts by rule. A start is matched where it is read, inside the
 //! reading's transaction, so a reading that fails or is rolled back has matched nothing and a
 //! start read again after it is matched once.
@@ -124,8 +126,8 @@ const DAY: i64 = 24 * 60 * 60;
 /// How long counts per reading are kept: a day is served, and the reading since the last
 /// full check.
 const KEEP: i64 = 2 * DAY;
-/// How long counts of matches per rule are kept: the week `docs/research/event-level.md`
-/// counts every match before rules are promoted or tuned. A row is a rule's id, an hour and a
+/// How long counts of matches per rule are kept: a week of every match, enough to see which
+/// rules match routine work before they are promoted or tuned. A row is a rule's id, an hour and a
 /// number, so a week is at most 168 rows per rule.
 const KEEP_MATCHES: i64 = 7 * DAY;
 /// Counts of matches are kept by the hour of the reading, so the last day is served by the
@@ -190,7 +192,7 @@ CREATE TABLE IF NOT EXISTS event_count (
     lost         INTEGER NOT NULL,  -- program starts missing from the numbering
     unknown_gaps INTEGER NOT NULL,  -- times the numbering started again: losses of unknown size
     unreadable   INTEGER NOT NULL,  -- lines that could not be read
-    other        INTEGER NOT NULL,  -- messages of another kind than exec
+    other        INTEGER NOT NULL,  -- messages of a kind this reader does not read
     removed_cap  INTEGER NOT NULL,  -- log files deleted to stay under the size cap
     removed_unread INTEGER NOT NULL -- log files deleted before they were read to their end
 );
@@ -208,8 +210,8 @@ CREATE TABLE IF NOT EXISTS rule_finding (
     matches INTEGER NOT NULL
 );
 -- The latest program starts a finding from a published rule rests on, at most five per
--- finding. The one place arguments enter the store, by the owner's decision of 12 November
--- 2026; the environment never does. Field names are the Elastic Common Schema's.
+-- finding. The one place arguments enter the store; the environment never does. Field
+-- names are the Elastic Common Schema's.
 CREATE TABLE IF NOT EXISTS rule_evidence (
     finding           TEXT NOT NULL REFERENCES finding (id),
     read_at           INTEGER NOT NULL,
@@ -298,7 +300,7 @@ pub type Take = fn(&ProcessStart) -> Option<String>;
 
 /// The Sigma fields a program start gives the published rules, and how each is taken. Sigma's
 /// taxonomy names no macOS fields; these are the three of Windows' `process_creation` that
-/// `eslogger` can fill, as `docs/research/event-level.md` maps them. A field a rule names that
+/// `eslogger` can fill, as `docs/event-level.md` maps them. A field a rule names that
 /// is not here is one this level does not have, and `src/sigma.rs` names such rules.
 pub const SIGMA_FIELDS: [(&str, Take); 3] = [
     ("Image", |s| Some(s.executable.clone())),
@@ -2511,7 +2513,7 @@ mod tests {
     #[test]
     fn a_busy_mac_s_file_events_are_read_many_times_faster_than_they_happen() {
         // A Mac under agents' builds creates and renames about 200 files a second, measured on
-        // the first owner's Mac, so the watcher's reading every ten seconds takes about 2,000.
+        // a developer's Mac, so the watcher's reading every ten seconds takes about 2,000.
         // The bound is ten times that pace in a debug build and fifty in a release one, as for
         // program starts. One file event in ten matches a high rule for file events, so its
         // finding's evidence is taken, and only the latest few are kept. Each file event is

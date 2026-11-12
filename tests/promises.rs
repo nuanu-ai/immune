@@ -1,4 +1,4 @@
-//! Promises of the walking skeleton: store, the readers, the lifecycle, the report and the view.
+//! Promises of the core: store, the readers, the lifecycle, the report and the view.
 //! Each test runs the real binary on samples in the formats the sources print: `brew info
 //! --json=v2 --installed`, the files the server sweep writes, lockfiles in checkouts, the ssh files and
 //! `tailscale status --json`. Every sample is invented, and the home folder is always a
@@ -10701,9 +10701,8 @@ fn links_arrive(pages: &[(PathBuf, String)]) -> (Vec<(String, String)>, Vec<Path
 
 #[test]
 fn each_link_on_the_summary_shows_what_its_label_says_first_thing_on_arrival() {
-    // The owner followed every count on the summary to one long page where he found neither
-    // projects nor machines. Each link now leads to a section headed with what its label
-    // names, listing exactly as many things as the label counts. The app opens the summary
+    // Every count on the summary is a link, and each leads to a section headed with what its
+    // label names, listing exactly as many things as the label counts. The app opens the summary
     // at what he can fix and at the limits of this version, by their anchors.
     let w = Watch::new("view-links");
     put(w.home(), ".zshrc", "export A=1\n");
@@ -10750,8 +10749,7 @@ fn each_link_on_the_summary_shows_what_its_label_says_first_thing_on_arrival() {
         text.push_str(part.split_once('>').map_or(part, |(_, t)| t));
         text.push(' ');
     }
-    // "Matched this week" is how the section on the published rules speaks of their matches,
-    // in the words of its mockup, which the owner agreed on 12 November 2026.
+    // "Matched this week" is how the section on the published rules speaks of their matches.
     let text = text.to_lowercase().replace("matched this week", "");
     for term in PERSON_NEVER_READS {
         assert!(!text.contains(term), "{term}: {text}");
@@ -10862,7 +10860,7 @@ fn each_link_on_the_summary_shows_what_its_label_says_first_thing_on_arrival() {
 #[test]
 fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_while_nothing_feeds_them()
  {
-    // The owner asked to see the published rules. While the event level does not run nothing
+    // The pages list the published rules. While the event level does not run nothing
     // feeds them program starts: no page says a rule is watching, a rule that is not checked
     // is never listed among the checked, and the counts are the status's. Once it runs, the
     // pages say how many watch, never counting one checked only in part, and how many times
@@ -11068,7 +11066,7 @@ fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_wh
 
 #[test]
 fn as_it_happens_draws_the_day_the_status_counts_and_a_published_rule_finding_where_it_is() {
-    // The owner agreed a drawing of program starts and the rules: the bars beside the day's
+    // The page draws program starts and the rules: the bars beside the day's
     // count, the rules that matched with the finding one raised, and the techniques they
     // cover. The status carries the series the panel draws, adding up to the count, and the
     // words for the second line; the page draws nothing as watching while the level is not

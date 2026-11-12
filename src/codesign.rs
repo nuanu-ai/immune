@@ -453,7 +453,7 @@ mod tests {
 
     #[test]
     fn each_way_of_tampering_with_a_sealed_bundle_breaks_its_seal_and_says_how() {
-        // The cases of the research's experiments on a copy, each on a fresh bundle.
+        // Five ways of tampering with a signed copy, each on a fresh bundle.
         type Tamper = fn(&Path);
         let cases: [(&str, Tamper, &str); 5] = [
             (
@@ -528,8 +528,8 @@ mod tests {
 
     #[test]
     fn a_resource_changed_inside_nested_code_breaks_the_seal_of_the_bundle_around_it() {
-        // The research's case 4: a shallow check of nested code looks at its signature only,
-        // so a resource of a framework or helper inside the bundle passes without the flag.
+        // A shallow check of nested code looks at its signature only, so a resource of a
+        // framework or helper inside the bundle passes without the flag.
         let (_dir, app) = bundle("nested", true);
         let (_inner_dir, inner) = bundle("nested-inner", true);
         let helpers = app.join("Contents/Library/LoginItems");

@@ -1,5 +1,8 @@
-# Raw data about the owner's resources: the map, session excerpts, addresses, repository names
+# Local raw data that never enters git
 private/
+
+# A private checkout of internal notes
+notes/
 
 .DS_Store
 

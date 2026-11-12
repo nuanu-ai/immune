@@ -335,7 +335,7 @@ impl Status {
     /// several environments for some time with its false positives listed: medium. `test`,
     /// which is 67 of the 69 macOS rules, says false positives may still be found, and
     /// `experimental` that it is new: low. No published false-positive rate for these rules
-    /// on developer Macs was found (`docs/research/event-level.md`). So a finding from a
+    /// on developer Macs was found. So a finding from a
     /// shipped `test` rule is never urgent: it is shown, and the app does not alert on it.
     pub fn confidence(self) -> &'static str {
         match self {

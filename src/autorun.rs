@@ -7,10 +7,11 @@
 //! and the count of ways read. Adding a product is adding a row; a row of a trigger and scope
 //! that has no rule yet needs their words and a rule.
 //!
-//! The project rows are `docs/research/what-is-missed.md`, section 3, with
+//! The project rows are the files known to make a tool run code from a project folder, with
 //! `.gemini/settings.json` and the `.env` files Gemini CLI loads as two rows, since one part is
-//! read and one is not. The home rows are the tools' own configuration its section 1 names, each
-//! at the path its tool documents; one not documented for macOS is not a row.
+//! read and one is not. The home rows are developer tools' own configuration in the home
+//! folder, each at the path its tool documents; one not documented for macOS is not a row.
+//! `docs/reference.md` lists what is read.
 //!
 //! A row that is read goes through the watched places reader like any other watched file,
 //! one reading per row scoped to the machine and, for a project row, covering every checkout:
@@ -408,8 +409,7 @@ pub const EDITOR_EXTENSION: Watched = (
     "Extensions installed in an editor, each by its publisher and name; a new version of one is not news.",
 );
 
-/// Every known way, in the order of the note's inventory, then the home folder. The order is
-/// the page's.
+/// Every known way, the project rows first, then the home folder. The order is the page's.
 #[rustfmt::skip]
 pub const POINTS: [Point; 52] = [
     Point { kept: Some(TASK), ..row(&[".vscode/tasks.json"], WholeWhen(CommentsAndCommas, "runOn", "folderOpen"), OpenInEditor, "VS Code, Cursor", DependsOnSetting, (EVENT, "high", "medium"), "https://code.visualstudio.com/docs/editor/tasks") },

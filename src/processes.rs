@@ -1,6 +1,6 @@
 //! Samples of this user's processes and their internet connections, and the one rule over
-//! them. This is level of access (a) in `docs/scheme.md`: no administrator rights and nothing
-//! that asks for a permission. A sample says what is running at one moment. It is not an
+//! them. This is the level of access without administrator rights in `docs/how-it-works.md`:
+//! nothing here asks for a permission. A sample says what is running at one moment. It is not an
 //! event: Apple's Endpoint Security names the start of a program `exec`, and a sample never
 //! sees that moment, so nothing here carries an Endpoint Security event name. The fields are
 //! named after the Elastic Common Schema: `process.pid`, `process.start`,
@@ -19,8 +19,8 @@
 //! What is kept: a small table of the processes the rule is tracking and one of connections
 //! that matched an indicator, see `SCHEMA`, both trimmed of what has been gone for `KEEP`.
 //! A process is not an entity with a lifecycle: it lives for minutes or days, and the facts
-//! and their lifecycle are for what the owner has. The scheme's Event table is where a process
-//! with a stable identity belongs; these tables are its first rough form, for two rules.
+//! and their lifecycle are for what the owner has. A process with a stable identity belongs in
+//! a table of events, which is not built; these tables are its first rough form, for two rules.
 //! A finding a sample raises rests on a journal entry `sampled`, one per raise, naming the
 //! program, the process's identity and what was derived; never its command line.
 //! Each sample's coverage is one row per kind, replaced at every sample: a sample every
@@ -102,8 +102,8 @@ pub const INLINE_CODE: &str = "interpreter given code on its command line";
 /// What the rule is told, and the kind of its findings.
 pub const DETACHED_INLINE: &str = "interpreter running code from its command line, detached";
 
-/// Two samples must see a process at least this far apart before the rule fires. It is the
-/// resync interval the research proposes for a watcher.
+/// Two samples must see a process at least this far apart before the rule fires, so that it
+/// fires on a process that stays running.
 pub const MIN_APART: i64 = 60;
 
 /// What every sample says it cannot see.
@@ -137,7 +137,7 @@ pub struct Interpreter {
     pub subcommand: Option<&'static str>,
 }
 
-/// The interpreters the research saw run on a Mac, and nothing else. Their ATT&CK
+/// The interpreters seen running on developers' Macs, and nothing else. Their ATT&CK
 /// sub-techniques of Command and Scripting Interpreter (T1059): JavaScript (.007) for node,
 /// bun and deno, Python (.006), Unix Shell (.004), AppleScript (.002); Ruby and Perl have
 /// none of their own.
