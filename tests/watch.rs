@@ -433,8 +433,17 @@ fn the_view_says_what_a_watcher_cannot_see_and_whether_one_runs_once_one_has_run
         now.contains("watched live: a change in what is watched all the time shows within seconds, last looked 2"),
         "{now}"
     );
+    // How many things a running watcher watches leads to where they are listed; once none
+    // runs, there is no such number to follow.
+    let followed = ", watched all the time\">";
+    assert!(
+        now.contains("<span class=\"num\"><a href=\"view/this-mac.html\" aria-label=\"What is watched on this Mac: ")
+            && now.contains(followed),
+        "{now}"
+    );
     drop(w);
     let after = mac.view();
+    assert!(!after.contains(followed), "{after}");
     assert!(after.contains(cannot), "{after}");
     assert!(
         after.contains(

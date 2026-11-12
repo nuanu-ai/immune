@@ -2036,6 +2036,9 @@ body.summary { background: var(--grp); color: var(--ink);
 .summary .s-high { background: var(--sev-high); } .summary .s-moderate { background: var(--sev-moderate); }
 .summary .s-low { background: var(--sev-low); } .summary .s-none { background: var(--sev-none); }
 .summary #vulnerabilities > p + p { margin-top: 10px; }
+.summary #vulnerabilities > .sub { margin: -8px 0 14px; }
+.summary #vulnerabilities > p.used { margin-top: 4px; font-size: 15px; }
+.summary .used strong { font-weight: 600; }
 
 /* The map of what the program has collected. */
 .summary .legend { display: flex; flex-wrap: wrap; gap: 8px 18px; list-style: none; padding: 0; margin: 0; font-size: 13px; color: var(--sec); }
@@ -2047,6 +2050,7 @@ body.summary { background: var(--grp); color: var(--ink);
 .summary .group h3 { font-size: 15px; }
 .summary .group h4 { font-size: 13px; font-weight: 400; color: var(--sec); margin: 6px 0 0; }
 .summary .group h3 span, .summary .group h4 span { color: var(--sec); font-weight: 400; }
+.summary .group h3 a.n, .summary .group h4 a.n { font-weight: 400; }
 .summary .group h3 .split { font-size: 13px; }
 .summary .group .note { font-size: 13px; color: var(--sec); }
 .summary .marks { display: flex; flex-wrap: wrap; gap: 6px; }

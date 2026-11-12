@@ -557,9 +557,28 @@ impl Map {
     }
 }
 
-/// A group's heading: its name, how many marks it has, and how many of them are in each state,
-/// in words, counted from the very marks that are drawn under it.
-fn heading<'a>(out: &mut String, name: &str, marks: impl Iterator<Item = &'a Mark> + Clone) -> Out {
+/// How many things a group or a kind has, as a link to where they are listed, named by the
+/// heading it opens at. None leads nowhere, so it stays a plain number.
+fn count(n: usize, href: &str, label: &str) -> String {
+    if n == 0 {
+        return "<span class=\"n\">0</span>".to_string();
+    }
+    format!(
+        "<a class=\"n\" href=\"{}\" aria-label=\"{}: {n}\">{n}</a>",
+        esc(href),
+        esc(label)
+    )
+}
+
+/// A group's heading: its name, how many marks it has, leading to where they are listed, and
+/// how many of them are in each state, in words, counted from the very marks that are drawn
+/// under it.
+fn heading<'a>(
+    out: &mut String,
+    name: &str,
+    to: (&str, &str),
+    marks: impl Iterator<Item = &'a Mark> + Clone,
+) -> Out {
     let n = marks.clone().count();
     let mut parts: Vec<String> = Vec::new();
     for state in [
@@ -585,7 +604,8 @@ fn heading<'a>(out: &mut String, name: &str, marks: impl Iterator<Item = &'a Mar
     }
     writeln!(
         out,
-        "<h3>{name} <span>{n}</span><span class=\"split\">{}</span></h3>",
+        "<h3>{name} {}<span class=\"split\">{}</span></h3>",
+        count(n, to.0, to.1),
         parts.concat()
     )?;
     Ok(())
@@ -606,7 +626,13 @@ pub fn draw(out: &mut String, map: &Map, own_devices_said: &str) -> Out {
 
     // Projects, the main thing, across the whole width.
     out.push_str("<div class=\"group wide\">\n");
-    heading(out, "Projects", map.projects.iter())?;
+    let projects = format!("{DETAILS}/{THIS_MAC}.html#projects");
+    heading(
+        out,
+        "Projects",
+        (&projects, "Projects"),
+        map.projects.iter(),
+    )?;
     if map.projects.is_empty() {
         let said = if map.projects_looked {
             "None found on this Mac."
@@ -621,7 +647,13 @@ pub fn draw(out: &mut String, map: &Map, own_devices_said: &str) -> Out {
 
     // This Mac.
     out.push_str("<div class=\"group\">\n");
-    heading(out, "This Mac", map.mac.iter().flat_map(|k| k.marks.iter()))?;
+    let this_mac = format!("{DETAILS}/{THIS_MAC}.html");
+    heading(
+        out,
+        "This Mac",
+        (&this_mac, pages::THIS_MAC_TITLE),
+        map.mac.iter().flat_map(|k| k.marks.iter()),
+    )?;
     if map.mac.is_empty() {
         out.push_str(if map.checked {
             "<p class=\"note\">Nothing to watch was found on this Mac at the last check.</p>\n"
@@ -630,11 +662,16 @@ pub fn draw(out: &mut String, map: &Map, own_devices_said: &str) -> Out {
         });
     }
     for k in &map.mac {
+        let what = pages::capital(k.what);
         writeln!(
             out,
-            "<h4>{} <span>{}</span></h4>",
-            esc(&pages::capital(k.what)),
-            k.marks.len()
+            "<h4>{} {}</h4>",
+            esc(&what),
+            count(
+                k.marks.len(),
+                &format!("{this_mac}#{}", pages::anchor(k.what)),
+                &what
+            )
         )?;
         marks(out, &k.marks, false, Size::Small)?;
     }
@@ -643,7 +680,13 @@ pub fn draw(out: &mut String, map: &Map, own_devices_said: &str) -> Out {
     // Servers and devices, only where any is known.
     if map.beyond() {
         out.push_str("<div class=\"group\">\n");
-        heading(out, "Servers", map.servers.iter())?;
+        let beyond = format!("{DETAILS}/{BEYOND}.html");
+        heading(
+            out,
+            "Servers",
+            (&format!("{beyond}#servers"), "Servers"),
+            map.servers.iter(),
+        )?;
         if map.servers.is_empty() {
             out.push_str("<p class=\"note\">None known.</p>\n");
         } else {
@@ -652,16 +695,24 @@ pub fn draw(out: &mut String, map: &Map, own_devices_said: &str) -> Out {
         if !map.own.is_empty() {
             writeln!(
                 out,
-                "<h4>Your other devices <span>{}</span></h4>",
-                map.own.len()
+                "<h4>Your other devices {}</h4>",
+                count(
+                    map.own.len(),
+                    &format!("{beyond}#your-devices"),
+                    "Your other devices"
+                )
             )?;
             marks(out, &map.own, false, Size::Column)?;
         }
         if !map.others.is_empty() {
             writeln!(
                 out,
-                "<h4>Other people's devices <span>{}</span></h4>",
-                map.others.len()
+                "<h4>Other people's devices {}</h4>",
+                count(
+                    map.others.len(),
+                    &format!("{beyond}#other-devices"),
+                    "Other devices"
+                )
             )?;
             marks(out, &map.others, false, Size::Column)?;
         }

@@ -2907,11 +2907,21 @@ fn the_owners_phones_and_laptops_that_nothing_else_names_are_their_other_devices
     assert!(page.contains(" aria-label=\"Servers: 4\""), "{page}");
     let map = section(&page, "map");
     assert!(
-        map.contains("<h4>Your other devices <span>2</span></h4>")
+        map.contains("<h4>Your other devices <a class=\"n\" href=\"view/beyond.html#your-devices\" aria-label=\"Your other devices: 2\">2</a></h4>")
             && map.contains("title=\"Your other devices: pocket · not checked")
             && map.contains("title=\"Your other devices: travel-laptop · not checked"),
         "{map}"
     );
+    // Each count of the map leads to the list of what it counts.
+    let (links, _) = links_arrive(&view_pages(&h.store()));
+    let labels: Vec<&str> = links.iter().map(|(_, t)| t.as_str()).collect();
+    for (said, times) in [("Servers: 4", 2), ("Your other devices: 2", 1)] {
+        assert_eq!(
+            labels.iter().filter(|l| **l == said).count(),
+            times,
+            "{said}: {labels:?}"
+        );
+    }
 }
 
 #[test]
@@ -10298,6 +10308,83 @@ fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_f
     );
 }
 
+/// Every link as its target and its name as a person is told it: its label where it has
+/// one, else its text, else its title. A tile names where it leads in its label, and a
+/// mark of the map in its title.
+fn links(html: &str) -> Vec<(String, String)> {
+    html.split("<a ")
+        .skip(1)
+        .map(|rest| {
+            let tag = &rest[..rest.find('>').unwrap()];
+            let attr = |name: &str| {
+                tag.split(&format!("{name}=\"")).nth(1).map(|v| {
+                    v[..v.find('"').unwrap()]
+                        .replace("&#39;", "'")
+                        .replace("&amp;", "&")
+                })
+            };
+            let inner = &rest[tag.len() + 1..rest.find("</a>").unwrap()];
+            let mut text = String::new();
+            for part in inner.split('<') {
+                text.push_str(part.split_once('>').map_or(part, |(_, t)| t));
+            }
+            let name = attr("aria-label")
+                .or_else(|| (!text.trim().is_empty()).then(|| text.trim().to_string()))
+                .or_else(|| attr("title"))
+                .unwrap_or_default();
+            (attr("href").unwrap(), name)
+        })
+        .collect()
+}
+
+/// Follows every link on the summary and checks that it shows what its label says first thing
+/// on arrival: the heading it opens at begins its name, and a count is the number of things
+/// listed there. Returns the links and the pages reached.
+fn links_arrive(pages: &[(PathBuf, String)]) -> (Vec<(String, String)>, Vec<PathBuf>) {
+    let (main, page) = &pages[0];
+    let folder = main.parent().unwrap();
+    let summary = links(page);
+    let mut reached: Vec<PathBuf> = Vec::new();
+    for (href, text) in &summary {
+        let (file, anchor) = href.split_once('#').unwrap_or((href, ""));
+        let target = folder.join(file);
+        let html = &pages
+            .iter()
+            .find(|(p, _)| *p == target)
+            .unwrap_or_else(|| panic!("{href} was not written"))
+            .1;
+        reached.push(target.clone());
+        // The heading of the section the link opens at, or of the page.
+        let at = if anchor.is_empty() {
+            0
+        } else {
+            html.find(&format!("<section id=\"{anchor}\">"))
+                .unwrap_or_else(|| panic!("no section {anchor} in {file}"))
+        };
+        let from = &html[at..];
+        let (open, close) = if anchor.is_empty() {
+            ("<h1>", "</h1>")
+        } else {
+            ("<h2>", "</h2>")
+        };
+        let start = from.find(open).unwrap() + open.len();
+        let heading = &from[start..start + from[start..].find(close).unwrap()];
+        let (label, count) = text.split_once(": ").unwrap_or((text, ""));
+        assert!(label.starts_with(heading), "{text} leads to {heading}");
+        // A count is the number of things the section lists, or, where no list is kept, the
+        // number it says; none is a section with no list.
+        if let (Ok(n), false) = (count.parse::<usize>(), anchor.is_empty()) {
+            let shown = section(html, anchor);
+            if shown.contains("<table") {
+                assert_eq!(shown.matches("</td></tr>").count(), n, "{text}: {shown}");
+            } else if n > 0 {
+                assert!(shown.contains(&format!(" {n} ")), "{text}: {shown}");
+            }
+        }
+    }
+    (summary, reached)
+}
+
 #[test]
 fn each_link_on_the_summary_shows_what_its_label_says_first_thing_on_arrival() {
     // The owner followed every count on the summary to one long page where he found neither
@@ -10334,34 +10421,6 @@ fn each_link_on_the_summary_shows_what_its_label_says_first_thing_on_arrival() {
             "{anchor}"
         );
     }
-    // Every link as its target and its name as a person is told it: its label where it has
-    // one, else its text, else its title. A tile names where it leads in its label, and a
-    // mark of the map in its title.
-    let links = |html: &str| -> Vec<(String, String)> {
-        html.split("<a ")
-            .skip(1)
-            .map(|rest| {
-                let tag = &rest[..rest.find('>').unwrap()];
-                let attr = |name: &str| {
-                    tag.split(&format!("{name}=\"")).nth(1).map(|v| {
-                        v[..v.find('"').unwrap()]
-                            .replace("&#39;", "'")
-                            .replace("&amp;", "&")
-                    })
-                };
-                let inner = &rest[tag.len() + 1..rest.find("</a>").unwrap()];
-                let mut text = String::new();
-                for part in inner.split('<') {
-                    text.push_str(part.split_once('>').map_or(part, |(_, t)| t));
-                }
-                let name = attr("aria-label")
-                    .or_else(|| (!text.trim().is_empty()).then(|| text.trim().to_string()))
-                    .or_else(|| attr("title"))
-                    .unwrap_or_default();
-                (attr("href").unwrap(), name)
-            })
-            .collect()
-    };
     // What a person lands on first is in his words, not the program's. What a source said,
     // listed apart under its item, is data. The rules' own words are a person's words where
     // they are written, and "an app you build yourself" is not about this program's build.
@@ -10381,56 +10440,29 @@ fn each_link_on_the_summary_shows_what_its_label_says_first_thing_on_arrival() {
     for term in PERSON_NEVER_READS {
         assert!(!text.contains(term), "{term}: {text}");
     }
-    let summary = links(page);
-    let mut reached: Vec<PathBuf> = Vec::new();
-    for (href, text) in &summary {
-        let (file, anchor) = href.split_once('#').unwrap_or((href, ""));
-        let target = folder.join(file);
-        let html = &pages
-            .iter()
-            .find(|(p, _)| *p == target)
-            .unwrap_or_else(|| panic!("{href} was not written"))
-            .1;
-        reached.push(target.clone());
-        // The heading of the section the link opens at, or of the page.
-        let at = if anchor.is_empty() {
-            0
-        } else {
-            html.find(&format!("<section id=\"{anchor}\">"))
-                .unwrap_or_else(|| panic!("no section {anchor} in {file}"))
-        };
-        let from = &html[at..];
-        let (open, close) = if anchor.is_empty() {
-            ("<h1>", "</h1>")
-        } else {
-            ("<h2>", "</h2>")
-        };
-        let start = from.find(open).unwrap() + open.len();
-        let heading = &from[start..start + from[start..].find(close).unwrap()];
-        let (label, count) = text.split_once(": ").unwrap_or((text, ""));
-        assert!(label.starts_with(heading), "{text} leads to {heading}");
-        // A count is the number of things the section lists, or, where no list is kept, the
-        // number it says.
-        if let (Ok(n), false) = (count.parse::<usize>(), anchor.is_empty()) {
-            let shown = section(html, anchor);
-            if shown.contains("<table") {
-                assert_eq!(shown.matches("</td></tr>").count(), n, "{text}: {shown}");
-            } else {
-                assert!(shown.contains(&format!(" {n} ")), "{text}: {shown}");
-            }
-        }
-    }
+    let (summary, mut reached) = links_arrive(&pages);
     let labels: Vec<&str> = summary.iter().map(|(_, t)| t.as_str()).collect();
-    for said in [
-        "Startup items: 1",
-        "Shell startup files: 1",
-        "Applications: 1",
-        "Homebrew packages: 1",
-        "npm packages: 1",
-        "Projects: 1",
-        "Technical details",
+    // A count of things leads to the things wherever it stands: a kind's count both in what
+    // you are told about and on the map, the projects' both on their tile and on the map, and
+    // how many things are checked every hour.
+    for (said, times) in [
+        ("Startup items: 1", 2),
+        ("Shell startup files: 1", 2),
+        ("Applications: 1", 2),
+        ("Homebrew packages: 1", 2),
+        ("npm packages: 1", 2),
+        ("Projects: 1", 2),
+        (
+            "What is watched on this Mac: 5 things, checked every hour",
+            1,
+        ),
+        ("Technical details", 1),
     ] {
-        assert!(labels.contains(&said), "{said}: {labels:?}");
+        assert_eq!(
+            labels.iter().filter(|l| **l == said).count(),
+            times,
+            "{said}: {labels:?}"
+        );
     }
     // A founder with no servers and no private network is told about his projects alone: no
     // tile and no group of the map speaks of servers or devices.

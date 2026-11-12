@@ -18,6 +18,8 @@ use std::fmt::Write;
 
 /// The person's pages of details, by file name in the folder of details.
 pub const THIS_MAC: &str = "this-mac";
+/// The heading of that page, which a link to it is named by.
+pub const THIS_MAC_TITLE: &str = "What is watched on this Mac";
 pub const BEYOND: &str = "beyond";
 pub const TECHNICAL: &str = "technical";
 pub const VULNERABILITIES: &str = "vulnerabilities";
@@ -112,7 +114,7 @@ pub fn summary(
     needs(&mut out, st)?;
     out.push_str("<div class=\"pair\">\n");
     you_can_fix(&mut out, st)?;
-    vulnerabilities_summary(conn, &mut out)?;
+    vulnerabilities_summary(conn, st, &mut out)?;
     out.push_str("</div>\n");
     crate::map::draw(&mut out, &map, YOUR_DEVICES)?;
     let list = indicator_list(conn)?;
@@ -499,16 +501,39 @@ fn watched_section(
             .sum()
     };
     let (live, hourly) = (sum("live"), sum("hourly"));
-    // A plain row: what, and a number or, quiet, why there is none.
-    let plain = |out: &mut String, label: &str, value: &str, quiet: bool| -> Out {
+    // A plain row: what, and a number or, quiet, why there is none. A number of things leads
+    // to where they are listed, named by the heading it opens at.
+    let plain = |out: &mut String,
+                 label: &str,
+                 value: &str,
+                 quiet: bool,
+                 to: Option<(String, String)>|
+     -> Out {
+        let value = match to {
+            Some((href, name)) => format!(
+                "<a href=\"{}\" aria-label=\"{}\">{}</a>",
+                esc(&href),
+                esc(&name),
+                esc(value)
+            ),
+            None => esc(value),
+        };
         writeln!(
             out,
-            "<div class=\"plain\"><span class=\"lbl\">{}</span><span class=\"{}\">{}</span></div>",
+            "<div class=\"plain\"><span class=\"lbl\">{}</span><span class=\"{}\">{value}</span></div>",
             esc(label),
             if quiet { "val" } else { "num" },
-            esc(value)
         )?;
         Ok(())
+    };
+    let this_mac = format!("{DETAILS}/{THIS_MAC}.html");
+    let things = |n: i64, how: &str| {
+        (n > 0).then(|| {
+            (
+                this_mac.clone(),
+                format!("{THIS_MAC_TITLE}: {}, {how}", counted(n, "thing", "things")),
+            )
+        })
     };
     if live + hourly == 0 {
         let said = if m.checked_at.is_some() {
@@ -516,29 +541,38 @@ fn watched_section(
         } else {
             "nothing has been read yet"
         };
-        plain(out, "On this Mac", said, true)?;
+        plain(out, "On this Mac", said, true, None)?;
     } else {
-        let live_said = if m.live {
-            counted(live, "thing", "things")
+        let (live_said, to) = if m.live {
+            (
+                counted(live, "thing", "things"),
+                things(live, "watched all the time"),
+            )
         } else if !m.failed.is_empty() {
-            format!("the watcher's latest {} failed", covered::watcher_failed(m))
+            (
+                format!("the watcher's latest {} failed", covered::watcher_failed(m)),
+                None,
+            )
         } else {
-            "no watcher is running now".to_string()
+            ("no watcher is running now".to_string(), None)
         };
         plain(
             out,
             "Watched all the time: a change shows within seconds",
             &live_said,
             !m.live,
+            to,
         )?;
         plain(
             out,
             "Checked every hour: a change shows at the next check",
             &counted(hourly, "thing", "things"),
             false,
+            things(hourly, "checked every hour"),
         )?;
     }
     match m.watched.iter().find(|w| w.0 == covered::SAMPLED) {
+        // The page keeps no list of them, only the numbers the latest sample saw.
         Some((_, n, _)) => plain(
             out,
             &format!(
@@ -547,12 +581,17 @@ fn watched_section(
             ),
             &counted(*n, "running now", "running now"),
             false,
+            Some((
+                format!("{this_mac}#{}", anchor(covered::SAMPLED)),
+                format!("{}: {}", capital(covered::SAMPLED), grouped(*n)),
+            )),
         )?,
         None => plain(
             out,
             "Running programs and their connections",
             "looked at only while the app is open",
             true,
+            None,
         )?,
     }
     let said = match list {
@@ -560,7 +599,7 @@ fn watched_section(
         Some(false) => "a list was given but could not be read",
         None => "no list given, so nothing is compared",
     };
-    plain(out, "Signs of a known attack", said, true)?;
+    plain(out, "Signs of a known attack", said, true, None)?;
     out.push_str("<h3>How much of what is known this version reads</h3>\n");
     for home in [false, true] {
         let (read, known) = crate::autorun::counts(home);
@@ -859,6 +898,8 @@ fn watched_here(
 
 /// What the summary says first of known vulnerabilities.
 const VULNERABILITIES_SAY: &str = "These are published weaknesses in packages your projects depend on. They are listed, not alarmed: most matter only under particular conditions. A package known to be malicious, or a vulnerability attackers are using, is shown at the top as something that needs a look.";
+/// What a label says, and what it does not.
+const LABEL_SAYS: &str = "A label, from critical to low, is the one the record itself gives: how bad it would be if the weakness could be used, not whether your project reaches it. A record that gives none has no label.";
 /// At most this many known vulnerabilities are shown on the summary.
 const VULNERABILITIES_SHOWN: usize = 10;
 
@@ -908,10 +949,11 @@ fn vulnerability_row(
 }
 
 /// The section of the summary on known vulnerabilities in packages the projects use: what
-/// they are, how many records, packages and projects, how many records of each label, the most
-/// severe few, and the page with all of them.
-fn vulnerabilities_summary(conn: &Connection, out: &mut String) -> Out {
-    out.push_str("<section id=\"vulnerabilities\">\n<div class=\"head\"><h2>Known vulnerabilities</h2><span class=\"n\">in packages your projects use</span></div>\n");
+/// they are, how many records, how many of them attackers are using or are malicious packages,
+/// how many packages and projects, how many records of each label, the most severe few, and
+/// the page with all of them.
+fn vulnerabilities_summary(conn: &Connection, st: &crate::status::State, out: &mut String) -> Out {
+    out.push_str("<section id=\"vulnerabilities\">\n<div class=\"head\"><h2>Known vulnerabilities</h2><span class=\"n\">in packages your projects use</span></div>\n<p class=\"sub\">Weaknesses to fix when you can, not something that happened.</p>\n");
     let list = crate::vulnerabilities::affecting(conn)?;
     let t = crate::vulnerabilities::totals(conn)?;
     let all = link(
@@ -919,7 +961,11 @@ fn vulnerabilities_summary(conn: &Connection, out: &mut String) -> Out {
         "by-project",
         "Known vulnerabilities by project",
     );
-    let said = format!("<p class=\"muted\">{}</p>", esc(VULNERABILITIES_SAY));
+    let said = format!(
+        "<details>\n<summary>Why these are not alarms</summary>\n<p class=\"muted\">{}</p>\n<p class=\"muted\">{}</p>\n</details>",
+        esc(VULNERABILITIES_SAY),
+        esc(LABEL_SAYS)
+    );
     if !t.matched {
         writeln!(
             out,
@@ -942,6 +988,55 @@ fn vulnerabilities_summary(conn: &Connection, out: &mut String) -> Out {
         "<p class=\"big\"><span class=\"num\">{}</span> <span>{}</span></p>",
         esc(number),
         esc(rest)
+    )?;
+    // How many of these records attackers are using, and how many are malicious packages,
+    // counted from the same tables the findings of what needs a look are raised from.
+    let mut exploited: BTreeSet<(&str, &str)> = BTreeSet::new();
+    let mut malicious: BTreeSet<(&str, &str)> = BTreeSet::new();
+    for a in &list {
+        let record = (a.source.as_str(), a.advisory.as_str());
+        if a.exploited {
+            exploited.insert(record);
+        }
+        if a.label == "malicious" {
+            malicious.insert(record);
+        }
+    }
+    let used = match exploited.len() {
+        0 => "None is known to be used in attacks.".to_string(),
+        1 => "1 is on the list of vulnerabilities used in attacks.".to_string(),
+        n => format!("{n} are on the list of vulnerabilities used in attacks."),
+    };
+    let bad = match malicious.len() {
+        0 => "None is a malicious package.".to_string(),
+        1 => "1 is a malicious package.".to_string(),
+        n => format!("{n} are malicious packages."),
+    };
+    let to = if exploited.is_empty() && malicious.is_empty() {
+        String::new()
+    } else if st.needs.items.iter().any(|i| {
+        matches!(
+            i.rule,
+            Some(
+                findings::EXPLOITED_VULNERABILITY
+                    | findings::MALICIOUS_PACKAGE
+                    | findings::MALICIOUS_NAME_REMOVED
+            )
+        )
+    }) {
+        format!(
+            " <a href=\"{}#needs\">Needs a look</a> says what to do.",
+            view::SUMMARY
+        )
+    } else {
+        format!(
+            " Their findings are under <a href=\"{}#answered\">Answered</a>.",
+            view::SUMMARY
+        )
+    };
+    writeln!(
+        out,
+        "<p class=\"used\"><strong>{used} {bad}</strong>{to}</p>"
     )?;
     // One bar by label, every record counted once, and the labels with their counts beside it.
     let whole: usize = t.records_by_label.iter().map(|(_, n)| n).sum();
@@ -1111,7 +1206,7 @@ pub fn this_mac(
     now: i64,
 ) -> Result<String, Box<dyn Error>> {
     let mut out = top(
-        "What is watched on this Mac",
+        THIS_MAC_TITLE,
         &format!(
             "Last full check {} · this page made {}",
             utc_or(st.this_mac.checked_at, "never"),
