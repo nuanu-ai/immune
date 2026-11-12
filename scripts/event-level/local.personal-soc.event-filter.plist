@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The event level's filter: /bin/sh runs collect.sh, which pipes the FIFO through Apple's
+     jq and rotatelogs into one log file per hour. Every file named here was copied by the installer
+     into a folder only root can write. launchd starts it again when it stops, no sooner than
+     ThrottleInterval seconds. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>local.personal-soc.event-filter</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/sh</string>
+		<string>/Library/Application Support/personal-soc/event-level/collect.sh</string>
+		<string>/Library/Application Support/personal-soc/event-level</string>
+		<string>/Library/Application Support/personal-soc/event-level/run/events.fifo</string>
+		<string>/Library/Application Support/personal-soc/event-level/log</string>
+	</array>
+	<key>StandardOutPath</key>
+	<string>/dev/null</string>
+	<key>StandardErrorPath</key>
+	<string>/Library/Application Support/personal-soc/event-level/log/scripts.err</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>Umask</key>
+	<integer>63</integer>
+</dict>
+</plist>

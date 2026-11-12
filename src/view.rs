@@ -1673,7 +1673,11 @@ fn changes(conn: &Connection, out: &mut String) -> Out {
             not_repeated_stmt.query_row([run_id], |r| r.get(0))?
         };
         let partial = not_full.iter().any(|r| r.2 == "partial" && r.4);
-        let nothing = not_repeated > 0 || not_full.iter().any(|r| r.2 == "none");
+        // The event level keeps no facts: a reading of it that read nothing hides no change.
+        let nothing = not_repeated > 0
+            || not_full
+                .iter()
+                .any(|r| r.2 == "none" && r.1 != crate::events::KIND);
 
         // Counts things, not assertions, as the report does.
         let count = |kind: &str| {

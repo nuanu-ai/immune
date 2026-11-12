@@ -1307,7 +1307,9 @@ fn a_quiet_mac_needs_no_look_whatever_is_not_covered_and_a_planted_change_does()
     for limit in ["not-understood", "vulnerability-list-not-downloaded"] {
         assert_eq!(who(limit), "nothing");
     }
-    assert_eq!(kinds.iter().filter(|k| who(k) == "you").count(), 1, "{r:#}");
+    // The servers, and turning on the event level, which this Mac does not have.
+    assert_eq!(who("program-starts-not-seen"), "you");
+    assert_eq!(kinds.iter().filter(|k| who(k) == "you").count(), 2, "{r:#}");
     let servers_item = &r["not_covered"][0];
     assert_eq!(
         (&servers_item["title"], &servers_item["examples_text"]),
@@ -1352,7 +1354,7 @@ fn a_quiet_mac_needs_no_look_whatever_is_not_covered_and_a_planted_change_does()
     let line = String::from_utf8_lossy(&out.stdout);
     assert!(
         line.contains(
-            " 1 thing needs a look, 1 new in this run. You can fix: servers not checked last time. Limits of this version: "
+            " 1 thing needs a look, 1 new in this run. You can fix: servers not checked last time, program starts not seen. Limits of this version: "
         ),
         "{line}"
     );
@@ -1705,6 +1707,7 @@ fn a_sample_that_opens_a_finding_says_so_in_one_line_and_a_quiet_sample_says_not
     assert_eq!(
         ids,
         [
+            "program-starts-not-seen",
             "project-autorun",
             "home-autorun",
             "vulnerability-list-not-downloaded",

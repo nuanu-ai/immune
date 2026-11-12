@@ -1,0 +1,172 @@
+#!/bin/sh
+# Installs the event level of Personal SOC. The owner runs it once, with his administrator
+# password:
+#   sudo /bin/sh scripts/event-level/install
+# and removes everything it installs, logs included, with:
+#   sudo /bin/sh scripts/event-level/uninstall
+#
+# Apple's eslogger, run by launchd as root, records every program start on this Mac. Apple's
+# jq keeps of each start only what the reader uses, so its environment and file descriptors
+# are never written, and Apple's rotatelogs appends that to one file per hour. A job every
+# ten minutes deletes what is older than a day, and the oldest files while the log is larger
+# than 2 GiB. Only programs macOS ships run as root, and only from files this script copies
+# into a folder only root can write; nothing of ours is executed from a place
+# the owner's account can change. It only collects: it acts on no process, file or
+# connection. The log is readable by root and by the account that ran this through sudo, and
+# by no other account: an access-control entry for that one account, narrower than a group.
+#
+# It is idempotent: run again, it stops what it started before, puts every file back and
+# starts it again, keeping the logs. It says what it will put where before it does anything,
+# and stops with a reason and a non-zero exit when a step fails.
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
+
+LIB='/Library/Application Support/personal-soc/event-level'
+TOP='/Library/Application Support/personal-soc'
+RUN="$LIB/run"
+LOG="$LIB/log"
+FIFO="$RUN/events.fifo"
+DAEMONS=/Library/LaunchDaemons
+# In the order they are started: the filter is reading before eslogger writes.
+LABELS='local.personal-soc.event-filter local.personal-soc.eslogger local.personal-soc.event-tidy'
+SCRIPTS='collect.sh filter.jq tidy.sh'
+
+here=$(cd "$(/usr/bin/dirname "$0")" && pwd -P) || exit 1
+
+fail() {
+    echo "install: $*" >&2
+    exit 1
+}
+
+# A step that must succeed.
+step() {
+    "$@" || fail "this step failed, and the install stopped here: $*"
+}
+
+if [ "$(/usr/bin/id -u)" -ne 0 ]; then
+    echo "install: it must run as root. Run: sudo /bin/sh '$here/install'" >&2
+    exit 1
+fi
+# The account that may read the log: the one that ran sudo.
+user=${SUDO_USER:-}
+uid=${SUDO_UID:-}
+if [ -z "$user" ] || [ -z "$uid" ] || [ "$uid" = 0 ] || [ "$user" = root ]; then
+    fail "run it with sudo from the account that will read the log, not from a root shell: sudo /bin/sh '$here/install'"
+fi
+[ "$(/usr/bin/id -u "$user" 2>/dev/null)" = "$uid" ] ||
+    fail "SUDO_USER and SUDO_UID do not name one account"
+
+for f in $SCRIPTS; do
+    [ -f "$here/$f" ] || fail "$here/$f is missing"
+done
+for l in $LABELS; do
+    [ -f "$here/$l.plist" ] || fail "$here/$l.plist is missing"
+    /usr/bin/plutil -lint -s "$here/$l.plist" || fail "$here/$l.plist is not a valid property list"
+done
+[ -x /usr/bin/eslogger ] || fail "/usr/bin/eslogger is not on this Mac; it ships with macOS 13 and later"
+[ -x /usr/bin/jq ] || fail "/usr/bin/jq is not on this Mac; it ships with macOS 15 and later"
+[ -x /usr/sbin/rotatelogs ] || fail "/usr/sbin/rotatelogs is not on this Mac"
+
+# A folder that only root can change: owned by root, writable by no group and no other
+# account, and with no access-control entry that lets anyone add, remove or change entries.
+root_only() {
+    [ -d "$1" ] && [ ! -L "$1" ] || return 1
+    [ "$(/usr/bin/stat -f %u "$1")" = 0 ] || return 1
+    mode=$(/usr/bin/stat -f %Lp "$1") || return 1
+    [ $((0$mode & 022)) -eq 0 ] || return 1
+    ! /bin/ls -led "$1" | /usr/bin/sed 1d |
+        /usr/bin/grep -E -q ' allow .*(write|add_file|add_subdirectory|delete|append|chown)'
+}
+
+for d in / /Library '/Library/Application Support' "$DAEMONS"; do
+    root_only "$d" || fail "$d can be changed by an account other than root, so nothing is installed under it"
+done
+if [ -e "$TOP" ] || [ -L "$TOP" ]; then
+    root_only "$TOP" || fail "$TOP exists and can be changed by an account other than root"
+fi
+
+cat <<EOF
+This installs the event level, and changes nothing else on this Mac:
+  $LIB
+      root, 755: collect.sh, filter.jq, tidy.sh (root, 644)
+  $RUN
+      root, 700: events.fifo, the pipe from eslogger to the filter (root, 600)
+  $LOG
+      root, 700, readable by $user alone through an access-control entry:
+      exec-<hour>.jsonl, one file per hour (UTC); eslogger.err and scripts.err, what eslogger
+      and these scripts print; removed, what was deleted and why
+  $DAEMONS/local.personal-soc.eslogger.plist
+      runs /usr/bin/eslogger exec as root
+  $DAEMONS/local.personal-soc.event-filter.plist
+      runs collect.sh as root: jq keeps what the reader uses, rotatelogs writes the log
+  $DAEMONS/local.personal-soc.event-tidy.plist
+      runs tidy.sh as root every ten minutes: deletes logs older than a day, and the oldest
+      while the log is larger than 2 GiB
+It records every program start on this Mac, of every account, with its arguments; the
+environment of a program is never written. eslogger needs Full Disk Access, granted to
+/usr/bin/eslogger in System Settings > Privacy & Security > Full Disk Access; without it
+eslogger stops at once, nothing is recorded, and Personal SOC says macOS refuses it.
+What it costs on disk: about 600 bytes a program start. A quiet Mac starting 2 programs a
+second writes about 100 MB a day; one building at 100 a second, about 5 GB a day, more than
+the cap, which then deletes the oldest hours first, so such a day keeps its last 10 hours or
+so, and Personal SOC says the day is partial. The log never holds more than
+2 GiB, plus what ten minutes of writing add: at most about 2.2 GB of disk.
+EOF
+
+# What an earlier install started is stopped, so that it is replaced whole.
+for l in $LABELS; do
+    if /bin/launchctl print "system/$l" >/dev/null 2>&1; then
+        step /bin/launchctl bootout "system/$l"
+        n=0
+        while /bin/launchctl print "system/$l" >/dev/null 2>&1; do
+            n=$((n + 1))
+            [ "$n" -le 20 ] || fail "$l did not stop within ten seconds"
+            /bin/sleep 0.5
+        done
+    fi
+done
+
+# A symbolic link where a folder belongs makes mkdir fail, and the install stops there.
+for d in "$TOP:755" "$LIB:755" "$RUN:700" "$LOG:700"; do
+    path=${d%:*}
+    { [ -d "$path" ] && [ ! -L "$path" ]; } || step /bin/mkdir "$path"
+    step /usr/sbin/chown root:wheel "$path"
+    step /bin/chmod "${d##*:}" "$path"
+    step /bin/chmod -N "$path"
+done
+for f in $SCRIPTS; do
+    step /usr/bin/install -o root -g wheel -m 644 "$here/$f" "$LIB/$f"
+done
+
+if [ ! -p "$FIFO" ]; then
+    step /bin/rm -f "$FIFO"
+    step /usr/bin/mkfifo -m 600 "$FIFO"
+fi
+step /usr/sbin/chown root:wheel "$FIFO"
+step /bin/chmod 600 "$FIFO"
+
+# The log: the folder can be listed, and each file in it read, by this one account. Files
+# made later inherit the second entry from the folder.
+step /bin/chmod +a "user:$user allow list,search,readattr,readextattr,readsecurity" "$LOG"
+step /bin/chmod +a "user:$user allow read,readattr,readextattr,readsecurity,file_inherit,only_inherit" "$LOG"
+# Files an earlier install left, perhaps for another account, get the same entry anew.
+step /usr/bin/find "$LOG" -type f -exec /bin/chmod -N {} +
+step /usr/bin/find "$LOG" -type f -exec /usr/sbin/chown root:wheel {} +
+step /usr/bin/find "$LOG" -type f -exec /bin/chmod 600 {} +
+step /usr/bin/find "$LOG" -type f -exec /bin/chmod +a "user:$user allow read,readattr,readextattr,readsecurity" {} +
+
+for l in $LABELS; do
+    step /usr/bin/install -o root -g wheel -m 644 "$here/$l.plist" "$DAEMONS/$l.plist"
+done
+for l in $LABELS; do
+    step /bin/launchctl bootstrap system "$DAEMONS/$l.plist"
+done
+
+cat <<EOF
+Installed. While the app is open, within a minute \`soc status\` and the panel say the event
+level is on, with how many program starts it read; otherwise they say it after the next
+full check, or at once after \`soc run\`. If macOS refuses
+eslogger Full Disk Access, they say so instead, with what eslogger printed
+(ES_NEW_CLIENT_RESULT_ERR_NOT_PERMITTED), and nothing is recorded until it is granted.
+EOF

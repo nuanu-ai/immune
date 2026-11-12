@@ -782,11 +782,12 @@ pub fn totals(tx: &Connection, run_id: &str) -> rusqlite::Result<Totals> {
                              AND a.reader = c.reader
                              AND a.scope = c.scope AND a.kind = c.kind)")?,
         // Folders macOS asks permission for were not looked into, which is not a reading
-        // that read nothing: they are told apart, under what is not covered.
+        // that read nothing: they are told apart, under what is not covered. The event level
+        // keeps no facts, so a reading of it that read nothing hides no change of one.
         none: tx.query_row(
             "SELECT COUNT(*) FROM coverage WHERE run_id = ?1 AND completeness = 'none'
-               AND kind != ?2",
-            params![run_id, crate::guarded::KIND],
+               AND kind NOT IN (?2, ?3)",
+            params![run_id, crate::guarded::KIND, crate::events::KIND],
             |row| row.get::<_, i64>(0),
         )?,
         machines_unread: one("SELECT COUNT(*) FROM (SELECT scope FROM coverage

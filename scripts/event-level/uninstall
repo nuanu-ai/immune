@@ -1,0 +1,67 @@
+#!/bin/sh
+# Removes everything the event level's install put on this Mac, the logs included:
+#   sudo /bin/sh scripts/event-level/uninstall
+# It stops the three launch daemons, deletes their property lists and the event level's
+# folder, and the folder above it when nothing else is in it. Run again, it finds nothing to
+# remove and says so. It stops with a reason and a non-zero exit when a step fails.
+
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
+
+LIB='/Library/Application Support/personal-soc/event-level'
+TOP='/Library/Application Support/personal-soc'
+DAEMONS=/Library/LaunchDaemons
+# The reverse of the order install starts them in.
+LABELS='local.personal-soc.event-tidy local.personal-soc.eslogger local.personal-soc.event-filter'
+
+here=$(cd "$(/usr/bin/dirname "$0")" && pwd -P) || exit 1
+
+fail() {
+    echo "uninstall: $*" >&2
+    exit 1
+}
+
+step() {
+    "$@" || fail "this step failed, and the removal stopped here: $*"
+}
+
+if [ "$(/usr/bin/id -u)" -ne 0 ]; then
+    echo "uninstall: it must run as root. Run: sudo /bin/sh '$here/uninstall'" >&2
+    exit 1
+fi
+
+cat <<EOF
+This removes the event level:
+  the launch daemons local.personal-soc.eslogger, local.personal-soc.event-filter and
+  local.personal-soc.event-tidy, and their property lists in $DAEMONS
+  $LIB, with every log of program starts in it
+  $TOP, if nothing else is in it
+EOF
+
+found=0
+for l in $LABELS; do
+    if /bin/launchctl print "system/$l" >/dev/null 2>&1; then
+        found=1
+        step /bin/launchctl bootout "system/$l"
+    fi
+    if [ -e "$DAEMONS/$l.plist" ]; then
+        found=1
+        step /bin/rm -f "$DAEMONS/$l.plist"
+    fi
+done
+if [ -L "$LIB" ]; then
+    fail "$LIB is a symbolic link, not the folder the install made; it is left as it is"
+fi
+if [ -d "$LIB" ]; then
+    found=1
+    step /bin/rm -rf "$LIB"
+fi
+if [ -d "$TOP" ] && [ ! -L "$TOP" ]; then
+    /bin/rmdir "$TOP" 2>/dev/null || true
+fi
+
+if [ "$found" -eq 1 ]; then
+    echo "Removed. \`soc status\` says the event level is not installed after its next reading."
+else
+    echo "Nothing was installed; nothing was removed."
+fi

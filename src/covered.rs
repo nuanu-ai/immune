@@ -56,6 +56,10 @@ const INSTALLED: [(Count, &str, bool); 4] = [
 /// What a watcher samples, in the same words as the other kinds.
 pub const SAMPLED: &str = "running programs and their connections";
 
+/// What the event level records, in the same words: listed with how `events` while it
+/// records them, counted over the last day, and not listed otherwise.
+pub const EVENTS: &str = "program starts";
+
 /// The rules that tell the owner about a change in a kind of watched thing, by its words as
 /// `watched` and `SAMPLED` give them. Derived from the rules themselves: a rule speaks about a
 /// kind when it fires on what a run reports for a change of that kind. None for words that
@@ -539,12 +543,72 @@ pub const NOT_COMPARED: Cause = Cause {
     advice: "Nothing to do. This comes in a later version.",
 };
 
+pub const EVENTS_OFF: Cause = Cause {
+    id: "program-starts-not-seen",
+    who: YOU,
+    scope: "this_mac",
+    kind: "program starts not seen",
+    title: [
+        "Program starts on this Mac are not seen.",
+        "Program starts on this Mac are not seen.",
+    ],
+    meaning: "Seeing every program start as it happens, with its command line, needs the event level: Apple's eslogger, run as administrator. Without it, running programs are looked at only in samples while the app is open, and a program that starts and ends between two samples goes unseen.",
+    meaning_none: None,
+    advice: "If you want it, give /usr/bin/eslogger Full Disk Access in System Settings, Privacy & Security, and run the event level's install command once with your administrator password; your agent can prepare it.",
+};
+
+pub const EVENTS_REFUSED: Cause = Cause {
+    id: "eslogger-refused",
+    who: YOU,
+    scope: "this_mac",
+    kind: "eslogger refused Full Disk Access",
+    title: [
+        "Program starts are not seen: macOS refuses eslogger Full Disk Access.",
+        "Program starts are not seen: macOS refuses eslogger Full Disk Access.",
+    ],
+    meaning: "The event level is installed, but macOS does not let Apple's eslogger run, so no program start is recorded. What eslogger said is listed with it.",
+    meaning_none: None,
+    advice: "Open System Settings, Privacy & Security, Full Disk Access, and turn on eslogger. If it is not in the list, add /usr/bin/eslogger with the plus button and Command-Shift-G.",
+};
+
+pub const EVENTS_FAILING: Cause = Cause {
+    id: "event-level-failing",
+    who: YOU,
+    scope: "this_mac",
+    kind: "event level stopped with an error",
+    title: [
+        "Program starts are not seen: the event level stopped with an error.",
+        "Program starts are not seen: the event level stopped with an error.",
+    ],
+    meaning: "The event level is installed, but it printed an error after the last program start it wrote, so program starts are not being recorded. What it said is listed with it.",
+    meaning_none: None,
+    advice: "Ask your agent to look at what it said. Running the event level's install command again may help.",
+};
+
+pub const EVENTS_SILENT: Cause = Cause {
+    id: "event-level-silent",
+    who: YOU,
+    scope: "this_mac",
+    kind: "event level silent",
+    title: [
+        "Program starts are not seen: the event level has written nothing since {date}.",
+        "Program starts are not seen: the event level has written nothing since {date}.",
+    ],
+    meaning: "It is installed, but its log has not been written to for longer than a Mac that is awake allows, so program starts are not being recorded.",
+    meaning_none: None,
+    advice: "If it stays, ask your agent to look at why. Running the event level's install command again may help.",
+};
+
 /// Every cause, in the order items are listed: what the owner can fix first.
-pub const CAUSES: [&Cause; 12] = [
+pub const CAUSES: [&Cause; 16] = [
     &SERVERS_NOT_CHECKED,
     &SERVERS_NOT_OPENED,
     &NOT_PERMITTED,
     &READING_FAILED,
+    &EVENTS_OFF,
+    &EVENTS_REFUSED,
+    &EVENTS_FAILING,
+    &EVENTS_SILENT,
     &GUARDED,
     &NOT_UNDERSTOOD,
     &PROJECT_AUTORUN,
@@ -756,6 +820,31 @@ pub fn not_covered(
             examples,
             ..Uncovered::new(cause, list.len())
         });
+    }
+
+    // The event level, as its latest reading left it: not installed, or installed and not
+    // recording, each with its own words. A reading of it that failed is among the readings
+    // that failed above.
+    if let Some(l) = crate::events::level(conn, crate::now_secs())? {
+        let cause = match l.state.as_str() {
+            crate::events::NOT_INSTALLED => Some(&EVENTS_OFF),
+            crate::events::REFUSED => Some(&EVENTS_REFUSED),
+            crate::events::FAILING => Some(&EVENTS_FAILING),
+            crate::events::SILENT => Some(&EVENTS_SILENT),
+            _ => None,
+        };
+        if let Some(cause) = cause {
+            out.push(Uncovered {
+                // Silent since the last write; else since the reading that found it so.
+                since: if l.state == crate::events::SILENT {
+                    l.written
+                } else {
+                    Some(l.read_at)
+                },
+                value: l.said.clone().filter(|s| !s.is_empty()),
+                ..Uncovered::new(cause, 1)
+            });
+        }
     }
 
     // Folders macOS protects, whichever reader did not look into them.

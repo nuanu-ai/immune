@@ -296,7 +296,7 @@ public struct Panel: Sendable, Equatable {
     let lastCheck = mac?.checkedAt ?? s.lastFinishedRun?.finishedAt
     checkedAt = lastCheck.map(Clock.full)
     let parts = (mac?.watched ?? []).filter { $0.count != 0 }
-    let liveKinds = parts.filter { $0.how == "live" || $0.how == "sampled" }.compactMap(\.what)
+    let liveKinds = parts.filter { Self.allTheTime($0) }.compactMap(\.what)
     // While the watcher says it is not watching, live watching is not claimed, whatever
     // the status says: the store may be what failed, and then the status cannot know.
     let live = notWatching == nil ? mac?.live : mac?.live.map { _ in false }
@@ -384,14 +384,20 @@ public struct Panel: Sendable, Equatable {
     return lines.joined(separator: "\n")
   }
 
-  /// What is watched in two groups: seen all the time (live, or sampled) and checked
-  /// every hour. Without a live watcher everything is in the hourly group.
+  /// Whether soc says a kind is seen all the time while a watcher runs: live, sampled,
+  /// or program starts the event level records, which the watcher reads at each sample.
+  static func allTheTime(_ p: WatchedPart) -> Bool {
+    p.how == "live" || p.how == "sampled" || p.how == "events"
+  }
+
+  /// What is watched in two groups: seen all the time (live, sampled, or program starts)
+  /// and checked every hour. Without a live watcher everything is in the hourly group.
   static func groups(_ parts: [WatchedPart], live: Bool) -> [WatchedGroup] {
     // soc's own words as they are: no capitals added, so "npm" stays "npm".
     func line(_ p: WatchedPart) -> String {
       Inert.text(p.what ?? "", limit: 80) + ": " + (p.count.map(String.init) ?? "?")
     }
-    let always = live ? parts.filter { $0.how == "live" || $0.how == "sampled" } : []
+    let always = live ? parts.filter(allTheTime) : []
     let hourly = parts.filter { p in !always.contains(p) }
     return [
       WatchedGroup(title: "All the time", lines: always.map(line)),

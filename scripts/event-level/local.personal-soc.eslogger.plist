@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The event level's sensor: Apple's eslogger, subscribed to program starts alone, as root.
+     It is the program launchd starts, so the Full Disk Access granted to /usr/bin/eslogger
+     is the one macOS asks for. What it writes goes into the FIFO the filter reads, and
+     nowhere else; what it prints as errors goes to a small file the reader can read.
+     launchd starts it again when it stops, no sooner than ThrottleInterval seconds. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>local.personal-soc.eslogger</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/eslogger</string>
+		<string>exec</string>
+	</array>
+	<key>StandardOutPath</key>
+	<string>/Library/Application Support/personal-soc/event-level/run/events.fifo</string>
+	<key>StandardErrorPath</key>
+	<string>/Library/Application Support/personal-soc/event-level/log/eslogger.err</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>Umask</key>
+	<integer>63</integer>
+</dict>
+</plist>

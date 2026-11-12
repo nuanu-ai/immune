@@ -47,7 +47,7 @@ pub const CANNOT_JUDGE: &[&str] = &[
     "no vulnerability is matched against installed software, servers' packages or ecosystems other than npm and crates.io yet",
 ];
 /// The sections of a result that hold numbers, in the order of the result.
-const SECTIONS: [&str; 14] = [
+const SECTIONS: [&str; 15] = [
     "needs_a_look",
     "vulnerabilities",
     "answered_outside_app",
@@ -57,6 +57,7 @@ const SECTIONS: [&str; 14] = [
     "last_finished_run",
     "estate",
     "watched",
+    "event_level",
     "integrity",
     "threats",
     "vulnerability_data",
@@ -608,6 +609,8 @@ pub struct State {
     /// Known vulnerabilities in packages the projects use, beside what needs a look and never
     /// counted in it: `vulnerabilities::status_json`.
     pub vulnerabilities: Value,
+    /// The event level as its latest reading left it; `None` before any reading of it.
+    pub event_level: Option<crate::events::Level>,
 }
 
 pub fn state(conn: &Connection, home: &Path, now: i64) -> Res<State> {
@@ -626,11 +629,23 @@ pub fn state(conn: &Connection, home: &Path, now: i64) -> Res<State> {
     }
     let (coverage, problems, needs) = looked(conn, now)?;
     // Watched live while a watcher runs and its latest reading, sample and look at what to
-    // watch did not fail.
+    // watch did not fail. A failed reading of the event level stands for program starts
+    // alone, which are then not claimed as seen.
     let failed = crate::watch::failures(conn, home)?;
-    let live = store::watch_in_progress(home).unwrap_or(false) && failed.is_empty();
+    let live = store::watch_in_progress(home).unwrap_or(false)
+        && failed.iter().all(|f| f.what == crate::watch::EVENTS);
     let mut this_mac = crate::covered::this_mac(conn, &coverage, live)?;
     this_mac.failed = failed;
+    let event_level = crate::events::level(conn, now)?;
+    // Program starts are watched only while the level records them.
+    if let Some(l) = event_level
+        .as_ref()
+        .filter(|l| l.state == crate::events::RUNNING)
+    {
+        this_mac
+            .watched
+            .push((crate::covered::EVENTS, l.last_day.starts, "events"));
+    }
     let not_covered =
         crate::covered::not_covered(conn, &coverage, &problems, catalogue(conn)?.as_ref())?;
     Ok(State {
@@ -645,6 +660,7 @@ pub fn state(conn: &Connection, home: &Path, now: i64) -> Res<State> {
         this_mac,
         not_covered,
         vulnerabilities: crate::vulnerabilities::status_json(conn, now)?,
+        event_level,
     })
 }
 
@@ -754,6 +770,16 @@ pub fn result(state: Option<&State>, running: bool, path: &Path, now: i64) -> Va
         "this_mac".into(),
         crate::covered::this_mac_json(&st.this_mac),
     );
+    // The event level, `src/events.rs`: every program start, when it is installed.
+    match &st.event_level {
+        Some(l) => {
+            out.insert("event_level".into(), crate::events::json(l));
+        }
+        None => absent(
+            "event_level",
+            "program starts have not been looked for yet; the next check does",
+        ),
+    }
     let not_covered: Vec<Value> = st
         .not_covered
         .iter()

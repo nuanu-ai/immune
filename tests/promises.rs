@@ -7762,10 +7762,11 @@ fn unknown_is_never_given_as_zero_or_full() {
         "not_covered",
         "answered_outside_app",
         "statements_outside_app",
+        "event_level",
     ] {
         assert!(none.get(section).is_none(), "{section}");
     }
-    assert_eq!(none["not_computed"].as_array().unwrap().len(), 14);
+    assert_eq!(none["not_computed"].as_array().unwrap().len(), 15);
     // With no store, this Mac has not been checked: said, not left out.
     assert_eq!(none["this_mac"]["state"], "not_checked");
     assert!(
@@ -7869,9 +7870,10 @@ fn unknown_is_never_given_as_zero_or_full() {
     );
     assert_eq!(c["failed"], 1, "{c:#}");
     assert_eq!(c["no_reader"], 2, "{c:#}");
+    // The second reading of nothing is this Mac's program starts: no event level here.
     assert_eq!(
         (c["partial"].clone(), c["none"].clone()),
-        (2.into(), 1.into()),
+        (2.into(), 2.into()),
         "{c:#}"
     );
     let classes = [
@@ -7995,16 +7997,18 @@ fn a_section_an_older_probe_did_not_write_is_not_given_never_failed_and_retracts
     assert_eq!(rows(&dir.store(), release_and_sources), before);
     let r = status_json(&dir.store());
     let c = &r["coverage"];
+    // The fourth is this Mac's program starts: the event level is not installed here.
     assert_eq!(
         (c["not_given"].as_i64(), c["failed"].as_i64()),
-        (Some(3), Some(0)),
+        (Some(4), Some(0)),
         "{c:#}"
     );
-    assert_eq!(c["none"], 3, "{c:#}");
+    assert_eq!(c["none"], 4, "{c:#}");
     assert_eq!(c["unreached_total"], 0, "{c:#}");
     assert_eq!(
         problem_groups(&r),
         [
+            "not_given|events|program starts on this Mac, from Apple's eslogger|1",
             "not_given|servers|running kernel package|1",
             "not_given|servers|system package sources|1",
             "not_given|servers|system release|1",
@@ -8080,7 +8084,10 @@ fn a_lockfile_of_a_kind_without_a_reader_is_named_as_such_by_status_and_the_repo
     );
     assert_eq!(
         problem_groups(&r),
-        ["no_reader|lockfiles|lockfile dependencies|2"]
+        [
+            "no_reader|lockfiles|lockfile dependencies|2",
+            "not_given|events|program starts on this Mac, from Apple's eslogger|1",
+        ]
     );
     let (code, printed, _) = status_out(&store, &[]);
     assert_eq!(code, Some(0));
@@ -8202,6 +8209,7 @@ fn a_machine_that_could_not_be_reached_is_named_once_and_what_it_leaves_unread_i
     assert_eq!(
         problem_groups(&r),
         [
+            "not_given|events|program starts on this Mac, from Apple's eslogger|1",
             "not_given|servers|running kernel package|1",
             "not_given|servers|system package sources|1",
             "not_given|servers|system release|1",
@@ -8232,13 +8240,14 @@ fn a_store_from_before_causes_were_kept_shows_its_incomplete_readings_as_failed(
         let c = &r["coverage"];
         ["failed", "no_reader", "not_given"].map(|k| c[k].as_i64().unwrap())
     };
-    assert_eq!(classes(&status_json(&w.store())), [0, 1, 0]);
+    // Not given: this Mac's program starts, the event level not being installed here.
+    assert_eq!(classes(&status_json(&w.store())), [0, 1, 1]);
 
     let conn = Connection::open(w.store()).unwrap();
     conn.execute_batch("UPDATE coverage SET cause = NULL")
         .unwrap();
     let r = status_json(&w.store());
-    assert_eq!(classes(&r), [1, 0, 0]);
+    assert_eq!(classes(&r), [2, 0, 0]);
     // For a person they are not a failure of his Mac: the first run of this build reads them
     // again and says why, so a status read before it, or while it runs, is not alarmed by
     // numbers that run is about to change.
@@ -8255,10 +8264,10 @@ fn a_store_from_before_causes_were_kept_shows_its_incomplete_readings_as_failed(
         .unwrap();
     drop(conn);
     let r = status_json(&w.store());
-    assert_eq!(classes(&r), [1, 0, 0]);
-    assert_eq!(
-        problem_groups(&r)[0],
-        "failed|lockfiles|lockfile dependencies|1"
+    assert_eq!(classes(&r), [2, 0, 0]);
+    assert!(
+        problem_groups(&r).contains(&"failed|lockfiles|lockfile dependencies|1".to_string()),
+        "{r:#}"
     );
     assert!(r.get("no_reader_for").is_none(), "{r:#}");
     assert!(
@@ -8292,7 +8301,7 @@ fn a_store_from_before_causes_were_kept_shows_its_incomplete_readings_as_failed(
         ),
         ["1"]
     );
-    assert_eq!(classes(&status_json(&w.store())), [0, 1, 0]);
+    assert_eq!(classes(&status_json(&w.store())), [0, 1, 1]);
 }
 
 /// Every string of a value that is not under a key ending in `_text`.
@@ -9203,7 +9212,7 @@ fn a_change_in_a_watched_place_stays_open_through_quiet_runs_and_is_the_number_t
     // What is not covered comes after it by name, never counted as a thing to look at.
     assert!(
         first.contains(
-            " 1 thing needs a look, 1 new in this run. Limits of this version: ways a project runs code by itself that are not read, places in the home folder where a tool's settings run code by itself that are not read, vulnerability list not downloaded,"
+            " 1 thing needs a look, 1 new in this run. You can fix: program starts not seen. Limits of this version: ways a project runs code by itself that are not read, places in the home folder where a tool's settings run code by itself that are not read, vulnerability list not downloaded,"
         ),
         "{first}"
     );
@@ -9269,9 +9278,9 @@ fn a_change_in_a_watched_place_stays_open_through_quiet_runs_and_is_the_number_t
             &r["not_covered"][2]["id"]
         ),
         (
+            &"program-starts-not-seen".into(),
             &"project-autorun".into(),
             &"home-autorun".into(),
-            &"vulnerability-list-not-downloaded".into()
         )
     );
 
@@ -10186,9 +10195,15 @@ fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_f
         "answered",
     ];
     assert!(order.windows(2).all(|w| at(w[0]) < at(w[1])), "{page}");
-    assert!(
-        section(page, "you-can-fix").contains("<p class=\"muted\">Nothing for you to fix.</p>")
-    );
+    // The one thing the owner can do here is turn the event level on.
+    let yours: Vec<&str> = r["not_covered"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|u| u["who"] == "you")
+        .map(|u| u["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(yours, ["program-starts-not-seen"]);
     for u in r["not_covered"].as_array().unwrap() {
         let id = u["id"].as_str().unwrap();
         let start = page
@@ -10196,11 +10211,13 @@ fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_f
             .unwrap_or_else(|| panic!("{id}"));
         let article = &page[start..start + page[start..].find("</article>").unwrap()];
         for part in ["title", "meaning", "advice"] {
-            // As the page writes it: an apostrophe is escaped.
-            assert!(
-                article.contains(&u[part].as_str().unwrap().replace('\'', "&#39;")),
-                "{part}: {article}"
-            );
+            // As the page writes it: an ampersand and an apostrophe are escaped.
+            let written = u[part]
+                .as_str()
+                .unwrap()
+                .replace('&', "&amp;")
+                .replace('\'', "&#39;");
+            assert!(article.contains(&written), "{part}: {article}");
         }
         let held = if u["who"] == "you" {
             "you-can-fix"

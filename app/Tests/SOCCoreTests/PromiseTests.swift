@@ -708,13 +708,20 @@ struct PanelPromises {
     let off = panel(output("live-off.json"))
     #expect(off.watched.map(\.title) == ["Every hour"])
     #expect(off.watched.first?.lines.count == 7)
-    // Sampled kinds are seen all the time; a kind with nothing in it is left out.
+    // Sampled kinds, and program starts the event level records, are seen all the time
+    // while a watcher runs; without one, every hour. A kind with nothing in it is left out.
     let parts = [
       WatchedPart(what: "running programs", count: 12, how: "sampled"),
+      WatchedPart(what: "program starts", count: 4_810, how: "events"),
       WatchedPart(what: "empty", count: 0, how: "hourly"),
     ]
     #expect(
-      Panel.groups(parts.filter { $0.count != 0 }, live: true).map(\.title) == ["All the time"])
+      Panel.groups(parts.filter { $0.count != 0 }, live: true) == [
+        WatchedGroup(
+          title: "All the time", lines: ["running programs: 12", "program starts: 4810"])
+      ])
+    #expect(
+      Panel.groups(parts.filter { $0.count != 0 }, live: false).map(\.title) == ["Every hour"])
     let zero = quiet(
       removing: ["result", "this_mac", "watched"],
       setting: [

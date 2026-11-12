@@ -32,6 +32,10 @@
 //! after one that failed; another quiet sample prints nothing. A sample that failed is a
 //! `problem` line, `sample_failed`, and the next is taken at its time.
 //!
+//! Program starts. At every sample the watcher also reads the event level's log
+//! (`events.rs`), under the run lock in its own transaction. A reading that failed is a
+//! `problem` line, `events_failed`; a reading prints nothing otherwise.
+//!
 //! Failures. A reading, a sample or a look at what to watch that failed is a `problem` line,
 //! and is recorded in the `watcher_failed` table with what it said, under the run lock, where
 //! the store can hold it; the next success of the same kind clears it. While one stands,
@@ -106,23 +110,27 @@ CREATE TABLE IF NOT EXISTS watcher (
 /// lock now is a past watcher's and is not read.
 const FAILED_TABLE: &str = "
 CREATE TABLE IF NOT EXISTS watcher_failed (
-    what   TEXT PRIMARY KEY,  -- `read`, `sample` or `resubscribe`
+    what   TEXT PRIMARY KEY,  -- `read`, `sample`, `resubscribe` or `events`
     at     INTEGER NOT NULL,  -- when it failed, UTC seconds
     detail TEXT NOT NULL      -- what the failure said
 );
 ";
 
 /// The kinds of failure kept in `watcher_failed`: a reading of the watched places, a sample of
-/// running programs, a look at what to watch.
+/// running programs, a look at what to watch, a reading of the event level. A failed reading
+/// of the event level stands for that kind alone: program starts are not claimed as seen,
+/// and what is watched live otherwise still is.
 pub const READ: &str = "read";
 pub const SAMPLED: &str = "sample";
 pub const RESUBSCRIBE: &str = "resubscribe";
+pub const EVENTS: &str = "events";
 
 /// A kind of failure in words, for a person.
 pub fn failed_words(what: &str) -> &'static str {
     match what {
         READ => "reading of the watched places",
         SAMPLED => "sample of running programs",
+        EVENTS => "reading of program starts",
         _ => "look at what to watch",
     }
 }
@@ -370,7 +378,7 @@ struct Watcher<'a> {
     /// Who signed what the samples track, kept across samples.
     signers: crate::processes::Signers,
     /// The kinds whose latest attempt failed, or whose failure may still stand in the store
-    /// because clearing it failed: `READ`, `SAMPLED`, `RESUBSCRIBE`.
+    /// because clearing it failed: `READ`, `SAMPLED`, `RESUBSCRIBE`, `EVENTS`.
     standing: BTreeSet<&'static str>,
 }
 
@@ -561,6 +569,16 @@ impl Watcher<'_> {
                         }
                     }
                 }
+                match self.events() {
+                    Ok(Some(())) => {}
+                    // Stopped while it waited: the loop ends at its next turn.
+                    Ok(None) => {}
+                    Err(e) => {
+                        if !emit(&problem("events_failed", &e.to_string())) {
+                            return;
+                        }
+                    }
+                }
             }
             if alive <= now {
                 alive = now + self.args.alive_every;
@@ -676,6 +694,17 @@ impl Watcher<'_> {
         self.mark_held(SAMPLED, sampled.as_ref().err().map(|e| e.to_string()));
         let (report, needs) = sampled?;
         Ok(Some((report.findings_opened, needs)))
+    }
+
+    /// One reading of the event level under the run lock. `None` when the watcher was
+    /// stopped while it waited for the lock.
+    fn events(&mut self) -> Result<Option<()>, Box<dyn Error>> {
+        let Some(_lock) = self.lock()? else {
+            return Ok(None);
+        };
+        let read = crate::read_events_held(&self.args.store, &self.args.system_root);
+        self.mark_held(EVENTS, read.as_ref().err().map(|e| e.to_string()));
+        read.map(Some)
     }
 
     /// Under the run lock the caller holds: records that `what` failed, with what the failure
@@ -1033,8 +1062,8 @@ fn started(folder: &Path) -> Option<i64> {
         .and_then(|s| s.trim().parse().ok())
 }
 
-/// A failure of the watcher that stands: what failed (`READ`, `SAMPLED`, `RESUBSCRIBE`), when,
-/// and what the failure said.
+/// A failure of the watcher that stands: what failed (`READ`, `SAMPLED`, `RESUBSCRIBE`,
+/// `EVENTS`), when, and what the failure said.
 pub struct Failure {
     pub what: String,
     pub at: i64,

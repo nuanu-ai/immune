@@ -16,6 +16,7 @@ mod brew;
 mod checkouts;
 mod codesign;
 mod covered;
+mod events;
 mod findings;
 mod fsevents;
 mod guarded;
@@ -796,6 +797,40 @@ fn sample_cmd(args: &SampleArgs) -> ExitCode {
 
 // ---- End of `soc sample`. ----
 
+/// The event level at a full run: program starts as Apple's eslogger recorded them, see
+/// `events.rs`. A reading that failed is coverage with its reason, never a failed run.
+fn read_events(run: &mut Run, args: &Args) -> Result<(), Box<dyn Error>> {
+    let outcome = events::read(run.tx, run.run_id, run.machine, &args.system_root, run.at)?;
+    if outcome.state != events::NOT_INSTALLED {
+        run.readers += 1;
+    }
+    Ok(())
+}
+
+/// One reading of the event level, with the run lock held by the caller: what the watcher
+/// does at each sample. It commits what it read, the state and the coverage, and then fails
+/// with the reason when the reading failed, so that the watcher records the failure.
+pub fn read_events_held(path: &Path, system_root: &Path) -> Result<(), Box<dyn Error>> {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH)?;
+    let run_id = format!(
+        "{}{}-{:09}",
+        events::RUN_PREFIX,
+        now.as_secs(),
+        now.subsec_nanos()
+    );
+    let mut conn = store::open(path).map_err(|e| Stop::Store(e.to_string()))?;
+    let tx = conn.transaction()?;
+    let machine =
+        covered::this_machine(&tx)?.unwrap_or_else(|| format!("machine:{}", machine_name()));
+    store::put_entity(&tx, &machine)?;
+    let outcome = events::read(&tx, &run_id, &machine, system_root, now.as_secs() as i64)?;
+    tx.commit()?;
+    match outcome.failed {
+        Some(why) => Err(why.into()),
+        None => Ok(()),
+    }
+}
+
 /// Now, in UTC seconds.
 fn now_secs() -> i64 {
     SystemTime::now()
@@ -1016,6 +1051,9 @@ fn status_text(store: &Path) -> Result<(), Stop> {
     }
     say(&summary_sentences(s));
     this_mac_text(&st.this_mac);
+    if let Some(l) = &st.event_level {
+        say(&format!("Event level: {}.", events::words(l)));
+    }
     needs_text(&st.needs);
     not_covered_text(&st.not_covered);
     let p = &st.problems;
@@ -2479,6 +2517,7 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     let mut changed = read_integrity(&mut run, args)?;
     changed.extend(read_indicators(&mut run, args, &found)?);
     opened += findings::detect(run.tx, run.run_id, run.at, &changed)?;
+    read_events(&mut run, args)?;
     read_traces(&mut run, args)?;
     resolve(&mut run)?;
     read_threats(&run, catalogue)?;

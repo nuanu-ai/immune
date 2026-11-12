@@ -123,7 +123,7 @@ pub fn summary(
     crate::map::draw(&mut out, &map, YOUR_DEVICES)?;
     let list = indicator_list(conn)?;
     let none = covered::none_here(conn, &latest, &st.this_mac)?;
-    watched_section(&mut out, &st.this_mac, &none, list)?;
+    watched_section(&mut out, &st.this_mac, &none, list, st.event_level.as_ref())?;
     out.push_str("<div class=\"card closed\">\n");
     limits(conn, &mut out, st)?;
     answered_section(conn, &mut out, now)?;
@@ -490,6 +490,7 @@ fn watched_section(
     m: &covered::ThisMac,
     none: &[&'static str],
     list: Option<bool>,
+    events: Option<&crate::events::Level>,
 ) -> Out {
     writeln!(
         out,
@@ -592,6 +593,24 @@ fn watched_section(
             out,
             "Running programs and their connections",
             "looked at only while the app is open",
+            true,
+            None,
+        )?,
+    }
+    // Every program start, as the event level's latest reading left it; quiet unless it
+    // records them.
+    match events {
+        Some(l) => plain(
+            out,
+            "Every program start, with its command line",
+            &crate::events::words(l),
+            l.state != crate::events::RUNNING,
+            None,
+        )?,
+        None => plain(
+            out,
+            "Every program start, with its command line",
+            "not looked for yet",
             true,
             None,
         )?,
@@ -835,9 +854,13 @@ fn watched_here(
             kinds.push((what, Shown::None, how));
         }
     }
-    // Any other kind the status names, as it names it.
+    // Any other kind the status names, as it names it. Program starts are told in the row
+    // of the event level, and no rule speaks about them yet.
     for (what, n, how) in &m.watched {
-        if *what != covered::SAMPLED && !all.iter().any(|w| w.1 == *what) {
+        if *what != covered::SAMPLED
+            && *what != covered::EVENTS
+            && !all.iter().any(|w| w.1 == *what)
+        {
             kinds.push((what, Shown::Count(*n), how));
         }
     }
