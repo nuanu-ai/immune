@@ -97,7 +97,7 @@ CREATE TABLE raw_input (
 /// What the journal records. The list only grows: a store whose journal was made with a
 /// shorter list is made again with this one when it is opened, so a new kind of entry is a
 /// new word here and nothing else.
-const JOURNAL_ENTRIES: [&str; 19] = [
+const JOURNAL_ENTRIES: [&str; 20] = [
     "run_started",
     "added",
     "changed",
@@ -120,6 +120,9 @@ const JOURNAL_ENTRIES: [&str; 19] = [
     "advisories_read",
     // A published rule's match that a finding rests on: the rule and a count, see `events.rs`.
     "matched",
+    // A place new in a worktree that is the same as in another checkout of its repository,
+    // and so raised no finding, see `worktrees.rs`.
+    "same_as_sibling",
 ];
 
 /// The journal. It cannot be rebuilt from raw input, so it only grows. Its entries are the

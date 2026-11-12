@@ -114,11 +114,15 @@ Assertions live in three layers: draft, live and retracted.
 
 The first reading of a kind in a scope is a baseline and reports nothing as new. A watched file that could not be read before and now can is named once as read for the first time, since there was nothing to compare it with.
 
+A new worktree of a project the store already holds is compared with that project. Agents make worktrees all day, and each one holds the project's own settings, scripts and tasks byte for byte. When git made a new checkout as a linked worktree of a repository, and the store held another checkout of that repository before this reading, each place new in the worktree is compared with the place at the same path in that other checkout, as the same reading read it. The comparison uses what the reading already compares: the checksum of the file, or of the part that counts. Where the two are equal, the place is recorded like any other, so a later change in it is a finding, and its appearance raises none. The journal records it as `same_as_sibling`, with the checkout it matched. A finding that stands in that checkout stays as it is. Where they differ, or the other checkout has no such place, or it could not be read this time, the finding is raised as usual. Only the worktree's first reading is compared this way; a place that appears in it later is a finding as in any other checkout.
+
+"The same repository" is git's own relation, checked in both directions. The worktree's `.git` file points into `<git folder>/worktrees/<name>`, that folder's `gitdir` points back at the worktree, and its `commondir` names the git folder of a checkout the store holds (or the git folder another such worktree points to). The pointer in the worktree is text anyone who can write there can forge, so it counts only when the repository's folder points back. A separate clone, a copied folder, a folder whose `.git` is a link to the project's git folder, and a checkout with the same name or remote are different repositories, and their places are judged on their own. A submodule's `.git` file points to a folder without `commondir`, so a submodule is never taken for a worktree.
+
 Readers keep their raw input next to the store, copied only when it changed, so that the store can be rebuilt from it. A source that holds secrets keeps only what the reader extracted: the SSH readers keep names and never keys. Homebrew's answer and the vulnerability feeds are kept in reduced form for size. A command that rebuilds the store from raw input is planned. The store carries a format version, now 4, and a build refuses a store of a format it does not know.
 
 ## The journal
 
-The journal is an append-only list of what Immune did and decided. Raw events from the collector do not go there. Its entries include `run_started`, `run_finished` and `report` for a run; `added`, `changed` and `removed` for differences between readings; `finding_raised`, `finding_reopened`, `finding_cleared`, `finding_expected` and `finding_seen`; `owner_said` and `owner_withdrew` for statements about a machine; `sampled` for what a sample derived; `matched` for a published rule's match a finding rests on, with the rule and a count; and `threats_first_read`, `threat_added`, `threat_gone` and `advisories_read` for threat data. Each has a sequence number, and a finding refers to the entries it rests on by those numbers (`rests_on`).
+The journal is an append-only list of what Immune did and decided. Raw events from the collector do not go there. Its entries include `run_started`, `run_finished` and `report` for a run; `added`, `changed` and `removed` for differences between readings; `finding_raised`, `finding_reopened`, `finding_cleared`, `finding_expected` and `finding_seen`; `owner_said` and `owner_withdrew` for statements about a machine; `sampled` for what a sample derived; `matched` for a published rule's match a finding rests on, with the rule and a count; `same_as_sibling` for a place in a new worktree that raised no finding because it matched its project's; and `threats_first_read`, `threat_added`, `threat_gone` and `advisories_read` for threat data. Each has a sequence number, and a finding refers to the entries it rests on by those numbers (`rests_on`).
 
 A run that died leaves `run_started` without `run_finished`.
 
@@ -201,6 +205,7 @@ Where the industry has a proven name, format or rule set, Immune takes it. Its o
 | Vulnerability data | OSV's schema, its ecosystem names and its `IsVulnerable` algorithm; CISA KEV |
 | Indicators | STIX 2.1 object paths |
 | An answer that hides a finding until an end date, with a reason | the industry's practice for alert exceptions |
+| Content judged by its checksum against what is already in force | file integrity monitoring baselines (Tripwire, OSSEC), allow-listing by hash (Santa, AppLocker), "first seen" state in detection rules |
 | Collector | Apple's `eslogger`, `jq` and `rotatelogs` |
 
 Immune's own:
@@ -210,6 +215,7 @@ Immune's own:
 - "does not affect me, no signs" as an answer apart from "known for certain";
 - the map of one person's Mac, projects and servers;
 - the table of ways a file makes a tool run code by itself;
+- a known checksum in a new place counts only between checkouts git made of one repository, with the relation checked in both directions, because a fresh clone with something that runs by itself is the attack Immune watches for;
 - integrity of what is installed: content changed while the version stayed the same, for which no published rule exists;
 - one person answering findings, with an agent allowed to answer only after they agree.
 

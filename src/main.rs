@@ -52,6 +52,7 @@ mod view;
 mod vulnerabilities;
 mod watch;
 mod watched;
+mod worktrees;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -4057,6 +4058,14 @@ fn read_watched(
         lines.push(mine);
     }
     let raw_file = run.keep_raw(watched::READER, watched::RAW, raw.as_bytes())?;
+    // A place new in a new worktree, the same as in another checkout of its repository as this
+    // reading read it, raises no finding (`worktrees.rs`).
+    let siblings = worktrees::Siblings::of(run.tx, &machine, &run_id, checkouts, &args.home)?;
+    let read: BTreeMap<&str, &watched::Entry> = placed
+        .iter()
+        .flat_map(|p| &p.look.entries)
+        .map(|e| (e.path.as_str(), e))
+        .collect();
 
     for (p, mine) in placed.iter().zip(&lines) {
         let reading = Reading {
@@ -4125,13 +4134,23 @@ fn read_watched(
         )? {
             match (kind, predicate.as_str()) {
                 ("added", "watched_as") => {
-                    rows.push(vec![
-                        "new".to_string(),
-                        p.watched_as.to_string(),
-                        path_of(&subject),
-                        String::new(),
-                    ]);
-                    observe("new", p.watched_as, &subject);
+                    let path = path_of(&subject);
+                    let same = siblings.same_as(&path, &read);
+                    let why = match &same {
+                        Some((checkout, there)) => {
+                            let content = read.get(path.as_str()).and_then(|e| e.content.literal());
+                            let ids = (format!("checkout:{machine}/{checkout}"), file_id(there));
+                            worktrees::journal(
+                                run.tx, &reading, &subject, content, &ids.0, &ids.1,
+                            )?;
+                            format!("the same as in {checkout}")
+                        }
+                        None => {
+                            observe("new", p.watched_as, &subject);
+                            String::new()
+                        }
+                    };
+                    rows.push(vec!["new".to_string(), p.watched_as.to_string(), path, why]);
                     new.insert(subject);
                 }
                 ("removed", "watched_as") => {

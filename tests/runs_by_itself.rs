@@ -92,6 +92,11 @@ impl Estate {
 
     /// A run whose walk for checkouts is pointed at `root`.
     fn run_in(&self, root: &Path) -> String {
+        self.run_with(root, &self.0.join("empty"))
+    }
+
+    /// A run whose walk is pointed at `root` and whose agents' sessions are in `sessions`.
+    fn run_with(&self, root: &Path, sessions: &Path) -> String {
         let empty = self.0.join("empty");
         let out = Command::new(env!("CARGO_BIN_EXE_immune"))
             .env("HOME", self.home())
@@ -108,7 +113,7 @@ impl Estate {
             .arg("--checkouts-root")
             .arg(root)
             .arg("--sessions-root")
-            .arg(&empty)
+            .arg(sessions)
             .arg("--servers-input")
             .arg(&empty)
             .output()
@@ -1006,6 +1011,329 @@ fn the_home_items_numbers_equal_the_pages_table_of_places() {
     assert_eq!(
         item(&e.status())["meaning"],
         "None of the others is present on this Mac now."
+    );
+}
+
+// Worktrees of a project the store holds.
+
+/// A linked worktree of the checkout `main` at `rel`, as `git worktree add` leaves it: its
+/// `.git` file points into the repository's folder of worktrees, whose `gitdir` points back
+/// and whose `commondir` names the repository's folder.
+fn worktree(e: &Estate, main: &Path, rel: &str) -> PathBuf {
+    let path = e.home().join(rel);
+    let own = main.join(".git/worktrees").join(path.file_name().unwrap());
+    put(&path.join(".git"), &format!("gitdir: {}\n", own.display()));
+    put(
+        &own.join("gitdir"),
+        &format!("{}\n", path.join(".git").display()),
+    );
+    put(&own.join("commondir"), "../..\n");
+    put(&own.join("HEAD"), "ref: refs/heads/feature\n");
+    path
+}
+
+/// The journal's entries for places that raised nothing for being the same as in another
+/// checkout, as subject and the checkout they are the same as.
+fn same_as(e: &Estate) -> Vec<String> {
+    e.rows(
+        "SELECT subject, json_extract(text, '$.checkout') FROM journal
+         WHERE entry = 'same_as_sibling' ORDER BY subject",
+    )
+}
+
+#[test]
+fn a_worktree_of_a_known_project_with_the_same_agent_settings_raises_nothing_and_the_journal_says_where_it_is_the_same()
+ {
+    // Agents make a worktree of a project all day; its settings are the project's own, byte
+    // for byte, and run nothing the project does not. An alarm for each would teach the owner
+    // to ignore the alarm. A finding that stands in the project stands alone.
+    let e = Estate::new("worktree-same");
+    let shop = e.checkout("dev/shop");
+    agent(&shop, "");
+    e.run();
+    agent(&shop, HOOK);
+    e.run();
+    assert_eq!(
+        e.found(),
+        [pair(
+            "autorun.agent-start",
+            "~/dev/shop/.claude/settings.json#/hooks"
+        )]
+    );
+    let tree = worktree(&e, &shop, "dev/shop-feature");
+    agent(&tree, HOOK);
+    let said = e.run();
+    assert_eq!(
+        e.found(),
+        [pair(
+            "autorun.agent-start",
+            "~/dev/shop/.claude/settings.json#/hooks"
+        )]
+    );
+    assert_eq!(
+        same_as(&e),
+        [
+            "file:machine:mac/dev/shop-feature/.claude/settings.json#/hooks|checkout:machine:mac/dev/shop"
+        ]
+    );
+    assert!(said.contains("the same as in dev/shop"), "{said}");
+    // Recorded as any place is, with the part that counts the journal says is the same.
+    let content = |like: &str| {
+        e.rows(&format!(
+            "SELECT object FROM assertion WHERE layer = 'live' AND predicate = 'has_content'
+               AND subject LIKE '%{like}'"
+        ))
+    };
+    let project = content("dev/shop/.claude/settings.json#/hooks");
+    assert_eq!(project.len(), 1);
+    assert_eq!(
+        content("shop-feature/.claude/settings.json#/hooks"),
+        project
+    );
+    assert_eq!(
+        e.rows("SELECT new_value FROM journal WHERE entry = 'same_as_sibling'"),
+        project
+    );
+}
+
+#[test]
+fn a_later_change_in_a_worktrees_place_that_raised_nothing_is_a_finding_like_any_change() {
+    // Only the worktree's first appearance is judged against its project. After it, a place
+    // that changes or appears in it is a finding as in any checkout, even the same as the
+    // project's.
+    let e = Estate::new("worktree-later");
+    let shop = e.checkout("dev/shop");
+    agent(&shop, HOOK);
+    package(&shop, "\"postinstall\": \"node .invented/setup-3c1d.js\"");
+    e.run();
+    let tree = worktree(&e, &shop, "dev/shop-feature");
+    agent(&tree, HOOK);
+    e.run();
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+    agent(&tree, &HOOK.replace("start-91c2", "start-0b7e"));
+    package(&tree, "\"postinstall\": \"node .invented/setup-3c1d.js\"");
+    e.run();
+    assert_eq!(
+        e.found(),
+        [
+            pair(
+                "autorun.agent-start",
+                "~/dev/shop-feature/.claude/settings.json#/hooks"
+            ),
+            pair(
+                "autorun.package-install",
+                "~/dev/shop-feature/package.json#/scripts/postinstall"
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_worktree_whose_part_that_counts_differs_from_its_projects_raises_the_finding() {
+    // Equal is per place and per part: what the project does not run is new, wherever its
+    // neighbours in the same file are the same. The same part in a project of another
+    // repository counts for nothing.
+    let e = Estate::new("worktree-differs");
+    let shop = e.checkout("dev/shop");
+    agent(&shop, HOOK);
+    package(&shop, "\"postinstall\": \"node .invented/setup-3c1d.js\"");
+    let web = e.checkout("dev/web");
+    agent(&web, &HOOK.replace("start-91c2", "start-0b7e"));
+    put(&web.join(".mcp.json"), SERVER);
+    e.run();
+    let tree = worktree(&e, &shop, "dev/shop-feature");
+    agent(&tree, &HOOK.replace("start-91c2", "start-0b7e"));
+    package(&tree, "\"postinstall\": \"node .invented/setup-3c1d.js\"");
+    put(&tree.join(".mcp.json"), SERVER);
+    e.run();
+    assert_eq!(
+        e.found(),
+        [
+            pair(
+                "autorun.agent-start",
+                "~/dev/shop-feature/.claude/settings.json#/hooks"
+            ),
+            pair(
+                "autorun.agent-start",
+                "~/dev/shop-feature/.mcp.json#/mcpServers/helper"
+            ),
+        ]
+    );
+    assert_eq!(
+        same_as(&e),
+        [
+            "file:machine:mac/dev/shop-feature/package.json#/scripts/postinstall|checkout:machine:mac/dev/shop"
+        ]
+    );
+}
+
+#[test]
+fn a_separate_clone_with_byte_identical_settings_still_raises_the_finding() {
+    // A fresh clone with something that runs by itself is the attack this program is for. The
+    // same bytes in another repository, of the same name or from the same remote, prove
+    // nothing.
+    let e = Estate::new("clone-same");
+    let shop = e.checkout("dev/shop");
+    agent(&shop, HOOK);
+    put(
+        &shop.join(".git/config"),
+        "[remote \"origin\"]\n\turl = https://git.example.invalid/shop.git\n",
+    );
+    e.run();
+    let clone = e.checkout("work/shop");
+    agent(&clone, HOOK);
+    put(
+        &clone.join(".git/config"),
+        "[remote \"origin\"]\n\turl = https://git.example.invalid/shop.git\n",
+    );
+    e.run();
+    assert_eq!(
+        e.found(),
+        [pair(
+            "autorun.agent-start",
+            "~/work/shop/.claude/settings.json#/hooks"
+        )]
+    );
+    assert!(same_as(&e).is_empty());
+}
+
+#[test]
+fn a_folder_that_claims_to_be_a_worktree_without_the_projects_pointer_back_still_raises_the_finding()
+ {
+    // The `.git` file of a folder is text anyone who writes in it can write. It is believed
+    // only when the project's own git folder points back at it.
+    let e = Estate::new("worktree-forged");
+    let shop = e.checkout("dev/shop");
+    agent(&shop, HOOK);
+    e.run();
+    // A worktree that is real, so that its folder in the project's git folder exists.
+    let real = worktree(&e, &shop, "dev/shop-feature");
+    agent(&real, HOOK);
+    e.run();
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+    // Points at a folder of worktrees that does not exist.
+    let none = e.home().join("dev/none");
+    put(
+        &none.join(".git"),
+        &format!("gitdir: {}\n", shop.join(".git/worktrees/none").display()),
+    );
+    agent(&none, HOOK);
+    // Points at the real worktree's folder, which points back at the real worktree: a copy.
+    let copy = e.home().join("dev/copy");
+    put(
+        &copy.join(".git"),
+        &format!(
+            "gitdir: {}\n",
+            shop.join(".git/worktrees/shop-feature").display()
+        ),
+    );
+    agent(&copy, HOOK);
+    // Keeps every pointer, back included, in a folder of its own outside the project's git
+    // folder.
+    let forged = e.home().join("dev/forged");
+    let own = forged.join(".pointers/forged");
+    put(
+        &forged.join(".git"),
+        &format!("gitdir: {}\n", own.display()),
+    );
+    put(
+        &own.join("gitdir"),
+        &format!("{}\n", forged.join(".git").display()),
+    );
+    put(
+        &own.join("commondir"),
+        &format!("{}\n", shop.join(".git").display()),
+    );
+    agent(&forged, HOOK);
+    // Its `.git` is a link to the project's git folder: no worktree git made.
+    let linked = e.home().join("dev/linked");
+    std::fs::create_dir_all(&linked).unwrap();
+    std::os::unix::fs::symlink(shop.join(".git"), linked.join(".git")).unwrap();
+    agent(&linked, HOOK);
+    e.run();
+    assert_eq!(
+        e.found(),
+        [
+            pair(
+                "autorun.agent-start",
+                "~/dev/copy/.claude/settings.json#/hooks"
+            ),
+            pair(
+                "autorun.agent-start",
+                "~/dev/forged/.claude/settings.json#/hooks"
+            ),
+            pair(
+                "autorun.agent-start",
+                "~/dev/linked/.claude/settings.json#/hooks"
+            ),
+            pair(
+                "autorun.agent-start",
+                "~/dev/none/.claude/settings.json#/hooks"
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_worktree_an_agent_keeps_inside_its_project_is_judged_by_the_path_of_a_place_in_the_worktree() {
+    // Agents keep their worktrees inside the project's own folder, where only their sessions
+    // lead. A place there belongs to the worktree, the deepest checkout that holds it, and is
+    // compared with the project's place of the same path from its own checkout.
+    let e = Estate::new("worktree-inside");
+    let shop = e.checkout("dev/shop");
+    agent(&shop, HOOK);
+    e.run();
+    let tree = worktree(&e, &shop, "dev/shop/.claude/worktrees/fix");
+    agent(&tree, HOOK);
+    let sessions = e.0.join("sessions/fix");
+    put(
+        &sessions.join("session.jsonl"),
+        &format!("{}\n", serde_json::json!({ "cwd": tree })),
+    );
+    e.run_with(&e.home(), &e.0.join("sessions"));
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+    assert_eq!(
+        same_as(&e),
+        [
+            "file:machine:mac/dev/shop/.claude/worktrees/fix/.claude/settings.json#/hooks|checkout:machine:mac/dev/shop"
+        ]
+    );
+}
+
+#[test]
+fn an_install_script_and_an_editor_task_in_a_worktree_are_judged_as_agent_settings_are() {
+    // The comparison is of every place read in a checkout, not of one tool's file.
+    let e = Estate::new("worktree-general");
+    let shop = e.checkout("dev/shop");
+    package(&shop, "\"postinstall\": \"node .invented/setup-3c1d.js\"");
+    put(&shop.join(".vscode/tasks.json"), ON_OPEN);
+    e.run();
+    let same = worktree(&e, &shop, "dev/shop-same");
+    package(&same, "\"postinstall\": \"node .invented/setup-3c1d.js\"");
+    put(&same.join(".vscode/tasks.json"), ON_OPEN);
+    let other = worktree(&e, &shop, "dev/shop-other");
+    package(&other, "\"postinstall\": \"node .invented/steal-77aa.js\"");
+    put(
+        &other.join(".vscode/tasks.json"),
+        &ON_OPEN.replace("setup", "steal"),
+    );
+    e.run();
+    assert_eq!(
+        e.found(),
+        [
+            pair("autorun.folder-open", "~/dev/shop-other/.vscode/tasks.json"),
+            pair(
+                "autorun.package-install",
+                "~/dev/shop-other/package.json#/scripts/postinstall"
+            ),
+        ]
+    );
+    assert_eq!(
+        same_as(&e),
+        [
+            "file:machine:mac/dev/shop-same/.vscode/tasks.json|checkout:machine:mac/dev/shop",
+            "file:machine:mac/dev/shop-same/package.json#/scripts/postinstall|checkout:machine:mac/dev/shop",
+        ]
     );
 }
 

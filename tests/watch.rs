@@ -1107,6 +1107,61 @@ fn after_a_first_check_the_watcher_read_first_what_arrives_later_is_still_found(
 }
 
 #[test]
+fn a_worktree_that_appears_while_the_watcher_runs_raises_nothing_in_the_run_or_the_watcher_and_its_later_change_is_found_live()
+ {
+    // The full run finds the worktree and the watcher then watches it: both judge it by one
+    // code, so neither raises what the other did not. Git writes the pointers relative here,
+    // as it does with `worktree.useRelativePaths`.
+    let mac = Mac::new("worktree");
+    project(&mac, "dev/shop");
+    mac.run();
+    let mut cmd = mac.watch_cmd();
+    cmd.args(["--alive-every", "1"]);
+    let mut w = Watcher::start(cmd).started();
+    project(&mac, "dev/shop-fix");
+    std::fs::remove_dir_all(mac.home().join("dev/shop-fix/.git")).unwrap();
+    mac.put(
+        "dev/shop-fix/.git",
+        "gitdir: ../shop/.git/worktrees/shop-fix\n",
+    );
+    mac.put(
+        "dev/shop/.git/worktrees/shop-fix/gitdir",
+        "../../../../shop-fix/.git\n",
+    );
+    mac.put("dev/shop/.git/worktrees/shop-fix/commondir", "../..\n");
+    mac.put(
+        "dev/shop/.git/worktrees/shop-fix/HEAD",
+        "ref: refs/heads/fix\n",
+    );
+    mac.run();
+    assert!(found(&mac).is_empty(), "{:?}", found(&mac));
+    assert_eq!(
+        mac.rows(
+            "SELECT subject FROM journal WHERE entry = 'same_as_sibling'
+               AND subject LIKE '%/dev/shop-fix/%' ORDER BY subject"
+        )
+        .len(),
+        3
+    );
+    // The watcher now watches the worktree's places and reads them. A change in one that
+    // raised nothing is a finding within seconds, and it is the only one: the watcher raises
+    // nothing for the places the run judged the same.
+    mac.put(
+        "dev/shop-fix/.claude/settings.json",
+        r#"{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "node .invented/other.js"}]}]}}"#,
+    );
+    w.until("read", |v| count(v, "opened") == 1);
+    assert_eq!(
+        found(&mac),
+        [(
+            "autorun.agent-start".to_string(),
+            "~/dev/shop-fix/.claude/settings.json#/hooks".to_string()
+        )]
+    );
+    assert!(w.stop().success());
+}
+
+#[test]
 fn a_link_in_a_watched_place_is_followed_and_a_change_at_its_target_is_seen() {
     // A profile kept in a dotfiles folder and linked into the home folder.
     let mac = Mac::new("link");
