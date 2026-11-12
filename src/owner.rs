@@ -121,6 +121,11 @@ pub fn standing(conn: &Connection) -> rusqlite::Result<Vec<Standing>> {
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
+    // Without a word in force there is nothing to place on a machine, and finding the
+    // machines reads every live assertion.
+    if words.is_empty() {
+        return Ok(Vec::new());
+    }
     let groups = store::machine_groups(conn)?;
     let known_as = store::live_known_as(conn)?;
     let mut out: Vec<Standing> = Vec::new();
