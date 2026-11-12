@@ -136,6 +136,8 @@ Every report command that takes `--json` prints one envelope with `format`, `ope
 | `immune rules [--json]` | The shipped Sigma rules: evaluated in full, in part or not, whether they watch, how often each matched |
 | `immune rules --over-log [--system-root <dir>] [--json]` | Evaluates the rules over the log on disk now, without the store |
 | `immune project <path or id> [--json]` | What the store knows of one project, as the contract's `Known` message. The project is a path, absolute or starting with `~/`, or its id as the store names it (`checkout:machine:<name>/<path>`). It reads the store only and never looks inside the project's folder |
+| `immune program <path, name or id> [--json]` | The same for one program installed on this Mac: an application bundle, a Homebrew formula, cask or keg, a global npm package. It is a path (the bundle, the keg or the package's folder, or a file inside one), the name the store gives it (a bundle identifier, Homebrew's name, the package's name), or its id. No path is looked at on disk |
+| `immune machine [<name or id>] [--json]` | The same for this Mac, or for another machine the store knows: a name or address it is known by, as `immune owner` takes one, or its id (`machine:<name>`). A machine known under several ids that the resolver links with `same_as` is answered with what was read under every one of them, whichever name is asked |
 | `immune matches [--after <position>] [--limit <n>] [--system-root <dir>] [--json]` | Every rule match over the event log, of every level, each with the event it matched, as the contract's `Matches` message. It reads the log again and the store only, and writes nothing |
 | `immune servers` | Lists the servers this Mac knows and writes the sweep script |
 | `immune owner [<name> retired\|not-mine --reason <text> \| <name> withdraw] [--via app\|agent] [--json]` | A statement that a machine is retired or not the user's, or the list of those that stand |
@@ -151,19 +153,27 @@ A program that runs Immune, such as the response layer, reads the commands of th
 
 A command of the contract prints one message on stdout: binary protobuf by default, and the same message as one line of JSON with `--json`. The generated types print the JSON. Field names are the schema's, an enum is the name of its value without the enum's prefix and in lower case (`CAUSE_NOT_GIVEN` prints as `not_given`, the store's own word), a 64-bit number is a JSON number, and an absent optional field is null. Times are seconds since the epoch, UTC, in fields ending in `_at`. A failure to answer is not a message: in binary nothing is printed on stdout, with `--json` the failure envelope is printed, and the exit codes are the ones above.
 
-Two commands use the contract so far: `immune project`, which prints `Known`, and `immune matches`, which prints `Matches`.
+Four commands use the contract so far. `immune project`, `immune program` and `immune machine` each print `Known`, about a project, a program or a machine. `immune matches` prints `Matches`.
 
-### `immune project`
+### `immune project`, `immune program` and `immune machine`
 
 | Field | Holds |
 |---|---|
-| `presence` | `unknown` when the store has never heard of the project, `held` when it has facts in force about it, `gone` when it was there and what was read of it is retracted |
-| `thing`, `parts` | the project's entity, and what is inside it: components `part_of` it, files `located_on` it, and files whose path is in its folder |
-| `facts` | the facts in force about the project and its parts, each with the assertions it rests on: `reader`, `basis`, `source_ref_text`, `observed_at`, and the reading's scope and kind |
-| `coverage` | the latest reading of each reader, scope and kind that speaks for the project: the readings of it and its parts, those that wrote its facts, those that look for projects on this Mac, and one that names a folder macOS asks permission for that holds it. Each has `completeness`, `reason_text`, `cause` and `observed_at`, and lists what it has no reader for |
-| `findings` | the findings about the project or its parts in every state, by id, with `rule`, `state`, `severity`, `confidence` and `urgent` |
+| `presence` | `unknown` when the store has never heard of the thing, `held` when it has facts in force about it or about what is on it, `gone` when it was there and what was read of it is retracted |
+| `thing`, `parts` | the thing's entity, and what is inside it with facts in force, one level. For a project: components `part_of` it, files `located_on` it, and files whose path is in its folder. For a machine: what is `part_of` or `located_on` it, such as its containers, packages, checkouts and watched files, without their own parts; `immune project` gives a checkout's. A program has none |
+| `facts` | the facts in force about the thing and its parts, each with the assertions it rests on: `reader`, `basis`, `source_ref_text`, `observed_at`, and the reading's scope and kind |
+| `coverage` | the latest reading of each reader, scope and kind that speaks for the thing: the readings of it and its parts, those that wrote its facts, those that look for things of its kind, and for a project one that names a folder macOS asks permission for that holds it. Each has `completeness`, `reason_text`, `cause` and `observed_at`, and lists what it has no reader for |
+| `findings` | the findings about the thing or its parts in every state, by id, with `rule`, `state`, `severity`, `confidence` and `urgent` |
 
-A project the store has never heard of is `unknown`, and its coverage shows which readings looked for it. In a project that is known and read in full, every reading is `full`. A project in a folder macOS asks permission for keeps what was read there before, and its answer carries the reading `folders macOS asks permission for` with completeness `none`, naming that folder.
+The readings that look for things of a kind are, for projects, the walk of the home folder and the reading of agent working folders, given with every project; for programs, the `integrity` readings of application bundles, Homebrew kegs and global npm packages and the `brew` reading; for machines, the `ssh-config`, `known-hosts` and `tailnet` readings. A program or a machine the store has never heard of carries all of its kind. A known one carries those that wrote about it.
+
+A thing the store has never heard of is `unknown`, and its coverage shows which readings looked for it. In a thing that is known and read in full, every reading is `full`. A project in a folder macOS asks permission for keeps what was read there before, and its answer carries the reading `folders macOS asks permission for` with completeness `none`, naming that folder. A program whose reading could not read all of it, such as a package whose manifest links into such a folder, carries that reading as `partial`. A server whose sweep did not complete carries its readings as `none`. A machine other than this Mac that the server check never visited, under any of the ids the resolver links, carries the reading `servers`, `sweep visit` with completeness `none`, cause `not_given` and `observed_at` 0; Immune makes that reading by rule, and nothing like it is kept in the store.
+
+`immune program` takes a path to the program whose folder holds it: the path in its `installed_at`, or the path a keg's id names. A program's id is that program, and a `file:` id of this Mac is the path it names. Anything else is a name, matched against the last part of a program's id, `component:<machine>/<ecosystem>/<name>`. A keg and its Homebrew formula are two programs: no fact links them.
+
+A question that fits more than one thing fails and names each of them. A name that fits two programs, such as a formula and a global npm package called the same, fails with `several_programs`; a name that fits machines not known to be one fails with `several_machines`. Both exit with code 2 and list every id the question fits, whole, in the error's `ids_text`, so each can be asked again. An id the store holds that is not a program fails with `not_a_program`.
+
+A statement that a machine is retired or not the user's is not part of the answer, since `Known` has no field for it. `immune owner --json` lists those that stand.
 
 As in every other answer, text from the Mac is only in fields ending in `_text`, with hidden characters escaped. Entity ids are such text, since they hold paths and names from the Mac. An id and the place a fact was read are references and are never cut, so they can be matched and asked about again; an id holding a hidden character is shown escaped and does not ask back as written. Other text from the Mac is cut to 256 characters.
 

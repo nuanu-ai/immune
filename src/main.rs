@@ -27,15 +27,18 @@ mod indicators;
 mod integrity;
 mod json5;
 mod jsonc;
+mod known;
 mod known_hosts;
 mod lifecycle;
 mod lockfiles;
+mod machine;
 mod map;
 mod matches;
 mod osv;
 mod owner;
 mod pages;
 mod processes;
+mod program;
 mod project;
 mod resolver;
 mod servers;
@@ -99,6 +102,12 @@ const USAGE: &str = "usage: immune run [--store <path>] [--machine-name <name>] 
        immune project <path or checkout id> [--store <path>] [--json]
            what the store knows of one project: its facts, what was read and what was
            not, its findings; one protobuf message, or the same message as JSON
+       immune program <path, name or id> [--store <path>] [--json]
+           the same for one program installed on this Mac: an application, a Homebrew
+           package or keg, a global npm package
+       immune machine [<name or id>] [--store <path>] [--json]
+           the same for this Mac, or for another machine the store knows; its parts
+           one level deep
        immune rules [--store <path>] [--json]
            the shipped Sigma rules for macOS: which are evaluated on every program
            start, which in part, and which not, with the reason; whether they watch
@@ -134,6 +143,8 @@ enum Cmd {
     Vulnerability(VulnerabilityArgs),
     Rules(RulesArgs),
     Project(project::ProjectArgs),
+    Program(program::ProgramArgs),
+    Machine(machine::MachineArgs),
     Matches(matches::MatchesArgs),
 }
 
@@ -537,6 +548,8 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
         }
         "watch" => watch::parse(it).map(Cmd::Watch),
         "project" => project::parse(it).map(Cmd::Project),
+        "program" => program::parse(it).map(Cmd::Program),
+        "machine" => machine::parse(it).map(Cmd::Machine),
         "matches" => matches::parse(it).map(Cmd::Matches),
         "rules" => {
             let (mut json, mut over_log, mut system_root) = (false, false, None);
@@ -665,6 +678,8 @@ fn main() -> ExitCode {
                         "vulnerability",
                         "rules",
                         "project",
+                        "program",
+                        "machine",
                         "matches",
                     ]
                     .contains(o)
@@ -680,6 +695,8 @@ fn main() -> ExitCode {
                     Some("sample") => "immune sample --json",
                     Some("owner") => "immune owner --json",
                     Some("project") => "immune project ~/<folder> --json",
+                    Some("program") => "immune program /Applications/<name>.app --json",
+                    Some("machine") => "immune machine --json",
                     Some("matches") => "immune matches --json",
                     _ => "immune status --json",
                 };
@@ -733,6 +750,8 @@ fn main() -> ExitCode {
         }
         Cmd::Rules(args) => return rules_cmd(&args),
         Cmd::Project(args) => return project::project_cmd(&args),
+        Cmd::Program(args) => return program::program_cmd(&args),
+        Cmd::Machine(args) => return machine::machine_cmd(&args),
         Cmd::Matches(args) => return matches::matches_cmd(&args),
     };
     match result {
