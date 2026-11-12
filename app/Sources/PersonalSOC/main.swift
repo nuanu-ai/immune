@@ -265,7 +265,7 @@ func renderPanel(_ model: AppModel, _ watcher: Watcher, to folder: URL) async ->
     memory.set(true, forKey: "notify.asked")
     model.announcer = Announcer(notifier: SilentNotifier(), memory: memory)
   }
-  model.watchedOpen = CommandLine.arguments.contains("--render-watched-open")
+  model.moreOpen = CommandLine.arguments.contains("--render-more-open")
   model.answeredOpen = CommandLine.arguments.contains("--render-answered-open")
   await model.refresh()
   let first = model.reading.status?.needsALook?.first { $0.type == "finding" }?.id
@@ -311,7 +311,7 @@ func renderPanel(_ model: AppModel, _ watcher: Watcher, to folder: URL) async ->
     model.reading, now: Date(), checking: model.runInProgress, notes: model.notes,
     notWatching: watcher.notWatching, form: model.form, answering: model.answering,
     refusals: model.refusals, notificationsOff: model.notificationsOff, soc: model.socCommand,
-    watchedOpen: model.watchedOpen, answeredOpen: model.answeredOpen)
+    moreOpen: model.moreOpen, answeredOpen: model.answeredOpen, openRow: model.openRow)
   try? (panel.lines.joined(separator: "\n") + "\n").write(
     to: folder.appendingPathComponent("panel.txt"), atomically: true, encoding: .utf8)
   watcher.stop()

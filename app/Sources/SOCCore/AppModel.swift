@@ -33,8 +33,10 @@ public final class AppModel: ObservableObject {
   /// instant too. On in the app, off in tests.
   public var learnPageEarly = false
   private var pageTask: Task<SocOutput, Never>?
-  /// "What is watched" is open in the panel.
-  @Published public var watchedOpen = false
+  /// "More" is open in the panel.
+  @Published public var moreOpen = false
+  /// The card the owner opened, by its place in the order soc served; nil is the first.
+  @Published public var openRow: Int?
   /// The answers given through the owner's agent are open in the panel.
   @Published public var answeredOpen = false
   /// The "Expected…" form, open on one finding's card, or nil.

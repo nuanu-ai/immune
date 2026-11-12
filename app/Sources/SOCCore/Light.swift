@@ -93,8 +93,15 @@ public enum Light: Sendable, Equatable {
     }
   }
 
-  /// The filled symbol for the panel's headline: the same shapes as `symbol`.
-  public var panelSymbol: String { symbol + ".fill" }
+  /// The large round symbol for the panel's headline, its mark a different shape in
+  /// each state: a check, an exclamation mark, a question mark.
+  public var panelSymbol: String {
+    switch self {
+    case .nothingToReport: "checkmark.circle.fill"
+    case .attention: "exclamationmark.circle.fill"
+    case .cannotRead: "questionmark.circle.fill"
+    }
+  }
 
   public var headline: String {
     switch self {

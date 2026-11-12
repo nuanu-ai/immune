@@ -361,7 +361,7 @@ struct PanelPromises {
     #expect(p.rows.allSatisfy { $0.means == "Meaning from the program. Advice from the program." })
     // A kind no app knows still gets its card, with soc's words and a plain picture.
     #expect(p.rows[2].symbol == "exclamationmark.circle")
-    #expect(p.lines.contains("• Nov 10 — Third.") || p.lines.contains { $0.hasSuffix(" — Third.") })
+    #expect(p.lines.contains("▸ • Third."))
   }
 
   @Test("A source's reason is under 'Reason:', the place is on its own line")
@@ -421,6 +421,31 @@ struct PanelPromises {
     #expect(p.lines.contains("54 more in Details"))
   }
 
+  @Test(
+    "One card is open at a time: the first served, or the one the owner opened; the Expected form, a save or a refusal keeps its card open"
+  )
+  func oneCardOpen() {
+    let items = [
+      lookItem(id: "f1", title: "First.", urgent: true), lookItem(id: "f2", title: "Second."),
+      lookItem(id: "f3", title: "Third."),
+    ]
+    let reading = Interpret.reading(from: looking(items))
+    let first = Panel.of(reading, now: Date())
+    #expect(first.opened?.item.id == "f1")
+    #expect(first.lines.contains { $0.hasSuffix(" — First.  [ Show ]") })
+    #expect(first.lines.contains("▸ • Second."))
+    #expect(first.lines.filter { $0.hasPrefix("    [ Expected… ]") }.count == 1)
+    #expect(Panel.of(reading, now: Date(), openRow: 2).opened?.item.id == "f3")
+    // An open row that is no longer shown falls back to the first.
+    #expect(Panel.of(reading, now: Date(), openRow: 7).opened?.item.id == "f1")
+    let form = ExpectedForm(id: "f2", reason: "mine")
+    #expect(Panel.of(reading, now: Date(), form: form, openRow: 2).opened?.item.id == "f2")
+    #expect(Panel.of(reading, now: Date(), answering: "f3").opened?.item.id == "f3")
+    #expect(Panel.of(reading, now: Date(), refusals: ["f2": "Not saved."]).opened?.item.id == "f2")
+    // soc's urgent mark is said in words, not by colour alone.
+    #expect(first.lines.contains { $0.hasPrefix("• [Urgent] ") })
+  }
+
   @Test("A path keeps its file name and the folders next to it, and loses its head")
   func pathHead() {
     #expect(
@@ -454,9 +479,11 @@ struct PanelPromises {
     #expect(
       p.gaps == [
         GapRow(
-          text: "You can fix 2 things", symbol: "wrench.and.screwdriver", section: "you-can-fix"),
+          text: "You can fix 2 things", label: "You can fix", count: 2,
+          symbol: "wrench.and.screwdriver", section: "you-can-fix"),
         GapRow(
-          text: "3 limits of this version, nothing to do", symbol: "info.circle", section: "limits"),
+          text: "3 limits of this version, nothing to do", label: "Limits of this version",
+          count: 3, symbol: "info.circle", section: "limits"),
       ])
     #expect(!p.lines.contains { $0.contains("Cannot judge") || $0.contains("more not covered") })
   }
@@ -508,11 +535,10 @@ struct PanelPromises {
     #expect(
       one.gaps.last
         == GapRow(
-          text: "1 known vulnerability in packages your projects use", symbol: "shippingbox",
+          text: "1 known vulnerability in packages your projects use",
+          label: "Known vulnerabilities", count: 1, symbol: "shippingbox",
           section: "vulnerabilities"))
-    #expect(
-      one.lines.contains(
-        "○ 1 known vulnerability in packages your projects use  › #vulnerabilities"))
+    #expect(one.lines.contains("○ Known vulnerabilities  1  › #vulnerabilities"))
     let many = with(["affected": 1015, "affected_records": 473])
     #expect(
       many.gaps.map(\.text) == [
@@ -627,6 +653,14 @@ struct PanelPromises {
     #expect(
       panel(quiet()).checked?.hasPrefix("Startup, shell and SSH changes show within seconds.")
         == true)
+    // The one line under the headline says the same in short, and claims live watching
+    // only when soc says so.
+    #expect(Panel.glance(live: true, lastCheck: at, now: now) == "Checked \(ago) · watched live")
+    #expect(Panel.glance(live: false, lastCheck: at, now: now) == "Checked \(ago) · hourly only")
+    #expect(Panel.glance(live: nil, lastCheck: at, now: now) == "Checked \(ago)")
+    #expect(Panel.glance(live: nil, lastCheck: nil, now: now) == "No full check yet")
+    #expect(panel(output("live-off.json")).glance?.hasSuffix(" · hourly only") == true)
+    #expect(panel(quiet()).glance?.hasSuffix(" · watched live") == true)
   }
 
   @Test(
@@ -645,7 +679,7 @@ struct PanelPromises {
   }
 
   @Test(
-    "What is watched opens in place in two groups, all the time and every hour, each kind with its count"
+    "What is watched is behind More, in two groups, all the time and every hour, each kind with its count"
   )
   func whatIsWatched() {
     let p = panel(quiet())
@@ -661,10 +695,10 @@ struct PanelPromises {
           title: "Every hour",
           lines: ["applications: 214", "Homebrew packages: 96", "npm packages: 640"]),
       ])
-    #expect(p.lines.contains("▸ What is watched"))
+    #expect(p.lines.contains("▸ More"))
     #expect(!p.lines.contains("    All the time"))
-    let open = Panel.of(Interpret.reading(from: quiet()), now: Date(), watchedOpen: true)
-    #expect(open.lines.contains("▾ What is watched"))
+    let open = Panel.of(Interpret.reading(from: quiet()), now: Date(), moreOpen: true)
+    #expect(open.lines.contains("▾ More"))
     #expect(open.lines.contains("    All the time"))
     #expect(open.lines.contains("      startup items: 14"))
     // Sampled running programs sit in the group; the second line names only file kinds.
@@ -834,7 +868,7 @@ struct PanelPromises {
     let names =
       rows.map(\.symbol) + panel(quiet()).gaps.map(\.symbol)
       + ["eye", "chevron.down", "chevron.right", "ellipsis.circle", "bell.slash", "pause.circle"]
-      + ["person.badge.clock"]
+      + ["person.badge.clock", "list.bullet", "text.bubble", "exclamationmark.circle.fill"]
       + [Light.nothingToReport, .attention(1), .cannotRead("x")].flatMap {
         [$0.symbol, $0.panelSymbol, Light.menuSymbol($0, worst: "critical")]
       }
@@ -1353,8 +1387,8 @@ struct Page {
     await model.openPage(section: "you-can-fix")
     await model.openPage(section: "limits")  // no file named: the summary
     await model.openPage()
-    // The quiet row under the open list of what is watched: what the owner is told about.
-    let open = Panel.of(model.reading, now: Date(), watchedOpen: true)
+    // The link under the open list of what is watched: what the owner is told about.
+    let open = Panel.of(model.reading, now: Date(), moreOpen: true)
     #expect(open.lines.contains("    ○ What you are told about  › #watched-here"))
     await model.openPage(section: open.toldAbout.section)
     #expect(opened.map(\.path) == [fix.path, page.path, page.path, told.path])
@@ -1546,10 +1580,13 @@ struct Answers {
     #expect(!health.isEmpty)
     #expect(health.allSatisfy { !$0.canAnswer })
     #expect(p.rows.filter { $0.item.type == "finding" }.allSatisfy { $0.canAnswer })
-    // In the panel's text, the health card is the last one and has no answer buttons.
-    let last = p.lines.lastIndex { $0.contains("[ Show ]") }!
-    #expect(!p.lines[last].contains("Seen"))
-    #expect(p.lines.filter { $0.contains("[ Seen ]  [ Expected… ]") }.count == 1)
+    // In the panel's text, the finding's card has the answer buttons; the health card,
+    // opened, has none.
+    #expect(p.lines.filter { $0.contains("[ Expected… ]  [ Seen ]") }.count == 1)
+    let healthOpen = Panel.of(Interpret.reading(from: mixed), now: Date(), openRow: 1)
+    #expect(healthOpen.opened?.item.type == "health")
+    #expect(healthOpen.lines.contains("    [ Copy for my agent ]"))
+    #expect(!healthOpen.lines.contains { $0.contains("[ Seen ]") || $0.contains("Expected…") })
     let soc = GatedSoc(status: mixed)
     let model = AppModel(soc: soc)
     await model.refresh()
@@ -1698,15 +1735,20 @@ struct OutsideApp {
     #expect(one.answered?.text == "1 answer given through your agent")
     #expect(one.total == 0)
     #expect(one.light == .nothingToReport)
-    #expect(one.lines.contains("▸ 1 answer given through your agent"))
+    #expect(one.answered?.label == "Answered through your agent")
+    #expect(one.answered?.count == 1)
+    #expect(one.lines.contains("▸ Answered through your agent  1"))
     // Only what is known to have come through the agent is said to have.
     let many = panel(answeredOutside([outsideItem(), outsideItem(id: "f2")], total: 7))
     #expect(many.answered?.text == "7 answers given outside the app")
+    #expect(many.answered?.label == "Answered outside the app")
+    #expect(many.answered?.count == 7)
     #expect(many.total == 0)
     let agents = panel(answeredOutside([outsideItem(), outsideItem(id: "f2")]))
     #expect(agents.answered?.text == "2 answers given through your agent")
     let mixed = panel(answeredOutside([outsideItem(), outsideItem(id: "f2", via: "command")]))
     #expect(mixed.answered?.text == "2 answers given outside the app")
+    #expect(mixed.answered?.label == "Answered outside the app")
     let command = panel(answeredOutside([outsideItem(via: "command")]))
     #expect(command.answered?.text == "1 answer given outside the app")
     #expect(panel(answeredOutside([])).answered == nil)
@@ -1783,7 +1825,7 @@ struct OutsideApp {
     #expect(!text.contains("could-not-read"))
     #expect(!text.contains("--all"))
     #expect(!text.contains("Ignore") && !text.contains("evil"))
-    #expect(p.lines.contains("○ You can fix 3 things  › #you-can-fix  [ Copy for my agent ]"))
+    #expect(p.lines.contains("○ You can fix  [ Copy for my agent ]  3  › #you-can-fix"))
     // Nothing for the owner to fix: nothing to hand over.
     #expect(panel(output("quiet-limits.json")).fixRequest == nil)
   }
@@ -2042,7 +2084,8 @@ struct Notifications {
     #expect(model.notificationsOff)
     let p = Panel.of(model.reading, now: Date(), notificationsOff: model.notificationsOff)
     #expect(
-      p.lines.contains("Notifications are off, so urgent things show only here  [ Open Settings ]"))
+      p.lines.contains(
+        "    Notifications are off, so urgent things show only here  [ Open Settings ]"))
     n.state = .allowed
     await model.refresh()
     #expect(!model.notificationsOff)

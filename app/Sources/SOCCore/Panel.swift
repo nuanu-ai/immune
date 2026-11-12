@@ -44,6 +44,8 @@ public struct Row: Sendable, Equatable, Identifiable {
 
   /// High and critical: the stronger weight.
   public var strong: Bool { Severity.isStrong(item.severity) }
+  /// soc marked it urgent: its card says so in words, not by colour alone.
+  public var urgent: Bool { item.urgent }
   /// Informational: the quietest.
   public var quiet: Bool { item.severity == "informational" }
 
@@ -161,7 +163,11 @@ public struct Panel: Sendable, Equatable {
 
   public var light: Light
   public var headline: String
-  /// "Checked 12 minutes ago", "checking now…".
+  /// The one line under the headline: when the last full check was, and whether this
+  /// Mac is watched live, as soc says. "Checked 12 minutes ago · watched live".
+  public var glance: String?
+  /// The whole sentence on how this Mac is watched: what is seen at once, what waits
+  /// for the hourly check, and when the last full check was. Behind "More".
   public var checked: String?
   /// The absolute time of the last check, for a tooltip on `checked`.
   public var checkedAt: String?
@@ -171,14 +177,18 @@ public struct Panel: Sendable, Equatable {
   public var reason: String?
   /// Every row; the panel shows the first `rowsShown`.
   public var rows: [Row] = []
-  /// "What is watched", shown when the row is open: what is seen all the time and
-  /// what every hour, each kind with its count.
+  /// What is watched, behind "More": what is seen all the time and what every hour,
+  /// each kind with its count.
   public var watched: [WatchedGroup] = []
-  public var watchedOpen = false
-  /// The quiet row at the bottom of the open list: the page's section that says, for
-  /// each kind, what the owner is told about.
+  /// "More" is open: how this Mac is watched, what is watched, what you are told about.
+  public var moreOpen = false
+  /// The card the owner opened, by its place in the order soc served; nil is the first.
+  public var openRow: Int?
+  /// The link at the bottom of "More": the page's section that says, for each kind,
+  /// what the owner is told about.
   public let toldAbout = GapRow(
-    text: "What you are told about", symbol: "text.bubble", section: "watched-here")
+    text: "What you are told about", label: "What you are told about", count: nil,
+    symbol: "text.bubble", section: "watched-here")
   /// What the program does not cover, as at most two quiet rows: what the owner can
   /// fix, and the limits of this version; then, when there are any, the known
   /// vulnerabilities in packages the projects use. Never counted, never orange.
@@ -218,17 +228,36 @@ public struct Panel: Sendable, Equatable {
   public var shown: [Row] { Array(rows.prefix(Self.rowsShown)) }
   public var more: Int { max(0, total - shown.count) }
 
+  /// The one card shown open; the others are one line each. The card with the
+  /// Expected form stays open; otherwise the one the owner opened; else one whose
+  /// answer is being saved or was refused, so that is never folded away; else the
+  /// first, which is the most urgent as soc orders them.
+  public var opened: Row? {
+    if let id = form?.id, let row = shown.first(where: { $0.canAnswer && $0.item.id == id }) {
+      return row
+    }
+    if let row = shown.first(where: { $0.id == openRow }) { return row }
+    let pending = shown.first {
+      guard let id = $0.item.id else { return false }
+      return id == answering || refusals[id] != nil
+    }
+    return pending ?? shown.first
+  }
+
+  /// "More" has something in it.
+  public var hasMore: Bool { checked != nil || !watched.isEmpty }
+
   public static func of(
     _ reading: Reading, now: Date, checking: Bool = false, notes: [String] = [],
     notWatching: String? = nil, form: ExpectedForm? = nil, answering: String? = nil,
     refusals: [String: String] = [:], notificationsOff: Bool = false, soc: SocCommand? = nil,
-    watchedOpen: Bool = false, answeredOpen: Bool = false
+    moreOpen: Bool = false, answeredOpen: Bool = false, openRow: Int? = nil
   ) -> Panel {
     let light = Light.of(reading)
     var p = Panel(
-      light: light, headline: light.headline, watchedOpen: watchedOpen, answeredOpen: answeredOpen,
-      notes: notes, notWatching: notWatching, canCheck: !checking, form: form,
-      answering: answering, refusals: refusals)
+      light: light, headline: light.headline, moreOpen: moreOpen, openRow: openRow,
+      answeredOpen: answeredOpen, notes: notes, notWatching: notWatching, canCheck: !checking,
+      form: form, answering: answering, refusals: refusals)
     if notificationsOff { p.notificationsOff = Announcer.offLine }
     switch reading {
     case .notYetRead:
@@ -269,6 +298,7 @@ public struct Panel: Sendable, Equatable {
     let parts = (mac?.watched ?? []).filter { $0.count != 0 }
     let liveKinds = parts.filter { $0.how == "live" || $0.how == "sampled" }.compactMap(\.what)
     checked = Self.how(live: mac?.live, liveKinds: liveKinds, lastCheck: lastCheck, now: now)
+    glance = Self.glance(live: mac?.live, lastCheck: lastCheck, now: now)
 
     if case .cannotRead(let r) = light {
       headline = "I can't tell: the program's answer is incomplete."
@@ -301,7 +331,8 @@ public struct Panel: Sendable, Equatable {
       gaps.append(
         GapRow(
           text: yours == 1 ? "You can fix 1 thing" : "You can fix \(yours) things",
-          symbol: "wrench.and.screwdriver", section: "you-can-fix"))
+          label: "You can fix", count: yours, symbol: "wrench.and.screwdriver",
+          section: "you-can-fix"))
       fixRequest = Self.fixRequest(
         ids: list.filter { $0.who == "you" }.compactMap(\.id), soc: soc)
     }
@@ -309,7 +340,8 @@ public struct Panel: Sendable, Equatable {
       gaps.append(
         GapRow(
           text: (limits == 1 ? "1 limit" : "\(limits) limits") + " of this version, nothing to do",
-          symbol: "info.circle", section: "limits"))
+          label: "Limits of this version", count: limits, symbol: "info.circle",
+          section: "limits"))
     }
     if let known = s.knownVulnerabilities, known > 0 {
       gaps.append(Self.vulnerabilities(known))
@@ -324,7 +356,7 @@ public struct Panel: Sendable, Equatable {
     GapRow(
       text: (n == 1 ? "1 known vulnerability" : "\(n) known vulnerabilities")
         + " in packages your projects use",
-      symbol: "shippingbox", section: "vulnerabilities")
+      label: "Known vulnerabilities", count: n, symbol: "shippingbox", section: "vulnerabilities")
   }
 
   /// A short task for the owner's coding agent about what they can fix: the soc this app
@@ -391,16 +423,37 @@ public struct Panel: Sendable, Equatable {
     }
   }
 
-  /// The panel as plain text, line by line, in the order the panel shows it.
+  /// The line under the headline: when the last full check was, then "watched live"
+  /// or "hourly only" exactly when soc says whether this Mac is watched live.
+  static func glance(live: Bool?, lastCheck: Date?, now: Date) -> String {
+    let when = lastCheck.map { "Checked " + Clock.ago($0, now: now) } ?? "No full check yet"
+    switch live {
+    case true?: return when + " · watched live"
+    case false?: return when + " · hourly only"
+    case nil: return when
+    }
+  }
+
+  /// The panel as plain text, line by line, in the order the panel shows it: the
+  /// state and what to act on under it, the open card and the others in one line each,
+  /// the quiet rows, "More" with what it holds when open, and the footer.
   public var lines: [String] {
     var out = ["[\(light.panelSymbol)] " + headline + (busy ? " (spinning)" : "")]
-    if let checked { out.append("    " + checked) }
+    if let glance { out.append("    " + glance) }
     out += help.map { "    " + $0 }
     if let reason { out.append("    (small) " + reason) }
-    if !shown.isEmpty || !watched.isEmpty || !gaps.isEmpty || answered != nil { out.append("----") }
+    if let notWatching { out.append("    " + notWatching) }
+    if let notificationsOff { out.append("    " + notificationsOff + "  [ Open Settings ]") }
+    if !shown.isEmpty { out.append("----") }
+    let open = opened
     for r in shown {
       let mark = r.strong ? "!" : r.quiet ? "·" : "•"
-      out.append(mark + " " + (r.when.map { $0 + " — " } ?? "") + r.title)
+      let urgent = r.urgent ? "[Urgent] " : ""
+      guard r == open else {
+        out.append("▸ " + mark + " " + urgent + r.title)
+        continue
+      }
+      out.append(mark + " " + urgent + (r.when.map { $0 + " — " } ?? "") + r.title + "  [ Show ]")
       if let v = r.shownValue { out.append("    › " + v) }
       if let why = r.reason { out.append("    Reason: " + why) }
       if !r.means.isEmpty { out.append("    " + r.means) }
@@ -414,24 +467,18 @@ public struct Panel: Sendable, Equatable {
       } else {
         let busy = r.canAnswer && answering == r.item.id
         out.append(
-          "    " + (r.canAnswer ? (busy ? "Saving…  " : "[ Seen ]  [ Expected… ]  ") : "")
-            + "[ Show ]  [ Copy for my agent ]")
+          "    " + (r.canAnswer ? (busy ? "Saving…  " : "[ Expected… ]  [ Seen ]  ") : "")
+            + "[ Copy for my agent ]")
       }
     }
     if more > 0 { out.append("\(more) more in Details") }
-    if !watched.isEmpty {
-      out.append((watchedOpen ? "▾ " : "▸ ") + "What is watched")
-      if watchedOpen {
-        for g in watched { out += ["    " + g.title] + g.lines.map { "      " + $0 } }
-        out.append("    ○ " + toldAbout.text + "  › #" + toldAbout.section)
-      }
-    }
+    if !gaps.isEmpty || answered != nil { out.append("----") }
     for g in gaps {
       let copy = g.section == "you-can-fix" && fixRequest != nil ? "  [ Copy for my agent ]" : ""
-      out.append("○ " + g.text + "  › #" + g.section + copy)
+      out.append("○ " + g.label + copy + (g.count.map { "  \($0)" } ?? "") + "  › #" + g.section)
     }
     if let a = answered {
-      out.append((answeredOpen ? "▾ " : "▸ ") + a.text)
+      out.append((answeredOpen ? "▾ " : "▸ ") + a.label + "  \(a.count)")
       if answeredOpen {
         for l in a.lines {
           out.append("    • " + l.title)
@@ -444,8 +491,14 @@ public struct Panel: Sendable, Equatable {
         if a.more > 0 { out.append("    \(a.more) more in Details  › #" + AnsweredRow.section) }
       }
     }
-    if let notWatching { out.append(notWatching) }
-    if let notificationsOff { out.append(notificationsOff + "  [ Open Settings ]") }
+    if hasMore {
+      out.append((moreOpen ? "▾ " : "▸ ") + "More")
+      if moreOpen {
+        if let checked { out.append("    " + checked) }
+        for g in watched { out += ["    " + g.title] + g.lines.map { "      " + $0 } }
+        if !watched.isEmpty { out.append("    ○ " + toldAbout.text + "  › #" + toldAbout.section) }
+      }
+    }
     out += notes
     out.append("----")
     out.append(footer.map { "[ \($0) ]" }.joined(separator: "  "))
@@ -459,7 +512,12 @@ public struct Panel: Sendable, Equatable {
 public struct AnsweredRow: Sendable, Equatable {
   /// The page's section that lists every answer, whoever gave it.
   public static let section = "answered"
+  /// The whole sentence: "2 answers given through your agent".
   public let text: String
+  /// The row's short label, beside `count`: "Answered through your agent".
+  public let label: String
+  /// soc's totals together.
+  public let count: Int
   public let lines: [AnsweredLine]
   /// How many of soc's totals are not listed here.
   public let more: Int
@@ -488,7 +546,7 @@ public struct AnsweredRow: Sendable, Equatable {
     let how = agent ? "through your agent" : "outside the app"
     return AnsweredRow(
       text: (total == 1 ? "1 answer" : "\(total) answers") + " given " + how,
-      lines: lines, more: total - lines.count)
+      label: "Answered " + how, count: total, lines: lines, more: total - lines.count)
   }
 }
 
@@ -556,9 +614,12 @@ public struct WatchedGroup: Sendable, Equatable {
 }
 
 /// One quiet row about what the program does not cover, leading to its section of
-/// the program's page.
+/// the program's page: a short label and a count, and the whole sentence for help.
 public struct GapRow: Sendable, Equatable, Identifiable {
   public let text: String
+  /// Three to five words beside the count: "You can fix".
+  public let label: String
+  public let count: Int?
   public let symbol: String
   /// The anchor of the page's section.
   public let section: String
