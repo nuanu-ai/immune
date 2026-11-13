@@ -8675,8 +8675,8 @@ fn plant_persistence(w: &Watch) {
 
 /// What `plant_persistence` puts there, by the ids of the entries.
 const PLANTED: [&str; 8] = [
-    "file:machine:mac//Library/Preferences/com.apple.loginwindow.plist#LoginHook",
-    "file:machine:mac/Library/Preferences/com.apple.loginwindow.plist#LogoutHook",
+    "file:machine:mac//Library/Preferences/com.apple.loginwindow.plist#/LoginHook",
+    "file:machine:mac/Library/Preferences/com.apple.loginwindow.plist#/LogoutHook",
     "file:machine:mac//etc/pam.conf",
     "file:machine:mac//etc/pam.d/sudo",
     "file:machine:mac//usr/local/etc/pam.conf",
@@ -8789,11 +8789,11 @@ fn a_place_read_for_the_first_time_on_an_older_store_is_told_once_and_a_change_a
             ),
             pair(
                 "watched.login-hook",
-                "/Library/Preferences/com.apple.loginwindow.plist#LoginHook"
+                "/Library/Preferences/com.apple.loginwindow.plist#/LoginHook"
             ),
             pair(
                 "watched.login-hook",
-                "~/Library/Preferences/com.apple.loginwindow.plist#LogoutHook"
+                "~/Library/Preferences/com.apple.loginwindow.plist#/LogoutHook"
             ),
         ]
     );
@@ -8820,7 +8820,7 @@ fn only_a_hook_counts_in_the_login_windows_preferences_and_its_script_is_never_k
         ),
     );
     let mut printed = w.run();
-    let id = "file:machine:mac/Library/Preferences/com.apple.loginwindow.plist#LoginHook";
+    let id = "file:machine:mac/Library/Preferences/com.apple.loginwindow.plist#/LoginHook";
     let content = w.content(id);
     assert_eq!(content.len(), 1);
     assert!(content[0].starts_with("value sha256:"), "{content:?}");
@@ -8901,7 +8901,7 @@ fn a_login_window_preferences_file_that_is_not_read_never_reads_as_holding_no_ho
         lost.iter().map(|f| f.1.as_str()).collect::<Vec<_>>(),
         ["watched.login-hook"]
     );
-    let id = "file:machine:mac/Library/Preferences/com.apple.loginwindow.plist#LoginHook";
+    let id = "file:machine:mac/Library/Preferences/com.apple.loginwindow.plist#/LoginHook";
     assert_eq!(w.content(id).len(), 1);
     // A file its permissions keep closed: the same, with the system's reason.
     login_window(
@@ -8963,7 +8963,7 @@ fn a_login_window_preferences_file_that_is_not_read_never_reads_as_holding_no_ho
             ("watched.login-hook".to_string(), place.to_string()),
             (
                 "watched.login-hook".to_string(),
-                format!("{place}#LoginHook")
+                format!("{place}#/LoginHook")
             ),
         ]
     );
@@ -9000,7 +9000,7 @@ fn a_login_window_preferences_link_to_nothing_holds_no_hook_until_its_target_hol
         found,
         [(
             "watched.login-hook".to_string(),
-            "~/Library/Preferences/com.apple.loginwindow.plist#LoginHook".to_string()
+            "~/Library/Preferences/com.apple.loginwindow.plist#/LoginHook".to_string()
         )]
     );
 }

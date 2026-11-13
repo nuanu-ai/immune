@@ -14,6 +14,7 @@
 //! Nothing that is not a regular file is ever read, and nothing is opened in a way that can
 //! block: a named pipe, a socket or a device is recorded as present with what it is.
 
+use crate::baseline::Unit;
 use std::fs::{FileType, Metadata, OpenOptions};
 use std::io::{ErrorKind, Read};
 use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
@@ -69,10 +70,10 @@ pub enum Counts {
     /// The whole file, by its checksum.
     Whole,
     /// The values at these top-level keys of a property list, each an entry of its own named
-    /// `<file>#<key>`, by the checksum of the value's exact encoding (`plist.rs`): for a
+    /// `<file>#/<key>`, by the checksum of the value's exact encoding (`plist.rs`): for a
     /// preferences file whose other settings change for their own reasons. A key that is not
     /// there is no entry; a file that is not a property list is a place that failed, and a key
-    /// whose value cannot be read is a part that failed, named `<file>#<key>`.
+    /// whose value cannot be read is a part that failed, named `<file>#/<key>`.
     Keys(&'static [&'static str]),
 }
 
@@ -220,10 +221,95 @@ pub const NOT_A_FILE: &str = "not a regular file: ";
 /// What a person or an agent reads of the content of an entry watched only for presence: a
 /// folder such as a plugin's bundle, or a pipe, socket or device. Its arrival and departure
 /// are seen, a change inside it is not, so it is never said to be unchanged.
-pub const PRESENCE_ONLY: &str =
-    "a change inside it is not seen: only whether it is there is watched";
+pub const PRESENCE_ONLY: &str = "a change inside it is not seen, only whether it is there";
 /// What is read of the content of an entry no reading has read yet.
 pub const NEVER_READ: &str = "not known: its content has not been read";
+/// What is read of an entry whose content the latest check did not read in full, before why.
+pub const NOT_READ_NOW: &str = "not read at the last check";
+/// Why, when the entry's kind was read in full and its content was not read with it.
+const CONTENT_NOT_READ: &str = "its content was not read";
+
+/// What the latest check knows of one live entry's content: the latest reading that speaks of
+/// it, as completeness and reason.
+pub struct ContentNow {
+    pub completeness: String,
+    pub reason: Option<String>,
+}
+
+impl ContentNow {
+    /// Whether its content was read in full by the latest reading of its kind: only then may a
+    /// person or an agent be told that it has not changed.
+    pub fn read(&self) -> bool {
+        self.completeness == "full"
+    }
+
+    /// What a row says in place of when it last changed, when its content was not read.
+    pub fn not_read(&self) -> String {
+        format!(
+            "{NOT_READ_NOW}: {}",
+            self.reason.as_deref().unwrap_or(CONTENT_NOT_READ)
+        )
+    }
+}
+
+/// For every live watched entry, by id, what the latest check knows of its content. The
+/// reading of its content counts only when it is as recent as the latest reading of the
+/// entry's kind, which writes it in the same run; otherwise the kind's latest reading speaks:
+/// what was known of the entry is kept from an earlier one, and its content was not read now.
+pub fn content_now(
+    conn: &rusqlite::Connection,
+) -> rusqlite::Result<std::collections::BTreeMap<String, ContentNow>> {
+    use std::collections::{BTreeMap, HashMap};
+    type Row = (i64, String, Option<String>);
+    let mut latest: HashMap<(String, String), Row> = HashMap::new();
+    // From the latest reading of each scope and kind, never through every reading: the cost
+    // follows what is watched, not how long the store has been kept (`store::LATEST`).
+    let mut stmt = conn.prepare(&format!(
+        "{latest}
+         SELECT c.scope, c.kind, c.id, c.completeness, c.reason FROM latest c
+         WHERE c.reader = ?1",
+        latest = crate::store::LATEST
+    ))?;
+    for row in stmt.query_map([READER], |r| {
+        Ok((
+            (r.get::<_, String>(0)?, r.get::<_, String>(1)?),
+            (r.get(2)?, r.get(3)?, r.get(4)?),
+        ))
+    })? {
+        let (key, value) = row?;
+        latest.insert(key, value);
+    }
+    let mut out = BTreeMap::new();
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT subject, scope, kind FROM assertion
+         WHERE layer = 'live' AND reader = ?1 AND predicate = 'watched_as'",
+    )?;
+    for row in stmt.query_map([READER], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+        ))
+    })? {
+        let (subject, scope, kind) = row?;
+        let of_kind = latest.get(&(scope, kind));
+        let content = latest.get(&(subject.clone(), CONTENT.to_string()));
+        let (completeness, reason) = match (of_kind, content) {
+            (Some(k), Some(c)) if c.0 > k.0 => (c.1.clone(), c.2.clone()),
+            (None, Some(c)) => (c.1.clone(), c.2.clone()),
+            (Some(k), _) if k.1 != "full" => ("none".to_string(), k.2.clone()),
+            _ => ("none".to_string(), None),
+        };
+        out.insert(
+            subject,
+            ContentNow {
+                completeness,
+                reason,
+            },
+        );
+    }
+    Ok(out)
+}
 
 /// The watched entries, by id, whose content is not hashed: only whether they are there is
 /// watched.
@@ -240,6 +326,41 @@ pub fn presence_only(
         |r| r.get(0),
     )?
     .collect()
+}
+
+/// How many live watched entries of each kind, by `watched_as`, are watched only for presence.
+pub fn presence_only_by_kind(
+    conn: &rusqlite::Connection,
+) -> rusqlite::Result<std::collections::BTreeMap<String, i64>> {
+    conn.prepare(
+        "SELECT w.object, COUNT(DISTINCT w.subject) FROM assertion w
+         WHERE w.layer = 'live' AND w.reader = ?1 AND w.predicate = 'watched_as'
+           AND EXISTS (SELECT 1 FROM assertion c
+                       WHERE c.layer = 'live' AND c.reader = ?1 AND c.subject = w.subject
+                         AND c.predicate = 'has_content' AND substr(c.object, 1, ?2) = ?3)
+         GROUP BY w.object",
+    )?
+    .query_map(
+        rusqlite::params![READER, NOT_A_FILE.len() as i64, NOT_A_FILE],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?
+    .collect()
+}
+
+/// Whether a watched entry, by id, was last read as something watched only for presence: by
+/// the latest content any reading gave it, so that a finding about one that went says so too.
+pub fn is_presence_only(conn: &rusqlite::Connection, subject: &str) -> rusqlite::Result<bool> {
+    use rusqlite::OptionalExtension;
+    let latest: Option<String> = conn
+        .query_row(
+            "SELECT object FROM assertion
+             WHERE reader = ?1 AND subject = ?2 AND predicate = 'has_content'
+             ORDER BY id DESC LIMIT 1",
+            rusqlite::params![READER, subject],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(latest.is_some_and(|c| c.starts_with(NOT_A_FILE)))
 }
 
 /// What is in one watched file, as `has_content` says it, or why it could not be read.
@@ -273,8 +394,7 @@ impl Content {
 
 /// One entry found in a watched place.
 pub struct Entry {
-    /// The path as ids name it: from the home folder when inside it, else the full path.
-    pub path: String,
+    pub unit: Unit,
     pub watched_as: &'static str,
     pub content: Content,
     /// The target text of a symbolic link, when the path is one.
@@ -286,19 +406,19 @@ pub struct Entry {
 pub struct Look {
     pub entries: Vec<Entry>,
     /// Places that are there and could not be looked at, with the reason.
-    pub failed: Vec<(String, String)>,
+    pub failed: Vec<(Unit, String)>,
     /// Places that are there and were looked at.
     pub present: usize,
     /// Places not looked into because they lead into a folder macOS asks permission for,
     /// each with why: whether they hold anything is not known.
-    pub unreached: Vec<(String, String)>,
+    pub unreached: Vec<(Unit, String)>,
     /// Every such folder met, a link's target among them, for the reader's coverage.
     pub guarded: Vec<PathBuf>,
     /// The units read in full, by their paths as ids name them: a file looked at, found or
     /// absent, and a folder listed or found absent (`baseline.rs`).
-    pub read: Vec<String>,
+    pub read: Vec<Unit>,
     /// The units found present, read or not.
-    pub seen: Vec<String>,
+    pub seen: Vec<Unit>,
 }
 
 impl Look {
@@ -348,7 +468,7 @@ impl Look {
     }
 
     /// A place that leads into a guarded folder: not looked into, and said.
-    pub fn not_into(&mut self, shown: String, folder: PathBuf, home: &Path) {
+    pub fn not_into(&mut self, shown: Unit, folder: PathBuf, home: &Path) {
         self.unreached
             .push((shown, crate::guarded::leads_into(&folder, home)));
         self.met(folder);
@@ -414,7 +534,11 @@ pub fn look_checkout(checkout: &Path, rel: &str, home: &Path) -> Hooks {
         Ok(dotgit) => dotgit,
         Err(folder) => {
             for p in PLACES.iter().filter(|p| p.base == Base::Checkout) {
-                look.not_into(format!("{rel}/{}", p.path), folder.clone(), home);
+                look.not_into(
+                    Unit::whole(format!("{rel}/{}", p.path)),
+                    folder.clone(),
+                    home,
+                );
             }
             return Hooks::Looked(look);
         }
@@ -447,13 +571,13 @@ fn look_place(look: &mut Look, p: &Place, base: &Path, shown: &str, at: &Where) 
     };
     let path = match crate::guarded::under(base, folder, &at.homes) {
         Ok(folder) => folder.join(name),
-        Err(guarded) => return look.not_into(shown.to_string(), guarded, at.home),
+        Err(guarded) => return look.not_into(Unit::whole(shown), guarded, at.home),
     };
     if !p.folder {
         let examined = examine(&path, look, at, p.counts);
         match examined {
             // A single file not there was read in full: it holds nothing.
-            Examined::Absent => look.read.push(shown.to_string()),
+            Examined::Absent => look.read.push(Unit::whole(shown)),
             Examined::Present(..) | Examined::Parts(..) => look.present += 1,
             _ => {}
         }
@@ -461,7 +585,7 @@ fn look_place(look: &mut Look, p: &Place, base: &Path, shown: &str, at: &Where) 
     }
     let path = match crate::guarded::followed(&path, &at.homes) {
         Ok(path) => path,
-        Err(guarded) => return look.not_into(shown.to_string(), guarded, at.home),
+        Err(guarded) => return look.not_into(Unit::whole(shown), guarded, at.home),
     };
     // Listing what is not a folder, a named pipe included, fails at once without waiting.
     let listing = std::fs::read_dir(&path).and_then(|entries| {
@@ -472,12 +596,12 @@ fn look_place(look: &mut Look, p: &Place, base: &Path, shown: &str, at: &Where) 
     let names = match listing {
         Ok(names) => names,
         // A folder that is not there was listed in full: it holds nothing.
-        Err(e) if absent(&e) => return look.read.push(shown.to_string()),
-        Err(e) => return look.failed.push((shown.to_string(), e.to_string())),
+        Err(e) if absent(&e) => return look.read.push(Unit::whole(shown)),
+        Err(e) => return look.failed.push((Unit::whole(shown), e.to_string())),
     };
     look.present += 1;
-    look.read.push(shown.to_string());
-    look.seen.push(shown.to_string());
+    look.read.push(Unit::whole(shown));
+    look.seen.push(Unit::whole(shown));
     for name in names {
         let text = name.to_string_lossy();
         if p.base == Base::Checkout && text.ends_with(SAMPLE) {
@@ -491,13 +615,14 @@ fn look_place(look: &mut Look, p: &Place, base: &Path, shown: &str, at: &Where) 
 
 /// Keeps what was found at one path, named `shown`, as the place's entries, or says why
 /// nothing was, and records the unit it is (`baseline.rs`). A file whose parts count is one
-/// unit, as a file read whole is: its parts, `<file>#<key>`, are entries of it, and the file
+/// unit, as a file read whole is: its parts, `<file>#/<key>`, are entries of it, and the file
 /// is read in full only when every part there was read. A part that could not be read is
 /// named as it is, so that what was known of it is kept and only of it; the file is then seen
 /// and not read, and losing sight of it is judged as for any unit.
 fn take(look: &mut Look, p: &Place, shown: String, examined: Examined, at: &Where) {
-    let entry = |path: String, content: Content, link: Option<String>| Entry {
-        path,
+    let shown = Unit::whole(shown);
+    let entry = |unit: Unit, content: Content, link: Option<String>| Entry {
+        unit,
         watched_as: p.watched_as,
         content,
         link,
@@ -520,15 +645,22 @@ fn take(look: &mut Look, p: &Place, shown: String, examined: Examined, at: &Wher
         Examined::Parts(parts, failed, link) => {
             if failed.is_empty() {
                 look.read.push(shown.clone());
+            } else if let Counts::Keys(keys) = p.counts {
+                // A key read or known absent can lose coverage again, even if another key failed.
+                for key in keys {
+                    if !failed.iter().any(|(unread, _)| unread == key) {
+                        look.read.push(Unit::part(&shown.path, format!("/{key}")));
+                    }
+                }
             }
             look.seen.push(shown.clone());
             for (key, content) in parts {
-                let path = format!("{shown}#{key}");
-                look.entries.push(entry(path, content, link.clone()));
+                let unit = Unit::part(&shown.path, format!("/{key}"));
+                look.entries.push(entry(unit, content, link.clone()));
             }
             for (key, why) in failed {
                 look.failed
-                    .push((format!("{shown}#{key}"), why.to_string()));
+                    .push((Unit::part(&shown.path, format!("/{key}")), why.to_string()));
             }
         }
     }

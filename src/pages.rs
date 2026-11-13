@@ -2161,6 +2161,7 @@ fn files(
         return Ok(());
     }
     let presence = watched::presence_only(conn)?;
+    let now = watched::content_now(conn)?;
     let has_content: BTreeSet<String> = conn
         .prepare(
             "SELECT DISTINCT subject FROM assertion
@@ -2186,7 +2187,10 @@ fn files(
         out.push_str("<tr>");
         view::td(out, "mono", &findings::place(&id, mac.as_ref()))?;
         view::td(out, "nowrap", &utc(at))?;
-        let (class, last) = if presence.contains(&id) {
+        // Never "unchanged" of what the latest check did not read in full.
+        let (class, last) = if let Some(n) = now.get(&id).filter(|n| !n.read()) {
+            ("", n.not_read())
+        } else if presence.contains(&id) {
             ("", watched::PRESENCE_ONLY.to_string())
         } else if let Some(t) = changed.get(&id) {
             ("nowrap", utc(*t))

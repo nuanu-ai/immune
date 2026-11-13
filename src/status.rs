@@ -167,6 +167,8 @@ pub struct Watched {
     pub hooks_not_full: BTreeMap<String, usize>,
     /// Files whose content could not be read in this run.
     pub unread: usize,
+    /// Entries watched now only for whether they are there (`watched::PRESENCE_ONLY`).
+    pub presence_only: i64,
 }
 
 /// What the latest reading of the threat catalogue found.
@@ -579,6 +581,7 @@ fn watched_summary(
         kinds_not_full: Vec::new(),
         hooks_not_full: BTreeMap::new(),
         unread: 0,
+        presence_only: watched::presence_only_by_kind(conn)?.values().sum(),
     };
     let mut stmt = conn.prepare(
         "SELECT kind, completeness FROM coverage
@@ -699,6 +702,8 @@ pub struct State {
     pub problems: Problems,
     /// Live files per kind of watched place.
     pub files: BTreeMap<String, i64>,
+    /// Of them, those watched only for presence, per kind.
+    pub presence_only: BTreeMap<String, i64>,
     /// What needs a look now: findings only.
     pub needs: findings::Needs,
     /// The findings whose answer is in force now, the latest answer first; `None` before
@@ -758,6 +763,7 @@ pub fn state(conn: &Connection, home: &Path, now: i64) -> Res<State> {
         problems,
         coverage,
         files,
+        presence_only: watched::presence_only_by_kind(conn)?,
         needs,
         answered: findings::answered(conn, now)?,
         standing: crate::owner::standing(conn)?,
@@ -1068,6 +1074,11 @@ fn watched_section(st: &State, s: &Summary, w: &Watched) -> Value {
         .into_iter()
         .map(|(watched_as, kind)| {
             let rows: Vec<&&Latest> = mine.iter().filter(|r| r.kind == kind).collect();
+            let presence = st
+                .presence_only
+                .get(watched_as)
+                .copied()
+                .unwrap_or_default();
             let n = |c: &str| rows.iter().filter(|r| r.completeness == c).count();
             let (full, partial, none) = (n("full"), n("partial"), n("none"));
             let coverage = match (full, partial, none) {
@@ -1090,6 +1101,8 @@ fn watched_section(st: &State, s: &Summary, w: &Watched) -> Value {
             json!({
                 "kind": watched_as,
                 "files": st.files.get(watched_as).copied().unwrap_or_default(),
+                "presence_only": presence,
+                "presence_only_note": (presence > 0).then_some(watched::PRESENCE_ONLY),
                 "coverage": coverage,
                 "readings": { "full": full, "partial": partial, "none": none },
                 "reason_text": reason.as_deref().map(text),

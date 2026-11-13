@@ -109,6 +109,17 @@ impl Estate {
     }
 
     fn go(&self, root: Option<&Path>, sessions: &Path) -> String {
+        let out = self.command(root, sessions).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    }
+
+    /// The command of a run, not started.
+    fn command(&self, root: Option<&Path>, sessions: &Path) -> Command {
         let empty = self.0.join("empty");
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_immune"));
         cmd.env("HOME", self.home())
@@ -129,13 +140,7 @@ impl Estate {
         if let Some(root) = root {
             cmd.arg("--checkouts-root").arg(root);
         }
-        let out = cmd.output().unwrap();
-        assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8(out.stdout).unwrap()
+        cmd
     }
 
     fn rows(&self, sql: &str) -> Vec<String> {
@@ -2904,7 +2909,7 @@ fn losing_sight_of_a_login_hook_a_pam_file_or_the_plugins_folder_read_before_rai
         [
             "file:machine:mac//Library/Security/SecurityAgentPlugins/Example.bundle".to_string(),
             "file:machine:mac//etc/pam.d/sudo".to_string(),
-            format!("file:machine:mac/{PREFS}#LoginHook"),
+            format!("file:machine:mac/{PREFS}#/LoginHook"),
         ]
     );
 }
@@ -2914,7 +2919,7 @@ fn a_hook_beside_one_that_cannot_be_read_is_still_compared_and_the_unread_one_is
 {
     // One value of the login window's preferences that cannot be read leaves the other read:
     // its change is found, the unread one is named with why and kept as it was known, and
-    // losing sight of part of the file is found.
+    // losing sight of that part is found, as the part.
     let e = Estate::new("hook-part-unread");
     login_window(
         &e.home(),
@@ -2922,7 +2927,7 @@ fn a_hook_beside_one_that_cannot_be_read_is_still_compared_and_the_unread_one_is
          <key>LogoutHook</key><string>/Users/Shared/b.sh</string>",
     );
     e.run();
-    let logout = format!("file:machine:mac/{PREFS}#LogoutHook");
+    let logout = format!("file:machine:mac/{PREFS}#/LogoutHook");
     let content = |id: &str| {
         e.rows(&format!(
             "SELECT object FROM assertion WHERE layer = 'live' AND predicate = 'has_content'
@@ -2947,14 +2952,14 @@ fn a_hook_beside_one_that_cannot_be_read_is_still_compared_and_the_unread_one_is
     assert_eq!(
         e.found(),
         [
-            pair("watched.login-hook", &format!("~/{PREFS}")),
-            pair("watched.login-hook", &format!("~/{PREFS}#LoginHook")),
+            pair("watched.login-hook", &format!("~/{PREFS}#/LoginHook")),
+            pair("watched.login-hook", &format!("~/{PREFS}#/LogoutHook")),
         ]
     );
     let coverage = e.coverage(LOGIN_HOOK_KIND);
     assert!(
         coverage.contains(&format!(
-            "{PREFS}#LogoutHook (a value nested deeper than this build reads)"
+            "{PREFS}#/LogoutHook (a value nested deeper than this build reads)"
         )),
         "{coverage}"
     );
@@ -2965,7 +2970,10 @@ fn a_hook_beside_one_that_cannot_be_read_is_still_compared_and_the_unread_one_is
     // still unread is not.
     login_window(&e.home(), &format!("<key>LogoutHook</key>{deep}"));
     e.run();
-    assert_eq!(removed(&e), [format!("file:machine:mac/{PREFS}#LoginHook")]);
+    assert_eq!(
+        removed(&e),
+        [format!("file:machine:mac/{PREFS}#/LoginHook")]
+    );
     assert_eq!(content(&logout), before);
 }
 
@@ -3033,7 +3041,7 @@ fn a_plugin_watched_only_for_whether_it_is_there_is_never_said_to_be_unchanged()
     };
     let bundle = row("Example.bundle");
     assert!(
-        bundle.contains("a change inside it is not seen: only whether it is there is watched")
+        bundle.contains("a change inside it is not seen, only whether it is there")
             && !bundle.contains("not since first seen"),
         "{bundle}"
     );
@@ -3092,4 +3100,724 @@ fn byhost_and_managed_preferences_are_named_as_not_read() {
         meaning.contains("ByHost preferences") && meaning.contains("Managed Preferences"),
         "{meaning}"
     );
+}
+
+/// An invented binary property list of the login window's preferences: `LoginHook` is a chain
+/// of `d` arrays, each referring `k` times to the next, k^d leaves in a few hundred bytes;
+/// `LogoutHook` is `logout`, a short path.
+fn shared_refs(k: u8, d: u8, logout: &str) -> Vec<u8> {
+    assert!(logout.len() < 15);
+    let mut objects: Vec<Vec<u8>> = vec![
+        vec![0xD2, 1, 2, 3, 4 + d],
+        [&[0x59][..], b"LoginHook"].concat(),
+        [&[0x5A][..], b"LogoutHook"].concat(),
+    ];
+    for level in 0..d {
+        let mut array = vec![0xA0 | k];
+        array.extend(std::iter::repeat_n(3 + level + 1, k as usize));
+        objects.push(array);
+    }
+    objects.push(vec![0xA0]);
+    objects.push([&[0x50 | logout.len() as u8][..], logout.as_bytes()].concat());
+    let mut out = b"bplist00".to_vec();
+    let mut offsets = Vec::new();
+    for o in &objects {
+        offsets.push(out.len() as u16);
+        out.extend_from_slice(o);
+    }
+    let table = out.len() as u64;
+    for o in offsets {
+        out.extend_from_slice(&o.to_be_bytes());
+    }
+    out.extend_from_slice(&[0, 0, 0, 0, 0, 0, 2, 1]);
+    out.extend_from_slice(&(objects.len() as u64).to_be_bytes());
+    out.extend_from_slice(&0u64.to_be_bytes());
+    out.extend_from_slice(&table.to_be_bytes());
+    out
+}
+
+/// The most memory any finished child of this test process took, in bytes.
+fn children_peak() -> i64 {
+    // SAFETY: `usage` is a plain struct the call fills.
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    assert_eq!(
+        unsafe { libc::getrusage(libc::RUSAGE_CHILDREN, &mut usage) },
+        0
+    );
+    usage.ru_maxrss
+}
+
+#[test]
+fn a_small_preferences_file_whose_hook_refers_to_one_array_many_times_never_stops_the_run() {
+    // Any program running as the user can write the login window's preferences. A value that
+    // refers to one array from many places is k^d leaves to a walk that does not notice:
+    // that key is named as too large to read, the key beside it is still compared, and every
+    // other reader of the same run is in the store.
+    let e = Estate::new("shared-refs");
+    login_window(
+        &e.home(),
+        "<key>LoginHook</key><string>/tmp/a.sh</string>\
+         <key>LogoutHook</key><string>/tmp/b.sh</string>",
+    );
+    e.run();
+    let file = shared_refs(8, 12, "/tmp/c.sh");
+    assert!(file.len() < 256, "{}", file.len());
+    std::fs::write(e.home().join(PREFS), &file).unwrap();
+    put(
+        &e.home()
+            .join("Library/LaunchAgents/com.example.invented.plist"),
+        "<plist/>\n",
+    );
+    let mut child = e
+        .command(Some(&e.home()), &e.0.join("empty"))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if started.elapsed() > std::time::Duration::from_secs(60) {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the run did not finish within a minute");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    assert!(status.success());
+    assert!(children_peak() < 512 << 20, "{}", children_peak());
+    let coverage = e.coverage(LOGIN_HOOK_KIND);
+    assert!(
+        coverage.contains(&format!(
+            "{PREFS}#/LoginHook (its value is larger than this version reads)"
+        )),
+        "{coverage}"
+    );
+    assert_eq!(
+        e.found(),
+        [
+            pair(
+                "watched.autostart",
+                "~/Library/LaunchAgents/com.example.invented.plist"
+            ),
+            pair("watched.login-hook", &format!("~/{PREFS}#/LoginHook")),
+            pair("watched.login-hook", &format!("~/{PREFS}#/LogoutHook")),
+        ]
+    );
+    assert!(removed(&e).is_empty(), "{:?}", removed(&e));
+}
+
+/// Each table row of every page that names `name`, from where it names it to the row's end.
+fn rows_naming(pages: &[String], name: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for page in pages {
+        let mut from = 0;
+        while let Some(at) = page[from..].find(name) {
+            let at = from + at;
+            let end = page[at..].find("</tr>").map_or(page.len(), |e| at + e);
+            let opened = page[..at].rfind("<tr");
+            if opened.is_some() && opened > page[..at].rfind("</tr>") {
+                out.push(page[at..end].to_string());
+            }
+            from = end.max(at + 1);
+        }
+    }
+    out
+}
+
+/// Every page `immune view` writes.
+fn all_pages(e: &Estate) -> Vec<String> {
+    let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+        .args(["view", "--no-open", "--store"])
+        .arg(e.store())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .filter(|p| p.ends_with(".html"))
+        .map(|p| std::fs::read_to_string(p).unwrap())
+        .collect()
+}
+
+#[test]
+fn an_entry_the_last_check_did_not_read_is_never_said_unchanged_and_shows_that_reading() {
+    // A hook in preferences that no longer parse and a PAM file that cannot be opened were
+    // read before: what is shown of them says the last check did not read them, with why,
+    // never that they have not changed, and never the full reading of an earlier check.
+    let e = Estate::new("unread-not-unchanged");
+    login_window(&e.home(), "<key>LoginHook</key><string>/tmp/a.sh</string>");
+    let pam = e.0.join("system/etc/pam.d/sudo");
+    put(&pam, "auth sufficient pam_tid.so\n");
+    e.run();
+    let unchanged = all_pages(&e);
+    for name in [format!("{PREFS}#/LoginHook"), "/etc/pam.d/sudo".to_string()] {
+        let rows = rows_naming(&unchanged, &name);
+        assert!(
+            rows.iter().any(|r| r.contains("not since first seen")),
+            "{rows:?}"
+        );
+    }
+    put(&e.home().join(PREFS), "\u{0}\u{1} not a property list");
+    {
+        let _closed = Closed::new(&[(&pam, 0o644)]);
+        e.run();
+    }
+    let pages = all_pages(&e);
+    for (name, why) in [
+        (format!("{PREFS}#/LoginHook"), "not a property list"),
+        ("/etc/pam.d/sudo".to_string(), "Permission denied"),
+    ] {
+        let rows = rows_naming(&pages, &name);
+        for row in &rows {
+            assert!(!row.contains("not since first seen"), "{row}");
+            assert!(!row.contains("badge good"), "{row}");
+        }
+        // The page of this Mac and the technical page each say it, with why.
+        let said = rows
+            .iter()
+            .filter(|r| r.contains("not read at the last check") && r.contains(why))
+            .count();
+        assert_eq!(said, 2, "{name}: {rows:?}");
+    }
+}
+
+#[test]
+fn a_part_that_failed_and_was_answered_never_silences_losing_sight_of_the_whole_file() {
+    // The logout hook nested too deep is found, as the part it is, and answered. When the
+    // whole file can no longer be read later, with a new login hook in it, that is a change of
+    // its own: found, journalled with why, and the row says the file was not read.
+    let e = Estate::new("part-then-whole");
+    login_window(
+        &e.home(),
+        "<key>LoginHook</key><string>/tmp/a.sh</string>\
+         <key>LogoutHook</key><string>/tmp/b.sh</string>",
+    );
+    e.run();
+    let deep = format!(
+        "{}<string>/tmp/b.sh</string>{}",
+        "<array>".repeat(40),
+        "</array>".repeat(40)
+    );
+    login_window(
+        &e.home(),
+        &format!("<key>LoginHook</key><string>/tmp/a.sh</string><key>LogoutHook</key>{deep}"),
+    );
+    e.run();
+    assert_eq!(
+        e.found(),
+        [pair(
+            "watched.login-hook",
+            &format!("~/{PREFS}#/LogoutHook")
+        )]
+    );
+    e.seen();
+    // Over the size cap: macOS still reads a file this large, this build does not.
+    let pad = "x".repeat(9 * 1024 * 1024);
+    login_window(
+        &e.home(),
+        &format!(
+            "<key>LoginHook</key><string>/tmp/c.sh</string><key>Pad</key><string>{pad}</string>"
+        ),
+    );
+    e.run();
+    assert_eq!(
+        e.found(),
+        [pair("watched.login-hook", &format!("~/{PREFS}"))]
+    );
+    let journal = e.rows(
+        "SELECT subject, new_value FROM journal WHERE entry = 'not_read' ORDER BY seq DESC LIMIT 1",
+    );
+    assert_eq!(
+        journal,
+        [format!(
+            "file:machine:mac/{PREFS}|over the size cap of 8 MiB"
+        )]
+    );
+    let rows = rows_naming(&all_pages(&e), &format!("{PREFS}#/LoginHook"));
+    assert!(rows.iter().all(|r| !r.contains("not since")), "{rows:?}");
+    let said = rows
+        .iter()
+        .filter(|r| r.contains("not read at the last check") && r.contains("size cap"))
+        .count();
+    assert_eq!(said, 2, "{rows:?}");
+}
+
+#[test]
+fn a_part_answered_still_lets_a_later_change_beside_it_be_found() {
+    // The answer to the part is about the part: a new login hook beside it is found.
+    let e = Estate::new("part-then-change");
+    login_window(
+        &e.home(),
+        "<key>LoginHook</key><string>/tmp/a.sh</string>\
+         <key>LogoutHook</key><string>/tmp/b.sh</string>",
+    );
+    e.run();
+    let deep = format!(
+        "{}<string>/tmp/b.sh</string>{}",
+        "<array>".repeat(40),
+        "</array>".repeat(40)
+    );
+    let with = |hook: &str| {
+        format!("<key>LoginHook</key><string>{hook}</string><key>LogoutHook</key>{deep}")
+    };
+    login_window(&e.home(), &with("/tmp/a.sh"));
+    e.run();
+    e.seen();
+    login_window(&e.home(), &with("/tmp/c.sh"));
+    e.run();
+    assert_eq!(
+        e.found(),
+        [pair("watched.login-hook", &format!("~/{PREFS}#/LoginHook"))]
+    );
+    // Once the whole file is read again, the part failing again is found again.
+    e.seen();
+    login_window(
+        &e.home(),
+        "<key>LoginHook</key><string>/tmp/c.sh</string>\
+         <key>LogoutHook</key><string>/tmp/b.sh</string>",
+    );
+    e.run();
+    assert!(e.found().is_empty(), "{:?}", e.found());
+    login_window(&e.home(), &with("/tmp/c.sh"));
+    e.run();
+    assert_eq!(
+        e.found(),
+        [pair(
+            "watched.login-hook",
+            &format!("~/{PREFS}#/LogoutHook")
+        )]
+    );
+}
+
+#[test]
+fn a_part_read_again_can_fail_again_even_while_another_part_is_unread() {
+    let e = Estate::new("alternating-unread-parts");
+    let deep = format!(
+        "{}<string>/tmp/hook.sh</string>{}",
+        "<array>".repeat(40),
+        "</array>".repeat(40)
+    );
+    let path = "<string>/tmp/hook.sh</string>";
+    let write = |login: &str, logout: &str| {
+        login_window(
+            &e.home(),
+            &format!("<key>LoginHook</key>{login}<key>LogoutHook</key>{logout}"),
+        );
+        e.run();
+    };
+    write(path, path);
+    write(&deep, path);
+    let login = pair("watched.login-hook", &format!("~/{PREFS}#/LoginHook"));
+    let logout = pair("watched.login-hook", &format!("~/{PREFS}#/LogoutHook"));
+    assert_eq!(e.found(), std::slice::from_ref(&login));
+    e.seen();
+    write(path, &deep);
+    assert_eq!(e.found(), [logout]);
+    e.seen();
+    write(&deep, &deep);
+    assert_eq!(e.found(), std::slice::from_ref(&login));
+    e.seen();
+    // An absent key is known too: the old failure no longer applies if it comes back.
+    login_window(&e.home(), &format!("<key>LogoutHook</key>{deep}"));
+    e.run();
+    e.seen();
+    write(&deep, &deep);
+    assert_eq!(e.found(), [login]);
+}
+
+#[test]
+fn recovering_any_key_ends_a_whole_file_failure_without_quieting_an_unread_sibling() {
+    let deep = format!(
+        "{}<string>/tmp/logout.sh</string>{}",
+        "<array>".repeat(40),
+        "</array>".repeat(40)
+    );
+    let login = "<key>LoginHook</key><string>/tmp/login.sh</string>";
+    for (label, recovered) in [("read", login), ("absent", "")] {
+        let e = Estate::new(label);
+        let prefs = login_window(
+            &e.home(),
+            &format!("{recovered}<key>LogoutHook</key><string>/tmp/logout.sh</string>"),
+        );
+        e.run();
+        let file = pair("watched.login-hook", &format!("~/{PREFS}"));
+        let key = pair("watched.login-hook", &format!("~/{PREFS}#/LogoutHook"));
+        let fail_whole = || {
+            put(&prefs, "\u{0}\u{1} not a property list");
+            e.run();
+            assert!(e.coverage(LOGIN_HOOK_KIND).starts_with("none|"));
+            assert_eq!(e.found(), std::slice::from_ref(&file), "{label}");
+        };
+        let recover_part = || {
+            login_window(
+                &e.home(),
+                &format!("{recovered}<key>LogoutHook</key>{deep}"),
+            );
+            e.run();
+            assert!(e.coverage(LOGIN_HOOK_KIND).starts_with("partial|"));
+        };
+        fail_whole();
+        e.seen();
+        recover_part();
+        assert_eq!(e.found(), [key]);
+        e.seen();
+        let before = e.last_entry();
+        fail_whole();
+        let losses = e.rows(&format!(
+            "SELECT subject FROM journal WHERE entry = 'not_read' AND seq > {before}"
+        ));
+        assert_eq!(losses, [format!("file:machine:mac/{PREFS}")]);
+        e.seen();
+        recover_part();
+        assert!(e.found().is_empty(), "{label}: {:?}", e.found());
+    }
+}
+
+#[test]
+fn losing_sight_of_a_read_part_is_found_even_if_the_whole_file_was_never_read() {
+    let e = Estate::new("unread-whole-with-read-part");
+    let deep = format!(
+        "{}<string>/tmp/hook.sh</string>{}",
+        "<array>".repeat(40),
+        "</array>".repeat(40)
+    );
+    let write = |login: &str| {
+        login_window(
+            &e.home(),
+            &format!("<key>LoginHook</key>{login}<key>LogoutHook</key>{deep}"),
+        );
+        e.run();
+    };
+    let prefs = e.home().join(PREFS);
+    put(&prefs, "\u{0}\u{1} not a property list");
+    e.run();
+    // A valid dictionary alone is insufficient. Neither hook could be read.
+    write(&deep);
+    let whole_failure = || {
+        e.rows(&format!(
+            "SELECT unit FROM unit_unread WHERE unit = '{PREFS}'"
+        ))
+    };
+    assert_eq!(whole_failure(), [PREFS]);
+    e.seen();
+    write("<string>/tmp/hook.sh</string>");
+    assert!(whole_failure().is_empty());
+    e.seen();
+    // The released whole-unit query cannot take this successful key for a full file read.
+    let db = Connection::open(e.store()).unwrap();
+    let full: bool = db
+        .query_row(
+            "SELECT EXISTS (SELECT 1 FROM unit_read
+         WHERE reader = 'watched-places' AND kind = ?1 AND unit = ?2 AND how = 'read')",
+            rusqlite::params![LOGIN_HOOK_KIND, PREFS],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!full);
+    drop(db);
+    write(&deep);
+    assert_eq!(
+        e.found(),
+        [pair("watched.login-hook", &format!("~/{PREFS}#/LoginHook"))]
+    );
+}
+
+#[test]
+fn a_hook_previously_unread_is_reported_as_first_read_even_when_its_sibling_is_known() {
+    let e = Estate::new("part-first-read");
+    let deep = format!(
+        "{}<string>/tmp/hook.sh</string>{}",
+        "<array>".repeat(40),
+        "</array>".repeat(40)
+    );
+    login_window(&e.home(), &format!("<key>LogoutHook</key>{deep}"));
+    e.run();
+    login_window(
+        &e.home(),
+        "<key>LoginHook</key><string>/tmp/login.sh</string>\
+         <key>LogoutHook</key><string>/tmp/logout.sh</string>",
+    );
+    e.run();
+    assert_eq!(
+        e.found(),
+        [
+            pair(FIRST_READ, "mac"),
+            pair("watched.login-hook", &format!("~/{PREFS}#/LoginHook")),
+        ]
+    );
+}
+
+#[test]
+fn losing_sight_of_a_whole_preferences_file_with_a_new_hook_in_it_is_found() {
+    let e = Estate::new("whole-unread");
+    login_window(&e.home(), "<key>LoginHook</key><string>/tmp/a.sh</string>");
+    e.run();
+    let pad = "x".repeat(9 * 1024 * 1024);
+    login_window(
+        &e.home(),
+        &format!(
+            "<key>LoginHook</key><string>/tmp/c.sh</string><key>Pad</key><string>{pad}</string>"
+        ),
+    );
+    e.run();
+    assert_eq!(
+        e.found(),
+        [pair("watched.login-hook", &format!("~/{PREFS}"))]
+    );
+}
+
+#[test]
+fn a_hash_in_a_checkout_or_selected_key_is_kept_as_part_of_its_own_name() {
+    let e = Estate::new("hash-checkout");
+    let path = e.checkout("dev/demo#/child").join(".mcp.json");
+    e.run();
+    put(
+        &path,
+        r#"{"mcpServers":{"helper#/{x}":{"command":"example"}}}"#,
+    );
+    e.run();
+    let place = "~/dev/demo#/child/.mcp.json#/mcpServers/helper#~1{x}";
+    assert_eq!(e.found(), [pair("autorun.agent-start", place)]);
+    e.seen();
+    {
+        let _closed = Closed::new(&[(&path, 0o644)]);
+        e.run();
+        assert_eq!(
+            e.found(),
+            [pair("autorun.agent-start", "~/dev/demo#/child/.mcp.json")]
+        );
+        assert_eq!(
+            e.rows(
+                "SELECT subject FROM assertion WHERE layer = 'live'
+             AND predicate = 'watched_as' AND subject LIKE '%/mcpServers/%'"
+            ),
+            [format!("file:machine:mac/{}", &place[2..])]
+        );
+    }
+    e.seen();
+    put(
+        &path,
+        r#"{"mcpServers":{"helper#/{x}":{"command":"other"}}}"#,
+    );
+    e.run();
+    assert_eq!(e.found(), [pair("autorun.agent-start", place)]);
+}
+
+/// Remove the extra tables an older version did not have.
+fn before_typed_units(e: &Estate) -> Connection {
+    let db = Connection::open(e.store()).unwrap();
+    db.execute_batch(
+        "DROP TABLE part_read;
+         DROP TABLE part_unread;
+         DROP TABLE watched_unit;
+         DELETE FROM meta WHERE key = 'typed_units';",
+    )
+    .unwrap();
+    db
+}
+
+#[test]
+fn an_old_store_keeps_finding_ids_and_answers_and_rejudges_ambiguous_hash_paths() {
+    let e = Estate::new("legacy-hash-unit");
+    let ordinary = e.checkout("dev/ordinary");
+    let hash = e.checkout("dev/demo#/child");
+    let pending = e.checkout("dev/pending");
+    e.run();
+    package(&ordinary, r#""prepare":"invented-one""#);
+    package(&hash, r#""prepare":"invented-two""#);
+    e.run();
+    e.seen();
+    package(&pending, r#""prepare":"invented-three""#);
+    e.run();
+    let id = e.contract(&["findings"])["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["finding"]["state"] == "open")
+        .unwrap()["finding"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let answered = Command::new(env!("CARGO_BIN_EXE_immune"))
+        .args([
+            "finding",
+            &id,
+            "expected",
+            "--reason",
+            "a fixture",
+            "--days",
+            "7",
+            "--store",
+        ])
+        .arg(e.store())
+        .output()
+        .unwrap();
+    assert!(answered.status.success());
+    put(&ordinary.join(".git/hooks/pre-push"), "#!/bin/sh\n");
+    e.run();
+    let findings = e.contract(&["findings"])["findings"].clone();
+    let ordinary_rows = e.rows(
+        "SELECT CAST(rowid AS TEXT), unit FROM unit_read
+        WHERE unit = 'dev/ordinary/package.json' ORDER BY rowid",
+    );
+    let db = before_typed_units(&e);
+    // The old fallback saw the physical path only as far as the first hash.
+    db.execute(
+        "UPDATE unit_read SET unit = 'dev/demo' WHERE unit = 'dev/demo#/child/package.json'",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    let hook = hash.join("package.json");
+    {
+        let _closed = Closed::new(&[(&hook, 0o644)]);
+        e.run();
+        assert_eq!(e.told(), ["checkout:machine:mac/dev/demo#/child (1)"]);
+        assert!(!e.found().contains(&pair(
+            "autorun.package-install",
+            "~/dev/demo#/child/package.json"
+        )));
+    }
+    let current = e.contract(&["findings"])["findings"].clone();
+    let old = current
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["finding"]["rule"] != FIRST_READ)
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(old, *findings.as_array().unwrap());
+    e.seen();
+    e.run();
+    assert_eq!(
+        e.rows(
+            "SELECT CAST(rowid AS TEXT), unit FROM unit_read
+           WHERE unit = 'dev/ordinary/package.json' ORDER BY rowid"
+        ),
+        ordinary_rows
+    );
+    assert!(
+        e.rows("SELECT unit FROM unit_read WHERE unit = 'dev/demo' AND reader = 'watched-places'")
+            .is_empty()
+    );
+    assert!(e.found().is_empty(), "{:?}", e.found());
+    {
+        let _closed = Closed::new(&[(&hook, 0o644)]);
+        e.run();
+        assert_eq!(
+            e.found(),
+            [pair(
+                "autorun.package-install",
+                "~/dev/demo#/child/package.json"
+            )]
+        );
+    }
+}
+
+#[test]
+fn a_pam_file_whose_name_holds_a_hash_sign_is_a_unit_of_its_own() {
+    // `login#2` is a file beside `login`, not a part of it: when it cannot be read, what was
+    // known of `login` is not kept on its account, so `login` going is told, and losing sight
+    // of `login#2` is found as itself.
+    let e = Estate::new("hash-name");
+    let pam = e.0.join("system/etc/pam.d");
+    put(&pam.join("login"), "auth required pam_tid.so\n");
+    put(&pam.join("login#2"), "auth required pam_tid.so\n");
+    e.run();
+    std::fs::remove_file(pam.join("login")).unwrap();
+    {
+        let _closed = Closed::new(&[(&pam.join("login#2"), 0o644)]);
+        e.run();
+    }
+    assert_eq!(removed(&e), ["file:machine:mac//etc/pam.d/login"]);
+    assert_eq!(
+        e.found(),
+        [
+            pair("watched.authentication", "/etc/pam.d/login"),
+            pair("watched.authentication", "/etc/pam.d/login#2"),
+        ]
+    );
+}
+
+#[test]
+fn a_plugin_watched_only_for_presence_is_said_so_in_status_and_in_its_finding() {
+    // What an agent or a person reads of the plugin, other than the pages, says that a change
+    // inside it is not seen.
+    let e = Estate::new("presence-said");
+    put(
+        &e.0.join("system/etc/pam.d/sudo"),
+        "auth sufficient pam_tid.so\n",
+    );
+    std::fs::create_dir_all(e.0.join("system/Library/Security/SecurityAgentPlugins")).unwrap();
+    e.run();
+    put(
+        &e.0.join(
+            "system/Library/Security/SecurityAgentPlugins/Example.bundle/Contents/Info.plist",
+        ),
+        "<plist/>\n",
+    );
+    e.run();
+    let said = "a change inside it is not seen, only whether it is there";
+    let kind = e.status()["watched"]["kinds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["kind"] == "authentication module")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (
+            &kind["files"],
+            &kind["presence_only"],
+            &kind["presence_only_note"]
+        ),
+        (&2.into(), &1.into(), &said.into()),
+        "{kind}"
+    );
+    let text = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+            .args(args)
+            .arg("--store")
+            .arg(e.store())
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let status = text(&["status"]);
+    assert!(
+        status.contains(&format!("1 entry watched only for presence: {said}")),
+        "{status}"
+    );
+    let found = e.findings(false);
+    assert_eq!(found.len(), 1, "{found:?}");
+    let listed = e.contract(&["findings"]);
+    let id = listed["findings"][0]["finding"]["id"].as_str().unwrap();
+    let finding = text(&["finding", id]);
+    assert!(
+        finding.contains(&format!("Watched only for presence: {said}.")),
+        "{finding}"
+    );
+    // A file whose content is compared says nothing of the kind.
+    put(
+        &e.0.join("system/etc/pam.d/sudo"),
+        "auth sufficient pam_permit.so\n",
+    );
+    e.seen();
+    e.run();
+    let listed = e.contract(&["findings"]);
+    let id = listed["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["finding"]["state"] == "open")
+        .unwrap()["finding"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(!text(&["finding", &id]).contains("Watched only for presence"));
 }

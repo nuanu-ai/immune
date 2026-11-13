@@ -922,12 +922,20 @@ fn a_login_hook_and_a_changed_login_policy_are_findings_within_seconds() {
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\
          <key>LogoutHook</key><string>/Users/Shared/example.sh</string></dict></plist>\n",
     );
+    w.until("read", |v| v["needs_a_look_total"] == 1);
+    assert!(
+        written.elapsed() < Duration::from_secs(10),
+        "hook read too late"
+    );
     let policy = mac.sys().join("etc/pam.d/sudo");
+    let written = Instant::now();
     std::fs::create_dir_all(policy.parent().unwrap()).unwrap();
     std::fs::write(&policy, "auth       required       pam_deny.so\n").unwrap();
-    // One reading or two, as the quiet period falls.
     w.until("read", |v| v["needs_a_look_total"] == 2);
-    assert!(written.elapsed() < Duration::from_secs(10), "read too late");
+    assert!(
+        written.elapsed() < Duration::from_secs(10),
+        "policy read too late"
+    );
     let r = mac.status()["result"].clone();
     let items = &r["needs_a_look"];
     let mut found: Vec<(String, String, String, bool)> = items
@@ -954,7 +962,7 @@ fn a_login_hook_and_a_changed_login_policy_are_findings_within_seconds() {
             ),
             (
                 "watched.login-hook".into(),
-                "~/Library/Preferences/com.apple.loginwindow.plist#LogoutHook".into(),
+                "~/Library/Preferences/com.apple.loginwindow.plist#/LogoutHook".into(),
                 "T1037.002".into(),
                 true
             ),

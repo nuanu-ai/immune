@@ -26,6 +26,7 @@
 
 use crate::{agent_folders, autorun, checkouts, store, watched};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use std::collections::{BTreeSet, HashMap};
 
 /// Every unit a reader met, by the first run that read it in full and the first that saw it
 /// present. Rows are only added; their order is the order units were first met.
@@ -53,6 +54,59 @@ CREATE TABLE IF NOT EXISTS unit_unread (
 );
 ";
 
+// Whole-path tables keep their layout. A build that does not know parts will never see a
+// part read as a whole file read.
+const PARTS: &str = "
+CREATE TABLE IF NOT EXISTS part_read (
+    reader TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    unit TEXT NOT NULL,
+    part TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    PRIMARY KEY (reader, kind, unit, part)
+);
+CREATE TABLE IF NOT EXISTS part_unread (
+    reader TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    unit TEXT NOT NULL,
+    part TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    PRIMARY KEY (reader, kind, unit, part)
+);
+";
+const TYPED_UNITS: &str = "typed_units";
+
+/// The physical unit of a watched assertion, scoped to the reading that made it.
+const WATCHED_UNITS: &str = "
+CREATE TABLE IF NOT EXISTS watched_unit (
+    kind TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    path TEXT NOT NULL,
+    part TEXT NOT NULL,
+    PRIMARY KEY (kind, scope, subject)
+);
+";
+
+pub fn remember_units(
+    tx: &Transaction,
+    r: &store::Reading,
+    units: &HashMap<String, &Unit>,
+) -> rusqlite::Result<()> {
+    if units.is_empty() {
+        return Ok(());
+    }
+    let mut stmt = tx.prepare(
+        "INSERT INTO watched_unit (kind, scope, subject, path, part) VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT (kind, scope, subject) DO UPDATE SET path = excluded.path, part = excluded.part
+         WHERE (path, part) != (excluded.path, excluded.part)",
+    )?;
+    for (subject, unit) in units {
+        stmt.execute(params![r.kind, r.scope, subject, unit.path, unit.part])?;
+    }
+    Ok(())
+}
+
 /// The key in `meta` of the last journal entry written before units were recorded. Entries up
 /// to it were judged by the rule of their time, which `status.rs` applies to them.
 pub const UNITS_SINCE: &str = "units_since";
@@ -64,22 +118,40 @@ pub const UNITS_SINCE: &str = "units_since";
 /// listed by a walk of the home folder that read in full. From then on one rule judges every
 /// reading, whatever run of this build comes first.
 pub fn open(conn: &mut Connection) -> Result<(), Box<dyn std::error::Error>> {
-    conn.execute_batch(UNREAD)?;
-    if made(conn)? {
+    if made(conn)? && typed(conn)? {
         return Ok(());
     }
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    if !made(&tx)? {
-        tx.execute_batch(SCHEMA)?;
+    if !typed(&tx)? || !made(&tx)? {
+        tx.execute_batch(UNREAD)?;
+        tx.execute_batch(PARTS)?;
+        tx.execute_batch(WATCHED_UNITS)?;
+        if made(&tx)? {
+            invalidate_split_units(&tx)?;
+        } else {
+            tx.execute_batch(SCHEMA)?;
+            tx.execute(
+                "INSERT OR REPLACE INTO meta (key, value)
+                 VALUES (?1, (SELECT COALESCE(MAX(seq), 0) FROM journal))",
+                [UNITS_SINCE],
+            )?;
+            fill(&tx)?;
+        }
         tx.execute(
-            "INSERT OR REPLACE INTO meta (key, value)
-             VALUES (?1, (SELECT COALESCE(MAX(seq), 0) FROM journal))",
-            [UNITS_SINCE],
+            "INSERT OR IGNORE INTO meta (key, value) VALUES (?1, '1')",
+            [TYPED_UNITS],
         )?;
-        fill(&tx)?;
     }
     tx.commit()?;
     Ok(())
+}
+
+fn typed(conn: &Connection) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM meta WHERE key = ?1)",
+        [TYPED_UNITS],
+        |r| r.get(0),
+    )
 }
 
 fn made(conn: &Connection) -> rusqlite::Result<bool> {
@@ -88,6 +160,62 @@ fn made(conn: &Connection) -> rusqlite::Result<bool> {
         [],
         |r| r.get(0),
     )
+}
+
+/// Old backfills and unread judgements could use the prefix before a literal hash as a path.
+/// Discard that evidence if it might have come from a different physical unit. Preserve the
+/// chronology of all other rows; the next successful reading establishes the discarded ones.
+fn invalidate_split_units(tx: &Transaction) -> rusqlite::Result<()> {
+    let mut stmt = tx.prepare(
+        "SELECT DISTINCT kind, subject FROM assertion
+         WHERE reader = ?1 AND predicate = 'watched_as' AND instr(subject, '#') > 0",
+    )?;
+    let checkouts = past_checkouts(tx)?;
+    let mut suspect = BTreeSet::new();
+    for row in stmt.query_map([watched::READER], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })? {
+        let (kind, subject) = row?;
+        let Some((machine, path)) = subject
+            .strip_prefix("file:")
+            .and_then(|s| s.split_once('/'))
+        else {
+            continue;
+        };
+        let Some((prefix, _)) = path.split_once('#') else {
+            continue;
+        };
+        if legacy_unit(&kind, path, |rel| {
+            checkouts.contains(&format!("{machine}/{rel}"))
+        })
+        .is_none_or(|unit| unit.path != prefix)
+        {
+            suspect.insert((kind, prefix.to_string()));
+        }
+    }
+    for (kind, path) in suspect {
+        tx.execute(
+            "DELETE FROM unit_read WHERE reader = ?1 AND kind = ?2 AND unit = ?3",
+            params![watched::READER, kind, path],
+        )?;
+    }
+    // A legacy unread mark is a suppression, not proof of coverage. If it was created
+    // without an assertion (the path was never readable), it has no source to disambiguate it.
+    tx.execute(
+        "DELETE FROM unit_unread WHERE reader = ?1 AND kind != ?2",
+        params![watched::READER, watched::CONTENT],
+    )?;
+    Ok(())
+}
+
+fn past_checkouts(conn: &Connection) -> rusqlite::Result<BTreeSet<String>> {
+    conn.prepare(
+        "SELECT DISTINCT substr(subject, 10) FROM assertion
+         WHERE predicate = 'located_on' AND layer != 'draft'
+           AND reader IN (?1, ?2) AND subject LIKE 'checkout:%'",
+    )?
+    .query_map([checkouts::READER, agent_folders::READER], |r| r.get(0))?
+    .collect()
 }
 
 /// One unit to record when the table is filled.
@@ -113,6 +241,7 @@ fn fill(tx: &Transaction) -> rusqlite::Result<()> {
         })
     };
     type Row = (String, String, String, i64);
+    let checkouts = past_checkouts(tx)?;
     let rows: Vec<Row> = tx
         .prepare(
             "SELECT subject, kind, run_id, observed_at FROM assertion
@@ -122,13 +251,31 @@ fn fill(tx: &Transaction) -> rusqlite::Result<()> {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
         })?
         .collect::<rusqlite::Result<_>>()?;
+    let mut parts = tx.prepare(
+        "INSERT OR IGNORE INTO part_read (reader, kind, unit, part, run_id)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+    )?;
     for (subject, kind, run_id, at) in rows {
-        let Some(path) = path_of(&subject, "file:") else {
+        let Some((machine, path)) = subject
+            .strip_prefix("file:")
+            .and_then(|s| s.split_once('/'))
+        else {
             continue;
         };
-        let u = unit_of(path);
-        add(watched::READER, &kind, u, "read", &run_id, at);
+        let Some(unit) = legacy_unit(&kind, path, |rel| {
+            checkouts.contains(&format!("{machine}/{rel}"))
+        }) else {
+            continue;
+        };
+        let u = &unit.path;
         add(watched::READER, &kind, u, "seen", &run_id, at);
+        // Before this build, a selected autorun entry came only from a whole-file read.
+        // A plist can yield one key while leaving another unread.
+        if unit.part.is_empty() || kind != watched::LOGIN_HOOK_KIND {
+            add(watched::READER, &kind, u, "read", &run_id, at);
+        } else {
+            parts.execute(params![watched::READER, kind, unit.path, unit.part, run_id])?;
+        }
         if lists_parent(&kind, u) {
             add(watched::READER, &kind, parent(u), "read", &run_id, at);
         }
@@ -182,8 +329,8 @@ fn fill(tx: &Transaction) -> rusqlite::Result<()> {
         }
     }
     for f in out {
-        let unit = [f.unit];
-        let (read, seen): (&[String], &[String]) = if f.how == "read" {
+        let unit = [Unit::whole(f.unit)];
+        let (read, seen): (&[Unit], &[Unit]) = if f.how == "read" {
             (&unit, &[])
         } else {
             (&[], &unit)
@@ -233,25 +380,97 @@ fn path_of<'a>(id: &'a str, prefix: &str) -> Option<&'a str> {
         .map(|(_, path)| path)
 }
 
-/// The unit that holds what is at `path`, a path as ids name it: the file, for a part taken
-/// from a file after its `#`; a folder with or without a closing `/`; `.` for the home folder.
-pub fn unit_of(path: &str) -> &str {
-    let unit = path.split_once('#').map_or(path, |(file, _)| file);
-    match unit.trim_end_matches('/') {
-        "" if unit.starts_with('/') => "/",
-        "" => ".",
-        unit => unit,
+/// A physical path, or one selected part of it. Only the public name combines the two.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Unit {
+    pub path: String,
+    pub part: String,
+}
+
+impl Unit {
+    pub fn whole(path: impl Into<String>) -> Self {
+        let path = path.into();
+        let path = if path == "/" {
+            "/"
+        } else {
+            path.trim_end_matches('/')
+        };
+        Self {
+            path: if path.is_empty() {
+                ".".to_string()
+            } else {
+                path.to_string()
+            },
+            part: String::new(),
+        }
+    }
+
+    pub fn part(path: impl Into<String>, pointer: impl Into<String>) -> Self {
+        Self {
+            part: pointer.into(),
+            ..Self::whole(path)
+        }
+    }
+
+    /// Whether a failure of this unit leaves the observed unit unknown.
+    pub fn hides(&self, observed: &Self) -> bool {
+        if self.part.is_empty() {
+            under(&observed.path, &self.path)
+        } else {
+            self == observed
+        }
     }
 }
 
-/// What a failure at `path` leaves unknown: the part it names, `<file>#<part>`, when one part
-/// of a file could not be read and the rest was; otherwise its whole unit.
-pub fn hidden(path: &str) -> &str {
-    if path.contains('#') {
-        path
-    } else {
-        unit_of(path)
+impl std::fmt::Display for Unit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.path)?;
+        if !self.part.is_empty() {
+            write!(f, "#{}", self.part)?;
+        }
+        Ok(())
     }
+}
+
+/// Recover a legacy assertion's physical source only where the owning reader could have
+/// produced it. A literal path and a selected pointer can contain the same characters.
+pub fn legacy_unit(kind: &str, name: &str, checkout: impl Fn(&str) -> bool) -> Option<Unit> {
+    let mut candidates = BTreeSet::new();
+    for p in watched::PLACES.iter().filter(|p| p.kind == kind) {
+        let file = match p.base {
+            watched::Base::Home => p.path.to_string(),
+            watched::Base::System => format!("/{}", p.path),
+            watched::Base::Checkout => {
+                if parent(name)
+                    .strip_suffix(&format!("/{}", p.path))
+                    .is_some_and(&checkout)
+                {
+                    candidates.insert(Unit::whole(name));
+                }
+                continue;
+            }
+        };
+        match p.counts {
+            watched::Counts::Keys(keys) => {
+                for key in keys {
+                    let unit = Unit::part(&file, format!("/{key}"));
+                    if name == unit.to_string() {
+                        candidates.insert(unit);
+                    }
+                }
+            }
+            watched::Counts::Whole
+                if (p.folder && parent(name) == file) || (!p.folder && name == file) =>
+            {
+                candidates.insert(Unit::whole(name));
+            }
+            _ => {}
+        }
+    }
+    autorun::legacy_units(kind, name, &checkout, &mut candidates);
+    (candidates.len() == 1)
+        .then(|| candidates.pop_first())
+        .flatten()
 }
 
 /// The folder that holds a unit: `.` for one directly in the home folder, `/` for one directly
@@ -272,7 +491,7 @@ pub fn under(path: &str, unit: &str) -> bool {
     path == unit
         || path
             .strip_prefix(unit)
-            .is_some_and(|rest| rest.starts_with('/') || rest.starts_with('#'))
+            .is_some_and(|rest| rest.starts_with('/'))
         || (unit == "/" && path.starts_with('/'))
 }
 
@@ -309,54 +528,83 @@ pub fn record(
     kind: &str,
     run_id: &str,
     at: i64,
-    read: &[String],
-    seen: &[String],
+    read: &[Unit],
+    seen: &[Unit],
 ) -> rusqlite::Result<()> {
     let mut stmt = tx.prepare(
         "INSERT OR IGNORE INTO unit_read (reader, kind, unit, how, run_id, at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
     )?;
     for (how, units) in [("read", read), ("seen", seen)] {
-        for unit in units {
-            stmt.execute(params![reader, kind, unit, how, run_id, at])?;
+        for unit in units.iter().filter(|u| u.part.is_empty()) {
+            stmt.execute(params![reader, kind, unit.path, how, run_id, at])?;
         }
     }
     let mut again =
         tx.prepare("DELETE FROM unit_unread WHERE reader = ?1 AND kind = ?2 AND unit = ?3")?;
+    let mut part_again = tx.prepare(
+        "DELETE FROM part_unread WHERE reader = ?1 AND kind = ?2 AND unit = ?3
+           AND (?4 = '' OR part = ?4)",
+    )?;
     for unit in read {
-        again.execute(params![reader, kind, unit])?;
+        // A readable part ends the whole-file failure without establishing full coverage.
+        again.execute(params![reader, kind, unit.path])?;
+        if !unit.part.is_empty() {
+            tx.execute(
+                "INSERT OR IGNORE INTO part_read (reader, kind, unit, part, run_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![reader, kind, unit.path, unit.part, run_id],
+            )?;
+        }
+        part_again.execute(params![reader, kind, unit.path, unit.part])?;
     }
     Ok(())
 }
 
-/// Records that a unit there and not readable was judged in this run, and says whether an
-/// earlier run judged it already while it stayed so: then it is not judged again.
+/// Records an unread unit once while it stays unread.
 pub fn judged_unread(
     tx: &Transaction,
     reader: &str,
     kind: &str,
-    unit: &str,
+    unit: &Unit,
     run_id: &str,
 ) -> rusqlite::Result<bool> {
-    let added = tx.execute(
-        "INSERT OR IGNORE INTO unit_unread (reader, kind, unit, run_id) VALUES (?1, ?2, ?3, ?4)",
-        params![reader, kind, unit, run_id],
-    )?;
-    if added == 1 {
-        return Ok(false);
+    if unit.part.is_empty() {
+        let added = tx.execute(
+            "INSERT OR IGNORE INTO unit_unread (reader, kind, unit, run_id) VALUES (?1, ?2, ?3, ?4)",
+            params![reader, kind, unit.path, run_id],
+        )?;
+        if added == 1 {
+            return Ok(false);
+        }
+        tx.query_row(
+            "SELECT run_id != ?4 FROM unit_unread WHERE reader = ?1 AND kind = ?2 AND unit = ?3",
+            params![reader, kind, unit.path, run_id],
+            |r| r.get(0),
+        )
+    } else {
+        let added = tx.execute(
+            "INSERT OR IGNORE INTO part_unread (reader, kind, unit, part, run_id)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![reader, kind, unit.path, unit.part, run_id],
+        )?;
+        if added == 1 {
+            return Ok(false);
+        }
+        tx.query_row(
+            "SELECT run_id != ?5 FROM part_unread
+             WHERE reader = ?1 AND kind = ?2 AND unit = ?3 AND part = ?4",
+            params![reader, kind, unit.path, unit.part, run_id],
+            |r| r.get(0),
+        )
     }
-    tx.query_row(
-        "SELECT run_id != ?4 FROM unit_unread WHERE reader = ?1 AND kind = ?2 AND unit = ?3",
-        params![reader, kind, unit, run_id],
-        |r| r.get(0),
-    )
 }
 
-/// Forgets that a unit could not be read, when what it holds was read again in full.
-pub fn read_again(tx: &Transaction, reader: &str, kind: &str, unit: &str) -> rusqlite::Result<()> {
+/// Forgets a whole content reading's unread mark.
+pub fn read_again(tx: &Transaction, reader: &str, kind: &str, id: &str) -> rusqlite::Result<()> {
     tx.execute(
         "DELETE FROM unit_unread WHERE reader = ?1 AND kind = ?2 AND unit = ?3",
-        params![reader, kind, unit],
+        params![reader, kind, id],
     )?;
     Ok(())
 }
@@ -515,6 +763,15 @@ impl Judge<'_> {
             .optional()
     }
 
+    fn part_read_before(&self, unit: &Unit) -> rusqlite::Result<bool> {
+        self.tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM part_read
+             WHERE reader = ?1 AND kind = ?2 AND unit = ?3 AND part = ?4 AND run_id != ?5)",
+            params![self.reader, self.kind, unit.path, unit.part, self.run_id],
+            |r| r.get(0),
+        )
+    }
+
     /// Met by a run before this one.
     fn before(&self, met: Option<Met>) -> Option<Met> {
         met.filter(|m| m.run != self.run_id)
@@ -560,9 +817,11 @@ impl Judge<'_> {
     }
 
     /// What the store can show about the unit that holds what is at `path`.
-    pub fn facts(&self, path: &str) -> rusqlite::Result<Facts> {
-        let unit = unit_of(path);
+    pub fn facts(&self, observed: &Unit) -> rusqlite::Result<Facts> {
+        let unit = &observed.path;
         let read = self.before(self.met(self.reader, self.kind, unit, "read")?);
+        let part_read =
+            read.is_none() && !observed.part.is_empty() && self.part_read_before(observed)?;
         let seen = self.met(self.reader, self.kind, unit, "seen")?;
         let listing = self.before(self.met(self.reader, self.kind, parent(unit), "read")?);
         let seen_before = seen.as_ref().filter(|s| s.run != self.run_id);
@@ -585,7 +844,7 @@ impl Judge<'_> {
             }
         };
         Ok(Facts {
-            read_before: read.is_some(),
+            read_before: read.is_some() || part_read,
             new_to_listing: newer(listing.as_ref(), seen.as_ref(), self.run_id),
             in_new_checkout,
             met_before: first.is_some(),
@@ -593,8 +852,8 @@ impl Judge<'_> {
         })
     }
 
-    pub fn verdict(&self, path: &str) -> rusqlite::Result<Verdict> {
-        Ok(verdict(self.facts(path)?))
+    pub fn verdict(&self, unit: &Unit) -> rusqlite::Result<Verdict> {
+        Ok(verdict(self.facts(unit)?))
     }
 }
 
@@ -649,29 +908,34 @@ mod tests {
     }
 
     #[test]
-    fn a_unit_is_the_file_a_part_is_taken_from_or_the_folder_itself_and_its_parent_is_its_folder() {
+    fn a_part_hides_only_itself_while_a_file_failure_hides_every_part() {
+        let file = Unit::whole("dev/demo#/package.json");
+        let part = Unit::part(&file.path, "/scripts/install");
+        let same_name = Unit::whole(part.to_string());
+        let neighbor = Unit::part(&file.path, "/scripts/prepare");
+        assert!(file.hides(&part));
+        assert!(part.hides(&part));
+        assert!(!part.hides(&same_name));
+        assert!(!part.hides(&neighbor));
+        assert!(!file.hides(&same_name));
+        assert!(Unit::whole("dev/demo#").hides(&part));
+        assert!(Unit::whole("/").hides(&Unit::whole("/etc/pam.d/login#2")));
+    }
+
+    #[test]
+    fn a_legacy_part_is_resolved_by_its_source_and_selector_even_when_both_have_hashes() {
+        let kind = autorun::POINTS
+            .iter()
+            .find(|p| p.paths == [".mcp.json"] && p.scope == autorun::Scope::Checkout)
+            .unwrap()
+            .kind();
+        let checkout = "dev/demo#/child";
+        let part = Unit::part(format!("{checkout}/.mcp.json"), "/mcpServers/a#/x");
+        assert!(legacy_unit(&kind, &part.to_string(), |p| p == checkout).is_none());
+        let part = Unit::part(format!("{checkout}/.mcp.json"), "/mcpServers/a#~1x");
         assert_eq!(
-            unit_of("dev/shop/package.json#/scripts/x"),
-            "dev/shop/package.json"
+            legacy_unit(&kind, &part.to_string(), |p| p == checkout),
+            Some(part)
         );
-        assert_eq!(unit_of("dev/shop/"), "dev/shop");
-        assert_eq!(unit_of(""), ".");
-        assert_eq!(unit_of("/"), "/");
-        assert_eq!(parent("dev/shop/package.json"), "dev/shop");
-        assert_eq!(parent(".zshrc"), ".");
-        assert_eq!(parent("/etc"), "/");
-        assert_eq!(parent("/etc/ssh/sshd_config.d/x"), "/etc/ssh/sshd_config.d");
-        assert!(under(
-            "dev/shop/package.json#/scripts/x",
-            "dev/shop/package.json"
-        ));
-        assert!(under(
-            "dev/shop/.git/hooks/pre-commit",
-            "dev/shop/.git/hooks"
-        ));
-        assert!(!under("dev/shopping/package.json", "dev/shop"));
-        assert!(!under("dev/shop/package.json.bak", "dev/shop/package.json"));
-        assert!(under("dev/x", ".") && !under("/etc/x", "."));
-        assert!(under("/etc/x", "/") && !under("dev/x", "/"));
     }
 }

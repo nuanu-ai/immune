@@ -36,6 +36,16 @@ const BINARY: CFIndex = 200;
 /// value nested deeper is not read, and the reading says so, rather than run out of stack on a
 /// file written to do that.
 pub const DEPTH: usize = 32;
+/// How many values one key's value may hold, itself and everything inside it, counted each
+/// time it is met. A binary property list can refer to one array from many places, and
+/// CoreFoundation shares it rather than copy it, so a file of a few hundred bytes can hold a
+/// value that, walked as a tree, has more leaves than memory: this is what keeps the walk
+/// bounded. A login hook is one string, one value; ten thousand is far beyond any real one and
+/// is walked in milliseconds.
+pub const NODES: usize = 10_000;
+/// How many bytes the encoding of one key's value may come to. A hook is a path, under 1,024
+/// bytes on macOS and so under about 2 KiB here; one MiB is far beyond it and bounds memory.
+pub const BYTES: usize = 1 << 20;
 
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
@@ -50,6 +60,7 @@ unsafe extern "C" {
     fn CFStringGetTypeID() -> usize;
     fn CFStringGetLength(string: CFTypeRef) -> CFIndex;
     fn CFStringGetCharacters(string: CFTypeRef, range: CFRange, buffer: *mut u16);
+    fn CFDataGetTypeID() -> usize;
     fn CFDataCreate(allocator: CFTypeRef, bytes: *const u8, length: CFIndex) -> CFTypeRef;
     fn CFDataGetLength(data: CFTypeRef) -> CFIndex;
     fn CFDataGetBytePtr(data: CFTypeRef) -> *const u8;
@@ -77,6 +88,7 @@ pub const NOT_A_DICTIONARY: &str = "a property list that is not a dictionary of 
 pub const TOO_DEEP: &str = "a value nested deeper than this build reads";
 pub const NOT_ENCODED: &str = "a value CoreFoundation could not write back";
 pub const NO_KEY: &str = "the key could not be looked up";
+pub const TOO_LARGE: &str = "its value is larger than this version reads";
 
 /// For each of `keys` the file holds at its top, in the order given, the value there in the
 /// exact encoding above, or why that one value was not read. A key the dictionary does not
@@ -122,9 +134,42 @@ pub fn values<'k>(
             continue;
         }
         let mut bytes = Vec::new();
-        out.push((*key, encode(value, 0, &mut bytes).map(|()| bytes)));
+        let mut budget = Budget {
+            nodes: NODES,
+            bytes: BYTES,
+        };
+        let encoded = encode(value, 0, &mut budget, &mut bytes).map(|()| bytes);
+        out.push((*key, encoded));
     }
     Ok(out)
+}
+
+/// What is left of what one key's value may cost: `NODES` and `BYTES`.
+struct Budget {
+    nodes: usize,
+    bytes: usize,
+}
+
+impl Budget {
+    /// Takes `nodes` values and `bytes` bytes, or says the value is larger than this version
+    /// reads.
+    fn spend(&mut self, nodes: usize, bytes: usize) -> Result<(), &'static str> {
+        if nodes > self.nodes || bytes > self.bytes {
+            return Err(TOO_LARGE);
+        }
+        self.nodes -= nodes;
+        self.bytes -= bytes;
+        Ok(())
+    }
+
+    /// Whether `nodes` values and `bytes` bytes are still within it, asked before anything that
+    /// size is made; what is made is taken when it is.
+    fn fits(&self, nodes: usize, bytes: usize) -> Result<(), &'static str> {
+        if nodes > self.nodes || bytes > self.bytes {
+            return Err(TOO_LARGE);
+        }
+        Ok(())
+    }
 }
 
 /// Appends `n` as eight bytes.
@@ -133,17 +178,28 @@ fn count(out: &mut Vec<u8>, n: usize) {
 }
 
 /// Appends a live property list value in the exact encoding: a tag, a count, then what it
-/// holds. Lent values are used only while their container lives and are never released.
-fn encode(value: CFTypeRef, depth: usize, out: &mut Vec<u8>) -> Result<(), &'static str> {
+/// holds. Lent values are used only while their container lives and are never released. Every
+/// value met, and every byte, is taken from `budget`, and nothing is made before it is known
+/// to fit: a value referred to from many places is counted each time, as it is walked.
+fn encode(
+    value: CFTypeRef,
+    depth: usize,
+    budget: &mut Budget,
+    out: &mut Vec<u8>,
+) -> Result<(), &'static str> {
     if depth > DEPTH {
         return Err(TOO_DEEP);
     }
+    // The value itself: a tag and a count.
+    budget.spend(1, 9)?;
     // SAFETY: plain functions of CoreFoundation on a live object.
     let id = unsafe { CFGetTypeID(value) };
     if id == unsafe { CFStringGetTypeID() } {
+        // SAFETY: `value` is a live string.
+        let length = unsafe { CFStringGetLength(value) }.max(0);
+        budget.spend(0, 2 * length as usize)?;
         // SAFETY: `value` is a live string; the buffer holds exactly its length in code units.
         let units = unsafe {
-            let length = CFStringGetLength(value).max(0);
             let mut units = vec![0u16; length as usize];
             CFStringGetCharacters(
                 value,
@@ -163,22 +219,26 @@ fn encode(value: CFTypeRef, depth: usize, out: &mut Vec<u8>) -> Result<(), &'sta
     } else if id == unsafe { CFArrayGetTypeID() } {
         // SAFETY: `value` is a live array; each index is below its count.
         let n = unsafe { CFArrayGetCount(value) }.max(0);
+        budget.fits(n as usize, 0)?;
         out.push(b'a');
         count(out, n as usize);
         for i in 0..n {
-            encode(unsafe { CFArrayGetValueAtIndex(value, i) }, depth + 1, out)?;
+            let item = unsafe { CFArrayGetValueAtIndex(value, i) };
+            encode(item, depth + 1, budget, out)?;
         }
     } else if id == unsafe { CFDictionaryGetTypeID() } {
         // SAFETY: `value` is a live dictionary; both buffers hold exactly its count.
         let n = unsafe { CFDictionaryGetCount(value) }.max(0) as usize;
+        // Its entries must fit before their buffers are made.
+        budget.fits(2 * n, 0)?;
         let mut keys = vec![std::ptr::null(); n];
         let mut values = vec![std::ptr::null(); n];
         unsafe { CFDictionaryGetKeysAndValues(value, keys.as_mut_ptr(), values.as_mut_ptr()) };
         let mut entries = Vec::with_capacity(n);
         for (k, v) in keys.into_iter().zip(values) {
             let (mut key, mut held) = (Vec::new(), Vec::new());
-            encode(k, depth + 1, &mut key)?;
-            encode(v, depth + 1, &mut held)?;
+            encode(k, depth + 1, budget, &mut key)?;
+            encode(v, depth + 1, budget, &mut held)?;
             entries.push((key, held));
         }
         // Keys are distinct, so their encodings are: the order is the same for every reading.
@@ -190,7 +250,13 @@ fn encode(value: CFTypeRef, depth: usize, out: &mut Vec<u8>) -> Result<(), &'sta
             out.extend_from_slice(&held);
         }
     } else {
+        // Data, the one other value that can be long, is measured before it is copied.
+        if id == unsafe { CFDataGetTypeID() } {
+            // SAFETY: `value` is live data.
+            budget.fits(0, unsafe { CFDataGetLength(value) }.max(0) as usize)?;
+        }
         let leaf = binary(value).ok_or(NOT_ENCODED)?;
+        budget.spend(0, leaf.len())?;
         out.push(b'b');
         count(out, leaf.len());
         out.extend_from_slice(&leaf);
@@ -349,6 +415,17 @@ mod tests {
     }
 
     #[test]
+    fn different_values_in_a_hook_dictionary_are_not_reported_as_unchanged() {
+        let xml = |value: &str| {
+            XML_HOOK.replace(
+                "<string>/Library/Scripts/example.sh</string>",
+                &format!("<dict><key>data</key><data>{value}</data></dict>"),
+            )
+        };
+        assert_ne!(hook(xml("AAEC").as_bytes()), hook(xml("AAED").as_bytes()));
+    }
+
+    #[test]
     fn a_value_that_cannot_be_read_is_named_and_the_keys_beside_it_are_still_read() {
         // One value nested too deep does not make the file unread: the hook beside it counts.
         let deep = format!(
@@ -365,5 +442,65 @@ mod tests {
         assert_eq!(read[0].0, "LoginHook");
         assert!(read[0].1.is_ok());
         assert_eq!(read[1], ("LogoutHook", Err(TOO_DEEP)));
+    }
+
+    /// An invented binary property list whose `LoginHook` is a chain of `d` arrays, each
+    /// holding `k` references to the next, k^d leaves in a few hundred bytes, and whose
+    /// `LogoutHook` is a short path.
+    fn shared(k: u8, d: u8) -> Vec<u8> {
+        let mut objects: Vec<Vec<u8>> = vec![
+            vec![0xD2, 1, 2, 3, 4 + d],
+            [&[0x59][..], b"LoginHook"].concat(),
+            [&[0x5A][..], b"LogoutHook"].concat(),
+        ];
+        for level in 0..d {
+            let mut array = vec![0xA0 | k];
+            array.extend(std::iter::repeat_n(3 + level + 1, k as usize));
+            objects.push(array);
+        }
+        objects.push(vec![0xA0]);
+        objects.push([&[0x55][..], b"/x.sh"].concat());
+        let mut out = b"bplist00".to_vec();
+        let mut offsets = Vec::new();
+        for o in &objects {
+            offsets.push(out.len() as u16);
+            out.extend_from_slice(o);
+        }
+        let table = out.len() as u64;
+        for o in offsets {
+            out.extend_from_slice(&o.to_be_bytes());
+        }
+        out.extend_from_slice(&[0, 0, 0, 0, 0, 0, 2, 1]);
+        out.extend_from_slice(&(objects.len() as u64).to_be_bytes());
+        out.extend_from_slice(&0u64.to_be_bytes());
+        out.extend_from_slice(&table.to_be_bytes());
+        out
+    }
+
+    #[test]
+    fn a_small_value_that_refers_to_one_array_many_times_is_named_too_large_and_its_neighbour_is_read()
+     {
+        // 8^12 leaves in under 200 bytes: walked as a tree it would never end. The walk stops
+        // at its budget, says so for that key, and the key beside it is read.
+        let file = shared(8, 12);
+        assert!(file.len() < 256, "{}", file.len());
+        let started = std::time::Instant::now();
+        let read = values(&file, &["LoginHook", "LogoutHook"]).unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        assert_eq!(read[0], ("LoginHook", Err(TOO_LARGE)));
+        assert_eq!(read[1].0, "LogoutHook");
+        assert!(read[1].1.is_ok());
+        // 11,111 values exceed the node budget even though they fit in the byte budget.
+        assert!(matches!(hook_of(&shared(10, 4)), Err(TOO_LARGE)));
+        // These UTF-16 code units alone would take over one MiB.
+        let long = format!("/{}", "x".repeat(600_000));
+        let xml = XML_HOOK.replace("/Library/Scripts/example.sh", &long);
+        assert!(matches!(hook_of(xml.as_bytes()), Err(TOO_LARGE)));
+        // A real hook fits.
+        assert!(hook_of(XML_HOOK.as_bytes()).is_ok());
+    }
+
+    fn hook_of(bytes: &[u8]) -> Result<Vec<u8>, &'static str> {
+        values(bytes, &["LoginHook"]).unwrap().remove(0).1
     }
 }
