@@ -19,7 +19,8 @@ none.
 The 15 rules whose `null_sensitive` list is not empty negate a field that an event may lack:
 `process.args`, `process.parent.executable` or `user.id`. Their translation rests on an
 assumption about how Elasticsearch treats a missing field: that a comparison with a field the
-event does not have is false, so its negation holds.
+event does not have is neither true nor false, so its negation does not hold either. The
+translation asks for the field to be present wherever it is negated.
 
 `not-taken.tsv` lists the other 119 rules, each with its upstream path, rule id, name,
 severity, the reason it was not taken and the translation's detail: `sequence` (it correlates
