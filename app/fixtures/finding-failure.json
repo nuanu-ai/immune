@@ -1,0 +1,13 @@
+{
+ "operation": "finding",
+ "ok": false,
+ "errors": [
+  {
+   "code": "unknown_finding",
+   "message": "the store has no finding with this id",
+   "example": "immune findings --all lists every finding with its id; with --json, every one in every state",
+   "detail_text": null,
+   "ids_text": []
+  }
+ ]
+}

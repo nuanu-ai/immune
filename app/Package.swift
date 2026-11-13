@@ -12,8 +12,13 @@ let package = Package(
     // Everything that can be tested without a screen: decoding, the icon's state,
     // inert text, the lines shown, running `immune`, the run guard.
     .target(name: "ImmuneCore"),
-    // AppKit status item, popover and window around SwiftUI views.
-    .executableTarget(name: "Immune", dependencies: ["ImmuneCore"]),
-    .testTarget(name: "ImmuneCoreTests", dependencies: ["ImmuneCore"]),
+    // The SwiftUI views of the panel and the opened finding, and the menu-bar icon.
+    .target(name: "ImmuneUI", dependencies: ["ImmuneCore"]),
+    // AppKit status item and popover around the views.
+    .executableTarget(name: "Immune", dependencies: ["ImmuneCore", "ImmuneUI"]),
+    // Draws the icon and the panel off screen into PNG files from fixture JSON, for review:
+    // no status item, no popover, no `immune`. Not part of the app.
+    .executableTarget(name: "ImmuneRender", dependencies: ["ImmuneCore", "ImmuneUI"]),
+    .testTarget(name: "ImmuneCoreTests", dependencies: ["ImmuneCore", "ImmuneUI"]),
   ]
 )

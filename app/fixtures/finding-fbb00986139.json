@@ -1,0 +1,68 @@
+{
+ "format": 1,
+ "answered_at": 1794570060,
+ "store_id": "0a1b2c3d4e5f60718293a4b5c6d7e8f9",
+ "technique_text": "T1546.004",
+ "answer": null,
+ "rests_on": [
+  {
+   "seq": 38,
+   "recorded_at": 1794569821,
+   "run_id": "1794569400-000000004",
+   "entry": "changed",
+   "reader": "watched-places",
+   "kind": "content of a watched file",
+   "predicate": "has_content",
+   "subject_text": "file:machine:example-mac/.zshrc",
+   "old_value_text": "sha256:1a2b3c4d1a2b3c4d1a2b3c4d1a2b3c4d1a2b3c4d1a2b3c4d1a2b3c4d1a2b3c4d",
+   "new_value_text": "sha256:9f8e7d6c9f8e7d6c9f8e7d6c9f8e7d6c9f8e7d6c9f8e7d6c9f8e7d6c9f8e7d6c"
+  }
+ ],
+ "answers_note": "Marking a finding expected or seen is the owner's answer: it hides the finding from him. An agent must not give it on the owner's behalf; it may show the owner the command to give it.",
+ "verdicts": {
+  "total": 1,
+  "suspicious": 0,
+  "listed": [
+   {
+    "verdict": {
+     "format": 1,
+     "store_id": "0a1b2c3d4e5f60718293a4b5c6d7e8f9",
+     "kind": "harmless",
+     "reason_text": "The new line adds ~/.local/bin to PATH, as the installer's documentation says.",
+     "case_text": "case-2042",
+     "severity": null,
+     "confidence": null,
+     "finding": {
+      "id": "fbb00986139"
+     }
+    },
+    "recorded_at": 1794569860,
+    "finding": null,
+    "raised": false
+   }
+  ],
+  "verdict_finding": null
+ },
+ "finding": {
+  "id": "fbb00986139",
+  "rule": "watched.shell-profile",
+  "about_text": "file:machine:example-mac/.zshrc",
+  "state": "open",
+  "severity": "medium",
+  "confidence": "low",
+  "urgent": false
+ },
+ "kind": "shell profile",
+ "title": "A file your terminal runs every time it starts was added, changed or removed.",
+ "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
+ "advice": "If you did not, open the file and look at its last lines.",
+ "where_text": "~/.zshrc",
+ "first_seen_at": 1794569821,
+ "last_seen_at": 1794569821,
+ "evidence": {
+  "place_changed": {
+   "change": "changed",
+   "presence_only": false
+  }
+ }
+}

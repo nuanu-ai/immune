@@ -1,7 +1,9 @@
 // All decoding of what `immune ... --json` prints lives in this one file, so a change
-// of shape is cheap. Every field is optional: a missing or mistyped field becomes
-// nil and is shown as "not reported", never as zero or as fine. Unknown fields are
-// ignored. The shape is the one `src/status.rs` writes.
+// of shape is cheap. Every field is optional: a missing field becomes nil and is shown as
+// "not reported", never as zero or as fine. A field or a list entry that is there with
+// another type is not missing: it is recorded (`Misfits`), and an answer with one is not
+// read as a smaller valid one: the status says it cannot tell, the opened finding fails.
+// Unknown fields are ignored. The shape is the one `src/status.rs` writes.
 
 import Foundation
 
@@ -34,7 +36,7 @@ public struct Status: Sendable, Equatable {
   public var cannotJudge: [String]?
   public var noReaderFor: [NoReader]?
   public var notComputed: [NotComputed]?
-  /// What needs the owner's look, as Immune serves it, urgent first, then most severe; at most 50.
+  /// What needs the owner's look, as Immune serves it, in its order; at most 50.
   public var needsALook: [Item]?
   public var needsALookTotal: Int?
   public var answersNote: String?
@@ -57,6 +59,9 @@ public struct Status: Sendable, Equatable {
   /// The event level: every program start on this Mac. Nil from an immune binary that has none, or
   /// before it was first looked for.
   public var eventLevel: EventLevel?
+  /// Where the answer was not the shape this app reads: a field or a list entry present with
+  /// another type, by its path ("result.needs_a_look[0]"). Not empty means the app cannot tell.
+  public var misfits: [String] = []
 }
 
 /// `result.event_level`, as much as the panel draws: the state, the count of the last
@@ -101,6 +106,12 @@ public struct Verdict: Sendable, Equatable {
   public var kind: String?
   public var said: String?
   public var reasonText: String?
+  /// For a finding of the core: how many verdicts name it, how many of them are `suspicious`, and
+  /// the id of its `verdict.suspicious` finding while one is open or expected. Nil for a
+  /// `verdict.suspicious` finding, and from an Immune that does not give them.
+  public var total: Int? = nil
+  public var suspicious: Int? = nil
+  public var finding: String? = nil
 }
 
 public struct PublishedRule: Sendable, Equatable {
@@ -114,6 +125,11 @@ public struct PublishedRule: Sendable, Equatable {
   /// `rename`. Absent for a program start.
   public var fileText: String? = nil
   public var action: String? = nil
+  /// The latest start's arguments, each whole as Immune gives it; nil when not given.
+  public var argsText: [String]? = nil
+  /// The folder it was started in, and who signed it.
+  public var workingDirectoryText: String? = nil
+  public var signingIdText: String? = nil
 }
 
 /// `result.rules`: how many published rules are shipped, how many are evaluated whole,
@@ -202,6 +218,8 @@ public struct Uncovered: Sendable, Equatable {
   /// "you" when the owner can change it; anything else, or missing, is nothing for
   /// him to do (a limit of this version, or it resolves by itself).
   public var who: String?
+  /// The first few things it is about, such as paths, each as data.
+  public var examplesText: [String]? = nil
 }
 
 /// One thing that needs a look: a finding the owner can answer. (Health items have
@@ -412,19 +430,21 @@ public enum Decoding {
     guard let any = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
     else { return .failure(.notJSON) }
     guard any is [String: Any] else { return .failure(.notAnObject) }
-    let j = J(any)
-    return .success(
-      Envelope(
-        format: j["format"].count,
-        operation: j["operation"].string,
-        ok: j["ok"].bool,
-        errors: (j["errors"].array ?? []).map {
-          ImmuneError(
-            code: $0["code"].string, message: $0["message"].string,
-            example: $0["example"].string, detailText: $0["detail_text"].string)
-        },
-        result: j["result"].object.map(status)
-      ))
+    let misfits = Misfits()
+    let j = J(any, misfits: misfits)
+    var envelope = Envelope(
+      format: j["format"].count,
+      operation: j["operation"].string,
+      ok: j["ok"].bool,
+      errors: (j["errors"].array ?? []).map {
+        ImmuneError(
+          code: $0["code"].string, message: $0["message"].string,
+          example: $0["example"].string, detailText: $0["detail_text"].string)
+      },
+      result: j["result"].object.map(status)
+    )
+    envelope.result?.misfits = misfits.paths
+    return .success(envelope)
   }
 
   /// One line of `immune watch`, or nil when it is not understood.
@@ -526,7 +546,7 @@ public enum Decoding {
             id: $0["id"].string, scope: $0["scope"].string, kind: $0["kind"].string,
             title: $0["title"].string, meaning: $0["meaning"].string, advice: $0["advice"].string,
             count: $0["count"].count, since: $0["since"].date, valueText: $0["value_text"].string,
-            who: $0["who"].string)
+            who: $0["who"].string, examplesText: $0["examples_text"].array?.compactMap(\.string))
         }
       },
       notCoveredTotal: r["not_covered_total"].count,
@@ -615,11 +635,16 @@ public enum Decoding {
           titleText: $0["title_text"].string, authorText: $0["author_text"].string,
           executableText: latest?["executable_text"].string,
           parentExecutableText: latest?["parent_executable_text"].string,
-          fileText: latest?["file_text"].string, action: latest?["action"].string)
+          fileText: latest?["file_text"].string, action: latest?["action"].string,
+          argsText: latest?["args_text"].array?.compactMap(\.string),
+          workingDirectoryText: latest?["working_directory_text"].string,
+          signingIdText: latest?["signing_id_text"].string)
       },
       verdict: i["verdict"].object.map {
         Verdict(
-          kind: $0["kind"].string, said: $0["said"].string, reasonText: $0["reason_text"].string)
+          kind: $0["kind"].string, said: $0["said"].string, reasonText: $0["reason_text"].string,
+          total: $0["total"].count, suspicious: $0["suspicious"].count,
+          finding: $0["finding"].string)
       },
       urgent: i["urgent"].bool ?? false)
   }
@@ -694,31 +719,77 @@ public enum Decoding {
   }
 }
 
-/// A view of one JSON value that answers nil for anything missing or of another type.
+/// The places in one answer where a value was there with another type than the one read.
+final class Misfits {
+  private(set) var paths: [String] = []
+  func note(_ path: String) {
+    if !paths.contains(path) { paths.append(path) }
+  }
+}
+
+/// A view of one JSON value that answers nil for anything missing or of another type. Every
+/// field and every list entry the app reads goes through these accessors, so the one rule holds
+/// for all of them: a value that is there with another type is recorded in `misfits`, and is
+/// never taken for one that is missing. A field that is null is missing; an entry of a list
+/// that is null is not, since a list has no missing entries.
 struct J {
   let value: Any?
-  init(_ value: Any?) { self.value = value }
+  let path: String
+  let misfits: Misfits?
+  let inList: Bool
 
-  subscript(_ key: String) -> J { J((value as? [String: Any])?[key]) }
+  init(_ value: Any?, path: String = "", misfits: Misfits? = nil, inList: Bool = false) {
+    self.value = value
+    self.path = path
+    self.misfits = misfits
+    self.inList = inList
+  }
+
+  /// There is a value to read: present, and not a null field.
+  private var given: Bool { value != nil && (inList || !(value is NSNull)) }
+
+  /// Answers nil, and records the value when it is there with another type.
+  private func misfit<T>() -> T? {
+    if given { misfits?.note(path.isEmpty ? "the answer" : path) }
+    return nil
+  }
+
+  subscript(_ key: String) -> J {
+    let child = path.isEmpty ? key : path + "." + key
+    guard let o = value as? [String: Any] else {
+      let _: J? = misfit()
+      return J(nil, path: child, misfits: misfits)
+    }
+    return J(o[key], path: child, misfits: misfits)
+  }
 
   /// The key is there, even with the value null.
   var isPresent: Bool { value != nil }
   /// Present only when the value is a JSON object.
-  var object: J? { value is [String: Any] ? self : nil }
-  var array: [J]? { (value as? [Any])?.map(J.init) }
-  var string: String? { value as? String }
+  var object: J? { value is [String: Any] ? self : misfit() }
+  var array: [J]? {
+    guard let a = value as? [Any] else { return misfit() }
+    return a.enumerated().map {
+      J($0.element, path: path + "[\($0.offset)]", misfits: misfits, inList: true)
+    }
+  }
+  var string: String? { value as? String ?? misfit() }
 
   /// JSON `true`/`false` only: the numbers 0 and 1 are not booleans.
   var bool: Bool? {
-    guard let n = value as? NSNumber, CFGetTypeID(n) == CFBooleanGetTypeID() else { return nil }
+    guard let n = value as? NSNumber, CFGetTypeID(n) == CFBooleanGetTypeID() else {
+      return misfit()
+    }
     return n.boolValue
   }
 
   /// A whole, non-negative number. Booleans, fractions and negatives are not counts.
   var count: Int? {
-    guard let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() else { return nil }
+    guard let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() else {
+      return misfit()
+    }
     let d = n.doubleValue
-    guard d >= 0, d <= 1e15, d.rounded() == d else { return nil }
+    guard d >= 0, d <= 1e15, d.rounded() == d else { return misfit() }
     return Int(d)
   }
 
@@ -729,6 +800,6 @@ struct J {
     if let d = plain.date(from: s) { return d }
     let fractional = ISO8601DateFormatter()
     fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    return fractional.date(from: s)
+    return fractional.date(from: s) ?? misfit()
   }
 }

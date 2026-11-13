@@ -1,0 +1,52 @@
+{
+ "format": 1,
+ "answered_at": 1794570060,
+ "store_id": "0a1b2c3d4e5f60718293a4b5c6d7e8f9",
+ "technique_text": "T1543",
+ "answer": {
+  "given": "expected",
+  "via": "agent",
+  "given_at": 1794569880,
+  "reason_text": "The owner said the updater belongs to the backup tool and agreed to mark it expected for 30 days.",
+  "until_at": 1797161880,
+  "in_force": true
+ },
+ "rests_on": [
+  {
+   "seq": 37,
+   "recorded_at": 1794569820,
+   "run_id": "1794569400-000000004",
+   "entry": "added",
+   "reader": "watched-places",
+   "kind": "content of a watched file",
+   "predicate": "has_content",
+   "subject_text": "file:machine:example-mac/Library/LaunchAgents/com.example.updater.plist",
+   "old_value_text": null,
+   "new_value_text": "sha256:5e6f7a8b5e6f7a8b5e6f7a8b5e6f7a8b5e6f7a8b5e6f7a8b5e6f7a8b5e6f7a8b"
+  }
+ ],
+ "answers_note": "Marking a finding expected or seen is the owner's answer: it hides the finding from him. An agent must not give it on the owner's behalf; it may show the owner the command to give it.",
+ "verdicts": null,
+ "finding": {
+  "id": "f3c1d2e4a51",
+  "rule": "watched.autostart",
+  "about_text": "file:machine:example-mac/Library/LaunchAgents/com.example.updater.plist",
+  "state": "expected",
+  "severity": "medium",
+  "confidence": "low",
+  "urgent": false
+ },
+ "kind": "autostart item",
+ "title": "A program set to start by itself on this Mac was added, changed or removed.",
+ "meaning": "Normal right after you install, update or remove an app that works in the background.",
+ "advice": "If you did not, find out which app it belongs to.",
+ "where_text": "~/Library/LaunchAgents/com.example.updater.plist",
+ "first_seen_at": 1794569820,
+ "last_seen_at": 1794569820,
+ "evidence": {
+  "place_changed": {
+   "change": "new",
+   "presence_only": false
+  }
+ }
+}
