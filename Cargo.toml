@@ -49,6 +49,11 @@ serde_norway = "0.9.42"
 # the multi-pattern search `regex`, which sigma-rust brings, is built on: BurntSushi's, with
 # `memchr` as its one dependency, both already compiled in, so no crate is added.
 aho-corasick = "1.1.5"
+# Secrets are cut out of what the core keeps and prints with gitleaks's published patterns
+# (`secrets.rs`), which are RE2 regular expressions. `regex` is BurntSushi's engine of the same
+# family as Go's: linear time, and it takes every construct the set uses. sigma-rust already
+# compiles it in, at this version, so naming it adds no crate.
+regex = "1.13.1"
 # The contract with a program that runs the core is a protobuf schema (`contract/`), and a
 # command of the contract prints binary protobuf. Protobuf's wire format is someone else's, so
 # it is not written by hand. prost is the protobuf runtime in general use in Rust (tokio-rs);
