@@ -498,11 +498,14 @@ pub fn findings(f: &v1::Findings, all: bool) -> String {
         );
     }
     let open = v1::FindingState::Open as i32;
-    let shown: Vec<&v1::ListedFinding> = f
-        .findings
-        .iter()
-        .filter(|l| all || l.finding.as_ref().is_some_and(|r| r.state == open))
-        .collect();
+    let is_open = |l: &v1::ListedFinding| l.finding.as_ref().is_some_and(|r| r.state == open);
+    // Open findings first, each part in the answer's order, so a cut never hides an open
+    // finding behind a closed one.
+    let (mut shown, closed): (Vec<&v1::ListedFinding>, Vec<&v1::ListedFinding>) =
+        f.findings.iter().partition(|l| is_open(l));
+    if all {
+        shown.extend(closed);
+    }
     let (one, many) = if all {
         ("finding", "findings")
     } else {
@@ -518,8 +521,9 @@ pub fn findings(f: &v1::Findings, all: bool) -> String {
         .map(|l| {
             let r = l.finding.clone().unwrap_or_default();
             vec![
-                r.id,
+                r.id.clone(),
                 word::<v1::FindingState>(r.state),
+                finding_level(Some(&r)),
                 view::utc(l.last_seen_at),
                 l.title.clone(),
                 quoted(&l.where_text),
@@ -527,7 +531,7 @@ pub fn findings(f: &v1::Findings, all: bool) -> String {
         })
         .collect();
     out.push_str(&table(
-        &["Id", "State", "Last seen", "What", "Where"],
+        &["Id", "State", "Level", "Last seen", "What", "Where"],
         &rows,
     ));
     if let Some(at) = f.latest_run_at {
@@ -537,10 +541,17 @@ pub fn findings(f: &v1::Findings, all: bool) -> String {
         );
     }
     if shown.len() > FINDINGS_SHOWN {
+        let hidden = &shown[FINDINGS_SHOWN..];
+        let urgent = hidden
+            .iter()
+            .filter(|l| l.finding.as_ref().is_some_and(|r| r.urgent))
+            .count();
         say(
             &mut out,
             &format!(
-                "Showing the first {FINDINGS_SHOWN}. Use --json or --proto for the full list."
+                "Showing the first {FINDINGS_SHOWN}; {} more not shown, {} of them urgent. Use --json or --proto for the full list.",
+                grouped(hidden.len() as u64),
+                grouped(urgent as u64)
             ),
         );
     }
@@ -857,6 +868,1320 @@ pub fn finding(f: &v1::Finding) -> String {
     out
 }
 
+/// The most rows of a table `immune status` prints; the JSON lists more.
+const STATUS_ROWS: usize = 10;
+
+/// `n` with thousands grouped.
+fn grouped(n: u64) -> String {
+    count(n, "", "").trim_end().to_string()
+}
+
+/// The summary of what the latest check that finished counted, in sentences, from the status.
+fn counted_sentences(s: &v1::Status, f: &v1::FinishedCheck) -> String {
+    let mut line = String::new();
+    if let Some(e) = &s.estate {
+        line.push_str(&format!(
+            "{}, {}.",
+            count(e.checkouts, "checkout", "checkouts"),
+            count(e.components, "component", "components")
+        ));
+        if e.servers == 0 {
+            line.push_str(" No servers known");
+        } else {
+            line.push_str(&format!(
+                " {} known, {} offered for the sweep, {} read",
+                count(e.servers, "server", "servers"),
+                grouped(e.servers_offered),
+                grouped(e.servers_read)
+            ));
+        }
+        if e.own_devices > 0 {
+            line.push_str(&format!(
+                "; {} of your other devices seen in the private network, not read",
+                grouped(e.own_devices)
+            ));
+        }
+        if e.other_devices > 0 {
+            line.push_str(&format!(
+                "; {} seen in the private network, not read",
+                count(
+                    e.other_devices,
+                    "other person's device",
+                    "other people's devices"
+                )
+            ));
+        }
+        if e.machines_set_aside > 0 {
+            line.push_str(&format!(
+                "; {} retired or disowned by the owner",
+                grouped(e.machines_set_aside)
+            ));
+        }
+        line.push('.');
+        if !e.machines_seen_after_owner_word_text.is_empty() {
+            let seen: Vec<String> = e
+                .machines_seen_after_owner_word_text
+                .iter()
+                .map(|m| quoted(m))
+                .collect();
+            line.push_str(&format!(
+                " Seen alive after the owner's word: {}.",
+                seen.join(", ")
+            ));
+        }
+    }
+    if let Some(r) = &f.readings {
+        let mut gaps = Vec::new();
+        if r.machines_unread > 0 {
+            gaps.push(format!(
+                "{} could not be read",
+                count(r.machines_unread, "machine", "machines")
+            ));
+        }
+        if r.partial > 0 {
+            gaps.push(format!(
+                "{} partial",
+                count(r.partial, "reading was", "readings were")
+            ));
+        }
+        if r.failed > 0 {
+            gaps.push(format!(
+                "{} nothing",
+                count(r.failed, "reading read", "readings read")
+            ));
+        }
+        if r.not_repeated > 0 {
+            gaps.push(format!(
+                "{} not repeated",
+                count(
+                    r.not_repeated,
+                    "earlier reading was",
+                    "earlier readings were"
+                )
+            ));
+        }
+        if !gaps.is_empty() {
+            let gaps = gaps.join("; ");
+            line.push(' ');
+            line.push_str(&gaps[..1].to_uppercase());
+            line.push_str(&gaps[1..]);
+            line.push('.');
+        }
+    }
+    line.push(' ');
+    match &f.since_previous_run {
+        None => line.push_str("First run."),
+        Some(c) => {
+            let counts = format!(
+                "+{} added, {} changed, {} removed",
+                grouped(c.added),
+                grouped(c.changed),
+                grouped(c.removed)
+            );
+            line.push_str(&if !f.unknown.is_empty() {
+                format!("Since last run: {counts}; {}.", f.unknown.join(", "))
+            } else if c.added + c.changed + c.removed == 0 {
+                "Since last run: no changes.".to_string()
+            } else {
+                format!("Since last run: {counts}.")
+            });
+        }
+    }
+    line.push(' ');
+    line.push_str(&match &s.watched {
+        None => "Watched places: never read.".to_string(),
+        Some(w) => {
+            let files = count(w.files, "file", "files");
+            let mut said = match (w.first_reading, &w.since_last_reading) {
+                (false, Some(c)) => format!(
+                    "Watched places: {files}, {} new, {} changed, {} gone since the last reading",
+                    c.new, c.changed, c.gone
+                ),
+                _ => format!("Watched places: {files}, first reading, kept as the baseline"),
+            };
+            let full = v1::Completeness::Full as i32;
+            let not_full: Vec<String> = w
+                .kinds
+                .iter()
+                .filter(|k| k.coverage.is_some_and(|c| c != full))
+                .map(|k| {
+                    format!(
+                        "{} ({})",
+                        k.kind,
+                        if k.coverage == Some(v1::Completeness::Partial as i32) {
+                            "partial"
+                        } else {
+                            "nothing read"
+                        }
+                    )
+                })
+                .chain((w.content_not_read > 0).then(|| {
+                    format!(
+                        "the content of {}",
+                        count(w.content_not_read, "file", "files")
+                    )
+                }))
+                .collect();
+            if !not_full.is_empty() {
+                said.push_str(&format!("; not read in full: {}", not_full.join(", ")));
+            }
+            let presence: u64 = w.kinds.iter().map(|k| k.presence_only).sum();
+            if let Some(note) = w.kinds.iter().find_map(|k| k.presence_only_note.as_ref()) {
+                said.push_str(&format!(
+                    "; {} watched only for presence: {note}",
+                    count(presence, "entry", "entries")
+                ));
+            }
+            said.push('.');
+            said
+        }
+    });
+    line.push(' ');
+    line.push_str(&match &s.integrity {
+        None => "Installed software: never read.".to_string(),
+        Some(i) => {
+            let counted = format!(
+                "Installed software: {}, {}, {}",
+                count(i.bundles, "application bundle", "application bundles"),
+                count(i.homebrew_kegs, "Homebrew keg", "Homebrew kegs"),
+                count(
+                    i.global_npm_packages,
+                    "global npm package",
+                    "global npm packages"
+                )
+            );
+            let mut said = if i.first_reading {
+                format!("{counted}, first reading, kept as the baseline")
+            } else {
+                format!(
+                    "{counted}, {} changed while the version stayed, since the last reading",
+                    i.changed_while_version_stayed
+                )
+            };
+            if i.bundles_not_verifying > 0 {
+                said.push_str(&format!(
+                    "; {} not verify, {} of them since the first reading",
+                    count(i.bundles_not_verifying, "bundle does", "bundles do"),
+                    i.not_verifying_since_first_reading
+                ));
+            }
+            let not_full: Vec<String> = i
+                .readings
+                .iter()
+                .filter(|r| r.completeness != v1::Completeness::Full as i32)
+                .map(|r| {
+                    format!(
+                        "{} ({})",
+                        r.kind,
+                        if r.completeness == v1::Completeness::Partial as i32 {
+                            "partial"
+                        } else {
+                            "nothing read"
+                        }
+                    )
+                })
+                .collect();
+            if !not_full.is_empty() {
+                said.push_str(&format!("; not read in full: {}", not_full.join(", ")));
+            }
+            said.push('.');
+            said
+        }
+    });
+    if let Some(t) = &s.threats {
+        let held = |n: u64| count(n, "exploited vulnerability", "exploited vulnerabilities");
+        let judged = "matched against nothing in this estate but through the vulnerability records linked to them, so whether any of them affects this estate is not known from it";
+        line.push(' ');
+        line.push_str(&match (v1::FeedOutcome::try_from(t.outcome), t.entries) {
+            (Ok(v1::FeedOutcome::Read), Some(n)) if t.first_reading == Some(true) => {
+                format!("CISA catalogue: {}, first reading, kept as the baseline; {judged}.", held(n))
+            }
+            (Ok(v1::FeedOutcome::Read | v1::FeedOutcome::Unchanged), Some(n)) => format!(
+                "CISA catalogue: {}, {} new since the last reading{}; {judged}.",
+                held(n),
+                grouped(t.new.unwrap_or_default()),
+                match t.gone {
+                    Some(g) if g > 0 => format!(", {} left the catalogue", grouped(g)),
+                    _ => String::new(),
+                }
+            ),
+            (Ok(v1::FeedOutcome::Failed), Some(n)) => format!(
+                "CISA catalogue not read: {}; what is new is unknown, and the {} it held at its last reading, {}, are {judged}.",
+                quoted(t.reason_text.as_deref().unwrap_or_default()),
+                held(n),
+                when(t.read_at, "an unknown time")
+            ),
+            (Ok(v1::FeedOutcome::Failed), None) => format!(
+                "CISA catalogue not read: {}; the program knows no exploited vulnerability yet, so whether any affects this estate is unknown.",
+                quoted(t.reason_text.as_deref().unwrap_or_default())
+            ),
+            _ => "CISA catalogue: never read; the program knows no exploited vulnerability yet, so whether any affects this estate is unknown.".to_string(),
+        });
+    }
+    if let Some(d) = &s.vulnerability_data {
+        let clauses: Vec<String> = d
+            .feeds
+            .iter()
+            .map(|f| {
+                // Every clause that says it is for a feed read whole, which has its counts.
+                let held = format!(
+                    "{}, {} of them on malicious packages",
+                    count(f.records.unwrap_or_default(), "record", "records"),
+                    grouped(f.malicious_records.unwrap_or_default())
+                );
+                let since = when(f.changed_at.or(f.read_at), "an unknown time");
+                match v1::FeedOutcome::try_from(f.outcome) {
+                    Ok(v1::FeedOutcome::NeverRead) => format!("{} never read", f.ecosystem),
+                    Ok(v1::FeedOutcome::Read) => match (&f.since_last_reading, f.first_reading) {
+                        (_, Some(true)) => {
+                            format!(
+                                "{}: {held}, first reading, kept as the baseline",
+                                f.ecosystem
+                            )
+                        }
+                        (Some(c), _) => format!(
+                            "{}: {held}, {} new and {} changed since the last reading{}{}",
+                            f.ecosystem,
+                            grouped(c.new),
+                            grouped(c.changed),
+                            if c.withdrawn > 0 {
+                                format!(", {} withdrawn", grouped(c.withdrawn))
+                            } else {
+                                String::new()
+                            },
+                            if c.gone > 0 {
+                                format!(", {} left it", grouped(c.gone))
+                            } else {
+                                String::new()
+                            }
+                        ),
+                        _ => format!("{}: {held}", f.ecosystem),
+                    },
+                    Ok(v1::FeedOutcome::Unchanged) => {
+                        format!("{}: {held}, unchanged since {since}", f.ecosystem)
+                    }
+                    _ => {
+                        let reason = quoted(f.reason_text.as_deref().unwrap_or_default());
+                        match f.read_at {
+                            Some(at) => format!(
+                                "{} not read: {reason}; the {held}, read {}, stay in force",
+                                f.ecosystem,
+                                view::utc(at)
+                            ),
+                            None => format!(
+                                "{} not read: {reason}; nothing of it is known yet",
+                                f.ecosystem
+                            ),
+                        }
+                    }
+                }
+            })
+            .collect();
+        let mut matched = String::new();
+        if let Some(v) = &s.vulnerabilities {
+            matched = format!(
+                "; matched against the projects' package-lock.json, pnpm-lock.yaml and Cargo.lock: {} in packages they use",
+                count(
+                    v.affected_records,
+                    "known vulnerability",
+                    "known vulnerabilities"
+                )
+            );
+            if v.unknown_packages > 0 {
+                matched.push_str(&format!(
+                    ", and for {} whether one affects them cannot be told",
+                    count(v.unknown_packages, "package", "packages")
+                ));
+            }
+        }
+        line.push_str(&format!(
+            " Vulnerability data from OSV: {}{matched}.",
+            clauses.join("; ")
+        ));
+    }
+    line
+}
+
+/// `immune status`: what the last finished check left, for a person, from the message alone.
+/// What a person sees first is whether this Mac is in order; every list is cut short here and
+/// whole in the message.
+pub fn status(s: &v1::Status) -> String {
+    let mut out = String::new();
+    let store = s.store.clone().unwrap_or_default();
+    say(&mut out, &format!("Store: {}.", quoted(&store.path_text)));
+    if !store.exists {
+        say(&mut out, "There is no store yet; `immune run` makes it.");
+        return out;
+    }
+    match &s.last_run {
+        None => say(&mut out, "No run has started."),
+        Some(l) => match l.finished_at {
+            Some(at) => say(
+                &mut out,
+                &format!(
+                    "Last run: started {}, finished {}.",
+                    view::utc(l.started_at),
+                    view::utc(at)
+                ),
+            ),
+            None => say(
+                &mut out,
+                &format!(
+                    "The latest run started {} and has not finished: {}.",
+                    view::utc(l.started_at),
+                    if s.running {
+                        "it is running"
+                    } else {
+                        "it died, and nothing it read is in the store"
+                    }
+                ),
+            ),
+        },
+    }
+    // Every part the message carries is rendered: no branch ends the text before a part that is
+    // there, so the text never says less than the answer it renders.
+    match &s.last_finished_run {
+        None => say(
+            &mut out,
+            "No run has finished yet, so nothing of a check is counted.",
+        ),
+        Some(f) => {
+            let check = f.check.clone().unwrap_or_default();
+            if s.last_run.as_ref().is_some_and(|l| l.id != check.id) {
+                say(
+                    &mut out,
+                    &format!(
+                        "The numbers below are what the run that finished {} left.",
+                        view::utc(check.finished_at.unwrap_or(check.started_at))
+                    ),
+                );
+            }
+            say(&mut out, &counted_sentences(s, f));
+        }
+    }
+    this_mac_said(&mut out, s);
+    if let Some(l) = &s.event_level {
+        let words = l.in_words.clone().unwrap_or_default();
+        let head = match (
+            v1::CollectorState::try_from(l.state),
+            l.program_starts.as_ref(),
+        ) {
+            (Ok(v1::CollectorState::Running), Some(p)) => format!(
+                "{}, {} in the last day.",
+                words.state,
+                count(p.last_day, "program start", "program starts")
+            ),
+            _ => format!("{}.", words.state),
+        };
+        let line: Vec<String> = std::iter::once(head).chain(words.notes).collect();
+        say(&mut out, &format!("Event level: {}", line.join(" ")));
+    }
+    match &s.needs_a_look {
+        None => say(
+            &mut out,
+            "Needs a look: not known yet, no run of this build has looked for findings in this store yet.",
+        ),
+        Some(n) => {
+            let urgent = match n.urgent_total {
+                0 => String::new(),
+                u => format!(", {} of them urgent", grouped(u)),
+            };
+            say(
+                &mut out,
+                &format!("Needs a look: {}{urgent}.", grouped(n.total)),
+            );
+            let listed: Vec<&v1::ListedFinding> =
+                n.items.iter().filter_map(|i| i.finding.as_ref()).collect();
+            let rows: Vec<Vec<String>> = listed
+                .iter()
+                .take(STATUS_ROWS)
+                .map(|l| {
+                    vec![
+                        view::utc(l.last_seen_at),
+                        finding_level(l.finding.as_ref()),
+                        l.title.clone(),
+                        quoted(&l.where_text),
+                        l.finding.as_ref().map(|r| r.id.clone()).unwrap_or_default(),
+                    ]
+                })
+                .collect();
+            if !rows.is_empty() {
+                out.push_str(&table(
+                    &["Last seen", "Level", "What", "Where", "Id"],
+                    &rows,
+                ));
+            }
+            if n.total > rows.len() as u64 {
+                // How many urgent ones are not shown: over all of them, from the count, never
+                // from the rows the answer holds.
+                let urgent_shown = listed
+                    .iter()
+                    .take(STATUS_ROWS)
+                    .filter(|l| l.finding.as_ref().is_some_and(|r| r.urgent))
+                    .count() as u64;
+                say(
+                    &mut out,
+                    &format!(
+                        "{} more are not listed here, {} of them urgent; `immune findings` lists every one.",
+                        grouped(n.total - rows.len() as u64),
+                        grouped(n.urgent_total.saturating_sub(urgent_shown))
+                    ),
+                );
+            }
+        }
+    }
+    // What nobody can fix is a limit of this version only when it holds on every Mac; what a
+    // reading of this Mac raised is told as not judged here.
+    let every_mac = |u: &v1::Uncovered| u.holds_on == v1::HoldsOn::EveryMac as i32;
+    for (who, on_every_mac, head) in [
+        ("you", None, "You can fix"),
+        ("nothing", Some(true), "Limit of this version"),
+        ("nothing", Some(false), "Not judged on this Mac"),
+    ] {
+        for u in s
+            .not_covered
+            .iter()
+            .filter(|u| u.who == who && on_every_mac.is_none_or(|e| every_mac(u) == e))
+        {
+            // Told apart from the words, as data: the examples and the value a source gave. The
+            // words never hold a name taken from the Mac.
+            let shown: Vec<String> = u
+                .examples_text
+                .iter()
+                .chain(u.value_text.as_ref())
+                .map(|e| quoted(e))
+                .collect();
+            let also = if shown.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", shown.join("; "))
+            };
+            say(&mut out, &format!("{head}: {}{also}", u.title));
+        }
+    }
+    if let Some(c) = &s.coverage {
+        say(
+            &mut out,
+            &format!(
+                "Coverage at the latest {}: {} full, {} failed, {} with no reader, {} where the source does not give it, {} with nothing to read, {} implied by {}.",
+                count(c.readings, "reading", "readings"),
+                grouped(c.full),
+                grouped(c.failed),
+                grouped(c.no_reader),
+                grouped(c.not_given),
+                grouped(c.read_nothing),
+                grouped(c.implied_by_unreached),
+                count(
+                    c.unreached_total,
+                    "machine that could not be reached",
+                    "machines that could not be reached"
+                )
+            ),
+        );
+        let rows: Vec<Vec<String>> = c
+            .unreached
+            .iter()
+            .take(STATUS_ROWS)
+            .map(|u| {
+                vec![
+                    u.scope_text.clone(),
+                    view::utc(u.since_at),
+                    u.reason_text.clone().unwrap_or_default(),
+                ]
+            })
+            .collect();
+        if !rows.is_empty() {
+            out.push_str(&table(&["Not reached", "Since", "Why"], &rows));
+        }
+        let shown: Vec<&v1::ReadingGroup> = c
+            .problems
+            .iter()
+            .filter(|g| g.class != v1::ReadingClass::ReadNothing as i32)
+            .collect();
+        let rows: Vec<Vec<String>> = shown
+            .iter()
+            .take(STATUS_ROWS)
+            .map(|g| {
+                vec![
+                    word::<v1::ReadingClass>(g.class).replace('_', " "),
+                    g.reader.clone(),
+                    g.kind.clone(),
+                    g.count.to_string(),
+                    // Text from the Mac, as data.
+                    g.examples_text
+                        .first()
+                        .map(|e| quoted(e))
+                        .unwrap_or_default(),
+                    g.reason_text.as_deref().map(quoted).unwrap_or_default(),
+                ]
+            })
+            .collect();
+        if !rows.is_empty() {
+            out.push_str(&table(
+                &["Class", "Reader", "What", "Readings", "For example", "Why"],
+                &rows,
+            ));
+        }
+        if shown.len() > rows.len() {
+            say(
+                &mut out,
+                &format!(
+                    "{} more; `immune status --json` lists them.",
+                    count(
+                        (shown.len() - rows.len()) as u64,
+                        "group of readings",
+                        "groups of readings"
+                    )
+                ),
+            );
+        }
+    }
+    if let Some(list) = s.no_reader_for.as_ref().filter(|l| !l.items.is_empty()) {
+        say(&mut out, "This build has no reader for:");
+        let rows: Vec<Vec<String>> = list
+            .items
+            .iter()
+            .take(STATUS_ROWS)
+            .map(|r| {
+                vec![
+                    r.what.clone(),
+                    r.what_text.as_deref().map(quoted).unwrap_or_default(),
+                    r.where_count.to_string(),
+                ]
+            })
+            .collect();
+        out.push_str(&table(&["What", "Which", "Places"], &rows));
+    }
+    if let Some(w) = &s.watched {
+        let rows: Vec<Vec<String>> = w
+            .changes
+            .iter()
+            .take(STATUS_ROWS)
+            .map(|c| {
+                vec![
+                    view::utc(c.at),
+                    word::<v1::Change>(c.change),
+                    c.kind.clone(),
+                    c.path_text.clone(),
+                ]
+            })
+            .collect();
+        say(
+            &mut out,
+            &format!(
+                "Latest changes in watched places, newest first, {} of {}:",
+                rows.len(),
+                w.changes_total
+            ),
+        );
+        out.push_str(&table(&["When", "Change", "Kind", "Path"], &rows));
+    }
+    say(
+        &mut out,
+        "All of it, with every list, is in `immune status --json`.",
+    );
+    out
+}
+
+/// A finding's severity, and whether it is urgent, as one cell.
+fn finding_level(r: Option<&v1::FindingRef>) -> String {
+    r.map_or_else(String::new, |r| {
+        format!(
+            "{}{}",
+            word::<v1::Level>(r.severity),
+            if r.urgent { ", urgent" } else { "" }
+        )
+    })
+}
+
+/// Whether this Mac is watched, and whether what the status says is fresh.
+fn this_mac_said(out: &mut String, s: &v1::Status) {
+    let Some(m) = &s.this_mac else {
+        say(out, "This Mac: whether it is watched is not said.");
+        return;
+    };
+    let state = match v1::ThisMacState::try_from(m.state) {
+        Ok(v1::ThisMacState::Watched) => "watched",
+        Ok(v1::ThisMacState::WatchedInPart) => "watched in part",
+        _ => "not checked yet",
+    };
+    let failed: Vec<String> = s
+        .watching
+        .as_ref()
+        .map(|w| {
+            w.failed
+                .iter()
+                .map(|f| crate::watch::failed_words(&f.what).to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    let live = if m.live {
+        "a watcher runs now".to_string()
+    } else if !failed.is_empty() {
+        format!(
+            "a watcher runs, but its latest {} failed, so it does not watch live",
+            failed.join(" and ")
+        )
+    } else {
+        "no watcher runs now".to_string()
+    };
+    say(
+        out,
+        &format!(
+            "This Mac: {state}; {live}; last checked {}.",
+            when(m.checked_at, "never")
+        ),
+    );
+    if !m.fresh {
+        say(
+            out,
+            &format!(
+                "Not fresh: {}. Do not take it for calm until a check finishes.",
+                m.stale_reason
+                    .as_deref()
+                    .unwrap_or("the core does not say why")
+            ),
+        );
+    }
+    let watched: Vec<String> = m
+        .watched
+        .iter()
+        .map(|w| format!("{}: {} ({})", w.what, grouped(w.count), w.how))
+        .collect();
+    if !watched.is_empty() {
+        say(out, &format!("Watched: {}.", watched.join(", ")));
+    }
+}
+
+/// A rule's level as a person reads it: `no level stated` for a rule whose set states none.
+fn level_said(level: i32) -> String {
+    match v1::Level::try_from(level) {
+        Ok(v1::Level::NotStated) => sigma::NO_LEVEL.to_string(),
+        _ => word::<v1::Level>(level),
+    }
+}
+
+/// A rule by its title and its set in words, as every listing for a person names it.
+fn rule_label(r: &v1::ShippedRule) -> String {
+    match &r.rule {
+        Some(rule) => format!("{} ({})", rule.title_text, rule.set),
+        None => format!("{} ({})", r.file, r.set),
+    }
+}
+
+/// Why a rule is not evaluated, in the core's words.
+fn reason_said(r: &v1::ShippedRule) -> String {
+    let given_by = match r.events.as_deref() {
+        Some(sigma::FILE_CATEGORY) => "a file event",
+        _ => "a program start",
+    };
+    use v1::UnevaluatedReason as R;
+    let said = match r.reason.map(R::try_from) {
+        Some(Ok(R::NeedsEvents)) => format!(
+            "needs {} events",
+            r.events_text.as_deref().unwrap_or_default()
+        ),
+        Some(Ok(R::NeedsFields)) => format!(
+            "needs {}, which {given_by} does not give",
+            r.fields_text.join(", ")
+        ),
+        Some(Ok(R::KeywordSearch)) => "searches whole messages for keywords".into(),
+        Some(Ok(R::NotParsed)) => format!(
+            "could not be read: {}",
+            r.said_text.as_deref().unwrap_or_default()
+        ),
+        Some(Ok(R::Sequence)) => {
+            "correlates a sequence of events, which is not translated".into()
+        }
+        Some(Ok(R::NotEql)) => "is not written in EQL, the only language translated".into(),
+        Some(Ok(R::BackslashInWildcard)) => {
+            "has a backslash in a wildcard pattern, whose meaning in Elasticsearch is not documented".into()
+        }
+        Some(Ok(R::SpansKinds)) => "is about program starts and file events at once".into(),
+        Some(Ok(R::NeverTrue)) => "could never be true over the events here".into(),
+        Some(Ok(R::Regex)) => {
+            "needs a regular expression in EQL's syntax, which is not translated".into()
+        }
+        Some(Ok(R::Unsupported)) => "uses a function of EQL's that is not translated".into(),
+        Some(Ok(R::Function)) => {
+            "compares one field with another, which a Sigma rule cannot".into()
+        }
+        _ => "is not evaluated for a reason this build does not name".into(),
+    };
+    match &r.detail_text {
+        Some(d) => format!("{said} ({d})"),
+        None => said,
+    }
+}
+
+/// `immune rules`: where the rules come from, whether they watch now, and each rule by its place
+/// and level, from the message alone.
+pub fn rules(m: &v1::Rules) -> String {
+    let mut out = String::new();
+    let sources: Vec<String> = m
+        .sources
+        .iter()
+        .map(|s| {
+            let t = s.totals.unwrap_or_default();
+            let at = match &s.commit_date {
+                Some(date) => format!("at {} of {date}", s.commit.get(..12).unwrap_or(&s.commit)),
+                None => format!("at {}", s.commit.get(..12).unwrap_or(&s.commit)),
+            };
+            let levels = if s.states_levels {
+                ""
+            } else {
+                ", none with a level stated"
+            };
+            if s.translated {
+                format!(
+                    "{} from {} {at}, {} of them translated into Sigma and shipped, {} not taken{levels}",
+                    t.shipped + t.not_taken,
+                    s.set,
+                    t.shipped,
+                    t.not_taken
+                )
+            } else {
+                format!("{} from {} {at}, all shipped{levels}", t.shipped, s.set)
+            }
+        })
+        .collect();
+    let head = format!("Published rules for macOS: {}.", sources.join("; "));
+    let now = m.now.clone().unwrap_or_default();
+    say(&mut out, &rules_said(&head, &now));
+    let row = |r: &v1::ShippedRule| {
+        let matched = match r.matches_last_day {
+            Some(n) if n > 0 => format!(" · matched {} in the last day", count(n, "time", "times")),
+            _ => String::new(),
+        };
+        let level = r
+            .rule
+            .as_ref()
+            .map_or("?".to_string(), |rule| level_said(rule.level));
+        format!("  {level:<15} {}{matched}", rule_label(r))
+    };
+    let not_stated = |r: &v1::ShippedRule| {
+        r.rule
+            .as_ref()
+            .is_some_and(|x| x.level == v1::Level::NotStated as i32)
+    };
+    // The rules of a set that states no level come after the rest under their own heading, as
+    // a group and never as a rank.
+    let group = |out: &mut String,
+                 rules: &[v1::ShippedRule],
+                 more: &dyn Fn(&mut String, &v1::ShippedRule)| {
+        let silent = rules.iter().filter(|r| not_stated(r)).count();
+        let mut headed = false;
+        for r in rules {
+            if not_stated(r) && !headed {
+                headed = true;
+                say(
+                    out,
+                    &format!(
+                        "  {}: {silent}",
+                        crate::pages::capital(sigma::NO_LEVEL_GROUP)
+                    ),
+                );
+            }
+            say(out, &row(r));
+            more(out, r);
+        }
+    };
+    let process = m
+        .evaluated
+        .iter()
+        .filter(|r| r.events.as_deref() == Some(m.events.as_str()))
+        .count();
+    say(
+        &mut out,
+        &format!(
+            "Evaluated in full: {}, {} on every program start and {} on every file created or renamed",
+            m.evaluated.len(),
+            process,
+            m.evaluated.len() - process
+        ),
+    );
+    group(&mut out, &m.evaluated, &|_, _| {});
+    say(
+        &mut out,
+        &format!(
+            "Evaluated in part, some alternatives never match here: {}",
+            m.in_part.len()
+        ),
+    );
+    group(&mut out, &m.in_part, &|out, r| {
+        let given_by = match r.events.as_deref() {
+            Some(sigma::FILE_CATEGORY) => "a file event",
+            _ => "a program start",
+        };
+        for b in &r.never_matches {
+            let said = match (&b.selection_text, b.fields_text.is_empty()) {
+                (Some(selection), _) => format!(
+                    "{selection} needs {}, which {given_by} does not give",
+                    b.fields_text.join(", ")
+                ),
+                (None, false) => format!(
+                    "an alternative of the upstream rule needs {}, which {given_by} does not give",
+                    b.fields_text.join(", ")
+                ),
+                (None, true) => format!(
+                    "an alternative of the upstream rule was left out in translation: {}",
+                    b.left_out_text.as_deref().unwrap_or("")
+                ),
+            };
+            say(out, &format!("      {said}"));
+        }
+    });
+    say(
+        &mut out,
+        &format!("Not evaluated: {}", m.not_evaluated.len()),
+    );
+    group(&mut out, &m.not_evaluated, &|out, r| {
+        say(out, &format!("      {}", reason_said(r)));
+    });
+    let raised = m.drill.iter().filter(|d| d.raised).count();
+    let must = m
+        .drill
+        .first()
+        .map(|d| d.must_raise.clone())
+        .unwrap_or_default();
+    let title = m
+        .evaluated
+        .iter()
+        .chain(&m.in_part)
+        .filter_map(|r| r.rule.as_ref())
+        .find(|r| r.id_text == must)
+        .map_or(must.clone(), |r| r.title_text.clone());
+    say(
+        &mut out,
+        &format!(
+            "Drill, Atomic Red Team T1027.001: {raised} of {} program starts raise {title}.",
+            m.drill.len()
+        ),
+    );
+    out
+}
+
+/// What the rules do here now, after where they come from: the sentence the status's page and
+/// `immune rules` share.
+pub fn rules_said(head: &str, r: &v1::RulesNow) -> String {
+    let (Some(true), Some(watching_rules)) = (r.watching, r.watching_rules) else {
+        // Before any reading of the event level, whether it is on is not known.
+        let state = if r.watching.is_none() {
+            "Whether it is on is not known yet: it has not been read, so none of them is known to be watching."
+        } else {
+            "It is not on, so none of them is watching."
+        };
+        return format!(
+            "{head} Once the event level is on, every program start on this Mac is checked against them. {state}"
+        );
+    };
+    let watching_file_rules = r.watching_file_rules.unwrap_or(0);
+    let matched = count(r.matches_last_day.unwrap_or(0), "time", "times");
+    let mut said = if r.file_events_collected == Some(true) {
+        format!(
+            "{head} The event level is on, so {} of them are watching this Mac: {} every program start and {} every file created or renamed; {} more are checked in part. In the last day they matched {matched}.",
+            watching_rules,
+            watching_rules - watching_file_rules,
+            watching_file_rules,
+            r.in_part
+        )
+    } else {
+        format!(
+            "{head} The event level is on, so {} of them are watching every program start on this Mac, and {} more are checked in part. The {} rules for files created or renamed are not watching: the collector installed here records program starts only, and installing the event level again adds file events. In the last day they matched {matched}.",
+            watching_rules, r.in_part, r.file_rules
+        )
+    };
+    if let Some(note) = &r.judged_note {
+        said.push(' ');
+        said.push_str(note);
+    }
+    said
+}
+
+/// `immune rules --over-log`: per rule that matched, its level and count, never a command line.
+pub fn replay(m: &v1::Replay) -> String {
+    let mut out = String::new();
+    if m.outcome != v1::ReplayOutcome::Read as i32 {
+        say(
+            &mut out,
+            "The event level is not installed here, so there is no log to replay.",
+        );
+        return out;
+    }
+    say(
+        &mut out,
+        &format!(
+            "The event log on disk holds {} and {}; the rules matched {}. Nothing was stored.",
+            count(
+                m.program_starts.unwrap_or_default(),
+                "program start",
+                "program starts"
+            ),
+            count(
+                m.file_events.unwrap_or_default(),
+                "file event",
+                "file events"
+            ),
+            count(m.matches_total.unwrap_or_default(), "time", "times")
+        ),
+    );
+    let not_stated = |h: &v1::ReplayMatch| {
+        h.rule
+            .as_ref()
+            .is_some_and(|r| r.level == v1::Level::NotStated as i32)
+    };
+    let silent = m.matched.iter().filter(|h| not_stated(h)).count();
+    let mut headed = false;
+    for h in &m.matched {
+        if not_stated(h) && !headed {
+            headed = true;
+            say(
+                &mut out,
+                &format!(
+                    "  {}: {silent}",
+                    crate::pages::capital(sigma::NO_LEVEL_GROUP)
+                ),
+            );
+        }
+        let rule = h.rule.clone().unwrap_or_default();
+        say(
+            &mut out,
+            &format!(
+                "  {:<15} {:>7}  {} ({})",
+                level_said(rule.level),
+                h.matches,
+                rule.title_text,
+                rule.set
+            ),
+        );
+    }
+    out
+}
+
+/// `immune vulnerabilities`: what cannot be told first, then the "affects" answers.
+pub fn vulnerabilities(m: &v1::Vulnerabilities) -> String {
+    let mut out = String::new();
+    // Every part the message carries is rendered, whatever is missing beside it.
+    match &m.totals {
+        // Nothing was counted: why, in the core's words, and never a 0.
+        None => {
+            let why = m
+                .not_computed
+                .first()
+                .map_or("there is no store", |n| n.reason.as_str());
+            say(&mut out, &format!("Nothing is known yet: {why}."));
+        }
+        // Packages whose answer cannot be told are said in the first sentence, so that nothing
+        // reads as calm where the data it needs was not read.
+        Some(t) => {
+            say(
+                &mut out,
+                &format!(
+                    "{} in packages your projects use; for {} whether one affects them cannot be told; {} known not to affect them.",
+                    count(
+                        t.affected_records,
+                        "known vulnerability",
+                        "known vulnerabilities"
+                    ),
+                    count(t.unknown_packages, "package", "packages"),
+                    grouped(t.not_affected_known)
+                ),
+            );
+            for f in &t.feeds {
+                if let Some(why) = &f.not_current_why {
+                    say(
+                        &mut out,
+                        &format!("The {} data is not current: {why}.", f.ecosystem),
+                    );
+                }
+            }
+        }
+    }
+    let rows: Vec<Vec<String>> = m
+        .affected
+        .iter()
+        .flat_map(|a| &a.items)
+        .map(|a| {
+            let r = a.record.clone().unwrap_or_default();
+            let releases: Vec<String> = a
+                .releases
+                .iter()
+                .map(|x| format!("{} {}", x.version_text, x.at_text))
+                .collect();
+            vec![
+                r.label.clone(),
+                format!("{} ({})", r.id_text, r.source),
+                format!("{} {}", a.package_text, releases.join(", ")),
+                a.project_text.clone(),
+                r.fixed_text.join(", "),
+            ]
+        })
+        .collect();
+    if !rows.is_empty() {
+        out.push_str(&table(
+            &["Label", "Record", "Package", "Project", "Fixed in"],
+            &rows,
+        ));
+    }
+    let reasons: Vec<String> = m
+        .totals
+        .iter()
+        .flat_map(|t| &t.unknown_by_reason)
+        .map(|c| format!("{} {}", c.name, c.count))
+        .collect();
+    if !reasons.is_empty() {
+        say(
+            &mut out,
+            &format!("Cannot be told, by reason: {}.", reasons.join(", ")),
+        );
+    }
+    say(&mut out, &m.declared_note);
+    out
+}
+
+/// `immune vulnerability <id>`: the answer in every place, record by record.
+pub fn vulnerability(m: &v1::Vulnerability) -> String {
+    let mut out = String::new();
+    // Every part the message carries is rendered: no branch ends the text before one.
+    match m.data.map(v1::RecordData::try_from) {
+        Some(Ok(v1::RecordData::Held)) => {}
+        None => say(
+            &mut out,
+            "Nothing is known yet: there is no store; `immune run` makes it.",
+        ),
+        _ => say(&mut out, m.said.as_deref().unwrap_or_default()),
+    }
+    say(
+        &mut out,
+        match m.in_catalogue {
+            Some(true) => "It is on the list of vulnerabilities attackers are using.",
+            Some(false) => "It is not on the list of vulnerabilities attackers are using.",
+            None => {
+                "Whether it is on the list of vulnerabilities attackers are using is not known: the list was not read."
+            }
+        },
+    );
+    place_answers(&mut out, &m.answers, "");
+    for r in &m.records {
+        say(
+            &mut out,
+            &format!(
+                "{} from {}, {}, modified {}:",
+                quoted(&r.record_text),
+                r.record_source,
+                r.ecosystem,
+                quoted(&r.modified_text)
+            ),
+        );
+        if !r.answered {
+            say(
+                &mut out,
+                &format!("  {}", r.said.as_deref().unwrap_or_default()),
+            );
+            continue;
+        }
+        place_answers(&mut out, &r.answers, "  ");
+    }
+    say(&mut out, &m.declared_note);
+    out
+}
+
+/// The answer in each place, a line for each package the record names, or one for the place.
+fn place_answers(out: &mut String, answers: &[v1::PlaceAnswer], indent: &str) {
+    let answer = |a: Option<i32>| word::<v1::PackageAnswer>(a.unwrap_or_default());
+    for a in answers {
+        let project = quoted(&a.project_text);
+        if a.packages.is_empty() {
+            say(
+                out,
+                &format!(
+                    "{indent}{project}: {}{}",
+                    answer(a.answer),
+                    a.reason
+                        .as_deref()
+                        .map(|r| format!(", {r}"))
+                        .unwrap_or_default()
+                ),
+            );
+        }
+        for p in &a.packages {
+            say(
+                out,
+                &format!(
+                    "{indent}{project}: {} {} ({})",
+                    quoted(&p.package_text),
+                    answer(Some(p.answer)),
+                    quoted(&p.detail_text)
+                ),
+            );
+        }
+    }
+}
+
+/// `immune sample`: counts only.
+pub fn sample(m: &v1::Sample) -> String {
+    let p = m.processes.unwrap_or_default();
+    let i = m.interpreters.unwrap_or_default();
+    let c = m.connections.unwrap_or_default();
+    let mut out = String::new();
+    say(
+        &mut out,
+        &format!(
+            "Sample: {} processes read, {} unreadable, {} of other users not read; {} interpreters, \
+             {} given code on the command line, {} of them detached; {} connections. \
+             Tracking {} new, {} again; {} findings opened. Took {} ms.",
+            p.read,
+            p.unreadable,
+            p.other_users,
+            i.seen,
+            i.inline_code,
+            i.inline_code_detached,
+            c.read,
+            m.tracked_new,
+            m.tracked_again,
+            m.findings_opened,
+            m.took_ms
+        ),
+    );
+    say(
+        &mut out,
+        &format!("A sample cannot see: {}.", m.cannot_see.join("; ")),
+    );
+    out
+}
+
+/// `immune owner`: the statements that stand.
+pub fn statements(m: &v1::Statements) -> String {
+    let mut out = String::new();
+    say(
+        &mut out,
+        &format!(
+            "The owner's word: {}.",
+            count(
+                m.statements.len() as u64,
+                "statement stands",
+                "statements stand"
+            )
+        ),
+    );
+    let rows: Vec<Vec<String>> = m
+        .statements
+        .iter()
+        .map(|s| {
+            vec![
+                s.machine_text.clone(),
+                s.said.clone(),
+                view::utc(s.at),
+                s.reason_text.clone(),
+                s.names_text.join(", "),
+                s.seen_after.as_ref().map_or("nothing".to_string(), |e| {
+                    format!(
+                        "contradicted: {}, {}",
+                        view::utc(e.at),
+                        quoted(&e.what_text)
+                    )
+                }),
+            ]
+        })
+        .collect();
+    out.push_str(&table(
+        &[
+            "Machine",
+            "Said",
+            "Since",
+            "Reason",
+            "Also known as",
+            "Seen alive after it",
+        ],
+        &rows,
+    ));
+    if m.withdrawn > 0 {
+        say(
+            &mut out,
+            &format!(
+                "{} withdrawn and kept.",
+                count(m.withdrawn, "statement was", "statements were")
+            ),
+        );
+    }
+    out
+}
+
+/// `immune owner <name> retired|not-mine|withdraw`: what was said or withdrawn, and the sweep
+/// script written again.
+pub fn statement_made(m: &v1::StatementMade) -> String {
+    let mut out = String::new();
+    match &m.done {
+        Some(v1::statement_made::Done::Said(s)) => {
+            say(
+                &mut out,
+                &format!(
+                    "Said: {} is {}, {}: {}",
+                    quoted(&m.machine_text),
+                    s.said,
+                    view::utc(s.at),
+                    quoted(&s.reason_text)
+                ),
+            );
+            if !s.reason_cuts.is_empty() {
+                say(
+                    &mut out,
+                    "Its reason held what Immune recognises as a secret, and is kept with it cut.",
+                );
+            }
+            if s.replaced > 0 {
+                say(
+                    &mut out,
+                    "It replaces the statement that stood about the same machine, which is kept.",
+                );
+            }
+        }
+        Some(v1::statement_made::Done::Withdrawn(w)) => {
+            for s in &w.statements {
+                say(
+                    &mut out,
+                    &format!(
+                        "Withdrawn: the statement that {} is {} no longer stands, and is kept.",
+                        quoted(&s.machine_text),
+                        s.said
+                    ),
+                );
+            }
+        }
+        None => {}
+    }
+    let names: Vec<String> = m.names_text.iter().map(|n| quoted(n)).collect();
+    say(
+        &mut out,
+        &format!(
+            "It covers the machine under every name: {}.",
+            names.join(", ")
+        ),
+    );
+    match m
+        .sweep
+        .as_ref()
+        .map(|s| (s.servers, s.problem_text.as_deref()))
+    {
+        Some((Some(n), _)) => say(
+            &mut out,
+            &format!(
+                "The sweep script was written again: it visits {}.",
+                count(n, "server", "servers")
+            ),
+        ),
+        Some((None, problem)) => say(
+            &mut out,
+            &format!(
+                "The sweep script could not be written again: {}.",
+                quoted(problem.unwrap_or_default())
+            ),
+        ),
+        None => {}
+    }
+    out
+}
+
 /// A failure, as a person reads it on stderr: the core's words, what it quotes, the ids a
 /// question fits, and a call that would be right.
 pub fn failure(f: &v1::Failure) -> String {
@@ -912,9 +2237,115 @@ mod tests {
         assert!(text.starts_with("201 open findings."), "{text}");
         assert!(text.contains("id-0200"), "{text}");
         assert!(!text.contains("id-0201"), "{text}");
-        assert!(text.contains("Showing the first 200."), "{text}");
+        assert!(
+            text.contains("Showing the first 200; 1 more not shown, 0 of them urgent."),
+            "{text}"
+        );
         assert!(
             text.contains("Latest full check finished 1970-01-01 00:00 UTC."),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn every_finding_as_text_puts_open_ones_first_and_its_cut_says_how_many_hidden_are_urgent() {
+        // The answer's order is urgent first across states: closed urgent findings come before
+        // open ones that are not urgent. Open ones are shown first all the same.
+        let found = |i: usize, state: v1::FindingState, urgent: bool| v1::ListedFinding {
+            finding: Some(v1::FindingRef {
+                id: format!("id-{i:04}"),
+                state: state as i32,
+                urgent,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let closed = (0..150).map(|i| found(i, v1::FindingState::Expected, true));
+        let open = (150..300).map(|i| found(i, v1::FindingState::Open, false));
+        let f = v1::Findings {
+            latest_run_at: Some(1),
+            findings: closed.chain(open).collect(),
+            ..Default::default()
+        };
+        let text = findings(&f, true);
+        assert!(text.starts_with("300 findings."), "{text}");
+        // All 150 open ones, then the first 50 closed ones; 100 closed urgent ones are hidden.
+        assert!(
+            text.contains("id-0299") && text.contains("id-0049"),
+            "{text}"
+        );
+        assert!(!text.contains("id-0050"), "{text}");
+        assert!(
+            text.contains("Showing the first 200; 100 more not shown, 100 of them urgent."),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn the_text_of_an_id_no_record_names_still_gives_the_answer_in_each_place_and_the_catalogue() {
+        // An id on the catalogue that no record names: the message carries an answer per place,
+        // and the text renders it after what the data could not say.
+        let m = v1::Vulnerability {
+            data: Some(v1::RecordData::NoRecord as i32),
+            said: Some("No record names it.".to_string()),
+            in_catalogue: Some(true),
+            answers: vec![v1::PlaceAnswer {
+                project_text: "~/dev/shop".to_string(),
+                answer: Some(v1::PackageAnswer::Unknown as i32),
+                ..Default::default()
+            }],
+            declared_note: "Declared.".to_string(),
+            ..Default::default()
+        };
+        let text = vulnerability(&m);
+        assert!(text.contains("No record names it."), "{text}");
+        assert!(text.contains("\"~/dev/shop\": "), "{text}");
+        assert!(
+            text.contains("It is on the list of vulnerabilities attackers are using."),
+            "{text}"
+        );
+        assert!(text.contains("Declared."), "{text}");
+        // Without a store, what the catalogue says is not known, and never "not on it".
+        let text = vulnerability(&v1::Vulnerability::default());
+        assert!(text.contains("is not known"), "{text}");
+    }
+
+    #[test]
+    fn the_status_text_says_how_many_of_the_findings_it_does_not_show_are_urgent() {
+        // Ten rows are shown; of the 120 not shown, the urgent ones are counted from Immune's
+        // count over all of them, including those the message itself does not list.
+        let look = |i: usize, urgent: bool| v1::LookFinding {
+            finding: Some(v1::ListedFinding {
+                finding: Some(v1::FindingRef {
+                    id: format!("id-{i:04}"),
+                    severity: v1::Level::High as i32,
+                    urgent,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let s = v1::Status {
+            store: Some(v1::StoreFile {
+                exists: true,
+                ..Default::default()
+            }),
+            needs_a_look: Some(v1::NeedsALook {
+                items: (0..100).map(|i| look(i, i < 12)).collect(),
+                total: 130,
+                urgent_total: 15,
+            }),
+            ..Default::default()
+        };
+        let text = status(&s);
+        assert!(
+            text.contains("id-0009") && !text.contains("id-0010"),
+            "{text}"
+        );
+        assert!(text.contains("  high, urgent  "), "{text}");
+        assert!(
+            text.contains("120 more are not listed here, 5 of them urgent;"),
             "{text}"
         );
     }

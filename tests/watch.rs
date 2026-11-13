@@ -368,7 +368,7 @@ fn a_file_changed_in_a_watched_place_is_a_changed_event_within_seconds_and_the_r
     // watcher's reading.
     drop(w);
     mac.run();
-    let changes = &mac.status()["result"]["watched"]["changes"];
+    let changes = &mac.status()["watched"]["changes"];
     assert_eq!(changes[0]["path_text"], ".zshrc");
     assert_eq!(changes[0]["change"], "changed");
     assert!(changes[0]["run_id"].as_str().unwrap().starts_with("watch-"));
@@ -388,8 +388,8 @@ fn a_change_the_watcher_sees_is_an_open_finding_at_once_and_its_read_line_counts
         mac.rows("SELECT run_id FROM journal WHERE entry = 'run_started'")
             .is_empty()
     );
-    let result = mac.status()["result"].clone();
-    assert_eq!(read["needs_a_look_total"], result["needs_a_look_total"]);
+    let result = mac.status().clone();
+    assert_eq!(read["needs_a_look_total"], result["needs_a_look"]["total"]);
     // This Mac is watched, live, for what the watcher reads; installed software, which only a
     // full run reads, is not said to be watched with a count of nothing.
     let m = &result["this_mac"];
@@ -404,7 +404,8 @@ fn a_change_the_watcher_sees_is_an_open_finding_at_once_and_its_read_line_counts
         whats.contains(&"shell startup files") && !whats.contains(&"applications"),
         "{m}"
     );
-    let items = result["needs_a_look"].as_array().unwrap();
+    let looked = looks(&result);
+    let items = looked.as_array().unwrap();
     let found = items
         .iter()
         .find(|i| i["rule"] == "watched.shell-profile")
@@ -641,7 +642,7 @@ fn a_full_run_holding_the_store_is_waited_for_and_both_finish() {
     }
     assert!(w.lines("problem").is_empty(), "{:?}", w.seen);
     assert_eq!(mac.journaled(".zshrc", "changed").len(), 4);
-    assert!(mac.status()["ok"].as_bool().unwrap());
+    assert_eq!(mac.status()["format"], 1);
 }
 
 #[test]
@@ -803,7 +804,7 @@ fn a_change_undone_within_the_quiet_period_is_read_as_no_change() {
 fn status_says_watching_only_while_a_live_watcher_holds_the_store() {
     let mac = Mac::new("status");
     mac.run();
-    assert!(mac.status()["result"]["watching"].is_null());
+    assert!(mac.status()["watching"].is_null());
     assert!(mac.watch().started().stop().success());
     // The next watcher starts a second later or more, so its start is after the last
     // reading of the one before; until it reads, it has read nothing. The store keeps whole
@@ -814,18 +815,18 @@ fn status_says_watching_only_while_a_live_watcher_holds_the_store() {
     folder.lock().unwrap();
     let mut w = mac.watch();
     w.next("watching");
-    let watching = mac.status()["result"]["watching"].clone();
-    assert!(watching["since"].as_str().unwrap().ends_with('Z'));
-    assert!(watching["last_read"].is_null(), "{watching}");
+    let watching = mac.status()["watching"].clone();
+    assert!(watching["since_at"].as_i64().unwrap() > 0);
+    assert!(watching["last_read_at"].is_null(), "{watching}");
     assert_eq!(watching["cannot_see"].as_array().unwrap().len(), 3);
     folder.unlock().unwrap();
     w.next("read");
-    let watching = mac.status()["result"]["watching"].clone();
-    assert!(watching["last_read"].as_str().unwrap() >= watching["since"].as_str().unwrap());
+    let watching = mac.status()["watching"].clone();
+    assert!(watching["last_read_at"].as_i64().unwrap() >= watching["since_at"].as_i64().unwrap());
     // A watcher killed outright, with no chance to clean up, never shows as watching.
     w.signal(libc::SIGKILL);
     w.exit();
-    assert!(mac.status()["result"]["watching"].is_null());
+    assert!(mac.status()["watching"].is_null());
 }
 
 #[test]
@@ -889,7 +890,7 @@ fn an_editor_task_planted_while_the_watcher_runs_is_a_finding_within_seconds() {
     let read = w.until("read", |v| count(v, "opened") == 1);
     assert!(written.elapsed() < Duration::from_secs(10), "read too late");
     assert_eq!(count(&read, "new"), 1);
-    let items = mac.status()["result"]["needs_a_look"].clone();
+    let items = looks(&mac.status()).clone();
     let found = items
         .as_array()
         .unwrap()
@@ -928,8 +929,8 @@ fn a_login_hook_and_a_changed_login_policy_are_findings_within_seconds() {
         written.elapsed() < Duration::from_secs(10),
         "policy read too late"
     );
-    let r = mac.status()["result"].clone();
-    let items = &r["needs_a_look"];
+    let r = mac.status().clone();
+    let items = &looks(&r);
     let mut found: Vec<(String, String, String, bool)> = items
         .as_array()
         .unwrap()
@@ -937,7 +938,7 @@ fn a_login_hook_and_a_changed_login_policy_are_findings_within_seconds() {
         .map(|i| {
             let text = |k: &str| i[k].as_str().unwrap_or_default().to_string();
             let (rule, place) = (text("rule"), text("where_text"));
-            (rule, place, text("technique"), i["urgent"] == true)
+            (rule, place, text("technique_text"), i["urgent"] == true)
         })
         .collect();
     found.sort();
@@ -996,7 +997,7 @@ fn a_tool_planted_in_an_agents_settings_and_a_new_editor_extension_are_findings_
     let mut found = Vec::new();
     while found.len() < 2 {
         assert!(written.elapsed() < Duration::from_secs(10), "read too late");
-        found = mac.status()["result"]["needs_a_look"]
+        found = looks(&mac.status())
             .as_array()
             .unwrap()
             .iter()
@@ -1055,7 +1056,7 @@ fn a_file_its_tool_rewrites_all_the_time_wakes_no_reading_and_what_is_planted_in
     w.signal(libc::SIGTERM);
     w.exit();
     mac.run();
-    let found: Vec<(String, String)> = mac.status()["result"]["needs_a_look"]
+    let found: Vec<(String, String)> = looks(&mac.status())
         .as_array()
         .unwrap()
         .iter()
@@ -1600,7 +1601,7 @@ fn a_failed_reading_or_sample_is_not_watched_live_with_its_reason_until_the_next
     w.until("read", |v| count(v, "new") == 1);
     mac.view_if_stale();
     let live = |mac: &Mac| {
-        let r = mac.status()["result"].clone();
+        let r = mac.status().clone();
         (
             r["this_mac"]["live"].clone(),
             r["watching"]["failed"].clone(),
@@ -1765,7 +1766,7 @@ fn a_watcher_whose_parent_is_gone_stops_and_frees_the_store() {
     let reap = Reap(watcher);
     parent.kill().unwrap();
     parent.wait().unwrap();
-    while !mac.status()["result"]["watching"].is_null() {
+    while !mac.status()["watching"].is_null() {
         assert!(Instant::now() < end, "the orphaned watcher kept the store");
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -1807,7 +1808,7 @@ fn a_watcher_whose_parent_is_gone_before_it_starts_stops_at_once() {
     }
     // It is gone and its id may be another process's now.
     std::mem::forget(reap);
-    assert!(mac.status()["result"]["watching"].is_null());
+    assert!(mac.status()["watching"].is_null());
     let said = std::fs::read_to_string(&out).unwrap_or_default();
     assert!(!said.contains("\"problem\""), "{said}");
 }
@@ -1825,7 +1826,7 @@ fn answered(r: &Value) -> (u64, String, Vec<String>) {
         .map(|u| u["id"].as_str().unwrap().to_string())
         .collect();
     (
-        r["needs_a_look_total"].as_u64().unwrap(),
+        r["needs_a_look"]["total"].as_u64().unwrap(),
         r["this_mac"]["state"].as_str().unwrap().to_string(),
         kinds,
     )
@@ -1862,7 +1863,7 @@ fn a_quiet_mac_needs_no_look_whatever_is_not_covered_and_a_planted_change_does()
             String::from_utf8_lossy(&out.stderr)
         );
     }
-    let r = mac.status()["result"].clone();
+    let r = mac.status().clone();
     let (needs, state, kinds) = answered(&r);
     assert_eq!((needs, state.as_str()), (0, "watched"), "{r:#}");
     let who = |id: &str| {
@@ -1891,7 +1892,7 @@ fn a_quiet_mac_needs_no_look_whatever_is_not_covered_and_a_planted_change_does()
         )
     );
     // Counted from the sweep itself, not from the run that read its files.
-    assert_eq!(servers_item["since"], "2023-11-14T22:13:20Z");
+    assert_eq!(servers_item["since_at"], 1_700_000_000);
     assert_eq!(r["this_mac"]["live"], false);
     let watched: Vec<(String, u64, String)> = r["this_mac"]["watched"]
         .as_array()
@@ -1930,7 +1931,7 @@ fn a_quiet_mac_needs_no_look_whatever_is_not_covered_and_a_planted_change_does()
         ),
         "{line}"
     );
-    assert_eq!(answered(&mac.status()["result"]).0, 1);
+    assert_eq!(answered(&mac.status()).0, 1);
 }
 
 #[test]
@@ -1975,7 +1976,7 @@ fn a_folder_macos_asks_permission_for_is_never_entered_and_what_was_known_there_
             "checkout:machine:mac/dev/shop"
         ]
     );
-    let r = mac.status()["result"].clone();
+    let r = mac.status().clone();
     let item = r["not_covered"]
         .as_array()
         .unwrap()
@@ -1992,7 +1993,7 @@ fn a_folder_macos_asks_permission_for_is_never_entered_and_what_was_known_there_
         ),
         (
             &"nothing".into(),
-            &"Projects inside Documents are not checked.".into(),
+            &"Projects inside a folder macOS protects are not checked.".into(),
             &1.into(),
             &serde_json::json!(["Documents"])
         )
@@ -2081,7 +2082,7 @@ fn a_watched_file_its_permissions_keep_closed_leaves_this_mac_watched_in_part_an
     let _open = Open(profile.clone());
     std::fs::set_permissions(&profile, std::fs::Permissions::from_mode(0o000)).unwrap();
     mac.run();
-    let r = mac.status()["result"].clone();
+    let r = mac.status().clone();
     assert_eq!(r["this_mac"]["state"], "watched_in_part", "{r:#}");
     let item = r["not_covered"]
         .as_array()
@@ -2142,16 +2143,16 @@ fn this_mac_says_live_for_what_a_running_watcher_sees_and_hourly_for_the_rest() 
             .unwrap_or_else(|| panic!("{what}: {m}"))["how"]
             .clone()
     };
-    let before = mac.status()["result"]["this_mac"].clone();
+    let before = mac.status()["this_mac"].clone();
     assert!(!before["watched"].to_string().contains(sampled), "{before}");
     // Seen within seconds only while a watcher runs.
     assert_eq!(how(&before, tasks), "hourly");
     let mut w = mac.watch().started();
     mac.put(".zshrc", "one\n");
     w.until("read", |v| count(v, "new") == 1);
-    let m = mac.status()["result"]["this_mac"].clone();
+    let m = mac.status()["this_mac"].clone();
     assert_eq!(m["live"], true);
-    assert!(m["live_read_at"].as_str().unwrap().ends_with('Z'), "{m}");
+    assert!(m["live_read_at"].as_i64().unwrap() > 0, "{m}");
     assert_eq!(how(&m, "shell startup files"), "live");
     assert_eq!(how(&m, tasks), "live");
     assert_eq!(how(&m, "Homebrew packages"), "hourly");
@@ -2159,7 +2160,7 @@ fn this_mac_says_live_for_what_a_running_watcher_sees_and_hourly_for_the_rest() 
     // A watcher that stopped samples nothing: the entry goes with it, and nothing is seen
     // within seconds any more.
     assert!(w.stop().success());
-    let after = mac.status()["result"]["this_mac"].clone();
+    let after = mac.status()["this_mac"].clone();
     assert!(!after["watched"].to_string().contains(sampled), "{after}");
     assert_eq!(how(&after, tasks), "hourly");
     assert_eq!(how(&after, "shell startup files"), "hourly");
@@ -2413,7 +2414,7 @@ fn a_sample_that_opens_a_finding_says_so_in_one_line_and_a_quiet_sample_says_not
     assert!(page.contains("sample of running programs and their connections"));
     // A sample reads only programs: it is not a run that left the other readings out.
     assert!(!page.contains("were not read in this run"), "{page}");
-    let r = mac.status()["result"].clone();
+    let r = mac.status().clone();
     assert_eq!(r["this_mac"]["state"], "watched", "{r:#}");
     let sampled = r["this_mac"]["watched"]
         .as_array()
@@ -2478,7 +2479,7 @@ fn a_folder_macos_asks_permission_for_does_not_lengthen_the_report_of_a_quiet_ma
     let line = String::from_utf8_lossy(&out.stdout);
     assert!(line.contains("Since last run: no changes."), "{line}");
     assert!(!line.contains("read nothing"), "{line}");
-    let r = mac.status()["result"].clone();
+    let r = mac.status().clone();
     assert_eq!(r["last_finished_run"]["readings"]["failed"], 0, "{r:#}");
     assert!(
         r["not_covered"].to_string().contains("protected-folders"),
@@ -3071,4 +3072,27 @@ fn a_change_only_another_readings_link_reaches_is_found_after_the_watcher_starts
     w.next("read");
     assert!(w.stop().success());
     assert!(!mac.journaled(".zshrc", "changed").is_empty());
+}
+
+/// What `needs_a_look` lists, each `LookFinding` read as one object: the finding's reference,
+/// the finding as listed and its words side by side, so a test names a field once.
+fn looks(status: &serde_json::Value) -> serde_json::Value {
+    let items = status["needs_a_look"]["items"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    items
+        .iter()
+        .map(|look| {
+            let mut flat = serde_json::Map::new();
+            for part in [&look["finding"]["finding"], &look["finding"], look] {
+                for (k, v) in part.as_object().into_iter().flatten() {
+                    if k != "finding" {
+                        flat.entry(k.clone()).or_insert_with(|| v.clone());
+                    }
+                }
+            }
+            serde_json::Value::Object(flat)
+        })
+        .collect()
 }

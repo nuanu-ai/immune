@@ -73,7 +73,7 @@ fn sample_with(dir: &Dir, at: i64, processes: &[Value], connections: &[Value]) -
         String::from_utf8_lossy(&out.stderr)
     );
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
-    v["result"].clone()
+    v.clone()
 }
 
 /// `immune <args> --json`, which must answer.
@@ -164,7 +164,7 @@ fn a_detached_interpreter_given_code_is_a_finding_once_two_samples_a_minute_apar
     // A first sample can fire nothing: it only starts tracking.
     let first = sample(&dir, T, &table(T));
     assert_eq!(first["findings_opened"], 0);
-    assert_eq!(first["tracked"]["new"], 3);
+    assert_eq!(first["tracked_new"], 3);
     assert_eq!(first["interpreters"]["inline_code"], 4);
     assert_eq!(first["interpreters"]["inline_code_detached"], 3);
     // Two samples, but under a minute apart.
@@ -193,7 +193,7 @@ fn a_detached_interpreter_given_code_is_a_finding_once_two_samples_a_minute_apar
     // It stays one finding while the process lives.
     let fourth = sample(&dir, T + 120, &table(T + 120));
     assert_eq!(fourth["findings_opened"], 0);
-    assert_eq!(fourth["tracked"]["seen_again"], 2);
+    assert_eq!(fourth["tracked_again"], 2);
     assert_eq!(findings(&dir).len(), 1);
 
     // Who signed what it tracks is kept beside it.
@@ -270,14 +270,17 @@ fn an_interpreter_inside_a_folder_macos_asks_permission_for_is_not_looked_at_and
     // The words say it is programs that were not looked at.
     let out = immune(&dir, &["status", "--json"]);
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
-    let titles: Vec<&str> = v["result"]["not_covered"]
+    let titles: Vec<&str> = v["not_covered"]
         .as_array()
         .unwrap()
         .iter()
         .filter(|u| u["id"] == "protected-folders")
         .map(|u| u["title"].as_str().unwrap())
         .collect();
-    assert_eq!(titles, ["Programs inside Documents are not checked."]);
+    assert_eq!(
+        titles,
+        ["Programs inside a folder macOS protects are not checked."]
+    );
 
     // Said while it runs, and no longer once it is gone.
     sample(&dir, T + 30, &table);

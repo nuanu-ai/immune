@@ -1,238 +1,251 @@
 {
- "format": 1,
- "operation": "status",
- "ok": true,
- "errors": [],
- "result": {
-  "generated_at": "2026-11-10T10:05:00Z",
+  "format": 1,
+  "answered_at": 1794305100,
+  "store_id": null,
   "running": false,
   "store": {
-   "path_text": "/Users/example/Library/Application Support/ai.nuanu.immune/store.db",
-   "exists": true
+    "path_text": "/Users/example/Library/Application Support/ai.nuanu.immune/store.db",
+    "exists": true
   },
   "cannot_judge": [
-   "no threat is matched against the estate yet"
+    "no threat is matched against the estate yet"
   ],
-  "no_reader_for": [],
-  "last_run": {
-   "id": "1794400000-000000002",
-   "started_at": "2026-11-10T10:00:00Z",
-   "finished_at": "2026-11-10T10:00:24Z",
-   "finished": true
-  },
-  "last_finished_run": {
-   "id": "1794400000-000000002",
-   "started_at": "2026-11-10T10:00:00Z",
-   "finished_at": "2026-11-10T10:00:24Z",
-   "first_run": false,
-   "readings": {
-    "partial": 2,
-    "failed": 2,
-    "not_repeated": 0,
-    "machines_unread": 1
-   },
-   "since_previous_run": {
-    "added": 3,
-    "changed": 2,
-    "removed": 0
-   },
-   "unknown": []
-  },
-  "estate": {
-   "machines": 3,
-   "servers": 2,
-   "servers_offered": 1,
-   "servers_read": 1,
-   "machines_set_aside": 1,
-   "machines_seen_after_owner_word": 0,
-   "checkouts": 7,
-   "components": 815
-  },
-  "watched": {
-   "files": 13,
-   "first_reading": false,
-   "since_last_reading": {
-    "new": 1,
-    "changed": 0,
-    "gone": 0
-   },
-   "kinds": [
-    {
-     "kind": "autostart item",
-     "files": 6,
-     "coverage": "full",
-     "readings": {
-      "full": 1,
-      "partial": 0,
-      "none": 0
-     },
-     "reason_text": null
-    },
-    {
-     "kind": "shell profile",
-     "files": 3,
-     "coverage": "full",
-     "readings": {
-      "full": 1,
-      "partial": 0,
-      "none": 0
-     },
-     "reason_text": null
-    },
-    {
-     "kind": "git hook",
-     "files": 4,
-     "coverage": "partial",
-     "readings": {
-      "full": 6,
-      "partial": 1,
-      "none": 0
-     },
-     "reason_text": ".git is a file, as in a worktree or a submodule: the hooks are kept elsewhere and were not read"
-    }
-   ],
-   "content_not_read": 0,
-   "changes": [
-    {
-     "at": "2026-11-10T10:00:19Z",
-     "run_id": "1794400000-000000002",
-     "change": "new",
-     "kind": "autostart item",
-     "path_text": "Library/LaunchAgents/org.example.helper.plist"
-    }
-   ],
-   "changes_total": 1
-  },
-  "threats": {
-   "outcome": "failed",
-   "reason_text": "could not connect to the catalogue: network is unreachable",
-   "entries": 1700,
-   "read_at": "2026-11-10T10:00:01Z",
-   "checked_at": "2026-11-10T10:00:01Z",
-   "source": "cisa-kev",
-   "matched": false
-  },
-  "coverage": {
-   "readings": 24,
-   "full": 12,
-   "read_nothing": 6,
-   "not_given": 2,
-   "partial": 2,
-   "failed": 0,
-   "problems": [
-    {
-     "class": "not_given",
-     "reader": "sweep",
-     "kind": "server packages",
-     "reason_text": "no sweep file was given for this server",
-     "count": 2,
-     "examples_text": [
-      "machine:example-server-2",
-      "machine:example-server-3"
-     ]
-    },
-    {
-     "class": "read_nothing",
-     "reader": "watched-places",
-     "kind": "hooks in the checkout's .git folder",
-     "reason_text": "the checkout has no hooks",
-     "count": 6,
-     "examples_text": [
-      "checkout:machine:example-mac/work/beta",
-      "checkout:machine:example-mac/work/gamma",
-      "checkout:machine:example-mac/work/delta"
-     ]
-    }
-   ],
-   "problems_total": 2,
-   "unreached": [],
-   "unreached_total": 0
-  },
-  "not_computed": [],
-  "needs_a_look": [
-   {
-    "id": "f5d20b8e641",
-    "type": "finding",
-    "kind": "shell profile",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A file your terminal runs every time it starts was added, changed or removed.",
-    "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
-    "advice": "If you did not, open the file and look at its last lines.",
-    "value_text": null,
-    "where_text": ".zshrc",
-    "rule": "watched.shell-profile",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1546.004"
-   }
-  ],
-  "needs_a_look_total": 1,
   "answers_note": "Marking a finding expected or seen is the owner's answer: it hides the finding from him. An agent must not give it on the owner's behalf; it may show the owner the command to give it.",
+  "not_computed": [],
   "this_mac": {
-   "state": "watched",
-   "live": true,
-   "checked_at": "2026-11-10T10:00:24Z",
-   "live_read_at": "2026-11-10T10:04:10Z",
-   "watched": [
-    {
-     "what": "startup items",
-     "count": 14,
-     "how": "live"
-    },
-    {
-     "what": "shell startup files",
-     "count": 3,
-     "how": "live"
-    },
-    {
-     "what": "SSH files",
-     "count": 4,
-     "how": "live"
-    },
-    {
-     "what": "git hooks in projects",
-     "count": 31,
-     "how": "live"
-    },
-    {
-     "what": "running programs and their connections",
-     "count": 87,
-     "how": "sampled"
-    },
-    {
-     "what": "applications",
-     "count": 214,
-     "how": "hourly"
-    },
-    {
-     "what": "Homebrew packages",
-     "count": 96,
-     "how": "hourly"
-    },
-    {
-     "what": "npm packages",
-     "count": 640,
-     "how": "hourly"
-    }
-   ]
+    "state": "watched",
+    "live": true,
+    "checked_at": 1794304824,
+    "live_read_at": 1794305050,
+    "watched": [
+      {
+        "what": "startup items",
+        "count": 14,
+        "how": "live"
+      },
+      {
+        "what": "shell startup files",
+        "count": 3,
+        "how": "live"
+      },
+      {
+        "what": "SSH files",
+        "count": 4,
+        "how": "live"
+      },
+      {
+        "what": "git hooks in projects",
+        "count": 31,
+        "how": "live"
+      },
+      {
+        "what": "running programs and their connections",
+        "count": 87,
+        "how": "sampled"
+      },
+      {
+        "what": "applications",
+        "count": 214,
+        "how": "hourly"
+      },
+      {
+        "what": "Homebrew packages",
+        "count": 96,
+        "how": "hourly"
+      },
+      {
+        "what": "npm packages",
+        "count": 640,
+        "how": "hourly"
+      }
+    ],
+    "fresh": true,
+    "stale_reason": null,
+    "fresh_for_seconds": 7200
   },
   "not_covered": [
-   {
-    "id": "n-feed",
-    "scope": "threats",
-    "kind": "threat list not downloaded",
-    "title": "The vulnerability list could not be downloaded; it is tried again",
-    "meaning": "Meaning from the program.",
-    "advice": "Advice from the program.",
-    "count": 1,
-    "since": "2026-11-09T22:00:05Z",
-    "value_text": "the network is unreachable",
-    "examples_text": []
-   }
+    {
+      "id": "n-feed",
+      "scope": "threats",
+      "kind": "threat list not downloaded",
+      "title": "The vulnerability list could not be downloaded; it is tried again",
+      "meaning": "Meaning from the program.",
+      "advice": "Advice from the program.",
+      "count": 1,
+      "value_text": "the network is unreachable",
+      "examples_text": [],
+      "since_at": 1794261605,
+      "holds_on": "this_mac"
+    }
   ],
-  "not_covered_total": 1
- }
+  "last_run": {
+    "id": "1794400000-000000002",
+    "started_at": 1794304800,
+    "finished_at": 1794304824
+  },
+  "last_finished_run": {
+    "check": {
+      "id": "1794400000-000000002",
+      "started_at": 1794304800,
+      "finished_at": 1794304824
+    },
+    "first_run": false,
+    "readings": {
+      "partial": 2,
+      "failed": 2,
+      "not_repeated": 0,
+      "machines_unread": 1
+    },
+    "since_previous_run": {
+      "added": 3,
+      "changed": 2,
+      "removed": 0
+    },
+    "unknown": []
+  },
+  "estate": {
+    "machines": 3,
+    "servers": 2,
+    "servers_offered": 1,
+    "servers_read": 1,
+    "machines_set_aside": 1,
+    "checkouts": 7,
+    "components": 815,
+    "machines_seen_after_owner_word_text": []
+  },
+  "watched": {
+    "files": 13,
+    "first_reading": false,
+    "since_last_reading": {
+      "new": 1,
+      "changed": 0,
+      "gone": 0
+    },
+    "kinds": [
+      {
+        "kind": "autostart item",
+        "files": 6,
+        "coverage": "full",
+        "readings": {
+          "full": 1,
+          "partial": 0,
+          "none": 0
+        },
+        "reason_text": null
+      },
+      {
+        "kind": "shell profile",
+        "files": 3,
+        "coverage": "full",
+        "readings": {
+          "full": 1,
+          "partial": 0,
+          "none": 0
+        },
+        "reason_text": null
+      },
+      {
+        "kind": "git hook",
+        "files": 4,
+        "coverage": "partial",
+        "readings": {
+          "full": 6,
+          "partial": 1,
+          "none": 0
+        },
+        "reason_text": ".git is a file, as in a worktree or a submodule: the hooks are kept elsewhere and were not read"
+      }
+    ],
+    "content_not_read": 0,
+    "changes": [
+      {
+        "at": 1794304819,
+        "run_id": "1794400000-000000002",
+        "change": "new",
+        "kind": "autostart item",
+        "path_text": "Library/LaunchAgents/org.example.helper.plist"
+      }
+    ],
+    "changes_total": 1
+  },
+  "threats": {
+    "outcome": "failed",
+    "reason_text": "could not connect to the catalogue: network is unreachable",
+    "entries": 1700,
+    "read_at": 1794304801,
+    "checked_at": 1794304801,
+    "source": "cisa-kev",
+    "matched": false
+  },
+  "no_reader_for": {
+    "items": []
+  },
+  "coverage": {
+    "readings": 24,
+    "full": 12,
+    "read_nothing": 6,
+    "not_given": 2,
+    "partial": 2,
+    "failed": 0,
+    "problems": [
+      {
+        "class": "not_given",
+        "reader": "sweep",
+        "kind": "server packages",
+        "reason_text": "no sweep file was given for this server",
+        "count": 2,
+        "examples_text": [
+          "machine:example-server-2",
+          "machine:example-server-3"
+        ]
+      },
+      {
+        "class": "read_nothing",
+        "reader": "watched-places",
+        "kind": "hooks in the checkout's .git folder",
+        "reason_text": "the checkout has no hooks",
+        "count": 6,
+        "examples_text": [
+          "checkout:machine:example-mac/work/beta",
+          "checkout:machine:example-mac/work/gamma",
+          "checkout:machine:example-mac/work/delta"
+        ]
+      }
+    ],
+    "problems_total": 2,
+    "unreached": [],
+    "unreached_total": 0
+  },
+  "needs_a_look": {
+    "items": [
+      {
+        "finding": {
+          "finding": {
+            "id": "f5d20b8e641",
+            "rule": "watched.shell-profile",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "shell profile",
+          "title": "A file your terminal runs every time it starts was added, changed or removed.",
+          "where_text": ".zshrc",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
+        "advice": "If you did not, open the file and look at its last lines.",
+        "value_text": null,
+        "technique_text": "T1546.004",
+        "change": "changed",
+        "evidence": null
+      }
+    ],
+    "total": 1,
+    "urgent_total": 0
+  }
 }

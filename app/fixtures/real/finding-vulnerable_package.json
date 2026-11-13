@@ -1,0 +1,77 @@
+{
+  "advice": "Do not install or run that project again. Ask your agent to look into it; if its packages were installed here, treat the tokens and keys this Mac could reach as exposed.",
+  "answer": null,
+  "answered_at": 1794597522,
+  "answers_note": "Answer a finding only after the owner has agreed in this conversation, having been told what it is and what the options are. Pass --via agent and the reason the owner agreed to. The app shows every answer given this way.",
+  "evidence": {
+    "vulnerable_package": {
+      "ecosystem": "npm",
+      "package_text": "ansi-regex",
+      "project_text": "checkout:machine:mac/dev/shop",
+      "records": [
+        {
+          "aliases_text": [
+            "GHSA-jvhh-2m83-6w29"
+          ],
+          "exploited": null,
+          "fixed_text": [],
+          "id_text": "MAL-2025-46966",
+          "label": "malicious",
+          "source": "OpenSSF malicious packages",
+          "summary_text": "Malicious code in ansi-regex (npm)"
+        }
+      ],
+      "releases": [
+        {
+          "at_text": "~/dev/shop/package-lock.json#node_modules/ansi-regex",
+          "version_text": "6.2.1"
+        }
+      ]
+    }
+  },
+  "finding": {
+    "about_text": "component:checkout:machine:mac/dev/shop/npm/ansi-regex",
+    "confidence": "high",
+    "id": "f9fd8d5f22f",
+    "rule": "lockfiles.malicious-package",
+    "severity": "critical",
+    "state": "open",
+    "urgent": true
+  },
+  "first_seen_at": 1794597518,
+  "format": 1,
+  "kind": "lockfile dependency",
+  "last_seen_at": 1794597519,
+  "meaning": "The package, or this release of it, was reported as carrying harmful code. If the project's packages were installed on this Mac, that code may have run here.",
+  "rests_on": [
+    {
+      "entry": "added",
+      "kind": "lockfile dependencies",
+      "new_value_text": "6.2.1",
+      "old_value_text": null,
+      "predicate": "has_version",
+      "reader": "lockfiles",
+      "recorded_at": 1794597518,
+      "run_id": "1794597518-067940000",
+      "seq": 3,
+      "subject_text": "component:checkout:machine:mac/dev/shop/npm/ansi-regex"
+    },
+    {
+      "entry": "advisories_read",
+      "kind": null,
+      "new_value_text": null,
+      "old_value_text": null,
+      "predicate": null,
+      "reader": "osv-npm",
+      "recorded_at": 1794597518,
+      "run_id": "1794597518-067940000",
+      "seq": 18,
+      "subject_text": null
+    }
+  ],
+  "store_id": "d33651be2c7f9f3bb28e6a58c8b62082",
+  "technique_text": "T1195.001",
+  "title": "A project on this Mac depends on a package that is known to be malicious.",
+  "verdicts": null,
+  "where_text": "~/dev/shop/package-lock.json#node_modules/ansi-regex"
+}

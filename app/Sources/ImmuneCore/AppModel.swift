@@ -59,10 +59,17 @@ public final class AppModel: ObservableObject {
   /// Appended to every command; empty except in trials (`--store <path>`).
   private let extraArguments: [String]
 
-  public init(immune: any ImmuneRunning, extraArguments: [String] = [], launchedAt: Date = Date()) {
+  /// The time now, which the light judges an answer's age by.
+  private let clock: @Sendable () -> Date
+
+  public init(
+    immune: any ImmuneRunning, extraArguments: [String] = [], launchedAt: Date = Date(),
+    clock: @escaping @Sendable () -> Date = { Date() }
+  ) {
     self.immune = immune
     self.extraArguments = extraArguments
     self.launchedAt = launchedAt
+    self.clock = clock
   }
 
   /// The full check every hour while the app is open. Called on a timer and after
@@ -80,7 +87,7 @@ public final class AppModel: ObservableObject {
     return await runNow(for: .app)
   }
 
-  public var light: Light { Light.of(reading) }
+  public var light: Light { Light.of(reading, now: clock()) }
 
   /// Immune said a run is in progress, started here or anywhere else.
   public var immuneSaysRunning: Bool { reading.status?.running == true }
@@ -142,9 +149,7 @@ public final class AppModel: ObservableObject {
       ["run", "--json"] + extraArguments, timeout: Self.runTimeout, for: whom)
     if Self.otherRunInProgress(out) {
       runNote = "A check was already running; its result will show when it ends."
-    } else if case .failed(let reason, let detail, _) = Interpret.reading(
-      from: out, operation: nil)
-    {
+    } else if case .failed(let reason, let detail, _) = Interpret.reading(from: out) {
       runFailure = reason + (detail.map { " " + Inert.text($0) } ?? "")
     }
     runInProgress = false

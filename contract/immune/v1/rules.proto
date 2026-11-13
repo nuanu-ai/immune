@@ -1,0 +1,270 @@
+// The published rules this build ships and the core's own: the answers to `immune rules` and
+// `immune rules --over-log`. Version 1 of the contract between the core and a program that runs
+// it. How a message is printed and read, and the conventions for text, references, times and
+// changes, are in `common.proto`; a rule is `Rule` in `event.proto`.
+//
+// The rules come from three published sets: SigmaHQ's rules for macOS, and Elastic's detection
+// rules and behaviour rules for macOS translated into Sigma. Each is evaluated in full, in part,
+// or not at all over the events the collector records, and the answer says which and why. A rule
+// of a set that states no level raises nothing by itself.
+//
+// Values that will be added. A reader meets values of `ReplayOutcome`, and those the other files
+// name, that it does not know: the core adds them within version 1. It treats one it does not
+// know as something it cannot judge.
+
+syntax = "proto3";
+
+package immune.v1;
+
+import "immune/v1/common.proto";
+import "immune/v1/event.proto";
+import "immune/v1/matches.proto";
+import "immune/v1/status.proto";
+
+// The answer to `immune rules`.
+message Rules {
+  // The numbers of `Failure`'s fields, so that a failure never reads as an answer.
+  reserved 1000 to 1099;
+  // The version of this contract: 1. A reader that meets another number stops.
+  uint32 format = 1;
+  int64 answered_at = 2;
+  // The store the counts were read from, as in every answer (`common.proto`).
+  optional string store_id = 3;
+  // The sets the rules come from, in the order they are listed.
+  repeated RuleSet sources = 4;
+  // The categories of events the rules are about: program starts, and files created or renamed.
+  string events = 5;
+  string file_events = 6;
+  RuleTotals totals = 7;
+  // The rules evaluated in full, in part, and not at all. Within each, the most severe level
+  // first; the rules of a set that states no level follow as a group of their own.
+  repeated ShippedRule evaluated = 8;
+  repeated ShippedRule in_part = 9;
+  // Every rule of a translated set that the translation did not take is here too.
+  repeated ShippedRule not_evaluated = 10;
+  // A drill: invented program starts of Atomic Red Team's tests, and what the rules make of them.
+  repeated Drill drill = 11;
+  // What the rules do here now, as the status gives it.
+  RulesNow now = 12;
+  // How many events the rules matched in the last week. Absent before any reading of the event
+  // level, and then `not_computed` says why.
+  optional uint64 matches_last_week = 13;
+  // Every rule of the core's own and every cause of what is not covered, with its words, for an
+  // agent to learn what each can say.
+  Catalogue catalogue = 14;
+  repeated NotComputed not_computed = 15;
+}
+
+// Where a set of rules comes from.
+message RuleSet {
+  // Its name, the prefix of its rules' names; who publishes it; and the set in words.
+  string name = 1;
+  string publisher = 2;
+  string set = 3;
+  // Whether its rules state levels. A rule of a set that states none raises no finding by itself.
+  bool states_levels = 4;
+  string url = 5;
+  string commit = 6;
+  optional string commit_date = 7;
+  string licence = 8;
+  // Its folder in this repository.
+  string folder = 9;
+  // Whether its rules were translated into Sigma.
+  bool translated = 10;
+  // The fields its rules are given of a program start and of a file event.
+  repeated string process_fields = 11;
+  repeated string file_fields = 12;
+  RuleTotals totals = 13;
+}
+
+message RuleTotals {
+  // Rule files shipped, and upstream rules a translation did not take, which are also counted
+  // under `not_evaluated`.
+  uint64 shipped = 1;
+  uint64 not_taken = 2;
+  uint64 evaluated = 3;
+  uint64 in_part = 4;
+  uint64 not_evaluated = 5;
+}
+
+// A rule as this build ships it, or an upstream rule a translation did not take.
+message ShippedRule {
+  // The rule. Absent for a rule that could not be read: then `file`, `source` and `set` name it.
+  Rule rule = 1;
+  string file = 2;
+  string source = 3;
+  string set = 4;
+  // Its status as published, such as `test`, which gives a finding's confidence.
+  optional string status = 5;
+  // The category of events it is about.
+  optional string events = 6;
+  // For a rule evaluated in part: each alternative that never matches here.
+  repeated NeverMatches never_matches = 7;
+  // For a rule not evaluated: why, with the kind of event, the fields or what the parser said.
+  optional UnevaluatedReason reason = 8;
+  optional string events_text = 9;
+  repeated string fields_text = 10;
+  optional string said_text = 11;
+  // For a rule a translation did not take, or took in part: what it said of it.
+  optional string detail_text = 12;
+  // How many events it matched in the last day and the last week, for a rule evaluated wholly
+  // or in part. Absent before any reading of the event level.
+  optional uint64 matches_last_day = 13;
+  optional uint64 matches_last_week = 14;
+}
+
+message NeverMatches {
+  // The selection, as the rule names it. Absent for one the translation left out.
+  optional string selection_text = 1;
+  // The fields it needs that the events here do not give.
+  repeated string fields_text = 2;
+  // What the translation left out, where it said.
+  optional string left_out_text = 3;
+}
+
+// One invented program start of the drill.
+message Drill {
+  string atomic_test = 1;
+  string image = 2;
+  repeated string arguments = 3;
+  // The rule it must raise, by its id, and whether it does.
+  string must_raise = 4;
+  bool raised = 5;
+  // The rules it matches.
+  repeated Rule matches = 6;
+}
+
+// The words of every finding the core can raise and of everything it can say is not covered.
+message Catalogue {
+  // The core's own rules.
+  repeated CoreRule rules = 1;
+  // What a finding of a published rule says.
+  PublishedWords published_rules = 2;
+  // What a finding the response layer's `suspicious` verdict raises says.
+  VerdictWords verdict_rule = 3;
+  // Every cause of what is not covered, with its words. In the words `{n}` is the count, `{what}`
+  // what it is, as a list of the catalogue's own words, `{date}` a time, and `{reasons}` why, in
+  // the core's words. A name taken from the Mac is never in them: it is in `examples_text`.
+  repeated CauseWords not_covered = 4;
+  // The levels, from least to worst.
+  repeated string severities = 5;
+  repeated string confidences = 6;
+}
+
+// A rule of the core's own.
+message CoreRule {
+  string id = 1;
+  string kind = 2;
+  optional string technique = 3;
+  Level severity = 4;
+  Level confidence = 5;
+  bool urgent = 6;
+  // What it finds: a change, a state, an event.
+  string finds = 7;
+  string title = 8;
+  string meaning = 9;
+  string advice = 10;
+}
+
+// What a finding of a published rule says, for every set that raises findings.
+message PublishedWords {
+  // How such a rule is named: its set and its id.
+  string rule = 1;
+  string kind = 2;
+  repeated string raised_by_sets = 3;
+  repeated string raised_by_levels = 4;
+  repeated SilentSet sets_that_raise_nothing = 5;
+  // Where its severity and confidence come from, in the core's words, and its confidence by
+  // the rule's status.
+  string severity = 6;
+  repeated StatusConfidence confidence_by_status = 7;
+  string finds = 8;
+  string title = 9;
+  // The meaning names the set, so it is given for each.
+  repeated SetMeaning meaning_by_set = 10;
+  string advice = 11;
+  // A rule about file events raises a finding of its own kind and words.
+  FileEventWords for_file_events = 12;
+}
+
+message SilentSet {
+  string name = 1;
+  string set = 2;
+  string why = 3;
+}
+
+message StatusConfidence {
+  string status = 1;
+  Level confidence = 2;
+}
+
+message SetMeaning {
+  string name = 1;
+  string meaning = 2;
+}
+
+message FileEventWords {
+  string kind = 1;
+  string title = 2;
+  repeated SetMeaning meaning_by_set = 3;
+  string advice = 4;
+}
+
+message VerdictWords {
+  string id = 1;
+  string kind = 2;
+  string severity = 3;
+  string confidence = 4;
+  string finds = 5;
+  string title = 6;
+  string meaning = 7;
+  string advice = 8;
+}
+
+message CauseWords {
+  string id = 1;
+  string who = 2;
+  string kind = 3;
+  string title = 4;
+  string meaning = 5;
+  string advice = 6;
+}
+
+// The answer to `immune rules --over-log`: the rules evaluated over the event log on disk now,
+// from the start of every file, the store neither read nor written. Per rule that matched, its
+// level and how many events matched; never a command line, a path or an argument.
+message Replay {
+  // As in `Rules`.
+  reserved 1000 to 1099;
+  uint32 format = 1;
+  int64 answered_at = 2;
+  ReplayOutcome outcome = 3;
+  // Why there is nothing to replay, in the core's words.
+  optional string reason = 4;
+  // What was read, lost and could not be read, and how many times the rules matched. Absent
+  // unless `outcome` is `read`: with no log nothing was counted.
+  optional uint64 program_starts = 5;
+  optional uint64 unreadable_lines = 6;
+  optional uint64 lost = 7;
+  optional uint64 unknown_losses = 8;
+  optional uint64 file_events = 9;
+  optional uint64 file_events_lost = 10;
+  optional uint64 unreadable_file_events = 11;
+  optional uint64 matches_total = 12;
+  // The most severe first, then by count; the rules of a set that states no level after them.
+  repeated ReplayMatch matched = 13;
+}
+
+// `UNSPECIFIED`, or a value the reader does not know, is read as a replay that did not happen.
+enum ReplayOutcome {
+  REPLAY_OUTCOME_UNSPECIFIED = 0;
+  REPLAY_OUTCOME_READ = 1;
+  // The event level is not installed here: there is no log.
+  REPLAY_OUTCOME_NOT_APPLICABLE = 2;
+}
+
+message ReplayMatch {
+  Rule rule = 1;
+  string status = 2;
+  uint64 matches = 3;
+}

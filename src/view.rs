@@ -76,7 +76,7 @@ pub fn basis(conn: &Connection, folder: &std::path::Path) -> Result<String, Box<
 pub fn pages(
     conn: &Connection,
     st: &crate::status::State,
-    result: &serde_json::Value,
+    result: &crate::contract::v1::Status,
     store: &str,
     now: i64,
 ) -> Result<Vec<(String, String)>, Box<dyn Error>> {
@@ -108,7 +108,11 @@ pub fn pages(
         ),
         (
             format!("{DETAILS}/{}.html", crate::pages::RULES),
-            crate::pages::rules(result, st.event_level.as_ref(), now),
+            crate::pages::rules(
+                &result.rules.clone().unwrap_or_default(),
+                st.event_level.as_ref(),
+                now,
+            ),
         ),
     ];
     for (name, title) in DETAIL_PAGES {
@@ -142,7 +146,7 @@ pub fn pages(
 pub fn event_pages(
     conn: &Connection,
     st: &crate::status::State,
-    result: &serde_json::Value,
+    result: &crate::contract::v1::Status,
     now: i64,
 ) -> Result<Vec<(String, String)>, Box<dyn Error>> {
     Ok(vec![
@@ -152,7 +156,11 @@ pub fn event_pages(
         ),
         (
             format!("{DETAILS}/{}.html", crate::pages::RULES),
-            crate::pages::rules(result, st.event_level.as_ref(), now),
+            crate::pages::rules(
+                &result.rules.clone().unwrap_or_default(),
+                st.event_level.as_ref(),
+                now,
+            ),
         ),
     ])
 }

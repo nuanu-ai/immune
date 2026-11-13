@@ -169,7 +169,7 @@ impl Estate {
             .output()
             .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-        v["result"]["integrity"].clone()
+        v["integrity"].clone()
     }
 }
 
@@ -1040,7 +1040,7 @@ fn a_place_of_apps_or_a_packages_file_linked_into_documents_is_not_looked_into_a
         .output()
         .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    let titles: Vec<&str> = v["result"]["not_covered"]
+    let titles: Vec<&str> = v["not_covered"]
         .as_array()
         .unwrap()
         .iter()
@@ -1049,7 +1049,7 @@ fn a_place_of_apps_or_a_packages_file_linked_into_documents_is_not_looked_into_a
         .collect();
     assert_eq!(
         titles,
-        ["Installed apps and packages inside Documents are not checked."]
+        ["Installed apps and packages inside a folder macOS protects are not checked."]
     );
 }
 
@@ -1115,7 +1115,7 @@ fn package_managers_this_version_does_not_read_are_named_by_kind_as_a_limit_and_
             .output()
             .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-        v["result"]["not_covered"].as_array().unwrap().clone()
+        v["not_covered"].as_array().unwrap().clone()
     };
     let items = not_covered();
     let item = items
@@ -1125,9 +1125,20 @@ fn package_managers_this_version_does_not_read_are_named_by_kind_as_a_limit_and_
     assert_eq!(item["who"], "nothing");
     assert_eq!(item["scope"], "this_mac");
     assert_eq!(item["count"], 5);
+    // The words hold the count; the names are data beside them, every one.
     assert_eq!(
         item["title"],
-        "Software installed with MacPorts, Nix, pkgsrc, conda and npm packages installed globally under nvm is not checked by this version."
+        "Software installed with 5 package managers this version does not read is not checked."
+    );
+    assert_eq!(
+        item["examples_text"],
+        serde_json::json!([
+            "MacPorts",
+            "Nix",
+            "pkgsrc",
+            "conda",
+            "npm packages installed globally under nvm"
+        ])
     );
     // What the places cannot see is said once, as a standing limit.
     assert_eq!(
@@ -1142,7 +1153,7 @@ fn package_managers_this_version_does_not_read_are_named_by_kind_as_a_limit_and_
         items.iter().all(|u| u["id"] != "not-understood"),
         "{items:#?}"
     );
-    // A person reads the names once, in the sentence, not again after it.
+    // A person reads the names once, quoted as data after the sentence.
     let said = Command::new(env!("CARGO_BIN_EXE_immune"))
         .args(["status", "--store"])
         .arg(e.store())
@@ -1151,7 +1162,20 @@ fn package_managers_this_version_does_not_read_are_named_by_kind_as_a_limit_and_
     let said = String::from_utf8(said.stdout).unwrap();
     assert!(
         said.lines().any(|l| l
-            == "Limit of this version: Software installed with MacPorts, Nix, pkgsrc, conda and npm packages installed globally under nvm is not checked by this version."),
+            == "Not judged on this Mac: Software installed with 5 package managers this version does not read is not checked. (\"MacPorts\"; \"Nix\"; \"pkgsrc\"; \"conda\"; \"npm packages installed globally under nvm\")"),
+        "{said}"
+    );
+    // Told once, under one heading, among what was not judged.
+    let headed = [
+        "You can fix: ",
+        "Limit of this version: ",
+        "Not judged on this Mac: ",
+    ];
+    assert_eq!(
+        said.lines()
+            .filter(|l| headed.iter().any(|h| l.starts_with(h)) && l.contains("\"MacPorts\""))
+            .count(),
+        1,
         "{said}"
     );
     // An agent finds each one by name among what this build has no reader for.
@@ -1161,7 +1185,7 @@ fn package_managers_this_version_does_not_read_are_named_by_kind_as_a_limit_and_
         .output()
         .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    let named: Vec<&str> = v["result"]["no_reader_for"]
+    let named: Vec<&str> = v["no_reader_for"]["items"]
         .as_array()
         .unwrap_or_else(|| panic!("{v:#}"))
         .iter()

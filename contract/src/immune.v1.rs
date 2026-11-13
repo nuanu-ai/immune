@@ -85,6 +85,29 @@ pub struct Error {
     #[prost(string, repeated, tag = "5")]
     pub ids_text: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
+/// A count under a name, where a set of counts is keyed by the core's words: a label, a reason, a
+/// signer.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Count {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub count: u64,
+}
+/// A part of an answer the core could not give, and why. The part is absent; this says so.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct NotComputed {
+    /// The part's field, such as `needs_a_look`.
+    #[prost(string, tag = "1")]
+    pub section: ::prost::alloc::string::String,
+    /// Why, in the core's words.
+    #[prost(string, tag = "2")]
+    pub reason: ::prost::alloc::string::String,
+}
 /// Where a finding stands. `UNSPECIFIED`, or a value the reader does not know, is read as `open`.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
@@ -1544,8 +1567,9 @@ pub struct Findings {
     /// what the watcher found between runs can be here, and an empty list says nothing.
     #[prost(int64, optional, tag = "4")]
     pub latest_run_at: ::core::option::Option<i64>,
-    /// Every finding, the most severe first, then the latest seen, then by id. A finding of a rule
-    /// this build does not have is left out.
+    /// Every finding, urgent ones first (severity high or critical with confidence medium or high),
+    /// then the most severe, then the latest seen, then by id. A finding of a rule this build does
+    /// not have is left out.
     #[prost(message, repeated, tag = "5")]
     pub findings: ::prost::alloc::vec::Vec<ListedFinding>,
     /// When an agent may answer a finding, in the core's words: the same in the usage, in `immune
@@ -1641,7 +1665,7 @@ pub struct Finding {
 /// The person's answer to a finding.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(default)]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Answer {
     #[prost(enumeration = "AnswerKind", tag = "1")]
     #[serde(
@@ -1659,7 +1683,8 @@ pub struct Answer {
     /// When it was given.
     #[prost(int64, tag = "3")]
     pub given_at: i64,
-    /// The reason given with it, as given. Absent when none was: `seen` takes one only if offered.
+    /// The reason given with it, as given but for a secret cut out of it, each piece replaced by a
+    /// mark as in `ProgramStart.args_text`. Absent when none was: `seen` takes one only if offered.
     #[prost(string, optional, tag = "4")]
     pub reason_text: ::core::option::Option<::prost::alloc::string::String>,
     /// When an `expected` answer ends. Absent for `seen`, which does not end.
@@ -1669,6 +1694,11 @@ pub struct Answer {
     /// later finding of the same rule about the same thing was raised since.
     #[prost(bool, tag = "6")]
     pub in_force: bool,
+    /// What was cut out of `reason_text` because it held a secret, in order, one entry for each
+    /// piece; `argument` is 0, the reason being one text. A reason is cut where it is kept and again
+    /// as it is read, so this is always known: empty means nothing was cut. Since 1.7.0.
+    #[prost(message, repeated, tag = "7")]
+    pub reason_cuts: ::prost::alloc::vec::Vec<Cut>,
 }
 /// What a finding rests on, by the kind of finding. The case of `body` that is set names the kind.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -1815,9 +1845,10 @@ pub struct PackageRecord {
     /// `high`, `moderate`, `low` or `none`.
     #[prost(string, tag = "4")]
     pub label: ::prost::alloc::string::String,
-    /// Whether CISA lists a vulnerability it names as used in attacks.
-    #[prost(bool, tag = "5")]
-    pub exploited: bool,
+    /// Whether CISA lists a vulnerability it names as used in attacks. Absent while the catalogue
+    /// has never been read, so that not known is never read as off the list.
+    #[prost(bool, optional, tag = "5")]
+    pub exploited: ::core::option::Option<bool>,
     #[prost(string, optional, tag = "6")]
     pub summary_text: ::core::option::Option<::prost::alloc::string::String>,
     /// The releases it is fixed in, where the record gives them.
@@ -2022,6 +2053,2354 @@ impl Change {
             "CHANGE_GONE" => Some(Self::Gone),
             "CHANGE_FIRST_READ" => Some(Self::FirstRead),
             "CHANGE_NOT_READ" => Some(Self::NotRead),
+            _ => None,
+        }
+    }
+}
+/// The answer to `immune owner` without a statement: the statements that stand.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Statements {
+    /// The version of this contract: 1. A reader that meets another number stops.
+    #[prost(uint32, tag = "1")]
+    pub format: u32,
+    #[prost(int64, tag = "2")]
+    pub answered_at: i64,
+    /// The store this answer was read from, as in every answer (`common.proto`).
+    #[prost(string, optional, tag = "3")]
+    pub store_id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, repeated, tag = "4")]
+    pub statements: ::prost::alloc::vec::Vec<Statement>,
+    /// How many were withdrawn and are kept.
+    #[prost(uint64, tag = "5")]
+    pub withdrawn: u64,
+}
+/// A statement that stands.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Statement {
+    /// The machine by the name the statement was made under, and its whole id, which `immune owner`
+    /// takes back by. Whole.
+    #[prost(string, tag = "1")]
+    pub machine_text: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub entity_text: ::prost::alloc::string::String,
+    /// What was said, the core's words: `retired` or `not mine`.
+    #[prost(string, tag = "3")]
+    pub said: ::prost::alloc::string::String,
+    /// Through what it came, as an answer's `via`.
+    #[prost(enumeration = "Via", tag = "4")]
+    #[serde(
+        serialize_with = "crate::enum_name::<Via, _>",
+        deserialize_with = "crate::enum_from_name::<Via, _>"
+    )]
+    pub via: i32,
+    #[prost(int64, tag = "5")]
+    pub at: i64,
+    /// The reason given with it, whole but for a secret cut out of it, each piece replaced by a mark
+    /// as in `ProgramStart.args_text`.
+    #[prost(string, tag = "6")]
+    pub reason_text: ::prost::alloc::string::String,
+    /// Every other name and address the store knows the machine by. Whole.
+    #[prost(string, repeated, tag = "7")]
+    pub names_text: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Something seen alive after it, which contradicts it. Absent when nothing was.
+    #[prost(message, optional, tag = "8")]
+    pub seen_after: ::core::option::Option<SeenAfter>,
+    /// What was cut out of `reason_text` because it held a secret, in order, one entry for each
+    /// piece; `argument` is 0. A reason is cut where it is kept and again as it is read, so this is
+    /// always known: empty means nothing was cut. Since 1.7.0.
+    #[prost(message, repeated, tag = "9")]
+    pub reason_cuts: ::prost::alloc::vec::Vec<Cut>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SeenAfter {
+    #[prost(int64, tag = "1")]
+    pub at: i64,
+    /// What was seen. Whole.
+    #[prost(string, tag = "2")]
+    pub what_text: ::prost::alloc::string::String,
+}
+/// The answer to `immune owner <name> retired|not-mine|withdraw`: what was said or withdrawn.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StatementMade {
+    #[prost(uint32, tag = "1")]
+    pub format: u32,
+    #[prost(int64, tag = "2")]
+    pub answered_at: i64,
+    #[prost(string, optional, tag = "3")]
+    pub store_id: ::core::option::Option<::prost::alloc::string::String>,
+    /// The machine by the name it was asked under, and every name it is known by: the statement
+    /// covers it under each. Whole.
+    #[prost(string, tag = "4")]
+    pub machine_text: ::prost::alloc::string::String,
+    #[prost(string, repeated, tag = "5")]
+    pub names_text: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(enumeration = "Via", tag = "6")]
+    #[serde(
+        serialize_with = "crate::enum_name::<Via, _>",
+        deserialize_with = "crate::enum_from_name::<Via, _>"
+    )]
+    pub via: i32,
+    /// The sweep script written again after it, so that no script on disk visits a machine set
+    /// aside.
+    #[prost(message, optional, tag = "9")]
+    pub sweep: ::core::option::Option<SweepWritten>,
+    #[prost(oneof = "statement_made::Done", tags = "7, 8")]
+    #[serde(flatten)]
+    pub done: ::core::option::Option<statement_made::Done>,
+}
+/// Nested message and enum types in `StatementMade`.
+pub mod statement_made {
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
+    pub enum Done {
+        /// A statement was made.
+        #[prost(message, tag = "7")]
+        Said(super::Said),
+        /// The statements that stood about the machine were withdrawn and kept.
+        #[prost(message, tag = "8")]
+        Withdrawn(super::Withdrawn),
+    }
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Said {
+    /// `retired` or `not mine`.
+    #[prost(string, tag = "1")]
+    pub said: ::prost::alloc::string::String,
+    #[prost(int64, tag = "2")]
+    pub at: i64,
+    /// The reason as it is kept: whole but for a secret cut out of it.
+    #[prost(string, tag = "3")]
+    pub reason_text: ::prost::alloc::string::String,
+    /// How many statements about the same machine it replaced; they are kept.
+    #[prost(uint64, tag = "4")]
+    pub replaced: u64,
+    /// What was cut out of the reason given, as `Statement.reason_cuts`: the statement is made all
+    /// the same. Empty means nothing was cut. Since 1.7.0.
+    #[prost(message, repeated, tag = "5")]
+    pub reason_cuts: ::prost::alloc::vec::Vec<Cut>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Withdrawn {
+    #[prost(message, repeated, tag = "1")]
+    pub statements: ::prost::alloc::vec::Vec<WithdrawnStatement>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct WithdrawnStatement {
+    #[prost(string, tag = "1")]
+    pub machine_text: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub said: ::prost::alloc::string::String,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SweepWritten {
+    /// How many servers it visits. Absent when it could not be written; then `problem_text` says
+    /// why, and the statement is kept all the same.
+    #[prost(uint64, optional, tag = "1")]
+    pub servers: ::core::option::Option<u64>,
+    #[prost(string, optional, tag = "2")]
+    pub problem_text: ::core::option::Option<::prost::alloc::string::String>,
+}
+/// The answer to `immune vulnerabilities`: the "affects" answers, the most severe first.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Vulnerabilities {
+    /// The version of this contract: 1. A reader that meets another number stops.
+    #[prost(uint32, tag = "1")]
+    pub format: u32,
+    #[prost(int64, tag = "2")]
+    pub answered_at: i64,
+    /// The store this answer was read from, as in every answer (`common.proto`).
+    #[prost(string, optional, tag = "3")]
+    pub store_id: ::core::option::Option<::prost::alloc::string::String>,
+    /// Absent when there is no store, or the projects' lockfiles were never matched in it; then
+    /// `not_computed` names `totals` and says why.
+    #[prost(message, optional, tag = "4")]
+    pub totals: ::core::option::Option<VulnerabilityTotals>,
+    /// The packages a record affects. Absent when `totals` is, and then `not_computed` names
+    /// `affected` too: nothing counted is never "none affected".
+    #[prost(message, optional, tag = "5")]
+    pub affected: ::core::option::Option<AffectedPackages>,
+    /// What every answer here speaks for, in the core's words.
+    #[prost(string, tag = "7")]
+    pub declared_note: ::prost::alloc::string::String,
+    /// Why there is nothing to count, in the core's words, when there is no store.
+    #[prost(message, repeated, tag = "8")]
+    pub not_computed: ::prost::alloc::vec::Vec<NotComputed>,
+}
+/// The packages of projects that a record affects.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AffectedPackages {
+    /// One per package and record, at most 200.
+    #[prost(message, repeated, tag = "1")]
+    pub items: ::prost::alloc::vec::Vec<AffectedPackage>,
+    /// How many there are.
+    #[prost(uint64, tag = "2")]
+    pub total: u64,
+}
+/// Counted answers of matching the lockfiles against the vulnerability data, as the latest check
+/// wrote them, with "does not affect" that rests on data not current now counted as cannot be
+/// told.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct VulnerabilityTotals {
+    /// Answers by package and record: affects, cannot be told, does not affect, known for certain.
+    #[prost(uint64, tag = "1")]
+    pub affected: u64,
+    #[prost(uint64, tag = "2")]
+    pub unknown: u64,
+    #[prost(uint64, tag = "3")]
+    pub not_affected_known: u64,
+    /// Entries of the catalogue no record names: "does not affect, no signs" for every lockfile.
+    /// Absent when the catalogue was never read.
+    #[prost(uint64, optional, tag = "4")]
+    pub not_affected_no_signs: ::core::option::Option<u64>,
+    #[prost(message, repeated, tag = "5")]
+    pub affected_by_label: ::prost::alloc::vec::Vec<Count>,
+    /// Records that affect something, each counted once however many projects it affects, with the
+    /// packages and projects they are in: what a person calls a known vulnerability.
+    #[prost(uint64, tag = "6")]
+    pub affected_records: u64,
+    #[prost(uint64, tag = "7")]
+    pub affected_packages: u64,
+    #[prost(uint64, tag = "8")]
+    pub affected_projects: u64,
+    #[prost(message, repeated, tag = "9")]
+    pub affected_records_by_label: ::prost::alloc::vec::Vec<Count>,
+    /// "Cannot be told" answers by reason, and the packages with one, each under its first reason.
+    #[prost(message, repeated, tag = "10")]
+    pub unknown_by_reason: ::prost::alloc::vec::Vec<Count>,
+    #[prost(uint64, tag = "11")]
+    pub unknown_packages: u64,
+    #[prost(message, repeated, tag = "12")]
+    pub unknown_packages_by_reason: ::prost::alloc::vec::Vec<Count>,
+    /// Whether matching ever ran on this store.
+    #[prost(bool, tag = "13")]
+    pub matched_this_store: bool,
+    /// Each feed, and whether its data is current now.
+    #[prost(message, repeated, tag = "14")]
+    pub feeds: ::prost::alloc::vec::Vec<FeedFreshness>,
+    /// Informational advisories held, such as an unmaintained crate, which this version does not
+    /// answer.
+    #[prost(uint64, tag = "15")]
+    pub informational_records: u64,
+}
+/// Whether a feed's data is current now.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct FeedFreshness {
+    #[prost(string, tag = "1")]
+    pub source: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub ecosystem: ::prost::alloc::string::String,
+    /// Its ecosystem is matched against the projects' lockfiles.
+    #[prost(bool, tag = "3")]
+    pub matched: bool,
+    /// When its latest reading that read it whole or found it unchanged was made. Absent when none.
+    #[prost(int64, optional, tag = "4")]
+    pub read_at: ::core::option::Option<i64>,
+    #[prost(bool, tag = "5")]
+    pub current: bool,
+    /// Why it is not current, in the core's words. Absent when it is.
+    #[prost(string, optional, tag = "6")]
+    pub not_current_why: ::core::option::Option<::prost::alloc::string::String>,
+}
+/// A package a project's lockfiles declare, and a record that affects it.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AffectedPackage {
+    /// The project, as a person recognises it; the package's ecosystem and its name. Whole.
+    #[prost(string, tag = "1")]
+    pub project_text: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub ecosystem: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub package_text: ::prost::alloc::string::String,
+    /// The releases declared that the record affects, each with the lockfile line.
+    #[prost(message, repeated, tag = "4")]
+    pub releases: ::prost::alloc::vec::Vec<PackageRelease>,
+    /// The record, as a finding of a vulnerable package gives it.
+    #[prost(message, optional, tag = "5")]
+    pub record: ::core::option::Option<PackageRecord>,
+    /// The feed it comes from, its `modified` and its kind, as the feed gives them.
+    #[prost(string, tag = "7")]
+    pub feed: ::prost::alloc::string::String,
+    #[prost(string, tag = "8")]
+    pub modified_text: ::prost::alloc::string::String,
+    #[prost(string, tag = "9")]
+    pub kind: ::prost::alloc::string::String,
+    /// When the data the answer rests on was read, and since when it has affected the package.
+    #[prost(int64, optional, tag = "10")]
+    pub data_read_at: ::core::option::Option<i64>,
+    #[prost(int64, tag = "11")]
+    pub since_at: i64,
+}
+/// The answer to `immune vulnerability <id>`: one record id or CVE id, in every project whose
+/// lockfiles were read, with what it rests on. An id the data does not hold is said as such,
+/// never as "does not affect".
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Vulnerability {
+    #[prost(uint32, tag = "1")]
+    pub format: u32,
+    #[prost(int64, tag = "2")]
+    pub answered_at: i64,
+    #[prost(string, optional, tag = "3")]
+    pub store_id: ::core::option::Option<::prost::alloc::string::String>,
+    /// The id asked about, as given. Whole.
+    #[prost(string, tag = "4")]
+    pub id_text: ::prost::alloc::string::String,
+    /// The catalogue of exploited vulnerabilities holds it. Absent when the catalogue was never
+    /// read, or there is no store.
+    #[prost(bool, optional, tag = "5")]
+    pub in_catalogue: ::core::option::Option<bool>,
+    /// Whether the data holds a record of it. Absent when there is no store; then `not_computed`
+    /// says so.
+    #[prost(enumeration = "RecordData", optional, tag = "6")]
+    #[serde(
+        serialize_with = "crate::optional_enum_name::<RecordData, _>",
+        deserialize_with = "crate::optional_enum_from_name::<RecordData, _>"
+    )]
+    pub data: ::core::option::Option<i32>,
+    /// When it holds none, what that means, in the core's words.
+    #[prost(string, optional, tag = "7")]
+    pub said: ::core::option::Option<::prost::alloc::string::String>,
+    /// When it holds none and the catalogue holds the id, the answer in each place from the
+    /// conditions of the place.
+    #[prost(message, repeated, tag = "8")]
+    pub answers: ::prost::alloc::vec::Vec<PlaceAnswer>,
+    /// Each record that names it.
+    #[prost(message, repeated, tag = "9")]
+    pub records: ::prost::alloc::vec::Vec<RecordAnswers>,
+    /// As in `Vulnerabilities`.
+    #[prost(string, tag = "10")]
+    pub declared_note: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag = "11")]
+    pub not_computed: ::prost::alloc::vec::Vec<NotComputed>,
+}
+/// A record the data holds, and its answer in each place.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RecordAnswers {
+    #[prost(string, tag = "1")]
+    pub record_text: ::prost::alloc::string::String,
+    /// The database it comes from, in the core's words; the feed; the ecosystem.
+    #[prost(string, tag = "2")]
+    pub record_source: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub feed: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub ecosystem: ::prost::alloc::string::String,
+    #[prost(string, tag = "5")]
+    pub modified_text: ::prost::alloc::string::String,
+    #[prost(string, tag = "6")]
+    pub kind: ::prost::alloc::string::String,
+    #[prost(string, optional, tag = "7")]
+    pub summary_text: ::core::option::Option<::prost::alloc::string::String>,
+    /// Whether it is answered: a withdrawn record, one that left the data, and an informational one
+    /// are not, and `said` says why in the core's words.
+    #[prost(bool, tag = "8")]
+    pub answered: bool,
+    #[prost(string, optional, tag = "9")]
+    pub said: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(message, repeated, tag = "10")]
+    pub answers: ::prost::alloc::vec::Vec<PlaceAnswer>,
+}
+/// The answer in one place: per package the record names, or from the conditions of the place
+/// when it names none of its packages.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PlaceAnswer {
+    #[prost(string, tag = "1")]
+    pub project_text: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub ecosystem: ::prost::alloc::string::String,
+    /// The packages the record names here. Empty when it names none: then the fields below answer.
+    #[prost(message, repeated, tag = "3")]
+    pub packages: ::prost::alloc::vec::Vec<PackageAnswerOf>,
+    #[prost(enumeration = "PackageAnswer", optional, tag = "4")]
+    #[serde(
+        serialize_with = "crate::optional_enum_name::<PackageAnswer, _>",
+        deserialize_with = "crate::optional_enum_from_name::<PackageAnswer, _>"
+    )]
+    pub answer: ::core::option::Option<i32>,
+    /// `known`, or `no_signs` for an id no record names.
+    #[prost(string, optional, tag = "5")]
+    pub certainty: ::core::option::Option<::prost::alloc::string::String>,
+    /// Why it cannot be told, the core's word, and what was said. Whole.
+    #[prost(string, optional, tag = "6")]
+    pub reason: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "7")]
+    pub detail_text: ::core::option::Option<::prost::alloc::string::String>,
+    /// OpenVEX's justification of "not affected".
+    #[prost(string, optional, tag = "8")]
+    pub openvex: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(int64, optional, tag = "9")]
+    pub data_read_at: ::core::option::Option<i64>,
+}
+/// The answer for one package the record names.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PackageAnswerOf {
+    #[prost(string, tag = "1")]
+    pub package_text: ::prost::alloc::string::String,
+    #[prost(enumeration = "PackageAnswer", tag = "2")]
+    #[serde(
+        serialize_with = "crate::enum_name::<PackageAnswer, _>",
+        deserialize_with = "crate::enum_from_name::<PackageAnswer, _>"
+    )]
+    pub answer: i32,
+    #[prost(string, tag = "3")]
+    pub detail_text: ::prost::alloc::string::String,
+    /// Each release declared, with its lockfile line, where it comes from, and whether the record
+    /// affects it.
+    #[prost(message, repeated, tag = "4")]
+    pub entries: ::prost::alloc::vec::Vec<DeclaredRelease>,
+    #[prost(string, repeated, tag = "5")]
+    pub fixed_text: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(int64, optional, tag = "6")]
+    pub data_read_at: ::core::option::Option<i64>,
+    #[prost(int64, tag = "7")]
+    pub since_at: i64,
+    #[prost(string, tag = "8")]
+    pub record_modified_text: ::prost::alloc::string::String,
+    #[prost(string, optional, tag = "9")]
+    pub reason: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "10")]
+    pub certainty: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "11")]
+    pub openvex: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DeclaredRelease {
+    #[prost(string, optional, tag = "1")]
+    pub version_text: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "2")]
+    pub at_text: ::core::option::Option<::prost::alloc::string::String>,
+    /// Where it comes from, the core's word, such as `registry`.
+    #[prost(string, tag = "3")]
+    pub from: ::prost::alloc::string::String,
+    #[prost(bool, tag = "4")]
+    pub affected: bool,
+}
+/// Whether the data holds a record of an id. `UNSPECIFIED`, or a value the reader does not know,
+/// is read as `unknown_id`.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum RecordData {
+    #[serde(rename = "unspecified")]
+    Unspecified = 0,
+    #[serde(rename = "held")]
+    Held = 1,
+    /// The catalogue holds the id and no record of the data names it.
+    #[serde(rename = "no_record")]
+    NoRecord = 2,
+    /// Neither holds it: nothing can be said, which is not "does not affect".
+    #[serde(rename = "unknown_id")]
+    UnknownId = 3,
+}
+impl RecordData {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "RECORD_DATA_UNSPECIFIED",
+            Self::Held => "RECORD_DATA_HELD",
+            Self::NoRecord => "RECORD_DATA_NO_RECORD",
+            Self::UnknownId => "RECORD_DATA_UNKNOWN_ID",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "RECORD_DATA_UNSPECIFIED" => Some(Self::Unspecified),
+            "RECORD_DATA_HELD" => Some(Self::Held),
+            "RECORD_DATA_NO_RECORD" => Some(Self::NoRecord),
+            "RECORD_DATA_UNKNOWN_ID" => Some(Self::UnknownId),
+            _ => None,
+        }
+    }
+}
+/// What a package's answer is. `UNSPECIFIED`, or a value the reader does not know, is read as
+/// `unknown`.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum PackageAnswer {
+    #[serde(rename = "unspecified")]
+    Unspecified = 0,
+    #[serde(rename = "affected")]
+    Affected = 1,
+    #[serde(rename = "not_affected")]
+    NotAffected = 2,
+    #[serde(rename = "unknown")]
+    Unknown = 3,
+}
+impl PackageAnswer {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "PACKAGE_ANSWER_UNSPECIFIED",
+            Self::Affected => "PACKAGE_ANSWER_AFFECTED",
+            Self::NotAffected => "PACKAGE_ANSWER_NOT_AFFECTED",
+            Self::Unknown => "PACKAGE_ANSWER_UNKNOWN",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "PACKAGE_ANSWER_UNSPECIFIED" => Some(Self::Unspecified),
+            "PACKAGE_ANSWER_AFFECTED" => Some(Self::Affected),
+            "PACKAGE_ANSWER_NOT_AFFECTED" => Some(Self::NotAffected),
+            "PACKAGE_ANSWER_UNKNOWN" => Some(Self::Unknown),
+            _ => None,
+        }
+    }
+}
+/// The answer to `immune status`, and to `immune run` once its check finished.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Status {
+    /// The version of this contract: 1. A reader that meets another number stops.
+    #[prost(uint32, tag = "1")]
+    pub format: u32,
+    /// When the answer was made. Everything in it is of one state of the store at this time.
+    #[prost(int64, tag = "2")]
+    pub answered_at: i64,
+    /// The store this answer was read from, as in every answer (`common.proto`). Absent when there
+    /// is no store, and for a store an older build made that no command has written to since.
+    #[prost(string, optional, tag = "3")]
+    pub store_id: ::core::option::Option<::prost::alloc::string::String>,
+    /// A full check is in progress now. Everything else describes the latest one that finished.
+    #[prost(bool, tag = "4")]
+    pub running: bool,
+    /// The store's file, and whether it exists. Without a store every section but `cannot_judge`,
+    /// `rules`, `watching` and `this_mac` is absent and named in `not_computed`.
+    #[prost(message, optional, tag = "5")]
+    pub store: ::core::option::Option<StoreFile>,
+    /// What this build cannot answer at all, in the core's words, one sentence each.
+    #[prost(string, repeated, tag = "6")]
+    pub cannot_judge: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// The published rules this build ships, and what they do here now.
+    #[prost(message, optional, tag = "7")]
+    pub rules: ::core::option::Option<RulesNow>,
+    /// The watcher, `immune watch`. Absent unless one holds this store now, so a watcher that died
+    /// never shows as watching.
+    #[prost(message, optional, tag = "8")]
+    pub watching: ::core::option::Option<Watcher>,
+    /// Whether this Mac is watched, and what.
+    #[prost(message, optional, tag = "9")]
+    pub this_mac: ::core::option::Option<ThisMac>,
+    /// The event level, as its latest reading left it. Absent before any reading of it.
+    #[prost(message, optional, tag = "10")]
+    pub event_level: ::core::option::Option<EventLevel>,
+    /// What the core does not cover, one item per cause, in its words: what the person can fix
+    /// first, then the limits of this version. Never counted in `needs_a_look`.
+    #[prost(message, repeated, tag = "11")]
+    pub not_covered: ::prost::alloc::vec::Vec<Uncovered>,
+    /// The latest check that started, finished or not. Absent when none has started.
+    #[prost(message, optional, tag = "12")]
+    pub last_run: ::core::option::Option<CheckMark>,
+    /// What the latest check that finished counted. Absent when none has finished.
+    #[prost(message, optional, tag = "13")]
+    pub last_finished_run: ::core::option::Option<FinishedCheck>,
+    /// What the store knows of the machines, servers, projects and packages.
+    #[prost(message, optional, tag = "14")]
+    pub estate: ::core::option::Option<Estate>,
+    /// The watched places. Absent when they were never read.
+    #[prost(message, optional, tag = "15")]
+    pub watched: ::core::option::Option<WatchedPlaces>,
+    /// The catalogue of exploited vulnerabilities.
+    #[prost(message, optional, tag = "16")]
+    pub threats: ::core::option::Option<Threats>,
+    /// The feeds of vulnerability data and how their latest readings went.
+    #[prost(message, optional, tag = "17")]
+    pub vulnerability_data: ::core::option::Option<VulnerabilityData>,
+    /// Known vulnerabilities in packages the projects use, beside what needs a look and never
+    /// counted in it. Absent when the projects' lockfiles were never matched in this store.
+    #[prost(message, optional, tag = "18")]
+    pub vulnerabilities: ::core::option::Option<VulnerabilityTotals>,
+    /// Installed software and whether it changed in place. Absent when it was never read.
+    #[prost(message, optional, tag = "19")]
+    pub integrity: ::core::option::Option<Integrity>,
+    /// What this build has no reader for, found by the latest readings. Absent on a store made
+    /// before it was recorded.
+    #[prost(message, optional, tag = "20")]
+    pub no_reader_for: ::core::option::Option<NoReaderFor>,
+    /// The latest reading of each reader, scope and kind, counted, with what was not full grouped.
+    /// Absent when nothing has been read.
+    #[prost(message, optional, tag = "21")]
+    pub coverage: ::core::option::Option<CoverageSummary>,
+    /// The findings that need a look: open, and not hidden by an answer. Absent when no check of
+    /// this build has looked for findings in this store.
+    #[prost(message, optional, tag = "22")]
+    pub needs_a_look: ::core::option::Option<NeedsALook>,
+    /// When an agent may answer a finding, in the core's words, as in `Findings`.
+    #[prost(string, tag = "23")]
+    pub answers_note: ::prost::alloc::string::String,
+    /// The answers in force known to have been given outside the app. Absent when no check of
+    /// this build has looked for findings.
+    #[prost(message, optional, tag = "24")]
+    pub answered_outside_app: ::core::option::Option<AnsweredOutsideApp>,
+    /// The statements that stand and are known to have been made outside the app.
+    #[prost(message, optional, tag = "25")]
+    pub statements_outside_app: ::core::option::Option<StatementsOutsideApp>,
+    /// The sections the core could not give, each with why, in its words.
+    #[prost(message, repeated, tag = "26")]
+    pub not_computed: ::prost::alloc::vec::Vec<NotComputed>,
+}
+/// The store's file.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StoreFile {
+    /// Its path, absolute. Whole.
+    #[prost(string, tag = "1")]
+    pub path_text: ::prost::alloc::string::String,
+    #[prost(bool, tag = "2")]
+    pub exists: bool,
+    /// The pages `immune view` writes for sections of its summary, so that nothing outside builds
+    /// a path. Present only when the store exists.
+    #[prost(message, repeated, tag = "3")]
+    pub view_sections: ::prost::alloc::vec::Vec<ViewSection>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ViewSection {
+    /// The section's name, such as `as-it-happens`.
+    #[prost(string, tag = "1")]
+    pub section: ::prost::alloc::string::String,
+    /// The page's path, absolute. Whole.
+    #[prost(string, tag = "2")]
+    pub path_text: ::prost::alloc::string::String,
+}
+/// The published rules this build ships, counted by what the event level lets them do now, and
+/// what they did.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct RulesNow {
+    /// Rule files shipped, and the upstream rules a translated set did not take, which are also
+    /// counted in `not_evaluated`.
+    #[prost(uint64, tag = "1")]
+    pub shipped: u64,
+    #[prost(uint64, tag = "2")]
+    pub not_taken: u64,
+    #[prost(uint64, tag = "3")]
+    pub evaluated: u64,
+    #[prost(uint64, tag = "4")]
+    pub in_part: u64,
+    #[prost(uint64, tag = "5")]
+    pub not_evaluated: u64,
+    /// What the rules do now rests on the event level's latest reading. Before any reading of it,
+    /// `watching`, `watching_rules`, `watching_file_rules`, `file_events_collected` and
+    /// `matched_last_day_total` are absent: not known, never false or 0.
+    /// True only while the event level's latest state is `running`.
+    #[prost(bool, optional, tag = "6")]
+    pub watching: ::core::option::Option<bool>,
+    /// The rules that watch now: evaluated in full, their events collected, and what they read
+    /// arriving. A rule evaluated in part or not at all is never among them.
+    #[prost(uint64, optional, tag = "7")]
+    pub watching_rules: ::core::option::Option<u64>,
+    /// The rules for file events evaluated in full, and of them those that watch now.
+    #[prost(uint64, tag = "8")]
+    pub file_rules: u64,
+    #[prost(uint64, optional, tag = "9")]
+    pub watching_file_rules: ::core::option::Option<u64>,
+    /// Whether the collector installed here is established to record files created and renamed.
+    /// Absent too while the level does not run.
+    #[prost(bool, optional, tag = "10")]
+    pub file_events_collected: ::core::option::Option<bool>,
+    /// The rules evaluated in full that do not watch while the level runs, each with why.
+    #[prost(message, repeated, tag = "11")]
+    pub not_watching: ::prost::alloc::vec::Vec<NotWatching>,
+    /// How much of the last day the watching rules judged.
+    #[prost(enumeration = "Judged", tag = "12")]
+    #[serde(
+        serialize_with = "crate::enum_name::<Judged, _>",
+        deserialize_with = "crate::enum_from_name::<Judged, _>"
+    )]
+    pub judged: i32,
+    /// Why not all, in the core's words. Absent when `judged` is `all`.
+    #[prost(string, optional, tag = "13")]
+    pub judged_note: ::core::option::Option<::prost::alloc::string::String>,
+    /// How many events the rules matched in the last day. Absent before any reading of the event
+    /// level. Matches are served whether or not the level runs now: they happened.
+    #[prost(uint64, optional, tag = "14")]
+    pub matches_last_day: ::core::option::Option<u64>,
+    /// The rules that matched in the last day, the most matches first, at most ten.
+    #[prost(message, repeated, tag = "15")]
+    pub matched_last_day: ::prost::alloc::vec::Vec<RuleMatches>,
+    /// How many rules matched in the last day.
+    #[prost(uint64, optional, tag = "16")]
+    pub matched_last_day_total: ::core::option::Option<u64>,
+}
+/// A rule evaluated in full that does not watch while the level runs.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct NotWatching {
+    #[prost(message, optional, tag = "1")]
+    pub rule: ::core::option::Option<Rule>,
+    #[prost(enumeration = "NotWatchingReason", tag = "2")]
+    #[serde(
+        serialize_with = "crate::enum_name::<NotWatchingReason, _>",
+        deserialize_with = "crate::enum_from_name::<NotWatchingReason, _>"
+    )]
+    pub reason: i32,
+    /// What it reads that does not arrive: `identity`, `script` or `signature`.
+    #[prost(string, repeated, tag = "3")]
+    pub not_arriving: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+/// How many events a rule matched.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RuleMatches {
+    /// The rule's id as published, whole.
+    #[prost(string, tag = "1")]
+    pub id_text: ::prost::alloc::string::String,
+    /// The rule as this build ships it. Absent for a rule this build no longer ships.
+    #[prost(message, optional, tag = "2")]
+    pub rule: ::core::option::Option<Rule>,
+    #[prost(uint64, tag = "3")]
+    pub matches: u64,
+}
+/// The watcher that holds the store now.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Watcher {
+    /// When it started, from its lock file. Absent when the file does not say.
+    #[prost(int64, optional, tag = "1")]
+    pub since_at: ::core::option::Option<i64>,
+    /// When it last read every watched place, if this watcher did. A reading of only the places
+    /// that changed does not move it; each start of the watcher reads them all.
+    #[prost(int64, optional, tag = "2")]
+    pub last_read_at: ::core::option::Option<i64>,
+    /// What has failed in it and not succeeded since.
+    #[prost(message, repeated, tag = "3")]
+    pub failed: ::prost::alloc::vec::Vec<WatcherFailure>,
+    /// What a watcher cannot see, in the core's words.
+    #[prost(string, repeated, tag = "4")]
+    pub cannot_see: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct WatcherFailure {
+    /// What failed, the core's word: `read`, `sample` or `events`.
+    #[prost(string, tag = "1")]
+    pub what: ::prost::alloc::string::String,
+    #[prost(int64, tag = "2")]
+    pub at: i64,
+    /// What the failure said. Whole.
+    #[prost(string, tag = "3")]
+    pub detail_text: ::prost::alloc::string::String,
+}
+/// Whether this Mac is watched.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ThisMac {
+    #[prost(enumeration = "ThisMacState", tag = "1")]
+    #[serde(
+        serialize_with = "crate::enum_name::<ThisMacState, _>",
+        deserialize_with = "crate::enum_from_name::<ThisMacState, _>"
+    )]
+    pub state: i32,
+    /// A watcher runs on the store now and nothing in it has failed since it last succeeded, but
+    /// perhaps its reading of program starts.
+    #[prost(bool, tag = "2")]
+    pub live: bool,
+    /// When the latest full check finished. Absent when none has.
+    #[prost(int64, optional, tag = "3")]
+    pub checked_at: ::core::option::Option<i64>,
+    /// When a watcher last read the watched places. Absent when none has.
+    #[prost(int64, optional, tag = "4")]
+    pub live_read_at: ::core::option::Option<i64>,
+    /// What is watched on this Mac, in words a person knows, each with how many and how. A kind
+    /// with nothing to watch here is left out.
+    #[prost(message, repeated, tag = "5")]
+    pub watched: ::prost::alloc::vec::Vec<WatchedThing>,
+    /// Whether what the status says is fresh: the latest full check finished within the last
+    /// `fresh_for_seconds`. False when it is older, when no check has finished, and in a status a
+    /// core that does not say it printed: a reader never takes a status that is not fresh for calm,
+    /// whatever `state` says. `stale_reason` says why, in the core's words.
+    #[prost(bool, tag = "6")]
+    pub fresh: bool,
+    #[prost(string, optional, tag = "7")]
+    pub stale_reason: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(uint64, tag = "8")]
+    pub fresh_for_seconds: u64,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct WatchedThing {
+    /// What it is, in the core's words, such as `startup items`.
+    #[prost(string, tag = "1")]
+    pub what: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub count: u64,
+    /// `live` within seconds while a watcher runs, `hourly` at every full check, `sampled` while a
+    /// watcher samples running programs, `events` while the event level records them.
+    #[prost(string, tag = "3")]
+    pub how: ::prost::alloc::string::String,
+}
+/// The event level: every program start and file event on this Mac, from Apple's `eslogger`, as
+/// its latest reading left it.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct EventLevel {
+    /// Its state, as the core's latest reading judged it. `COLLECTOR_STATE_FAILED` is a reading that
+    /// failed.
+    #[prost(enumeration = "CollectorState", tag = "1")]
+    #[serde(
+        serialize_with = "crate::enum_name::<CollectorState, _>",
+        deserialize_with = "crate::enum_from_name::<CollectorState, _>"
+    )]
+    pub state: i32,
+    /// What the level is, in the core's words.
+    #[prost(string, tag = "2")]
+    pub level: ::prost::alloc::string::String,
+    /// When it was last read, and when its log was last written to.
+    #[prost(int64, tag = "3")]
+    pub read_at: i64,
+    #[prost(int64, optional, tag = "4")]
+    pub written_at: ::core::option::Option<i64>,
+    /// Counts of the readings since the latest full check began, and over the last day.
+    #[prost(message, optional, tag = "5")]
+    pub program_starts: ::core::option::Option<Span>,
+    /// Program starts missing from eslogger's numbering, and restarts of the numbering.
+    #[prost(message, optional, tag = "6")]
+    pub lost: ::core::option::Option<Span>,
+    #[prost(message, optional, tag = "7")]
+    pub unknown_losses: ::core::option::Option<Span>,
+    /// Lines that are not a message, and lines of other messages.
+    #[prost(message, optional, tag = "8")]
+    pub unreadable_lines: ::core::option::Option<Span>,
+    #[prost(message, optional, tag = "9")]
+    pub other_messages: ::core::option::Option<Span>,
+    /// Log files deleted by the cap, and deleted before they were read.
+    #[prost(message, optional, tag = "10")]
+    pub files_removed_by_cap: ::core::option::Option<Span>,
+    #[prost(message, optional, tag = "11")]
+    pub files_removed_unread: ::core::option::Option<Span>,
+    /// The message version of the latest program start read.
+    #[prost(int64, optional, tag = "12")]
+    pub message_version: ::core::option::Option<i64>,
+    /// What made it `refused` or `failing`: who printed it, `eslogger` or `scripts`, and the line.
+    #[prost(string, optional, tag = "13")]
+    pub said_by: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "14")]
+    pub said_text: ::core::option::Option<::prost::alloc::string::String>,
+    /// Why the core's reading failed. Whole.
+    #[prost(string, optional, tag = "15")]
+    pub reason_text: ::core::option::Option<::prost::alloc::string::String>,
+    /// After how many seconds without a line the level is `silent`.
+    #[prost(uint64, tag = "16")]
+    pub silent_after_seconds: u64,
+    /// What the level cannot see on this Mac, in the core's words.
+    #[prost(string, repeated, tag = "17")]
+    pub cannot_see: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// What a collector may keep beyond what the first one kept, `identity`, `script` and
+    /// `signature`, each in one of five lists by what the core's latest reading says of it, as
+    /// `Collector` in `matches.proto` gives them: `not_kept`, the latest line lacks it, so the
+    /// collector installed here is an earlier one; `kept_never_filled`, lines carry it and none has
+    /// given it a value yet; `not_yet_known`, no line that would carry it has been read; `arriving`,
+    /// with the time of the first line that gave it a value; and `no_longer_arriving`, below. A rule
+    /// that reads one that does not arrive is named in `RulesNow.not_watching`.
+    #[prost(string, repeated, tag = "18")]
+    pub not_kept: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(string, repeated, tag = "19")]
+    pub kept_never_filled: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(string, repeated, tag = "20")]
+    pub not_yet_known: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(message, repeated, tag = "21")]
+    pub arriving: ::prost::alloc::vec::Vec<Arriving>,
+    /// Files created and renamed.
+    #[prost(message, optional, tag = "22")]
+    pub file_events: ::core::option::Option<FileEvents>,
+    /// Program starts read in each hour of the last day, and in each minute of the last hour,
+    /// oldest first.
+    #[prost(message, optional, tag = "23")]
+    pub program_starts_by_hour: ::core::option::Option<Series>,
+    #[prost(message, optional, tag = "24")]
+    pub program_starts_by_minute: ::core::option::Option<Series>,
+    /// The level for a person, in the core's words, which every surface takes.
+    #[prost(message, optional, tag = "25")]
+    pub in_words: ::core::option::Option<EventLevelWords>,
+    /// The cap of the log in bytes, as the installed tidy job is given it; or why it could not be
+    /// read. Both absent until a reading found the collector installed.
+    #[prost(uint64, optional, tag = "26")]
+    pub log_cap_bytes: ::core::option::Option<u64>,
+    #[prost(string, optional, tag = "27")]
+    pub log_cap_reason_text: ::core::option::Option<::prost::alloc::string::String>,
+    /// Lines gave it values and then stopped, each with the time of the first of the lines in a row
+    /// that gave it none, as `Collector.no_longer_arriving`.
+    #[prost(message, repeated, tag = "28")]
+    pub no_longer_arriving: ::prost::alloc::vec::Vec<NoLongerArriving>,
+}
+/// A count since the latest full check began, and over the last day.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Span {
+    #[prost(uint64, tag = "1")]
+    pub since_check: u64,
+    #[prost(uint64, tag = "2")]
+    pub last_day: u64,
+}
+/// Files created and renamed, as the event level records them.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct FileEvents {
+    /// The collector installed here is established to record them.
+    #[prost(bool, tag = "1")]
+    pub collected: bool,
+    /// Why not, in the core's words. Absent when they are collected.
+    #[prost(string, optional, tag = "2")]
+    pub not_collected_reason: ::core::option::Option<::prost::alloc::string::String>,
+    /// The kinds recorded, `create` and `rename`.
+    #[prost(string, repeated, tag = "3")]
+    pub kinds: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(message, optional, tag = "4")]
+    pub events: ::core::option::Option<Span>,
+    #[prost(message, optional, tag = "5")]
+    pub lost: ::core::option::Option<Span>,
+    #[prost(message, optional, tag = "6")]
+    pub unknown_losses: ::core::option::Option<Span>,
+    #[prost(message, optional, tag = "7")]
+    pub unreadable_events: ::core::option::Option<Span>,
+}
+/// Counts at equal steps, oldest first; the last step ends at `ends_at`.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Series {
+    #[prost(int64, tag = "1")]
+    pub ends_at: i64,
+    #[prost(uint64, tag = "2")]
+    pub step_seconds: u64,
+    #[prost(uint64, repeated, tag = "3")]
+    pub counts: ::prost::alloc::vec::Vec<u64>,
+}
+/// The event level in the core's words.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct EventLevelWords {
+    /// A short state, such as `on`.
+    #[prost(string, tag = "1")]
+    pub state: ::prost::alloc::string::String,
+    /// Each caveat a sentence; none when nothing was lost.
+    #[prost(string, repeated, tag = "2")]
+    pub notes: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// The same caveats in a few words each, under stable names.
+    #[prost(message, repeated, tag = "3")]
+    pub caveats: ::prost::alloc::vec::Vec<Caveat>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Caveat {
+    #[prost(string, tag = "1")]
+    pub kind: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub short: ::prost::alloc::string::String,
+}
+/// One thing the core does not cover, in its words: one per cause, never one per machine or file.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Uncovered {
+    /// The cause, a stable name.
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    /// `you` when the person can change it; `nothing` for a limit of this version or what passes
+    /// by itself.
+    #[prost(string, tag = "2")]
+    pub who: ::prost::alloc::string::String,
+    /// `this_mac`, `projects`, `servers` or `threats`.
+    #[prost(string, tag = "3")]
+    pub scope: ::prost::alloc::string::String,
+    /// The catalogue's words for the cause (`Catalogue.not_covered` in `rules.proto`), with only
+    /// numbers, times and the core's own words put in. A name taken from the Mac is never in them.
+    #[prost(string, tag = "4")]
+    pub kind: ::prost::alloc::string::String,
+    #[prost(string, tag = "5")]
+    pub title: ::prost::alloc::string::String,
+    #[prost(string, tag = "6")]
+    pub meaning: ::prost::alloc::string::String,
+    #[prost(string, tag = "7")]
+    pub advice: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "8")]
+    pub count: u64,
+    /// When it is counted from. Absent when not known.
+    #[prost(int64, optional, tag = "9")]
+    pub since_at: ::core::option::Option<i64>,
+    /// What a source said of it. Whole.
+    #[prost(string, optional, tag = "10")]
+    pub value_text: ::core::option::Option<::prost::alloc::string::String>,
+    /// The things it is about, as the Mac names them: the first three, or every one for
+    /// `package-managers-not-read`. Whole.
+    #[prost(string, repeated, tag = "11")]
+    pub examples_text: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Where it holds: on every Mac, a limit of this version that no reading here raised, or on
+    /// this Mac, raised by something read here.
+    #[prost(enumeration = "HoldsOn", tag = "12")]
+    #[serde(
+        serialize_with = "crate::enum_name::<HoldsOn, _>",
+        deserialize_with = "crate::enum_from_name::<HoldsOn, _>"
+    )]
+    pub holds_on: i32,
+}
+/// A check as the journal records it.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CheckMark {
+    /// The check's id, the core's own.
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    #[prost(int64, tag = "2")]
+    pub started_at: i64,
+    /// Absent while it has not finished: it runs, or it died and nothing it read is in the store.
+    #[prost(int64, optional, tag = "3")]
+    pub finished_at: ::core::option::Option<i64>,
+}
+/// What the latest check that finished counted.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct FinishedCheck {
+    #[prost(message, optional, tag = "1")]
+    pub check: ::core::option::Option<CheckMark>,
+    /// No check finished before it: everything it found is the baseline.
+    #[prost(bool, tag = "2")]
+    pub first_run: bool,
+    /// Readings it made that were not full, and earlier readings it did not repeat.
+    #[prost(message, optional, tag = "3")]
+    pub readings: ::core::option::Option<CheckReadings>,
+    /// Things added, changed and removed since the check before, each counted once. Absent on the
+    /// first check.
+    #[prost(message, optional, tag = "4")]
+    pub since_previous_run: ::core::option::Option<SinceCheck>,
+    /// What cannot be known about those changes, in the core's words.
+    #[prost(string, repeated, tag = "5")]
+    pub unknown: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CheckReadings {
+    #[prost(uint64, tag = "1")]
+    pub partial: u64,
+    #[prost(uint64, tag = "2")]
+    pub failed: u64,
+    #[prost(uint64, tag = "3")]
+    pub not_repeated: u64,
+    #[prost(uint64, tag = "4")]
+    pub machines_unread: u64,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SinceCheck {
+    #[prost(uint64, tag = "1")]
+    pub added: u64,
+    #[prost(uint64, tag = "2")]
+    pub changed: u64,
+    #[prost(uint64, tag = "3")]
+    pub removed: u64,
+}
+/// What the store knows of the machines, servers, projects and packages.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Estate {
+    #[prost(uint64, tag = "1")]
+    pub machines: u64,
+    #[prost(uint64, tag = "2")]
+    pub servers: u64,
+    #[prost(uint64, tag = "3")]
+    pub servers_offered: u64,
+    #[prost(uint64, tag = "4")]
+    pub servers_read: u64,
+    #[prost(uint64, tag = "5")]
+    pub servers_in_last_check: u64,
+    #[prost(uint64, tag = "6")]
+    pub servers_checked_in_last_check: u64,
+    #[prost(uint64, tag = "7")]
+    pub servers_system_not_given: u64,
+    #[prost(uint64, tag = "8")]
+    pub own_devices: u64,
+    #[prost(uint64, tag = "9")]
+    pub other_devices: u64,
+    #[prost(uint64, tag = "10")]
+    pub machines_set_aside: u64,
+    /// The machines the person set aside and that were seen alive after it, by their names.
+    #[prost(string, repeated, tag = "11")]
+    pub machines_seen_after_owner_word_text: ::prost::alloc::vec::Vec<
+        ::prost::alloc::string::String,
+    >,
+    #[prost(uint64, tag = "12")]
+    pub checkouts: u64,
+    #[prost(uint64, tag = "13")]
+    pub components: u64,
+}
+/// The watched places.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct WatchedPlaces {
+    /// Files watched now.
+    #[prost(uint64, tag = "1")]
+    pub files: u64,
+    /// The latest check's reading was the first: everything it found is the baseline.
+    #[prost(bool, tag = "2")]
+    pub first_reading: bool,
+    /// What the latest check found new, changed and gone. Absent on the first reading: there was
+    /// nothing to compare with.
+    #[prost(message, optional, tag = "3")]
+    pub since_last_reading: ::core::option::Option<PlaceCounts>,
+    /// Each kind of place, in the order of the table of places.
+    #[prost(message, repeated, tag = "4")]
+    pub kinds: ::prost::alloc::vec::Vec<WatchedKind>,
+    /// Files whose content could not be read at their latest reading.
+    #[prost(uint64, tag = "5")]
+    pub content_not_read: u64,
+    /// The latest changes of watched places, newest first, at most fifty.
+    #[prost(message, repeated, tag = "6")]
+    pub changes: ::prost::alloc::vec::Vec<PlaceChange>,
+    #[prost(uint64, tag = "7")]
+    pub changes_total: u64,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PlaceCounts {
+    #[prost(uint64, tag = "1")]
+    pub new: u64,
+    #[prost(uint64, tag = "2")]
+    pub changed: u64,
+    #[prost(uint64, tag = "3")]
+    pub gone: u64,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct WatchedKind {
+    /// The kind of place, the store's word, such as `shell profile`.
+    #[prost(string, tag = "1")]
+    pub kind: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "2")]
+    pub files: u64,
+    /// Of them, those watched only for whether they are there; and what that means, in the core's
+    /// words, when there are any.
+    #[prost(uint64, tag = "3")]
+    pub presence_only: u64,
+    #[prost(string, optional, tag = "4")]
+    pub presence_only_note: ::core::option::Option<::prost::alloc::string::String>,
+    /// How its latest readings went together. Absent when it has no reading.
+    #[prost(enumeration = "Completeness", optional, tag = "5")]
+    #[serde(
+        serialize_with = "crate::optional_enum_name::<Completeness, _>",
+        deserialize_with = "crate::optional_enum_from_name::<Completeness, _>"
+    )]
+    pub coverage: ::core::option::Option<i32>,
+    /// Its latest readings by completeness.
+    #[prost(message, optional, tag = "6")]
+    pub readings: ::core::option::Option<CompletenessCounts>,
+    /// Why they were not full, each reason once; on one full reading, its note. Whole.
+    #[prost(string, optional, tag = "7")]
+    pub reason_text: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CompletenessCounts {
+    #[prost(uint64, tag = "1")]
+    pub full: u64,
+    #[prost(uint64, tag = "2")]
+    pub partial: u64,
+    #[prost(uint64, tag = "3")]
+    pub none: u64,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PlaceChange {
+    #[prost(int64, tag = "1")]
+    pub at: i64,
+    /// The check that found it.
+    #[prost(string, tag = "2")]
+    pub run_id: ::prost::alloc::string::String,
+    #[prost(enumeration = "Change", tag = "3")]
+    #[serde(
+        serialize_with = "crate::enum_name::<Change, _>",
+        deserialize_with = "crate::enum_from_name::<Change, _>"
+    )]
+    pub change: i32,
+    /// The kind of place, the store's word.
+    #[prost(string, tag = "4")]
+    pub kind: ::prost::alloc::string::String,
+    /// The path as ids name it. Whole.
+    #[prost(string, tag = "5")]
+    pub path_text: ::prost::alloc::string::String,
+}
+/// The latest reading of the catalogue of exploited vulnerabilities. A first reading is the
+/// baseline: nothing in it counts as new or gone. After a failed reading what is new is unknown,
+/// so `new` and `gone` are absent.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Threats {
+    /// Where it comes from, `cisa-kev`.
+    #[prost(string, tag = "1")]
+    pub source: ::prost::alloc::string::String,
+    #[prost(enumeration = "FeedOutcome", tag = "2")]
+    #[serde(
+        serialize_with = "crate::enum_name::<FeedOutcome, _>",
+        deserialize_with = "crate::enum_from_name::<FeedOutcome, _>"
+    )]
+    pub outcome: i32,
+    /// Entries it held at its latest good reading. Absent when it was never read.
+    #[prost(uint64, optional, tag = "3")]
+    pub entries: ::core::option::Option<u64>,
+    #[prost(bool, optional, tag = "4")]
+    pub first_reading: ::core::option::Option<bool>,
+    #[prost(uint64, optional, tag = "5")]
+    pub new: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "6")]
+    pub gone: ::core::option::Option<u64>,
+    /// When it was last read whole, and when it was last asked for.
+    #[prost(int64, optional, tag = "7")]
+    pub read_at: ::core::option::Option<i64>,
+    #[prost(int64, optional, tag = "8")]
+    pub checked_at: ::core::option::Option<i64>,
+    /// Why the latest reading failed. Whole.
+    #[prost(string, optional, tag = "9")]
+    pub reason_text: ::core::option::Option<::prost::alloc::string::String>,
+    /// Whether its entries are matched against what the store knows: not yet.
+    #[prost(bool, tag = "10")]
+    pub matched: bool,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct VulnerabilityData {
+    /// Whether the feeds' ecosystems are matched against the projects' lockfiles.
+    #[prost(bool, tag = "1")]
+    pub matched: bool,
+    #[prost(message, repeated, tag = "2")]
+    pub feeds: ::prost::alloc::vec::Vec<FeedState>,
+}
+/// One feed of vulnerability data and its latest reading. A check that did not ask for a feed,
+/// because its last good reading is recent, leaves it `unchanged` with `asked_this_run` false.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct FeedState {
+    #[prost(string, tag = "1")]
+    pub source: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub ecosystem: ::prost::alloc::string::String,
+    #[prost(bool, tag = "3")]
+    pub asked_this_run: bool,
+    /// When it was last read successfully, when what it holds last changed, and when it was last
+    /// asked for.
+    #[prost(int64, optional, tag = "4")]
+    pub read_at: ::core::option::Option<i64>,
+    #[prost(int64, optional, tag = "5")]
+    pub changed_at: ::core::option::Option<i64>,
+    #[prost(int64, optional, tag = "6")]
+    pub checked_at: ::core::option::Option<i64>,
+    /// What it holds. Absent while it was never read whole: nothing was counted.
+    #[prost(uint64, optional, tag = "7")]
+    pub records: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "8")]
+    pub malicious_records: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "9")]
+    pub withdrawn_records: ::core::option::Option<u64>,
+    #[prost(bool, tag = "10")]
+    pub matched: bool,
+    #[prost(enumeration = "FeedOutcome", tag = "11")]
+    #[serde(
+        serialize_with = "crate::enum_name::<FeedOutcome, _>",
+        deserialize_with = "crate::enum_from_name::<FeedOutcome, _>"
+    )]
+    pub outcome: i32,
+    /// Why its latest reading failed. Whole.
+    #[prost(string, optional, tag = "12")]
+    pub reason_text: ::core::option::Option<::prost::alloc::string::String>,
+    /// For a reading of this check that read an archive: whether it was the first, and what it
+    /// changed.
+    #[prost(bool, optional, tag = "13")]
+    pub first_reading: ::core::option::Option<bool>,
+    #[prost(message, optional, tag = "14")]
+    pub since_last_reading: ::core::option::Option<FeedChanges>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct FeedChanges {
+    #[prost(uint64, tag = "1")]
+    pub new: u64,
+    #[prost(uint64, tag = "2")]
+    pub changed: u64,
+    #[prost(uint64, tag = "3")]
+    pub withdrawn: u64,
+    #[prost(uint64, tag = "4")]
+    pub gone: u64,
+}
+/// Installed software, counts only.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Integrity {
+    #[prost(bool, tag = "1")]
+    pub first_reading: bool,
+    #[prost(uint64, tag = "2")]
+    pub bundles: u64,
+    /// Bundles by who signs them, the reader's words.
+    #[prost(message, repeated, tag = "3")]
+    pub bundles_by_signer: ::prost::alloc::vec::Vec<Count>,
+    #[prost(uint64, tag = "4")]
+    pub bundles_not_verifying: u64,
+    #[prost(uint64, tag = "5")]
+    pub not_verifying_since_first_reading: u64,
+    #[prost(uint64, tag = "6")]
+    pub seals_verified_this_run: u64,
+    #[prost(uint64, tag = "7")]
+    pub seals_carried_forward: u64,
+    #[prost(uint64, tag = "8")]
+    pub homebrew_kegs: u64,
+    #[prost(uint64, tag = "9")]
+    pub global_npm_packages: u64,
+    #[prost(uint64, tag = "10")]
+    pub application_code_folders: u64,
+    #[prost(uint64, tag = "11")]
+    pub changed_while_version_stayed: u64,
+    /// Each reading of the check, with its own words.
+    #[prost(message, repeated, tag = "12")]
+    pub readings: ::prost::alloc::vec::Vec<IntegrityReading>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct IntegrityReading {
+    #[prost(string, tag = "1")]
+    pub kind: ::prost::alloc::string::String,
+    #[prost(enumeration = "Completeness", tag = "2")]
+    #[serde(
+        serialize_with = "crate::enum_name::<Completeness, _>",
+        deserialize_with = "crate::enum_from_name::<Completeness, _>"
+    )]
+    pub completeness: i32,
+    #[prost(string, optional, tag = "3")]
+    pub reason_text: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct NoReaderFor {
+    /// Most places first, at most a hundred.
+    #[prost(message, repeated, tag = "1")]
+    pub items: ::prost::alloc::vec::Vec<NoReader>,
+}
+/// One kind of thing this build has no reader for, and in how many places it was found.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct NoReader {
+    /// What it is, in the core's words.
+    #[prost(string, tag = "1")]
+    pub what: ::prost::alloc::string::String,
+    /// Its name as the source gives it, such as a lockfile's.
+    #[prost(string, optional, tag = "2")]
+    pub what_text: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(uint64, tag = "3")]
+    pub where_count: u64,
+}
+/// The latest reading of each reader, scope and kind, counted by class and by completeness.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct CoverageSummary {
+    #[prost(uint64, tag = "1")]
+    pub readings: u64,
+    /// Full with no note.
+    #[prost(uint64, tag = "2")]
+    pub full: u64,
+    #[prost(uint64, tag = "3")]
+    pub partial: u64,
+    #[prost(uint64, tag = "4")]
+    pub none: u64,
+    /// Failed readings on a machine that could not be reached, implied by it.
+    #[prost(uint64, tag = "5")]
+    pub implied_by_unreached: u64,
+    /// Readings in the groups, by class.
+    #[prost(uint64, tag = "6")]
+    pub failed: u64,
+    #[prost(uint64, tag = "7")]
+    pub no_reader: u64,
+    #[prost(uint64, tag = "8")]
+    pub not_given: u64,
+    #[prost(uint64, tag = "9")]
+    pub read_nothing: u64,
+    /// Readings of one class, reader, kind and reason, the worst class first, at most a hundred.
+    #[prost(message, repeated, tag = "10")]
+    pub problems: ::prost::alloc::vec::Vec<ReadingGroup>,
+    #[prost(uint64, tag = "11")]
+    pub problems_total: u64,
+    /// Machines whose latest visit failed, at most a hundred.
+    #[prost(message, repeated, tag = "12")]
+    pub unreached: ::prost::alloc::vec::Vec<Unreached>,
+    #[prost(uint64, tag = "13")]
+    pub unreached_total: u64,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReadingGroup {
+    #[prost(enumeration = "ReadingClass", tag = "1")]
+    #[serde(
+        serialize_with = "crate::enum_name::<ReadingClass, _>",
+        deserialize_with = "crate::enum_from_name::<ReadingClass, _>"
+    )]
+    pub class: i32,
+    #[prost(string, tag = "2")]
+    pub reader: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub kind: ::prost::alloc::string::String,
+    #[prost(string, optional, tag = "4")]
+    pub reason_text: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(uint64, tag = "5")]
+    pub count: u64,
+    /// At most three of their scopes. Whole.
+    #[prost(string, repeated, tag = "6")]
+    pub examples_text: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Unreached {
+    #[prost(string, tag = "1")]
+    pub scope_text: ::prost::alloc::string::String,
+    /// When its visits began to fail.
+    #[prost(int64, tag = "2")]
+    pub since_at: i64,
+    #[prost(string, optional, tag = "3")]
+    pub reason_text: ::core::option::Option<::prost::alloc::string::String>,
+}
+/// The findings that need a look: open, urgent first, then the most severe, then the latest
+/// seen, then by id.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct NeedsALook {
+    /// At most fifty of the core's findings and fifty of the response layer's, each in that order,
+    /// so that neither source can push the other's findings out. Within a source, urgent findings
+    /// come first, so its cut never drops an urgent finding while it keeps one that is not.
+    #[prost(message, repeated, tag = "1")]
+    pub items: ::prost::alloc::vec::Vec<LookFinding>,
+    /// How many there are.
+    #[prost(uint64, tag = "2")]
+    pub total: u64,
+    /// How many of them are urgent, counted over all of them and not over `items`. More than the
+    /// urgent ones listed means some urgent findings are not listed; `immune findings` lists every
+    /// finding.
+    #[prost(uint64, tag = "3")]
+    pub urgent_total: u64,
+}
+/// A finding that needs a look, as a person is shown it.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct LookFinding {
+    #[prost(message, optional, tag = "1")]
+    pub finding: ::core::option::Option<ListedFinding>,
+    /// When it is normal, and what to do, in the core's words.
+    #[prost(string, tag = "2")]
+    pub meaning: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub advice: ::prost::alloc::string::String,
+    /// What a source said of it, such as what an application's seal became, or a published rule's
+    /// title with its authors. Whole.
+    #[prost(string, optional, tag = "4")]
+    pub value_text: ::core::option::Option<::prost::alloc::string::String>,
+    /// The ATT&CK technique its rule names, where one fits.
+    #[prost(string, optional, tag = "5")]
+    pub technique_text: ::core::option::Option<::prost::alloc::string::String>,
+    /// Its latest occurrence, for a rule that names one.
+    #[prost(enumeration = "Change", optional, tag = "6")]
+    #[serde(
+        serialize_with = "crate::optional_enum_name::<Change, _>",
+        deserialize_with = "crate::optional_enum_from_name::<Change, _>"
+    )]
+    pub change: ::core::option::Option<i32>,
+    /// What it rests on, as `Finding` gives it.
+    #[prost(message, optional, tag = "7")]
+    pub evidence: ::core::option::Option<Evidence>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AnsweredOutsideApp {
+    /// The latest answer first, at most fifty.
+    #[prost(message, repeated, tag = "1")]
+    pub items: ::prost::alloc::vec::Vec<ListedFinding>,
+    #[prost(uint64, tag = "2")]
+    pub total: u64,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct StatementsOutsideApp {
+    /// The latest first, at most fifty.
+    #[prost(message, repeated, tag = "1")]
+    pub items: ::prost::alloc::vec::Vec<Statement>,
+    #[prost(uint64, tag = "2")]
+    pub total: u64,
+}
+/// The answer to `immune sample`: one sample of this user's processes and their connections,
+/// counted. What it found is recorded, and a finding it opened is in the status.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Sample {
+    /// The version of this contract: 1. A reader that meets another number stops.
+    #[prost(uint32, tag = "1")]
+    pub format: u32,
+    #[prost(int64, tag = "2")]
+    pub answered_at: i64,
+    /// The store it was recorded in, as in every answer (`common.proto`).
+    #[prost(string, optional, tag = "3")]
+    pub store_id: ::core::option::Option<::prost::alloc::string::String>,
+    /// What a sample reads, in the core's words.
+    #[prost(string, tag = "4")]
+    pub level: ::prost::alloc::string::String,
+    /// When it was taken, and how long it took.
+    #[prost(int64, tag = "5")]
+    pub at: i64,
+    #[prost(uint64, tag = "6")]
+    pub took_ms: u64,
+    #[prost(message, optional, tag = "7")]
+    pub processes: ::core::option::Option<SampleProcesses>,
+    #[prost(message, optional, tag = "8")]
+    pub interpreters: ::core::option::Option<SampleInterpreters>,
+    #[prost(message, optional, tag = "9")]
+    pub connections: ::core::option::Option<SampleConnections>,
+    /// Processes the rule tracks: newly, and again.
+    #[prost(uint64, tag = "10")]
+    pub tracked_new: u64,
+    #[prost(uint64, tag = "11")]
+    pub tracked_again: u64,
+    #[prost(uint64, tag = "12")]
+    pub findings_opened: u64,
+    /// The rule a sample feeds, and how far apart two samples must see a process.
+    #[prost(string, tag = "13")]
+    pub rule_kind: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "14")]
+    pub rule_min_apart_seconds: u64,
+    /// What a sample cannot see, in the core's words.
+    #[prost(string, repeated, tag = "15")]
+    pub cannot_see: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SampleProcesses {
+    #[prost(uint64, tag = "1")]
+    pub read: u64,
+    #[prost(uint64, tag = "2")]
+    pub unreadable: u64,
+    #[prost(uint64, tag = "3")]
+    pub ended_while_read: u64,
+    /// Processes of other users, which are not read.
+    #[prost(uint64, tag = "4")]
+    pub other_users: u64,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SampleInterpreters {
+    #[prost(uint64, tag = "1")]
+    pub seen: u64,
+    #[prost(uint64, tag = "2")]
+    pub arguments_unreadable: u64,
+    /// Given code on the command line, and of those detached from any terminal.
+    #[prost(uint64, tag = "3")]
+    pub inline_code: u64,
+    #[prost(uint64, tag = "4")]
+    pub inline_code_detached: u64,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SampleConnections {
+    #[prost(uint64, tag = "1")]
+    pub read: u64,
+    #[prost(uint64, tag = "2")]
+    pub matched_indicators: u64,
+    #[prost(uint64, tag = "3")]
+    pub unreadable: u64,
+}
+/// How much of the last day the rules judged. `UNSPECIFIED`, or a value the reader does not know,
+/// is read as `none`.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum Judged {
+    #[serde(rename = "unspecified")]
+    Unspecified = 0,
+    /// Every program start and file event the log held was read and judged.
+    #[serde(rename = "all")]
+    All = 1,
+    /// Some were lost, could not be read or were deleted before they were read.
+    #[serde(rename = "part")]
+    Part = 2,
+    /// The event level is not running, so nothing is judged now.
+    #[serde(rename = "none")]
+    None = 3,
+}
+impl Judged {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "JUDGED_UNSPECIFIED",
+            Self::All => "JUDGED_ALL",
+            Self::Part => "JUDGED_PART",
+            Self::None => "JUDGED_NONE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "JUDGED_UNSPECIFIED" => Some(Self::Unspecified),
+            "JUDGED_ALL" => Some(Self::All),
+            "JUDGED_PART" => Some(Self::Part),
+            "JUDGED_NONE" => Some(Self::None),
+            _ => None,
+        }
+    }
+}
+/// Why a rule evaluated in full does not watch. `UNSPECIFIED`, or a value the reader does not
+/// know, is read as a rule that does not watch for a reason it cannot judge.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum NotWatchingReason {
+    #[serde(rename = "unspecified")]
+    Unspecified = 0,
+    /// A rule for file events, and the collector installed here does not record them.
+    #[serde(rename = "file_events_not_collected")]
+    FileEventsNotCollected = 1,
+    /// It reads what the lines the collector writes do not carry: an earlier collector.
+    #[serde(rename = "collector_does_not_keep")]
+    CollectorDoesNotKeep = 2,
+    /// Lines carry what it reads, and none has given it a value yet.
+    #[serde(rename = "kept_never_filled")]
+    KeptNeverFilled = 3,
+    /// No line that would carry what it reads has been read yet.
+    #[serde(rename = "not_yet_known")]
+    NotYetKnown = 4,
+    /// Lines gave what it reads values and then stopped: the collector no longer fills it.
+    #[serde(rename = "no_longer_arriving")]
+    NoLongerArriving = 5,
+}
+impl NotWatchingReason {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "NOT_WATCHING_REASON_UNSPECIFIED",
+            Self::FileEventsNotCollected => {
+                "NOT_WATCHING_REASON_FILE_EVENTS_NOT_COLLECTED"
+            }
+            Self::CollectorDoesNotKeep => "NOT_WATCHING_REASON_COLLECTOR_DOES_NOT_KEEP",
+            Self::KeptNeverFilled => "NOT_WATCHING_REASON_KEPT_NEVER_FILLED",
+            Self::NotYetKnown => "NOT_WATCHING_REASON_NOT_YET_KNOWN",
+            Self::NoLongerArriving => "NOT_WATCHING_REASON_NO_LONGER_ARRIVING",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "NOT_WATCHING_REASON_UNSPECIFIED" => Some(Self::Unspecified),
+            "NOT_WATCHING_REASON_FILE_EVENTS_NOT_COLLECTED" => {
+                Some(Self::FileEventsNotCollected)
+            }
+            "NOT_WATCHING_REASON_COLLECTOR_DOES_NOT_KEEP" => {
+                Some(Self::CollectorDoesNotKeep)
+            }
+            "NOT_WATCHING_REASON_KEPT_NEVER_FILLED" => Some(Self::KeptNeverFilled),
+            "NOT_WATCHING_REASON_NOT_YET_KNOWN" => Some(Self::NotYetKnown),
+            "NOT_WATCHING_REASON_NO_LONGER_ARRIVING" => Some(Self::NoLongerArriving),
+            _ => None,
+        }
+    }
+}
+/// Whether this Mac is watched. `UNSPECIFIED`, or a value the reader does not know, is read as
+/// `not_checked`: never as calm.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ThisMacState {
+    #[serde(rename = "unspecified")]
+    Unspecified = 0,
+    /// Nothing of this Mac has been read yet.
+    #[serde(rename = "not_checked")]
+    NotChecked = 1,
+    /// Its places are read, and none that is there failed to be read.
+    #[serde(rename = "watched")]
+    Watched = 2,
+    /// A place of its own is there and was not read whole: a reading of it failed; or the event
+    /// level is installed and records no program start (refused, failing or silent); or it runs and
+    /// lost part of what it was to record over the last day, for as long as `rules.judged` is
+    /// `part`. `not_covered` or `rules.judged_note` says which.
+    #[serde(rename = "watched_in_part")]
+    WatchedInPart = 3,
+}
+impl ThisMacState {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "THIS_MAC_STATE_UNSPECIFIED",
+            Self::NotChecked => "THIS_MAC_STATE_NOT_CHECKED",
+            Self::Watched => "THIS_MAC_STATE_WATCHED",
+            Self::WatchedInPart => "THIS_MAC_STATE_WATCHED_IN_PART",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "THIS_MAC_STATE_UNSPECIFIED" => Some(Self::Unspecified),
+            "THIS_MAC_STATE_NOT_CHECKED" => Some(Self::NotChecked),
+            "THIS_MAC_STATE_WATCHED" => Some(Self::Watched),
+            "THIS_MAC_STATE_WATCHED_IN_PART" => Some(Self::WatchedInPart),
+            _ => None,
+        }
+    }
+}
+/// Where a cause of what is not covered holds. `UNSPECIFIED`, or a value the reader does not know,
+/// is read as `this_mac`: shown to the person, never left out as a limit of the version.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum HoldsOn {
+    #[serde(rename = "unspecified")]
+    Unspecified = 0,
+    /// The same on every Mac this version runs on: no reading of this Mac raised it.
+    #[serde(rename = "every_mac")]
+    EveryMac = 1,
+    /// Raised by something read on this Mac.
+    #[serde(rename = "this_mac")]
+    ThisMac = 2,
+}
+impl HoldsOn {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "HOLDS_ON_UNSPECIFIED",
+            Self::EveryMac => "HOLDS_ON_EVERY_MAC",
+            Self::ThisMac => "HOLDS_ON_THIS_MAC",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "HOLDS_ON_UNSPECIFIED" => Some(Self::Unspecified),
+            "HOLDS_ON_EVERY_MAC" => Some(Self::EveryMac),
+            "HOLDS_ON_THIS_MAC" => Some(Self::ThisMac),
+            _ => None,
+        }
+    }
+}
+/// How the latest reading of a feed went. `UNSPECIFIED`, or a value the reader does not know, is
+/// read as `failed`.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum FeedOutcome {
+    #[serde(rename = "unspecified")]
+    Unspecified = 0,
+    #[serde(rename = "read")]
+    Read = 1,
+    #[serde(rename = "unchanged")]
+    Unchanged = 2,
+    #[serde(rename = "failed")]
+    Failed = 3,
+    #[serde(rename = "never_read")]
+    NeverRead = 4,
+}
+impl FeedOutcome {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "FEED_OUTCOME_UNSPECIFIED",
+            Self::Read => "FEED_OUTCOME_READ",
+            Self::Unchanged => "FEED_OUTCOME_UNCHANGED",
+            Self::Failed => "FEED_OUTCOME_FAILED",
+            Self::NeverRead => "FEED_OUTCOME_NEVER_READ",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "FEED_OUTCOME_UNSPECIFIED" => Some(Self::Unspecified),
+            "FEED_OUTCOME_READ" => Some(Self::Read),
+            "FEED_OUTCOME_UNCHANGED" => Some(Self::Unchanged),
+            "FEED_OUTCOME_FAILED" => Some(Self::Failed),
+            "FEED_OUTCOME_NEVER_READ" => Some(Self::NeverRead),
+            _ => None,
+        }
+    }
+}
+/// The class of a reading that is not plainly full. `UNSPECIFIED`, or a value the reader does not
+/// know, is read as `failed`.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ReadingClass {
+    #[serde(rename = "unspecified")]
+    Unspecified = 0,
+    #[serde(rename = "failed")]
+    Failed = 1,
+    #[serde(rename = "no_reader")]
+    NoReader = 2,
+    #[serde(rename = "not_given")]
+    NotGiven = 3,
+    /// Full, with a note: there was nothing to read.
+    #[serde(rename = "read_nothing")]
+    ReadNothing = 4,
+}
+impl ReadingClass {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "READING_CLASS_UNSPECIFIED",
+            Self::Failed => "READING_CLASS_FAILED",
+            Self::NoReader => "READING_CLASS_NO_READER",
+            Self::NotGiven => "READING_CLASS_NOT_GIVEN",
+            Self::ReadNothing => "READING_CLASS_READ_NOTHING",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "READING_CLASS_UNSPECIFIED" => Some(Self::Unspecified),
+            "READING_CLASS_FAILED" => Some(Self::Failed),
+            "READING_CLASS_NO_READER" => Some(Self::NoReader),
+            "READING_CLASS_NOT_GIVEN" => Some(Self::NotGiven),
+            "READING_CLASS_READ_NOTHING" => Some(Self::ReadNothing),
+            _ => None,
+        }
+    }
+}
+/// The answer to `immune rules`.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Rules {
+    /// The version of this contract: 1. A reader that meets another number stops.
+    #[prost(uint32, tag = "1")]
+    pub format: u32,
+    #[prost(int64, tag = "2")]
+    pub answered_at: i64,
+    /// The store the counts were read from, as in every answer (`common.proto`).
+    #[prost(string, optional, tag = "3")]
+    pub store_id: ::core::option::Option<::prost::alloc::string::String>,
+    /// The sets the rules come from, in the order they are listed.
+    #[prost(message, repeated, tag = "4")]
+    pub sources: ::prost::alloc::vec::Vec<RuleSet>,
+    /// The categories of events the rules are about: program starts, and files created or renamed.
+    #[prost(string, tag = "5")]
+    pub events: ::prost::alloc::string::String,
+    #[prost(string, tag = "6")]
+    pub file_events: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "7")]
+    pub totals: ::core::option::Option<RuleTotals>,
+    /// The rules evaluated in full, in part, and not at all. Within each, the most severe level
+    /// first; the rules of a set that states no level follow as a group of their own.
+    #[prost(message, repeated, tag = "8")]
+    pub evaluated: ::prost::alloc::vec::Vec<ShippedRule>,
+    #[prost(message, repeated, tag = "9")]
+    pub in_part: ::prost::alloc::vec::Vec<ShippedRule>,
+    /// Every rule of a translated set that the translation did not take is here too.
+    #[prost(message, repeated, tag = "10")]
+    pub not_evaluated: ::prost::alloc::vec::Vec<ShippedRule>,
+    /// A drill: invented program starts of Atomic Red Team's tests, and what the rules make of them.
+    #[prost(message, repeated, tag = "11")]
+    pub drill: ::prost::alloc::vec::Vec<Drill>,
+    /// What the rules do here now, as the status gives it.
+    #[prost(message, optional, tag = "12")]
+    pub now: ::core::option::Option<RulesNow>,
+    /// How many events the rules matched in the last week. Absent before any reading of the event
+    /// level, and then `not_computed` says why.
+    #[prost(uint64, optional, tag = "13")]
+    pub matches_last_week: ::core::option::Option<u64>,
+    /// Every rule of the core's own and every cause of what is not covered, with its words, for an
+    /// agent to learn what each can say.
+    #[prost(message, optional, tag = "14")]
+    pub catalogue: ::core::option::Option<Catalogue>,
+    #[prost(message, repeated, tag = "15")]
+    pub not_computed: ::prost::alloc::vec::Vec<NotComputed>,
+}
+/// Where a set of rules comes from.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RuleSet {
+    /// Its name, the prefix of its rules' names; who publishes it; and the set in words.
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub publisher: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub set: ::prost::alloc::string::String,
+    /// Whether its rules state levels. A rule of a set that states none raises no finding by itself.
+    #[prost(bool, tag = "4")]
+    pub states_levels: bool,
+    #[prost(string, tag = "5")]
+    pub url: ::prost::alloc::string::String,
+    #[prost(string, tag = "6")]
+    pub commit: ::prost::alloc::string::String,
+    #[prost(string, optional, tag = "7")]
+    pub commit_date: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, tag = "8")]
+    pub licence: ::prost::alloc::string::String,
+    /// Its folder in this repository.
+    #[prost(string, tag = "9")]
+    pub folder: ::prost::alloc::string::String,
+    /// Whether its rules were translated into Sigma.
+    #[prost(bool, tag = "10")]
+    pub translated: bool,
+    /// The fields its rules are given of a program start and of a file event.
+    #[prost(string, repeated, tag = "11")]
+    pub process_fields: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(string, repeated, tag = "12")]
+    pub file_fields: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(message, optional, tag = "13")]
+    pub totals: ::core::option::Option<RuleTotals>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RuleTotals {
+    /// Rule files shipped, and upstream rules a translation did not take, which are also counted
+    /// under `not_evaluated`.
+    #[prost(uint64, tag = "1")]
+    pub shipped: u64,
+    #[prost(uint64, tag = "2")]
+    pub not_taken: u64,
+    #[prost(uint64, tag = "3")]
+    pub evaluated: u64,
+    #[prost(uint64, tag = "4")]
+    pub in_part: u64,
+    #[prost(uint64, tag = "5")]
+    pub not_evaluated: u64,
+}
+/// A rule as this build ships it, or an upstream rule a translation did not take.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ShippedRule {
+    /// The rule. Absent for a rule that could not be read: then `file`, `source` and `set` name it.
+    #[prost(message, optional, tag = "1")]
+    pub rule: ::core::option::Option<Rule>,
+    #[prost(string, tag = "2")]
+    pub file: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub source: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub set: ::prost::alloc::string::String,
+    /// Its status as published, such as `test`, which gives a finding's confidence.
+    #[prost(string, optional, tag = "5")]
+    pub status: ::core::option::Option<::prost::alloc::string::String>,
+    /// The category of events it is about.
+    #[prost(string, optional, tag = "6")]
+    pub events: ::core::option::Option<::prost::alloc::string::String>,
+    /// For a rule evaluated in part: each alternative that never matches here.
+    #[prost(message, repeated, tag = "7")]
+    pub never_matches: ::prost::alloc::vec::Vec<NeverMatches>,
+    /// For a rule not evaluated: why, with the kind of event, the fields or what the parser said.
+    #[prost(enumeration = "UnevaluatedReason", optional, tag = "8")]
+    #[serde(
+        serialize_with = "crate::optional_enum_name::<UnevaluatedReason, _>",
+        deserialize_with = "crate::optional_enum_from_name::<UnevaluatedReason, _>"
+    )]
+    pub reason: ::core::option::Option<i32>,
+    #[prost(string, optional, tag = "9")]
+    pub events_text: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, repeated, tag = "10")]
+    pub fields_text: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "11")]
+    pub said_text: ::core::option::Option<::prost::alloc::string::String>,
+    /// For a rule a translation did not take, or took in part: what it said of it.
+    #[prost(string, optional, tag = "12")]
+    pub detail_text: ::core::option::Option<::prost::alloc::string::String>,
+    /// How many events it matched in the last day and the last week, for a rule evaluated wholly
+    /// or in part. Absent before any reading of the event level.
+    #[prost(uint64, optional, tag = "13")]
+    pub matches_last_day: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "14")]
+    pub matches_last_week: ::core::option::Option<u64>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct NeverMatches {
+    /// The selection, as the rule names it. Absent for one the translation left out.
+    #[prost(string, optional, tag = "1")]
+    pub selection_text: ::core::option::Option<::prost::alloc::string::String>,
+    /// The fields it needs that the events here do not give.
+    #[prost(string, repeated, tag = "2")]
+    pub fields_text: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// What the translation left out, where it said.
+    #[prost(string, optional, tag = "3")]
+    pub left_out_text: ::core::option::Option<::prost::alloc::string::String>,
+}
+/// One invented program start of the drill.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Drill {
+    #[prost(string, tag = "1")]
+    pub atomic_test: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub image: ::prost::alloc::string::String,
+    #[prost(string, repeated, tag = "3")]
+    pub arguments: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// The rule it must raise, by its id, and whether it does.
+    #[prost(string, tag = "4")]
+    pub must_raise: ::prost::alloc::string::String,
+    #[prost(bool, tag = "5")]
+    pub raised: bool,
+    /// The rules it matches.
+    #[prost(message, repeated, tag = "6")]
+    pub matches: ::prost::alloc::vec::Vec<Rule>,
+}
+/// The words of every finding the core can raise and of everything it can say is not covered.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Catalogue {
+    /// The core's own rules.
+    #[prost(message, repeated, tag = "1")]
+    pub rules: ::prost::alloc::vec::Vec<CoreRule>,
+    /// What a finding of a published rule says.
+    #[prost(message, optional, tag = "2")]
+    pub published_rules: ::core::option::Option<PublishedWords>,
+    /// What a finding the response layer's `suspicious` verdict raises says.
+    #[prost(message, optional, tag = "3")]
+    pub verdict_rule: ::core::option::Option<VerdictWords>,
+    /// Every cause of what is not covered, with its words. In the words `{n}` is the count, `{what}`
+    /// what it is, as a list of the catalogue's own words, `{date}` a time, and `{reasons}` why, in
+    /// the core's words. A name taken from the Mac is never in them: it is in `examples_text`.
+    #[prost(message, repeated, tag = "4")]
+    pub not_covered: ::prost::alloc::vec::Vec<CauseWords>,
+    /// The levels, from least to worst.
+    #[prost(string, repeated, tag = "5")]
+    pub severities: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(string, repeated, tag = "6")]
+    pub confidences: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+/// A rule of the core's own.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CoreRule {
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub kind: ::prost::alloc::string::String,
+    #[prost(string, optional, tag = "3")]
+    pub technique: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(enumeration = "Level", tag = "4")]
+    #[serde(
+        serialize_with = "crate::enum_name::<Level, _>",
+        deserialize_with = "crate::enum_from_name::<Level, _>"
+    )]
+    pub severity: i32,
+    #[prost(enumeration = "Level", tag = "5")]
+    #[serde(
+        serialize_with = "crate::enum_name::<Level, _>",
+        deserialize_with = "crate::enum_from_name::<Level, _>"
+    )]
+    pub confidence: i32,
+    #[prost(bool, tag = "6")]
+    pub urgent: bool,
+    /// What it finds: a change, a state, an event.
+    #[prost(string, tag = "7")]
+    pub finds: ::prost::alloc::string::String,
+    #[prost(string, tag = "8")]
+    pub title: ::prost::alloc::string::String,
+    #[prost(string, tag = "9")]
+    pub meaning: ::prost::alloc::string::String,
+    #[prost(string, tag = "10")]
+    pub advice: ::prost::alloc::string::String,
+}
+/// What a finding of a published rule says, for every set that raises findings.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PublishedWords {
+    /// How such a rule is named: its set and its id.
+    #[prost(string, tag = "1")]
+    pub rule: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub kind: ::prost::alloc::string::String,
+    #[prost(string, repeated, tag = "3")]
+    pub raised_by_sets: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(string, repeated, tag = "4")]
+    pub raised_by_levels: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(message, repeated, tag = "5")]
+    pub sets_that_raise_nothing: ::prost::alloc::vec::Vec<SilentSet>,
+    /// Where its severity and confidence come from, in the core's words, and its confidence by
+    /// the rule's status.
+    #[prost(string, tag = "6")]
+    pub severity: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag = "7")]
+    pub confidence_by_status: ::prost::alloc::vec::Vec<StatusConfidence>,
+    #[prost(string, tag = "8")]
+    pub finds: ::prost::alloc::string::String,
+    #[prost(string, tag = "9")]
+    pub title: ::prost::alloc::string::String,
+    /// The meaning names the set, so it is given for each.
+    #[prost(message, repeated, tag = "10")]
+    pub meaning_by_set: ::prost::alloc::vec::Vec<SetMeaning>,
+    #[prost(string, tag = "11")]
+    pub advice: ::prost::alloc::string::String,
+    /// A rule about file events raises a finding of its own kind and words.
+    #[prost(message, optional, tag = "12")]
+    pub for_file_events: ::core::option::Option<FileEventWords>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SilentSet {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub set: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub why: ::prost::alloc::string::String,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StatusConfidence {
+    #[prost(string, tag = "1")]
+    pub status: ::prost::alloc::string::String,
+    #[prost(enumeration = "Level", tag = "2")]
+    #[serde(
+        serialize_with = "crate::enum_name::<Level, _>",
+        deserialize_with = "crate::enum_from_name::<Level, _>"
+    )]
+    pub confidence: i32,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SetMeaning {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub meaning: ::prost::alloc::string::String,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct FileEventWords {
+    #[prost(string, tag = "1")]
+    pub kind: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub title: ::prost::alloc::string::String,
+    #[prost(message, repeated, tag = "3")]
+    pub meaning_by_set: ::prost::alloc::vec::Vec<SetMeaning>,
+    #[prost(string, tag = "4")]
+    pub advice: ::prost::alloc::string::String,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct VerdictWords {
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub kind: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub severity: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub confidence: ::prost::alloc::string::String,
+    #[prost(string, tag = "5")]
+    pub finds: ::prost::alloc::string::String,
+    #[prost(string, tag = "6")]
+    pub title: ::prost::alloc::string::String,
+    #[prost(string, tag = "7")]
+    pub meaning: ::prost::alloc::string::String,
+    #[prost(string, tag = "8")]
+    pub advice: ::prost::alloc::string::String,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CauseWords {
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub who: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub kind: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub title: ::prost::alloc::string::String,
+    #[prost(string, tag = "5")]
+    pub meaning: ::prost::alloc::string::String,
+    #[prost(string, tag = "6")]
+    pub advice: ::prost::alloc::string::String,
+}
+/// The answer to `immune rules --over-log`: the rules evaluated over the event log on disk now,
+/// from the start of every file, the store neither read nor written. Per rule that matched, its
+/// level and how many events matched; never a command line, a path or an argument.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Replay {
+    #[prost(uint32, tag = "1")]
+    pub format: u32,
+    #[prost(int64, tag = "2")]
+    pub answered_at: i64,
+    #[prost(enumeration = "ReplayOutcome", tag = "3")]
+    #[serde(
+        serialize_with = "crate::enum_name::<ReplayOutcome, _>",
+        deserialize_with = "crate::enum_from_name::<ReplayOutcome, _>"
+    )]
+    pub outcome: i32,
+    /// Why there is nothing to replay, in the core's words.
+    #[prost(string, optional, tag = "4")]
+    pub reason: ::core::option::Option<::prost::alloc::string::String>,
+    /// What was read, lost and could not be read, and how many times the rules matched. Absent
+    /// unless `outcome` is `read`: with no log nothing was counted.
+    #[prost(uint64, optional, tag = "5")]
+    pub program_starts: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "6")]
+    pub unreadable_lines: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "7")]
+    pub lost: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "8")]
+    pub unknown_losses: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "9")]
+    pub file_events: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "10")]
+    pub file_events_lost: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "11")]
+    pub unreadable_file_events: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "12")]
+    pub matches_total: ::core::option::Option<u64>,
+    /// The most severe first, then by count; the rules of a set that states no level after them.
+    #[prost(message, repeated, tag = "13")]
+    pub matched: ::prost::alloc::vec::Vec<ReplayMatch>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ReplayMatch {
+    #[prost(message, optional, tag = "1")]
+    pub rule: ::core::option::Option<Rule>,
+    #[prost(string, tag = "2")]
+    pub status: ::prost::alloc::string::String,
+    #[prost(uint64, tag = "3")]
+    pub matches: u64,
+}
+/// `UNSPECIFIED`, or a value the reader does not know, is read as a replay that did not happen.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ReplayOutcome {
+    #[serde(rename = "unspecified")]
+    Unspecified = 0,
+    #[serde(rename = "read")]
+    Read = 1,
+    /// The event level is not installed here: there is no log.
+    #[serde(rename = "not_applicable")]
+    NotApplicable = 2,
+}
+impl ReplayOutcome {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "REPLAY_OUTCOME_UNSPECIFIED",
+            Self::Read => "REPLAY_OUTCOME_READ",
+            Self::NotApplicable => "REPLAY_OUTCOME_NOT_APPLICABLE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "REPLAY_OUTCOME_UNSPECIFIED" => Some(Self::Unspecified),
+            "REPLAY_OUTCOME_READ" => Some(Self::Read),
+            "REPLAY_OUTCOME_NOT_APPLICABLE" => Some(Self::NotApplicable),
             _ => None,
         }
     }

@@ -8,9 +8,8 @@
 //! counted and shown again. Only a withdrawal or a later statement clears that.
 
 use crate::findings::Via;
-use crate::{resolver, status, store};
+use crate::{resolver, store};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
-use serde_json::{Value, json};
 
 pub const RETIRED: &str = "retired";
 pub const NOT_MINE: &str = "not mine";
@@ -385,11 +384,33 @@ pub fn withdrawn(conn: &Connection) -> rusqlite::Result<i64> {
     )
 }
 
-/// The statements that stand and are known to have been made outside the app, by the owner's
-/// agent or from the command line, the latest first: each sets a machine aside, so none is
-/// made silently. One made before `via` was kept is not among them. Never counted as
-/// something to look at.
-pub fn outside_app_json(standing: &[Standing], shown: usize) -> Value {
+/// A statement that stands, as the contract gives it. The machine's names are the owner's or a
+/// source's text, so they are only in `_text` fields, whole.
+pub fn statement(s: &Standing) -> crate::contract::v1::Statement {
+    use crate::contract::{v1, value_of};
+    use crate::known::whole;
+    v1::Statement {
+        machine_text: whole(s.name()),
+        entity_text: whole(&s.word.entity),
+        said: s.word.said.clone(),
+        via: value_of::<v1::Via>(s.word.via.literal()),
+        at: s.word.made_at,
+        reason_text: s.word.reason.shown(whole),
+        reason_cuts: crate::answer::reason_cuts(&s.word.reason),
+        names_text: s.names.iter().skip(1).map(|n| whole(n)).collect(),
+        seen_after: s.seen.as_ref().map(|e| v1::SeenAfter {
+            at: e.at,
+            what_text: whole(&e.what),
+        }),
+    }
+}
+
+/// `statements_outside_app` of the contract's `Status`: the statements that stand and are known
+/// to have been made outside the app, the latest first, at most `shown`, with their total.
+pub fn outside_app(
+    standing: &[Standing],
+    shown: usize,
+) -> crate::contract::v1::StatementsOutsideApp {
     let mut outside: Vec<&Standing> = standing
         .iter()
         .filter(|s| s.word.via.outside_app())
@@ -400,20 +421,8 @@ pub fn outside_app_json(standing: &[Standing], shown: usize) -> Value {
             .cmp(&a.word.made_at)
             .then_with(|| a.name().cmp(b.name()))
     });
-    let items: Vec<Value> = outside
-        .iter()
-        .take(shown)
-        .map(|s| {
-            json!({
-                "machine_text": status::text(s.name()),
-                "entity_text": status::text(&s.word.entity),
-                "said": s.word.said,
-                "via": s.word.via.literal(),
-                "at": crate::view::iso(s.word.made_at),
-                "reason_text": status::cut_text(&s.word.reason),
-                "reason_cuts": status::cuts(&s.word.reason),
-            })
-        })
-        .collect();
-    json!({ "total": outside.len(), "items": items })
+    crate::contract::v1::StatementsOutsideApp {
+        total: outside.len() as u64,
+        items: outside.iter().take(shown).map(|s| statement(s)).collect(),
+    }
 }

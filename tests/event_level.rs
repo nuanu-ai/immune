@@ -176,7 +176,7 @@ impl Dir {
             .unwrap();
         assert!(out.status.success());
         let v: Value = serde_json::from_slice(&out.stdout).unwrap();
-        v["result"].clone()
+        v.clone()
     }
 
     /// `immune <args> --store <this store>`: its stdout, after it succeeded.
@@ -201,7 +201,7 @@ impl Dir {
         let mut args = args.to_vec();
         args.push("--json");
         let v: Value = serde_json::from_str(&self.immune(&args)).unwrap();
-        v["result"].clone()
+        v.clone()
     }
 
     /// `immune <args> --json --store <this store>` for a command of the contract: its message.
@@ -1578,7 +1578,7 @@ fn not_installed_is_a_limit_the_owner_can_lift_and_never_a_failure_or_a_claim_of
         line.contains("You can fix: program starts not seen."),
         "{line}"
     );
-    assert_eq!(r["needs_a_look_total"], 0);
+    assert_eq!(r["needs_a_look"]["total"], 0);
     // No false calm: nothing says program starts are seen.
     assert_eq!(watched_starts(&r), None);
     assert_eq!(
@@ -1812,7 +1812,10 @@ fn an_unknown_schema_version_fails_the_reading_and_nothing_is_taken_as_read() {
 }
 
 #[test]
-fn a_refusal_is_served_with_what_eslogger_said_as_data_and_a_quiet_level_as_silent() {
+fn a_refusal_is_served_with_what_eslogger_said_as_data_and_a_quiet_level_as_silent_and_this_mac_is_watched_in_part()
+ {
+    // A collector that ran and then was refused, failed or fell silent sees nothing: this Mac
+    // is then watched only in part, never with the calm of one watched whole.
     let dir = Dir::new("refused");
     dir.install();
     let said =
@@ -1836,6 +1839,7 @@ fn a_refusal_is_served_with_what_eslogger_said_as_data_and_a_quiet_level_as_sile
         (&"you".into(), &shown.into())
     );
     assert!(!item["title"].as_str().unwrap().contains("ignore"));
+    assert_eq!(r["this_mac"]["state"], "watched_in_part", "{r:#}");
     assert_eq!(
         dir.words(),
         "Event level: refused by macOS. macOS does not give the collector Full Disk Access, so program starts are not seen."
@@ -1857,6 +1861,7 @@ fn a_refusal_is_served_with_what_eslogger_said_as_data_and_a_quiet_level_as_sile
         )
     );
     assert!(not_covered(&r, "event-level-failing").is_some());
+    assert_eq!(r["this_mac"]["state"], "watched_in_part", "{r:#}");
 
     // A line written after the error: the level records again.
     let earlier = SystemTime::now() - Duration::from_secs(10);
@@ -1888,6 +1893,7 @@ fn a_refusal_is_served_with_what_eslogger_said_as_data_and_a_quiet_level_as_sile
     let r = dir.status();
     assert_eq!(r["event_level"]["state"], "silent");
     assert!(not_covered(&r, "event-level-silent").is_some());
+    assert_eq!(r["this_mac"]["state"], "watched_in_part", "{r:#}");
     assert_eq!(watched_starts(&r), None);
 }
 
@@ -2287,7 +2293,7 @@ fn a_binary_padding_start_raises_one_finding_with_its_authors_and_arguments_and_
     );
     // The status, the page and the app's card carry the authors with the rule's title.
     assert_eq!(
-        dir.status()["needs_a_look"][0]["value_text"],
+        looks(&dir.status())[0]["value_text"],
         "Binary Padding - MacOS, by Igor Fits, Mikhail Larin, oscd.community"
     );
     let r = dir.status();
@@ -2304,7 +2310,7 @@ fn a_binary_padding_start_raises_one_finding_with_its_authors_and_arguments_and_
         "{rules:#}"
     );
     assert_eq!(
-        rules["matched_last_day"],
+        shaped(&rules["matched_last_day"], &MATCHED),
         json!([{
             "id_text": PADDING,
             "title_text": "Binary Padding - MacOS",
@@ -2315,7 +2321,7 @@ fn a_binary_padding_start_raises_one_finding_with_its_authors_and_arguments_and_
         }])
     );
     assert_eq!(rules["matched_last_day_total"], 1);
-    assert_eq!(r["needs_a_look_total"], 1);
+    assert_eq!(r["needs_a_look"]["total"], 1);
 
     // Read again with nothing new, then a start half written at one reading and whole at the
     // next: each start is matched once.
@@ -2374,7 +2380,7 @@ fn a_binary_padding_start_raises_one_finding_with_its_authors_and_arguments_and_
     // Seen by the owner: the next match is a new finding, as for every rule that finds an
     // event, and is still counted.
     dir.immune(&["finding", &id, "seen"]);
-    assert_eq!(dir.status()["needs_a_look_total"], 0);
+    assert_eq!(dir.status()["needs_a_look"]["total"], 0);
     dir.append(h, &started(10, "/bin/sh", "/bin/dd", &DD));
     dir.run();
     let open: Vec<Value> = dir
@@ -2413,8 +2419,13 @@ fn a_medium_rule_s_match_is_counted_raises_nothing_and_keeps_no_argument() {
         "set": "SigmaHQ's rule set",
         "matches": 1,
     }]);
-    assert_eq!(r["rules"]["matched_last_day"], medium, "{:#}", r["rules"]);
-    assert_eq!(r["needs_a_look_total"], 0);
+    assert_eq!(
+        shaped(&r["rules"]["matched_last_day"], &MATCHED),
+        medium,
+        "{:#}",
+        r["rules"]
+    );
+    assert_eq!(r["needs_a_look"]["total"], 0);
     assert_eq!(dir.contract(&["findings"])["findings"], json!([]));
     dir.nowhere_in_the_store(marker);
     // A match two days ago counts in the week and not in the last day.
@@ -2431,14 +2442,14 @@ fn a_medium_rule_s_match_is_counted_raises_nothing_and_keeps_no_argument() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|e| e["id_text"] == SW_VERS)
+        .find(|e| e["rule"]["id_text"] == SW_VERS)
         .unwrap();
     assert_eq!(
         (&entry["matches_last_day"], &entry["matches_last_week"]),
         (&json!(1), &json!(2))
     );
     assert_eq!(
-        (&rules["watching"], &rules["matches_last_day"]),
+        (&rules["now"]["watching"], &rules["now"]["matches_last_day"]),
         (&json!(true), &json!(1))
     );
     let plain = dir.immune(&["rules"]);
@@ -2522,7 +2533,12 @@ fn a_replay_over_the_log_on_disk_counts_per_rule_touches_no_store_and_prints_no_
     let (ok, out) = dir.replay(&["--json"]);
     assert!(ok, "{out}");
     let v: Value = serde_json::from_str(&out).unwrap();
-    assert_eq!(v["result"]["over_log"], "not_applicable");
+    assert_eq!(v["outcome"], "not_applicable");
+    // With no log nothing was counted: absent, never 0.
+    assert_eq!(
+        (&v["program_starts"], &v["matches_total"]),
+        (&Value::Null, &Value::Null)
+    );
     dir.install();
     dir.append(
         "exec-20261004T00.jsonl",
@@ -2546,9 +2562,9 @@ fn a_replay_over_the_log_on_disk_counts_per_rule_touches_no_store_and_prints_no_
     let (ok, out) = dir.replay(&["--json"]);
     assert!(ok, "{out}");
     let v: Value = serde_json::from_str(&out).unwrap();
-    let r = &v["result"];
+    let r = &v;
     assert_eq!(
-        (&r["over_log"], &r["program_starts"], &r["matches_total"]),
+        (&r["outcome"], &r["program_starts"], &r["matches_total"]),
         (&json!("read"), &json!(6), &json!(5))
     );
     // The most severe first, and within a level the rule that matched most.
@@ -2556,21 +2572,36 @@ fn a_replay_over_the_log_on_disk_counts_per_rule_touches_no_store_and_prints_no_
         .as_array()
         .unwrap()
         .iter()
-        .map(|m| (m["level"].as_str().unwrap(), m["matches"].as_i64().unwrap()))
+        .map(|m| {
+            (
+                m["rule"]["level"].as_str().unwrap(),
+                m["matches"].as_i64().unwrap(),
+            )
+        })
         .collect();
     assert_eq!(
         matched,
         [("high", 1), ("medium", 1), ("low", 2), ("low", 1)],
         "{r:#}"
     );
+    let keys = [
+        "name",
+        "source",
+        "set",
+        "id_text",
+        "title_text",
+        "level",
+        "status",
+        "matches",
+    ];
     assert_eq!(
-        r["matched"][0],
+        shaped(&r["matched"], &keys)[0],
         json!({ "name": format!("sigma:{PADDING}"), "source": "sigma", "set": "SigmaHQ's rule set",
                 "id_text": PADDING, "title_text": "Binary Padding - MacOS", "level": "high",
                 "status": "test", "matches": 1 })
     );
     assert_eq!(
-        r["matched"][1],
+        shaped(&r["matched"], &keys)[1],
         json!({ "name": format!("sigma:{SW_VERS}"), "source": "sigma", "set": "SigmaHQ's rule set",
                 "id_text": SW_VERS, "title_text": "System Information Discovery Using sw_vers",
                 "level": "medium", "status": "test", "matches": 1 })
@@ -2944,7 +2975,7 @@ fn what_the_collector_keeps_is_told_by_what_its_lines_carry_and_never_by_a_recor
         &kept_file_event(1, "create", "/usr/bin/touch", "/Users/example/a", None),
     );
     let (said, _) = told(&dir);
-    let since = json!("2026-10-04T00:00:03Z");
+    let since = json!(1791072003);
     assert_eq!(
         said,
         lists(
@@ -3034,11 +3065,11 @@ fn a_group_the_collector_stops_filling_is_told_as_no_longer_arriving_with_since_
     dir.append(name, &(null + "\n"));
     dir.run_apart();
     let l = &dir.status()["event_level"];
-    let since = json!([{"name": "identity", "since": "2026-10-04T00:01:02Z"}]);
+    let since = json!([{"name": "identity", "since": 1791072062}]);
     assert_eq!(l["no_longer_arriving"], since, "{l:#}");
     assert_eq!(
         l["arriving"],
-        json!([{"name": "signature", "since": "2026-10-04T00:00:03Z"}])
+        json!([{"name": "signature", "since": 1791072003}])
     );
     let root = dir.root().display().to_string();
     let c = &dir.contract(&["matches", "--system-root", &root])["collector"];
@@ -3079,9 +3110,13 @@ fn no_rule_for_files_watches_until_the_collector_here_is_established_to_record_f
             (&json!(true), &json!(162), &json!(false), &json!("all")),
             "{rules:#}"
         );
-        let mut named: Vec<&str> = rules["not_watching"]
+        let not_watching: Vec<Value> = rules["not_watching"]
             .as_array()
             .unwrap()
+            .iter()
+            .map(flat)
+            .collect();
+        let mut named: Vec<&str> = not_watching
             .iter()
             .inspect(|n| assert_eq!(n["reason"], "file_events_not_collected"))
             .map(|n| n["id_text"].as_str().unwrap())
@@ -3091,13 +3126,11 @@ fn no_rule_for_files_watches_until_the_collector_here_is_established_to_record_f
         all.sort();
         assert_eq!(named, all);
         // A rule of a set that states no level is named with none.
-        let crontab = rules["not_watching"]
-            .as_array()
-            .unwrap()
+        let crontab = not_watching
             .iter()
             .find(|n| n["id_text"] == "31151602-1de1-4301-9b75-215ac8902b75")
             .unwrap();
-        assert_eq!(crontab["level"], Value::Null);
+        assert_eq!(crontab["level"], "not_stated");
         // Each with its set, by name and in words, as every listing of rules gives it.
         assert_eq!(
             (&crontab["source"], &crontab["set"]),
@@ -4034,7 +4067,7 @@ fn the_status_gives_the_cap_the_tidy_job_was_installed_with_and_never_a_guess() 
     dir.run();
     let l = &dir.status()["event_level"];
     assert_eq!(l["log_cap_bytes"], 2147483648u64, "{l:#}");
-    assert!(l.get("log_cap_reason").is_none(), "{l:#}");
+    assert!(l["log_cap_reason_text"].is_null(), "{l:#}");
     tidy_plist(
         &dir,
         "root/Library/LaunchDaemons/ai.nuanu.immune.event-tidy.plist",
@@ -4063,7 +4096,7 @@ fn the_status_gives_the_cap_the_tidy_job_was_installed_with_and_never_a_guess() 
     let l = &dir.status()["event_level"];
     assert_eq!(l.get("log_cap_bytes"), Some(&Value::Null), "{l:#}");
     assert!(
-        l["log_cap_reason"]
+        l["log_cap_reason_text"]
             .as_str()
             .unwrap()
             .starts_with("the cap of the event level's log could not be read: plutil:"),
@@ -4077,7 +4110,10 @@ fn the_status_gives_the_cap_the_tidy_job_was_installed_with_and_never_a_guess() 
     dir.run();
     let l = &dir.status()["event_level"];
     assert_eq!(
-        (&l["log_cap_bytes"], l["log_cap_reason"].as_str().unwrap()),
+        (
+            &l["log_cap_bytes"],
+            l["log_cap_reason_text"].as_str().unwrap()
+        ),
         (
             &Value::Null,
             "the cap of the event level's log could not be read: its fourth argument is not a cap tidy.sh takes, a whole number of bytes of at least 1 GiB"
@@ -4087,7 +4123,10 @@ fn the_status_gives_the_cap_the_tidy_job_was_installed_with_and_never_a_guess() 
     dir.run();
     let l = &dir.status()["event_level"];
     assert_eq!(
-        (&l["log_cap_bytes"], l["log_cap_reason"].as_str().unwrap()),
+        (
+            &l["log_cap_bytes"],
+            l["log_cap_reason_text"].as_str().unwrap()
+        ),
         (
             &Value::Null,
             "the tidy job's launch daemon is not installed, so nothing keeps the log under a cap; installing the event level again puts it back"
@@ -4097,7 +4136,145 @@ fn the_status_gives_the_cap_the_tidy_job_was_installed_with_and_never_a_guess() 
     dir.run();
     let l = &dir.status()["event_level"];
     assert!(
-        l.get("log_cap_bytes").is_none() && l.get("log_cap_reason").is_none(),
+        l["log_cap_bytes"].is_null() && l["log_cap_reason_text"].is_null(),
         "{l:#}"
     );
+}
+
+/// What `needs_a_look` lists, each `LookFinding` read as one object: the finding's reference,
+/// the finding as listed and its words side by side, so a test names a field once.
+fn looks(status: &serde_json::Value) -> serde_json::Value {
+    let items = status["needs_a_look"]["items"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    items
+        .iter()
+        .map(|look| {
+            let mut flat = serde_json::Map::new();
+            for part in [&look["finding"]["finding"], &look["finding"], look] {
+                for (k, v) in part.as_object().into_iter().flatten() {
+                    if k != "finding" {
+                        flat.entry(k.clone()).or_insert_with(|| v.clone());
+                    }
+                }
+            }
+            serde_json::Value::Object(flat)
+        })
+        .collect()
+}
+
+/// A listed rule with the fields of its `rule` beside its own, as one object.
+fn flat(v: &Value) -> Value {
+    let mut out = v["rule"].as_object().cloned().unwrap_or_default();
+    for (k, x) in v.as_object().into_iter().flatten() {
+        if k != "rule" {
+            out.insert(k.clone(), x.clone());
+        }
+    }
+    out.into()
+}
+
+/// Listed rules, each flattened and cut down to `keys`; a key it lacks shows as absent.
+fn shaped(rows: &Value, keys: &[&str]) -> Value {
+    rows.as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            let f = flat(row);
+            keys.iter()
+                .map(|k| {
+                    (
+                        k.to_string(),
+                        f.get(*k).cloned().unwrap_or(json!("<absent>")),
+                    )
+                })
+                .collect::<serde_json::Map<_, _>>()
+                .into()
+        })
+        .collect::<Vec<Value>>()
+        .into()
+}
+
+/// The keys a listing of matched rules is compared on.
+const MATCHED: [&str; 6] = ["id_text", "title_text", "level", "source", "set", "matches"];
+
+#[test]
+fn a_collector_that_lost_part_of_the_day_leaves_this_mac_watched_in_part_for_as_long_as_rules_judge_part()
+ {
+    // No false calm: a collector that runs and lost what it was to record, for any cause, has
+    // this Mac read in part, the same as the rules' own judgement says, never `watched`. A day
+    // read whole is `watched`.
+    let h = "exec-20261004T00.jsonl";
+    let state = |tag: &str, log: &str, notes: Option<&str>| -> (Value, Value) {
+        let dir = Dir::new(tag);
+        dir.install();
+        dir.append(h, log);
+        if let Some(notes) = notes {
+            std::fs::write(dir.log().join("removed"), notes).unwrap();
+        }
+        dir.run();
+        let r = dir.status();
+        (r["this_mac"]["state"].clone(), r["rules"]["judged"].clone())
+    };
+    let when = now_secs() + 1;
+    for (tag, log, notes, expected) in [
+        ("whole", exec(1) + &exec(2), None, ("watched", "all")),
+        // A gap in eslogger's numbering.
+        ("gap", exec(1) + &exec(3), None, ("watched_in_part", "part")),
+        // eslogger started again: a loss of unknown size.
+        (
+            "restart",
+            exec(1) + &exec(2) + &exec(1),
+            None,
+            ("watched_in_part", "part"),
+        ),
+        // A line that could not be read.
+        (
+            "unreadable",
+            exec(1) + "not a message\n" + &exec(2),
+            None,
+            ("watched_in_part", "part"),
+        ),
+        // A file of the log deleted by the cap, and one deleted before it was read.
+        (
+            "cap",
+            exec(1) + &exec(2),
+            Some(format!("{when} exec-20261003T22.jsonl 900 cap\n")),
+            ("watched_in_part", "part"),
+        ),
+        (
+            "unread",
+            exec(1) + &exec(2),
+            Some(format!("{when} exec-20261003T23.jsonl 900 age\n")),
+            ("watched_in_part", "part"),
+        ),
+        // File events, which this collector keeps, missing from their own numbering while
+        // every program start arrived.
+        (
+            "file-gap",
+            exec(1)
+                + &file_event(1, "create", "/usr/bin/touch", "/Users/example/a", None)
+                + &file_event(3, "create", "/usr/bin/touch", "/Users/example/b", None)
+                + &exec(2),
+            None,
+            ("watched_in_part", "part"),
+        ),
+        (
+            "files-whole",
+            exec(1)
+                + &file_event(1, "create", "/usr/bin/touch", "/Users/example/a", None)
+                + &file_event(2, "create", "/usr/bin/touch", "/Users/example/b", None)
+                + &exec(2),
+            None,
+            ("watched", "all"),
+        ),
+    ] {
+        let (this_mac, judged) = state(&format!("lost-{tag}"), &log, notes.as_deref());
+        assert_eq!(
+            (this_mac.as_str().unwrap(), judged.as_str().unwrap()),
+            expected,
+            "{tag}"
+        );
+    }
 }

@@ -1,0 +1,150 @@
+{
+  "advice": "Look at the program, its arguments and what started it, shown here. If you or a tool you use ran it, mark it expected; if nobody knows it, ask your agent to look into it.",
+  "answer": null,
+  "answered_at": 1794597524,
+  "answers_note": "Answer a finding only after the owner has agreed in this conversation, having been told what it is and what the options are. Pass --via agent and the reason the owner agreed to. The app shows every answer given this way.",
+  "evidence": {
+    "published_rule_matched": {
+      "events": [
+        {
+          "program_start": {
+            "args_text": [
+              "dd",
+              "if=/dev/zero",
+              "bs=1",
+              "count=1",
+              "--password=\\cut{immune:flag-value 18}"
+            ],
+            "cuts": [
+              {
+                "argument": 4,
+                "kind": "immune:flag-value",
+                "length": 18
+              }
+            ],
+            "happened_at": 1791072002,
+            "happened_nanos": 2000,
+            "instigator": {
+              "codesigning_flags": null,
+              "executable_text": "/bin/sh",
+              "pid": null,
+              "pid_version": null,
+              "platform_binary": null,
+              "signing_id_text": null,
+              "started_at": null,
+              "started_nanos": null,
+              "team_id_text": null,
+              "user_id": null
+            },
+            "parent": null,
+            "parent_pid": 401,
+            "process": {
+              "codesigning_flags": null,
+              "executable_text": "/bin/dd",
+              "pid": 402,
+              "pid_version": null,
+              "platform_binary": true,
+              "signing_id_text": "com.apple.dd",
+              "started_at": null,
+              "started_nanos": null,
+              "team_id_text": null,
+              "user_id": 501
+            },
+            "script_text": null,
+            "working_directory_text": "/Users/example/dev/site"
+          }
+        },
+        {
+          "program_start": {
+            "args_text": [
+              "dd",
+              "if=/dev/zero",
+              "bs=1",
+              "count=1"
+            ],
+            "cuts": [],
+            "happened_at": 1791072002,
+            "happened_nanos": 2000,
+            "instigator": {
+              "codesigning_flags": null,
+              "executable_text": "/bin/sh",
+              "pid": null,
+              "pid_version": null,
+              "platform_binary": null,
+              "signing_id_text": null,
+              "started_at": null,
+              "started_nanos": null,
+              "team_id_text": null,
+              "user_id": null
+            },
+            "parent": null,
+            "parent_pid": 401,
+            "process": {
+              "codesigning_flags": null,
+              "executable_text": "/bin/dd",
+              "pid": 402,
+              "pid_version": null,
+              "platform_binary": true,
+              "signing_id_text": "com.apple.dd",
+              "started_at": null,
+              "started_nanos": null,
+              "team_id_text": null,
+              "user_id": 501
+            },
+            "script_text": null,
+            "working_directory_text": "/Users/example/dev/site"
+          }
+        }
+      ],
+      "licence": "DRL-1.1",
+      "matches": 2,
+      "rule": {
+        "author_text": "Igor Fits, Mikhail Larin, oscd.community",
+        "file": "rules/macos/process_creation/proc_creation_macos_binary_padding.yml",
+        "id_text": "95361ce5-c891-4b0a-87ca-e24607884a96",
+        "level": "high",
+        "name": "sigma:95361ce5-c891-4b0a-87ca-e24607884a96",
+        "set": "SigmaHQ's rule set",
+        "source": "sigma",
+        "techniques_text": [
+          "T1027.001"
+        ],
+        "title_text": "Binary Padding - MacOS"
+      },
+      "source": "https://github.com/SigmaHQ/sigma"
+    }
+  },
+  "finding": {
+    "about_text": "machine:mac",
+    "confidence": "low",
+    "id": "f13fda03d01",
+    "rule": "sigma:95361ce5-c891-4b0a-87ca-e24607884a96",
+    "severity": "high",
+    "state": "open",
+    "urgent": false
+  },
+  "first_seen_at": 1794597518,
+  "format": 1,
+  "kind": "program start matched by a published rule",
+  "last_seen_at": 1794597519,
+  "meaning": "The rule, named with this finding, comes from SigmaHQ's rule set and was written from attacks seen elsewhere. Coding agents, build tools and people run the same commands for ordinary work, so a match is often harmless.",
+  "rests_on": [
+    {
+      "entry": "matched",
+      "kind": "sigma:95361ce5-c891-4b0a-87ca-e24607884a96",
+      "new_value_text": null,
+      "old_value_text": null,
+      "predicate": null,
+      "reader": "events",
+      "recorded_at": 1794597518,
+      "run_id": "1794597518-067940000",
+      "seq": 17,
+      "subject_text": "machine:mac"
+    }
+  ],
+  "store_id": "d33651be2c7f9f3bb28e6a58c8b62082",
+  "technique_text": "T1027.001",
+  "title": "A program started on this Mac in a way that a published detection rule marks as high risk.",
+  "verdicts": null,
+  "where_text": "mac"
+}

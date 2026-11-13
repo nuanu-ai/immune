@@ -1,0 +1,769 @@
+// What the last finished check left, read from the store alone: the answer to `immune status`,
+// and to `immune run` once its check finished. Version 1 of the contract between the core and a
+// program that runs it. How a message is printed and read, and the conventions for text,
+// references, times and changes, are in `common.proto`.
+//
+// The status is what the app and the person's agent read to decide whether this Mac is in order,
+// so nothing in it reads as calm that the core has not established:
+// - A section the core cannot give is absent, and named in `not_computed` with the reason. A
+//   section that is there and empty means that there is nothing in it.
+// - A count that is not known is absent, never 0. An enum's unspecified value is never a calm
+//   one: each enum's comment says how it is read.
+// - What needs a look is findings only: `needs_a_look`. What the core does not cover is beside
+//   it, in `not_covered`, and is never counted in it.
+//
+// Values that will be added. A reader meets values of `ThisMacState`, `FeedOutcome`, `Judged`,
+// `NotWatchingReason` and `ReadingClass`, and those the other files name, that it does not know:
+// the core adds them within version 1. It treats one it does not know as each enum's comment
+// says.
+
+syntax = "proto3";
+
+package immune.v1;
+
+import "immune/v1/common.proto";
+import "immune/v1/event.proto";
+import "immune/v1/findings.proto";
+import "immune/v1/known.proto";
+import "immune/v1/matches.proto";
+import "immune/v1/owner.proto";
+import "immune/v1/vulnerabilities.proto";
+
+// The answer to `immune status`, and to `immune run` once its check finished.
+message Status {
+  // The numbers of `Failure`'s fields, so that a failure never reads as an answer.
+  reserved 1000 to 1099;
+  // The version of this contract: 1. A reader that meets another number stops.
+  uint32 format = 1;
+  // When the answer was made. Everything in it is of one state of the store at this time.
+  int64 answered_at = 2;
+  // The store this answer was read from, as in every answer (`common.proto`). Absent when there
+  // is no store, and for a store an older build made that no command has written to since.
+  optional string store_id = 3;
+  // A full check is in progress now. Everything else describes the latest one that finished.
+  bool running = 4;
+  // The store's file, and whether it exists. Without a store every section but `cannot_judge`,
+  // `rules`, `watching` and `this_mac` is absent and named in `not_computed`.
+  StoreFile store = 5;
+  // What this build cannot answer at all, in the core's words, one sentence each.
+  repeated string cannot_judge = 6;
+  // The published rules this build ships, and what they do here now.
+  RulesNow rules = 7;
+  // The watcher, `immune watch`. Absent unless one holds this store now, so a watcher that died
+  // never shows as watching.
+  Watcher watching = 8;
+  // Whether this Mac is watched, and what.
+  ThisMac this_mac = 9;
+  // The event level, as its latest reading left it. Absent before any reading of it.
+  EventLevel event_level = 10;
+  // What the core does not cover, one item per cause, in its words: what the person can fix
+  // first, then the limits of this version. Never counted in `needs_a_look`.
+  repeated Uncovered not_covered = 11;
+  // The latest check that started, finished or not. Absent when none has started.
+  CheckMark last_run = 12;
+  // What the latest check that finished counted. Absent when none has finished.
+  FinishedCheck last_finished_run = 13;
+  // What the store knows of the machines, servers, projects and packages.
+  Estate estate = 14;
+  // The watched places. Absent when they were never read.
+  WatchedPlaces watched = 15;
+  // The catalogue of exploited vulnerabilities.
+  Threats threats = 16;
+  // The feeds of vulnerability data and how their latest readings went.
+  VulnerabilityData vulnerability_data = 17;
+  // Known vulnerabilities in packages the projects use, beside what needs a look and never
+  // counted in it. Absent when the projects' lockfiles were never matched in this store.
+  VulnerabilityTotals vulnerabilities = 18;
+  // Installed software and whether it changed in place. Absent when it was never read.
+  Integrity integrity = 19;
+  // What this build has no reader for, found by the latest readings. Absent on a store made
+  // before it was recorded.
+  NoReaderFor no_reader_for = 20;
+  // The latest reading of each reader, scope and kind, counted, with what was not full grouped.
+  // Absent when nothing has been read.
+  CoverageSummary coverage = 21;
+  // The findings that need a look: open, and not hidden by an answer. Absent when no check of
+  // this build has looked for findings in this store.
+  NeedsALook needs_a_look = 22;
+  // When an agent may answer a finding, in the core's words, as in `Findings`.
+  string answers_note = 23;
+  // The answers in force known to have been given outside the app. Absent when no check of
+  // this build has looked for findings.
+  AnsweredOutsideApp answered_outside_app = 24;
+  // The statements that stand and are known to have been made outside the app.
+  StatementsOutsideApp statements_outside_app = 25;
+  // The sections the core could not give, each with why, in its words.
+  repeated NotComputed not_computed = 26;
+}
+
+// The store's file.
+message StoreFile {
+  // Its path, absolute. Whole.
+  string path_text = 1;
+  bool exists = 2;
+  // The pages `immune view` writes for sections of its summary, so that nothing outside builds
+  // a path. Present only when the store exists.
+  repeated ViewSection view_sections = 3;
+}
+
+message ViewSection {
+  // The section's name, such as `as-it-happens`.
+  string section = 1;
+  // The page's path, absolute. Whole.
+  string path_text = 2;
+}
+
+// The published rules this build ships, counted by what the event level lets them do now, and
+// what they did.
+message RulesNow {
+  // Rule files shipped, and the upstream rules a translated set did not take, which are also
+  // counted in `not_evaluated`.
+  uint64 shipped = 1;
+  uint64 not_taken = 2;
+  uint64 evaluated = 3;
+  uint64 in_part = 4;
+  uint64 not_evaluated = 5;
+  // What the rules do now rests on the event level's latest reading. Before any reading of it,
+  // `watching`, `watching_rules`, `watching_file_rules`, `file_events_collected` and
+  // `matched_last_day_total` are absent: not known, never false or 0.
+  // True only while the event level's latest state is `running`.
+  optional bool watching = 6;
+  // The rules that watch now: evaluated in full, their events collected, and what they read
+  // arriving. A rule evaluated in part or not at all is never among them.
+  optional uint64 watching_rules = 7;
+  // The rules for file events evaluated in full, and of them those that watch now.
+  uint64 file_rules = 8;
+  optional uint64 watching_file_rules = 9;
+  // Whether the collector installed here is established to record files created and renamed.
+  // Absent too while the level does not run.
+  optional bool file_events_collected = 10;
+  // The rules evaluated in full that do not watch while the level runs, each with why.
+  repeated NotWatching not_watching = 11;
+  // How much of the last day the watching rules judged.
+  Judged judged = 12;
+  // Why not all, in the core's words. Absent when `judged` is `all`.
+  optional string judged_note = 13;
+  // How many events the rules matched in the last day. Absent before any reading of the event
+  // level. Matches are served whether or not the level runs now: they happened.
+  optional uint64 matches_last_day = 14;
+  // The rules that matched in the last day, the most matches first, at most ten.
+  repeated RuleMatches matched_last_day = 15;
+  // How many rules matched in the last day.
+  optional uint64 matched_last_day_total = 16;
+}
+
+// How much of the last day the rules judged. `UNSPECIFIED`, or a value the reader does not know,
+// is read as `none`.
+enum Judged {
+  JUDGED_UNSPECIFIED = 0;
+  // Every program start and file event the log held was read and judged.
+  JUDGED_ALL = 1;
+  // Some were lost, could not be read or were deleted before they were read.
+  JUDGED_PART = 2;
+  // The event level is not running, so nothing is judged now.
+  JUDGED_NONE = 3;
+}
+
+// A rule evaluated in full that does not watch while the level runs.
+message NotWatching {
+  Rule rule = 1;
+  NotWatchingReason reason = 2;
+  // What it reads that does not arrive: `identity`, `script` or `signature`.
+  repeated string not_arriving = 3;
+}
+
+// Why a rule evaluated in full does not watch. `UNSPECIFIED`, or a value the reader does not
+// know, is read as a rule that does not watch for a reason it cannot judge.
+enum NotWatchingReason {
+  NOT_WATCHING_REASON_UNSPECIFIED = 0;
+  // A rule for file events, and the collector installed here does not record them.
+  NOT_WATCHING_REASON_FILE_EVENTS_NOT_COLLECTED = 1;
+  // It reads what the lines the collector writes do not carry: an earlier collector.
+  NOT_WATCHING_REASON_COLLECTOR_DOES_NOT_KEEP = 2;
+  // Lines carry what it reads, and none has given it a value yet.
+  NOT_WATCHING_REASON_KEPT_NEVER_FILLED = 3;
+  // No line that would carry what it reads has been read yet.
+  NOT_WATCHING_REASON_NOT_YET_KNOWN = 4;
+  // Lines gave what it reads values and then stopped: the collector no longer fills it.
+  NOT_WATCHING_REASON_NO_LONGER_ARRIVING = 5;
+}
+
+// How many events a rule matched.
+message RuleMatches {
+  // The rule's id as published, whole.
+  string id_text = 1;
+  // The rule as this build ships it. Absent for a rule this build no longer ships.
+  Rule rule = 2;
+  uint64 matches = 3;
+}
+
+// The watcher that holds the store now.
+message Watcher {
+  // When it started, from its lock file. Absent when the file does not say.
+  optional int64 since_at = 1;
+  // When it last read every watched place, if this watcher did. A reading of only the places
+  // that changed does not move it; each start of the watcher reads them all.
+  optional int64 last_read_at = 2;
+  // What has failed in it and not succeeded since.
+  repeated WatcherFailure failed = 3;
+  // What a watcher cannot see, in the core's words.
+  repeated string cannot_see = 4;
+}
+
+message WatcherFailure {
+  // What failed, the core's word: `read`, `sample` or `events`.
+  string what = 1;
+  int64 at = 2;
+  // What the failure said. Whole.
+  string detail_text = 3;
+}
+
+// Whether this Mac is watched.
+message ThisMac {
+  ThisMacState state = 1;
+  // A watcher runs on the store now and nothing in it has failed since it last succeeded, but
+  // perhaps its reading of program starts.
+  bool live = 2;
+  // When the latest full check finished. Absent when none has.
+  optional int64 checked_at = 3;
+  // When a watcher last read the watched places. Absent when none has.
+  optional int64 live_read_at = 4;
+  // What is watched on this Mac, in words a person knows, each with how many and how. A kind
+  // with nothing to watch here is left out.
+  repeated WatchedThing watched = 5;
+  // Whether what the status says is fresh: the latest full check finished within the last
+  // `fresh_for_seconds`. False when it is older, when no check has finished, and in a status a
+  // core that does not say it printed: a reader never takes a status that is not fresh for calm,
+  // whatever `state` says. `stale_reason` says why, in the core's words.
+  bool fresh = 6;
+  optional string stale_reason = 7;
+  uint64 fresh_for_seconds = 8;
+}
+
+// Whether this Mac is watched. `UNSPECIFIED`, or a value the reader does not know, is read as
+// `not_checked`: never as calm.
+enum ThisMacState {
+  THIS_MAC_STATE_UNSPECIFIED = 0;
+  // Nothing of this Mac has been read yet.
+  THIS_MAC_STATE_NOT_CHECKED = 1;
+  // Its places are read, and none that is there failed to be read.
+  THIS_MAC_STATE_WATCHED = 2;
+  // A place of its own is there and was not read whole: a reading of it failed; or the event
+  // level is installed and records no program start (refused, failing or silent); or it runs and
+  // lost part of what it was to record over the last day, for as long as `rules.judged` is
+  // `part`. `not_covered` or `rules.judged_note` says which.
+  THIS_MAC_STATE_WATCHED_IN_PART = 3;
+}
+
+message WatchedThing {
+  // What it is, in the core's words, such as `startup items`.
+  string what = 1;
+  uint64 count = 2;
+  // `live` within seconds while a watcher runs, `hourly` at every full check, `sampled` while a
+  // watcher samples running programs, `events` while the event level records them.
+  string how = 3;
+}
+
+// The event level: every program start and file event on this Mac, from Apple's `eslogger`, as
+// its latest reading left it.
+message EventLevel {
+  // Its state, as the core's latest reading judged it. `COLLECTOR_STATE_FAILED` is a reading that
+  // failed.
+  CollectorState state = 1;
+  // What the level is, in the core's words.
+  string level = 2;
+  // When it was last read, and when its log was last written to.
+  int64 read_at = 3;
+  optional int64 written_at = 4;
+  // Counts of the readings since the latest full check began, and over the last day.
+  Span program_starts = 5;
+  // Program starts missing from eslogger's numbering, and restarts of the numbering.
+  Span lost = 6;
+  Span unknown_losses = 7;
+  // Lines that are not a message, and lines of other messages.
+  Span unreadable_lines = 8;
+  Span other_messages = 9;
+  // Log files deleted by the cap, and deleted before they were read.
+  Span files_removed_by_cap = 10;
+  Span files_removed_unread = 11;
+  // The message version of the latest program start read.
+  optional int64 message_version = 12;
+  // What made it `refused` or `failing`: who printed it, `eslogger` or `scripts`, and the line.
+  optional string said_by = 13;
+  optional string said_text = 14;
+  // Why the core's reading failed. Whole.
+  optional string reason_text = 15;
+  // After how many seconds without a line the level is `silent`.
+  uint64 silent_after_seconds = 16;
+  // What the level cannot see on this Mac, in the core's words.
+  repeated string cannot_see = 17;
+  // What a collector may keep beyond what the first one kept, `identity`, `script` and
+  // `signature`, each in one of five lists by what the core's latest reading says of it, as
+  // `Collector` in `matches.proto` gives them: `not_kept`, the latest line lacks it, so the
+  // collector installed here is an earlier one; `kept_never_filled`, lines carry it and none has
+  // given it a value yet; `not_yet_known`, no line that would carry it has been read; `arriving`,
+  // with the time of the first line that gave it a value; and `no_longer_arriving`, below. A rule
+  // that reads one that does not arrive is named in `RulesNow.not_watching`.
+  repeated string not_kept = 18;
+  repeated string kept_never_filled = 19;
+  repeated string not_yet_known = 20;
+  repeated Arriving arriving = 21;
+  // Files created and renamed.
+  FileEvents file_events = 22;
+  // Program starts read in each hour of the last day, and in each minute of the last hour,
+  // oldest first.
+  Series program_starts_by_hour = 23;
+  Series program_starts_by_minute = 24;
+  // The level for a person, in the core's words, which every surface takes.
+  EventLevelWords in_words = 25;
+  // The cap of the log in bytes, as the installed tidy job is given it; or why it could not be
+  // read. Both absent until a reading found the collector installed.
+  optional uint64 log_cap_bytes = 26;
+  optional string log_cap_reason_text = 27;
+  // Lines gave it values and then stopped, each with the time of the first of the lines in a row
+  // that gave it none, as `Collector.no_longer_arriving`.
+  repeated NoLongerArriving no_longer_arriving = 28;
+}
+
+// A count since the latest full check began, and over the last day.
+message Span {
+  uint64 since_check = 1;
+  uint64 last_day = 2;
+}
+
+// Files created and renamed, as the event level records them.
+message FileEvents {
+  // The collector installed here is established to record them.
+  bool collected = 1;
+  // Why not, in the core's words. Absent when they are collected.
+  optional string not_collected_reason = 2;
+  // The kinds recorded, `create` and `rename`.
+  repeated string kinds = 3;
+  Span events = 4;
+  Span lost = 5;
+  Span unknown_losses = 6;
+  Span unreadable_events = 7;
+}
+
+// Counts at equal steps, oldest first; the last step ends at `ends_at`.
+message Series {
+  int64 ends_at = 1;
+  uint64 step_seconds = 2;
+  repeated uint64 counts = 3;
+}
+
+// The event level in the core's words.
+message EventLevelWords {
+  // A short state, such as `on`.
+  string state = 1;
+  // Each caveat a sentence; none when nothing was lost.
+  repeated string notes = 2;
+  // The same caveats in a few words each, under stable names.
+  repeated Caveat caveats = 3;
+}
+
+message Caveat {
+  string kind = 1;
+  string short = 2;
+}
+
+// One thing the core does not cover, in its words: one per cause, never one per machine or file.
+message Uncovered {
+  // The cause, a stable name.
+  string id = 1;
+  // `you` when the person can change it; `nothing` for a limit of this version or what passes
+  // by itself.
+  string who = 2;
+  // `this_mac`, `projects`, `servers` or `threats`.
+  string scope = 3;
+  // The catalogue's words for the cause (`Catalogue.not_covered` in `rules.proto`), with only
+  // numbers, times and the core's own words put in. A name taken from the Mac is never in them.
+  string kind = 4;
+  string title = 5;
+  string meaning = 6;
+  string advice = 7;
+  uint64 count = 8;
+  // When it is counted from. Absent when not known.
+  optional int64 since_at = 9;
+  // What a source said of it. Whole.
+  optional string value_text = 10;
+  // The things it is about, as the Mac names them: the first three, or every one for
+  // `package-managers-not-read`. Whole.
+  repeated string examples_text = 11;
+  // Where it holds: on every Mac, a limit of this version that no reading here raised, or on
+  // this Mac, raised by something read here.
+  HoldsOn holds_on = 12;
+}
+
+// Where a cause of what is not covered holds. `UNSPECIFIED`, or a value the reader does not know,
+// is read as `this_mac`: shown to the person, never left out as a limit of the version.
+enum HoldsOn {
+  HOLDS_ON_UNSPECIFIED = 0;
+  // The same on every Mac this version runs on: no reading of this Mac raised it.
+  HOLDS_ON_EVERY_MAC = 1;
+  // Raised by something read on this Mac.
+  HOLDS_ON_THIS_MAC = 2;
+}
+
+// A check as the journal records it.
+message CheckMark {
+  // The check's id, the core's own.
+  string id = 1;
+  int64 started_at = 2;
+  // Absent while it has not finished: it runs, or it died and nothing it read is in the store.
+  optional int64 finished_at = 3;
+}
+
+// What the latest check that finished counted.
+message FinishedCheck {
+  CheckMark check = 1;
+  // No check finished before it: everything it found is the baseline.
+  bool first_run = 2;
+  // Readings it made that were not full, and earlier readings it did not repeat.
+  CheckReadings readings = 3;
+  // Things added, changed and removed since the check before, each counted once. Absent on the
+  // first check.
+  SinceCheck since_previous_run = 4;
+  // What cannot be known about those changes, in the core's words.
+  repeated string unknown = 5;
+}
+
+message CheckReadings {
+  uint64 partial = 1;
+  uint64 failed = 2;
+  uint64 not_repeated = 3;
+  uint64 machines_unread = 4;
+}
+
+message SinceCheck {
+  uint64 added = 1;
+  uint64 changed = 2;
+  uint64 removed = 3;
+}
+
+// What the store knows of the machines, servers, projects and packages.
+message Estate {
+  uint64 machines = 1;
+  uint64 servers = 2;
+  uint64 servers_offered = 3;
+  uint64 servers_read = 4;
+  uint64 servers_in_last_check = 5;
+  uint64 servers_checked_in_last_check = 6;
+  uint64 servers_system_not_given = 7;
+  uint64 own_devices = 8;
+  uint64 other_devices = 9;
+  uint64 machines_set_aside = 10;
+  // The machines the person set aside and that were seen alive after it, by their names.
+  repeated string machines_seen_after_owner_word_text = 11;
+  uint64 checkouts = 12;
+  uint64 components = 13;
+}
+
+// The watched places.
+message WatchedPlaces {
+  // Files watched now.
+  uint64 files = 1;
+  // The latest check's reading was the first: everything it found is the baseline.
+  bool first_reading = 2;
+  // What the latest check found new, changed and gone. Absent on the first reading: there was
+  // nothing to compare with.
+  PlaceCounts since_last_reading = 3;
+  // Each kind of place, in the order of the table of places.
+  repeated WatchedKind kinds = 4;
+  // Files whose content could not be read at their latest reading.
+  uint64 content_not_read = 5;
+  // The latest changes of watched places, newest first, at most fifty.
+  repeated PlaceChange changes = 6;
+  uint64 changes_total = 7;
+}
+
+message PlaceCounts {
+  uint64 new = 1;
+  uint64 changed = 2;
+  uint64 gone = 3;
+}
+
+message WatchedKind {
+  // The kind of place, the store's word, such as `shell profile`.
+  string kind = 1;
+  uint64 files = 2;
+  // Of them, those watched only for whether they are there; and what that means, in the core's
+  // words, when there are any.
+  uint64 presence_only = 3;
+  optional string presence_only_note = 4;
+  // How its latest readings went together. Absent when it has no reading.
+  optional Completeness coverage = 5;
+  // Its latest readings by completeness.
+  CompletenessCounts readings = 6;
+  // Why they were not full, each reason once; on one full reading, its note. Whole.
+  optional string reason_text = 7;
+}
+
+message CompletenessCounts {
+  uint64 full = 1;
+  uint64 partial = 2;
+  uint64 none = 3;
+}
+
+message PlaceChange {
+  int64 at = 1;
+  // The check that found it.
+  string run_id = 2;
+  Change change = 3;
+  // The kind of place, the store's word.
+  string kind = 4;
+  // The path as ids name it. Whole.
+  string path_text = 5;
+}
+
+// The latest reading of the catalogue of exploited vulnerabilities. A first reading is the
+// baseline: nothing in it counts as new or gone. After a failed reading what is new is unknown,
+// so `new` and `gone` are absent.
+message Threats {
+  // Where it comes from, `cisa-kev`.
+  string source = 1;
+  FeedOutcome outcome = 2;
+  // Entries it held at its latest good reading. Absent when it was never read.
+  optional uint64 entries = 3;
+  optional bool first_reading = 4;
+  optional uint64 new = 5;
+  optional uint64 gone = 6;
+  // When it was last read whole, and when it was last asked for.
+  optional int64 read_at = 7;
+  optional int64 checked_at = 8;
+  // Why the latest reading failed. Whole.
+  optional string reason_text = 9;
+  // Whether its entries are matched against what the store knows: not yet.
+  bool matched = 10;
+}
+
+// How the latest reading of a feed went. `UNSPECIFIED`, or a value the reader does not know, is
+// read as `failed`.
+enum FeedOutcome {
+  FEED_OUTCOME_UNSPECIFIED = 0;
+  FEED_OUTCOME_READ = 1;
+  FEED_OUTCOME_UNCHANGED = 2;
+  FEED_OUTCOME_FAILED = 3;
+  FEED_OUTCOME_NEVER_READ = 4;
+}
+
+message VulnerabilityData {
+  // Whether the feeds' ecosystems are matched against the projects' lockfiles.
+  bool matched = 1;
+  repeated FeedState feeds = 2;
+}
+
+// One feed of vulnerability data and its latest reading. A check that did not ask for a feed,
+// because its last good reading is recent, leaves it `unchanged` with `asked_this_run` false.
+message FeedState {
+  string source = 1;
+  string ecosystem = 2;
+  bool asked_this_run = 3;
+  // When it was last read successfully, when what it holds last changed, and when it was last
+  // asked for.
+  optional int64 read_at = 4;
+  optional int64 changed_at = 5;
+  optional int64 checked_at = 6;
+  // What it holds. Absent while it was never read whole: nothing was counted.
+  optional uint64 records = 7;
+  optional uint64 malicious_records = 8;
+  optional uint64 withdrawn_records = 9;
+  bool matched = 10;
+  FeedOutcome outcome = 11;
+  // Why its latest reading failed. Whole.
+  optional string reason_text = 12;
+  // For a reading of this check that read an archive: whether it was the first, and what it
+  // changed.
+  optional bool first_reading = 13;
+  FeedChanges since_last_reading = 14;
+}
+
+message FeedChanges {
+  uint64 new = 1;
+  uint64 changed = 2;
+  uint64 withdrawn = 3;
+  uint64 gone = 4;
+}
+
+// Installed software, counts only.
+message Integrity {
+  bool first_reading = 1;
+  uint64 bundles = 2;
+  // Bundles by who signs them, the reader's words.
+  repeated Count bundles_by_signer = 3;
+  uint64 bundles_not_verifying = 4;
+  uint64 not_verifying_since_first_reading = 5;
+  uint64 seals_verified_this_run = 6;
+  uint64 seals_carried_forward = 7;
+  uint64 homebrew_kegs = 8;
+  uint64 global_npm_packages = 9;
+  uint64 application_code_folders = 10;
+  uint64 changed_while_version_stayed = 11;
+  // Each reading of the check, with its own words.
+  repeated IntegrityReading readings = 12;
+}
+
+message IntegrityReading {
+  string kind = 1;
+  Completeness completeness = 2;
+  optional string reason_text = 3;
+}
+
+message NoReaderFor {
+  // Most places first, at most a hundred.
+  repeated NoReader items = 1;
+}
+
+// One kind of thing this build has no reader for, and in how many places it was found.
+message NoReader {
+  // What it is, in the core's words.
+  string what = 1;
+  // Its name as the source gives it, such as a lockfile's.
+  optional string what_text = 2;
+  uint64 where_count = 3;
+}
+
+// The latest reading of each reader, scope and kind, counted by class and by completeness.
+message CoverageSummary {
+  uint64 readings = 1;
+  // Full with no note.
+  uint64 full = 2;
+  uint64 partial = 3;
+  uint64 none = 4;
+  // Failed readings on a machine that could not be reached, implied by it.
+  uint64 implied_by_unreached = 5;
+  // Readings in the groups, by class.
+  uint64 failed = 6;
+  uint64 no_reader = 7;
+  uint64 not_given = 8;
+  uint64 read_nothing = 9;
+  // Readings of one class, reader, kind and reason, the worst class first, at most a hundred.
+  repeated ReadingGroup problems = 10;
+  uint64 problems_total = 11;
+  // Machines whose latest visit failed, at most a hundred.
+  repeated Unreached unreached = 12;
+  uint64 unreached_total = 13;
+}
+
+// The class of a reading that is not plainly full. `UNSPECIFIED`, or a value the reader does not
+// know, is read as `failed`.
+enum ReadingClass {
+  READING_CLASS_UNSPECIFIED = 0;
+  READING_CLASS_FAILED = 1;
+  READING_CLASS_NO_READER = 2;
+  READING_CLASS_NOT_GIVEN = 3;
+  // Full, with a note: there was nothing to read.
+  READING_CLASS_READ_NOTHING = 4;
+}
+
+message ReadingGroup {
+  ReadingClass class = 1;
+  string reader = 2;
+  string kind = 3;
+  optional string reason_text = 4;
+  uint64 count = 5;
+  // At most three of their scopes. Whole.
+  repeated string examples_text = 6;
+}
+
+message Unreached {
+  string scope_text = 1;
+  // When its visits began to fail.
+  int64 since_at = 2;
+  optional string reason_text = 3;
+}
+
+// The findings that need a look: open, urgent first, then the most severe, then the latest
+// seen, then by id.
+message NeedsALook {
+  // At most fifty of the core's findings and fifty of the response layer's, each in that order,
+  // so that neither source can push the other's findings out. Within a source, urgent findings
+  // come first, so its cut never drops an urgent finding while it keeps one that is not.
+  repeated LookFinding items = 1;
+  // How many there are.
+  uint64 total = 2;
+  // How many of them are urgent, counted over all of them and not over `items`. More than the
+  // urgent ones listed means some urgent findings are not listed; `immune findings` lists every
+  // finding.
+  uint64 urgent_total = 3;
+}
+
+// A finding that needs a look, as a person is shown it.
+message LookFinding {
+  ListedFinding finding = 1;
+  // When it is normal, and what to do, in the core's words.
+  string meaning = 2;
+  string advice = 3;
+  // What a source said of it, such as what an application's seal became, or a published rule's
+  // title with its authors. Whole.
+  optional string value_text = 4;
+  // The ATT&CK technique its rule names, where one fits.
+  optional string technique_text = 5;
+  // Its latest occurrence, for a rule that names one.
+  optional Change change = 6;
+  // What it rests on, as `Finding` gives it.
+  Evidence evidence = 7;
+}
+
+message AnsweredOutsideApp {
+  // The latest answer first, at most fifty.
+  repeated ListedFinding items = 1;
+  uint64 total = 2;
+}
+
+message StatementsOutsideApp {
+  // The latest first, at most fifty.
+  repeated Statement items = 1;
+  uint64 total = 2;
+}
+
+// The answer to `immune sample`: one sample of this user's processes and their connections,
+// counted. What it found is recorded, and a finding it opened is in the status.
+message Sample {
+  // The numbers of `Failure`'s fields, so that a failure never reads as an answer.
+  reserved 1000 to 1099;
+  // The version of this contract: 1. A reader that meets another number stops.
+  uint32 format = 1;
+  int64 answered_at = 2;
+  // The store it was recorded in, as in every answer (`common.proto`).
+  optional string store_id = 3;
+  // What a sample reads, in the core's words.
+  string level = 4;
+  // When it was taken, and how long it took.
+  int64 at = 5;
+  uint64 took_ms = 6;
+  SampleProcesses processes = 7;
+  SampleInterpreters interpreters = 8;
+  SampleConnections connections = 9;
+  // Processes the rule tracks: newly, and again.
+  uint64 tracked_new = 10;
+  uint64 tracked_again = 11;
+  uint64 findings_opened = 12;
+  // The rule a sample feeds, and how far apart two samples must see a process.
+  string rule_kind = 13;
+  uint64 rule_min_apart_seconds = 14;
+  // What a sample cannot see, in the core's words.
+  repeated string cannot_see = 15;
+}
+
+message SampleProcesses {
+  uint64 read = 1;
+  uint64 unreadable = 2;
+  uint64 ended_while_read = 3;
+  // Processes of other users, which are not read.
+  uint64 other_users = 4;
+}
+
+message SampleInterpreters {
+  uint64 seen = 1;
+  uint64 arguments_unreadable = 2;
+  // Given code on the command line, and of those detached from any terminal.
+  uint64 inline_code = 3;
+  uint64 inline_code_detached = 4;
+}
+
+message SampleConnections {
+  uint64 read = 1;
+  uint64 matched_indicators = 2;
+  uint64 unreadable = 3;
+}

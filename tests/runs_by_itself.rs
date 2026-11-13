@@ -222,11 +222,18 @@ impl Estate {
             .arg(self.store())
             .output()
             .unwrap();
-        serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap()["result"].clone()
+        serde_json::from_slice::<serde_json::Value>(&out.stdout)
+            .unwrap()
+            .clone()
     }
 
     /// The page of what is watched on this Mac.
     fn this_mac_page(&self) -> String {
+        self.page("this-mac.html")
+    }
+
+    /// One page `immune view` makes, by its file name.
+    fn page(&self, name: &str) -> String {
         let out = Command::new(env!("CARGO_BIN_EXE_immune"))
             .args(["view", "--no-open", "--store"])
             .arg(self.store())
@@ -236,7 +243,7 @@ impl Estate {
         let pages = String::from_utf8(out.stdout).unwrap();
         let path = pages
             .lines()
-            .find(|p| p.ends_with("this-mac.html"))
+            .find(|p| p.ends_with(&format!("/{name}")))
             .unwrap()
             .to_string();
         std::fs::read_to_string(path).unwrap()
@@ -1205,9 +1212,11 @@ fn every_known_way_is_on_the_page_and_the_limit_says_the_numbers_of_that_table()
             "{present} of the others are present in your projects and are not read, so a change in them would go unseen."
         )
     );
+    // Ways found here raised it: it holds on this Mac, never on every Mac.
+    assert!(present > 0);
     assert_eq!(
-        (&u["who"], &u["count"]),
-        (&"nothing".into(), &present.into())
+        (&u["who"], &u["count"], &u["holds_on"]),
+        (&"nothing".into(), &present.into(), &"this_mac".into())
     );
     // The status's item of what it does not understand no longer names them.
     assert!(
@@ -1221,10 +1230,108 @@ fn every_known_way_is_on_the_page_and_the_limit_says_the_numbers_of_that_table()
         std::fs::remove_dir_all(e.home().join(c)).unwrap();
     }
     std::fs::remove_file(e.home().join("dev/b/.envrc")).unwrap();
-    e.run();
+    // "None" is said of the projects only after a walk of the whole home folder.
+    e.full();
     assert_eq!(
         item(&e.status())["meaning"],
         "None of the others is present in your projects now."
+    );
+    // A walk of a given folder, or one that left out a folder macOS protects, says what it
+    // looked at and that the rest was not.
+    let partial = "None of the others is present in the projects that were looked at. Not every folder was looked at, so of the projects in the rest this says nothing.";
+    e.run_in(&e.home().join("dev"));
+    assert_eq!(item(&e.status())["meaning"], partial);
+    std::fs::create_dir_all(e.home().join("Documents")).unwrap();
+    e.full();
+    assert_eq!(item(&e.status())["meaning"], partial);
+}
+
+/// The kinds the overview says none of: each "<li>Kind: none on this Mac now".
+fn none_said(view: &str) -> Vec<String> {
+    view.lines()
+        .filter_map(|l| {
+            l.strip_prefix("<li>")?
+                .strip_suffix(": none on this Mac now")
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+/// The section of the page of this Mac about a kind, by its anchor.
+fn section<'a>(page: &'a str, id: &str) -> &'a str {
+    let start = page
+        .find(&format!("<section id=\"{id}\">"))
+        .unwrap_or_else(|| panic!("{id}\n{page}"));
+    let rest = &page[start..];
+    &rest[..rest.find("</section>").unwrap()]
+}
+
+#[test]
+fn no_page_says_none_of_what_is_in_projects_after_a_walk_that_did_not_find_them_all() {
+    // One project in ~/dev, read; one in ~/Documents with a git hook, a folder macOS protects
+    // that the walk does not look into. What projects hold is not known while one may be
+    // unseen, so no page says none of it; after a whole walk the same pages do.
+    let e = Estate::new("walk-pages");
+    put(&e.checkout("dev/shop").join("package-lock.json"), LOCK);
+    let in_projects = [
+        ("Git hooks in projects", "git-hooks-in-projects"),
+        (
+            "Editor tasks that run when a project is opened",
+            "editor-tasks-that-run-when-a-project-is-opened",
+        ),
+        (
+            "Programs and commands a project sets an editor to run",
+            "programs-and-commands-a-project-sets-an-editor-to-run",
+        ),
+        (
+            "Programs and tools a project tells your coding agent to run",
+            "programs-and-tools-a-project-tells-your-coding-agent-to-run",
+        ),
+        (
+            "Scripts that run when a project&#39;s packages are installed",
+            "scripts-that-run-when-a-project-s-packages-are-installed",
+        ),
+    ];
+    // A whole walk: none of them in the one project, and the pages say so.
+    e.full();
+    let said = none_said(&e.page("view.html"));
+    let page = e.this_mac_page();
+    for (kind, id) in in_projects {
+        assert!(said.iter().any(|k| k == kind), "{kind}: {said:?}");
+        assert!(section(&page, id).contains("None found here."), "{id}");
+    }
+    let whole = said;
+    // A project in a folder the walk does not look into.
+    let app = e.checkout("Documents/app");
+    put(
+        &app.join(".git/hooks/pre-commit"),
+        "#!/bin/sh\necho invented\n",
+    );
+    e.full();
+    let said = none_said(&e.page("view.html"));
+    let page = e.this_mac_page();
+    for (kind, id) in in_projects {
+        assert!(!said.iter().any(|k| k == kind), "{kind}: {said:?}");
+        let part = section(&page, id);
+        assert!(
+            !part.contains("None found here.")
+                && part.contains("projects inside folders macOS protects were not looked into"),
+            "{id}: {part}"
+        );
+    }
+    // The count of what projects depend on is of the projects found, and says so.
+    assert!(
+        section(&page, "packages-your-projects-depend-on")
+            .contains("projects inside folders macOS protects were not looked into"),
+        "{page}"
+    );
+    // What is not in projects is said as before.
+    assert!(
+        whole
+            .iter()
+            .filter(|k| !in_projects.iter().any(|(p, _)| p == k))
+            .all(|k| said.contains(k)),
+        "{whole:?} {said:?}"
     );
 }
 
@@ -1455,9 +1562,11 @@ fn the_home_items_numbers_equal_the_pages_table_of_places() {
             "{present} of the others are present on this Mac and are not read, so a change in them would go unseen."
         )
     );
+    // Ways found here raised it: it holds on this Mac, never on every Mac.
+    assert!(present > 0);
     assert_eq!(
-        (&u["who"], &u["count"]),
-        (&"nothing".into(), &present.into())
+        (&u["who"], &u["count"], &u["holds_on"]),
+        (&"nothing".into(), &present.into(), &"this_mac".into())
     );
     assert!(
         e.status()["not_covered"]

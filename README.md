@@ -129,11 +129,11 @@ More detail: [how it works](docs/how-it-works.md), [what is read and every comma
 
 ## For AI agents
 
-The first user of Immune is your coding agent, and the commands are its interface. Every report command that takes `--json` prints one envelope with `ok`, `errors` and `result`. `immune project`, `immune program`, `immune machine`, `immune matches`, `immune findings`, `immune finding <id>` and `immune verdict` each answer with one message: one protobuf message with `--proto`, the same message as JSON with `--json`, and without either, text for a person rendered from it (`immune verdict`, which reads a message, needs a form). A failure is the message `Failure`, in the same form. Exit code 0 means answered, 1 from `immune matches` or `immune verdict` that the event log could not be read, 2 a misuse or an unknown id, 3 an unreadable store, 4 a check holding the store (ask again), and 5 from `immune watch` means another watcher has the store. Nothing asks an interactive question.
+The first user of Immune is your coding agent, and the commands are its interface. Every command except `immune servers`, `immune view` and `immune watch` answers with one message of a protobuf schema: the binary message with `--proto`, the same message as JSON with `--json`, and without either, text for a person rendered from it (`immune verdict`, which reads a message, needs a form). A failure is the message `Failure`, in the same form. Exit code 0 means answered, 1 from `immune matches`, `immune rules --over-log` or `immune verdict` that the event log could not be read, 2 a misuse or an unknown id, 3 an unreadable store, 4 a check holding the store (ask again), and 5 from `immune watch` means another watcher has the store. Nothing asks an interactive question.
 
 | Command | Answers |
 |---|---|
-| `immune status --json` | Whether this Mac is watched and quiet: what needs a look, what is not covered, what cannot be judged |
+| `immune status --json` | Whether this Mac is watched and quiet: what needs a look, urgent first, what is not covered and whether each such cause holds on every Mac or was found on this one, what cannot be judged, and whether the answer is fresh |
 | `immune findings --json`, `immune finding <id> --json` | Every finding in every state; one finding whole, with its evidence, the journal entries it rests on (`rests_on`) and your answer |
 | `immune finding <id> expected --reason <text> --via agent` | Your answer, given through the agent; also `seen` and `reopen` |
 | `immune vulnerabilities --json`, `immune vulnerability <id> --json` | Known vulnerabilities in your projects' packages, and the answer for one record or CVE in every project, with what it rests on |
@@ -150,33 +150,42 @@ A trimmed answer from the invented Mac in the pictures:
 ```json
 {
   "format": 1,
-  "operation": "status",
-  "ok": true,
-  "errors": [],
-  "result": {
-    "needs_a_look": [
+  "this_mac": {
+    "state": "watched",
+    "fresh": true,
+    "stale_reason": null
+  },
+  "needs_a_look": {
+    "items": [
       {
-        "id": "f89b204373f",
-        "rule": "watched.autostart",
-        "severity": "medium",
-        "confidence": "low",
-        "urgent": false,
-        "technique": "T1543",
-        "title": "A program set to start by itself on this Mac was added, changed or removed.",
-        "where_text": "~/Library/LaunchAgents/com.example.updater.plist"
+        "finding": {
+          "finding": {
+            "id": "f89b204373f",
+            "rule": "watched.autostart",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "title": "A program set to start by itself on this Mac was added, changed or removed.",
+          "where_text": "~/Library/LaunchAgents/com.example.updater.plist"
+        },
+        "technique_text": "T1543"
       }
     ],
-    "not_covered": [
-      {
-        "id": "vulnerabilities-not-compared",
-        "who": "nothing",
-        "title": "Known vulnerabilities are not yet compared with your installed software, your servers or projects of other kinds."
-      }
-    ],
-    "cannot_judge": [
-      "no vulnerability is matched against installed software, servers' packages or ecosystems other than npm and crates.io yet"
-    ]
-  }
+    "total": 1,
+    "urgent_total": 0
+  },
+  "not_covered": [
+    {
+      "id": "vulnerabilities-not-compared",
+      "who": "nothing",
+      "holds_on": "every_mac",
+      "title": "Known vulnerabilities are not yet compared with your installed software, your servers or projects of other kinds."
+    }
+  ],
+  "cannot_judge": [
+    "no vulnerability is matched against installed software, servers' packages or ecosystems other than npm and crates.io yet"
+  ]
 }
 ```
 

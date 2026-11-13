@@ -1,3 +1,12 @@
-{ "format": 1, "operation": "run", "ok": false,
-  "errors": [ { "code": "run_in_progress", "message": "a run is already in progress", "example": "immune status --json",
-                "detail_text": "" } ] }
+{
+  "operation": "run",
+  "ok": false,
+  "errors": [
+    {
+      "code": "run_in_progress",
+      "message": "a run is already in progress",
+      "example": "immune status --json",
+      "detail_text": ""
+    }
+  ]
+}

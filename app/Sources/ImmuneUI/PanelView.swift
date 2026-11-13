@@ -1,7 +1,7 @@
 // The panel under the icon: a status line and a list. It shows exactly what `Panel` holds, in
 // the order of `Panel.lines`: the state and the line under it; the findings in two groups,
 // each a row that starts with the thing itself; the answers given outside the app; what is not
-// seen on this Mac; what is watched; the limits of this version; the footer. A click on a
+// seen on this Mac; what is watched; what was not judged on this Mac; the footer. A click on a
 // finding opens it in place (`FindingView`). Every line of text goes through
 // `Text(verbatim:)`, which never interprets markup.
 //
@@ -85,7 +85,7 @@ extension Light {
   var tint: Color {
     switch self {
     case .nothingToReport: .green
-    case .watchedInPart, .cannotRead: Color(nsColor: .systemGray)
+    case .watchedInPart, .stale, .cannotRead: Color(nsColor: .systemGray)
     case .attention: .orange
     }
   }
@@ -95,6 +95,7 @@ extension Light {
     case .nothingToReport: "Calm"
     case .watchedInPart: "Watched in part"
     case .attention: "Needs a look"
+    case .stale: "Old"
     case .cannotRead: "Unknown"
     }
   }
@@ -165,10 +166,11 @@ struct HeadlineView: View {
     }
   }
 
-  /// A filled disc for calm, a finding or can't tell, its mark white; a grey ring with a check
-  /// for a Mac watched in part, quieter than calm and never an alarm.
+  /// A filled disc for calm, a finding or can't tell, its mark white; a grey ring for a Mac
+  /// watched in part (with a check) and for an old answer (a clock), quieter than calm and never
+  /// an alarm.
   @ViewBuilder var glyph: some View {
-    if panel.light == .watchedInPart {
+    if panel.light == .watchedInPart || panel.light.isStale {
       Image(systemName: panel.light.panelSymbol)
         .font(.system(size: 36, weight: .regular)).foregroundStyle(panel.light.tint)
     } else {
@@ -639,9 +641,9 @@ public struct PanelView: View {
         if !p.watched.isEmpty || p.programStarts != nil {
           WatchedBox(panel: p).padding(.horizontal, Metrics.padding)
         }
-        if let limits = p.limits {
-          QuietRow(symbol: limits.symbol, label: limits.text) {
-            Task { await model.openPage(section: limits.section) }
+        if let notJudged = p.notJudged {
+          QuietRow(symbol: notJudged.symbol, label: notJudged.text) {
+            Task { await model.openPage(section: notJudged.section) }
           }
           .padding(.horizontal, 6)
         }

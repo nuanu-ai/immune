@@ -35,8 +35,9 @@ message Findings {
   // When the core's latest run that finished ended. Absent when no run has finished: then only
   // what the watcher found between runs can be here, and an empty list says nothing.
   optional int64 latest_run_at = 4;
-  // Every finding, the most severe first, then the latest seen, then by id. A finding of a rule
-  // this build does not have is left out.
+  // Every finding, urgent ones first (severity high or critical with confidence medium or high),
+  // then the most severe, then the latest seen, then by id. A finding of a rule this build does
+  // not have is left out.
   repeated ListedFinding findings = 5;
   // When an agent may answer a finding, in the core's words: the same in the usage, in `immune
   // status` and in every answer about findings.
@@ -108,13 +109,18 @@ message Answer {
   Via via = 2;
   // When it was given.
   int64 given_at = 3;
-  // The reason given with it, as given. Absent when none was: `seen` takes one only if offered.
+  // The reason given with it, as given but for a secret cut out of it, each piece replaced by a
+  // mark as in `ProgramStart.args_text`. Absent when none was: `seen` takes one only if offered.
   optional string reason_text = 4;
   // When an `expected` answer ends. Absent for `seen`, which does not end.
   optional int64 until_at = 5;
   // Whether it hides the finding now: `seen`, or `expected` until a time still ahead, and no
   // later finding of the same rule about the same thing was raised since.
   bool in_force = 6;
+  // What was cut out of `reason_text` because it held a secret, in order, one entry for each
+  // piece; `argument` is 0, the reason being one text. A reason is cut where it is kept and again
+  // as it is read, so this is always known: empty means nothing was cut. Since 1.7.0.
+  repeated Cut reason_cuts = 7;
 }
 
 // Which answer the person gave. `UNSPECIFIED`, or a value the reader does not know, is read as no
@@ -247,8 +253,9 @@ message PackageRecord {
   // How the core labels it from the record's kind and severity: `malicious`, `critical`,
   // `high`, `moderate`, `low` or `none`.
   string label = 4;
-  // Whether CISA lists a vulnerability it names as used in attacks.
-  bool exploited = 5;
+  // Whether CISA lists a vulnerability it names as used in attacks. Absent while the catalogue
+  // has never been read, so that not known is never read as off the list.
+  optional bool exploited = 5;
   optional string summary_text = 6;
   // The releases it is fixed in, where the record gives them.
   repeated string fixed_text = 7;

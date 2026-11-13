@@ -7,7 +7,7 @@
 // one row that starts with the thing itself, shown as data (a path, a program and its
 // arguments), with its kind and what happened under it in the app's words. A click opens the
 // finding inside the popover (`FindingReading`). What is not seen on this Mac is one quiet
-// group named by name; the limits of this version are one line.
+// group named by name; what could not be judged on this Mac is one line.
 //
 // The app has words only for its own states and for kinds and changes; Immune's fixed words
 // (`title`, `meaning`, `advice`) and text from a source (`*_text`) are shown inert and never
@@ -382,8 +382,10 @@ public struct Panel: Sendable, Equatable {
   public var firstDay: String?
   /// What is not seen on this Mac that the person can fix, one row each.
   public var notSeen: [NotSeenRow] = []
-  /// "8 limits of this version", one line, or nil.
-  public var limits: GapRow?
+  /// "2 things on this Mac were not judged", one line, only when Immune names something of this
+  /// Mac it could not judge and the person cannot fix; nil otherwise. The limits that hold on
+  /// every Mac are not shown here.
+  public var notJudged: GapRow?
   /// What is watched, as Immune says it: all the time and every hour, each kind with its count.
   public var watched: [WatchedGroup] = []
   /// Program starts, in Immune's words for the event level's state, or nil.
@@ -424,7 +426,7 @@ public struct Panel: Sendable, Equatable {
     notWatching: String? = nil, answering: String? = nil, refusals: [String: String] = [:],
     notificationsOff: Bool = false, immune: ImmuneCommand? = nil
   ) -> Panel {
-    let light = Light.of(reading)
+    let light = Light.of(reading, now: now)
     var p = Panel(
       light: light, headline: light.headline, notes: notes, notWatching: notWatching,
       canCheck: !checking, answering: answering, refusals: refusals)
@@ -449,6 +451,16 @@ public struct Panel: Sendable, Equatable {
   static let helpLine =
     "Press Check now, or run \(statusCommand) in a terminal to see what is wrong."
 
+  /// A span of seconds in whole hours where it is one, else in minutes: "2 hours".
+  static func hours(_ seconds: Int) -> String {
+    if seconds >= 3600, seconds % 3600 == 0 {
+      let h = seconds / 3600
+      return h == 1 ? "1 hour" : "\(h) hours"
+    }
+    let m = max(1, seconds / 60)
+    return m == 1 ? "1 minute" : "\(m) minutes"
+  }
+
   /// `whole`: the answer came without errors and in the shape this app reads; otherwise
   /// nothing is said from it but the rows it lists and that the app cannot tell.
   mutating func fill(
@@ -463,7 +475,11 @@ public struct Panel: Sendable, Equatable {
     // least that is known, and the headline then says it cannot tell.
     total = max(s.needsALookTotal ?? items.count, items.count)
     worst = Severity.worst(items)
-    urgent = items.contains { $0.urgent }
+    // Urgent ones are Immune's count over all of them, not the list's, which is cut; a count it
+    // does not give is never taken for fewer than those listed.
+    let listedUrgent = items.filter(\.urgent).count
+    let urgentTotal = max(s.needsALookUrgent ?? listedUrgent, listedUrgent)
+    urgent = urgentTotal > 0
     let entries = Self.entries(rows)
     needsYou = Array(entries.filter(\.urgent).prefix(Self.rowsShown))
     toLook = Array(entries.filter { !$0.urgent }.prefix(Self.rowsShown - needsYou.count))
@@ -500,7 +516,19 @@ public struct Panel: Sendable, Equatable {
       reason = r
       return
     }
-    if total > 0 { headline = Self.headline(urgent: items.filter(\.urgent).count, total: total) }
+    if total > 0 {
+      headline = Self.headline(urgent: urgentTotal, listed: listedUrgent, total: total)
+    }
+    // Old is said with why, in Immune's words; a check under way still takes the headline.
+    if case .stale = light {
+      // Immune's reason, or, for an answer that grew old while the app held it, the same fact.
+      reason =
+        s.thisMac?.staleReason.map { "Immune says: " + Inert.text($0, limit: 200) + "." }
+        ?? s.thisMac?.freshFor.map {
+          "The latest full check finished more than \(Self.hours($0)) ago, and none has finished since."
+        }
+      if !checking { help = ["Press Check now to look at this Mac again."] }
+    }
     settled = headline
     // While a check runs, nothing is presented as settled.
     if checking {
@@ -525,10 +553,15 @@ public struct Panel: Sendable, Equatable {
         more: examples.isEmpty ? 0 : max(0, count - 1),
         request: Answer.isUsable(id: id) ? Self.fixRequest(ids: [id], immune: immune) : nil)
     }
-    let limitsCount = list.filter { $0.who != "you" }.count
-    if limitsCount > 0 {
-      let text = (limitsCount == 1 ? "1 limit" : "\(limitsCount) limits") + " of this version"
-      limits = GapRow(text: text, label: text, count: nil, symbol: "info.circle", section: "limits")
+    // The scope of the answer: what was not judged here and nothing the person does changes.
+    // A cause not said to hold on every Mac is of this Mac and counted.
+    let unjudged = list.filter { $0.who != "you" && !$0.everyMac }.count
+    if unjudged > 0 {
+      let text =
+        unjudged == 1
+        ? "1 thing on this Mac was not judged" : "\(unjudged) things on this Mac were not judged"
+      notJudged = GapRow(
+        text: text, label: text, count: unjudged, symbol: "info.circle", section: "limits")
     }
   }
 
@@ -552,12 +585,15 @@ public struct Panel: Sendable, Equatable {
     return "\(more) more in report" + urgentWords
   }
 
-  /// "1 needs you now · 2 to look at": the findings Immune marked urgent among those it served,
-  /// and the rest of its total.
-  static func headline(urgent: Int, total: Int) -> String {
+  /// "1 needs you now · 2 to look at": the findings Immune marked urgent, and the rest of its
+  /// total. When fewer urgent ones are listed than Immune counts, it says how many are not.
+  static func headline(urgent: Int, listed: Int, total: Int) -> String {
     let rest = max(0, total - urgent)
     var parts: [String] = []
-    if urgent > 0 { parts.append(urgent == 1 ? "1 needs you now" : "\(urgent) need you now") }
+    if urgent > 0 {
+      let unlisted = urgent > listed ? ", \(urgent - listed) not listed" : ""
+      parts.append((urgent == 1 ? "1 needs you now" : "\(urgent) need you now") + unlisted)
+    }
     if rest > 0 { parts.append("\(rest) to look at") }
     return parts.joined(separator: " · ")
   }
@@ -709,7 +745,7 @@ public struct Panel: Sendable, Equatable {
       for g in watched { out.append("{" + g.title + "} " + g.lines.joined(separator: " · ")) }
       if let programStarts { out.append("{Program starts} " + programStarts) }
     }
-    if let limits { out.append("○ " + limits.text + "  › #" + limits.section) }
+    if let notJudged { out.append("○ " + notJudged.text + "  › #" + notJudged.section) }
     out += notes
     out.append("----")
     out.append(footer.map { "[ \($0) ]" }.joined(separator: "  ") + "  [ ⋯ " + menu[0] + " ]")

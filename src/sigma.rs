@@ -1077,6 +1077,9 @@ pub struct Rules {
 
 static SHIPPED_RULES: std::sync::OnceLock<Rules> = std::sync::OnceLock::new();
 
+/// How many events each rule matched, by its id: in the last day, and in the last week.
+pub type MatchedByRule<'a> = (&'a BTreeMap<String, i64>, &'a BTreeMap<String, i64>);
+
 impl Rules {
     /// Every shipped rule of every set, parsed once per process, not at each reading: the
     /// watcher reads program starts every thirty seconds for as long as it runs.
@@ -1237,63 +1240,65 @@ impl Rules {
             .unwrap_or_default()
     }
 
-    /// The summary of `immune rules --json`: the sets, and how many rules are shipped,
-    /// evaluated, evaluated in part and not evaluated, with the rules behind each number.
-    pub fn summary_json(&self) -> Json {
-        let named = |l: &Loaded| {
-            let mut v = json!({
-                "source": l.source.name,
-                "set": l.source.set,
-                "name": l.meta.as_ref().map(|m| m.name.as_str()),
-                "file": l.file,
-                "id_text": l.meta.as_ref().map(|m| crate::status::text(&m.id)),
-                "title_text": l.meta.as_ref().map(|m| crate::status::text(&m.title)),
-                "level": l.meta.as_ref().and_then(Meta::level_name),
-                "status": l.meta.as_ref().map(|m| m.status.as_str()),
-                "events": l.kind.map(Kind::category),
-            });
+    /// `immune rules` as the contract gives it, without what the store says: the sets, the
+    /// totals, the rules in their three groups and the drill. `matched` gives how many events a
+    /// rule matched in the last day and week by its id, where the store says.
+    pub fn message(&self, matched: Option<MatchedByRule>) -> crate::contract::v1::Rules {
+        use crate::contract::{v1, value_of};
+        use crate::known::whole;
+        let wholes = |items: &[String]| items.iter().map(|s| whole(s)).collect::<Vec<_>>();
+        let totals = |rules: &[&Loaded]| {
+            let count =
+                |p: fn(&Placement) -> bool| rules.iter().filter(|l| p(&l.placement)).count() as u64;
+            let not_taken = rules.iter().filter(|l| l.not_taken()).count();
+            v1::RuleTotals {
+                shipped: (rules.len() - not_taken) as u64,
+                not_taken: not_taken as u64,
+                evaluated: count(|p| *p == Placement::Evaluated),
+                in_part: count(|p| matches!(p, Placement::InPart(_))),
+                not_evaluated: count(|p| matches!(p, Placement::NotEvaluated(_))),
+            }
+        };
+        let shipped = |l: &Loaded, counted: bool| {
+            let mut v = v1::ShippedRule {
+                rule: l.meta.as_ref().map(|m| crate::matches::rule(l.file, m)),
+                file: l.file.to_string(),
+                source: l.source.name.to_string(),
+                set: l.source.set.to_string(),
+                status: l.meta.as_ref().map(|m| m.status.as_str().to_string()),
+                events: l.kind.map(|k| k.category().to_string()),
+                ..Default::default()
+            };
             match &l.placement {
                 Placement::Evaluated => {}
                 Placement::InPart(branches) => {
-                    v["never_matches"] = branches
+                    v.never_matches = branches
                         .iter()
-                        .map(|b| {
-                            json!({
-                                "selection_text": b.selection.as_deref().map(crate::status::text),
-                                "fields_text": texts(&b.fields),
-                                "left_out_text": b.said.as_deref().map(crate::status::text),
-                            })
+                        .map(|b| v1::NeverMatches {
+                            selection_text: b.selection.as_deref().map(whole),
+                            fields_text: wholes(&b.fields),
+                            left_out_text: b.said.as_deref().map(whole),
                         })
                         .collect();
                 }
                 Placement::NotEvaluated(reason) => {
-                    v["reason"] = json!(reason.code());
+                    v.reason = Some(value_of::<v1::UnevaluatedReason>(reason.code()));
                     match reason {
-                        Reason::NeedsEvents(c) => v["events_text"] = crate::status::text(c),
-                        Reason::NeedsFields(f) => v["fields_text"] = texts(f),
-                        Reason::NotParsed(said) => v["said_text"] = crate::status::text(said),
+                        Reason::NeedsEvents(c) => v.events_text = Some(whole(c)),
+                        Reason::NeedsFields(f) => v.fields_text = wholes(f),
+                        Reason::NotParsed(said) => v.said_text = Some(whole(said)),
                         _ => {}
                     }
-                    if let Some(d) = l.detail {
-                        v["detail_text"] = crate::status::text(d);
-                    }
+                    v.detail_text = l.detail.map(whole);
                 }
+            }
+            if counted && let (Some((day, week)), Some(m)) = (matched, &l.meta) {
+                v.matches_last_day = Some(day.get(&m.id).copied().unwrap_or(0) as u64);
+                v.matches_last_week = Some(week.get(&m.id).copied().unwrap_or(0) as u64);
             }
             v
         };
-        let totals = |rules: &[&Loaded]| {
-            let count =
-                |p: fn(&Placement) -> bool| rules.iter().filter(|l| p(&l.placement)).count();
-            let not_taken = rules.iter().filter(|l| l.not_taken()).count();
-            json!({
-                "shipped": rules.len() - not_taken,
-                "not_taken": not_taken,
-                "evaluated": count(|p| *p == Placement::Evaluated),
-                "in_part": count(|p| matches!(p, Placement::InPart(_))),
-                "not_evaluated": count(|p| matches!(p, Placement::NotEvaluated(_))),
-            })
-        };
-        let sources: Vec<Json> = self
+        let sources = self
             .sources()
             .into_iter()
             .map(|s| {
@@ -1302,58 +1307,61 @@ impl Rules {
                     .iter()
                     .filter(|l| std::ptr::eq(l.source, s))
                     .collect();
-                json!({
-                    "name": s.name,
-                    "publisher": s.publisher,
-                    "set": s.set,
-                    "states_levels": s.states_levels,
-                    "url": s.url,
-                    "commit": s.commit,
-                    "commit_date": s.commit_date,
-                    "licence": s.licence,
-                    "folder": s.folder,
-                    "translated": s.translation.is_some(),
-                    "fields": {
-                        CATEGORY: self.fields_of(s.schema, Kind::Process),
-                        FILE_CATEGORY: self.fields_of(s.schema, Kind::File),
-                    },
-                    "totals": totals(&mine),
-                })
+                let names = |kind| {
+                    self.fields_of(s.schema, kind)
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect()
+                };
+                v1::RuleSet {
+                    name: s.name.to_string(),
+                    publisher: s.publisher.to_string(),
+                    set: s.set.to_string(),
+                    states_levels: s.states_levels,
+                    url: s.url.to_string(),
+                    commit: s.commit.to_string(),
+                    commit_date: s.commit_date.map(str::to_string),
+                    licence: s.licence.to_string(),
+                    folder: s.folder.to_string(),
+                    translated: s.translation.is_some(),
+                    process_fields: names(Kind::Process),
+                    file_fields: names(Kind::File),
+                    totals: Some(totals(&mine)),
+                }
             })
             .collect();
         let (evaluated, in_part, not_evaluated) = self.groups();
         let all: Vec<&Loaded> = self.rules.iter().collect();
-        json!({
-            "sources": sources,
-            "events": CATEGORY,
-            "file_events": FILE_CATEGORY,
-            "totals": totals(&all),
-            "evaluated": evaluated.into_iter().map(named).collect::<Vec<_>>(),
-            "in_part": in_part.into_iter().map(named).collect::<Vec<_>>(),
-            "not_evaluated": not_evaluated.into_iter().map(named).collect::<Vec<_>>(),
-            "drill": DRILL.iter().map(|(test, image, args)| {
-                let matches = self.evaluate(&drill_start(image, args));
-                json!({
-                    "atomic_test": test,
-                    "image": image,
-                    "arguments": args,
-                    "must_raise": DRILL_RULE,
-                    "raised": matches.iter().any(|m| m.meta.id == DRILL_RULE),
-                    "matches": matches.iter().map(Match::json).collect::<Vec<_>>(),
+        v1::Rules {
+            sources,
+            events: CATEGORY.to_string(),
+            file_events: FILE_CATEGORY.to_string(),
+            totals: Some(totals(&all)),
+            evaluated: evaluated.into_iter().map(|l| shipped(l, true)).collect(),
+            in_part: in_part.into_iter().map(|l| shipped(l, true)).collect(),
+            not_evaluated: not_evaluated
+                .into_iter()
+                .map(|l| shipped(l, false))
+                .collect(),
+            drill: DRILL
+                .iter()
+                .map(|(test, image, args)| {
+                    let matches = self.evaluate(&drill_start(image, args));
+                    v1::Drill {
+                        atomic_test: test.to_string(),
+                        image: image.to_string(),
+                        arguments: args.iter().map(|a| a.to_string()).collect(),
+                        must_raise: DRILL_RULE.to_string(),
+                        raised: matches.iter().any(|m| m.meta.id == DRILL_RULE),
+                        matches: matches
+                            .iter()
+                            .map(|m| crate::matches::rule(m.file, m.meta))
+                            .collect(),
+                    }
                 })
-            }).collect::<Vec<_>>(),
-        })
-    }
-
-    /// How many drill starts raise the rule they must.
-    fn drill_raised(&self) -> usize {
-        DRILL
-            .iter()
-            .filter(|(_, image, args)| {
-                let matches = self.evaluate(&drill_start(image, args));
-                matches.iter().any(|m| m.meta.id == DRILL_RULE)
-            })
-            .count()
+                .collect(),
+            ..Default::default()
+        }
     }
 
     /// Where the sets come from, in one line for a person.
@@ -1388,89 +1396,6 @@ impl Rules {
         format!("Published rules for macOS: {}.", said.join("; "))
     }
 
-    /// The same summary for a person, a line each, with how many times each rule matched in
-    /// the last day where the store says.
-    pub fn summary_lines(&self, last_day: Option<&BTreeMap<String, i64>>) -> Vec<String> {
-        let (evaluated, in_part, not_evaluated) = self.groups();
-        let row = |l: &Loaded| match &l.meta {
-            Some(m) => {
-                let n = last_day.and_then(|d| d.get(&m.id)).copied().unwrap_or(0);
-                let matched = if n > 0 {
-                    format!(" · matched {} in the last day", times(n))
-                } else {
-                    String::new()
-                };
-                format!("  {:<15} {}{matched}", level_said(m.level), m.label())
-            }
-            None => format!("  {:<15} {}", "?", label(l.file, l.source)),
-        };
-        // The rules of a set that states no level come after the rest under their own heading,
-        // as a group and never as a rank (`groups`).
-        let heading = |l: &Loaded, group: &[&Loaded], lines: &mut Vec<String>| {
-            let first = group.iter().find(|g| g.states_no_level());
-            if first.is_some_and(|f| std::ptr::eq(*f, l)) {
-                let n = group.iter().filter(|g| g.states_no_level()).count();
-                lines.push(format!("  {}: {n}", crate::pages::capital(NO_LEVEL_GROUP)));
-            }
-        };
-        let mut lines = vec![
-            self.sources_said(),
-            format!(
-                "Evaluated in full: {}, {} on every program start and {} on every file created or renamed",
-                evaluated.len(),
-                self.evaluated(Kind::Process),
-                self.evaluated(Kind::File)
-            ),
-        ];
-        for l in &evaluated {
-            heading(l, &evaluated, &mut lines);
-            lines.push(row(l));
-        }
-        lines.push(format!(
-            "Evaluated in part, some alternatives never match here: {}",
-            in_part.len()
-        ));
-        for l in &in_part {
-            heading(l, &in_part, &mut lines);
-            lines.push(row(l));
-            if let Placement::InPart(branches) = &l.placement {
-                for b in branches {
-                    lines.push(format!("      {}", branch_said(b, l.kind)));
-                }
-            }
-        }
-        lines.push(format!("Not evaluated: {}", not_evaluated.len()));
-        for l in &not_evaluated {
-            heading(l, &not_evaluated, &mut lines);
-            lines.push(row(l));
-            if let Placement::NotEvaluated(reason) = &l.placement {
-                let mut said = match reason {
-                    Reason::NeedsFields(f) => format!(
-                        "needs {}, which {} does not give",
-                        f.join(", "),
-                        given_by(l.kind)
-                    ),
-                    r => r.said(),
-                };
-                if let Some(d) = l.detail {
-                    said.push_str(&format!(" ({d})"));
-                }
-                lines.push(format!("      {said}"));
-            }
-        }
-        lines.push(format!(
-            "Drill, Atomic Red Team T1027.001: {} of {} program starts raise {}.",
-            self.drill_raised(),
-            DRILL.len(),
-            self.rules
-                .iter()
-                .filter_map(|l| l.meta.as_ref())
-                .find(|m| m.id == DRILL_RULE)
-                .map_or(DRILL_RULE, |m| m.title.as_str())
-        ));
-        lines
-    }
-
     /// The rules split by placement: evaluated, in part, not evaluated, each from the most
     /// severe down, in the order they are shipped within a level, then one that could not be
     /// read; then, as a group of their own and not as a place on the scale, the rules of a set
@@ -1495,26 +1420,6 @@ impl Rules {
     }
 }
 
-/// An alternative that never matches here, for a person.
-pub fn branch_said(b: &Branch, kind: Option<Kind>) -> String {
-    match (&b.selection, b.fields.is_empty(), &b.said) {
-        (Some(selection), _, _) => format!(
-            "{selection} needs {}, which {} does not give",
-            b.fields.join(", "),
-            given_by(kind)
-        ),
-        (None, false, _) => format!(
-            "an alternative of the upstream rule needs {}, which {} does not give",
-            b.fields.join(", "),
-            given_by(kind)
-        ),
-        (None, true, said) => format!(
-            "an alternative of the upstream rule was left out in translation: {}",
-            said.as_deref().unwrap_or("")
-        ),
-    }
-}
-
 /// What gives a rule's fields, for a person: "a program start" or "a file event".
 pub fn given_by(kind: Option<Kind>) -> &'static str {
     match kind {
@@ -1526,10 +1431,6 @@ pub fn given_by(kind: Option<Kind>) -> &'static str {
 /// How many times, as a number with its thousands separated.
 pub fn times(n: i64) -> String {
     crate::view::counted(n, "time", "times")
-}
-
-fn texts(items: &[String]) -> Json {
-    items.iter().map(|s| crate::status::text(s)).collect()
 }
 
 /// The rules as they are read, before the texts they need are gathered into automata.
@@ -2448,6 +2349,7 @@ pub(crate) mod testing {
 mod tests {
     use super::testing::record_of;
     use super::*;
+    use crate::contract::v1;
 
     fn start(image: &str, args: &[&str], parent: &str) -> ProcessStart {
         ProcessStart {
@@ -2558,23 +2460,21 @@ mod tests {
         }
 
         let rules = Rules::shipped();
-        let s = rules.summary_json();
+        let s = rules.message(None);
         let totals = |name: &str| {
-            let source = s["sources"]
-                .as_array()
-                .unwrap()
+            let t = s
+                .sources
                 .iter()
-                .find(|x| x["name"] == name)
+                .find(|x| x.name == name)
+                .and_then(|x| x.totals)
                 .unwrap();
-            let t = &source["totals"];
             [
-                &t["shipped"],
-                &t["not_taken"],
-                &t["evaluated"],
-                &t["in_part"],
-                &t["not_evaluated"],
+                t.shipped,
+                t.not_taken,
+                t.evaluated,
+                t.in_part,
+                t.not_evaluated,
             ]
-            .map(|v| v.as_u64().unwrap())
         };
         assert_eq!(totals("sigma"), [75, 0, 74, 1, 0]);
         // Of Elastic's 185 rules for macOS, 66 translated: 12 of them with an alternative the
@@ -2584,16 +2484,25 @@ mod tests {
         // alternative the translation left out, and 221 not taken.
         assert_eq!(totals("elastic-behaviour"), [57, 221, 47, 10, 221]);
         assert_eq!(
-            s["totals"],
-            json!({ "shipped": 198, "not_taken": 340, "evaluated": 175, "in_part": 23, "not_evaluated": 340 })
+            s.totals,
+            Some(v1::RuleTotals {
+                shipped: 198,
+                not_taken: 340,
+                evaluated: 175,
+                in_part: 23,
+                not_evaluated: 340
+            })
         );
         let ids = |key: &str, source: &str, events: &str| -> Vec<String> {
-            let mut ids: Vec<String> = s[key]
-                .as_array()
-                .unwrap()
+            let list = match key {
+                "evaluated" => &s.evaluated,
+                "in_part" => &s.in_part,
+                _ => &s.not_evaluated,
+            };
+            let mut ids: Vec<String> = list
                 .iter()
-                .filter(|r| r["events"] == events && r["source"] == source)
-                .map(|r| r["id_text"].as_str().unwrap().to_string())
+                .filter(|r| r.events.as_deref() == Some(events) && r.source == source)
+                .map(|r| r.rule.as_ref().unwrap().id_text.clone())
                 .collect();
             ids.sort();
             ids
@@ -3449,30 +3358,28 @@ mod tests {
                 "{args:?}"
             );
         }
-        let s = rules.summary_json();
-        for d in s["drill"].as_array().unwrap() {
-            assert_eq!(d["raised"], true, "{d}");
+        let mut s = rules.message(None);
+        for d in &s.drill {
+            assert!(d.raised, "{d:?}");
         }
+        s.now = Some(crate::status::rules_now(None));
         assert!(
-            rules
-                .summary_lines(None)
-                .iter()
+            crate::text::rules(&s)
+                .lines()
                 .any(|l| l == "Drill, Atomic Red Team T1027.001: 4 of 4 program starts raise Binary Padding - MacOS.")
         );
         let truncate = drill_start("/usr/bin/truncate", DRILL[3].2);
         assert_eq!(
-            s["drill"][3]["matches"],
+            serde_json::to_value(&s.drill[3].matches).unwrap(),
             json!([{
                 "name": format!("sigma:{BINARY_PADDING}"),
                 "source": "sigma",
                 "set": "SigmaHQ's rule set",
                 "file": "rules/macos/process_creation/proc_creation_macos_binary_padding.yml",
-                "events": "process_creation",
                 "id_text": BINARY_PADDING,
                 "title_text": "Binary Padding - MacOS",
                 "level": "high",
-                "status": "test",
-                "techniques": ["T1027.001"],
+                "techniques_text": ["T1027.001"],
                 "author_text": "Igor Fits, Mikhail Larin, oscd.community",
             }])
         );
@@ -3950,19 +3857,21 @@ mod tests {
         );
         let quiet = start("/tmp/.helper", &["/tmp/.helper", "-run"], "/bin/sh");
         assert!(!fires(rules, RENAMED_MESHAGENT, &quiet));
-        let s = rules.summary_json();
+        let s = rules.message(None);
         assert_eq!(
-            s["in_part"]
-                .as_array()
-                .unwrap()
+            s.in_part
                 .iter()
-                .find(|r| r["id_text"] == RENAMED_MESHAGENT)
-                .unwrap()["never_matches"],
-            json!([{
-                "selection_text": "selection_meshagent",
-                "fields_text": ["OriginalFileName"],
-                "left_out_text": null,
-            }])
+                .find(|r| r
+                    .rule
+                    .as_ref()
+                    .is_some_and(|x| x.id_text == RENAMED_MESHAGENT))
+                .unwrap()
+                .never_matches,
+            [v1::NeverMatches {
+                selection_text: Some("selection_meshagent".to_string()),
+                fields_text: vec!["OriginalFileName".to_string()],
+                left_out_text: None,
+            }]
         );
     }
 
@@ -4093,10 +4002,15 @@ mod tests {
         let x = start("/bin/x", &["x", "evil"], "/bin/zsh");
         let hit: Vec<&str> = rules.evaluate(&x).iter().map(|m| m.file).collect();
         assert_eq!(hit, ["part.yml"]);
-        let s = rules.summary_json();
         assert_eq!(
-            s["totals"],
-            json!({ "shipped": 4, "not_taken": 0, "evaluated": 0, "in_part": 1, "not_evaluated": 3 })
+            rules.message(None).totals,
+            Some(v1::RuleTotals {
+                shipped: 4,
+                not_taken: 0,
+                evaluated: 0,
+                in_part: 1,
+                not_evaluated: 3
+            })
         );
     }
 
@@ -4311,7 +4225,10 @@ mod tests {
         let matched = none.evaluate(&curl);
         assert_eq!(matched.len(), 1);
         assert_eq!(matched[0].json()["level"], Json::Null);
-        assert_eq!(none.summary_json()["evaluated"][0]["level"], Json::Null);
+        assert_eq!(
+            none.message(None).evaluated[0].rule.as_ref().unwrap().level,
+            v1::Level::NotStated as i32
+        );
         // A high rule of a set that states levels raises; the level alone decides.
         let high = Rules::load_as(
             &ELASTIC,
@@ -4356,17 +4273,19 @@ mod tests {
     /// the most severe rules first.
     #[test]
     fn the_summary_has_stable_names() {
-        let s = Rules::shipped().summary_json();
+        let mut m = Rules::shipped().message(None);
+        m.now = Some(crate::status::rules_now(None));
+        let s = serde_json::to_value(&m).unwrap();
         assert_eq!(s["events"], "process_creation");
         assert_eq!(s["file_events"], "file_event");
         let sigma = &s["sources"][0];
         assert_eq!(sigma["name"], "sigma");
         assert_eq!(
-            sigma["fields"],
-            json!({
-                "process_creation": ["Image", "CommandLine", "ParentImage"],
-                "file_event": ["TargetFilename", "Image"],
-            })
+            (&sigma["process_fields"], &sigma["file_fields"]),
+            (
+                &json!(["Image", "CommandLine", "ParentImage"]),
+                &json!(["TargetFilename", "Image"])
+            )
         );
         assert_eq!(sigma["commit"], COMMIT);
         assert_eq!(sigma["licence"], "DRL-1.1");
@@ -4404,51 +4323,73 @@ mod tests {
                 (&json!("Elastic's behaviour rules"), &json!(false)),
             ]
         );
-        // The most severe first; a rule that states no level, `null`, after every level.
+        // The most severe first; a rule that states no level, `not_stated`, after every level.
         let evaluated = s["evaluated"].as_array().unwrap();
-        assert_eq!(evaluated[0]["level"], "high");
-        let stated = evaluated.iter().take_while(|r| !r["level"].is_null());
-        assert_eq!(stated.last().unwrap()["level"], "informational");
-        let none: Vec<&Json> = evaluated.iter().filter(|r| r["level"].is_null()).collect();
+        let level = |r: &Json| r["rule"]["level"].clone();
+        assert_eq!(level(&evaluated[0]), "high");
+        let stated = evaluated.iter().take_while(|r| level(r) != "not_stated");
+        assert_eq!(level(stated.last().unwrap()), "informational");
+        let none: Vec<&Json> = evaluated
+            .iter()
+            .filter(|r| level(r) == "not_stated")
+            .collect();
         assert_eq!(none.len(), 47);
         assert!(none.iter().all(|r| r["source"] == "elastic-behaviour"));
         assert!(
             evaluated[evaluated.len() - 47..]
                 .iter()
-                .all(|r| r["level"].is_null())
+                .all(|r| level(r) == "not_stated")
         );
         let padding = evaluated
             .iter()
-            .find(|r| r["id_text"] == BINARY_PADDING)
+            .find(|r| r["rule"]["id_text"] == BINARY_PADDING)
             .unwrap();
         assert_eq!(
-            padding,
-            &json!({
-                "source": "sigma",
-                "set": "SigmaHQ's rule set",
-                "name": format!("sigma:{BINARY_PADDING}"),
-                "file": "rules/macos/process_creation/proc_creation_macos_binary_padding.yml",
-                "id_text": BINARY_PADDING,
-                "title_text": "Binary Padding - MacOS",
-                "level": "high",
-                "status": "test",
-                "events": "process_creation",
-            })
+            (
+                &padding["source"],
+                &padding["set"],
+                &padding["file"],
+                &padding["status"],
+                &padding["events"]
+            ),
+            (
+                &json!("sigma"),
+                &json!("SigmaHQ's rule set"),
+                &json!("rules/macos/process_creation/proc_creation_macos_binary_padding.yml"),
+                &json!("test"),
+                &json!("process_creation")
+            )
         );
-        let lines = Rules::shipped().summary_lines(None);
         assert_eq!(
-            lines[0],
-            "Published rules for macOS: 75 from SigmaHQ's rule set at d7c9da10c170 of 2026-11-10, all shipped; 185 from Elastic's detection rules at 032ac5ecb0b4, 66 of them translated into Sigma and shipped, 119 not taken; 278 from Elastic's behaviour rules at a87715d87a2b, 57 of them translated into Sigma and shipped, 221 not taken, none with a level stated."
+            (
+                &padding["rule"]["name"],
+                &padding["rule"]["title_text"],
+                &padding["rule"]["level"]
+            ),
+            (
+                &json!(format!("sigma:{BINARY_PADDING}")),
+                &json!("Binary Padding - MacOS"),
+                &json!("high")
+            )
+        );
+        let text = crate::text::rules(&m);
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(
+            lines[0].starts_with("Published rules for macOS: 75 from SigmaHQ's rule set at d7c9da10c170 of 2026-11-10, all shipped; 185 from Elastic's detection rules at 032ac5ecb0b4, 66 of them translated into Sigma and shipped, 119 not taken; 278 from Elastic's behaviour rules at a87715d87a2b, 57 of them translated into Sigma and shipped, 221 not taken, none with a level stated."),
+            "{}",
+            lines[0]
         );
         assert!(
             lines
                 .iter()
                 .any(|l| l.contains("selection_meshagent needs OriginalFileName"))
         );
-        assert!(lines.iter().any(|l| l == "Evaluated in full: 175, 162 on every program start and 13 on every file created or renamed"));
+        assert!(lines.contains(
+            &"Evaluated in full: 175, 162 on every program start and 13 on every file created or renamed"
+        ));
         // A person reads that a rule states no level, in the level's column, and its set beside
         // its title; the rules of such a set come after the rest under their own heading.
-        let at = |line: &str| lines.iter().position(|l| l == line);
+        let at = |line: &str| lines.iter().position(|l| *l == line);
         let heading = at("  Of a set that states no level: 47").expect("the group's heading");
         let ditto =
             at("  no level stated Sensitive File Copy via Ditto (Elastic's behaviour rules)");

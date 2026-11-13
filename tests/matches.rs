@@ -195,7 +195,9 @@ impl Dir {
         args.push("--json");
         let out = self.command(&args, &[]).output().unwrap();
         assert!(out.status.success());
-        serde_json::from_slice::<Value>(&out.stdout).unwrap()["result"].clone()
+        serde_json::from_slice::<Value>(&out.stdout)
+            .unwrap()
+            .clone()
     }
 
     /// `immune matches <args>` over this root and store, as it ran.
@@ -782,20 +784,20 @@ fn what_immune_matches_gives_and_what_the_core_s_reading_counts_agree_for_the_sa
         .output()
         .unwrap();
     let replay: Value = serde_json::from_slice(&out.stdout).unwrap();
-    let replayed: std::collections::BTreeMap<String, i64> = replay["result"]["matched"]
+    let replayed: std::collections::BTreeMap<String, i64> = replay["matched"]
         .as_array()
         .unwrap()
         .iter()
         .map(|r| {
             (
-                r["id_text"].as_str().unwrap().to_string(),
+                r["rule"]["id_text"].as_str().unwrap().to_string(),
                 r["matches"].as_i64().unwrap(),
             )
         })
         .collect();
     assert_eq!(given, replayed);
     let s = &m["stretch"];
-    let r = &replay["result"];
+    let r = &replay;
     assert_eq!(
         (&s["program_starts"], &s["file_events"]),
         (&r["program_starts"], &r["file_events"])
@@ -809,7 +811,7 @@ fn what_immune_matches_gives_and_what_the_core_s_reading_counts_agree_for_the_sa
         .filter(|r| r["matches_last_day"].as_i64().unwrap() > 0)
         .map(|r| {
             (
-                r["id_text"].as_str().unwrap().to_string(),
+                r["rule"]["id_text"].as_str().unwrap().to_string(),
                 r["matches_last_day"].as_i64().unwrap(),
             )
         })
@@ -1758,25 +1760,26 @@ fn a_behaviour_rule_states_no_level_so_its_match_is_counted_and_handed_over_and_
         )
     );
     let r = dir.report(&["status"]);
-    let counted: Vec<&Value> = r["rules"]["matched_last_day"]
+    let counted: Vec<Value> = shaped(&r["rules"]["matched_last_day"], &MATCHED)
         .as_array()
         .unwrap()
         .iter()
         .filter(|x| x["id_text"] == SETFILE)
+        .cloned()
         .collect();
     assert_eq!(
         counted,
-        [&json!({
+        [json!({
             "id_text": SETFILE,
             "title_text": "File Hidden via SetFile",
-            "level": null,
+            "level": "not_stated",
             "source": "elastic-behaviour",
             "set": "Elastic's behaviour rules",
             "matches": 1,
         })]
     );
     // No other rule matches this start, so nothing at all asks for a look.
-    assert_eq!(r["needs_a_look_total"], 0, "{r:#}");
+    assert_eq!(r["needs_a_look"]["total"], 0, "{r:#}");
 }
 
 /// Elastic's behaviour rule "File Hidden via SetFile".
@@ -1822,6 +1825,7 @@ fn every_listing_of_rules_tells_two_rules_of_the_same_title_apart_by_their_set()
     let sets_of = |entries: Vec<&Value>, title: &str| -> Vec<(String, String)> {
         let mut sets: Vec<(String, String)> = entries
             .into_iter()
+            .map(flat)
             .filter(|e| e[title] == XCSSET)
             .map(|e| {
                 (
@@ -1874,10 +1878,7 @@ fn every_listing_of_rules_tells_two_rules_of_the_same_title_apart_by_their_set()
         String::from_utf8(c.output().unwrap().stdout).unwrap()
     };
     let over: Value = serde_json::from_str(&replay(true)).unwrap();
-    assert_eq!(
-        sets_of(array(&over["result"]["matched"]), "title_text"),
-        both
-    );
+    assert_eq!(sets_of(array(&over["matched"]), "title_text"), both);
     let text = replay(false);
     rows_of(&text);
     // The rule of a set that states no level is not ranked among the levels: it comes after
@@ -1933,7 +1934,7 @@ fn every_listing_of_rules_tells_two_rules_of_the_same_title_apart_by_their_set()
     entries.extend(array(&m["unevaluated"]));
     entries.extend(array(&status["rules"]["matched_last_day"]));
     entries.extend(array(&status["rules"]["not_watching"]));
-    entries.extend(array(&over["result"]["matched"]));
+    entries.extend(array(&over["matched"]));
     for d in array(&rules["drill"]) {
         entries.extend(array(&d["matches"]));
     }
@@ -1943,7 +1944,7 @@ fn every_listing_of_rules_tells_two_rules_of_the_same_title_apart_by_their_set()
         "elastic-behaviour" => "Elastic's behaviour rules",
         other => panic!("no set {other}"),
     };
-    for e in entries {
+    for e in entries.into_iter().map(flat) {
         assert_eq!(e["set"], words(e["source"].as_str().unwrap()), "{e}");
     }
 }
@@ -1962,22 +1963,22 @@ fn immune_rules_lists_both_sets_and_names_every_rule_not_taken_with_its_reason()
     let said = &rules["catalogue"]["published_rules"];
     for (words, set, about) in [
         (
-            &said["meaning_by_set"]["sigma"],
+            &meaning(&said["meaning_by_set"], "sigma"),
             "SigmaHQ's rule set",
             "run the same commands",
         ),
         (
-            &said["meaning_by_set"]["elastic"],
+            &meaning(&said["meaning_by_set"], "elastic"),
             "Elastic's detection rules",
             "run the same commands",
         ),
         (
-            &said["for_file_events"]["meaning_by_set"]["sigma"],
+            &meaning(&said["for_file_events"]["meaning_by_set"], "sigma"),
             "SigmaHQ's rule set",
             "put files in the same places",
         ),
         (
-            &said["for_file_events"]["meaning_by_set"]["elastic"],
+            &meaning(&said["for_file_events"]["meaning_by_set"], "elastic"),
             "Elastic's detection rules",
             "put files in the same places",
         ),
@@ -2004,7 +2005,10 @@ fn immune_rules_lists_both_sets_and_names_every_rule_not_taken_with_its_reason()
         &said["meaning_by_set"],
         &said["for_file_events"]["meaning_by_set"],
     ] {
-        assert!(meanings.get("elastic-behaviour").is_none(), "{meanings}");
+        assert!(
+            meaning(meanings, "elastic-behaviour").is_null(),
+            "{meanings}"
+        );
     }
     let sources: Vec<&Value> = rules["sources"].as_array().unwrap().iter().collect();
     assert_eq!(
@@ -2022,7 +2026,12 @@ fn immune_rules_lists_both_sets_and_names_every_rule_not_taken_with_its_reason()
             (json!("elastic-behaviour"), json!(57), json!(221)),
         ]
     );
-    let not_evaluated = rules["not_evaluated"].as_array().unwrap();
+    let not_evaluated: Vec<Value> = rules["not_evaluated"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(flat)
+        .collect();
     assert_eq!(not_evaluated.len(), 119 + 221);
     assert!(
         not_evaluated
@@ -2066,7 +2075,7 @@ fn immune_rules_lists_both_sets_and_names_every_rule_not_taken_with_its_reason()
         ),
         (
             &json!("never_true"),
-            &Value::Null,
+            &json!("not_stated"),
             &json!("elastic-behaviour:76259650-ed25-4d48-9cb2-e4a32073f945"),
             &json!(
                 "asks for a field every event of its kinds has to be absent: process.command_line"
@@ -2098,6 +2107,7 @@ fn immune_rules_lists_both_sets_and_names_every_rule_not_taken_with_its_reason()
         .as_array()
         .unwrap()
         .iter()
+        .map(flat)
         .find(|r| r["id_text"] == "10a500bb-a28f-418e-ba29-ca4c8d1a9f2f")
         .unwrap();
     assert_eq!(
@@ -2404,13 +2414,13 @@ fn a_secret_on_a_command_line_reaches_no_answer_and_no_file_and_the_rules_beside
     );
     // The report's JSON lists the same cuts beside its text.
     let status = dir.report(&["status"]);
-    let listed: usize = status["needs_a_look"]
+    let listed: usize = status["needs_a_look"]["items"]
         .as_array()
         .unwrap()
         .iter()
-        .filter_map(|i| i["published_rule"]["evidence"].as_array())
+        .filter_map(|i| i["evidence"]["published_rule_matched"]["events"].as_array())
         .flatten()
-        .map(|e| e["cuts"].as_array().unwrap().len())
+        .map(|e| e["program_start"]["cuts"].as_array().unwrap().len())
         .sum();
     assert_eq!(listed, 3, "{status:#}");
     let mut files = Vec::new();
@@ -2802,4 +2812,48 @@ fn the_text_of_matches_is_its_message_and_an_argument_cannot_pose_as_the_program
     assert!(text.contains(&format!("Collector: {state}")), "{text}");
     let place = m["continue_after"].as_str().unwrap();
     assert!(text.contains(&format!("Continue after: {place}")), "{text}");
+}
+
+/// A listed rule with the fields of its `rule` beside its own, as one object.
+fn flat(v: &Value) -> Value {
+    let mut out = v["rule"].as_object().cloned().unwrap_or_default();
+    for (k, x) in v.as_object().into_iter().flatten() {
+        if k != "rule" {
+            out.insert(k.clone(), x.clone());
+        }
+    }
+    out.into()
+}
+
+/// Listed rules, each flattened and cut down to `keys`; a key it lacks shows as absent.
+fn shaped(rows: &Value, keys: &[&str]) -> Value {
+    rows.as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            let f = flat(row);
+            keys.iter()
+                .map(|k| {
+                    (
+                        k.to_string(),
+                        f.get(*k).cloned().unwrap_or(json!("<absent>")),
+                    )
+                })
+                .collect::<serde_json::Map<_, _>>()
+                .into()
+        })
+        .collect::<Vec<Value>>()
+        .into()
+}
+
+/// The keys a listing of matched rules is compared on.
+const MATCHED: [&str; 6] = ["id_text", "title_text", "level", "source", "set", "matches"];
+
+/// The words a list of `{name, meaning}` gives for `name`, or null when it names none.
+fn meaning(list: &Value, name: &str) -> Value {
+    list.as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["name"] == name)
+        .map_or(Value::Null, |m| m["meaning"].clone())
 }

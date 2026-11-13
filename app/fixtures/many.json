@@ -1,1181 +1,1601 @@
 {
- "format": 1,
- "operation": "status",
- "ok": true,
- "errors": [],
- "result": {
-  "generated_at": "2026-11-10T10:05:00Z",
+  "format": 1,
+  "answered_at": 1794305100,
+  "store_id": null,
   "running": false,
   "store": {
-   "path_text": "/Users/example/Library/Application Support/ai.nuanu.immune/store.db",
-   "exists": true
+    "path_text": "/Users/example/Library/Application Support/ai.nuanu.immune/store.db",
+    "exists": true
   },
   "cannot_judge": [
-   "no threat is matched against the estate yet"
+    "no threat is matched against the estate yet"
   ],
-  "last_run": {
-   "id": "1794300000-000000001",
-   "started_at": "2026-11-10T10:00:00Z",
-   "finished_at": "2026-11-10T10:00:21Z",
-   "finished": true
-  },
-  "last_finished_run": {
-   "id": "1794300000-000000001",
-   "started_at": "2026-11-10T10:00:00Z",
-   "finished_at": "2026-11-10T10:00:21Z",
-   "first_run": false,
-   "readings": {
-    "partial": 2,
-    "failed": 0,
-    "not_repeated": 0,
-    "machines_unread": 0
-   },
-   "since_previous_run": null,
-   "unknown": []
-  },
-  "estate": {
-   "machines": 3,
-   "servers": 2,
-   "servers_offered": 1,
-   "servers_read": 0,
-   "machines_set_aside": 0,
-   "machines_seen_after_owner_word": 0,
-   "checkouts": 7,
-   "components": 812
-  },
-  "watched": {
-   "files": 12,
-   "first_reading": false,
-   "since_last_reading": {
-    "new": 0,
-    "changed": 0,
-    "gone": 0
-   },
-   "kinds": [
-    {
-     "kind": "autostart item",
-     "files": 5,
-     "coverage": "full",
-     "readings": {
-      "full": 1,
-      "partial": 0,
-      "none": 0
-     },
-     "reason_text": null
-    },
-    {
-     "kind": "shell profile",
-     "files": 3,
-     "coverage": "full",
-     "readings": {
-      "full": 1,
-      "partial": 0,
-      "none": 0
-     },
-     "reason_text": null
-    },
-    {
-     "kind": "ssh access file",
-     "files": 0,
-     "coverage": null,
-     "readings": {
-      "full": 0,
-      "partial": 0,
-      "none": 0
-     },
-     "reason_text": null
-    },
-    {
-     "kind": "git hook",
-     "files": 4,
-     "coverage": "partial",
-     "readings": {
-      "full": 6,
-      "partial": 1,
-      "none": 0
-     },
-     "reason_text": ".git is a file, as in a worktree or a submodule: the hooks are kept elsewhere and were not read"
-    }
-   ],
-   "content_not_read": 0,
-   "changes": [],
-   "changes_total": 0
-  },
-  "threats": {
-   "outcome": "read",
-   "entries": 1700,
-   "first_reading": true,
-   "new": 0,
-   "gone": 0,
-   "read_at": "2026-11-10T10:00:01Z",
-   "checked_at": "2026-11-10T10:00:01Z",
-   "source": "cisa-kev",
-   "matched": false
-  },
-  "coverage": {
-   "readings": 20,
-   "full": 12,
-   "read_nothing": 6,
-   "partial": 2,
-   "failed": 28,
-   "problems": [
-    {
-     "class": "failed",
-     "reader": "r0",
-     "kind": "installed software",
-     "reason_text": "the package list could not be read: permission denied",
-     "count": 1,
-     "examples_text": [
-      "machine:example-mac"
-     ]
-    },
-    {
-     "class": "failed",
-     "reader": "r1",
-     "kind": "lockfile dependencies",
-     "reason_text": "the lockfile is not valid: unexpected end of file",
-     "count": 2,
-     "examples_text": [
-      "machine:example-mac"
-     ]
-    },
-    {
-     "class": "failed",
-     "reader": "r2",
-     "kind": "hooks in the checkout's .git folder",
-     "reason_text": "the folder could not be listed: operation not permitted",
-     "count": 3,
-     "examples_text": [
-      "machine:example-mac"
-     ]
-    },
-    {
-     "class": "failed",
-     "reader": "r3",
-     "kind": "ssh configuration",
-     "reason_text": "the file could not be read: permission denied",
-     "count": 4,
-     "examples_text": [
-      "machine:example-mac"
-     ]
-    },
-    {
-     "class": "failed",
-     "reader": "r4",
-     "kind": "known hosts",
-     "reason_text": "the file is larger than the program reads",
-     "count": 5,
-     "examples_text": [
-      "machine:example-mac"
-     ]
-    },
-    {
-     "class": "failed",
-     "reader": "r5",
-     "kind": "applications",
-     "reason_text": "the list of applications could not be read: timed out",
-     "count": 6,
-     "examples_text": [
-      "machine:example-mac"
-     ]
-    },
-    {
-     "class": "failed",
-     "reader": "r6",
-     "kind": "autostart items",
-     "reason_text": "the folder could not be listed: operation not permitted",
-     "count": 7,
-     "examples_text": [
-      "machine:example-mac"
-     ]
-    },
-    {
-     "class": "partial",
-     "reader": "lockfiles",
-     "kind": "lockfile dependencies",
-     "reason_text": "not supported yet: uv.lock",
-     "count": 1,
-     "examples_text": [
-      "checkout:machine:example-mac/work/alpha"
-     ]
-    },
-    {
-     "class": "partial",
-     "reader": "watched-places",
-     "kind": "hooks in the checkout's .git folder",
-     "reason_text": ".git is a file, as in a worktree or a submodule: the hooks are kept elsewhere and were not read",
-     "count": 1,
-     "examples_text": [
-      "checkout:machine:example-mac/work/alpha-worktree"
-     ]
-    },
-    {
-     "class": "read_nothing",
-     "reader": "watched-places",
-     "kind": "hooks in the checkout's .git folder",
-     "reason_text": "the checkout has no hooks",
-     "count": 6,
-     "examples_text": [
-      "checkout:machine:example-mac/work/beta",
-      "checkout:machine:example-mac/work/gamma",
-      "checkout:machine:example-mac/work/delta"
-     ]
-    }
-   ],
-   "problems_total": 10
-  },
-  "not_computed": [],
-  "needs_a_look": [
-   {
-    "id": "f0000001000",
-    "type": "finding",
-    "kind": "shell profile",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A file your terminal runs every time it starts was added, changed or removed.",
-    "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
-    "advice": "If you did not, open the file and look at its last lines.",
-    "value_text": null,
-    "where_text": "projects/app-00/.git/hooks/pre-commit",
-    "rule": "watched.shell-profile",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1546.004"
-   },
-   {
-    "id": "f0000001001",
-    "type": "finding",
-    "kind": "autostart item",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A program set to start by itself on this Mac was added, changed or removed.",
-    "meaning": "This is normal right after you install, update or remove an app that works in the background.",
-    "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
-    "value_text": null,
-    "where_text": ".zprofile",
-    "rule": "watched.autostart",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1543"
-   },
-   {
-    "id": "f0000001002",
-    "type": "finding",
-    "kind": "git hook",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A script that git runs by itself in one of your projects was added, changed or removed.",
-    "meaning": "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
-    "advice": "If you did not, read the script before your next commit in that project.",
-    "value_text": null,
-    "where_text": "Library/LaunchAgents/org.example.agent-02.plist",
-    "rule": "watched.git-hook",
-    "confidence": "low",
-    "change": "changed"
-   },
-   {
-    "id": "f0000001003",
-    "type": "finding",
-    "kind": "shell profile",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A file your terminal runs every time it starts was added, changed or removed.",
-    "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
-    "advice": "If you did not, open the file and look at its last lines.",
-    "value_text": null,
-    "where_text": "projects/app-03/.git/hooks/pre-commit",
-    "rule": "watched.shell-profile",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1546.004"
-   },
-   {
-    "id": "f0000001004",
-    "type": "finding",
-    "kind": "autostart item",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A program set to start by itself on this Mac was added, changed or removed.",
-    "meaning": "This is normal right after you install, update or remove an app that works in the background.",
-    "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
-    "value_text": null,
-    "where_text": ".zprofile",
-    "rule": "watched.autostart",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1543"
-   },
-   {
-    "id": "f0000001005",
-    "type": "finding",
-    "kind": "git hook",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A script that git runs by itself in one of your projects was added, changed or removed.",
-    "meaning": "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
-    "advice": "If you did not, read the script before your next commit in that project.",
-    "value_text": null,
-    "where_text": "Library/LaunchAgents/org.example.agent-05.plist",
-    "rule": "watched.git-hook",
-    "confidence": "low",
-    "change": "changed"
-   },
-   {
-    "id": "f0000001006",
-    "type": "finding",
-    "kind": "shell profile",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A file your terminal runs every time it starts was added, changed or removed.",
-    "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
-    "advice": "If you did not, open the file and look at its last lines.",
-    "value_text": null,
-    "where_text": "projects/app-06/.git/hooks/pre-commit",
-    "rule": "watched.shell-profile",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1546.004"
-   },
-   {
-    "id": "f0000001007",
-    "type": "finding",
-    "kind": "autostart item",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A program set to start by itself on this Mac was added, changed or removed.",
-    "meaning": "This is normal right after you install, update or remove an app that works in the background.",
-    "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
-    "value_text": null,
-    "where_text": ".zprofile",
-    "rule": "watched.autostart",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1543"
-   },
-   {
-    "id": "f0000001008",
-    "type": "finding",
-    "kind": "git hook",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A script that git runs by itself in one of your projects was added, changed or removed.",
-    "meaning": "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
-    "advice": "If you did not, read the script before your next commit in that project.",
-    "value_text": null,
-    "where_text": "Library/LaunchAgents/org.example.agent-08.plist",
-    "rule": "watched.git-hook",
-    "confidence": "low",
-    "change": "changed"
-   },
-   {
-    "id": "f0000001009",
-    "type": "finding",
-    "kind": "shell profile",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A file your terminal runs every time it starts was added, changed or removed.",
-    "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
-    "advice": "If you did not, open the file and look at its last lines.",
-    "value_text": null,
-    "where_text": "projects/app-09/.git/hooks/pre-commit",
-    "rule": "watched.shell-profile",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1546.004"
-   },
-   {
-    "id": "f000000100a",
-    "type": "finding",
-    "kind": "autostart item",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A program set to start by itself on this Mac was added, changed or removed.",
-    "meaning": "This is normal right after you install, update or remove an app that works in the background.",
-    "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
-    "value_text": null,
-    "where_text": ".zprofile",
-    "rule": "watched.autostart",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1543"
-   },
-   {
-    "id": "f000000100b",
-    "type": "finding",
-    "kind": "git hook",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A script that git runs by itself in one of your projects was added, changed or removed.",
-    "meaning": "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
-    "advice": "If you did not, read the script before your next commit in that project.",
-    "value_text": null,
-    "where_text": "Library/LaunchAgents/org.example.agent-11.plist",
-    "rule": "watched.git-hook",
-    "confidence": "low",
-    "change": "changed"
-   },
-   {
-    "id": "f000000100c",
-    "type": "finding",
-    "kind": "shell profile",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A file your terminal runs every time it starts was added, changed or removed.",
-    "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
-    "advice": "If you did not, open the file and look at its last lines.",
-    "value_text": null,
-    "where_text": "projects/app-12/.git/hooks/pre-commit",
-    "rule": "watched.shell-profile",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1546.004"
-   },
-   {
-    "id": "f000000100d",
-    "type": "finding",
-    "kind": "autostart item",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A program set to start by itself on this Mac was added, changed or removed.",
-    "meaning": "This is normal right after you install, update or remove an app that works in the background.",
-    "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
-    "value_text": null,
-    "where_text": ".zprofile",
-    "rule": "watched.autostart",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1543"
-   },
-   {
-    "id": "f000000100e",
-    "type": "finding",
-    "kind": "git hook",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A script that git runs by itself in one of your projects was added, changed or removed.",
-    "meaning": "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
-    "advice": "If you did not, read the script before your next commit in that project.",
-    "value_text": null,
-    "where_text": "Library/LaunchAgents/org.example.agent-14.plist",
-    "rule": "watched.git-hook",
-    "confidence": "low",
-    "change": "changed"
-   },
-   {
-    "id": "f000000100f",
-    "type": "finding",
-    "kind": "shell profile",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A file your terminal runs every time it starts was added, changed or removed.",
-    "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
-    "advice": "If you did not, open the file and look at its last lines.",
-    "value_text": null,
-    "where_text": "projects/app-15/.git/hooks/pre-commit",
-    "rule": "watched.shell-profile",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1546.004"
-   },
-   {
-    "id": "f0000001010",
-    "type": "finding",
-    "kind": "autostart item",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A program set to start by itself on this Mac was added, changed or removed.",
-    "meaning": "This is normal right after you install, update or remove an app that works in the background.",
-    "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
-    "value_text": null,
-    "where_text": ".zprofile",
-    "rule": "watched.autostart",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1543"
-   },
-   {
-    "id": "f0000001011",
-    "type": "finding",
-    "kind": "git hook",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A script that git runs by itself in one of your projects was added, changed or removed.",
-    "meaning": "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
-    "advice": "If you did not, read the script before your next commit in that project.",
-    "value_text": null,
-    "where_text": "Library/LaunchAgents/org.example.agent-17.plist",
-    "rule": "watched.git-hook",
-    "confidence": "low",
-    "change": "changed"
-   },
-   {
-    "id": "f0000001012",
-    "type": "finding",
-    "kind": "shell profile",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A file your terminal runs every time it starts was added, changed or removed.",
-    "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
-    "advice": "If you did not, open the file and look at its last lines.",
-    "value_text": null,
-    "where_text": "projects/app-18/.git/hooks/pre-commit",
-    "rule": "watched.shell-profile",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1546.004"
-   },
-   {
-    "id": "f0000001013",
-    "type": "finding",
-    "kind": "autostart item",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A program set to start by itself on this Mac was added, changed or removed.",
-    "meaning": "This is normal right after you install, update or remove an app that works in the background.",
-    "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
-    "value_text": null,
-    "where_text": ".zprofile",
-    "rule": "watched.autostart",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1543"
-   },
-   {
-    "id": "f0000001014",
-    "type": "finding",
-    "kind": "git hook",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A script that git runs by itself in one of your projects was added, changed or removed.",
-    "meaning": "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
-    "advice": "If you did not, read the script before your next commit in that project.",
-    "value_text": null,
-    "where_text": "Library/LaunchAgents/org.example.agent-20.plist",
-    "rule": "watched.git-hook",
-    "confidence": "low",
-    "change": "changed"
-   },
-   {
-    "id": "f0000001015",
-    "type": "finding",
-    "kind": "shell profile",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A file your terminal runs every time it starts was added, changed or removed.",
-    "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
-    "advice": "If you did not, open the file and look at its last lines.",
-    "value_text": null,
-    "where_text": "projects/app-21/.git/hooks/pre-commit",
-    "rule": "watched.shell-profile",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1546.004"
-   },
-   {
-    "id": "f0000001016",
-    "type": "finding",
-    "kind": "autostart item",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A program set to start by itself on this Mac was added, changed or removed.",
-    "meaning": "This is normal right after you install, update or remove an app that works in the background.",
-    "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
-    "value_text": null,
-    "where_text": ".zprofile",
-    "rule": "watched.autostart",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1543"
-   },
-   {
-    "id": "f0000001017",
-    "type": "finding",
-    "kind": "git hook",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A script that git runs by itself in one of your projects was added, changed or removed.",
-    "meaning": "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
-    "advice": "If you did not, read the script before your next commit in that project.",
-    "value_text": null,
-    "where_text": "Library/LaunchAgents/org.example.agent-23.plist",
-    "rule": "watched.git-hook",
-    "confidence": "low",
-    "change": "changed"
-   },
-   {
-    "id": "f0000001018",
-    "type": "finding",
-    "kind": "shell profile",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A file your terminal runs every time it starts was added, changed or removed.",
-    "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
-    "advice": "If you did not, open the file and look at its last lines.",
-    "value_text": null,
-    "where_text": "projects/app-24/.git/hooks/pre-commit",
-    "rule": "watched.shell-profile",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1546.004"
-   },
-   {
-    "id": "f0000001019",
-    "type": "finding",
-    "kind": "autostart item",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A program set to start by itself on this Mac was added, changed or removed.",
-    "meaning": "This is normal right after you install, update or remove an app that works in the background.",
-    "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
-    "value_text": null,
-    "where_text": ".zprofile",
-    "rule": "watched.autostart",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1543"
-   },
-   {
-    "id": "f000000101a",
-    "type": "finding",
-    "kind": "git hook",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A script that git runs by itself in one of your projects was added, changed or removed.",
-    "meaning": "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
-    "advice": "If you did not, read the script before your next commit in that project.",
-    "value_text": null,
-    "where_text": "Library/LaunchAgents/org.example.agent-26.plist",
-    "rule": "watched.git-hook",
-    "confidence": "low",
-    "change": "changed"
-   },
-   {
-    "id": "f000000101b",
-    "type": "finding",
-    "kind": "shell profile",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A file your terminal runs every time it starts was added, changed or removed.",
-    "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
-    "advice": "If you did not, open the file and look at its last lines.",
-    "value_text": null,
-    "where_text": "projects/app-27/.git/hooks/pre-commit",
-    "rule": "watched.shell-profile",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1546.004"
-   },
-   {
-    "id": "f000000101c",
-    "type": "finding",
-    "kind": "autostart item",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A program set to start by itself on this Mac was added, changed or removed.",
-    "meaning": "This is normal right after you install, update or remove an app that works in the background.",
-    "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
-    "value_text": null,
-    "where_text": ".zprofile",
-    "rule": "watched.autostart",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1543"
-   },
-   {
-    "id": "f000000101d",
-    "type": "finding",
-    "kind": "git hook",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A script that git runs by itself in one of your projects was added, changed or removed.",
-    "meaning": "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
-    "advice": "If you did not, read the script before your next commit in that project.",
-    "value_text": null,
-    "where_text": "Library/LaunchAgents/org.example.agent-29.plist",
-    "rule": "watched.git-hook",
-    "confidence": "low",
-    "change": "changed"
-   },
-   {
-    "id": "f000000101e",
-    "type": "finding",
-    "kind": "shell profile",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A file your terminal runs every time it starts was added, changed or removed.",
-    "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
-    "advice": "If you did not, open the file and look at its last lines.",
-    "value_text": null,
-    "where_text": "projects/app-30/.git/hooks/pre-commit",
-    "rule": "watched.shell-profile",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1546.004"
-   },
-   {
-    "id": "f000000101f",
-    "type": "finding",
-    "kind": "autostart item",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A program set to start by itself on this Mac was added, changed or removed.",
-    "meaning": "This is normal right after you install, update or remove an app that works in the background.",
-    "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
-    "value_text": null,
-    "where_text": ".zprofile",
-    "rule": "watched.autostart",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1543"
-   },
-   {
-    "id": "f0000001020",
-    "type": "finding",
-    "kind": "git hook",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A script that git runs by itself in one of your projects was added, changed or removed.",
-    "meaning": "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
-    "advice": "If you did not, read the script before your next commit in that project.",
-    "value_text": null,
-    "where_text": "Library/LaunchAgents/org.example.agent-32.plist",
-    "rule": "watched.git-hook",
-    "confidence": "low",
-    "change": "changed"
-   },
-   {
-    "id": "f0000001021",
-    "type": "finding",
-    "kind": "shell profile",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A file your terminal runs every time it starts was added, changed or removed.",
-    "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
-    "advice": "If you did not, open the file and look at its last lines.",
-    "value_text": null,
-    "where_text": "projects/app-33/.git/hooks/pre-commit",
-    "rule": "watched.shell-profile",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1546.004"
-   },
-   {
-    "id": "f0000001022",
-    "type": "finding",
-    "kind": "autostart item",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A program set to start by itself on this Mac was added, changed or removed.",
-    "meaning": "This is normal right after you install, update or remove an app that works in the background.",
-    "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
-    "value_text": null,
-    "where_text": ".zprofile",
-    "rule": "watched.autostart",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1543"
-   },
-   {
-    "id": "f0000001023",
-    "type": "finding",
-    "kind": "git hook",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A script that git runs by itself in one of your projects was added, changed or removed.",
-    "meaning": "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
-    "advice": "If you did not, read the script before your next commit in that project.",
-    "value_text": null,
-    "where_text": "Library/LaunchAgents/org.example.agent-35.plist",
-    "rule": "watched.git-hook",
-    "confidence": "low",
-    "change": "changed"
-   },
-   {
-    "id": "f0000001024",
-    "type": "finding",
-    "kind": "shell profile",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A file your terminal runs every time it starts was added, changed or removed.",
-    "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
-    "advice": "If you did not, open the file and look at its last lines.",
-    "value_text": null,
-    "where_text": "projects/app-36/.git/hooks/pre-commit",
-    "rule": "watched.shell-profile",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1546.004"
-   },
-   {
-    "id": "f0000001025",
-    "type": "finding",
-    "kind": "autostart item",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A program set to start by itself on this Mac was added, changed or removed.",
-    "meaning": "This is normal right after you install, update or remove an app that works in the background.",
-    "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
-    "value_text": null,
-    "where_text": ".zprofile",
-    "rule": "watched.autostart",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1543"
-   },
-   {
-    "id": "f0000001026",
-    "type": "finding",
-    "kind": "git hook",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A script that git runs by itself in one of your projects was added, changed or removed.",
-    "meaning": "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
-    "advice": "If you did not, read the script before your next commit in that project.",
-    "value_text": null,
-    "where_text": "Library/LaunchAgents/org.example.agent-38.plist",
-    "rule": "watched.git-hook",
-    "confidence": "low",
-    "change": "changed"
-   },
-   {
-    "id": "f0000001027",
-    "type": "finding",
-    "kind": "shell profile",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A file your terminal runs every time it starts was added, changed or removed.",
-    "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
-    "advice": "If you did not, open the file and look at its last lines.",
-    "value_text": null,
-    "where_text": "projects/app-39/.git/hooks/pre-commit",
-    "rule": "watched.shell-profile",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1546.004"
-   },
-   {
-    "id": "f0000001028",
-    "type": "finding",
-    "kind": "autostart item",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A program set to start by itself on this Mac was added, changed or removed.",
-    "meaning": "This is normal right after you install, update or remove an app that works in the background.",
-    "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
-    "value_text": null,
-    "where_text": ".zprofile",
-    "rule": "watched.autostart",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1543"
-   },
-   {
-    "id": "f0000001029",
-    "type": "finding",
-    "kind": "git hook",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A script that git runs by itself in one of your projects was added, changed or removed.",
-    "meaning": "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
-    "advice": "If you did not, read the script before your next commit in that project.",
-    "value_text": null,
-    "where_text": "Library/LaunchAgents/org.example.agent-41.plist",
-    "rule": "watched.git-hook",
-    "confidence": "low",
-    "change": "changed"
-   },
-   {
-    "id": "f000000102a",
-    "type": "finding",
-    "kind": "shell profile",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A file your terminal runs every time it starts was added, changed or removed.",
-    "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
-    "advice": "If you did not, open the file and look at its last lines.",
-    "value_text": null,
-    "where_text": "projects/app-42/.git/hooks/pre-commit",
-    "rule": "watched.shell-profile",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1546.004"
-   },
-   {
-    "id": "f000000102b",
-    "type": "finding",
-    "kind": "autostart item",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A program set to start by itself on this Mac was added, changed or removed.",
-    "meaning": "This is normal right after you install, update or remove an app that works in the background.",
-    "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
-    "value_text": null,
-    "where_text": ".zprofile",
-    "rule": "watched.autostart",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1543"
-   },
-   {
-    "id": "f000000102c",
-    "type": "finding",
-    "kind": "git hook",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A script that git runs by itself in one of your projects was added, changed or removed.",
-    "meaning": "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
-    "advice": "If you did not, read the script before your next commit in that project.",
-    "value_text": null,
-    "where_text": "Library/LaunchAgents/org.example.agent-44.plist",
-    "rule": "watched.git-hook",
-    "confidence": "low",
-    "change": "changed"
-   },
-   {
-    "id": "f000000102d",
-    "type": "finding",
-    "kind": "shell profile",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A file your terminal runs every time it starts was added, changed or removed.",
-    "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
-    "advice": "If you did not, open the file and look at its last lines.",
-    "value_text": null,
-    "where_text": "projects/app-45/.git/hooks/pre-commit",
-    "rule": "watched.shell-profile",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1546.004"
-   },
-   {
-    "id": "f000000102e",
-    "type": "finding",
-    "kind": "autostart item",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A program set to start by itself on this Mac was added, changed or removed.",
-    "meaning": "This is normal right after you install, update or remove an app that works in the background.",
-    "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
-    "value_text": null,
-    "where_text": ".zprofile",
-    "rule": "watched.autostart",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1543"
-   },
-   {
-    "id": "f000000102f",
-    "type": "finding",
-    "kind": "git hook",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A script that git runs by itself in one of your projects was added, changed or removed.",
-    "meaning": "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
-    "advice": "If you did not, read the script before your next commit in that project.",
-    "value_text": null,
-    "where_text": "Library/LaunchAgents/org.example.agent-47.plist",
-    "rule": "watched.git-hook",
-    "confidence": "low",
-    "change": "changed"
-   },
-   {
-    "id": "f0000001030",
-    "type": "finding",
-    "kind": "shell profile",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A file your terminal runs every time it starts was added, changed or removed.",
-    "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
-    "advice": "If you did not, open the file and look at its last lines.",
-    "value_text": null,
-    "where_text": "projects/app-48/.git/hooks/pre-commit",
-    "rule": "watched.shell-profile",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1546.004"
-   },
-   {
-    "id": "f0000001031",
-    "type": "finding",
-    "kind": "autostart item",
-    "severity": "medium",
-    "state": "open",
-    "first_seen": "2026-11-10T10:00:20Z",
-    "last_seen": "2026-11-10T10:00:20Z",
-    "title": "A program set to start by itself on this Mac was added, changed or removed.",
-    "meaning": "This is normal right after you install, update or remove an app that works in the background.",
-    "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
-    "value_text": null,
-    "where_text": ".zprofile",
-    "rule": "watched.autostart",
-    "confidence": "low",
-    "change": "changed",
-    "technique": "T1543"
-   }
-  ],
-  "needs_a_look_total": 57,
   "answers_note": "Marking a finding expected or seen is the owner's answer: it hides the finding from him. An agent must not give it on the owner's behalf; it may show the owner the command to give it.",
+  "not_computed": [],
   "this_mac": {
-   "state": "watched",
-   "live": true,
-   "checked_at": "2026-11-10T10:00:21Z",
-   "live_read_at": "2026-11-10T10:04:10Z",
-   "watched": [
-    {
-     "what": "startup items",
-     "count": 14,
-     "how": "live"
-    },
-    {
-     "what": "shell startup files",
-     "count": 3,
-     "how": "live"
-    },
-    {
-     "what": "SSH files",
-     "count": 4,
-     "how": "live"
-    },
-    {
-     "what": "git hooks in projects",
-     "count": 31,
-     "how": "live"
-    },
-    {
-     "what": "running programs and their connections",
-     "count": 87,
-     "how": "sampled"
-    },
-    {
-     "what": "applications",
-     "count": 214,
-     "how": "hourly"
-    },
-    {
-     "what": "Homebrew packages",
-     "count": 96,
-     "how": "hourly"
-    },
-    {
-     "what": "npm packages",
-     "count": 640,
-     "how": "hourly"
-    }
-   ]
+    "state": "watched",
+    "live": true,
+    "checked_at": 1794304821,
+    "live_read_at": 1794305050,
+    "watched": [
+      {
+        "what": "startup items",
+        "count": 14,
+        "how": "live"
+      },
+      {
+        "what": "shell startup files",
+        "count": 3,
+        "how": "live"
+      },
+      {
+        "what": "SSH files",
+        "count": 4,
+        "how": "live"
+      },
+      {
+        "what": "git hooks in projects",
+        "count": 31,
+        "how": "live"
+      },
+      {
+        "what": "running programs and their connections",
+        "count": 87,
+        "how": "sampled"
+      },
+      {
+        "what": "applications",
+        "count": 214,
+        "how": "hourly"
+      },
+      {
+        "what": "Homebrew packages",
+        "count": 96,
+        "how": "hourly"
+      },
+      {
+        "what": "npm packages",
+        "count": 640,
+        "how": "hourly"
+      }
+    ],
+    "fresh": true,
+    "stale_reason": null,
+    "fresh_for_seconds": 7200
   },
   "not_covered": [
-   {
-    "id": "n-servers",
-    "scope": "servers",
-    "kind": "servers not read",
-    "title": "Servers are read only when you run the server check",
-    "meaning": "Meaning from the program.",
-    "advice": "Advice from the program.",
-    "count": 6,
-    "since": "2026-11-09T22:00:05Z",
-    "value_text": null,
-    "examples_text": [],
-    "who": "you"
-   }
+    {
+      "id": "n-servers",
+      "scope": "servers",
+      "kind": "servers not read",
+      "title": "Servers are read only when you run the server check",
+      "meaning": "Meaning from the program.",
+      "advice": "Advice from the program.",
+      "count": 6,
+      "value_text": null,
+      "examples_text": [],
+      "who": "you",
+      "since_at": 1794261605,
+      "holds_on": "this_mac"
+    }
   ],
-  "not_covered_total": 1
- }
+  "last_run": {
+    "id": "1794300000-000000001",
+    "started_at": 1794304800,
+    "finished_at": 1794304821
+  },
+  "last_finished_run": {
+    "check": {
+      "id": "1794300000-000000001",
+      "started_at": 1794304800,
+      "finished_at": 1794304821
+    },
+    "first_run": false,
+    "readings": {
+      "partial": 2,
+      "failed": 0,
+      "not_repeated": 0,
+      "machines_unread": 0
+    },
+    "since_previous_run": null,
+    "unknown": []
+  },
+  "estate": {
+    "machines": 3,
+    "servers": 2,
+    "servers_offered": 1,
+    "servers_read": 0,
+    "machines_set_aside": 0,
+    "checkouts": 7,
+    "components": 812,
+    "machines_seen_after_owner_word_text": []
+  },
+  "watched": {
+    "files": 12,
+    "first_reading": false,
+    "since_last_reading": {
+      "new": 0,
+      "changed": 0,
+      "gone": 0
+    },
+    "kinds": [
+      {
+        "kind": "autostart item",
+        "files": 5,
+        "coverage": "full",
+        "readings": {
+          "full": 1,
+          "partial": 0,
+          "none": 0
+        },
+        "reason_text": null
+      },
+      {
+        "kind": "shell profile",
+        "files": 3,
+        "coverage": "full",
+        "readings": {
+          "full": 1,
+          "partial": 0,
+          "none": 0
+        },
+        "reason_text": null
+      },
+      {
+        "kind": "ssh access file",
+        "files": 0,
+        "coverage": null,
+        "readings": {
+          "full": 0,
+          "partial": 0,
+          "none": 0
+        },
+        "reason_text": null
+      },
+      {
+        "kind": "git hook",
+        "files": 4,
+        "coverage": "partial",
+        "readings": {
+          "full": 6,
+          "partial": 1,
+          "none": 0
+        },
+        "reason_text": ".git is a file, as in a worktree or a submodule: the hooks are kept elsewhere and were not read"
+      }
+    ],
+    "content_not_read": 0,
+    "changes": [],
+    "changes_total": 0
+  },
+  "threats": {
+    "outcome": "read",
+    "entries": 1700,
+    "first_reading": true,
+    "new": 0,
+    "gone": 0,
+    "read_at": 1794304801,
+    "checked_at": 1794304801,
+    "source": "cisa-kev",
+    "matched": false
+  },
+  "coverage": {
+    "readings": 20,
+    "full": 12,
+    "read_nothing": 6,
+    "partial": 2,
+    "failed": 28,
+    "problems": [
+      {
+        "class": "failed",
+        "reader": "r0",
+        "kind": "installed software",
+        "reason_text": "the package list could not be read: permission denied",
+        "count": 1,
+        "examples_text": [
+          "machine:example-mac"
+        ]
+      },
+      {
+        "class": "failed",
+        "reader": "r1",
+        "kind": "lockfile dependencies",
+        "reason_text": "the lockfile is not valid: unexpected end of file",
+        "count": 2,
+        "examples_text": [
+          "machine:example-mac"
+        ]
+      },
+      {
+        "class": "failed",
+        "reader": "r2",
+        "kind": "hooks in the checkout's .git folder",
+        "reason_text": "the folder could not be listed: operation not permitted",
+        "count": 3,
+        "examples_text": [
+          "machine:example-mac"
+        ]
+      },
+      {
+        "class": "failed",
+        "reader": "r3",
+        "kind": "ssh configuration",
+        "reason_text": "the file could not be read: permission denied",
+        "count": 4,
+        "examples_text": [
+          "machine:example-mac"
+        ]
+      },
+      {
+        "class": "failed",
+        "reader": "r4",
+        "kind": "known hosts",
+        "reason_text": "the file is larger than the program reads",
+        "count": 5,
+        "examples_text": [
+          "machine:example-mac"
+        ]
+      },
+      {
+        "class": "failed",
+        "reader": "r5",
+        "kind": "applications",
+        "reason_text": "the list of applications could not be read: timed out",
+        "count": 6,
+        "examples_text": [
+          "machine:example-mac"
+        ]
+      },
+      {
+        "class": "failed",
+        "reader": "r6",
+        "kind": "autostart items",
+        "reason_text": "the folder could not be listed: operation not permitted",
+        "count": 7,
+        "examples_text": [
+          "machine:example-mac"
+        ]
+      },
+      {
+        "class": "partial",
+        "reader": "lockfiles",
+        "kind": "lockfile dependencies",
+        "reason_text": "not supported yet: uv.lock",
+        "count": 1,
+        "examples_text": [
+          "checkout:machine:example-mac/work/alpha"
+        ]
+      },
+      {
+        "class": "partial",
+        "reader": "watched-places",
+        "kind": "hooks in the checkout's .git folder",
+        "reason_text": ".git is a file, as in a worktree or a submodule: the hooks are kept elsewhere and were not read",
+        "count": 1,
+        "examples_text": [
+          "checkout:machine:example-mac/work/alpha-worktree"
+        ]
+      },
+      {
+        "class": "read_nothing",
+        "reader": "watched-places",
+        "kind": "hooks in the checkout's .git folder",
+        "reason_text": "the checkout has no hooks",
+        "count": 6,
+        "examples_text": [
+          "checkout:machine:example-mac/work/beta",
+          "checkout:machine:example-mac/work/gamma",
+          "checkout:machine:example-mac/work/delta"
+        ]
+      }
+    ],
+    "problems_total": 10,
+    "unreached": []
+  },
+  "needs_a_look": {
+    "items": [
+      {
+        "finding": {
+          "finding": {
+            "id": "f0000001000",
+            "rule": "watched.shell-profile",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "shell profile",
+          "title": "A file your terminal runs every time it starts was added, changed or removed.",
+          "where_text": "projects/app-00/.git/hooks/pre-commit",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
+        "advice": "If you did not, open the file and look at its last lines.",
+        "value_text": null,
+        "technique_text": "T1546.004",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f0000001001",
+            "rule": "watched.autostart",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "autostart item",
+          "title": "A program set to start by itself on this Mac was added, changed or removed.",
+          "where_text": ".zprofile",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal right after you install, update or remove an app that works in the background.",
+        "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
+        "value_text": null,
+        "technique_text": "T1543",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f0000001002",
+            "rule": "watched.git-hook",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "git hook",
+          "title": "A script that git runs by itself in one of your projects was added, changed or removed.",
+          "where_text": "Library/LaunchAgents/org.example.agent-02.plist",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
+        "advice": "If you did not, read the script before your next commit in that project.",
+        "value_text": null,
+        "technique_text": null,
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f0000001003",
+            "rule": "watched.shell-profile",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "shell profile",
+          "title": "A file your terminal runs every time it starts was added, changed or removed.",
+          "where_text": "projects/app-03/.git/hooks/pre-commit",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
+        "advice": "If you did not, open the file and look at its last lines.",
+        "value_text": null,
+        "technique_text": "T1546.004",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f0000001004",
+            "rule": "watched.autostart",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "autostart item",
+          "title": "A program set to start by itself on this Mac was added, changed or removed.",
+          "where_text": ".zprofile",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal right after you install, update or remove an app that works in the background.",
+        "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
+        "value_text": null,
+        "technique_text": "T1543",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f0000001005",
+            "rule": "watched.git-hook",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "git hook",
+          "title": "A script that git runs by itself in one of your projects was added, changed or removed.",
+          "where_text": "Library/LaunchAgents/org.example.agent-05.plist",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
+        "advice": "If you did not, read the script before your next commit in that project.",
+        "value_text": null,
+        "technique_text": null,
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f0000001006",
+            "rule": "watched.shell-profile",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "shell profile",
+          "title": "A file your terminal runs every time it starts was added, changed or removed.",
+          "where_text": "projects/app-06/.git/hooks/pre-commit",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
+        "advice": "If you did not, open the file and look at its last lines.",
+        "value_text": null,
+        "technique_text": "T1546.004",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f0000001007",
+            "rule": "watched.autostart",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "autostart item",
+          "title": "A program set to start by itself on this Mac was added, changed or removed.",
+          "where_text": ".zprofile",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal right after you install, update or remove an app that works in the background.",
+        "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
+        "value_text": null,
+        "technique_text": "T1543",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f0000001008",
+            "rule": "watched.git-hook",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "git hook",
+          "title": "A script that git runs by itself in one of your projects was added, changed or removed.",
+          "where_text": "Library/LaunchAgents/org.example.agent-08.plist",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
+        "advice": "If you did not, read the script before your next commit in that project.",
+        "value_text": null,
+        "technique_text": null,
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f0000001009",
+            "rule": "watched.shell-profile",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "shell profile",
+          "title": "A file your terminal runs every time it starts was added, changed or removed.",
+          "where_text": "projects/app-09/.git/hooks/pre-commit",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
+        "advice": "If you did not, open the file and look at its last lines.",
+        "value_text": null,
+        "technique_text": "T1546.004",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f000000100a",
+            "rule": "watched.autostart",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "autostart item",
+          "title": "A program set to start by itself on this Mac was added, changed or removed.",
+          "where_text": ".zprofile",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal right after you install, update or remove an app that works in the background.",
+        "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
+        "value_text": null,
+        "technique_text": "T1543",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f000000100b",
+            "rule": "watched.git-hook",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "git hook",
+          "title": "A script that git runs by itself in one of your projects was added, changed or removed.",
+          "where_text": "Library/LaunchAgents/org.example.agent-11.plist",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
+        "advice": "If you did not, read the script before your next commit in that project.",
+        "value_text": null,
+        "technique_text": null,
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f000000100c",
+            "rule": "watched.shell-profile",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "shell profile",
+          "title": "A file your terminal runs every time it starts was added, changed or removed.",
+          "where_text": "projects/app-12/.git/hooks/pre-commit",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
+        "advice": "If you did not, open the file and look at its last lines.",
+        "value_text": null,
+        "technique_text": "T1546.004",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f000000100d",
+            "rule": "watched.autostart",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "autostart item",
+          "title": "A program set to start by itself on this Mac was added, changed or removed.",
+          "where_text": ".zprofile",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal right after you install, update or remove an app that works in the background.",
+        "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
+        "value_text": null,
+        "technique_text": "T1543",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f000000100e",
+            "rule": "watched.git-hook",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "git hook",
+          "title": "A script that git runs by itself in one of your projects was added, changed or removed.",
+          "where_text": "Library/LaunchAgents/org.example.agent-14.plist",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
+        "advice": "If you did not, read the script before your next commit in that project.",
+        "value_text": null,
+        "technique_text": null,
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f000000100f",
+            "rule": "watched.shell-profile",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "shell profile",
+          "title": "A file your terminal runs every time it starts was added, changed or removed.",
+          "where_text": "projects/app-15/.git/hooks/pre-commit",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
+        "advice": "If you did not, open the file and look at its last lines.",
+        "value_text": null,
+        "technique_text": "T1546.004",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f0000001010",
+            "rule": "watched.autostart",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "autostart item",
+          "title": "A program set to start by itself on this Mac was added, changed or removed.",
+          "where_text": ".zprofile",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal right after you install, update or remove an app that works in the background.",
+        "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
+        "value_text": null,
+        "technique_text": "T1543",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f0000001011",
+            "rule": "watched.git-hook",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "git hook",
+          "title": "A script that git runs by itself in one of your projects was added, changed or removed.",
+          "where_text": "Library/LaunchAgents/org.example.agent-17.plist",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
+        "advice": "If you did not, read the script before your next commit in that project.",
+        "value_text": null,
+        "technique_text": null,
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f0000001012",
+            "rule": "watched.shell-profile",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "shell profile",
+          "title": "A file your terminal runs every time it starts was added, changed or removed.",
+          "where_text": "projects/app-18/.git/hooks/pre-commit",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
+        "advice": "If you did not, open the file and look at its last lines.",
+        "value_text": null,
+        "technique_text": "T1546.004",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f0000001013",
+            "rule": "watched.autostart",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "autostart item",
+          "title": "A program set to start by itself on this Mac was added, changed or removed.",
+          "where_text": ".zprofile",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal right after you install, update or remove an app that works in the background.",
+        "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
+        "value_text": null,
+        "technique_text": "T1543",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f0000001014",
+            "rule": "watched.git-hook",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "git hook",
+          "title": "A script that git runs by itself in one of your projects was added, changed or removed.",
+          "where_text": "Library/LaunchAgents/org.example.agent-20.plist",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
+        "advice": "If you did not, read the script before your next commit in that project.",
+        "value_text": null,
+        "technique_text": null,
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f0000001015",
+            "rule": "watched.shell-profile",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "shell profile",
+          "title": "A file your terminal runs every time it starts was added, changed or removed.",
+          "where_text": "projects/app-21/.git/hooks/pre-commit",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
+        "advice": "If you did not, open the file and look at its last lines.",
+        "value_text": null,
+        "technique_text": "T1546.004",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f0000001016",
+            "rule": "watched.autostart",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "autostart item",
+          "title": "A program set to start by itself on this Mac was added, changed or removed.",
+          "where_text": ".zprofile",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal right after you install, update or remove an app that works in the background.",
+        "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
+        "value_text": null,
+        "technique_text": "T1543",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f0000001017",
+            "rule": "watched.git-hook",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "git hook",
+          "title": "A script that git runs by itself in one of your projects was added, changed or removed.",
+          "where_text": "Library/LaunchAgents/org.example.agent-23.plist",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
+        "advice": "If you did not, read the script before your next commit in that project.",
+        "value_text": null,
+        "technique_text": null,
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f0000001018",
+            "rule": "watched.shell-profile",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "shell profile",
+          "title": "A file your terminal runs every time it starts was added, changed or removed.",
+          "where_text": "projects/app-24/.git/hooks/pre-commit",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
+        "advice": "If you did not, open the file and look at its last lines.",
+        "value_text": null,
+        "technique_text": "T1546.004",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f0000001019",
+            "rule": "watched.autostart",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "autostart item",
+          "title": "A program set to start by itself on this Mac was added, changed or removed.",
+          "where_text": ".zprofile",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal right after you install, update or remove an app that works in the background.",
+        "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
+        "value_text": null,
+        "technique_text": "T1543",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f000000101a",
+            "rule": "watched.git-hook",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "git hook",
+          "title": "A script that git runs by itself in one of your projects was added, changed or removed.",
+          "where_text": "Library/LaunchAgents/org.example.agent-26.plist",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
+        "advice": "If you did not, read the script before your next commit in that project.",
+        "value_text": null,
+        "technique_text": null,
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f000000101b",
+            "rule": "watched.shell-profile",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "shell profile",
+          "title": "A file your terminal runs every time it starts was added, changed or removed.",
+          "where_text": "projects/app-27/.git/hooks/pre-commit",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
+        "advice": "If you did not, open the file and look at its last lines.",
+        "value_text": null,
+        "technique_text": "T1546.004",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f000000101c",
+            "rule": "watched.autostart",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "autostart item",
+          "title": "A program set to start by itself on this Mac was added, changed or removed.",
+          "where_text": ".zprofile",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal right after you install, update or remove an app that works in the background.",
+        "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
+        "value_text": null,
+        "technique_text": "T1543",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f000000101d",
+            "rule": "watched.git-hook",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "git hook",
+          "title": "A script that git runs by itself in one of your projects was added, changed or removed.",
+          "where_text": "Library/LaunchAgents/org.example.agent-29.plist",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
+        "advice": "If you did not, read the script before your next commit in that project.",
+        "value_text": null,
+        "technique_text": null,
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f000000101e",
+            "rule": "watched.shell-profile",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "shell profile",
+          "title": "A file your terminal runs every time it starts was added, changed or removed.",
+          "where_text": "projects/app-30/.git/hooks/pre-commit",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
+        "advice": "If you did not, open the file and look at its last lines.",
+        "value_text": null,
+        "technique_text": "T1546.004",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f000000101f",
+            "rule": "watched.autostart",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "autostart item",
+          "title": "A program set to start by itself on this Mac was added, changed or removed.",
+          "where_text": ".zprofile",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal right after you install, update or remove an app that works in the background.",
+        "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
+        "value_text": null,
+        "technique_text": "T1543",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f0000001020",
+            "rule": "watched.git-hook",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "git hook",
+          "title": "A script that git runs by itself in one of your projects was added, changed or removed.",
+          "where_text": "Library/LaunchAgents/org.example.agent-32.plist",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
+        "advice": "If you did not, read the script before your next commit in that project.",
+        "value_text": null,
+        "technique_text": null,
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f0000001021",
+            "rule": "watched.shell-profile",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "shell profile",
+          "title": "A file your terminal runs every time it starts was added, changed or removed.",
+          "where_text": "projects/app-33/.git/hooks/pre-commit",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
+        "advice": "If you did not, open the file and look at its last lines.",
+        "value_text": null,
+        "technique_text": "T1546.004",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f0000001022",
+            "rule": "watched.autostart",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "autostart item",
+          "title": "A program set to start by itself on this Mac was added, changed or removed.",
+          "where_text": ".zprofile",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal right after you install, update or remove an app that works in the background.",
+        "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
+        "value_text": null,
+        "technique_text": "T1543",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f0000001023",
+            "rule": "watched.git-hook",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "git hook",
+          "title": "A script that git runs by itself in one of your projects was added, changed or removed.",
+          "where_text": "Library/LaunchAgents/org.example.agent-35.plist",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
+        "advice": "If you did not, read the script before your next commit in that project.",
+        "value_text": null,
+        "technique_text": null,
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f0000001024",
+            "rule": "watched.shell-profile",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "shell profile",
+          "title": "A file your terminal runs every time it starts was added, changed or removed.",
+          "where_text": "projects/app-36/.git/hooks/pre-commit",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
+        "advice": "If you did not, open the file and look at its last lines.",
+        "value_text": null,
+        "technique_text": "T1546.004",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f0000001025",
+            "rule": "watched.autostart",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "autostart item",
+          "title": "A program set to start by itself on this Mac was added, changed or removed.",
+          "where_text": ".zprofile",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal right after you install, update or remove an app that works in the background.",
+        "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
+        "value_text": null,
+        "technique_text": "T1543",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f0000001026",
+            "rule": "watched.git-hook",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "git hook",
+          "title": "A script that git runs by itself in one of your projects was added, changed or removed.",
+          "where_text": "Library/LaunchAgents/org.example.agent-38.plist",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
+        "advice": "If you did not, read the script before your next commit in that project.",
+        "value_text": null,
+        "technique_text": null,
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f0000001027",
+            "rule": "watched.shell-profile",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "shell profile",
+          "title": "A file your terminal runs every time it starts was added, changed or removed.",
+          "where_text": "projects/app-39/.git/hooks/pre-commit",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
+        "advice": "If you did not, open the file and look at its last lines.",
+        "value_text": null,
+        "technique_text": "T1546.004",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f0000001028",
+            "rule": "watched.autostart",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "autostart item",
+          "title": "A program set to start by itself on this Mac was added, changed or removed.",
+          "where_text": ".zprofile",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal right after you install, update or remove an app that works in the background.",
+        "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
+        "value_text": null,
+        "technique_text": "T1543",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f0000001029",
+            "rule": "watched.git-hook",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "git hook",
+          "title": "A script that git runs by itself in one of your projects was added, changed or removed.",
+          "where_text": "Library/LaunchAgents/org.example.agent-41.plist",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
+        "advice": "If you did not, read the script before your next commit in that project.",
+        "value_text": null,
+        "technique_text": null,
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f000000102a",
+            "rule": "watched.shell-profile",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "shell profile",
+          "title": "A file your terminal runs every time it starts was added, changed or removed.",
+          "where_text": "projects/app-42/.git/hooks/pre-commit",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
+        "advice": "If you did not, open the file and look at its last lines.",
+        "value_text": null,
+        "technique_text": "T1546.004",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f000000102b",
+            "rule": "watched.autostart",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "autostart item",
+          "title": "A program set to start by itself on this Mac was added, changed or removed.",
+          "where_text": ".zprofile",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal right after you install, update or remove an app that works in the background.",
+        "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
+        "value_text": null,
+        "technique_text": "T1543",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f000000102c",
+            "rule": "watched.git-hook",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "git hook",
+          "title": "A script that git runs by itself in one of your projects was added, changed or removed.",
+          "where_text": "Library/LaunchAgents/org.example.agent-44.plist",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
+        "advice": "If you did not, read the script before your next commit in that project.",
+        "value_text": null,
+        "technique_text": null,
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f000000102d",
+            "rule": "watched.shell-profile",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "shell profile",
+          "title": "A file your terminal runs every time it starts was added, changed or removed.",
+          "where_text": "projects/app-45/.git/hooks/pre-commit",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
+        "advice": "If you did not, open the file and look at its last lines.",
+        "value_text": null,
+        "technique_text": "T1546.004",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f000000102e",
+            "rule": "watched.autostart",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "autostart item",
+          "title": "A program set to start by itself on this Mac was added, changed or removed.",
+          "where_text": ".zprofile",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal right after you install, update or remove an app that works in the background.",
+        "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
+        "value_text": null,
+        "technique_text": "T1543",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f000000102f",
+            "rule": "watched.git-hook",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "git hook",
+          "title": "A script that git runs by itself in one of your projects was added, changed or removed.",
+          "where_text": "Library/LaunchAgents/org.example.agent-47.plist",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
+        "advice": "If you did not, read the script before your next commit in that project.",
+        "value_text": null,
+        "technique_text": null,
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f0000001030",
+            "rule": "watched.shell-profile",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "shell profile",
+          "title": "A file your terminal runs every time it starts was added, changed or removed.",
+          "where_text": "projects/app-48/.git/hooks/pre-commit",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
+        "advice": "If you did not, open the file and look at its last lines.",
+        "value_text": null,
+        "technique_text": "T1546.004",
+        "change": "changed",
+        "evidence": null
+      },
+      {
+        "finding": {
+          "finding": {
+            "id": "f0000001031",
+            "rule": "watched.autostart",
+            "about_text": "",
+            "state": "open",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "kind": "autostart item",
+          "title": "A program set to start by itself on this Mac was added, changed or removed.",
+          "where_text": ".zprofile",
+          "first_seen_at": 1794304820,
+          "last_seen_at": 1794304820,
+          "answer": null,
+          "verdicts": null
+        },
+        "meaning": "This is normal right after you install, update or remove an app that works in the background.",
+        "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",
+        "value_text": null,
+        "technique_text": "T1543",
+        "change": "changed",
+        "evidence": null
+      }
+    ],
+    "total": 57,
+    "urgent_total": 0
+  }
 }

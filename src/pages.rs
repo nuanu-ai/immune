@@ -8,6 +8,7 @@
 //!
 //! Text from the store goes through `esc`, as on every page of the view.
 
+use crate::contract::v1;
 use crate::covered::{self, Count, NOTHING, Uncovered, YOU};
 use crate::view::{self, DETAILS, FOOT, Latest, Out, counted, esc, utc, utc_or};
 use crate::{beyond, findings, integrity, servers, watched};
@@ -119,7 +120,7 @@ fn about(what: &str) -> &'static str {
 pub fn summary(
     conn: &Connection,
     st: &crate::status::State,
-    r: &serde_json::Value,
+    r: &v1::Status,
     now: i64,
 ) -> Result<String, Box<dyn Error>> {
     let mut out = view::head("What needs a look").replacen("<body>", "<body class=\"summary\">", 1);
@@ -137,6 +138,7 @@ pub fn summary(
     // "None on this Mac now" only where every reading that fills its list is full and fresh,
     // as on the page of this Mac (`unread`); else it is said not to be known.
     let latest_run = crate::status::latest_finished(conn)?.map(|r| r.started_at);
+    let this = covered::this_machine(conn)?;
     let (unread_kinds, none): (Vec<&'static str>, Vec<&'static str>) =
         covered::none_here(conn, &latest, &st.this_mac)?
             .into_iter()
@@ -145,7 +147,8 @@ pub fn summary(
                     .into_iter()
                     .find(|w| w.1 == *what)
                     .is_some_and(|(count, _, _)| {
-                        unread(&readings_of(count, &latest), latest_run, now, &[]).is_some()
+                        let walk = walk_gap(count, &latest, this.as_deref());
+                        unread(&readings_of(count, &latest), latest_run, now, &walk).is_some()
                     })
             });
     watched_section(
@@ -156,7 +159,7 @@ pub fn summary(
         list,
         st.event_level.as_ref(),
     )?;
-    crate::happens::draw(&mut out, st, &r["rules"], now)?;
+    crate::happens::draw(&mut out, st, &r.rules.clone().unwrap_or_default(), now)?;
     out.push_str("<div class=\"card closed\">\n");
     limits(conn, &mut out, st)?;
     answered_section(conn, &mut out, now)?;
@@ -184,13 +187,8 @@ const GLYPH_UNKNOWN: &str = "<svg class=\"glyph\" viewBox=\"0 0 64 64\" aria-hid
 
 /// The state, first: the glyph, the headline as the status words it, and one line on this Mac:
 /// whether it is watched, which machine, the last full check and whether a watcher runs.
-fn state(
-    conn: &Connection,
-    out: &mut String,
-    st: &crate::status::State,
-    r: &serde_json::Value,
-) -> Out {
-    let total = r["needs_a_look_total"].as_i64();
+fn state(conn: &Connection, out: &mut String, st: &crate::status::State, r: &v1::Status) -> Out {
+    let total = r.needs_a_look.as_ref().map(|n| n.total as i64);
     let headline = match total {
         Some(0) => "Nothing needs a look".to_string(),
         Some(n) => counted(n, "thing needs a look", "things need a look"),
@@ -256,9 +254,9 @@ fn state(
         writeln!(out, "<p class=\"sub\">{why}</p>")?;
     }
     // Why what needs a look is not known yet, in the program's own words.
-    for n in r["not_computed"].as_array().into_iter().flatten() {
-        if n["section"] == "needs_a_look" {
-            let why = capital(n["reason"].as_str().unwrap_or_default());
+    for n in &r.not_computed {
+        if n.section == "needs_a_look" {
+            let why = capital(&n.reason);
             writeln!(out, "<p class=\"meta\">{}.</p>", esc(&why))?;
         }
     }
@@ -319,20 +317,12 @@ fn tile(out: &mut String, t: &Tile) -> Out {
     Ok(())
 }
 
-/// `2026-11-12T10:00:00Z` as `2026-11-12 10:00 UTC`.
-fn iso_shown(iso: &str) -> String {
-    match (iso.get(..10), iso.get(11..16)) {
-        (Some(date), Some(time)) => format!("{date} {time} UTC"),
-        _ => iso.to_string(),
-    }
-}
-
 /// Four tiles: this Mac, projects, servers, threat data. Every number is one the status or the
 /// map already has.
 fn tiles(
     out: &mut String,
     st: &crate::status::State,
-    r: &serde_json::Value,
+    r: &v1::Status,
     map: &crate::map::Map,
 ) -> Out {
     out.push_str("<div class=\"tiles\">\n");
@@ -379,8 +369,7 @@ fn tiles(
             },
         },
     )?;
-    let e = &r["estate"];
-    let n = |key: &str| e[key].as_i64().unwrap_or_default();
+    let e = r.estate.clone().unwrap_or_default();
     let not_checked = map
         .servers
         .iter()
@@ -393,7 +382,7 @@ fn tiles(
             &Tile {
                 id: "t-servers",
                 href: format!("{DETAILS}/{BEYOND}.html#servers"),
-                label: match n("servers") {
+                label: match e.servers {
                     0 => "Servers: none known".to_string(),
                     all => format!("Servers: {all}"),
                 },
@@ -401,11 +390,11 @@ fn tiles(
                 name: "Servers",
                 look: map.on_servers,
                 quiet: (not_checked > 0).then(|| format!("{not_checked} not checked")),
-                value: grouped(n("servers")),
+                value: grouped(e.servers as i64),
                 line: match (
-                    n("servers"),
-                    n("servers_in_last_check"),
-                    n("servers_checked_in_last_check"),
+                    e.servers,
+                    e.servers_in_last_check,
+                    e.servers_checked_in_last_check,
                 ) {
                     (0, _, _) => "none known".to_string(),
                     (_, 0, _) => "the server check has not been run".to_string(),
@@ -418,24 +407,25 @@ fn tiles(
     }
     // The sources of threat data: each feed of known vulnerabilities, and the list of
     // vulnerabilities attackers are using.
-    let feeds = r["vulnerabilities"]["feeds"]
-        .as_array()
-        .cloned()
+    let feeds = r
+        .vulnerabilities
+        .as_ref()
+        .map(|v| v.feeds.clone())
         .unwrap_or_default();
-    let catalogue = &r["threats"];
+    let catalogue = r.threats.clone().unwrap_or_default();
     let total = feeds.len() + 1;
-    let current = feeds.iter().filter(|f| f["current"] == true).count()
+    let current = feeds.iter().filter(|f| f.current).count()
         + usize::from(matches!(
-            catalogue["outcome"].as_str(),
-            Some("read" | "unchanged")
+            v1::FeedOutcome::try_from(catalogue.outcome),
+            Ok(v1::FeedOutcome::Read | v1::FeedOutcome::Unchanged)
         ));
     let last = feeds
         .iter()
-        .map(|f| &f["read_at"])
-        .chain([&catalogue["read_at"]])
-        .filter_map(|v| v.as_str())
+        .map(|f| f.read_at)
+        .chain([catalogue.read_at])
+        .flatten()
         .max()
-        .map(iso_shown);
+        .map(utc);
     tile(
         out,
         &Tile {
@@ -457,8 +447,8 @@ fn tiles(
     Ok(())
 }
 
-/// What needs a look, one card per finding, the most urgent first as the status orders them;
-/// only when there is any.
+/// What needs a look, one card per finding, urgent first and then the most severe, as
+/// `findings::order` orders them; only when there is any.
 fn needs(out: &mut String, st: &crate::status::State) -> Out {
     let items = &st.needs.items;
     if items.is_empty() {
@@ -474,9 +464,18 @@ fn needs(out: &mut String, st: &crate::status::State) -> Out {
     }
     out.push_str("</div>\n");
     if items.len() > ITEMS_SHOWN {
+        // Urgent ones come first, so the rest are the mildest unless urgent ones overflow.
+        let urgent = items[ITEMS_SHOWN..]
+            .iter()
+            .filter(|i| findings::urgent(i.severity, i.confidence))
+            .count();
+        let which = match urgent {
+            0 => "the mildest".to_string(),
+            u => format!("{} of them urgent", grouped(u as i64)),
+        };
         writeln!(
             out,
-            "<p class=\"meta\">{} more, the mildest; <span class=\"mono\">immune status --json</span> and <span class=\"mono\">immune findings</span> list them.</p>",
+            "<p class=\"meta\">{} more, {which}; <span class=\"mono\">immune findings</span> lists them.</p>",
             items.len() - ITEMS_SHOWN
         )?;
     }
@@ -1323,32 +1322,27 @@ fn projects(conn: &Connection, this: Option<&str>) -> rusqlite::Result<Vec<(Stri
 /// each, saying what it is, how much it holds, when it was read and whether that is current,
 /// and what it is compared with here. A source never read or not current says so, and nothing
 /// says it was compared.
-pub fn threat_data(
-    conn: &Connection,
-    r: &serde_json::Value,
-    now: i64,
-) -> Result<String, Box<dyn Error>> {
+pub fn threat_data(conn: &Connection, r: &v1::Status, now: i64) -> Result<String, Box<dyn Error>> {
     let mut out = top(THREAT_DATA_TITLE, &format!("This page made {}", utc(now)));
-    let fresh = r["vulnerabilities"]["feeds"]
-        .as_array()
-        .cloned()
+    let fresh = r
+        .vulnerabilities
+        .as_ref()
+        .map(|v| v.feeds.clone())
         .unwrap_or_default();
-    let held = |source: &str| -> serde_json::Value {
-        r["vulnerability_data"]["feeds"]
-            .as_array()
-            .and_then(|l| l.iter().find(|f| f["source"] == source).cloned())
+    let held = |source: &str| -> v1::FeedState {
+        r.vulnerability_data
+            .as_ref()
+            .and_then(|d| d.feeds.iter().find(|f| f.source == source).cloned())
             .unwrap_or_default()
     };
+    let entries = r.threats.as_ref().and_then(|t| t.entries);
     // The scale: only counts the program has, and none where a source was never read.
     let read: Vec<(&str, i64)> = fresh
         .iter()
-        .filter(|f| f["read_at"].is_string())
-        .filter_map(|f| {
-            let source = f["source"].as_str()?;
-            Some((
-                f["ecosystem"].as_str().unwrap_or(source),
-                held(source)["records"].as_i64().unwrap_or_default(),
-            ))
+        .filter(|f| f.read_at.is_some())
+        .map(|f| {
+            let records = held(&f.source).records.unwrap_or_default();
+            (f.ecosystem.as_str(), records as i64)
         })
         .collect();
     // A count, big, and what it counts beside it.
@@ -1360,9 +1354,9 @@ pub fn threat_data(
         )
     };
     out.push_str("<div class=\"scale\">\n");
-    match r["threats"]["entries"].as_i64() {
+    match entries {
         Some(n) => out.push_str(&figure(
-            n,
+            n as i64,
             "vulnerability known to be used in real attacks",
             "vulnerabilities known to be used in real attacks",
         )),
@@ -1384,7 +1378,7 @@ pub fn threat_data(
     }
     out.push_str("</div>\n");
     // The two side by side are explained only where both are counts.
-    if r["threats"]["entries"].is_i64() && !read.is_empty() {
+    if entries.is_some() && !read.is_empty() {
         out.push_str("<p class=\"muted\">The first is the short list of what attackers are known to use. The second is every record the program holds from OSV, the open database of published vulnerabilities, for the packages named; most of them are never used in an attack.</p>\n");
     }
 
@@ -1392,8 +1386,8 @@ pub fn threat_data(
 
     let compared = crate::vulnerabilities::catalogue_compared(conn)?;
     for f in &fresh {
-        let source = f["source"].as_str().unwrap_or_default();
-        let eco = f["ecosystem"].as_str().unwrap_or(source);
+        let source = f.source.as_str();
+        let eco = f.ecosystem.as_str();
         let h = held(source);
         let asked = crate::osv::FEEDS
             .iter()
@@ -1407,38 +1401,31 @@ pub fn threat_data(
             esc(eco),
             esc(asked)
         )?;
-        let at = f["read_at"].as_str();
-        if let Some(at) = at {
+        let at = f.read_at;
+        // Counts exist only for a feed read whole.
+        if let (Some(at), Some(records)) = (at, h.records) {
             writeln!(
                 out,
                 "<p class=\"facts\"><strong>{}</strong> {}, {} among them · last read {}{}</p>",
-                grouped(h["records"].as_i64().unwrap_or_default()),
-                if h["records"] == 1 {
-                    "record"
-                } else {
-                    "records"
-                },
+                grouped(records as i64),
+                if records == 1 { "record" } else { "records" },
                 counted(
-                    h["malicious_records"].as_i64().unwrap_or_default(),
+                    h.malicious_records.unwrap_or_default() as i64,
                     "malicious package",
                     "malicious packages"
                 ),
-                esc(&iso_shown(at)),
-                if f["current"] == true {
-                    " · current"
-                } else {
-                    ""
-                }
+                esc(&utc(at)),
+                if f.current { " · current" } else { "" }
             )?;
         }
-        let said = match (at, f["current"] == true) {
+        let said = match (at, f.current) {
             (None, _) => format!(
                 "<p class=\"quiet\">Never read, so none of your {} packages is compared with it.</p>",
                 esc(eco)
             ),
             (Some(_), false) => format!(
                 "<p class=\"quiet\">Not current: {}. Until it is read again, a {} package it says nothing about is not known to be clear.</p>",
-                esc(f["not_current_why"].as_str().unwrap_or("no reason given")),
+                esc(f.not_current_why.as_deref().unwrap_or("no reason given")),
                 esc(eco)
             ),
             (Some(_), true) if compared.contains(&eco) => format!(
@@ -1476,57 +1463,20 @@ const PLACED: [(&str, &str, &str); 3] = [
     ),
 ];
 
-/// What the published rules are and how many of them watch this Mac, from the status's part
-/// `rules`: none while the event level does not run; while it runs, those evaluated in full,
-/// never one evaluated in part, and whether they judged every start of the last day. The
-/// summary, the rules page and `immune rules` say it in these words.
-pub fn rules_said(r: &serde_json::Value) -> String {
-    let head = crate::sigma::Rules::shipped().sources_said();
-    if r["watching"] != true {
-        return format!(
-            "{head} Once the event level is on, every program start on this Mac is checked against them. It is not on, so none of them is watching."
-        );
-    }
-    let n = |key: &str| r[key].as_i64().unwrap_or(0);
-    let files = n("file_rules");
-    let mut said = if r["file_events_collected"] == true {
-        let watching_files = n("watching_file_rules");
-        format!(
-            "{head} The event level is on, so {} of them are watching this Mac: {} every program start and {watching_files} every file created or renamed; {} more are checked in part. In the last day they matched {}.",
-            n("watching_rules"),
-            n("watching_rules") - watching_files,
-            n("in_part"),
-            crate::sigma::times(n("matches_last_day"))
-        )
-    } else {
-        format!(
-            "{head} The event level is on, so {} of them are watching every program start on this Mac, and {} more are checked in part. The {files} rules for files created or renamed are not watching: the collector installed here records program starts only, and installing the event level again adds file events. In the last day they matched {}.",
-            n("watching_rules"),
-            n("in_part"),
-            crate::sigma::times(n("matches_last_day"))
-        )
-    };
-    if let Some(note) = r["judged_note"].as_str() {
-        said.push(' ');
-        said.push_str(note);
-    }
-    said
-}
-
 /// Every published rule this build ships, for a person: by place, then by level, the most
 /// severe first. Each with its title, its level, what it looks for in its author's words, its
 /// ATT&CK techniques and its authors, and, where it is not checked in full, what is missing.
 /// Everything from a rule file is the rule's own text, each in an element of its own. The
 /// counts at the top are the status's; how many times each rule matched in the last day is
 /// the event level's, `events`.
-pub fn rules(r: &serde_json::Value, events: Option<&crate::events::Level>, now: i64) -> String {
+pub fn rules(r: &v1::RulesNow, events: Option<&crate::events::Level>, now: i64) -> String {
     rules_page(crate::sigma::Rules::shipped(), r, events, now)
 }
 
 /// The rules page for these rules.
 fn rules_page(
     shipped: &crate::sigma::Rules,
-    r: &serde_json::Value,
+    r: &v1::RulesNow,
     events: Option<&crate::events::Level>,
     now: i64,
 ) -> String {
@@ -1543,16 +1493,14 @@ fn rules_page(
         RULES_TITLE,
         &format!("From {} · this page made {}", from.join("; "), utc(now)),
     );
-    let r = &r["rules"];
     let mut w = |s: String| out.push_str(&s);
     w(format!(
         "<p>{}</p>\n<div class=\"scale\">\n",
-        esc(&rules_said(r))
+        esc(&crate::text::rules_said(&shipped.sources_said(), r))
     ));
-    for ((anchor, title, _), key) in PLACED.iter().zip(["evaluated", "in_part", "not_evaluated"]) {
+    for ((anchor, title, _), n) in PLACED.iter().zip([r.evaluated, r.in_part, r.not_evaluated]) {
         w(format!(
-            "<p><span class=\"num\">{}</span> <a href=\"#{anchor}\">{}</a></p>\n",
-            r[key],
+            "<p><span class=\"num\">{n}</span> <a href=\"#{anchor}\">{}</a></p>\n",
             esc(title)
         ));
     }
@@ -1611,11 +1559,10 @@ fn rules_page(
             // that reads what a collector may keep only while values of it arrive; while the
             // level runs and they do not, the rule says so by name, with which.
             let file_rule = l.kind == Some(sigma::Kind::File);
-            let files_unwatched = file_rule && r["file_events_collected"] != true;
+            let on = r.watching == Some(true);
+            let files_unwatched = file_rule && r.file_events_collected != Some(true);
             let not_arriving = events
-                .filter(|e| {
-                    r["watching"] == true && !files_unwatched && l.silenced_by(e.not_arriving())
-                })
+                .filter(|e| on && !files_unwatched && l.silenced_by(e.not_arriving()))
                 .map(|e| e.arrivals.worst(l.needs & e.not_arriving()));
             let unwatched = files_unwatched || not_arriving.is_some();
             if matched > 0 {
@@ -1623,13 +1570,10 @@ fn rules_page(
                     "<p class=\"meta\">Matched {} in the last day.</p>\n",
                     sigma::times(matched)
                 ));
-            } else if r["watching"] == true
-                && !unwatched
-                && !matches!(l.placement, Placement::NotEvaluated(_))
-            {
+            } else if on && !unwatched && !matches!(l.placement, Placement::NotEvaluated(_)) {
                 w("<p class=\"meta\">No match in the last day.</p>\n".to_string());
             }
-            if files_unwatched && r["watching"] == true && l.placement == Placement::Evaluated {
+            if files_unwatched && on && l.placement == Placement::Evaluated {
                 w("<p class=\"missing\">Not watching on this Mac: the collector installed here records program starts only. Installing the event level again adds files created and renamed.</p>\n".to_string());
             }
             match not_arriving {
@@ -1818,6 +1762,18 @@ fn unread(
     })
 }
 
+/// What a list of a kind of watched thing rests on beside its own readings: for a kind kept in
+/// projects, the walk that finds them (`covered::projects_gap`), so that no "none" is said of
+/// projects the walk did not find.
+fn walk_gap(count: Count, latest: &[Latest], this: Option<&str>) -> Vec<String> {
+    covered::in_projects(count)
+        .then(|| covered::projects_gap(latest, this))
+        .flatten()
+        .map(str::to_string)
+        .into_iter()
+        .collect()
+}
+
 /// The readings that fill the list of a kind of watched thing on this Mac: of files, every
 /// kind of place watched as it; of installed things, that kind; of the packages projects
 /// depend on, finding the projects and reading their lockfiles.
@@ -1943,7 +1899,8 @@ pub fn this_mac(
         told(&mut out, &covered::rules_about(what))?;
         match count {
             Count::Files(as_) => {
-                let gap = unread(&readings_of(count, &st.coverage), latest_run, now, &[]);
+                let walk = walk_gap(count, &st.coverage, this);
+                let gap = unread(&readings_of(count, &st.coverage), latest_run, now, &walk);
                 files(conn, &mut out, as_, this, gap.as_deref())?
             }
             Count::Installed(kind) => {
@@ -1965,7 +1922,11 @@ pub fn this_mac(
                     out,
                     "<p>Your projects on this Mac depend on {} packages, each counted once per project; each project and its count are under Projects below. <a href=\"{VULNERABILITIES}.html\">Known vulnerabilities in them</a> are listed by project.</p>",
                     grouped(n)
-                )?
+                )?;
+                // The count is of the projects found: what the walk left out is said under it.
+                let walk = walk_gap(count, &st.coverage, this);
+                let gap = unread(&readings_of(count, &st.coverage), latest_run, now, &walk);
+                coverage_of_list(&mut out, gap.as_deref(), false, "");
             }
         }
         out.push_str("</section>\n");
@@ -2725,8 +2686,7 @@ mod tests {
         };
         let level = |arrivals| level_as(RUNNING, true, arrivals);
         let page = |l: &Level| {
-            let r =
-                serde_json::json!({ "rules": crate::status::rules_section_of(&rules, Some(l)) });
+            let r = crate::status::rules_now_of(&rules, Some(l));
             rules_page(&rules, &r, Some(l), 0)
         };
         let said = "Not watching on this Mac: it reads what the collector installed here does not keep. Installing the event level again adds it.";
@@ -2761,11 +2721,11 @@ mod tests {
         );
         assert!(!unknown.contains("No match in the last day"), "{unknown}");
         // The count at the top counts neither among the rules watching file events.
-        let r = crate::status::rules_section_of(&rules, Some(&level(sig(Arrival::NotKept))));
+        let r = crate::status::rules_now_of(&rules, Some(&level(sig(Arrival::NotKept))));
+        let said_now = crate::text::rules_said("", &r);
         assert!(
-            rules_said(&r).contains("0 every program start and 0 every file created or renamed"),
-            "{}",
-            rules_said(&r)
+            said_now.contains("0 every program start and 0 every file created or renamed"),
+            "{said_now}"
         );
         let now = page(&level(sig(on)));
         assert!(!now.contains(said), "{now}");
@@ -2784,8 +2744,7 @@ mod tests {
         // The same for a rule about program starts, which no change of file events covers.
         let starts = crate::sigma::testing::process_kept();
         let page = |l: &Level| {
-            let r =
-                serde_json::json!({ "rules": crate::status::rules_section_of(&starts, Some(l)) });
+            let r = crate::status::rules_now_of(&starts, Some(l));
             rules_page(&starts, &r, Some(l), 0)
         };
         let earlier = page(&level(script(Arrival::NotKept)));

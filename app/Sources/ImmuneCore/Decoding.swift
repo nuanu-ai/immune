@@ -1,12 +1,15 @@
-// All decoding of what `immune ... --json` prints lives in this one file, so a change
-// of shape is cheap. Every field is optional: a missing field becomes nil and is shown as
-// "not reported", never as zero or as fine. A field or a list entry that is there with
-// another type is not missing: it is recorded (`Misfits`), and an answer with one is not
-// read as a smaller valid one: the status says it cannot tell, the opened finding fails.
-// Unknown fields are ignored. The shape is the one `src/status.rs` writes.
+// All decoding of what `immune status --json` and `immune watch` print lives in this one file,
+// so a change of shape is cheap. The status is the contract's `Status`
+// (`contract/immune/v1/status.proto`), a failure its `Failure`. Every field is optional: a
+// missing field becomes nil and is shown as "not reported", never as zero or as fine. A field or
+// a list entry that is there with another type is not missing: it is recorded (`Misfits`), and
+// an answer with one is not read as a smaller valid one: the status says it cannot tell, the
+// opened finding fails. Unknown fields are ignored. Times are whole seconds since the epoch.
 
 import Foundation
 
+/// What `immune status --json` printed: the contract's `Status`, or its `Failure`. `ok` is
+/// false for a failure, true for an object that is a `Status`, and nil for any other object.
 public struct Envelope: Sendable, Equatable {
   public var format: Int?
   public var operation: String?
@@ -36,15 +39,17 @@ public struct Status: Sendable, Equatable {
   public var cannotJudge: [String]?
   public var noReaderFor: [NoReader]?
   public var notComputed: [NotComputed]?
-  /// What needs the owner's look, as Immune serves it, in its order; at most 50.
+  /// What needs the owner's look, as Immune serves it, urgent first, then most severe; at most 50
+  /// of the core's findings and 50 of the response layer's.
   public var needsALook: [Item]?
   public var needsALookTotal: Int?
+  /// How many of all of them Immune marked urgent, listed or not.
+  public var needsALookUrgent: Int?
   public var answersNote: String?
   /// Whether this Mac is watched, and how.
   public var thisMac: ThisMac?
   /// What the program does not cover, a handful of items in its fixed words.
   public var notCovered: [Uncovered]?
-  public var notCoveredTotal: Int?
   /// Answers that hide a finding now and were not given in the app.
   public var answeredOutsideApp: AnsweredOutside?
   /// The owner's statements that set a machine aside and were not given in the app.
@@ -106,6 +111,8 @@ public struct Verdict: Sendable, Equatable {
   public var kind: String?
   public var said: String?
   public var reasonText: String?
+  /// What Immune cut out of the reason.
+  public var reasonCuts: [Contract.Cut] = []
   /// For a finding of the core: how many verdicts name it, how many of them are `suspicious`, and
   /// the id of its `verdict.suspicious` finding while one is open or expected. Nil for a
   /// `verdict.suspicious` finding, and from an Immune that does not give them.
@@ -125,8 +132,11 @@ public struct PublishedRule: Sendable, Equatable {
   /// `rename`. Absent for a program start.
   public var fileText: String? = nil
   public var action: String? = nil
-  /// The latest start's arguments, each whole as Immune gives it; nil when not given.
+  /// The latest start's arguments, each whole as Immune gives it but for a secret it cut, which
+  /// shows as Immune's mark; nil when not given.
   public var argsText: [String]? = nil
+  /// What Immune cut out of them.
+  public var cuts: [Contract.Cut] = []
   /// The folder it was started in, and who signed it.
   public var workingDirectoryText: String? = nil
   public var signingIdText: String? = nil
@@ -161,6 +171,8 @@ public struct StatementItem: Sendable, Equatable {
   public var via: String?
   public var at: Date?
   public var reasonText: String?
+  /// What Immune cut out of the reason.
+  public var reasonCuts: [Contract.Cut] = []
 }
 
 /// The answers given outside the app that are in force: Immune's total and the latest few.
@@ -181,6 +193,8 @@ public struct AnsweredItem: Sendable, Equatable {
   public var at: Date?
   public var reasonText: String?
   public var whereText: String?
+  /// What Immune cut out of the reason.
+  public var reasonCuts: [Contract.Cut] = []
 }
 
 /// The state of this Mac as Immune judges it.
@@ -192,6 +206,14 @@ public struct ThisMac: Sendable, Equatable {
   /// The last full check.
   public var checkedAt: Date?
   public var watched: [WatchedPart]?
+  /// Immune says what it answers is fresh: its last finished check is recent enough. Missing,
+  /// or not a boolean, is nil: not said, which is never calm.
+  public var fresh: Bool? = nil
+  /// Why it is not fresh, in Immune's words.
+  public var staleReason: String? = nil
+  /// How long after the last full check Immune calls what it knows fresh, in seconds. A status
+  /// held longer than that after its check is old, whatever it said when it was read.
+  public var freshFor: Int? = nil
 }
 
 /// One kind of place on this Mac that is watched: the program's words, how many,
@@ -220,6 +242,12 @@ public struct Uncovered: Sendable, Equatable {
   public var who: String?
   /// The first few things it is about, such as paths, each as data.
   public var examplesText: [String]? = nil
+  /// `every_mac` for a limit of this version that holds on every Mac; anything else, or
+  /// missing, is of this Mac and is shown.
+  public var holdsOn: String? = nil
+
+  /// A limit of this version, the same on every Mac: left out of what a person is shown.
+  public var everyMac: Bool { holdsOn == "every_mac" }
 }
 
 /// One thing that needs a look: a finding the owner can answer. (Health items have
@@ -426,25 +454,42 @@ public enum Decoding {
   /// The envelope format this app understands.
   public static let knownFormat = 1
 
+  /// The status, or the failure printed in its place. An object that is neither is taken as
+  /// neither: no result, and `ok` not said.
   public static func envelope(from data: Data) -> Result<Envelope, DecodeFailure> {
     guard let any = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
     else { return .failure(.notJSON) }
     guard any is [String: Any] else { return .failure(.notAnObject) }
     let misfits = Misfits()
     let j = J(any, misfits: misfits)
-    var envelope = Envelope(
-      format: j["format"].count,
-      operation: j["operation"].string,
-      ok: j["ok"].bool,
-      errors: (j["errors"].array ?? []).map {
-        ImmuneError(
-          code: $0["code"].string, message: $0["message"].string,
-          example: $0["example"].string, detailText: $0["detail_text"].string)
-      },
-      result: j["result"].object.map(status)
-    )
-    envelope.result?.misfits = misfits.paths
-    return .success(envelope)
+    // The contract's `Failure`: `ok` false and its errors. `ok` is never in a `Status`, so an
+    // object with `ok` of any other value is neither.
+    if j["ok"].isPresent {
+      return .success(
+        Envelope(
+          format: Self.knownFormat, operation: j["operation"].string,
+          ok: j["ok"].bool == false ? false : nil, errors: (j["errors"].array ?? []).map(error),
+          result: nil))
+    }
+    // Only the message asked for is a status: anything else, such as a `Finding`, is not read
+    // as an empty one.
+    guard isStatus(j) else {
+      return .success(
+        Envelope(format: j["format"].count, operation: nil, ok: nil, errors: [], result: nil))
+    }
+    var status = status(j)
+    // Errors beside a status, which the contract never prints, are kept so the app says it
+    // cannot tell. Read after the status, so a misfit anywhere is recorded.
+    let errors = (j["errors"].array ?? []).map(error)
+    status.misfits = misfits.paths
+    return .success(
+      Envelope(format: j["format"].count, operation: nil, ok: true, errors: errors, result: status))
+  }
+
+  /// A `Status`: of a format, answered at a time, with its store. Anything else, such as a
+  /// `Finding`, is not taken for one.
+  static func isStatus(_ j: J) -> Bool {
+    j["format"].count != nil && j["answered_at"].int64 != nil && j["store"].object != nil
   }
 
   /// One line of `immune watch`, or nil when it is not understood.
@@ -479,8 +524,9 @@ public enum Decoding {
   }
 
   static func status(_ r: J) -> Status {
-    Status(
-      generatedAt: r["generated_at"].date,
+    let look = r["needs_a_look"].object
+    return Status(
+      generatedAt: r["answered_at"].seconds,
       running: r["running"].bool,
       store: r["store"].object.map {
         Store(
@@ -493,18 +539,14 @@ public enum Decoding {
               return (name, path)
             }, uniquingKeysWith: { first, _ in first }))
       },
-      lastRun: r["last_run"].object.map {
-        LastRun(
-          id: $0["id"].string, startedAt: $0["started_at"].date,
-          finishedAt: $0["finished_at"].date, finished: $0["finished"].bool)
-      },
+      lastRun: r["last_run"].object.map(checkMark),
       lastFinishedRun: r["last_finished_run"].object.map(finishedRun),
       estate: r["estate"].object.map {
         Estate(
           machines: $0["machines"].count, servers: $0["servers"].count,
           serversOffered: $0["servers_offered"].count, serversRead: $0["servers_read"].count,
           machinesSetAside: $0["machines_set_aside"].count,
-          machinesSeenAfterOwnerWord: $0["machines_seen_after_owner_word"].count,
+          machinesSeenAfterOwnerWord: $0["machines_seen_after_owner_word_text"].array?.count,
           checkouts: $0["checkouts"].count, components: $0["components"].count)
       },
       watched: r["watched"].object.map(watched),
@@ -513,12 +555,12 @@ public enum Decoding {
           source: $0["source"].string, outcome: $0["outcome"].string,
           entries: $0["entries"].count, firstReading: $0["first_reading"].bool,
           new: $0["new"].count, gone: $0["gone"].count, matched: $0["matched"].bool,
-          readAt: $0["read_at"].date, checkedAt: $0["checked_at"].date,
+          readAt: $0["read_at"].seconds, checkedAt: $0["checked_at"].seconds,
           reasonText: $0["reason_text"].string)
       },
       coverage: r["coverage"].object.map(coverage),
       cannotJudge: r["cannot_judge"].array?.compactMap(\.string),
-      noReaderFor: r["no_reader_for"].array?.compactMap { n in
+      noReaderFor: r["no_reader_for"]["items"].array?.compactMap { n in
         n.object.map {
           NoReader(
             what: $0["what"].string, whatText: $0["what_text"].string,
@@ -528,37 +570,42 @@ public enum Decoding {
       notComputed: r["not_computed"].array?.compactMap { n in
         n.object.map { NotComputed(section: $0["section"].string, reason: $0["reason"].string) }
       },
-      needsALook: r["needs_a_look"].array?.compactMap { i in i.object.map(item) },
-      needsALookTotal: r["needs_a_look_total"].count,
+      needsALook: look?["items"].array?.compactMap { i in i.object.map(item) },
+      needsALookTotal: look?["total"].count,
+      needsALookUrgent: look?["urgent_total"].count,
       answersNote: r["answers_note"].string,
       thisMac: r["this_mac"].object.map { m in
         ThisMac(
-          state: m["state"].string, live: m["live"].bool, checkedAt: m["checked_at"].date,
+          state: m["state"].string, live: m["live"].bool, checkedAt: m["checked_at"].seconds,
           watched: m["watched"].array?.compactMap { w in
             w.object.map {
               WatchedPart(what: $0["what"].string, count: $0["count"].count, how: $0["how"].string)
             }
-          })
+          }, fresh: m["fresh"].bool, staleReason: m["stale_reason"].string,
+          freshFor: m["fresh_for_seconds"].count)
       },
       notCovered: r["not_covered"].array?.compactMap { n in
         n.object.map {
           Uncovered(
             id: $0["id"].string, scope: $0["scope"].string, kind: $0["kind"].string,
             title: $0["title"].string, meaning: $0["meaning"].string, advice: $0["advice"].string,
-            count: $0["count"].count, since: $0["since"].date, valueText: $0["value_text"].string,
-            who: $0["who"].string, examplesText: $0["examples_text"].array?.compactMap(\.string))
+            count: $0["count"].count, since: $0["since_at"].seconds,
+            valueText: $0["value_text"].string, who: $0["who"].string,
+            examplesText: $0["examples_text"].array?.compactMap(\.string),
+            holdsOn: $0["holds_on"].string)
         }
       },
-      notCoveredTotal: r["not_covered_total"].count,
       answeredOutsideApp: r["answered_outside_app"].object.map { a in
         AnsweredOutside(
           total: a["total"].count,
           items: (a["items"].array ?? []).compactMap { i in
             i.object.map {
               AnsweredItem(
-                id: $0["id"].string, title: $0["title"].string, answer: $0["answer"].string,
-                until: $0["until"].date, via: $0["via"].string, at: $0["at"].date,
-                reasonText: $0["reason_text"].string, whereText: $0["where_text"].string)
+                id: $0["finding"]["id"].string, title: $0["title"].string,
+                answer: $0["answer"]["given"].string, until: $0["answer"]["until_at"].seconds,
+                via: $0["answer"]["via"].string, at: $0["answer"]["given_at"].seconds,
+                reasonText: $0["answer"]["reason_text"].string, whereText: $0["where_text"].string,
+                reasonCuts: cuts($0["answer"]["reason_cuts"]))
             }
           })
       },
@@ -569,8 +616,8 @@ public enum Decoding {
             i.object.map {
               StatementItem(
                 machineText: $0["machine_text"].string, entityText: $0["entity_text"].string,
-                said: $0["said"].string, via: $0["via"].string, at: $0["at"].date,
-                reasonText: $0["reason_text"].string)
+                said: $0["said"].string, via: $0["via"].string, at: $0["at"].seconds,
+                reasonText: $0["reason_text"].string, reasonCuts: cuts($0["reason_cuts"]))
             }
           })
       },
@@ -584,6 +631,12 @@ public enum Decoding {
       eventLevel: r["event_level"].object.map(eventLevel))
   }
 
+  static func checkMark(_ c: J) -> LastRun {
+    LastRun(
+      id: c["id"].string, startedAt: c["started_at"].seconds, finishedAt: c["finished_at"].seconds,
+      finished: c["finished_at"].int64 != nil)
+  }
+
   static func eventLevel(_ e: J) -> EventLevel {
     EventLevel(
       state: e["state"].string, startsLastDay: e["program_starts"]["last_day"].count,
@@ -591,8 +644,8 @@ public enum Decoding {
       stateWords: e["in_words"]["state"].string,
       notes: e["in_words"]["notes"].array.map { $0.compactMap(\.string) },
       startsByMinute: counts(e["program_starts_by_minute"]["counts"]),
-      startsLastHour: e["program_starts_by_minute"]["last_hour"].count,
-      readAt: e["read_at"].date,
+      startsLastHour: counts(e["program_starts_by_minute"]["counts"])?.reduce(0, +),
+      readAt: e["read_at"].seconds,
       caveats: caveats(e["in_words"]["caveats"]))
   }
 
@@ -620,38 +673,61 @@ public enum Decoding {
       caveats: caveats(j["in_words"]["caveats"]))
   }
 
+  /// One `LookFinding`: the finding as listed, and its words and evidence. Every item of
+  /// `needs_a_look` is a finding. Of its evidence the row reads only what it shows, a published
+  /// rule and the latest event it matched, so only a misfit there is one of the status; the
+  /// rest is read, and a misfit in it told, on the card that shows it.
   static func item(_ i: J) -> Item {
-    Item(
-      id: i["id"].string, type: i["type"].string, kind: i["kind"].string,
-      severity: i["severity"].string, state: i["state"].string, firstSeen: i["first_seen"].date,
-      lastSeen: i["last_seen"].date, title: i["title"].string, meaning: i["meaning"].string,
-      advice: i["advice"].string, valueText: i["value_text"].string,
-      whereText: i["where_text"].string, rule: i["rule"].string,
-      confidence: i["confidence"].string, change: i["change"].string,
-      technique: i["technique"].string,
-      publishedRule: i["published_rule"].object.map {
-        let latest = $0["evidence"].array?.first
-        return PublishedRule(
+    let listed = i["finding"]
+    let ref = listed["finding"]
+    let matched = i["evidence"]["published_rule_matched"]
+    let latest: Contract.Event? = matched["events"].array?.first.map(event)
+    let rule = matched["rule"]
+    let verdicts = listed["verdicts"].object
+    let first = verdicts?["listed"].array?.first?["verdict"]
+    return Item(
+      id: ref["id"].string, type: listed.object == nil ? nil : "finding",
+      kind: listed["kind"].string, severity: ref["severity"].string, state: ref["state"].string,
+      firstSeen: listed["first_seen_at"].seconds, lastSeen: listed["last_seen_at"].seconds,
+      title: listed["title"].string, meaning: i["meaning"].string, advice: i["advice"].string,
+      valueText: i["value_text"].string, whereText: listed["where_text"].string,
+      rule: ref["rule"].string, confidence: ref["confidence"].string, change: i["change"].string,
+      technique: i["technique_text"].string,
+      publishedRule: rule.object.map {
+        var p = PublishedRule(
           titleText: $0["title_text"].string, authorText: $0["author_text"].string,
-          executableText: latest?["executable_text"].string,
-          parentExecutableText: latest?["parent_executable_text"].string,
-          fileText: latest?["file_text"].string, action: latest?["action"].string,
-          argsText: latest?["args_text"].array?.compactMap(\.string),
-          workingDirectoryText: latest?["working_directory_text"].string,
-          signingIdText: latest?["signing_id_text"].string)
+          executableText: nil, parentExecutableText: nil)
+        switch latest {
+        case .programStart(let s)?:
+          p.executableText = s.executableText
+          p.parentExecutableText = s.instigatorText
+          p.argsText = s.argsText
+          p.cuts = s.cuts
+          p.workingDirectoryText = s.workingDirectoryText
+          p.signingIdText = s.signingIdText
+        case .fileEvent(let f)?:
+          p.executableText = f.instigatorText
+          p.fileText = f.pathText
+          p.action = f.action
+          p.signingIdText = f.signingIdText
+        default: break
+        }
+        return p
       },
-      verdict: i["verdict"].object.map {
+      verdict: verdicts.map {
         Verdict(
-          kind: $0["kind"].string, said: $0["said"].string, reasonText: $0["reason_text"].string,
+          kind: first?["kind"].string, said: nil, reasonText: first?["reason_text"].string,
+          reasonCuts: cuts(verdicts?["listed"].array?.first?["reason_cuts"] ?? J(nil)),
           total: $0["total"].count, suspicious: $0["suspicious"].count,
-          finding: $0["finding"].string)
+          finding: $0["verdict_finding"]["id"].string)
       },
-      urgent: i["urgent"].bool ?? false)
+      urgent: ref["urgent"].bool ?? false)
   }
 
   static func finishedRun(_ f: J) -> FinishedRun {
     FinishedRun(
-      id: f["id"].string, startedAt: f["started_at"].date, finishedAt: f["finished_at"].date,
+      id: f["check"]["id"].string, startedAt: f["check"]["started_at"].seconds,
+      finishedAt: f["check"]["finished_at"].seconds,
       firstRun: f["first_run"].bool,
       readings: f["readings"].object.map {
         RunReadings(
@@ -688,7 +764,7 @@ public enum Decoding {
       changes: w["changes"].array?.compactMap { c in
         c.object.map {
           WatchedChange(
-            at: $0["at"].date, runId: $0["run_id"].string, change: $0["change"].string,
+            at: $0["at"].seconds, runId: $0["run_id"].string, change: $0["change"].string,
             kind: $0["kind"].string, pathText: $0["path_text"].string)
         }
       },
@@ -711,7 +787,7 @@ public enum Decoding {
       unreached: c["unreached"].array?.compactMap { u in
         u.object.map {
           Unreached(
-            scopeText: $0["scope_text"].string, since: $0["since"].date,
+            scopeText: $0["scope_text"].string, since: $0["since_at"].seconds,
             reasonText: $0["reason_text"].string)
         }
       },
@@ -783,14 +859,25 @@ struct J {
     return n.boolValue
   }
 
-  /// A whole, non-negative number. Booleans, fractions and negatives are not counts.
-  var count: Int? {
+  /// The largest whole number JSON carries exactly: 2^53.
+  static let wholeLimit: Double = 9_007_199_254_740_992
+
+  /// A whole number up to 2^53 either way, as a JSON number carries an `int64` of the schema:
+  /// a time, a pid, a start in microseconds. Booleans and fractions are not.
+  var int64: Int? {
     guard let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() else {
       return misfit()
     }
     let d = n.doubleValue
-    guard d >= 0, d <= 1e15, d.rounded() == d else { return misfit() }
+    guard abs(d) <= Self.wholeLimit, d.rounded() == d else { return misfit() }
     return Int(d)
+  }
+
+  /// A `uint64` or `uint32` of the schema: a whole number from 0 up to 2^53. Negatives are not
+  /// counts.
+  var count: Int? {
+    guard let n = int64 else { return nil }
+    return n >= 0 ? n : misfit()
   }
 
   /// An RFC 3339 time, with or without fractional seconds.

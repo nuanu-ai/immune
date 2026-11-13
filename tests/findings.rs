@@ -124,12 +124,14 @@ impl Estate {
     /// The result of `immune status --json`.
     fn status(&self) -> Value {
         let out = self.immune(&["status", "--json"]);
-        serde_json::from_slice::<Value>(&out.stdout).unwrap()["result"].clone()
+        serde_json::from_slice::<Value>(&out.stdout)
+            .unwrap()
+            .clone()
     }
 
     /// What the status shows of the open finding of this rule.
     fn shown(&self, rule: &str) -> Value {
-        self.status()["needs_a_look"]
+        looks(&self.status())
             .as_array()
             .unwrap()
             .iter()
@@ -164,7 +166,7 @@ fn carries_what_the_status_shows(whole: &Value, item: &Value) {
     for part in ["id", "rule", "state", "severity", "confidence", "urgent"] {
         assert_eq!(whole["finding"][part], item[part], "{part}");
     }
-    assert_eq!(whole["technique_text"], item["technique"]);
+    assert_eq!(whole["technique_text"], item["technique_text"]);
 }
 
 /// A checkout with an editor task file whose task runs on `run_on`.
@@ -580,25 +582,32 @@ fn a_failure_never_parses_as_an_answer() {
         let parsed: v1::Findings = serde_json::from_value(v).unwrap();
         assert_eq!(parsed.format, 0);
     }
-    // An answer keeps its own envelope, and has no binary form.
+    // An answer fails with the same message.
     let out = e.immune(&["finding", "f0000000000", "seen", "--json"]);
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(
-        (&v["format"], &v["errors"][0]["code"]),
-        (&json!(1), &json!("unknown_finding"))
+        (v.get("format"), &v["errors"][0]["code"]),
+        (None, &json!("unknown_finding"))
     );
     let id = id_of(&e, "autorun.folder-open");
     let out = e.immune(&["finding", &id, "seen", "--via", "agent", "--json"]);
     assert_eq!(out.status.code(), Some(2));
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(
-        (&v["format"], &v["errors"][0]["code"]),
-        (&json!(1), &json!("usage"))
+        (v.get("format"), &v["errors"][0]["code"]),
+        (None, &json!("usage"))
     );
-    // An answer asked in binary is refused, and nothing is answered.
+    // An answer asked in binary answers with the finding as it left it, in binary.
     let out = e.immune(&["finding", &id, "seen", "--proto"]);
-    assert_eq!(out.status.code(), Some(2));
-    assert!(out.stdout.is_empty());
+    assert_eq!(out.status.code(), Some(0));
+    let answered = v1::Finding::decode(out.stdout.as_slice()).unwrap();
+    assert_eq!(answered.format, 1);
+    assert_eq!(
+        answered.finding.as_ref().map(|f| f.state),
+        Some(v1::FindingState::Seen as i32)
+    );
+    assert_eq!(e.finding(&id)["finding"]["state"], "seen");
+    assert_eq!(e.immune(&["finding", &id, "reopen"]).status.code(), Some(0));
     assert_eq!(e.finding(&id)["finding"]["state"], "open");
 
     // No store: a failure with exit code 3, never an empty list.
@@ -733,4 +742,27 @@ fn every_command_of_the_contract_answers_in_binary_with_proto_and_refuses_two_fo
         let v: Value = serde_json::from_slice(&out.stdout).unwrap();
         assert!(v.get("format").is_none(), "{v}");
     }
+}
+
+/// What `needs_a_look` lists, each `LookFinding` read as one object: the finding's reference,
+/// the finding as listed and its words side by side, so a test names a field once.
+fn looks(status: &serde_json::Value) -> serde_json::Value {
+    let items = status["needs_a_look"]["items"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    items
+        .iter()
+        .map(|look| {
+            let mut flat = serde_json::Map::new();
+            for part in [&look["finding"]["finding"], &look["finding"], look] {
+                for (k, v) in part.as_object().into_iter().flatten() {
+                    if k != "finding" {
+                        flat.entry(k.clone()).or_insert_with(|| v.clone());
+                    }
+                }
+            }
+            serde_json::Value::Object(flat)
+        })
+        .collect()
 }

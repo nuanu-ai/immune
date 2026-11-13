@@ -288,7 +288,12 @@ fn matched_ids(level: Option<&Level>) -> Vec<&'static str> {
 }
 
 /// The section, from the state and the status's part `rules`, made at `now`.
-pub fn draw(out: &mut String, st: &crate::status::State, r: &Value, now: i64) -> Out {
+pub fn draw(
+    out: &mut String,
+    st: &crate::status::State,
+    r: &crate::contract::v1::RulesNow,
+    now: i64,
+) -> Out {
     let level = st.event_level.as_ref();
     let running = level.is_some_and(|l| l.state == events::RUNNING);
     writeln!(
@@ -432,7 +437,7 @@ pub fn write_live(folder: &std::path::Path, l: Option<&Level>, now: i64) -> std:
 }
 
 /// How many rules watch, of how many shipped, with what the rest need.
-fn watching(out: &mut String, r: &Value, level: Option<&Level>) -> Out {
+fn watching(out: &mut String, r: &crate::contract::v1::RulesNow, level: Option<&Level>) -> Out {
     let running = level.is_some_and(|l| l.state == events::RUNNING);
     let rules = Rules::shipped();
     let (evaluated, in_part, not_evaluated) = rules.groups();
@@ -470,7 +475,7 @@ fn watching(out: &mut String, r: &Value, level: Option<&Level>) -> Out {
         rest.push(format!("{n} {}", if n == 1 { one } else { many }));
     }
     let mut notes = vec![rest.join("; ")];
-    if let Some(note) = r["judged_note"].as_str().filter(|_| running) {
+    if let Some(note) = r.judged_note.as_deref().filter(|_| running) {
         notes.push(note.to_string());
     }
     let mut meter = format!(
@@ -994,7 +999,7 @@ detection:
         // A rule that was read and not taken is never counted as one that could not be read:
         // each reason has its own words, so a real failure to read stands apart.
         let mut out = String::new();
-        watching(&mut out, &Value::Null, None).unwrap();
+        watching(&mut out, &Default::default(), None).unwrap();
         let note = "175 would watch once program starts are seen; 23 are checked in part and not counted; \
                     1 compares one field with another; 4 could never be true over the events here; \
                     4 could not be translated exactly; 139 are sequences of events, not translated; \

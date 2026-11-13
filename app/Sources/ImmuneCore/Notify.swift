@@ -1,6 +1,7 @@
 // The owner hears about urgent things: a notification when an item Immune marked
-// `urgent` is seen for the first time. Immune decides what is urgent; the app only
-// decides when it is new. The system's notification centre sits behind
+// `urgent` is seen for the first time, and when more urgent findings than before are beyond
+// the list Immune serves, so a count the person cannot see still reaches them. Immune
+// decides what is urgent; the app only decides when it is new. The system's notification centre sits behind
 // `Notifying`, so tests use a recording stand-in and never ask the system anything.
 
 import Foundation
@@ -72,6 +73,7 @@ public final class Announcer {
   nonisolated static let idsKey = "notify.delivered"
   nonisolated static let storesKey = "notify.stores"
   nonisolated static let askedKey = "notify.asked"
+  nonisolated static let unlistedKey = "notify.unlisted"
 
   private let notifier: any Notifying
   private let memory: any Remembering
@@ -123,12 +125,29 @@ public final class Announcer {
     known = Array((known.filter { !ids.contains($0) } + ids).suffix(Self.rememberedIds))
     memory.set(known, forKey: Self.idsKey)
 
-    let notes = Self.notes(fresh)
+    // Urgent findings beyond the list: told when there are more than at the last reading of
+    // this store, once for each number; the first reading of a store is the baseline.
+    let unlisted = max(0, (s.needsALookUrgent ?? urgent.count) - urgent.count)
+    var counted = memory.object(forKey: Self.unlistedKey) as? [String: Int] ?? [:]
+    let before = counted[store]
+    counted[store] = unlisted
+    memory.set(counted, forKey: Self.unlistedKey)
+    var notes = Self.notes(fresh)
+    if let before, unlisted > before { notes.append(Self.unlistedNote(unlisted)) }
     if !notes.isEmpty, await notifier.permission() == .allowed {
       notes.forEach(notifier.deliver)
       return notes
     }
     return []
+  }
+
+  /// "3 urgent findings are not in the list": how many, never which, since the list does not
+  /// hold them.
+  nonisolated static func unlistedNote(_ n: Int) -> Note {
+    let title =
+      n == 1 ? "1 urgent finding is not in the list" : "\(n) urgent findings are not in the list"
+    return Note(
+      id: "urgent-not-listed", title: title, body: "Open the report to see every finding.")
   }
 
   /// One per item, or one for all when more than `burst` are new at once. Only

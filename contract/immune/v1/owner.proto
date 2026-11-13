@@ -1,0 +1,111 @@
+// The person's word about a machine: that it is retired, or not theirs. The answers to `immune
+// owner`. Version 1 of the contract between the core and a program that runs it. How a message
+// is printed and read, and the conventions for text, references, times and changes, are in
+// `common.proto`.
+//
+// A statement sets a machine aside: the server check no longer visits it, and what is not read of
+// it is not counted as a failure. Every statement is kept, a withdrawn one too, and one made
+// outside the app is listed in the status so that none is made silently.
+
+syntax = "proto3";
+
+package immune.v1;
+
+import "immune/v1/event.proto";
+import "immune/v1/findings.proto";
+
+// The answer to `immune owner` without a statement: the statements that stand.
+message Statements {
+  // The numbers of `Failure`'s fields, so that a failure never reads as an answer.
+  reserved 1000 to 1099;
+  // The version of this contract: 1. A reader that meets another number stops.
+  uint32 format = 1;
+  int64 answered_at = 2;
+  // The store this answer was read from, as in every answer (`common.proto`).
+  optional string store_id = 3;
+  repeated Statement statements = 4;
+  // How many were withdrawn and are kept.
+  uint64 withdrawn = 5;
+}
+
+// A statement that stands.
+message Statement {
+  // The machine by the name the statement was made under, and its whole id, which `immune owner`
+  // takes back by. Whole.
+  string machine_text = 1;
+  string entity_text = 2;
+  // What was said, the core's words: `retired` or `not mine`.
+  string said = 3;
+  // Through what it came, as an answer's `via`.
+  Via via = 4;
+  int64 at = 5;
+  // The reason given with it, whole but for a secret cut out of it, each piece replaced by a mark
+  // as in `ProgramStart.args_text`.
+  string reason_text = 6;
+  // Every other name and address the store knows the machine by. Whole.
+  repeated string names_text = 7;
+  // Something seen alive after it, which contradicts it. Absent when nothing was.
+  SeenAfter seen_after = 8;
+  // What was cut out of `reason_text` because it held a secret, in order, one entry for each
+  // piece; `argument` is 0. A reason is cut where it is kept and again as it is read, so this is
+  // always known: empty means nothing was cut. Since 1.7.0.
+  repeated Cut reason_cuts = 9;
+}
+
+message SeenAfter {
+  int64 at = 1;
+  // What was seen. Whole.
+  string what_text = 2;
+}
+
+// The answer to `immune owner <name> retired|not-mine|withdraw`: what was said or withdrawn.
+message StatementMade {
+  // As in `Statements`.
+  reserved 1000 to 1099;
+  uint32 format = 1;
+  int64 answered_at = 2;
+  optional string store_id = 3;
+  // The machine by the name it was asked under, and every name it is known by: the statement
+  // covers it under each. Whole.
+  string machine_text = 4;
+  repeated string names_text = 5;
+  Via via = 6;
+  oneof done {
+    // A statement was made.
+    Said said = 7;
+    // The statements that stood about the machine were withdrawn and kept.
+    Withdrawn withdrawn = 8;
+  }
+  // The sweep script written again after it, so that no script on disk visits a machine set
+  // aside.
+  SweepWritten sweep = 9;
+}
+
+message Said {
+  // `retired` or `not mine`.
+  string said = 1;
+  int64 at = 2;
+  // The reason as it is kept: whole but for a secret cut out of it.
+  string reason_text = 3;
+  // How many statements about the same machine it replaced; they are kept.
+  uint64 replaced = 4;
+  // What was cut out of the reason given, as `Statement.reason_cuts`: the statement is made all
+  // the same. Empty means nothing was cut. Since 1.7.0.
+  repeated Cut reason_cuts = 5;
+}
+
+message Withdrawn {
+  repeated WithdrawnStatement statements = 1;
+}
+
+message WithdrawnStatement {
+  string machine_text = 1;
+  string said = 2;
+}
+
+message SweepWritten {
+  // How many servers it visits. Absent when it could not be written; then `problem_text` says
+  // why, and the statement is kept all the same.
+  optional uint64 servers = 1;
+  optional string problem_text = 2;
+}

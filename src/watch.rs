@@ -245,8 +245,16 @@ pub fn watch(args: &WatchArgs) -> ExitCode {
         return failed(&format!("the signal handlers could not be set: {e}"));
     }
     let folder = crate::home(&args.store);
-    let unreadable =
-        |e: &dyn std::fmt::Display| crate::fail_json("watch", &crate::Stop::Store(e.to_string()));
+    let unreadable = |e: &dyn std::fmt::Display| {
+        crate::print_json(&status::failure(
+            Some("watch"),
+            "store_unreadable",
+            "the store cannot be read; nothing was changed",
+            "immune status --json --store <file>",
+            &e.to_string(),
+        ));
+        ExitCode::from(crate::EXIT_STORE)
+    };
     if let Err(e) = std::fs::create_dir_all(&folder) {
         return unreadable(&e);
     }
@@ -851,7 +859,7 @@ fn reader_args(args: &WatchArgs) -> crate::Args {
         curl: None,
         system_root: args.system_root.clone(),
         indicators: None,
-        json: false,
+        form: crate::answer::Form::Text,
     }
 }
 
@@ -1130,35 +1138,36 @@ extern "C" fn on_signal(_: libc::c_int) {
     }
 }
 
-/// What `immune status --json` says about the watcher: `null` unless one holds its lock on this
-/// store now, so a watcher that died never shows as watching. `since` is from the lock file;
-/// `last_read` is the latest reading of every place by a watcher, if this one made it; `failed` is what has
-/// failed in this one and not succeeded since, with what the failure said.
-pub fn status(store: &Path) -> Value {
+/// `watching` of the contract's `Status`: absent unless a watcher holds its lock on this store
+/// now, so a watcher that died never shows as watching. What a failure said is whole.
+pub fn watcher(store: &Path) -> Option<crate::contract::v1::Watcher> {
+    use crate::contract::v1;
     let folder = crate::home(store);
     if !store::watch_in_progress(&folder).unwrap_or(false) {
-        return Value::Null;
+        return None;
     }
     let since = started(&folder);
     let conn = store::open_read_only(store).ok();
     let last = conn
         .as_ref()
-        .and_then(|conn| last_read(conn).ok().flatten());
-    let last = last.filter(|last| since.is_some_and(|since| *last >= since));
+        .and_then(|conn| last_read(conn).ok().flatten())
+        .filter(|last| since.is_some_and(|since| *last >= since));
     let failed = conn
         .as_ref()
         .and_then(|conn| failures(conn, &folder).ok())
         .unwrap_or_default();
-    let iso = |secs: i64| json!(crate::view::iso(secs));
-    let failed: Vec<Value> = failed
-        .iter()
-        .map(|f| json!({ "what": f.what, "at": iso(f.at), "detail_text": status::text(&f.detail) }))
-        .collect();
-    json!({
-        "since": since.map_or(Value::Null, iso),
-        "last_read": last.map_or(Value::Null, iso),
-        "failed": failed,
-        "cannot_see": CANNOT_SEE,
+    Some(v1::Watcher {
+        since_at: since,
+        last_read_at: last,
+        failed: failed
+            .iter()
+            .map(|f| v1::WatcherFailure {
+                what: f.what.clone(),
+                at: f.at,
+                detail_text: crate::known::whole(&f.detail),
+            })
+            .collect(),
+        cannot_see: CANNOT_SEE.iter().map(|s| s.to_string()).collect(),
     })
 }
 
@@ -1282,7 +1291,7 @@ mod tests {
             curl: None,
             system_root: sys.clone(),
             indicators: None,
-            json: false,
+            form: crate::answer::Form::Text,
         })
         .unwrap();
         let w = WatchArgs {
