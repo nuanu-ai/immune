@@ -1,0 +1,23 @@
+[package]
+name = "immune-contract"
+# The version follows the contract. The major version is the contract's `format`, the number
+# every message of package `immune.v1` carries, so 1 for `immune.v1`; a version 2 of the schema
+# (package `immune.v2`, `format` 2) makes major version 2. Within a major version the schema is
+# only added to, and each change that adds to it raises the minor version, so a reader built on
+# an older 1.x reads what a newer core prints. A change that leaves the messages as they are,
+# such as a comment in the schema, raises the patch version.
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT"
+description = "The types of Immune's contract, package immune.v1, generated from its protobuf schema"
+publish = false
+
+[dependencies]
+# What the generated types need and nothing more; the same versions as the core's, so one copy
+# of each is compiled into the core. prost derives the binary protobuf form for every message;
+# its default features are `derive` and `std`.
+prost = "0.14.4"
+# serde's derives give every message its JSON form, Immune's own (README.md). No JSON parser
+# is named: a reader brings its own, such as serde_json.
+serde = { version = "1.0.229", features = ["derive"] }

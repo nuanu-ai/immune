@@ -4,11 +4,7 @@
 //! home folder, an invented system root and invented server files, so no test reads anything of
 //! the Mac it runs on or asks the network.
 
-#[path = "../src/contract.rs"]
-#[allow(dead_code)]
-mod contract;
-
-use contract::v1;
+use immune_contract::v1;
 use prost::Message;
 use serde_json::Value;
 use std::path::PathBuf;
