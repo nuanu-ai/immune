@@ -1038,6 +1038,8 @@ fn a_machine_the_owner_set_aside_says_it_is_no_longer_checked() {
             .args(words)
             .args(["--json", "--store"])
             .arg(e.store())
+            .arg("--tailscale")
+            .arg(e.0.join("no-tailscale"))
             .output()
             .unwrap();
         assert!(

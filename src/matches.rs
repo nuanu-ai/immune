@@ -25,6 +25,7 @@ use crate::contract::{v1, value_of};
 use crate::events::{
     self, Arrival, Arrivals, Evidence, Hit, Lacked, LineAt, Place, Queue, Stretch, WentTo,
 };
+use crate::secrets::Args;
 use crate::sigma::{Kind, Meta, Placement, Reason, Rules};
 use crate::{answer, findings, known, store, verdict};
 use rusqlite::Connection;
@@ -339,8 +340,19 @@ fn flags(f: Option<i64>) -> Option<u32> {
     f.and_then(|f| u32::try_from(f).ok())
 }
 
-/// An event as the contract gives it: every field the log holds, each whole.
+/// An event as the contract gives it: every field the log holds, each whole, but for the
+/// secrets cut out of the arguments.
 pub fn event(e: &Evidence) -> v1::Event {
+    let args = match e {
+        Evidence::Start(s) => Args::raw(&s.args),
+        Evidence::File(_) => Args(Vec::new()),
+    };
+    event_cut(e, &args)
+}
+
+/// The same, with a program start's arguments as given, already cut: a stored row's are read
+/// back from the store (`finding_answer`). The start's own `args` are not read.
+pub fn event_cut(e: &Evidence, args: &Args) -> v1::Event {
     use v1::event::Body;
     let when = happened(e);
     let (happened_at, happened_nanos) = (when.map(|w| w.0), when.map(|w| w.1));
@@ -370,7 +382,16 @@ pub fn event(e: &Evidence) -> v1::Event {
                     ..program(p, &s.who.instigator)
                 }),
                 parent_pid: s.parent_pid,
-                args_text: s.args.iter().map(|a| whole(a)).collect(),
+                args_text: args.shown(whole),
+                cuts: args
+                    .cuts()
+                    .into_iter()
+                    .map(|c| v1::Cut {
+                        argument: c.argument as u32,
+                        kind: c.kind,
+                        length: c.length as u64,
+                    })
+                    .collect(),
                 working_directory_text: s.working_directory.as_deref().map(whole),
                 parent: s.who.parent.pid.map(|pid| v1::Identity {
                     pid: Some(pid),
@@ -417,7 +438,10 @@ fn collector(s: &Stretch, arrivals: &Arrivals) -> v1::Collector {
     v1::Collector {
         state: value_of::<v1::CollectorState>(s.state),
         said_by: s.said.as_ref().map(|(by, _)| by.to_string()),
-        said_text: s.said.as_ref().map(|(_, said)| whole(said)),
+        said_text: s
+            .said
+            .as_ref()
+            .map(|(_, said)| crate::secrets::text(said, whole)),
         written_at: s.written,
         file_events_collected: s.collects.is_ok(),
         foreign_files: s.foreign,

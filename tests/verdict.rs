@@ -170,6 +170,11 @@ impl Mac {
             .arg("--store")
             .arg(self.store())
             .args(&args[1..]);
+        // A statement rewrites the sweep, which reads the tailnet: from a path that is not
+        // there, never this Mac's own `tailscale`.
+        if args[0] == "owner" {
+            c.arg("--tailscale").arg(self.0.join("no-tailscale"));
+        }
         c
     }
 
@@ -1235,6 +1240,1053 @@ fn what_this_build_does_not_read_is_refused_in_either_form_and_records_nothing()
         answer.recorded.unwrap().verdict.unwrap().case_text,
         "case-binary"
     );
+}
+
+/// `n` invented letters and digits, the same for the same seed: a token's body made when the test
+/// runs, so no literal in the source looks like one.
+fn invented(seed: u64, n: usize) -> String {
+    let chars: Vec<char> = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        .chars()
+        .collect();
+    let mut x = seed;
+    (0..n)
+        .map(|_| {
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            chars[((x >> 33) as usize) % chars.len()]
+        })
+        .collect()
+}
+
+#[test]
+fn a_secret_in_a_key_of_a_verdict_is_refused_without_echo_and_the_finding_is_as_it_was() {
+    // A key of a verdict (its case, the store and what it names) is never rewritten: cut, it
+    // would mean something else. One that holds a secret is refused before anything is written,
+    // the refusal names the field alone, in either form, and what it is about is as it was.
+    let mac = Mac::new("secret");
+    mac.package(true);
+    mac.run();
+    let store = mac.store_id();
+    let id = mac.latest(MALICIOUS).unwrap();
+    let token = format!("{}{}", ["gh", "p_"].concat(), invented(4, 36));
+    let password = format!("Fk{}", invented(5, 14));
+    let before = mac.finding(&id)["finding"].clone();
+    let good = about_finding(&store, &id, "harmless", "case-1");
+    let mut sent = Vec::new();
+    for case in [
+        format!("case {token}"),
+        format!("case --password {password}"),
+    ] {
+        let mut v = good.clone();
+        v["case_text"] = json!(case);
+        sent.push(("case_text".to_string(), v));
+    }
+    let mut rule = about_match(&store, "20261004T00-1-0", PADDING, "harmless");
+    rule["match"]["rule"] = json!(token);
+    sent.push(("match.rule".to_string(), rule));
+    let mut position = about_match(&store, "20261004T00-1-0", PADDING, "harmless");
+    position["match"]["position"] = json!(token);
+    sent.push(("match.position".to_string(), position));
+    let mut named = good.clone();
+    named["finding"]["id"] = json!(token);
+    sent.push(("finding.id".to_string(), named));
+    let mut other = good.clone();
+    other["store_id"] = json!(token);
+    sent.push(("store_id".to_string(), other));
+    let mut bodies: Vec<(String, Vec<u8>, Value)> = sent
+        .into_iter()
+        .map(|(field, v)| (field, v.to_string().into_bytes(), v))
+        .collect();
+    // A JSON escape hides nothing: the key is checked as read.
+    let escaped = good
+        .to_string()
+        .replacen("case-1", &format!("case \\u0067{}", &token[1..]), 1);
+    bodies.push((
+        "case_text".to_string(),
+        escaped.clone().into_bytes(),
+        serde_json::from_str(&escaped).unwrap(),
+    ));
+    for (field, json, v) in bodies {
+        mac.refused(&json, "holds_secret", 2);
+        let out = mac.send_bytes(&json, &["--json"]);
+        let failure: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(failure["errors"][0]["detail_text"], field, "{failure:#}");
+        let mut said = out.stdout;
+        // The same in binary.
+        let binary = binary_verdict(&v);
+        let out = mac.send_bytes(&binary, &["--proto"]);
+        assert_eq!(out.status.code(), Some(2));
+        let failure = v1::Failure::decode(out.stdout.as_slice()).unwrap();
+        assert_eq!(failure.errors[0].code, "holds_secret");
+        assert_eq!(
+            failure.errors[0].detail_text.as_deref(),
+            Some(field.as_str())
+        );
+        said.extend(out.stdout);
+        for secret in [&token, &password] {
+            assert!(!holds(&said, secret), "{field}");
+        }
+    }
+    assert_eq!(mac.recorded(), (0, 0));
+    assert_eq!(mac.finding(&id)["finding"], before);
+    // The same verdict without the secret is taken.
+    mac.send(&good);
+}
+
+/// A verdict given in JSON, as the binary message the core reads with `--proto`.
+fn binary_verdict(v: &Value) -> Vec<u8> {
+    let m: v1::Verdict = serde_json::from_value(v.clone()).unwrap();
+    m.encode_to_vec()
+}
+
+/// Whether `bytes` hold `secret` as it is.
+fn holds(bytes: &[u8], secret: &str) -> bool {
+    bytes.windows(secret.len()).any(|w| w == secret.as_bytes())
+}
+
+#[test]
+fn a_verdict_that_cannot_be_read_prints_no_secret_it_was_sent_written_plain_or_escaped() {
+    // A refusal names what it could not read, a key or a value, and that may be a secret,
+    // written plain or behind a JSON escape. What it repeats is cut where it is printed, so the
+    // refusal says what it could not read and prints none of the secret.
+    let mac = Mac::new("echo");
+    mac.package(true);
+    mac.run();
+    let store = mac.store_id();
+    let id = mac.latest(MALICIOUS).unwrap();
+    let token = format!("{}{}", ["gh", "p_"].concat(), invented(10, 36));
+    let good = about_finding(&store, &id, "harmless", "case-1");
+    for written in [token.clone(), format!("\\u0067{}", &token[1..])] {
+        let base = good.to_string();
+        let mut cases = vec![
+            // A key it does not know, at the top and inside what the verdict names.
+            base.replacen('{', &format!("{{\"{written}\":1,"), 1),
+            base.replacen(
+                "\"finding\":{",
+                &format!("\"finding\":{{\"{written}\":1,"),
+                1,
+            ),
+            // A key given twice.
+            base.replacen('{', &format!("{{\"{written}\":1,\"{written}\":2,"), 1),
+        ];
+        // A value of the wrong kind.
+        for field in ["kind", "format", "severity"] {
+            let mut v = good.clone();
+            v[field] = json!("PLACEHOLDER");
+            cases.push(v.to_string().replacen("PLACEHOLDER", &written, 1));
+        }
+        // A reason too long to take, holding it.
+        let mut v = good.clone();
+        v["reason_text"] = json!(format!("PLACEHOLDER {}", "x".repeat(1100)));
+        cases.push(v.to_string().replacen("PLACEHOLDER", &written, 1));
+        for body in cases {
+            let out = mac.send_bytes(body.as_bytes(), &["--json"]);
+            assert_eq!(out.status.code(), Some(2), "{body}");
+            let failure: Value = serde_json::from_slice(&out.stdout).unwrap();
+            assert_ne!(failure["errors"][0]["code"], "holds_secret", "{failure:#}");
+            assert!(!holds(&out.stdout, &token), "{failure:#}");
+            assert!(!holds(&out.stderr, &token));
+        }
+    }
+    // A key it does not know that glues a token to a mark it quotes.
+    let aws = ["AK", "IA", "QZ7WK4RM2TX3PD5N"].concat();
+    let glued = format!("\\\\cut{{gitleaks:github-pat 40}}{aws}");
+    let body = good
+        .to_string()
+        .replacen('{', &format!("{{\"{glued}\":1,"), 1);
+    let out = mac.send_bytes(body.as_bytes(), &["--json"]);
+    assert_eq!(out.status.code(), Some(2), "{body}");
+    assert!(!holds(&out.stdout, &aws) && !holds(&out.stderr, &aws));
+    assert_eq!(mac.recorded().0, 0);
+}
+
+#[test]
+fn a_failure_of_any_command_prints_no_secret_it_was_given_in_any_form() {
+    // A failure that repeats what it was given (an argument, a path) cuts it where it is
+    // printed: for the contract's commands in binary, JSON and text, and for a report's.
+    let mac = Mac::new("failures");
+    mac.run();
+    let token = format!("{}{}", ["gh", "p_"].concat(), invented(12, 36));
+    let password = format!("Fk{}", invented(13, 14));
+    let flag = format!("--password={password}");
+    for command in ["findings", "matches", "status", "rules"] {
+        let contract = ["findings", "matches"].contains(&command);
+        for form in [&["--json"][..], &["--proto"][..], &[][..]] {
+            if form == ["--proto"] && !contract {
+                continue;
+            }
+            for given in [&token, &flag] {
+                let mut run = mac.command(&[command]);
+                // A command that reads the collector's log reads the invented one.
+                if ["matches", "rules"].contains(&command) {
+                    run.arg("--system-root").arg(mac.root());
+                }
+                let out = run.arg(given).args(form).output().unwrap();
+                assert_eq!(out.status.code(), Some(2), "{command} {form:?}");
+                let printed = [out.stdout.as_slice(), out.stderr.as_slice()].concat();
+                for secret in [&token, &password] {
+                    assert!(!holds(&printed, secret), "{command} {form:?}");
+                }
+                // It was repeated, and cut.
+                let said = String::from_utf8_lossy(&printed).to_string();
+                if form != ["--proto"] {
+                    assert!(said.contains("cut{"), "{command} {form:?}: {said}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_refusal_or_an_answer_about_what_was_asked_prints_no_secret_it_was_asked_in_any_form() {
+    // A refusal's message is the core's own words; what was asked goes into a field of its
+    // own, cut, and an answer that repeats the question cuts it too.
+    let mac = Mac::new("asked");
+    mac.run();
+    let token = format!("{}{}", ["gh", "p_"].concat(), invented(14, 36));
+    let password = format!("Fk{}", invented(15, 14));
+    let root = mac.root();
+    let root = root.to_str().unwrap();
+    let mut asked: Vec<Vec<String>> = Vec::new();
+    for form in [&["--json"][..], &[][..]] {
+        for args in [
+            vec!["owner", &token, "retired", "--reason", "x"],
+            vec!["owner", &token, "withdraw"],
+            vec!["vulnerability", &token],
+            vec!["program", &token],
+            vec!["project", &token],
+            vec!["machine", &token],
+            vec!["finding", &token],
+            vec!["finding", &token, "expected", "--reason", "x"],
+            vec!["findings", "--state", &token],
+            vec!["matches", "--after", &token, "--system-root", root],
+            vec!["rules", &token, "--system-root", root],
+        ] {
+            let mut a: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+            a.extend(form.iter().map(|s| s.to_string()));
+            asked.push(a);
+        }
+    }
+    for args in [
+        vec!["program", &token, "--proto"],
+        vec!["finding", &token, "--proto"],
+        vec!["status", &format!("--password={password}"), "--json"],
+        vec!["view", &format!("--x={token}")],
+    ] {
+        asked.push(args.iter().map(|s| s.to_string()).collect());
+    }
+    for args in &asked {
+        let a: Vec<&str> = args.iter().map(String::as_str).collect();
+        let out = mac.command(&a).output().unwrap();
+        for secret in [&token, &password] {
+            assert!(!holds(&out.stdout, secret), "{}", args[0]);
+            assert!(!holds(&out.stderr, secret), "{}", args[0]);
+        }
+    }
+    // A store asked for at a path that holds a secret, and is not there.
+    let missing = mac.0.join(&token);
+    for form in [&["--json"][..], &[][..]] {
+        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+            .env("HOME", mac.home())
+            .args(["owner", "a", "retired", "--reason", "x", "--store"])
+            .arg(&missing)
+            .arg("--tailscale")
+            .arg(mac.0.join("no-tailscale"))
+            .args(form)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(3), "{form:?}");
+        let printed = [out.stdout.as_slice(), out.stderr.as_slice()].concat();
+        assert!(!holds(&printed, &token), "{form:?}");
+        assert!(holds(&printed, "cut{gitleaks:github-pat 40}"), "{form:?}");
+    }
+    // The refusal says what it is in its own words, and repeats what was asked cut.
+    let out = mac
+        .command(&["owner", &token, "retired", "--reason", "x", "--json"])
+        .output()
+        .unwrap();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["errors"][0]["code"], "unknown_machine");
+    assert_eq!(
+        v["errors"][0]["message"],
+        "the store knows no machine by the name asked; nothing was said"
+    );
+    assert_eq!(
+        v["errors"][0]["detail_text"],
+        "\\cut{gitleaks:github-pat 40}"
+    );
+}
+
+// The shapes in which the response layer may quote the core's cut output.
+const JOINED: &str = "the arguments joined by spaces";
+const ARRAY: &str = "the arguments as a compact JSON array";
+const VALUE: &str = "args_text as the JSON value";
+const BARE: &str = "one argument bare";
+const DOUBLE: &str = "one argument in double quotes";
+const SINGLE: &str = "one argument in single quotes";
+const EVENT: &str = "the whole event as compact JSON";
+const LINE: &str = "a line of the text a command prints";
+const FINDING: &str = "a finding as compact JSON";
+
+/// Whether a quote of this shape may lose words: the whole event as compact JSON, where a cut
+/// value after a space, as in `--token <value>` or `Authorization: Bearer <value>`, ends its
+/// argument, so its mark is glued to `"],"cuts":…` in one word, and the rest of that word is cut
+/// as it would be after a real value. Every other shape keeps its words.
+fn loses(shape: &str) -> bool {
+    shape == EVENT
+}
+
+/// The marks Immune made in a text as the contract shows it, where a source's backslash is
+/// `\u{5c}`: each kind and length, in order.
+fn made(kept: &str) -> Vec<(String, u64)> {
+    kept.split("\\cut{")
+        .skip(1)
+        .map(|rest| {
+            let (inside, _) = rest.split_once('}').unwrap();
+            let (kind, length) = inside.rsplit_once(' ').unwrap();
+            (kind.to_string(), length.parse().unwrap())
+        })
+        .collect()
+}
+
+/// The marks a text quotes, each written out.
+fn quoted_marks(q: &str) -> Vec<String> {
+    q.match_indices("\\cut{")
+        .map(|(at, _)| {
+            let end = at + q[at..].find('}').unwrap() + 1;
+            q[at..end].to_string()
+        })
+        .collect()
+}
+
+/// A Mac whose log holds command lines with a secret in each form the core cuts, run, with a
+/// finding of the response layer's own; and everything the response layer could honestly
+/// quote of the core's cut output about them: each match's arguments joined, as a JSON array
+/// and as the JSON value, each argument bare and in either quotes, the whole event, the same
+/// from the binary answer, the lines of `immune matches`, of a finding and of the findings for
+/// a person that hold a mark, and the finding as JSON. A quote longer than a reason may be is
+/// taken in pieces, each ending at a comma. Also the store's id and the first match's position.
+fn quoting(name: &str) -> (Mac, String, String, Vec<(&'static str, String)>) {
+    let mac = Mac::new(name);
+    let pw = ["Pq8", "Zr5", "Lm3", "Xv"].concat();
+    let pw2 = ["Hj6", "Wd2", "Nc9", "Ty"].concat();
+    let token = format!("{}{}", ["gh", "p_"].concat(), invented(31, 36));
+    let sets: Vec<Vec<String>> = vec![
+        vec!["--password".into(), pw.clone()],
+        vec![format!("--password={pw}")],
+        vec!["-H".into(), format!("Authorization: Bearer {pw}.tok")],
+        vec![format!("tool --password '{pw} {pw2}' next")],
+        vec![format!("mysql -u root -p{pw} db")],
+        vec![format!("https://u:{pw}@h.invalid/r")],
+        vec![token.clone()],
+        vec![format!("C:\\dir --token {pw} x")],
+        vec![format!("--token {pw}\nnext")],
+        vec!["--api-key".into(), pw.clone(), format!("x=1&password={pw}")],
+        vec![format!("tool --password $(cat f) {pw} y")],
+        vec![format!("\"--password\" {pw} z")],
+        vec![format!(
+            "tool --password=\"{pw} x\" && echo `id` --token {pw2}"
+        )],
+        vec![format!("DB_PASSWORD={pw} run; X-Api-Key: {pw2}")],
+    ];
+    let mut at = Vec::new();
+    for (i, set) in sets.iter().enumerate() {
+        let mut args: Vec<&str> = vec!["sw_vers", "-productVersion"];
+        args.extend(set.iter().map(String::as_str));
+        at.push(mac.append(&start(i as u64 + 1, "/usr/bin/sw_vers", &args)));
+    }
+    mac.run();
+    let store = mac.store_id();
+    let mut quotes: Vec<(&'static str, String)> = Vec::new();
+    for x in mac.matches()["matches"].as_array().unwrap() {
+        if x["rule"]["name"] != SW_VERS {
+            continue;
+        }
+        let value = &x["event"]["program_start"]["args_text"];
+        let args: Vec<String> = serde_json::from_value(value.clone()).unwrap();
+        quotes.push((JOINED, format!("it ran {}", args.join(" "))));
+        quotes.push((
+            ARRAY,
+            format!("args: {}", serde_json::to_string(&args).unwrap()),
+        ));
+        quotes.push((VALUE, format!("args_text: {value}")));
+        for (i, a) in args.iter().enumerate().skip(2) {
+            quotes.push((BARE, format!("argument {i} was {a}")));
+            quotes.push((DOUBLE, format!("argument {i} was \"{a}\"")));
+            quotes.push((SINGLE, format!("argument {i} was '{a}'")));
+        }
+        quotes.push((EVENT, format!("event: {}", x["event"])));
+    }
+    let proto = mac
+        .command(&["matches", "--proto", "--system-root"])
+        .arg(mac.root())
+        .output()
+        .unwrap();
+    for x in v1::Matches::decode(proto.stdout.as_slice())
+        .unwrap()
+        .matches
+    {
+        if let Some(v1::event::Body::ProgramStart(ps)) = x.event.and_then(|e| e.body) {
+            quotes.push((JOINED, format!("it ran {}", ps.args_text.join(" "))));
+        }
+    }
+    mac.send(&about_match(
+        &store,
+        &mac.position(at[3]),
+        SW_VERS,
+        "suspicious",
+    ));
+    let own = mac.verdict_findings().pop().unwrap();
+    let text = |args: &[&str]| {
+        let out = mac.command(args).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    let root = mac.root();
+    for printed in [
+        text(&["matches", "--system-root", root.to_str().unwrap()]),
+        text(&["finding", &own]),
+        text(&["findings"]),
+    ] {
+        quotes.extend(
+            printed
+                .lines()
+                .filter(|l| l.contains("cut{"))
+                .map(|l| (LINE, l.trim().to_string())),
+        );
+    }
+    quotes.push((
+        FINDING,
+        format!("finding: {}", text(&["finding", &own, "--json"])),
+    ));
+    let mut pieces = Vec::new();
+    for (shape, q) in quotes {
+        let mut rest: Vec<char> = q.trim().chars().collect();
+        while rest.len() > 1000 {
+            let cut = rest[..1000]
+                .iter()
+                .rposition(|c| *c == ',')
+                .map_or(1000, |p| p + 1);
+            pieces.push((shape, rest.drain(..cut).collect::<String>()));
+        }
+        pieces.push((shape, rest.into_iter().collect()));
+    }
+    let first = mac.position(at[0]);
+    (mac, store, first, pieces)
+}
+
+/// Text from a source as the contract shows it: the backslash and control characters escaped.
+fn escaped(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c == '\\' || c.is_control() {
+                c.escape_unicode().to_string()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
+}
+
+/// Text as a report's `_text` field shows it, at most 256 characters.
+fn capped(s: &str) -> String {
+    if s.chars().count() <= 256 {
+        s.to_string()
+    } else {
+        s.chars().take(255).chain(['…']).collect()
+    }
+}
+
+/// Sends a verdict about the match at `position` with this reason and case, in JSON or in
+/// binary: what was recorded, or the failure.
+fn send_reason(
+    mac: &Mac,
+    (store, position): (&str, &str),
+    kind: &str,
+    reason: &str,
+    proto: bool,
+) -> Result<v1::RecordedVerdict, v1::Failure> {
+    let mut v = about_match(store, position, SW_VERS, kind);
+    v["reason_text"] = json!(reason);
+    let out = if proto {
+        mac.send_bytes(&binary_verdict(&v), &["--proto"])
+    } else {
+        mac.send_output(&v)
+    };
+    match (out.status.success(), proto) {
+        (true, true) => Ok(v1::VerdictRecorded::decode(out.stdout.as_slice())
+            .unwrap()
+            .recorded
+            .unwrap()),
+        (true, false) => Ok(serde_json::from_slice::<v1::VerdictRecorded>(&out.stdout)
+            .unwrap()
+            .recorded
+            .unwrap()),
+        (false, true) => Err(v1::Failure::decode(out.stdout.as_slice()).unwrap()),
+        (false, false) => Err(serde_json::from_slice(&out.stdout).unwrap()),
+    }
+}
+
+#[test]
+fn every_quote_of_the_core_s_cut_output_in_a_verdict_s_reason_lands_and_keeps_the_marks_it_quotes()
+{
+    // A reason is prose: it is cut where it is kept and never refused. A mark it quotes from
+    // the core's output is a value already cut, kept as text. Quoted as a person reads the core's
+    // output, a word apart, the quote keeps all its words. Quoted as compact JSON, a mark is glued
+    // to what follows it in its word, and that is cut as it would be after a real value; the
+    // marks it quoted stay as they were, and `reason_cuts` says what was cut.
+    let (mac, store, first, quotes) = quoting("quotes");
+    assert!(quotes.len() >= 140, "{}", quotes.len());
+    let mut tally: std::collections::BTreeMap<&str, (usize, usize)> = Default::default();
+    for (shape, q) in &quotes {
+        let mut lost = false;
+        for proto in [false, true] {
+            let recorded = send_reason(&mac, (&store, &first), "harmless", q, proto)
+                .unwrap_or_else(|f| panic!("{q}: {f:?}"));
+            let kept = recorded.verdict.unwrap().reason_text;
+            let cuts: Vec<(String, u64)> = recorded
+                .reason_cuts
+                .iter()
+                .map(|c| (c.kind.clone(), c.length))
+                .collect();
+            assert_eq!(cuts, made(&kept), "{q}");
+            for m in quoted_marks(q) {
+                assert!(kept.contains(&escaped(&m)), "{m} in {q}: {kept}");
+            }
+            if kept != escaped(q) {
+                assert!(!cuts.is_empty(), "{q}");
+                assert!(loses(shape), "{shape}: {q}: {kept}");
+                lost = true;
+            }
+        }
+        if lost {
+            println!("loses words: {}", q.split("],\"cuts\"").next().unwrap());
+        }
+        let t = tally.entry(shape).or_default();
+        t.0 += usize::from(lost);
+        t.1 += 1;
+    }
+    println!("quotes that lose words, by shape: {tally:?}");
+    // Three do: an Authorization header, `x=1&password=` and `--token` after a backtick,
+    // each a cut value that ends the last argument.
+    assert_eq!(tally[EVENT].0, 3);
+}
+
+#[test]
+fn a_secret_in_a_reason_alone_or_beside_a_mark_is_cut_where_kept_and_wherever_printed() {
+    // A secret the response layer quotes, alone or before, after or glued to a mark it quotes,
+    // is cut in the store and everywhere the reason is printed, the verdict lands, and the
+    // answer names each cut. A mark hides nothing beside it in its word.
+    let mac = Mac::new("beside");
+    let at = mac.append(&sw_vers(1));
+    mac.run();
+    let store = mac.store_id();
+    let first = mac.position(at);
+    let pw = ["Hj6", "Wd2", "Nc9", "Ty"].concat();
+    let token = format!("{}{}", ["gh", "p_"].concat(), invented(32, 36));
+    let aws = ["AK", "IA", "QZ7WK4RM2TX3PD5N"].concat();
+    let gcp = ["AI", "za", "SyQz7Wk4Rm2Tx9Pd3Vn6Bc1Hd5Js0Ga7KLm"].concat();
+    let m = "\\cut{immune:flag-value 11}";
+    let cut = |kind: &str, length: u64| v1::Cut {
+        argument: 0,
+        kind: kind.to_string(),
+        length,
+    };
+    let (fv, pat) = ("immune:flag-value", "gitleaks:github-pat");
+    let named: Vec<(String, Vec<v1::Cut>)> = vec![
+        (format!("ran tool --password {pw} next"), vec![cut(fv, 11)]),
+        (format!("{token}{m} was printed"), vec![cut(pat, 40)]),
+        (
+            format!("ran tool --password {m}{pw} next"),
+            vec![cut(fv, 11)],
+        ),
+        (
+            format!("\\cut{{gitleaks:github-pat 40}} {token}"),
+            vec![cut(pat, 40)],
+        ),
+        // With the backslash doubled, as JSON writes it.
+        (format!("ran tool --password=\\{m}{pw}"), vec![cut(fv, 11)]),
+        // In the same quotes as the mark: the word is the value, cut where it is not the mark.
+        (
+            format!("ran tool --password \"{m} {pw}\" next"),
+            vec![cut(fv, 1), cut(fv, 13)],
+        ),
+    ];
+    for (reason, cuts) in &named {
+        for proto in [false, true] {
+            let r = send_reason(&mac, (&store, &first), "suspicious", reason, proto)
+                .unwrap_or_else(|f| panic!("{reason}: {f:?}"));
+            assert_eq!(&r.reason_cuts, cuts, "{reason}");
+        }
+    }
+    // The reviewer's forms of a secret beside a mark: each is cut, whatever else is.
+    let beside = [
+        format!("ran tool --password={m}{pw}"),
+        format!("ran tool --password=\\cut{{gitleaks:github-pat 3}}{pw}"),
+        format!("ran tool --password=\\cut{{a 99999999999999999999}}{pw}"),
+        format!("ran tool --pass{m}word={pw}"),
+        format!("ran tool {m}--password={pw}"),
+        format!("ran tool {m}password={pw}"),
+        format!("ran tool --password '{m}'{pw}"),
+        format!("ran tool --password \\{m}{m}{pw}"),
+        format!("ran tool --password \\\\{m}{pw}"),
+        format!("sent Authorization: Bearer \\cut{{immune:authorization 12}}{pw}"),
+        format!("ran mysql -p\\cut{{immune:mysql-password 8}}{pw} db"),
+        format!("ran {m}{token}"),
+        format!("ran https://u:{m}{pw}@h.invalid/r"),
+        format!("ran {m}\n--password {pw}"),
+        format!("ran \\cut{{a 1 --password {pw}"),
+        format!("ran --password=\\cut{{A 1}}{pw}"),
+        // A token glued to a mark is found as beside a boundary, and a value that begins with
+        // a mark ends where a real one would.
+        format!("it ran \\cut{{gitleaks:github-pat 40}}{aws} then"),
+        format!("it ran {aws}\\cut{{gitleaks:github-pat 40}} then"),
+        format!("it ran {m}{gcp} then"),
+        format!("it ran --password={m},{pw} then"),
+        format!("it ran --password={m}]{pw} then"),
+        format!("Authorization: Bearer {m} {pw}"),
+        format!("ran immune:mysql-password={pw}"),
+    ];
+    for reason in &beside {
+        for proto in [false, true] {
+            let r = send_reason(&mac, (&store, &first), "suspicious", reason, proto)
+                .unwrap_or_else(|f| panic!("{reason}: {f:?}"));
+            assert!(!r.reason_cuts.is_empty(), "{reason}");
+            let shown = r.verdict.unwrap().reason_text;
+            for secret in [&pw, &token, &aws, &gcp] {
+                assert!(!shown.contains(secret.as_str()), "{shown}");
+            }
+        }
+    }
+    // Behind a JSON escape.
+    let mut v = about_match(&store, &first, SW_VERS, "suspicious");
+    v["reason_text"] = json!(format!("the token {token} was used"));
+    let body = v
+        .to_string()
+        .replacen(&token, &format!("\\u0067{}", &token[1..]), 1);
+    let out = mac.send_bytes(body.as_bytes(), &["--json"]);
+    let answer: v1::VerdictRecorded = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(answer.recorded.unwrap().reason_cuts, vec![cut(pat, 40)]);
+    let own = mac.verdict_findings().pop().unwrap();
+    let mut printed = Vec::new();
+    let root = mac.root();
+    for args in [
+        vec!["status", "--json"],
+        vec!["status"],
+        vec!["findings", "--all", "--json"],
+        vec!["findings", "--all", "--proto"],
+        vec!["findings", "--all"],
+        vec!["finding", own.as_str(), "--json"],
+        vec!["finding", own.as_str(), "--proto"],
+        vec!["finding", own.as_str()],
+        vec!["matches", "--json", "--system-root", root.to_str().unwrap()],
+        vec!["view", "--no-open"],
+    ] {
+        let out = mac.command(&args).output().unwrap();
+        assert!(out.status.success(), "{args:?}");
+        printed.push((format!("{args:?}"), out.stdout));
+    }
+    files_under(&mac.0.join("store"), &mut printed);
+    for (what, bytes) in printed {
+        for secret in [&token, &pw, &aws, &gcp] {
+            assert!(!holds(&bytes, secret), "{what}");
+        }
+    }
+}
+
+#[test]
+fn the_core_s_cut_output_quoted_as_a_person_s_reason_or_by_the_collector_keeps_its_words() {
+    // One reading of a mark for every kind of kept text: the same quotes, given as the reason
+    // of a person's statement or printed by the collector, are taken; those a word apart from
+    // the marks they quote keep their words and cut nothing.
+    let (mac, _, _, quotes) = quoting("general");
+    for (shape, q) in &quotes {
+        let out = mac
+            .command(&["owner", "mac", "retired", "--reason", q, "--json"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{q}");
+        let said: Value = serde_json::from_slice(&out.stdout).unwrap();
+        if !loses(shape) {
+            assert_eq!(said["result"]["reason_text"], capped(q), "{q}");
+            assert_eq!(said["result"]["reason_cuts"], json!([]), "{q}");
+        } else if said["result"]["reason_text"] != capped(q) {
+            assert_ne!(said["result"]["reason_cuts"], json!([]), "{q}");
+        }
+    }
+    // What the collector printed is read on a run, one line at a time.
+    for (_, q) in quotes
+        .iter()
+        .filter(|(shape, q)| !loses(shape) && !q.contains('\n'))
+        .step_by(20)
+    {
+        std::fs::write(mac.log().join("scripts.err"), format!("{q}\n")).unwrap();
+        mac.run();
+        let level = &mac.status()["event_level"];
+        assert_eq!(level["said_text"], capped(q), "{q}");
+    }
+}
+
+#[test]
+fn a_verdict_s_text_that_spells_a_mark_out_is_kept_and_shown_as_text() {
+    // Only the core makes a mark. A reason or a case that spells one out, or a backslash, is
+    // the response layer's text, and stays that wherever it is shown.
+    let mac = Mac::new("spelled");
+    let at = mac.append(&sw_vers(1));
+    mac.run();
+    let store = mac.store_id();
+    let mut v = about_match(&store, &mac.position(at), SW_VERS, "suspicious");
+    v["reason_text"] = json!("invented: \\cut{forged 3}");
+    v["case_text"] = json!("case \\cut{forged 4}");
+    mac.send(&v);
+    let own = mac.verdict_findings().pop().unwrap();
+    let whole = mac.finding(&own).to_string();
+    for shown in [
+        "\"reason_text\":\"invented: \\\\u{5c}cut{forged 3}\"",
+        "\"case_text\":\"case \\\\u{5c}cut{forged 4}\"",
+    ] {
+        assert!(whole.contains(shown), "{whole}");
+    }
+    // The same message again is the same verdict.
+    mac.send(&v);
+    assert_eq!(mac.recorded().0, 1);
+}
+
+#[test]
+fn a_store_not_yet_cleaned_prints_no_secret_from_any_kind_of_kept_text() {
+    // A store an earlier build kept holds text as it was read. Until a run cleans it, every
+    // command that only reads it cuts each kind of kept text as it reads it: the arguments of
+    // evidence, what the collector printed, a verdict's reason and case, and the reasons of an
+    // answer and of a statement about a machine.
+    let mac = Mac::new("uncleaned");
+    let at = mac.append(&sw_vers(1));
+    mac.run();
+    let store = mac.store_id();
+    mac.send(&about_match(
+        &store,
+        &mac.position(at),
+        SW_VERS,
+        "suspicious",
+    ));
+    let own = mac.verdict_findings().pop().unwrap();
+    let placeholder = ["--reason", "invented: placeholder", "--via", "agent"];
+    let out = mac.answer(&own, &[&["seen"][..], &placeholder].concat());
+    assert_eq!(out.status.code(), Some(0));
+    let out = mac
+        .command(&[&["owner", "mac", "retired"][..], &placeholder].concat())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let token = format!("{}{}", ["gh", "p_"].concat(), invented(9, 36));
+    {
+        let db = rusqlite::Connection::open(mac.store()).unwrap();
+        // As an earlier build kept it: what the store's form would write `\u{5c}` is a source's
+        // own text here, never an escape.
+        let said = format!("invented: the token {token} was used \\u{{5c}}");
+        db.execute(
+            "UPDATE verdict SET reason = ?1, case_ref = ?1",
+            [said.as_str()],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE rule_evidence SET args = ?1",
+            [json!(["sw_vers", "-productVersion", token]).to_string()],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE event_level SET state = 'refused', said_by = 'eslogger', said = ?1",
+            [said.as_str()],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE finding SET reason = ?1 WHERE reason IS NOT NULL",
+            [said.as_str()],
+        )
+        .unwrap();
+        db.execute("UPDATE owner_statement SET reason = ?1", [said.as_str()])
+            .unwrap();
+        db.execute(
+            "UPDATE meta SET value = '4' WHERE key = 'format_version'",
+            [],
+        )
+        .unwrap();
+    }
+    let root = mac.root();
+    let root = root.to_str().unwrap();
+    let mut printed = Vec::new();
+    for args in [
+        vec!["status", "--json"],
+        vec!["status"],
+        vec!["findings", "--all", "--json"],
+        vec!["findings", "--all", "--proto"],
+        vec!["findings", "--all"],
+        vec!["owner", "--json"],
+        vec!["owner"],
+        vec!["finding", own.as_str(), "--json"],
+        vec!["finding", own.as_str(), "--proto"],
+        vec!["finding", own.as_str()],
+        vec!["matches", "--json", "--system-root", root],
+        vec!["view", "--no-open"],
+    ] {
+        let out = mac.command(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        printed.push((format!("{args:?}"), out.stdout));
+    }
+    let db = rusqlite::Connection::open(mac.store()).unwrap();
+    let kept: String = db
+        .query_row("SELECT reason FROM verdict", [], |r| r.get(0))
+        .unwrap();
+    assert!(kept.contains(&token), "only a run cleans the store");
+    let whole = mac.finding(&own).to_string();
+    for field in ["reason_text", "case_text"] {
+        let shown = format!(
+            "\"{field}\":\"invented: the token \\\\cut{{gitleaks:github-pat 40}} was used \\\\u{{5c}}u{{5c}}\""
+        );
+        assert!(whole.contains(&shown), "{whole}");
+    }
+    let status = String::from_utf8_lossy(&printed[0].1).to_string();
+    assert!(
+        status.contains(
+            "\"said_text\":\"invented: the token \\\\cut{gitleaks:github-pat 40} was used \\\\u{5c}\""
+        ),
+        "{status}"
+    );
+    assert_eq!(
+        mac.finding(&own)["answer"]["reason_text"],
+        "invented: the token \\cut{gitleaks:github-pat 40} was used \\u{5c}u{5c}"
+    );
+    let owner = mac.command(&["owner", "--json"]).output().unwrap().stdout;
+    let owner = String::from_utf8_lossy(&owner);
+    assert!(
+        owner.contains(
+            "\"reason_text\":\"invented: the token \\\\cut{gitleaks:github-pat 40} was used \\\\u{5c}\""
+        ),
+        "{owner}"
+    );
+    files_under(&mac.0.join("store"), &mut printed);
+    for (what, bytes) in printed {
+        // The store itself still holds the text until a run cleans it.
+        if what.contains("store.db") {
+            continue;
+        }
+        assert!(
+            !bytes.windows(token.len()).any(|w| w == token.as_bytes()),
+            "{what}"
+        );
+    }
+}
+
+#[test]
+fn an_answer_or_a_statement_whose_reason_holds_a_secret_is_taken_with_its_reason_cut() {
+    // A reason is the person's decision, given by them or by their agent: it is taken whatever
+    // it holds, never refused, and kept and shown with its secrets cut. The command's answer
+    // lists what was cut by kind, so the agent knows what was kept.
+    let mac = Mac::new("answer-reason");
+    mac.package(true);
+    mac.run();
+    let id = mac.latest(MALICIOUS).unwrap();
+    let token = format!("{}{}", ["gh", "p_"].concat(), invented(21, 36));
+    let pw = ["Hunter", "2xQ9z"].concat();
+    let out = mac.answer(
+        &id,
+        &[
+            "expected",
+            "--reason",
+            &format!("invented: the run used {token} and --password {pw}"),
+            "--via",
+            "agent",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(0));
+    let answered: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        answered["result"]["finding"]["answer"]["reason_cuts"],
+        json!([
+            { "kind": "gitleaks:github-pat", "length": 40 },
+            { "kind": "immune:flag-value", "length": 11 }
+        ]),
+        "{answered:#}"
+    );
+    let out = mac
+        .command(&[
+            "owner",
+            "mac",
+            "retired",
+            "--reason",
+            &format!("invented: {token}"),
+            "--via",
+            "agent",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let said: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        said["result"]["reason_cuts"],
+        json!([{ "kind": "gitleaks:github-pat", "length": 40 }]),
+        "{said:#}"
+    );
+    // For a person, the same in words.
+    let again = mac
+        .command(&[
+            "owner",
+            "mac",
+            "retired",
+            "--reason",
+            &format!("invented: again {token}"),
+        ])
+        .output()
+        .unwrap();
+    let words = String::from_utf8_lossy(&again.stdout);
+    assert!(
+        words.contains(
+            "Its reason held what Immune recognises as a secret, and is kept with it cut."
+        ),
+        "{words}"
+    );
+    let mut printed = vec![
+        ("answer".to_string(), out.stdout),
+        ("again".to_string(), again.stdout),
+    ];
+    for args in [
+        vec!["status", "--json"],
+        vec!["status"],
+        vec!["findings", "--all", "--json"],
+        vec!["findings", "--all", "--proto"],
+        vec!["findings", "--all"],
+        vec!["finding", id.as_str(), "--json"],
+        vec!["finding", id.as_str(), "--proto"],
+        vec!["finding", id.as_str()],
+        vec!["owner", "--json"],
+        vec!["owner"],
+        vec!["view", "--no-open"],
+    ] {
+        let out = mac.command(&args).output().unwrap();
+        assert!(out.status.success(), "{args:?}");
+        printed.push((format!("{args:?}"), out.stdout));
+    }
+    files_under(&mac.0.join("store"), &mut printed);
+    for (what, bytes) in printed {
+        for secret in [&token, &pw] {
+            assert!(
+                !bytes.windows(secret.len()).any(|w| w == secret.as_bytes()),
+                "{what}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_store_of_format_4_is_cleaned_into_format_5_which_a_build_of_4_refuses_as_newer() {
+    // The cleaned state is the store's format, so a build from before cutting, which knows
+    // format 4, refuses a cleaned store as newer and never writes raw text into it. This build
+    // takes format 4 only to clean it, and refuses anything else it does not know.
+    let mac = Mac::new("format");
+    let at = mac.append(&sw_vers(1));
+    mac.run();
+    let store = mac.store_id();
+    mac.send(&about_match(
+        &store,
+        &mac.position(at),
+        SW_VERS,
+        "suspicious",
+    ));
+    let token = format!("{}{}", ["gh", "p_"].concat(), invented(41, 36));
+    let format = || -> String {
+        rusqlite::Connection::open(mac.store())
+            .unwrap()
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'format_version'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(format(), "5");
+    {
+        let db = rusqlite::Connection::open(mac.store()).unwrap();
+        db.execute(
+            "UPDATE verdict SET reason = ?1",
+            [format!("invented: {token}")],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE meta SET value = '4' WHERE key = 'format_version'",
+            [],
+        )
+        .unwrap();
+    }
+    mac.run();
+    assert_eq!(format(), "5");
+    let file = std::fs::read(mac.store()).unwrap();
+    assert!(!file.windows(token.len()).any(|w| w == token.as_bytes()));
+    for (version, said) in [("6", "newer format"), ("3", "older format")] {
+        rusqlite::Connection::open(mac.store())
+            .unwrap()
+            .execute(
+                "UPDATE meta SET value = ?1 WHERE key = 'format_version'",
+                [version],
+            )
+            .unwrap();
+        let out = mac.command(&["status", "--json"]).output().unwrap();
+        assert_ne!(out.status.code(), Some(0), "{version}");
+        let all = String::from_utf8_lossy(&out.stdout).to_string()
+            + &String::from_utf8_lossy(&out.stderr);
+        assert!(all.contains(said), "{version}: {all}");
+    }
+}
+
+/// Every file under `folder` and what it holds, each named.
+fn files_under(folder: &Path, out: &mut Vec<(String, Vec<u8>)>) {
+    for entry in std::fs::read_dir(folder).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            files_under(&path, out);
+        } else {
+            out.push((path.display().to_string(), std::fs::read(&path).unwrap()));
+        }
+    }
+}
+
+#[test]
+fn a_verdict_about_a_match_keeps_the_event_it_read_again_cut() {
+    // A verdict about a match reads the line again from the log and keeps its event with the
+    // finding it raises: that copy is cut as the core's own reading's is.
+    let mac = Mac::new("secret-event");
+    let token = format!("{}{}", ["gh", "p_"].concat(), invented(6, 36));
+    let at = mac.append(&start(
+        1,
+        "/usr/bin/sw_vers",
+        &["sw_vers", "-productVersion", &token],
+    ));
+    mac.run();
+    let store = mac.store_id();
+    let answer = mac.send(&about_match(
+        &store,
+        &mac.position(at),
+        SW_VERS,
+        "suspicious",
+    ));
+    let own = answer["recorded"]["finding"]["id"].as_str().unwrap();
+    let whole = mac.finding(own);
+    let event = &whole["evidence"]["verdict_given"]["events"][0]["program_start"];
+    assert_eq!(
+        event["cuts"],
+        json!([{ "argument": 2, "kind": "gitleaks:github-pat", "length": 40 }])
+    );
+    assert_eq!(event["args_text"][2], "\\cut{gitleaks:github-pat 40}");
+    let db = std::fs::read(mac.store()).unwrap();
+    assert!(!db.windows(token.len()).any(|w| w == token.as_bytes()));
 }
 
 #[test]

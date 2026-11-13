@@ -919,7 +919,7 @@ pub struct Found {
     pub first_seen: (i64, String),
     pub last_seen: (i64, String),
     pub answered_at: Option<i64>,
-    pub reason: Option<String>,
+    pub reason: Option<crate::secrets::Text>,
     pub until: Option<i64>,
     /// How the answer was given; `None` before this was kept.
     pub via: Option<String>,
@@ -976,6 +976,7 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Found>>> 
     let this = This::of(conn, this_machine(conn)?)?;
     // A store opened only for reading since this build keeps no `via` yet.
     let via = if has_via(conn)? { "via" } else { "NULL" };
+    let form = crate::secrets::form(conn)?;
     let mut affecting: Option<Vec<crate::vulnerabilities::Affecting>> = None;
     conn.prepare(&format!(
         "SELECT id, rule, about, state, change, first_seen_at, first_seen_run, last_seen_at,
@@ -1017,7 +1018,9 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Found>>> 
             first_seen: (r.get(5)?, r.get(6)?),
             last_seen: (last, r.get(8)?),
             answered_at,
-            reason: r.get(10)?,
+            reason: r
+                .get::<_, Option<String>>(10)?
+                .map(|s| crate::secrets::Kept::AnswerReason.read(form, &s)),
             until,
             became: r.get(13)?,
             via: r.get(14)?,
@@ -1187,23 +1190,28 @@ pub fn answer(
         return Err(Box::new(RefusedError(Refused::Closed(f.state))));
     }
     let via = via.literal();
+    // The reason is the person's decision and is taken whatever it holds, cut as a source's
+    // text is (`secrets::Kept::AnswerReason`, `AnswerEntry`).
+    let kept = |r: &str| crate::secrets::Text::source(r).store();
     let (entry, state, reason, until, text) = match a {
         Answer::Expected { reason, days } => {
             let until = at + days * 86_400;
+            let reason = kept(reason);
             (
                 "finding_expected",
                 "expected",
-                Some(reason.as_str()),
+                Some(reason.clone()),
                 Some(until),
                 json!({ "via": via, "reason": reason, "until": until }),
             )
         }
         Answer::Seen { reason } => {
+            let reason = reason.as_deref().map(kept);
             let mut text = json!({ "via": via });
-            if let Some(reason) = reason {
+            if let Some(reason) = &reason {
                 text["reason"] = json!(reason);
             }
-            ("finding_seen", "seen", reason.as_deref(), None, text)
+            ("finding_seen", "seen", reason, None, text)
         }
     };
     tx.execute(
@@ -1305,7 +1313,8 @@ pub fn outside_app_json(answered: &[Item], shown: usize) -> Value {
                 "until": a.until.map(crate::view::iso),
                 "via": a.via.literal(),
                 "at": crate::view::iso(a.at),
-                "reason_text": a.reason.as_deref().map(status::text),
+                "reason_text": a.reason.as_ref().map(status::cut_text),
+                "reason_cuts": a.reason.as_ref().map(status::cuts),
                 "where_text": i.place.as_deref().map(status::text),
             })
         })
@@ -1368,7 +1377,7 @@ pub struct Answered {
     /// `expected` or `seen`.
     pub given: &'static str,
     pub via: Via,
-    pub reason: Option<String>,
+    pub reason: Option<crate::secrets::Text>,
     pub until: Option<i64>,
     /// It hides the finding now.
     pub in_force: bool,
@@ -1711,7 +1720,8 @@ pub fn item_json(i: &Item) -> Value {
             "at": crate::view::iso(a.at),
             "until": a.until.map(crate::view::iso),
             "in_force": a.in_force,
-            "reason_text": a.reason.as_deref().map(status::text),
+            "reason_text": a.reason.as_ref().map(status::cut_text),
+            "reason_cuts": a.reason.as_ref().map(status::cuts),
         });
     }
     v

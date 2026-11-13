@@ -36,8 +36,17 @@
 // Text from the response layer is data. It read files on the Mac that an attacker may have
 // written, so its reason and its case are kept and shown only in `_text` fields, escaped as all
 // such text is, and never inside the core's own words. `reason_text` is at most 1,000 Unicode
-// scalar values and `case_text` at most 200; longer is refused, and every answer carries them
-// whole. Text with no visible character is empty.
+// scalar values and `case_text` at most 200; longer is refused, never shortened, and every
+// answer carries them whole but for a secret cut out of the reason. Text with no visible
+// character is empty.
+//
+// A secret the core recognises is cut out of `reason_text` where it is kept, as out of every text
+// the core keeps, and the verdict is recorded all the same: `RecordedVerdict.reason_cuts` says
+// what was cut. A mark the reason quotes from the core's output, `\cut{<kind> <length>}`, bare or
+// with its backslash doubled as JSON writes it, is a value already cut: it is kept as text and
+// cuts nothing. The values that are keys, `case_text`, `store_id` and what the verdict names, are
+// never rewritten: one that holds a secret is refused with `holds_secret`, naming the field and
+// never what it holds.
 //
 // `immune verdict` reads the form it is told, `--proto` or `--json`, and answers in it. With no
 // form named it is refused as a misuse: a message is not typed as text.
@@ -54,6 +63,7 @@ syntax = "proto3";
 package immune.v1;
 
 import "immune/v1/common.proto";
+import "immune/v1/event.proto";
 
 // A verdict, as the response layer sends it to `immune verdict`.
 message Verdict {
@@ -124,6 +134,9 @@ message RecordedVerdict {
   FindingRef finding = 3;
   // It raised that occurrence of the finding: no occurrence was open or expected when it came.
   bool raised = 4;
+  // What was cut out of `verdict.reason_text` because it held a secret, in order, one entry for
+  // each piece; `argument` is 0, the reason being one text. Empty when nothing was cut.
+  repeated Cut reason_cuts = 5;
 }
 
 // The verdicts about a finding or a match, as an answer gives them.

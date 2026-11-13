@@ -2279,6 +2279,7 @@ fn a_binary_padding_start_raises_one_finding_with_its_authors_and_arguments_and_
                 "working_directory_text": CWD,
                 "parent": null,
                 "script_text": null,
+                "cuts": [],
             }}],
             "source": "https://github.com/SigmaHQ/sigma",
             "licence": "DRL-1.1",

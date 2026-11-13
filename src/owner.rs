@@ -19,7 +19,8 @@ pub const NOT_MINE: &str = "not mine";
 pub struct Word {
     pub entity: String,
     pub said: String,
-    pub reason: String,
+    /// Cut, as `secrets::Kept::OwnerReason` keeps it.
+    pub reason: crate::secrets::Text,
     pub made_at: i64,
     /// How it was given; `Unknown` for one made before this was kept.
     pub via: Via,
@@ -58,7 +59,7 @@ impl Standing {
             "{} by the owner on {}: {}",
             self.word.said,
             crate::view::utc(self.word.made_at),
-            self.word.reason
+            self.word.reason.shown(crate::view::shown)
         )
     }
 
@@ -106,6 +107,7 @@ pub fn standing(conn: &Connection) -> rusqlite::Result<Vec<Standing>> {
     }
     // A store opened only for reading since this build keeps no `via` yet.
     let via = if has_via(conn)? { "via" } else { "NULL" };
+    let form = crate::secrets::form(conn)?;
     let words: Vec<Word> = conn
         .prepare(&format!(
             "SELECT entity, said, reason, made_at, {via} FROM owner_statement
@@ -115,7 +117,7 @@ pub fn standing(conn: &Connection) -> rusqlite::Result<Vec<Standing>> {
             Ok(Word {
                 entity: r.get(0)?,
                 said: r.get(1)?,
-                reason: r.get(2)?,
+                reason: crate::secrets::Kept::OwnerReason.read(form, &r.get::<_, String>(2)?),
                 made_at: r.get(3)?,
                 via: Via::stored(r.get::<_, Option<String>>(4)?.as_deref()),
             })
@@ -310,7 +312,9 @@ fn withdraw_in(
 }
 
 /// Makes a statement about the entity. One that stood about the same machine is withdrawn
-/// in the same transaction: a machine has one standing statement.
+/// in the same transaction: a machine has one standing statement. The reason is taken whatever
+/// it holds and kept cut (`secrets::Kept::OwnerReason`, `OwnerEntry`); returned with how many
+/// statements it replaced, as it is kept.
 #[allow(clippy::too_many_arguments)]
 pub fn say(
     conn: &mut Connection,
@@ -321,7 +325,10 @@ pub fn say(
     via: Via,
     at: i64,
     run_id: &str,
-) -> rusqlite::Result<usize> {
+) -> rusqlite::Result<(usize, crate::secrets::Text)> {
+    let kept = crate::secrets::Text::source(reason);
+    let reason = kept.store();
+    let reason = reason.as_str();
     let tx = conn.transaction()?;
     let replaced = withdraw_in(
         &tx,
@@ -348,7 +355,7 @@ pub fn say(
         via.literal(),
     )?;
     tx.commit()?;
-    Ok(replaced)
+    Ok((replaced, kept))
 }
 
 /// Withdraws what stands about the machine. Returns what was withdrawn: entity and what was
@@ -403,7 +410,8 @@ pub fn outside_app_json(standing: &[Standing], shown: usize) -> Value {
                 "said": s.word.said,
                 "via": s.word.via.literal(),
                 "at": crate::view::iso(s.word.made_at),
-                "reason_text": status::text(&s.word.reason),
+                "reason_text": status::cut_text(&s.word.reason),
+                "reason_cuts": status::cuts(&s.word.reason),
             })
         })
         .collect();

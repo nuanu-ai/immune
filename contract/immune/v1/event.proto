@@ -101,7 +101,8 @@ message ProgramStart {
   Process instigator = 4;
   // `event.exec.target.ppid`.
   optional int64 parent_pid = 5;
-  // The arguments, `event.exec.args`, the first included, each whole and in its own string.
+  // The arguments, `event.exec.args`, the first included, each in its own string and whole but
+  // for what `cuts` lists.
   repeated string args_text = 6;
   // `event.exec.cwd.path`.
   optional string working_directory_text = 7;
@@ -111,6 +112,30 @@ message ProgramStart {
   // The script the program runs, `event.exec.script.path`, when the start is of an interpreter
   // that runs a script file.
   optional string script_text = 9;
+  // What was cut out of the arguments before they were printed, in the order of the arguments,
+  // one entry for each piece cut. In `args_text` each piece is replaced by a mark,
+  // `\cut{<kind> <length>}`, which begins with a bare backslash: a backslash from the source is
+  // written `\u{5c}`, so no argument can forge a mark. This list is the authority on what was
+  // cut; a reader never has to take marks out of the text. Empty when nothing was cut. Paths and
+  // the working directory are not searched.
+  repeated Cut cuts = 10;
+}
+
+// A piece of an argument cut out because it holds a secret, or an argument withheld whole.
+message Cut {
+  // Which argument, its index in `ProgramStart.args_text`; 0 for a text of one piece, such as a
+  // verdict's reason.
+  uint32 argument = 1;
+  // What it was taken for, the set and the pattern: `gitleaks:<rule id>` for a pattern of
+  // gitleaks's, `detect-secrets:basic-auth` for a password in a URL, `immune:flag-value` for the
+  // value of a flag whose name says it is a secret, `immune:authorization` and
+  // `immune:mysql-password` for two forms of Immune's own. Two kinds withhold an argument whole:
+  // `immune:too-long`, when the arguments together are longer than the core searches, and
+  // `immune:no-patterns`, when the patterns did not load. More kinds come with newer sets; a
+  // reader that does not know one reads it as a cut all the same.
+  string kind = 2;
+  // How many characters were cut, in Unicode scalar values.
+  uint64 length = 3;
 }
 
 // A file created or renamed: a `create` or `rename` message from `eslogger`, as the collector

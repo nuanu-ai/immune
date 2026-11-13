@@ -229,7 +229,7 @@ pub fn known_of(
     let mut known = v1::Known {
         format: FORMAT,
         question: q.question as i32,
-        asked_text: whole(q.asked),
+        asked_text: crate::secrets::text(q.asked, whole),
         answered_at: now,
         presence: v1::Presence::Unknown as i32,
         latest_run_at: status::latest_finished(conn)?.and_then(|r| r.finished_at),

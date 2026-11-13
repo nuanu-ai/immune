@@ -788,7 +788,11 @@ fn answered_section(conn: &Connection, out: &mut String, now: i64) -> Out {
             esc(view::given_by(a.via))
         )?;
         if let Some(reason) = &a.reason {
-            writeln!(out, "<p class=\"said\">{}</p>", esc(reason))?;
+            writeln!(
+                out,
+                "<p class=\"said\">{}</p>",
+                esc(&reason.shown(view::shown))
+            )?;
         }
         writeln!(
             out,
@@ -2536,7 +2540,7 @@ pub fn beyond(conn: &Connection, latest: &[Latest], now: i64) -> Result<String, 
             view::td(&mut out, "mono", s.name())?;
             view::td(&mut out, "", &s.word.said)?;
             view::td(&mut out, "nowrap", &utc(s.word.made_at))?;
-            view::td(&mut out, "", &s.word.reason)?;
+            view::td(&mut out, "", &s.word.reason.shown(view::shown))?;
             view::td(&mut out, "", view::given_by(s.word.via))?;
             out.push_str("</tr>\n");
         }

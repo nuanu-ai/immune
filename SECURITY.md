@@ -20,6 +20,6 @@ Anything in this repository: the `immune` program, the menu-bar app, and the col
 - Immune sends something about the Mac over the network, or makes a request that depends on what is on it.
 - A finding is closed or hidden without the answer being recorded and shown in the app.
 
-Some limits are known and documented in the README, such as answers not being signed, a matched program start's command line kept as evidence with any secret in it, and `eslogger` not being a stable interface. A report that shows one of them is worse than documented is welcome.
+Some limits are known and documented in the README, such as answers not being signed, the collector's log holding command lines with any secret in them for a day, the forms of secret Immune does not recognise, and `eslogger` not being a stable interface. A report that shows one of them is worse than documented is welcome.
 
 A problem in a SigmaHQ rule itself, such as a rule that misses a technique or matches too much, belongs upstream at https://github.com/SigmaHQ/sigma. Immune ships those rules unchanged.

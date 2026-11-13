@@ -797,7 +797,25 @@ pub fn text(s: &str) -> Value {
 
 /// The same as a string, for the contract's `_text` fields.
 pub fn text_string(s: &str) -> String {
-    let shown = view::shown(s);
+    capped(view::shown(s))
+}
+
+/// A text the core cut, as `text` gives one, each mark as it is.
+pub fn cut_text(t: &crate::secrets::Text) -> Value {
+    Value::String(capped(t.shown(view::shown)))
+}
+
+/// What was cut out of a text a person or an agent gave, each piece by kind and length, so
+/// whoever gave it knows what was kept.
+pub fn cuts(t: &crate::secrets::Text) -> Value {
+    t.cuts()
+        .iter()
+        .map(|(kind, length)| json!({ "kind": kind, "length": length }))
+        .collect()
+}
+
+/// Text already shown, cut to `TEXT_CAP` characters.
+pub fn capped(shown: String) -> String {
     if shown.chars().count() <= TEXT_CAP {
         return shown;
     }
@@ -822,7 +840,8 @@ pub fn envelope(operation: &str, result: Value) -> Value {
 }
 
 /// The envelope of a failure. `message` and `example` are the program's own words; what the
-/// failure said, which may hold a path or a name from the machine, is `detail_text`.
+/// failure said, which may hold a path or a name from the machine or what a caller gave, is
+/// `detail_text`, cut as every text from a source is.
 pub fn failure(
     operation: Option<&str>,
     code: &str,
@@ -838,7 +857,7 @@ pub fn failure(
             "code": code,
             "message": message,
             "example": example,
-            "detail_text": text(detail),
+            "detail_text": cut_text(&crate::secrets::Text::source(detail)),
         }],
     })
 }

@@ -142,7 +142,7 @@ The first user of Immune is your coding agent, and the commands are its interfac
 | `immune program <path or name> --json` | The same for one installed app, Homebrew package or global npm package, found by a path inside it or by its name |
 | `immune machine [<name>] --json` | The same for this Mac, or for a server or tailnet peer the Mac knows, with what is on it one level deep |
 | `immune verdict --json` | Takes a verdict of the response layer about a match or a finding on standard input and records it; a verdict never changes Immune's own findings |
-| `immune matches --json` | Every rule match over the collector's log, of every level, each with the program start or file event it matched and command lines whole; what was read, lost or not evaluated; and the place to read on from with `--after` |
+| `immune matches --json` | Every rule match over the collector's log, of every level, each with the program start or file event it matched and command lines whole but for the secrets cut out of them; what was read, lost or not evaluated; and the place to read on from with `--after` |
 | `immune watch` | One JSON line per event while it runs |
 
 A trimmed answer from the invented Mac in the pictures:
@@ -203,7 +203,7 @@ These are the only requests Immune makes. They go through `/usr/bin/curl` over H
 - Nothing about your Mac leaves it. Immune takes no command from the network and never connects to your servers.
 - Rules come from published sets that others maintain and test. Immune writes its own only where none exists, for example for software changed in place.
 - Every answer to a finding records who gave it (the app, an agent or the command line) and why, and an answer given outside the app stays listed in it until you take it back, so nothing is quieted silently. Answers are not signed: a program running as you could still rewrite the store directly.
-- The 30-second sampler reads a command line only to decide one rule and keeps none. The collector's log holds arguments for one day, and the store keeps them only as the evidence of a finding, as they were.
+- The 30-second sampler reads a command line only to decide one rule and keeps none. The collector's log holds arguments for one day as they were run. The store keeps them only as the evidence of a finding, and with the secrets Immune recognises cut out, as every answer prints them. Rules see them uncut.
 
 ## Artificial Immunity
 
@@ -217,7 +217,6 @@ The collector depends on `eslogger`, which Apple does not promise as an interfac
 
 Not built yet:
 
-- Secrets cut out of the command lines Immune keeps and prints, with patterns from a published set. Today the command line of a matched program start is kept as the finding's evidence as it was, and `immune matches` prints it whole
 - Grouping related findings into cases, and adding up weak rule matches
 - Vulnerability matching for installed software, Homebrew and server packages
 - A signed build for other Macs, and `immune` on your `PATH`

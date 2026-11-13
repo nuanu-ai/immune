@@ -18,13 +18,16 @@
 //! an event is evaluated (`events::at_line`), so a verdict is about what the core matched.
 //!
 //! Text from the response layer is data: it read files an attacker may have written. Its reason
-//! and its case are kept as sent and shown only in `_text` fields, escaped as all such text is,
-//! and after the core's own words, never inside them.
+//! and its case are shown only in `_text` fields, escaped as all such text is, and after the
+//! core's own words, never inside them. Its reason is prose: a secret in it is cut where it is
+//! kept, as in every text the core keeps (`secrets::Text`), and the verdict lands. Its keys (the
+//! case, the store, what it names) are never rewritten: one that holds a secret is refused.
 
 use crate::contract::{v1, value_of};
 use crate::events::{self, AtLine, LineAt};
 use crate::findings::{self, CONFIDENCES, Found, SEVERITIES, Words};
 use crate::known::{self, whole};
+use crate::secrets::{Form, Kept, Text, holds};
 use crate::sigma::Rules;
 use crate::{Stop, answer, store, view};
 use prost::Message;
@@ -117,32 +120,36 @@ pub struct Recorded {
     pub raised: bool,
     pub severity: Option<String>,
     pub confidence: Option<String>,
-    pub reason: String,
-    pub case: String,
+    /// The response layer's text, read cut (`secrets::Kept`), as every reader shows it.
+    pub reason: Text,
+    pub case: Text,
 }
 
 const COLUMNS: &str =
     "at, kind, named, position, rule, finding, raised, severity, confidence, reason, case_ref";
 
-fn row(r: &rusqlite::Row) -> rusqlite::Result<Recorded> {
-    let kind: String = r.get(1)?;
-    Ok(Recorded {
-        at: r.get(0)?,
-        kind: if kind == "suspicious" {
-            Kind::Suspicious
-        } else {
-            Kind::Harmless
-        },
-        named: r.get(2)?,
-        position: r.get(3)?,
-        rule: r.get(4)?,
-        finding: r.get(5)?,
-        raised: r.get(6)?,
-        severity: r.get(7)?,
-        confidence: r.get(8)?,
-        reason: r.get(9)?,
-        case: r.get(10)?,
-    })
+/// A verdict's row, read in the store's `form`.
+fn row(form: Form) -> impl Fn(&rusqlite::Row) -> rusqlite::Result<Recorded> {
+    move |r| {
+        let kind: String = r.get(1)?;
+        Ok(Recorded {
+            at: r.get(0)?,
+            kind: if kind == "suspicious" {
+                Kind::Suspicious
+            } else {
+                Kind::Harmless
+            },
+            named: r.get(2)?,
+            position: r.get(3)?,
+            rule: r.get(4)?,
+            finding: r.get(5)?,
+            raised: r.get(6)?,
+            severity: r.get(7)?,
+            confidence: r.get(8)?,
+            reason: Kept::Reason.read(form, &r.get::<_, String>(9)?),
+            case: Kept::Case.read(form, &r.get::<_, String>(10)?),
+        })
+    }
 }
 
 fn has_table(conn: &Connection) -> rusqlite::Result<bool> {
@@ -177,7 +184,7 @@ pub fn listed(
                     OR id IN (SELECT id FROM verdict WHERE {cond} ORDER BY id DESC LIMIT {LISTED}))
              ORDER BY id"
         ))?
-        .query_map(args, row)?
+        .query_map(args, row(crate::secrets::form(conn)?))?
         .collect::<rusqlite::Result<_>>()?;
     Ok((total, suspicious, list))
 }
@@ -260,7 +267,7 @@ pub fn attach(conn: &Connection, found: &mut [Found]) -> rusqlite::Result<()> {
     }
     for v in conn
         .prepare(&format!("SELECT {COLUMNS} FROM verdict WHERE raised"))?
-        .query_map([], row)?
+        .query_map([], row(crate::secrets::form(conn)?))?
     {
         let v = v?;
         if let Some(s) = v.finding.as_ref().and_then(|f| of_finding.get_mut(f)) {
@@ -319,8 +326,8 @@ pub fn item_json(s: &Summary) -> Value {
     match &s.opening {
         Some(o) => json!({
             "said": said(s),
-            "reason_text": view::shown(&o.reason),
-            "case_text": view::shown(&o.case),
+            "reason_text": o.reason.shown(view::shown),
+            "case_text": o.case.shown(view::shown),
             "at": view::iso(o.at),
             "severity": o.severity,
             "confidence": o.confidence,
@@ -355,14 +362,24 @@ pub fn recorded(
             store_id: store_id.unwrap_or_default().to_string(),
             about: Some(about),
             kind: value_of::<v1::VerdictKind>(r.kind.word()),
-            reason_text: whole(&r.reason),
-            case_text: whole(&r.case),
+            reason_text: r.reason.shown(whole),
+            case_text: r.case.shown(whole),
             severity: r.severity.as_deref().map(value_of::<v1::Level>),
             confidence: r.confidence.as_deref().map(value_of::<v1::Level>),
         }),
         recorded_at: r.at,
         finding,
         raised: r.raised,
+        reason_cuts: r
+            .reason
+            .cuts()
+            .into_iter()
+            .map(|(kind, length)| v1::Cut {
+                argument: 0,
+                kind: kind.to_string(),
+                length: length as u64,
+            })
+            .collect(),
     }
 }
 
@@ -504,6 +521,17 @@ struct Sent {
     confidence: Option<&'static str>,
 }
 
+impl Sent {
+    /// The reason and the case as the store keeps them (`secrets::Kept`), and as a retry is
+    /// compared on: two reasons that differ only in a secret are the same once cut.
+    fn kept(&self) -> (String, String) {
+        (
+            Text::source(&self.reason).store(),
+            Text::source(&self.case).store(),
+        )
+    }
+}
+
 /// A level as the store words it: `None` for one that is not on the core's scale.
 fn level(value: i32) -> Option<&'static str> {
     match v1::Level::try_from(value).ok()? {
@@ -523,7 +551,8 @@ fn blank(s: &str) -> bool {
 }
 
 /// Reads one `Verdict`, in the form asked, and checks what can be checked without the store.
-/// What this build does not read is refused in either form. Text is taken as sent, never cut.
+/// What this build does not read is refused in either form. Text is never shortened; a secret in
+/// the reason is cut where it is kept, and a key that holds one is refused.
 fn read(bytes: &[u8], json: bool) -> Result<Sent, Refusal> {
     if bytes.len() > CAP {
         return Err(refused(
@@ -532,6 +561,17 @@ fn read(bytes: &[u8], json: bool) -> Result<Sent, Refusal> {
             format!("more than {CAP} bytes"),
         ));
     }
+    // The reason is prose, cut where it is kept (`Sent::kept`); the keys are checked here. What
+    // a refusal repeats of what was sent is cut where the refusal is printed (`answer::fail`).
+    let sent = parsed(bytes, json)?;
+    match secret_field(&sent)? {
+        Some(field) => Err(holds_secret(field)),
+        None => Ok(sent),
+    }
+}
+
+/// One `Verdict` read in the form asked and checked, as far as it can be without the store.
+fn parsed(bytes: &[u8], json: bool) -> Result<Sent, Refusal> {
     let v: v1::Verdict = if json {
         from_json(bytes)?
     } else {
@@ -620,6 +660,53 @@ fn read(bytes: &[u8], json: bool) -> Result<Sent, Refusal> {
         severity,
         confidence,
     })
+}
+
+/// A verdict whose key holds a secret the core recognises is refused before anything is read or
+/// written, and the refusal names the field, never what it holds. A key is never cut instead:
+/// the case is the response layer's reference and what a retry is compared on, and the others
+/// name what the verdict is about, so a rewritten one would mean something else. With patterns
+/// that did not load, nothing can be checked and nothing is taken.
+fn holds_secret(field: &str) -> Refusal {
+    refused(
+        "holds_secret",
+        "a key of the verdict holds what Immune recognises as a secret, and a key is never rewritten; nothing was recorded",
+        field,
+    )
+}
+
+fn unchecked(holds: Result<bool, &'static str>) -> Result<bool, Refusal> {
+    holds.map_err(|_| Refusal {
+        code: "secrets_unchecked",
+        message: "the patterns Immune recognises secrets by did not load, so the verdict cannot be checked; nothing was recorded",
+        detail: String::new(),
+        exit: 1,
+    })
+}
+
+/// The first key of a verdict that holds a secret, as read, so a JSON escape hides nothing. Of
+/// the message's fields, `reason_text` is prose and is cut where it is kept; `format`, `kind`,
+/// `severity` and `confidence` are numbers of a closed list; every other text is a key: the
+/// case, the store and what the verdict names.
+fn secret_field(s: &Sent) -> Result<Option<&'static str>, Refusal> {
+    let (named, position, rule) = match &s.about {
+        About::Finding(id) => (Some(id.as_str()), None, None),
+        About::Match { position, rule } => (None, Some(position.as_str()), Some(rule.as_str())),
+    };
+    for (field, text) in [
+        ("case_text", Some(s.case.as_str())),
+        ("store_id", Some(s.store_id.as_str())),
+        ("finding.id", named),
+        ("match.position", position),
+        ("match.rule", rule),
+    ] {
+        if let Some(text) = text
+            && unchecked(holds(text))?
+        {
+            return Ok(Some(field));
+        }
+    }
+    Ok(None)
 }
 
 /// A `Verdict` from JSON, refused whole when it is not exactly one: a key given twice anywhere,
@@ -721,6 +808,7 @@ fn take(args: &VerdictArgs) -> Result<v1::VerdictRecorded, Refusal> {
         About::Finding(id) => (Some(id.as_str()), None, None),
         About::Match { position, rule } => (None, Some(position.as_str()), Some(rule.as_str())),
     };
+    let (reason, case) = sent.kept();
     tx.execute(
         "INSERT INTO journal (at, run_id, entry, kind, subject, new_value, text)
          VALUES (?1, ?2, 'verdict', ?3, ?4, ?5, ?6)",
@@ -733,7 +821,8 @@ fn take(args: &VerdictArgs) -> Result<v1::VerdictRecorded, Refusal> {
             json!({
                 "named": named, "position": position, "rule": rule,
                 "severity": sent.severity, "confidence": sent.confidence,
-                "reason": sent.reason, "case": sent.case,
+                crate::secrets::VERDICT_ENTRY_TEXT[0]: reason,
+                crate::secrets::VERDICT_ENTRY_TEXT[1]: case,
             })
             .to_string()
         ],
@@ -797,8 +886,8 @@ fn take(args: &VerdictArgs) -> Result<v1::VerdictRecorded, Refusal> {
             raised,
             sent.severity,
             sent.confidence,
-            sent.reason,
-            sent.case
+            reason,
+            case
         ],
     )?;
     let out = answer(&tx, tx.last_insert_rowid(), false, now)?;
@@ -905,6 +994,7 @@ fn same(tx: &Transaction, s: &Sent) -> rusqlite::Result<Option<i64>> {
         About::Finding(id) => (Some(id.as_str()), None, None),
         About::Match { position, rule } => (None, Some(position.as_str()), Some(rule.as_str())),
     };
+    let (reason, case) = s.kept();
     tx.query_row(
         "SELECT v.id FROM verdict v LEFT JOIN finding f ON f.id = v.finding
          WHERE v.named IS ?1 AND v.position IS ?2 AND v.rule IS ?3 AND v.kind = ?4
@@ -916,8 +1006,8 @@ fn same(tx: &Transaction, s: &Sent) -> rusqlite::Result<Option<i64>> {
             position,
             rule,
             s.kind.word(),
-            s.case,
-            s.reason,
+            case,
+            reason,
             s.severity,
             s.confidence
         ],
@@ -937,7 +1027,7 @@ fn answer(
     let r = tx.query_row(
         &format!("SELECT {COLUMNS} FROM verdict WHERE id = ?1"),
         [id],
-        row,
+        row(crate::secrets::form(tx)?),
     )?;
     let finding = match &r.finding {
         Some(f) => findings::all(tx, now)?

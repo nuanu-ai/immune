@@ -239,7 +239,7 @@ pub struct Rule {
 /// kind the reader does not know reads as no event.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(default)]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Event {
     #[prost(oneof = "event::Body", tags = "1, 2")]
     #[serde(flatten)]
@@ -249,7 +249,7 @@ pub struct Event {
 pub mod event {
     #[derive(serde::Serialize, serde::Deserialize)]
     #[serde(rename_all = "snake_case")]
-    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Body {
         #[prost(message, tag = "1")]
         ProgramStart(super::ProgramStart),
@@ -308,7 +308,7 @@ pub struct Identity {
 /// environment is never kept.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(default)]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ProgramStart {
     /// When it happened, from `time`: seconds since the epoch, and the nanoseconds within that
     /// second. The log gives microseconds. Absent when the log's time is not in the form eslogger
@@ -331,7 +331,8 @@ pub struct ProgramStart {
     /// `event.exec.target.ppid`.
     #[prost(int64, optional, tag = "5")]
     pub parent_pid: ::core::option::Option<i64>,
-    /// The arguments, `event.exec.args`, the first included, each whole and in its own string.
+    /// The arguments, `event.exec.args`, the first included, each in its own string and whole but
+    /// for what `cuts` lists.
     #[prost(string, repeated, tag = "6")]
     pub args_text: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// `event.exec.cwd.path`.
@@ -345,6 +346,36 @@ pub struct ProgramStart {
     /// that runs a script file.
     #[prost(string, optional, tag = "9")]
     pub script_text: ::core::option::Option<::prost::alloc::string::String>,
+    /// What was cut out of the arguments before they were printed, in the order of the arguments,
+    /// one entry for each piece cut. In `args_text` each piece is replaced by a mark,
+    /// `\cut{<kind> <length>}`, which begins with a bare backslash: a backslash from the source is
+    /// written `\u{5c}`, so no argument can forge a mark. This list is the authority on what was
+    /// cut; a reader never has to take marks out of the text. Empty when nothing was cut. Paths and
+    /// the working directory are not searched.
+    #[prost(message, repeated, tag = "10")]
+    pub cuts: ::prost::alloc::vec::Vec<Cut>,
+}
+/// A piece of an argument cut out because it holds a secret, or an argument withheld whole.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Cut {
+    /// Which argument, its index in `ProgramStart.args_text`; 0 for a text of one piece, such as a
+    /// verdict's reason.
+    #[prost(uint32, tag = "1")]
+    pub argument: u32,
+    /// What it was taken for, the set and the pattern: `gitleaks:<rule id>` for a pattern of
+    /// gitleaks's, `detect-secrets:basic-auth` for a password in a URL, `immune:flag-value` for the
+    /// value of a flag whose name says it is a secret, `immune:authorization` and
+    /// `immune:mysql-password` for two forms of Immune's own. Two kinds withhold an argument whole:
+    /// `immune:too-long`, when the arguments together are longer than the core searches, and
+    /// `immune:no-patterns`, when the patterns did not load. More kinds come with newer sets; a
+    /// reader that does not know one reads it as a cut all the same.
+    #[prost(string, tag = "2")]
+    pub kind: ::prost::alloc::string::String,
+    /// How many characters were cut, in Unicode scalar values.
+    #[prost(uint64, tag = "3")]
+    pub length: u64,
 }
 /// A file created or renamed: a `create` or `rename` message from `eslogger`, as the collector
 /// keeps it.
@@ -498,7 +529,7 @@ pub struct AboutFinding {
 /// A verdict as the core recorded it.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(default)]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RecordedVerdict {
     /// The verdict as it was sent and kept: what it named, its kind, its reason and case, and its
     /// levels. Its text is escaped as all text in the contract is.
@@ -514,6 +545,10 @@ pub struct RecordedVerdict {
     /// It raised that occurrence of the finding: no occurrence was open or expected when it came.
     #[prost(bool, tag = "4")]
     pub raised: bool,
+    /// What was cut out of `verdict.reason_text` because it held a secret, in order, one entry for
+    /// each piece; `argument` is 0, the reason being one text. Empty when nothing was cut.
+    #[prost(message, repeated, tag = "5")]
+    pub reason_cuts: ::prost::alloc::vec::Vec<Cut>,
 }
 /// The verdicts about a finding or a match, as an answer gives them.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -540,7 +575,7 @@ pub struct Verdicts {
 /// The answer to `immune verdict`: what was recorded.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(default)]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct VerdictRecorded {
     /// The version of this contract: 1. A reader that meets another number stops.
     #[prost(uint32, tag = "1")]

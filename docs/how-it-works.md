@@ -136,7 +136,7 @@ A new worktree of a project the store already holds is compared with that projec
 
 "The same repository" is git's own relation, checked in both directions. The worktree's `.git` file points into `<git folder>/worktrees/<name>`, that folder's `gitdir` points back at the worktree, and its `commondir` names the git folder of a checkout the store holds (or the git folder another such worktree points to). The pointer in the worktree is text anyone who can write there can forge, so it counts only when the repository's folder points back. A separate clone, a copied folder, a folder whose `.git` is a link to the project's git folder, and a checkout with the same name or remote are different repositories, and their places are judged on their own. A submodule's `.git` file points to a folder without `commondir`, so a submodule is never taken for a worktree.
 
-Readers keep their raw input next to the store, copied only when it changed, so that the store can be rebuilt from it. A source that holds secrets keeps only what the reader extracted: the SSH readers keep names and never keys. Homebrew's answer and the vulnerability feeds are kept in reduced form for size. A command that rebuilds the store from raw input is planned. The store carries a format version, now 4, and a build refuses a store of a format it does not know.
+Readers keep their raw input next to the store, copied only when it changed, so that the store can be rebuilt from it. A source that holds secrets keeps only what the reader extracted: the SSH readers keep names and never keys. Homebrew's answer and the vulnerability feeds are kept in reduced form for size. A command that rebuilds the store from raw input is planned. The store carries a format version, now 5, and a build refuses a store of a format it does not know.
 
 ## The journal
 
@@ -221,7 +221,8 @@ Files on the Mac, feeds and indicator lists may be written by an attacker, somet
 - no path, command or URL is ever taken from a feed or an indicator list and used;
 - nothing from an indicator list is visited, downloaded or run;
 - text from a source is returned only in fields ending in `_text`;
-- the HTML pages escape it and run no script except one fixed in the program.
+- the HTML pages escape it and run no script except one fixed in the program;
+- a secret on a command line is cut out before Immune keeps the command line or prints it, since what Immune prints reaches the person's agent and may reach a model in the cloud. Rules see the command line as it was, in memory. [reference.md](reference.md#secrets-in-what-immune-keeps-and-prints) has what is cut and what is not.
 
 ## No model
 
@@ -252,6 +253,9 @@ Where the industry has a proven name, format or rule set, Immune takes it. Its o
 | Trusting a kept position in a file others write | git's index: an unchanged stat stands for unchanged content unless it was taken in the moment of a change ("racily clean"); otherwise the content is hashed and compared |
 | The kinds of a verdict | the words security schemas and sandboxes use: the verdict of OCSF's incident finding has Suspicious and Benign, and VirusTotal counts the engines' results as `suspicious` or `harmless` |
 | A verdict kept beside an alert, with its history | triage in SIEM and case tools, where a classification is added to an alert that is kept, with its history |
+| Where secrets are cut | detection on the data as collected and redaction where it is stored or leaves, as the Datadog Agent, Tetragon, OpenTelemetry's redaction processor and Elasticsearch's redact processor do |
+| What a secret is | gitleaks's published patterns and its semantics: keywords, secret group, entropy, allowlists; Datadog Agent's word list for the names of flags whose value is a secret; detect-secrets' pattern for a password in a URL |
+| What replaces a secret | the kind of the pattern that found it, as Tetragon's `redact_str` and Elasticsearch's `<NAME>` give it, with a count of what was cut, as OpenTelemetry's `redaction.masked.count` gives it |
 
 Elastic's rules are written in Elastic's query languages, and Immune has no evaluator of them. A program outside this repository translates each EQL rule into a Sigma rule over Elastic's own field names, mechanically, and takes a translation only when it is exact for every event the collector records. Each taken translation was checked against a reference that follows Elasticsearch's documented meaning of the query, on 33,969 invented events evaluated by `sigma-rust` 0.7.0 over events built as Immune builds them, and they disagreed on none. Of Elastic's 185 rules for macOS at commit `032ac5e`, 66 were taken. The other 119 are named in `rules/elastic/not-taken.tsv` with the reason: 30 correlate a sequence of events, 40 are written in KQL or ES|QL, 23 need events and 23 need fields the collector does not record, 2 hold a backslash in a wildcard pattern and 1 is about program starts and file events at once.
 
@@ -270,7 +274,8 @@ Immune's own:
 - a baseline per unit, a file read or a folder listed, with three outcomes: a change where the store can show the thing was not there, a silent baseline only in the store's first full check, and otherwise a first reading told in one informational finding. File integrity monitors build one baseline from their first scan of the paths they are given. Immune's readings reach different places at different times, so a place reached later is named in an informational finding;
 - integrity of what is installed: content changed while the version stayed the same, for which no published rule exists;
 - one person answering findings, with an agent allowed to answer only after they agree;
-- a verdict from another program never writes into the core's findings: a suspicious one is an event of a rule of Immune's own, whose finding only the person closes.
+- a verdict from another program never writes into the core's findings: a suspicious one is an event of a rule of Immune's own, whose finding only the person closes;
+- for secrets on a command line: a name read at every `=`, `:`, `&` or `?` in a word, with `-`, `_` and `.` alike, and matched against the word list, never taking a next word that begins with `-`; two small rules where no published pattern fits what `eslogger` gives, an `Authorization` header without quotes and a MySQL client's `-p<password>`; one reading of shell words for names and values, and one decision of where a value ends for all of these, which runs to the end of the argument when the name begins it, follows shell quoting inside a longer text, and runs to the end of the argument from anything it does not follow exactly; a mark that names the kind and the length, read back only in the store's own form, so no source can write one, and a list of the cuts beside every event; one reading of a mark a source quotes, and of a kind in a list of cuts, in every text that is cut: an exemption that covers only its own bytes, so the patterns read around it as around a space and as if it were absent, and a value that begins with it ends where a real one would, kept as the source's text; one list of the kinds of kept text that may hold a secret, the reasons people and their agents give included, which both the one-time cleaning of an earlier build's store and every reader of that text go by, with the cleaning raising the store's format so an earlier build refuses it; prose (a person's reason, a verdict's reason, what the collector printed) taken and cut, never refused, and a key (a verdict's case and what it names) refused, never rewritten; and a failure whose message is the core's own words, with what it repeats in a field of its own, cut where it is printed.
 
 ## Planned
 

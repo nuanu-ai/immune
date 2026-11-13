@@ -46,6 +46,7 @@ mod processes;
 mod program;
 mod project;
 mod resolver;
+mod secrets;
 mod servers;
 mod sha256;
 mod sigma;
@@ -797,7 +798,7 @@ fn main() -> ExitCode {
                     &e,
                 ));
             }
-            eprintln!("immune: {}\n{USAGE}", view::shown(&e));
+            eprintln!("immune: {}\n{USAGE}", secrets::text(&e, view::shown));
             return ExitCode::from(EXIT_USAGE);
         }
     };
@@ -823,7 +824,7 @@ fn main() -> ExitCode {
         },
         Cmd::Status(args) => match status_text(&args.store) {
             Err(e) => {
-                eprintln!("immune: {}", view::shown(&e.to_string()));
+                eprintln!("immune: {}", said(&e.to_string()));
                 return ExitCode::from(EXIT_STORE);
             }
             ok => ok.map_err(Into::into),
@@ -847,7 +848,7 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("immune: {}", view::shown(&e.to_string()));
+            eprintln!("immune: {}", said(&e.to_string()));
             ExitCode::FAILURE
         }
     }
@@ -948,7 +949,7 @@ fn sample_cmd(args: &SampleArgs) -> ExitCode {
                     }
                 };
             }
-            eprintln!("immune: {}", view::shown(&e.to_string()));
+            eprintln!("immune: {}", said(&e.to_string()));
             return ExitCode::from(match stop {
                 Some(Stop::RunInProgress) => EXIT_RUN_IN_PROGRESS,
                 Some(Stop::Store(_)) => EXIT_STORE,
@@ -1128,10 +1129,7 @@ fn replay_cmd(root: &Path, json: bool) -> ExitCode {
                     &why,
                 ));
             } else {
-                eprintln!(
-                    "immune: the event log could not be read: {}",
-                    view::shown(&why)
-                );
+                eprintln!("immune: the event log could not be read: {}", said(&why));
             }
             ExitCode::FAILURE
         }
@@ -1565,11 +1563,32 @@ fn read_findings(store: &Path, now: i64) -> Result<Option<Vec<findings::Found>>,
 }
 
 /// A refusal in the form the command was asked in, with the exit code given.
+/// What a failure says, for a person: what it repeats of what it was given is cut.
+fn said(s: &str) -> String {
+    secrets::text(s, view::shown)
+}
+
 fn refuse(json: bool, op: &str, code: &str, message: &str, example: &str, exit: u8) -> ExitCode {
+    refuse_about(json, op, code, message, example, "", exit)
+}
+
+/// A refusal about what was asked: `message` is the core's own words, and what was asked, which
+/// may hold a secret, is `detail`, cut in every form.
+fn refuse_about(
+    json: bool,
+    op: &str,
+    code: &str,
+    message: &str,
+    example: &str,
+    detail: &str,
+    exit: u8,
+) -> ExitCode {
     if json {
-        print_json(&status::failure(Some(op), code, message, example, ""));
-    } else {
+        print_json(&status::failure(Some(op), code, message, example, detail));
+    } else if detail.is_empty() {
         eprintln!("immune: {message}. {example}");
+    } else {
+        eprintln!("immune: {message}: {}. {example}", said(detail));
     }
     ExitCode::from(exit)
 }
@@ -1578,7 +1597,7 @@ fn store_failed(json: bool, op: &str, e: &Stop) -> ExitCode {
     if json {
         return fail_json(op, e);
     }
-    eprintln!("immune: {}", view::shown(&e.to_string()));
+    eprintln!("immune: {}", said(&e.to_string()));
     ExitCode::from(EXIT_STORE)
 }
 
@@ -2511,7 +2530,7 @@ fn word_rows(words: &[&owner::Standing]) -> Vec<Vec<String>> {
                 w.name().to_string(),
                 w.word.said.clone(),
                 view::utc(w.word.made_at),
-                w.word.reason.clone(),
+                w.word.reason.shown(view::shown),
                 w.names[1..].join(", "),
             ]
         })
@@ -2551,7 +2570,8 @@ fn statement_json(s: &owner::Standing) -> serde_json::Value {
         "said": s.word.said,
         "via": s.word.via.literal(),
         "at": view::iso(s.word.made_at),
-        "reason_text": status::text(&s.word.reason),
+        "reason_text": status::cut_text(&s.word.reason),
+        "reason_cuts": status::cuts(&s.word.reason),
         "names_text": s.names[1..].iter().map(|n| status::text(n)).collect::<Vec<_>>(),
         "seen_after": s.seen.as_ref().map(|e| serde_json::json!({
             "at": view::iso(e.at),
@@ -2562,18 +2582,15 @@ fn statement_json(s: &owner::Standing) -> serde_json::Value {
 
 /// Makes or withdraws a statement, or lists those that stand.
 fn owner_cmd(args: &OwnerArgs) -> ExitCode {
-    let refused = |code: &str, message: String, example: &str, exit: u8| {
-        refuse(args.json, "owner", code, &message, example, exit)
-    };
     let store_path = &args.servers.store;
     if !store_path.is_file() {
-        return refused(
+        return refuse_about(
+            args.json,
+            "owner",
             "no_store",
-            format!(
-                "there is no store at {}; `immune run` makes it",
-                store_path.display()
-            ),
+            "there is no store at the path given; `immune run` makes it",
             "immune run --json",
+            &store_path.display().to_string(),
             EXIT_STORE,
         );
     }
@@ -2633,13 +2650,13 @@ fn owner_cmd(args: &OwnerArgs) -> ExitCode {
     let (entity, machine) = match owner::find(&conn, name) {
         Ok(owner::Found::One(entity, machine)) => (entity, machine),
         Ok(owner::Found::Unknown) => {
-            return refused(
+            return refuse_about(
+                args.json,
+                "owner",
                 "unknown_machine",
-                format!(
-                    "the store knows no machine as {}; nothing was said",
-                    view::shown(name)
-                ),
+                "the store knows no machine by the name asked; nothing was said",
                 "immune servers lists the machines the store knows",
+                name,
                 EXIT_USAGE,
             );
         }
@@ -2651,15 +2668,13 @@ fn owner_cmd(args: &OwnerArgs) -> ExitCode {
                     names.join(" = ")
                 })
                 .collect();
-            return refused(
+            return refuse_about(
+                args.json,
+                "owner",
                 "several_machines",
-                format!(
-                    "{} fits {} machines that are not known to be one: {}. Name one of them; nothing was said",
-                    view::shown(name),
-                    list.len(),
-                    view::shown(&list.join("; "))
-                ),
+                "the name asked fits several machines that are not known to be one; name one of them; nothing was said",
                 "immune owner <full machine id> retired --reason <text>",
+                &format!("{name} fits: {}", list.join("; ")),
                 EXIT_USAGE,
             );
         }
@@ -2674,17 +2689,24 @@ fn owner_cmd(args: &OwnerArgs) -> ExitCode {
     });
     match act {
         Act::Say(said, reason) => {
-            let replaced = match owner::say(
+            let (replaced, reason) = match owner::say(
                 &mut conn, &entity, &machine, said, reason, args.via, at, &run_id,
             ) {
                 Ok(n) => n,
                 Err(e) => return failed(&e),
             };
             lines.push(format!(
-                "Said: {} is {said}, {}: {reason}",
+                "Said: {} is {said}, {}: {}",
                 owner::bare(&entity),
-                view::utc(at)
+                view::utc(at),
+                reason.shown(view::shown)
             ));
+            if !reason.cuts().is_empty() {
+                lines.push(
+                    "Its reason held what Immune recognises as a secret, and is kept with it cut."
+                        .to_string(),
+                );
+            }
             if replaced > 0 {
                 lines.push(
                     "It replaces the statement that stood about the same machine, which is kept."
@@ -2694,7 +2716,8 @@ fn owner_cmd(args: &OwnerArgs) -> ExitCode {
             r["done"] = serde_json::json!("said");
             r["said"] = serde_json::json!(said);
             r["at"] = serde_json::json!(view::iso(at));
-            r["reason_text"] = status::text(reason);
+            r["reason_text"] = status::cut_text(&reason);
+            r["reason_cuts"] = status::cuts(&reason);
             r["replaced"] = serde_json::json!(replaced);
         }
         Act::Withdraw => {
@@ -2703,13 +2726,13 @@ fn owner_cmd(args: &OwnerArgs) -> ExitCode {
                 Err(e) => return failed(&e),
             };
             if withdrawn.is_empty() {
-                return refused(
+                return refuse_about(
+                    args.json,
+                    "owner",
                     "no_statement",
-                    format!(
-                        "no statement stands about {}; nothing was withdrawn",
-                        view::shown(name)
-                    ),
+                    "no statement stands about the machine asked; nothing was withdrawn",
                     "immune owner --json lists the statements that stand",
+                    name,
                     EXIT_USAGE,
                 );
             }
@@ -2747,7 +2770,7 @@ fn owner_cmd(args: &OwnerArgs) -> ExitCode {
                 for line in &lines {
                     say(line);
                 }
-                eprintln!("immune: {}", view::shown(&problem));
+                eprintln!("immune: {}", said(&problem));
                 return ExitCode::FAILURE;
             }
             r["sweep"] =
