@@ -36,13 +36,10 @@ public final class AppModel: ObservableObject {
   /// When the app last had the page written ahead.
   private var lastAhead: Date?
   private var pageTask: Task<ImmuneOutput, Never>?
-  /// "More" is open in the panel.
-  @Published public var moreOpen = false
-  /// The card the owner opened, by its place in the order Immune served; nil is the first.
-  @Published public var openRow: Int?
-  /// The answers given through the owner's agent are open in the panel.
-  @Published public var answeredOpen = false
-  /// The "Expected…" form, open on one finding's card, or nil.
+  /// The finding opened inside the popover, by its id, and what `immune finding <id> --json`
+  /// said of it; nil shows the list.
+  @Published public private(set) var opened: OpenedFinding?
+  /// The "Expected…" form, open on the opened finding, or nil.
   @Published public var form: ExpectedForm?
   /// The id of the finding whose answer is being saved now.
   @Published public private(set) var answering: String?
@@ -113,6 +110,9 @@ public final class AppModel: ObservableObject {
       Task { _ = await writePage(for: .app) }
     }
     refreshing = false
+    // The opened finding is read again with the status, so the card never shows an older
+    // state than the list behind it.
+    if let o = opened { await readOpened(o.id) }
   }
 
   /// Takes what the watcher said after a reading of program starts into the status read
@@ -142,7 +142,9 @@ public final class AppModel: ObservableObject {
       ["run", "--json"] + extraArguments, timeout: Self.runTimeout, for: whom)
     if Self.otherRunInProgress(out) {
       runNote = "A check was already running; its result will show when it ends."
-    } else if case .failed(let reason, let detail, _) = Interpret.reading(from: out) {
+    } else if case .failed(let reason, let detail, _) = Interpret.reading(
+      from: out, operation: nil)
+    {
       runFailure = reason + (detail.map { " " + Inert.text($0) } ?? "")
     }
     runInProgress = false
@@ -168,11 +170,11 @@ public final class AppModel: ObservableObject {
     }
     let out = await writePage(for: .owner)
     if out.exitCode != 0 {
-      pageFailure = "Details could not be opened. " + Self.viewFailure(out)
+      pageFailure = "The report could not be opened. " + Self.viewFailure(out)
     } else if let page = pagePath {
-      if !opener(target(page, section: section)) { pageFailure = "Details could not be opened." }
+      if !opener(target(page, section: section)) { pageFailure = "The report could not be opened." }
     } else {
-      pageFailure = "Details could not be opened. The program did not say where its page is."
+      pageFailure = "The report could not be opened. The program did not say where its page is."
     }
     pageOpening = false
     return true
@@ -231,6 +233,32 @@ public final class AppModel: ObservableObject {
       ?? "The program reported a problem."
   }
 
+  /// Opens a finding inside the popover: `immune finding <id> --json`, the contract's one
+  /// message, read whole. Returns false, and runs nothing, for an id the app does not pass.
+  @discardableResult
+  public func openFinding(_ id: String) async -> Bool {
+    guard Answer.isUsable(id: id) else { return false }
+    if form?.id != id { form = nil }
+    opened = OpenedFinding(id: id, reading: .loading)
+    await readOpened(id)
+    return true
+  }
+
+  /// Back to the list.
+  public func closeFinding() {
+    opened = nil
+    form = nil
+  }
+
+  private func readOpened(_ id: String) async {
+    let out = await immune.run(
+      ["finding", id, "--json"] + extraArguments, timeout: Self.answerTimeout, for: .owner)
+    // Only the finding still open on the screen takes the answer.
+    if opened?.id == id {
+      opened = OpenedFinding(id: id, reading: Decoding.finding(from: out, asked: id))
+    }
+  }
+
   /// The owner's "Seen" on a finding: `immune finding <id> seen`, then a refresh.
   /// Returns false, and runs nothing, for an id the app does not pass or while
   /// another answer is being saved.
@@ -256,7 +284,14 @@ public final class AppModel: ObservableObject {
   @discardableResult
   public func takeBack(_ id: String) async -> Bool {
     let listed = reading.status?.answeredOutsideApp?.items ?? []
-    guard let args = Answer.reopenArguments(id: id), listed.contains(where: { $0.id == id })
+    // The status lists the latest few; the opened finding says of itself whether an answer
+    // given outside the app hides it now.
+    var openedOutside = false
+    if let o = opened, o.id == id, case .read(let f) = o.reading {
+      openedOutside = FindingFacts.answeredOutside(f)
+    }
+    guard let args = Answer.reopenArguments(id: id),
+      openedOutside || listed.contains(where: { $0.id == id })
     else { return false }
     return await save(id, args)
   }
@@ -276,7 +311,13 @@ public final class AppModel: ObservableObject {
   private func answer(_ id: String, _ args: [String]) async -> Bool {
     // Only a finding the panel shows takes an answer; a health item never does.
     let shown = reading.status?.needsALook ?? []
-    guard shown.contains(where: { $0.id == id && $0.type == "finding" }) else { return false }
+    guard shown.contains(where: { $0.id == id && $0.type == "finding" }) else {
+      // A press that cannot act says so, on the card it was pressed on.
+      refusals[id] =
+        "Not saved: the status read last does not list this finding among those that need a"
+        + " look, so it takes no answer here."
+      return false
+    }
     return await save(id, args)
   }
 
@@ -293,6 +334,7 @@ public final class AppModel: ObservableObject {
       refusals[id] = Answer.refusal(out)
     }
     answering = nil
+    // The refresh reads the opened finding again too, with the answer as Immune now holds it.
     await refresh(for: .owner)
     return true
   }
@@ -309,6 +351,12 @@ public final class AppModel: ObservableObject {
     guard case .success(let env) = Decoding.envelope(from: out.stdout) else { return false }
     return env.ok == false && env.errors.contains { $0.code == "run_in_progress" }
   }
+}
+
+/// The finding open inside the popover.
+public struct OpenedFinding: Sendable, Equatable {
+  public let id: String
+  public let reading: FindingReading
 }
 
 /// When the app has the page written ahead of a click. A change read by the watcher can

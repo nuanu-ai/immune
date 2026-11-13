@@ -7,7 +7,7 @@ Immune is the detection core of [Artificial Immunity](https://immunity.bot), a p
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/img/panel-dark.png">
-    <img src="docs/img/panel-light.png" width="320" alt="The menu-bar panel, watched live, with two findings: a program start that a published Sigma rule marks as high risk, and a new launch agent; below them the last hour of program starts">
+    <img src="docs/img/panel-light.png" width="320" alt="The menu-bar panel, watched live: one finding that needs you now, a package in a project, and one to look at, a changed shell startup file the response layer judged harmless; below them an answer given through an agent, with Take back, and what is watched">
   </picture>
 </p>
 
@@ -28,7 +28,9 @@ open target/app/Immune.app
 
 `./build` checks for what is missing and says how to install it; it installs nothing itself. The first build takes a minute or two.
 
-The app lives in the menu bar. On first launch it asks once for permission to send notifications. The first check takes about a minute. While the app is open it watches the places where persistence lives as they change, looks at running programs every 30 seconds and runs a full check every hour. When you quit it, it stops. Details opens a page in your browser with everything it knows.
+The app lives in the menu bar. On first launch it asks once for permission to send notifications. The first check takes about a minute. While the app is open it watches the places where persistence lives as they change, looks at running programs every 30 seconds and runs a full check every hour. When you quit it, it stops.
+
+The panel under the icon answers whether this Mac is OK. Its headline counts the findings that need you now and the ones to look at. Each finding is a row that starts with the thing itself, a file's path or a program with its arguments, and a click opens its evidence, the response layer's verdicts and your answer. An answer given through an agent or on the command line stays in the panel with Take back. What Immune cannot see on this Mac and you can fix is a group of its own below the findings. Open report opens a page in your browser with everything Immune knows, including known vulnerabilities and rule matches, which the panel leaves out.
 
 ### Watching program starts and files
 
@@ -55,7 +57,7 @@ sudo /bin/sh scripts/event-level/uninstall
 
 ### Updating and removing
 
-To update, run `git pull`, quit the app from its panel, run `./build` and open the app again. `./build` refuses to run while the app is open.
+To update, run `git pull`, quit the app from the ⋯ menu of its panel, run `./build` and open the app again. `./build` refuses to run while the app is open.
 
 To remove Immune, quit it, delete `Immune.app` and its data folder, `~/Library/Application Support/ai.nuanu.immune`, and run `defaults delete ai.nuanu.immune` to clear what it remembers about notifications. If you installed the collector, run the uninstall script above.
 

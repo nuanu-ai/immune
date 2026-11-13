@@ -36,6 +36,9 @@ public enum Severity {
 
 public enum Light: Sendable, Equatable {
   case nothingToReport
+  /// Nothing needs a look, and Immune says a reading of this Mac's own places failed: quiet,
+  /// never an alarm, never counted, and never drawn as the calm of a Mac watched whole.
+  case watchedInPart
   case attention(Int)
   case cannotRead(String)
 
@@ -43,11 +46,25 @@ public enum Light: Sendable, Equatable {
     switch reading {
     case .notYetRead: return .cannotRead("The program has not been read yet.")
     case .failed(let reason, _, _): return .cannotRead(reason)
-    case .read(let s, _): return of(s)
+    case .read(let s, let errors):
+      // Errors beside an answer that says it succeeded: not calm, whatever else it says.
+      if let e = errors.first {
+        return .cannotRead(
+          "immune reported a problem beside its answer: "
+            + Inert.text(Interpret.words(e), limit: 300)
+            + ".")
+      }
+      return of(s)
     }
   }
 
   static func of(_ s: Status) -> Light {
+    // An answer with a value of another type than the one read is not a smaller valid answer.
+    if let path = s.misfits.first {
+      return .cannotRead(
+        "immune's answer does not have the shape this app reads at " + Inert.text(path, limit: 200)
+          + ".")
+    }
     switch s.store?.exists {
     case true?: break
     case false?: return .cannotRead("There is no store yet. Run a full run to create it.")
@@ -71,7 +88,8 @@ public enum Light: Sendable, Equatable {
     // Calm only when Immune says this Mac is watched, wholly or in part; not checked,
     // or anything else, is not calm. What it does not cover never raises the icon.
     switch s.thisMac?.state {
-    case "watched", "watched_in_part": return .nothingToReport
+    case "watched": return .nothingToReport
+    case "watched_in_part": return .watchedInPart
     default: return .cannotRead("Whether this Mac is watched is not reported.")
     }
   }
@@ -83,31 +101,34 @@ public enum Light: Sendable, Equatable {
     return light.symbol
   }
 
-  /// One SF Symbol per state, each a different shape, so the states are told
-  /// apart without colour.
+  /// One SF Symbol per state, each a different shape, so the states are told apart without
+  /// colour: a whole shield with a check, half a shield, a triangle, a circle with a question
+  /// mark.
   public var symbol: String {
     switch self {
     case .nothingToReport: "checkmark.shield"
+    case .watchedInPart: "shield.lefthalf.filled"
     case .attention: "exclamationmark.triangle"
     case .cannotRead: "questionmark.circle"
     }
   }
 
-  /// The large round symbol for the panel's headline, its mark a different shape in
-  /// each state: a check, an exclamation mark, a question mark.
+  /// The large round symbol for the panel's headline, a different shape in each state: a
+  /// filled disc with a check, a ring with a check, an exclamation mark, a question mark.
   public var panelSymbol: String {
     switch self {
     case .nothingToReport: "checkmark.circle.fill"
+    case .watchedInPart: "checkmark.circle"
     case .attention: "exclamationmark.circle.fill"
     case .cannotRead: "questionmark.circle.fill"
     }
   }
 
+  /// The headline before the panel says how many need the person now; see `Panel.headline`.
   public var headline: String {
     switch self {
-    case .nothingToReport: "This Mac is watched. Nothing needs you."
-    case .attention(let n):
-      n == 1 ? "1 thing changed on this Mac." : "\(n) things changed on this Mac."
+    case .nothingToReport, .watchedInPart: "Nothing needs you"
+    case .attention(let n): n == 1 ? "1 to look at" : "\(n) to look at"
     case .cannotRead: "I can't tell."
     }
   }
@@ -122,8 +143,10 @@ public enum Interpret {
   static let cannotReadRecords = "the program cannot read its records"
   static let reported = "the program reported a problem"
 
-  /// Immune's raw output, turned into what the app knows. Any doubt is a failure.
-  public static func reading(from o: ImmuneOutput) -> Reading {
+  /// Immune's raw output, turned into what the app knows. Any doubt is a failure. An answer is
+  /// taken only when it is the message asked for: an object of the right format is not yet a
+  /// status, its `operation` must say it is one.
+  public static func reading(from o: ImmuneOutput, operation: String? = "status") -> Reading {
     if let why = o.launchFailure {
       return .failed(reason: "immune could not be started.", detailText: why, plain: notStarted)
     }
@@ -164,6 +187,12 @@ public enum Interpret {
     guard env.ok == true else {
       return .failed(
         reason: "immune's answer does not say whether it succeeded.", detailText: nil,
+        plain: notUnderstood)
+    }
+    guard operation == nil || env.operation == operation else {
+      return .failed(
+        reason: "immune's answer is not the \(operation ?? "") that was asked for.",
+        detailText: nil,
         plain: notUnderstood)
     }
     guard let status = env.result else {

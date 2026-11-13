@@ -1,0 +1,143 @@
+{
+ "format": 1,
+ "answered_at": 1794570060,
+ "store_id": "0a1b2c3d4e5f60718293a4b5c6d7e8f9",
+ "technique_text": "attack.t1027.001",
+ "answer": null,
+ "rests_on": [
+  {
+   "seq": 41,
+   "recorded_at": 1794569821,
+   "run_id": "1794569400-000000004",
+   "entry": "matched",
+   "reader": "events",
+   "kind": null,
+   "predicate": null,
+   "subject_text": "machine:example-mac",
+   "old_value_text": null,
+   "new_value_text": "sigma:example-binary-padding"
+  }
+ ],
+ "answers_note": "Marking a finding expected or seen is the owner's answer: it hides the finding from him. An agent must not give it on the owner's behalf; it may show the owner the command to give it.",
+ "verdicts": {
+  "total": 1,
+  "suspicious": 1,
+  "listed": [
+   {
+    "verdict": {
+     "format": 1,
+     "store_id": "0a1b2c3d4e5f60718293a4b5c6d7e8f9",
+     "kind": "suspicious",
+     "reason_text": "dd was started by a script in ~/dev/agent-tools that an agent wrote an hour ago; it writes one byte, a known way to pad a binary.",
+     "case_text": "case-2041",
+     "severity": "high",
+     "confidence": "medium",
+     "finding": {
+      "id": "f95f8472164"
+     }
+    },
+    "recorded_at": 1794569850,
+    "finding": {
+     "id": "fae2fbeab0d",
+     "rule": "verdict.suspicious",
+     "about_text": "machine:example-mac",
+     "state": "open",
+     "severity": "high",
+     "confidence": "medium",
+     "urgent": true
+    },
+    "raised": true
+   }
+  ],
+  "verdict_finding": {
+   "id": "fae2fbeab0d",
+   "rule": "verdict.suspicious",
+   "about_text": "machine:example-mac",
+   "state": "open",
+   "severity": "high",
+   "confidence": "medium",
+   "urgent": true
+  }
+ },
+ "finding": {
+  "id": "f95f8472164",
+  "rule": "sigma:example-binary-padding",
+  "about_text": "machine:example-mac",
+  "state": "open",
+  "severity": "high",
+  "confidence": "low",
+  "urgent": false
+ },
+ "kind": "program start matched by a published rule",
+ "title": "A program started on this Mac in a way that a published detection rule marks as high risk.",
+ "meaning": "Coding agents and build tools run such commands for ordinary work, so a match is often harmless.",
+ "advice": "Look at the program, its arguments and what started it. If you or a tool you use ran it, mark it expected; if nobody knows it, ask your agent to look into it.",
+ "where_text": "example-mac",
+ "first_seen_at": 1794569412,
+ "last_seen_at": 1794569412,
+ "evidence": {
+  "published_rule_matched": {
+   "rule": {
+    "name": "sigma:example-binary-padding",
+    "file": "macos/process_creation/example.yml",
+    "id_text": "00000000-0000-4000-8000-000000000001",
+    "title_text": "Binary Padding - MacOS",
+    "level": "high",
+    "techniques_text": [
+     "attack.t1027.001"
+    ],
+    "author_text": "A. Author",
+    "source": "sigmahq",
+    "set": "SigmaHQ"
+   },
+   "matches": 1,
+   "events": [
+    {
+     "program_start": {
+      "happened_at": 1794569412,
+      "happened_nanos": 402000000,
+      "process": {
+       "executable_text": "/bin/dd",
+       "pid": 4242,
+       "user_id": 501,
+       "signing_id_text": "com.apple.dd",
+       "team_id_text": null,
+       "platform_binary": true,
+       "pid_version": 9001,
+       "started_at": 1794569412,
+       "started_nanos": 401000000,
+       "codesigning_flags": 570522385
+      },
+      "instigator": {
+       "executable_text": "/bin/sh",
+       "pid": 4242,
+       "user_id": null,
+       "signing_id_text": null,
+       "team_id_text": null,
+       "platform_binary": null,
+       "pid_version": 9000,
+       "started_at": 1794569412,
+       "started_nanos": 390000000,
+       "codesigning_flags": null
+      },
+      "parent_pid": 4200,
+      "args_text": [
+       "dd",
+       "if=/dev/zero",
+       "bs=1",
+       "count=1"
+      ],
+      "working_directory_text": "/Users/example/dev/agent-tools",
+      "parent": {
+       "pid": 4200,
+       "pid_version": 8800
+      },
+      "script_text": null
+     }
+    }
+   ],
+   "source": "https://github.com/SigmaHQ/sigma",
+   "licence": "DRL-1.1"
+  }
+ }
+}

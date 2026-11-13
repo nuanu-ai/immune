@@ -9,6 +9,7 @@
 import AppKit
 import Combine
 import ImmuneCore
+import ImmuneUI
 import SwiftUI
 
 /// The app's name, from Info.plist: kept there and nowhere else.
@@ -46,11 +47,7 @@ final class Delegate: NSObject, NSApplicationDelegate {
     popover.behavior = .transient
 
     // @Published sends the new value before it is stored; paint from the value.
-    watching = model.$reading.sink { [weak self] reading in
-      let items = reading.status?.needsALook ?? []
-      self?.paint(
-        Light.of(reading), worst: Severity.worst(items), urgent: items.contains { $0.urgent })
-    }
+    watching = model.$reading.sink { [weak self] reading in self?.paint(reading) }
 
     // Every minute: read the status, then start the hourly check if it is due.
     timers.append(
@@ -108,23 +105,17 @@ final class Delegate: NSObject, NSApplicationDelegate {
     if await model.checkIfDue() { log("hourly check done") }
   }
 
-  private func paint(_ light: Light, worst: String?, urgent: Bool) {
+  /// The icon, its count and its tooltip, in the panel's own words for the state.
+  private func paint(_ reading: Reading) {
     guard let button = item?.button else { return }
-    let words: String
-    switch light {
-    case .nothingToReport: words = "nothing needs you"
-    case .attention(let n): words = n == 1 ? "1 thing needs a look" : "\(n) things need a look"
-    case .cannotRead(let reason): words = "can't tell. " + reason
-    }
+    let p = Panel.of(reading, now: Date())
+    let words = Panel.iconWords(p)
     // The worst severity shown decides the weight: filled for high or critical.
-    let symbol = Light.menuSymbol(light, worst: worst, urgent: urgent)
-    let image = NSImage(
-      systemSymbolName: symbol, accessibilityDescription: "\(appName): \(words)")
-    image?.isTemplate = true
-    button.image = image
-    if case .attention(let n) = light { button.title = " \(n)" } else { button.title = "" }
+    button.image = MenuIcon.image(
+      p.light, worst: p.worst, urgent: p.urgent, words: "\(appName): \(words)")
+    button.attributedTitle = MenuIcon.title(p.light)
     button.toolTip = "\(appName): \(words)"
-    log("state: \(symbol) \(words)")
+    log("state: \(Light.menuSymbol(p.light, worst: p.worst, urgent: p.urgent)) \(words)")
   }
 
   /// Opens the panel, as a click on a notification does.
@@ -138,7 +129,9 @@ final class Delegate: NSObject, NSApplicationDelegate {
       popover.performClose(nil)
       return
     }
-    // The owner opened the panel and is looking at it: this reading does not wait.
+    // The owner opened the panel and is looking at it: this reading does not wait. It opens
+    // on the list.
+    model.closeFinding()
     Task { await model.refresh(for: .owner) }
     popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
     NSApp.activate()
@@ -256,8 +249,7 @@ final class SilentNotifier: Notifying {
 /// colour stands in for it.
 ///
 /// `--render-seen` first presses Seen on the first finding (so a refusal from the
-/// stand-in shows on its card); `--render-form <reason>` opens the Expected form on
-/// it with that reason typed.
+/// stand-in shows); `--render-open` opens the first finding in the popover.
 @MainActor
 func renderPanel(_ model: AppModel, _ watcher: Watcher, to folder: URL) async -> Never {
   // `--render-notify-off` draws the line shown when notifications are off, with a
@@ -267,53 +259,29 @@ func renderPanel(_ model: AppModel, _ watcher: Watcher, to folder: URL) async ->
     memory.set(true, forKey: "notify.asked")
     model.announcer = Announcer(notifier: SilentNotifier(), memory: memory)
   }
-  model.moreOpen = CommandLine.arguments.contains("--render-more-open")
-  model.answeredOpen = CommandLine.arguments.contains("--render-answered-open")
   await model.refresh()
   let first = model.reading.status?.needsALook?.first { $0.type == "finding" }?.id
   if CommandLine.arguments.contains("--render-seen"), let first {
     await model.answerSeen(first)
   }
-  if let i = CommandLine.arguments.firstIndex(of: "--render-form"),
-    i + 1 < CommandLine.arguments.count, let first
-  {
-    model.form = ExpectedForm(id: first, reason: CommandLine.arguments[i + 1])
+  if CommandLine.arguments.contains("--render-open"), let first {
+    await model.openFinding(first)
   }
   // Give the watcher a moment, so the panel shows what it says.
   watcher.start()
   try? await Task.sleep(for: .milliseconds(1500))
   try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
   for (name, look) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
-    guard let appearance = NSAppearance(named: look) else { continue }
-    let host = NSHostingView(
-      rootView: PanelView(model: model, watcher: WatcherBox(watcher))
-        .background(Color(nsColor: .windowBackgroundColor)))
-    host.appearance = appearance
-    // Lay out twice: the rows' measured height settles after the first pass.
-    for _ in 0..<3 {
-      host.frame = NSRect(origin: .zero, size: host.fittingSize)
-      host.layoutSubtreeIfNeeded()
-      try? await Task.sleep(for: .milliseconds(150))
-    }
-    let size = host.bounds.size
-    guard
-      let rep = NSBitmapImageRep(
-        bitmapDataPlanes: nil, pixelsWide: Int(size.width * 2), pixelsHigh: Int(size.height * 2),
-        bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-        colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
-    else { continue }
-    rep.size = size
-    appearance.performAsCurrentDrawingAppearance { host.cacheDisplay(in: host.bounds, to: rep) }
-    let file = folder.appendingPathComponent("\(name).png")
-    try? rep.representation(using: .png, properties: [:])?.write(to: file)
-    log("rendered \(file.lastPathComponent): \(Int(size.width))x\(Int(size.height)) pt")
+    let png = await Snapshot.png(
+      PanelView(model: model, watcher: WatcherBox(watcher)), appearance: look)
+    try? png?.write(to: folder.appendingPathComponent("\(name).png"))
+    log("rendered \(name).png")
   }
   // The same panel as text, beside the pictures.
   let panel = Panel.of(
     model.reading, now: Date(), checking: model.runInProgress, notes: model.notes,
-    notWatching: watcher.notWatching, form: model.form, answering: model.answering,
-    refusals: model.refusals, notificationsOff: model.notificationsOff, immune: model.immuneCommand,
-    moreOpen: model.moreOpen, answeredOpen: model.answeredOpen, openRow: model.openRow)
+    notWatching: watcher.notWatching, answering: model.answering, refusals: model.refusals,
+    notificationsOff: model.notificationsOff, immune: model.immuneCommand)
   try? (panel.lines.joined(separator: "\n") + "\n").write(
     to: folder.appendingPathComponent("panel.txt"), atomically: true, encoding: .utf8)
   watcher.stop()
