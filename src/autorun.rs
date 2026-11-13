@@ -632,24 +632,27 @@ pub fn counts(home: bool) -> (usize, usize) {
 /// The files of a checkout read here, each from the checkout's folder. The watcher subscribes
 /// to each of them in every checkout it holds, as it does to the hooks folder, so a row read
 /// here is watched within seconds with no change to the watcher. A row that says why it is not
-/// (`hourly`) is read at every full run and by the watcher's readings, not subscribed to.
-pub fn files() -> Vec<&'static str> {
+/// (`hourly`) is read at every full run and by a watcher's reading of every place, not
+/// subscribed to. Each file comes with the coverage kind of its row, which a change to it
+/// reads again.
+pub fn files() -> Vec<(&'static str, String)> {
     POINTS
         .iter()
         .filter(|p| p.live() && p.scope == Scope::Checkout)
-        .flat_map(|p| p.paths.iter().copied())
+        .flat_map(|p| p.paths.iter().map(|path| (*path, p.kind())))
         .collect()
 }
 
-/// The places in the home folder read here, and whether each is a folder.
-pub fn home_places() -> Vec<(&'static str, bool)> {
+/// The places in the home folder read here, whether each is a folder, and the coverage kind
+/// of its row.
+pub fn home_places() -> Vec<(&'static str, bool, String)> {
     POINTS
         .iter()
         .filter(|p| p.live() && p.scope == Scope::Home)
         .flat_map(|p| {
             p.paths
                 .iter()
-                .map(|path| (*path, matches!(p.part, Folders(_))))
+                .map(|path| (*path, matches!(p.part, Folders(_)), p.kind()))
         })
         .collect()
 }

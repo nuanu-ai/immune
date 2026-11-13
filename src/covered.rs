@@ -192,7 +192,7 @@ pub struct ThisMac {
     pub live: bool,
     /// When the latest full run finished.
     pub checked_at: Option<i64>,
-    /// When a watcher last read the watched places.
+    /// When a watcher last read every watched place: a reading of the places one change touched does not move it.
     pub live_read_at: Option<i64>,
     /// What is watched, its count, and `live`, `hourly` or `sampled`.
     pub watched: Vec<(&'static str, i64, &'static str)>,

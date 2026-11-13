@@ -28,6 +28,8 @@ pub const BASIS: &str = "observed";
 pub const CONTENT: &str = "content of a watched file";
 /// The raw copy: one line per entry with its kind, path and checksum, never content.
 pub const RAW: &str = "watched-places.txt";
+/// The same, of a watcher's reading of the places a change touched.
+pub const RAW_SOME: &str = "watched-places-touched.txt";
 /// A file larger than this is not read.
 pub const CAP: u64 = 8 * 1024 * 1024;
 /// The note of a full reading when none of its places is on this machine.

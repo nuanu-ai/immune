@@ -7,7 +7,7 @@ What Immune reads on a Mac, where it looks, what it records and when; the vocabu
 | Name | Trigger |
 |---|---|
 | full check | `immune run`; the app starts one every hour while it is open, with a 30-minute limit |
-| live | `immune watch`, about a second after FSEvents reports a change in a place it subscribes to |
+| live | `immune watch`, about a second after FSEvents reports a change in a place it subscribes to: the readings that place belongs to, or every place, see [Watched places](#watched-places) |
 | sample | `immune watch` every 30 seconds, or `immune sample` |
 | events | `immune watch` every 10 seconds, and at every full check |
 
@@ -61,7 +61,7 @@ The downloads use a proxy only when the environment names one, as `/usr/bin/curl
 
 ## Watched places
 
-36 rows in `src/watched.rs`. Adding a place is adding a row. Each kind is one reading. A place a later version reads for the first time on a store that already exists is read for the first time: what it holds is its baseline and is told once by `watched.first-read`.
+36 rows in `src/watched.rs`. Adding a place is adding a row. Each kind is one reading. After a change, a watcher first reads only the readings whose places the change is in, each whole: one kind of place on this Mac, the hooks of one checkout, or one row of what runs by itself in every checkout. Every other reading keeps its own time in coverage. A watcher reads every place at its start, whatever the store says of an earlier one, after a reading that failed, when it finds new places to watch or a new way into one, after events FSEvents says it dropped or coalesced, for a change at a path in no watched place, and at its next look at what to watch, once a minute, after any reading of some places or when a watched path now leads somewhere else. The place a change names is read within seconds, every other place within about a minute. So what a watcher still owed when it stopped, and what changed while none ran, is read at the next start; on a Mac where nothing changed, that reading's `read` line has `new`, `changed`, `gone` and `opened` at 0. The `watcher` row keeps when every place was last read. Its `event_id` and `volumes` are left empty: an earlier build kept an FSEvents event id there to replay from, and on an empty one it reads every place at its start. A place a later version reads for the first time on a store that already exists is read for the first time: what it holds is its baseline and is told once by `watched.first-read`.
 
 | Kind | Places |
 |---|---|
@@ -371,5 +371,7 @@ Everything lives in `~/Library/Application Support/ai.nuanu.immune/` unless `--s
 | `indicators.json` | the indicator list, when the user gives one |
 | `sweep/` | `sweep.sh`, `probe.sh`, `skip.txt` and the files the sweep leaves |
 | `view.html`, `view/` | the HTML pages |
+
+The store keeps every reading of the 20 runs the changes page lists and of the latest finished run. Of older ones it keeps the first and the last of each run of unchanged readings ([how-it-works.md](how-it-works.md#coverage)). A watcher's reading of the places one change touched keeps its raw copy as `watched-places-touched.txt`, apart from the copy of a reading of every place.
 
 The collector keeps its own files under `/Library/Application Support/ai.nuanu.immune/event-level`. The app keeps its notification settings under the defaults domain `ai.nuanu.immune`.

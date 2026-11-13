@@ -276,7 +276,8 @@ INSERT OR IGNORE INTO coverage_kind (name) VALUES ('folders macOS asks permissio
 /// things took seconds: each finding looked up its subject and its basis by a full scan, and
 /// each latest reading looked for its last full one the same way.
 ///
-/// Every reading adds coverage rows, a watcher's too, and none is ever deleted. The latest
+/// Every reading adds coverage rows, a watcher's too; only those older than the runs kept whole
+/// are folded (`fold`), so the runs kept whole and what came after them can be many. The latest
 /// reading of a kind, which a watcher asks for at every reading to know which machine it
 /// reads, is found through `coverage_latest_of_kind`. Without it a watcher's reading looked
 /// through every reading before it: 3 ms after ten readings, 124 ms after ten thousand,
@@ -818,6 +819,195 @@ pub fn put_coverage(
     Ok(())
 }
 
+// --- Folding the history of readings. ---
+
+/// How many runs the changes page lists, each with every reading it made.
+pub const RUNS_KEPT: i64 = 20;
+
+/// One run the changes page lists.
+pub struct Listed {
+    pub run_id: String,
+    /// When it began: its earliest journal entry.
+    pub at: i64,
+    pub finished: bool,
+    /// The report line of a full run that finished.
+    pub report: Option<String>,
+}
+
+/// The runs a page or an answer asks about by their id, newest first: the last `RUNS_KEPT`
+/// the journal holds, which the changes page lists. A run is what the journal says started as
+/// one, a watcher's reading or a sample; an answer, a statement or a verdict is not a run,
+/// whatever its id. The fold keeps every reading of each of them (`kept_from`).
+pub fn listed_runs(conn: &Connection) -> rusqlite::Result<Vec<Listed>> {
+    conn.prepare(
+        "SELECT run_id, MIN(at),
+                MAX(entry = 'run_finished'),
+                MAX(CASE WHEN entry = 'report' THEN text END)
+         FROM journal WHERE entry NOT IN ('owner_said', 'owner_withdrew')
+         GROUP BY run_id
+         HAVING MAX(entry = 'run_started') OR run_id LIKE ?2 OR run_id LIKE ?3
+         ORDER BY MAX(seq) DESC LIMIT ?1",
+    )?
+    .query_map(
+        params![
+            RUNS_KEPT,
+            format!("{}%", crate::watch::RUN_PREFIX),
+            format!("{}%", crate::processes::RUN_PREFIX)
+        ],
+        |r| {
+            Ok(Listed {
+                run_id: r.get(0)?,
+                at: r.get(1)?,
+                finished: r.get(2)?,
+                report: r.get(3)?,
+            })
+        },
+    )?
+    .collect()
+}
+
+/// Where the history of readings the fold thins ends: the first row of the runs any page or
+/// answer asks about by their id, the listed runs (`listed_runs`) and the latest finished run,
+/// which `immune status` reports on. Every row from there on is kept. Rows are written with ids
+/// that grow, and runs never overlap, so a row with a smaller id was written before every one
+/// of those runs. A reader that keeps one row per reading, the event level and the samples,
+/// takes its row out and writes it again: a reading of one row, which no fold touches. `None`
+/// while no such run wrote a reading.
+fn kept_from(conn: &Connection) -> rusqlite::Result<Option<i64>> {
+    let finished: Option<String> = conn
+        .query_row(
+            "SELECT run_id FROM journal WHERE entry = 'run_finished' ORDER BY seq DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let mut first = conn.prepare("SELECT MIN(id) FROM coverage WHERE run_id = ?1")?;
+    let mut from = None;
+    for run in listed_runs(conn)?
+        .into_iter()
+        .map(|l| l.run_id)
+        .chain(finished)
+    {
+        let id: Option<i64> = first.query_row([run], |r| r.get(0))?;
+        from = from.into_iter().chain(id).min();
+    }
+    Ok(from)
+}
+
+/// The readings older than `kept_from` that lie between the first and the last of a run of
+/// unchanged readings of one reader, scope and kind: the same completeness, reason and cause,
+/// one after another, with times that do not go back. A reading that differs in any of them,
+/// a failure or a loss of sight among them, ends the run, and so does one dated before the
+/// reading before it, as a server's reading dated by its sweep or one made after the clock
+/// went back: the next starts a run of its own. What is left of a run is its first reading,
+/// which says since when, and its last, which says until when, and so every earliest and
+/// latest time of a reading is kept. What a reading names as having no reader is not part of
+/// what it said here: only the latest reading's is ever asked for.
+const FOLDED: &str = "
+INSERT INTO temp.folded (id)
+SELECT id FROM (
+    SELECT id, completeness, reason, cause, observed_at AS t,
+           LAG(completeness) OVER w AS c0, LAG(reason) OVER w AS r0, LAG(cause) OVER w AS k0,
+           LAG(observed_at) OVER w AS t0,
+           LEAD(completeness) OVER w AS c1, LEAD(reason) OVER w AS r1, LEAD(cause) OVER w AS k1,
+           LEAD(observed_at) OVER w AS t1
+    FROM coverage WHERE id < ?1
+    WINDOW w AS (PARTITION BY reader, scope, kind ORDER BY id)
+)
+WHERE c0 IS completeness AND r0 IS reason AND k0 IS cause AND t0 <= t
+  AND c1 IS completeness AND r1 IS reason AND k1 IS cause AND t <= t1
+";
+
+/// How many readings `fold` took out, of how many there were.
+#[derive(Debug, Default, PartialEq)]
+pub struct Folded {
+    pub removed: usize,
+    pub rows: i64,
+}
+
+/// Whether `free` pages of the file's `pages` are a quarter of it or more: then the space goes
+/// back to the file, whichever run freed it. Fewer free pages are left for the rows written
+/// next, as SQLite keeps them.
+fn worth_giving_back(free: i64, pages: i64) -> bool {
+    free > 0 && free * 4 >= pages
+}
+
+/// The free pages of the store's file and all its pages, as SQLite counts them.
+fn free_pages(conn: &Connection) -> rusqlite::Result<(i64, i64)> {
+    let free = conn.query_row("PRAGMA freelist_count", [], |r| r.get(0))?;
+    let pages = conn.query_row("PRAGMA page_count", [], |r| r.get(0))?;
+    Ok((free, pages))
+}
+
+/// How many readings one transaction of `fold` takes out. A store is opened so that a writer
+/// never shuts readers out before it commits, which keeps what it changes in memory. On a
+/// store of 543,182 readings, a year of them: taken out in one transaction, the run that did
+/// it held 235 MB at most; in transactions of this many, 92 MB, and it took 6 s.
+const FOLD_AT_ONCE: i64 = 10_000;
+
+/// Folds the history of readings older than the runs kept whole (`FOLDED`), outside any
+/// transaction of the caller's, in transactions of `FOLD_AT_ONCE` readings, so that a reading
+/// unchanged for a year is two rows and not one per run; on a store kept by an earlier build,
+/// the first full run folds the whole history that way. A fold cut short leaves only readings
+/// that lay between two of the same kept, and the next one goes on. Nothing a finding or an
+/// answer rests on is a coverage row, and the latest reading of each reader, scope and kind is
+/// never taken out.
+pub fn fold(conn: &Connection) -> rusqlite::Result<Folded> {
+    let rows: i64 = conn.query_row("SELECT COUNT(*) FROM coverage", [], |r| r.get(0))?;
+    let Some(kept_from) = kept_from(conn)? else {
+        return Ok(Folded { removed: 0, rows });
+    };
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS temp.folded;
+         CREATE TEMP TABLE folded (id INTEGER PRIMARY KEY);",
+    )?;
+    conn.execute(FOLDED, [kept_from])?;
+    let mut removed = 0;
+    loop {
+        let tx = conn.unchecked_transaction()?;
+        let next = "SELECT id FROM temp.folded ORDER BY id LIMIT ?1";
+        tx.execute(
+            &format!("DELETE FROM coverage_lack WHERE coverage IN ({next})"),
+            [FOLD_AT_ONCE],
+        )?;
+        removed += tx.execute(
+            &format!("DELETE FROM coverage WHERE id IN ({next})"),
+            [FOLD_AT_ONCE],
+        )?;
+        let done = tx.execute(
+            &format!("DELETE FROM temp.folded WHERE id IN ({next})"),
+            [FOLD_AT_ONCE],
+        )?;
+        tx.commit()?;
+        if done == 0 {
+            break;
+        }
+    }
+    conn.execute_batch("DROP TABLE temp.folded")?;
+    Ok(Folded { removed, rows })
+}
+
+/// Gives the file back the space of what was taken out of it, outside any transaction. SQLite
+/// keeps freed pages for the rows written next, so the file does not grow again by them; this
+/// is for when much was freed (`worth_giving_back`).
+pub fn give_back(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch("VACUUM")
+}
+
+/// What follows a full run's commit, still under the run lock: the fold, and where a quarter of
+/// the file or more is free pages, the space given back. It is housekeeping and never changes
+/// what the run did, so it returns nothing: a fold or a vacuum that fails, as when a reader
+/// holds the store, is left as it is. The next run folds what is left, and gives back the space
+/// still free, whichever run freed it.
+pub fn tidy(conn: &Connection) {
+    let _ = fold(conn);
+    if free_pages(conn).is_ok_and(|(free, pages)| worth_giving_back(free, pages)) {
+        let _ = give_back(conn);
+    }
+}
+
+// --- End of folding. ---
+
 /// What the report line says about the store after a run.
 pub struct Totals {
     /// Machines, each counted once however many names it has.
@@ -1198,5 +1388,699 @@ mod tests {
         assert_eq!(age(now + 60, now), Some(0));
         assert_eq!(age(now + AHEAD_ALLOWED, now), Some(0));
         assert_eq!(age(now + AHEAD_ALLOWED + 1, now), None);
+    }
+
+    // --- Folding the history of readings, on invented stores. ---
+
+    const MAC: &str = "machine:mac";
+    const PROFILES: &str = "shell profiles of zsh and bash";
+    const BREW: &str = "brew packages";
+
+    /// What a reading said: its completeness, and its reason and cause when not full.
+    #[derive(Clone, Copy)]
+    struct Said {
+        completeness: &'static str,
+        reason: Option<&'static str>,
+        cause: Option<Cause>,
+        lack: Option<&'static str>,
+    }
+
+    const FULL: Said = Said {
+        completeness: "full",
+        reason: None,
+        cause: None,
+        lack: None,
+    };
+
+    fn failed(reason: &'static str) -> Said {
+        Said {
+            completeness: "none",
+            reason: Some(reason),
+            cause: Some(Cause::Failed),
+            lack: None,
+        }
+    }
+
+    fn partial(reason: &'static str) -> Said {
+        Said {
+            completeness: "partial",
+            reason: Some(reason),
+            cause: Some(Cause::NotGiven),
+            lack: None,
+        }
+    }
+
+    /// An invented store and the runs made on it, one a minute.
+    struct Kept {
+        dir: std::path::PathBuf,
+        conn: Connection,
+        runs: i64,
+        /// Seconds the clock is off by for the next run's readings, as a clock set back is.
+        skew: i64,
+    }
+
+    impl Kept {
+        fn new(tag: &str) -> Kept {
+            let dir = std::env::temp_dir().join(format!(
+                "immune-fold-{tag}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let conn = open(&dir.join("store.db")).unwrap();
+            Kept {
+                dir,
+                conn,
+                runs: 0,
+                skew: 0,
+            }
+        }
+
+        /// One run that writes these readings, `(reader, scope, kind, said)`: a full run with
+        /// its start and end in the journal, or a watcher's reading with neither.
+        fn run(&mut self, full: bool, readings: &[(&str, &str, &str, Said)]) -> String {
+            self.runs += 1;
+            let at = 1_900_000_000 + self.runs * 60;
+            let run_id = if full {
+                format!("{at}-000000000")
+            } else {
+                format!("watch-{at}-000000000")
+            };
+            if full {
+                journal_note(&self.conn, at, &run_id, "run_started", "").unwrap();
+            }
+            let tx = self.conn.transaction().unwrap();
+            for (reader, scope, kind, said) in readings {
+                put_entity(&tx, scope).unwrap();
+                let r = Reading {
+                    reader,
+                    scope,
+                    kind,
+                    run_id: &run_id,
+                    at: at + self.skew,
+                    observed_at: at + self.skew,
+                };
+                let gap = Gap {
+                    cause: said.cause,
+                    lacks: said
+                        .lack
+                        .map(|l| vec![Lack::new(l, None)])
+                        .unwrap_or_default(),
+                };
+                put_coverage(&tx, &r, said.completeness, said.reason, &gap).unwrap();
+            }
+            tx.commit().unwrap();
+            if full {
+                journal_note(&self.conn, at, &run_id, "run_finished", "").unwrap();
+            }
+            run_id
+        }
+
+        fn fold(&self) -> Folded {
+            fold(&self.conn).unwrap()
+        }
+
+        fn rows(&self) -> i64 {
+            self.conn
+                .query_row("SELECT COUNT(*) FROM coverage", [], |r| r.get(0))
+                .unwrap()
+        }
+
+        /// The readings of one reader, scope and kind, oldest first: completeness, reason, run
+        /// and time.
+        fn history(&self, scope: &str, kind: &str) -> Vec<(String, Option<String>, String, i64)> {
+            self.conn
+                .prepare(
+                    "SELECT completeness, reason, run_id, observed_at FROM coverage
+                     WHERE scope = ?1 AND kind = ?2 ORDER BY id",
+                )
+                .unwrap()
+                .query_map(params![scope, kind], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                })
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        }
+    }
+
+    impl Drop for Kept {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// A deterministic sequence of readings for a history, so that a failing case can be read
+    /// again: each step a number below `n`.
+    fn steps(seed: u64, count: usize, n: u64) -> Vec<u64> {
+        let mut x = seed;
+        (0..count)
+            .map(|_| {
+                x = x
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                (x >> 33) % n
+            })
+            .collect()
+    }
+
+    #[test]
+    fn unchanged_readings_beyond_the_runs_kept_whole_add_no_rows() {
+        // The bound itself: a Mac read every hour for a year holds no more readings than one
+        // read for a day, once nothing changes.
+        let mut k = Kept::new("bound");
+        let readings = [
+            ("brew", MAC, BREW, FULL),
+            ("watched-places", MAC, PROFILES, FULL),
+            ("tailnet", MAC, "tailnet peers", failed("switched off")),
+        ];
+        let mut after = Vec::new();
+        for i in 0..(RUNS_KEPT + 40) {
+            k.run(true, &readings);
+            // Watchers' readings between the runs, of the watched places alone.
+            if i % 3 == 0 {
+                k.run(false, &readings[1..2]);
+            }
+            k.fold();
+            after.push(k.rows());
+        }
+        // The runs kept whole hold a watcher's reading every third run, so the count repeats
+        // every three runs and never grows.
+        let late = &after[after.len() - 30..];
+        assert!(late.windows(4).all(|w| w[0] == w[3]), "{after:?}");
+        // Each reading of the runs kept whole, and the first and the last of what is older.
+        let most = *late.iter().max().unwrap();
+        assert!(most <= 3 * (RUNS_KEPT + 2) + (RUNS_KEPT / 3 + 3), "{most}");
+    }
+
+    #[test]
+    fn a_failure_ends_a_run_of_unchanged_readings_and_a_reading_after_it_starts_a_new_one() {
+        let mut k = Kept::new("failure");
+        let mut said = Vec::new();
+        said.extend([FULL; 5]);
+        said.extend([failed("permission denied"); 4]);
+        said.push(failed("no such file"));
+        said.extend([FULL; 5]);
+        for s in &said {
+            k.run(true, &[("watched-places", MAC, PROFILES, *s)]);
+        }
+        for _ in 0..RUNS_KEPT {
+            k.run(true, &[("brew", MAC, BREW, FULL)]);
+        }
+        assert!(k.fold().removed > 0);
+        let kept: Vec<(String, Option<String>)> = k
+            .history(MAC, PROFILES)
+            .into_iter()
+            .map(|(c, r, _, _)| (c, r))
+            .collect();
+        let full = ("full".to_string(), None);
+        let denied = ("none".to_string(), Some("permission denied".to_string()));
+        let missing = ("none".to_string(), Some("no such file".to_string()));
+        assert_eq!(
+            kept,
+            vec![
+                full.clone(),
+                full.clone(),
+                denied.clone(),
+                denied,
+                missing,
+                full.clone(),
+                full
+            ]
+        );
+    }
+
+    #[test]
+    fn a_change_of_completeness_reason_or_cause_ends_a_run_of_unchanged_readings() {
+        let mut k = Kept::new("reason");
+        let lacking = Said {
+            lack: Some("software of a package manager this version does not read"),
+            ..partial("one")
+        };
+        // Each run differs from the one before it in one of these alone.
+        let none = Said {
+            completeness: "none",
+            ..partial("one")
+        };
+        for s in [partial("one"); 3]
+            .into_iter()
+            .chain([none; 3])
+            .chain([failed("one"); 3])
+            .chain([failed("two"); 3])
+            .chain([lacking; 3])
+        {
+            k.run(true, &[("brew", MAC, BREW, s)]);
+        }
+        for _ in 0..RUNS_KEPT {
+            k.run(true, &[("watched-places", MAC, PROFILES, FULL)]);
+        }
+        assert_eq!(k.fold().removed, 5);
+        let left: Vec<_> = k.history(MAC, BREW).into_iter().map(|h| h.3).collect();
+        let at = |run: i64| 1_900_000_000 + run * 60;
+        assert_eq!(
+            left,
+            [1, 3, 4, 6, 7, 9, 10, 12, 13, 15].map(at),
+            "the first and the last of each run"
+        );
+        // What has no reader goes with the readings taken out, and stays with those kept, the
+        // latest among them.
+        let lacks: i64 = k
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM coverage_lack l JOIN coverage c ON c.id = l.coverage
+                 WHERE c.kind = ?1",
+                [BREW],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(lacks, 2);
+    }
+
+    #[test]
+    fn folding_never_turns_a_failed_or_partial_reading_into_a_full_one_nor_moves_a_time() {
+        // Over invented histories: what each reading said, in order and with consecutive
+        // repeats taken as one, is the same before and after; so are the first and the last
+        // time of each repeat.
+        let said = [FULL, failed("a"), failed("b"), partial("c")];
+        for seed in 1..40 {
+            let mut k = Kept::new("histories");
+            // Long runs of one outcome, as on a real Mac, and now and then a clock set back
+            // by up to three runs.
+            for step in steps(seed, 60, 12) {
+                let s = said[(step / 3).min(3) as usize];
+                k.skew = if step % 4 == 0 {
+                    -(step as i64 * 15)
+                } else {
+                    0
+                };
+                k.run(true, &[("watched-places", MAC, PROFILES, s)]);
+            }
+            k.skew = 0;
+            for _ in 0..RUNS_KEPT {
+                k.run(true, &[("brew", MAC, BREW, FULL)]);
+            }
+            // A run of repeats ends where what was said changes, or where the time goes back.
+            let runs = |h: Vec<(String, Option<String>, String, i64)>| {
+                let mut out: Vec<(String, Option<String>, i64, i64)> = Vec::new();
+                for (c, r, _, at) in h {
+                    match out.last_mut() {
+                        Some(last) if last.0 == c && last.1 == r && at >= last.3 => last.3 = at,
+                        _ => out.push((c, r, at, at)),
+                    }
+                }
+                out
+            };
+            let before = runs(k.history(MAC, PROFILES));
+            k.fold();
+            let after = k.history(MAC, PROFILES);
+            assert!(after.len() <= 2 * before.len(), "seed {seed}");
+            assert_eq!(runs(after), before, "seed {seed}");
+        }
+    }
+
+    #[test]
+    fn every_answer_the_store_gives_about_coverage_is_the_same_after_folding() {
+        // The latest reading of each reader, scope and kind is the freshness every answer
+        // uses: when it was taken, when it was last full, since when it fails, whether a
+        // place was read before. A stale or uncovered answer stays so, a fresh one stays fresh.
+        let mut k = Kept::new("answers");
+        let server = "machine:web-1";
+        let visit = crate::servers::VISIT;
+        let mut first = None;
+        for i in 0..(RUNS_KEPT + 30) {
+            let visited = match i {
+                0..10 => FULL,
+                10..14 => failed("timed out"),
+                14..16 => failed("refused"),
+                _ => failed("timed out"),
+            };
+            let shell = if i < 12 { FULL } else { partial("one file") };
+            let run = k.run(
+                true,
+                &[
+                    (crate::servers::READER, server, visit, visited),
+                    ("watched-places", MAC, PROFILES, shell),
+                    ("resolver", MAC, "machines under several names", FULL),
+                ],
+            );
+            first.get_or_insert(run);
+        }
+        let answers = |k: &Kept| {
+            let c = &k.conn;
+            let latest: Vec<_> = crate::view::latest_coverage(c)
+                .unwrap()
+                .into_iter()
+                .map(|l| {
+                    (
+                        l.reader,
+                        l.scope,
+                        l.kind,
+                        l.completeness,
+                        l.reason,
+                        l.at,
+                        l.last_full,
+                        l.cause,
+                    )
+                })
+                .collect();
+            let problems =
+                crate::status::problems(c, &crate::view::latest_coverage(c).unwrap()).unwrap();
+            let unreached: Vec<_> = problems
+                .unreached
+                .iter()
+                .map(|u| (u.scope.clone(), u.since, u.reason.clone()))
+                .collect();
+            let run = "the next run";
+            (
+                latest,
+                unreached,
+                last_read(c, crate::servers::READER, server).unwrap(),
+                read_before(c, "watched-places", MAC, PROFILES, run).unwrap(),
+                read_full_before(c, "watched-places", MAC, PROFILES, run).unwrap(),
+                read_full_before(c, crate::servers::READER, server, visit, run).unwrap(),
+                scopes_read(c, crate::servers::READER).unwrap(),
+                c.query_row(&format!("{LATEST} SELECT COUNT(*) FROM latest"), [], |r| {
+                    r.get::<_, i64>(0)
+                })
+                .unwrap(),
+                // The run that first read each place, which the journal's baselines go by.
+                c.query_row(
+                    "SELECT run_id FROM coverage WHERE reader = 'watched-places'
+                       AND completeness != 'none' ORDER BY id LIMIT 1",
+                    [],
+                    |r| r.get::<_, String>(0),
+                )
+                .unwrap(),
+            )
+        };
+        let before = answers(&k);
+        assert!(k.fold().removed > 0);
+        assert_eq!(answers(&k), before);
+        // Since when the server fails is the first failure after the last full visit.
+        assert_eq!(before.1[0].1, 1_900_000_000 + 11 * 60);
+        assert_eq!(before.8, first.unwrap());
+    }
+
+    #[test]
+    fn readings_of_two_readers_of_one_place_are_folded_each_in_its_own_history() {
+        // Freshness is told per reader, scope and kind: one reader's readings never end a run
+        // of another's, nor stand for its first or its latest.
+        let mut k = Kept::new("readers");
+        for _ in 0..6 {
+            k.run(
+                true,
+                &[("brew", MAC, BREW, FULL), ("another", MAC, BREW, FULL)],
+            );
+        }
+        for _ in 0..RUNS_KEPT {
+            k.run(true, &[("watched-places", MAC, PROFILES, FULL)]);
+        }
+        assert_eq!(k.fold().removed, 8);
+        let each: Vec<(String, i64, i64)> = k
+            .conn
+            .prepare(
+                "SELECT reader, MIN(observed_at), MAX(observed_at) FROM coverage
+                 WHERE kind = ?1 GROUP BY reader ORDER BY reader",
+            )
+            .unwrap()
+            .query_map([BREW], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let at = |run: i64| 1_900_000_000 + run * 60;
+        assert_eq!(
+            each,
+            [
+                ("another".to_string(), at(1), at(6)),
+                ("brew".to_string(), at(1), at(6))
+            ]
+        );
+    }
+
+    #[test]
+    fn folding_never_lowers_a_time_an_answer_reads_when_times_go_back() {
+        // A server's reading is dated by its sweep, and any reading by a clock that can go
+        // back: times need not grow with the row id. A reading dated before the one before it
+        // starts a run of its own, so the latest and the earliest time of each are kept.
+        let mut k = Kept::new("time");
+        let server = "machine:web-1";
+        for t in [100, 300, 200, 210, 220] {
+            k.runs += 1;
+            let run_id = format!("{}-000000000", 1_900_000_000 + k.runs * 60);
+            journal_note(&k.conn, t, &run_id, "run_started", "").unwrap();
+            let tx = k.conn.transaction().unwrap();
+            put_entity(&tx, server).unwrap();
+            let r = Reading {
+                reader: crate::servers::READER,
+                scope: server,
+                kind: "system packages",
+                run_id: &run_id,
+                at: t,
+                observed_at: t,
+            };
+            put_coverage(&tx, &r, "full", None, &Gap::default()).unwrap();
+            tx.commit().unwrap();
+            journal_note(&k.conn, t, &run_id, "run_finished", "").unwrap();
+        }
+        for _ in 0..RUNS_KEPT {
+            k.run(true, &[("brew", MAC, BREW, FULL)]);
+        }
+        // The owner said the server was retired at 150: the reading at 300 contradicts it.
+        crate::owner::say(
+            &mut k.conn,
+            server,
+            &[server.to_string()],
+            "retired",
+            "moved",
+            crate::findings::Via::Command,
+            150,
+            "owner-1",
+        )
+        .unwrap();
+        let answers = |k: &Kept| {
+            let last_full = crate::view::latest_coverage(&k.conn)
+                .unwrap()
+                .into_iter()
+                .find(|l| l.scope == server)
+                .unwrap()
+                .last_full;
+            let seen = crate::owner::standing(&k.conn).unwrap()[0].contradiction();
+            (
+                last_read(&k.conn, crate::servers::READER, server).unwrap(),
+                last_full,
+                seen,
+            )
+        };
+        let before = answers(&k);
+        assert_eq!((before.0, before.1), (Some(300), Some(300)));
+        assert_eq!(k.fold().removed, 1);
+        assert_eq!(answers(&k), before);
+        let left: Vec<i64> = k
+            .history(server, "system packages")
+            .into_iter()
+            .map(|h| h.3)
+            .collect();
+        assert_eq!(left, [100, 300, 200, 220]);
+    }
+
+    #[test]
+    fn a_fold_beside_a_reader_that_holds_the_store_does_not_fail_the_run_and_the_next_run_folds() {
+        // What follows a full run's commit is housekeeping, and returns nothing: a fold that
+        // cannot commit while a reader holds the store, here for the five seconds a writer
+        // waits, leaves the readings as they were, and the next run folds them.
+        let mut k = Kept::new("busy");
+        for _ in 0..(RUNS_KEPT + 5) {
+            k.run(true, &[("brew", MAC, BREW, FULL)]);
+        }
+        let rows = k.rows();
+        let reader = Connection::open(k.dir.join("store.db")).unwrap();
+        reader
+            .execute_batch("BEGIN; SELECT COUNT(*) FROM coverage;")
+            .unwrap();
+        tidy(&k.conn);
+        assert_eq!(k.rows(), rows);
+        reader.execute_batch("COMMIT").unwrap();
+        tidy(&k.conn);
+        assert_eq!(k.rows(), rows - 3);
+    }
+
+    #[test]
+    fn only_a_file_a_quarter_or_more_free_is_rewritten() {
+        // Rewriting the file takes as long as the store is large and shuts readers out
+        // meanwhile: the few pages a run frees in the ordinary way stay free for the next run.
+        assert!(!worth_giving_back(0, 0));
+        assert!(!worth_giving_back(0, 100));
+        assert!(!worth_giving_back(24, 100));
+        assert!(worth_giving_back(25, 100));
+        assert!(worth_giving_back(57_000, 57_861));
+    }
+
+    #[test]
+    fn a_run_that_leaves_little_free_keeps_its_free_pages_for_the_rows_written_next() {
+        let mut k = Kept::new("free-little");
+        let scopes: Vec<String> = (0..40).map(|i| format!("machine:m{i}")).collect();
+        let readings: Vec<(&str, &str, &str, Said)> = scopes
+            .iter()
+            .map(|s| ("brew", s.as_str(), BREW, FULL))
+            .collect();
+        for _ in 0..RUNS_KEPT {
+            k.run(true, &readings);
+        }
+        // A few pages freed, as by the readings an ordinary run folds.
+        k.conn
+            .execute_batch(
+                "CREATE TABLE spare (v TEXT);
+                 WITH RECURSIVE n (i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 100)
+                 INSERT INTO spare SELECT hex(randomblob(100)) FROM n;
+                 DROP TABLE spare;",
+            )
+            .unwrap();
+        let (free, pages) = free_pages(&k.conn).unwrap();
+        assert!(
+            free > 0 && !worth_giving_back(free, pages),
+            "{free} of {pages}"
+        );
+        tidy(&k.conn);
+        assert_eq!(free_pages(&k.conn).unwrap(), (free, pages));
+    }
+
+    #[test]
+    fn space_a_fold_freed_and_could_not_give_back_is_given_back_by_a_later_run() {
+        // The vacuum after a fold met a reader and failed; the next run folds almost nothing,
+        // and still gives back the space the file holds free.
+        let mut k = Kept::new("free-later");
+        let scopes: Vec<String> = (0..40).map(|i| format!("machine:m{i}")).collect();
+        let readings: Vec<(&str, &str, &str, Said)> = scopes
+            .iter()
+            .map(|s| ("brew", s.as_str(), BREW, FULL))
+            .collect();
+        for _ in 0..(RUNS_KEPT + 200) {
+            k.run(true, &readings);
+        }
+        let path = k.dir.join("store.db");
+        let size = || std::fs::metadata(&path).unwrap().len();
+        let before = size();
+        k.fold();
+        let reader = Connection::open(&path).unwrap();
+        reader
+            .execute_batch("BEGIN; SELECT COUNT(*) FROM coverage;")
+            .unwrap();
+        assert!(give_back(&k.conn).is_err(), "the vacuum met the reader");
+        reader.execute_batch("COMMIT").unwrap();
+        drop(reader);
+        assert_eq!(size(), before);
+        k.run(true, &readings);
+        tidy(&k.conn);
+        assert!(size() * 3 < before, "{} bytes of {before}", size());
+    }
+
+    #[test]
+    fn the_runs_kept_whole_and_the_latest_finished_keep_every_reading_they_made() {
+        // The changes page and `immune status` ask what each of these runs read: a run in the
+        // middle of unchanged readings still read them, and is never shown as having read
+        // nothing or everything.
+        let mut k = Kept::new("window");
+        let readings = [
+            ("brew", MAC, BREW, failed("no output")),
+            ("watched-places", MAC, PROFILES, FULL),
+        ];
+        let mut runs = Vec::new();
+        for _ in 0..(RUNS_KEPT + 10) {
+            runs.push(k.run(true, &readings));
+        }
+        // Runs that died before they finished, after the latest one that finished.
+        let finished = runs.last().unwrap().clone();
+        for _ in 0..(RUNS_KEPT + 5) {
+            k.runs += 1;
+            let at = 1_900_000_000 + k.runs * 60;
+            let run_id = format!("{at}-000000000");
+            journal_note(&k.conn, at, &run_id, "run_started", "").unwrap();
+            let tx = k.conn.transaction().unwrap();
+            for (reader, scope, kind, said) in &readings {
+                let r = Reading {
+                    reader,
+                    scope,
+                    kind,
+                    run_id: &run_id,
+                    at,
+                    observed_at: at,
+                };
+                put_coverage(
+                    &tx,
+                    &r,
+                    said.completeness,
+                    said.reason,
+                    &Gap::when(said.cause),
+                )
+                .unwrap();
+            }
+            tx.commit().unwrap();
+            runs.push(run_id);
+        }
+        let per_run = |k: &Kept, run: &str| {
+            let t = totals(&k.conn, run).unwrap();
+            (t.partial, t.none, t.machines_unread, t.not_repeated)
+        };
+        let kept: Vec<&String> = runs[runs.len() - RUNS_KEPT as usize..]
+            .iter()
+            .chain([&finished])
+            .collect();
+        let before: Vec<_> = kept.iter().map(|r| per_run(&k, r)).collect();
+        assert!(k.fold().removed > 0);
+        let after: Vec<_> = kept.iter().map(|r| per_run(&k, r)).collect();
+        assert_eq!(after, before);
+        assert!(before.iter().all(|t| t.1 == 1), "{before:?}");
+    }
+
+    #[test]
+    fn nothing_is_folded_before_any_run_journaled_nor_from_the_runs_kept_whole() {
+        let mut k = Kept::new("young");
+        for _ in 0..5 {
+            k.run(false, &[("watched-places", MAC, PROFILES, FULL)]);
+        }
+        assert_eq!(
+            k.fold(),
+            Folded {
+                removed: 0,
+                rows: 5
+            }
+        );
+        for _ in 0..RUNS_KEPT {
+            k.run(true, &[("watched-places", MAC, PROFILES, FULL)]);
+        }
+        // The watcher's readings before the first run are older than every run kept whole.
+        assert_eq!(k.fold().removed, 3);
+        assert_eq!(k.fold().removed, 0);
+    }
+
+    #[test]
+    fn a_store_kept_whole_by_an_earlier_build_is_folded_and_its_file_gives_the_space_back() {
+        let mut k = Kept::new("earlier");
+        let readings: Vec<(&str, String, &str, Said)> = (0..40)
+            .map(|i| {
+                (
+                    "watched-places",
+                    format!("file:mac/f{i}"),
+                    crate::watched::CONTENT,
+                    FULL,
+                )
+            })
+            .collect();
+        let readings: Vec<(&str, &str, &str, Said)> = readings
+            .iter()
+            .map(|(r, s, kind, said)| (*r, s.as_str(), *kind, *said))
+            .collect();
+        for _ in 0..(RUNS_KEPT + 200) {
+            k.run(true, &readings);
+        }
+        let path = k.dir.join("store.db");
+        let size = || std::fs::metadata(&path).unwrap().len();
+        let before = size();
+        tidy(&k.conn);
+        assert!(size() * 3 < before, "{} then {before}", size());
+        assert_eq!(k.rows(), 40 * (RUNS_KEPT + 2));
     }
 }
