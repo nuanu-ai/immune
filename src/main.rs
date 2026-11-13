@@ -5568,7 +5568,6 @@ mod tests {
                 run_id: "run-1",
                 at: 1,
                 machine: "machine:mac",
-                events: Vec::new(),
                 notes: Vec::new(),
                 readers: 0,
             };
