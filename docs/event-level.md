@@ -179,7 +179,7 @@ What the 66 translated rules rest on, beyond the checked translation:
 - How Elastic Defend fills `process.name` and `process.command_line` on macOS is not documented. Immune takes the last part of the path and the arguments joined by spaces.
 - The image before an `exec` stands for the parent, as for SigmaHQ's `ParentImage`.
 - 34 of the 60 rules for program starts do not ask for `event.action == "exec"`, and Elastic may also count a fork as a start. The collector records no fork, so such a rule sees only programs started by `exec`. Three translated rules also ask for an event kind the log does not hold: a fork, a file modified and a file overwritten.
-- 15 rules negate a field an event may lack (`process.args`, `process.parent.executable`, `user.id`). They rest on Elasticsearch treating a comparison with a missing field as false, so its negation holds.
+- 15 rules negate a field an event may lack (`process.args`, `process.parent.executable`, `user.id`). They rest on Elasticsearch treating a comparison with a missing field as neither true nor false, so its negation does not hold either: the translation asks for the field to be present wherever it is negated.
 
 ## `eslogger` is not a promised interface
 
