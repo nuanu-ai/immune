@@ -2798,3 +2798,298 @@ fn each_check_with_first_readings_raises_its_own_item_whatever_was_answered_abou
         ]
     );
 }
+
+// Places of persistence read by the user: login hooks, PAM and authorization plugins.
+
+const LOGIN_HOOK_KIND: &str = "login and logout hooks in the login window's preferences";
+const AUTH_KIND: &str = "PAM policies and modules, and authorization plugins";
+const PREFS: &str = "Library/Preferences/com.apple.loginwindow.plist";
+
+/// The login window's preferences in the home folder, as XML, holding `entries`.
+fn login_window(home: &Path, entries: &str) -> PathBuf {
+    let path = home.join(PREFS);
+    put(
+        &path,
+        &format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>{entries}</dict></plist>\n"
+        ),
+    );
+    path
+}
+
+/// Paths whose permissions are taken away while it lives, and given back, as given, when it
+/// is dropped, whatever the test did.
+struct Closed(Vec<(PathBuf, u32)>);
+
+impl Closed {
+    fn new(paths: &[(&Path, u32)]) -> Closed {
+        use std::os::unix::fs::PermissionsExt;
+        for (path, _) in paths {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        Closed(paths.iter().map(|(p, m)| (p.to_path_buf(), *m)).collect())
+    }
+}
+
+impl Drop for Closed {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        for (path, mode) in &self.0 {
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(*mode));
+        }
+    }
+}
+
+/// The subjects the journal says were removed from the places of persistence.
+fn removed(e: &Estate) -> Vec<String> {
+    e.rows(&format!(
+        "SELECT subject FROM journal WHERE entry = 'removed' AND predicate = 'watched_as'
+           AND kind IN ('{}', '{AUTH_KIND}')",
+        LOGIN_HOOK_KIND.replace('\'', "''")
+    ))
+}
+
+#[test]
+fn losing_sight_of_a_login_hook_a_pam_file_or_the_plugins_folder_read_before_raises_its_rule_with_why()
+ {
+    // Someone who wants to change one of these unseen would break its reading first. Losing
+    // sight of a hook, a PAM file or the plugins folder read before is a finding of its kind
+    // with why; none of them goes quiet, and nothing in them is told as removed.
+    let e = Estate::new("lose-sight-persistence");
+    let prefs = login_window(
+        &e.home(),
+        "<key>LoginHook</key><string>/Users/Shared/a.sh</string>",
+    );
+    let sys = e.0.join("system");
+    let pam = sys.join("etc/pam.d/sudo");
+    put(&pam, "auth sufficient pam_tid.so\n");
+    let plugins = sys.join("Library/Security/SecurityAgentPlugins");
+    put(
+        &plugins.join("Example.bundle/Contents/Info.plist"),
+        "<plist/>\n",
+    );
+    e.run();
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+    {
+        let _closed = Closed::new(&[(&prefs, 0o644), (&pam, 0o644), (&plugins, 0o755)]);
+        e.run();
+    }
+    assert_eq!(
+        e.found(),
+        [
+            pair(
+                "watched.authentication",
+                "/Library/Security/SecurityAgentPlugins"
+            ),
+            pair("watched.authentication", "/etc/pam.d/sudo"),
+            pair("watched.login-hook", &format!("~/{PREFS}")),
+        ]
+    );
+    let why =
+        e.rows("SELECT subject, new_value FROM journal WHERE entry = 'not_read' ORDER BY subject");
+    assert_eq!(why.len(), 3, "{why:?}");
+    assert!(
+        why.iter()
+            .all(|w| w.ends_with("Permission denied (os error 13)")),
+        "{why:?}"
+    );
+    assert!(removed(&e).is_empty(), "{:?}", removed(&e));
+    let live = e.rows(
+        "SELECT subject FROM assertion WHERE layer = 'live' AND predicate = 'watched_as'
+           AND (subject LIKE '%loginwindow%' OR subject LIKE '%pam.d%' OR subject LIKE '%.bundle')
+         ORDER BY subject",
+    );
+    assert_eq!(
+        live,
+        [
+            "file:machine:mac//Library/Security/SecurityAgentPlugins/Example.bundle".to_string(),
+            "file:machine:mac//etc/pam.d/sudo".to_string(),
+            format!("file:machine:mac/{PREFS}#LoginHook"),
+        ]
+    );
+}
+
+#[test]
+fn a_hook_beside_one_that_cannot_be_read_is_still_compared_and_the_unread_one_is_named_never_gone()
+{
+    // One value of the login window's preferences that cannot be read leaves the other read:
+    // its change is found, the unread one is named with why and kept as it was known, and
+    // losing sight of part of the file is found.
+    let e = Estate::new("hook-part-unread");
+    login_window(
+        &e.home(),
+        "<key>LoginHook</key><string>/Users/Shared/a.sh</string>\
+         <key>LogoutHook</key><string>/Users/Shared/b.sh</string>",
+    );
+    e.run();
+    let logout = format!("file:machine:mac/{PREFS}#LogoutHook");
+    let content = |id: &str| {
+        e.rows(&format!(
+            "SELECT object FROM assertion WHERE layer = 'live' AND predicate = 'has_content'
+               AND subject = '{id}'"
+        ))
+    };
+    let before = content(&logout);
+    assert_eq!(before.len(), 1);
+    // Deeper than the build follows a value.
+    let deep = format!(
+        "{}<string>/Users/Shared/b.sh</string>{}",
+        "<array>".repeat(40),
+        "</array>".repeat(40)
+    );
+    login_window(
+        &e.home(),
+        &format!(
+            "<key>LoginHook</key><string>/Users/Shared/c.sh</string><key>LogoutHook</key>{deep}"
+        ),
+    );
+    e.run();
+    assert_eq!(
+        e.found(),
+        [
+            pair("watched.login-hook", &format!("~/{PREFS}")),
+            pair("watched.login-hook", &format!("~/{PREFS}#LoginHook")),
+        ]
+    );
+    let coverage = e.coverage(LOGIN_HOOK_KIND);
+    assert!(
+        coverage.contains(&format!(
+            "{PREFS}#LogoutHook (a value nested deeper than this build reads)"
+        )),
+        "{coverage}"
+    );
+    assert!(!coverage.contains("none of these places"), "{coverage}");
+    assert!(removed(&e).is_empty(), "{:?}", removed(&e));
+    assert_eq!(content(&logout), before);
+    // The hook that was read is gone from a dictionary read whole: that is told, and the one
+    // still unread is not.
+    login_window(&e.home(), &format!("<key>LogoutHook</key>{deep}"));
+    e.run();
+    assert_eq!(removed(&e), [format!("file:machine:mac/{PREFS}#LoginHook")]);
+    assert_eq!(content(&logout), before);
+}
+
+#[test]
+fn a_kind_of_place_read_in_part_with_nothing_found_never_says_there_is_none() {
+    // A preferences file that cannot be parsed and a plugins folder that cannot be listed may
+    // hold a hook or a plugin: the page says what could not be read, never that there is none.
+    let e = Estate::new("none-from-part");
+    put(&e.home().join(PREFS), "\u{0}\u{1} not a property list");
+    let plugins = e.0.join("system/Library/Security/SecurityAgentPlugins");
+    std::fs::create_dir_all(&plugins).unwrap();
+    {
+        let _closed = Closed::new(&[(&plugins, 0o755)]);
+        e.run();
+    }
+    for kind in [LOGIN_HOOK_KIND, AUTH_KIND] {
+        let coverage = e.coverage(kind);
+        assert!(
+            coverage.starts_with("none|could not be read: "),
+            "{coverage}"
+        );
+    }
+    let page = e.this_mac_page();
+    let section = |id: &str| {
+        let start = page
+            .find(&format!("<section id=\"{id}\">"))
+            .unwrap_or_else(|| panic!("{id}"));
+        page[start..start + page[start..].find("</section>").unwrap()].to_string()
+    };
+    for id in ["login-and-logout-hooks", "login-and-password-modules"] {
+        let shown = section(id);
+        assert!(!shown.contains("None found here."), "{shown}");
+        assert!(
+            shown.contains("Not read in full, so this list may not be whole"),
+            "{shown}"
+        );
+    }
+    // A kind read in full with nothing there still says so.
+    assert!(section("ssh-files").contains("None found here."));
+}
+
+#[test]
+fn a_plugin_watched_only_for_whether_it_is_there_is_never_said_to_be_unchanged() {
+    // An authorization plugin is a folder: its arrival and departure are seen, a change inside
+    // it is not. What a person reads says so, and never that it has not changed.
+    let e = Estate::new("presence-only");
+    let plugins = e.0.join("system/Library/Security/SecurityAgentPlugins");
+    put(
+        &plugins.join("Example.bundle/Contents/Info.plist"),
+        "<plist/>\n",
+    );
+    put(
+        &e.0.join("system/etc/pam.d/sudo"),
+        "auth sufficient pam_tid.so\n",
+    );
+    e.run();
+    let page = e.this_mac_page();
+    let start = page
+        .find("<section id=\"login-and-password-modules\">")
+        .unwrap();
+    let section = &page[start..start + page[start..].find("</section>").unwrap()];
+    let row = |name: &str| {
+        let at = section.find(name).unwrap_or_else(|| panic!("{section}"));
+        section[at..at + section[at..].find("</tr>").unwrap()].to_string()
+    };
+    let bundle = row("Example.bundle");
+    assert!(
+        bundle.contains("a change inside it is not seen: only whether it is there is watched")
+            && !bundle.contains("not since first seen"),
+        "{bundle}"
+    );
+    // A file whose content is compared says it has not changed since it was first seen.
+    assert!(row("/etc/pam.d/sudo").contains("not since first seen"));
+    // The summary does not call the plugin watched for change.
+    let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+        .args(["view", "--no-open", "--store"])
+        .arg(e.store())
+        .output()
+        .unwrap();
+    let pages = String::from_utf8(out.stdout).unwrap();
+    let summary: String = pages
+        .lines()
+        .filter(|p| p.ends_with(".html"))
+        .map(|p| std::fs::read_to_string(p).unwrap())
+        .find(|p| p.contains("Example.bundle") && p.contains("no finding rests on it"))
+        .unwrap_or_else(|| panic!("{pages}"));
+    let at = summary.find("Example.bundle").unwrap();
+    let mark = &summary[at..at + summary[at..].find('"').unwrap()];
+    assert!(
+        mark.contains("watched for whether it is there, not for a change inside it"),
+        "{mark}"
+    );
+}
+
+#[test]
+fn byhost_and_managed_preferences_are_named_as_not_read() {
+    // A login hook can be set where this version does not read: the limits say where.
+    let e = Estate::new("unread-preferences");
+    e.run();
+    let status = e.status();
+    let cannot: Vec<&str> = status["cannot_judge"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|s| s.as_str())
+        .collect();
+    let persistence = cannot
+        .iter()
+        .find(|s| s.contains("places of persistence"))
+        .unwrap_or_else(|| panic!("{cannot:?}"));
+    assert!(
+        persistence.contains("ByHost preferences") && persistence.contains("Managed Preferences"),
+        "{persistence}"
+    );
+    let item = status["not_covered"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["id"] == "persistence-not-read")
+        .unwrap_or_else(|| panic!("{status:#}"))
+        .clone();
+    let meaning = item["meaning"].as_str().unwrap();
+    assert!(
+        meaning.contains("ByHost preferences") && meaning.contains("Managed Preferences"),
+        "{meaning}"
+    );
+}

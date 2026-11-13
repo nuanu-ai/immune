@@ -42,6 +42,9 @@ pub const NEEDS_SHOWN: usize = 50;
 /// What this build cannot answer at all, in its own words. One sentence a line: the builder
 /// who closes a gap deletes its line, and nothing else changes.
 pub const CANNOT_JUDGE: &[&str] = &[
+    // Places of persistence left out of the watched places (`watched.rs`): readable by root
+    // only or without a permission dialog, rewritten at every logout, or not a file.
+    PERSISTENCE_UNREAD,
     // Lockfiles of npm and crates.io are matched (`vulnerabilities`); the rest is planned in
     // docs/threats.md.
     "no vulnerability is matched against installed software, servers' packages or ecosystems other than npm and crates.io yet",
@@ -52,6 +55,8 @@ pub const CANNOT_JUDGE: &[&str] = &[
 /// What this version cannot judge of software installed on this Mac, whatever the table of
 /// package managers holds.
 pub const OTHER_MANAGERS: &str = "software installed by a package manager other than Homebrew and npm is not checked, and Homebrew or Tailscale installed outside the places their installers use by default is not found";
+/// The places of persistence this version does not read, by name.
+pub const PERSISTENCE_UNREAD: &str = "these places of persistence are not read: login and logout hooks in root's preferences, in ByHost preferences and in Managed Preferences, a PAM policy a device management profile installs, the authorization database, the sudoers file and its folder, login items and background items, crontabs, launchd jobs with no file on disk, and the applications reopened at login";
 /// The sections of a result that hold numbers, in the order of the result.
 const SECTIONS: [&str; 15] = [
     "needs_a_look",

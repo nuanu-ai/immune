@@ -1453,12 +1453,18 @@ fn watched(conn: &Connection, out: &mut String, latest: &[Latest], now: i64) -> 
             td(out, "mono", &f.content)?;
             td(out, "mono", &f.link)?;
             td(out, "nowrap", &utc(f.first_seen))?;
-            let last = if changed.contains(id) {
-                utc(f.content_since)
+            // Never "unchanged" where the content is not compared: a folder is watched only
+            // for whether it is there, and content no reading read is not known.
+            let (class, last) = if f.content.starts_with(crate::watched::NOT_A_FILE) {
+                ("", crate::watched::PRESENCE_ONLY.to_string())
+            } else if changed.contains(id) {
+                ("nowrap", utc(f.content_since))
+            } else if f.content.is_empty() && f.link.is_empty() {
+                ("", crate::watched::NEVER_READ.to_string())
             } else {
-                "not since first seen".to_string()
+                ("nowrap", "not since first seen".to_string())
             };
-            td(out, "nowrap", &last)?;
+            td(out, class, &last)?;
             out.push_str("<td>");
             if let Some(r) = read_by_us
                 .iter()

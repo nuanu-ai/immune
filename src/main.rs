@@ -40,6 +40,7 @@ mod matches;
 mod osv;
 mod owner;
 mod pages;
+mod plist;
 mod processes;
 mod program;
 mod project;
@@ -4433,13 +4434,14 @@ fn read_watched(
         }));
         // A unit that could not be read, or was not looked into, keeps what was known of it,
         // so that the rest of the reading is compared whole: what is gone from a unit read in
-        // full is gone, whatever failed elsewhere. Hooks kept elsewhere keep all of theirs.
+        // full is gone, whatever failed elsewhere. A part of a file that could not be read,
+        // its neighbours read, keeps only its own. Hooks kept elsewhere keep all of theirs.
         let unread: Vec<&str> = p
             .look
             .failed
             .iter()
             .chain(&p.look.unreached)
-            .map(|(path, _)| baseline::unit_of(path))
+            .map(|(path, _)| baseline::hidden(path))
             .collect();
         statements.extend(kept(tx, &reading, |path| {
             p.elsewhere.is_some() || unread.iter().any(|u| baseline::under(path, u))

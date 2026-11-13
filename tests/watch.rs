@@ -757,7 +757,7 @@ fn a_place_that_cannot_be_subscribed_to_is_a_problem_line_and_the_rest_is_still_
     }
     assert_eq!(
         watching["places"].as_u64().unwrap() + problems.len() as u64,
-        27 + HOME_PLACES
+        TABLE_PLACES + HOME_PLACES
     );
     // An autostart item: its kind of place reads in full here, so it has a baseline.
     mac.put("Library/LaunchAgents/seen.plist", "<plist/>\n");
@@ -845,7 +845,10 @@ fn the_hooks_of_the_checkouts_the_store_holds_are_watched() {
     let mut w = mac.watch();
     let watching = w.next("watching");
     // The table's places, and the checkout's hooks and its files that run code by itself.
-    assert_eq!(watching["places"], 27 + HOME_PLACES + CHECKOUT_PLACES);
+    assert_eq!(
+        watching["places"],
+        TABLE_PLACES + HOME_PLACES + CHECKOUT_PLACES
+    );
     w.next("read");
     mac.put("dev/shop/.git/hooks/pre-commit", "#!/bin/sh\n");
     w.until("read", |v| count(v, "new") == 1);
@@ -854,6 +857,11 @@ fn the_hooks_of_the_checkouts_the_store_holds_are_watched() {
         vec!["located_on", "watched_as", "has_content"]
     );
 }
+
+/// The places of the table of watched places on the machine, every row but a checkout's hooks:
+/// launch agents and daemons, the login window's preferences, shell profiles, SSH files, and
+/// the policies, modules and plugins of logging in.
+const TABLE_PLACES: u64 = 35;
 
 /// The places of the home folder the watcher subscribes to through which a tool's own settings
 /// run code by itself: five files of coding agents' settings and VS Code's extensions folder.
@@ -898,6 +906,73 @@ fn an_editor_task_planted_while_the_watcher_runs_is_a_finding_within_seconds() {
         .unwrap_or_else(|| panic!("{items}"))
         .clone();
     assert_eq!(found["where_text"], "~/dev/shop/.vscode/tasks.json");
+}
+
+#[test]
+fn a_login_hook_and_a_changed_login_policy_are_findings_within_seconds() {
+    // Both run with full control at the next login or password prompt: an hour's wait for
+    // the full check is an hour in which the owner logs in. Neither the preferences folder nor
+    // the policy folder is there when the watcher starts.
+    let mac = Mac::new("login");
+    mac.run();
+    let mut w = mac.watch().started();
+    let written = Instant::now();
+    mac.put(
+        "Library/Preferences/com.apple.loginwindow.plist",
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\
+         <key>LogoutHook</key><string>/Users/Shared/example.sh</string></dict></plist>\n",
+    );
+    let policy = mac.sys().join("etc/pam.d/sudo");
+    std::fs::create_dir_all(policy.parent().unwrap()).unwrap();
+    std::fs::write(&policy, "auth       required       pam_deny.so\n").unwrap();
+    // One reading or two, as the quiet period falls.
+    w.until("read", |v| v["needs_a_look_total"] == 2);
+    assert!(written.elapsed() < Duration::from_secs(10), "read too late");
+    let r = mac.status()["result"].clone();
+    let items = &r["needs_a_look"];
+    let mut found: Vec<(String, String, String, bool)> = items
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            let text = |k: &str| i[k].as_str().unwrap_or_default().to_string();
+            let (rule, place) = (text("rule"), text("where_text"));
+            (rule, place, text("technique"), i["urgent"] == true)
+        })
+        .collect();
+    found.sort();
+    // A hook is told at once; a changed policy, which an update of macOS also makes, waits
+    // for the owner to look. Each names the ATT&CK technique an agent looks it up by.
+    assert_eq!(
+        found,
+        [
+            (
+                "watched.authentication".into(),
+                "/etc/pam.d/sudo".into(),
+                "T1556".into(),
+                false
+            ),
+            (
+                "watched.login-hook".into(),
+                "~/Library/Preferences/com.apple.loginwindow.plist#LogoutHook".into(),
+                "T1037.002".into(),
+                true
+            ),
+        ],
+        "{items}"
+    );
+    // And the status says both kinds are seen within seconds while the watcher runs.
+    for what in ["login and logout hooks", "login and password modules"] {
+        let watched = r["this_mac"]["watched"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|w| w["what"] == what)
+            .unwrap_or_else(|| panic!("{what}: {r:#}"))
+            .clone();
+        assert_eq!(watched["how"], "live", "{watched}");
+        assert_eq!(watched["count"], 1, "{watched}");
+    }
 }
 
 #[test]
@@ -1922,7 +1997,7 @@ fn a_folder_macos_asks_permission_for_is_never_entered_and_what_was_known_there_
     let mut w = mac.watch();
     assert_eq!(
         w.next("watching")["places"],
-        27 + HOME_PLACES + CHECKOUT_PLACES
+        TABLE_PLACES + HOME_PLACES + CHECKOUT_PLACES
     );
 }
 
@@ -1956,7 +2031,7 @@ fn a_watched_place_linked_into_documents_is_neither_entered_nor_subscribed_to_an
     }
     // The table's places but the shell file and the three ssh files, the home folder's but
     // the agent's settings, and none of the project's.
-    let places = 27 - 4 + HOME_PLACES - 1;
+    let places = TABLE_PLACES - 4 + HOME_PLACES - 1;
     let open = Open(docs.clone());
     std::fs::set_permissions(&docs, std::fs::Permissions::from_mode(0o000)).unwrap();
     let mut w = mac.watch();
@@ -2359,6 +2434,7 @@ fn a_sample_that_opens_a_finding_says_so_in_one_line_and_a_quiet_sample_says_not
             "home-autorun",
             "vulnerability-list-not-downloaded",
             "vulnerability-data-old",
+            "persistence-not-read",
             "vulnerabilities-not-compared",
             "package-managers-elsewhere-not-found"
         ],

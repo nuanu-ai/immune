@@ -117,12 +117,13 @@ unsafe extern "C" {
     ) -> OSStatus;
 }
 
-/// A CoreFoundation object this code owns, released once when dropped.
-struct Owned(CFTypeRef);
+/// A CoreFoundation object this code owns, released once when dropped. `plist.rs` holds its
+/// objects in it too.
+pub(crate) struct Owned(pub(crate) CFTypeRef);
 
 impl Owned {
     /// Takes ownership of what a `Create` or `Copy` call returned, if it returned anything.
-    fn take(object: CFTypeRef) -> Option<Owned> {
+    pub(crate) fn take(object: CFTypeRef) -> Option<Owned> {
         // Lazily: an `Owned` of null, made and dropped, would release null.
         (!object.is_null()).then(|| Owned(object))
     }
@@ -136,7 +137,7 @@ impl Drop for Owned {
 }
 
 /// A string as a CoreFoundation string this code owns.
-fn cf_string(s: &str) -> Option<Owned> {
+pub(crate) fn cf_string(s: &str) -> Option<Owned> {
     // SAFETY: the bytes are valid for their length; the call copies them. Owned: `Create`.
     Owned::take(unsafe {
         CFStringCreateWithBytes(

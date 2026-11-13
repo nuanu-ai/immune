@@ -149,8 +149,10 @@ Each of Immune's own rules is plain code with an id, the ATT&CK technique where 
 | Rule | Fires on | Technique | Severity, confidence |
 |---|---|---|---|
 | `watched.autostart` | a launch agent or daemon added, changed or removed | T1543 | medium, low |
+| `watched.login-hook` | a login or logout hook in the login window's preferences, the system's or the user's, added, changed or removed | T1037.002 | high, medium |
 | `watched.shell-profile` | a zsh or bash startup file added, changed or removed | T1546.004 | medium, low |
 | `watched.ssh-access` | `~/.ssh/config`, `authorized_keys`, `rc` or the system's SSH configuration added, changed or removed | | high, low |
+| `watched.authentication` | a PAM policy or module, or an authorization plugin, added, changed or removed | T1556 | high, low |
 | `watched.git-hook` | a git hook in a checkout added, changed or removed | | medium, low |
 | `watched.first-read` | places read for the first time after the store's first check, one finding per check that names each place | | informational, low |
 | `integrity.app-seal` | an application's seal no longer verifies, version unchanged | T1554 | high, medium |
@@ -237,6 +239,7 @@ Where the industry has a proven name, format or rule set, Immune takes it. Its o
 | Indicators | STIX 2.1 object paths |
 | An answer that hides a finding until an end date, with a reason | the industry's practice for alert exceptions |
 | Content judged by its checksum against what is already in force | file integrity monitoring baselines (Tripwire, OSSEC), allow-listing by hash (Santa, AppLocker), "first seen" state in detection rules |
+| Which places of persistence are watched | the categories Objective-See's KnockKnock enumerates and MITRE ATT&CK's persistence techniques for macOS. Immune keeps the places current macOS still acts on, that a program running as the user can read without a permission dialog, and that have a normal state to compare with. The rest are named as limits |
 | Collector | Apple's `eslogger`, `jq` and `rotatelogs` |
 | Who a process is | Apple's audit token, the pid with its version, and the start time `eslogger` gives. The Elastic Common Schema leaves `process.entity_id`, an identifier that survives a reused pid, to each data source to build from what identifies a process; Immune hands over those parts as they are and builds no identifier of its own |
 | Reading on from a position the reader keeps | journald's cursors (`journalctl --after-cursor`) and the offsets a log broker's consumer commits |

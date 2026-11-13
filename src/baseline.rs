@@ -244,6 +244,16 @@ pub fn unit_of(path: &str) -> &str {
     }
 }
 
+/// What a failure at `path` leaves unknown: the part it names, `<file>#<part>`, when one part
+/// of a file could not be read and the rest was; otherwise its whole unit.
+pub fn hidden(path: &str) -> &str {
+    if path.contains('#') {
+        path
+    } else {
+        unit_of(path)
+    }
+}
+
 /// The folder that holds a unit: `.` for one directly in the home folder, `/` for one directly
 /// at the root.
 pub fn parent(unit: &str) -> &str {

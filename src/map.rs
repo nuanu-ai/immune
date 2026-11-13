@@ -325,6 +325,7 @@ pub fn read(
     order(&mut map.projects);
 
     // What is watched on this Mac, kind by kind, except what is inside a project.
+    let presence = watched::presence_only(conn)?;
     for (count, what, _) in covered::watched() {
         let href = format!("{DETAILS}/{THIS_MAC}.html#{}", pages::anchor(what));
         let heading = pages::capital(what);
@@ -360,13 +361,17 @@ pub fn read(
                         || latest
                             .iter()
                             .any(|r| r.scope == f && r.completeness != "full");
-                    marks.push(on_mac(
+                    let mut mark = on_mac(
                         crate::findings::place(&f, mac.as_ref()),
                         look_mac.contains(f.as_str()),
                         failed,
                         &href,
                         &heading,
-                    ));
+                    );
+                    if mark.said == WATCHED_CALM && presence.contains(&f) {
+                        mark.said = PRESENCE_CALM;
+                    }
+                    marks.push(mark);
                 }
             }
             Count::Installed(kind) => {
@@ -476,6 +481,13 @@ fn looked(name: String) -> Mark {
     }
 }
 
+/// What a mark of a thing on this Mac whose content is compared says when calm.
+const WATCHED_CALM: &str = "watched for change, no finding rests on it";
+/// The same for a thing watched only for whether it is there, such as a plugin's folder: a
+/// change inside it is not seen, so it is not said to be watched for change.
+const PRESENCE_CALM: &str =
+    "watched for whether it is there, not for a change inside it; no finding rests on it";
+
 /// A thing watched on this Mac: calm only while its reading is full.
 fn on_mac(name: String, look: bool, failed: bool, href: &str, heading: &str) -> Mark {
     if look {
@@ -484,7 +496,7 @@ fn on_mac(name: String, look: bool, failed: bool, href: &str, heading: &str) -> 
     let (state, said) = if failed {
         (State::Open, "not fully read at the last check")
     } else {
-        (State::Calm, "watched for change, no finding rests on it")
+        (State::Calm, WATCHED_CALM)
     };
     Mark {
         name,

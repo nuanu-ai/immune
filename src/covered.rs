@@ -19,8 +19,10 @@ use std::collections::{BTreeMap, BTreeSet};
 pub fn watched() -> Vec<(Count, &'static str, bool)> {
     let mut out = vec![
         (Count::Files(watched::AUTOSTART), "startup items", true),
+        (Count::Files(watched::LOGIN_HOOK), LOGIN_HOOKS, true),
         (Count::Files(watched::PROFILE), "shell startup files", true),
         (Count::Files(watched::SSH), "SSH files", true),
+        (Count::Files(watched::AUTH), LOGIN_MODULES, true),
         (Count::Files(watched::HOOK), "git hooks in projects", true),
     ];
     out.extend(
@@ -32,6 +34,11 @@ pub fn watched() -> Vec<(Count, &'static str, bool)> {
     out.push((Count::Dependencies, DEPENDENCIES, false));
     out
 }
+
+/// Scripts the login window runs at every login and logout, in the words for a person.
+pub const LOGIN_HOOKS: &str = "login and logout hooks";
+/// What decides how the owner logs in and how a password is checked, in the same words.
+pub const LOGIN_MODULES: &str = "login and password modules";
 
 /// What the projects' lockfiles declare, matched against the known vulnerabilities at every
 /// check.
@@ -716,8 +723,22 @@ pub const FILES_NOT_COLLECTED: Cause = Cause {
     advice: "Run the event level's install command again with your administrator password; it keeps the log and adds file events. Your agent can prepare it.",
 };
 
+pub const PERSISTENCE_NOT_READ: Cause = Cause {
+    id: "persistence-not-read",
+    who: NOTHING,
+    scope: "this_mac",
+    kind: "places where something can be set to start by itself that are not read",
+    title: [
+        "Some places where something can be set to start by itself on this Mac are not checked.",
+        "Some places where something can be set to start by itself on this Mac are not checked.",
+    ],
+    meaning: "Login items and background items, scheduled commands, the list of who may act as the administrator, and login scripts kept in the administrator's own settings open only with permissions this app does not ask for. Login scripts set in ByHost preferences, kept for one Mac, or in Managed Preferences, which a device management profile writes, are not read in this version. Jobs started with no file on disk, and the apps reopened at login, which change at every logout, have nothing to compare against. A change in any of them goes unseen.",
+    meaning_none: None,
+    advice: "Nothing to do. This is a limit of this version.",
+};
+
 /// Every cause, in the order items are listed: what the owner can fix first.
-pub const CAUSES: [&Cause; 24] = [
+pub const CAUSES: [&Cause; 25] = [
     &SERVERS_NOT_CHECKED,
     &SERVERS_NOT_OPENED,
     &NOT_PERMITTED,
@@ -741,12 +762,15 @@ pub const CAUSES: [&Cause; 24] = [
     &VULNERABILITY_DATA_OLD,
     &VULNERABILITY_DATA_FIXABLE,
     &VULNERABILITIES_UNKNOWN,
+    // The limits of this version, `LIMITS`, last.
+    &PERSISTENCE_NOT_READ,
     &NOT_COMPARED,
 ];
 
 /// Each sentence of `status::CANNOT_JUDGE`, told for a person, one for one: the builder who
 /// closes a gap deletes the sentence and its line here, and the item goes with them.
-pub const LIMITS: [(&str, &Cause); 2] = [
+pub const LIMITS: [(&str, &Cause); 3] = [
+    (crate::status::PERSISTENCE_UNREAD, &PERSISTENCE_NOT_READ),
     (
         "no vulnerability is matched against installed software, servers' packages or ecosystems other than npm and crates.io yet",
         &NOT_COMPARED,
@@ -1469,5 +1493,11 @@ mod tests {
         let told: Vec<&str> = LIMITS.iter().map(|(s, _)| *s).collect();
         assert_eq!(told, status::CANNOT_JUDGE);
         assert!(LIMITS.iter().all(|(_, c)| c.who == NOTHING));
+        // An agent learns from the catalogue every item it can meet, a limit's among them.
+        assert!(
+            LIMITS
+                .iter()
+                .all(|(_, c)| CAUSES.iter().any(|known| known.id == c.id))
+        );
     }
 }

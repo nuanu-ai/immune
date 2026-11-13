@@ -1,6 +1,8 @@
 //! The `watched-places` reader: the few places on a Mac where persistence lives and that
 //! rarely change for a good reason. It keeps a checksum of each file there, so the lifecycle
-//! turns a difference between two runs into an event. Content is never kept or printed.
+//! turns a difference between two runs into an event. Content is never kept or printed. Of a
+//! preferences file only a few keys count, and each is an entry of its own with the checksum
+//! of its value (`Counts::Keys`).
 //!
 //! Two kinds of reading. One per kind of place and scope says which entries are there: a
 //! file `watched_as` its kind and `located_on` the machine, or on the checkout for git hooks.
@@ -57,24 +59,48 @@ pub struct Place {
     pub base: Base,
     pub path: &'static str,
     pub folder: bool,
+    /// What of a file counts.
+    pub counts: Counts,
+}
+
+/// What of a watched file counts.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Counts {
+    /// The whole file, by its checksum.
+    Whole,
+    /// The values at these top-level keys of a property list, each an entry of its own named
+    /// `<file>#<key>`, by the checksum of the value's exact encoding (`plist.rs`): for a
+    /// preferences file whose other settings change for their own reasons. A key that is not
+    /// there is no entry; a file that is not a property list is a place that failed, and a key
+    /// whose value cannot be read is a part that failed, named `<file>#<key>`.
+    Keys(&'static [&'static str]),
 }
 
 pub const AUTOSTART: &str = "autostart item";
+pub const LOGIN_HOOK: &str = "login or logout hook";
 pub const PROFILE: &str = "shell profile";
 pub const SSH: &str = "ssh access file";
+pub const AUTH: &str = "authentication module";
 pub const HOOK: &str = "git hook";
 pub const AUTOSTART_KIND: &str = "launch agents and daemons";
+pub const LOGIN_HOOK_KIND: &str = "login and logout hooks in the login window's preferences";
 pub const PROFILE_KIND: &str = "shell profiles of zsh and bash";
 pub const SSH_KIND: &str = "ssh access files";
+pub const AUTH_KIND: &str = "PAM policies and modules, and authorization plugins";
 pub const HOOK_KIND: &str = "hooks in the checkout's .git folder";
+/// The keys of the login window's preferences that name a script it runs as root at every
+/// login and logout (Apple, "Customizing Login and Logout"; KnockKnock's `LogInOutHooks`).
+const HOOK_KEYS: &[&str] = &["LoginHook", "LogoutHook"];
 /// Entries of a hooks folder that git itself never runs.
 const SAMPLE: &str = ".sample";
 
 /// A kind of place: the literal of `watched_as` and the coverage kind of its reading.
 type Kind = (&'static str, &'static str);
 const AUTOSTARTS: Kind = (AUTOSTART, AUTOSTART_KIND);
+const LOGIN_HOOKS: Kind = (LOGIN_HOOK, LOGIN_HOOK_KIND);
 const PROFILES: Kind = (PROFILE, PROFILE_KIND);
 const SSH_FILES: Kind = (SSH, SSH_KIND);
+const AUTHS: Kind = (AUTH, AUTH_KIND);
 const HOOKS: Kind = (HOOK, HOOK_KIND);
 
 const fn place(kind: Kind, base: Base, path: &'static str, folder: bool) -> Place {
@@ -84,15 +110,43 @@ const fn place(kind: Kind, base: Base, path: &'static str, folder: bool) -> Plac
         base,
         path,
         folder,
+        counts: Counts::Whole,
+    }
+}
+
+/// A property list of which only the values at `keys` count.
+const fn keys(kind: Kind, base: Base, path: &'static str, keys: &'static [&'static str]) -> Place {
+    Place {
+        counts: Counts::Keys(keys),
+        ..place(kind, base, path, false)
     }
 }
 
 /// Every watched place. Adding a place is one row. Each holds on every Mac; none is a
 /// private key or known hosts. The order is the order of the view and the report.
-pub const PLACES: [Place; 28] = [
+///
+/// The list is laid next to the categories Objective-See's KnockKnock enumerates and MITRE
+/// ATT&CK's persistence techniques for macOS. It keeps what a program running as the user can
+/// read without a permission dialog, what current macOS still acts on, and what has a normal
+/// state. A place added later is read for the first time on a store that already exists:
+/// what it holds is told once, never raised by its kind's rule (`baseline.rs`).
+pub const PLACES: [Place; 36] = [
     place(AUTOSTARTS, Base::Home, "Library/LaunchAgents", true),
     place(AUTOSTARTS, Base::System, "Library/LaunchAgents", true),
     place(AUTOSTARTS, Base::System, "Library/LaunchDaemons", true),
+    // Root's own preferences, where `sudo defaults write` puts a hook, only root can read.
+    keys(
+        LOGIN_HOOKS,
+        Base::System,
+        "Library/Preferences/com.apple.loginwindow.plist",
+        HOOK_KEYS,
+    ),
+    keys(
+        LOGIN_HOOKS,
+        Base::Home,
+        "Library/Preferences/com.apple.loginwindow.plist",
+        HOOK_KEYS,
+    ),
     place(PROFILES, Base::System, "etc/zshenv", false),
     place(PROFILES, Base::System, "etc/zprofile", false),
     place(PROFILES, Base::System, "etc/zshrc", false),
@@ -117,8 +171,38 @@ pub const PLACES: [Place; 28] = [
     place(SSH_FILES, Base::System, "etc/ssh/sshd_config", false),
     place(SSH_FILES, Base::System, "etc/ssh/ssh_config.d", true),
     place(SSH_FILES, Base::System, "etc/ssh/sshd_config.d", true),
+    // OpenPAM as Apple builds it looks for a service's policy in these, in this order, after
+    // one a device management profile installs and before `/usr/share/pam.d` (pam.conf(5);
+    // `openpam_configure.c`). A module named without a path is looked for in `/usr/lib/pam`,
+    // then in `/usr/local/lib/pam`. Only an update of macOS changes what is in `/usr/share`
+    // and `/usr/lib`.
+    place(AUTHS, Base::System, "etc/pam.d", true),
+    place(AUTHS, Base::System, "etc/pam.conf", false),
+    place(AUTHS, Base::System, "usr/local/etc/pam.d", true),
+    place(AUTHS, Base::System, "usr/local/etc/pam.conf", false),
+    place(AUTHS, Base::System, "usr/local/lib/pam", true),
+    // Each plugin is a bundle: its arrival and departure are seen, a change inside it is not.
+    // Which plugins run is said by the authorization database, which is not read.
+    place(
+        AUTHS,
+        Base::System,
+        "Library/Security/SecurityAgentPlugins",
+        true,
+    ),
     place(HOOKS, Base::Checkout, ".git/hooks", true),
 ];
+
+/// Registers the coverage kinds of the places, on every open: a store of the current format
+/// takes a kind added since without a rebuild.
+pub fn add_kinds(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    for (_, kind) in kinds() {
+        conn.execute(
+            "INSERT OR IGNORE INTO coverage_kind (name) VALUES (?1)",
+            [kind],
+        )?;
+    }
+    Ok(())
+}
 
 /// The kinds of place in the order of the table, each once.
 pub fn kinds() -> Vec<(&'static str, &'static str)> {
@@ -129,6 +213,33 @@ pub fn kinds() -> Vec<(&'static str, &'static str)> {
         }
     }
     out
+}
+
+/// The start of the `has_content` literal of something that is not a regular file.
+pub const NOT_A_FILE: &str = "not a regular file: ";
+/// What a person or an agent reads of the content of an entry watched only for presence: a
+/// folder such as a plugin's bundle, or a pipe, socket or device. Its arrival and departure
+/// are seen, a change inside it is not, so it is never said to be unchanged.
+pub const PRESENCE_ONLY: &str =
+    "a change inside it is not seen: only whether it is there is watched";
+/// What is read of the content of an entry no reading has read yet.
+pub const NEVER_READ: &str = "not known: its content has not been read";
+
+/// The watched entries, by id, whose content is not hashed: only whether they are there is
+/// watched.
+pub fn presence_only(
+    conn: &rusqlite::Connection,
+) -> rusqlite::Result<std::collections::BTreeSet<String>> {
+    conn.prepare(
+        "SELECT DISTINCT subject FROM assertion
+         WHERE layer = 'live' AND reader = ?1 AND predicate = 'has_content'
+           AND substr(object, 1, ?2) = ?3",
+    )?
+    .query_map(
+        rusqlite::params![READER, NOT_A_FILE.len() as i64, NOT_A_FILE],
+        |r| r.get(0),
+    )?
+    .collect()
 }
 
 /// What is in one watched file, as `has_content` says it, or why it could not be read.
@@ -153,7 +264,7 @@ impl Content {
         match self {
             Content::Hash(h) => Some(h.clone()),
             Content::Value(h) => Some(format!("value {h}")),
-            Content::Special(what) => Some(format!("not a regular file: {what}")),
+            Content::Special(what) => Some(format!("{NOT_A_FILE}{what}")),
             Content::Dangling => Some("dangling link".to_string()),
             Content::Unread(..) => None,
         }
@@ -339,25 +450,14 @@ fn look_place(look: &mut Look, p: &Place, base: &Path, shown: &str, at: &Where) 
         Err(guarded) => return look.not_into(shown.to_string(), guarded, at.home),
     };
     if !p.folder {
-        match examine(&path, look, at) {
+        let examined = examine(&path, look, at, p.counts);
+        match examined {
+            // A single file not there was read in full: it holds nothing.
             Examined::Absent => look.read.push(shown.to_string()),
-            Examined::Unknown(why) => {
-                look.seen.push(shown.to_string());
-                look.failed.push((shown.to_string(), why));
-            }
-            Examined::Present(content, link) => {
-                look.present += 1;
-                look.read.push(shown.to_string());
-                look.seen.push(shown.to_string());
-                look.entries.push(Entry {
-                    path: shown.to_string(),
-                    watched_as: p.watched_as,
-                    content,
-                    link,
-                });
-            }
+            Examined::Present(..) | Examined::Parts(..) => look.present += 1,
+            _ => {}
         }
-        return;
+        return take(look, p, shown.to_string(), examined, at);
     }
     let path = match crate::guarded::followed(&path, &at.homes) {
         Ok(path) => path,
@@ -384,21 +484,51 @@ fn look_place(look: &mut Look, p: &Place, base: &Path, shown: &str, at: &Where) 
             continue;
         }
         let entry = format!("{shown}/{text}");
-        match examine(&path.join(&name), look, at) {
-            Examined::Absent => {}
-            Examined::Unknown(why) => {
-                look.seen.push(entry.clone());
-                look.failed.push((entry, why));
+        let examined = examine(&path.join(&name), look, at, p.counts);
+        take(look, p, entry, examined, at);
+    }
+}
+
+/// Keeps what was found at one path, named `shown`, as the place's entries, or says why
+/// nothing was, and records the unit it is (`baseline.rs`). A file whose parts count is one
+/// unit, as a file read whole is: its parts, `<file>#<key>`, are entries of it, and the file
+/// is read in full only when every part there was read. A part that could not be read is
+/// named as it is, so that what was known of it is kept and only of it; the file is then seen
+/// and not read, and losing sight of it is judged as for any unit.
+fn take(look: &mut Look, p: &Place, shown: String, examined: Examined, at: &Where) {
+    let entry = |path: String, content: Content, link: Option<String>| Entry {
+        path,
+        watched_as: p.watched_as,
+        content,
+        link,
+    };
+    match examined {
+        Examined::Absent => {}
+        Examined::Unknown(why) | Examined::Unread(why) => {
+            look.seen.push(shown.clone());
+            look.failed.push((shown, why));
+        }
+        Examined::Unreached(guarded) => {
+            look.seen.push(shown.clone());
+            look.not_into(shown, guarded, at.home);
+        }
+        Examined::Present(content, link) => {
+            look.read.push(shown.clone());
+            look.seen.push(shown.clone());
+            look.entries.push(entry(shown, content, link));
+        }
+        Examined::Parts(parts, failed, link) => {
+            if failed.is_empty() {
+                look.read.push(shown.clone());
             }
-            Examined::Present(content, link) => {
-                look.read.push(entry.clone());
-                look.seen.push(entry.clone());
-                look.entries.push(Entry {
-                    path: entry,
-                    watched_as: p.watched_as,
-                    content,
-                    link,
-                });
+            look.seen.push(shown.clone());
+            for (key, content) in parts {
+                let path = format!("{shown}#{key}");
+                look.entries.push(entry(path, content, link.clone()));
+            }
+            for (key, why) in failed {
+                look.failed
+                    .push((format!("{shown}#{key}"), why.to_string()));
             }
         }
     }
@@ -412,13 +542,25 @@ enum Examined {
     Absent,
     /// Whether it is there is not known, with the reason.
     Unknown(String),
+    /// A file whose parts count, there and not read, with the reason.
+    Unread(String),
+    /// A link into this folder macOS asks permission for, of a file whose parts count: what
+    /// it holds is not known.
+    Unreached(PathBuf),
     Present(Content, Option<String>),
+    /// A file whose parts count: each part there and read, by its key; each part there and
+    /// not read, with why; and the link it was reached by.
+    Parts(
+        Vec<(&'static str, Content)>,
+        Vec<(&'static str, &'static str)>,
+        Option<String>,
+    ),
 }
 
 /// What is at a path, whose folder was reached. A symbolic link is followed to its final
 /// target for the content, unless that target is in a folder macOS asks permission for:
 /// then the link is there and what it leads to was not looked into.
-fn examine(path: &Path, look: &mut Look, at: &Where) -> Examined {
+fn examine(path: &Path, look: &mut Look, at: &Where, counts: Counts) -> Examined {
     let own = std::fs::symlink_metadata(path).and_then(|m| {
         if !m.file_type().is_symlink() {
             return Ok((m, None));
@@ -427,13 +569,14 @@ fn examine(path: &Path, look: &mut Look, at: &Where) -> Examined {
         Ok((m, Some(target.to_string_lossy().into_owned())))
     });
     let link = match own {
-        Ok((m, None)) => return Examined::Present(content(path, &m), None),
+        Ok((m, None)) => return counted(path, &m, counts, None),
         Ok((_, Some(link))) => link,
         Err(e) if absent(&e) => return Examined::Absent,
         Err(e) => return Examined::Unknown(e.to_string()),
     };
     let target = match crate::guarded::followed(path, &at.homes) {
         Ok(target) => target,
+        Err(guarded) if counts != Counts::Whole => return Examined::Unreached(guarded),
         Err(guarded) => {
             let why = format!(
                 "{}{}",
@@ -444,12 +587,46 @@ fn examine(path: &Path, look: &mut Look, at: &Where) -> Examined {
             return Examined::Present(Content::Unread(Cause::NotGiven, why), Some(link));
         }
     };
-    let content = match std::fs::metadata(&target) {
-        Ok(meta) => content(&target, &meta),
-        Err(e) if absent(&e) => Content::Dangling,
-        Err(e) => Content::Unread(Cause::Failed, reason(&e)),
+    match std::fs::metadata(&target) {
+        Ok(meta) => counted(&target, &meta, counts, Some(link)),
+        // A link to nothing holds no part: what reads the file reads nothing there.
+        Err(e) if absent(&e) && counts != Counts::Whole => {
+            Examined::Parts(Vec::new(), Vec::new(), Some(link))
+        }
+        Err(e) if absent(&e) => Examined::Present(Content::Dangling, Some(link)),
+        Err(e) if counts != Counts::Whole => Examined::Unread(reason(&e)),
+        Err(e) => Examined::Present(Content::Unread(Cause::Failed, reason(&e)), Some(link)),
+    }
+}
+
+/// What a file reached holds, as `counts` takes it. Of a file whose parts count, anything but
+/// a property list that was read is a place that failed: an entry of the whole file beside
+/// its parts would make a reading that cannot see them say they are gone.
+fn counted(path: &Path, meta: &Metadata, counts: Counts, link: Option<String>) -> Examined {
+    let Counts::Keys(keys) = counts else {
+        return Examined::Present(content(path, meta), link);
     };
-    Examined::Present(content, Some(link))
+    let bytes = match bytes(path, meta) {
+        Ok(bytes) => bytes,
+        Err(Content::Unread(_, why)) => return Examined::Unread(why),
+        Err(other) => return Examined::Unread(other.literal().unwrap_or_default()),
+    };
+    match crate::plist::values(&bytes, keys) {
+        Err(why) => Examined::Unread(why.to_string()),
+        Ok(values) => {
+            let (mut parts, mut failed) = (Vec::new(), Vec::new());
+            for (key, value) in values {
+                match value {
+                    Ok(value) => {
+                        let hash = format!("sha256:{}", crate::sha256::hex(&value));
+                        parts.push((key, Content::Value(hash)));
+                    }
+                    Err(why) => failed.push((key, why)),
+                }
+            }
+            Examined::Parts(parts, failed, link)
+        }
+    }
 }
 
 fn reason(e: &std::io::Error) -> String {
@@ -460,12 +637,20 @@ fn reason(e: &std::io::Error) -> String {
     }
 }
 
-/// The content of what `meta` describes. Only a regular file is opened, and without
-/// waiting: a file swapped for a named pipe after it was looked at cannot hold the run, and
-/// is told by what was opened.
+/// The content of what `meta` describes, by the checksum of its bytes.
 fn content(path: &Path, meta: &Metadata) -> Content {
+    match bytes(path, meta) {
+        Ok(bytes) => Content::Hash(format!("sha256:{}", crate::sha256::hex(&bytes))),
+        Err(not) => not,
+    }
+}
+
+/// The bytes of what `meta` describes, or what it is instead. Only a regular file is opened,
+/// and without waiting: a file swapped for a named pipe after it was looked at cannot hold the
+/// run, and is told by what was opened.
+fn bytes(path: &Path, meta: &Metadata) -> Result<Vec<u8>, Content> {
     if !meta.is_file() {
-        return Content::Special(kind_of(meta.file_type()));
+        return Err(Content::Special(kind_of(meta.file_type())));
     }
     let read = || -> std::io::Result<Result<Vec<u8>, &'static str>> {
         let file = OpenOptions::new()
@@ -481,14 +666,14 @@ fn content(path: &Path, meta: &Metadata) -> Content {
         Ok(Ok(bytes))
     };
     match read() {
-        Err(e) => Content::Unread(Cause::Failed, reason(&e)),
-        Ok(Err(what)) => Content::Special(what),
+        Err(e) => Err(Content::Unread(Cause::Failed, reason(&e))),
+        Ok(Err(what)) => Err(Content::Special(what)),
         // The file is there and this build does not read a file that large.
-        Ok(Ok(bytes)) if bytes.len() as u64 > CAP => Content::Unread(
+        Ok(Ok(bytes)) if bytes.len() as u64 > CAP => Err(Content::Unread(
             Cause::NoReader,
             format!("over the size cap of {} MiB", CAP >> 20),
-        ),
-        Ok(Ok(bytes)) => Content::Hash(format!("sha256:{}", crate::sha256::hex(&bytes))),
+        )),
+        Ok(Ok(bytes)) => Ok(bytes),
     }
 }
 

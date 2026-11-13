@@ -132,6 +132,27 @@ fn autostart() -> Rule {
     }
 }
 
+fn login_hook() -> Rule {
+    Rule {
+        id: "watched.login-hook",
+        kind: watched::LOGIN_HOOK,
+        // Boot or Logon Initialization Scripts: Login Hook.
+        technique: Some("T1037.002"),
+        // More than a launch agent: it runs as root at every login, and since Apple deprecated
+        // hooks in favour of launchd, almost nothing sets one for a good reason. Only the hook
+        // itself is compared, so the rest of the preferences file changing says nothing.
+        severity: "high",
+        confidence: "medium",
+        finds: "event",
+        words: Words {
+            title: "A script that this Mac runs with full control every time someone logs in or out was added, changed or removed.",
+            meaning: "Apple replaced this way of running a script at login years ago, so apps rarely use it now; it is a known way for something unwanted to stay on a Mac.",
+            advice: "If neither you nor whoever manages this Mac set it, find out which script it names before you next log out or restart.",
+        },
+        fires: |o| changed_in(o, watched::LOGIN_HOOK),
+    }
+}
+
 fn shell_profile() -> Rule {
     Rule {
         id: "watched.shell-profile",
@@ -166,6 +187,28 @@ fn ssh_access() -> Rule {
             advice: "If you did not, look at the file now, before you next connect anywhere.",
         },
         fires: |o| changed_in(o, watched::SSH),
+    }
+}
+
+fn authentication() -> Rule {
+    Rule {
+        id: "watched.authentication",
+        kind: watched::AUTH,
+        // Modify Authentication Process: its Pluggable Authentication Modules sub-technique is
+        // one of the two places; Elastic's rule on authorization plugins names this technique
+        // too.
+        technique: Some("T1556"),
+        // As the SSH files that decide who can log in. Updates of macOS rewrite some policies,
+        // and turning on Touch ID for the terminal edits one, so how sure stays low.
+        severity: "high",
+        confidence: "low",
+        finds: "event",
+        words: Words {
+            title: "A file that decides how you log in to this Mac, or how your password is checked, was added, changed or removed.",
+            meaning: "This is normal after an update of macOS, after you turn on Touch ID for the terminal, or after you install software that changes how you log in; otherwise it can let someone in without your password or record it.",
+            advice: "If none of those just happened, look at the file named here before you next type your password.",
+        },
+        fires: |o| changed_in(o, watched::AUTH),
     }
 }
 
@@ -670,11 +713,13 @@ pub fn hold(
 // ---- End of packages the projects depend on. ----
 
 /// Every rule, in the order they are listed.
-pub fn rules() -> [Rule; 20] {
+pub fn rules() -> [Rule; 22] {
     [
         autostart(),
+        login_hook(),
         shell_profile(),
         ssh_access(),
+        authentication(),
         git_hook(),
         first_read_rule(),
         app_seal(),

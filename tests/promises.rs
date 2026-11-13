@@ -8545,8 +8545,10 @@ fn a_second_run_on_unchanged_watched_places_reports_no_changes() {
             ".mcp.json of each checkout, the part that runs by itself",
             ".vscode/mcp.json of each checkout, the part that runs by itself",
             ".vscode/settings.json of each checkout, the part that runs by itself",
+            "PAM policies and modules, and authorization plugins",
             "editor tasks set to run when a checkout's folder is opened",
             "launch agents and daemons",
+            "login and logout hooks in the login window's preferences",
             "other places in the home folder where a tool's settings run code by itself",
             "other ways a checkout runs code by itself",
             "package.json of each checkout, the part that runs by itself",
@@ -8631,6 +8633,400 @@ fn content_of_a_watched_file_never_enters_the_store_the_raw_copy_the_report_or_t
             path.display()
         );
     }
+}
+
+const LOGIN_HOOK_KIND: &str = "login and logout hooks in the login window's preferences";
+const AUTH_KIND: &str = "PAM policies and modules, and authorization plugins";
+
+/// Persistence in each place added after the first version, one line per place, as it may
+/// have been there all along.
+fn plant_persistence(w: &Watch) {
+    login_window(
+        &w.sys,
+        "<key>LoginHook</key><string>/Library/Scripts/a.sh</string>",
+    );
+    login_window(
+        w.home(),
+        "<key>LogoutHook</key><string>/Users/Shared/b.sh</string>",
+    );
+    put(&w.sys, "etc/pam.d/sudo", SUDO_POLICY);
+    put(
+        &w.sys,
+        "etc/pam.conf",
+        "sshd auth required pam_opendirectory.so\n",
+    );
+    put(
+        &w.sys,
+        "usr/local/etc/pam.d/screensaver",
+        "auth required pam_opendirectory.so\n",
+    );
+    put(
+        &w.sys,
+        "usr/local/etc/pam.conf",
+        "login auth required pam_opendirectory.so\n",
+    );
+    put(&w.sys, "usr/local/lib/pam/pam_example.so", "\u{7f}ELF\n");
+    put(
+        &w.sys,
+        "Library/Security/SecurityAgentPlugins/Example.bundle/Contents/Info.plist",
+        "<plist/>\n",
+    );
+}
+
+/// What `plant_persistence` puts there, by the ids of the entries.
+const PLANTED: [&str; 8] = [
+    "file:machine:mac//Library/Preferences/com.apple.loginwindow.plist#LoginHook",
+    "file:machine:mac/Library/Preferences/com.apple.loginwindow.plist#LogoutHook",
+    "file:machine:mac//etc/pam.conf",
+    "file:machine:mac//etc/pam.d/sudo",
+    "file:machine:mac//usr/local/etc/pam.conf",
+    "file:machine:mac//usr/local/etc/pam.d/screensaver",
+    "file:machine:mac//usr/local/lib/pam/pam_example.so",
+    "file:machine:mac//Library/Security/SecurityAgentPlugins/Example.bundle",
+];
+
+/// The live entries of the places added after the first version.
+fn persistence_entries(w: &Watch) -> Vec<String> {
+    let mut found = rows(
+        &w.store(),
+        &format!(
+            "SELECT subject FROM assertion WHERE layer = 'live' AND predicate = 'watched_as'
+               AND kind IN ('{}', '{AUTH_KIND}') ORDER BY subject",
+            LOGIN_HOOK_KIND.replace('\'', "''")
+        ),
+    );
+    found.sort();
+    found
+}
+
+#[test]
+fn a_place_read_for_the_first_time_on_an_older_store_is_told_once_and_a_change_after_is_a_finding()
+{
+    // An upgrade that starts reading a place must not raise a finding about every login hook,
+    // policy and plugin that was there all along: that would be a wave the owner learns to
+    // dismiss. What it holds is told once, as read for the first time, and what changes after
+    // that first reading is a finding, in every new place.
+    let w = Watch::new("persistence-upgrade");
+    plant_persistence(&w);
+    w.run();
+    // As an earlier version left the store: none of these kinds known, read or asserted.
+    let kinds = format!("('{}', '{AUTH_KIND}')", LOGIN_HOOK_KIND.replace('\'', "''"));
+    let files = "(kind = 'content of a watched file' AND (scope LIKE '%loginwindow%'
+                  OR scope LIKE '%pam%' OR scope LIKE '%SecurityAgentPlugins%'))";
+    let db = rusqlite::Connection::open(w.store()).unwrap();
+    db.execute_batch(&format!(
+        "DELETE FROM coverage_lack WHERE coverage IN
+           (SELECT id FROM coverage WHERE kind IN {kinds} OR {files});
+         DELETE FROM assertion WHERE kind IN {kinds} OR {files};
+         DELETE FROM coverage WHERE kind IN {kinds} OR {files};
+         DELETE FROM coverage_kind WHERE name IN {kinds};
+         DELETE FROM unit_read WHERE kind IN {kinds};
+         DELETE FROM unit_unread WHERE kind IN {kinds};"
+    ))
+    .unwrap();
+    drop(db);
+    assert!(persistence_entries(&w).is_empty());
+    w.run();
+    let rules: Vec<String> = open_findings(&w.store(), &[])
+        .into_iter()
+        .map(|f| f.1)
+        .collect();
+    assert_eq!(rules, ["watched.first-read"]);
+    let mut planted = PLANTED.map(String::from).to_vec();
+    planted.sort();
+    assert_eq!(persistence_entries(&w), planted);
+
+    // One change in each place.
+    login_window(&w.sys, "<key>GuestEnabled</key><false/>");
+    login_window(
+        w.home(),
+        "<key>LogoutHook</key><string>/Users/Shared/c.sh</string>",
+    );
+    put(&w.sys, "etc/pam.d/sudo", "auth sufficient pam_permit.so\n");
+    put(
+        &w.sys,
+        "etc/pam.conf",
+        "sshd auth sufficient pam_permit.so\n",
+    );
+    put(
+        &w.sys,
+        "usr/local/etc/pam.d/screensaver",
+        "auth sufficient pam_permit.so\n",
+    );
+    put(
+        &w.sys,
+        "usr/local/etc/pam.conf",
+        "login auth sufficient pam_permit.so\n",
+    );
+    put(&w.sys, "usr/local/lib/pam/pam_example.so", "\u{7f}ELF 2\n");
+    put(
+        &w.sys,
+        "Library/Security/SecurityAgentPlugins/Other.bundle/Contents/Info.plist",
+        "<plist/>\n",
+    );
+    w.run();
+    let mut found: Vec<(String, String)> = open_findings(&w.store(), &[])
+        .into_iter()
+        .filter(|f| f.1 != "watched.first-read")
+        .map(|f| (f.1, f.3))
+        .collect();
+    found.sort();
+    let pair = |rule: &str, place: &str| (rule.to_string(), place.to_string());
+    assert_eq!(
+        found,
+        [
+            pair(
+                "watched.authentication",
+                "/Library/Security/SecurityAgentPlugins/Other.bundle"
+            ),
+            pair("watched.authentication", "/etc/pam.conf"),
+            pair("watched.authentication", "/etc/pam.d/sudo"),
+            pair("watched.authentication", "/usr/local/etc/pam.conf"),
+            pair("watched.authentication", "/usr/local/etc/pam.d/screensaver"),
+            pair(
+                "watched.authentication",
+                "/usr/local/lib/pam/pam_example.so"
+            ),
+            pair(
+                "watched.login-hook",
+                "/Library/Preferences/com.apple.loginwindow.plist#LoginHook"
+            ),
+            pair(
+                "watched.login-hook",
+                "~/Library/Preferences/com.apple.loginwindow.plist#LogoutHook"
+            ),
+        ]
+    );
+}
+
+/// The hook of `login_window`'s first test file in the binary form macOS writes preferences
+/// in, beside another setting: an invented file converted by `plutil -convert binary1`.
+const BINARY_LOGIN_WINDOW: &str = "62706c6973743030d2010203045c6c617374557365724e616d65594c6f67\
+    696e486f6f6b57736f6d656f6e655f101b2f4c6962726172792f53637269\
+    7074732f6578616d706c652e7368080d1a242c0000000000000101000000\
+    00000000050000000000000000000000000000004a";
+
+#[test]
+fn only_a_hook_counts_in_the_login_windows_preferences_and_its_script_is_never_kept() {
+    // The login window rewrites its preferences for its own reasons, in binary, with the last
+    // user's name among them. Only the hook keys are compared, by a checksum: the rest of the
+    // file changing is no change, and what the hook names is never stored or printed.
+    let w = Watch::new("login-hook-part");
+    let marker = "MARKER-51c2-never-stored";
+    login_window(
+        w.home(),
+        &format!(
+            "<key>LoginHook</key><string>/Library/Scripts/example.sh</string><key>lastUserName</key><string>{marker}</string>"
+        ),
+    );
+    let mut printed = w.run();
+    let id = "file:machine:mac/Library/Preferences/com.apple.loginwindow.plist#LoginHook";
+    let content = w.content(id);
+    assert_eq!(content.len(), 1);
+    assert!(content[0].starts_with("value sha256:"), "{content:?}");
+    // The same hook written again in binary beside another setting: nothing changed.
+    let bytes: Vec<u8> = (0..BINARY_LOGIN_WINDOW.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&BINARY_LOGIN_WINDOW[i..i + 2], 16).unwrap())
+        .collect();
+    std::fs::write(
+        w.home()
+            .join("Library/Preferences/com.apple.loginwindow.plist"),
+        bytes,
+    )
+    .unwrap();
+    let again = w.run();
+    assert!(again.contains("0 new, 0 changed, 0 gone"), "{again}");
+    assert_eq!(w.content(id), content);
+    assert!(needs_findings(&w.store()).is_empty());
+    printed.push_str(&again);
+    view(&w.store());
+    assert!(
+        !printed.contains(marker) && !printed.contains("example.sh"),
+        "{printed}"
+    );
+    let mut written = vec![w.store(), w.home().join("view.html")];
+    let mut stack = vec![w.home().join("raw")];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                written.push(path);
+            }
+        }
+    }
+    assert!(written.iter().any(|p| p.ends_with("watched-places.txt")));
+    for path in written {
+        let bytes = std::fs::read(&path).unwrap();
+        let has = |text: &str| bytes.windows(text.len()).any(|b| b == text.as_bytes());
+        assert!(!has(marker) && !has("example.sh"), "{}", path.display());
+    }
+    // A file with no hook in it holds no entry: there is nothing that would run.
+    login_window(&w.sys, "<key>GuestEnabled</key><false/>");
+    w.run();
+    assert!(
+        w.content("file:machine:mac//Library/Preferences/com.apple.loginwindow.plist")
+            .is_empty()
+    );
+    assert!(needs_findings(&w.store()).is_empty());
+}
+
+#[test]
+fn a_login_window_preferences_file_that_is_not_read_never_reads_as_holding_no_hook() {
+    // A file that cannot be opened or parsed holds hooks nobody knows. Taken as holding none,
+    // the hook known before would read as removed, and a planted one as never there. Losing
+    // sight of it is found once, by the rule of its kind, and it stays so while it is unread.
+    let w = Watch::new("login-hook-unread");
+    login_window(
+        w.home(),
+        "<key>LoginHook</key><string>/Library/Scripts/example.sh</string>",
+    );
+    w.run();
+    let file = w
+        .home()
+        .join("Library/Preferences/com.apple.loginwindow.plist");
+    std::fs::write(&file, "\u{0}\u{1} not a property list").unwrap();
+    let printed = w.run();
+    assert_eq!(
+        w.coverage("machine:mac", LOGIN_HOOK_KIND),
+        [
+            "none|could not be read: Library/Preferences/com.apple.loginwindow.plist (not a property list macOS can read)"
+        ]
+    );
+    assert!(printed.contains("0 new, 0 changed, 0 gone"), "{printed}");
+    let lost = needs_findings(&w.store());
+    assert_eq!(
+        lost.iter().map(|f| f.1.as_str()).collect::<Vec<_>>(),
+        ["watched.login-hook"]
+    );
+    let id = "file:machine:mac/Library/Preferences/com.apple.loginwindow.plist#LoginHook";
+    assert_eq!(w.content(id).len(), 1);
+    // A file its permissions keep closed: the same, with the system's reason.
+    login_window(
+        w.home(),
+        "<key>LoginHook</key><string>/Library/Scripts/example.sh</string>",
+    );
+    chmod(&file, 0o000);
+    w.run();
+    chmod(&file, 0o644);
+    let coverage = w.coverage("machine:mac", LOGIN_HOOK_KIND);
+    assert!(
+        coverage[0].starts_with("none|could not be read: Library/Preferences/com.apple.loginwindow.plist (Permission denied"),
+        "{coverage:?}"
+    );
+    assert_eq!(needs_findings(&w.store()), lost);
+    // A folder where the file should be, and a link that leads round in a loop: the same.
+    std::fs::remove_file(&file).unwrap();
+    std::fs::create_dir(&file).unwrap();
+    w.run();
+    std::fs::remove_dir(&file).unwrap();
+    let loop_end = file.with_file_name("loop.plist");
+    std::os::unix::fs::symlink(&loop_end, &file).unwrap();
+    std::os::unix::fs::symlink(&file, &loop_end).unwrap();
+    w.run();
+    std::fs::remove_file(&loop_end).unwrap();
+    std::fs::remove_file(&file).unwrap();
+    let readings = rows(
+        &w.store(),
+        &format!(
+            "SELECT completeness, reason FROM coverage WHERE kind = '{}' ORDER BY id DESC LIMIT 2",
+            LOGIN_HOOK_KIND.replace('\'', "''")
+        ),
+    );
+    assert_eq!(
+        readings,
+        [
+            "none|could not be read: Library/Preferences/com.apple.loginwindow.plist (link loop)",
+            "none|could not be read: Library/Preferences/com.apple.loginwindow.plist (not a regular file: folder)",
+        ]
+    );
+    assert_eq!(needs_findings(&w.store()), lost);
+    login_window(
+        w.home(),
+        "<key>LoginHook</key><string>/Library/Scripts/example.sh</string>",
+    );
+    // A file that is gone takes its hook with it, which is a change beside losing sight of it;
+    // and with no such file on the Mac the place is not applicable, which is no failure.
+    std::fs::remove_file(&file).unwrap();
+    w.run();
+    let mut found: Vec<(String, String)> = open_findings(&w.store(), &[])
+        .into_iter()
+        .map(|f| (f.1, f.3))
+        .collect();
+    found.sort();
+    let place = "~/Library/Preferences/com.apple.loginwindow.plist";
+    assert_eq!(
+        found,
+        [
+            ("watched.login-hook".to_string(), place.to_string()),
+            (
+                "watched.login-hook".to_string(),
+                format!("{place}#LoginHook")
+            ),
+        ]
+    );
+    assert_eq!(
+        w.coverage("machine:mac", LOGIN_HOOK_KIND),
+        ["full|none of these places is on this machine"]
+    );
+}
+
+#[test]
+fn a_login_window_preferences_link_to_nothing_holds_no_hook_until_its_target_holds_one() {
+    // What reads the preferences reads nothing through a link to nothing, so nothing would
+    // run. A hook that appears at the target later is new, and nothing else is said to change.
+    let w = Watch::new("login-hook-dangling");
+    let prefs = w.home().join("Library/Preferences");
+    std::fs::create_dir_all(&prefs).unwrap();
+    let target = w.home().join("elsewhere.plist");
+    std::os::unix::fs::symlink(&target, prefs.join("com.apple.loginwindow.plist")).unwrap();
+    w.run();
+    assert_eq!(w.coverage("machine:mac", LOGIN_HOOK_KIND), ["full|NULL"]);
+    assert!(persistence_entries(&w).is_empty());
+    std::fs::write(
+        &target,
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\
+         <key>LoginHook</key><string>/Library/Scripts/example.sh</string></dict></plist>\n",
+    )
+    .unwrap();
+    w.run();
+    let found: Vec<(String, String)> = open_findings(&w.store(), &[])
+        .into_iter()
+        .map(|f| (f.1, f.3))
+        .collect();
+    assert_eq!(
+        found,
+        [(
+            "watched.login-hook".to_string(),
+            "~/Library/Preferences/com.apple.loginwindow.plist#LoginHook".to_string()
+        )]
+    );
+}
+
+#[test]
+fn a_login_window_preferences_file_linked_into_documents_is_not_followed_and_that_is_said() {
+    // Following the link would open a folder macOS asks permission for, and the app would
+    // raise that dialog.
+    let w = Watch::new("login-hook-guarded");
+    let documents = w.home().join("Documents");
+    std::fs::create_dir_all(&documents).unwrap();
+    let prefs = w.home().join("Library/Preferences");
+    std::fs::create_dir_all(&prefs).unwrap();
+    std::os::unix::fs::symlink(
+        documents.join("loginwindow.plist"),
+        prefs.join("com.apple.loginwindow.plist"),
+    )
+    .unwrap();
+    w.run();
+    let coverage = w.coverage("machine:mac", LOGIN_HOOK_KIND);
+    assert!(
+        coverage[0]
+            .starts_with("none|not looked into: Library/Preferences/com.apple.loginwindow.plist: "),
+        "{coverage:?}"
+    );
+    assert!(coverage[0].contains("Documents"), "{coverage:?}");
 }
 
 #[test]
@@ -10197,7 +10593,26 @@ fn agent_settings(w: &Watch, more: &str) {
     );
 }
 
-const SAMPLES: [Sample; 19] = [
+/// A policy for sudo as OpenPAM reads it (pam.conf(5)), invented.
+const SUDO_POLICY: &str = "# sudo: auth account password session\n\
+    auth       include        sudo_local\n\
+    auth       required       pam_opendirectory.so\n\
+    account    required       pam_permit.so\n";
+
+/// The login window's preferences under `root`, an XML property list holding `entries`.
+fn login_window(root: &Path, entries: &str) {
+    put(
+        root,
+        "Library/Preferences/com.apple.loginwindow.plist",
+        &format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+             <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+             <plist version=\"1.0\"><dict>{entries}</dict></plist>\n"
+        ),
+    );
+}
+
+const SAMPLES: [Sample; 21] = [
     Sample {
         rule: "watched.autostart",
         before: |w| {
@@ -10222,6 +10637,19 @@ const SAMPLES: [Sample; 19] = [
                 "<plist>1</plist>\n",
             );
         },
+    },
+    Sample {
+        rule: "watched.login-hook",
+        before: |w| login_window(&w.sys, "<key>GuestEnabled</key><false/>"),
+        raise: |w| {
+            login_window(
+                &w.sys,
+                "<key>GuestEnabled</key><false/>\
+                 <key>LoginHook</key><string>/Library/Scripts/example.sh</string>",
+            );
+        },
+        // Another setting of the login window: the file changes, no hook does.
+        silent: |w| login_window(&w.sys, "<key>GuestEnabled</key><true/>"),
     },
     Sample {
         rule: "watched.shell-profile",
@@ -10263,6 +10691,23 @@ const SAMPLES: [Sample; 19] = [
                 ".ssh/known_hosts",
                 &format!("web-1 ssh-ed25519 {KEY}\n"),
             );
+        },
+    },
+    Sample {
+        rule: "watched.authentication",
+        before: |w| {
+            put(&w.sys, "etc/pam.d/sudo", SUDO_POLICY);
+        },
+        raise: |w| {
+            put(
+                &w.sys,
+                "etc/pam.d/sudo",
+                &format!("auth       sufficient     /Users/Shared/pam_x.so\n{SUDO_POLICY}"),
+            );
+        },
+        // A module in the folder only an update of macOS can change is not watched.
+        silent: |w| {
+            put(&w.sys, "usr/lib/pam/pam_example.so.2", "\u{7f}ELF\n");
         },
     },
     Sample {
@@ -12373,7 +12818,7 @@ fn on_a_mac_where_nothing_was_found_and_no_watcher_ran_every_rule_is_on_the_summ
     let told = section(&pages[0].1, "watched-here");
     let rules = catalogue(&w.store());
     let rules = rules["rules"].as_array().unwrap();
-    assert_eq!(rules.len(), 20);
+    assert_eq!(rules.len(), 22);
     for r in rules {
         let title = r["title"].as_str().unwrap().replace('\'', "&#39;");
         assert!(told.contains(&title), "{}: {told}", r["id"]);
