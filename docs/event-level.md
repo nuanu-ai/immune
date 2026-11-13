@@ -60,7 +60,7 @@ A file event the filter cannot make out, or whose path `eslogger` marks as trunc
 
 The log folder and its files belong to root with mode 700 and 600. An access-control entry lets the account that ran the installer through `sudo` list the folder and read the files, and no other account. The installer refuses to run from a root shell, since it needs that account.
 
-The log holds the arguments of every program started on the Mac, by every account, root included, for up to a day. Any program running as the installing account can read it, and `immune matches`, run as that account, prints the whole command line of every program start that matched a rule, whoever started it. On a Mac with one person that is the person's own data. On a shared Mac it is other people's too; the installer says before it starts that it records the program starts of every account.
+The log holds the arguments of every program started on the Mac, by every account, root included, for up to a day, as `eslogger` gave them: a password or a token typed on a command line is in it as it was typed. Nothing on the root side cuts it, since that would put a matcher of secrets to work as root on text an attacker writes. Any program running as the installing account can read the log, as it can read the arguments of running programs with `/bin/ps`. What the log adds is starts too short to see that way, a day of history, and one file that holds it all. The installer does not exclude the log from backups, so a backup of `/Library/Application Support` holds it too. `immune matches`, run as that account, prints the command line of every program start that matched a rule, whoever started it, with the secrets it recognises cut out ([reference.md](reference.md#secrets-in-what-immune-keeps-and-prints)). On a Mac with one person that is the person's own data. On a shared Mac it is other people's too; the installer says before it starts that it records the program starts of every account.
 
 ## The log's life and size
 
@@ -89,7 +89,7 @@ Immune reads the log at every full check, and every 10 seconds while `immune wat
 
 The store keeps no event. It keeps where each file was read up to, counts per reading for two days, the level's state, coverage (one row, replaced at every reading), and per rule how many starts or file events matched, by the hour, for a week. For every match of a rule marked high or critical it keeps which finding the match went to, by the line's file, inode and offset, until the file is no longer there; `immune matches` reads it. The one place arguments enter the store is the evidence of a finding from a published rule: the latest five program starts it matched, or the latest five file events with the file and the program. The environment never does.
 
-Secrets in those arguments are kept as they were. Cutting tokens and passwords out of what Immune keeps and prints, with patterns from a published set, is planned.
+Those arguments are kept with the secrets Immune recognises cut out, and printed cut again, so a newer set of patterns applies to rows kept before it. The rules are evaluated before anything is cut. What is recognised, the mark a cut leaves and what is not recognised are in [reference.md](reference.md#secrets-in-what-immune-keeps-and-prints).
 
 ## Losses
 
@@ -187,7 +187,7 @@ What a match does:
 - The rule's title, authors, techniques, its set's address and licence travel with the finding as data (`published_rule`), as the Detection Rule License asks. An Elastic rule keeps Elastic's rule id and name as its `id` and `title`.
 - Matches of lower rules, and of rules with no level stated, are a quiet count. They never change the headline, the count of findings or the icon. The store keeps nothing else of them; `immune matches` reads them from the log, with their events, for the response layer.
 
-`immune rules --over-log` evaluates the rules over the log on disk without the store and prints per rule its level and count, never a command line. `immune matches` evaluates the log with the same code and prints every match with the event it matched, arguments whole, and for a high match the finding the core's own reading put it in. The caller keeps its place in the log, which holds per file what the core's reading keeps for itself (see [reference.md](reference.md#immune-matches)).
+`immune rules --over-log` evaluates the rules over the log on disk without the store and prints per rule its level and count, never a command line. `immune matches` evaluates the log with the same code and prints every match with the event it matched, its arguments whole except for the secrets cut out of them, and for a high match the finding the core's own reading put it in. The caller keeps its place in the log, which holds per file what the core's reading keeps for itself (see [reference.md](reference.md#immune-matches)).
 
 ## What published rules need that the level does not give
 

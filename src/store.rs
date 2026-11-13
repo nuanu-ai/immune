@@ -8,7 +8,14 @@ use std::fs::{File, TryLockError};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-pub const FORMAT_VERSION: &str = "4";
+/// Format 5 keeps text from a source with its secrets cut and in the store's form (see
+/// `secrets::Form`). A store of format 4 is accepted only to be cleaned: this build reads it
+/// cut on the fly, and the first open for writing cleans it and raises it to 5
+/// (`secrets::clean`). A build of format 4 refuses a store of 5 as newer, so it never writes
+/// raw text into a cleaned store.
+pub const FORMAT_VERSION: &str = "5";
+/// The format a store had before secrets were cut, taken only to be cleaned.
+pub const UNCLEANED_FORMAT: &str = "4";
 
 const SCHEMA: &str = "
 CREATE TABLE meta (
@@ -509,6 +516,9 @@ pub fn open(path: &Path) -> Res<Connection> {
     widen_journal(&mut conn)?;
     conn.execute_batch(JOURNAL_INDEXES)?;
     crate::baseline::open(&mut conn)?;
+    // What a build before this one kept uncut is cut once, before anything is read or written.
+    let folder = path.parent().filter(|p| !p.as_os_str().is_empty());
+    crate::secrets::clean(&mut conn, folder.unwrap_or(Path::new(".")))?;
     Ok(conn)
 }
 
@@ -600,6 +610,9 @@ fn check_format(conn: &Connection, path: &Path) -> Res<()> {
     let Some(version) = version else {
         return Err(format!("{} is not a store of this tool", path.display()).into());
     };
+    if version == UNCLEANED_FORMAT {
+        return Ok(());
+    }
     let (Ok(found), Ok(ours)) = (version.parse::<u32>(), FORMAT_VERSION.parse::<u32>()) else {
         return Err(format!("store format {version} is not supported").into());
     };

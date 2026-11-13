@@ -271,7 +271,7 @@ pub fn item(out: &mut String, i: &crate::findings::Item) -> Out {
             writeln!(
                 out,
                 "<blockquote class=\"sent\">{}</blockquote>",
-                esc(&shown(&o.reason))
+                esc(&o.reason.shown(shown))
             )?;
         }
     }
@@ -298,7 +298,7 @@ pub fn item(out: &mut String, i: &crate::findings::Item) -> Out {
         };
         said.push_str(&format!(" {}", given_by(a.via)));
         if let Some(reason) = &a.reason {
-            said.push_str(&format!(": {reason}"));
+            said.push_str(&format!(": {}", reason.shown(shown)));
         }
         facts.push(said);
     }
@@ -1030,7 +1030,7 @@ fn machines(conn: &Connection, out: &mut String, latest: &[Latest], now: i64) ->
             td(out, "mono", s.name())?;
             td(out, "", &s.word.said)?;
             td(out, "nowrap", &utc(s.word.made_at))?;
-            td(out, "", &s.word.reason)?;
+            td(out, "", &s.word.reason.shown(shown))?;
             td(out, "mono", &s.names[1..].join(", "))?;
             out.push_str("</tr>\n");
         }

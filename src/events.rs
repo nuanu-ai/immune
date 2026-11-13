@@ -2116,6 +2116,8 @@ pub fn basis(conn: &Connection) -> rusqlite::Result<String> {
     if !has(conn, "event_level")? {
         return Ok(String::new());
     }
+    // What the collector said, read cut as every reader reads it: this goes into a page's file.
+    let form = crate::secrets::form(conn)?;
     let level = conn
         .query_row(
             "SELECT state, last_seq, said_by, said, reason FROM event_level WHERE id = 1",
@@ -2127,7 +2129,8 @@ pub fn basis(conn: &Connection) -> rusqlite::Result<String> {
                         r.get::<_, String>(0)?,
                         r.get::<_, Option<i64>>(1)?,
                         r.get::<_, Option<String>>(2)?,
-                        r.get::<_, Option<String>>(3)?,
+                        r.get::<_, Option<String>>(3)?
+                            .map(|s| crate::secrets::Kept::Said.read(form, &s).store()),
                         r.get::<_, Option<String>>(4)?,
                     )
                 ))
@@ -2464,7 +2467,8 @@ pub fn keep(
                     now,
                     s.timestamp,
                     s.executable,
-                    json!(s.args).to_string(),
+                    // Kept cut: a secret on the command line never enters the store.
+                    json!(crate::secrets::Args::raw(&s.args).store()).to_string(),
                     s.parent_executable,
                     s.working_directory,
                     s.pid,
@@ -2586,9 +2590,13 @@ fn counted(conn: &Connection, finding: &str) -> rusqlite::Result<i64> {
         .unwrap_or(0))
 }
 
-/// The starts a finding from a published rule keeps, newest first, under ECS's names.
+/// The starts a finding from a published rule keeps, newest first, under ECS's names. The
+/// arguments are cut again, so a set newer than the one that kept them applies, before they
+/// are escaped and capped; `cuts` lists what was cut, since a mark in this JSON's text can be
+/// forged.
 fn evidence(conn: &Connection, finding: &str) -> rusqlite::Result<Vec<Value>> {
     let text = |s: Option<String>| s.as_deref().map(crate::status::text);
+    let form = crate::secrets::form(conn)?;
     conn.prepare(
         "SELECT timestamp, executable, args, parent_executable, working_directory, pid,
                 parent_pid, user_id, signing_id, team_id, platform_binary
@@ -2596,10 +2604,18 @@ fn evidence(conn: &Connection, finding: &str) -> rusqlite::Result<Vec<Value>> {
     )?
     .query_map([finding], |r| {
         let args: Vec<String> = serde_json::from_str(&r.get::<_, String>(2)?).unwrap_or_default();
+        let args = crate::secrets::Args::stored(&args, form);
         Ok(json!({
             "timestamp_text": crate::status::text(&r.get::<_, String>(0)?),
             "executable_text": crate::status::text(&r.get::<_, String>(1)?),
-            "args_text": args.iter().map(|a| crate::status::text(a)).collect::<Vec<_>>(),
+            "args_text": args
+                .shown(crate::view::shown)
+                .into_iter()
+                .map(crate::status::capped)
+                .collect::<Vec<_>>(),
+            "cuts": args.cuts().iter().map(|c| json!({
+                "argument": c.argument, "kind": c.kind, "length": c.length,
+            })).collect::<Vec<_>>(),
             "parent_executable_text": text(r.get(3)?),
             "working_directory_text": text(r.get(4)?),
             "pid": r.get::<_, i64>(5)?,
@@ -3408,6 +3424,8 @@ fn put_level(
     (said_by, said): (Option<&str>, Option<&str>),
     (last_seq, version, counted): (Option<i64>, Option<i64>, Option<i64>),
 ) -> rusqlite::Result<()> {
+    // What the collector printed is text from a source, which can quote a command line: kept cut.
+    let said = said.map(|s| crate::secrets::Text::source(s).store());
     tx.execute(
         "INSERT INTO event_level (id, read_at, state, written, said_by, said, reason, last_seq,
                                   version, counted)
@@ -3581,7 +3599,7 @@ pub struct Level {
     pub read_at: i64,
     pub written: Option<i64>,
     pub said_by: Option<String>,
-    pub said: Option<String>,
+    pub said: Option<crate::secrets::Text>,
     pub reason: Option<String>,
     /// The message version of the latest program start read.
     pub version: Option<i64>,
@@ -3729,7 +3747,10 @@ pub fn level(conn: &Connection, now: i64) -> rusqlite::Result<Option<Level>> {
         read_at,
         written,
         said_by,
-        said,
+        said: match said {
+            Some(s) => Some(crate::secrets::Kept::Said.read(crate::secrets::form(conn)?, &s)),
+            None => None,
+        },
         reason,
         version,
         since_check: tally_since(conn, check)?,
@@ -3853,7 +3874,10 @@ pub fn json(l: &Level) -> Value {
         "files_removed_unread": pair(|t| t.removed_unread),
         "message_version": l.version,
         "said_by": l.said_by,
-        "said_text": l.said.as_deref().map(crate::status::text),
+        "said_text": l
+            .said
+            .as_ref()
+            .map(|s| crate::status::capped(s.shown(crate::view::shown))),
         "reason_text": l.reason.as_deref().map(crate::status::text),
         "silent_after_seconds": SILENT_AFTER,
         "cannot_see": cannot_see(l),

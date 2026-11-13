@@ -12,6 +12,7 @@ use crate::contract::{v1, value_of};
 use crate::events::{self, Evidence, FileEvent, ProcessStart};
 use crate::findings::{self, Found, Item};
 use crate::known::{self, Refused, whole};
+use crate::secrets::Args;
 use crate::{matches, sigma, status, store, verdict, vulnerabilities};
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::{BTreeMap, BTreeSet};
@@ -151,7 +152,7 @@ fn answer(a: &findings::Answered) -> v1::Answer {
         given: value_of::<v1::AnswerKind>(a.given),
         via: value_of::<v1::Via>(a.via.literal()),
         given_at: a.at,
-        reason_text: a.reason.as_deref().map(whole),
+        reason_text: a.reason.as_ref().map(|r| r.shown(whole)),
         until_at: a.until,
         in_force: a.in_force,
     }
@@ -248,7 +249,10 @@ fn rule_events(
     if !has(conn, table)? {
         return Ok(Vec::new());
     }
-    let read: Vec<Evidence> = match kind {
+    // A row's arguments are read back cut, and cut again, so a set newer than the one that kept
+    // them applies; the start made from the row holds none.
+    let form = crate::secrets::form(conn)?;
+    let read: Vec<(Evidence, Args)> = match kind {
         sigma::Kind::Process => conn
             .prepare(
                 "SELECT timestamp, executable, args, parent_executable, working_directory, pid,
@@ -257,10 +261,10 @@ fn rule_events(
             )?
             .query_map([finding], |r| {
                 let args: String = r.get(2)?;
-                Ok(Evidence::Start(ProcessStart {
+                let args: Vec<String> = serde_json::from_str(&args).unwrap_or_default();
+                let start = Evidence::Start(ProcessStart {
                     timestamp: r.get(0)?,
                     executable: r.get(1)?,
-                    args: serde_json::from_str(&args).unwrap_or_default(),
                     parent_executable: r.get(3)?,
                     working_directory: r.get(4)?,
                     pid: r.get(5)?,
@@ -270,7 +274,8 @@ fn rule_events(
                     team_id: r.get(9)?,
                     platform_binary: r.get(10)?,
                     ..ProcessStart::default()
-                }))
+                });
+                Ok((start, Args::stored(&args, form)))
             })?
             .collect::<rusqlite::Result<_>>()?,
         sigma::Kind::File => conn
@@ -280,7 +285,7 @@ fn rule_events(
             )?
             .query_map([finding], |r| {
                 let action: String = r.get(1)?;
-                Ok(Evidence::File(FileEvent {
+                let event = Evidence::File(FileEvent {
                     timestamp: r.get(0)?,
                     // A word the collector's reading does not write is no action: it prints
                     // as unspecified, which a reader cannot judge.
@@ -293,11 +298,15 @@ fn rule_events(
                     source: r.get(3)?,
                     executable: r.get(4)?,
                     ..FileEvent::default()
-                }))
+                });
+                Ok((event, Args(Vec::new())))
             })?
             .collect::<rusqlite::Result<_>>()?,
     };
-    Ok(read.iter().map(matches::event).collect())
+    Ok(read
+        .iter()
+        .map(|(e, args)| matches::event_cut(e, args))
+        .collect())
 }
 
 /// The process the latest sample that raised or found again a finding saw, by its pid and

@@ -1636,7 +1636,7 @@ pub fn one_json(conn: &Connection, id: &str, now: i64) -> rusqlite::Result<Value
     };
     let mut out = json!({
         "generated_at": crate::view::iso(now),
-        "id_text": crate::status::text(id),
+        "id_text": crate::status::cut_text(&crate::secrets::Text::source(id)),
         "in_catalogue": in_catalogue,
         "declared_note": DECLARED,
     });

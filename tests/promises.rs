@@ -5817,18 +5817,21 @@ fn an_unknown_or_ambiguous_name_is_an_error_that_changes_nothing() {
     for (words, says) in [
         (
             &["ubuntu", "retired", "--reason", "Gone"][..],
-            "ubuntu fits 2 machines that are not known to be one: a; b.",
+            "fits several machines that are not known to be one; name one of them; nothing was said: ubuntu fits: a; b.",
         ),
         (
             &["db-9", "retired", "--reason", "Gone"],
-            "the store knows no machine as db-9",
+            "the store knows no machine by the name asked; nothing was said: db-9.",
         ),
         (&["a", "retired"], "a statement needs a reason"),
         (
             &["a", "retired", "--reason", "  "],
             "a statement needs a reason",
         ),
-        (&["a", "withdraw"], "no statement stands about a"),
+        (
+            &["a", "withdraw"],
+            "no statement stands about the machine asked; nothing was withdrawn: a.",
+        ),
         (
             &["a", "withdraw", "--reason", "Back"],
             "a withdrawal takes no reason",
@@ -5907,7 +5910,7 @@ fn a_store_of_the_current_format_takes_the_first_statement_without_losing_its_jo
             &h.store(),
             "SELECT value FROM meta WHERE key = 'format_version'"
         ),
-        ["4"]
+        ["5"]
     );
     let conn = Connection::open(h.store()).unwrap();
     assert!(conn.execute("DELETE FROM journal", []).is_err());
@@ -7037,7 +7040,7 @@ fn a_store_made_before_the_threat_list_takes_its_tables_and_journal_entries_with
             &f.store(),
             "SELECT value FROM meta WHERE key = 'format_version'"
         ),
-        ["4"]
+        ["5"]
     );
     let conn = Connection::open(f.store()).unwrap();
     assert!(conn.execute("DELETE FROM journal", []).is_err());
@@ -10077,7 +10080,7 @@ fn a_store_from_before_causes_were_kept_shows_its_incomplete_readings_as_failed(
             &w.store(),
             "SELECT value FROM meta WHERE key = 'format_version'"
         ),
-        ["4"]
+        ["5"]
     );
     assert_eq!(
         rows(

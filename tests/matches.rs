@@ -594,6 +594,7 @@ fn a_match_says_which_finding_it_went_to_as_the_core_recorded_it_with_the_person
                 "working_directory_text": CWD,
                 "parent": null,
                 "script_text": null,
+                "cuts": [],
             },
         })
     );
@@ -1423,6 +1424,134 @@ fn a_collector_that_records_nothing_is_said_so_with_what_it_printed() {
 }
 
 #[test]
+fn what_the_collector_printed_is_given_and_kept_with_its_secrets_cut() {
+    // The last line the collector printed can quote a command line. It is cut where it is
+    // handed over, where the store keeps it and where a report shows it.
+    let dir = Dir::new("said");
+    dir.install();
+    dir.run();
+    dir.append(H00, &git(1));
+    dir.touch(H00, SystemTime::now() - Duration::from_secs(3600));
+    let pw = format!("Sd{}", invented(4, 14));
+    std::fs::write(
+        dir.log().join("eslogger.err"),
+        format!("ERROR: es_new_client: tool --password {pw}\n"),
+    )
+    .unwrap();
+    let cut = "ERROR: es_new_client: tool --password \\cut{immune:flag-value 16}";
+    assert_eq!(dir.matches(&[])["collector"]["said_text"], cut);
+    dir.run();
+    let status = dir.report(&["status"]);
+    assert_eq!(status["event_level"]["said_text"], cut, "{status:#}");
+    let mut files = Vec::new();
+    files_under(&dir.0.join("store"), &mut files);
+    for (path, bytes) in files {
+        assert!(!holds(&bytes, &pw), "{}", path.display());
+    }
+}
+
+#[test]
+fn a_mark_the_collector_printed_is_text_and_never_hides_the_secret_beside_it() {
+    // A mark is the store's own; text from a source never yields one. A line that spells a mark
+    // out is cut like any other text, so the secret after it is cut with it, in what is handed
+    // over, in what a report shows and in the store.
+    let dir = Dir::new("said-mark");
+    dir.install();
+    dir.run();
+    dir.append(H00, &git(1));
+    dir.touch(H00, SystemTime::now() - Duration::from_secs(3600));
+    let pw = format!("Sd{}", invented(4, 14));
+    std::fs::write(
+        dir.log().join("eslogger.err"),
+        format!("ERROR: es_new_client: tool --password=\\cut{{a 1}}{pw}\n"),
+    )
+    .unwrap();
+    let cut = "ERROR: es_new_client: tool --password=\\cut{immune:flag-value 25}";
+    assert_eq!(dir.matches(&[])["collector"]["said_text"], cut);
+    dir.run();
+    let status = dir.report(&["status"]);
+    assert_eq!(status["event_level"]["said_text"], cut, "{status:#}");
+    assert!(!holds(&std::fs::read(dir.store()).unwrap(), &pw));
+}
+
+#[test]
+fn a_value_with_spaces_in_its_own_argument_is_cut_whole_wherever_it_is_shown_or_kept() {
+    // A flag word that begins an argument takes the rest of that argument as its value, spaces
+    // and all, and so does a name inside it, as `--from-literal=password=` holds one.
+    let dir = Dir::new("spaces");
+    dir.install();
+    dir.run();
+    let tail = [" horse", " battery", " staple"].concat();
+    let literal = ["Hunter", "2!xQ9"].concat();
+    let lines = start(
+        1,
+        T0,
+        "/bin/zsh",
+        "/usr/bin/grep",
+        &[
+            "grep",
+            "-r",
+            &format!("--passphrase=correct{tail}"),
+            "password",
+            "/etc",
+        ],
+    ) + &start(
+        2,
+        T0,
+        "/bin/zsh",
+        "/usr/bin/grep",
+        &[
+            "grep",
+            "-r",
+            "password",
+            &format!("--from-literal=password={literal}"),
+            "/etc",
+        ],
+    );
+    dir.append(H00, &lines);
+    dir.run();
+    let shown = dir.matches_output(&["--json"]).stdout;
+    let id = dir.findings_named(CREDENTIALS).pop().unwrap();
+    let finding = dir
+        .command(&["finding", &id, "--json"], &[])
+        .output()
+        .unwrap();
+    let file = std::fs::read(dir.store()).unwrap();
+    for secret in [tail.as_str(), literal.as_str()] {
+        assert!(!holds(&shown, secret), "{secret}");
+        assert!(!holds(&finding.stdout, secret), "{secret}");
+        assert!(!holds(&file, secret), "{secret}");
+    }
+    let v: Value = serde_json::from_slice(&finding.stdout).unwrap();
+    let args: Vec<Value> = v["evidence"]["published_rule_matched"]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["program_start"]["args_text"].clone())
+        .collect();
+    assert!(
+        args.contains(&json!([
+            "grep",
+            "-r",
+            "--passphrase=\\cut{immune:flag-value 28}",
+            "password",
+            "/etc"
+        ])),
+        "{args:?}"
+    );
+    assert!(
+        args.contains(&json!([
+            "grep",
+            "-r",
+            "password",
+            "--from-literal=password=\\cut{immune:flag-value 11}",
+            "/etc"
+        ])),
+        "{args:?}"
+    );
+}
+
+#[test]
 fn unreadable_lines_are_counted_and_the_rules_that_judge_nothing_are_named_with_why() {
     // Lines that could not be read were not evaluated, and are counted. Rules that cannot
     // judge what this collector records are named, each with why.
@@ -2108,11 +2237,323 @@ fn a_rule_a_translated_set_did_not_take_is_named_with_its_reason_and_what_the_tr
     }
 }
 
+/// "Suspicious Curl to Jamf Endpoint", Elastic's, high: `curl` to `https://jamf.` from a script.
+const JAMF: &str = "elastic:a8256685-9736-465b-b159-f25a172d08e8";
+/// "Credentials In Files", SigmaHQ's, high: `grep` with `password` on its command line.
+const CREDENTIALS: &str = "sigma:53b1b378-9b06-4992-b972-dde6e423d2b4";
+
+/// `n` invented letters and digits, the same for the same seed. Secrets in the shape of a
+/// provider's token are made from these when the test runs, so no literal in the source looks
+/// like one.
+fn invented(seed: u64, n: usize) -> String {
+    let chars: Vec<char> = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        .chars()
+        .collect();
+    let mut x = seed;
+    (0..n)
+        .map(|_| {
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            chars[((x >> 33) as usize) % chars.len()]
+        })
+        .collect()
+}
+
+/// Two starts with secrets beside the literals two high rules match on: a password given to
+/// `curl -u` for Jamf, and a password and a token on a `grep` for passwords. The secrets, and
+/// the two starts.
+fn secret_starts(first: u64) -> ([String; 3], String) {
+    let password = format!("Fk{}", invented(1, 14));
+    let grepped = format!("Gp{}", invented(2, 14));
+    let token = format!("{}{}", ["gh", "p_"].concat(), invented(3, 36));
+    let lines = start(
+        first,
+        T0,
+        "/usr/bin/osascript",
+        "/usr/bin/curl",
+        &[
+            "curl",
+            "-u",
+            &format!("someone:{password}"),
+            "https://jamf.example.invalid/JSSResource/computers",
+        ],
+    ) + &start(
+        first + 1,
+        T0,
+        "/bin/zsh",
+        "/usr/bin/grep",
+        &["grep", "-r", &format!("password={grepped}"), &token, "/etc"],
+    );
+    ([password, grepped, token], lines)
+}
+
+/// Every file under `folder` and what it holds, each named.
+fn files_under(folder: &Path, out: &mut Vec<(PathBuf, Vec<u8>)>) {
+    for entry in std::fs::read_dir(folder).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            files_under(&path, out);
+        } else {
+            out.push((path.clone(), std::fs::read(&path).unwrap()));
+        }
+    }
+}
+
+fn holds(bytes: &[u8], secret: &str) -> bool {
+    bytes.windows(secret.len()).any(|w| w == secret.as_bytes())
+}
+
+#[test]
+fn a_secret_on_a_command_line_reaches_no_answer_and_no_file_and_the_rules_beside_it_still_match() {
+    // Rules judge the command line as it was run, so a rule whose literal sits beside a secret
+    // still matches. What leaves the core, every form of every command that prints an event,
+    // and what it keeps in its folder, holds none of the secret: only the secret is cut, and
+    // each event lists its cuts.
+    let dir = Dir::new("secrets");
+    dir.install();
+    dir.run();
+    let (secrets, lines) = secret_starts(1);
+    dir.append(H00, &lines);
+    let before = dir.matches(&[]);
+    dir.run();
+    let m = dir.matches(&[]);
+    let names: Vec<&str> = m["matches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x["rule"]["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        names.contains(&JAMF) && names.contains(&CREDENTIALS),
+        "{names:?}"
+    );
+    let jamf = m["matches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["rule"]["name"] == JAMF)
+        .unwrap();
+    let start = &jamf["event"]["program_start"];
+    assert_eq!(
+        start["args_text"],
+        json!([
+            "curl",
+            "-u",
+            "\\cut{gitleaks:curl-auth-user 24}",
+            "https://jamf.example.invalid/JSSResource/computers"
+        ])
+    );
+    assert_eq!(
+        start["cuts"],
+        json!([{ "argument": 2, "kind": "gitleaks:curl-auth-user", "length": 24 }])
+    );
+    assert_eq!(raised_of(&before)[0].0, "not_read_yet");
+    let found = [dir.findings_named(JAMF), dir.findings_named(CREDENTIALS)].concat();
+    assert_eq!(found.len(), 2, "{found:?}");
+
+    let mut outputs: Vec<(String, Vec<u8>)> = Vec::new();
+    for args in [&["--json"][..], &["--proto"], &[]] {
+        let out = dir.matches_output(args);
+        assert!(out.status.success());
+        outputs.push((format!("matches {args:?}"), out.stdout));
+    }
+    let mut asked: Vec<Vec<&str>> = vec![
+        vec!["findings", "--json"],
+        vec!["findings", "--proto"],
+        vec!["findings"],
+        vec!["status", "--json"],
+        vec!["rules", "--json"],
+    ];
+    for id in &found {
+        asked.push(vec!["finding", id, "--json"]);
+        asked.push(vec!["finding", id, "--proto"]);
+        asked.push(vec!["finding", id]);
+    }
+    for args in asked {
+        let out = dir.command(&args, &[]).output().unwrap();
+        assert!(out.status.success(), "{args:?}");
+        outputs.push((format!("{args:?}"), out.stdout));
+    }
+    // The finding keeps the start cut: the password's value and the token, each named.
+    let finding = dir
+        .command(&["finding", &found[1], "--json"], &[])
+        .output()
+        .unwrap();
+    let finding: Value = serde_json::from_slice(&finding.stdout).unwrap();
+    let kept = &finding["evidence"]["published_rule_matched"]["events"][0]["program_start"];
+    let cuts: Vec<(i64, i64)> = kept["cuts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| {
+            (
+                c["argument"].as_i64().unwrap(),
+                c["length"].as_i64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(cuts, [(2, 16), (3, 40)], "{kept:#}");
+    assert_eq!(kept["cuts"][1]["kind"], "gitleaks:github-pat");
+    assert!(
+        kept["args_text"][2]
+            .as_str()
+            .unwrap()
+            .starts_with("password=\\cut{"),
+        "{kept:#}"
+    );
+    // The report's JSON lists the same cuts beside its text.
+    let status = dir.report(&["status"]);
+    let listed: usize = status["needs_a_look"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|i| i["published_rule"]["evidence"].as_array())
+        .flatten()
+        .map(|e| e["cuts"].as_array().unwrap().len())
+        .sum();
+    assert_eq!(listed, 3, "{status:#}");
+    let mut files = Vec::new();
+    files_under(&dir.0.join("store"), &mut files);
+    for (path, bytes) in files {
+        outputs.push((path.display().to_string(), bytes));
+    }
+    for (what, bytes) in &outputs {
+        for secret in &secrets {
+            assert!(!holds(bytes, secret), "{what} holds {secret}");
+        }
+    }
+}
+
+#[test]
+fn what_an_earlier_build_kept_uncut_is_cut_once_and_no_old_byte_is_left_in_the_store_or_its_pages()
+{
+    // A store an earlier build kept holds arguments, what the collector printed and the text of
+    // verdicts as they were. The first build that cuts opens it for writing and cuts them in
+    // their rows and in the journal, leaves no old byte in the file's free pages or a journal
+    // beside it, and removes the pages made from it. What is shown of it then is cut.
+    let dir = Dir::new("clean");
+    dir.install();
+    dir.run();
+    let (secrets, lines) = secret_starts(1);
+    dir.append(H00, &lines);
+    dir.run();
+    let id = dir.findings_named(JAMF).pop().unwrap();
+    let [password, grepped, token] = &secrets;
+    let raw = json!([
+        "curl",
+        "-u",
+        format!("someone:{password}"),
+        "https://jamf.example.invalid/JSSResource/computers"
+    ])
+    .to_string();
+    {
+        let db = rusqlite::Connection::open(dir.store()).unwrap();
+        db.execute(
+            "UPDATE rule_evidence SET args = ?1 WHERE finding = ?2",
+            [&raw, &id],
+        )
+        .unwrap();
+        db.execute(
+            // Refused, so a report also lists what it said among what is not covered.
+            "UPDATE event_level SET said = ?1, said_by = 'eslogger', state = 'refused'",
+            [format!("jq: error near --password {grepped}")],
+        )
+        .unwrap();
+        let reason = format!("invented: the token {token} was the person's");
+        db.execute(
+            "INSERT INTO journal (at, run_id, entry, subject, new_value, text)
+             VALUES (1, 'verdict-1', 'verdict', ?1, 'harmless', ?2)",
+            [
+                &id,
+                &json!({ "named": id, "reason": reason, "case": "case-1" }).to_string(),
+            ],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO verdict (at, journal, kind, named, position, rule, finding, raised,
+                                  severity, confidence, reason, case_ref)
+             VALUES (1, last_insert_rowid(), 'harmless', ?1, NULL, NULL, NULL, 0, NULL, NULL,
+                     ?2, 'case-1')",
+            [&id, &reason],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE meta SET value = '4' WHERE key = 'format_version'",
+            [],
+        )
+        .unwrap();
+    }
+    let page = dir.0.join("store/view.html");
+    std::fs::write(&page, format!("<p>{password}</p>")).unwrap();
+    std::fs::create_dir_all(dir.0.join("store/view")).unwrap();
+    std::fs::write(dir.0.join("store/view/made.json"), grepped).unwrap();
+    let mut files = Vec::new();
+    files_under(&dir.0.join("store"), &mut files);
+    let kept_raw =
+        |files: &[(PathBuf, Vec<u8>)], secret: &str| files.iter().any(|(_, b)| holds(b, secret));
+    assert!(secrets.iter().all(|s| kept_raw(&files, s)));
+    // Read only, an older store is not cleaned, and what it shows is cut all the same.
+    let shown = dir
+        .command(&["finding", &id, "--json"], &[])
+        .output()
+        .unwrap();
+    assert!(shown.status.success());
+    assert!(!holds(&shown.stdout, password));
+    let status = dir.command(&["status", "--json"], &[]).output().unwrap();
+    assert!(status.status.success());
+    assert!(!holds(&status.stdout, password) && !holds(&status.stdout, grepped));
+    let mut files = Vec::new();
+    files_under(&dir.0.join("store"), &mut files);
+    assert!(kept_raw(&files, password) && kept_raw(&files, grepped));
+    dir.run();
+    let mut files = Vec::new();
+    files_under(&dir.0.join("store"), &mut files);
+    for secret in &secrets {
+        let held: Vec<_> = files
+            .iter()
+            .filter(|(_, b)| holds(b, secret))
+            .map(|(p, _)| p)
+            .collect();
+        assert!(held.is_empty(), "{secret} is still in {held:?}");
+    }
+    assert!(!page.exists() || !holds(&std::fs::read(&page).unwrap(), password));
+    let db = rusqlite::Connection::open(dir.store()).unwrap();
+    let reason: String = db
+        .query_row("SELECT reason FROM verdict", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        reason,
+        "invented: the token \\cut{gitleaks:github-pat 40} was the person's"
+    );
+    // The journal's guard, lifted for the cut, is back.
+    assert!(db.execute("UPDATE journal SET text = 'x'", []).is_err());
+    let finding = dir
+        .command(&["finding", &id, "--json"], &[])
+        .output()
+        .unwrap();
+    let finding: Value = serde_json::from_slice(&finding.stdout).unwrap();
+    assert_eq!(
+        finding["evidence"]["published_rule_matched"]["events"][0]["program_start"]["cuts"],
+        json!([{ "argument": 2, "kind": "gitleaks:curl-auth-user", "length": 24 }])
+    );
+    // Once: a store cleaned is not cleaned again, so what it keeps cut is read as cut.
+    dir.run();
+    let again = dir
+        .command(&["finding", &id, "--json"], &[])
+        .output()
+        .unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&again.stdout).unwrap()["evidence"],
+        finding["evidence"]
+    );
+}
+
 #[test]
 fn arguments_are_given_whole_each_in_its_own_string_and_only_in_text_fields() {
-    // The response layer judges a command line as it was run: no argument is cut, each stays
-    // apart, a hidden character is shown escaped, and none of it is anywhere but a `_text`
-    // field, where an agent reads it as data.
+    // The response layer judges a command line as it was run: no argument is cut but for a
+    // secret in it, each stays apart, a hidden character is shown escaped, and none of it is
+    // anywhere but a `_text` field, where an agent reads it as data.
     let dir = Dir::new("args");
     dir.install();
     dir.run();
@@ -2241,7 +2682,8 @@ fn the_limit_holds_and_more_says_when_it_cut() {
 fn a_busy_hour_is_given_in_answers_of_about_a_megabyte_and_long_command_lines_do_not_swell_one() {
     // Sizes on invented logs. A busy hour: a program start every few milliseconds, one in five
     // matched by a rule. The default limit keeps an answer near a megabyte. A command line can
-    // be a megabyte and is never cut, so the bytes of matched lines stop an answer too.
+    // be a megabyte, so the bytes of matched lines stop an answer too; one over 64 KiB is
+    // withheld when it is printed, and still counts by the bytes it took in the log.
     let dir = Dir::new("busy");
     dir.install();
     dir.run();

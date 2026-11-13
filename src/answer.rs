@@ -149,8 +149,13 @@ pub fn print<M: Message + serde::Serialize>(
 
 /// Every failure of a command of the contract: the message `Failure`, binary or JSON on stdout,
 /// or for a person on stderr with nothing on stdout; and the exit code given, which says which
-/// kind of failure it is.
-pub fn fail(op: &str, form: Form, error: v1::Error, exit: u8) -> ExitCode {
+/// kind of failure it is. What its detail repeats of what it was given, an argument, a key or a
+/// value a caller sent, is cut here, as it is printed, in every form (`secrets::Text`).
+pub fn fail(op: &str, form: Form, mut error: v1::Error, exit: u8) -> ExitCode {
+    error.detail_text = error
+        .detail_text
+        .as_deref()
+        .map(|s| crate::secrets::Text::source(&crate::contract::unescape(s)).shown(known::whole));
     let failure = v1::Failure {
         operation: op.to_string(),
         ok: false,

@@ -1007,7 +1007,12 @@ pub fn not_covered(
                 } else {
                     Some(l.read_at)
                 },
-                value: l.said.clone().filter(|s| !s.is_empty()),
+                // Read cut (`events::level`), as every reader of it reads it.
+                value: l
+                    .said
+                    .as_ref()
+                    .map(|s| s.shown(str::to_string))
+                    .filter(|s| !s.is_empty()),
                 ..Uncovered::new(cause, 1)
             });
         }
