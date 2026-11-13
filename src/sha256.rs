@@ -16,7 +16,9 @@ unsafe extern "C" {
     fn CC_SHA256_Final(md: *mut u8, c: *mut Context) -> i32;
 }
 
-/// `CC_SHA256_CTX` as CommonCrypto's header lays it out: 26 32-bit words.
+/// `CC_SHA256_CTX` as CommonCrypto's header lays it out: 26 32-bit words. It holds no pointer,
+/// so a copy is a hash that goes on from the same bytes.
+#[derive(Clone)]
 #[repr(C)]
 struct Context {
     count: [u32; 2],
@@ -25,6 +27,7 @@ struct Context {
 }
 
 /// SHA-256 of bytes that arrive in pieces, so that a large file is hashed without holding it.
+#[derive(Clone)]
 pub struct Hasher(Context);
 
 impl Default for Hasher {
