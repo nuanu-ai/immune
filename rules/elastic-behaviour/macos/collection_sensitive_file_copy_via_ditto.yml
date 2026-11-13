@@ -1,0 +1,14 @@
+title: "Sensitive File Copy via Ditto"
+id: "b1cf09db-d619-49f8-96cf-ff82abaac79f"
+status: "test"
+description: "Detects ditto binary copying sensitive files like keychains, browser data, and shell history. This technique is used by\nmalware for credential harvesting and data collection."
+references: ["https://github.com/elastic/protections-artifacts/blob/a87715d87a2babd51b37ff6c55f104fe7e567911/behavior/rules/macos/collection_sensitive_file_copy_via_ditto.toml"]
+license: "Elastic License v2"
+tags: ["attack.t1005"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["ditto"]}
+  s2: {"process.args_count": 3}
+  s3: [{"process.args|contains": ["\u0000/Library/Keychains/System.keychain\u0000"]}, {"immune.folded.process.args|re": ["(?s)\\x00/users/[^\\x00]*/library/application support/google/chrome/default/[^\\x00]*\\x00", "(?s)\\x00/users/[^\\x00]*/library/keychains/login\\.keychain\\-db\\x00", "(?s)\\x00/users/[^\\x00]*/\\.zsh_history\\x00", "(?s)\\x00/users/[^\\x00]*/\\.bash_history\\x00"]}]
+  condition: "(s1 and s2 and s3)"
+elastic: {"rule_id": "b1cf09db-d619-49f8-96cf-ff82abaac79f", "severity": null, "risk_score": null, "query_sha256": "efd2016e9a120287af30573b71e72470fe045dd83270ca56104aca8ff2f95485", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": [], "folded_fields": ["process.args"], "version": "1.0.3", "actions_ignored": ["kill_process process.parent.entity_id"], "elastic_also_evaluates_on": []}

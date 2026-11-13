@@ -1,0 +1,13 @@
+title: "Suspicious Execution via Script Editor"
+id: "8713c19e-6167-494b-9dc9-9ad74bc9b0d7"
+status: "test"
+description: "Identifies when the macOS Script Editor utility spawns an unusual child process, this may indicate an attempt to execute\na malicious Apple Script via a malicious applescript URL handler."
+references: ["https://github.com/elastic/protections-artifacts/blob/a87715d87a2babd51b37ff6c55f104fe7e567911/behavior/rules/macos/initial_access_suspicious_execution_via_script_editor.toml"]
+license: "Elastic License v2"
+tags: ["attack.t1059.002", "attack.t1204.001", "attack.t1553", "attack.t1566.002"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.parent.executable|cased": ["/System/Applications/Utilities/Script Editor.app/Contents/MacOS/Script Editor"]}
+  s2: {"process.name": ["curl", "nscurl", "osascript", "python*", "perl*", "mktemp", "chmod", "php", "nohup", "openssl", "plutil", "PlistBuddy", "xattr", "mktemp", "sqlite3", "funzip", "open"]}
+  condition: "(s1 and s2)"
+elastic: {"rule_id": "8713c19e-6167-494b-9dc9-9ad74bc9b0d7", "severity": null, "risk_score": null, "query_sha256": "fe0ed2d00eb0f9764ba37f67f642fd794467426529e3c516023e1416d5e5ed8b", "kinds": ["start"], "in_part_missing_fields": ["needs_fields process.Ext.effective_parent.executable", "needs_fields process.code_signature.signing_id"], "also_asks_events": [], "null_sensitive": [], "folded_fields": [], "version": "1.0.30", "actions_ignored": ["kill_process process.entity_id"], "elastic_also_evaluates_on": []}

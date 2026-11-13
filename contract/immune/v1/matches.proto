@@ -4,11 +4,11 @@
 // events are in `event.proto`.
 //
 // The core evaluates published rules over the program starts and file events its collector
-// writes to a log that lives a day: SigmaHQ's rules for macOS, and Elastic's detection rules for
-// macOS translated into Sigma. This answer gives every match of every rule, of
-// every level, each with the event it matched, in the order of the log. A match of a rule marked
-// high or critical also raised a finding; the others are only counted in the store. Events that
-// matched no rule are not given.
+// writes to a log that lives a day: SigmaHQ's rules for macOS, and Elastic's detection rules and
+// behaviour rules for macOS translated into Sigma. This answer gives every match of every rule,
+// of every level and with none, each with the event it matched, in the order of the log. A match
+// of a rule marked high or critical also raised a finding; the others, and those of a rule whose
+// set states no level, are only counted in the store. Events that matched no rule are not given.
 //
 // The queue is the log itself, read again. The store keeps no event, and the caller keeps its
 // own place: it passes `continue_after` back as `--after` to read on. The place is the core's own
@@ -29,9 +29,11 @@
 //   the fields in its `fields_text`.
 // Otherwise the answer says what the core did not see, and the reader does not take it for calm.
 //
-// Values that will be added. A reader meets values of `Raised`, `CollectorState` and
-// `UnevaluatedReason`, and those `event.proto` names, that it does not know: the core adds them
-// within version 1. It treats one it does not know as something it cannot judge.
+// Values that will be added. A reader meets values of `Raised`, `CollectorState`,
+// `UnevaluatedReason` and a rule's `Level`, and those `event.proto` names, that it does not know:
+// the core adds them within version 1. It treats one it does not know as something it cannot
+// judge; a rule's level it does not know it reads as the highest, as `common.proto` says, and
+// that level never decides whether a match raised a finding: `raised` says that.
 
 syntax = "proto3";
 
@@ -87,7 +89,9 @@ message RuleMatch {
   repeated FindingRef findings = 5;
 }
 
-// What became of a match among the core's findings.
+// What became of a match among the core's findings. Values are added within version 1.
+// `UNSPECIFIED`, or a value the reader does not know, is read as something it cannot judge: the
+// reader judges the match itself.
 enum Raised {
   RAISED_UNSPECIFIED = 0;
   // The rule is marked below high: its matches are counted and raise nothing. The reader judges
@@ -107,6 +111,9 @@ enum Raised {
   // It went to one of the rule's findings on this Mac, and the core cannot tell which. The reader
   // judges the match itself; `immune findings --all` lists the rule's findings.
   RAISED_UNRECORDED = 5;
+  // The rule's set states no level (its `level` is `LEVEL_NOT_STATED`): its matches are counted
+  // and raise nothing by themselves. The reader judges the match itself.
+  RAISED_LEVEL_NOT_STATED = 6;
 }
 
 // What was read after `after` up to `continue_after`, and what was not. Adding the stretches of
@@ -191,10 +198,11 @@ message Unevaluated {
   // Its path in the shipped set; for a rule not taken, the upstream file's path under its
   // repository's `rules/` folder.
   string file = 1;
-  // The name findings give it, `sigma:<id>` or `elastic:<rule_id>`. Absent for a rule that
-  // could not be read.
+  // Its name, its set and its id as `Rule.name` gives it: `sigma:<id>`, `elastic:<rule_id>` or
+  // `elastic-behaviour:<rule_id>`. Absent for a rule that could not be read.
   optional string name = 2;
-  // Its `id`, `title` and level. Absent for a rule that could not be read.
+  // Its `id`, `title` and level. Absent for a rule that could not be read. `level` is
+  // `LEVEL_NOT_STATED` for a rule whose set states none.
   optional string id_text = 3;
   optional string title_text = 4;
   optional Level level = 5;
@@ -207,6 +215,10 @@ message Unevaluated {
   // translated set did not take, what the translation said of it, and for `in_part` what a
   // translation left out that is not a missing field, such as a pattern it could not carry.
   optional string detail_text = 8;
+  // Its set, as `Rule.source` and `Rule.set` give it; present for a rule that could not be read
+  // too.
+  string source = 9;
+  string set = 10;
 }
 
 // Why a rule judges nothing here, or only part of what it means.
@@ -235,4 +247,15 @@ enum UnevaluatedReason {
   UNEVALUATED_REASON_BACKSLASH_IN_WILDCARD = 9;
   // It is about program starts and file events at once.
   UNEVALUATED_REASON_SPANS_KINDS = 10;
+  // The four below are also a translation's reasons for not taking a rule. It could never be
+  // true over the events here, such as one that asks for a field no event of its kind has.
+  UNEVALUATED_REASON_NEVER_TRUE = 11;
+  // A part it cannot do without is a regular expression in EQL's syntax, which is not
+  // translated.
+  UNEVALUATED_REASON_REGEX = 12;
+  // A part it cannot do without uses a function of EQL's that is not translated.
+  UNEVALUATED_REASON_UNSUPPORTED = 13;
+  // A part it cannot do without compares one field of the event with another, which a Sigma
+  // rule cannot.
+  UNEVALUATED_REASON_FUNCTION = 14;
 }

@@ -1,0 +1,19 @@
+Invented events, each with the Elastic behaviour rules it matches, for the rules in
+`rules/elastic-behaviour/`.
+
+The program that translated those rules made the events (see `rules/elastic-behaviour/NOTICE`).
+For each rule it built events that match it, then near misses: one value changed, a field taken
+away, or every text in another case. Nothing in them comes from a real Mac. Each translation was
+checked against a reference that follows Elasticsearch's documented meaning of the upstream
+query, over 11,472 such events, and the two disagreed on none. No event matched a rule other
+than the one it was made for.
+
+`samples.jsonl` keeps 341 of them, one per line, with keys sorted. `event` is the event as the
+translator wrote it. `matches` names, as findings do, every translated rule the reference said
+it matches; the translator named them `elastic:<rule_id>`, and here they carry this set's name,
+`elastic-behaviour:<rule_id>`.
+
+Of the events made for each of the 57 rules, three it matches and three it does not are kept,
+spread over the order they were made in. The three it does not match are each one field away
+from an event made for it that it matches. One rule, Potential Privilege Escalation via Root
+Crontab File Modification, matches only 2 of the events made for it, and both are kept.

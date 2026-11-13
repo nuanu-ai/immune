@@ -460,40 +460,11 @@ fn watching(out: &mut String, r: &Value, level: Option<&Level>) -> Out {
         ));
     }
     // What the rest need, by kind: what a rule needs, said for one and for several.
-    let mut needs: BTreeMap<(String, String), usize> = BTreeMap::new();
+    let mut needs: BTreeMap<(&str, &str), usize> = BTreeMap::new();
     for l in not_evaluated {
-        let (one, many) = match &l.placement {
-            // Which kinds is said on the rules page; here, only that they are not collected.
-            Placement::NotEvaluated(Reason::NeedsEvents(_)) => (
-                "needs a kind of event not collected".to_string(),
-                "need kinds of event not collected".to_string(),
-            ),
-            Placement::NotEvaluated(Reason::NeedsFields(_)) => (
-                "needs details a program start does not give".to_string(),
-                "need details a program start does not give".to_string(),
-            ),
-            Placement::NotEvaluated(Reason::KeywordSearch) => (
-                "searches whole messages".to_string(),
-                "search whole messages".to_string(),
-            ),
-            Placement::NotEvaluated(Reason::Sequence) => (
-                "is a sequence of events, not translated".to_string(),
-                "are sequences of events, not translated".to_string(),
-            ),
-            Placement::NotEvaluated(Reason::NotEql) => (
-                "is not in EQL, not translated".to_string(),
-                "are not in EQL, not translated".to_string(),
-            ),
-            Placement::NotEvaluated(Reason::BackslashInWildcard | Reason::SpansKinds) => (
-                "could not be translated exactly".to_string(),
-                "could not be translated exactly".to_string(),
-            ),
-            _ => (
-                "could not be read".to_string(),
-                "could not be read".to_string(),
-            ),
-        };
-        *needs.entry((one, many)).or_default() += 1;
+        if let Placement::NotEvaluated(reason) = &l.placement {
+            *needs.entry(not_evaluated_said(reason)).or_default() += 1;
+        }
     }
     for ((one, many), n) in needs {
         rest.push(format!("{n} {}", if n == 1 { one } else { many }));
@@ -522,6 +493,53 @@ fn watching(out: &mut String, r: &Value, level: Option<&Level>) -> Out {
         &meter,
         &notes,
     )
+}
+
+/// Why a rule is not evaluated, as the summary says it, for one rule and for several. Every
+/// reason has its own words, so a rule that could not be read is never counted with rules that
+/// were read and not taken, and a reason added later must be given words here.
+fn not_evaluated_said(reason: &Reason) -> (&'static str, &'static str) {
+    match reason {
+        // Which kinds is said on the rules page; here, only that they are not collected.
+        Reason::NeedsEvents(_) => (
+            "needs a kind of event not collected",
+            "need kinds of event not collected",
+        ),
+        Reason::NeedsFields(_) => (
+            "needs details a program start does not give",
+            "need details a program start does not give",
+        ),
+        Reason::KeywordSearch => ("searches whole messages", "search whole messages"),
+        Reason::NotParsed(_) => ("could not be read", "could not be read"),
+        Reason::Sequence => (
+            "is a sequence of events, not translated",
+            "are sequences of events, not translated",
+        ),
+        Reason::NotEql => (
+            "is not in EQL, not translated",
+            "are not in EQL, not translated",
+        ),
+        Reason::BackslashInWildcard | Reason::SpansKinds => (
+            "could not be translated exactly",
+            "could not be translated exactly",
+        ),
+        Reason::NeverTrue => (
+            "could never be true over the events here",
+            "could never be true over the events here",
+        ),
+        Reason::Regex => (
+            "needs a regular expression in EQL's syntax, not translated",
+            "need regular expressions in EQL's syntax, not translated",
+        ),
+        Reason::Unsupported => (
+            "uses a function of EQL's that is not translated",
+            "use functions of EQL's that are not translated",
+        ),
+        Reason::Function => (
+            "compares one field with another",
+            "compare one field with another",
+        ),
+    }
 }
 
 /// The file events of the last day, as the section says them.
@@ -570,19 +588,20 @@ fn bars(h: &events::Series) -> String {
 /// One rule's row: its title as data in an element of its own, its level, a bar for its count
 /// against the `most` any rule counted, the count, and its finding, linked, or "Counted".
 fn rule_row(out: &mut String, row: &Row, most: i64) -> Out {
-    let level = row.meta.level.as_str();
+    // A rule with no level stated is drawn as one below high, and says it states none.
+    let level = row.meta.level_name().unwrap_or("none");
     let state = match row.finding {
         Some((id, true)) => format!("<a class=\"look\" href=\"#{}\">Finding</a>", esc(id)),
         Some((id, false)) => format!("<a href=\"#answered-{}\">Finding, answered</a>", esc(id)),
-        None if row.meta.level.raises() => "Finding".to_string(),
+        None if row.meta.raises() => "Finding".to_string(),
         None => "Counted".to_string(),
     };
     writeln!(
         out,
-        "<div class=\"rr\" data-rule=\"{}\"><span class=\"rt src\">{}</span><span class=\"rl\"><span class=\"lv lv-{level}\">{}</span></span><span class=\"rb\" aria-hidden=\"true\"><span style=\"width:{}%\"></span></span><span class=\"rc\">{}</span><span class=\"rs\">{state}</span></div>",
+        "<div class=\"rr\" data-rule=\"{}\"><span class=\"rt\"><span class=\"src\">{}</span></span><span class=\"rl\"><span class=\"lv lv-{level}\">{}</span></span><span class=\"rb\" aria-hidden=\"true\"><span style=\"width:{}%\"></span></span><span class=\"rc\">{}</span><span class=\"rs\">{state}</span></div>",
         esc(&row.meta.id),
-        esc(&row.meta.title),
-        esc(&crate::pages::capital(level)),
+        esc(&row.meta.label()),
+        esc(&crate::pages::capital(sigma::level_said(row.meta.level))),
         (row.count * 100 / most.max(1)).max(1),
         num(row.count),
     )?;
@@ -596,7 +615,7 @@ fn matched(out: &mut String, st: &crate::status::State, level: Option<&Level>) -
     let empty = BTreeMap::new();
     let week = level.map_or(&empty, |l| &l.matches_last_week);
     let finding_of = |m: &sigma::Meta| -> Option<(&str, bool)> {
-        let of = |i: &&Item| i.rule == Some(m.finding_rule.as_str());
+        let of = |i: &&Item| i.rule == Some(m.name.as_str());
         if let Some(i) = st.needs.items.iter().find(of) {
             return Some((i.id.as_str(), true));
         }
@@ -617,36 +636,71 @@ fn matched(out: &mut String, st: &crate::status::State, level: Option<&Level>) -
             })
         })
         .collect();
+    out.push_str("<div class=\"matched\">\n<div class=\"sh\"><h3>Rules that matched this week</h3><span class=\"n\">only a rule marked high raises a finding; the rest are counted</span></div>\n");
+    matched_rows(out, &mut rows)?;
+    writeln!(
+        out,
+        "<p class=\"all\">{}<a href=\"{DETAILS}/{}.html\">Published rules, each with what it looks for</a> · all {}</p>\n</div>",
+        shown_said(&rows),
+        crate::pages::RULES,
+        rules.rules.len()
+    )?;
+    Ok(())
+}
+
+/// The rows of the rules that matched, sorted and cut. Most severe first, then by count. The
+/// rules of a set that states no level are not ranked among them: they are a group of their
+/// own after them, by count, with its own heading, count and cut.
+fn matched_rows(out: &mut String, rows: &mut [Row]) -> Out {
     rows.sort_by(|a, b| {
         b.meta
             .level
             .cmp(&a.meta.level)
             .then(b.count.cmp(&a.count))
-            .then_with(|| a.meta.title.cmp(&b.meta.title))
+            .then_with(|| a.meta.label().cmp(&b.meta.label()))
     });
-    out.push_str("<div class=\"matched\">\n<div class=\"sh\"><h3>Rules that matched this week</h3><span class=\"n\">only a rule marked high raises a finding; the rest are counted</span></div>\n");
+    let (ranked, unranked): (Vec<&Row>, Vec<&Row>) =
+        rows.iter().partition(|r| r.meta.level.is_some());
     if rows.is_empty() {
         out.push_str("<p class=\"none\" data-live=\"none\">No rule matched this week.</p>\n");
     }
     let most = rows.iter().map(|r| r.count).max().unwrap_or(1).max(1);
-    for row in rows.iter().take(ROWS_SHOWN) {
+    for row in ranked.iter().take(ROWS_SHOWN) {
         rule_row(out, row, most)?;
     }
-    let shown = if rows.len() > ROWS_SHOWN {
-        format!(
-            "{} rules matched this week; the {ROWS_SHOWN} most severe are shown · ",
-            rows.len()
-        )
-    } else {
-        String::new()
-    };
-    writeln!(
-        out,
-        "<p class=\"all\" data-live=\"more\" hidden></p>\n<p class=\"all\">{shown}<a href=\"{DETAILS}/{}.html\">Published rules, each with what it looks for</a> · all {}</p>\n</div>",
-        crate::pages::RULES,
-        rules.rules.len()
-    )?;
+    if !unranked.is_empty() {
+        writeln!(
+            out,
+            "<div class=\"sh grp\"><h4>{}</h4><span class=\"n\">{}, counted and not ranked by severity</span></div>",
+            esc(&crate::pages::capital(sigma::NO_LEVEL_GROUP)),
+            crate::view::counted(unranked.len() as i64, "rule", "rules")
+        )?;
+        for row in unranked.iter().take(ROWS_SHOWN) {
+            rule_row(out, row, most)?;
+        }
+    }
+    out.push_str("<p class=\"all\" data-live=\"more\" hidden></p>\n");
     Ok(())
+}
+
+/// What the cut left out, said for each group apart: the rules with a level by severity, the
+/// rules of a set that states no level by count.
+fn shown_said(rows: &[Row]) -> String {
+    let ranked = rows.iter().filter(|r| r.meta.level.is_some()).count();
+    let unranked = rows.len() - ranked;
+    let mut shown = String::new();
+    if ranked > ROWS_SHOWN {
+        shown.push_str(&format!(
+            "{ranked} rules with a level matched this week; the {ROWS_SHOWN} most severe are shown · "
+        ));
+    }
+    if unranked > ROWS_SHOWN {
+        shown.push_str(&format!(
+            "{unranked} rules {} matched this week; the {ROWS_SHOWN} counted most are shown · ",
+            sigma::NO_LEVEL_GROUP
+        ));
+    }
+    shown
 }
 
 /// The grid of techniques: a legend, each tactic with its squares and "N of M", and what the
@@ -660,7 +714,7 @@ fn cover(out: &mut String, st: &crate::status::State, level: Option<&Level>, run
         .items
         .iter()
         .filter_map(|i| {
-            let rule = Rules::shipped().by_finding_rule(i.rule?)?;
+            let rule = Rules::shipped().by_name(i.rule?)?;
             Some(rule.meta.as_ref()?.id.as_str())
         })
         .collect();
@@ -905,9 +959,9 @@ detection:
         // markup and never mixed into the program's words.
         let meta = sigma::Meta {
             id: "x".to_string(),
-            finding_rule: "sigma:x".to_string(),
+            name: "sigma:x".to_string(),
             title: "<b>Padding</b> & \"co\"".to_string(),
-            level: sigma::Level::Medium,
+            level: Some(sigma::Level::Medium),
             status: sigma::Status::Test,
             author: None,
             techniques: Vec::new(),
@@ -923,7 +977,7 @@ detection:
         rule_row(&mut out, &row, 2_468).unwrap();
         assert!(
             out.contains(
-                "<span class=\"rt src\">&lt;b&gt;Padding&lt;/b&gt; &amp; &quot;co&quot;</span>"
+                "<span class=\"rt\"><span class=\"src\">&lt;b&gt;Padding&lt;/b&gt; &amp; &quot;co&quot; (SigmaHQ&#39;s rule set)</span></span>"
             ),
             "{out}"
         );
@@ -931,6 +985,143 @@ detection:
         assert!(
             out.contains("width:50%")
                 && out.contains("<span class=\"rc\">1,234</span><span class=\"rs\">Counted</span>"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn the_rules_not_evaluated_are_counted_by_their_own_reason_and_none_as_unreadable() {
+        // A rule that was read and not taken is never counted as one that could not be read:
+        // each reason has its own words, so a real failure to read stands apart.
+        let mut out = String::new();
+        watching(&mut out, &Value::Null, None).unwrap();
+        let note = "175 would watch once program starts are seen; 23 are checked in part and not counted; \
+                    1 compares one field with another; 4 could never be true over the events here; \
+                    4 could not be translated exactly; 139 are sequences of events, not translated; \
+                    40 are not in EQL, not translated; 65 need kinds of event not collected; \
+                    1 needs a regular expression in EQL's syntax, not translated; \
+                    84 need details a program start does not give; \
+                    2 use functions of EQL's that are not translated";
+        assert!(out.contains(&esc(note)), "{out}");
+        assert!(!out.contains("could not be read"), "{out}");
+    }
+
+    #[test]
+    fn only_a_rule_that_could_not_be_read_is_said_to_be_unreadable_for_any_count() {
+        // The note above shows one form of each reason, for today's counts; the other form is
+        // shown when a count changes, so every reason is held here in both.
+        let unreadable = not_evaluated_said(&Reason::NotParsed(String::new()));
+        assert_eq!(unreadable, ("could not be read", "could not be read"));
+        for reason in [
+            Reason::NeedsEvents(String::new()),
+            Reason::NeedsFields(Vec::new()),
+            Reason::KeywordSearch,
+            Reason::Sequence,
+            Reason::NotEql,
+            Reason::BackslashInWildcard,
+            Reason::SpansKinds,
+            Reason::NeverTrue,
+            Reason::Regex,
+            Reason::Unsupported,
+            Reason::Function,
+        ] {
+            let (one, many) = not_evaluated_said(&reason);
+            for said in [one, many] {
+                assert!(
+                    !said.is_empty() && !said.contains(unreadable.0),
+                    "{reason:?}: {said}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_rule_of_a_set_that_states_no_level_is_never_ranked_or_cut_by_severity() {
+        // Twelve rules with a level and twelve of a set that states none matched. The cut by
+        // severity is over the rules with a level only; the others are a group of their own
+        // under its heading, with its own count and its own cut, by count, never hidden as the
+        // least severe.
+        let metas: Vec<sigma::Meta> = (0..24)
+            .map(|i| sigma::Meta {
+                id: format!("r{i:02}"),
+                name: format!("x:r{i:02}"),
+                title: format!("Invented {i:02}"),
+                level: (i < 12).then(|| [sigma::Level::Medium, sigma::Level::Low][i % 2]),
+                status: sigma::Status::Test,
+                author: None,
+                techniques: Vec::new(),
+                description: None,
+                source: if i < 12 {
+                    &sigma::SIGMAHQ
+                } else {
+                    &sigma::ELASTIC_BEHAVIOUR
+                },
+            })
+            .collect();
+        // The rules with no level matched most, so a cut by count over all would show them.
+        let mut rows: Vec<Row> = metas
+            .iter()
+            .enumerate()
+            .map(|(i, meta)| Row {
+                meta,
+                count: if i < 12 { 1 } else { 100 + i as i64 },
+                finding: None,
+            })
+            .collect();
+        let mut out = String::new();
+        matched_rows(&mut out, &mut rows).unwrap();
+        let heading = out
+            .find("<h4>Of a set that states no level</h4><span class=\"n\">12 rules, counted and not ranked by severity</span>")
+            .expect("the group's heading");
+        let shown = |range: std::ops::Range<usize>| {
+            range
+                .map(|i| out.find(&format!("Invented {i:02} (")))
+                .collect::<Vec<_>>()
+        };
+        let levelled = shown(0..12);
+        let unlevelled = shown(12..24);
+        // Ten with a level shown, the mediums first, all before the heading.
+        assert_eq!(levelled.iter().flatten().count(), 10, "{out}");
+        assert!(levelled.iter().flatten().all(|at| *at < heading), "{out}");
+        assert!(levelled[0].is_some() && levelled[11].is_none(), "{out}");
+        // Ten of the group shown after its heading, the most counted first.
+        assert_eq!(unlevelled.iter().flatten().count(), 10, "{out}");
+        assert!(unlevelled.iter().flatten().all(|at| *at > heading), "{out}");
+        assert!(unlevelled[11].unwrap() < unlevelled[10].unwrap(), "{out}");
+        assert!(unlevelled[0].is_none() && unlevelled[1].is_none(), "{out}");
+        assert_eq!(
+            shown_said(&rows),
+            "12 rules with a level matched this week; the 10 most severe are shown · \
+             12 rules of a set that states no level matched this week; the 10 counted most are shown · "
+        );
+    }
+
+    #[test]
+    fn a_rule_that_states_no_level_is_drawn_as_counted_and_says_so() {
+        // A rule of a set that states no level shows that in the row, in the style of a rule
+        // below high, and its matches are counted, never drawn as a finding.
+        let meta = sigma::Meta {
+            id: "y".to_string(),
+            name: "elastic-behaviour:y".to_string(),
+            title: "Invented".to_string(),
+            level: None,
+            status: sigma::Status::Test,
+            author: None,
+            techniques: Vec::new(),
+            description: None,
+            source: &sigma::ELASTIC_BEHAVIOUR,
+        };
+        let mut out = String::new();
+        let row = Row {
+            meta: &meta,
+            count: 3,
+            finding: None,
+        };
+        rule_row(&mut out, &row, 3).unwrap();
+        assert!(
+            out.contains("<span class=\"src\">Invented (Elastic&#39;s behaviour rules)</span>")
+                && out.contains("<span class=\"lv lv-none\">No level stated</span>")
+                && out.contains("<span class=\"rs\">Counted</span>"),
             "{out}"
         );
     }

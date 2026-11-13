@@ -1,0 +1,13 @@
+title: "Suspicious Crypto Wallet Process Termination"
+id: "f0b29612-c189-405b-bf73-88bcc4f35bab"
+status: "test"
+description: "Detects when the Killall or Pkill binary are used to terminate the Ledger Live or Trezor Suite process. The vast\nmajority of users will not terminate a process in this way. Threat actors who are attempting to hijack or backdoor an\nexisting installation will need to terminate any existing or running processes for the application in order to modify\nits source files."
+references: ["https://github.com/elastic/protections-artifacts/blob/a87715d87a2babd51b37ff6c55f104fe7e567911/behavior/rules/macos/defense_evasion_suspicious_crypto_wallet_process_termination.toml"]
+license: "Elastic License v2"
+tags: ["attack.t1562.001"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["killall", "pkill"]}
+  s2: {"process.args|contains|cased": ["\u0000Ledger Live\u0000", "\u0000Trezor Suite\u0000"]}
+  condition: "(s1 and s2)"
+elastic: {"rule_id": "f0b29612-c189-405b-bf73-88bcc4f35bab", "severity": null, "risk_score": null, "query_sha256": "43b5c6637f10ec80599dfacb6c5356196fdd8f0798df43532944029ea7a64130", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": [], "folded_fields": [], "version": "1.0.1", "actions_ignored": ["kill_process process.entity_id", "kill_process process.parent.entity_id"], "elastic_also_evaluates_on": []}

@@ -428,6 +428,8 @@ fn a_match_says_which_finding_it_went_to_as_the_core_recorded_it_with_the_person
             "level": "medium",
             "techniques_text": ["T1082"],
             "author_text": "Joseliyo Sanchez, @Joseliyo_Jstnk",
+            "source": "sigma",
+            "set": "SigmaHQ's rule set",
         })
     );
     let secs: i64 = {
@@ -1054,7 +1056,7 @@ fn no_collector_and_no_log_is_an_answer_that_says_so_and_names_the_rules_that_ju
         .iter()
         .filter(|u| u["reason"] == "not_collected")
         .collect();
-    assert_eq!(not_collected.len(), 11, "{m:#}");
+    assert_eq!(not_collected.len(), 14, "{m:#}");
     assert!(
         not_collected
             .iter()
@@ -1208,7 +1210,7 @@ fn unreadable_lines_are_counted_and_the_rules_that_judge_nothing_are_named_with_
         .iter()
         .filter(|u| u["reason"] == "not_collected")
         .collect();
-    assert_eq!(not_collected.len(), 11, "{unevaluated:#?}");
+    assert_eq!(not_collected.len(), 14, "{unevaluated:#?}");
     assert!(
         not_collected.iter().all(|u| u["detail_text"]
             == "the collector installed here records program starts only; installing the event level again adds files created and renamed"),
@@ -1227,12 +1229,16 @@ fn unreadable_lines_are_counted_and_the_rules_that_judge_nothing_are_named_with_
         reasons,
         [
             ("backslash_in_wildcard", 2),
-            ("in_part", 13),
-            ("needs_events", 23),
-            ("needs_fields", 23),
+            ("function", 1),
+            ("in_part", 23),
+            ("needs_events", 23 + 42),
+            ("needs_fields", 23 + 61),
+            ("never_true", 4),
             ("not_eql", 40),
-            ("sequence", 30),
-            ("spans_kinds", 1),
+            ("regex", 1),
+            ("sequence", 30 + 109),
+            ("spans_kinds", 1 + 1),
+            ("unsupported", 2),
         ]
         .into(),
     );
@@ -1290,6 +1296,8 @@ fn a_high_translated_rule_raises_a_finding_named_elastic_and_its_match_is_handed
             "level": "high",
             "techniques_text": ["T1115"],
             "author_text": "Elastic",
+            "source": "elastic",
+            "set": "Elastic's detection rules",
         })
     );
     assert_eq!(elastic[0]["position"], dir.position(H00, 0));
@@ -1314,6 +1322,239 @@ fn a_high_translated_rule_raises_a_finding_named_elastic_and_its_match_is_handed
     let text = String::from_utf8(out.stdout).unwrap();
     let said = "; from Elastic's detection rules under the Elastic License 2.0, macos/collection_pbpaste_execution_via_unusual_parent.yml.";
     assert!(text.contains(said), "{text}");
+}
+
+#[test]
+fn a_behaviour_rule_states_no_level_so_its_match_is_counted_and_handed_over_and_raises_nothing() {
+    // Elastic's behaviour rules state no level, and the core gives them none of its own. A
+    // match of one is handed over like one below high, with the level `not_stated`, and counted
+    // in the hour like any match; it raises no finding, so the owner is told of nothing.
+    let dir = Dir::new("behaviour");
+    dir.install();
+    dir.append(
+        H00,
+        &start(
+            1,
+            &now_time(),
+            "/bin/zsh",
+            "/usr/bin/SetFile",
+            &["SetFile", "-a", "V", "/Users/example/x"],
+        ),
+    );
+    dir.run();
+    let rule = format!("elastic-behaviour:{SETFILE}");
+    assert!(dir.findings_named(&rule).is_empty());
+    let m = dir.matches(&[]);
+    let behaviour: Vec<&Value> = m["matches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|x| x["rule"]["name"] == rule.as_str())
+        .collect();
+    assert_eq!(behaviour.len(), 1, "{m:#}");
+    assert_eq!(
+        (
+            &behaviour[0]["rule"]["level"],
+            &behaviour[0]["rule"]["file"],
+            &behaviour[0]["raised"],
+            &behaviour[0]["findings"]
+        ),
+        (
+            &json!("not_stated"),
+            &json!("macos/defense_evasion_file_hidden_via_setfile.yml"),
+            &json!("level_not_stated"),
+            &json!([])
+        )
+    );
+    let r = dir.report(&["status"]);
+    let counted: Vec<&Value> = r["rules"]["matched_last_day"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|x| x["id_text"] == SETFILE)
+        .collect();
+    assert_eq!(
+        counted,
+        [&json!({
+            "id_text": SETFILE,
+            "title_text": "File Hidden via SetFile",
+            "level": null,
+            "source": "elastic-behaviour",
+            "set": "Elastic's behaviour rules",
+            "matches": 1,
+        })]
+    );
+    // No other rule matches this start, so nothing at all asks for a look.
+    assert_eq!(r["needs_a_look_total"], 0, "{r:#}");
+}
+
+/// Elastic's behaviour rule "File Hidden via SetFile".
+const SETFILE: &str = "2ed9c6bf-025e-4edf-a9ec-1493d0bb4f81";
+
+/// "Potential XCSSET Malware Infection": SigmaHQ's rule, medium, and Elastic's behaviour rule of
+/// the same title, under different ids.
+const XCSSET: &str = "Potential XCSSET Malware Infection";
+const XCSSET_SETS: [(&str, &str); 2] = [
+    ("sigma", "SigmaHQ's rule set"),
+    ("elastic-behaviour", "Elastic's behaviour rules"),
+];
+
+#[test]
+fn every_listing_of_rules_tells_two_rules_of_the_same_title_apart_by_their_set() {
+    // Two sets ship a rule of the same title. Wherever rules are listed, a person reads each
+    // with its set beside its title, so the two rows differ, and a machine reads `source` and
+    // `set`: in `rules` and `rules --over-log`, text and JSON, in `matches`, in the status, on
+    // the summary page and on the rules page. One invented start matches both.
+    let dir = Dir::new("same-title");
+    dir.install();
+    dir.append(
+        H00,
+        &start(
+            1,
+            &now_time(),
+            "/bin/zsh",
+            "/usr/bin/zip",
+            &[
+                "zip",
+                "-r",
+                "/tmp/x.zip",
+                "/Users/example/Library/Group Containers/invented",
+            ],
+        ),
+    );
+    dir.run();
+    let labels: Vec<String> = XCSSET_SETS
+        .iter()
+        .map(|(_, set)| format!("{XCSSET} ({set})"))
+        .collect();
+    // A machine form: the entries of this title carry each set once, by name and in words.
+    let sets_of = |entries: Vec<&Value>, title: &str| -> Vec<(String, String)> {
+        let mut sets: Vec<(String, String)> = entries
+            .into_iter()
+            .filter(|e| e[title] == XCSSET)
+            .map(|e| {
+                (
+                    e["source"].as_str().unwrap().to_string(),
+                    e["set"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect();
+        sets.sort();
+        sets
+    };
+    let mut both: Vec<(String, String)> = XCSSET_SETS
+        .iter()
+        .map(|(n, s)| (n.to_string(), s.to_string()))
+        .collect();
+    both.sort();
+    fn array(v: &Value) -> Vec<&Value> {
+        v.as_array().unwrap().iter().collect()
+    }
+    // A person's form: one line or row for each, each with its set.
+    let rows_of = |text: &str| -> Vec<String> {
+        let rows: Vec<String> = text
+            .lines()
+            .filter(|l| l.contains(XCSSET))
+            .map(str::to_string)
+            .collect();
+        assert_eq!(rows.len(), 2, "{text}");
+        assert_ne!(rows[0], rows[1]);
+        for label in &labels {
+            assert!(
+                rows.iter().any(|r| r.contains(label.as_str())),
+                "{label}: {rows:?}"
+            );
+        }
+        rows
+    };
+
+    let rules = dir.report(&["rules"]);
+    assert_eq!(sets_of(array(&rules["evaluated"]), "title_text"), both);
+    let out = dir.command(&["rules"], &[]).output().unwrap();
+    rows_of(&String::from_utf8(out.stdout).unwrap());
+
+    let replay = |json: bool| {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_immune"));
+        c.args(["rules", "--over-log", "--system-root"])
+            .arg(dir.root());
+        if json {
+            c.arg("--json");
+        }
+        String::from_utf8(c.output().unwrap().stdout).unwrap()
+    };
+    let over: Value = serde_json::from_str(&replay(true)).unwrap();
+    assert_eq!(
+        sets_of(array(&over["result"]["matched"]), "title_text"),
+        both
+    );
+    let text = replay(false);
+    rows_of(&text);
+    // The rule of a set that states no level is not ranked among the levels: it comes after
+    // them under its own heading.
+    let heading = text
+        .find("\n  Of a set that states no level: 1\n")
+        .expect("the heading");
+    assert!(text.find(&labels[1]).unwrap() > heading, "{text}");
+    assert!(text.find(&labels[0]).unwrap() < heading, "{text}");
+
+    let m = dir.matches(&[]);
+    let rules_matched: Vec<&Value> = array(&m["matches"])
+        .into_iter()
+        .map(|x| &x["rule"])
+        .collect();
+    assert_eq!(sets_of(rules_matched, "title_text"), both);
+
+    let status = dir.report(&["status"]);
+    assert_eq!(
+        sets_of(array(&status["rules"]["matched_last_day"]), "title_text"),
+        both
+    );
+
+    let out = dir.command(&["view", "--no-open"], &[]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let pages: Vec<(String, String)> = String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .map(|p| (p.to_string(), std::fs::read_to_string(p).unwrap()))
+        .collect();
+    let rules_page = &pages
+        .iter()
+        .find(|(p, _)| p.ends_with("view/rules.html"))
+        .unwrap()
+        .1;
+    let summary = &pages[0].1;
+    for page in [summary, rules_page] {
+        for label in &labels {
+            let label = label.replace('\'', "&#39;");
+            assert_eq!(page.matches(&label).count(), 1, "{label}");
+        }
+    }
+
+    // Every entry of every machine listing carries its set, whatever its title.
+    let mut entries: Vec<&Value> = Vec::new();
+    for key in ["evaluated", "in_part", "not_evaluated"] {
+        entries.extend(array(&rules[key]));
+    }
+    entries.extend(array(&m["unevaluated"]));
+    entries.extend(array(&status["rules"]["matched_last_day"]));
+    entries.extend(array(&status["rules"]["not_watching"]));
+    entries.extend(array(&over["result"]["matched"]));
+    for d in array(&rules["drill"]) {
+        entries.extend(array(&d["matches"]));
+    }
+    let words = |source: &str| match source {
+        "sigma" => "SigmaHQ's rule set",
+        "elastic" => "Elastic's detection rules",
+        "elastic-behaviour" => "Elastic's behaviour rules",
+        other => panic!("no set {other}"),
+    };
+    for e in entries {
+        assert_eq!(e["set"], words(e["source"].as_str().unwrap()), "{e}");
+    }
 }
 
 #[test]
@@ -1353,6 +1594,27 @@ fn immune_rules_lists_both_sets_and_names_every_rule_not_taken_with_its_reason()
         let words = words.as_str().unwrap();
         assert!(words.contains(set) && words.contains(about), "{words}");
     }
+    // Only the sets whose rules state levels raise findings; the catalogue names no finding a
+    // behaviour rule could raise by itself, and says why it raises none.
+    assert_eq!(
+        said["rule"],
+        "sigma:<the rule's id> or elastic:<the rule's id>"
+    );
+    assert_eq!(said["raised_by_sets"], json!(["sigma", "elastic"]));
+    assert_eq!(
+        said["sets_that_raise_nothing"],
+        json!([{
+            "name": "elastic-behaviour",
+            "set": "Elastic's behaviour rules",
+            "why": "its rules state no level, so a match is counted and handed over and raises no finding by itself",
+        }])
+    );
+    for meanings in [
+        &said["meaning_by_set"],
+        &said["for_file_events"]["meaning_by_set"],
+    ] {
+        assert!(meanings.get("elastic-behaviour").is_none(), "{meanings}");
+    }
     let sources: Vec<&Value> = rules["sources"].as_array().unwrap().iter().collect();
     assert_eq!(
         sources
@@ -1366,11 +1628,60 @@ fn immune_rules_lists_both_sets_and_names_every_rule_not_taken_with_its_reason()
         [
             (json!("sigma"), json!(75), json!(0)),
             (json!("elastic"), json!(66), json!(119)),
+            (json!("elastic-behaviour"), json!(57), json!(221)),
         ]
     );
     let not_evaluated = rules["not_evaluated"].as_array().unwrap();
-    assert_eq!(not_evaluated.len(), 119);
-    assert!(not_evaluated.iter().all(|r| r["source"] == "elastic"));
+    assert_eq!(not_evaluated.len(), 119 + 221);
+    assert!(
+        not_evaluated
+            .iter()
+            .all(|r| r["source"] == "elastic" || r["source"] == "elastic-behaviour")
+    );
+    // Every reason the behaviour rules' translation gave has its code.
+    let mut codes: std::collections::BTreeMap<&str, usize> = Default::default();
+    for r in not_evaluated
+        .iter()
+        .filter(|r| r["source"] == "elastic-behaviour")
+    {
+        *codes.entry(r["reason"].as_str().unwrap()).or_default() += 1;
+    }
+    assert_eq!(
+        codes,
+        [
+            ("function", 1),
+            ("needs_events", 42),
+            ("needs_fields", 61),
+            ("never_true", 4),
+            ("regex", 1),
+            ("sequence", 109),
+            ("spans_kinds", 1),
+            ("unsupported", 2),
+        ]
+        .into()
+    );
+    // A behaviour rule not taken is named with the translation's reason, and with no level,
+    // since its set states none.
+    let never = not_evaluated
+        .iter()
+        .find(|r| r["id_text"] == "76259650-ed25-4d48-9cb2-e4a32073f945")
+        .unwrap();
+    assert_eq!(
+        (
+            &never["reason"],
+            &never["level"],
+            &never["name"],
+            &never["detail_text"]
+        ),
+        (
+            &json!("never_true"),
+            &Value::Null,
+            &json!("elastic-behaviour:76259650-ed25-4d48-9cb2-e4a32073f945"),
+            &json!(
+                "asks for a field every event of its kinds has to be absent: process.command_line"
+            )
+        )
+    );
     let sequence = not_evaluated
         .iter()
         .find(|r| r["id_text"] == "a0fbd7a9-1923-4e05-92df-b484168f17bc")
@@ -1418,6 +1729,19 @@ fn immune_rules_lists_both_sets_and_names_every_rule_not_taken_with_its_reason()
         plain.contains("      correlates a sequence of events, which is not translated (Sequence)"),
         "{plain}"
     );
+    // The reasons the behaviour rules' translation added, each in its own words.
+    for said in [
+        "      could never be true over the events here (asks for a field",
+        "      needs a regular expression in EQL's syntax, which is not translated (regex match~(",
+        "      uses a function of EQL's that is not translated (expected a field, got length(",
+        "      compares one field with another, which a Sigma rule cannot (function startswith: ",
+    ] {
+        assert!(plain.contains(said), "{said}");
+    }
+    assert!(
+        plain.contains("  no level stated File Hidden via SetFile (Elastic's behaviour rules)"),
+        "{plain}"
+    );
     assert!(
         plain.contains("      an alternative of the upstream rule needs process.parent.code_signature.trusted, which a program start does not give"),
         "{plain}"
@@ -1446,6 +1770,8 @@ fn a_rule_a_translated_set_did_not_take_is_named_with_its_reason_and_what_the_tr
             "reason": "sequence",
             "fields_text": [],
             "detail_text": "Sequence",
+            "source": "elastic",
+            "set": "Elastic's detection rules",
         })
     );
     let fields = by_name("elastic:f85ce03f-d8a8-4c83-acdc-5c8cd0592be7");
@@ -1477,6 +1803,13 @@ fn a_rule_a_translated_set_did_not_take_is_named_with_its_reason_and_what_the_tr
             &Value::Null
         )
     );
+    // A rule of a set that states no level is given as such, never as `unspecified`, which a
+    // reader takes for the highest severity.
+    let never = by_name("elastic-behaviour:76259650-ed25-4d48-9cb2-e4a32073f945");
+    assert_eq!(
+        (&never["level"], &never["reason"]),
+        (&json!("not_stated"), &json!("never_true"))
+    );
     let papercut = by_name("elastic:a2d4508e-e9c2-41f6-9466-0c3aed8cc2c9");
     assert_eq!(
         (
@@ -1503,6 +1836,10 @@ fn a_rule_a_translated_set_did_not_take_is_named_with_its_reason_and_what_the_tr
         v1::UnevaluatedReason::NeedsFields,
         v1::UnevaluatedReason::BackslashInWildcard,
         v1::UnevaluatedReason::SpansKinds,
+        v1::UnevaluatedReason::NeverTrue,
+        v1::UnevaluatedReason::Regex,
+        v1::UnevaluatedReason::Unsupported,
+        v1::UnevaluatedReason::Function,
         v1::UnevaluatedReason::InPart,
     ] {
         assert!(reasons.contains(&(why as i32)), "{why:?}");

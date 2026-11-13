@@ -2,7 +2,8 @@ Sigma rules for macOS, copied unchanged on 12 November 2026 from the SigmaHQ rul
 https://github.com/SigmaHQ/sigma, at commit d7c9da10c170a6988d68ebdf2c9f7bd8782b7c55 of
 10 November 2026. Every rule whose logsource names `product: macos` in `rules/`,
 `rules-emerging-threats/` and `rules-threat-hunting/` is here, at the path it has in that
-repository. Each file is byte-for-byte as published; none is modified. They are compiled
+repository. Each file is byte-for-byte as published; none is modified. `SHA256SUMS` holds the
+sha256 of every file, and a test fails when a file differs from it. They are compiled
 into the program and evaluated by it; nothing fetches rules at run time.
 
 The rules are licensed under the Detection Rule License (DRL) 1.1,

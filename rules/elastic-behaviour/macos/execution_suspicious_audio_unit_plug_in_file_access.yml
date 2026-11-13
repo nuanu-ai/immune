@@ -1,0 +1,15 @@
+title: "Suspicious Audio Unit Plug-in File Access"
+id: "ced79436-2518-4aac-8939-c775b4b4ccd5"
+status: "test"
+description: "Detects when an audio component or plug-in is created or accessed by a suspicious process. Applications such as\nGarageBand 10, Logic Pro X, Audacity, etc., use audio unit plug-ins to create sound effects and virtual instruments.\nSoftware developers and sound engineers can create either audio components or virtual studio technology (VST) plug-ins.\nThreat actors can also create audio components or plug-ins and load them to execute unsigned code via the native auval\nor auvaltool binaries."
+references: ["https://github.com/elastic/protections-artifacts/blob/a87715d87a2babd51b37ff6c55f104fe7e567911/behavior/rules/macos/execution_suspicious_audio_unit_plug_in_file_access.toml"]
+license: "Elastic License v2"
+tags: ["attack.t1059.004"]
+logsource: {"product": "macos", "category": "file_event"}
+detection:
+  s1: {"event.action|cased": ["deletion"]}
+  s2: {"process.name": ["curl", "nscurl", "osascript", "wget", "python*"]}
+  s3: {"file.extension": ["component", "audiocomp"]}
+  s4: {"file.path": ["/Library/Audio/Plug-ins/Components/*", "/Users/*/Library/Audio/Plug-ins/Components/*"]}
+  condition: "(not s1 and s2 and s3 and s4)"
+elastic: {"rule_id": "ced79436-2518-4aac-8939-c775b4b4ccd5", "severity": null, "risk_score": null, "query_sha256": "7bcbcbe164ec71313ca590c8e35b48f3605e6700522792747cd545f14deb971d", "kinds": ["create", "rename"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": [], "folded_fields": [], "version": "1.0.12", "actions_ignored": ["kill_process Effective_process.executable", "kill_process process.entity_id"], "elastic_also_evaluates_on": ["modification", "open", "mount", "extended_attributes_delete", "clone"]}

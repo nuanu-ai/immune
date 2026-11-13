@@ -6,7 +6,7 @@ name = "immune-contract"
 # only added to, and each change that adds to it raises the minor version, so a reader built on
 # an older 1.x reads what a newer core prints. A change that leaves the messages as they are,
 # such as a comment in the schema, raises the patch version.
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 rust-version = "1.89"
 license = "MIT"

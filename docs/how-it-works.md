@@ -10,7 +10,7 @@ Readers → Store → Rules and matchers → Findings → Store → Commands →
 
 - Readers look at one kind of source each: launch agents, shell profiles, lockfiles, installed applications, the SSH configuration, the collector's log, and so on. A reader writes statements about what it saw and a record of what it looked through.
 - The store is one SQLite file, by default `~/Library/Application Support/ai.nuanu.immune/store.db`. Raw input the readers keep, the downloaded vulnerability data and the HTML pages live in the same folder.
-- Rules and matchers read the store and write findings into it. Immune's own rules are plain Rust code. Published rules are evaluated by the `sigma-rust` crate: SigmaHQ's rules for macOS, shipped unchanged, and Elastic's detection rules for macOS that translate into Sigma exactly over what the collector records. Matchers compare what the readers found with vulnerability data and indicator lists.
+- Rules and matchers read the store and write findings into it. Immune's own rules are plain Rust code. Published rules are evaluated by the `sigma-rust` crate: SigmaHQ's rules for macOS, shipped unchanged, and Elastic's detection rules and behaviour rules for macOS that translate into Sigma exactly over what the collector records. Matchers compare what the readers found with vulnerability data and indicator lists.
 - Commands read the store and print what they find, as text or as one JSON envelope with `--json`. A command of the contract with the response layer prints one protobuf message instead, or the same message as JSON. The app, the user's AI agent and the HTML pages all read the same commands.
 
 The store is the one seam between the parts. What a reader saw, what a rule found and what a person answered are all rows in it, and the commands, the app and the pages read nothing else. No other layer or interface sits between the parts. That keeps any one of them replaceable: a collector, for example, can be swapped for another that writes the same facts.
@@ -149,7 +149,7 @@ Each of Immune's own rules is plain code with an id, the ATT&CK technique where 
 | `lockfiles.malicious-package` | a dependency a malicious-package record names | T1195.001 | critical, high |
 | `lockfiles.malicious-name-removed` | a dependency whose name the registry replaced with a placeholder | T1195.001 | high, low |
 | `lockfiles.exploited-vulnerability` | a dependency with a vulnerability in CISA's catalogue | | critical, medium |
-| `sigma:<rule id>`, `elastic:<rule id>` | a published rule marked high or critical, SigmaHQ's or Elastic's translated one, matched a program start or a file event | the rule's | the rule's level; medium for a `stable` rule, low otherwise |
+| `sigma:<rule id>`, `elastic:<rule id>` | a published rule marked high or critical, SigmaHQ's or one of Elastic's translated detection rules, matched a program start or a file event. Elastic's behaviour rules (`elastic-behaviour:<rule id>`) state no level and raise no finding | the rule's | the rule's level; medium for a `stable` rule, low otherwise |
 
 A rule finds either an event or a state. A finding about an event stays open through quiet runs until it is answered; found again, it is the same finding seen later. A finding about a state (the three lockfile rules) is cleared when the state goes, for example when the dependency is removed. A published rule raises one finding per rule on a Mac, and further matches add to its count and its evidence.
 
@@ -199,7 +199,7 @@ Where the industry has a proven name, format or rule set, Immune takes it. Its o
 |---|---|
 | Event field names | the Elastic Common Schema, so published rules translate |
 | Published rules | SigmaHQ's rules for macOS, unchanged; the Sigma format and its field names |
-| A second published rule set | Elastic's detection rules for macOS (`elastic/detection-rules`), translated into Sigma by a program, so one evaluator runs both sets; Elastic's field names, the Elastic Common Schema's |
+| A second and a third published rule set | Elastic's detection rules for macOS (`elastic/detection-rules`) and its behaviour rules for macOS (`elastic/protections-artifacts`), translated into Sigma by a program, so one evaluator runs every set; Elastic's field names, the Elastic Common Schema's |
 | Techniques | MITRE ATT&CK for Enterprise, release 20.1 |
 | Severity and confidence | OCSF's finding fields and level names |
 | Vulnerability answers | OpenVEX's statuses: affected, not affected with a justification, under investigation |
@@ -210,7 +210,11 @@ Where the industry has a proven name, format or rule set, Immune takes it. Its o
 | Collector | Apple's `eslogger`, `jq` and `rotatelogs` |
 | Reading on from a position the reader keeps | journald's cursors (`journalctl --after-cursor`) and the offsets a log broker's consumer commits |
 
-Elastic's rules are written in Elastic's query languages, and Immune has no evaluator of them. A program outside this repository translates each EQL rule into a Sigma rule over Elastic's own field names, mechanically, and takes a translation only when it is exact for every event the collector records. Each taken translation was checked against a reference that follows Elasticsearch's documented meaning of the query, on 33,969 invented events evaluated by `sigma-rust` 0.7.0 over events built as Immune builds them, and they disagreed on none. Of Elastic's 185 rules for macOS at commit `032ac5e`, 66 were taken. The other 119 are named in `rules/elastic/not-taken.tsv` with the reason: 30 correlate a sequence of events, 40 are written in KQL or ES|QL, 23 need events and 23 need fields the collector does not record, 2 hold a backslash in a wildcard pattern and 1 is about program starts and file events at once. How an event becomes the fields each set's rules read is in [event-level.md](event-level.md#the-rules).
+Elastic's rules are written in Elastic's query languages, and Immune has no evaluator of them. A program outside this repository translates each EQL rule into a Sigma rule over Elastic's own field names, mechanically, and takes a translation only when it is exact for every event the collector records. Each taken translation was checked against a reference that follows Elasticsearch's documented meaning of the query, on 33,969 invented events evaluated by `sigma-rust` 0.7.0 over events built as Immune builds them, and they disagreed on none. Of Elastic's 185 rules for macOS at commit `032ac5e`, 66 were taken. The other 119 are named in `rules/elastic/not-taken.tsv` with the reason: 30 correlate a sequence of events, 40 are written in KQL or ES|QL, 23 need events and 23 need fields the collector does not record, 2 hold a backslash in a wildcard pattern and 1 is about program starts and file events at once.
+
+The same translator and the same check took 57 of Elastic's 278 behaviour rules for macOS at commit `a87715d` of `elastic/protections-artifacts`, checked on 11,472 invented events with no disagreement. The other 221 are named in `rules/elastic-behaviour/not-taken.tsv`: 109 correlate a sequence of events, 42 need events and 61 need fields the collector does not record, 4 could never be true over the events here, 1 needs a regular expression in EQL's syntax, 2 use a function of EQL's that is not translated, 1 compares one field with another and 1 is about program starts and file events at once. A behaviour rule states no level: Elastic's sensor sets an alert's severity when it runs and does not publish which a rule gets. Immune gives it none of its own. Its matches are counted and handed over like those of a rule below high, and it raises no finding by itself. Upstream, every behaviour rule also stops a process when it matches. Immune takes no action of any kind; the translation records the actions as ignored.
+
+How an event becomes the fields each set's rules read is in [event-level.md](event-level.md#the-rules).
 
 Immune's own:
 

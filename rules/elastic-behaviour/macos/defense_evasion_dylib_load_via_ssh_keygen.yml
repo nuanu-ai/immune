@@ -1,0 +1,13 @@
+title: "Dylib Load via SSH-Keygen"
+id: "53a6460a-a204-42e0-9c92-c3bef161b6c1"
+status: "test"
+description: "Detects when the ssh-keygen binary is executed with the -D argument which can be used to load a malicious dylib into\nmemory."
+references: ["https://github.com/elastic/protections-artifacts/blob/a87715d87a2babd51b37ff6c55f104fe7e567911/behavior/rules/macos/defense_evasion_dylib_load_via_ssh_keygen.toml"]
+license: "Elastic License v2"
+tags: ["attack.t1574"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["ssh-keygen"]}
+  s2: {"process.args|contains|cased": ["\u0000-D\u0000"]}
+  condition: "(s1 and s2)"
+elastic: {"rule_id": "53a6460a-a204-42e0-9c92-c3bef161b6c1", "severity": null, "risk_score": null, "query_sha256": "692ff9cfe507412d40471d173e6688120a07f27b2f97237a85b14f740d15fa4b", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": [], "folded_fields": [], "version": "1.0.9", "actions_ignored": ["kill_process process.entity_id"], "elastic_also_evaluates_on": ["fork"]}

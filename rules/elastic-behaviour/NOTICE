@@ -1,0 +1,74 @@
+Behaviour rules for macOS from Elastic's protections artifacts,
+https://github.com/elastic/protections-artifacts, at commit
+a87715d87a2babd51b37ff6c55f104fe7e567911, translated into Sigma.
+
+Of the 278 rules in that repository's `behavior/rules/macos/`, 57 are here as Sigma files, at
+the path their upstream rule has under `behavior/rules/` (`macos/`), with `.yml` for `.toml`.
+Each file is a mechanical translation of the upstream rule it names, and is not the upstream
+file. Its `references` link to the upstream file at that commit, and its `elastic` block gives
+the upstream rule's `rule_id` and version, the sha256 of its query, the kinds of event it is
+evaluated over, what the translation left out of it, the fields it negates that may be absent,
+the kinds of event Elastic would also evaluate it on, and the actions the upstream rule takes,
+which are ignored. None is edited by hand. The translator is not part of this repository, and
+it is the one that translated `rules/elastic/`. `SHA256SUMS` holds the sha256 of every file as
+the translator wrote it and of `not-taken.tsv`, and a test fails when a file differs from it.
+
+No rule states a level. Elastic's sensor sets a behaviour alert's severity when it runs and
+does not publish which a rule gets, so each file's `severity` and `risk_score` are null and the
+file has no `level`. Immune reads a file of this set only in that shape, the keys the translator
+writes and no other, so a level in any spelling is refused rather than ignored. It gives these
+rules no level of its own. Their matches are counted and handed over, and none of them raises a
+finding by itself. Wherever rules are ordered or cut by level, these are a group of their own,
+never ranked among the levels.
+
+Every one of the 278 upstream rules carries actions that stop a process. The translation records
+them in `actions_ignored`, and Immune takes none of them: it never stops a process.
+
+Each translation was checked against a reference that follows Elasticsearch's documented
+meaning of the upstream query, on 11,472 invented events evaluated by `sigma-rust` 0.7.0, the
+evaluator this program uses, over events built as this program builds them. The 57 agreed with
+the reference on every event.
+
+What the translations rest on:
+
+- 10 are evaluated in part. An alternative of the upstream rule needs a field the log does not
+  give, so the translation left it out and it never matches: the effective parent
+  (`process.Ext.effective_parent.name` or `.executable`) in 6, whether a signature exists or is
+  trusted (`code_signature.exists`, `code_signature.trusted`) in 3, and
+  `process.code_signature.signing_id` in 2. One rule lacks both the effective parent and
+  `signing_id`.
+- 6 negate a field an event may lack: `process.args` or `process.parent.executable`.
+  Elasticsearch treats a comparison with a field the event does not have as neither true nor
+  false, so its negation does not hold either. The translation asks for the field to be present
+  wherever it is negated.
+- 12 do not ask for `event.action == "exec"`, so Elastic would also evaluate them on a fork. The
+  collector records no fork, so they see only programs started by `exec`.
+- The 3 file rules would also be evaluated on kinds of file event the log does not hold, such as
+  files modified or opened. One of them also asks for files modified, which never match here.
+
+6 titles are shared by two sets among the rules evaluated, and 14 among all the rules listed,
+taken or not, each pair under different ids. Among the rules evaluated, 5 of the 57 share a
+title with one of the 66 detection rules in `rules/elastic/`: Dumping Account Hashes via
+Built-In Commands, Modification of Safari Settings via Defaults Command, Potential Privacy
+Control Bypass via Localhost Secure Copy, Potential Kerberos Attack via Bifrost, and Unexpected
+Child Process of macOS Screensaver Engine. One shares it with a SigmaHQ rule in `rules/sigma/`:
+Potential XCSSET Malware Infection. An event that matches both is counted once in each set.
+Every listing of rules names each rule's set beside its title.
+
+`not-taken.tsv` lists the other 221 rules, each with its upstream path, rule id, name, an empty
+severity, the reason it was not taken and the translation's detail: `sequence` (it correlates
+several events), `needs_events` (it is about events this program does not record),
+`needs_fields` (a part it cannot do without reads a field the events do not give), `never_true`
+(it could never be true over the events here), `regex` (a part it cannot do without is a regular
+expression in EQL's syntax, which is not translated), `unsupported` (it uses a function of EQL's
+that is not translated), `function` (it compares one field with another) and `spans_kinds` (it is
+about program starts and file events at once).
+
+The files are compiled into the program and evaluated by it. Nothing fetches rules at run
+time.
+
+The upstream rules are licensed under the Elastic License 2.0, as each file's `license` field
+says ("Elastic License v2"). Its text is at https://www.elastic.co/licensing/elastic-license
+and in the repository's `LICENSE.txt` at that commit,
+https://github.com/elastic/protections-artifacts/blob/a87715d87a2babd51b37ff6c55f104fe7e567911/LICENSE.txt.
+The upstream rules name no authors.

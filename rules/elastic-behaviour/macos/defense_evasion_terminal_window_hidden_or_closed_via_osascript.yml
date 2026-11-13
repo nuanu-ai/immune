@@ -1,0 +1,15 @@
+title: "Terminal Window Hidden or Closed via Osascript"
+id: "c109fbb8-ef78-49a5-90b2-1c9ee3b10b09"
+status: "test"
+description: "Detects the use of Osascript to hide or close a Terminal window from the user. The AMOS stealer has utilized this\ntechnique in order to hide its execution from on the system."
+references: ["https://github.com/elastic/protections-artifacts/blob/a87715d87a2babd51b37ff6c55f104fe7e567911/behavior/rules/macos/defense_evasion_terminal_window_hidden_or_closed_via_osascript.toml"]
+license: "Elastic License v2"
+tags: ["attack.t1564.003"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["osascript"]}
+  s2: {"process.args|contains|cased": ["\u0000-e\u0000"]}
+  s3: {"process.command_line": ["*Terminal* visible*window*false*"]}
+  s4: {"process.command_line": ["*Terminal* to*close*first*window*"]}
+  condition: "(s1 and s2 and (s3 or s4))"
+elastic: {"rule_id": "c109fbb8-ef78-49a5-90b2-1c9ee3b10b09", "severity": null, "risk_score": null, "query_sha256": "293c1acb6d0823c7141b1f91109e89b5412e988cdf870b32d766ca2e99f5733b", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": [], "folded_fields": [], "version": "1.0.5", "actions_ignored": ["kill_process process.entity_id", "kill_process process.parent.entity_id"], "elastic_also_evaluates_on": []}

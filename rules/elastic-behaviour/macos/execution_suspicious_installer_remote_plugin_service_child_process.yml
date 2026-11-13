@@ -1,0 +1,15 @@
+title: "Suspicious Installer Remote Plugin Service Child Process"
+id: "a67b556a-daa0-46c6-ba11-d03336442337"
+status: "test"
+description: "Detects when the macOS installer application remote plugin service invokes a suspicious process. This activity is highly\nsuspicious and could indicate a malicious installer package attempting to gain initial access via XPC."
+references: ["https://github.com/elastic/protections-artifacts/blob/a87715d87a2babd51b37ff6c55f104fe7e567911/behavior/rules/macos/execution_suspicious_installer_remote_plugin_service_child_process.toml"]
+license: "Elastic License v2"
+tags: ["attack.t1559.003"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.parent.executable|cased": ["/System/Library/CoreServices/Installer.app/Contents/XPCServices/InstallerRemotePluginService*"]}
+  s2: {"process.name": ["tclsh", "python*", "osascript", "curl", "nscurl"]}
+  s3: {"process.args|contains": ["\u0000open", "\u0000rm", "\u0000touch"]}
+  s4: {"process.args|exists": true}
+  condition: "(s1 and s2 and (s4 and not s3))"
+elastic: {"rule_id": "a67b556a-daa0-46c6-ba11-d03336442337", "severity": null, "risk_score": null, "query_sha256": "b27053e824cf018bd7aabc7fa3fe542630a80f6ef46c386c0180f1ebb32aff07", "kinds": ["start"], "in_part_missing_fields": ["needs_fields process.Ext.effective_parent.executable"], "also_asks_events": [], "null_sensitive": ["process.args"], "folded_fields": [], "version": "1.0.19", "actions_ignored": ["kill_process process.entity_id", "kill_process process.parent.entity_id"], "elastic_also_evaluates_on": []}

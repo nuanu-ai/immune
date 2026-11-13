@@ -11277,7 +11277,7 @@ fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_wh
         .find(|(p, _)| p.ends_with("view/rules.html"))
         .unwrap()
         .1;
-    let told = "The event level is on, so 118 of them are watching every program start on this Mac, and 13 more are checked in part. The 10 rules for files created or renamed are not watching: the collector installed here records program starts only, and installing the event level again adds file events. In the last day they matched 1 time.";
+    let told = "The event level is on, so 162 of them are watching every program start on this Mac, and 23 more are checked in part. The 13 rules for files created or renamed are not watching: the collector installed here records program starts only, and installing the event level again adds file events. In the last day they matched 1 time.";
     let text = &page[page.find("<main>").unwrap()..];
     assert!(text.contains(told), "{text}");
     // Watching is said twice above, and each rule for file events says it does not.
@@ -11291,7 +11291,7 @@ fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_wh
     let summary = section(&pages[0].1, "as-it-happens");
     assert!(
         summary
-            .contains("<span class=\"st\">Rules watching</span><span class=\"sv\" data-live=\"watching\">118 of 260</span>"),
+            .contains("<span class=\"st\">Rules watching</span><span class=\"sv\" data-live=\"watching\">162 of 538</span>"),
         "{summary}"
     );
     assert!(!summary.contains("data-live=\"files\""), "{summary}");
@@ -11312,6 +11312,19 @@ fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_wh
         n(&r["in_part"]) - 1
     );
     assert!(!section(page, "not-evaluated").contains("No match"));
+    // The rules of a set that states no level are listed under their own heading, as a group
+    // after every level and not as one, and a reason the behaviour rules' translation added is said in words.
+    let evaluated = section(page, "evaluated");
+    let none = evaluated
+        .find("<h3>Of a set that states no level</h3>")
+        .unwrap();
+    assert!(evaluated.find("<h3>Informational</h3>").unwrap() < none);
+    assert!(evaluated.contains("<span class=\"chip lvl-none\">no level stated</span>"));
+    assert!(
+        section(page, "not-evaluated")
+            .contains("<p class=\"missing\">Could never be true over the events here. "),
+        "{page}"
+    );
 
     // The summary's row for program starts: the state and the count at a glance, and a
     // restart of the collector as a quieter line under it, only when there is one.
@@ -11368,12 +11381,12 @@ fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_wh
         .find(|(p, _)| p.ends_with("view/rules.html"))
         .unwrap()
         .1;
-    let told = "The event level is on, so 128 of them are watching this Mac: 118 every program start and 10 every file created or renamed; 13 more are checked in part.";
+    let told = "The event level is on, so 175 of them are watching this Mac: 162 every program start and 13 every file created or renamed; 23 more are checked in part.";
     assert!(page.contains(told), "{page}");
     assert!(!page.contains(unwatched), "{page}");
     let summary = section(&pages[0].1, "as-it-happens");
     assert!(
-        summary.contains("data-live=\"watching\">128 of 260</span>")
+        summary.contains("data-live=\"watching\">175 of 538</span>")
             && summary.contains(
                 "<span class=\"ss\" data-live=\"files\">1 file event checked in the last day</span>"
             ),
@@ -11399,7 +11412,7 @@ fn as_it_happens_draws_the_day_the_status_counts_and_a_published_rule_finding_wh
     assert!(
         quiet.contains("<p class=\"first\"><strong>Program starts: not installed.</strong>")
             && quiet.contains(
-                "<span class=\"st\">Rules watching</span><span class=\"sv\" data-live=\"watching\">0 of 260</span>"
+                "<span class=\"st\">Rules watching</span><span class=\"sv\" data-live=\"watching\">0 of 538</span>"
             ),
         "{quiet}"
     );

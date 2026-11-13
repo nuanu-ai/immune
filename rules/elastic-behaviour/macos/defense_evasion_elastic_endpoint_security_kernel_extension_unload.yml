@@ -1,0 +1,13 @@
+title: "Elastic Endpoint Security Kernel Extension Unload"
+id: "a412fd9b-2a06-49ff-a073-8eb313c2d930"
+status: "test"
+description: "Identifies attempts to unload the Elastic Endpoint Security kernel extension via the kextunload command."
+references: ["https://github.com/elastic/protections-artifacts/blob/a87715d87a2babd51b37ff6c55f104fe7e567911/behavior/rules/macos/defense_evasion_elastic_endpoint_security_kernel_extension_unload.toml"]
+license: "Elastic License v2"
+tags: ["attack.t1547.006", "attack.t1562.001"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["kextunload"]}
+  s2: {"process.args|contains": [".EndpointSecurity\u0000", "\u0000EndpointSecurity.kext\u0000"]}
+  condition: "(s1 and s2)"
+elastic: {"rule_id": "a412fd9b-2a06-49ff-a073-8eb313c2d930", "severity": null, "risk_score": null, "query_sha256": "769268320f8462a6fb547c22e2c7ce77121de234320ff6de9cb2ac26a80f6257", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": [], "folded_fields": [], "version": "1.0.30", "actions_ignored": ["kill_process process.entity_id", "kill_process process.parent.entity_id"], "elastic_also_evaluates_on": ["fork"]}

@@ -1,0 +1,15 @@
+title: "Modification of Safari Settings via Defaults Command"
+id: "396e1138-243c-4215-a8ed-be303204710d"
+status: "test"
+description: "Identifies changes to the Safari configuration using the built-in defaults command. Adversaries may attempt to enable or\ndisable certain Safari settings, such as enabling JavaScript from Apple Events to ease the user's browser's hijacking."
+references: ["https://github.com/elastic/protections-artifacts/blob/a87715d87a2babd51b37ff6c55f104fe7e567911/behavior/rules/macos/defense_evasion_modification_of_safari_settings_via_defaults_command.toml"]
+license: "Elastic License v2"
+tags: ["attack.t1562.001"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["defaults"]}
+  s2: {"process.args|contains": ["\u0000write\u0000"]}
+  s3: {"process.command_line": ["*com.apple.Safari*"]}
+  s4: {"process.command_line": ["*IncludeDevelopMenu*", "*JavaScript*"]}
+  condition: "(s1 and s2 and s3 and s4)"
+elastic: {"rule_id": "396e1138-243c-4215-a8ed-be303204710d", "severity": null, "risk_score": null, "query_sha256": "170e611a6d51e404aa46f4da8bd6cfb5816b755b279be9a30c7ad8dcb051048a", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": [], "folded_fields": [], "version": "1.0.29", "actions_ignored": ["kill_process process.entity_id"], "elastic_also_evaluates_on": ["fork"]}

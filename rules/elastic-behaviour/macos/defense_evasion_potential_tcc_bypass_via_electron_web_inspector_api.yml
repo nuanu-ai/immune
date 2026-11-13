@@ -1,0 +1,14 @@
+title: "Potential TCC Bypass via Electron Web Inspector API"
+id: "f150809c-5f4b-4715-b4a6-4bc8b9929d65"
+status: "test"
+description: "Adversaries can abuse Electron default configuration which allows executing code in the context of those Electron apps\nand thus inherit their TCC permissions. It\u2019s a technique that doesn\u2019t touch files of those apps so it also bypasses the\nnew macOS Ventura App Protection mechanism."
+references: ["https://github.com/elastic/protections-artifacts/blob/a87715d87a2babd51b37ff6c55f104fe7e567911/behavior/rules/macos/defense_evasion_potential_tcc_bypass_via_electron_web_inspector_api.toml"]
+license: "Elastic License v2"
+tags: ["attack.t1218"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.executable|cased": ["/Applications/*", "/Volumes/*"]}
+  s2: {"process.command_line": ["*--inspect=13337*"]}
+  s3: {"process.parent.executable|cased": ["/Applications/*", "/Volumes/*"]}
+  condition: "((s1 and s2) or (s3 and s2))"
+elastic: {"rule_id": "f150809c-5f4b-4715-b4a6-4bc8b9929d65", "severity": null, "risk_score": null, "query_sha256": "4dd11504e2496b34461fdeb7f1ce758a010b6ddc46a191e605557f76b115d5b2", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": [], "folded_fields": [], "version": "1.0.7", "actions_ignored": ["kill_process process.entity_id", "kill_process process.parent.entity_id"], "elastic_also_evaluates_on": []}

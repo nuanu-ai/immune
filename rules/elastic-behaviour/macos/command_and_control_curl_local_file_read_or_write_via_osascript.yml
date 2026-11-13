@@ -1,0 +1,14 @@
+title: "Curl Local File Read or Write via Osascript"
+id: "9abe2b65-10a9-4d7e-908b-d841d6c4b360"
+status: "test"
+description: "Detects when Curl is executed via Osascript and reads or writes to a local file. Threat actors will often use Curl to\ndownload or upload files to a local file path on the system. The use of Curl via Osascript elevates the suspiciousness\nof the activity as osascript is a scripting language that can be used to execute AppleScript commands. The combination\nof these two activities is indicative of a threat actor attempting to download or upload a file on the system."
+references: ["https://github.com/elastic/protections-artifacts/blob/a87715d87a2babd51b37ff6c55f104fe7e567911/behavior/rules/macos/command_and_control_curl_local_file_read_or_write_via_osascript.toml"]
+license: "Elastic License v2"
+tags: ["attack.t1005", "attack.t1059.002", "attack.t1105"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["curl", "nscurl"]}
+  s2: {"process.command_line": ["*file://*"]}
+  s3: {"process.parent.name|cased": ["osascript"]}
+  condition: "(s1 and s2 and s3)"
+elastic: {"rule_id": "9abe2b65-10a9-4d7e-908b-d841d6c4b360", "severity": null, "risk_score": null, "query_sha256": "17a969a30be40ba31f148b136ad1f28e67696a9ad6105b4fc8aa93f323105c5e", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": [], "folded_fields": [], "version": "1.0.4", "actions_ignored": ["kill_process process.parent.entity_id"], "elastic_also_evaluates_on": []}

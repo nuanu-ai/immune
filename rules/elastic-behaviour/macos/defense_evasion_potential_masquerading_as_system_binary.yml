@@ -1,0 +1,15 @@
+title: "Potential Masquerading as System Binary"
+id: "bb1de0c7-3504-4b31-8d3e-928aa3acf64f"
+status: "test"
+description: "Detects the execution, by root, of a non-Apple binary passing the path to a System binary as command-line arguments.\nThis activity has only been observed being used by malware in order to masquerade as the system process for the purpose\nof remaining hidden on the victim machine."
+references: ["https://github.com/elastic/protections-artifacts/blob/a87715d87a2babd51b37ff6c55f104fe7e567911/behavior/rules/macos/defense_evasion_potential_masquerading_as_system_binary.toml"]
+license: "Elastic License v2"
+tags: ["attack.t1036.004", "attack.t1059.004"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.args|contains|cased": ["\u0000/System/"]}
+  s2: {"process.parent.name|cased": ["bash", "sh", "zsh"]}
+  s3: {"process.args_count": 1}
+  s4: {"process.executable|cased": ["/System/*", "/usr/libexec/*", "/usr/bin/*", "/usr/sbin/*", "/bin/*", "/sbin/*"]}
+  condition: "(s1 and s2 and s3 and not s4)"
+elastic: {"rule_id": "bb1de0c7-3504-4b31-8d3e-928aa3acf64f", "severity": null, "risk_score": null, "query_sha256": "335a89b079e805377106fa2897908007461b70a63c46be9db177ba474594ebdf", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": [], "folded_fields": [], "version": "1.0.19", "actions_ignored": ["kill_process process.entity_id"], "elastic_also_evaluates_on": []}

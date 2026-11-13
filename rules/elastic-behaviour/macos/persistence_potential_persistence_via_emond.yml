@@ -1,0 +1,13 @@
+title: "Potential Persistence via Emond"
+id: "1cd247d8-00e8-4c62-b9ee-90cd1811460b"
+status: "test"
+description: "Identifies the execution of a suspicious child process of the Event Monitor Daemon (emond). Adversaries may abuse this\nservice by writing a rule to execute commands when a defined event occurs, such as system start up or user\nauthentication."
+references: ["https://github.com/elastic/protections-artifacts/blob/a87715d87a2babd51b37ff6c55f104fe7e567911/behavior/rules/macos/persistence_potential_persistence_via_emond.toml"]
+license: "Elastic License v2"
+tags: ["attack.t1546.014"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.parent.name|cased": ["emond"]}
+  s2: {"process.name": ["bash", "dash", "sh", "tcsh", "csh", "zsh", "ksh", "fish", "Python", "python*", "perl*", "php*", "osascript", "pwsh", "curl", "nscurl", "wget", "cp", "mv", "touch", "echo", "base64", "launchctl", "ruby*", "node*", "tcl*"]}
+  condition: "(s1 and s2)"
+elastic: {"rule_id": "1cd247d8-00e8-4c62-b9ee-90cd1811460b", "severity": null, "risk_score": null, "query_sha256": "b487f79da50202719ee88dbc484d2241d01073cfb04fb7be73cd4957d8a976d5", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": [], "folded_fields": [], "version": "1.0.31", "actions_ignored": ["kill_process process.entity_id"], "elastic_also_evaluates_on": ["fork"]}

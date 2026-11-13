@@ -1324,7 +1324,7 @@ pub fn place(id: &str, this: Option<&This>) -> String {
 /// The shipped published rule a finding's rule names, `sigma:<id>` or `elastic:<id>`; `None`
 /// for any other rule and for a rule this build no longer ships.
 pub fn published(rule: &str) -> Option<&'static crate::sigma::Loaded> {
-    crate::sigma::Rules::shipped().by_finding_rule(rule)
+    crate::sigma::Rules::shipped().by_name(rule)
 }
 
 /// What a finding from a published rule is about, as the item's `kind`: a program start for a
@@ -1332,60 +1332,59 @@ pub fn published(rule: &str) -> Option<&'static crate::sigma::Loaded> {
 pub const PUBLISHED_KIND: &str = "program start matched by a published rule";
 pub const PUBLISHED_FILE_KIND: &str = "file event matched by a published rule";
 
-/// The program's own words for a finding of a published rule about program starts, with the
-/// name of the set the rule came from. The rule's title, its authors and the start it matched
+/// The program's own words for a finding of a published rule, with the name of the set the rule
+/// came from: for a rule about program starts, then for one about file events, a file created or
+/// renamed into a place the rule names. The rule's title, its authors and the event it matched
 /// are text from a source and stand beside these, in fields of their own.
-macro_rules! start_words {
-    ($set:literal) => {
-        Words {
-            title: "A program started on this Mac in a way that a published detection rule marks as high risk.",
-            meaning: concat!(
-                "The rule, named with this finding, comes from ",
-                $set,
-                " and was written from attacks seen elsewhere. Coding agents, build tools and people run the same commands for ordinary work, so a match is often harmless."
-            ),
-            advice: "Look at the program, its arguments and what started it, shown here. If you or a tool you use ran it, mark it expected; if nobody knows it, ask your agent to look into it.",
-        }
-    };
-}
-
-/// The same for a rule about file events: a file created or renamed into a place the rule
-/// names.
-macro_rules! file_words {
-    ($set:literal) => {
-        Words {
-            title: "A file was created or renamed on this Mac where a published detection rule marks it as high risk.",
-            meaning: concat!(
-                "The rule, named with this finding, comes from ",
-                $set,
-                " and was written from attacks seen elsewhere. Installers, updaters and people put files in the same places for ordinary work, so a match is often harmless."
-            ),
-            advice: "Look at the file and the program that wrote it, shown here. If you or a tool you use put it there, mark it expected; if nobody knows it, ask your agent to look into it.",
-        }
-    };
-}
+const START_TITLE: &str =
+    "A program started on this Mac in a way that a published detection rule marks as high risk.";
+const START_ORDINARY: &str = "Coding agents, build tools and people run the same commands for ordinary work, so a match is often harmless.";
+const START_ADVICE: &str = "Look at the program, its arguments and what started it, shown here. If you or a tool you use ran it, mark it expected; if nobody knows it, ask your agent to look into it.";
+const FILE_TITLE: &str = "A file was created or renamed on this Mac where a published detection rule marks it as high risk.";
+const FILE_ORDINARY: &str = "Installers, updaters and people put files in the same places for ordinary work, so a match is often harmless.";
+const FILE_ADVICE: &str = "Look at the file and the program that wrote it, shown here. If you or a tool you use put it there, mark it expected; if nobody knows it, ask your agent to look into it.";
 
 /// The words for a finding of a rule of this set: for a rule about program starts, then for
-/// one about file events. They differ between sets only in the set's name, which a person
-/// reads in the meaning.
+/// one about file events. They differ between sets only in the set's name, `Source::set`, which
+/// a person reads in the meaning, so no set can be given another's name. Each set's meanings are
+/// made once and kept for as long as the program runs.
 pub fn published_words(source: &crate::sigma::Source) -> (Words, Words) {
-    match source.name {
-        "elastic" => (
-            start_words!("Elastic's detection rules"),
-            file_words!("Elastic's detection rules"),
-        ),
-        _ => (
-            start_words!("SigmaHQ's rule set"),
-            file_words!("SigmaHQ's rule set"),
-        ),
-    }
+    type Made = std::collections::BTreeMap<&'static str, [&'static str; 2]>;
+    static MADE: std::sync::Mutex<Made> = std::sync::Mutex::new(Made::new());
+    let mut made = MADE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let [starts, files] = *made.entry(source.set).or_insert_with(|| {
+        [START_ORDINARY, FILE_ORDINARY].map(|ordinary| {
+            let meaning = format!(
+                "The rule, named with this finding, comes from {} and was written from attacks seen elsewhere. {ordinary}",
+                source.set
+            );
+            &*Box::leak(meaning.into_boxed_str())
+        })
+    });
+    (
+        Words {
+            title: START_TITLE,
+            meaning: starts,
+            advice: START_ADVICE,
+        },
+        Words {
+            title: FILE_TITLE,
+            meaning: files,
+            advice: FILE_ADVICE,
+        },
+    )
 }
 
 /// A finding of a published rule as an item: how bad is the rule's level, how sure follows its
 /// status (`sigma::Status::confidence`), and its first ATT&CK technique stands as the item's;
-/// every technique, the authors and the evidence are in `detail`.
+/// every technique, the authors and the evidence are in `detail`. `None` for a rule whose set
+/// states no level: this build raises no finding of one, and an item is never given an empty
+/// severity.
 fn published_item(f: &Found, l: &'static crate::sigma::Loaded) -> Option<Item> {
     let m = l.meta.as_ref()?;
+    let severity = m.level_name()?;
     let (starts, files) = published_words(m.source);
     let (kind, words) = match l.kind {
         Some(crate::sigma::Kind::File) => (PUBLISHED_FILE_KIND, files),
@@ -1394,9 +1393,9 @@ fn published_item(f: &Found, l: &'static crate::sigma::Loaded) -> Option<Item> {
     Some(Item {
         id: f.id.clone(),
         kind,
-        rule: Some(m.finding_rule.as_str()),
+        rule: Some(m.name.as_str()),
         technique: m.techniques.first().map(String::as_str),
-        severity: m.level.as_str(),
+        severity,
         confidence: Some(m.status.confidence()),
         state: f.state.clone(),
         change: f.change.clone(),
@@ -1428,7 +1427,7 @@ fn answered_of(f: &Found) -> Option<Answered> {
     })
 }
 
-/// A finding as an item; `None` for a rule this build does not have.
+/// A finding as an item; `None` for a rule this build does not have or does not raise.
 pub fn item(f: &Found) -> Option<Item> {
     if let Some(l) = published(&f.rule) {
         return published_item(f, l);
@@ -1545,7 +1544,10 @@ pub fn item_json(i: &Item) -> Value {
 /// Every rule, and every cause of what is not covered, with its wording, for an agent to
 /// learn what each can say.
 pub fn catalogue_json() -> Value {
-    let sets = crate::sigma::SOURCES;
+    // Only a set whose rules state levels raises findings; a rule of a set that states none is
+    // counted and handed over, and raises nothing by itself.
+    let (sets, silent): (Vec<&crate::sigma::Source>, Vec<&crate::sigma::Source>) =
+        crate::sigma::SOURCES.iter().partition(|s| s.states_levels);
     let (starts, files) = published_words(sets[0]);
     let meanings = |of_files: bool| -> Value {
         sets.iter()
@@ -1578,13 +1580,22 @@ pub fn catalogue_json() -> Value {
         "rules": rules,
         // Every finding of a published rule says the same words; the rule is in its own field.
         "published_rules": {
-            "rule": crate::sigma::SOURCES
+            "rule": sets
                 .iter()
                 .map(|s| format!("{}:<the rule's id>", s.name))
                 .collect::<Vec<_>>()
                 .join(" or "),
             "kind": PUBLISHED_KIND,
+            "raised_by_sets": sets.iter().map(|s| s.name).collect::<Vec<_>>(),
             "raised_by_levels": ["high", "critical"],
+            "sets_that_raise_nothing": silent
+                .iter()
+                .map(|s| json!({
+                    "name": s.name,
+                    "set": s.set,
+                    "why": "its rules state no level, so a match is counted and handed over and raises no finding by itself",
+                }))
+                .collect::<Vec<_>>(),
             "severity": "the rule's level",
             "confidence_by_status": {
                 "stable": crate::sigma::Status::Stable.confidence(),
@@ -1633,6 +1644,38 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_finding_of_a_rule_that_states_no_level_is_no_item_and_no_item_has_an_empty_severity() {
+        // This build raises no finding of a rule whose set states no level; one in the store is
+        // not shown as an item with a blank severity, which a reader could not weigh.
+        let found = |rule: &str| super::Found {
+            id: "f-1".into(),
+            rule: rule.into(),
+            about: "process:invented".into(),
+            state: "open".into(),
+            change: None,
+            first_seen: (1, "1".into()),
+            last_seen: (1, "1".into()),
+            answered_at: None,
+            reason: None,
+            until: None,
+            via: None,
+            superseded: false,
+            in_force: false,
+            place: "invented".into(),
+            became: None,
+            detail: None,
+        };
+        assert!(
+            super::item(&found(
+                "elastic-behaviour:2ed9c6bf-025e-4edf-a9ec-1493d0bb4f81"
+            ))
+            .is_none()
+        );
+        let padding = super::item(&found("sigma:95361ce5-c891-4b0a-87ca-e24607884a96")).unwrap();
+        assert_eq!(padding.severity, "high");
     }
 
     #[test]

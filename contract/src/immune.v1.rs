@@ -90,8 +90,11 @@ impl FindingState {
         }
     }
 }
-/// OCSF's level names, for severity and confidence. `UNSPECIFIED`, or a value the reader does not
-/// know, is read as the highest for a severity and as the lowest for a confidence.
+/// OCSF's level names, for severity and confidence, and for a published rule's level. Values are
+/// added within version 1. `UNSPECIFIED`, or a value the reader does not know, is read as the
+/// highest for a severity and for a rule's level, and as the lowest for a confidence. A rule's
+/// level never decides whether the core raised a finding of a match: `RuleMatch.raised` says
+/// that.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -108,6 +111,14 @@ pub enum Level {
     High = 4,
     #[serde(rename = "critical")]
     Critical = 5,
+    /// The rule's set states no level, as Elastic's behaviour rules state none. It is not a
+    /// severity: it says nothing of how bad a match is, and such a rule raises no finding by
+    /// itself. Only a rule's level takes it (`Rule.level`, `Unevaluated.level`); a finding's
+    /// severity or confidence never does. A reader built before it was added reads it as a value
+    /// it does not know, so as the highest level, while the match's `raised` says it raised
+    /// nothing.
+    #[serde(rename = "not_stated")]
+    NotStated = 6,
 }
 impl Level {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -122,6 +133,7 @@ impl Level {
             Self::Medium => "LEVEL_MEDIUM",
             Self::High => "LEVEL_HIGH",
             Self::Critical => "LEVEL_CRITICAL",
+            Self::NotStated => "LEVEL_NOT_STATED",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -133,6 +145,7 @@ impl Level {
             "LEVEL_MEDIUM" => Some(Self::Medium),
             "LEVEL_HIGH" => Some(Self::High),
             "LEVEL_CRITICAL" => Some(Self::Critical),
+            "LEVEL_NOT_STATED" => Some(Self::NotStated),
             _ => None,
         }
     }
@@ -142,12 +155,14 @@ impl Level {
 #[serde(default)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Rule {
-    /// The name findings give the rule, its set's name and its id: `sigma:<id>` for SigmaHQ's,
-    /// `elastic:<rule_id>` for Elastic's. The store's name for it.
+    /// The rule's name: its set and its id, the same in every command. `sigma:<id>` for SigmaHQ's,
+    /// `elastic:<rule_id>` for Elastic's detection rules, `elastic-behaviour:<rule_id>` for
+    /// Elastic's behaviour rules. The store's name for it. A finding of a rule of a set that raises
+    /// findings carries this name.
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
-    /// Its path in the shipped set, under the set's folder, `rules/sigma/` or `rules/elastic/`, as
-    /// the prefix of `name` says. It moves between upstream commits.
+    /// Its path in the shipped set, under the set's folder, `rules/sigma/`, `rules/elastic/` or
+    /// `rules/elastic-behaviour/`, as the prefix of `name` says. It moves between upstream commits.
     #[prost(string, tag = "2")]
     pub file: ::prost::alloc::string::String,
     /// Its `id` and `title` as published, whole.
@@ -155,6 +170,7 @@ pub struct Rule {
     pub id_text: ::prost::alloc::string::String,
     #[prost(string, tag = "4")]
     pub title_text: ::prost::alloc::string::String,
+    /// Its level; `LEVEL_NOT_STATED` for a rule whose set states none.
     #[prost(enumeration = "Level", tag = "5")]
     #[serde(
         serialize_with = "crate::enum_name::<Level, _>",
@@ -168,6 +184,14 @@ pub struct Rule {
     /// for SigmaHQ's rules.
     #[prost(string, optional, tag = "7")]
     pub author_text: ::core::option::Option<::prost::alloc::string::String>,
+    /// Its set: by its name for a machine, the prefix of `name` (`sigma`, `elastic` or
+    /// `elastic-behaviour`), and in words for a person, such as "SigmaHQ's rule set". Rules of
+    /// different sets can have the same title; these tell them apart. (`PublishedRuleMatched.source`
+    /// is another thing: where the set comes from.)
+    #[prost(string, tag = "8")]
+    pub source: ::prost::alloc::string::String,
+    #[prost(string, tag = "9")]
+    pub set: ::prost::alloc::string::String,
 }
 /// An event as the collector's log holds it. The case of `body` that is set names its kind; a
 /// kind the reader does not know reads as no event.
@@ -870,11 +894,12 @@ pub struct Unevaluated {
     /// repository's `rules/` folder.
     #[prost(string, tag = "1")]
     pub file: ::prost::alloc::string::String,
-    /// The name findings give it, `sigma:<id>` or `elastic:<rule_id>`. Absent for a rule that
-    /// could not be read.
+    /// Its name, its set and its id as `Rule.name` gives it: `sigma:<id>`, `elastic:<rule_id>` or
+    /// `elastic-behaviour:<rule_id>`. Absent for a rule that could not be read.
     #[prost(string, optional, tag = "2")]
     pub name: ::core::option::Option<::prost::alloc::string::String>,
-    /// Its `id`, `title` and level. Absent for a rule that could not be read.
+    /// Its `id`, `title` and level. Absent for a rule that could not be read. `level` is
+    /// `LEVEL_NOT_STATED` for a rule whose set states none.
     #[prost(string, optional, tag = "3")]
     pub id_text: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag = "4")]
@@ -901,8 +926,16 @@ pub struct Unevaluated {
     /// translation left out that is not a missing field, such as a pattern it could not carry.
     #[prost(string, optional, tag = "8")]
     pub detail_text: ::core::option::Option<::prost::alloc::string::String>,
+    /// Its set, as `Rule.source` and `Rule.set` give it; present for a rule that could not be read
+    /// too.
+    #[prost(string, tag = "9")]
+    pub source: ::prost::alloc::string::String,
+    #[prost(string, tag = "10")]
+    pub set: ::prost::alloc::string::String,
 }
-/// What became of a match among the core's findings.
+/// What became of a match among the core's findings. Values are added within version 1.
+/// `UNSPECIFIED`, or a value the reader does not know, is read as something it cannot judge: the
+/// reader judges the match itself.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -931,6 +964,10 @@ pub enum Raised {
     /// judges the match itself; `immune findings --all` lists the rule's findings.
     #[serde(rename = "unrecorded")]
     Unrecorded = 5,
+    /// The rule's set states no level (its `level` is `LEVEL_NOT_STATED`): its matches are counted
+    /// and raise nothing by themselves. The reader judges the match itself.
+    #[serde(rename = "level_not_stated")]
+    LevelNotStated = 6,
 }
 impl Raised {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -945,6 +982,7 @@ impl Raised {
             Self::NotReadYet => "RAISED_NOT_READ_YET",
             Self::NoFinding => "RAISED_NO_FINDING",
             Self::Unrecorded => "RAISED_UNRECORDED",
+            Self::LevelNotStated => "RAISED_LEVEL_NOT_STATED",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -956,6 +994,7 @@ impl Raised {
             "RAISED_NOT_READ_YET" => Some(Self::NotReadYet),
             "RAISED_NO_FINDING" => Some(Self::NoFinding),
             "RAISED_UNRECORDED" => Some(Self::Unrecorded),
+            "RAISED_LEVEL_NOT_STATED" => Some(Self::LevelNotStated),
             _ => None,
         }
     }
@@ -1056,6 +1095,21 @@ pub enum UnevaluatedReason {
     /// It is about program starts and file events at once.
     #[serde(rename = "spans_kinds")]
     SpansKinds = 10,
+    /// The four below are also a translation's reasons for not taking a rule. It could never be
+    /// true over the events here, such as one that asks for a field no event of its kind has.
+    #[serde(rename = "never_true")]
+    NeverTrue = 11,
+    /// A part it cannot do without is a regular expression in EQL's syntax, which is not
+    /// translated.
+    #[serde(rename = "regex")]
+    Regex = 12,
+    /// A part it cannot do without uses a function of EQL's that is not translated.
+    #[serde(rename = "unsupported")]
+    Unsupported = 13,
+    /// A part it cannot do without compares one field of the event with another, which a Sigma
+    /// rule cannot.
+    #[serde(rename = "function")]
+    Function = 14,
 }
 impl UnevaluatedReason {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1075,6 +1129,10 @@ impl UnevaluatedReason {
             Self::NotEql => "UNEVALUATED_REASON_NOT_EQL",
             Self::BackslashInWildcard => "UNEVALUATED_REASON_BACKSLASH_IN_WILDCARD",
             Self::SpansKinds => "UNEVALUATED_REASON_SPANS_KINDS",
+            Self::NeverTrue => "UNEVALUATED_REASON_NEVER_TRUE",
+            Self::Regex => "UNEVALUATED_REASON_REGEX",
+            Self::Unsupported => "UNEVALUATED_REASON_UNSUPPORTED",
+            Self::Function => "UNEVALUATED_REASON_FUNCTION",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1091,6 +1149,10 @@ impl UnevaluatedReason {
             "UNEVALUATED_REASON_NOT_EQL" => Some(Self::NotEql),
             "UNEVALUATED_REASON_BACKSLASH_IN_WILDCARD" => Some(Self::BackslashInWildcard),
             "UNEVALUATED_REASON_SPANS_KINDS" => Some(Self::SpansKinds),
+            "UNEVALUATED_REASON_NEVER_TRUE" => Some(Self::NeverTrue),
+            "UNEVALUATED_REASON_REGEX" => Some(Self::Regex),
+            "UNEVALUATED_REASON_UNSUPPORTED" => Some(Self::Unsupported),
+            "UNEVALUATED_REASON_FUNCTION" => Some(Self::Function),
             _ => None,
         }
     }

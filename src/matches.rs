@@ -246,7 +246,12 @@ fn raised(
     hit: &Hit,
     meta: &Meta,
 ) -> rusqlite::Result<(v1::Raised, Vec<v1::FindingRef>)> {
-    if !meta.level.raises() {
+    // A rule raises by its level; one whose set states none has a value of its own, so that
+    // `below_high` keeps the meaning it had.
+    if meta.level.is_none() {
+        return Ok((v1::Raised::LevelNotStated, Vec::new()));
+    }
+    if !meta.raises() {
         return Ok((v1::Raised::BelowHigh, Vec::new()));
     }
     let at: &LineAt = &hit.at;
@@ -257,7 +262,7 @@ fn raised(
     if !read {
         return Ok((v1::Raised::NotReadYet, Vec::new()));
     }
-    Ok(match events::went_to(conn, at, &meta.finding_rule)? {
+    Ok(match events::went_to(conn, at, &meta.name)? {
         WentTo::Finding(id) => {
             // Every finding of a shipped rule is among them; the id alone stands for one that
             // is not.
@@ -299,15 +304,25 @@ fn whole(s: &str) -> String {
     known::whole(s)
 }
 
+/// A rule's level as the contract gives it: `not_stated` for a rule whose set states none.
+/// A reader built before that value was added reads it as one it does not know, so as the
+/// highest level; whether the match raised a finding is `raised`'s to say, never the level's.
+fn level(m: &Meta) -> i32 {
+    m.level_name()
+        .map_or(v1::Level::NotStated as i32, value_of::<v1::Level>)
+}
+
 pub fn rule(file: &str, m: &Meta) -> v1::Rule {
     v1::Rule {
-        name: m.finding_rule.clone(),
+        name: m.name.clone(),
         file: file.to_string(),
         id_text: whole(&m.id),
         title_text: whole(&m.title),
-        level: value_of::<v1::Level>(m.level.as_str()),
+        level: level(m),
         techniques_text: m.techniques.iter().map(|t| whole(t)).collect(),
         author_text: m.author.as_deref().map(whole),
+        source: m.source.name.to_string(),
+        set: m.source.set.to_string(),
     }
 }
 
@@ -406,6 +421,10 @@ fn unevaluated(collects: &Result<(), String>) -> Vec<v1::Unevaluated> {
                         Reason::NotEql => (Why::NotEql, Vec::new(), said),
                         Reason::BackslashInWildcard => (Why::BackslashInWildcard, Vec::new(), said),
                         Reason::SpansKinds => (Why::SpansKinds, Vec::new(), said),
+                        Reason::NeverTrue => (Why::NeverTrue, Vec::new(), said),
+                        Reason::Regex => (Why::Regex, Vec::new(), said),
+                        Reason::Unsupported => (Why::Unsupported, Vec::new(), said),
+                        Reason::Function => (Why::Function, Vec::new(), said),
                     },
                     (_, Some(why)) if l.kind == Some(Kind::File) => {
                         (Why::NotCollected, Vec::new(), Some(why.clone()))
@@ -430,13 +449,15 @@ fn unevaluated(collects: &Result<(), String>) -> Vec<v1::Unevaluated> {
             let meta = l.meta.as_ref();
             Some(v1::Unevaluated {
                 file: l.file.to_string(),
-                name: meta.map(|m| m.finding_rule.clone()),
+                name: meta.map(|m| m.name.clone()),
                 id_text: meta.map(|m| whole(&m.id)),
                 title_text: meta.map(|m| whole(&m.title)),
-                level: meta.map(|m| value_of::<v1::Level>(m.level.as_str())),
+                level: meta.map(level),
                 reason: why as i32,
                 fields_text: fields,
                 detail_text: detail.map(|d| whole(&d)),
+                source: l.source.name.to_string(),
+                set: l.source.set.to_string(),
             })
         })
         .collect()
