@@ -149,7 +149,24 @@ In JSON output, `title`, `meaning` and `advice` are Immune's fixed words. Anythi
 
 ## The contract
 
-A program that runs Immune, such as the response layer, reads the commands of the contract. Their messages are defined by a protobuf schema in `contract/immune/v1/`, package `immune.v1`. The Rust types are generated from it into `src/contract/immune.v1.rs`, which is committed. A test generates the file again and fails when the two differ, so a build needs neither `protoc` nor a generator.
+A program that runs Immune, such as the response layer, reads the commands of the contract. Their messages are defined by a protobuf schema in `contract/immune/v1/`, package `immune.v1`. The Rust types are generated from it into `contract/src/immune.v1.rs`, which is committed. A test generates the file again and fails when the two differ, so a build needs neither `protoc` nor a generator.
+
+The types are the crate `immune-contract`, in `contract/`, a member of the same Cargo workspace as the core. The core prints its messages with this crate, and a program in Rust reads them with it. The crate holds the generated types and the code their JSON needs, and nothing of the core. It depends on `prost` and `serde` alone, and re-exports `prost`, so a reader decodes with the same version the types were derived with. It is not published. A program depends on it by a git path at a commit, and brings its own JSON parser:
+
+```toml
+[dependencies]
+immune-contract = { git = "https://github.com/nuanu-ai/immune", rev = "<commit>" }
+serde_json = "1"
+```
+
+```rust
+use immune_contract::{prost::Message, v1};
+
+let known = v1::Known::decode(out.stdout.as_slice())?;        // immune project <path> --proto
+let known: v1::Known = serde_json::from_slice(&out.stdout)?;  // immune project <path> --json
+```
+
+The crate's version follows the contract. Its major version is the `format` the messages carry, 1 for package `immune.v1`. Within version 1 the schema is only added to, and each change that adds to it raises the minor version, so a reader built on an older 1.x reads what a newer core prints. A change that leaves the messages as they are, such as a comment in the schema, raises the patch version. Version 2 of the contract is a new package, `immune.v2`, with `format` 2, and major version 2 of the crate.
 
 A command of the contract prints one message on stdout: binary protobuf by default, and the same message as one line of JSON with `--json`. Every command of the contract takes `--proto` too, so a program can always name the form it wants, and naming both is a misuse. `immune findings` and `immune finding <id>` are the exception to the default: without either flag they print the text for a person they printed before. The binary form is standard protobuf, and a program in another language reads that. The JSON is Immune's own and is not protobuf's JSON mapping. The generated types print it. Field names are the schema's, an enum is the name of its value without the enum's prefix and in lower case (`CAUSE_NOT_GIVEN` prints as `not_given`, the store's own word), a 64-bit number is a JSON number, and an absent optional field is null. Times are seconds since the epoch, UTC, in fields ending in `_at`.
 

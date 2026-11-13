@@ -21,22 +21,22 @@ pub struct FindingRef {
     pub about_text: ::prost::alloc::string::String,
     #[prost(enumeration = "FindingState", tag = "4")]
     #[serde(
-        serialize_with = "crate::contract::enum_name::<FindingState, _>",
-        deserialize_with = "crate::contract::enum_from_name::<FindingState, _>"
+        serialize_with = "crate::enum_name::<FindingState, _>",
+        deserialize_with = "crate::enum_from_name::<FindingState, _>"
     )]
     pub state: i32,
     /// How bad it would be.
     #[prost(enumeration = "Level", tag = "5")]
     #[serde(
-        serialize_with = "crate::contract::enum_name::<Level, _>",
-        deserialize_with = "crate::contract::enum_from_name::<Level, _>"
+        serialize_with = "crate::enum_name::<Level, _>",
+        deserialize_with = "crate::enum_from_name::<Level, _>"
     )]
     pub severity: i32,
     /// How sure the core is. Absent when the rule gives no confidence.
     #[prost(enumeration = "Level", optional, tag = "6")]
     #[serde(
-        serialize_with = "crate::contract::optional_enum_name::<Level, _>",
-        deserialize_with = "crate::contract::optional_enum_from_name::<Level, _>"
+        serialize_with = "crate::optional_enum_name::<Level, _>",
+        deserialize_with = "crate::optional_enum_from_name::<Level, _>"
     )]
     pub confidence: ::core::option::Option<i32>,
     /// High or critical severity with medium or high confidence: what the app notifies about.
@@ -157,8 +157,8 @@ pub struct Rule {
     pub title_text: ::prost::alloc::string::String,
     #[prost(enumeration = "Level", tag = "5")]
     #[serde(
-        serialize_with = "crate::contract::enum_name::<Level, _>",
-        deserialize_with = "crate::contract::enum_from_name::<Level, _>"
+        serialize_with = "crate::enum_name::<Level, _>",
+        deserialize_with = "crate::enum_from_name::<Level, _>"
     )]
     pub level: i32,
     /// ATT&CK techniques from its `attack.t…` tags, such as `T1027.001`.
@@ -260,8 +260,8 @@ pub struct FileEvent {
     pub happened_nanos: ::core::option::Option<u32>,
     #[prost(enumeration = "FileAction", tag = "3")]
     #[serde(
-        serialize_with = "crate::contract::enum_name::<FileAction, _>",
-        deserialize_with = "crate::contract::enum_from_name::<FileAction, _>"
+        serialize_with = "crate::enum_name::<FileAction, _>",
+        deserialize_with = "crate::enum_from_name::<FileAction, _>"
     )]
     pub action: i32,
     /// The file created, or where a renamed file went. Whole.
@@ -328,8 +328,8 @@ pub struct Known {
     /// Whether the store knows the thing at all.
     #[prost(enumeration = "Presence", tag = "4")]
     #[serde(
-        serialize_with = "crate::contract::enum_name::<Presence, _>",
-        deserialize_with = "crate::contract::enum_from_name::<Presence, _>"
+        serialize_with = "crate::enum_name::<Presence, _>",
+        deserialize_with = "crate::enum_from_name::<Presence, _>"
     )]
     pub presence: i32,
     /// The thing asked for. Absent when the presence is `unknown`. A path names the project or the
@@ -376,8 +376,8 @@ pub struct Known {
     /// Which question was asked, so that an `unknown` answer says of what kind.
     #[prost(enumeration = "Question", tag = "11")]
     #[serde(
-        serialize_with = "crate::contract::enum_name::<Question, _>",
-        deserialize_with = "crate::contract::enum_from_name::<Question, _>"
+        serialize_with = "crate::enum_name::<Question, _>",
+        deserialize_with = "crate::enum_from_name::<Question, _>"
     )]
     pub question: i32,
     /// When the core's latest run that finished ended. A reading older than it was not made again
@@ -428,8 +428,8 @@ pub struct Assertion {
     pub reader: ::prost::alloc::string::String,
     #[prost(enumeration = "Basis", tag = "2")]
     #[serde(
-        serialize_with = "crate::contract::enum_name::<Basis, _>",
-        deserialize_with = "crate::contract::enum_from_name::<Basis, _>"
+        serialize_with = "crate::enum_name::<Basis, _>",
+        deserialize_with = "crate::enum_from_name::<Basis, _>"
     )]
     pub basis: i32,
     /// Where exactly it was read: a file and line, or a command and section. Whole.
@@ -459,8 +459,8 @@ pub struct Coverage {
     pub scope_text: ::prost::alloc::string::String,
     #[prost(enumeration = "Completeness", tag = "4")]
     #[serde(
-        serialize_with = "crate::contract::enum_name::<Completeness, _>",
-        deserialize_with = "crate::contract::enum_from_name::<Completeness, _>"
+        serialize_with = "crate::enum_name::<Completeness, _>",
+        deserialize_with = "crate::enum_from_name::<Completeness, _>"
     )]
     pub completeness: i32,
     /// Why it was not full; on a full reading, an optional note such as why there was nothing to
@@ -470,8 +470,8 @@ pub struct Coverage {
     /// Why it was not full, as a closed word; absent on a full reading.
     #[prost(enumeration = "Cause", optional, tag = "6")]
     #[serde(
-        serialize_with = "crate::contract::optional_enum_name::<Cause, _>",
-        deserialize_with = "crate::contract::optional_enum_from_name::<Cause, _>"
+        serialize_with = "crate::optional_enum_name::<Cause, _>",
+        deserialize_with = "crate::optional_enum_from_name::<Cause, _>"
     )]
     pub cause: ::core::option::Option<i32>,
     /// When it was read. Absent for a reading made by rule, which was never made.
@@ -759,8 +759,8 @@ pub struct RuleMatch {
     /// What became of the match among the core's findings.
     #[prost(enumeration = "Raised", tag = "4")]
     #[serde(
-        serialize_with = "crate::contract::enum_name::<Raised, _>",
-        deserialize_with = "crate::contract::enum_from_name::<Raised, _>"
+        serialize_with = "crate::enum_name::<Raised, _>",
+        deserialize_with = "crate::enum_from_name::<Raised, _>"
     )]
     pub raised: i32,
     /// The findings the match was added to, each with its state, when `raised` is `finding`. One
@@ -826,8 +826,8 @@ pub struct Collector {
     /// `running` does a quiet stretch mean that little happened.
     #[prost(enumeration = "CollectorState", tag = "1")]
     #[serde(
-        serialize_with = "crate::contract::enum_name::<CollectorState, _>",
-        deserialize_with = "crate::contract::enum_from_name::<CollectorState, _>"
+        serialize_with = "crate::enum_name::<CollectorState, _>",
+        deserialize_with = "crate::enum_from_name::<CollectorState, _>"
     )]
     pub state: i32,
     /// What made it `refused` or `failing`: who printed it, `eslogger` or `scripts`, and the last
@@ -850,8 +850,8 @@ pub struct Collector {
     /// stretch. Absent when the store holds no reading of it.
     #[prost(enumeration = "CollectorState", optional, tag = "6")]
     #[serde(
-        serialize_with = "crate::contract::optional_enum_name::<CollectorState, _>",
-        deserialize_with = "crate::contract::optional_enum_from_name::<CollectorState, _>"
+        serialize_with = "crate::optional_enum_name::<CollectorState, _>",
+        deserialize_with = "crate::optional_enum_from_name::<CollectorState, _>"
     )]
     pub status_state: ::core::option::Option<i32>,
     #[prost(int64, optional, tag = "7")]
@@ -881,14 +881,14 @@ pub struct Unevaluated {
     pub title_text: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(enumeration = "Level", optional, tag = "5")]
     #[serde(
-        serialize_with = "crate::contract::optional_enum_name::<Level, _>",
-        deserialize_with = "crate::contract::optional_enum_from_name::<Level, _>"
+        serialize_with = "crate::optional_enum_name::<Level, _>",
+        deserialize_with = "crate::optional_enum_from_name::<Level, _>"
     )]
     pub level: ::core::option::Option<i32>,
     #[prost(enumeration = "UnevaluatedReason", tag = "6")]
     #[serde(
-        serialize_with = "crate::contract::enum_name::<UnevaluatedReason, _>",
-        deserialize_with = "crate::contract::enum_from_name::<UnevaluatedReason, _>"
+        serialize_with = "crate::enum_name::<UnevaluatedReason, _>",
+        deserialize_with = "crate::enum_from_name::<UnevaluatedReason, _>"
     )]
     pub reason: i32,
     /// The fields it needs that the events here do not give: for `needs_fields`, and for `in_part`
@@ -1208,15 +1208,15 @@ pub struct Finding {
 pub struct Answer {
     #[prost(enumeration = "AnswerKind", tag = "1")]
     #[serde(
-        serialize_with = "crate::contract::enum_name::<AnswerKind, _>",
-        deserialize_with = "crate::contract::enum_from_name::<AnswerKind, _>"
+        serialize_with = "crate::enum_name::<AnswerKind, _>",
+        deserialize_with = "crate::enum_from_name::<AnswerKind, _>"
     )]
     pub given: i32,
     /// How it was given.
     #[prost(enumeration = "Via", tag = "2")]
     #[serde(
-        serialize_with = "crate::contract::enum_name::<Via, _>",
-        deserialize_with = "crate::contract::enum_from_name::<Via, _>"
+        serialize_with = "crate::enum_name::<Via, _>",
+        deserialize_with = "crate::enum_from_name::<Via, _>"
     )]
     pub via: i32,
     /// When it was given.
@@ -1281,8 +1281,8 @@ pub struct PlaceChanged {
     /// What its latest occurrence was.
     #[prost(enumeration = "Change", tag = "1")]
     #[serde(
-        serialize_with = "crate::contract::enum_name::<Change, _>",
-        deserialize_with = "crate::contract::enum_from_name::<Change, _>"
+        serialize_with = "crate::enum_name::<Change, _>",
+        deserialize_with = "crate::enum_from_name::<Change, _>"
     )]
     pub change: i32,
 }

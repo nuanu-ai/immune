@@ -1,15 +1,12 @@
 //! The contract's types are what its schema gives. The schema in `contract/immune/v1/` is the
-//! source; `src/contract/immune.v1.rs` is generated from it and committed, so that building the
-//! program needs no generator. This test generates it again, with `protox` in place of `protoc`
-//! and `prost-build`, and fails when the committed file differs.
+//! source; `contract/src/immune.v1.rs`, in the crate `immune-contract`, is generated from it and
+//! committed, so that building the program or the crate needs no generator. This test generates
+//! it again, with `protox` in place of `protoc` and `prost-build`, and fails when the committed
+//! file differs.
 //!
 //! To regenerate after changing the schema: `IMMUNE_WRITE_CONTRACT=1 cargo test --test contract`.
 
-#[path = "../src/contract.rs"]
-#[allow(dead_code)]
-mod contract;
-
-use contract::v1;
+use immune_contract::v1;
 use prost_types::field_descriptor_proto::{Label, Type};
 use std::path::Path;
 
@@ -21,8 +18,8 @@ const SCHEMA: [&str; 5] = [
     "immune/v1/matches.proto",
     "immune/v1/findings.proto",
 ];
-/// The generated file, relative to the crate.
-const GENERATED: &str = "src/contract/immune.v1.rs";
+/// The generated file, relative to the repository.
+const GENERATED: &str = "contract/src/immune.v1.rs";
 
 /// What heads the generated file, before what prost-build writes.
 const HEADER: &str =
@@ -107,7 +104,8 @@ fn generate() -> String {
                 config.enum_attribute(&path, "#[serde(rename_all = \"snake_case\")]");
             }
             for f in m.field.iter().filter(|f| f.r#type() == Type::Enum) {
-                // An enum field is an i32 in prost; it prints as its value's name.
+                // An enum field is an i32 in prost; it prints as its value's name, with the
+                // functions at the root of `immune-contract`.
                 let rust = f.type_name().rsplit('.').next().unwrap();
                 let (ser, de) = if f.proto3_optional() {
                     ("optional_enum_name", "optional_enum_from_name")
@@ -123,8 +121,8 @@ fn generate() -> String {
                 config.field_attribute(
                     format!("{package}.{}.{}", m.name(), f.name()),
                     format!(
-                        "#[serde(serialize_with = \"crate::contract::{ser}::<{rust}, _>\", \
-                         deserialize_with = \"crate::contract::{de}::<{rust}, _>\")]"
+                        "#[serde(serialize_with = \"crate::{ser}::<{rust}, _>\", \
+                         deserialize_with = \"crate::{de}::<{rust}, _>\")]"
                     ),
                 );
             }

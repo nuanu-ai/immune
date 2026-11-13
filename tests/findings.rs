@@ -9,11 +9,7 @@
 //! program starts and file events in `tests/event_level.rs`, a vulnerable package in
 //! `tests/vulnerability_data.rs`; the others are here.
 
-#[path = "../src/contract.rs"]
-#[allow(dead_code)]
-mod contract;
-
-use contract::v1;
+use immune_contract::v1;
 use prost::Message;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};

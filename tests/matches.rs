@@ -3,11 +3,7 @@
 //! one, with log lines as the collector's filter writes them and invented content. Nothing here
 //! reads the real log or the real store.
 
-#[path = "../src/contract.rs"]
-#[allow(dead_code)]
-mod contract;
-
-use contract::v1;
+use immune_contract::v1;
 use prost::Message;
 use serde_json::{Value, json};
 use std::io::Write;

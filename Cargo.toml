@@ -6,7 +6,15 @@ rust-version = "1.89"
 license = "MIT"
 publish = false
 
+# The core and the crate of the contract's types (`contract/`), which the response layer depends
+# on by a git path. One lockfile and one target folder for both.
+[workspace]
+members = ["contract"]
+
 [dependencies]
+# The contract's types, generated from the schema, are a crate of this workspace: the core prints
+# its messages with them and the response layer reads them with the same crate.
+immune-contract = { path = "contract" }
 # The ssh configuration reader expands `Include` with the system's glob(3) and matches
 # `Host` patterns with fnmatch(3), as OpenSSH does, instead of our own matcher. libc is
 # maintained by the Rust project, has no dependencies of its own and declares the
@@ -44,13 +52,14 @@ aho-corasick = "1.1.5"
 # The contract with a program that runs the core is a protobuf schema (`contract/`), and a
 # command of the contract prints binary protobuf. Protobuf's wire format is someone else's, so
 # it is not written by hand. prost is the protobuf runtime in general use in Rust (tokio-rs);
-# the types it derives for are generated from the schema and committed (`src/contract.rs`).
+# the types it derives for are generated from the schema and committed in `immune-contract`,
+# which needs it too; the core names it to encode a message.
 # It links `bytes` into the program and runs `prost-derive` at build time, which brings
 # `anyhow`, `itertools` and `either`. Its default features are `derive` and `std`. The version is
 # the latest that had been published for at least two weeks.
 prost = "0.14.4"
 # The same messages as JSON with `--json`: serde's derives, put on the generated types by the
-# generator, print them with serde_json. serde and serde_derive were already compiled in for
+# generator in `immune-contract`, print them with serde_json. serde and serde_derive were already compiled in for
 # sigma-rust; naming serde here adds no crate.
 serde = { version = "1.0.229", features = ["derive"] }
 

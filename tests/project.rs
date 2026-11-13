@@ -4,10 +4,10 @@
 //! Mac it runs on or asks the network.
 
 #[path = "../src/contract.rs"]
-#[allow(dead_code)]
+#[allow(dead_code, unused_imports)]
 mod contract;
 
-use contract::v1;
+use immune_contract::v1;
 use prost::Message;
 use serde_json::Value;
 use std::path::{Path, PathBuf};

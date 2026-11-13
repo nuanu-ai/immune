@@ -147,6 +147,7 @@ name = "immune"
 version = "0.1.0"
 dependencies = [
  "aho-corasick",
+ "immune-contract",
  "jsonc-parser",
  "libc",
  "prost",
@@ -159,6 +160,14 @@ dependencies = [
  "serde_json",
  "serde_norway",
  "sigma-rust",
+]
+
+[[package]]
+name = "immune-contract"
+version = "1.0.0"
+dependencies = [
+ "prost",
+ "serde",
 ]
 
 [[package]]
