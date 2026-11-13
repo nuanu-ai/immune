@@ -214,7 +214,8 @@ const VOCABULARY: &str = "
 INSERT OR IGNORE INTO entity_type (name, status) VALUES
     ('machine', 'used'), ('container', 'used'), ('checkout', 'used'), ('component', 'used'),
     ('repository', 'reserved'), ('service', 'reserved'), ('account', 'reserved'),
-    ('domain', 'reserved'), ('key', 'reserved'), ('party', 'reserved'), ('file', 'used');
+    ('domain', 'reserved'), ('key', 'reserved'), ('party', 'reserved'), ('file', 'used'),
+    ('check', 'used');
 INSERT OR IGNORE INTO predicate (name, object_kind, status) VALUES
     ('located_on', 'entity', 'used'), ('part_of', 'entity', 'used'),
     ('has_version', 'literal', 'used'), ('runs_os', 'literal', 'used'),

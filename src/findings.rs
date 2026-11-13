@@ -190,6 +190,9 @@ fn git_hook() -> Rule {
 /// The rule of the item that tells the places read for the first time in a check. It is
 /// raised once for a check by `first_read`, never by one thing seen.
 pub const FIRST_READ_RULE: &str = "watched.first-read";
+/// The prefix of the id of one check, `check:<machine>/<run id>`, which the item of places
+/// read for the first time is about.
+pub const CHECK: &str = "check:";
 
 fn first_read_rule() -> Rule {
     Rule {
@@ -224,7 +227,11 @@ pub fn first_read(
     if !any {
         return Ok(false);
     }
-    let (id, opened) = occur(tx, FIRST_READ_RULE, machine, FIRST_READ, run_id, at)?;
+    // The item is about the check that read them: each check raises its own, whatever was
+    // answered about an earlier one.
+    let check = format!("{CHECK}{machine}/{run_id}");
+    crate::store::put_entity(tx, &check)?;
+    let (id, opened) = occur(tx, FIRST_READ_RULE, &check, FIRST_READ, run_id, at)?;
     tx.execute(
         "INSERT INTO finding_basis (finding, journal)
          SELECT ?1, seq FROM journal WHERE run_id = ?2 AND entry = 'place_first_read'",
@@ -1349,6 +1356,13 @@ impl This {
 /// now, a container with its machine, and the machine first for a file or checkout on a
 /// machine other than `this`. Anything else is shown as its id.
 pub fn place(id: &str, this: Option<&This>) -> String {
+    // A check is shown by the machine it read.
+    if let Some((machine, _run)) = id
+        .strip_prefix(CHECK)
+        .and_then(|rest| rest.rsplit_once('/'))
+    {
+        return place(machine, this);
+    }
     if let Some(name) = id.strip_prefix("machine:") {
         return match this {
             Some(This {

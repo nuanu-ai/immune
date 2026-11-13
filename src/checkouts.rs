@@ -15,6 +15,30 @@ pub const BASIS: &str = "observed";
 pub const TYPE: &str = "checkout";
 /// Why a walk of a folder given instead of the home folder is partial.
 pub const ONLY_GIVEN: &str = "only the given folder was walked";
+/// What is said of a checkout the store holds that is still there in another form.
+pub const MOVED: &str = "is no longer a folder there, as when a link to a folder elsewhere took its place: it was not looked into, and what was known of it is kept";
+
+/// Whether something other than a folder is where a checkout was, a link to one included:
+/// the checkout is not gone, and is not looked into there.
+pub fn is_moved(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| !m.is_dir())
+}
+
+/// The checkouts the store holds on `machine`, by their paths as ids name them, that are not
+/// among `found` and are still there in another form (`is_moved`).
+pub fn moved(
+    conn: &rusqlite::Connection,
+    machine: &str,
+    home: &Path,
+    found: &[String],
+) -> rusqlite::Result<Vec<String>> {
+    let prefix = format!("checkout:{machine}/");
+    Ok(crate::store::live_subjects(conn, READER)?
+        .into_iter()
+        .filter_map(|id| id.strip_prefix(&prefix).map(str::to_string))
+        .filter(|rel| !found.contains(rel) && is_moved(&home.join(rel)))
+        .collect())
+}
 
 const MAX_DEPTH: usize = 5;
 /// Folders that are never descended into, wherever they are: tools keep copies of other

@@ -41,6 +41,18 @@ CREATE TABLE unit_read (
 );
 ";
 
+/// Every unit that was there and could not be read when a reading judged it. It is judged once
+/// while it stays so; the row goes when the unit is read again.
+const UNREAD: &str = "
+CREATE TABLE IF NOT EXISTS unit_unread (
+    reader TEXT NOT NULL,
+    kind   TEXT NOT NULL,
+    unit   TEXT NOT NULL,
+    run_id TEXT NOT NULL,     -- the run that judged it
+    PRIMARY KEY (reader, kind, unit)
+);
+";
+
 /// The key in `meta` of the last journal entry written before units were recorded. Entries up
 /// to it were judged by the rule of their time, which `status.rs` applies to them.
 pub const UNITS_SINCE: &str = "units_since";
@@ -52,6 +64,7 @@ pub const UNITS_SINCE: &str = "units_since";
 /// listed by a walk of the home folder that read in full. From then on one rule judges every
 /// reading, whatever run of this build comes first.
 pub fn open(conn: &mut Connection) -> Result<(), Box<dyn std::error::Error>> {
+    conn.execute_batch(UNREAD)?;
     if made(conn)? {
         return Ok(());
     }
@@ -298,6 +311,43 @@ pub fn record(
             stmt.execute(params![reader, kind, unit, how, run_id, at])?;
         }
     }
+    let mut again =
+        tx.prepare("DELETE FROM unit_unread WHERE reader = ?1 AND kind = ?2 AND unit = ?3")?;
+    for unit in read {
+        again.execute(params![reader, kind, unit])?;
+    }
+    Ok(())
+}
+
+/// Records that a unit there and not readable was judged in this run, and says whether an
+/// earlier run judged it already while it stayed so: then it is not judged again.
+pub fn judged_unread(
+    tx: &Transaction,
+    reader: &str,
+    kind: &str,
+    unit: &str,
+    run_id: &str,
+) -> rusqlite::Result<bool> {
+    let added = tx.execute(
+        "INSERT OR IGNORE INTO unit_unread (reader, kind, unit, run_id) VALUES (?1, ?2, ?3, ?4)",
+        params![reader, kind, unit, run_id],
+    )?;
+    if added == 1 {
+        return Ok(false);
+    }
+    tx.query_row(
+        "SELECT run_id != ?4 FROM unit_unread WHERE reader = ?1 AND kind = ?2 AND unit = ?3",
+        params![reader, kind, unit, run_id],
+        |r| r.get(0),
+    )
+}
+
+/// Forgets that a unit could not be read, when what it holds was read again in full.
+pub fn read_again(tx: &Transaction, reader: &str, kind: &str, unit: &str) -> rusqlite::Result<()> {
+    tx.execute(
+        "DELETE FROM unit_unread WHERE reader = ?1 AND kind = ?2 AND unit = ?3",
+        params![reader, kind, unit],
+    )?;
     Ok(())
 }
 

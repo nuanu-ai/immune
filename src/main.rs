@@ -3327,15 +3327,16 @@ fn read_checkouts(
     run.readers += 1;
     let walk = checkouts::walk(root, home);
     let machine = run.machine.to_string();
-    // A checkout the store holds in a folder the walk did not enter is not known to be gone:
-    // it is kept as it was, and nothing inside it is read.
+    // A checkout the store holds in a folder the walk did not enter is not known to be gone,
+    // nor is one still there in another form, as a link where its folder was: it is kept as
+    // it was, and nothing inside it is read.
     let prefix = format!("checkout:{machine}/");
     let kept: Vec<String> = store::live_subjects(run.tx, checkouts::READER)?
         .into_iter()
         .filter_map(|id| id.strip_prefix(&prefix).map(str::to_string))
         .filter(|rel| {
             let path = home.join(rel);
-            walk.guarded.iter().any(|g| path.starts_with(g))
+            walk.guarded.iter().any(|g| path.starts_with(g)) || checkouts::is_moved(&path)
         })
         .collect();
     let mut raw = String::new();
@@ -3961,8 +3962,9 @@ struct Placed {
     watched_as: &'static str,
     kind: String,
     look: watched::Look,
-    /// The checkout's `.git` is a file, so its hooks were not read.
-    git_file: bool,
+    /// Why the checkout's hooks were not looked at where they were: its `.git` is a file, or
+    /// the checkout itself is no longer a folder there.
+    elsewhere: Option<String>,
     /// The completeness and reason the reading says, where its reader gives them.
     coverage: Option<(&'static str, Option<String>)>,
     /// What the reading held about checkouts it did not look into, made again as it was.
@@ -4130,7 +4132,7 @@ fn read_watched(
             watched_as,
             kind: kind.to_string(),
             look: watched::look_machine(&roots, kind),
-            git_file: false,
+            elsewhere: None,
             coverage: None,
             kept: Vec::new(),
             checkouts: Vec::new(),
@@ -4138,9 +4140,12 @@ fn read_watched(
     }
     for c in checkouts {
         let scope = format!("checkout:{machine}/{}", c.rel);
-        let (look, git_file) = match watched::look_checkout(&c.path, &c.rel, &args.home) {
-            watched::Hooks::GitFile => (watched::Look::default(), true),
-            watched::Hooks::Looked(look) => (look, false),
+        let (look, elsewhere) = match watched::look_checkout(&c.path, &c.rel, &args.home) {
+            watched::Hooks::GitFile => (
+                watched::Look::default(),
+                Some(watched::GIT_FILE.to_string()),
+            ),
+            watched::Hooks::Looked(look) => (look, None),
         };
         // Every checkout is read, those with no hooks too: the first hook planted in a
         // checkout the store already held is then new, not the baseline. Hooks kept elsewhere
@@ -4150,10 +4155,25 @@ fn read_watched(
             watched_as: watched::HOOK,
             kind: watched::HOOK_KIND.to_string(),
             look,
-            git_file,
+            elsewhere,
             coverage: None,
             kept: Vec::new(),
             checkouts: vec![c.rel.clone()],
+        });
+    }
+    // A checkout the store holds that is still there in another form, as a link where its
+    // folder was: it is not gone, and its hooks are not looked at through the link.
+    for rel in checkouts::moved(run.tx, &machine, &args.home, &rels)? {
+        let why = format!("{rel} {}", checkouts::MOVED);
+        placed.push(Placed {
+            scope: format!("checkout:{machine}/{rel}"),
+            watched_as: watched::HOOK,
+            kind: watched::HOOK_KIND.to_string(),
+            look: watched::Look::default(),
+            elsewhere: Some(why),
+            coverage: None,
+            kept: Vec::new(),
+            checkouts: vec![rel],
         });
     }
     // Each way code runs by itself that is read here, in every checkout or in the home
@@ -4196,7 +4216,7 @@ fn read_watched(
             kind: point.kind(),
             coverage: Some(looked.coverage(point)),
             look: looked.look,
-            git_file: false,
+            elsewhere: None,
             kept,
             checkouts: over,
         });
@@ -4307,10 +4327,10 @@ fn read_watched(
             .map(|(path, _)| baseline::unit_of(path))
             .collect();
         statements.extend(kept(tx, &reading, |path| {
-            p.git_file || unread.iter().any(|u| baseline::under(path, u))
+            p.elsewhere.is_some() || unread.iter().any(|u| baseline::under(path, u))
         })?);
-        let (completeness, reason) = if p.git_file {
-            ("partial", Some(watched::GIT_FILE.to_string()))
+        let (completeness, reason) = if let Some(why) = &p.elsewhere {
+            ("partial", Some(why.clone()))
         } else if p.kind == watched::HOOK_KIND && p.look.entries.is_empty() {
             match p.look.completeness() {
                 ("full", _) => ("full", Some(watched::NO_HOOKS.to_string())),
@@ -4323,7 +4343,9 @@ fn read_watched(
         };
         // A place that could not be looked at failed; one that leads into a folder macOS asks
         // permission for was not given; hooks kept elsewhere have no reader.
-        let gap = if p.git_file {
+        let gap = if p.elsewhere.as_deref() != Some(watched::GIT_FILE) && p.elsewhere.is_some() {
+            Gap::of(Cause::Failed)
+        } else if p.elsewhere.is_some() {
             Gap {
                 cause: Some(Cause::NoReader),
                 lacks: vec![Lack::new(watched::HOOKS_ELSEWHERE, None)],
@@ -4399,16 +4421,42 @@ fn read_watched(
                 _ => {}
             }
         }
-        // Losing sight is a change: a unit an earlier run read in full that is there now and
-        // could not be read, or now leads where it is not looked into, is found by the rule of
-        // its kind, with why. What was known of it is kept, so reading it again later brings
-        // what changed meanwhile as changes.
-        for (path, why) in p.look.failed.iter().chain(&p.look.unreached) {
+        // What is there and could not be read, or leads where it is not looked into, is judged
+        // by the same three cases as what was read, once while it stays so. Losing sight of a
+        // unit read before is a change, and so is a thing new to a listing or in a new
+        // checkout: found by the rule of its kind, with why. What was known of it is kept, so
+        // reading it again later brings what changed meanwhile as changes. Hooks no longer
+        // where they were are lost sight of when they were read there before; a new worktree's
+        // hooks were never here.
+        let hooks = p.checkouts.first().map(|c| format!("{c}/.git/hooks"));
+        let unread_now: Vec<(String, String)> = match (&p.elsewhere, &hooks) {
+            (Some(why), Some(unit)) if judge.read_before(unit)? => {
+                vec![(unit.clone(), why.clone())]
+            }
+            (Some(_), _) => Vec::new(),
+            (None, _) => p
+                .look
+                .failed
+                .iter()
+                .chain(&p.look.unreached)
+                .cloned()
+                .collect(),
+        };
+        for (path, why) in &unread_now {
             let unit = baseline::unit_of(path);
-            if !p.git_file && judge.read_before(unit)? {
-                let id = file_id(unit);
-                lost_sight(run.tx, &reading, &id, why)?;
-                observe(findings::NOT_READ, p.watched_as, &id);
+            if baseline::judged_unread(tx, watched::READER, &p.kind, unit, &run_id)? {
+                continue;
+            }
+            let id = file_id(unit);
+            match judge.verdict(path)? {
+                Verdict::Change => {
+                    lost_sight(run.tx, &reading, &id, why)?;
+                    observe(findings::NOT_READ, p.watched_as, &id);
+                }
+                Verdict::FirstRead => {
+                    *first_reads.entry((group(path), p.watched_as)).or_default() += 1;
+                }
+                Verdict::Baseline => {}
             }
         }
         for (path, why) in &p.look.failed {
@@ -4510,7 +4558,11 @@ fn read_watched(
                     String::new(),
                 ]);
             }
-            if lost {
+            if completeness == "full" {
+                baseline::read_again(tx, watched::READER, watched::CONTENT, &id)?;
+            } else if lost
+                && !baseline::judged_unread(tx, watched::READER, watched::CONTENT, &id, &run_id)?
+            {
                 lost_sight(run.tx, &reading, &id, reason.unwrap_or_default())?;
                 observe(findings::NOT_READ, e.watched_as, &id);
             }
@@ -4571,7 +4623,7 @@ fn read_watched(
         !p.look.entries.is_empty()
             || !p.look.failed.is_empty()
             || !p.look.unreached.is_empty()
-            || p.git_file
+            || p.elsewhere.is_some()
     }) {
         run.readers += 1;
     }
