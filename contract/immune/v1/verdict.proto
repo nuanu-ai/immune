@@ -1,0 +1,155 @@
+// The verdict the response layer gives back: what `immune verdict` reads on standard input, and
+// what it answers. Version 1 of the contract between the core and a program that runs it. How a
+// message is printed and read, and the conventions for text, references, times and changes, are in
+// `common.proto`.
+//
+// The response layer reads rule matches (`immune matches`) and findings (`immune findings`,
+// `immune finding <id>`), looks into them, and says what it concluded: `suspicious`, a person
+// should see it, or `harmless`.
+//
+// A verdict never writes into a finding the core raised: not its state, its occurrences, its
+// evidence, when it was last seen, its levels or whether it is urgent. The core's findings are the
+// same whether verdicts are sent or not.
+//
+// A `suspicious` verdict is an event of one rule of Immune's own, `verdict.suspicious`, and raises
+// a finding of that rule the way any rule that finds an event does. The finding is about what the
+// verdict is about: the rule it names (the match's rule, or the rule of the finding it names) and
+// the thing that rule's findings are about on this Mac. A verdict about a finding and one about a
+// match of the same rule and thing go to the same finding; its rule, as the store keeps it, is
+// `verdict.suspicious:<that rule>`. Open, it stays open as more come; marked expected, it stays so
+// until the mark ends; marked seen, the next `suspicious` verdict raises its next occurrence. The
+// core never clears it: only the person closes it. Its severity and confidence are the highest any
+// verdict of its occurrence gave, so they only go up, and it is urgent by the ordinary rule. For a
+// verdict about a match, the finding keeps the event at that line, as a rule's finding keeps
+// events.
+//
+// A `harmless` verdict is a record: kept, shown beside what it is about, and nothing else.
+//
+// The same message, equal in everything, is recorded once while the finding it went to is open.
+// After the person answered that finding, the same message raises the next occurrence, as a new
+// match would. A `harmless` message is recorded once.
+//
+// Anyone who can run `immune verdict` as the person can send a verdict, and the core cannot tell
+// the response layer from another program: verdicts are not signed. That is why a verdict never
+// writes into the core's findings.
+//
+// Text from the response layer is data. It read files on the Mac that an attacker may have
+// written, so its reason and its case are kept and shown only in `_text` fields, escaped as all
+// such text is, and never inside the core's own words. `reason_text` is at most 1,000 Unicode
+// scalar values and `case_text` at most 200; longer is refused, and every answer carries them
+// whole. Text with no visible character is empty.
+//
+// What this build does not read is refused, in either form: a field it does not know, a field
+// given twice, or both `match` and `finding`. A binary verdict must be the encoding this build
+// gives the same message.
+//
+// Values that will be added. A reader meets values of `VerdictKind` it does not know: the core
+// adds them within version 1. It treats one it does not know as something it cannot judge.
+
+syntax = "proto3";
+
+package immune.v1;
+
+import "immune/v1/common.proto";
+
+// A verdict, as the response layer sends it to `immune verdict`.
+message Verdict {
+  // The version of this contract: 1. The core refuses another number.
+  uint32 format = 1;
+  // The store the response layer read the answer it judges from: its `store_id`. A verdict whose
+  // store is not the one the command writes to is refused, since a finding's id is unique only
+  // within one store.
+  string store_id = 2;
+  // What it is about: a match or a finding. Required.
+  oneof about {
+    // A rule match, as `immune matches` named it.
+    AboutMatch match = 3;
+    // A finding, by its id.
+    AboutFinding finding = 4;
+  }
+  // What the response layer concluded. Required: `UNSPECIFIED`, or a value the core does not
+  // know, is refused.
+  VerdictKind kind = 5;
+  // Why, in the response layer's words. Required, at most 1,000 Unicode scalar values.
+  string reason_text = 6;
+  // The response layer's own reference to its case, so the person can find it there. Required,
+  // at most 200 Unicode scalar values.
+  string case_text = 7;
+  // How bad the response layer judges it, and how sure it is, on the core's scale: the levels of
+  // the finding it raises. Both are required on a `suspicious` verdict and refused on a
+  // `harmless` one; a confidence is low, medium or high.
+  optional Level severity = 8;
+  optional Level confidence = 9;
+}
+
+// A rule match, as `immune matches` names it: the position of the event's line and the rule's
+// name, both as that answer printed them. The position names a line of the log under the
+// `--system-root` the command is given, as `immune run` reads the log under its own.
+message AboutMatch {
+  // The opaque token `immune matches` gave in `position`, whole.
+  string position = 1;
+  // The rule's `name`, as `immune matches` printed it: `sigma:<id>`, `elastic:<rule_id>` or
+  // `elastic-behaviour:<rule_id>`. A rule whose set states no level can be named like any other.
+  string rule = 2;
+}
+
+// A finding, by its id as the core gave it.
+message AboutFinding {
+  string id = 1;
+}
+
+// What the response layer concluded about a match or a finding. `UNSPECIFIED`, or a value the
+// reader does not know, is read as no verdict: the core refuses one, and a reader of a recorded
+// verdict takes it for something it cannot judge.
+enum VerdictKind {
+  VERDICT_KIND_UNSPECIFIED = 0;
+  // It looked into it and says a person should see it: it raises a `verdict.suspicious` finding.
+  VERDICT_KIND_SUSPICIOUS = 1;
+  // It looked into it and judged it harmless. This is its opinion, kept beside what it is about.
+  VERDICT_KIND_HARMLESS = 2;
+}
+
+// A verdict as the core recorded it.
+message RecordedVerdict {
+  // The verdict as it was sent and kept: what it named, its kind, its reason and case, and its
+  // levels. Its text is escaped as all text in the contract is.
+  Verdict verdict = 1;
+  // When the core recorded it.
+  int64 recorded_at = 2;
+  // The `verdict.suspicious` finding a `suspicious` verdict was recorded in. Absent for a
+  // `harmless` one.
+  FindingRef finding = 3;
+  // It raised that occurrence of the finding: no occurrence was open or expected when it came.
+  bool raised = 4;
+}
+
+// The verdicts about a finding or a match, as an answer gives them.
+message Verdicts {
+  // How many there are: about this finding of the core, by its id; recorded in this occurrence
+  // of a `verdict.suspicious` finding; or about this match.
+  uint32 total = 1;
+  // How many of them are `suspicious`.
+  uint32 suspicious = 2;
+  // The verdicts listed, oldest first: the first of them and the latest 20 at most. In a list of
+  // findings, only the one that raised a `verdict.suspicious` finding's occurrence, and none for
+  // a finding of the core.
+  repeated RecordedVerdict listed = 3;
+  // For a finding of the core: the `verdict.suspicious` finding of the same rule and thing, when
+  // one is open or marked expected.
+  FindingRef verdict_finding = 4;
+}
+
+// The answer to `immune verdict`: what was recorded.
+message VerdictRecorded {
+  // The version of this contract: 1. A reader that meets another number stops.
+  uint32 format = 1;
+  // When the answer was made.
+  int64 answered_at = 2;
+  // The store it was recorded in, as in every answer (`common.proto`).
+  optional string store_id = 3;
+  // The verdict as recorded. When the same verdict was recorded before, the one recorded then.
+  RecordedVerdict recorded = 4;
+  // The same message, equal in what it names, its kind, its reason, its case and both levels, was
+  // recorded before and its finding is still open, or it is `harmless`; nothing was recorded now.
+  bool already_recorded = 5;
+}

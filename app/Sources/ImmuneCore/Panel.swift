@@ -39,6 +39,22 @@ public struct Row: Sendable, Equatable, Identifiable {
   public var reason: String? { item.valueText.map { Inert.text($0, limit: 240) } }
   /// The app's label before `reason`.
   public var reasonLabel: String { item.publishedRule == nil ? "Reason: " : "Rule: " }
+  /// The response layer's leading verdict: Immune's words, then its reason quoted, inert and
+  /// whole. Immune refuses a reason longer than 1,000 characters, so none is cut here: a reason
+  /// cut short can say the opposite. A backslash or a quote character inside it is escaped with a
+  /// backslash, so nothing in it closes the quotation and goes on in Immune's voice. The finding
+  /// stays open whatever it says.
+  public var verdict: String? {
+    guard let v = item.verdict, let said = v.said else { return nil }
+    let words = Inert.text(said, limit: 400)
+    guard let reason = v.reasonText else { return words }
+    var quoted = ""
+    for c in Inert.text(reason, limit: .max) {
+      if c == "\\" || c == "\"" || c == "“" || c == "”" { quoted.append("\\") }
+      quoted.append(c)
+    }
+    return words + " “" + quoted + "”"
+  }
   /// The tag a published rule's finding carries, in the app's words.
   public var tag: String? { item.publishedRule == nil ? nil : "published rule" }
   /// For a published rule's finding, the latest event it matched, inert. A program start:
@@ -514,6 +530,7 @@ public struct Panel: Sendable, Equatable {
           + (r.tag.map { "  (" + $0 + ")" } ?? "") + "  [ Show ]")
       if let v = r.started ?? r.shownValue { out.append("    › " + v) }
       if let why = r.reason { out.append("    " + r.reasonLabel + why) }
+      if let verdict = r.verdict { out.append("    " + verdict) }
       if !r.means.isEmpty { out.append("    " + r.means) }
       if let id = r.item.id, let refused = refusals[id] { out.append("    " + refused) }
       if r.canAnswer, let form, form.id == r.item.id {

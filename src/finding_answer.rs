@@ -12,9 +12,9 @@ use crate::contract::{v1, value_of};
 use crate::events::{self, Evidence, FileEvent, ProcessStart};
 use crate::findings::{self, Found, Item};
 use crate::known::{self, Refused, whole};
-use crate::{matches, sigma, status, store, vulnerabilities};
+use crate::{matches, sigma, status, store, verdict, vulnerabilities};
 use rusqlite::{Connection, OptionalExtension};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The version of the contract this build prints.
 const FORMAT: u32 = 1;
@@ -24,12 +24,17 @@ pub fn list(conn: &Connection, now: i64) -> rusqlite::Result<v1::Findings> {
     let found = all(conn, now)?;
     let mut items: Vec<Item> = found.iter().filter_map(findings::item).collect();
     findings::order(&mut items);
+    let store_id = store::id(conn)?;
+    let refs = refs(&items);
     Ok(v1::Findings {
         format: FORMAT,
         answered_at: now,
-        store_id: store::id(conn)?,
         latest_run_at: status::latest_finished(conn)?.and_then(|r| r.finished_at),
-        findings: items.iter().map(listed).collect(),
+        findings: items
+            .iter()
+            .map(|i| listed(i, store_id.as_deref(), &refs))
+            .collect(),
+        store_id,
         answers_note: findings::ANSWERS_NOTE.to_string(),
     })
 }
@@ -69,10 +74,19 @@ pub fn one(
             new_value_text: b.new_value.as_deref().map(whole),
         })
         .collect();
+    let store_id = store::id(conn)?;
+    let items: Vec<Item> = found.iter().filter_map(findings::item).collect();
+    let verdicts = verdict::verdicts(
+        verdict::of_finding(conn, id, &f.rule)?,
+        store_id.as_deref(),
+        &refs(&items),
+        i.verdicts.as_ref().and_then(|s| s.standing.as_ref()),
+    );
     Ok(Ok(v1::Finding {
         format: FORMAT,
         answered_at: now,
-        store_id: store::id(conn)?,
+        store_id,
+        verdicts,
         finding: Some(known::finding_ref(&i)),
         kind: i.kind.to_string(),
         title: i.words.title.to_string(),
@@ -97,8 +111,30 @@ fn all(conn: &Connection, now: i64) -> rusqlite::Result<Vec<Found>> {
     Ok(findings::all(conn, now)?.unwrap_or_default())
 }
 
-fn listed(i: &Item) -> v1::ListedFinding {
+/// Every finding by id, as an answer names one.
+fn refs(items: &[Item]) -> BTreeMap<String, v1::FindingRef> {
+    items
+        .iter()
+        .map(|i| (i.id.clone(), known::finding_ref(i)))
+        .collect()
+}
+
+fn listed(
+    i: &Item,
+    store_id: Option<&str>,
+    refs: &BTreeMap<String, v1::FindingRef>,
+) -> v1::ListedFinding {
     v1::ListedFinding {
+        // Counted, with only the verdict that raised a `verdict.suspicious` finding listed.
+        verdicts: i.verdicts.as_ref().and_then(|s| {
+            let opening = s.opening.iter().cloned().collect();
+            verdict::verdicts(
+                (s.total, s.suspicious, opening),
+                store_id,
+                refs,
+                s.standing.as_ref(),
+            )
+        }),
         finding: Some(known::finding_ref(i)),
         kind: i.kind.to_string(),
         title: i.words.title.to_string(),
@@ -135,6 +171,16 @@ fn evidence(conn: &Connection, f: &Found) -> rusqlite::Result<Option<v1::evidenc
             events: rule_events(conn, &f.id, kind)?,
             source: meta.source.url.to_string(),
             licence: meta.source.licence.to_string(),
+        })));
+    }
+    if let Some(subject) = f.rule.strip_prefix(verdict::PREFIX) {
+        let events = match findings::published(subject).and_then(|l| l.kind) {
+            Some(kind) => rule_events(conn, &f.id, kind)?,
+            None => Vec::new(),
+        };
+        return Ok(Some(Body::VerdictGiven(v1::VerdictGiven {
+            rule: subject.to_string(),
+            events,
         })));
     }
     let became = || f.became.as_deref().map(whole);

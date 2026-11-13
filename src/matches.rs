@@ -24,7 +24,7 @@
 use crate::contract::{v1, value_of};
 use crate::events::{self, Evidence, Hit, LineAt, Place, Queue, Stretch, WentTo};
 use crate::sigma::{Kind, Meta, Placement, Reason, Rules};
-use crate::{findings, known, status, store, view};
+use crate::{findings, known, status, store, verdict, view};
 use prost::Message;
 use rusqlite::Connection;
 use std::collections::BTreeMap;
@@ -218,10 +218,30 @@ fn read(args: &MatchesArgs, now: i64) -> Result<v1::Matches, Failure> {
             for hit in &s.hits {
                 let event = event(&hit.event);
                 for (file, meta) in &hit.matched {
-                    let (raised, findings) =
+                    let (raised, mut findings) =
                         raised(&tx, &held, hit, meta).map_err(|e| unreadable(&e))?;
+                    let position = hit.at.to_string();
+                    // The response layer's verdicts about the match, read by the match; the
+                    // finding its latest suspicious one went to is named after the core's.
+                    let said = verdict::listed(
+                        &tx,
+                        "position = ?1 AND rule = ?2",
+                        &[&position, &meta.name],
+                    )
+                    .map_err(|e| unreadable(&e))?;
+                    if let Some(f) = said.2.iter().rev().find_map(|v| v.finding.as_ref())
+                        && let Some(r) = held.findings.get(f)
+                    {
+                        findings.push(r.clone());
+                    }
                     answer.matches.push(v1::RuleMatch {
-                        position: hit.at.to_string(),
+                        verdicts: verdict::verdicts(
+                            said,
+                            answer.store_id.as_deref(),
+                            &held.findings,
+                            None,
+                        ),
+                        position,
                         rule: Some(rule(file, meta)),
                         event: Some(event.clone()),
                         raised: raised as i32,

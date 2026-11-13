@@ -11,9 +11,10 @@ use prost_types::field_descriptor_proto::{Label, Type};
 use std::path::Path;
 
 /// The schema's files, relative to `contract/`.
-const SCHEMA: [&str; 5] = [
+const SCHEMA: [&str; 6] = [
     "immune/v1/common.proto",
     "immune/v1/event.proto",
+    "immune/v1/verdict.proto",
     "immune/v1/known.proto",
     "immune/v1/matches.proto",
     "immune/v1/findings.proto",

@@ -41,6 +41,7 @@ package immune.v1;
 
 import "immune/v1/common.proto";
 import "immune/v1/event.proto";
+import "immune/v1/verdict.proto";
 
 // The answer to `immune matches`.
 message Matches {
@@ -85,8 +86,13 @@ message RuleMatch {
   // The findings the match was added to, each with its state, when `raised` is `finding`. One
   // today. A finding's state says whether the person has already answered it: a match added to a
   // finding marked `expected`, or to one marked `seen` since, raises nothing the person sees.
-  // `immune finding <id>` shows one.
+  // `immune finding <id>` shows one. After them, the `verdict.suspicious` finding of the latest
+  // `suspicious` verdict about the match, whatever `raised` is.
   repeated FindingRef findings = 5;
+  // The response layer's verdicts about this match. The `verdict.suspicious` finding a
+  // `suspicious` one went to is also among `findings`; `raised` stays what the core did. Absent
+  // when there are none.
+  Verdicts verdicts = 6;
 }
 
 // What became of a match among the core's findings. Values are added within version 1.

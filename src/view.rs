@@ -252,10 +252,27 @@ pub fn item(out: &mut String, i: &crate::findings::Item) -> Out {
     }
     writeln!(
         out,
-        "</p>\n<h3>{}</h3>\n<p>{}</p>\n<details>\n<summary>Details</summary>",
+        "</p>\n<h3>{}</h3>\n<p>{}</p>",
         esc(i.words.title),
         esc(i.words.meaning)
     )?;
+    // What the response layer said: the core's words, then for its own finding the reason that
+    // raised it, whole, in an element of its own, which nothing in the text can close.
+    if let Some(s) = &i.verdicts {
+        writeln!(
+            out,
+            "<p class=\"verdict\">{}</p>",
+            esc(&crate::verdict::said(s))
+        )?;
+        if let Some(o) = &s.opening {
+            writeln!(
+                out,
+                "<blockquote class=\"sent\">{}</blockquote>",
+                esc(&shown(&o.reason))
+            )?;
+        }
+    }
+    out.push_str("<details>\n<summary>Details</summary>\n");
     if let Some(value) = &i.value {
         writeln!(out, "<p class=\"said\">{}</p>", esc(value))?;
     }
@@ -1681,12 +1698,21 @@ fn changes(conn: &Connection, out: &mut String) -> Out {
                 MAX(entry = 'run_finished'),
                 MAX(CASE WHEN entry = 'report' THEN text END)
          FROM journal WHERE entry NOT IN ('owner_said', 'owner_withdrew')
-         GROUP BY run_id ORDER BY MAX(seq) DESC LIMIT ?1",
+         GROUP BY run_id
+         HAVING MAX(entry = 'run_started') OR run_id LIKE ?2 OR run_id LIKE ?3
+         ORDER BY MAX(seq) DESC LIMIT ?1",
     )?;
+    // A run is what the journal says started as one, and a watcher's reading or a sample is shown
+    // as what it is. An answer, a statement or a verdict is not a run, whatever its id.
     let runs: Vec<(String, i64, bool, Option<String>)> = runs_stmt
-        .query_map([RUNS_SHOWN], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-        })?
+        .query_map(
+            rusqlite::params![
+                RUNS_SHOWN,
+                format!("{}%", crate::watch::RUN_PREFIX),
+                format!("{}%", crate::processes::RUN_PREFIX)
+            ],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )?
         .collect::<rusqlite::Result<_>>()?;
     if runs.is_empty() {
         out.push_str("<p>No runs yet.</p>\n");
@@ -2025,6 +2051,8 @@ article.item.medium { border-left-color: var(--changed); }
 article.item h2, article.item h3 { font-size: 1rem; margin: 0 0 4px; padding: 0; border: 0; }
 article.item .where { margin: 0 0 6px; }
 article.item .said { color: var(--muted); overflow-wrap: anywhere; }
+article.item blockquote.sent { margin: 4px 0 8px; padding: 2px 10px; border-left: 3px solid var(--line);
+  color: var(--muted); overflow-wrap: anywhere; white-space: pre-wrap; }
 article.item .advice { font-weight: 600; }
 ul.counts { list-style: none; padding: 0; }
 ul.counts li { margin: 4px 0; }

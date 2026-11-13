@@ -892,6 +892,8 @@ pub struct Found {
     /// For a published rule's finding, the rule, its count and its evidence, as
     /// `events::finding_detail` gives them.
     pub detail: Option<Value>,
+    /// What it carries of the response layer's verdicts (`verdict::attach`).
+    pub verdicts: Option<crate::verdict::Summary>,
 }
 
 /// The state of a finding at `now`. An `expected` mark hides the finding until it ends; at
@@ -977,6 +979,7 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Found>>> 
             superseded: r.get(15)?,
             in_force: false,
             detail: None,
+            verdicts: None,
         })
     })?
     .map(|f| {
@@ -1011,8 +1014,11 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Found>>> 
             Ok(f)
         })
     })
-    .collect::<rusqlite::Result<_>>()
-    .map(Some)
+    .collect::<rusqlite::Result<Vec<Found>>>()
+    .and_then(|mut found| {
+        crate::verdict::attach(conn, &mut found)?;
+        Ok(Some(found))
+    })
 }
 
 /// One journal entry a finding rests on.
@@ -1307,6 +1313,8 @@ pub struct Item {
     pub answer: Option<Answered>,
     /// For a published rule's finding, the rule and the starts it matched, served as they are.
     pub detail: Option<Value>,
+    /// What it carries of the response layer's verdicts.
+    pub verdicts: Option<crate::verdict::Summary>,
 }
 
 /// The answer a finding has.
@@ -1479,15 +1487,21 @@ fn published_item(f: &Found, l: &'static crate::sigma::Loaded) -> Option<Item> {
         words,
         // The rule's title with its authors: wherever the finding is shown, the page and the
         // app's card included, the authors travel with it, as the Detection Rule License asks.
-        value: Some(match &m.author {
-            Some(a) => format!("{}, by {a}", m.title),
-            None => m.title.clone(),
-        }),
+        value: Some(published_value(m)),
         place: Some(f.place.clone()),
         about: f.about.clone(),
         answer: answered_of(f),
         detail: f.detail.clone(),
+        verdicts: f.verdicts.clone(),
     })
+}
+
+/// A published rule's title with its authors, as a finding's `value`.
+fn published_value(m: &crate::sigma::Meta) -> String {
+    match &m.author {
+        Some(a) => format!("{}, by {a}", m.title),
+        None => m.title.clone(),
+    }
 }
 
 /// The answer a finding has, as an item carries it.
@@ -1502,10 +1516,48 @@ fn answered_of(f: &Found) -> Option<Answered> {
     })
 }
 
+/// A finding of the response layer's `verdict.suspicious` about the rule `subject`: its levels
+/// are the highest its verdicts gave, and what it is about, the subject rule's title, stands
+/// beside its words.
+fn verdict_item(f: &Found, subject: &str) -> Option<Item> {
+    // The subject rule's title whether or not the rule has a level: a verdict about a match of
+    // a rule whose set states none is the response layer's judgement of it, and is shown. A
+    // rule this build no longer has is named as the verdict named it: the response layer's
+    // finding is the person's to close, and never goes when a build drops the rule.
+    let value = match published(subject) {
+        Some(l) => l.meta.as_ref().map(published_value),
+        None => rule(subject).map(|r| r.words.title.to_string()),
+    }
+    .unwrap_or_else(|| subject.to_string());
+    let (s, c) = f.verdicts.as_ref()?.levels?;
+    Some(Item {
+        id: f.id.clone(),
+        kind: crate::verdict::KIND,
+        rule: Some(crate::verdict::RULE),
+        technique: None,
+        severity: SEVERITIES[s],
+        confidence: Some(CONFIDENCES[c]),
+        state: f.state.clone(),
+        change: f.change.clone(),
+        first_seen: Some(f.first_seen.0),
+        last_seen: Some(f.last_seen.0),
+        words: crate::verdict::WORDS,
+        value: Some(value),
+        place: Some(f.place.clone()),
+        about: f.about.clone(),
+        answer: answered_of(f),
+        detail: None,
+        verdicts: f.verdicts.clone(),
+    })
+}
+
 /// A finding as an item; `None` for a rule this build does not have or does not raise.
 pub fn item(f: &Found) -> Option<Item> {
     if let Some(l) = published(&f.rule) {
         return published_item(f, l);
+    }
+    if let Some(subject) = f.rule.strip_prefix(crate::verdict::PREFIX) {
+        return verdict_item(f, subject);
     }
     let r = rule(&f.rule)?;
     Some(Item {
@@ -1525,6 +1577,7 @@ pub fn item(f: &Found) -> Option<Item> {
         about: f.about.clone(),
         answer: answered_of(f),
         detail: None,
+        verdicts: f.verdicts.clone(),
     })
 }
 
@@ -1602,6 +1655,9 @@ pub fn item_json(i: &Item) -> Value {
     }
     if let Some(d) = &i.detail {
         v["published_rule"] = d.clone();
+    }
+    if let Some(s) = &i.verdicts {
+        v["verdict"] = crate::verdict::item_json(s);
     }
     if let Some(a) = &i.answer {
         v["answer"] = json!({
@@ -1692,6 +1748,18 @@ pub fn catalogue_json() -> Value {
                 "advice": files.advice,
             },
         },
+        // A suspicious verdict of the response layer raises a finding of Immune's own rule; its
+        // levels are the verdict's, and what it is about stands beside these words.
+        "verdict_rule": {
+            "id": crate::verdict::RULE,
+            "kind": crate::verdict::KIND,
+            "severity": "the highest a verdict of the occurrence gave",
+            "confidence": "the highest a verdict of the occurrence gave",
+            "finds": "event",
+            "title": crate::verdict::WORDS.title,
+            "meaning": crate::verdict::WORDS.meaning,
+            "advice": crate::verdict::WORDS.advice,
+        },
         "not_covered": crate::covered::causes_json(),
         "levels": { "severity": SEVERITIES, "confidence": CONFIDENCES },
     })
@@ -1742,6 +1810,7 @@ mod tests {
             place: "invented".into(),
             became: None,
             detail: None,
+            verdicts: None,
         };
         assert!(
             super::item(&found(

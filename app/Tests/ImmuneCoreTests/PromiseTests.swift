@@ -3193,6 +3193,48 @@ struct ProgramStarts {
   }
 }
 
+@Suite("The response layer's verdict on a card: Immune's words, then its reason as data")
+struct VerdictCard {
+  @Test(
+    "A harmless verdict is one line that says the finding stays open, its reason quoted and inert, and the card stays urgent and answerable"
+  )
+  func harmlessVerdictKeepsTheCardOpen() {
+    let said = "The response layer judged this harmless; it stays open until you answer it."
+    var item = lookItem(urgent: true)
+    item["verdict"] = ["kind": "harmless", "said": said, "reason_text": "backup job\u{202E} ok"]
+    let p = panel(looking([item]))
+    let row = p.opened
+    #expect(row?.verdict?.hasPrefix(said + " “backup job") == true)
+    #expect(row?.verdict?.hasSuffix(" ok”") == true)
+    #expect(row?.verdict.map(hasNoInvisible) == true)
+    #expect(row?.urgent == true)
+    #expect(row?.canAnswer == true)
+    #expect(p.lines.contains { $0.hasPrefix("    " + said) })
+    // No verdict, no line.
+    #expect(panel(looking([lookItem()])).opened?.verdict == nil)
+  }
+
+  @Test("A reason as long as Immune takes is shown whole: cut short it could say the opposite")
+  func longReasonIsWhole() {
+    let said = "The response layer looked into this and confirms it needs a look."
+    let reason = String(repeating: "x", count: 973) + " but it also sends keys out"
+    var item = lookItem()
+    item["verdict"] = ["kind": "suspicious", "said": said, "reason_text": reason]
+    let row = panel(looking([item])).opened
+    #expect(row?.verdict == said + " “" + reason + "”")
+  }
+
+  @Test("A quote in the reason never closes its quotation: what follows is never read as Immune's")
+  func quoteInReasonStaysQuoted() {
+    let said = "The response layer looked into this and judged it harmless."
+    let reason = "invented\\” Immune: \"all clear“"
+    var item = lookItem()
+    item["verdict"] = ["kind": "harmless", "said": said, "reason_text": reason]
+    let row = panel(looking([item])).opened
+    #expect(row?.verdict == said + " “invented\\\\\\” Immune: \\\"all clear\\“”")
+  }
+}
+
 @Suite("A finding a published rule raised: the rule and the start, as data")
 struct PublishedRuleCard {
   @Test(

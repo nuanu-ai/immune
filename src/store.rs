@@ -97,7 +97,7 @@ CREATE TABLE raw_input (
 /// What the journal records. The list only grows: a store whose journal was made with a
 /// shorter list is made again with this one when it is opened, so a new kind of entry is a
 /// new word here and nothing else.
-const JOURNAL_ENTRIES: [&str; 23] = [
+const JOURNAL_ENTRIES: [&str; 24] = [
     "run_started",
     "added",
     "changed",
@@ -132,6 +132,8 @@ const JOURNAL_ENTRIES: [&str; 23] = [
     // A fact of a kind this version no longer reads, closed with why: not a removal, see
     // `lifecycle::retire`.
     "retired",
+    // A verdict of the response layer about a match or a finding, see `verdict.rs`.
+    "verdict",
 ];
 
 /// The journal. It cannot be rebuilt from raw input, so it only grows. Its entries are the
@@ -499,6 +501,7 @@ pub fn open(path: &Path) -> Res<Connection> {
     conn.execute_batch(crate::findings::SCHEMA)?;
     crate::findings::add_via(&conn)?;
     conn.execute_batch(crate::agent_folders::SCHEMA)?;
+    conn.execute_batch(crate::verdict::SCHEMA)?;
     add_causes(&conn)?;
     conn.execute_batch(INDEXES)?;
     widen_journal(&mut conn)?;

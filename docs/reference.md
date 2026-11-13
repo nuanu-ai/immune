@@ -128,7 +128,7 @@ Reserved: `copy_of`, `reachable_from`.
 
 ## Commands
 
-Every report command that takes `--json` prints one envelope with `format`, `operation`, `ok`, `errors` and `result`; an error has a `code`, a `message` and an `example`. A command of the contract prints its own message instead and uses the envelope only for a failure (see [the contract](#the-contract)). Exit codes: 0 answered, 1 from `immune matches` and `immune rules --over-log` when the event log cannot be read, 2 a misuse or an unknown id, 3 an unreadable store, 4 a check holding the store (ask again), 5 from `immune watch` when another watcher has the store. `--store <path>` points any command at another store.
+Every report command that takes `--json` prints one envelope with `format`, `operation`, `ok`, `errors` and `result`; an error has a `code`, a `message` and an `example`. A command of the contract prints its own message instead and uses the envelope only for a failure (see [the contract](#the-contract)). Exit codes: 0 answered, 1 from `immune matches`, `immune rules --over-log` and `immune verdict` when the event log cannot be read, 2 a misuse or an unknown id, 3 an unreadable store, 4 a check holding the store (ask again), 5 from `immune watch` when another watcher has the store. `--store <path>` points any command at another store.
 
 | Command | Does |
 |---|---|
@@ -147,6 +147,7 @@ Every report command that takes `--json` prints one envelope with `format`, `ope
 | `immune program <path, name or id> [--json \| --proto]` | The same for one program installed on this Mac: an application bundle, a Homebrew formula, cask or keg, a global npm package. It is a path (the bundle, the keg or the package's folder, or a file inside one), the name the store gives it (a bundle identifier, Homebrew's name, the package's name), or its id. No path is looked at on disk |
 | `immune machine [<name or id>] [--json \| --proto]` | The same for this Mac, or for another machine the store knows: a name or address it is known by, as `immune owner` takes one, or its id (`machine:<name>`). A machine known under several ids that the resolver links with `same_as` is answered with what was read under every one of them, whichever name is asked |
 | `immune matches [--after <place>] [--limit <n>] [--system-root <dir>] [--json \| --proto]` | Every rule match over the event log, of every level, each with the event it matched, as the contract's `Matches` message, read on from the place an earlier answer gave. It reads the log again and the store only, and writes nothing; without a store it fails |
+| `immune verdict [--system-root <dir>] [--json \| --proto]` | Records the response layer's verdict about a rule match or a finding: one `Verdict` message on standard input, binary or JSON with `--json`, answered with `VerdictRecorded` in the same form. A verdict never writes into a finding the core raised; a `suspicious` one raises a finding of Immune's own rule `verdict.suspicious` |
 | `immune servers` | Lists the servers this Mac knows and writes the sweep script |
 | `immune owner [<name> retired\|not-mine --reason <text> \| <name> withdraw] [--via app\|agent] [--json]` | A statement that a machine is retired or not the user's, or the list of those that stand |
 | `immune view [--no-open] [--if-stale]` | Writes the HTML pages and opens the summary; with `--if-stale`, only when something they show changed or they are an hour old |
@@ -180,9 +181,9 @@ A command of the contract prints one message on stdout: binary protobuf by defau
 
 A failure to answer is not a message, and a reader checks the exit code before it parses. In binary nothing is printed on stdout. With `--json` the failure envelope is printed without `format`, so a reader that parses it as the message all the same reads format 0 and stops. The exit codes are the ones above.
 
-An enum value a reader does not know, and the value `unspecified`, are read as the unsafe case, which the schema names for each enum: for `Presence` not known, for `Completeness` not full, for `Cause` failed, for `FindingState` open, for a severity and for a rule's level the highest level and for a confidence the lowest, for `AnswerKind` no answer, for `Via` not known who gave it, and for `Change` changed. The generated types read a word they do not know as `unspecified`, so a value added within version 1 does not break an older reader.
+An enum value a reader does not know, and the value `unspecified`, are read as the unsafe case, which the schema names for each enum: for `Presence` not known, for `Completeness` not full, for `Cause` failed, for `FindingState` open, for a severity and for a rule's level the highest level and for a confidence the lowest, for `AnswerKind` no answer, for `Via` not known who gave it, for `Change` changed, and for `VerdictKind` no verdict. The generated types read a word they do not know as `unspecified`, so a value added within version 1 does not break an older reader.
 
-Six commands use the contract so far. `immune project`, `immune program` and `immune machine` each print `Known`, about a project, a program or a machine. `immune matches` prints `Matches`. `immune findings` prints `Findings`, and `immune finding <id>` prints `Finding`. The types every message shares are in `common.proto`, and the event a rule matched is in `event.proto`.
+Seven commands use the contract. `immune project`, `immune program` and `immune machine` each print `Known`, about a project, a program or a machine. `immune matches` prints `Matches`. `immune findings` prints `Findings`, and `immune finding <id>` prints `Finding`. `immune verdict` reads `Verdict` and prints `VerdictRecorded`, both in `verdict.proto`. The types every message shares are in `common.proto`, and the event a rule matched is in `event.proto`.
 
 Every message carries `store_id`, the id of the store it was read from. A finding's id is unique only within one store: a store deleted and made again can give the same id to another finding, so a reader that keeps a verdict keeps it by the store's id and the finding's id together. The id is 16 random bytes from `getentropy`, written as 32 hexadecimal characters. It is made once, when the store is made, and kept in the store's `meta` table, so it says nothing about the Mac. A store an older build made gets one the next time a command that writes opens it, such as `immune run` or `immune watch`. A command that only reads makes none: until then the field is absent, and nothing tells that store apart from another.
 
@@ -223,7 +224,7 @@ As in every other answer, text from the Mac is only in fields ending in `_text`.
 
 The response layer gives a verdict about a finding, so it reads one whole. Both answers read the same findings as the status and the pages, in the same order: the most severe first, then the latest seen, then by id. A finding of a rule this build does not have is left out, as it is everywhere else.
 
-`Findings` lists every finding the store holds, in every state, each as its reference (`finding`: `id`, `rule`, `about_text`, `state`, `severity`, `confidence`, `urgent`) with `kind`, `title`, `where_text`, `first_seen_at`, `last_seen_at` and the person's `answer`. `latest_run_at` is absent when no run has finished. `--all` changes only the text for a person; the message carries every state either way.
+`Findings` lists every finding the store holds, in every state, each as its reference (`finding`: `id`, `rule`, `about_text`, `state`, `severity`, `confidence`, `urgent`) with `kind`, `title`, `where_text`, `first_seen_at`, `last_seen_at`, the person's `answer` and `verdicts`, what the response layer said about it, counted (see [`immune verdict`](#immune-verdict)). `latest_run_at` is absent when no run has finished. `--all` changes only the text for a person; the message carries every state either way.
 
 `Finding` is one finding whole:
 
@@ -238,6 +239,7 @@ The response layer gives a verdict about a finding, so it reads one whole. Both 
 | `evidence` | one key, the kind of finding, holding what it rests on beside the journal |
 | `rests_on` | the journal entries it rests on, oldest first: `seq`, `recorded_at`, `run_id`, `entry`, `reader`, `kind`, `predicate`, `subject_text`, and the value before and after, `old_value_text` and `new_value_text` |
 | `answers_note` | when an agent may answer a finding, the same words as in `immune status --json` and the usage |
+| `verdicts` | for a finding of the core, the verdicts that name it, and the `verdict.suspicious` finding of the same rule and thing when one is open or expected; for a `verdict.suspicious` finding, the verdicts of this occurrence. `total`, `suspicious`, and `listed`: the first and the latest 20 at most, oldest first |
 
 The kinds of evidence, by rule:
 
@@ -248,7 +250,8 @@ The kinds of evidence, by rule:
 | `indicator_matched` | `indicator.match` | `indicators_text`: the indicators the file or the connection matches, as STIX comparisons |
 | `detached_process` | `processes.detached-inline-code` | `pid` and `start_micros` of the process the latest sample saw; its program is `about_text`. Its command line is never kept |
 | `vulnerable_package` | `lockfiles.*` | `project_text`, `ecosystem`, `package_text`; `releases`, each `version_text` with `at_text`, the lockfile line; `records`, each with `id_text`, `aliases_text`, `source`, `label`, `exploited`, `summary_text` and `fixed_text`. All are from the answers that stand now, so a cleared finding has none |
-| `published_rule_matched` | `sigma:<id>` | `rule` as in `Matches`; `matches`, how many events it matched since it was raised; `events`, the latest five at most, newest first, each as `Matches` gives an event; `source` and `licence` |
+| `verdict_given` | `verdict.suspicious` | `rule`, the rule its verdicts are about; `events`, for verdicts about matches, the events at those lines, newest first, five at most |
+| `published_rule_matched` | `sigma:<id>`, `elastic:<id>` | `rule` as in `Matches`; `matches`, how many events it matched since it was raised; `events`, the latest five at most, newest first, each as `Matches` gives an event; `source` and `licence`. A finding a verdict raised has the same evidence, and rests on the journal entry `verdict` |
 
 Text from the Mac or a source is given whole, escaped as in every answer of the contract. A store with no table of findings, which an older build can leave, fails as a store written by an older build, with exit code 3, so an empty list always means that the store holds no finding. An id the store has no finding for is refused with `unknown_finding` and exit code 2.
 
@@ -264,7 +267,7 @@ Reading on from a place works the way the core's own reading works. A file the p
 
 | Field | Holds |
 |---|---|
-| `matches` | each match with `position`, `rule` (`name`, `file`, `id_text`, `title_text`, `level`, `techniques_text`, `author_text`, `source`, `set`), `event`, `raised` and `findings`. A match is named by its position and its rule's `name`, its set and its id, `sigma:<id>`, `elastic:<id>` or `elastic-behaviour:<id>`, the same in every command, which a finding of a set that raises carries; `source` and `set` give the set by name and in words; `file` is the path under that set's folder, `rules/sigma/`, `rules/elastic/` or `rules/elastic-behaviour/`. `level` is `not_stated` for a rule whose set states none, Elastic's behaviour rules: a value that is not a severity. A reader built before it was added reads it as a value it does not know, so as the highest level; a rule's level never decides whether the core raised a finding, which `raised` says. A position is an opaque reference to the event's line that includes the log file's inode, so it is never given to another line. Positions are not ordered as text: matches come in the order of the log |
+| `matches` | each match with `position`, `rule` (`name`, `file`, `id_text`, `title_text`, `level`, `techniques_text`, `author_text`, `source`, `set`), `event`, `raised`, `findings` and `verdicts`, the response layer's verdicts about that match, counted and listed as for a finding. After the findings the core's reading recorded, `findings` names the `verdict.suspicious` finding of the latest `suspicious` verdict about the match. A match is named by its position and its rule's `name`, its set and its id, `sigma:<id>`, `elastic:<id>` or `elastic-behaviour:<id>`, the same in every command, which a finding of a set that raises carries; `source` and `set` give the set by name and in words; `file` is the path under that set's folder, `rules/sigma/`, `rules/elastic/` or `rules/elastic-behaviour/`. `level` is `not_stated` for a rule whose set states none, Elastic's behaviour rules: a value that is not a severity. A reader built before it was added reads it as a value it does not know, so as the highest level; a rule's level never decides whether the core raised a finding, which `raised` says. A position is an opaque reference to the event's line that includes the log file's inode, so it is never given to another line. Positions are not ordered as text: matches come in the order of the log |
 | `event` | one key, the event's kind, holding the event: `program_start` or `file_event`. A program start has `happened_at` with `happened_nanos`, `process` (the process started: `executable_text`, `pid`, `user_id`, `signing_id_text`, `team_id_text`, `platform_binary`), `instigator` (the same process before the `exec`; today only its `executable_text`), `parent_pid`, `args_text` and `working_directory_text`. A file event has the time, `action` (`create` or `rename`), `path_text`, `source_text` for a rename, and `instigator`, the process that did it, today only its `executable_text`. A kind a reader does not know reads as no event |
 | `raised` | `below_high` for a rule below high, which raises nothing; `level_not_stated` for a rule whose set states no level, which raises nothing by itself; `finding` with the finding in `findings`, as the core's own reading recorded it, with the finding's state now; `not_read_yet` when the core's own reading has not reached the line; `no_finding` when it read the line and no finding holds the match, as a build without the rule leaves it; `unrecorded` when it read the line before the store kept which finding each match went to |
 | `continue_after`, `more` | the place to pass as `--after` next; and whether whole lines are left that the limit stopped short of. There is no place when the collector is not installed |
@@ -283,6 +286,52 @@ One answer holds at most `--limit` matches, 1,000 by default. It also stops once
 Text in an event is given whole. No argument or path is cut, each argument is a string of its own, and hidden characters are escaped as elsewhere. The environment is not in the log and not in the answer. On a Mac without the collector, the answer has no matches, the state `not_installed` and the rules for file events in `unevaluated`, and the command exits with 0. Without a store, or with one that cannot be read, the command fails with `store_unreadable` and exit code 3, as the other commands of the contract do: without the store it cannot say what became of a match. A log that cannot be read is a failure with the code `log_unreadable` and exit code 1. With `--json` every failure prints the envelope without `format`, so a reader that takes it for a `Matches` reads format 0 and stops.
 
 The core cannot give these today: a process's start time or its parent's identity beyond the pid, which the collector does not keep; and how many lines a deleted file held, so `gone` says only that lines are gone.
+
+### `immune verdict`
+
+The response layer looks into a match or a finding and gives the core a verdict: `suspicious`, a person should see it, or `harmless`. `immune verdict` reads exactly one `Verdict` on standard input, binary protobuf by default and JSON with `--json`, records it, and prints `VerdictRecorded` in the same form. Standard input that is a terminal is refused: the command asks nothing. A verdict over 65,536 bytes is refused, never cut. What this build does not read is refused in either form: a field the schema does not name, at the top or inside `match` or `finding`, a field given twice, or both `match` and `finding`. A binary verdict must be the encoding this build gives the same message.
+
+| Field of `Verdict` | Holds |
+|---|---|
+| `format` | 1 |
+| `store_id` | the `store_id` of the answer the response layer judged; another store's is refused |
+| `match` or `finding` | what it is about: a match by `position` and `rule`, both as `immune matches` printed them, or a finding by `id` |
+| `kind` | `suspicious` or `harmless` |
+| `reason_text`, `case_text` | the response layer's reason, at most 1,000 Unicode scalar values, and its own reference to its case, at most 200. Each needs a visible character. Longer text is refused, never cut |
+| `severity`, `confidence` | on the core's scale: required on a `suspicious` verdict and refused on a `harmless` one; a confidence is `low`, `medium` or `high` |
+
+A verdict never writes into a finding the core raised: not its state, its occurrences, its evidence, when it was last seen, its levels or whether it is urgent.
+
+A `suspicious` verdict is an event of one rule of Immune's own, `verdict.suspicious`, and raises a finding the way any rule that finds an event does. The finding is about the rule the verdict names (the match's rule, or the rule of the finding it names) and the thing that rule's findings are about on this Mac; in the store its rule is `verdict.suspicious:<that rule>`, and in every answer its `rule` is `verdict.suspicious`, its `kind` is `verdict of the response layer`, and `value_text` is the title of the rule it is about. A verdict about a finding and one about a match of the same rule and thing go to the same finding. Open, it stays open as more verdicts come; marked expected, it stays so until the mark ends; marked seen, the next `suspicious` verdict raises its next occurrence. The core never clears it: only the person closes it. Its severity and confidence are the highest any verdict of its occurrence gave, so they only go up, and it is urgent by the ordinary rule. For a verdict about a match, the core reads the line at the position again under `--system-root`, evaluates its event with the same code as its own reading, and the rule must have matched it; the finding keeps that event as a rule's finding keeps events.
+
+A `harmless` verdict is a record: kept, shown beside what it is about, and nothing else.
+
+The same message, equal in what it names, its kind, its reason, its case and both levels, is recorded once while the finding it went to is open, and a `harmless` one is recorded once; the second answer gives the first with `already_recorded` true. After the person answered that finding, the same message is the response layer saying it again and raises the next occurrence. Each verdict is an entry `verdict` in the journal.
+
+Verdicts are not signed, as answers are not. Anyone who can run `immune verdict` as the person can send one, and the core cannot tell the response layer from another program doing so. A verdict about a match names a line of the log under the `--system-root` the command is given, as `immune run` reads the log under its own, and whoever can run Immune as the person can do either. That is why a verdict never writes into the core's findings.
+
+`VerdictRecorded` has `format`, `answered_at`, `store_id`, `recorded` and `already_recorded`. A recorded verdict (`RecordedVerdict`) holds the `verdict` as sent, its text escaped as all text of the contract, `recorded_at`, `finding`, the `verdict.suspicious` finding a `suspicious` one was recorded in (absent for a `harmless` one), and `raised`, whether it raised that occurrence.
+
+What is shown beside a finding is `Verdicts`: `total`, `suspicious`, `listed` and `verdict_finding`. An answer lists at most the first verdict and the latest 20, with the total. In `Findings`, a finding of the core lists none and names its `verdict.suspicious` finding when one is open or expected; a `verdict.suspicious` finding lists the verdict that raised its occurrence. In `immune status --json` an item carries `verdict`: for a finding of the core, `said` (the core's words, such as "2 verdicts from the response layer, 1 suspicious."), `total`, `suspicious` and `finding`, with no text of the response layer's; for a `verdict.suspicious` finding, `said`, then the raising verdict's `reason_text`, `case_text`, `at`, `severity` and `confidence`, and `more`, how many came after it. The text of `immune finding <id>`, the summary page and the app show the core's words first and the response layer's text after them, quoted and whole: a quote character inside it is escaped, and on the page the reason is a block of its own.
+
+`immune status --json` cuts what needs a look per source, in the one order: up to 50 of the core's findings and up to 50 of the response layer's, so that verdicts cannot push the core's findings out of the list.
+
+A failure prints nothing on stdout in binary, and the envelope without `format` with `--json`. Nothing is recorded, and a refused verdict writes nothing to the store: a file that is not a store of this format is not made into one.
+
+| Code | Exit | When |
+|---|---|---|
+| `usage` | 2 | standard input is a terminal, or the command line is wrong |
+| `too_large` | 2 | the verdict is over 65,536 bytes |
+| `not_a_verdict` | 2 | it is not one `Verdict` of format 1 this build reads: it cannot be read, has a field the schema does not name or a field twice, names neither a match nor a finding or both, has no known kind, has a level that is not on the scale, lacks a level on a `suspicious` verdict, or has one on a `harmless` verdict |
+| `empty_reason`, `empty_case` | 2 | `reason_text` or `case_text` has no visible character |
+| `reason_too_long`, `case_too_long` | 2 | `reason_text` is over 1,000 Unicode scalar values or `case_text` over 200 |
+| `another_store` | 2 | its `store_id` is not this store's |
+| `unknown_finding` | 2 | the store has no finding with that id |
+| `match_gone` | 2 | the log holds no line at that position: the file it names is not in the log, or another file has its name now |
+| `no_such_match` | 2 | the position is not one `immune matches` prints, no event's line begins there, the rule is not shipped, or the event there did not match that rule |
+| `log_unreadable` | 1 | the event log could not be read |
+| `store_unreadable` | 3 | there is no store, it is not a store of this format, or it cannot be read or written |
+| `run_in_progress` | 4 | a run or another writer holds the store; nothing was recorded, and the same verdict can be sent again. `immune finding <id> seen`, `expected` and `reopen` write the same way and fail with the same code |
 
 ## Files Immune keeps
 
