@@ -18,12 +18,12 @@
 //! at, answered `unknown`, carries a reading made by rule that says so, since "every reading
 //! full" would otherwise read as "looked, and not there".
 
+use crate::answer::{self, Form};
 use crate::contract::{self, v1, value_of};
 use crate::{Stop, checkouts, findings, guarded, status, store};
 use prost::Message;
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
@@ -87,53 +87,30 @@ pub fn spelled_otherwise(ids: Vec<String>, example: &'static str) -> Refused {
     }
 }
 
-/// The form a command of the contract prints its message in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Form {
-    /// Binary protobuf, `--proto`: what a command of the contract prints when no form is named.
-    Proto,
-    /// The same message as one line of JSON, `--json`.
-    Json,
-}
-
-/// Takes `--json` or `--proto` into `form`, so that a program can always name the form it
-/// wants; false for any other argument. Naming both is a misuse.
-pub fn take_form(arg: &str, form: &mut Option<Form>) -> Result<bool, String> {
-    let named = match arg {
-        "--json" => Form::Json,
-        "--proto" => Form::Proto,
-        _ => return Ok(false),
-    };
-    if form.is_some_and(|f| f != named) {
-        return Err("--json and --proto each name the form of the answer; give one".to_string());
-    }
-    *form = Some(named);
-    Ok(true)
-}
-
-/// The words after the command: `--store`, the form, and the rest in order.
-pub struct Words {
-    pub store: PathBuf,
-    pub json: bool,
-    pub words: Vec<String>,
-}
-
-/// Reads the arguments after a command of the contract.
-pub fn words(mut it: impl Iterator<Item = String>) -> Result<Words, String> {
-    let (mut store, mut form, mut words) = (None, None, Vec::new());
-    while let Some(arg) = it.next() {
-        match arg.as_str() {
-            "--store" => store = Some(crate::value(&mut it, &arg)?.into()),
-            _ if take_form(&arg, &mut form)? => {}
-            _ if arg.starts_with("--") => return Err(format!("unexpected argument: {arg}")),
-            _ => words.push(arg),
+impl Refused {
+    /// The refusal as the contract's error, with the ids it fits whole.
+    fn error(&self) -> v1::Error {
+        v1::Error {
+            ids_text: self.ids.iter().map(|id| whole(id)).collect(),
+            ..answer::error(self.code, self.message, self.example, "")
         }
     }
-    Ok(Words {
-        store: store.map_or_else(crate::default_store, Ok)?,
-        json: form == Some(Form::Json),
-        words,
-    })
+}
+
+/// Reads the positionals after a command of the contract that takes only the common options.
+pub fn words(
+    it: impl Iterator<Item = String>,
+    options: &mut answer::Options,
+) -> Result<Vec<String>, String> {
+    let mut words = Vec::new();
+    options.read(it, |arg, _| {
+        if arg.starts_with("--") {
+            return Err(format!("unexpected argument: {arg}"));
+        }
+        words.push(arg);
+        Ok(())
+    })?;
+    Ok(words)
 }
 
 /// A path as ids name it on this Mac: relative to the home folder when it is inside it, the full
@@ -157,43 +134,25 @@ pub fn path_of(asked: &str, home: &Path) -> Option<String> {
     Some(checkouts::rel(home, &plain))
 }
 
-/// Answers a command of the contract: the message on stdout, binary or JSON; a refusal as a
-/// misuse; a store that cannot be read the way the report commands say it. `ask` turns the
-/// question into the answer, in one read transaction so that it is of one state of the store.
+/// Answers a command of the contract in the form asked (`answer::print`), with `text` the text
+/// for a person of the message; a refusal as a misuse, and a store that cannot be read, as every
+/// failure of the contract is told (`answer::fail`). `ask` turns the question into the answer, in
+/// one read transaction so that it is of one state of the store.
 pub fn command<M: Message + serde::Serialize>(
     op: &str,
     store: &Path,
-    json: bool,
+    form: Form,
     ask: impl FnOnce(&Connection, i64) -> rusqlite::Result<Result<M, Refused>>,
+    text: impl FnOnce(&M) -> String,
 ) -> ExitCode {
-    let answer = match read(store, |conn| ask(conn, crate::now_secs())) {
-        Ok(Ok(answer)) => answer,
-        Ok(Err(refused)) => return refuse(op, json, &refused),
-        Err(e) => return failed(op, json, &e),
-    };
-    if json {
-        match serde_json::to_string(&answer) {
-            Ok(line) => println!("{line}"),
-            Err(e) => return failed(op, true, &Stop::Store(e.to_string())),
+    match read(store, |conn| ask(conn, crate::now_secs())) {
+        Ok(Ok(m)) => answer::print(op, form, &m, text),
+        Ok(Err(refused)) => answer::fail(op, form, refused.error(), crate::EXIT_USAGE),
+        Err(e) => {
+            let (error, exit) = answer::stopped(&e, "immune status --json --store <file>");
+            answer::fail(op, form, error, exit)
         }
-    } else if std::io::stdout()
-        .write_all(&answer.encode_to_vec())
-        .is_err()
-    {
-        return ExitCode::FAILURE;
     }
-    ExitCode::SUCCESS
-}
-
-/// A store that cannot be read, said as the report commands say it, in the envelope of the
-/// contract with `--json`.
-fn failed(op: &str, json: bool, e: &Stop) -> ExitCode {
-    if !json {
-        return crate::store_failed(false, op, e);
-    }
-    let (v, exit) = crate::failure_of(op, e);
-    println!("{}", envelope(v));
-    ExitCode::from(exit)
 }
 
 fn read<T>(store: &Path, ask: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T, Stop> {
@@ -209,33 +168,6 @@ fn read<T>(store: &Path, ask: impl FnOnce(&Connection) -> rusqlite::Result<T>) -
         .unchecked_transaction()
         .map_err(|e| Stop::Store(e.to_string()))?;
     ask(&tx).map_err(|e| Stop::Store(older(e.to_string())))
-}
-
-/// The failure envelope of a command of the contract: the report commands' envelope without
-/// `format`. Parsed with the contract's types all the same, it reads as format 0, which no
-/// reader takes for an answer.
-pub fn envelope(mut v: serde_json::Value) -> serde_json::Value {
-    if let Some(fields) = v.as_object_mut() {
-        fields.remove("format");
-    }
-    v
-}
-
-/// A refusal as a misuse: nothing on stdout in binary, the failure envelope with `--json`, whose
-/// error lists the ids it fits in `ids_text`, whole.
-fn refuse(op: &str, json: bool, r: &Refused) -> ExitCode {
-    let ids: Vec<String> = r.ids.iter().map(|id| whole(id)).collect();
-    if json {
-        let mut v = status::failure(Some(op), r.code, r.message, r.example, &ids.join(", "));
-        v["errors"][0]["ids_text"] = serde_json::json!(ids);
-        println!("{}", envelope(v));
-    } else {
-        eprintln!("immune: {}. {}", r.message, r.example);
-        for id in &ids {
-            eprintln!("  {id}");
-        }
-    }
-    ExitCode::from(crate::EXIT_USAGE)
 }
 
 /// What a failure to read the store says. A store of this format written by an older build lacks

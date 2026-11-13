@@ -22,6 +22,8 @@ import "immune/v1/verdict.proto";
 
 // The answer to `immune findings`: every finding the store holds, in every state.
 message Findings {
+  // The numbers of `Failure`'s fields, so that a failure never reads as an answer.
+  reserved 1000 to 1099;
   // The version of this contract: 1. A reader that meets another number stops.
   uint32 format = 1;
   // When the answer was made.
@@ -66,6 +68,7 @@ message ListedFinding {
 // The answer to `immune finding <id>`: one finding whole.
 message Finding {
   // As in `Findings`.
+  reserved 1000 to 1099;
   uint32 format = 1;
   int64 answered_at = 2;
   optional string store_id = 3;
@@ -168,6 +171,10 @@ message Evidence {
 message PlaceChanged {
   // What its latest occurrence was.
   Change change = 1;
+  // What the last retained observation could see. True if it could see only that the entry
+  // was there. False if it read the content the reader checks. Absent when the store has no
+  // such observation. Neither value gives the coverage or freshness of a later reading.
+  optional bool presence_only = 2;
 }
 
 // What happened to a watched place. `UNSPECIFIED`, or a value the reader does not know, is read
@@ -180,6 +187,9 @@ enum Change {
   // It could be opened for the first time, so a change before now would have gone unseen. The
   // store's word is `first read`.
   CHANGE_FIRST_READ = 4;
+  // The place is there and could not be read. The latest occurrence's `not_read` journal
+  // entry gives the reason in `new_value_text`.
+  CHANGE_NOT_READ = 5;
 }
 
 // Installed software changed in place. The digests and verdicts before and after are in

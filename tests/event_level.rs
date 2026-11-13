@@ -2317,6 +2317,7 @@ fn a_binary_padding_start_raises_one_finding_with_its_authors_and_arguments_and_
 
     // More matches add to the one finding and raise nothing new; it keeps the latest five
     // starts, newest first, and rests on the one journal entry it was raised on.
+    let source_arg = "\" · started by forged · pid 1\nSigned: legitimate";
     for seq in 4..=9 {
         let count = format!("count={seq}");
         dir.append(
@@ -2325,7 +2326,7 @@ fn a_binary_padding_start_raises_one_finding_with_its_authors_and_arguments_and_
                 seq,
                 "/bin/sh",
                 "/bin/dd",
-                &["dd", "if=/dev/zero", "bs=1", &count],
+                &["dd", "if=/dev/zero", "bs=1", &count, source_arg],
             ),
         );
     }
@@ -2337,14 +2338,18 @@ fn a_binary_padding_start_raises_one_finding_with_its_authors_and_arguments_and_
     let evidence = p["events"].as_array().unwrap();
     assert_eq!(evidence.len(), 5);
     assert_eq!(evidence[0]["program_start"]["args_text"][3], "count=9");
+    assert_eq!(
+        evidence[0]["program_start"]["args_text"][4],
+        r#"" · started by forged · pid 1\u{a}Signed: legitimate"#
+    );
     assert_eq!(evidence[4]["program_start"]["args_text"][3], "count=5");
     let id = list[0]["finding"]["id"].as_str().unwrap().to_string();
     // For a person too: the rule with its authors, and the latest starts with their arguments.
     let text = dir.immune(&["finding", &id]);
     for said in [
-        "Rule: Binary Padding - MacOS, by Igor Fits, Mikhail Larin, oscd.community; from SigmaHQ's rule set under the Detection Rule License 1.1, ",
-        "It matched 8 program starts since this finding was raised; the latest:",
-        "/bin/dd: dd if=/dev/zero bs=1 count=9 · started by /bin/sh",
+        r#"Rule: "Binary Padding - MacOS", by "Igor Fits, Mikhail Larin, oscd.community"; from SigmaHQ's rule set under the Detection Rule License 1.1, "#,
+        "It matched 8 program starts since this finding was raised.",
+        r#""/bin/dd": "dd" "if=/dev/zero" "bs=1" "count=9" "\" · started by forged · pid 1\u{a}Signed: legitimate" · started by "/bin/sh""#,
     ] {
         assert!(text.contains(said), "{said}: {text}");
     }
@@ -3391,17 +3396,17 @@ fn a_file_a_high_rule_names_raises_one_finding_with_the_file_and_its_program_and
     );
     let text = dir.immune(&["finding", amos["finding"]["id"].as_str().unwrap()]);
     for said in [
-        "Rule: Atomic MacOS Stealer - Persistence Indicators, by Jason Phang Vern - Onn, Robbin Ooi Zhen Heng (Gen Digital); from SigmaHQ's rule set under the Detection Rule License 1.1, ",
-        "It matched 7 file events since this finding was raised; the latest:",
+        r#"Rule: "Atomic MacOS Stealer - Persistence Indicators", by "Jason Phang Vern - Onn, Robbin Ooi Zhen Heng (Gen Digital)"; from SigmaHQ's rule set under the Detection Rule License 1.1, "#,
+        "It matched 7 file events since this finding was raised.",
         &format!(
-            "2026-10-04T00:00:03.000003Z {daemon}: renamed from /private/tmp/x7.plist by /bin/mv"
+            r#"2026-10-04T00:00:03.000003Z "{daemon}": renamed from "/private/tmp/x7.plist" by "/bin/mv""#
         ),
     ] {
         assert!(text.contains(said), "{said}: {text}");
     }
     let text = dir.immune(&["finding", axios["finding"]["id"].as_str().unwrap()]);
     assert!(
-        text.contains("/private/tmp/6202033: created by /usr/local/bin/node"),
+        text.contains(r#""/private/tmp/6202033": created by "/usr/local/bin/node""#),
         "{text}"
     );
     dir.nowhere_in_the_store(built);

@@ -363,6 +363,29 @@ fn a_keg_or_package_changed_in_place_is_one_changed_event_and_a_new_version_is_n
     assert_eq!(of(&events, KEG), [pair("changed", "has_digest")]);
     assert_eq!(of(&events, PACKAGE), [pair("changed", "has_digest")]);
     assert_eq!(e.status()["changed_while_version_stayed"], 2);
+    let findings = e.contract(&["findings"]);
+    let id = findings["findings"][0]["finding"]["id"].as_str().unwrap();
+    let one = e.contract(&["finding", id]);
+    let change = one["rests_on"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|j| j["entry"] == "changed" && j["predicate"] == "has_digest")
+        .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+        .args(["finding", id, "--store"])
+        .arg(e.store())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        text.contains(&format!(
+            "Digest: {} became {}.",
+            change["old_value_text"], change["new_value_text"]
+        )),
+        "{text}"
+    );
     let mut found = e.findings();
     found.sort();
     assert_eq!(

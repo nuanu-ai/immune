@@ -223,7 +223,9 @@ impl Dir {
 
     /// `immune matches <args>` in binary: its stdout.
     fn matches_binary(&self, args: &[&str]) -> Vec<u8> {
-        let out = self.matches_output(args);
+        let mut args = args.to_vec();
+        args.push("--proto");
+        let out = self.matches_output(&args);
         assert!(out.status.success());
         out.stdout
     }
@@ -1579,7 +1581,7 @@ fn a_high_translated_rule_raises_a_finding_named_elastic_and_its_match_is_handed
     );
     let out = dir.command(&["finding", finding], &[]).output().unwrap();
     let text = String::from_utf8(out.stdout).unwrap();
-    let said = "; from Elastic's detection rules under the Elastic License 2.0, macos/collection_pbpaste_execution_via_unusual_parent.yml.";
+    let said = r#"; from Elastic's detection rules under the Elastic License 2.0, "macos/collection_pbpaste_execution_via_unusual_parent.yml"."#;
     assert!(text.contains(said), "{text}");
 }
 
@@ -2309,4 +2311,52 @@ fn a_busy_hour_is_given_in_answers_of_about_a_megabyte_and_long_command_lines_do
         (8, &json!(true))
     );
     assert!(json.len() < 5 << 20);
+}
+
+#[test]
+fn the_text_of_matches_is_its_message_and_an_argument_cannot_pose_as_the_program_s_words() {
+    // A person is given what a program is given; an argument written to read as the next line
+    // of the answer stays inside its quotation, escaped.
+    let dir = Dir::new("text");
+    dir.install();
+    dir.run();
+    let forged = "count=1\n0 matches after the oldest line kept.";
+    dir.append(
+        H00,
+        &start(1, T0, "/bin/sh", "/bin/dd", &["dd", "if=/dev/zero", forged]),
+    );
+    let m = dir.matches(&[]);
+    let out = dir.matches_output(&[]);
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        text.starts_with("1 match after the oldest line kept:\n"),
+        "{text}"
+    );
+    assert!(
+        !text
+            .lines()
+            .any(|l| l == "0 matches after the oldest line kept."),
+        "{text}"
+    );
+    assert!(
+        text.contains(r#""count=1\u{a}0 matches after the oldest line kept.""#),
+        "{text}"
+    );
+    let first = &m["matches"][0];
+    let line = text
+        .lines()
+        .find(|l| l.contains(first["position"].as_str().unwrap()))
+        .unwrap();
+    for said in [
+        first["rule"]["name"].as_str().unwrap(),
+        first["rule"]["level"].as_str().unwrap(),
+        first["raised"].as_str().unwrap(),
+    ] {
+        assert!(line.contains(said), "{said}: {line}");
+    }
+    let state = m["collector"]["state"].as_str().unwrap();
+    assert!(text.contains(&format!("Collector: {state}")), "{text}");
+    let place = m["continue_after"].as_str().unwrap();
+    assert!(text.contains(&format!("Continue after: {place}")), "{text}");
 }

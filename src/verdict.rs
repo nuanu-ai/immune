@@ -26,12 +26,12 @@ use crate::events::{self, AtLine, LineAt};
 use crate::findings::{self, CONFIDENCES, Found, SEVERITIES, Words};
 use crate::known::{self, whole};
 use crate::sigma::Rules;
-use crate::{Stop, status, store, view};
+use crate::{Stop, answer, store, view};
 use prost::Message;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, VecDeque};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -385,51 +385,40 @@ pub fn verdicts(
     })
 }
 
-/// Text from the response layer as a person reads it in a line of the core's: in double quotes,
-/// with a backslash and a double quote inside escaped by a backslash and invisible characters
-/// spelled out, so nothing in it closes the quotation and goes on in the core's voice.
-pub fn quoted(s: &str) -> String {
-    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
-    format!("\"{}\"", view::shown(&escaped))
-}
-
-/// A verdict as text for a person: the core's words, then the reason and case quoted, whole.
-pub fn line(r: &Recorded) -> String {
-    let levels = match (&r.severity, &r.confidence) {
-        (Some(s), Some(c)) => format!(", severity {s}, confidence {c}"),
-        _ => String::new(),
-    };
-    format!(
-        "A {} verdict of the response layer, {}{levels}. Its reason: {}. Its case: {}.",
-        r.kind.word(),
-        view::utc(r.at),
-        quoted(&r.reason),
-        quoted(&r.case)
-    )
-}
-
 /// `immune verdict`.
 pub struct VerdictArgs {
     pub store: PathBuf,
-    pub json: bool,
+    /// The form it reads and answers in, `--proto` or `--json`: never text, since a message is
+    /// not typed as text.
+    pub form: answer::Form,
     /// The folder the collector's log is read under: `/` unless given another, as for `immune run`.
     pub system_root: PathBuf,
 }
 
 /// Reads the arguments after `verdict`.
-pub fn parse(mut it: impl Iterator<Item = String>) -> Result<VerdictArgs, String> {
-    let (mut store, mut form, mut root) = (None, None, None);
-    while let Some(arg) = it.next() {
+pub fn parse(
+    it: impl Iterator<Item = String>,
+    options: &mut answer::Options,
+) -> Result<VerdictArgs, String> {
+    let mut root = None;
+    options.read(it, |arg, it| {
         match arg.as_str() {
-            "--store" => store = Some(crate::value(&mut it, &arg)?.into()),
-            "--system-root" => root = Some(crate::value(&mut it, &arg)?.into()),
-            _ if known::take_form(&arg, &mut form)? => {}
+            "--system-root" => root = Some(crate::value(it, &arg)?.into()),
             _ => return Err(format!("unexpected argument: {arg}")),
         }
+        Ok(())
+    })?;
+    // Nothing is read or recorded without a form: standard input would be taken for one.
+    let form = options.form();
+    if form == answer::Form::Text {
+        return Err(
+            "immune verdict reads one message and answers in the same form, which is never text: name it, --proto or --json"
+                .to_string(),
+        );
     }
     Ok(VerdictArgs {
-        store: store.map_or_else(crate::default_store, Ok)?,
-        json: form == Some(known::Form::Json),
+        store: options.store()?,
+        form,
         system_root: root.unwrap_or_else(|| PathBuf::from("/")),
     })
 }
@@ -438,6 +427,7 @@ pub fn parse(mut it: impl Iterator<Item = String>) -> Result<VerdictArgs, String
 pub struct Refusal {
     pub code: &'static str,
     pub message: &'static str,
+    /// Raw detail. The failure message escapes it when it is built.
     pub detail: String,
     pub exit: u8,
 }
@@ -645,8 +635,7 @@ fn from_json(bytes: &[u8]) -> Result<v1::Verdict, Refusal> {
     let back = serde_json::to_value(&v).map_err(|e| not_a_verdict(e.to_string()))?;
     if let Some(at) = unknown_key(&sent, &back, "") {
         return Err(not_a_verdict(format!(
-            "{} is not a field of the message, or names a second thing it is about",
-            whole(&at)
+            "{at} is not a field of the message, or names a second thing it is about"
         )));
     }
     Ok(v)
@@ -666,38 +655,16 @@ fn unknown_key(sent: &Value, back: &Value, at: &str) -> Option<String> {
     })
 }
 
-/// Answers `immune verdict`: the message on stdout, binary or JSON; a refusal or a failure as
-/// the other commands of the contract give one, the envelope without `format` with `--json` and
-/// nothing on stdout in binary.
+/// Answers `immune verdict` with a `VerdictRecorded` or a `Failure` in the form named.
 pub fn verdict_cmd(args: &VerdictArgs) -> ExitCode {
-    let answer = match take(args) {
-        Ok(answer) => answer,
-        Err(r) => return fail(args.json, &r),
-    };
-    if args.json {
-        match serde_json::to_string(&answer) {
-            Ok(line) => println!("{line}"),
-            Err(e) => return fail(true, &store_unreadable(e.to_string())),
+    match take(args) {
+        // The form is binary or JSON (`parse`), so there is no text to give.
+        Ok(m) => answer::print("verdict", args.form, &m, |_| String::new()),
+        Err(r) => {
+            let error = answer::error(r.code, r.message, EXAMPLE, &r.detail);
+            answer::fail("verdict", args.form, error, r.exit)
         }
-    } else if std::io::stdout()
-        .write_all(&answer.encode_to_vec())
-        .is_err()
-    {
-        return ExitCode::FAILURE;
     }
-    ExitCode::SUCCESS
-}
-
-fn fail(json: bool, r: &Refusal) -> ExitCode {
-    if json {
-        let v = status::failure(Some("verdict"), r.code, r.message, EXAMPLE, &r.detail);
-        println!("{}", known::envelope(v));
-    } else if r.detail.is_empty() {
-        eprintln!("immune: {}", r.message);
-    } else {
-        eprintln!("immune: {}: {}", r.message, view::shown(&r.detail));
-    }
-    ExitCode::from(r.exit)
 }
 
 /// Opens the store to write as every writing command does: under the run lock, waited for as
@@ -724,7 +691,7 @@ fn take(args: &VerdictArgs) -> Result<v1::VerdictRecorded, Refusal> {
         .take(CAP as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| not_a_verdict(format!("standard input could not be read: {e}")))?;
-    let sent = read(&bytes, args.json)?;
+    let sent = read(&bytes, args.form == answer::Form::Json)?;
     if !args.store.is_file() {
         return Err(store_unreadable(format!(
             "there is no store at {}; `immune run` makes it",
@@ -853,8 +820,8 @@ fn check(
             "another_store",
             "the verdict names another store than the one it was given to; nothing was recorded",
             format!(
-                "the verdict names {:?}, and this store is {}",
-                whole(&sent.store_id),
+                "the verdict names {}, and this store is {}",
+                sent.store_id,
                 id.as_deref().unwrap_or("without an id")
             ),
         ));
@@ -869,7 +836,7 @@ fn check(
                 return Err(refused(
                     "unknown_finding",
                     "the store has no finding with this id; nothing was recorded",
-                    whole(id),
+                    id,
                 ));
             }
             Ok(None)
@@ -894,30 +861,23 @@ fn checked_match(
         )
     };
     if Rules::shipped().by_name(rule).is_none() {
-        return Err(no_match(format!(
-            "this build ships no rule named {}",
-            whole(rule)
-        )));
+        return Err(no_match(format!("this build ships no rule named {rule}")));
     }
     let Some(at) = LineAt::parse(position) else {
         return Err(no_match(format!(
-            "{} is not a position immune matches printed",
-            whole(position)
+            "{position} is not a position immune matches printed"
         )));
     };
     let hit = match events::at_line(&args.system_root, &at, crate::now_secs()) {
         Ok(AtLine::Event(hit)) => hit,
         Ok(AtLine::NoLine) => {
-            return Err(no_match(format!(
-                "no event's line begins at {}",
-                whole(position)
-            )));
+            return Err(no_match(format!("no event's line begins at {position}")));
         }
         Ok(AtLine::Gone) => {
             return Err(refused(
                 "match_gone",
                 "the log holds no line at that position: the file it names is not in the log, or another file has its name now; nothing was recorded",
-                whole(position),
+                position,
             ));
         }
         Err(why) => {
@@ -931,9 +891,7 @@ fn checked_match(
     };
     if !hit.matched.iter().any(|(_, m)| m.name == rule) {
         return Err(no_match(format!(
-            "the event at {} did not match {}",
-            whole(position),
-            whole(rule)
+            "the event at {position} did not match {rule}"
         )));
     }
     Ok(hit.event)
@@ -997,4 +955,55 @@ fn answer(
         recorded: Some(recorded(&r, store_id.as_deref(), finding)),
         already_recorded: already,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_verdict_error_preserves_a_newline_and_its_literal_escape_as_different_data() {
+        for (key, escaped) in [
+            ("extra\n\"", r#"extra\u{a}""#),
+            (r#"extra\u{a}""#, r#"extra\u{5c}u{a}""#),
+        ] {
+            let bytes = serde_json::to_vec(&serde_json::json!({ key: 1 })).unwrap();
+            let Err(refusal) = from_json(&bytes) else {
+                panic!("accepted an unknown field");
+            };
+            let failure = v1::Failure {
+                operation: "verdict".to_string(),
+                ok: false,
+                errors: vec![answer::error(
+                    refusal.code,
+                    refusal.message,
+                    EXAMPLE,
+                    &refusal.detail,
+                )],
+            };
+            let detail = format!(
+                "/{escaped} is not a field of the message, or names a second thing it is about"
+            );
+            let binary = failure.encode_to_vec();
+            let json = serde_json::to_vec(&failure).unwrap();
+            for decoded in [
+                v1::Failure::decode(binary.as_slice()).unwrap(),
+                serde_json::from_slice::<v1::Failure>(&json).unwrap(),
+            ] {
+                let error = &decoded.errors[0];
+                assert_eq!(error.code, "not_a_verdict");
+                assert_eq!(error.detail_text.as_deref(), Some(detail.as_str()));
+                assert!(!error.message.contains("extra"));
+            }
+            let text = crate::text::failure(&failure);
+            let quoted = detail.replace('"', "\\\"");
+            assert!(
+                text.lines()
+                    .next()
+                    .unwrap()
+                    .ends_with(&format!(": \"{quoted}\"")),
+                "{text}"
+            );
+        }
+    }
 }

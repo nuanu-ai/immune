@@ -45,6 +45,8 @@ import "immune/v1/verdict.proto";
 
 // The answer to `immune matches`.
 message Matches {
+  // The numbers of `Failure`'s fields, so that a failure never reads as an answer.
+  reserved 1000 to 1099;
   // The version of this contract: 1. A reader that meets another number stops.
   uint32 format = 1;
   // When the answer was made.

@@ -10,7 +10,7 @@ Read binary output with `immune_contract::prost::Message`, as `v1::Known::decode
 
 ## The loop of a program that runs the core
 
-A program that judges what the core found runs four commands. Name the form on every call, `--proto` or `--json`: the default differs between commands today.
+A program that judges what the core found runs four commands. Name the form on every call, `--proto` or `--json`: without one, a command prints text for a person, and `immune verdict` is refused. Check the exit code first: a failure is the message `Failure`, in the form named.
 
 1. `immune matches --proto --after <continue_after>` gives the rule matches since the last call, each with the event it matched, its rule and `raised`, what the core did with it. Keep `continue_after` whole and pass it back. A match of a rule whose set states no level has `raised` `level_not_stated`: the core raised nothing and leaves the judgement to the reader.
 2. `immune findings --proto` lists the findings, and `immune finding <id> --proto` gives one with its evidence and the person's answer.

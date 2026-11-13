@@ -923,6 +923,17 @@ fn a_verdict_finding_keeps_the_event_it_is_about_and_a_match_s_raised_stays_what
     let answer = mac.send(&about_match(&store, &position, SW_VERS, "suspicious"));
     let own = answer["recorded"]["finding"]["id"].as_str().unwrap();
     let whole = mac.finding(own);
+    let out = mac.command(&["finding", own]).output().unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        text.contains(&format!("Rule the verdict is about: {SW_VERS}.")),
+        "{text}"
+    );
+    assert!(
+        text.contains(r#""/usr/bin/sw_vers": "sw_vers" "-productVersion""#),
+        "{text}"
+    );
     let evidence = &whole["evidence"]["verdict_given"];
     assert_eq!(evidence["rule"], SW_VERS);
     assert_eq!(evidence["events"].as_array().unwrap().len(), 1);
@@ -1210,13 +1221,14 @@ fn what_this_build_does_not_read_is_refused_in_either_form_and_records_nothing()
         vec![0xff, 0xff],
     ] {
         let before = mac.recorded();
-        let out = mac.send_bytes(&bad, &[]);
+        let out = mac.send_bytes(&bad, &["--proto"]);
         assert_eq!(out.status.code(), Some(2));
-        assert!(out.stdout.is_empty());
+        let failure = v1::Failure::decode(out.stdout.as_slice()).unwrap();
+        assert_eq!(failure.errors[0].code, "not_a_verdict");
         assert_eq!(mac.recorded(), before);
     }
     // The message itself, in binary, is taken and answered in binary.
-    let out = mac.send_bytes(&message, &[]);
+    let out = mac.send_bytes(&message, &["--proto"]);
     assert!(out.status.success());
     let answer = v1::VerdictRecorded::decode(out.stdout.as_slice()).unwrap();
     assert_eq!(
@@ -1327,8 +1339,9 @@ fn the_sender_s_text_never_leaves_its_quotation_and_is_never_cut() {
         })
         .count();
     assert_eq!(bare, 4, "{line}");
+    // The backslash is written as the contract writes it, so the quote after it stays escaped.
     assert!(
-        line.contains(r#"Its reason: "ok\\\". The person marked"#),
+        line.contains(r#"Its reason: "ok\u{5c}\". The person marked"#),
         "{line}"
     );
     // The longest reason taken comes back whole from every output, the page in a block of its

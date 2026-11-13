@@ -348,6 +348,19 @@ fn a_finding_still_open_names_the_latest_process_of_its_program_a_sample_saw() {
         found[0]["evidence"],
         json!({ "detached_process": { "pid": 11, "start_micros": 7 } })
     );
+    let id = found[0]["finding"]["id"].as_str().unwrap();
+    let out = immune(&dir, &["findings"]);
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains("No full check has finished."), "{text}");
+    assert!(text.contains(id), "{text}");
+    let out = immune(&dir, &["finding", id]);
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        text.contains("Process id: 11, started 1970-01-01T00:00:00.000007Z."),
+        "{text}"
+    );
 }
 
 #[test]

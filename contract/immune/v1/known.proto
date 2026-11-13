@@ -13,6 +13,8 @@ import "immune/v1/common.proto";
 // What the store knows of one thing and of the things inside it. The same message answers for a
 // project, a program or a machine; what differs is which thing is asked for.
 message Known {
+  // The numbers of `Failure`'s fields, so that a failure never reads as an answer.
+  reserved 1000 to 1099;
   // The version of this contract: 1. A reader that meets another number stops.
   uint32 format = 1;
   // What was asked for, as given on the command line. Whole.

@@ -49,7 +49,7 @@ const WHAT: &str = "immune program takes a path on this Mac, absolute or beginni
 /// `immune program <what>`.
 pub struct ProgramArgs {
     pub store: PathBuf,
-    pub json: bool,
+    pub form: crate::answer::Form,
     /// What was asked for, as given.
     pub asked: String,
     /// The home folder: ids name a path inside it relative to it.
@@ -57,12 +57,15 @@ pub struct ProgramArgs {
 }
 
 /// Reads the arguments after `program`.
-pub fn parse(it: impl Iterator<Item = String>) -> Result<ProgramArgs, String> {
-    let w = known::words(it)?;
-    let [asked] = <[String; 1]>::try_from(w.words).map_err(|_| WHAT.to_string())?;
+pub fn parse(
+    it: impl Iterator<Item = String>,
+    options: &mut crate::answer::Options,
+) -> Result<ProgramArgs, String> {
+    let words = known::words(it, options)?;
+    let [asked] = <[String; 1]>::try_from(words).map_err(|_| WHAT.to_string())?;
     Ok(ProgramArgs {
-        store: w.store,
-        json: w.json,
+        store: options.store()?,
+        form: options.form(),
         asked,
         home: crate::user_home()?,
     })
@@ -75,55 +78,61 @@ const UNREAD: &str = "no reading that finds programs looks at this place: they r
 
 /// Answers `immune program`.
 pub fn program_cmd(args: &ProgramArgs) -> ExitCode {
-    known::command("program", &args.store, args.json, |conn, now| {
-        let this = covered::this_machine(conn)?;
-        // A store no run has written names no Mac, and so no program on it.
-        let asked = contract::unescape(&args.asked);
-        let found = match &this {
-            Some(this) => find(conn, this, &asked, &args.home)?,
-            None => Ok(Found::default()),
-        };
-        let found = match found {
-            Ok(found) => found,
-            Err(not) => return Ok(Err(not)),
-        };
-        let id = match <[String; 1]>::try_from(found.ids) {
-            Ok([id]) => Some(id),
-            Err(ids) if ids.is_empty() => None,
-            Err(ids) => return Ok(Err(several(ids))),
-        };
-        let found_by = known::found_by(conn, id.as_deref(), &FOUND_BY)?;
-        let place = found.place.as_deref();
-        let q = Question {
-            question: v1::Question::Program,
-            asked: &args.asked,
-            id: id.as_deref(),
-            also: &[],
-            folder: None,
-            place,
-            unread: place.filter(|rel| !integrity::reads(rel)).map(|_| UNREAD),
-            machine: this.as_deref(),
-            found_by: &found_by,
-            inside: &[],
-        };
-        let mut known = known::known_of(conn, &q, &args.home, now)?;
-        // A program the store never heard of may be one a package manager this version does
-        // not read installed: the answer says so, whatever the table of managers found.
-        if let (true, Some(machine)) = (
-            known.presence == v1::Presence::Unknown as i32,
-            this.as_deref(),
-        ) {
-            known::by_rule_for(
-                &mut known,
-                known::RULE_READER,
-                OTHER_MANAGERS_KIND,
-                machine,
-                OTHER_MANAGERS_LIMIT,
-                v1::Cause::NoReader,
-            );
-        }
-        Ok(Ok(known))
-    })
+    known::command(
+        "program",
+        &args.store,
+        args.form,
+        |conn, now| {
+            let this = covered::this_machine(conn)?;
+            // A store no run has written names no Mac, and so no program on it.
+            let asked = contract::unescape(&args.asked);
+            let found = match &this {
+                Some(this) => find(conn, this, &asked, &args.home)?,
+                None => Ok(Found::default()),
+            };
+            let found = match found {
+                Ok(found) => found,
+                Err(not) => return Ok(Err(not)),
+            };
+            let id = match <[String; 1]>::try_from(found.ids) {
+                Ok([id]) => Some(id),
+                Err(ids) if ids.is_empty() => None,
+                Err(ids) => return Ok(Err(several(ids))),
+            };
+            let found_by = known::found_by(conn, id.as_deref(), &FOUND_BY)?;
+            let place = found.place.as_deref();
+            let q = Question {
+                question: v1::Question::Program,
+                asked: &args.asked,
+                id: id.as_deref(),
+                also: &[],
+                folder: None,
+                place,
+                unread: place.filter(|rel| !integrity::reads(rel)).map(|_| UNREAD),
+                machine: this.as_deref(),
+                found_by: &found_by,
+                inside: &[],
+            };
+            let mut known = known::known_of(conn, &q, &args.home, now)?;
+            // A program the store never heard of may be one a package manager this version does
+            // not read installed: the answer says so, whatever the table of managers found.
+            if let (true, Some(machine)) = (
+                known.presence == v1::Presence::Unknown as i32,
+                this.as_deref(),
+            ) {
+                known::by_rule_for(
+                    &mut known,
+                    known::RULE_READER,
+                    OTHER_MANAGERS_KIND,
+                    machine,
+                    OTHER_MANAGERS_LIMIT,
+                    v1::Cause::NoReader,
+                );
+            }
+            Ok(Ok(known))
+        },
+        crate::text::known,
+    )
 }
 
 /// The kind of the reading made by rule for what no reader of this version finds programs in.
