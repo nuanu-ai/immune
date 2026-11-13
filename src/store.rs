@@ -97,7 +97,7 @@ CREATE TABLE raw_input (
 /// What the journal records. The list only grows: a store whose journal was made with a
 /// shorter list is made again with this one when it is opened, so a new kind of entry is a
 /// new word here and nothing else.
-const JOURNAL_ENTRIES: [&str; 20] = [
+const JOURNAL_ENTRIES: [&str; 22] = [
     "run_started",
     "added",
     "changed",
@@ -123,6 +123,12 @@ const JOURNAL_ENTRIES: [&str; 20] = [
     // A place new in a worktree that is the same as in another checkout of its repository,
     // and so raised no finding, see `worktrees.rs`.
     "same_as_sibling",
+    // A place read for the first time, with how many things it held that were taken as its
+    // baseline, see `baseline.rs`.
+    "place_first_read",
+    // Something an earlier reading read in full that is there and could not be read, with why,
+    // see `baseline.rs`.
+    "not_read",
 ];
 
 /// The journal. It cannot be rebuilt from raw input, so it only grows. Its entries are the
@@ -208,7 +214,8 @@ const VOCABULARY: &str = "
 INSERT OR IGNORE INTO entity_type (name, status) VALUES
     ('machine', 'used'), ('container', 'used'), ('checkout', 'used'), ('component', 'used'),
     ('repository', 'reserved'), ('service', 'reserved'), ('account', 'reserved'),
-    ('domain', 'reserved'), ('key', 'reserved'), ('party', 'reserved'), ('file', 'used');
+    ('domain', 'reserved'), ('key', 'reserved'), ('party', 'reserved'), ('file', 'used'),
+    ('check', 'used');
 INSERT OR IGNORE INTO predicate (name, object_kind, status) VALUES
     ('located_on', 'entity', 'used'), ('part_of', 'entity', 'used'),
     ('has_version', 'literal', 'used'), ('runs_os', 'literal', 'used'),
@@ -265,9 +272,9 @@ INSERT OR IGNORE INTO coverage_kind (name) VALUES ('folders macOS asks permissio
 ///
 /// Every reading adds coverage rows, a watcher's too, and none is ever deleted. The latest
 /// reading of a kind, which a watcher asks for at every reading to know which machine it
-/// reads, is found through `coverage_latest_of_kind`. Without it, and with
-/// `only_failed_before` counting every earlier reading, a watcher's reading looked through
-/// every reading before it: 3 ms after ten readings, 124 ms after ten thousand.
+/// reads, is found through `coverage_latest_of_kind`. Without it a watcher's reading looked
+/// through every reading before it: 3 ms after ten readings, 124 ms after ten thousand,
+/// measured when it also counted every earlier failed reading, which it no longer does.
 ///
 /// The status and the view ask for the latest reading of each reader, scope and kind, when
 /// each was last read in full, and what one run read. `LATEST` finds the first through
@@ -492,6 +499,7 @@ pub fn open(path: &Path) -> Res<Connection> {
     conn.execute_batch(INDEXES)?;
     widen_journal(&mut conn)?;
     conn.execute_batch(JOURNAL_INDEXES)?;
+    crate::baseline::open(&mut conn)?;
     Ok(conn)
 }
 
@@ -943,37 +951,43 @@ pub fn scopes_read(conn: &Connection, reader: &str) -> rusqlite::Result<BTreeSet
     .collect()
 }
 
-/// Whether an earlier reading of this kind by this reader read something in this scope.
-/// A reading that is not preceded by one is the baseline: what it finds is not new.
+/// Whether a reading of this kind by this reader in an earlier run than `run_id` read
+/// something in this scope.
 pub fn read_before(
     conn: &Connection,
     reader: &str,
     scope: &str,
     kind: &str,
+    run_id: &str,
 ) -> rusqlite::Result<bool> {
     conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM coverage WHERE reader = ?1 AND scope = ?2 AND kind = ?3
-                          AND completeness != 'none')",
-        params![reader, scope, kind],
+                          AND completeness != 'none' AND run_id != ?4)",
+        params![reader, scope, kind, run_id],
         |r| r.get(0),
     )
 }
 
-/// Whether every earlier reading of this kind by this reader in this scope read nothing,
-/// and there was at least one. Asked as two that stop at the first row that answers them, not
-/// as a count of every earlier reading: it is asked for each watched file at every reading.
-pub fn only_failed_before(
+/// What the journal says of a difference found where nobody could have known what was there
+/// before: during the store's first check. It is recorded, and it is not a change.
+pub const FIRST_READING: &str = "first reading of its place";
+/// What the journal says of a difference found in a place read for the first time after the
+/// store's first check: it is recorded, it is not a change, and it is told once.
+pub const READ_FIRST: &str = "read for the first time";
+
+/// Whether a reading of this kind by this reader in an earlier run than `run_id` read this
+/// scope in full.
+pub fn read_full_before(
     conn: &Connection,
     reader: &str,
     scope: &str,
     kind: &str,
+    run_id: &str,
 ) -> rusqlite::Result<bool> {
     conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM coverage WHERE reader = ?1 AND scope = ?2 AND kind = ?3)
-            AND NOT EXISTS (SELECT 1 FROM coverage
-                            WHERE reader = ?1 AND scope = ?2 AND kind = ?3
-                              AND completeness IN ('full', 'partial'))",
-        params![reader, scope, kind],
+        "SELECT EXISTS (SELECT 1 FROM coverage WHERE reader = ?1 AND scope = ?2 AND kind = ?3
+                          AND completeness = 'full' AND run_id != ?4)",
+        params![reader, scope, kind, run_id],
         |r| r.get(0),
     )
 }
@@ -1098,11 +1112,18 @@ pub fn journal_owner(
     Ok(())
 }
 
-pub fn journal_event(tx: &Transaction, r: &Reading, e: &Event) -> rusqlite::Result<()> {
+/// One difference a reading found, with `text` when it is not a change: `FIRST_READING` or
+/// `READ_FIRST`.
+pub fn journal_event(
+    tx: &Transaction,
+    r: &Reading,
+    e: &Event,
+    text: Option<&str>,
+) -> rusqlite::Result<()> {
     tx.execute(
         "INSERT INTO journal (at, run_id, entry, reader, scope, kind, subject, predicate,
-                              old_value, new_value)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                              old_value, new_value, text)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             r.at,
             r.run_id,
@@ -1113,7 +1134,8 @@ pub fn journal_event(tx: &Transaction, r: &Reading, e: &Event) -> rusqlite::Resu
             e.subject,
             e.predicate,
             e.old,
-            e.new
+            e.new,
+            text
         ],
     )?;
     Ok(())

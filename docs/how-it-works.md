@@ -112,7 +112,19 @@ Assertions live in three layers: draft, live and retracted.
 - When a checkout or a container is gone, everything read inside it is retracted with it, as one `removed` event.
 - Retracted assertions are kept. An investigation looks back.
 
-The first reading of a kind in a scope is a baseline and reports nothing as new. A watched file that could not be read before and now can is named once as read for the first time, since there was nothing to compare it with.
+What a reading finds is judged by what earlier readings can show. The unit is the smallest thing one failure can hit: one file that is read, or the listing of one folder. The store records each unit with the run that first read it. A file or a folder that fails is its own unit, and its neighbours are judged as usual.
+
+Something found is one of three things:
+
+- A change, when the store can show it was not there before. Its unit was read by an earlier run, or it is new in a folder listing that an earlier run recorded in full. A checkout is new when an earlier walk listed its parent folder in full and the checkout was not in it; then everything in it is a change. That is how a clone made after the first check is found, hooks included: git copies the hooks of its template folder into every new clone. A change raises the finding of its kind's rule.
+- The baseline, silently, only in the first full check of the store's life, for what no earlier run met, in a folder no earlier run listed. Nobody could have known what was there before. The journal marks each such difference `first reading of its place`.
+- Read for the first time: everything else. After the first check, a place can come into reach with no proof that it is new: a run pointed at a folder the walk does not enter, a project first named in an agent's session, a folder that could not be listed before, a place a newer version reads. What it holds becomes its baseline, and it is never silent: one informational finding per check, `watched.first-read`, about that check and raised for it whatever was answered about an earlier one, names each such place and how many things in it run by themselves. The journal marks each difference `read for the first time`, and `place_first_read` for each place.
+
+Something that is there and cannot be read, or leads into a folder macOS asks permission for, is judged by the same three cases, once while it stays so. Losing sight of a unit an earlier run read is a change, and so is an unreadable thing new to a listing or in a new checkout: each raises the finding of its kind's rule. The reason is in the journal entry `not_read`, and the reading stays in coverage as not read. What was known of the unit is kept, so once it reads again, whatever changed in the meantime is a change.
+
+Something read before is gone only when it is absent. Where its path is still there in another form, as a `.git` file where the `.git` folder was or a link where a checkout's folder was, that is losing sight of it: the checkout is kept, and its hooks read before are a finding. Something gone from a unit read in full is a change, whatever failed elsewhere in the same reading.
+
+`immune status`, the journal and the changes page count the same things. A difference marked as a first reading counts as read for the first time, not as added. On a store made before units were recorded, the first open fills them from what the store holds: every file recorded, every place of a kind read in full, every checkout found, and the folders a walk that read in full listed on the way. From then on one rule judges every reading, whichever run comes first.
 
 A new worktree of a project the store already holds is compared with that project. Agents make worktrees all day, and each one holds the project's own settings, scripts and tasks byte for byte. When git made a new checkout as a linked worktree of a repository, and the store held another checkout of that repository before this reading, each place new in the worktree is compared with the place at the same path in that other checkout, as the same reading read it. The comparison uses what the reading already compares: the checksum of the file, or of the part that counts. Where the two are equal, the place is recorded like any other, so a later change in it is a finding, and its appearance raises none. The journal records it as `same_as_sibling`, with the checkout it matched. A finding that stands in that checkout stays as it is. Where they differ, or the other checkout has no such place, or it could not be read this time, the finding is raised as usual. Only the worktree's first reading is compared this way; a place that appears in it later is a finding as in any other checkout.
 
@@ -122,7 +134,7 @@ Readers keep their raw input next to the store, copied only when it changed, so 
 
 ## The journal
 
-The journal is an append-only list of what Immune did and decided. Raw events from the collector do not go there. Its entries include `run_started`, `run_finished` and `report` for a run; `added`, `changed` and `removed` for differences between readings; `finding_raised`, `finding_reopened`, `finding_cleared`, `finding_expected` and `finding_seen`; `owner_said` and `owner_withdrew` for statements about a machine; `sampled` for what a sample derived; `matched` for a published rule's match a finding rests on, with the rule and a count; `same_as_sibling` for a place in a new worktree that raised no finding because it matched its project's; and `threats_first_read`, `threat_added`, `threat_gone` and `advisories_read` for threat data. Each has a sequence number, and a finding refers to the entries it rests on by those numbers (`rests_on`).
+The journal is an append-only list of what Immune did and decided. Raw events from the collector do not go there. Its entries include `run_started`, `run_finished` and `report` for a run; `added`, `changed` and `removed` for differences between readings; `finding_raised`, `finding_reopened`, `finding_cleared`, `finding_expected` and `finding_seen`; `owner_said` and `owner_withdrew` for statements about a machine; `sampled` for what a sample derived; `matched` for a published rule's match a finding rests on, with the rule and a count; `same_as_sibling` for a place in a new worktree that raised no finding because it matched its project's; `place_first_read` for a place read for the first time, with how many things in it run by themselves; `not_read` for a unit read before that could not be read, with the reason; and `threats_first_read`, `threat_added`, `threat_gone` and `advisories_read` for threat data. Each has a sequence number, and a finding refers to the entries it rests on by those numbers (`rests_on`).
 
 A run that died leaves `run_started` without `run_finished`.
 
@@ -138,7 +150,7 @@ Each of Immune's own rules is plain code with an id, the ATT&CK technique where 
 | `watched.shell-profile` | a zsh or bash startup file added, changed or removed | T1546.004 | medium, low |
 | `watched.ssh-access` | `~/.ssh/config`, `authorized_keys`, `rc` or the system's SSH configuration added, changed or removed | | high, low |
 | `watched.git-hook` | a git hook in a checkout added, changed or removed | | medium, low |
-| `watched.first-read` | a watched file read for the first time | | informational, low |
+| `watched.first-read` | places read for the first time after the store's first check, one finding per check that names each place | | informational, low |
 | `integrity.app-seal` | an application's seal no longer verifies, version unchanged | T1554 | high, medium |
 | `integrity.app-signer` | an application signed by someone else, version unchanged | T1554 | high, low |
 | `integrity.package-files` | a Homebrew keg or global npm package changed, version unchanged | T1554 | high, medium |
@@ -150,6 +162,8 @@ Each of Immune's own rules is plain code with an id, the ATT&CK technique where 
 | `lockfiles.malicious-name-removed` | a dependency whose name the registry replaced with a placeholder | T1195.001 | high, low |
 | `lockfiles.exploited-vulnerability` | a dependency with a vulnerability in CISA's catalogue | | critical, medium |
 | `sigma:<rule id>`, `elastic:<rule id>` | a published rule marked high or critical, SigmaHQ's or one of Elastic's translated detection rules, matched a program start or a file event. Elastic's behaviour rules (`elastic-behaviour:<rule id>`) state no level and raise no finding | the rule's | the rule's level; medium for a `stable` rule, low otherwise |
+
+A rule of a watched kind, or of a way a file runs code by itself, also fires when a file it read before is there and can no longer be read.
 
 A rule finds either an event or a state. A finding about an event stays open through quiet runs until it is answered; found again, it is the same finding seen later. A finding about a state (the three lockfile rules) is cleared when the state goes, for example when the dependency is removed. A published rule raises one finding per rule on a Mac, and further matches add to its count and its evidence.
 
@@ -225,6 +239,7 @@ Immune's own:
 - the map of one person's Mac, projects and servers;
 - the table of ways a file makes a tool run code by itself;
 - a known checksum in a new place counts only between checkouts git made of one repository, with the relation checked in both directions, because a fresh clone with something that runs by itself is the attack Immune watches for;
+- a baseline per unit, a file read or a folder listed, with three outcomes: a change where the store can show the thing was not there, a silent baseline only in the store's first full check, and otherwise a first reading told in one informational finding. File integrity monitors build one baseline from their first scan of the paths they are given. Immune's readings reach different places at different times, so a place reached later is named in an informational finding;
 - integrity of what is installed: content changed while the version stayed the same, for which no published rule exists;
 - one person answering findings, with an agent allowed to answer only after they agree.
 

@@ -7563,13 +7563,12 @@ fn a_watched_file_that_cannot_be_read_is_never_unchanged_and_never_gone() {
     );
     let named = watched_rows(&printed);
     assert!(
-        named.contains(&vec![
-            "first read".to_string(),
-            "shell profile".to_string(),
-            ".zlogout".to_string()
-        ]) && !named
+        named
             .iter()
-            .any(|r| r[0] == "first read" && r[2] != ".zlogout"),
+            .any(|r| r[..3] == ["first read", "shell profile", ".zlogout"])
+            && !named
+                .iter()
+                .any(|r| r[0] == "first read" && r[2] != ".zlogout"),
         "{printed}"
     );
 }
@@ -7738,6 +7737,15 @@ fn a_checkout_that_is_gone_takes_its_hooks_with_it() {
             format!("removed|{shop_id}|holds_autorun_point|.git/hooks|NULL"),
         ]
     );
+    // Both are changes: neither is journaled as a first reading.
+    assert_eq!(
+        rows(
+            &w.store(),
+            "SELECT count(*) FROM journal WHERE text = 'first reading of its place'
+               AND run_id = (SELECT run_id FROM journal ORDER BY seq DESC LIMIT 1)"
+        ),
+        ["0"]
+    );
     assert!(
         !rows(&w.store(), LIVE)
             .iter()
@@ -7763,7 +7771,9 @@ fn the_first_reading_of_watched_places_counts_nothing_as_new() {
         .unwrap()
         .execute_batch(
             "DELETE FROM coverage WHERE reader = 'watched-places';
-             DELETE FROM assertion WHERE reader = 'watched-places';",
+             DELETE FROM assertion WHERE reader = 'watched-places';
+             DROP TABLE unit_read;
+             DELETE FROM meta WHERE key = 'units_since';",
         )
         .unwrap();
     put(&app, ".git/hooks/pre-commit", "#!/bin/sh\n");
@@ -7780,7 +7790,30 @@ fn the_first_reading_of_watched_places_counts_nothing_as_new() {
     let printed = w.run();
     // Promise 1 of the machine-readable form: `immune status --json` says the same numbers.
     assert_agrees(&printed, &w.store());
-    assert_eq!(printed.lines().count(), 1, "{printed}");
+    // Nothing is counted as new, and what was read for the first time is said.
+    assert_eq!(
+        watched_rows(&printed),
+        [
+            [
+                "first read",
+                "ssh access file",
+                ".ssh/config",
+                "1 thing kept as the baseline"
+            ],
+            [
+                "first read",
+                "shell profile",
+                ".zprofile",
+                "1 thing kept as the baseline"
+            ],
+            [
+                "first read",
+                "git hook",
+                "dev/app",
+                "1 thing kept as the baseline"
+            ],
+        ]
+    );
     assert!(
         printed.contains(
             "Since last run: no changes. Watched places: 3 files, first reading, kept as the baseline."
@@ -7798,8 +7831,9 @@ fn the_first_reading_of_watched_places_counts_nothing_as_new() {
 
 #[test]
 fn the_first_hook_planted_in_a_checkout_the_store_already_held_is_new_and_named() {
-    // Planting a hook in a project that had none is the attack this reader exists for. The
-    // hooks of a checkout that itself first appears are the baseline: the checkout is the news.
+    // Planting a hook in a project that had none is the attack this reader exists for. A clone
+    // made after the first check brings hooks too: git copies its template folder's hooks into
+    // every new clone, so they are new as well.
     let w = Watch::new("watched-first-hook");
     let app = checkout(w.home(), "dev/app");
     put(&app, ".git/hooks/pre-push.sample", "#!/bin/sh\n");
@@ -7814,15 +7848,18 @@ fn the_first_hook_planted_in_a_checkout_the_store_already_held_is_new_and_named(
     // Promise 1 of the machine-readable form: `immune status --json` says the same numbers.
     assert_agrees(&printed, &w.store());
     assert!(
-        printed.contains("Since last run: +2 added, 0 changed, 0 removed.")
+        printed.contains("Since last run: +3 added, 0 changed, 0 removed.")
             && printed.contains(
-                "Watched places: 2 files, 1 new, 0 changed, 0 gone since the last reading."
+                "Watched places: 2 files, 2 new, 0 changed, 0 gone since the last reading."
             ),
         "{printed}"
     );
     assert_eq!(
         watched_rows(&printed),
-        [["new", "git hook", "dev/app/.git/hooks/post-checkout"]]
+        [
+            ["new", "git hook", "dev/app/.git/hooks/post-checkout"],
+            ["new", "git hook", "dev/fresh/.git/hooks/pre-commit"]
+        ]
     );
 
     let again = w.run();
@@ -8248,7 +8285,7 @@ fn the_report_line_and_status_json_say_the_same_numbers_and_run_json_is_that_ans
     let first = ok(&mut with_kev(&w));
     assert_agrees(first.lines().next().unwrap(), &w.store());
 
-    // Every kind of change at once, and a checkout whose hooks are the baseline.
+    // Every kind of change at once, and a checkout cloned with a hook.
     put(w.home(), ".zshrc", "bindkey -v\n");
     std::fs::remove_file(agents.join("com.example.old.plist")).unwrap();
     put(&agents, "com.example.new.plist", "<plist/>\n");
@@ -8269,12 +8306,12 @@ fn the_report_line_and_status_json_say_the_same_numbers_and_run_json_is_that_ans
     let r = status_json(&w.store());
     assert_eq!(
         r["watched"]["since_last_reading"],
-        serde_json::json!({"new": 1, "changed": 2, "gone": 1}),
+        serde_json::json!({"new": 2, "changed": 2, "gone": 1}),
         "{line}"
     );
-    // The fresh checkout is one addition; its hook is the baseline, not a second one.
+    // The fresh checkout, its hook and the new launch agent: three additions.
     assert_eq!(
-        r["last_finished_run"]["since_previous_run"]["added"], 2,
+        r["last_finished_run"]["since_previous_run"]["added"], 3,
         "{line}"
     );
     assert_eq!(r["threats"]["new"], 1);

@@ -76,17 +76,18 @@ impl Mac {
     /// `immune run` as the app starts it: on this Mac's own name, the one a watcher takes
     /// while the store names no machine. The name is never looked at.
     fn app_run(&self) {
-        let mut cmd = self.immune();
-        cmd.arg("run");
-        let out = self
-            .run_args(cmd, &self.root.join("absent"))
-            .output()
-            .unwrap();
+        let out = self.app_run_cmd().output().unwrap();
         assert!(
             out.status.success(),
             "{}",
             String::from_utf8_lossy(&out.stderr)
         );
+    }
+
+    fn app_run_cmd(&self) -> Command {
+        let mut cmd = self.immune();
+        cmd.arg("run");
+        self.run_args(cmd, &self.root.join("absent"))
     }
 
     fn run_args(&self, mut cmd: Command, servers: &std::path::Path) -> Command {
@@ -1104,6 +1105,275 @@ fn after_a_first_check_the_watcher_read_first_what_arrives_later_is_still_found(
                 "~/dev/new/package.json#/scripts/preinstall".to_string()
             ),
         ]
+    );
+}
+
+#[test]
+fn a_watcher_that_reads_before_any_project_was_looked_for_claims_no_reading_of_the_projects() {
+    // Before the first full check no project is known: a reading over them would look into
+    // none and record that it read each one in full.
+    let mac = lived_in("before-any-check");
+    assert!(mac.watch().started().stop().success());
+    let claimed: Vec<String> = Connection::open(mac.store())
+        .unwrap()
+        .prepare(
+            "SELECT kind FROM coverage WHERE reader = 'watched-places'
+               AND kind LIKE '% of each checkout, %'",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert!(claimed.is_empty(), "{claimed:?}");
+}
+
+/// A home folder as a developer's is before the program first runs: projects with git hooks,
+/// agents' settings, install scripts and an editor task, an autostart item, a shell profile,
+/// and agents' own settings in the home folder.
+fn lived_in(tag: &str) -> Mac {
+    let mac = with_projects(tag);
+    for rel in ["dev/api", "dev/shop", "work/site"] {
+        mac.put(
+            &format!("{rel}/.git/hooks/pre-commit"),
+            "#!/bin/sh\nmake lint\n",
+        );
+    }
+    mac.put("dev/shop/.vscode/tasks.json", ON_OPEN);
+    mac.put("Library/LaunchAgents/com.invented.sync.plist", "<plist/>\n");
+    mac.put(".zshrc", "export PATH=\"$HOME/bin:$PATH\"\n");
+    mac.put(
+        ".claude/settings.json",
+        r#"{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "say done"}]}]}}"#,
+    );
+    mac.put(
+        ".claude.json",
+        r#"{"mcpServers": {"notes": {"command": "node"}}}"#,
+    );
+    mac
+}
+
+/// A watcher that looks again at what to watch every second, so that it reads the projects
+/// a full run found within seconds of it.
+fn quick_watch(mac: &Mac) -> Watcher {
+    let mut cmd = mac.watch_cmd();
+    cmd.args(["--alive-every", "1"]);
+    Watcher::start(cmd).started()
+}
+
+/// The orders in which the app's watcher and its first full check can write to a store that
+/// does not exist yet, each run to the end of the first check; a watcher still running is
+/// returned.
+fn first_day(mac: &Mac, order: &str) -> Option<Watcher> {
+    match order {
+        "watcher first" => {
+            let mut w = quick_watch(mac);
+            mac.app_run();
+            // Its reading of the projects the check found.
+            w.next("read");
+            Some(w)
+        }
+        "check first" => {
+            mac.app_run();
+            Some(quick_watch(mac))
+        }
+        "both at once" => {
+            let run = spawn(&mut mac.app_run_cmd());
+            let mut w = quick_watch(mac);
+            let out = finish(run);
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            w.next("read");
+            Some(w)
+        }
+        "watcher stopped and started again" => {
+            assert!(quick_watch(mac).stop().success());
+            // Started again with nothing changed since, it has nothing to read until the
+            // check's projects are watched.
+            let mut cmd = mac.watch_cmd();
+            cmd.args(["--alive-every", "1"]);
+            let mut w = Watcher::start(cmd);
+            w.next("watching");
+            mac.app_run();
+            w.next("read");
+            Some(w)
+        }
+        "watcher stopped before the check" => {
+            assert!(quick_watch(mac).stop().success());
+            mac.app_run();
+            None
+        }
+        other => panic!("no order {other}"),
+    }
+}
+
+const FIRST_DAY: [&str; 5] = [
+    "watcher first",
+    "check first",
+    "both at once",
+    "watcher stopped and started again",
+    "watcher stopped before the check",
+];
+
+#[test]
+fn the_first_day_on_a_new_mac_finds_nothing_in_what_was_there_in_any_order_of_the_watcher_and_the_first_check()
+ {
+    // The app starts its watcher and its first full check together, on a store that does not
+    // exist yet. What the Mac held before is the baseline, whichever writes first: one
+    // finding about each project's settings is what a new user would see at first launch.
+    for order in FIRST_DAY {
+        let mac = lived_in(&format!("day-one-{}", order.replace(' ', "-")));
+        let w = first_day(&mac, order);
+        assert!(found(&mac).is_empty(), "{order}: {:?}", found(&mac));
+        if let Some(w) = w {
+            assert!(w.stop().success());
+        }
+    }
+}
+
+#[test]
+fn after_the_first_check_what_appears_in_a_project_or_the_home_folder_is_found_in_every_order() {
+    // The first check is a baseline, not a pass for what comes after it.
+    for order in FIRST_DAY {
+        let mac = lived_in(&format!("day-one-later-{}", order.replace(' ', "-")));
+        if let Some(w) = first_day(&mac, order) {
+            assert!(w.stop().success());
+        }
+        mac.put("dev/api/.git/hooks/post-checkout", "#!/bin/sh\nsh .x\n");
+        mac.put("dev/api/.vscode/tasks.json", ON_OPEN);
+        mac.put(
+            "Library/LaunchAgents/com.invented.other.plist",
+            "<plist/>\n",
+        );
+        mac.put("dev/new/.git/HEAD", "ref: refs/heads/main\n");
+        mac.put(
+            "dev/new/package.json",
+            r#"{"scripts": {"preinstall": "node x.js"}}"#,
+        );
+        mac.app_run();
+        let rules: Vec<(String, String)> = found(&mac);
+        assert_eq!(
+            rules,
+            [
+                (
+                    "autorun.folder-open".to_string(),
+                    "~/dev/api/.vscode/tasks.json".to_string()
+                ),
+                (
+                    "autorun.package-install".to_string(),
+                    "~/dev/new/package.json#/scripts/preinstall".to_string()
+                ),
+                (
+                    "watched.autostart".to_string(),
+                    "~/Library/LaunchAgents/com.invented.other.plist".to_string()
+                ),
+                (
+                    "watched.git-hook".to_string(),
+                    "~/dev/api/.git/hooks/post-checkout".to_string()
+                ),
+            ],
+            "{order}"
+        );
+    }
+}
+
+#[test]
+fn what_changes_between_the_watchers_first_reading_and_the_first_check_where_the_watcher_read_is_found()
+ {
+    // The watcher's first reading of the home folder is that folder's baseline, though no
+    // full check has run: what is added or changed there before the first check is found by
+    // it, and not taken for part of the baseline.
+    let mac = lived_in("between");
+    assert!(mac.watch().started().stop().success());
+    mac.put(
+        "Library/LaunchAgents/com.invented.other.plist",
+        "<plist/>\n",
+    );
+    mac.put(".zshrc", "curl -s x | sh\n");
+    mac.put(
+        ".claude/settings.json",
+        r#"{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "say done"}]}]}, "env": {"NODE_OPTIONS": "-r x"}}"#,
+    );
+    mac.app_run();
+    assert_eq!(
+        found(&mac),
+        [
+            (
+                "autorun.agent-settings".to_string(),
+                "~/.claude/settings.json#/env".to_string()
+            ),
+            (
+                "watched.autostart".to_string(),
+                "~/Library/LaunchAgents/com.invented.other.plist".to_string()
+            ),
+            ("watched.shell-profile".to_string(), "~/.zshrc".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn a_place_the_watcher_read_first_after_the_first_check_is_told_once_and_what_appears_there_later_is_found()
+ {
+    // The full check could not list the home folder's autostart items; the watcher's reading
+    // could. What the folder held then is its baseline, told once as read for the first time,
+    // and an item added after that reading is found by the next check, though no check ever
+    // read the folder before.
+    let mac = Mac::new("watcher-baseline");
+    let agents = mac.home().join("Library/LaunchAgents");
+    mac.put("Library/LaunchAgents/com.invented.sync.plist", "<plist/>\n");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&agents, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let out = mac.run_cmd().output().unwrap();
+        std::fs::set_permissions(&agents, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(out.status.success());
+    }
+    assert!(mac.watch().started().stop().success());
+    mac.put(
+        "Library/LaunchAgents/com.invented.other.plist",
+        "<plist/>\n",
+    );
+    mac.run();
+    assert_eq!(
+        found(&mac),
+        [
+            (
+                "watched.autostart".to_string(),
+                "~/Library/LaunchAgents/com.invented.other.plist".to_string()
+            ),
+            ("watched.first-read".to_string(), "mac".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn after_an_upgrade_a_clone_made_before_the_first_full_check_is_found_though_the_watcher_read_first()
+ {
+    // A store an earlier version made, which recorded no place. The upgraded app's watcher
+    // reads first and records its places; the first full check then judges a project cloned
+    // since the earlier version's last check by the walks that version made.
+    let mac = with_projects("upgraded");
+    mac.run();
+    Connection::open(mac.store())
+        .unwrap()
+        .execute_batch("DROP TABLE unit_read; DELETE FROM meta WHERE key = 'units_since';")
+        .unwrap();
+    assert!(mac.watch().started().stop().success());
+    mac.put("dev/new/.git/HEAD", "ref: refs/heads/main\n");
+    mac.put(
+        "dev/new/package.json",
+        r#"{"scripts": {"preinstall": "node x.js"}}"#,
+    );
+    mac.run();
+    assert_eq!(
+        found(&mac),
+        [(
+            "autorun.package-install".to_string(),
+            "~/dev/new/package.json#/scripts/preinstall".to_string()
+        )]
     );
 }
 

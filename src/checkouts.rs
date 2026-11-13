@@ -15,6 +15,30 @@ pub const BASIS: &str = "observed";
 pub const TYPE: &str = "checkout";
 /// Why a walk of a folder given instead of the home folder is partial.
 pub const ONLY_GIVEN: &str = "only the given folder was walked";
+/// What is said of a checkout the store holds that is still there in another form.
+pub const MOVED: &str = "is no longer a folder there, as when a link to a folder elsewhere took its place: it was not looked into, and what was known of it is kept";
+
+/// Whether something other than a folder is where a checkout was, a link to one included:
+/// the checkout is not gone, and is not looked into there.
+pub fn is_moved(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| !m.is_dir())
+}
+
+/// The checkouts the store holds on `machine`, by their paths as ids name them, that are not
+/// among `found` and are still there in another form (`is_moved`).
+pub fn moved(
+    conn: &rusqlite::Connection,
+    machine: &str,
+    home: &Path,
+    found: &[String],
+) -> rusqlite::Result<Vec<String>> {
+    let prefix = format!("checkout:{machine}/");
+    Ok(crate::store::live_subjects(conn, READER)?
+        .into_iter()
+        .filter_map(|id| id.strip_prefix(&prefix).map(str::to_string))
+        .filter(|rel| !found.contains(rel) && is_moved(&home.join(rel)))
+        .collect())
+}
 
 const MAX_DEPTH: usize = 5;
 /// Folders that are never descended into, wherever they are: tools keep copies of other
@@ -45,6 +69,11 @@ pub struct Walk {
     pub unlisted: Vec<String>,
     /// Folders macOS asks permission for that the walk did not enter (`guarded.rs`).
     pub guarded: Vec<PathBuf>,
+    /// Folders listed in full, named as checkouts are: a checkout that appears in one later
+    /// is new (`baseline.rs`).
+    pub listed: Vec<String>,
+    /// Every folder found in a folder that was listed, entered or not.
+    pub seen: Vec<String>,
 }
 
 /// The path as ids name it: relative to the home folder when it is inside it.
@@ -70,10 +99,18 @@ pub fn reaches(rel: &str) -> bool {
             .all(|n| !n.starts_with('.') && !PRUNED.contains(n))
 }
 
-/// The folders inside `dir` to descend into, and whether every entry could be read.
-/// `None` when the folder could not be listed at all.
-fn subfolders(dir: &Path, in_home: bool) -> Option<(Vec<PathBuf>, bool)> {
+/// What one folder holds: the folders to descend into, every folder in it, and whether every
+/// entry could be read.
+struct Listed {
+    descend: Vec<PathBuf>,
+    folders: Vec<PathBuf>,
+    complete: bool,
+}
+
+/// The folders inside `dir`. `None` when the folder could not be listed at all.
+fn subfolders(dir: &Path, in_home: bool) -> Option<Listed> {
     let mut out = Vec::new();
+    let mut folders = Vec::new();
     let mut complete = true;
     for entry in std::fs::read_dir(dir).ok()? {
         let Ok(entry) = entry else {
@@ -88,6 +125,7 @@ fn subfolders(dir: &Path, in_home: bool) -> Option<(Vec<PathBuf>, bool)> {
         if !file_type.is_dir() {
             continue;
         }
+        folders.push(entry.path());
         let name = entry.file_name().to_string_lossy().into_owned();
         let pruned = name.starts_with('.')
             || PRUNED.contains(&name.as_str())
@@ -97,7 +135,11 @@ fn subfolders(dir: &Path, in_home: bool) -> Option<(Vec<PathBuf>, bool)> {
         }
     }
     out.sort();
-    Some((out, complete))
+    Some(Listed {
+        descend: out,
+        folders,
+        complete,
+    })
 }
 
 /// Walks `root` to a fixed depth. When the root is the home folder, the home folder itself
@@ -108,6 +150,8 @@ pub fn walk(root: &Path, home: &Path) -> Walk {
     let mut checkouts = Vec::new();
     let mut unlisted = Vec::new();
     let mut guarded = Vec::new();
+    let mut listed = Vec::new();
+    let mut seen = Vec::new();
     let mut stack = vec![(root.to_path_buf(), 0)];
     while let Some((dir, depth)) = stack.pop() {
         let top = depth == 0 && is_home;
@@ -121,14 +165,17 @@ pub fn walk(root: &Path, home: &Path) -> Walk {
         if depth == MAX_DEPTH {
             continue;
         }
-        let Some((subs, complete)) = subfolders(&dir, top) else {
+        let Some(found) = subfolders(&dir, top) else {
             unlisted.push(rel(home, &dir));
             continue;
         };
-        if !complete {
+        if found.complete {
+            listed.push(rel(home, &dir));
+        } else {
             unlisted.push(rel(home, &dir));
         }
-        for path in subs.into_iter().rev() {
+        seen.extend(found.folders.iter().map(|f| rel(home, f)));
+        for path in found.descend.into_iter().rev() {
             // Entering it would ask the owner's permission, from a run he did not start.
             match crate::guarded::may_enter(&path, root, home) {
                 Ok(()) => stack.push((path, depth + 1)),
@@ -144,5 +191,7 @@ pub fn walk(root: &Path, home: &Path) -> Walk {
         checkouts,
         unlisted,
         guarded,
+        listed,
+        seen,
     }
 }

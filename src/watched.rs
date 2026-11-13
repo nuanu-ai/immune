@@ -183,6 +183,11 @@ pub struct Look {
     pub unreached: Vec<(String, String)>,
     /// Every such folder met, a link's target among them, for the reader's coverage.
     pub guarded: Vec<PathBuf>,
+    /// The units read in full, by their paths as ids name them: a file looked at, found or
+    /// absent, and a folder listed or found absent (`baseline.rs`).
+    pub read: Vec<String>,
+    /// The units found present, read or not.
+    pub seen: Vec<String>,
 }
 
 impl Look {
@@ -335,10 +340,15 @@ fn look_place(look: &mut Look, p: &Place, base: &Path, shown: &str, at: &Where) 
     };
     if !p.folder {
         match examine(&path, look, at) {
-            Examined::Absent => {}
-            Examined::Unknown(why) => look.failed.push((shown.to_string(), why)),
+            Examined::Absent => look.read.push(shown.to_string()),
+            Examined::Unknown(why) => {
+                look.seen.push(shown.to_string());
+                look.failed.push((shown.to_string(), why));
+            }
             Examined::Present(content, link) => {
                 look.present += 1;
+                look.read.push(shown.to_string());
+                look.seen.push(shown.to_string());
                 look.entries.push(Entry {
                     path: shown.to_string(),
                     watched_as: p.watched_as,
@@ -361,10 +371,13 @@ fn look_place(look: &mut Look, p: &Place, base: &Path, shown: &str, at: &Where) 
     });
     let names = match listing {
         Ok(names) => names,
-        Err(e) if absent(&e) => return,
+        // A folder that is not there was listed in full: it holds nothing.
+        Err(e) if absent(&e) => return look.read.push(shown.to_string()),
         Err(e) => return look.failed.push((shown.to_string(), e.to_string())),
     };
     look.present += 1;
+    look.read.push(shown.to_string());
+    look.seen.push(shown.to_string());
     for name in names {
         let text = name.to_string_lossy();
         if p.base == Base::Checkout && text.ends_with(SAMPLE) {
@@ -373,13 +386,20 @@ fn look_place(look: &mut Look, p: &Place, base: &Path, shown: &str, at: &Where) 
         let entry = format!("{shown}/{text}");
         match examine(&path.join(&name), look, at) {
             Examined::Absent => {}
-            Examined::Unknown(why) => look.failed.push((entry, why)),
-            Examined::Present(content, link) => look.entries.push(Entry {
-                path: entry,
-                watched_as: p.watched_as,
-                content,
-                link,
-            }),
+            Examined::Unknown(why) => {
+                look.seen.push(entry.clone());
+                look.failed.push((entry, why));
+            }
+            Examined::Present(content, link) => {
+                look.read.push(entry.clone());
+                look.seen.push(entry.clone());
+                look.entries.push(Entry {
+                    path: entry,
+                    watched_as: p.watched_as,
+                    content,
+                    link,
+                });
+            }
         }
     }
 }

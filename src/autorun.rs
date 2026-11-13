@@ -14,15 +14,17 @@
 //! `docs/reference.md` lists what is read.
 //!
 //! A row that is read goes through the watched places reader like any other watched file,
-//! one reading per row scoped to the machine and, for a project row, covering every checkout:
-//! its first reading on this Mac is the baseline, and an entry that appears later, in a
-//! checkout the store held or in one that is new, or whose part changes, is a finding of the
-//! rule of its trigger and scope. A row read for the first time after an upgrade is a kind
-//! read for the first time: a baseline too. A project row is not read before checkouts were
-//! ever looked for on this Mac, as when the watcher reads while the first full run is still
-//! asking for its data: knowing no checkout, that reading would be the baseline and every
-//! project the run then finds would be new. A reading speaks only for the checkouts it looked
-//! into: what the store holds about the others is kept as it was.
+//! one reading per row scoped to the machine and, for a project row, covering every checkout.
+//! What it finds is judged by units, as `baseline.rs` says: the file a part is taken from, or
+//! the folder a `*` or `Folders` row lists. An entry whose unit an earlier run read, or that
+//! is new to a listing an earlier run made, or that is in a checkout that arrived later, is a
+//! change and a finding of the rule of its trigger and scope; so is a part that changes, and a
+//! file read before that can no longer be read. What is found in the store's first full check
+//! is the baseline; anything else read for the first time is told once by `watched.first-read`.
+//! A project row is not read before checkouts were ever looked for on this Mac, as when the
+//! watcher reads while the first full run is still asking for its data: it would look into no
+//! checkout and say it read every one. A reading speaks only for the units it read: what the
+//! store holds about the others is kept as it was.
 //!
 //! How the part that counts is taken, a closed set:
 //!
@@ -704,9 +706,10 @@ pub fn levels(watched_as: &str) -> (Option<&'static str>, &'static str, &'static
         .unwrap_or((None, "medium", "low"))
 }
 
-/// Whether what a run saw is a new or changed entry watched as `watched_as`.
+/// Whether what a run saw is a new or changed entry watched as `watched_as`, or a file of such
+/// entries that was read before and could not be read now.
 pub fn fires(place: &str, change: &str, watched_as: &str) -> bool {
-    place == watched_as && (change == "new" || change == "changed")
+    place == watched_as && matches!(change, "new" | "changed" | "not read")
 }
 
 /// The coverage kinds of the readings of this table that look inside every checkout on this
@@ -818,22 +821,34 @@ pub fn look_all<'a>(
 }
 
 /// The files a path names in `dir`, the folder it was reached at: itself, or for a `*` in
-/// its last segment, every entry of its folder that begins and ends as it does. A folder that
-/// cannot be listed is a failure.
+/// its last segment, every entry of its folder that begins and ends as it does. That folder is
+/// a unit of its own, a listing; one that cannot be listed whole is a failure.
 fn matching(dir: &Path, rel: &str, pattern: &str, out: &mut Looked) -> Vec<String> {
     let (folder, name) = pattern.rsplit_once('/').unwrap_or(("", pattern));
     let Some((before, after)) = name.split_once('*') else {
         return vec![pattern.to_string()];
     };
-    let names = match std::fs::read_dir(dir) {
-        Ok(entries) => entries.filter_map(|e| e.ok()).map(|e| e.file_name()),
-        Err(e) if absent(&e) => return Vec::new(),
+    let listing = crate::baseline::unit_of(&shown(rel, folder)).to_string();
+    let names = std::fs::read_dir(dir).and_then(|entries| {
+        entries
+            .map(|e| e.map(|e| e.file_name()))
+            .collect::<std::io::Result<Vec<_>>>()
+    });
+    let names = match names {
+        Ok(names) => names,
+        Err(e) if absent(&e) => {
+            out.look.read.push(listing);
+            return Vec::new();
+        }
         Err(e) => {
-            out.look.failed.push((shown(rel, folder), e.to_string()));
+            out.look.failed.push((listing, e.to_string()));
             return Vec::new();
         }
     };
+    out.look.read.push(listing.clone());
+    out.look.seen.push(listing);
     let mut found: Vec<String> = names
+        .into_iter()
         .map(|n| n.to_string_lossy().into_owned())
         .filter(|n| {
             n.len() >= before.len() + after.len() && n.starts_with(before) && n.ends_with(after)
@@ -867,13 +882,16 @@ fn shown(rel: &str, file: &str) -> String {
 fn look(p: &Point, path: &Path, shown: &str, out: &mut Looked, homes: &[&Path], home: &Path) {
     let shown = shown.to_string();
     let link = match std::fs::symlink_metadata(path) {
-        Err(e) if absent(&e) => return,
+        // Not there: read in full, it holds nothing.
+        Err(e) if absent(&e) => return out.look.read.push(shown),
         Err(e) => return out.look.failed.push((shown, e.to_string())),
         Ok(m) if m.file_type().is_symlink() => std::fs::read_link(path)
             .ok()
             .map(|t| t.to_string_lossy().into_owned()),
         Ok(_) => None,
     };
+    // There, read or not.
+    out.look.seen.push(shown.clone());
     let path = match crate::guarded::followed(path, homes) {
         Ok(path) => path,
         Err(g) => return out.look.not_into(shown, g, home),
@@ -884,10 +902,14 @@ fn look(p: &Point, path: &Path, shown: &str, out: &mut Looked, homes: &[&Path], 
             Err(why) => return out.look.failed.push((shown, why)),
             Ok(names) => {
                 for name in names {
-                    found.push((format!("{shown}/{name}"), value(name.as_bytes())));
+                    let entry = format!("{shown}/{name}");
+                    out.look.read.push(entry.clone());
+                    out.look.seen.push(entry.clone());
+                    found.push((entry, value(name.as_bytes())));
                 }
             }
         }
+        out.look.read.push(shown);
         return push(p, out, found, link);
     }
     let bytes = match read_capped(&path, p.cap()) {
@@ -895,6 +917,7 @@ fn look(p: &Point, path: &Path, shown: &str, out: &mut Looked, homes: &[&Path], 
         Err(why) => return out.look.failed.push((shown, why)),
     };
     let whole = |bytes: &[u8]| Content::Hash(format!("sha256:{}", crate::sha256::hex(bytes)));
+    let unit = shown.clone();
     match p.part {
         WholeWhen(format, key, holds) => match whole_when(&bytes, format, key, holds) {
             Err(why) => return out.look.failed.push((shown, why)),
@@ -924,6 +947,7 @@ fn look(p: &Point, path: &Path, shown: &str, out: &mut Looked, homes: &[&Path], 
         },
         Present | Entries(_) | Folders(_) => return,
     }
+    out.look.read.push(unit);
     push(p, out, found, link);
 }
 
@@ -942,8 +966,9 @@ fn push(p: &Point, out: &mut Looked, found: Vec<(String, Content)>, link: Option
 
 /// The folders in a folder, each by what identifies it apart from its version, sorted and once
 /// each. Files, and entries whose name begins with a dot, are the editor's own bookkeeping.
-/// An entry that is a link into a folder macOS asks permission for is not looked at, and is
-/// said in `looked`.
+/// An entry that is a link into a folder macOS asks permission for is not looked at, and one
+/// that cannot be looked at is a failure; each is said in `looked` as its own unit, by what
+/// identifies it, and its neighbours are read.
 fn folders(
     path: &Path,
     ident: Ident,
@@ -959,17 +984,25 @@ fn folders(
         if name.starts_with('.') {
             continue;
         }
+        let id = ident.of(&name).to_string();
+        let unit = format!("{shown}/{id}");
         let at = match crate::guarded::followed(&entry.path(), homes) {
             Ok(at) => at,
             Err(g) => {
-                looked.look.not_into(format!("{shown}/{name}"), g, home);
+                looked.look.seen.push(unit.clone());
+                looked.look.not_into(unit, g, home);
                 continue;
             }
         };
-        if !std::fs::metadata(at).is_ok_and(|m| m.is_dir()) {
-            continue;
+        match std::fs::metadata(at) {
+            Ok(m) if m.is_dir() => {}
+            Ok(_) => continue,
+            Err(e) => {
+                looked.look.seen.push(unit.clone());
+                looked.look.failed.push((unit, e.to_string()));
+                continue;
+            }
         }
-        let id = ident.of(&name).to_string();
         if !out.contains(&id) {
             out.push(id);
         }
