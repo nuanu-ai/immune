@@ -438,6 +438,14 @@ pub fn matches(m: &v1::Matches) -> String {
             .collect();
         fields.push(format!("arriving: {}", arriving.join(", ")));
     }
+    if !c.no_longer_arriving.is_empty() {
+        let stopped: Vec<String> = c
+            .no_longer_arriving
+            .iter()
+            .map(|a| format!("{} since {}", a.name, view::utc(a.since)))
+            .collect();
+        fields.push(format!("no longer arriving: {}", stopped.join(", ")));
+    }
     if !fields.is_empty() {
         say(&mut out, &format!("Fields: {}.", fields.join("; ")));
     }

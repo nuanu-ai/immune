@@ -86,9 +86,13 @@
 //! collector kept, and a rule that reads a field one of them fills is not asked about a line
 //! that lacks it. What arrives says the same of the Mac (`Arrival`): each of `KEEPS` is not
 //! kept while the latest line of a kind that marks it lacks its key, kept and never filled
-//! while lines carry the key and none a value, and arriving from the first line that gave one;
-//! before any line, not yet known. A rule that reads one watches only while it arrives, and is
-//! otherwise named as not watching, with which.
+//! while lines carry the key and none a value, arriving from the first line that gave one, and
+//! no longer arriving once as many lines in a row as its mark allows gave none (`MARKS`);
+//! before any line, not yet known. Only the lines of the file the collector is writing now
+//! speak of it (`writing`), so lines an earlier or later collector left in other files, read in
+//! whatever order, never do. Only the core's reading tells it, since only it reads every file to
+//! its end; `immune matches` gives what the latest one stored. A rule that reads one watches
+//! only while it arrives, and is otherwise named as not watching, with which.
 
 use crate::sigma::{Match, Meta, Rules, Subject};
 use crate::store::{Cause, Gap, Reading};
@@ -144,19 +148,39 @@ pub const ALL_KEPT: Keeps = IDENTITY | SCRIPT | SIGNATURE;
 /// `event.exec.target.codesigning_flags` in a program start; `process.start_time` and
 /// `process.signing_id` in a file event. That last one is the field a rule reads
 /// (`ECS_KEPT`), so whether it arrives is decided by the field itself.
-pub const MARKS: [(crate::sigma::Kind, Keeps); 5] = [
-    (crate::sigma::Kind::Process, IDENTITY),
-    (crate::sigma::Kind::Process, SCRIPT),
-    (crate::sigma::Kind::Process, SIGNATURE),
-    (crate::sigma::Kind::File, IDENTITY),
-    (crate::sigma::Kind::File, SIGNATURE),
+///
+/// Each mark also says how many lines of its kind in a row that carry the key and no value tell
+/// that the collector no longer fills it (`Arrival::NoLonger`). The rule is how often eslogger
+/// fills the field by nature. A start time, an audit token and code-signing flags belong to
+/// every process, and a signing id to all code that runs natively on Apple silicon, which is
+/// signed at least ad hoc: on the first install on a Mac each was filled on all 1,060 program
+/// starts and 483 file events, so one line without a value is the collector not filling it. An
+/// unsigned Intel program run by Rosetta has no signing id, and a file it creates makes the
+/// signer of file events not arrive until the next file event that gives one. A script
+/// belongs only to an interpreter started on a script file: 33 of those 1,060 starts, about one
+/// in 32, gave one. A thousand starts in a row without one, about thirty times that gap, tell
+/// that it stopped. A Mac that runs no script for longer is told the same: not watching, which
+/// is never calm, until the next script arrives. The lines counted are those of the file the
+/// collector is writing, as the core reads it (`writing`): a reading that finds new lines in two
+/// files, across a new file, counts only the newer one's, so a run that crosses the turn of a
+/// file is told up to that file's starts later.
+pub const MARKS: [(crate::sigma::Kind, Keeps, u64); 5] = [
+    (crate::sigma::Kind::Process, IDENTITY, 1),
+    (crate::sigma::Kind::Process, SCRIPT, 1000),
+    (crate::sigma::Kind::Process, SIGNATURE, 1),
+    (crate::sigma::Kind::File, IDENTITY, 1),
+    (crate::sigma::Kind::File, SIGNATURE, 1),
 ];
 /// Why a rule that reads one of `KEEPS` does not watch, by what the lines say of it
 /// (`Arrival`), in the program's words.
 pub const NOT_KEPT: &str = "the lines the collector installed here writes do not carry it: it is an earlier collector, and installing the event level again adds it";
 pub const NEVER_FILLED: &str =
     "the collector installed here keeps it, and no line read has carried a value for it yet";
+pub const NO_LONGER: &str = "the collector installed here keeps it, and lines gave values for it and then stopped: the latest ones read carry none, as when a macOS update changed the field, or a Mac runs nothing that has it";
 pub const NOT_YET_KNOWN: &str = "no line that would carry it has been read yet, so whether the collector installed here keeps it is not yet known";
+/// Why a rule that reads one of `KEEPS` judged only some of the lines an answer of `immune
+/// matches` read, whatever the core's latest reading says arrives (`Lacked`).
+pub const NOT_IN_LINES: &str = "some lines this answer read do not give it: they lack it, as an earlier collector writes them, or carry it with no value; the rule judged none of them by it";
 /// The fields rules are given that only a collector that keeps one of `KEEPS` fills, by the
 /// kind of event, the field's name under the Elastic Common Schema, and what fills it. A rule
 /// that reads one is not asked about a line whose collector did not keep it, and watches only
@@ -353,7 +377,10 @@ CREATE TABLE IF NOT EXISTS event_arrival (
     kind   TEXT NOT NULL,     -- program_start or file_event
     keep   TEXT NOT NULL,     -- identity, script or signature
     kept   INTEGER NOT NULL,  -- whether the latest line of the kind holds its key
-    filled INTEGER,           -- since then, the time of the first line that gave it a value
+    filled INTEGER,           -- while it arrives, the time of the first line that gave it a value
+    stopped INTEGER,          -- when it no longer arrives, since when
+    quiet  INTEGER NOT NULL DEFAULT 0,  -- while it arrives, lines in a row since without a value
+    quiet_from INTEGER,       -- and the time of the first of them
     PRIMARY KEY (kind, keep)
 );
 -- The filter's markers read whose number in eslogger's numbering no gap has taken in yet.
@@ -1106,7 +1133,8 @@ fn look(root: &Path, left: &Left, now: i64, rules: &'static Rules) -> Found {
     let mut version = None;
     let mut files = Vec::new();
     let mut times = Vec::new();
-    for f in &listed {
+    let now_written = writing(&listed, |f| left.files.get(&f.name).copied());
+    for (i, f) in listed.iter().enumerate() {
         let name = &f.name;
         let mut into = Into {
             tally: &mut tally,
@@ -1114,7 +1142,8 @@ fn look(root: &Path, left: &Left, now: i64, rules: &'static Rules) -> Found {
             last_seq: &mut last_seq,
             file_seq: &mut file_seq,
             version: &mut version,
-            arrivals: &mut arrivals,
+            arrivals: (now_written == Some(i)).then_some(&mut arrivals),
+            lacked: None,
             pending: &mut pending,
             now,
             rules,
@@ -1270,7 +1299,7 @@ fn collects(root: &Path, daemon: &std::fs::Metadata) -> Result<(), (Cause, Strin
 
 /// What the lines read so far say of one of `KEEPS` in one kind of event (`MARKS`). Kept is
 /// decided by what arrives, never by a record: a field counts only once a line carried a value
-/// for it.
+/// for it, and goes on counting only while lines go on giving values.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Arrival {
     /// No line of the kind has been read.
@@ -1278,28 +1307,59 @@ pub enum Arrival {
     Unknown,
     /// The latest line of the kind lacks its key: the collector that wrote it does not keep it.
     NotKept,
-    /// Lines carry its key; with the time of the first line since then that gave it a value,
-    /// when one did. Without one, the collector keeps it and eslogger has filled it in no line.
+    /// Lines carry its key; with the time of the first line that gave it a value since it last
+    /// did not arrive, while it arrives. Without one, the collector keeps it and eslogger has
+    /// filled it in no line since the key appeared.
     Kept(Option<i64>),
+    /// Lines carry its key and gave it values, and then as many lines in a row as its mark
+    /// allows (`MARKS`) gave none: it no longer arrives, since the time of the first of them.
+    /// As when a macOS update renames the field or changes its shape, which the filter then
+    /// writes as null.
+    NoLonger(i64),
+}
+
+/// The lines of a kind read in a row that carry a key and no value under it, since the last
+/// that gave one, and the time of the first of them: how far an arriving field is from being
+/// told as no longer arriving.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Quiet {
+    lines: u64,
+    from: i64,
 }
 
 impl Arrival {
     /// What a line of the kind, at `t`, says after what was said before: whether it holds the
-    /// key, and whether a value under it. A line without the key starts it again.
-    fn after(self, has: bool, filled: bool, t: i64) -> Arrival {
-        match (has, self) {
-            (false, _) => Arrival::NotKept,
-            (true, Arrival::Kept(Some(since))) => Arrival::Kept(Some(since)),
-            (true, _) => Arrival::Kept(filled.then_some(t)),
-        }
+    /// key, and whether a value under it. A line without the key starts it again. `quiet` is
+    /// the run of lines without a value so far, and `most` how long a run tells it stopped.
+    fn after(self, quiet: &mut Quiet, most: u64, has: bool, filled: bool, t: i64) -> Arrival {
+        let state = match (has, filled, self) {
+            (false, _, _) => Arrival::NotKept,
+            (true, true, Arrival::Kept(Some(since))) => Arrival::Kept(Some(since)),
+            (true, true, _) => Arrival::Kept(Some(t)),
+            (true, false, Arrival::Kept(Some(since))) => {
+                if quiet.lines == 0 {
+                    quiet.from = t;
+                }
+                quiet.lines = quiet.lines.saturating_add(1);
+                if quiet.lines < most {
+                    return Arrival::Kept(Some(since));
+                }
+                Arrival::NoLonger(quiet.from)
+            }
+            (true, false, Arrival::NoLonger(from)) => Arrival::NoLonger(from),
+            (true, false, _) => Arrival::Kept(None),
+        };
+        *quiet = Quiet::default();
+        state
     }
 
     /// How far it is from arriving: what a rule that reads it is named with when they differ.
     fn distance(self) -> u8 {
         match self {
-            Arrival::NotKept => 3,
-            Arrival::Unknown => 2,
-            Arrival::Kept(None) => 1,
+            Arrival::NotKept => 4,
+            Arrival::Unknown => 3,
+            Arrival::Kept(None) => 2,
+            Arrival::NoLonger(_) => 1,
             Arrival::Kept(Some(_)) => 0,
         }
     }
@@ -1310,6 +1370,7 @@ impl Arrival {
             Arrival::NotKept => Some(NOT_KEPT),
             Arrival::Unknown => Some(NOT_YET_KNOWN),
             Arrival::Kept(None) => Some(NEVER_FILLED),
+            Arrival::NoLonger(_) => Some(NO_LONGER),
             Arrival::Kept(Some(_)) => None,
         }
     }
@@ -1320,37 +1381,46 @@ impl Arrival {
             Arrival::NotKept => Some("collector_does_not_keep"),
             Arrival::Unknown => Some("not_yet_known"),
             Arrival::Kept(None) => Some("kept_never_filled"),
+            Arrival::NoLonger(_) => Some("no_longer_arriving"),
             Arrival::Kept(Some(_)) => None,
         }
     }
 }
 
 /// What the lines read so far say of each of `KEEPS` in each kind of event, in the order of
-/// `MARKS`.
+/// `MARKS`, and for each the run of lines without a value since the last that gave one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Arrivals(pub [Arrival; 5]);
+pub struct Arrivals(pub [Arrival; 5], [Quiet; 5]);
+
+impl From<[Arrival; 5]> for Arrivals {
+    fn from(states: [Arrival; 5]) -> Arrivals {
+        Arrivals(states, Default::default())
+    }
+}
 
 impl Arrivals {
     /// Takes in one line of `kind` at `t`: which of `KEEPS` it holds the key of, and which a
     /// value under.
     fn line(&mut self, kind: crate::sigma::Kind, kept: Keeps, filled: Keeps, t: i64) {
-        for (a, (k, keep)) in self.0.iter_mut().zip(MARKS) {
+        for ((a, quiet), (k, keep, most)) in self.0.iter_mut().zip(&mut self.1).zip(MARKS) {
             if k == kind {
-                *a = a.after(kept & keep != 0, filled & keep != 0, t);
+                *a = a.after(quiet, most, kept & keep != 0, filled & keep != 0, t);
             }
         }
     }
 
     /// What the lines say of one of `KEEPS`: of the kinds that mark it, the one furthest from
-    /// arriving; arriving only when it arrives in each, since the latest of them began to.
+    /// arriving; arriving only when it arrives in each, since the latest of them began to; no
+    /// longer arriving since the first of them stopped.
     pub fn of(&self, keep: Keeps) -> Arrival {
         self.0
             .iter()
             .zip(MARKS)
-            .filter(|(_, (_, k))| *k == keep)
+            .filter(|(_, (_, k, _))| *k == keep)
             .map(|(a, _)| *a)
             .reduce(|a, b| match (a, b) {
                 (Arrival::Kept(Some(x)), Arrival::Kept(Some(y))) => Arrival::Kept(Some(x.max(y))),
+                (Arrival::NoLonger(x), Arrival::NoLonger(y)) => Arrival::NoLonger(x.min(y)),
                 _ if b.distance() > a.distance() => b,
                 _ => a,
             })
@@ -1386,14 +1456,57 @@ impl Arrivals {
 
     /// The names of `KEEPS` that arrive, each with the time since when.
     pub fn arriving(&self) -> Vec<(&'static str, i64)> {
+        self.timed(|a| match a {
+            Arrival::Kept(Some(since)) => Some(since),
+            _ => None,
+        })
+    }
+
+    /// The names of `KEEPS` that no longer arrive, each with the time since when.
+    pub fn no_longer(&self) -> Vec<(&'static str, i64)> {
+        self.timed(|a| match a {
+            Arrival::NoLonger(since) => Some(since),
+            _ => None,
+        })
+    }
+
+    /// The names of `KEEPS` whose state gives a time, with it.
+    fn timed(&self, time: impl Fn(Arrival) -> Option<i64>) -> Vec<(&'static str, i64)> {
         KEEPS
             .iter()
             .enumerate()
-            .filter_map(|(i, (name, _))| match self.of(1 << i) {
-                Arrival::Kept(Some(since)) => Some((*name, since)),
-                _ => None,
-            })
+            .filter_map(|(i, (name, _))| Some((*name, time(self.of(1 << i))?)))
             .collect()
+    }
+}
+
+/// Of each of `MARKS`, whether some line of its kind that a stretch judged did not give it: a
+/// line without its key, whose collector did not keep it, so a rule that reads it was not asked
+/// about the line; and for a mark whose bound is one line, a field every process has, a line
+/// with the key and no value, which the rule was asked about without it. A script is given by a
+/// few starts by nature, so a start without one counts only when it lacks the key. What a rule
+/// judged is a fact of the lines read, whatever the store says arrives.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Lacked([bool; 5]);
+
+impl Lacked {
+    /// Takes in one judged line of `kind`: which of `KEEPS` it holds the key of, and which a
+    /// value under.
+    fn line(&mut self, kind: crate::sigma::Kind, kept: Keeps, filled: Keeps) {
+        for (lacked, (k, keep, most)) in self.0.iter_mut().zip(MARKS) {
+            if k == kind && (kept & keep == 0 || (most == 1 && filled & keep == 0)) {
+                *lacked = true;
+            }
+        }
+    }
+
+    /// What of `KEEPS` some judged line of `kind` did not give.
+    pub fn of(&self, kind: crate::sigma::Kind) -> Keeps {
+        self.0
+            .iter()
+            .zip(MARKS)
+            .filter(|(lacked, (k, _, _))| **lacked && *k == kind)
+            .fold(0, |set, (_, (_, keep, _))| set | keep)
     }
 }
 
@@ -1478,8 +1591,12 @@ struct Into<'a> {
     last_seq: &'a mut Option<u64>,
     file_seq: &'a mut [Option<u64>; 2],
     version: &'a mut Option<u64>,
-    /// What the lines say of each of `KEEPS`, taken on line by line.
-    arrivals: &'a mut Arrivals,
+    /// What the lines say of each of `KEEPS`, taken on line by line, while the core's reading
+    /// reads the file the collector is writing now (`writing`); `None` for any other file, and
+    /// always for `immune matches`, which tells what the core's latest reading stored.
+    arrivals: Option<&'a mut Arrivals>,
+    /// For `immune matches`: what of `KEEPS` the lines it judged did not give.
+    lacked: Option<&'a mut Lacked>,
     /// Markers read whose number in eslogger's numbering no gap has taken in yet.
     pending: &'a mut u64,
     /// The time of the reading: a line whose time cannot be read is taken to be of it.
@@ -1571,12 +1688,18 @@ fn read_from(mut file: std::fs::File, from: u64, into: &mut Into) -> Result<Upto
                 count_seq(seq, into.last_seq, counts, into.pending);
                 t.starts += 1;
                 *into.version = v.or(*into.version);
-                into.arrivals.line(
-                    crate::sigma::Kind::Process,
-                    start.kept,
-                    filled_start(&start),
-                    second_of(&start.timestamp, into.now),
-                );
+                if let Some(arrivals) = into.arrivals.as_deref_mut() {
+                    arrivals.line(
+                        crate::sigma::Kind::Process,
+                        start.kept,
+                        filled_start(&start),
+                        second_of(&start.timestamp, into.now),
+                    );
+                }
+                if let Some(lacked) = into.lacked.as_deref_mut() {
+                    let kind = crate::sigma::Kind::Process;
+                    lacked.line(kind, start.kept, filled_start(&start));
+                }
                 into.judge(Subject::Start(&start), begins, n)
             }
             Line::File { kind, seq, event } => {
@@ -1588,12 +1711,17 @@ fn read_from(mut file: std::fs::File, from: u64, into: &mut Into) -> Result<Upto
                 match event {
                     Some(e) => {
                         t.files += 1;
-                        into.arrivals.line(
-                            crate::sigma::Kind::File,
-                            e.kept,
-                            filled_file(&e),
-                            second_of(&e.timestamp, into.now),
-                        );
+                        if let Some(arrivals) = into.arrivals.as_deref_mut() {
+                            arrivals.line(
+                                crate::sigma::Kind::File,
+                                e.kept,
+                                filled_file(&e),
+                                second_of(&e.timestamp, into.now),
+                            );
+                        }
+                        if let Some(lacked) = into.lacked.as_deref_mut() {
+                            lacked.line(crate::sigma::Kind::File, e.kept, filled_file(&e));
+                        }
                         into.judge(Subject::File(&e), begins, n)
                     }
                     None => {
@@ -1705,6 +1833,9 @@ struct LogFile {
     key: Key,
     /// When it was last written to: seconds, and nanoseconds within the second.
     mtime: (i64, i64),
+    /// Its inode and length when it was listed.
+    inode: u64,
+    len: u64,
     /// It is over: a file later in the order was written to at or after this one was last.
     /// rotatelogs moves to the next file and does not come back, so a line left without its
     /// newline at the end of this one is never finished. The last file is never over, nor one
@@ -1796,6 +1927,28 @@ fn name_of(key: Key) -> String {
     }
 }
 
+/// Which of `files` the collector is writing now, as far as a look can tell: of those holding
+/// bytes past where a reading left them (`read`, by inode and offset; a file of another inode is
+/// read from its start), the one written last, and of two written at once the later in the
+/// order of names. Only its lines say what arrives (`Arrival`). After a downgrade the earlier
+/// collector writes files whose names sort first, and the later collector's files, written
+/// before, sort after them; names also sort out of the order of writing after a clock was set
+/// back. A file nobody writes any more holds nothing new, so from the second reading on only the
+/// file being written is a candidate, whatever its name and whatever the clock said. When a
+/// reading finds several, at the first reading or across a new file, the time each was last
+/// written decides, as `tidy.sh` keeps the one written last.
+fn writing(files: &[LogFile], read: impl Fn(&LogFile) -> Option<(u64, u64)>) -> Option<usize> {
+    files
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| match read(f) {
+            Some((inode, offset)) if inode == f.inode && offset <= f.len => f.len > offset,
+            _ => f.len > 0,
+        })
+        .max_by_key(|(i, f)| (f.mtime, *i))
+        .map(|(i, _)| i)
+}
+
 /// Looks at the source without reading a line. `Err(None)` is a level not installed, `Err` with
 /// a reason one that is there and cannot be read.
 fn open(root: &Path) -> Result<Opened, Option<String>> {
@@ -1830,6 +1983,8 @@ fn open(root: &Path) -> Result<Opened, Option<String>> {
             name: name.to_string(),
             key,
             mtime: (meta.mtime(), meta.mtime_nsec()),
+            inode: meta.ino(),
+            len: meta.len(),
             over: false,
         });
     }
@@ -2007,6 +2162,14 @@ fn collected(conn: &Connection) -> rusqlite::Result<(bool, Option<String>)> {
 pub fn schema(tx: &Transaction) -> rusqlite::Result<()> {
     let recorded = has(tx, "rule_line")?;
     tx.execute_batch(SCHEMA)?;
+    // A store an earlier build made keeps no run of lines without a value.
+    if !has_run(tx)? {
+        tx.execute_batch(
+            "ALTER TABLE event_arrival ADD COLUMN stopped INTEGER;
+             ALTER TABLE event_arrival ADD COLUMN quiet INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE event_arrival ADD COLUMN quiet_from INTEGER;",
+        )?;
+    }
     if !recorded {
         // The store begins to keep which finding each match went to. What was read before is
         // not in it, and is told apart from a line no finding holds.
@@ -2494,9 +2657,10 @@ pub const BYTES: usize = 4 << 20;
 /// the rates the installer states is about 170. A log of more cannot be read on from a place,
 /// and an answer fails rather than leave files out of it.
 const MAX_FILES: usize = 4096;
-/// The version of a place's encoding this build writes, its first number. It reads version 1
-/// too, which an earlier build wrote while every log file was named by its hour.
-const PLACE_VERSION: u64 = 2;
+/// The version of a place's encoding this build writes, its first number. It reads versions 1
+/// and 2 too, which earlier builds wrote: version 1 while every log file was named by its hour,
+/// version 2 while a place carried what the lines said arrives.
+const PLACE_VERSION: u64 = 3;
 
 /// Where a line of the log is: its file's name and inode, and the byte offset where the line
 /// begins. A log file is only appended to, so a line keeps its place until its file is deleted,
@@ -2594,7 +2758,7 @@ pub fn at_line(root: &Path, at: &LineAt, now: i64) -> Result<AtLine, String> {
     let (mut tally, mut file_tally) = (Tally::default(), FileTally::default());
     let (mut last_seq, mut file_seq, mut version) = (None, [None; 2], None);
     let mut matched = Matched::default();
-    let (mut arrivals, mut pending) = (Arrivals::default(), 0);
+    let mut pending = 0;
     let mut sink = Sink {
         hits: Vec::new(),
         matches: 0,
@@ -2607,7 +2771,8 @@ pub fn at_line(root: &Path, at: &LineAt, now: i64) -> Result<AtLine, String> {
         last_seq: &mut last_seq,
         file_seq: &mut file_seq,
         version: &mut version,
-        arrivals: &mut arrivals,
+        arrivals: None,
+        lacked: None,
         pending: &mut pending,
         now,
         rules: Rules::shipped(),
@@ -2640,14 +2805,16 @@ pub fn at_line(root: &Path, at: &LineAt, now: i64) -> Result<AtLine, String> {
 /// in `--after`: for each log file, where its name puts it (`Key`), its inode, how far it was
 /// read, and whether it was over (`LogFile::over`) when it was read to its end; the last number
 /// eslogger gave each kind of event read, and the filter's markers no gap has taken in yet, so
-/// that a gap at the seam between two answers is counted once; and what the lines read say of
-/// each of `KEEPS`.
+/// that a gap at the seam between two answers is counted once. What arrives is not in it:
+/// `immune matches` tells what the core's latest reading stored.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Place {
     /// The last `seq_num` of a program start, a file created and a file renamed.
     seq: [Option<u64>; 3],
     pending: u64,
-    arrivals: Arrivals,
+    /// What a place of version 2 said of each of `MARKS`, its numbers as read: kept only so
+    /// that its text is held to one form, and otherwise ignored.
+    said: Vec<u64>,
     /// In the order of their keys, each key once.
     files: Vec<Kept>,
 }
@@ -2664,15 +2831,15 @@ struct Kept {
 }
 
 /// A place is printed as lower-case hexadecimal of a run of numbers, each an unsigned varint in
-/// protobuf's encoding, written and read by prost. Version 2: the encoding's version, 2; each
-/// of the three last numbers plus one, 0 for none; the markers pending; for each of `MARKS`, 0
-/// for `Unknown`, 1 for `NotKept`, 2 for kept and never filled, or 3 plus the second it began to
-/// arrive; how many files; then for each file the difference of its run from the file's before
-/// (from 0 for the first); when the run is the same, the difference of its start from the file's
-/// before (from 0 for the first), else its start, doubled, plus one when it is finished; its
-/// inode; and its offset. Version 1, which an earlier build wrote, has no markers and no
-/// arrivals, and gives each file's hour as the difference from the one before, doubled, plus
-/// one when finished. Hexadecimal, because sixteen characters pass through a shell and an
+/// protobuf's encoding, written and read by prost. Version 3: the encoding's version, 3; each
+/// of the three last numbers plus one, 0 for none; the markers pending; how many files; then
+/// for each file the difference of its run from the file's before (from 0 for the first); when
+/// the run is the same, the difference of its start from the file's before (from 0 for the
+/// first), else its start, doubled, plus one when it is finished; its inode; and its offset.
+/// Version 2, which an earlier build wrote, has after the markers one number for each of
+/// `MARKS`, what its lines said arrives: 0, 1, 2, or 3 plus a second; they are read and
+/// ignored. Version 1 has no markers, and gives each file's hour as the difference from the one
+/// before, doubled, plus one when finished. Hexadecimal, because sixteen characters pass through a shell and an
 /// argument parser untouched and are checked one by one, and it needs no encoder of someone
 /// else's format but the varint, which is prost's. A day of 25 files is about 360 bytes, so
 /// about 730 characters.
@@ -2684,7 +2851,7 @@ impl std::fmt::Display for Place {
 }
 
 impl Place {
-    /// The place's numbers in the encoding of `version`, 1 or 2, as varints.
+    /// The place's numbers in the encoding of `version`, 1, 2 or 3, as varints.
     fn encode(&self, version: u64) -> Vec<u8> {
         let mut bytes = Vec::new();
         let mut put = |n: u64| prost::encoding::encode_varint(n, &mut bytes);
@@ -2694,14 +2861,9 @@ impl Place {
         }
         if version >= 2 {
             put(self.pending);
-            for a in self.arrivals.0 {
-                put(match a {
-                    Arrival::Unknown => 0,
-                    Arrival::NotKept => 1,
-                    Arrival::Kept(None) => 2,
-                    Arrival::Kept(Some(t)) => 3 + t.max(0) as u64,
-                });
-            }
+        }
+        if version == 2 {
+            self.said.iter().for_each(|n| put(*n));
         }
         put(self.files.len() as u64);
         let mut before = Key { run: 0, at: 0 };
@@ -2726,7 +2888,7 @@ impl Place {
     }
 
     /// A place as `immune matches` prints it, or as an earlier build printed it; `None` for any
-    /// other text. Read strictly: version 1 or 2, at most `MAX_FILES` files, each of a key some
+    /// other text. Read strictly: version 1, 2 or 3, at most `MAX_FILES` files, each of a key some
     /// log file's name can give and later than the one before, and the text exactly as this
     /// build prints the place it reads in that version. That last check also holds the text to
     /// lower-case hexadecimal, to its length, and to nothing left over, and no two texts are one
@@ -2750,13 +2912,13 @@ impl Place {
         }
         if version >= 2 {
             place.pending = next()?;
-            for a in &mut place.arrivals.0 {
-                *a = match next()? {
-                    0 => Arrival::Unknown,
-                    1 => Arrival::NotKept,
-                    2 => Arrival::Kept(None),
-                    t => Arrival::Kept(Some(i64::try_from(t - 3).ok()?)),
-                };
+        }
+        if version == 2 {
+            for _ in MARKS {
+                // A second its build could write: 3 plus at most the largest one.
+                let n = next()?;
+                i64::try_from(n.saturating_sub(3)).ok()?;
+                place.said.push(n);
             }
         }
         let n = next()?;
@@ -2843,10 +3005,10 @@ pub struct Stretch {
     pub said: Option<(&'static str, String)>,
     pub written: Option<i64>,
     pub collects: Result<(), (Cause, String)>,
-    /// What the lines say of each of `KEEPS`, after the last line read.
-    pub arrivals: Arrivals,
     /// Files in the log folder that are not the collector's own: not read.
     pub foreign: u64,
+    /// What of `KEEPS` the lines it judged did not give, by kind.
+    pub lacked: Lacked,
 }
 
 /// What `immune matches` found.
@@ -2926,9 +3088,9 @@ pub fn queue(root: &Path, after: Option<&Place>, limit: usize, now: i64) -> Queu
     let mut matched = Matched::default();
     let mut last_seq = held.seq[0];
     let mut file_seq = [held.seq[1], held.seq[2]];
-    let mut arrivals = held.arrivals;
     let mut pending = held.pending;
     let mut version = None;
+    let mut lacked = Lacked::default();
     let mut sink = Sink {
         hits: Vec::new(),
         matches: 0,
@@ -2945,7 +3107,8 @@ pub fn queue(root: &Path, after: Option<&Place>, limit: usize, now: i64) -> Queu
             last_seq: &mut last_seq,
             file_seq: &mut file_seq,
             version: &mut version,
-            arrivals: &mut arrivals,
+            arrivals: None,
+            lacked: Some(&mut lacked),
             pending: &mut pending,
             now,
             rules: Rules::shipped(),
@@ -3002,7 +3165,6 @@ pub fn queue(root: &Path, after: Option<&Place>, limit: usize, now: i64) -> Queu
     );
     place.seq = [last_seq, file_seq[0], file_seq[1]];
     place.pending = pending;
-    place.arrivals = arrivals;
     let gone_at = gone.into_iter().min();
     let kept_from = gone_at.and_then(|g| {
         let f = files.iter().find(|f| f.key >= g)?;
@@ -3028,8 +3190,8 @@ pub fn queue(root: &Path, after: Option<&Place>, limit: usize, now: i64) -> Queu
         said,
         written,
         collects,
-        arrivals,
         foreign,
+        lacked,
     }))
 }
 
@@ -3283,50 +3445,92 @@ fn kind_name(kind: crate::sigma::Kind) -> &'static str {
 /// What the lines read say of each of `KEEPS`, one row for each of `MARKS` that a line spoke of.
 fn put_arrivals(tx: &Transaction, arrivals: &Arrivals) -> rusqlite::Result<()> {
     tx.execute("DELETE FROM event_arrival", [])?;
-    for (a, (kind, keep)) in arrivals.0.iter().zip(MARKS) {
-        let (kept, filled) = match a {
+    for ((a, quiet), (kind, keep, _)) in arrivals.0.iter().zip(&arrivals.1).zip(MARKS) {
+        let (kept, filled, stopped) = match a {
             Arrival::Unknown => continue,
-            Arrival::NotKept => (false, None),
-            Arrival::Kept(filled) => (true, *filled),
+            Arrival::NotKept => (false, None, None),
+            Arrival::Kept(filled) => (true, *filled, None),
+            Arrival::NoLonger(since) => (true, None, Some(*since)),
         };
         tx.execute(
-            "INSERT INTO event_arrival (kind, keep, kept, filled) VALUES (?1, ?2, ?3, ?4)",
-            params![kind_name(kind), names(keep)[0], kept, filled],
+            "INSERT INTO event_arrival (kind, keep, kept, filled, stopped, quiet, quiet_from)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                kind_name(kind),
+                names(keep)[0],
+                kept,
+                filled,
+                stopped,
+                quiet.lines as i64,
+                quiet.from
+            ],
         )?;
     }
     Ok(())
 }
 
 /// What the lines read say of each of `KEEPS`, as the latest reading left it; nothing is known
-/// before any reading of this version.
-fn arrivals(conn: &Connection) -> rusqlite::Result<Arrivals> {
+/// before any reading. Read-only commands call it on a store an earlier build left, before any
+/// reading of this build has added the run's columns. A row of that build's shape, a kept field
+/// with a value and no run, is not yet known: that build told a field arriving for ever after
+/// one value. Such a row has no `quiet_from`, before the columns are added and after, while this
+/// build writes one on every row. A run no build stores, as long as the bound of its mark or
+/// longer, is told as no longer arriving, since its first line: a store is a file a program
+/// running as the user can rewrite, and what it says never makes calm.
+pub fn arrivals(conn: &Connection) -> rusqlite::Result<Arrivals> {
     let mut arrivals = Arrivals::default();
     if !has(conn, "event_arrival")? {
         return Ok(arrivals);
     }
-    let mut stmt = conn.prepare("SELECT kind, keep, kept, filled FROM event_arrival")?;
+    let sql = if has_run(conn)? {
+        "SELECT kind, keep, kept, filled, stopped, quiet, quiet_from FROM event_arrival"
+    } else {
+        "SELECT kind, keep, kept, filled, NULL, 0, NULL FROM event_arrival"
+    };
+    let mut stmt = conn.prepare(sql)?;
     let rows = stmt.query_map([], |r| {
         Ok((
-            r.get::<_, String>(0)?,
-            r.get::<_, String>(1)?,
+            (r.get::<_, String>(0)?, r.get::<_, String>(1)?),
             r.get::<_, bool>(2)?,
-            r.get::<_, Option<i64>>(3)?,
+            (r.get::<_, Option<i64>>(3)?, r.get::<_, Option<i64>>(4)?),
+            r.get::<_, i64>(5)?.max(0) as u64,
+            r.get::<_, Option<i64>>(6)?,
         ))
     })?;
     for row in rows {
-        let (kind, keep, kept, filled) = row?;
+        let ((kind, keep), kept, (filled, stopped), lines, from) = row?;
         let at = MARKS
             .iter()
-            .position(|(k, m)| kind_name(*k) == kind && names(*m) == [keep.as_str()]);
+            .position(|(k, m, _)| kind_name(*k) == kind && names(*m) == [keep.as_str()]);
         if let Some(i) = at {
-            arrivals.0[i] = if kept {
-                Arrival::Kept(filled)
-            } else {
-                Arrival::NotKept
+            let quiet = Quiet {
+                lines,
+                from: from.unwrap_or_default(),
+            };
+            arrivals.0[i] = match (kept, stopped, filled) {
+                (false, _, _) => Arrival::NotKept,
+                (true, Some(since), _) => Arrival::NoLonger(since),
+                (true, None, Some(_)) if from.is_none() => Arrival::Unknown,
+                (true, None, Some(_)) if lines >= MARKS[i].2 => Arrival::NoLonger(quiet.from),
+                (true, None, Some(since)) => {
+                    arrivals.1[i] = quiet;
+                    Arrival::Kept(Some(since))
+                }
+                (true, None, None) => Arrival::Kept(None),
             };
         }
     }
     Ok(arrivals)
+}
+
+/// Whether `event_arrival` has the columns of the run, which this build adds at its first
+/// reading.
+fn has_run(conn: &Connection) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('event_arrival') WHERE name = 'stopped')",
+        [],
+        |r| r.get(0),
+    )
 }
 
 /// Where the last reading left off.
@@ -3654,16 +3858,21 @@ pub fn json(l: &Level) -> Value {
         "silent_after_seconds": SILENT_AFTER,
         "cannot_see": cannot_see(l),
         // What a collector may keep beyond what the first one kept (`identity`, `script`,
-        // `signature`), each in one of four lists by what the lines read say of it: `not_kept`,
+        // `signature`), each in one of five lists by what the lines read say of it: `not_kept`,
         // the latest line lacks it, so the collector installed here is an earlier one;
         // `kept_never_filled`, lines carry it and none has given it a value yet;
-        // `not_yet_known`, no line that would carry it has been read; and `arriving`, with the
-        // time of the first line that gave it a value. A rule that reads one that does not
-        // arrive is named in the rules' `not_watching`.
+        // `not_yet_known`, no line that would carry it has been read; `arriving`, with the
+        // time of the first line that gave it a value; and `no_longer_arriving`, with the time
+        // of the first of the lines in a row that gave it none (`MARKS`). A rule that reads one
+        // that does not arrive is named in the rules' `not_watching`.
         "not_kept": l.arrivals.named(|a| a == Arrival::NotKept),
         "kept_never_filled": l.arrivals.named(|a| a == Arrival::Kept(None)),
         "not_yet_known": l.arrivals.named(|a| a == Arrival::Unknown),
         "arriving": l.arrivals.arriving().iter().map(|(name, since)| json!({
+            "name": name,
+            "since": crate::view::iso(*since),
+        })).collect::<Vec<_>>(),
+        "no_longer_arriving": l.arrivals.no_longer().iter().map(|(name, since)| json!({
             "name": name,
             "since": crate::view::iso(*since),
         })).collect::<Vec<_>>(),
@@ -4063,13 +4272,7 @@ mod tests {
         let day = Place {
             seq: [Some(4_000_000), None, Some(0)],
             pending: 1,
-            arrivals: Arrivals([
-                Arrival::Kept(Some(1_791_072_002)),
-                Arrival::Kept(None),
-                Arrival::NotKept,
-                Arrival::Unknown,
-                Arrival::Kept(Some(1_791_072_003)),
-            ]),
+            said: Vec::new(),
             files: (0..25u64)
                 .map(|i| {
                     let run = 20261003000013 + if i < 24 { 0 } else { 1_000_000 };
@@ -4087,7 +4290,7 @@ mod tests {
         assert!(text.len() < 800, "{} characters", text.len());
         println!("a place of a day of 25 files: {} characters", text.len());
         let empty = Place::default().to_string();
-        assert_eq!(empty, "0200000000000000000000");
+        assert_eq!(empty, "030000000000");
         assert_eq!(Place::parse(&empty), Some(Place::default()));
         let head = [2, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         let one = |run: u64, step: u64| hex(&varints(&[&head[..], &[1, run, step, 7, 9]].concat()));
@@ -4148,8 +4351,12 @@ mod tests {
             one(0, 20261004000000 << 1),
             two(0, 0),
             two(0, 1),
-            // An arrival's time beyond what a second holds.
+            // A version 2 arrival's time beyond what a second holds.
             hex(&varints(&[2, 0, 0, 0, 0, u64::MAX, 0, 0, 0, 0, 0])),
+            hex(&varints(&[2, 0, 0, 0, 0, 3 + (1 << 63), 0, 0, 0, 0, 0])),
+            // Version 3 holds nothing of what arrives.
+            hex(&varints(&[3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])),
+            hex(&varints(&[3, 0, 0, 0, 0, 3, 7, 0, 0, 0, 0, 0, 0])),
             too_many,
             "0".repeat(20_000),
         ] {
@@ -4188,14 +4395,47 @@ mod tests {
                 },
             ]
         );
-        assert_eq!((place.pending, place.arrivals), (0, Arrivals::default()));
+        assert_eq!((place.pending, place.said.len()), (0, 0));
+        // One version 2 printed carries what its lines said arrives: read and ignored, so its
+        // text is still held to one form, and the place it prints next carries none of it.
+        let held2 = v1(&[
+            2,
+            5,
+            0,
+            0,
+            1,
+            3 + 7,
+            0,
+            1,
+            2,
+            0,
+            1,
+            0,
+            2026100400 << 1,
+            7,
+            90,
+        ]);
+        let v2 = Place::parse(&held2).expect("a version-2 place is read");
+        assert_eq!(
+            (v2.seq, v2.pending, v2.files.len()),
+            ([Some(4), None, None], 1, 1)
+        );
+        assert_eq!(hex(&v2.encode(2)), held2);
+        let next = Place::parse(&v2.to_string()).expect("its next place is read back");
+        assert_eq!(
+            (next.seq, next.pending, &next.files),
+            (v2.seq, 1, &v2.files)
+        );
+        assert!(next.said.is_empty() && next.to_string().len() < held2.len());
         // What it prints next is this build's version, and it reads that back.
-        assert!(place.to_string().starts_with("02"));
+        assert!(place.to_string().starts_with("03"));
         assert_eq!(Place::parse(&place.to_string()), Some(place));
         for bad in [
             v1(&[1, 0, 0, 0, 1, 2026130400 << 1, 7, 9]),
             v1(&[1, 0, 0, 0, 2, 2026100400 << 1, 7, 9, 0, 8, 9]),
             format!("{held}00"),
+            format!("{held2}00"),
+            v1(&[2, 5, 0, 0, 1, 3 + 7, 0, 1, 2, 0]),
         ] {
             assert_eq!(Place::parse(&bad), None, "{bad}");
         }
@@ -5264,5 +5504,537 @@ mod tests {
         assert_eq!(line(br#""unreadable""#), Ok(Line::Unreadable));
         assert!(line(br#"{"unreadable":true,"event":{"exec":{}}}"#).is_err());
         assert!(line(br#"{"unreadable":false}"#).is_err());
+    }
+
+    /// What the lines say of each of `KEEPS`, by name: `-` not yet known, `x` not kept, `0`
+    /// kept and never filled, `+<since>` arriving, `!<since>` no longer arriving.
+    fn told(a: &Arrivals) -> Vec<String> {
+        (0..KEEPS.len())
+            .map(|i| match a.of(1 << i) {
+                Arrival::Unknown => "-".to_string(),
+                Arrival::NotKept => "x".to_string(),
+                Arrival::Kept(None) => "0".to_string(),
+                Arrival::Kept(Some(t)) => format!("+{t}"),
+                Arrival::NoLonger(t) => format!("!{t}"),
+            })
+            .collect()
+    }
+
+    /// How many lines of its kind in a row without a value tell that `keep` stopped.
+    fn most(keep: Keeps) -> u64 {
+        MARKS.iter().find(|(_, k, _)| *k == keep).unwrap().2
+    }
+
+    #[test]
+    fn a_field_the_collector_stops_filling_is_told_as_no_longer_arriving_and_since_when() {
+        // No false calm after a macOS update renames a field or changes its shape, or after an
+        // older filter is put back: the filter then writes the key with null, and the state
+        // follows the lines read now. A field every process has (who it is, its code-signing
+        // flags, its signer on a file event) no longer arrives from the first line without it;
+        // the script, which few starts have, after `most(SCRIPT)` starts in a row without one.
+        // Each says since the first line without a value, and arrives again from the next value.
+        use crate::sigma::Kind::{File, Process};
+        let mut a = Arrivals::default();
+        a.line(Process, ALL_KEPT, ALL_KEPT, 10);
+        a.line(File, IDENTITY | SIGNATURE, IDENTITY | SIGNATURE, 11);
+        assert_eq!(told(&a), ["+11", "+10", "+11"]);
+        // A start that gives no start time: who each process is no longer arrives.
+        a.line(Process, ALL_KEPT, SIGNATURE, 20);
+        assert_eq!(told(&a), ["!20", "+10", "+11"]);
+        assert_eq!(a.not_arriving(), IDENTITY);
+        assert_eq!(a.no_longer(), [("identity", 20)]);
+        a.line(Process, ALL_KEPT, SIGNATURE, 21);
+        assert_eq!(told(&a), ["!20", "+10", "+11"]);
+        // It arrives again from the next start that gives it.
+        a.line(Process, ALL_KEPT, IDENTITY | SIGNATURE, 30);
+        assert_eq!(told(&a), ["+30", "+10", "+11"]);
+        // A file event whose program's signer is null: the signer no longer arrives.
+        a.line(File, IDENTITY | SIGNATURE, IDENTITY, 31);
+        assert_eq!(told(&a), ["+30", "+10", "!31"]);
+        // Starts 20, 21 and 30 gave no script. The rest of a run of `most(SCRIPT)` keeps it
+        // arriving until its last line, and then it no longer arrives, since the first of them.
+        let run = most(SCRIPT);
+        assert!(run > 4);
+        for t in 0..run - 4 {
+            a.line(Process, ALL_KEPT, IDENTITY | SIGNATURE, 100 + t as i64);
+        }
+        assert_eq!(told(&a)[1], "+10");
+        a.line(Process, ALL_KEPT, IDENTITY | SIGNATURE, 5000);
+        assert_eq!(told(&a)[1], "!20");
+        a.line(Process, ALL_KEPT, IDENTITY | SIGNATURE, 5001);
+        assert_eq!(told(&a)[1], "!20");
+        // A line that lacks a key is an earlier collector's, whatever came before.
+        a.line(Process, 0, 0, 5002);
+        assert_eq!(told(&a), ["x", "x", "x"]);
+        // And a key that is there with no value after it, kept and never filled.
+        a.line(Process, ALL_KEPT, 0, 5003);
+        assert_eq!(told(&a), ["0", "0", "0"]);
+        assert_eq!(a.0[4], Arrival::NoLonger(31));
+        // Both kinds that mark a group stopped: it stopped when the first of them did.
+        let mut b = Arrivals::default();
+        b.line(Process, ALL_KEPT, ALL_KEPT, 1);
+        b.line(File, IDENTITY | SIGNATURE, IDENTITY | SIGNATURE, 2);
+        b.line(File, IDENTITY | SIGNATURE, 0, 7);
+        b.line(Process, ALL_KEPT, SCRIPT, 9);
+        assert_eq!(told(&b), ["!7", "+1", "!7"]);
+        // Each mark of a field every process has: one line of its kind without a value.
+        for (kind, keep) in [
+            (Process, IDENTITY),
+            (Process, SIGNATURE),
+            (File, IDENTITY),
+            (File, SIGNATURE),
+        ] {
+            let mut c = Arrivals::default();
+            c.line(Process, ALL_KEPT, ALL_KEPT, 1);
+            c.line(File, IDENTITY | SIGNATURE, IDENTITY | SIGNATURE, 1);
+            let kept = if kind == Process {
+                ALL_KEPT
+            } else {
+                IDENTITY | SIGNATURE
+            };
+            c.line(kind, kept, kept & !keep, 5);
+            assert_eq!(c.of(keep), Arrival::NoLonger(5), "{kind:?} {keep}");
+        }
+    }
+
+    #[test]
+    fn a_rarely_filled_field_is_not_told_as_stopped_by_starts_that_never_carry_it_by_nature() {
+        // On the first install on a Mac one start in 32 named a script. Starts that are no
+        // interpreter run on a script file carry its key with null, in runs as long as the work
+        // of the moment makes them: up to one short of `most(SCRIPT)`, the script goes on
+        // arriving since the first start that gave one, and who each process is and its
+        // signer, which every start gives, go on arriving too.
+        use crate::sigma::Kind::{File, Process};
+        let mut a = Arrivals::default();
+        a.line(File, IDENTITY | SIGNATURE, IDENTITY | SIGNATURE, 1_000);
+        let mut t = 1_000;
+        for run in [31, 0, 5, most(SCRIPT) - 1, 400, most(SCRIPT) - 1] {
+            a.line(Process, ALL_KEPT, ALL_KEPT, t);
+            for _ in 0..run {
+                t += 1;
+                a.line(Process, ALL_KEPT, IDENTITY | SIGNATURE, t);
+            }
+            assert_eq!(told(&a), ["+1000", "+1000", "+1000"], "a run of {run}");
+            t += 1;
+        }
+        // A start without a value under a field every process has is no such run.
+        a.line(Process, ALL_KEPT, SCRIPT | SIGNATURE, t);
+        assert_eq!(told(&a), [format!("!{t}"), "+1000".into(), "+1000".into()]);
+        // The run is the one the document states.
+        assert_eq!(most(SCRIPT), 1000);
+        assert!(
+            include_str!("../docs/event-level.md")
+                .contains("It no longer arrives after 1,000 program starts in a row without one")
+        );
+    }
+
+    /// A program start as the filter that keeps who each process is writes it, at `second`:
+    /// the program's start time given or null, a script named or null.
+    fn kept_start(seq: u64, second: i64, identity: bool, script: bool) -> String {
+        let script = if script {
+            r#"{"path":"/Users/example/run.sh"}"#
+        } else {
+            "null"
+        };
+        let line = kept_exec(
+            r#""audit_token":{"pid":401,"pidversion":9401}"#,
+            r#"{"pid":402,"euid":501,"pidversion":9402}"#,
+            r#"{"pid":401,"pidversion":9300}"#,
+            script,
+        )
+        .replace(
+            r#""seq_num":7,"global_seq_num":7"#,
+            &format!(r#""seq_num":{seq},"global_seq_num":{seq}"#),
+        )
+        .replace("2026-10-04T00:00:02.000002Z", &crate::view::iso(second));
+        if identity {
+            line + "\n"
+        } else {
+            line.replace(
+                r#""start_time":"2026-10-04T00:00:01.900000Z""#,
+                r#""start_time":null"#,
+            ) + "\n"
+        }
+    }
+
+    /// A system root of its own for a test, with the collector installed and its log empty.
+    fn installed(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("immune-events-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(LOG)).unwrap();
+        let plist = dir.join(PLIST);
+        std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
+        std::fs::write(&plist, "<plist/>").unwrap();
+        dir
+    }
+
+    /// Appends `text` to the log file `name` under `root`, then gives it `at` as the time it was
+    /// last written.
+    fn write_at(root: &Path, name: &str, text: &str, at: i64) {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(root.join(LOG).join(name))
+            .unwrap();
+        f.write_all(text.as_bytes()).unwrap();
+        f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(at as u64))
+            .unwrap();
+    }
+
+    /// A reading of the log under `root` on from `left`: what it says arrives, and where it left
+    /// off, for the next.
+    fn looked(root: &Path, left: &Left, now: i64) -> Left {
+        let Found::Read(log) = look(root, left, now, Rules::shipped()) else {
+            panic!("the log is read");
+        };
+        Left {
+            files: log
+                .files
+                .iter()
+                .map(|(name, inode, to)| (name.clone(), (*inode, *to)))
+                .collect(),
+            arrivals: log.arrivals,
+            ..Left::default()
+        }
+    }
+
+    #[test]
+    fn lines_of_an_earlier_collector_read_before_or_after_the_current_one_s_do_not_change_what_is_told()
+     {
+        // No false calm after a downgrade. An earlier collector names its files by the hour, and
+        // they sort before a later collector's, so after a downgrade the files the later one
+        // wrote before are read after what the earlier one writes now. What the core's reading
+        // tells comes from the file being written now, however the names sort.
+        let now = 1_791_090_000;
+        let earlier = "exec-20261004T00.jsonl";
+        let later = "exec-20261004T000013-20261004T000000.jsonl";
+        let kept = kept_start(1, now - 100, true, false);
+        let old = exec(2, OBJECT) + "\n";
+        // A file event as each collector writes it: the later one keeps who acted and its
+        // signer.
+        let old_file = created(1, "/Users/example/a") + "\n";
+        let kept_file = old_file.replace(
+            r#"{"executable":{"path":"/usr/bin/curl"}}"#,
+            r#"{"executable":{"path":"/usr/bin/curl"},"audit_token":{"pid":402,"pidversion":9402},"start_time":"2026-10-04T00:00:01.900000Z","signing_id":"com.example.tool","codesigning_flags":570522385}"#,
+        );
+        assert_ne!(kept_file, old_file);
+        // An upgrade: the earlier collector's file written first, the later one's after. No
+        // file event was read, so who acts on files is not yet known.
+        let up = installed("arrival-upgrade");
+        write_at(&up, earlier, &old, now - 200);
+        write_at(&up, later, &kept, now - 100);
+        assert_eq!(
+            told(&looked(&up, &Left::default(), now).arrivals),
+            ["-", "0", "-"]
+        );
+        // The earlier collector put back: its lines, written now, say what is kept, though its
+        // file is read first and the later collector's after it. It has written a file event
+        // and no program start yet, so what program starts carry is not yet known. A file the
+        // later collector left empty, written last, holds nothing to tell.
+        let down = installed("arrival-downgrade");
+        write_at(&down, later, &(kept.clone() + &kept_file), now - 200);
+        write_at(&down, earlier, &old_file, now - 100);
+        write_at(&down, "exec-20261004T000013-20261004T060000.jsonl", "", now);
+        let read = looked(&down, &Left::default(), now);
+        assert_eq!(told(&read.arrivals), ["x", "-", "x"]);
+        // Read on: the earlier collector goes on writing, and the later one's file holds
+        // nothing new.
+        write_at(&down, earlier, &(exec(3, OBJECT) + "\n"), now - 50);
+        let read = looked(&down, &read, now);
+        assert_eq!(told(&read.arrivals), ["x", "x", "x"]);
+        // The later collector installed again: told from its first line.
+        write_at(&down, later, &kept_start(4, now - 10, true, true), now - 10);
+        assert_eq!(
+            told(&looked(&down, &read, now).arrivals),
+            ["x", "+1791089990", "x"]
+        );
+        // A clock set back: the file being written has the earlier name and the earlier time of
+        // the two, and the other, written before with the clock ahead, held values its
+        // collector no longer gives. Only the file that grows speaks.
+        let back = installed("arrival-clock");
+        let ahead_name = "exec-20261004T000013-20261004T050000.jsonl";
+        let back_name = "exec-20261004T000013-20261004T010000.jsonl";
+        write_at(&back, ahead_name, &kept, now);
+        write_at(&back, back_name, &kept, now - 3600);
+        let read = looked(&back, &Left::default(), now);
+        write_at(
+            &back,
+            back_name,
+            &kept_start(5, now - 3500, false, false),
+            now - 3500,
+        );
+        // Who the program started is, in a program start: no file event was read.
+        let stopped = Arrival::NoLonger(now - 3500);
+        assert_eq!(looked(&back, &read, now).arrivals.0[0], stopped);
+        for root in [up, down, back] {
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn a_run_of_lines_without_a_value_is_counted_across_readings() {
+        // The core reads every ten seconds, so the run of starts without a script goes on from
+        // where the last reading left it, in the store. An earlier build's store has no such
+        // run and is given one.
+        let now = 1_791_090_000;
+        let root = installed("arrival-run");
+        let name = "exec-20261004T000013-20261004T000000.jsonl";
+        let starts = |from: u64, n: u64| -> String {
+            (from..from + n)
+                .map(|seq| kept_start(seq, now - 5000 + seq as i64, true, seq == 1))
+                .collect()
+        };
+        let run = most(SCRIPT);
+        write_at(&root, name, &starts(1, run / 2), now - 2);
+        let dir = std::env::temp_dir().join(format!("immune-events-run-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut conn = crate::store::open(&dir.join("store.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE event_arrival (kind TEXT NOT NULL, keep TEXT NOT NULL,
+                 kept INTEGER NOT NULL, filled INTEGER, PRIMARY KEY (kind, keep));",
+        )
+        .unwrap();
+        let read = |conn: &mut rusqlite::Connection| {
+            let tx = conn.transaction().unwrap();
+            crate::store::put_entity(&tx, "machine:mac").unwrap();
+            read(&tx, "events-1", "machine:mac", &root, now).unwrap();
+            tx.commit().unwrap();
+            told(&arrivals(conn).unwrap())
+        };
+        assert_eq!(read(&mut conn)[1], format!("+{}", now - 4999));
+        write_at(
+            &root,
+            name,
+            &starts(run / 2 + 1, run - run / 2 + 1),
+            now - 1,
+        );
+        assert_eq!(read(&mut conn)[1], format!("!{}", now - 4998));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_bound_counts_the_starts_of_the_file_being_written_as_the_core_reads_them() {
+        // The bound of a script's run is 1,000 starts of the file the collector is writing,
+        // read by the core. A reading that finds new lines in two files, across a new file,
+        // counts only the newer one's: 1,200 starts without a script over two files leave the
+        // script arriving, and it no longer arrives once the newer file alone holds 1,000.
+        let now = 1_791_090_000;
+        let root = installed("arrival-bound");
+        let older = "exec-20261004T000013-20261004T000000.jsonl";
+        let newer = "exec-20261004T000013-20261004T010000.jsonl";
+        let starts = |from: u64, to: u64| -> String {
+            (from..to)
+                .map(|seq| kept_start(seq, now - 5000 + seq as i64, true, seq == 1))
+                .collect()
+        };
+        let first = kept_start(1, now - 4999, true, true);
+        write_at(&root, older, &first, now - 3000);
+        let read = looked(&root, &Left::default(), now);
+        assert_eq!(told(&read.arrivals)[1], format!("+{}", now - 4999));
+        write_at(&root, older, &starts(2, 602), now - 2000);
+        write_at(&root, newer, &starts(602, 1202), now - 1000);
+        let read = looked(&root, &read, now);
+        assert_eq!(told(&read.arrivals)[1], format!("+{}", now - 4999));
+        write_at(&root, newer, &starts(1202, 1602), now - 500);
+        let read = looked(&root, &read, now);
+        assert_eq!(told(&read.arrivals)[1], format!("!{}", now - 5000 + 602));
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(include_str!("../docs/event-level.md").contains(
+            "1,000 program starts in a row without one, counted in the file the collector is writing as the core reads it"
+        ));
+    }
+
+    #[test]
+    fn a_store_an_earlier_build_left_is_answered_from_before_its_first_reading_by_this_one() {
+        // `immune status`, `rules` and `matches` read the store without a reading of their own,
+        // and the store an earlier build left has no columns for the run yet. They answer. A
+        // field kept and never filled is so, and one not kept is not kept; a field that build
+        // told arriving is not yet known, since it told one arriving for ever after one value,
+        // and stays so once this build's first reading has added the columns.
+        let dir = std::env::temp_dir().join(format!("immune-events-old-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("store.db");
+        let mut conn = crate::store::open(&path).unwrap();
+        let tx = conn.transaction().unwrap();
+        schema(&tx).unwrap();
+        tx.commit().unwrap();
+        conn.execute_batch(
+            "ALTER TABLE event_arrival DROP COLUMN stopped;
+             ALTER TABLE event_arrival DROP COLUMN quiet;
+             ALTER TABLE event_arrival DROP COLUMN quiet_from;
+             INSERT INTO event_level (id, read_at, state) VALUES (1, 1, 'running');
+             INSERT INTO event_arrival VALUES ('program_start', 'script', 1, 5);
+             INSERT INTO event_arrival VALUES ('program_start', 'identity', 1, NULL);
+             INSERT INTO event_arrival VALUES ('program_start', 'signature', 0, NULL);",
+        )
+        .unwrap();
+        drop(conn);
+        let conn = crate::store::open_read_only(&path).unwrap();
+        let level = level(&conn, 10).unwrap().expect("the level is read");
+        assert_eq!(
+            level.arrivals,
+            Arrivals::from([
+                Arrival::Kept(None),
+                Arrival::Unknown,
+                Arrival::NotKept,
+                Arrival::Unknown,
+                Arrival::Unknown,
+            ])
+        );
+        drop(conn);
+        let mut conn = crate::store::open(&path).unwrap();
+        let tx = conn.transaction().unwrap();
+        schema(&tx).unwrap();
+        assert!(has_run(&tx).unwrap());
+        assert_eq!(arrivals(&tx).unwrap().0[1], Arrival::Unknown);
+        drop(tx);
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_stretch_names_what_its_lines_did_not_give_a_missing_key_or_an_empty_field_every_process_has()
+     {
+        // What `immune matches` names beside the store's reading. A line of a kind without a
+        // mark's key was not judged by a rule that reads it; a line with the key and no value
+        // was judged without it when every process has the field. Most starts run no script,
+        // so a start with the script's key and no value is not named. Each kind stands for its
+        // own rules, and one line that did not give a field names it for the whole stretch.
+        use crate::sigma::Kind::{File, Process};
+        let after = |lines: &[(crate::sigma::Kind, Keeps, Keeps)]| {
+            let mut lacked = Lacked::default();
+            for (kind, kept, filled) in lines {
+                lacked.line(*kind, *kept, *filled);
+            }
+            (lacked.of(Process), lacked.of(File))
+        };
+        let file = IDENTITY | SIGNATURE;
+        assert_eq!(after(&[]), (0, 0));
+        assert_eq!(
+            after(&[(Process, ALL_KEPT, ALL_KEPT), (File, file, file)]),
+            (0, 0)
+        );
+        assert_eq!(after(&[(Process, ALL_KEPT, IDENTITY | SIGNATURE)]), (0, 0));
+        assert_eq!(
+            after(&[(Process, IDENTITY | SIGNATURE, IDENTITY | SIGNATURE)]),
+            (SCRIPT, 0)
+        );
+        assert_eq!(
+            after(&[
+                (Process, ALL_KEPT, SCRIPT | SIGNATURE),
+                (Process, ALL_KEPT, ALL_KEPT)
+            ]),
+            (IDENTITY, 0)
+        );
+        assert_eq!(
+            after(&[(Process, ALL_KEPT, IDENTITY | SCRIPT)]),
+            (SIGNATURE, 0)
+        );
+        assert_eq!(after(&[(File, file, IDENTITY)]), (0, SIGNATURE));
+        assert_eq!(after(&[(File, SIGNATURE, SIGNATURE)]), (0, IDENTITY));
+        assert_eq!(after(&[(Process, 0, 0)]), (ALL_KEPT, 0));
+    }
+
+    #[test]
+    fn every_kept_field_a_shipped_rule_reads_is_its_group_s_mark_and_filled_on_every_line() {
+        // `immune matches` names a rule whose group some line it read did not give (`Lacked`),
+        // and that is whole only for a field that is its group's mark and that every line of
+        // its kind fills: one line without it is then the collector not filling it. A group
+        // filled only on some lines by nature, as the script is, is judged by the core's latest
+        // reading alone, and an answer over starts that reading has not read stays quiet after
+        // the collector stops filling it, until the reading has counted the bound, or for as
+        // long as the core does not read. So no shipped rule may read one. Before one does, the
+        // answer must say how many of the lines it judged the core's latest reading has not
+        // read, and count that in what makes an answer quiet. A field that is not its group's
+        // mark needs the same: what the mark says would not be what the rule reads.
+        //
+        // The kept fields known to be their group's mark, by kind, name and group. A field is
+        // added here only when the key `MARKS` describes for it is the one its value comes from.
+        let marked_by_itself = [(
+            crate::sigma::Kind::File,
+            "process.code_signature.signing_id",
+            SIGNATURE,
+        )];
+        let filled_on_every_line = |kind, keep| {
+            MARKS
+                .iter()
+                .any(|(k, m, most)| *k == kind && *m == keep && *most == 1)
+        };
+        for source in crate::sigma::SOURCES {
+            for &(kind, field, keep) in source.schema.kept {
+                assert!(
+                    marked_by_itself.contains(&(kind, field, keep)),
+                    "{field} of {} is not its group's mark",
+                    source.name
+                );
+                assert!(filled_on_every_line(kind, keep), "{field}");
+            }
+        }
+        for rule in &Rules::shipped().rules {
+            for keep in (0..KEEPS.len())
+                .map(|i| 1 << i)
+                .filter(|k| rule.needs & k != 0)
+            {
+                let kind = rule
+                    .kind
+                    .expect("a rule that needs a kept field has a kind");
+                assert!(filled_on_every_line(kind, keep), "{}", rule.file);
+            }
+        }
+    }
+
+    #[test]
+    fn a_run_no_build_stores_never_makes_calm_and_a_long_one_does_not_overflow() {
+        // The store is a file a program running as the user can rewrite. A run of lines
+        // without a value as long as its mark's bound, or longer, is told as no longer
+        // arriving, since its first line; one shorter goes on. A run at the largest count
+        // stays there instead of wrapping to none, in a debug build and a release one.
+        let mut quiet = Quiet {
+            lines: u64::MAX,
+            from: 7,
+        };
+        let a = Arrival::Kept(Some(1)).after(&mut quiet, u64::MAX, true, false, 9);
+        assert_eq!(a, Arrival::NoLonger(7));
+        let dir = std::env::temp_dir().join(format!("immune-events-forged-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut conn = crate::store::open(&dir.join("store.db")).unwrap();
+        let tx = conn.transaction().unwrap();
+        schema(&tx).unwrap();
+        tx.commit().unwrap();
+        conn.execute_batch(
+            "INSERT INTO event_arrival VALUES ('program_start', 'script', 1, 5, NULL, 1000, 6);
+             INSERT INTO event_arrival VALUES ('program_start', 'identity', 1, 5, NULL, 9, 6);
+             INSERT INTO event_arrival VALUES ('file_event', 'identity', 1, 5, NULL, 1, 8);",
+        )
+        .unwrap();
+        let a = arrivals(&conn).unwrap();
+        assert_eq!(
+            a.0,
+            [
+                Arrival::NoLonger(6),
+                Arrival::NoLonger(6),
+                Arrival::Unknown,
+                Arrival::NoLonger(8),
+                Arrival::Unknown,
+            ]
+        );
+        conn.execute_batch("UPDATE event_arrival SET quiet = 999 WHERE keep = 'script';")
+            .unwrap();
+        let mut a = arrivals(&conn).unwrap();
+        assert_eq!(a.0[1], Arrival::Kept(Some(5)));
+        a.line(
+            crate::sigma::Kind::Process,
+            ALL_KEPT,
+            IDENTITY | SIGNATURE,
+            20,
+        );
+        assert_eq!(a.0[1], Arrival::NoLonger(6));
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

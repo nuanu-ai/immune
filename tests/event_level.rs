@@ -419,13 +419,26 @@ fn collector_at(top: &Path, cap: &str) -> (PathBuf, PathBuf) {
         &tidy,
     )
     .unwrap();
+    with_cap(&tidy, cap);
+    (lib, log)
+}
+
+/// Makes the tidy job's launch daemon at `path` give tidy.sh `cap`: its arguments become the
+/// three it ships with and `cap`, written as one list. plutil's `-replace` on one index of a
+/// list inserts on macOS 26 and keeps the old value, which is how an install once gave tidy.sh
+/// five arguments.
+fn with_cap(path: &Path, cap: &str) {
+    let mut args = tidy_args(path);
+    args.truncate(3);
+    args.push(cap.to_string());
     let out = Command::new("/usr/bin/plutil")
-        .args(["-replace", "ProgramArguments.3", "-string", cap])
-        .arg(&tidy)
+        .args(["-replace", "ProgramArguments", "-json"])
+        .arg(serde_json::to_string(&args).unwrap())
+        .arg(path)
         .output()
         .unwrap();
     assert!(out.status.success());
-    (lib, log)
+    assert_eq!(tidy_args(path), args);
 }
 
 /// Runs collect.sh as installed, from a system root of its own under `dir` with a FIFO and an
@@ -2993,6 +3006,54 @@ fn what_the_collector_keeps_is_told_by_what_its_lines_carry_and_never_by_a_recor
 }
 
 #[test]
+fn a_group_the_collector_stops_filling_is_told_as_no_longer_arriving_with_since_when() {
+    // No false calm after a macOS update changes a kept field: the filter writes it as null,
+    // and the status, `immune matches` and its text for a person say it no longer arrives,
+    // since the first line without it, instead of arriving since the first line that had it.
+    let dir = Dir::new("no-longer");
+    dir.install();
+    let name = "exec-20261004T000013-20261004T000000.jsonl";
+    dir.append(
+        name,
+        &(kept_with(1, &["ls"], KEPT_OBJECT)
+            + "\n"
+            + &kept_file_event(1, "create", "/usr/bin/touch", "/Users/example/a", None)),
+    );
+    dir.run_apart();
+    let l = &dir.status()["event_level"];
+    assert_eq!(l["no_longer_arriving"], json!([]), "{l:#}");
+    // A program start whose start time the filter wrote as null, a minute later.
+    let null = kept_with(2, &["ls"], KEPT_OBJECT)
+        .replace(
+            r#""start_time":"2026-10-04T00:00:01.900000Z","parent_audit_token""#,
+            r#""start_time":null,"parent_audit_token""#,
+        )
+        .replace("2026-10-04T00:00:02.000002Z", "2026-10-04T00:01:02Z");
+    assert!(null.contains(r#""start_time":null"#));
+    dir.append(name, &(null + "\n"));
+    dir.run_apart();
+    let l = &dir.status()["event_level"];
+    let since = json!([{"name": "identity", "since": "2026-10-04T00:01:02Z"}]);
+    assert_eq!(l["no_longer_arriving"], since, "{l:#}");
+    assert_eq!(
+        l["arriving"],
+        json!([{"name": "signature", "since": "2026-10-04T00:00:03Z"}])
+    );
+    let root = dir.root().display().to_string();
+    let c = &dir.contract(&["matches", "--system-root", &root])["collector"];
+    assert_eq!(
+        c["no_longer_arriving"],
+        json!([{"name": "identity", "since": 1791072062}]),
+        "{c:#}"
+    );
+    let text = dir.immune(&["matches", "--system-root", &root]);
+    assert!(
+        text.contains("no longer arriving: identity since "),
+        "{text}"
+    );
+}
+
+#[test]
 fn no_rule_for_files_watches_until_the_collector_here_is_established_to_record_file_events() {
     // No false calm. The rules for files created and renamed count as watching only when the
     // install's record of what the collector records names both kinds and is no older than
@@ -3598,12 +3659,7 @@ fn tidy_plist(dir: &Dir, name: &str, cap: &str) -> PathBuf {
         &path,
     )
     .unwrap();
-    let out = Command::new("/usr/bin/plutil")
-        .args(["-replace", "ProgramArguments.3", "-string", cap])
-        .arg(&path)
-        .output()
-        .unwrap();
-    assert!(out.status.success());
+    with_cap(&path, cap);
     path
 }
 
@@ -3693,6 +3749,7 @@ fn a_cap_given_at_install_reaches_the_tidy_job_as_bytes() {
     let written = tidy_args(&plist);
     assert_eq!(written[3], "3221225472");
     assert_eq!(written[..3], shipped[..3]);
+    assert_eq!(written.len(), 4, "{written:?}");
     // A given cap wins over the one installed.
     let installed = tidy_plist(&dir, "installed.plist", "5368709120");
     let (_, out, _) = cap_code(&format!("cap_of 3 '{}' /nonexistent", installed.display()));
@@ -3706,6 +3763,140 @@ fn a_cap_given_at_install_reaches_the_tidy_job_as_bytes() {
     let started = at("step /bin/launchctl bootstrap system");
     assert!(placed < capped && capped < started);
     assert!(install.contains("TIDY=\"$DAEMONS/ai.nuanu.immune.event-tidy.plist\""));
+}
+
+#[test]
+fn the_ten_minute_job_the_install_installs_runs_the_retention_with_the_cap_the_install_states() {
+    // After the install's cap step the tidy job's launch daemon gives tidy.sh exactly its log
+    // folder and the cap the install stated, and its command line, run as launchd runs it,
+    // deletes over that cap with no usage error. An earlier install wrote the cap with
+    // `plutil -replace ProgramArguments.3`, which on macOS 26 inserts and keeps the old cap: a
+    // fifth argument, and tidy.sh stopped on its usage every ten minutes, while rotated.sh,
+    // which reads only the fourth, kept the log under its cap. Installing again over such a
+    // launch daemon keeps the cap it states and comes out right.
+    let dir = Dir::new("tidy-job");
+    let template = Path::new(SCRIPTS).join("ai.nuanu.immune.event-tidy.plist");
+    let shipped = tidy_args(&template);
+    let fresh = dir.0.join("fresh.plist");
+    std::fs::copy(&template, &fresh).unwrap();
+    let broken = dir.0.join("five.plist");
+    std::fs::copy(&template, &broken).unwrap();
+    let mut five = shipped[..3].to_vec();
+    five.extend([GIB.to_string(), CAP.to_string()]);
+    let out = Command::new("/usr/bin/plutil")
+        .args(["-replace", "ProgramArguments", "-json"])
+        .arg(serde_json::to_string(&five).unwrap())
+        .arg(&broken)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    for (plist, given, stated) in [
+        (&fresh, "--log-gib 1", "1073741824 given"),
+        (&broken, "", "1073741824 kept"),
+    ] {
+        let (code, out, err) = cap_code(&format!(
+            "parse_args {given} && capped=$(cap_of \"$given\" '{p}' '{t}') && echo \"$capped\" && write_cap \"${{capped% *}}\" '{p}'",
+            p = plist.display(),
+            t = template.display(),
+        ));
+        assert_eq!((code, out.trim(), err.as_str()), (0, stated, ""));
+        let args = tidy_args(plist);
+        let mut want = shipped[..3].to_vec();
+        want.push(GIB.to_string());
+        assert_eq!(args, want);
+        // The job's command line as launchd runs it, its folders moved into the test's own.
+        let log = dir.0.join("log");
+        std::fs::create_dir_all(&log).unwrap();
+        aged(
+            &log,
+            "exec-20261004T010000-20261004T010000.jsonl",
+            GIB * 6 / 10,
+            2,
+        );
+        aged(
+            &log,
+            "exec-20261004T010000-20261004T020000.jsonl",
+            GIB * 6 / 10,
+            1,
+        );
+        let moved: Vec<String> = args
+            .iter()
+            .map(|a| a.replace(&format!("{LIB}/tidy.sh"), &format!("{SCRIPTS}/tidy.sh")))
+            .map(|a| a.replace(&format!("{LIB}/log"), &log.display().to_string()))
+            .collect();
+        let from = now_secs();
+        let ran = Command::new(&moved[0])
+            .env_clear()
+            .env("PATH", "/nonexistent")
+            .args(&moved[1..])
+            .output()
+            .unwrap();
+        assert!(
+            ran.status.success() && ran.stderr.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        assert_eq!(
+            notes(&log, from),
+            [format!(
+                "exec-20261004T010000-20261004T010000.jsonl {} cap",
+                GIB * 6 / 10
+            )]
+        );
+        std::fs::remove_dir_all(&log).unwrap();
+    }
+    // What is written is read back, whatever plutil did, and only the three arguments the job
+    // ships with and the cap, with no fifth, pass.
+    let set = |name: &str, args: &[&str]| {
+        let path = dir.0.join(name);
+        std::fs::copy(&template, &path).unwrap();
+        let out = Command::new("/usr/bin/plutil")
+            .args(["-replace", "ProgramArguments", "-json"])
+            .arg(serde_json::to_string(args).unwrap())
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        path
+    };
+    let [sh, job, folder] = [&shipped[0], &shipped[1], &shipped[2]].map(String::as_str);
+    let written = |cap: &str, args: &[&str]| {
+        let path = set("written.plist", args);
+        cap_code(&format!(
+            "cap_written {cap} '{}' '{sh}' '{job}' '{folder}'",
+            path.display()
+        ))
+        .0
+    };
+    let gib = GIB.to_string();
+    assert_eq!(written(&gib, &[sh, job, folder, &gib]), 0);
+    for args in [
+        vec![sh, job, folder, &gib, CAP],
+        vec![sh, job, folder, CAP],
+        vec![sh, job, folder],
+        vec![job, job, folder, &gib],
+        vec![sh, sh, folder, &gib],
+        vec![sh, job, job, &gib],
+    ] {
+        assert_eq!(written(&gib, &args), 1, "{args:?}");
+    }
+    let install = std::fs::read_to_string(Path::new(SCRIPTS).join("install")).unwrap();
+    assert!(install.contains(
+        "    cap_written \"$1\" \"$2\" \"$3\" \"$4\" \"$5\" || {\n        echo \"install: the tidy job's arguments"
+    ));
+    // A launch daemon whose arguments are not the three it ships with, or hold what a JSON
+    // list would read otherwise, is refused, with why, and left as it was.
+    for args in [
+        vec!["/bin/sh"],
+        vec![sh, job, r#"/Library/a"b"#, CAP],
+        vec![sh, r"/Library/a\b", folder, CAP],
+    ] {
+        let odd = set("odd.plist", &args);
+        let (code, _, err) = cap_code(&format!("write_cap {CAP} '{}'", odd.display()));
+        assert_eq!(code, 1, "{args:?}");
+        assert!(err.contains("are not what it ships with"), "{err}");
+        assert_eq!(tidy_args(&odd), args);
+    }
 }
 
 #[test]

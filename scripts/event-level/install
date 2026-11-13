@@ -111,9 +111,38 @@ cap_of() {
         return 1
     echo "$default default"
 }
-# Writes a cap in bytes into a tidy job's launch daemon.
+# Writes a cap in bytes into a tidy job's launch daemon: its arguments become exactly the first
+# three it holds and the cap, four strings, which tidy.sh takes and nothing more. The whole list
+# is written at once, because what plutil does to one index of a list differs: on macOS 26
+# `-replace ProgramArguments.3` inserts a fifth string before the old cap and keeps it, and
+# tidy.sh then stops on its usage every ten minutes. What was written is read back
+# (`cap_written`), and anything but those four strings fails the step with the reason.
 write_cap() {
-    /usr/bin/plutil -replace ProgramArguments.3 -string "$1" "$2"
+    set -- "$1" "$2" "$(/usr/bin/plutil -extract ProgramArguments.0 raw -o - "$2")" \
+        "$(/usr/bin/plutil -extract ProgramArguments.1 raw -o - "$2")" \
+        "$(/usr/bin/plutil -extract ProgramArguments.2 raw -o - "$2")"
+    for a in "$3" "$4" "$5" "$1"; do
+        case $a in
+        '' | *'"'* | *\\*)
+            echo "install: the tidy job's arguments in $2 are not what it ships with" >&2
+            return 1
+            ;;
+        esac
+    done
+    /usr/bin/plutil -replace ProgramArguments -json "[\"$3\",\"$4\",\"$5\",\"$1\"]" "$2" || return 1
+    cap_written "$1" "$2" "$3" "$4" "$5" || {
+        echo "install: the tidy job's arguments in $2 did not come out as its three and the cap $1" >&2
+        return 1
+    }
+}
+# Whether a tidy job's launch daemon gives exactly these arguments, the three before the cap and
+# the cap, and no fifth: `cap_written <cap> <plist> <first> <second> <third>`.
+cap_written() {
+    [ "$(/usr/bin/plutil -extract ProgramArguments.0 raw -o - "$2")" = "$3" ] &&
+        [ "$(/usr/bin/plutil -extract ProgramArguments.1 raw -o - "$2")" = "$4" ] &&
+        [ "$(/usr/bin/plutil -extract ProgramArguments.2 raw -o - "$2")" = "$5" ] &&
+        [ "$(/usr/bin/plutil -extract ProgramArguments.3 raw -o - "$2")" = "$1" ] &&
+        ! /usr/bin/plutil -extract ProgramArguments.4 raw -o - "$2" >/dev/null 2>&1
 }
 # A cap in a person's words: whole GiB when it is, else bytes.
 cap_words() {
