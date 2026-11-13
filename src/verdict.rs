@@ -905,7 +905,7 @@ fn checked_match(
             whole(position)
         )));
     };
-    let hit = match events::at_line(&args.system_root, &at) {
+    let hit = match events::at_line(&args.system_root, &at, crate::now_secs()) {
         Ok(AtLine::Event(hit)) => hit,
         Ok(AtLine::NoLine) => {
             return Err(no_match(format!(

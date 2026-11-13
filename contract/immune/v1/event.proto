@@ -52,8 +52,9 @@ message Event {
 }
 
 // A process, as far as the collector keeps it. Only `executable_text` is always there; the rest
-// is absent where the event does not give it. Nothing here identifies a process beyond its pid,
-// which is reused once the process ends.
+// is absent where the event does not give it. A pid is reused once the process ends; with its
+// `pid_version` and when it started, `started_at`, it names one process. A collector installed
+// before it kept these gives neither.
 message Process {
   // Its program, the path of its executable. Whole.
   string executable_text = 1;
@@ -64,6 +65,21 @@ message Process {
   optional string signing_id_text = 4;
   optional string team_id_text = 5;
   optional bool platform_binary = 6;
+  // The pid's version, `pidversion` in its audit token, given as an object or as the eight
+  // words of `audit_token_t`.
+  optional int64 pid_version = 7;
+  // When it started, from eslogger's `start_time`: seconds since the epoch and the nanoseconds
+  // within that second. Absent when the log's time is not in the form eslogger writes.
+  optional int64 started_at = 8;
+  optional uint32 started_nanos = 9;
+  // Its code-signing flags, eslogger's `codesigning_flags`, as the kernel's `CS_*` bits.
+  optional uint32 codesigning_flags = 10;
+}
+
+// Who a process is, without its program: the pid and the pid's version of an audit token.
+message Identity {
+  optional int64 pid = 1;
+  optional int64 pid_version = 2;
 }
 
 // A program started: an `exec` message from Apple's `eslogger`, as the collector keeps it. The
@@ -74,13 +90,14 @@ message ProgramStart {
   // writes.
   optional int64 happened_at = 1;
   optional uint32 happened_nanos = 2;
-  // The process with the program started, `event.exec.target`: its executable, pid, user id and
-  // signature.
+  // The process with the program started, `event.exec.target`: its executable, pid, user id,
+  // signature, pid version, start time and code-signing flags.
   Process process = 3;
-  // The same process before this `exec`, `process` in eslogger's message: today only its
-  // program, `process.executable.path`. After a fork or `posix_spawn` that is the parent's
-  // program; after an `exec` without a fork it is a wrapper that replaced itself, such as `nohup`
-  // or `env`. Absent when the log does not give it.
+  // The same process before this `exec`, `process` in eslogger's message: its program,
+  // `process.executable.path`, and its pid, pid version, start time and code-signing flags.
+  // After a fork or `posix_spawn` that program is the parent's; after an `exec` without a fork
+  // it is a wrapper that replaced itself, such as `nohup` or `env`. Absent when the log does not
+  // give its program.
   Process instigator = 4;
   // `event.exec.target.ppid`.
   optional int64 parent_pid = 5;
@@ -88,6 +105,12 @@ message ProgramStart {
   repeated string args_text = 6;
   // `event.exec.cwd.path`.
   optional string working_directory_text = 7;
+  // The parent, `event.exec.target.parent_audit_token`. Absent when the log does not give its
+  // pid.
+  Identity parent = 8;
+  // The script the program runs, `event.exec.script.path`, when the start is of an interpreter
+  // that runs a script file.
+  optional string script_text = 9;
 }
 
 // A file created or renamed: a `create` or `rename` message from `eslogger`, as the collector
@@ -101,8 +124,8 @@ message FileEvent {
   string path_text = 4;
   // Where a renamed file was. Absent for a file created.
   optional string source_text = 5;
-  // The process that did it, `process` in eslogger's message: today only its program,
-  // `process.executable.path`.
+  // The process that did it, `process` in eslogger's message: its program,
+  // `process.executable.path`, its pid, pid version and start time, and its `signing_id`.
   Process instigator = 6;
 }
 

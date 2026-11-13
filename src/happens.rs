@@ -1142,6 +1142,8 @@ detection:
             starts_by_hour: Series::default(),
             starts_by_minute: Series::default(),
             files: crate::events::Files::default(),
+            arrivals: Default::default(),
+            cap: None,
         }
     }
 

@@ -269,6 +269,7 @@ fn rule_events(
                     signing_id: r.get(8)?,
                     team_id: r.get(9)?,
                     platform_binary: r.get(10)?,
+                    ..ProcessStart::default()
                 }))
             })?
             .collect::<rusqlite::Result<_>>()?,
@@ -291,6 +292,7 @@ fn rule_events(
                     path: r.get(2)?,
                     source: r.get(3)?,
                     executable: r.get(4)?,
+                    ..FileEvent::default()
                 }))
             })?
             .collect::<rusqlite::Result<_>>()?,

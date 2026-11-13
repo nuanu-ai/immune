@@ -12179,7 +12179,9 @@ fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_wh
     };
     assert_eq!(
         row(&pages[0].1),
-        "Every program start, with its command line</span><span class=\"num\">on, 1 in the last day</span>"
+        // Installed before file events, the collector keeps none of what a later one keeps,
+        // and the row says that it needs to be installed again.
+        "Every program start, with its command line</span><span class=\"num\">on, 1 in the last day</span><span class=\"note\">The collector installed here is an earlier one and does not keep who each process is, the script a program start runs and code-signing details; installing the event level again adds them.</span>"
     );
     let again = dd.replace("\"dd\",\"if=/dev/zero\"", "\"dd\",\"if=a\"");
     put(
@@ -12191,7 +12193,7 @@ fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_wh
     w.run();
     assert_eq!(
         row(&view_pages(&w.store())[0].1),
-        "Every program start, with its command line</span><span class=\"num\">on, 2 in the last day</span><span class=\"note\">The collector restarted once; program starts in that moment were not seen.</span>"
+        "Every program start, with its command line</span><span class=\"num\">on, 2 in the last day</span><span class=\"note\">The collector restarted once; program starts in that moment were not seen.</span><span class=\"note\">The collector installed here is an earlier one and does not keep who each process is, the script a program start runs and code-signing details; installing the event level again adds them.</span>"
     );
 
     // Installed again, the collector records file events and says so: every rule checked in
@@ -12302,9 +12304,13 @@ fn as_it_happens_draws_the_day_the_status_counts_and_a_published_rule_finding_wh
     assert_eq!(e["program_starts"]["last_day"], 4);
     assert_eq!(counts[23], 4, "{counts:?}");
     assert_eq!(e["program_starts_by_hour"]["ends_at"], r["generated_at"]);
+    // These lines are an earlier collector's, without who each process is: the level says so.
     assert_eq!(
-        e["in_words"],
-        serde_json::json!({ "state": "on", "notes": [], "caveats": [] })
+        (&e["in_words"]["state"], &e["in_words"]["caveats"]),
+        (
+            &serde_json::json!("on"),
+            &serde_json::json!([{"kind": "earlier_collector", "short": "reinstall needed"}])
+        )
     );
     let minutes: i64 = e["program_starts_by_minute"]["counts"]
         .as_array()

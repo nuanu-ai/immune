@@ -5,7 +5,7 @@ Without administrator rights Immune sees state: files, installed software, sampl
 It needs macOS 15 or later, because it uses `/usr/bin/jq`, and an administrator password once:
 
 ```sh
-sudo /bin/sh scripts/event-level/install
+sudo /bin/sh scripts/event-level/install      # or with --log-gib <n>, the log's cap in GiB
 sudo /bin/sh scripts/event-level/uninstall    # removes it, logs included
 ```
 
@@ -18,14 +18,14 @@ Three launch daemons, and nothing else:
 | Label | Runs | What it does |
 |---|---|---|
 | `ai.nuanu.immune.eslogger` | `/usr/bin/eslogger exec create rename` | Apple's Endpoint Security logger, subscribed to program starts and to files created and renamed. It writes into a FIFO |
-| `ai.nuanu.immune.event-filter` | `/bin/sh collect.sh` | Pipes the FIFO through `/usr/bin/jq` with `filter.jq`, which keeps only the fields Immune reads, into `/usr/sbin/rotatelogs`, which appends to one file per hour |
-| `ai.nuanu.immune.event-tidy` | `/bin/sh tidy.sh`, every ten minutes | Deletes old log files and keeps the log under its cap |
+| `ai.nuanu.immune.event-filter` | `/bin/sh collect.sh` | Pipes the FIFO through `/usr/bin/jq` with `filter.jq`, which keeps only the fields Immune reads, into `/usr/sbin/rotatelogs`, which starts a new log file at each hour and at 128 MiB and runs `rotated.sh`, and so `tidy.sh`, each time it does |
+| `ai.nuanu.immune.event-tidy` | `/bin/sh tidy.sh`, every ten minutes | Deletes old log files and keeps the log under its cap. Its launch daemon holds the cap |
 
-Only programs that macOS ships run as root, by absolute path. No compiled code of Immune's runs as root: the root side is a `jq` program and two short shell scripts, and Immune's own reader runs as the user, without rights. A security tool is a target itself, and code of its own running as root would be one more thing an attacker could aim at.
+Only programs that macOS ships run as root, by absolute path. No compiled code of Immune's runs as root: the root side is a `jq` program and three short shell scripts, and Immune's own reader runs as the user, without rights. A security tool is a target itself, and code of its own running as root would be one more thing an attacker could aim at.
 
-The installer copies the scripts into `/Library/Application Support/ai.nuanu.immune/event-level`, a folder only root can write. Before it writes anything it checks that `/`, `/Library`, `/Library/Application Support`, `/Library/LaunchDaemons` and its own folder can be changed by no account other than root, and stops if one can. Nothing is ever executed from a place the user's account can change. The collector acts on no process, file or connection: it only records.
+The installer copies the scripts into `/Library/Application Support/ai.nuanu.immune/event-level`, a folder only root can write. Before it writes anything it checks that `/`, `/Library`, `/Library/Application Support`, `/Library/LaunchDaemons` and its own folder can be changed by no account other than root, and stops if one can. Once it is installed, nothing is executed from a place the user's account can change. The installer itself runs as root whatever the checkout it is in holds, so run it from a checkout you trust. The collector acts on no process, file or connection: it only records.
 
-The installer is idempotent. Run again, it stops what it started, puts every file back and starts it again, keeping the logs. It ends with one line: `RESULT: RUNNING`, `RESULT: RUNNING IN PART` (program starts are recorded, and no file event came in the ten seconds it waited), `RESULT: REFUSED` (Full Disk Access is missing) or `RESULT: INSTALLED, NOT RECORDING YET`.
+The installer is idempotent. Run again, it stops what it started, puts every file back and starts it again, keeping the logs. It makes the folders and the pipe and sets who may read the log before it stops the collector that runs. If a step fails after that, it says what it left: the collector stopped, or partly started, so that nothing is recorded until the installer runs again and succeeds. Immune goes on showing the level as running for up to 15 minutes after the last line was written, and then says it is silent. It ends with one line: `RESULT: RUNNING`, `RESULT: RUNNING IN PART` (program starts are recorded, and no file event came in the ten seconds it waited), `RESULT: REFUSED` (Full Disk Access is missing) or `RESULT: INSTALLED, NOT RECORDING YET`.
 
 ## What is recorded, and what never is
 
@@ -35,19 +35,26 @@ For a program start (`exec`):
 
 - `schema_version`, `version`, `seq_num`, `global_seq_num` and `time`;
 - the program started (`event.exec.target.executable.path`), its arguments (`event.exec.args`) and its working directory;
-- its pid and effective user id from `audit_token`, its parent's pid (`ppid`);
-- who signed it: `signing_id`, `team_id`, `is_platform_binary`;
-- the image the process ran before the `exec` (`process.executable.path`), which Immune uses as the parent program.
+- its pid, effective user id and pid version (`pidversion`) from `audit_token`, its real user (`ruid`) and its effective and real groups (`egid`, `rgid`), and when it started (`start_time`);
+- its parent's pid (`ppid`), and the parent's pid and pid version from `parent_audit_token`;
+- the pid and pid version of the process macOS holds responsible for it (`responsible_audit_token`), and its process group (`group_id`);
+- who signed it: `signing_id`, `team_id`, `is_platform_binary`, and its code-signing flags (`codesigning_flags`);
+- the script it runs, `event.exec.script.path`, when the program is an interpreter started on a script file;
+- the image the process ran before the `exec` (`process.executable.path`), which Immune uses as the parent program, with that process's pid, pid version, users and groups, its start time, and who signed it: `signing_id`, `team_id`, `is_platform_binary` and `codesigning_flags`.
 
 For a file created or renamed (`create`, `rename`):
 
 - `schema_version`, `seq_num` and `time`;
-- the program that did it;
+- the program that did it, with its pid, pid version, users and groups, its start time, and who signed it: `signing_id`, `team_id`, `is_platform_binary` and `codesigning_flags`;
 - the file's path (`destination`), and for a rename its `source`.
 
-Never written: a program's environment, its file descriptors, the contents of any file. Not collected at all: files changed in place, closed or removed; `fork` and `exit`; connections, since `eslogger` has no network event.
+A pid is reused once its process ends. The pid with its version names one process for as long as the Mac runs, and the start time tells two apart across a restart. `eslogger` has written `audit_token` both as an object and as the eight words of `audit_token_t` (the pid is the sixth, the version the eighth); the filter keeps either.
 
-A file event the filter cannot make out, or whose path `eslogger` marks as truncated, is written as its kind with nothing in it, its numbers kept, so the reader counts it as unreadable and never as nothing. A line that is not a JSON object is dropped by `jq`, and the gap it leaves in the sequence numbers is counted as a loss.
+Every value the filter keeps goes through one of four helpers, each for one shape: a text, a whole number from 0 to 2^53 − 1 (which the reader holds exactly), true or false, or a list of texts. A value of any other shape is written as null. An audit token in another shape is null as a whole, and so is a list of arguments with one that is not text. When the field is one the reader needs, such as the started program's pid or its arguments, a null there fails the reading as a change of format, with the reason. No rule reads the pid or its version: the reader takes them, the start times, the script and the code-signing flags of the program started and of the process before the `exec`, and hands them to the response layer through `immune matches`. The users and groups, the responsible process, the process group and the rest of the signer of the process before an `exec` are on the log for rules Immune cannot evaluate yet (see [what published rules need](#what-published-rules-need-that-the-level-does-not-give)); the reader does not read them today.
+
+Never written: a program's environment, its file descriptors, the contents of any file. Under a field the filter keeps it writes only the keys it names, so nothing else reaches the disk under a kept name. Not collected at all: files changed in place, closed or removed; `fork` and `exit`; connections, since `eslogger` has no network event.
+
+A file event the filter cannot make out, or whose path `eslogger` marks as truncated, is written as its kind with nothing in it, its numbers kept, so the reader counts it as unreadable and never as nothing. A line `jq` cannot read as JSON, such as one with a lone UTF-16 surrogate (`\ud800`) or a raw control character in a string, and a line that is not an object or has no event, is written as the marker `{"unreadable":true}`. The reader counts the marker as a line that could not be read, and the number that message took in `eslogger`'s numbering is not counted again as a loss.
 
 ## Who can read the log
 
@@ -57,22 +64,27 @@ The log holds the arguments of every program started on the Mac, by every accoun
 
 ## The log's life and size
 
-- One file per hour, named by the hour in UTC: `exec-YYYYMMDDTHH.jsonl`. The name dates from when the log held program starts alone; file events go into the same files.
-- `rotatelogs` moves to the next hour's file without closing the pipe, so `eslogger` is never restarted to rotate, and its sequence numbers keep counting.
-- Every ten minutes `tidy.sh` deletes files not written to for a day, then the oldest files while the log is larger than 500 MiB (524,288,000 bytes), never the file being written. Between two runs the log can pass the cap by what ten minutes add, so it takes at most about 0.6 GB of disk.
-- Each deletion is a line in `removed`: when, the file's name, its size, and `age` or `cap`.
+- `rotatelogs` starts a new file at each hour and when the file reaches 128 MiB (`SEGMENT_MIB` in `collect.sh`). A file is named `exec-<run>-<start>.jsonl`, when this run of the filter began and when the file was started, both `YYYYMMDDTHHMMSS` in UTC. The first file of a run and each file started at the hour take the start of the hour; a file started at the size takes the current second. Two files started within the same second share a name, and `rotatelogs` appends to it, so a file passes 128 MiB by more than one write only when more than that arrives within one second. Because the run comes first, a filter started again never reopens a file of an earlier run, and names sort in the order files were written as long as the clock is not set back. No other file reuses a name or an inode. When a write to the log fails, as on a full disk, the writer, `rotatelogs`, empties the file being written and goes on in it; those lines are counted as lost and the day is partial, and they are not told apart from what the kernel dropped. The file then starts with the writer's own message, counted as a line that could not be read.
+- Files an earlier collector wrote, `exec-YYYYMMDDTHH.jsonl`, are read before any of these, as they were written before it, and deleted the same way.
+- `rotatelogs` moves to the next file without closing the pipe, so `eslogger` is never restarted to rotate, and its sequence numbers keep counting.
+- Each time `rotatelogs` starts a file it runs `rotated.sh`, which reads the cap from the tidy job's launch daemon with `plutil` and runs `tidy.sh`. The tidy job also runs it every ten minutes. `tidy.sh` deletes files not written to for a day, then, while the log is larger than its cap, the file written longest ago, never the one written last, which is the one being written. It goes by when each file was last written, so a clock set back does not change what it keeps. Two runs never delete at once: each first makes the folder `tidy.lock` in the log folder with `mkdir`, which only one can make, and removes it when it ends. A run that finds it held deletes nothing and ends without an error, since the run holding it brings the log under the cap and the next new file starts another. A lock older than ten minutes was left by a run that was killed, and is taken over.
+- So the log is never larger than its cap, plus the file being written (128 MiB, more only when more than that arrives within one second), plus what is written while `tidy.sh` runs. Heavy writing pushes older lines out before their day is over. Each such file is counted, and Immune then says the day is partial.
+- The cap is 2 GiB (2,147,483,648 bytes) unless the installer is given another with `--log-gib <n>`, a whole number of GiB from 1 to 1,048,576. A value that is not one is refused before anything is changed. Without the flag, installing again keeps the cap of the collector already installed when its tidy job holds a whole number of bytes of at least 1 GiB, and uses the default otherwise, so installing again never shrinks the log. The installer says which cap it installs and where it came from. The ceiling is for the shell's arithmetic: above 8,589,934,591 GiB the bytes would wrap.
+- The installer writes the cap in bytes into the tidy job's launch daemon, which belongs to root, and nothing else sets it. A cap that a program running as the user could shrink would let that program empty the log. `immune status --json` gives the cap installed as `event_level.log_cap_bytes`, read from that launch daemon with Apple's `plutil`; when it cannot be read, the number is null and `log_cap_reason` says why. Both are absent while no collector is installed.
+- Each deletion is a line in `removed`: when, the file's name, its size, and `age` or `cap`. Lines lost when a failed write empties the file being written are not deletions and are not in it.
+- `tidy.sh` refuses a cap that is not digits, has a leading zero, has more than 16 digits or is below 1 GiB, the smallest the installer writes, and deletes nothing to keep the log under it; the status reports a cap only in the form `tidy.sh` takes.
 - What `eslogger` and the scripts print goes to `eslogger.err` and `scripts.err`. These and `removed` are kept small: a file over 64 KiB is replaced by its last 16 KiB.
 
-The installer's estimate of the cost: about 600 bytes per program start and 350 per file event. A quiet Mac starting 2 programs and creating 20 files a second writes about 700 MB a day; a Mac building software, at 100 starts and 200 files a second, about 11 GB a day, more than the cap, so the oldest hours are deleted first and the log may hold only its last hour or so. The log is a buffer: Immune reads it every ten seconds while the app is open, and what is read is judged and counted.
+The installer's estimate of the cost: about 1,000 bytes per program start and 600 per file event. On invented events a program start takes 966 bytes against 6,482 in `eslogger`'s whole message, and a file event 491 to 553 against 2,404 to 2,838; who each process is and who signed it add about 490 bytes to a start and 230 to a file event. A quiet Mac starting 2 programs and creating 20 files a second writes about 1.2 GB a day, under the default cap, so the log holds its day. A Mac building software, at 100 starts and 200 files a second, writes about 790 MB an hour, so a 128 MiB file lasts about ten minutes. With the default cap the log then holds between about 2.5 and 2.9 hours: right after `tidy.sh` runs it holds the cap less at most the file it just deleted, and before the next new file it holds the cap and the file being written. It takes at most about 2.3 GB of disk, the cap plus the file being written. The installer works these out for the cap it installs. It never says the log holds more than a day, since lines are deleted after one, nor that it takes more disk than a day of the building Mac's writing and one file: with `--log-gib 24` it says the log holds its day and takes at most about 19.1 GB. The log is a buffer: Immune reads it every ten seconds while the app is open, and what is read is judged and counted.
 
 ## How Immune reads it
 
 Immune reads the log at every full check, and every 10 seconds while `immune watch` runs (`--events-every`). A reading that finds nothing new costs a look at the log's files and one row.
 
-- Only a file named exactly as `rotatelogs` names a log file, `exec-YYYYMMDDTHH.jsonl` with an hour of a date, is read. Any other file in the folder is not the collector's and is never read; `immune matches` counts them.
+- Only a file named exactly as a collector names a log file, `exec-<run>-<start>.jsonl` with two seconds of a date or an earlier collector's `exec-YYYYMMDDTHH.jsonl` with an hour of a date, is read. Files are read in the order their names give: an earlier collector's by the hour first, then by run and by start. Any other file in the folder is not the collector's and is never read; `immune matches` counts them.
 - Lines are read whole, from where the last reading stopped in each file, by the file's name and inode. A line still being written is left for the next reading. A file that is gone is forgotten; one with the same name and a new inode is read from its start.
-- A file's hour is over once a file of a later hour has been written to at or after the time the file was last written to. A line without its newline at the end of such a file is never finished, as when a line is split between two hourly files, and is counted as unreadable and skipped. The end of a file whose hour is not over is left for the next reading. That includes a file of an earlier hour written to again after a clock set ahead was put back.
-- A line that is not a JSON object is counted as unreadable and skipped.
+- A file is over once a file later in that order has been written to at or after the time the file was last written to. A line without its newline at the end of such a file is never finished, as when a line is split between two files, and is counted as unreadable and skipped. The end of a file that is not over is left for the next reading. That includes an earlier file written to again after a clock set ahead was put back.
+- A line that is not a JSON object, and the filter's marker, are counted as unreadable and skipped.
 - A message with an unknown `schema_version`, or without a field the reader needs, means the format changed. The reading fails with the reason and nothing is taken as read, so a build that knows the new format reads the same lines. Today `schema_version` 1 is known. The message `version` alone fails nothing: Apple raises it with macOS releases as it adds fields.
 
 The store keeps no event. It keeps where each file was read up to, counts per reading for two days, the level's state, coverage (one row, replaced at every reading), and per rule how many starts or file events matched, by the hour, for a week. For every match of a rule marked high or critical it keeps which finding the match went to, by the line's file, inode and offset, until the file is no longer there; `immune matches` reads it. The one place arguments enter the store is the evidence of a finding from a published rule: the latest five program starts it matched, or the latest five file events with the file and the program. The environment never does.
@@ -86,9 +98,10 @@ Every loss is counted, and a loss of unknown size is never counted as zero.
 - Endpoint Security drops events for a client that cannot keep up. `seq_num` counts each event type per client, so a gap in it is that many events lost. Immune counts program starts and file events apart.
 - A sequence number at or below the last one means `eslogger` started again: after a crash, a reboot or a broken pipe. What was lost across a restart is a gap of unknown size, counted as one.
 - Files deleted to stay under the cap held lines younger than a day. Files deleted before Immune read them to their end held lines it never read. Both are counted from `removed`.
-- Unreadable lines and unreadable file events are counted.
+- When a write to the log fails, as on a full disk, the writer, `rotatelogs`, empties the file being written and goes on in it; those lines are counted as lost and the day is partial, and they are not told apart from what the kernel dropped.
+- Unreadable lines and unreadable file events are counted. A marker of the filter stands for a message whose number is missing from the numbering: the next gap takes it in, so it is counted once, as unreadable. A marker does not say which kind its message was, so the gap it is taken from may be the other kind's; the two kinds' losses may then trade one, and their sum is right.
 
-Coverage of program starts is judged over the last day. After any loss, unreadable line, or hour deleted early or unread, it is partial. The status gives each of these as a caveat with its count: `restarts`, `lost`, `unreadable`, `deleted_early`, `deleted_unread`.
+Coverage of program starts is judged over the last day. After any loss, unreadable line, or log file deleted early or unread, it is partial. The status gives each of these as a caveat with its count: `restarts`, `lost`, `unreadable`, `deleted_early`, `deleted_unread`.
 
 ## The states it reports
 
@@ -104,6 +117,16 @@ Coverage of program starts is judged over the last day. After any loss, unreadab
 | `failed` | The reading itself failed, with its reason |
 
 File events count as collected only when the installer's record of the collector's arguments, `collects`, names `create` and `rename` and is not older than the installed launch daemon. A collector installed before file events existed writes a log with none in it, which would read the same as a Mac where no file was created. Until the record says otherwise, the five file rules are listed as not watching, with the reason, and `event_level.file_events.collected` is false.
+
+What the filter keeps beyond the first collector's fields comes in three groups: `identity` (who each process is), `script` (the script a program start runs) and `signature` (code-signing details). Whether the collector keeps one is decided by what its lines carry, and no record is kept of it. Each group is marked in each kind of line by one key: `event.exec.target.start_time`, `event.exec.script` and `event.exec.target.codesigning_flags` in a program start; `process.start_time` and `process.signing_id` in a file event. The last is the field a rule reads. For each kind the reader keeps one of three states, from the lines it has read:
+
+- not kept: the latest line of the kind lacks the key, so an earlier collector wrote it;
+- kept, never filled: lines carry the key, and none since the key appeared has given it a value;
+- arriving: a line has given it a value, with that line's time.
+
+A group arrives only when it arrives in each kind that marks it, since the later of the two. Before any line of a kind is read, the group is not yet known. `immune status --json` serves the groups in four lists, `event_level.not_kept`, `kept_never_filled`, `not_yet_known` and `arriving`, the last with the time each began. `immune matches` gives the same in `collector`, with the place it reads on from. While the level runs and a group is not kept, `in_words` says that the collector installed here is an earlier one, names what it does not keep and says that installing the event level again adds it, with the caveat `earlier_collector`. An earlier install wrote a record, `keeps`; the installer removes it.
+
+Lines an earlier collector wrote are read as before. A rule that reads a field of a group watches only while the group arrives. Otherwise it is listed under `rules.not_watching` with the reason `collector_does_not_keep`, `kept_never_filled` or `not_yet_known`, and the groups in `not_arriving`, and is not counted in `watching_rules` or `watching_file_rules`. The rules page says it is not watching, and which, instead of saying it found nothing, and `immune matches` lists the rule in `unevaluated` as `not_collected` with the fields it reads and which state in `detail_text`. Today one field of Elastic's needs a group, `process.code_signature.signing_id` on a file event, and no shipped rule reads it, so this silences none of the shipped rules. A line is judged by what it carries itself, so an older line read after a reinstall is still not given to such a rule.
 
 The status also serves the last day's starts by the hour (`program_starts_by_hour`), the last hour by the minute (`program_starts_by_minute`), and the state in words with its caveats (`in_words`). Rules are said to watch only while the state is `running`.
 
@@ -141,6 +164,7 @@ Elastic's translated rules read the Elastic Common Schema's names, filled from t
 | `user.id` | the effective user id, as text |
 | `event.type`, `event.action` | `start` and `exec` for a program start; `creation` for both on a file created, `change` and `rename` for one renamed |
 | `file.path`, `file.name`, `file.extension` | the file created or a rename's destination, its last part, and what follows the last dot of that |
+| `process.code_signature.signing_id` | on a file event, the `signing_id` of the program that did it. On a program start it is not given: no translated rule reads it there, and the field is kept for the response layer |
 
 Every text is also given folded, one character at a time as `sigma-rust` folds, under `immune.folded.` and its name: a translated regular expression that ignores case reads that field, since Sigma's `re` keeps case. Elastic's rules see a path only as Endpoint Security gives it, with no second name through the links into `/private`: the translation was checked that way, and Elastic's rules write `/private/...` where they mean it. A rule's set decides which of these it gets, the short name or the folded copies, through the set's schema in `src/sigma.rs`. `tests/elastic/samples.jsonl` keeps 396 of the translator's invented events with the rules the reference said each matches, three that match and three near misses for every translated rule, and a test holds Immune's evaluation of them to exactly those rules. `tests/elastic-behaviour/samples.jsonl` keeps 341 for the behaviour rules in the same way; one rule matches only 2 of the events made for it, and both are kept.
 
@@ -165,8 +189,8 @@ What a match does:
 Counted over SigmaHQ at `d7c9da1`, `elastic/detection-rules` at `032ac5e` and `elastic/protections-artifacts` at `a87715d`, for macOS:
 
 - Connections. `eslogger` has no network event. No Sigma rule for macOS needs one. Of Elastic's 185 detection rules for macOS, 19 of the 145 written in EQL involve the network; of its 278 behaviour rules, 38 do. Seeing every connection needs a network extension signed with Apple's permission.
-- A process identity that survives a reused pid (Elastic's `entity_id`), required by 125 of Elastic's rules, mostly as the key of a sequence.
-- Whether a signature is trusted (`code_signature.trusted`), which `eslogger` does not give. The signer itself is recorded.
+- A process identity that survives a reused pid (Elastic's `entity_id`), required by 125 of Elastic's rules, mostly as the key of a sequence. The collector keeps what tells processes apart, the pid with its version and the start time, but Immune evaluates no sequence and gives no rule an `entity_id`.
+- Whether a signature is trusted (`code_signature.trusted`), which `eslogger` does not give. The signer and the code-signing flags are recorded. The three of Elastic's rules for macOS that read `code_signature.signing_id` also read `code_signature.trusted`, so keeping the signer of a file event's program opens none of them.
 - `fork`, required by 5 of Elastic's behaviour rules.
 - Files changed in place, closed or removed.
 - Correlations and sequences: `sigma-rust` does not evaluate Sigma correlations, and the shipped Sigma rules have none.
@@ -179,6 +203,25 @@ No rule in these sets reads the end of a process or a connection's byte count. I
 - 2 hold a backslash in a wildcard pattern, whose meaning in Elasticsearch is not documented, and 1 is about program starts and file events at once.
 
 Of Elastic's 278 behaviour rules for macOS, 221 are not taken: 109 correlate a sequence of events, 42 are about events the collector does not record and 61 cannot do without a field it does not give, 4 could never be true over the events here, 1 needs a regular expression in EQL's syntax, 2 use a function of EQL's that is not translated, 1 compares one field with another and 1 is about program starts and file events at once.
+
+The fields those 23 wait for, with how many of them name each, and what the log holds toward it. A rule can name more than one.
+
+| Field | Rules | What the log holds |
+|---|---|---|
+| `process.Ext.effective_parent.executable` | 6 | `responsible_audit_token` of the process started. Its program is on the responsible process's own `exec` line, if that is in the log. That Elastic's effective parent is macOS's responsible process is not documented |
+| `process.parent.args` | 6 | the parent's pid and pid version; its arguments are on the parent's own `exec` line, if that is in the log |
+| `process.parent.command_line` | 6 | the same |
+| `process.code_signature.trusted` | 3 | nothing: `eslogger` gives no verdict on the certificate chain, and the code-signing flags say whether the code is signed and valid, not whether its signer is trusted |
+| `process.parent.code_signature.trusted` | 3 | the same |
+| `process.parent.code_signature.exists` | 3 | the signer and code-signing flags of the image before the `exec`; each of the 3 also reads `trusted` |
+| `process.code_signature.signing_id` | 2 | given, on file events; both also read `trusted` |
+| `process.code_signature.exists` | 1 | the code-signing flags of the program started; the rule also reads `trusted` |
+| `user.name` | 1 | the effective and real user ids; a name would be looked up when the log is read. The rule asks for `root`, uid 0 |
+| `event.outcome` | 1 | nothing to keep: `eslogger` reports a file created or renamed after it happened, so each is a success. The rule also reads files opened and modified, which the collector does not record |
+| `process.pe.original_file_name` | 1 | nothing: a field of Windows executables |
+| `process.env_vars` | 1 | nothing: the environment is never written |
+
+So no further field from these events would open one of the 23. Giving `user.name` from the user id, and `event.outcome` as `success`, would open 2 of them without collecting anything more.
 
 What the 66 translated rules rest on, beyond the checked translation:
 
@@ -201,5 +244,11 @@ Apple's manual page for `eslogger` says it "is NOT API in any sense". Its output
 ## Not yet seen
 
 - A whole day of collection on one Mac, and a real refusal of Full Disk Access after install.
-- Whether a line is split at the turn of an hour in practice.
+- Whether a line is split at the turn of a file in practice.
 - `eslogger`'s output on macOS 15.
+- An `exec` message whose `script` holds a file: the samples seen give it as null.
+- Whether an `exec` changes the process's pid version, and whether the start time of the process before the `exec` ever differs from the target's.
+- The names and shapes of the fields kept since this version, and the form of `start_time`, are taken from invented samples until the first install on a Mac. A field whose name or shape differs comes out null, and the three states above say so: it shows as kept and never filled, and no rule that reads it is said to watch.
+- Whether `eslogger` ever writes an escape `jq` cannot read, such as a lone surrogate for bytes of an argument that are not UTF-8. Such a line becomes the filter's marker and is counted.
+- A really full disk. When a write to the log fails, as on a full disk, the writer, `rotatelogs`, empties the file being written and goes on in it; those lines are counted as lost and the day is partial, and they are not told apart from what the kernel dropped. This was seen with a write made to fail on purpose, not on a full disk.
+- `rotatelogs` with a rotation time and a size together was tried on this version of macOS (Apache 2.4's `rotatelogs`), with `-p` running at each new file; it has not yet run a day on a Mac.

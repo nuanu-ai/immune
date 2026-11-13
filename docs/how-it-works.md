@@ -32,7 +32,7 @@ What Immune can see depends on the rights it runs with.
 | | Without administrator rights | Apple's `eslogger` as administrator | A signed app with Apple's Endpoint Security entitlement |
 |---|---|---|---|
 | Status | Built, the default | Built, optional (`scripts/event-level/install`) | Not built |
-| Collects | State: files, installed software, lockfiles, configuration; file-system events in watched places; samples of the user's processes and connections | Also every program start with its arguments, and every file created or renamed with the program that did it | Also every connection with its host name |
+| Collects | State: files, installed software, lockfiles, configuration; file-system events in watched places; samples of the user's processes and connections | Also every program start with its arguments, and every file created or renamed with the program that did it, each process named by its pid, pid version and start time | Also every connection with its host name |
 | Detects | Immune's own rules over state, exact matches of indicators and vulnerabilities | Also SigmaHQ's published rules for macOS and Elastic's translated into Sigma | All published rules for macOS |
 | Cannot see | The moment a program starts, its command line, who wrote a file | Connections. Apple does not promise `eslogger`'s output as an interface | |
 
@@ -238,6 +238,7 @@ Where the industry has a proven name, format or rule set, Immune takes it. Its o
 | An answer that hides a finding until an end date, with a reason | the industry's practice for alert exceptions |
 | Content judged by its checksum against what is already in force | file integrity monitoring baselines (Tripwire, OSSEC), allow-listing by hash (Santa, AppLocker), "first seen" state in detection rules |
 | Collector | Apple's `eslogger`, `jq` and `rotatelogs` |
+| Who a process is | Apple's audit token, the pid with its version, and the start time `eslogger` gives. The Elastic Common Schema leaves `process.entity_id`, an identifier that survives a reused pid, to each data source to build from what identifies a process; Immune hands over those parts as they are and builds no identifier of its own |
 | Reading on from a position the reader keeps | journald's cursors (`journalctl --after-cursor`) and the offsets a log broker's consumer commits |
 | Trusting a kept position in a file others write | git's index: an unchanged stat stands for unchanged content unless it was taken in the moment of a change ("racily clean"); otherwise the content is hashed and compared |
 | The kinds of a verdict | the words security schemas and sandboxes use: the verdict of OCSF's incident finding has Suspicious and Benign, and VirusTotal counts the engines' results as `suspicious` or `harmless` |

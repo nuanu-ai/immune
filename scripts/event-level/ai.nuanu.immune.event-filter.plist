@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- The event level's filter: /bin/sh runs collect.sh, which pipes the FIFO through Apple's
-     jq and rotatelogs into one log file per hour. Every file named here was copied by the installer
-     into a folder only root can write. launchd starts it again when it stops, no sooner than
+     jq and rotatelogs into the log, a new file at each hour and at 128 MiB; at each new file
+     rotatelogs runs rotated.sh, which runs tidy.sh. Every file named here was copied by the
+     installer into a folder only root can write. launchd starts it again when it stops, no sooner than
      ThrottleInterval seconds. -->
 <plist version="1.0">
 <dict>

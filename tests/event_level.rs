@@ -25,8 +25,10 @@ const LABELS: [&str; 3] = [
     "ai.nuanu.immune.event-filter",
     "ai.nuanu.immune.event-tidy",
 ];
-/// The most bytes of log the tidy job keeps, as its plist gives it: 500 MiB.
-const CAP: &str = "524288000";
+/// The most bytes of log the tidy job keeps, as its plist gives it by default: 2 GiB.
+const CAP: &str = "2147483648";
+/// The tidy job's launch daemon, under a system root.
+const TIDY: &str = "Library/LaunchDaemons/ai.nuanu.immune.event-tidy.plist";
 const CWD: &str = "/Users/example/dev/site";
 /// The started program's audit token as eslogger writes it on macOS 26, and as the eight words
 /// of `audit_token_t` some builds wrote: pid 402, effective user 501 in both.
@@ -74,8 +76,9 @@ impl Dir {
         assert!(out.status.success());
     }
 
-    /// Lays the system root out as an install before file events did: the launch daemon and
-    /// the log, no record of what it collects.
+    /// Lays the system root out as an install before file events did: the launch daemons of
+    /// eslogger and of the tidy job, with its default cap, and the log, no record of what it
+    /// collects.
     fn install_before_file_events(&self) {
         std::fs::create_dir_all(self.log()).unwrap();
         let plist = self.root().join(PLIST);
@@ -85,11 +88,17 @@ impl Dir {
             plist,
         )
         .unwrap();
+        std::fs::copy(
+            Path::new(SCRIPTS).join("ai.nuanu.immune.event-tidy.plist"),
+            self.root().join(TIDY),
+        )
+        .unwrap();
     }
 
     /// Removes everything an install laid out, logs included, as the uninstall does.
     fn uninstall(&self) {
         std::fs::remove_file(self.root().join(PLIST)).unwrap();
+        let _ = std::fs::remove_file(self.root().join(TIDY));
         std::fs::remove_dir_all(self.log()).unwrap();
     }
 
@@ -261,12 +270,29 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
-/// An `exec` line as the root side's filter writes it, with invented content: only what the
-/// reader uses, in the filter's order.
+/// An `exec` line as the root side's filter wrote it before it kept who each process is, with
+/// invented content: only what the reader used, in that filter's order. The reader reads such a
+/// line as it always did; a log an earlier collector wrote holds only these.
 fn projected_with(seq: u64, args: &[&str], token: &str) -> String {
     let args = serde_json::to_string(args).unwrap();
     format!(
         r#"{{"schema_version":1,"version":10,"seq_num":{seq},"global_seq_num":{seq},"time":"2026-10-04T00:00:02.000002Z","process":{{"executable":{{"path":"/bin/zsh"}}}},"event":{{"exec":{{"args":{args},"cwd":{{"path":"{CWD}"}},"target":{{"executable":{{"path":"/usr/bin/git"}},"audit_token":{token},"ppid":401,"signing_id":"com.apple.git","team_id":null,"is_platform_binary":true}}}}}}}}"#
+    )
+}
+
+/// The started program's audit token as the filter keeps it now, from an object: the pid, the
+/// effective user, the pid version, and the other users and groups.
+const KEPT_OBJECT: &str =
+    r#"{"pid":402,"pidversion":9402,"euid":501,"egid":20,"ruid":501,"rgid":20}"#;
+
+/// An `exec` line as the root side's filter writes it now, from `full`: who the process before
+/// the `exec` is and its signer, the script (none), who the program started is, its parent,
+/// the process responsible for it and its process group, and its code-signing flags, in the
+/// filter's order.
+fn kept_with(seq: u64, args: &[&str], token: &str) -> String {
+    let args = serde_json::to_string(args).unwrap();
+    format!(
+        r#"{{"schema_version":1,"version":10,"seq_num":{seq},"global_seq_num":{seq},"time":"2026-10-04T00:00:02.000002Z","process":{{"executable":{{"path":"/bin/zsh"}},"audit_token":{{"pid":401,"pidversion":9401,"euid":501,"egid":20,"ruid":501,"rgid":20}},"start_time":"2026-10-04T00:00:01.900000Z","signing_id":"com.apple.zsh","team_id":null,"is_platform_binary":true,"codesigning_flags":570522385}},"event":{{"exec":{{"args":{args},"cwd":{{"path":"{CWD}"}},"script":null,"target":{{"executable":{{"path":"/usr/bin/git"}},"audit_token":{token},"start_time":"2026-10-04T00:00:01.900000Z","parent_audit_token":{{"pid":401,"pidversion":9401}},"responsible_audit_token":{{"pid":300,"pidversion":9300}},"group_id":401,"ppid":401,"signing_id":"com.apple.git","team_id":null,"is_platform_binary":true,"codesigning_flags":570522385}}}}}}}}"#
     )
 }
 
@@ -365,19 +391,58 @@ fn files(dir: &Path) -> Vec<String> {
     names
 }
 
-/// Runs collect.sh as installed, with a FIFO and a log folder of its own and an environment
-/// with no PATH it could look a program up in, feeds it `lines` and returns what it wrote:
-/// one file, or two when the run crosses the UTC hour it rotates by, read in their order.
-fn collect(dir: &Dir, lines: &[String]) -> String {
-    let (fifo, log) = (dir.0.join("events.fifo"), dir.0.join("log"));
+/// The scripts the install copies into the folder the daemons run them from, each with the mode
+/// it gives it.
+const INSTALLED: [(&str, u32); 4] = [
+    ("collect.sh", 0o644),
+    ("filter.jq", 0o644),
+    ("tidy.sh", 0o644),
+    ("rotated.sh", 0o755),
+];
+
+/// Lays out a system root under `top` as the install lays out the collector's side: its scripts
+/// in their folder, the tidy job's launch daemon with `cap`, and the log folder. Returns the
+/// scripts' folder and the log folder.
+fn collector_at(top: &Path, cap: &str) -> (PathBuf, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let lib = top.join(LIB.trim_start_matches('/'));
+    let log = lib.join("log");
     std::fs::create_dir_all(&log).unwrap();
+    for (name, mode) in INSTALLED {
+        std::fs::copy(Path::new(SCRIPTS).join(name), lib.join(name)).unwrap();
+        std::fs::set_permissions(lib.join(name), std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+    let tidy = top.join(TIDY);
+    std::fs::create_dir_all(tidy.parent().unwrap()).unwrap();
+    std::fs::copy(
+        Path::new(SCRIPTS).join("ai.nuanu.immune.event-tidy.plist"),
+        &tidy,
+    )
+    .unwrap();
+    let out = Command::new("/usr/bin/plutil")
+        .args(["-replace", "ProgramArguments.3", "-string", cap])
+        .arg(&tidy)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    (lib, log)
+}
+
+/// Runs collect.sh as installed, from a system root of its own under `dir` with a FIFO and an
+/// environment with no PATH it could look a program up in, feeds it `lines` and returns what it
+/// wrote: one file, or two when the run crosses the UTC hour it rotates by, read in their
+/// order. It waits for what rotatelogs started at each new file too, since that prints where
+/// collect.sh prints.
+fn collect(dir: &Dir, lines: &[String]) -> String {
+    let (lib, log) = collector_at(&dir.0.join("collector"), CAP);
+    let fifo = dir.0.join("events.fifo");
     let made = Command::new("/usr/bin/mkfifo").arg(&fifo).status().unwrap();
     assert!(made.success());
     let child = Command::new("/bin/sh")
         .env_clear()
         .env("PATH", "/nonexistent")
-        .arg(Path::new(SCRIPTS).join("collect.sh"))
-        .arg(SCRIPTS)
+        .arg(lib.join("collect.sh"))
+        .arg(&lib)
         .arg(&fifo)
         .arg(&log)
         .stderr(Stdio::piped())
@@ -391,7 +456,7 @@ fn collect(dir: &Dir, lines: &[String]) -> String {
     drop(w);
     let out = child.wait_with_output().unwrap();
     assert!(
-        out.status.success(),
+        out.status.success() && out.stderr.is_empty(),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
@@ -399,9 +464,9 @@ fn collect(dir: &Dir, lines: &[String]) -> String {
     assert!(matches!(names.len(), 1 | 2), "{names:?}");
     let mut written = String::new();
     for name in &names {
-        // exec-YYYYMMDDTHH.jsonl: the hour, in the names the reader reads.
+        // exec-<run>-<start>.jsonl, each YYYYMMDDTHHMMSS: the names the reader reads.
         assert!(
-            name.starts_with("exec-") && name.ends_with(".jsonl") && name.len() == 22,
+            name.starts_with("exec-") && name.ends_with(".jsonl") && name.len() == 42,
             "{name}"
         );
         written.push_str(&std::fs::read_to_string(log.join(name)).unwrap());
@@ -416,8 +481,9 @@ fn only_what_the_reader_uses_reaches_the_disk_and_a_missing_field_stays_missing(
     // a line: the filter keeps an allowlist, the typed event's fields and the numbering, and
     // drops the rest before anything reaches a disk. A field eslogger did not give is written
     // as missing, never filled in, so the reader fails on it with its reason. A line that is
-    // not JSON does not stop the stream. collect.sh runs with no PATH: every program it starts
-    // is named by its path.
+    // not JSON, or not an object, does not stop the stream: it is written as the filter's
+    // marker, which the reader counts as unreadable. collect.sh runs with no PATH: every
+    // program it starts is named by its path.
     let dir = Dir::new("filter");
     let args = ["curl", "-H", "x: y"];
     let mut no_args = full(4, &["ls"], token(402));
@@ -441,11 +507,13 @@ fn only_what_the_reader_uses_reaches_the_disk_and_a_missing_field_stays_missing(
     ];
     let written = collect(&dir, &sent);
     let expected = [
-        projected_with(1, &args, OBJECT),
+        kept_with(1, &args, KEPT_OBJECT),
+        MARKER.to_string(),
         r#"{"schema_version":1,"version":10,"seq_num":1,"global_seq_num":5,"time":"2026-10-04T00:00:03Z","event":{"fork":{}}}"#.to_string(),
-        projected_with(2, &["ls"], LIST),
-        projected_with(3, &["ls"], OBJECT),
-        projected_with(4, &["ls"], OBJECT).replace(r#""args":["ls"]"#, r#""args":null"#),
+        MARKER.to_string(),
+        kept_with(2, &["ls"], LIST),
+        kept_with(3, &["ls"], KEPT_OBJECT),
+        kept_with(4, &["ls"], KEPT_OBJECT).replace(r#""args":["ls"]"#, r#""args":null"#),
     ];
     assert_eq!(written.lines().collect::<Vec<_>>(), expected, "{written}");
     for gone in [
@@ -461,11 +529,444 @@ fn only_what_the_reader_uses_reaches_the_disk_and_a_missing_field_stays_missing(
 }
 
 #[test]
-fn a_projected_line_costs_what_the_install_says_and_a_tenth_of_eslogger_s() {
+fn who_each_process_is_reaches_the_disk_in_either_shape_and_nothing_else_rides_under_its_names() {
+    // The filter keeps, beside each pid, its version and the start time, the parent's and the
+    // responsible process's pid and version, the users and groups, the process group, the
+    // script a start names, the signer of the process that acted and the code-signing flags,
+    // under eslogger's own names. It keeps them only as the numbers, texts and true or false
+    // eslogger writes: the eight words of audit_token_t as they are, the named numbers of an
+    // object, a script's path unless eslogger cut it short. Any other shape under those names is written as null, so neither
+    // the environment nor anything else can reach a disk through them, from a program start or
+    // from a file event.
+    let dir = Dir::new("identity-filter");
+    let secret = "INVENTED_SECRET_TOKEN=abc";
+    let list = |pid: u64| json!([501, 501, 20, 501, 20, pid, 100001, 9000 + pid]);
+    let mut lists = full(1, &["sh", "run.sh"], list(402));
+    lists["process"]["audit_token"] = list(401);
+    lists["event"]["exec"]["target"]["parent_audit_token"] = list(401);
+    lists["event"]["exec"]["target"]["responsible_audit_token"] = list(300);
+    lists["event"]["exec"]["script"] =
+        json!({"path": "/Users/example/run.sh", "path_truncated": false, "stat": stat(77, 12)});
+    let mut cut = full(2, &["sh", "run.sh"], token(402));
+    cut["event"]["exec"]["script"] = json!({"path": "/Users/example/ru", "path_truncated": true});
+    let mut odd = full(3, &["sh", "run.sh"], token(402));
+    odd["process"]["audit_token"] = json!({"pid": 401, "pidversion": 9401, "env": [secret]});
+    odd["process"]["start_time"] = json!({"env": [secret]});
+    odd["process"]["codesigning_flags"] = json!(secret);
+    odd["process"]["team_id"] = json!([secret]);
+    odd["process"]["is_platform_binary"] = json!(secret);
+    odd["event"]["exec"]["target"]["audit_token"]["egid"] = json!({"env": [secret]});
+    odd["event"]["exec"]["target"]["audit_token"]["ruid"] = json!(secret);
+    odd["event"]["exec"]["target"]["audit_token"]["rgid"] = json!([secret]);
+    odd["event"]["exec"]["target"]["responsible_audit_token"] = json!({"env": [secret]});
+    odd["event"]["exec"]["target"]["group_id"] = json!(secret);
+    odd["event"]["exec"]["target"]["parent_audit_token"] = json!([secret, 1, 2, 3, 4, 5, 6, 7]);
+    odd["event"]["exec"]["target"]["start_time"] = json!([secret]);
+    odd["event"]["exec"]["target"]["codesigning_flags"] = json!({"env": [secret]});
+    odd["event"]["exec"]["script"] = json!({"path": "/Users/example/run.sh", "env": [secret]});
+    let mut odd_file = whole_file_event(
+        1,
+        "create",
+        "/usr/bin/touch",
+        existing("/Users/example/a"),
+        None,
+    );
+    odd_file["process"]["audit_token"] = json!({"pid": {"env": [secret]}, "pidversion": 1});
+    odd_file["process"]["start_time"] = json!(7);
+    odd_file["process"]["signing_id"] = json!([secret]);
+    odd_file["process"]["audit_token"]["euid"] = json!(secret);
+    odd_file["process"]["audit_token"]["egid"] = json!(20);
+    odd_file["process"]["audit_token"]["ruid"] = json!([secret]);
+    odd_file["process"]["audit_token"]["rgid"] = json!({"env": [secret]});
+    odd_file["process"]["codesigning_flags"] = json!([secret]);
+    let mut list_file = whole_file_event(
+        2,
+        "create",
+        "/usr/bin/touch",
+        existing("/Users/example/b"),
+        None,
+    );
+    list_file["process"]["audit_token"] = list(402);
+    list_file["process"]["team_id"] = json!("EXAMPLETM1");
+    let mut short = full(4, &["sh", "run.sh"], token(402));
+    short["event"]["exec"]["target"]["parent_audit_token"] =
+        json!([501, 501, 20, 501, 20, 401, 9401]);
+    short["event"]["exec"]["script"] = json!(secret);
+    short["process"]["audit_token"] = json!(secret);
+    let sent: Vec<String> = [lists, cut, odd, odd_file, list_file, short]
+        .iter()
+        .map(Value::to_string)
+        .collect();
+    let written = collect(&dir, &sent);
+    let lines: Vec<Value> = written
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 6, "{written}");
+    let exec = |n: usize| (&lines[n]["process"], &lines[n]["event"]["exec"]);
+    let (before, e) = exec(0);
+    assert_eq!(before["audit_token"], list(401));
+    assert_eq!(e["target"]["audit_token"], list(402));
+    assert_eq!(e["target"]["parent_audit_token"], list(401));
+    assert_eq!(e["target"]["responsible_audit_token"], list(300));
+    assert_eq!(e["script"], json!({"path": "/Users/example/run.sh"}));
+    let (_, e) = exec(1);
+    assert_eq!(e["script"], Value::Null);
+    let (before, e) = exec(2);
+    assert_eq!(
+        before,
+        &json!({"executable": {"path": "/bin/zsh"}, "audit_token": {"pid": 401, "pidversion": 9401, "euid": null, "egid": null, "ruid": null, "rgid": null}, "start_time": null, "signing_id": "com.apple.zsh", "team_id": null, "is_platform_binary": null, "codesigning_flags": null})
+    );
+    let t = &e["target"];
+    assert_eq!(
+        t["audit_token"],
+        json!({"pid": 402, "pidversion": 9402, "euid": 501, "egid": null, "ruid": null, "rgid": null})
+    );
+    assert_eq!(
+        (
+            &t["parent_audit_token"],
+            &t["responsible_audit_token"],
+            &t["group_id"],
+            &t["start_time"],
+            &t["codesigning_flags"],
+            &e["script"]
+        ),
+        (
+            &Value::Null,
+            &json!({"pid": null, "pidversion": null}),
+            &Value::Null,
+            &Value::Null,
+            &Value::Null,
+            &json!({"path": "/Users/example/run.sh"})
+        )
+    );
+    assert_eq!(
+        lines[3]["process"],
+        json!({"executable": {"path": "/usr/bin/touch"}, "audit_token": {"pid": null, "pidversion": 1, "euid": null, "egid": 20, "ruid": null, "rgid": null}, "start_time": null, "signing_id": null, "team_id": null, "is_platform_binary": true, "codesigning_flags": null})
+    );
+    assert_eq!(lines[4]["process"]["audit_token"], list(402));
+    assert_eq!(lines[4]["process"]["team_id"], "EXAMPLETM1");
+    let (before, e) = exec(5);
+    assert_eq!(
+        (
+            &before["audit_token"],
+            &e["target"]["parent_audit_token"],
+            &e["script"]
+        ),
+        (&Value::Null, &Value::Null, &Value::Null)
+    );
+    assert!(!written.contains("INVENTED"), "{written}");
+    assert!(!written.contains("env"), "{written}");
+}
+
+/// The line the filter writes in place of one it could not read or shape.
+const MARKER: &str = r#"{"unreadable":true}"#;
+
+/// Runs the filter as collect.sh runs it, on `lines`, and returns the lines it wrote.
+fn filtered(lines: &[Vec<u8>]) -> Vec<String> {
+    let mut child = Command::new("/usr/bin/jq")
+        .env_clear()
+        .args(["--raw-input", "--compact-output", "--unbuffered", "-f"])
+        .arg(Path::new(SCRIPTS).join("filter.jq"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Fed from a thread of its own while its output is read, so neither pipe fills.
+    let mut input = child.stdin.take().unwrap();
+    let mut bytes = Vec::new();
+    for l in lines {
+        bytes.extend_from_slice(l);
+        bytes.push(b'\n');
+    }
+    let feeder = std::thread::spawn(move || input.write_all(&bytes).unwrap());
+    let out = child.wait_with_output().unwrap();
+    feeder.join().unwrap();
+    assert!(
+        out.status.success() && out.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+/// Every value the filter keeps of a program start, by its path in eslogger's message and in
+/// the line, which are the same, with the shape it keeps: a text, a whole number, true or
+/// false, or a list of texts. An audit token's numbers are the token's.
+const KEPT_EXEC: [(&str, &str); 37] = [
+    ("/schema_version", "whole"),
+    ("/version", "whole"),
+    ("/seq_num", "whole"),
+    ("/global_seq_num", "whole"),
+    ("/time", "text"),
+    ("/process/executable/path", "text"),
+    ("/process/audit_token/pid", "whole"),
+    ("/process/audit_token/pidversion", "whole"),
+    ("/process/audit_token/euid", "whole"),
+    ("/process/audit_token/egid", "whole"),
+    ("/process/audit_token/ruid", "whole"),
+    ("/process/audit_token/rgid", "whole"),
+    ("/process/start_time", "text"),
+    ("/process/signing_id", "text"),
+    ("/process/team_id", "text"),
+    ("/process/is_platform_binary", "flag"),
+    ("/process/codesigning_flags", "whole"),
+    ("/event/exec/args", "texts"),
+    ("/event/exec/cwd/path", "text"),
+    ("/event/exec/script/path", "text"),
+    ("/event/exec/target/executable/path", "text"),
+    ("/event/exec/target/audit_token/pid", "whole"),
+    ("/event/exec/target/audit_token/pidversion", "whole"),
+    ("/event/exec/target/audit_token/euid", "whole"),
+    ("/event/exec/target/audit_token/egid", "whole"),
+    ("/event/exec/target/audit_token/ruid", "whole"),
+    ("/event/exec/target/audit_token/rgid", "whole"),
+    ("/event/exec/target/start_time", "text"),
+    ("/event/exec/target/parent_audit_token/pid", "whole"),
+    ("/event/exec/target/parent_audit_token/pidversion", "whole"),
+    ("/event/exec/target/responsible_audit_token/pid", "whole"),
+    (
+        "/event/exec/target/responsible_audit_token/pidversion",
+        "whole",
+    ),
+    ("/event/exec/target/group_id", "whole"),
+    ("/event/exec/target/ppid", "whole"),
+    ("/event/exec/target/signing_id", "text"),
+    ("/event/exec/target/team_id", "text"),
+    ("/event/exec/target/is_platform_binary", "flag"),
+];
+
+/// The same of a file event: its numbers and time, and who the process that acted is. Its
+/// paths are taken whole or not at all (`a_file_created_or_renamed_reaches_the_disk...`).
+const KEPT_FILE: [(&str, &str); 13] = [
+    ("/schema_version", "whole"),
+    ("/seq_num", "whole"),
+    ("/time", "text"),
+    ("/process/audit_token/pid", "whole"),
+    ("/process/audit_token/pidversion", "whole"),
+    ("/process/audit_token/euid", "whole"),
+    ("/process/audit_token/egid", "whole"),
+    ("/process/audit_token/ruid", "whole"),
+    ("/process/audit_token/rgid", "whole"),
+    ("/process/start_time", "text"),
+    ("/process/signing_id", "text"),
+    ("/process/team_id", "text"),
+    ("/process/is_platform_binary", "flag"),
+];
+
+#[test]
+fn every_kept_field_in_a_shape_eslogger_does_not_write_is_null_and_nothing_rides_under_it() {
+    // The filter keeps each value only in its own shape: a text, a whole number the reader
+    // holds exactly, true or false, or a list of texts. Every kept field is given in turn each
+    // shape it does not take, an invented secret among them, and comes out null, the rest of
+    // the line as it was: nothing but the kept shape is ever carried under a kept name.
+    let secret = "INVENTED_SECRET=1";
+    let wrong = |shape: &str| -> Vec<Value> {
+        let all = [
+            json!({"env": [secret]}),
+            json!([secret]),
+            json!(secret),
+            json!(7),
+            json!(true),
+            json!(1.5),
+            json!(-1),
+            json!(9007199254740992u64),
+            json!([secret, 1]),
+        ];
+        all.into_iter()
+            .filter(|v| match shape {
+                "text" => !v.is_string(),
+                "whole" => !v.as_u64().is_some_and(|n| n < 1 << 53),
+                "flag" => !v.is_boolean(),
+                _ => !v.as_array().is_some_and(|a| a.iter().all(Value::is_string)),
+            })
+            .collect()
+    };
+    let mut base = full(1, &["ls"], token(402));
+    base["event"]["exec"]["script"] = json!({"path": "/Users/example/run.sh"});
+    let file_base = whole_file_event(
+        1,
+        "create",
+        "/usr/bin/touch",
+        existing("/Users/example/a"),
+        None,
+    );
+    let clean_exec: Value =
+        serde_json::from_str(&filtered(&[base.to_string().into_bytes()])[0]).unwrap();
+    let clean_file: Value =
+        serde_json::from_str(&filtered(&[file_base.to_string().into_bytes()])[0]).unwrap();
+    let mut sent = Vec::new();
+    let mut expected = Vec::new();
+    for (base, clean, kept) in [
+        (&base, &clean_exec, &KEPT_EXEC[..]),
+        (&file_base, &clean_file, &KEPT_FILE[..]),
+    ] {
+        for (path, shape) in kept {
+            for w in wrong(shape) {
+                let mut m = base.clone();
+                *m.pointer_mut(path).unwrap_or_else(|| panic!("{path}")) = w.clone();
+                let mut out = clean.clone();
+                // A script whose path is not a text is no script.
+                let at = if *path == "/event/exec/script/path" {
+                    "/event/exec/script"
+                } else {
+                    path
+                };
+                *out.pointer_mut(at).unwrap() = Value::Null;
+                sent.push(m.to_string().into_bytes());
+                expected.push((path.to_string(), w, out));
+            }
+        }
+    }
+    // A whole token, or the eight words, in a shape the filter does not take.
+    for (at, w) in [
+        ("/process/audit_token", json!(secret)),
+        (
+            "/event/exec/target/audit_token",
+            json!([secret, {"env": [secret]}]),
+        ),
+        (
+            "/event/exec/target/parent_audit_token",
+            json!([secret, 1, 2, 3, 4, 5, 6, 7]),
+        ),
+        (
+            "/event/exec/target/responsible_audit_token",
+            json!([1, 2, 3, 4, 5, 6, 7, 1.5]),
+        ),
+    ] {
+        let mut m = base.clone();
+        *m.pointer_mut(at).unwrap() = w.clone();
+        let mut out = clean_exec.clone();
+        *out.pointer_mut(at).unwrap() = Value::Null;
+        sent.push(m.to_string().into_bytes());
+        expected.push((at.to_string(), w, out));
+    }
+    let written = filtered(&sent);
+    assert_eq!(written.len(), expected.len());
+    for (line, (path, w, out)) in written.iter().zip(&expected) {
+        assert!(!line.contains("INVENTED"), "{path} as {w}: {line}");
+        let line: Value = serde_json::from_str(line).unwrap();
+        assert_eq!(&line, out, "{path} as {w}");
+    }
+    // A program start whose object on the way to a kept field is in another shape keeps its
+    // numbers and its other fields, and every kept field under that object is null: it is
+    // never the marker, so the reader still sees its number and judges what it lacks.
+    for at in [
+        "/process",
+        "/process/executable",
+        "/event/exec",
+        "/event/exec/cwd",
+        "/event/exec/target",
+        "/event/exec/target/executable",
+    ] {
+        let mut m = base.clone();
+        *m.pointer_mut(at).unwrap() = json!(secret);
+        let line = &filtered(&[m.to_string().into_bytes()])[0];
+        assert!(!line.contains("INVENTED"), "{at}: {line}");
+        let line: Value = serde_json::from_str(line).unwrap();
+        assert_eq!(line["seq_num"], clean_exec["seq_num"], "{at}: {line}");
+        for (path, _) in KEPT_EXEC {
+            match path.strip_prefix(at) {
+                Some(under) if under.starts_with('/') => {
+                    assert!(
+                        line.pointer(path).is_none_or(Value::is_null),
+                        "{at}: {path}"
+                    )
+                }
+                _ if !at.starts_with(path) => {
+                    assert_eq!(line.pointer(path), clean_exec.pointer(path), "{at}: {path}")
+                }
+                _ => {}
+            }
+        }
+    }
+    // A number too large for the reader to hold, written as eslogger never would, is null,
+    // and so is one with a fraction: the reviewer's own lines.
+    let big = r#"{"schema_version":1,"version":10,"seq_num":18446744073709551616,"global_seq_num":1,"time":"t","process":{"executable":{"path":"/bin/zsh"},"codesigning_flags":1e400,"audit_token":{"pid":401,"pidversion":1.5}},"event":{"exec":{"args":["a"],"cwd":{"path":"/tmp"},"target":{"executable":{"path":"/bin/echo"},"audit_token":{"pid":402,"euid":501,"pidversion":99999999999999999999999}}}}}"#;
+    let line: Value = serde_json::from_str(&filtered(&[big.as_bytes().to_vec()])[0]).unwrap();
+    for path in [
+        "/seq_num",
+        "/process/codesigning_flags",
+        "/process/audit_token/pidversion",
+        "/event/exec/target/audit_token/pidversion",
+    ] {
+        assert_eq!(line.pointer(path), Some(&Value::Null), "{path}");
+    }
+    assert_eq!(line["event"]["exec"]["target"]["audit_token"]["pid"], 402);
+}
+
+#[test]
+fn a_line_jq_cannot_read_is_written_as_a_marker_and_the_reader_counts_it_apart_from_losses() {
+    // A message the filter cannot read as JSON is never dropped in silence: a lone UTF-16
+    // surrogate, raw control characters, a line that is not an object or has no event. Each
+    // is written as the marker, the stream goes on, and the reader counts it as a line that
+    // could not be read; the number it took in eslogger's numbering is not counted again as
+    // dropped by the kernel. Whether eslogger itself ever writes such a line is not known.
+    let line = |arg: &[u8]| {
+        let mut l = br#"{"schema_version":1,"version":10,"seq_num":1,"global_seq_num":1,"time":"2026-10-04T00:00:02Z","process":{"executable":{"path":"/bin/zsh"}},"event":{"exec":{"args":["echo",""#.to_vec();
+        l.extend_from_slice(arg);
+        l.extend_from_slice(br#""],"cwd":{"path":"/tmp"},"target":{"executable":{"path":"/bin/echo"},"audit_token":{"pid":402,"euid":501}}}}}"#);
+        l
+    };
+    let unreadable: Vec<Vec<u8>> = vec![
+        line(br"\ud800-lone"),
+        line(br"\ud800A"),
+        line(b"raw\x01ctl"),
+        line(b"rawtab\tx"),
+        line(b"nul\x00x"),
+        b"not json {".to_vec(),
+        b"[1,2]".to_vec(),
+        br#"{"schema_version":1}"#.to_vec(),
+        br#"{"schema_version":1,"event":{}}"#.to_vec(),
+        br#""exec""#.to_vec(),
+        br#"{"schema_version":1,"event":"exec"}"#.to_vec(),
+        br#"{"schema_version":1,"event":["exec"]}"#.to_vec(),
+    ];
+    let readable: Vec<Vec<u8>> = vec![
+        line(b"plain"),
+        line(br"\udc00-lowlone"),
+        line(b"\xff\xfe-bad"),
+        line(br"ctl\u0001\u001b[31m"),
+    ];
+    let written = filtered(&unreadable);
+    assert_eq!(written, vec![MARKER; unreadable.len()]);
+    for l in filtered(&readable) {
+        assert_ne!(l, MARKER);
+        let v: Value = serde_json::from_str(&l).unwrap();
+        assert!(v["event"]["exec"]["args"].is_array(), "{l}");
+    }
+    // The reader: a start, two markers, a gap of three in the numbering, then the next start.
+    let dir = Dir::new("marker");
+    dir.install();
+    dir.append(
+        "exec-20261004T000013-20261004T000000.jsonl",
+        &(exec(1) + MARKER + "\n" + MARKER + "\n" + &exec(5)),
+    );
+    dir.run_apart();
+    let l = &dir.status()["event_level"];
+    assert_eq!(
+        (
+            &l["program_starts"]["last_day"],
+            &l["unreadable_lines"]["last_day"],
+            &l["lost"]["last_day"]
+        ),
+        (&json!(2), &json!(2), &json!(1)),
+        "{l:#}"
+    );
+}
+
+#[test]
+fn a_projected_line_costs_what_the_install_says_and_a_sixth_of_eslogger_s() {
     // The install tells the owner what the level costs on disk before he grants it root, from
     // bytes per program start; the figure it gives is not below what a line takes. Measured
-    // on a whole message of the size a developer's Mac writes, about 5.6 KB, with a command
-    // line of ordinary length; printed with `--nocapture`.
+    // on a whole message of the size a developer's Mac writes, about 6.5 KB, with a command
+    // line of ordinary length; printed with `--nocapture`, beside what the line took before the
+    // filter kept who each process is.
     let dir = Dir::new("measure");
     let args = [
         "git",
@@ -480,56 +981,201 @@ fn a_projected_line_costs_what_the_install_says_and_a_tenth_of_eslogger_s() {
     let whole = full(1, &args, token(402)).to_string();
     let written = collect(&dir, std::slice::from_ref(&whole));
     let line = written.lines().next().unwrap();
-    assert_eq!(line, projected_with(1, &args, OBJECT));
+    assert_eq!(line, kept_with(1, &args, KEPT_OBJECT));
     let (from, to) = (whole.len() + 1, line.len() + 1);
-    println!("eslogger's line: {from} bytes; the projected line: {to} bytes");
+    let before = projected_with(1, &args, OBJECT).len() + 1;
+    println!(
+        "eslogger's line: {from} bytes; the projected line: {to} bytes, {before} before it kept who each process is"
+    );
     assert!(from > 5_000, "{from}");
-    assert!(to * 10 < from, "{to} of {from}");
+    assert!(to * 6 < from, "{to} of {from}");
     let install = std::fs::read_to_string(Path::new(SCRIPTS).join("install")).unwrap();
     let said: usize = install
-        .split("about ")
-        .nth(1)
-        .and_then(|s| s.split(" bytes a program start").next())
+        .split(" bytes a program start")
+        .next()
+        .and_then(|s| s.rsplit("about ").next())
         .and_then(|n| n.parse().ok())
         .expect("the install says how many bytes a program start costs");
     assert!(to <= said, "{to} bytes against the {said} the install says");
 }
 
 #[test]
-fn rotatelogs_moves_to_the_next_file_without_closing_the_pipe_losing_or_repeating_a_line() {
+fn rotatelogs_starts_a_file_at_the_time_and_at_the_size_without_closing_the_pipe_losing_or_repeating_a_line()
+ {
     // eslogger's sequence numbers count losses only while it runs: rotation must not restart
-    // it. collect.sh hands the filtered stream to Apple's rotatelogs with a file name per
-    // hour; here the same program, with the same kind of name, rotates every second, fed
-    // through one pipe that stays open across the change of file.
-    let dir = Dir::new("rotate");
-    let log = dir.0.join("log");
-    std::fs::create_dir_all(&log).unwrap();
-    let mut child = Command::new("/usr/sbin/rotatelogs")
+    // it. collect.sh hands the filtered stream to Apple's rotatelogs with a rotation time and a
+    // size together, names to the second, and a program it runs at each new file. Here the same
+    // program, with the same kind of name, rotates every second by time and at 1 KiB by size,
+    // fed through one pipe that stays open across every change of file: the files read in the
+    // order of their names hold every line once, and the program ran once for each file, given
+    // the new one.
+    for (every, size) in [("1", None), ("3600", Some("1K"))] {
+        let dir = Dir::new("rotate");
+        let log = dir.0.join("log");
+        std::fs::create_dir_all(&log).unwrap();
+        let hook = dir.0.join("hook.sh");
+        std::fs::write(
+            &hook,
+            format!("#!/bin/sh\necho \"$1\" >>'{}/started'\n", dir.0.display()),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut child = Command::new("/usr/sbin/rotatelogs")
+            .env_clear()
+            .arg("-p")
+            .arg(&hook)
+            .arg(log.join("exec-20261004T000013-%Y%m%dT%H%M%S.jsonl"))
+            .arg(every)
+            .args(size)
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut pipe = child.stdin.take().unwrap();
+        let sent: Vec<String> = (1..=14).map(exec).collect();
+        for l in &sent {
+            pipe.write_all(l.as_bytes()).unwrap();
+            pipe.flush().unwrap();
+            std::thread::sleep(Duration::from_millis(330));
+        }
+        drop(pipe);
+        assert!(child.wait().unwrap().success());
+        std::thread::sleep(Duration::from_millis(300));
+        let names = files(&log);
+        assert!(names.len() >= 3, "{names:?}");
+        let read: String = names
+            .iter()
+            .map(|n| std::fs::read_to_string(log.join(n)).unwrap())
+            .collect();
+        assert_eq!(read, sent.concat());
+        let mut started: Vec<String> = std::fs::read_to_string(dir.0.join("started"))
+            .unwrap()
+            .lines()
+            .map(|l| l.rsplit('/').next().unwrap().to_string())
+            .collect();
+        started.sort();
+        started.dedup();
+        assert_eq!(started, names);
+        if size.is_some() {
+            // A file passes the size by at most what one read brought: here one line.
+            for n in &names {
+                let len = std::fs::metadata(log.join(n)).unwrap().len();
+                assert!(len < 1024 + exec(1).len() as u64 * 2, "{n}: {len}");
+            }
+        }
+    }
+    // collect.sh rotates so, at the hour and at its segment of 128 MiB, under the names the
+    // reader reads, and runs rotated.sh at each new file.
+    let collect = std::fs::read_to_string(Path::new(SCRIPTS).join("collect.sh")).unwrap();
+    assert_eq!(collect.matches("\nSEGMENT_MIB=").count(), 1);
+    assert!(collect.contains("\nSEGMENT_MIB=128\n"));
+    assert!(collect.contains(
+        r#"/usr/sbin/rotatelogs -p "$lib/rotated.sh" "$log/exec-$run-%Y%m%dT%H%M%S.jsonl" 3600 "${SEGMENT_MIB}M""#
+    ));
+    assert!(collect.contains("run=$(/bin/date -u +%Y%m%dT%H%M%S)"));
+}
+
+#[test]
+fn each_new_file_brings_the_log_under_its_cap_through_rotated_sh_with_the_cap_of_the_tidy_job() {
+    // The chain as installed, run as an ordinary user in a system root of its own: collect.sh,
+    // with its segment made 1 KiB for the test, hands lines to rotatelogs, which runs rotated.sh
+    // at each new file; rotated.sh reads the cap from the tidy job's launch daemon with plutil
+    // and runs tidy.sh. Older files go as new ones are started, each noted with `cap`, and the
+    // log is never left larger than its cap and the file being written.
+    let dir = Dir::new("chain");
+    let top = dir.0.join("root");
+    let cap = 2 * GIB;
+    let (lib, log) = collector_at(&top, &cap.to_string());
+    let collect = std::fs::read_to_string(lib.join("collect.sh")).unwrap();
+    std::fs::write(
+        lib.join("collect.sh"),
+        collect.replace(r#""${SEGMENT_MIB}M""#, "1K"),
+    )
+    .unwrap();
+    // An earlier collector's hours, written before, and a later collector's file that fills
+    // the log to its cap.
+    let fill = "exec-20261004T020000-20261004T020000.jsonl";
+    for (name, bytes, age) in [
+        ("exec-20261004T01.jsonl", 1500, 3),
+        ("exec-20261004T02.jsonl", 1500, 2),
+        (fill, cap - 3000, 1),
+    ] {
+        aged(&log, name, bytes, age);
+    }
+    let fifo = dir.0.join("events.fifo");
+    assert!(
+        Command::new("/usr/bin/mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let child = Command::new("/bin/sh")
         .env_clear()
-        .arg(log.join("exec-%Y%m%dT%H%M%S.jsonl"))
-        .arg("1")
-        .stdin(Stdio::piped())
+        .env("PATH", "/nonexistent")
+        .arg(lib.join("collect.sh"))
+        .arg(&lib)
+        .arg(&fifo)
+        .arg(&log)
+        .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let mut pipe = child.stdin.take().unwrap();
-    let sent: Vec<String> = (1..=25).map(exec).collect();
-    for l in &sent {
-        pipe.write_all(l.as_bytes()).unwrap();
-        pipe.flush().unwrap();
-        std::thread::sleep(Duration::from_millis(120));
+    let mut w = std::fs::OpenOptions::new().write(true).open(&fifo).unwrap();
+    let total = |log: &Path| -> u64 {
+        files(log)
+            .iter()
+            .filter(|n| n.starts_with("exec-"))
+            .map(|n| std::fs::metadata(log.join(n)).unwrap().len())
+            .sum()
+    };
+    let line = kept_with(1, &["ls"], KEPT_OBJECT);
+    let mut most = 0;
+    for _ in 0..12 {
+        w.write_all(full(1, &["ls"], token(402)).to_string().as_bytes())
+            .unwrap();
+        w.write_all(b"\n").unwrap();
+        w.flush().unwrap();
+        std::thread::sleep(Duration::from_millis(400));
+        most = most.max(total(&log));
     }
-    drop(pipe);
-    assert!(child.wait().unwrap().success());
-    let names = files(&log);
-    assert!(names.len() >= 2, "{names:?}");
-    let read: String = names
-        .iter()
-        .map(|n| std::fs::read_to_string(log.join(n)).unwrap())
-        .collect();
-    assert_eq!(read, sent.concat());
-    // collect.sh rotates by the hour in UTC, under the names the reader reads.
-    let collect = std::fs::read_to_string(Path::new(SCRIPTS).join("collect.sh")).unwrap();
-    assert!(collect.contains(r#"/usr/sbin/rotatelogs "$log/exec-%Y%m%dT%H.jsonl" 3600"#));
+    drop(w);
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success() && out.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let notes = notes(&log, 0);
+    assert_eq!(
+        notes,
+        [
+            "exec-20261004T01.jsonl 1500 cap".to_string(),
+            "exec-20261004T02.jsonl 1500 cap".to_string(),
+            format!("{fill} {} cap", cap - 3000),
+        ],
+    );
+    // The cap, the file being written (a segment and the line that passed it), and what was
+    // written while tidy.sh ran, at most a line here.
+    let bound = cap + 1024 + 3 * (line.len() as u64 + 1);
+    assert!(most <= bound && total(&log) <= bound, "{most} {bound}");
+    // Run from anywhere but the folder the install gives it, rotated.sh does nothing.
+    let out = Command::new("/bin/sh")
+        .env_clear()
+        .arg(Path::new(SCRIPTS).join("rotated.sh"))
+        .arg(log.join("exec-20261004T000013-20261004T000000.jsonl"))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(64));
+    // A cap it cannot read leaves the log as it is and says why.
+    let tidy_plist = top.join(TIDY);
+    std::fs::write(&tidy_plist, "not a property list").unwrap();
+    let out = Command::new(lib.join("rotated.sh"))
+        .env_clear()
+        .arg(log.join("exec-20261004T000013-20261004T000000.jsonl"))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(66));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("the cap could not be read"));
 }
 
 /// Runs tidy.sh as installed on `log`, with `cap` as the most bytes of log.
@@ -544,16 +1190,17 @@ fn tidy(log: &Path, cap: &str) -> std::process::Output {
         .unwrap()
 }
 
-/// A log file of `bytes` bytes last written `hours` ago.
-fn aged(log: &Path, name: &str, bytes: usize, hours: u64) {
-    std::fs::write(log.join(name), vec![b'x'; bytes]).unwrap();
-    let f = std::fs::File::options()
-        .append(true)
-        .open(log.join(name))
-        .unwrap();
+/// A log file of `bytes` bytes last written `hours` ago. A sparse file, so a log of gibibytes
+/// takes no disk.
+fn aged(log: &Path, name: &str, bytes: u64, hours: u64) {
+    let f = std::fs::File::create(log.join(name)).unwrap();
+    f.set_len(bytes).unwrap();
     f.set_modified(SystemTime::now() - Duration::from_secs(hours * 3600))
         .unwrap();
 }
+
+/// A gibibyte, the smallest cap tidy.sh takes.
+const GIB: u64 = 1 << 30;
 
 /// The root side's notes of deletions, as `name bytes why`, each checked to have been written
 /// between `from` and now.
@@ -616,35 +1263,119 @@ fn a_log_file_is_kept_one_day_and_what_the_root_side_prints_stays_small() {
 }
 
 #[test]
-fn over_the_cap_the_oldest_hours_go_first_and_never_the_one_being_written() {
+fn over_the_cap_the_files_written_longest_ago_go_first_and_never_the_one_being_written() {
     // A Mac building at a hundred starts a second writes more in a day than the cap allows:
-    // the oldest hours are deleted first, each noted with `cap`, and the hour being
-    // written is never deleted.
+    // the files written longest ago are deleted first, each noted with `cap`, and the one
+    // written last, the one being written, never is. They go by when they were written, not
+    // by name: a clock set back gives the file being written an earlier name than the last.
     let dir = Dir::new("cap");
     let log = dir.0.join("log");
     std::fs::create_dir_all(&log).unwrap();
     let from = now_secs();
-    for (hour, age) in [(1, 4), (2, 3), (3, 2), (4, 1)] {
-        aged(&log, &format!("exec-20261004T0{hour}.jsonl"), 1000, age);
+    for (name, age) in [
+        ("exec-20261004T01.jsonl", 5),
+        ("exec-20261004T010000-20261004T010000.jsonl", 4),
+        ("exec-20261004T010000-20261004T020000.jsonl", 3),
+        ("exec-20261004T030000-20261004T030000.jsonl", 2),
+        ("exec-20261004T020000-20261004T020000.jsonl", 1),
+    ] {
+        aged(&log, name, GIB, age);
     }
-    assert!(tidy(&log, "2500").status.success());
+    // A log exactly at its cap is under it.
+    assert!(tidy(&log, &(2 * GIB).to_string()).status.success());
     assert_eq!(
         notes(&log, from),
         [
-            "exec-20261004T01.jsonl 1000 cap",
-            "exec-20261004T02.jsonl 1000 cap"
+            "exec-20261004T01.jsonl 1073741824 cap",
+            "exec-20261004T010000-20261004T010000.jsonl 1073741824 cap",
+            "exec-20261004T010000-20261004T020000.jsonl 1073741824 cap"
         ]
     );
-    assert!(tidy(&log, "0").status.success());
+    assert!(tidy(&log, "1073741824").status.success());
     assert_eq!(
         files(&log),
-        ["exec-20261004T04.jsonl", "removed"],
-        "the hour being written stays"
+        ["exec-20261004T020000-20261004T020000.jsonl", "removed"],
+        "the file written last stays"
     );
-    // The cap is a number of bytes; anything else stops the job with its reason.
-    let out = tidy(&log, "2GiB");
-    assert_eq!(out.status.code(), Some(64));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("not 2GiB"));
+    // The cap is a whole number of bytes the shell compares as it is, of at least 1 GiB, the
+    // smallest the installer writes; anything else stops the job with its reason and deletes
+    // nothing.
+    for bad in ["2GiB", "02500", "10000000000000000", "", "0", "1073741823"] {
+        let out = tidy(&log, bad);
+        assert_eq!(out.status.code(), Some(64), "{bad}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains(bad), "{bad}");
+    }
+    assert_eq!(files(&log).len(), 2);
+}
+
+#[test]
+fn two_tidy_runs_at_once_never_both_delete_and_a_lock_a_killed_run_left_is_taken_over() {
+    // The tidy job and the hook at a new file can run at once. Each first makes the lock folder
+    // `tidy.lock` in the log folder, with mkdir, which every macOS has, and removes it when it
+    // ends. A run that finds it held deletes nothing, leaves it, and ends without an error and
+    // without a word in scripts.err; the run that holds it brings the log under the cap. A lock
+    // older than ten minutes was left by a run that was killed, and is taken over.
+    let dir = Dir::new("lock");
+    let log = dir.0.join("log");
+    std::fs::create_dir_all(&log).unwrap();
+    for (i, age) in [(1, 6), (2, 5), (3, 4), (4, 3), (5, 2), (6, 1)] {
+        aged(
+            &log,
+            &format!("exec-20261004T0{i}0000-20261004T0{i}0000.jsonl"),
+            GIB,
+            age,
+        );
+    }
+    let lock = log.join("tidy.lock");
+    let aged_lock = |minutes: u64| {
+        std::fs::create_dir(&lock).unwrap();
+        std::fs::File::open(&lock)
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(minutes * 60))
+            .unwrap();
+    };
+    // Held by a run that is still going: nothing is deleted, and the lock stays.
+    aged_lock(9);
+    let out = tidy(&log, &(3 * GIB).to_string());
+    assert_eq!(
+        (out.status.code(), out.stderr.as_slice()),
+        (Some(0), &b""[..])
+    );
+    assert!(
+        !log.join("removed").exists(),
+        "deleted while another held the lock"
+    );
+    assert!(lock.is_dir());
+    // Left by a run that was killed eleven minutes ago: taken over, and removed at the end.
+    std::fs::remove_dir(&lock).unwrap();
+    aged_lock(11);
+    let out = tidy(&log, &(3 * GIB).to_string());
+    assert_eq!(
+        (out.status.code(), out.stderr.as_slice()),
+        (Some(0), &b""[..])
+    );
+    assert_eq!(notes(&log, 0).len(), 3);
+    assert!(!lock.exists());
+    // Many at once: together they delete no more than one would.
+    let runs: Vec<_> = (0..8)
+        .map(|_| {
+            Command::new("/bin/sh")
+                .env_clear()
+                .arg(Path::new(SCRIPTS).join("tidy.sh"))
+                .arg(&log)
+                .arg(GIB.to_string())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    for r in runs {
+        assert!(r.wait_with_output().unwrap().status.success());
+    }
+    assert_eq!(notes(&log, 0).len(), 5);
+    assert_eq!(
+        files(&log),
+        ["exec-20261004T060000-20261004T060000.jsonl", "removed"]
+    );
 }
 
 /// A property list as JSON, through Apple's plutil.
@@ -715,7 +1446,6 @@ fn the_daemons_run_only_what_macos_ships_from_a_folder_only_root_can_write_and_n
     }
     // What collect.sh reads is installed beside it.
     assert!(listed.split(['\'', ' ']).any(|w| w == "filter.jq"));
-    assert!(install.contains("never holds more than\n500 MiB"));
 }
 
 #[test]
@@ -922,10 +1652,11 @@ fn whole_lines_are_read_once_through_rotation_and_deletion_and_losses_are_counte
     // A line this reader could not read is its own failure.
     assert!(coverage_of(&r).unwrap().starts_with("failed|"));
     // One short state, then each caveat as a sentence of its own, in words a person knows
-    // without knowing what eslogger is; a restart is a moment not seen, said once.
+    // without knowing what eslogger is; a restart is a moment not seen, said once. These lines
+    // are an earlier collector's, and that is said last.
     assert_eq!(
         dir.words(),
-        "Event level: on, 11 program starts in the last day. The collector restarted once; program starts in that moment were not seen. 3 program starts were missed because the collector fell behind. 2 lines of the log could not be read."
+        "Event level: on, 11 program starts in the last day. The collector restarted once; program starts in that moment were not seen. 3 program starts were missed because the collector fell behind. 2 lines of the log could not be read. The collector installed here is an earlier one and does not keep who each process is, the script a program start runs and code-signing details; installing the event level again adds them."
     );
 
     // Another file under a name already read, longer than where the old one was left: read
@@ -993,7 +1724,7 @@ fn hours_the_root_side_deleted_early_or_before_they_were_read_are_partial_covera
     );
     assert_eq!(
         dir.words(),
-        "Event level: on, 4 program starts in the last day. 1 program start was missed because the collector fell behind. 1 hour of the log was deleted early to keep the log under its size limit. 2 hours of the log were deleted before they were read."
+        "Event level: on, 4 program starts in the last day. 1 program start was missed because the collector fell behind. 1 file of the log was deleted early to keep the log under its size limit of 2 GiB. 2 files of the log were deleted before they were read. The collector installed here is an earlier one and does not keep who each process is, the script a program start runs and code-signing details; installing the event level again adds them."
     );
     // The same notes, read again, are not counted again; the day still has its hole.
     dir.run_apart();
@@ -1145,6 +1876,31 @@ fn a_refusal_is_served_with_what_eslogger_said_as_data_and_a_quiet_level_as_sile
     assert_eq!(r["event_level"]["state"], "silent");
     assert!(not_covered(&r, "event-level-silent").is_some());
     assert_eq!(watched_starts(&r), None);
+}
+
+#[test]
+fn a_log_file_written_while_the_reading_goes_on_is_the_level_recording() {
+    // A reading takes its time once, when it begins, and a large log takes seconds to read.
+    // The collector writes meanwhile, so the file's time is a little after the reading's: that
+    // is the level recording, and it is never told as silent.
+    let dir = Dir::new("written-meanwhile");
+    dir.install();
+    let hour_ago = SystemTime::now() - Duration::from_secs(3600);
+    std::fs::File::options()
+        .append(true)
+        .open(dir.root().join(PLIST))
+        .unwrap()
+        .set_modified(hour_ago)
+        .unwrap();
+    dir.append("exec-20261004T00.jsonl", &exec(1));
+    std::fs::File::options()
+        .append(true)
+        .open(dir.log().join("exec-20261004T00.jsonl"))
+        .unwrap()
+        .set_modified(SystemTime::now() + Duration::from_secs(60))
+        .unwrap();
+    dir.run();
+    assert_eq!(dir.status()["event_level"]["state"], "running");
 }
 
 #[test]
@@ -1488,6 +2244,10 @@ fn a_binary_padding_start_raises_one_finding_with_its_authors_and_arguments_and_
                     "signing_id_text": "com.apple.git",
                     "team_id_text": null,
                     "platform_binary": true,
+                    "pid_version": null,
+                    "started_at": null,
+                    "started_nanos": null,
+                    "codesigning_flags": null,
                 },
                 "instigator": {
                     "executable_text": "/bin/sh",
@@ -1496,10 +2256,16 @@ fn a_binary_padding_start_raises_one_finding_with_its_authors_and_arguments_and_
                     "signing_id_text": null,
                     "team_id_text": null,
                     "platform_binary": null,
+                    "pid_version": null,
+                    "started_at": null,
+                    "started_nanos": null,
+                    "codesigning_flags": null,
                 },
                 "parent_pid": 401,
                 "args_text": DD,
                 "working_directory_text": CWD,
+                "parent": null,
+                "script_text": null,
             }}],
             "source": "https://github.com/SigmaHQ/sigma",
             "licence": "DRL-1.1",
@@ -1846,6 +2612,18 @@ fn file_event(seq: u64, kind: &str, program: &str, path: &str, from: Option<&str
     ) + "\n"
 }
 
+/// A file event as the root side's filter writes it now, from `whole_file_event`: beside the
+/// paths and the program, who the program is, its users and groups, and its signer. `file_event` is the line of a
+/// collector before it kept them.
+fn kept_file_event(seq: u64, kind: &str, program: &str, path: &str, from: Option<&str>) -> String {
+    file_event(seq, kind, program, path, from).replace(
+        &format!(r#"{{"executable":{{"path":"{program}"}}}}"#),
+        &format!(
+            r#"{{"executable":{{"path":"{program}"}},"audit_token":{{"pid":402,"pidversion":9402,"euid":501,"egid":20,"ruid":501,"rgid":20}},"start_time":"2026-10-04T00:00:01.900000Z","signing_id":"com.example.tool","team_id":null,"is_platform_binary":true,"codesigning_flags":570522385}}"#
+        ),
+    )
+}
+
 /// A file as eslogger describes one: its path, whether it was cut short, and its stat.
 fn es_file(path: &str, truncated: bool) -> Value {
     json!({"path": path, "path_truncated": truncated, "stat": stat(4400, 220)})
@@ -1895,9 +2673,10 @@ fn whole_file_event(
 #[test]
 fn a_file_created_or_renamed_reaches_the_disk_as_its_paths_and_its_program_and_nothing_else() {
     // A busy Mac creates and renames files by the hundred a second. Of each the filter keeps
-    // the numbering, the time, the program that did it, and the file as one path, joined from
-    // eslogger's folder and name when the file is new, with a rename's source: the file's
-    // stat, mode and ACL and the program's ids never reach a disk. A file event whose shape it
+    // the numbering, the time, the program that did it with who it is, its users and groups
+    // and its signer, and the file as one path, joined from eslogger's folder and name when the
+    // file is new, with a rename's source: the file's stat, mode and ACL and the program's
+    // other ids never reach a disk. A file event whose shape it
     // does not know, or whose path eslogger cut short, is written as its kind with nothing in
     // it, so the reader counts it as one it could not make out, never as nothing; and a
     // reading never fails on it.
@@ -1949,17 +2728,17 @@ fn a_file_created_or_renamed_reaches_the_disk_as_its_paths_and_its_program_and_n
         ) + "\n"
     };
     let expected = [
-        file_event(1, "create", node, "/private/tmp/6202033", None),
-        file_event(2, "create", "/usr/bin/curl", "/Users/example/.helper", None),
-        file_event(3, "create", "/usr/bin/touch", "/x", None),
-        file_event(
+        kept_file_event(1, "create", node, "/private/tmp/6202033", None),
+        kept_file_event(2, "create", "/usr/bin/curl", "/Users/example/.helper", None),
+        kept_file_event(3, "create", "/usr/bin/touch", "/x", None),
+        kept_file_event(
             1,
             "rename",
             "/bin/mv",
             "/Library/LaunchDaemons/b.plist",
             Some("/private/tmp/a.plist"),
         ),
-        file_event(
+        kept_file_event(
             2,
             "rename",
             "/usr/bin/vim",
@@ -1978,9 +2757,12 @@ fn a_file_created_or_renamed_reaches_the_disk_as_its_paths_and_its_program_and_n
         "stat",
         "mode",
         "acl",
-        "audit_token",
+        "asid",
+        "auid",
+        "responsible_audit_token",
+        "parent_audit_token",
+        "group_id",
         "cdhash",
-        "signing_id",
         "tty",
         "thread",
         "_type",
@@ -2050,9 +2832,159 @@ fn a_projected_file_event_costs_what_the_install_says() {
         .expect("the install says how many bytes a file event costs");
     for (whole, line) in sent.iter().zip(written.lines()) {
         let (from, to) = (whole.len() + 1, line.len() + 1);
-        println!("eslogger's file event: {from} bytes; the projected line: {to} bytes");
+        // The same line without who the program is and its signer, as the filter wrote it
+        // before it kept them.
+        let mut before: Value = serde_json::from_str(line).unwrap();
+        let process = before["process"].as_object_mut().unwrap();
+        for key in [
+            "audit_token",
+            "start_time",
+            "signing_id",
+            "team_id",
+            "is_platform_binary",
+            "codesigning_flags",
+        ] {
+            assert!(process.remove(key).is_some(), "{key}");
+        }
+        let before = before.to_string().len() + 1;
+        println!(
+            "eslogger's file event: {from} bytes; the projected line: {to} bytes, {before} before it kept who the program is"
+        );
         assert!(to <= said, "{to} bytes against the {said} the install says");
     }
+}
+
+#[test]
+fn what_the_collector_keeps_is_told_by_what_its_lines_carry_and_never_by_a_record() {
+    // No false calm about who each process is and its signer. Whether the collector keeps a
+    // field is decided by what arrives: before any line is read it is not yet known; a line
+    // without the key is an earlier collector's; a key that is there and empty is kept and
+    // never filled; and only a value makes it arrive, from that line's time. Lines a collector
+    // installed before this version wrote are read and judged as before meanwhile.
+    let dir = Dir::new("arrival");
+    dir.install();
+    let told = |dir: &Dir| -> (Value, String) {
+        dir.run_apart();
+        let r = dir.status();
+        let l = &r["event_level"];
+        (
+            json!({
+                "not_kept": l["not_kept"],
+                "kept_never_filled": l["kept_never_filled"],
+                "not_yet_known": l["not_yet_known"],
+                "arriving": l["arriving"],
+            }),
+            dir.words(),
+        )
+    };
+    let lists = |not_kept: Value, never: Value, unknown: Value, arriving: Value| {
+        json!({
+            "not_kept": not_kept,
+            "kept_never_filled": never,
+            "not_yet_known": unknown,
+            "arriving": arriving,
+        })
+    };
+    let all = json!(["identity", "script", "signature"]);
+    // Installed, nothing read: not yet known, and no record answers in its place.
+    let (said, words) = told(&dir);
+    assert_eq!(said, lists(json!([]), json!([]), all.clone(), json!([])));
+    assert!(!words.contains("earlier one"), "{words}");
+    // An earlier collector's line.
+    dir.append("exec-20261004T00.jsonl", &exec(1));
+    let (said, words) = told(&dir);
+    assert_eq!(said, lists(all.clone(), json!([]), json!([]), json!([])));
+    assert_eq!(
+        words,
+        "Event level: on, 1 program start in the last day. The collector installed here is an earlier one and does not keep who each process is, the script a program start runs and code-signing details; installing the event level again adds them."
+    );
+    assert_eq!(
+        dir.status()["event_level"]["in_words"]["caveats"],
+        json!([{"kind": "earlier_collector", "short": "reinstall needed"}])
+    );
+    // A later collector's program start: who it is and its flags arrive from it, the script
+    // is there and empty, and file events, of which none was read, are not yet known for
+    // what they carry too.
+    let name = "exec-20261004T000013-20261004T000000.jsonl";
+    dir.append(name, &(kept_with(2, &["ls"], KEPT_OBJECT) + "\n"));
+    let (said, words) = told(&dir);
+    assert_eq!(
+        said,
+        lists(
+            json!([]),
+            json!(["script"]),
+            json!(["identity", "signature"]),
+            json!([])
+        )
+    );
+    assert_eq!(words, "Event level: on, 2 program starts in the last day.");
+    // A file event that gives its program's start time and signer: both arrive, from the
+    // later of the two kinds' first lines that gave them.
+    dir.append(
+        name,
+        &kept_file_event(1, "create", "/usr/bin/touch", "/Users/example/a", None),
+    );
+    let (said, _) = told(&dir);
+    let since = json!("2026-10-04T00:00:03Z");
+    assert_eq!(
+        said,
+        lists(
+            json!([]),
+            json!(["script"]),
+            json!([]),
+            json!([{"name": "identity", "since": since}, {"name": "signature", "since": since}])
+        )
+    );
+    // Later lines that give them again leave the time they began to arrive as it was.
+    let later = |line: String| {
+        let at = line.find(r#""time":""#).unwrap() + 8;
+        let end = at + line[at..].find('"').unwrap();
+        format!("{}2026-10-04T00:05:00Z{}", &line[..at], &line[end..])
+    };
+    dir.append(
+        name,
+        &(later(kept_with(3, &["ls"], KEPT_OBJECT))
+            + "\n"
+            + &later(kept_file_event(
+                2,
+                "create",
+                "/usr/bin/touch",
+                "/Users/example/b",
+                None,
+            ))),
+    );
+    let (again, _) = told(&dir);
+    assert_eq!(again, said);
+    // A line that lacks a key again, as after a collector was put back: what the latest line
+    // says counts, never what an earlier one did.
+    dir.append(name, &exec(4));
+    let (said, _) = told(&dir);
+    assert_eq!(said, lists(all.clone(), json!([]), json!([]), json!([])));
+    // The install keeps no record of what the filter keeps, and the filter says it nowhere but
+    // in its lines; an earlier install's record is removed.
+    let install = std::fs::read_to_string(Path::new(SCRIPTS).join("install")).unwrap();
+    let filter = std::fs::read_to_string(Path::new(SCRIPTS).join("filter.jq")).unwrap();
+    assert!(!filter.contains("# keeps:"));
+    assert!(!install.contains(r#">"$LIB/keeps""#));
+    assert!(install.contains(r#"step /bin/rm -f "$LIB/keeps""#));
+    // Once removed, there is no collector to name, and nothing is known of the next one.
+    dir.uninstall();
+    dir.run_apart();
+    let l = &dir.status()["event_level"];
+    assert_eq!(
+        (
+            &l["state"],
+            &l["not_kept"],
+            &l["not_yet_known"],
+            &l["in_words"]["notes"]
+        ),
+        (
+            &json!("not_installed"),
+            &json!([]),
+            &all,
+            &json!(["Program starts are not seen until it is installed."])
+        )
+    );
 }
 
 #[test]
@@ -2382,6 +3314,10 @@ fn a_file_a_high_rule_names_raises_one_finding_with_the_file_and_its_program_and
                 "signing_id_text": null,
                 "team_id_text": null,
                 "platform_binary": null,
+                "pid_version": null,
+                "started_at": null,
+                "started_nanos": null,
+                "codesigning_flags": null,
             },
         }})
     };
@@ -2470,4 +3406,501 @@ fn a_file_a_high_rule_names_raises_one_finding_with_the_file_and_its_program_and
     );
     dir.nowhere_in_the_store(built);
     dir.nowhere_in_the_store(venv);
+}
+
+/// The installer's functions for the log's cap, between its `# BEGIN the log's cap` and
+/// `# END the log's cap` lines, run by /bin/sh after them with `script`: the installer's own
+/// code, without running the installer, which needs root and changes the system. Its exit
+/// code, stdout and stderr.
+fn cap_code(script: &str) -> (i32, String, String) {
+    let install = std::fs::read_to_string(Path::new(SCRIPTS).join("install")).unwrap();
+    let from = install
+        .find("# BEGIN the log's cap\n")
+        .expect("the cap's code begins");
+    let to = install
+        .find("# END the log's cap\n")
+        .expect("the cap's code ends");
+    let code = format!("here='{SCRIPTS}'\n{}\n{script}\n", &install[from..to]);
+    let out = Command::new("/bin/sh")
+        .env_clear()
+        .env("PATH", "/nonexistent")
+        .args(["-c", &code])
+        .output()
+        .unwrap();
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8(out.stdout).unwrap(),
+        String::from_utf8(out.stderr).unwrap(),
+    )
+}
+
+/// The installer's own steps, from where it makes its folders to where it has started every
+/// launch daemon, with its own `fail` and its record of what it left, run by /bin/sh without
+/// root and without changing the system: `step` records each step and runs none but the
+/// stand-in for launchctl, and the first step that contains `fail_at` fails. `running` says
+/// whether a collector ran before. Its exit code, its stderr and the steps it took.
+fn install_steps(dir: &Dir, fail_at: &str, running: bool) -> (i32, String, String) {
+    let install = std::fs::read_to_string(Path::new(SCRIPTS).join("install")).unwrap();
+    let part = |from: &str, to: &str| {
+        let a = install.find(from).expect(from);
+        let b = a + install[a..].find(to).expect(to);
+        install[a..b].to_string()
+    };
+    let fail = part("left=\nfail() {", "# BEGIN the log's cap\n");
+    let steps = part(
+        "# What can fail without touching the collector that runs now",
+        "\n# The verdict",
+    )
+    .replace("/bin/launchctl", "launchctl_");
+    assert!(steps.contains("step launchctl_ bootout") && steps.ends_with("left=\n"));
+    let t = dir.0.join("steps");
+    std::fs::create_dir_all(&t).unwrap();
+    let code = format!(
+        r#"T='{t}'; FAILAT='{fail_at}'; RUNNING={running}
+TOP="$T/top"; LIB="$TOP/event-level"; RUN="$LIB/run"; LOG="$LIB/log"; FIFO="$RUN/events.fifo"
+DAEMONS="$T/daemons"; TIDY="$DAEMONS/ai.nuanu.immune.event-tidy.plist"; here="$T/here"
+LABELS='ai.nuanu.immune.event-filter ai.nuanu.immune.eslogger ai.nuanu.immune.event-tidy'
+SCRIPTS='collect.sh filter.jq tidy.sh'; HOOK=rotated.sh; user=someone; cap=2147483648
+{fail}
+step() {{
+    echo "$*" >>"$T/log"
+    case "$*" in *"$FAILAT"*) fail "this step failed, and the install stopped here: $*" ;; esac
+    case $1 in launchctl_) "$@" ;; esac
+}}
+launchctl_() {{
+    case $1 in
+    print) [ "$RUNNING" = 1 ] && [ ! -e "$T/out-${{2#system/}}" ] ;;
+    bootout) : >"$T/out-${{2#system/}}" ;;
+    esac
+}}
+{steps}
+echo "left=[$left]" >>"$T/log"
+"#,
+        t = t.display(),
+        running = u8::from(running),
+    );
+    let out = Command::new("/bin/sh")
+        .env_clear()
+        .env("PATH", "/nonexistent")
+        .args(["-c", &code])
+        .output()
+        .unwrap();
+    let log = std::fs::read_to_string(t.join("log")).unwrap_or_default();
+    std::fs::remove_dir_all(&t).unwrap();
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8(out.stderr).unwrap(),
+        log,
+    )
+}
+
+#[test]
+fn an_install_that_fails_after_it_stopped_the_collector_says_what_it_left_and_one_that_fails_before_changes_nothing()
+ {
+    // What can fail without touching the collector that runs (the folders, the pipe, who may
+    // read the log) is done before it is stopped, and a failure there says nothing of a state
+    // it did not change. Once the install has stopped the collector, a failure says the
+    // collector is stopped; once it has started one launch daemon again, that it is partly
+    // started. A whole install leaves nothing to say.
+    const STOPPED: &str = "install: the collector is stopped, so nothing is recorded";
+    const PARTLY: &str = "install: the collector is partly started";
+    let dir = Dir::new("install-left");
+    let t = dir.0.join("steps").display().to_string();
+    for before in [
+        "/bin/mkdir",
+        "mkfifo",
+        "/bin/rm -f",
+        "chmod +a user:someone",
+        "find ",
+    ] {
+        let (code, err, log) = install_steps(&dir, before, true);
+        assert_eq!(code, 1, "{before}: {err}");
+        assert!(
+            err.starts_with("install: this step failed, and the install stopped here: ")
+                && err.lines().count() == 1
+                && !log.contains("bootout"),
+            "{before}: {err}\n{log}"
+        );
+    }
+    for (step, running, says) in [
+        (
+            "launchctl_ bootout system/ai.nuanu.immune.event-filter",
+            true,
+            Some(STOPPED),
+        ),
+        (
+            "launchctl_ bootout system/ai.nuanu.immune.event-tidy",
+            true,
+            Some(STOPPED),
+        ),
+        ("-m 644 ", true, Some(STOPPED)),
+        ("rotated.sh", true, Some(STOPPED)),
+        ("write_cap", true, Some(STOPPED)),
+        ("keeps", true, Some(STOPPED)),
+        ("bootstrap system", true, Some(STOPPED)),
+        (
+            "bootstrap system $T/daemons/ai.nuanu.immune.eslogger.plist",
+            true,
+            Some(PARTLY),
+        ),
+        (
+            "bootstrap system $T/daemons/ai.nuanu.immune.event-tidy.plist",
+            true,
+            Some(PARTLY),
+        ),
+        ("rotated.sh", false, None),
+        (
+            "bootstrap system $T/daemons/ai.nuanu.immune.eslogger.plist",
+            false,
+            Some(PARTLY),
+        ),
+    ] {
+        let step = step.replace("$T", &t);
+        let (code, err, log) = install_steps(&dir, &step, running);
+        assert_eq!(code, 1, "{step}: {err}");
+        assert_eq!(
+            err.lines().count(),
+            1 + usize::from(says.is_some()),
+            "{step}: {err}"
+        );
+        if let Some(says) = says {
+            assert!(
+                err.lines().nth(1).unwrap().starts_with(says),
+                "{step}: {err}"
+            );
+        }
+        assert!(!log.contains("left=["), "{step}: {log}");
+    }
+    for running in [true, false] {
+        let (code, err, log) = install_steps(&dir, "nothing fails", running);
+        assert_eq!((code, err.as_str()), (0, ""), "{log}");
+        assert!(log.ends_with("left=[]\n"), "{log}");
+        assert_eq!(log.contains("bootout"), running, "{log}");
+        assert_eq!(
+            log.matches("launchctl_ bootstrap system").count(),
+            3,
+            "{log}"
+        );
+    }
+}
+
+/// A tidy job's launch daemon as the installer copies it, with `cap` as its last argument, in
+/// `dir`.
+fn tidy_plist(dir: &Dir, name: &str, cap: &str) -> PathBuf {
+    let path = dir.0.join(name);
+    std::fs::copy(
+        Path::new(SCRIPTS).join("ai.nuanu.immune.event-tidy.plist"),
+        &path,
+    )
+    .unwrap();
+    let out = Command::new("/usr/bin/plutil")
+        .args(["-replace", "ProgramArguments.3", "-string", cap])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    path
+}
+
+/// The arguments a tidy job's launch daemon gives tidy.sh, as Apple's plutil reads them.
+fn tidy_args(path: &Path) -> Vec<String> {
+    let out = Command::new("/usr/bin/plutil")
+        .args(["-extract", "ProgramArguments", "json", "-o", "-"])
+        .arg(path)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    serde_json::from_slice(&out.stdout).unwrap()
+}
+
+#[test]
+fn the_log_s_cap_is_two_gib_by_default_and_what_that_holds_is_said_the_same_everywhere() {
+    // Without --log-gib and with no collector installed, the cap is the one the tidy job's
+    // launch daemon ships with, 2 GiB. What it holds at the install's own rates is worked out
+    // from what tidy.sh does at each new file of 128 MiB, and the install, the
+    // document and the README say the same. No cap is said to hold more than a day, nor to
+    // take more disk than a day's writing.
+    let template = Path::new(SCRIPTS).join("ai.nuanu.immune.event-tidy.plist");
+    assert_eq!(tidy_args(&template)[3], CAP);
+    let (code, out, err) = cap_code(&format!(
+        "cap_of '' /nonexistent/tidy.plist '{}' && cap_words {CAP} && cap_means {CAP}",
+        template.display()
+    ));
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        out,
+        format!("{CAP} default\n2 GiB\nits day\n2.5 2.9\n2.3\n")
+    );
+    // At the floor a quiet Mac's day no longer fits, and a cap kept from before that is not
+    // whole GiB is said in bytes.
+    let (_, out, _) = cap_code("cap_means 1073741824 && cap_words 1073741825");
+    assert_eq!(
+        out,
+        "about its last 21 hours\n1.2 1.5\n1.2\n1073741825 bytes\n"
+    );
+    // A cap above a building Mac's day: it holds its day, and the disk it takes is a day's
+    // writing and the file being written, not the cap.
+    let (_, out, _) = cap_code("cap_means 25769803776 && cap_means 1125899906842624");
+    assert_eq!(out, "its day\n24.0 24.0\n19.1\nits day\n24.0 24.0\n19.1\n");
+    let install = std::fs::read_to_string(Path::new(SCRIPTS).join("install")).unwrap();
+    for said in [
+        "it holds the log's cap, $capw ($cap bytes),\n      $from.",
+        "the log holds $quiet.",
+        "an hour, and the log holds $holds.",
+        r#"holds="between about ${building% *} and ${building#* } hours""#,
+        r#"[ "$building" = "24.0 24.0" ]"#,
+        "plus the file being written (128 MiB, or more if more than that arrives\nwithin one second), plus what is written while tidy.sh runs",
+        "about $disk GB of disk.",
+        "Heavy writing pushes older lines out before their day is over.",
+        "Lines deleted before they were read are counted, and Immune then says the\nday is partial.",
+    ] {
+        assert!(install.contains(said), "{said}");
+    }
+    let doc =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/event-level.md"))
+            .unwrap();
+    for said in [
+        "2 GiB (2,147,483,648 bytes)",
+        "between about 2.5 and 2.9 hours",
+        "at most about 2.3 GB of disk",
+        "plus the file being written (128 MiB, more only when more than that arrives within one second)",
+    ] {
+        assert!(doc.contains(said), "{said}");
+    }
+    let readme =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md")).unwrap();
+    assert_eq!(readme.matches("2 GiB").count(), 2, "{readme}");
+}
+
+#[test]
+fn a_cap_given_at_install_reaches_the_tidy_job_as_bytes() {
+    // `--log-gib 3` becomes 3221225472 bytes, the tidy job's last argument, and the rest of
+    // its arguments stay as shipped. The install writes it after the launch daemons are in
+    // place and before any is started.
+    let dir = Dir::new("cap-given");
+    let plist = tidy_plist(&dir, "tidy.plist", CAP);
+    let (code, out, err) = cap_code(&format!(
+        "parse_args --log-gib 3 && capped=$(cap_of \"$given\" /nonexistent '{p}') && echo \"$capped\" && write_cap \"${{capped% *}}\" '{p}'",
+        p = plist.display()
+    ));
+    assert_eq!((code, out.as_str()), (0, "3221225472 given\n"), "{err}");
+    let shipped = tidy_args(&Path::new(SCRIPTS).join("ai.nuanu.immune.event-tidy.plist"));
+    let written = tidy_args(&plist);
+    assert_eq!(written[3], "3221225472");
+    assert_eq!(written[..3], shipped[..3]);
+    // A given cap wins over the one installed.
+    let installed = tidy_plist(&dir, "installed.plist", "5368709120");
+    let (_, out, _) = cap_code(&format!("cap_of 3 '{}' /nonexistent", installed.display()));
+    assert_eq!(out, "3221225472 given\n");
+    let install = std::fs::read_to_string(Path::new(SCRIPTS).join("install")).unwrap();
+    let at = |s: &str| install.find(s).unwrap_or_else(|| panic!("{s}"));
+    let placed = at(
+        "step /usr/bin/install -o root -g wheel -m 644 \"$here/$l.plist\" \"$DAEMONS/$l.plist\"",
+    );
+    let capped = at("step write_cap \"$cap\" \"$TIDY\"");
+    let started = at("step /bin/launchctl bootstrap system");
+    assert!(placed < capped && capped < started);
+    assert!(install.contains("TIDY=\"$DAEMONS/ai.nuanu.immune.event-tidy.plist\""));
+}
+
+#[test]
+fn a_cap_that_is_not_a_whole_number_of_gib_from_one_is_refused_before_anything_is_done() {
+    // Zero, a negative number, a fraction, a unit, a leading zero, text, nothing, a value past
+    // the ceiling the shell's arithmetic needs, and an argument the install does not take are
+    // refused with the reason and the usage, exit code 64. The install reads its arguments
+    // before it checks it is root and before any step, so a refusal changes nothing.
+    for given in [
+        "0",
+        "-1",
+        "1.5",
+        "2G",
+        "2GiB",
+        "01",
+        "abc",
+        "",
+        "1048577",
+        "99999999999999999999",
+    ] {
+        let (code, out, err) = cap_code(&format!("parse_args --log-gib '{given}'; echo went on"));
+        assert_eq!(code, 64, "{given}: {out}{err}");
+        assert!(out.is_empty(), "{given}: {out}");
+        assert!(
+            err.starts_with("install: the log's cap is a whole number of GiB from 1 to 1048576"),
+            "{given}: {err}"
+        );
+        assert!(err.contains("usage: sudo /bin/sh"), "{given}: {err}");
+    }
+    for (args, said) in [
+        (
+            "--log-gib",
+            "install: --log-gib needs a whole number of GiB",
+        ),
+        (
+            "--cap 2",
+            "install: --cap is not an argument this script takes",
+        ),
+        ("2", "install: 2 is not an argument this script takes"),
+    ] {
+        let (code, out, err) = cap_code(&format!("parse_args {args}; echo went on"));
+        assert_eq!(code, 64, "{args}: {out}{err}");
+        assert!(err.starts_with(said), "{args}: {err}");
+        assert!(err.contains("usage: sudo /bin/sh"), "{args}: {err}");
+    }
+    for given in ["1", "2", "1048576"] {
+        let (code, out, err) =
+            cap_code(&format!("parse_args --log-gib {given} && echo \"$given\""));
+        assert_eq!((code, out.trim()), (0, given), "{err}");
+    }
+    let install = std::fs::read_to_string(Path::new(SCRIPTS).join("install")).unwrap();
+    let main = &install[install.find("# END the log's cap\n").unwrap()..];
+    let parsed = main
+        .find("parse_args \"$@\"")
+        .expect("the install reads its arguments");
+    for later in [
+        "/usr/bin/id -u",
+        "step ",
+        "/bin/mkdir",
+        "/bin/launchctl",
+        "cat <<EOF",
+    ] {
+        assert!(parsed < main.find(later).unwrap(), "{later}");
+    }
+}
+
+#[test]
+fn installing_again_keeps_the_installed_cap_and_never_one_that_is_broken_or_too_small() {
+    // Without --log-gib the install keeps the cap of the tidy job installed here when it is a
+    // whole number of bytes from 1 GiB, so installing again never shrinks the log by itself.
+    // A cap that is too small, not a whole number, or not there, gives the default.
+    let dir = Dir::new("cap-kept");
+    let template = Path::new(SCRIPTS).join("ai.nuanu.immune.event-tidy.plist");
+    let decided = |installed: &Path| {
+        let (code, out, err) = cap_code(&format!(
+            "cap_of '' '{}' '{}'",
+            installed.display(),
+            template.display()
+        ));
+        assert_eq!((code, err.as_str()), (0, ""));
+        out
+    };
+    for kept in ["5368709120", "1073741824", "1073741825"] {
+        let plist = tidy_plist(&dir, &format!("kept-{kept}.plist"), kept);
+        assert_eq!(decided(&plist), format!("{kept} kept\n"));
+    }
+    for broken in [
+        "524288000",
+        "1073741823",
+        "0",
+        "01073741824",
+        "abc",
+        "2147483648 ",
+        "-2147483648",
+        "9999999999999999",
+        "99999999999999999",
+        "99999999999999999999",
+    ] {
+        let plist = tidy_plist(&dir, "broken.plist", broken);
+        assert_eq!(decided(&plist), format!("{CAP} default\n"), "{broken}");
+    }
+    let garbage = dir.0.join("garbage.plist");
+    std::fs::write(&garbage, "not a property list").unwrap();
+    assert_eq!(decided(&garbage), format!("{CAP} default\n"));
+    assert_eq!(
+        decided(&dir.0.join("absent.plist")),
+        format!("{CAP} default\n")
+    );
+    // A default that is not a cap itself installs nothing: the install stops on it.
+    let shipped_broken = tidy_plist(&dir, "shipped-broken.plist", "2 GiB");
+    let (code, out, _) = cap_code(&format!(
+        "cap_of '' /nonexistent '{}'",
+        shipped_broken.display()
+    ));
+    assert_eq!((code, out.as_str()), (1, ""));
+    // And where it came from is said.
+    let install = std::fs::read_to_string(Path::new(SCRIPTS).join("install")).unwrap();
+    for from in [
+        "given with --log-gib",
+        "kept from the collector installed here",
+        "the default",
+    ] {
+        assert!(install.contains(from), "{from}");
+    }
+}
+
+#[test]
+fn the_status_gives_the_cap_the_tidy_job_was_installed_with_and_never_a_guess() {
+    // `event_level.log_cap_bytes` is the tidy job's last argument as installed. A launch daemon
+    // that cannot be read, or one that is gone while the collector is installed, gives no
+    // number but the reason; with no collector the field is absent.
+    let dir = Dir::new("cap-status");
+    dir.install();
+    dir.run();
+    let l = &dir.status()["event_level"];
+    assert_eq!(l["log_cap_bytes"], 2147483648u64, "{l:#}");
+    assert!(l.get("log_cap_reason").is_none(), "{l:#}");
+    tidy_plist(
+        &dir,
+        "root/Library/LaunchDaemons/ai.nuanu.immune.event-tidy.plist",
+        "5368709120",
+    );
+    dir.run();
+    assert_eq!(dir.status()["event_level"]["log_cap_bytes"], 5368709120u64);
+    // The cap is read whatever the reading's outcome: a reading that fails still gives the cap
+    // installed now, and never the one an earlier reading saw.
+    let two = exec(1).replace(r#""schema_version":1"#, r#""schema_version":2"#);
+    dir.append("exec-20261004T00.jsonl", &two);
+    tidy_plist(
+        &dir,
+        "root/Library/LaunchDaemons/ai.nuanu.immune.event-tidy.plist",
+        "3221225472",
+    );
+    dir.run();
+    let l = &dir.status()["event_level"];
+    assert_eq!(
+        (&l["state"], &l["log_cap_bytes"]),
+        (&json!("failed"), &json!(3221225472u64)),
+        "{l:#}"
+    );
+    std::fs::write(dir.root().join(TIDY), "not a property list").unwrap();
+    dir.run();
+    let l = &dir.status()["event_level"];
+    assert_eq!(l.get("log_cap_bytes"), Some(&Value::Null), "{l:#}");
+    assert!(
+        l["log_cap_reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("the cap of the event level's log could not be read: plutil:"),
+        "{l:#}"
+    );
+    tidy_plist(
+        &dir,
+        "root/Library/LaunchDaemons/ai.nuanu.immune.event-tidy.plist",
+        "half",
+    );
+    dir.run();
+    let l = &dir.status()["event_level"];
+    assert_eq!(
+        (&l["log_cap_bytes"], l["log_cap_reason"].as_str().unwrap()),
+        (
+            &Value::Null,
+            "the cap of the event level's log could not be read: its fourth argument is not a cap tidy.sh takes, a whole number of bytes of at least 1 GiB"
+        ),
+    );
+    std::fs::remove_file(dir.root().join(TIDY)).unwrap();
+    dir.run();
+    let l = &dir.status()["event_level"];
+    assert_eq!(
+        (&l["log_cap_bytes"], l["log_cap_reason"].as_str().unwrap()),
+        (
+            &Value::Null,
+            "the tidy job's launch daemon is not installed, so nothing keeps the log under a cap; installing the event level again puts it back"
+        ),
+    );
+    dir.uninstall();
+    dir.run();
+    let l = &dir.status()["event_level"];
+    assert!(
+        l.get("log_cap_bytes").is_none() && l.get("log_cap_reason").is_none(),
+        "{l:#}"
+    );
 }

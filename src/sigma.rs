@@ -318,6 +318,9 @@ pub struct Schema {
     /// folds, under this prefix and its name: the field a translated regular expression that
     /// ignores case reads, since Sigma's `re` keeps case.
     pub folded: Option<&'static str>,
+    /// The fields only a collector that keeps one of `crate::events::KEEPS` fills, by kind,
+    /// name and what fills it (`crate::events::ECS_KEPT`).
+    pub kept: &'static [(Kind, &'static str, crate::events::Keeps)],
 }
 
 /// SigmaHQ's taxonomy, as `docs/event-level.md` maps it. A path in `/private` is given under
@@ -329,6 +332,7 @@ pub static SIGMA_TAXONOMY: Schema = Schema {
     numbers: &[],
     links: true,
     folded: None,
+    kept: &[],
 };
 
 /// The Elastic Common Schema's names, as Elastic's own rules for macOS read them and as the
@@ -340,6 +344,7 @@ pub static ECS: Schema = Schema {
     numbers: &["process.args_count"],
     links: false,
     folded: Some("immune.folded."),
+    kept: &crate::events::ECS_KEPT,
 };
 
 /// A published rule set this build carries. Every loaded rule knows its source; what tells one
@@ -383,6 +388,7 @@ pub struct Source {
 /// The shape of a file a translator writes: a file of a translated set is read only when it has
 /// that shape, so a key the translator does not write, such as a level the set does not state,
 /// is refused rather than ignored. The lists are taken from the shipped files.
+#[derive(Clone, Copy)]
 pub struct Translation {
     /// The key of the block in which the translation records each rule's upstream identity and
     /// the alternatives of the upstream rule it left out (`in_part_missing_fields`).
@@ -683,6 +689,14 @@ impl Subject<'_> {
         match self {
             Subject::Start(_) => Kind::Process,
             Subject::File(_) => Kind::File,
+        }
+    }
+
+    /// Which of `crate::events::KEEPS` the collector that wrote its line kept.
+    fn kept(&self) -> crate::events::Keeps {
+        match self {
+            Subject::Start(s) => s.kept,
+            Subject::File(f) => f.kept,
         }
     }
 }
@@ -993,6 +1007,10 @@ pub struct Loaded {
     layout: usize,
     /// What an event must hold for the rule to be able to match it.
     need: Need,
+    /// What of `crate::events::KEEPS` the fields it reads need its collector to have kept, and
+    /// those fields: it is not asked about a line whose collector did not keep them.
+    pub needs: crate::events::Keeps,
+    pub needs_fields: Vec<String>,
 }
 
 impl Loaded {
@@ -1009,6 +1027,17 @@ impl Loaded {
     /// Evaluated, wholly or in part, over events of this kind.
     fn asked_of(&self, kind: Kind) -> bool {
         self.kind == Some(kind) && !matches!(self.placement, Placement::NotEvaluated(_))
+    }
+
+    /// Evaluated, wholly or in part, and reads a field the collector does not keep when it does
+    /// not keep `missing`: it judges nothing while that collector writes the log.
+    pub fn silenced_by(&self, missing: crate::events::Keeps) -> bool {
+        self.needs & missing != 0 && !matches!(self.placement, Placement::NotEvaluated(_))
+    }
+
+    /// Asked about an event of `kind` whose collector kept `kept`.
+    fn asked_about(&self, kind: Kind, kept: crate::events::Keeps) -> bool {
+        self.asked_of(kind) && self.needs & !kept == 0
     }
 }
 
@@ -1111,7 +1140,7 @@ impl Rules {
         for (n, layout) in self.layouts.iter().enumerate() {
             for values in layout.forms(subject) {
                 let event = layout.event(kind, &values);
-                for i in self.asked(n, kind, &values) {
+                for i in self.asked(n, kind, subject.kept(), &values) {
                     if !hit[i] {
                         hit[i] = self.rules[i]
                             .rule
@@ -1143,12 +1172,18 @@ impl Rules {
     /// The rules to ask about an event of `kind` with these values of layout `n`, as
     /// `Layout::forms` gives them, by their place: those of its schema and kind evaluated,
     /// wholly or in part, whose need the values hold.
-    fn asked(&self, n: usize, kind: Kind, values: &[Option<String>]) -> Vec<usize> {
+    fn asked(
+        &self,
+        n: usize,
+        kind: Kind,
+        kept: crate::events::Keeps,
+        values: &[Option<String>],
+    ) -> Vec<usize> {
         let held = self.layouts[n].texts.as_ref().map(|t| t.held(values));
         self.rules
             .iter()
             .enumerate()
-            .filter(|(_, l)| l.layout == n && l.asked_of(kind))
+            .filter(|(_, l)| l.layout == n && l.asked_about(kind, kept))
             .filter(|(_, l)| held.as_ref().is_none_or(|h| l.need.holds(h)))
             .map(|(i, _)| i)
             .collect()
@@ -1166,7 +1201,7 @@ impl Rules {
                 let event = layout.event(kind, &values);
                 for (i, l) in self.rules.iter().enumerate() {
                     hit[i] |= l.layout == n
-                        && l.asked_of(kind)
+                        && l.asked_about(kind, subject.kept())
                         && l.rule.as_ref().is_some_and(|r| r.is_match(&event));
                 }
             }
@@ -1573,6 +1608,8 @@ impl Loading {
                 rule: None,
                 layout,
                 need: Need::Any,
+                needs: 0,
+                needs_fields: Vec::new(),
             })
         }) {
             Ok(loaded) => loaded,
@@ -1586,6 +1623,8 @@ impl Loading {
                 rule: None,
                 layout,
                 need: Need::Any,
+                needs: 0,
+                needs_fields: Vec::new(),
             },
         };
         self.rules.push(loaded);
@@ -1647,6 +1686,8 @@ fn load(
         rule: None,
         layout: n,
         need: Need::Any,
+        needs: 0,
+        needs_fields: Vec::new(),
     };
     let yaml: Value = match serde_norway::from_str(text) {
         Ok(v) => v,
@@ -1673,6 +1714,7 @@ fn load(
         Some(Ok(left)) => place(&yaml, layout, left),
         None => place(&yaml, layout, Vec::new()),
     };
+    let (needs, needs_fields) = kind.map_or((0, Vec::new()), |k| kept_needs(&yaml, source, k));
     Loaded {
         file,
         source,
@@ -1683,7 +1725,43 @@ fn load(
         rule: Some(rule),
         layout: n,
         need: kind.map_or(Need::Any, |kind| need(&yaml, layout, kind, texts)),
+        needs,
+        needs_fields,
     }
+}
+
+/// What of `crate::events::KEEPS` a rule about events of `kind` needs its collector to have
+/// kept, from every field its detection names, a folded copy as its field, and those fields.
+fn kept_needs(yaml: &Value, source: &Source, kind: Kind) -> (crate::events::Keeps, Vec<String>) {
+    let schema = source.schema;
+    let mut fields = BTreeSet::new();
+    let mut needs = 0;
+    for (_, selection) in yaml["detection"].as_mapping().into_iter().flatten() {
+        let maps: Vec<&serde_norway::Mapping> = match selection {
+            Value::Mapping(m) => vec![m],
+            Value::Sequence(items) => items.iter().filter_map(Value::as_mapping).collect(),
+            _ => Vec::new(),
+        };
+        for name in maps
+            .into_iter()
+            .flat_map(|m| m.keys().filter_map(Value::as_str))
+            .filter_map(|k| k.split('|').next())
+        {
+            let base = schema
+                .folded
+                .and_then(|p| name.strip_prefix(p))
+                .unwrap_or(name);
+            for (_, field, keep) in schema
+                .kept
+                .iter()
+                .filter(|(k, f, _)| *k == kind && *f == base)
+            {
+                needs |= keep;
+                fields.insert(field.to_string());
+            }
+        }
+    }
+    (needs, fields.into_iter().collect())
 }
 
 /// The alternatives of the upstream rule that a translation recorded as left out, each as a
@@ -2305,8 +2383,70 @@ fn place(yaml: &Value, layout: &Layout, left: Vec<Branch>) -> Placement {
     }
 }
 
+/// No field of a program start needs a keep today, so a set whose schema says one does stands
+/// in for one in tests.
+#[cfg(test)]
+pub(crate) mod testing {
+    use super::*;
+
+    static SCHEMA: Schema = Schema {
+        process: &crate::events::ECS_FIELDS,
+        file: &crate::events::FILE_ECS_FIELDS,
+        numbers: &[],
+        links: false,
+        folded: None,
+        kept: &[(
+            Kind::Process,
+            "process.working_directory",
+            crate::events::SCRIPT,
+        )],
+    };
+
+    // Not a translated set: its one rule is written here, not by a translator.
+    static SET: Source = Source {
+        schema: &SCHEMA,
+        translation: None,
+        ..ELASTIC
+    };
+
+    /// The translation's record as the translator writes one for a rule of `source`: every key
+    /// of its record, with `severity` as given (a quoted level, or `null`), a risk score that
+    /// is null with it, and `left_out` as the list of what it left out. The other keys, which
+    /// nothing here reads, are null.
+    pub fn record_of(source: &Source, severity: &str, left_out: &str) -> String {
+        let t = source.translation.as_ref().unwrap();
+        let fields: Vec<String> = t
+            .record_keys
+            .iter()
+            .map(|k| match *k {
+                "severity" => format!("\"severity\": {severity}"),
+                "risk_score" if severity == "null" => "\"risk_score\": null".to_string(),
+                "risk_score" => "\"risk_score\": 47".to_string(),
+                "in_part_missing_fields" => format!("\"in_part_missing_fields\": [{left_out}]"),
+                k => format!("\"{k}\": null"),
+            })
+            .collect();
+        format!("{}: {{{}}}\n", t.record, fields.join(", "))
+    }
+
+    /// One rule of that set, about program starts: it fires on a start whose working directory
+    /// is not `/tmp`, so on one without a working directory too.
+    pub fn process_kept() -> Rules {
+        Rules::load_as(
+            &SET,
+            &[(
+                "cwd.yml",
+                "title: Invented cwd\nid: 00000000-0000-4000-8000-000000000010\nstatus: test\n\
+                 level: high\nlogsource: {\"product\": \"macos\", \"category\": \"process_creation\"}\n\
+                 detection:\n  s1: {\"process.working_directory|cased\": [\"/tmp\"]}\n  condition: \"not s1\"\n",
+            )],
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::testing::record_of;
     use super::*;
 
     fn start(image: &str, args: &[&str], parent: &str) -> ProcessStart {
@@ -2326,6 +2466,7 @@ mod tests {
             path: path.into(),
             source: from.map(str::to_string),
             executable: image.into(),
+            ..FileEvent::default()
         }
     }
 
@@ -2342,7 +2483,7 @@ mod tests {
         let mut files = Vec::new();
         for (n, layout) in rules.layouts.iter().enumerate() {
             for values in layout.forms(Subject::Start(s)) {
-                let asked = rules.asked(n, Kind::Process, &values);
+                let asked = rules.asked(n, Kind::Process, s.kept, &values);
                 files.extend(asked.into_iter().map(|i| rules.rules[i].file));
             }
         }
@@ -2665,26 +2806,6 @@ mod tests {
         Box::leak(text.into_boxed_str())
     }
 
-    /// The translation's record as the translator writes one for a rule of `source`: every key
-    /// of its record, with `severity` as given (a quoted level, or `null`), a risk score that
-    /// is null with it, and `left_out` as the list of what it left out. The other keys, which
-    /// nothing here reads, are null.
-    fn record_of(source: &Source, severity: &str, left_out: &str) -> String {
-        let t = source.translation.as_ref().unwrap();
-        let fields: Vec<String> = t
-            .record_keys
-            .iter()
-            .map(|k| match *k {
-                "severity" => format!("\"severity\": {severity}"),
-                "risk_score" if severity == "null" => "\"risk_score\": null".to_string(),
-                "risk_score" => "\"risk_score\": 47".to_string(),
-                "in_part_missing_fields" => format!("\"in_part_missing_fields\": [{left_out}]"),
-                k => format!("\"{k}\": null"),
-            })
-            .collect();
-        format!("{}: {{{}}}\n", t.record, fields.join(", "))
-    }
-
     /// A translated rule is asked by the names Elastic's rules use, so its texts are searched
     /// for like any rule's, and never taken for a field this level does not have. A name the
     /// schema does not give is named: in a selection the rule cannot do without, the rule is not
@@ -2949,9 +3070,13 @@ mod tests {
         assert_eq!(count("\"process.args_count|lte\": 3"), 1);
         assert_eq!(count("\"process.args_count|lt\": 3"), 0);
         assert_eq!(count("\"process.args_count\": 3"), 1);
-        // A file created, and one renamed.
+        // A file created, and one renamed; the signing id of the program that did it only
+        // where the line gives it.
         let created = given(
-            Subject::File(&file("/usr/bin/Java", "/opt/a/B.Class", None)),
+            Subject::File(&FileEvent {
+                signing_id: Some("com.example.Java".into()),
+                ..file("/usr/bin/Java", "/opt/a/B.Class", None)
+            }),
             Kind::File,
         );
         let renamed = given(
@@ -2970,6 +3095,7 @@ mod tests {
             "process.executable",
             "process.name",
             "immune.folded.file.name",
+            "process.code_signature.signing_id",
         ];
         let some =
             |v: &[&str]| -> Vec<Option<String>> { v.iter().map(|s| Some(s.to_string())).collect() };
@@ -2983,7 +3109,8 @@ mod tests {
                 "Class",
                 "/usr/bin/Java",
                 "Java",
-                "b.class"
+                "b.class",
+                "com.example.Java"
             ])
         );
         let mut want = some(&[
@@ -2995,10 +3122,12 @@ mod tests {
             "/bin/mv",
             "mv",
             ".bashrc",
+            "",
         ]);
         want[4] = None;
+        want[8] = None;
         assert_eq!(pick(&renamed, &names), want);
-        assert_eq!(created.len(), 7 + 7);
+        assert_eq!(created.len(), 8 + 8);
         for (path, extension) in [
             ("/tmp/notes.", None),
             ("/tmp/a.tar.gz", Some("gz")),
@@ -3007,6 +3136,123 @@ mod tests {
             let f = given(Subject::File(&file("/bin/cp", path, None)), Kind::File);
             assert_eq!(f["file.extension"].as_deref(), extension, "{path}");
         }
+    }
+
+    /// No false calm over an older log. A rule that reads a field only a collector that keeps
+    /// one of `KEEPS` fills is not asked about a line whose collector did not keep it: such a
+    /// line lacks the field, and a rule that negates it would match, one that asks for it would
+    /// miss, either way judging what the line cannot say. What it needs is known from every
+    /// field it names, a folded copy included; a rule that names none is asked as before.
+    #[test]
+    fn a_rule_that_reads_what_an_earlier_collector_did_not_keep_is_not_asked_about_its_lines() {
+        use crate::events::{IDENTITY, SCRIPT, SIGNATURE};
+        let load = |s2: &str| {
+            Rules::load_as(
+                &ELASTIC,
+                &[(
+                    "signer.yml",
+                    translated(
+                        &format!(
+                            "  s1: {{\"file.name|cased\": [\"StartupParameters.plist\"]}}\n  s2: {{{s2}}}\n  condition: \"s1 and not s2\"\n"
+                        ),
+                        FILE_CATEGORY,
+                        "",
+                    ),
+                )],
+            )
+        };
+        let plist = "/Library/StartupItems/x/StartupParameters.plist";
+        let signed = |id: Option<&str>, kept| FileEvent {
+            signing_id: id.map(str::to_string),
+            kept,
+            ..file("/bin/cp", plist, None)
+        };
+        let both = |rules: &Rules, f: &FileEvent| {
+            let fired = rules.evaluate(f).len();
+            assert_eq!(fired, rules.evaluate_each(f).len());
+            fired
+        };
+        for s2 in [
+            "\"process.code_signature.signing_id|cased\": [\"com.apple.shove\"]",
+            "\"immune.folded.process.code_signature.signing_id|re\": \"^com\\\\.apple\\\\.shove$\"",
+        ] {
+            let rules = load(s2);
+            let l = &rules.rules[0];
+            assert_eq!(l.placement, Placement::Evaluated, "{s2}");
+            assert_eq!(
+                (l.needs, l.needs_fields.as_slice()),
+                (
+                    SIGNATURE,
+                    ["process.code_signature.signing_id".to_string()].as_slice()
+                ),
+                "{s2}"
+            );
+            assert!(l.silenced_by(SIGNATURE) && !l.silenced_by(IDENTITY | SCRIPT));
+            let now = IDENTITY | SIGNATURE;
+            assert_eq!(
+                both(&rules, &signed(Some("com.example.cp"), now)),
+                1,
+                "{s2}"
+            );
+            assert_eq!(
+                both(&rules, &signed(Some("com.apple.shove"), now)),
+                0,
+                "{s2}"
+            );
+            // Kept, and eslogger gave none: the rule judges the line.
+            assert_eq!(both(&rules, &signed(None, now)), 1, "{s2}");
+            // A line of a collector that did not keep it: never asked.
+            assert_eq!(both(&rules, &signed(None, IDENTITY)), 0, "{s2}");
+        }
+        // A selection that is a list of maps names its fields as much as one map does.
+        let listed = Rules::load_as(
+            &ELASTIC,
+            &[(
+                "listed.yml",
+                translated(
+                    "  s1: [{\"process.name|cased\": [\"cp\"]}, {\"process.code_signature.signing_id|cased\": [\"x\"]}]\n  condition: s1\n",
+                    FILE_CATEGORY,
+                    "",
+                ),
+            )],
+        );
+        assert_eq!(listed.rules[0].needs, SIGNATURE);
+        // A rule that judges nothing here anyway is not said to be silenced by the collector.
+        let never = load(
+            "\"process.code_signature.signing_id|cased\": [\"com.apple.shove\"], \"process.code_signature.trusted\": true",
+        );
+        assert!(matches!(
+            never.rules[0].placement,
+            Placement::NotEvaluated(Reason::NeedsFields(_))
+        ));
+        assert_eq!(never.rules[0].needs, SIGNATURE);
+        assert!(!never.rules[0].silenced_by(SIGNATURE));
+        let plain = load("\"process.name|cased\": [\"cp\"]");
+        assert_eq!(plain.rules[0].needs, 0);
+        assert!(!plain.rules[0].silenced_by(crate::events::ALL_KEPT));
+        assert_eq!(both(&plain, &signed(None, 0)), 0);
+        assert_eq!(
+            both(
+                &plain,
+                &FileEvent {
+                    executable: "/bin/mv".into(),
+                    ..signed(None, 0)
+                }
+            ),
+            1
+        );
+        // A program start is judged by what its own line carries the same way.
+        let cwd = testing::process_kept();
+        assert_eq!(cwd.rules[0].needs, SCRIPT);
+        let at = |kept| ProcessStart {
+            working_directory: Some("/Users/x".into()),
+            kept,
+            ..start("/bin/cp", &[], "/bin/zsh")
+        };
+        assert_eq!(cwd.evaluate(&at(SCRIPT)).len(), 1);
+        assert_eq!(cwd.evaluate_each(&at(SCRIPT)).len(), 1);
+        assert_eq!(cwd.evaluate(&at(IDENTITY | SIGNATURE)).len(), 0);
+        assert_eq!(cwd.evaluate_each(&at(IDENTITY | SIGNATURE)).len(), 0);
     }
 
     /// Elastic's severity is the level of the same name, and the rule's id and name are

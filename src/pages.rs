@@ -1480,10 +1480,11 @@ pub fn rules_said(r: &serde_json::Value) -> String {
     let n = |key: &str| r[key].as_i64().unwrap_or(0);
     let files = n("file_rules");
     let mut said = if r["file_events_collected"] == true {
+        let watching_files = n("watching_file_rules");
         format!(
-            "{head} The event level is on, so {} of them are watching this Mac: {} every program start and {files} every file created or renamed; {} more are checked in part. In the last day they matched {}.",
+            "{head} The event level is on, so {} of them are watching this Mac: {} every program start and {watching_files} every file created or renamed; {} more are checked in part. In the last day they matched {}.",
             n("watching_rules"),
-            n("watching_rules") - files,
+            n("watching_rules") - watching_files,
             n("in_part"),
             crate::sigma::times(n("matches_last_day"))
         )
@@ -1509,8 +1510,17 @@ pub fn rules_said(r: &serde_json::Value) -> String {
 /// counts at the top are the status's; how many times each rule matched in the last day is
 /// the event level's, `events`.
 pub fn rules(r: &serde_json::Value, events: Option<&crate::events::Level>, now: i64) -> String {
+    rules_page(crate::sigma::Rules::shipped(), r, events, now)
+}
+
+/// The rules page for these rules.
+fn rules_page(
+    shipped: &crate::sigma::Rules,
+    r: &serde_json::Value,
+    events: Option<&crate::events::Level>,
+    now: i64,
+) -> String {
     use crate::sigma::{self, Placement, Reason};
-    let shipped = sigma::Rules::shipped();
     let from: Vec<String> = shipped
         .sources()
         .iter()
@@ -1587,10 +1597,17 @@ pub fn rules(r: &serde_json::Value, events: Option<&crate::events::Level>, now: 
                 .and_then(|m| events?.matches_last_day.get(&m.id))
                 .copied()
                 .unwrap_or(0);
-            // A rule for file events watches only while they are collected here; while the
-            // level runs and they are not, the rule says so by name.
+            // A rule for file events watches only while they are collected here, and a rule
+            // that reads what a collector may keep only while values of it arrive; while the
+            // level runs and they do not, the rule says so by name, with which.
             let file_rule = l.kind == Some(sigma::Kind::File);
-            let unwatched = file_rule && r["file_events_collected"] != true;
+            let files_unwatched = file_rule && r["file_events_collected"] != true;
+            let not_arriving = events
+                .filter(|e| {
+                    r["watching"] == true && !files_unwatched && l.silenced_by(e.not_arriving())
+                })
+                .map(|e| e.arrivals.worst(l.needs & e.not_arriving()));
+            let unwatched = files_unwatched || not_arriving.is_some();
             if matched > 0 {
                 w(format!(
                     "<p class=\"meta\">Matched {} in the last day.</p>\n",
@@ -1602,8 +1619,14 @@ pub fn rules(r: &serde_json::Value, events: Option<&crate::events::Level>, now: 
             {
                 w("<p class=\"meta\">No match in the last day.</p>\n".to_string());
             }
-            if unwatched && r["watching"] == true && l.placement == Placement::Evaluated {
+            if files_unwatched && r["watching"] == true && l.placement == Placement::Evaluated {
                 w("<p class=\"missing\">Not watching on this Mac: the collector installed here records program starts only. Installing the event level again adds files created and renamed.</p>\n".to_string());
+            }
+            match not_arriving {
+                Some(crate::events::Arrival::NotKept) => w("<p class=\"missing\">Not watching on this Mac: it reads what the collector installed here does not keep. Installing the event level again adds it.</p>\n".to_string()),
+                Some(crate::events::Arrival::Kept(None)) => w("<p class=\"missing\">Not watching on this Mac: it reads what the collector keeps and no line has given a value for yet.</p>\n".to_string()),
+                Some(_) => w("<p class=\"missing\">Not watching on this Mac: it reads what no line read so far would carry, so whether the collector keeps it is not yet known.</p>\n".to_string()),
+                None => {}
             }
             match &l.placement {
                 Placement::Evaluated => {}
@@ -2603,6 +2626,134 @@ mod tests {
         let mut out = String::new();
         coverage_of_list(&mut out, None, false, NONE_FOUND);
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn the_rules_page_never_says_no_match_of_a_rule_that_reads_what_does_not_arrive() {
+        // "No match in the last day" is calm. A rule, in full or in part, that reads what no
+        // line has given a value for has judged nothing, and says so instead, with which: the
+        // collector does not keep it, keeps it and never filled it, or no line was read yet.
+        use crate::events::{Arrival, Arrivals, Files, Level, RUNNING, Series, Tally};
+        use crate::sigma::{ELASTIC, Rules};
+        let rule = |id: &str, title: &str, detection: &str, left_out: &str| -> &'static str {
+            Box::leak(
+                format!(
+                    "title: {title}\nid: {id}\nstatus: test\nlevel: high\n\
+                     logsource: {{\"product\": \"macos\", \"category\": \"file_event\"}}\n\
+                     detection:\n{detection}{}",
+                    crate::sigma::testing::record_of(&ELASTIC, "\"high\"", left_out)
+                )
+                .into_boxed_str(),
+            )
+        };
+        let signer = "  s1: {\"process.code_signature.signing_id|cased\": [\"com.example\"]}\n  condition: s1\n";
+        let rules = Rules::load_as(
+            &ELASTIC,
+            &[
+                (
+                    "full.yml",
+                    rule(
+                        "00000000-0000-4000-8000-000000000001",
+                        "Invented in full",
+                        signer,
+                        "",
+                    ),
+                ),
+                (
+                    "part.yml",
+                    rule(
+                        "00000000-0000-4000-8000-000000000002",
+                        "Invented in part",
+                        signer,
+                        "\"needs_fields process.code_signature.trusted\"",
+                    ),
+                ),
+            ],
+        );
+        let on = Arrival::Kept(Some(1));
+        let sig = |a| Arrivals([on, on, a, on, a]);
+        let script = |a| Arrivals([on, a, on, on, on]);
+        let level_as = |state: &str, collected: bool, arrivals| Level {
+            state: state.to_string(),
+            read_at: 0,
+            written: None,
+            said_by: None,
+            said: None,
+            reason: None,
+            version: None,
+            since_check: Tally::default(),
+            last_day: Tally::default(),
+            matches_last_day: BTreeMap::new(),
+            matches_last_week: BTreeMap::new(),
+            starts_by_hour: Series::default(),
+            starts_by_minute: Series::default(),
+            files: Files {
+                collected,
+                ..Files::default()
+            },
+            arrivals,
+            cap: None,
+        };
+        let level = |arrivals| level_as(RUNNING, true, arrivals);
+        let page = |l: &Level| {
+            let r =
+                serde_json::json!({ "rules": crate::status::rules_section_of(&rules, Some(l)) });
+            rules_page(&rules, &r, Some(l), 0)
+        };
+        let said = "Not watching on this Mac: it reads what the collector installed here does not keep. Installing the event level again adds it.";
+        let earlier = page(&level(sig(Arrival::NotKept)));
+        assert_eq!(earlier.matches(said).count(), 2, "{earlier}");
+        assert!(!earlier.contains("No match in the last day"), "{earlier}");
+        let empty = page(&level(sig(Arrival::Kept(None))));
+        assert_eq!(
+            empty
+                .matches("Not watching on this Mac: it reads what the collector keeps and no line has given a value for yet.")
+                .count(),
+            2,
+            "{empty}"
+        );
+        assert!(!empty.contains("No match in the last day"), "{empty}");
+        let unknown = page(&level(sig(Arrival::Unknown)));
+        assert_eq!(
+            unknown
+                .matches("so whether the collector keeps it is not yet known")
+                .count(),
+            2,
+            "{unknown}"
+        );
+        assert!(!unknown.contains("No match in the last day"), "{unknown}");
+        // The count at the top counts neither among the rules watching file events.
+        let r = crate::status::rules_section_of(&rules, Some(&level(sig(Arrival::NotKept))));
+        assert!(
+            rules_said(&r).contains("0 every program start and 0 every file created or renamed"),
+            "{}",
+            rules_said(&r)
+        );
+        let now = page(&level(sig(on)));
+        assert!(!now.contains(said), "{now}");
+        assert_eq!(now.matches("No match in the last day.").count(), 2, "{now}");
+        // One reason at a time: while file events are not collected, that is the one said.
+        let no_files = page(&level_as(RUNNING, false, sig(Arrival::NotKept)));
+        assert!(!no_files.contains(said), "{no_files}");
+        assert!(
+            no_files.contains("records program starts only"),
+            "{no_files}"
+        );
+        // With no collector running there is no earlier collector to name, though nothing
+        // is known to arrive.
+        let off = page(&level_as("not_installed", false, Arrivals::default()));
+        assert!(!off.contains("Not watching on this Mac: it reads"), "{off}");
+        // The same for a rule about program starts, which no change of file events covers.
+        let starts = crate::sigma::testing::process_kept();
+        let page = |l: &Level| {
+            let r =
+                serde_json::json!({ "rules": crate::status::rules_section_of(&starts, Some(l)) });
+            rules_page(&starts, &r, Some(l), 0)
+        };
+        let earlier = page(&level(script(Arrival::NotKept)));
+        assert_eq!(earlier.matches(said).count(), 1, "{earlier}");
+        let off = page(&level_as("not_installed", false, Arrivals::default()));
+        assert!(!off.contains(said), "{off}");
     }
 
     #[test]
