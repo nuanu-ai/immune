@@ -11,12 +11,15 @@ evaluated over, what the translation left out of it, the fields it negates that 
 the kinds of event Elastic would also evaluate it on, and the actions the upstream rule takes,
 which are ignored. None is edited by hand. The translator is not part of this repository, and
 it is the one that translated `rules/elastic/`. `SHA256SUMS` holds the sha256 of every file as
-the translator wrote it, and a test fails when a file differs from it.
+the translator wrote it and of `not-taken.tsv`, and a test fails when a file differs from it.
 
 No rule states a level. Elastic's sensor sets a behaviour alert's severity when it runs and
 does not publish which a rule gets, so each file's `severity` and `risk_score` are null and the
-file has no `level`. Immune gives these rules no level of its own. Their matches are counted and
-handed over like those of a rule below high, and none of them raises a finding by itself.
+file has no `level`. Immune reads a file of this set only in that shape, the keys the translator
+writes and no other, so a level in any spelling is refused rather than ignored. It gives these
+rules no level of its own. Their matches are counted and handed over, and none of them raises a
+finding by itself. Wherever rules are ordered or cut by level, these are a group of their own,
+never ranked among the levels.
 
 Every one of the 278 upstream rules carries actions that stop a process. The translation records
 them in `actions_ignored`, and Immune takes none of them: it never stops a process.
@@ -43,13 +46,14 @@ What the translations rest on:
 - The 3 file rules would also be evaluated on kinds of file event the log does not hold, such as
   files modified or opened. One of them also asks for files modified, which never match here.
 
-6 of the 57 have the same name as a rule of another shipped set, under a different id. 5 share
-it with one of the 66 detection rules in `rules/elastic/`: Dumping Account Hashes via Built-In
-Commands, Modification of Safari Settings via Defaults Command, Potential Privacy Control
-Bypass via Localhost Secure Copy, Potential Kerberos Attack via Bifrost, and Unexpected Child
-Process of macOS Screensaver Engine. One shares it with a SigmaHQ rule in `rules/sigma/`:
-Potential XCSSET Malware Infection. An event that matches both is counted once in each set,
-and every listing names the set.
+6 titles are shared by two sets among the rules evaluated, and 14 among all the rules listed,
+taken or not, each pair under different ids. Among the rules evaluated, 5 of the 57 share a
+title with one of the 66 detection rules in `rules/elastic/`: Dumping Account Hashes via
+Built-In Commands, Modification of Safari Settings via Defaults Command, Potential Privacy
+Control Bypass via Localhost Secure Copy, Potential Kerberos Attack via Bifrost, and Unexpected
+Child Process of macOS Screensaver Engine. One shares it with a SigmaHQ rule in `rules/sigma/`:
+Potential XCSSET Malware Infection. An event that matches both is counted once in each set.
+Every listing of rules names each rule's set beside its title.
 
 `not-taken.tsv` lists the other 221 rules, each with its upstream path, rule id, name, an empty
 severity, the reason it was not taken and the translation's detail: `sequence` (it correlates

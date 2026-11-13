@@ -11312,10 +11312,12 @@ fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_wh
         n(&r["in_part"]) - 1
     );
     assert!(!section(page, "not-evaluated").contains("No match"));
-    // A rule of a set that states no level is listed under its own heading, after every
-    // level, and a reason the behaviour rules' translation added is said in words.
+    // The rules of a set that states no level are listed under their own heading, as a group
+    // after every level and not as one, and a reason the behaviour rules' translation added is said in words.
     let evaluated = section(page, "evaluated");
-    let none = evaluated.find("<h3>No level stated</h3>").unwrap();
+    let none = evaluated
+        .find("<h3>Of a set that states no level</h3>")
+        .unwrap();
     assert!(evaluated.find("<h3>Informational</h3>").unwrap() < none);
     assert!(evaluated.contains("<span class=\"chip lvl-none\">no level stated</span>"));
     assert!(

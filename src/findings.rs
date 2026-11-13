@@ -1324,7 +1324,7 @@ pub fn place(id: &str, this: Option<&This>) -> String {
 /// The shipped published rule a finding's rule names, `sigma:<id>` or `elastic:<id>`; `None`
 /// for any other rule and for a rule this build no longer ships.
 pub fn published(rule: &str) -> Option<&'static crate::sigma::Loaded> {
-    crate::sigma::Rules::shipped().by_finding_rule(rule)
+    crate::sigma::Rules::shipped().by_name(rule)
 }
 
 /// What a finding from a published rule is about, as the item's `kind`: a program start for a
@@ -1379,9 +1379,12 @@ pub fn published_words(source: &crate::sigma::Source) -> (Words, Words) {
 
 /// A finding of a published rule as an item: how bad is the rule's level, how sure follows its
 /// status (`sigma::Status::confidence`), and its first ATT&CK technique stands as the item's;
-/// every technique, the authors and the evidence are in `detail`.
+/// every technique, the authors and the evidence are in `detail`. `None` for a rule whose set
+/// states no level: this build raises no finding of one, and an item is never given an empty
+/// severity.
 fn published_item(f: &Found, l: &'static crate::sigma::Loaded) -> Option<Item> {
     let m = l.meta.as_ref()?;
+    let severity = m.level_name()?;
     let (starts, files) = published_words(m.source);
     let (kind, words) = match l.kind {
         Some(crate::sigma::Kind::File) => (PUBLISHED_FILE_KIND, files),
@@ -1390,10 +1393,9 @@ fn published_item(f: &Found, l: &'static crate::sigma::Loaded) -> Option<Item> {
     Some(Item {
         id: f.id.clone(),
         kind,
-        rule: Some(m.finding_rule.as_str()),
+        rule: Some(m.name.as_str()),
         technique: m.techniques.first().map(String::as_str),
-        // A finding comes only from a rule that states a level; the absence is no level.
-        severity: m.level_name().unwrap_or_default(),
+        severity,
         confidence: Some(m.status.confidence()),
         state: f.state.clone(),
         change: f.change.clone(),
@@ -1425,7 +1427,7 @@ fn answered_of(f: &Found) -> Option<Answered> {
     })
 }
 
-/// A finding as an item; `None` for a rule this build does not have.
+/// A finding as an item; `None` for a rule this build does not have or does not raise.
 pub fn item(f: &Found) -> Option<Item> {
     if let Some(l) = published(&f.rule) {
         return published_item(f, l);
@@ -1642,6 +1644,38 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_finding_of_a_rule_that_states_no_level_is_no_item_and_no_item_has_an_empty_severity() {
+        // This build raises no finding of a rule whose set states no level; one in the store is
+        // not shown as an item with a blank severity, which a reader could not weigh.
+        let found = |rule: &str| super::Found {
+            id: "f-1".into(),
+            rule: rule.into(),
+            about: "process:invented".into(),
+            state: "open".into(),
+            change: None,
+            first_seen: (1, "1".into()),
+            last_seen: (1, "1".into()),
+            answered_at: None,
+            reason: None,
+            until: None,
+            via: None,
+            superseded: false,
+            in_force: false,
+            place: "invented".into(),
+            became: None,
+            detail: None,
+        };
+        assert!(
+            super::item(&found(
+                "elastic-behaviour:2ed9c6bf-025e-4edf-a9ec-1493d0bb4f81"
+            ))
+            .is_none()
+        );
+        let padding = super::item(&found("sigma:95361ce5-c891-4b0a-87ca-e24607884a96")).unwrap();
+        assert_eq!(padding.severity, "high");
     }
 
     #[test]

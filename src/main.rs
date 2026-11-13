@@ -1096,6 +1096,9 @@ fn read_level(store: &Path) -> Result<Option<events::Level>, Stop> {
 fn replay_cmd(root: &Path, json: bool) -> ExitCode {
     let match_json = |h: &events::Hits| {
         serde_json::json!({
+            "name": h.meta.name,
+            "source": h.meta.source.name,
+            "set": h.meta.source.set,
             "id_text": status::text(&h.meta.id),
             "title_text": status::text(&h.meta.title),
             "level": h.meta.level_name(),
@@ -1137,11 +1140,12 @@ fn replay_cmd(root: &Path, json: bool) -> ExitCode {
             file_tally,
             matched,
         } => {
+            // From the most severe down, then by count; the rules of a set that states no level
+            // after them as a group of their own, by count, never ranked among the levels.
             let mut hits: Vec<&events::Hits> = matched.rules.values().collect();
             hits.sort_by(|a, b| {
-                b.meta
-                    .level
-                    .cmp(&a.meta.level)
+                (a.meta.level.is_none(), std::cmp::Reverse(a.meta.level))
+                    .cmp(&(b.meta.level.is_none(), std::cmp::Reverse(b.meta.level)))
                     .then_with(|| b.count.cmp(&a.count))
                     .then_with(|| a.meta.id.cmp(&b.meta.id))
             });
@@ -1169,12 +1173,20 @@ fn replay_cmd(root: &Path, json: bool) -> ExitCode {
                     things(file_tally.files, "file event", "file events"),
                     sigma::times(total)
                 ));
-                for h in hits {
+                let no_level = hits.iter().filter(|h| h.meta.level.is_none()).count();
+                for (i, h) in hits.iter().enumerate() {
+                    // The group's heading, before its first rule: they come last.
+                    if no_level > 0 && i == hits.len() - no_level {
+                        say(&format!(
+                            "  {}: {no_level}",
+                            crate::pages::capital(sigma::NO_LEVEL_GROUP)
+                        ));
+                    }
                     say(&format!(
                         "  {:<15} {:>7}  {}",
                         sigma::level_said(h.meta.level),
                         h.count,
-                        h.meta.title
+                        h.meta.label()
                     ));
                 }
             }

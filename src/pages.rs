@@ -1502,14 +1502,24 @@ pub fn rules(r: &serde_json::Value, events: Option<&crate::events::Level>, now: 
                 None => ("unknown", "unknown"),
                 Some(m) => (m.level_name().unwrap_or("none"), sigma::level_said(m.level)),
             };
+            // A heading for each level, from the most severe down; the rules of a set that states
+            // no level come last under their own, as a group and not as a level.
             if level != Some(this) {
-                w(format!("<h3>{}</h3>\n", esc(&capital(said))));
+                let heading = if l.states_no_level() {
+                    sigma::NO_LEVEL_GROUP
+                } else {
+                    said
+                };
+                w(format!("<h3>{}</h3>\n", esc(&capital(heading))));
                 level = Some(this);
             }
-            let title = l.meta.as_ref().map_or(l.file, |m| m.title.as_str());
+            let label = l
+                .meta
+                .as_ref()
+                .map_or_else(|| sigma::label(l.file, l.source), sigma::Meta::label);
             w(format!(
                 "<article class=\"rule\">\n<h4>{} <span class=\"chip lvl-{this}\">{said}</span></h4>\n",
-                source(title)
+                source(&label)
             ));
             // How many times it matched in the last day: any count there is, and while the
             // rules watch, that a rule they evaluate did not match.
@@ -1607,8 +1617,8 @@ pub fn rules(r: &serde_json::Value, events: Option<&crate::events::Level>, now: 
             }
             if l.detail.is_some() {
                 w(format!(
-                    "<li>{}'s rule, not taken, upstream in <span class=\"mono\">{}</span></li>\n</ul>\n</details>\n</article>\n",
-                    esc(l.source.publisher),
+                    "<li>Not taken from {}, upstream in <span class=\"mono\">{}</span></li>\n</ul>\n</details>\n</article>\n",
+                    esc(l.source.set),
                     esc(l.file)
                 ));
             } else {

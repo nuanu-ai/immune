@@ -90,8 +90,11 @@ enum FindingState {
   FINDING_STATE_CLEARED = 4;
 }
 
-// OCSF's level names, for severity and confidence. `UNSPECIFIED`, or a value the reader does not
-// know, is read as the highest for a severity and as the lowest for a confidence.
+// OCSF's level names, for severity and confidence, and for a published rule's level. Values are
+// added within version 1. `UNSPECIFIED`, or a value the reader does not know, is read as the
+// highest for a severity and for a rule's level, and as the lowest for a confidence. A rule's
+// level never decides whether the core raised a finding of a match: `RuleMatch.raised` says
+// that.
 enum Level {
   LEVEL_UNSPECIFIED = 0;
   LEVEL_INFORMATIONAL = 1;
@@ -102,6 +105,8 @@ enum Level {
   // The rule's set states no level, as Elastic's behaviour rules state none. It is not a
   // severity: it says nothing of how bad a match is, and such a rule raises no finding by
   // itself. Only a rule's level takes it (`Rule.level`, `Unevaluated.level`); a finding's
-  // severity or confidence never does.
+  // severity or confidence never does. A reader built before it was added reads it as a value
+  // it does not know, so as the highest level, while the match's `raised` says it raised
+  // nothing.
   LEVEL_NOT_STATED = 6;
 }

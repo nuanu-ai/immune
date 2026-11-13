@@ -1086,6 +1086,8 @@ pub fn rules_section(level: Option<&crate::events::Level>) -> Value {
                 "id_text": text(&m.id),
                 "title_text": text(&m.title),
                 "level": m.level_name(),
+                "source": m.source.name,
+                "set": m.source.set,
                 "reason": "file_events_not_collected",
             })
         })

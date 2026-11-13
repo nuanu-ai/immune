@@ -238,8 +238,9 @@ CREATE TABLE IF NOT EXISTS event_files (
 );
 -- Which finding each match of a rule that raises one went to, so `immune matches` says it
 -- exactly: the line, by its log file's name and inode and the offset where it begins; the rule
--- as findings name it; and the finding. Only rules marked high or critical raise one. A row of
--- a log file the reading no longer finds is removed, so a row lives as long as its line.
+-- by its name, its set and its id; and the finding. Only rules marked high or critical raise
+-- one. A row of a log file the reading no longer finds is removed, so a row lives as long as its
+-- line.
 CREATE TABLE IF NOT EXISTS rule_line (
     file    TEXT NOT NULL,
     inode   INTEGER NOT NULL,
@@ -1638,7 +1639,7 @@ fn record(
         }
         // One finding per rule on this Mac: a repeated match of a rule whose finding stands
         // adds to its count and its examples and raises nothing new.
-        let rule = hits.meta.finding_rule.as_str();
+        let rule = hits.meta.name.as_str();
         let (finding, raised) = crate::findings::occur(tx, rule, machine, "new", run_id, now)?;
         if raised {
             // What the finding rests on: a journal entry naming the rule and how many starts
@@ -1758,6 +1759,9 @@ pub fn finding_detail(
     let mut v = crate::sigma::Match { file, meta, kind }.json();
     v["licence"] = json!(meta.source.licence);
     v["licence_name"] = json!(meta.source.licence_name);
+    // Here `source` is where the set comes from, its repository, as the contract's
+    // `PublishedRuleMatched.source` has it since version 1.0.0; the set's machine name is the
+    // prefix of `name`, and `set` and `source_name` give it in words.
     v["source"] = json!(meta.source.url);
     v["source_name"] = json!(meta.source.set);
     let table = match kind {
@@ -2250,7 +2254,7 @@ pub enum WentTo {
     Unrecorded,
 }
 
-/// Which finding the core's own reading recorded the match of `rule` (as findings name it) on
+/// Which finding the core's own reading recorded the match of `rule` (by its name) on
 /// the line at `at` as going to, for a line it has read.
 pub fn went_to(conn: &Connection, at: &LineAt, rule: &str) -> rusqlite::Result<WentTo> {
     if !has(conn, "rule_line")? {

@@ -1473,6 +1473,8 @@ fn a_binary_padding_start_raises_one_finding_with_its_authors_and_arguments_and_
                 "level": "high",
                 "techniques_text": ["T1027.001"],
                 "author_text": "Igor Fits, Mikhail Larin, oscd.community",
+                "source": "sigma",
+                "set": "SigmaHQ's rule set",
             },
             "matches": 1,
             "events": [{ "program_start": {
@@ -1657,7 +1659,7 @@ fn a_medium_rule_s_match_is_counted_raises_nothing_and_keeps_no_argument() {
     let plain = dir.immune(&["rules"]);
     assert!(
         plain.contains(
-            "System Information Discovery Using sw_vers · matched 1 time in the last day"
+            "System Information Discovery Using sw_vers (SigmaHQ's rule set) · matched 1 time in the last day"
         ),
         "{plain}"
     );
@@ -1778,17 +1780,22 @@ fn a_replay_over_the_log_on_disk_counts_per_rule_touches_no_store_and_prints_no_
     );
     assert_eq!(
         r["matched"][0],
-        json!({ "id_text": PADDING, "title_text": "Binary Padding - MacOS", "level": "high",
+        json!({ "name": format!("sigma:{PADDING}"), "source": "sigma", "set": "SigmaHQ's rule set",
+                "id_text": PADDING, "title_text": "Binary Padding - MacOS", "level": "high",
                 "status": "test", "matches": 1 })
     );
     assert_eq!(
         r["matched"][1],
-        json!({ "id_text": SW_VERS, "title_text": "System Information Discovery Using sw_vers",
+        json!({ "name": format!("sigma:{SW_VERS}"), "source": "sigma", "set": "SigmaHQ's rule set",
+                "id_text": SW_VERS, "title_text": "System Information Discovery Using sw_vers",
                 "level": "medium", "status": "test", "matches": 1 })
     );
     let (ok, plain) = dir.replay(&[]);
     assert!(ok);
-    assert!(plain.contains("Binary Padding - MacOS"), "{plain}");
+    assert!(
+        plain.contains("Binary Padding - MacOS (SigmaHQ's rule set)"),
+        "{plain}"
+    );
     for text in [&out, &plain] {
         for never in ["if=/dev/zero", "-productVersion", CWD, "/bin/dd"] {
             assert!(!text.contains(never), "{never} in {text}");
@@ -2092,6 +2099,14 @@ fn no_rule_for_files_watches_until_the_collector_here_is_established_to_record_f
             .find(|n| n["id_text"] == "31151602-1de1-4301-9b75-215ac8902b75")
             .unwrap();
         assert_eq!(crontab["level"], Value::Null);
+        // Each with its set, by name and in words, as every listing of rules gives it.
+        assert_eq!(
+            (&crontab["source"], &crontab["set"]),
+            (
+                &json!("elastic-behaviour"),
+                &json!("Elastic's behaviour rules")
+            )
+        );
         let l = &r["event_level"];
         assert_eq!(
             (

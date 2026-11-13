@@ -8,8 +8,10 @@ and is not the upstream file. Its `references` link to the upstream file at that
 its `elastic` block gives the upstream rule's `rule_id`, severity and risk score, the sha256 of
 its query, the kinds of event it is evaluated over, what the translation left out of it, and
 the fields it negates that may be absent. None is edited by hand. The translator is not part
-of this repository. `SHA256SUMS` holds the sha256 of every file as the translator wrote it,
-and a test fails when a file differs from it.
+of this repository. `SHA256SUMS` holds the sha256 of every file as the translator wrote it
+and of `not-taken.tsv`, and a test fails when a file differs from it. Immune reads a file of
+this set only in the shape the translator writes, with the record's `severity` equal to the
+rule's `level`.
 
 Each translation was checked against a reference that follows Elasticsearch's documented
 meaning of the upstream query, on 33,969 invented events evaluated by `sigma-rust` 0.7.0, the

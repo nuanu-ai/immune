@@ -598,10 +598,9 @@ fn rule_row(out: &mut String, row: &Row, most: i64) -> Out {
     };
     writeln!(
         out,
-        "<div class=\"rr\" data-rule=\"{}\"><span class=\"rt\"><span class=\"src\">{}</span> <span class=\"rk\">{}</span></span><span class=\"rl\"><span class=\"lv lv-{level}\">{}</span></span><span class=\"rb\" aria-hidden=\"true\"><span style=\"width:{}%\"></span></span><span class=\"rc\">{}</span><span class=\"rs\">{state}</span></div>",
+        "<div class=\"rr\" data-rule=\"{}\"><span class=\"rt\"><span class=\"src\">{}</span></span><span class=\"rl\"><span class=\"lv lv-{level}\">{}</span></span><span class=\"rb\" aria-hidden=\"true\"><span style=\"width:{}%\"></span></span><span class=\"rc\">{}</span><span class=\"rs\">{state}</span></div>",
         esc(&row.meta.id),
-        esc(&row.meta.title),
-        esc(row.meta.source.set),
+        esc(&row.meta.label()),
         esc(&crate::pages::capital(sigma::level_said(row.meta.level))),
         (row.count * 100 / most.max(1)).max(1),
         num(row.count),
@@ -616,7 +615,7 @@ fn matched(out: &mut String, st: &crate::status::State, level: Option<&Level>) -
     let empty = BTreeMap::new();
     let week = level.map_or(&empty, |l| &l.matches_last_week);
     let finding_of = |m: &sigma::Meta| -> Option<(&str, bool)> {
-        let of = |i: &&Item| i.rule == Some(m.finding_rule.as_str());
+        let of = |i: &&Item| i.rule == Some(m.name.as_str());
         if let Some(i) = st.needs.items.iter().find(of) {
             return Some((i.id.as_str(), true));
         }
@@ -637,36 +636,71 @@ fn matched(out: &mut String, st: &crate::status::State, level: Option<&Level>) -
             })
         })
         .collect();
+    out.push_str("<div class=\"matched\">\n<div class=\"sh\"><h3>Rules that matched this week</h3><span class=\"n\">only a rule marked high raises a finding; the rest are counted</span></div>\n");
+    matched_rows(out, &mut rows)?;
+    writeln!(
+        out,
+        "<p class=\"all\">{}<a href=\"{DETAILS}/{}.html\">Published rules, each with what it looks for</a> · all {}</p>\n</div>",
+        shown_said(&rows),
+        crate::pages::RULES,
+        rules.rules.len()
+    )?;
+    Ok(())
+}
+
+/// The rows of the rules that matched, sorted and cut. Most severe first, then by count. The
+/// rules of a set that states no level are not ranked among them: they are a group of their
+/// own after them, by count, with its own heading, count and cut.
+fn matched_rows(out: &mut String, rows: &mut [Row]) -> Out {
     rows.sort_by(|a, b| {
         b.meta
             .level
             .cmp(&a.meta.level)
             .then(b.count.cmp(&a.count))
-            .then_with(|| a.meta.title.cmp(&b.meta.title))
+            .then_with(|| a.meta.label().cmp(&b.meta.label()))
     });
-    out.push_str("<div class=\"matched\">\n<div class=\"sh\"><h3>Rules that matched this week</h3><span class=\"n\">only a rule marked high raises a finding; the rest are counted</span></div>\n");
+    let (ranked, unranked): (Vec<&Row>, Vec<&Row>) =
+        rows.iter().partition(|r| r.meta.level.is_some());
     if rows.is_empty() {
         out.push_str("<p class=\"none\" data-live=\"none\">No rule matched this week.</p>\n");
     }
     let most = rows.iter().map(|r| r.count).max().unwrap_or(1).max(1);
-    for row in rows.iter().take(ROWS_SHOWN) {
+    for row in ranked.iter().take(ROWS_SHOWN) {
         rule_row(out, row, most)?;
     }
-    let shown = if rows.len() > ROWS_SHOWN {
-        format!(
-            "{} rules matched this week; the {ROWS_SHOWN} most severe are shown · ",
-            rows.len()
-        )
-    } else {
-        String::new()
-    };
-    writeln!(
-        out,
-        "<p class=\"all\" data-live=\"more\" hidden></p>\n<p class=\"all\">{shown}<a href=\"{DETAILS}/{}.html\">Published rules, each with what it looks for</a> · all {}</p>\n</div>",
-        crate::pages::RULES,
-        rules.rules.len()
-    )?;
+    if !unranked.is_empty() {
+        writeln!(
+            out,
+            "<div class=\"sh grp\"><h4>{}</h4><span class=\"n\">{}, counted and not ranked by severity</span></div>",
+            esc(&crate::pages::capital(sigma::NO_LEVEL_GROUP)),
+            crate::view::counted(unranked.len() as i64, "rule", "rules")
+        )?;
+        for row in unranked.iter().take(ROWS_SHOWN) {
+            rule_row(out, row, most)?;
+        }
+    }
+    out.push_str("<p class=\"all\" data-live=\"more\" hidden></p>\n");
     Ok(())
+}
+
+/// What the cut left out, said for each group apart: the rules with a level by severity, the
+/// rules of a set that states no level by count.
+fn shown_said(rows: &[Row]) -> String {
+    let ranked = rows.iter().filter(|r| r.meta.level.is_some()).count();
+    let unranked = rows.len() - ranked;
+    let mut shown = String::new();
+    if ranked > ROWS_SHOWN {
+        shown.push_str(&format!(
+            "{ranked} rules with a level matched this week; the {ROWS_SHOWN} most severe are shown · "
+        ));
+    }
+    if unranked > ROWS_SHOWN {
+        shown.push_str(&format!(
+            "{unranked} rules {} matched this week; the {ROWS_SHOWN} counted most are shown · ",
+            sigma::NO_LEVEL_GROUP
+        ));
+    }
+    shown
 }
 
 /// The grid of techniques: a legend, each tactic with its squares and "N of M", and what the
@@ -680,7 +714,7 @@ fn cover(out: &mut String, st: &crate::status::State, level: Option<&Level>, run
         .items
         .iter()
         .filter_map(|i| {
-            let rule = Rules::shipped().by_finding_rule(i.rule?)?;
+            let rule = Rules::shipped().by_name(i.rule?)?;
             Some(rule.meta.as_ref()?.id.as_str())
         })
         .collect();
@@ -925,7 +959,7 @@ detection:
         // markup and never mixed into the program's words.
         let meta = sigma::Meta {
             id: "x".to_string(),
-            finding_rule: "sigma:x".to_string(),
+            name: "sigma:x".to_string(),
             title: "<b>Padding</b> & \"co\"".to_string(),
             level: Some(sigma::Level::Medium),
             status: sigma::Status::Test,
@@ -943,7 +977,7 @@ detection:
         rule_row(&mut out, &row, 2_468).unwrap();
         assert!(
             out.contains(
-                "<span class=\"rt\"><span class=\"src\">&lt;b&gt;Padding&lt;/b&gt; &amp; &quot;co&quot;</span> <span class=\"rk\">SigmaHQ&#39;s rule set</span></span>"
+                "<span class=\"rt\"><span class=\"src\">&lt;b&gt;Padding&lt;/b&gt; &amp; &quot;co&quot; (SigmaHQ&#39;s rule set)</span></span>"
             ),
             "{out}"
         );
@@ -1002,12 +1036,73 @@ detection:
     }
 
     #[test]
+    fn a_rule_of_a_set_that_states_no_level_is_never_ranked_or_cut_by_severity() {
+        // Twelve rules with a level and twelve of a set that states none matched. The cut by
+        // severity is over the rules with a level only; the others are a group of their own
+        // under its heading, with its own count and its own cut, by count, never hidden as the
+        // least severe.
+        let metas: Vec<sigma::Meta> = (0..24)
+            .map(|i| sigma::Meta {
+                id: format!("r{i:02}"),
+                name: format!("x:r{i:02}"),
+                title: format!("Invented {i:02}"),
+                level: (i < 12).then(|| [sigma::Level::Medium, sigma::Level::Low][i % 2]),
+                status: sigma::Status::Test,
+                author: None,
+                techniques: Vec::new(),
+                description: None,
+                source: if i < 12 {
+                    &sigma::SIGMAHQ
+                } else {
+                    &sigma::ELASTIC_BEHAVIOUR
+                },
+            })
+            .collect();
+        // The rules with no level matched most, so a cut by count over all would show them.
+        let mut rows: Vec<Row> = metas
+            .iter()
+            .enumerate()
+            .map(|(i, meta)| Row {
+                meta,
+                count: if i < 12 { 1 } else { 100 + i as i64 },
+                finding: None,
+            })
+            .collect();
+        let mut out = String::new();
+        matched_rows(&mut out, &mut rows).unwrap();
+        let heading = out
+            .find("<h4>Of a set that states no level</h4><span class=\"n\">12 rules, counted and not ranked by severity</span>")
+            .expect("the group's heading");
+        let shown = |range: std::ops::Range<usize>| {
+            range
+                .map(|i| out.find(&format!("Invented {i:02} (")))
+                .collect::<Vec<_>>()
+        };
+        let levelled = shown(0..12);
+        let unlevelled = shown(12..24);
+        // Ten with a level shown, the mediums first, all before the heading.
+        assert_eq!(levelled.iter().flatten().count(), 10, "{out}");
+        assert!(levelled.iter().flatten().all(|at| *at < heading), "{out}");
+        assert!(levelled[0].is_some() && levelled[11].is_none(), "{out}");
+        // Ten of the group shown after its heading, the most counted first.
+        assert_eq!(unlevelled.iter().flatten().count(), 10, "{out}");
+        assert!(unlevelled.iter().flatten().all(|at| *at > heading), "{out}");
+        assert!(unlevelled[11].unwrap() < unlevelled[10].unwrap(), "{out}");
+        assert!(unlevelled[0].is_none() && unlevelled[1].is_none(), "{out}");
+        assert_eq!(
+            shown_said(&rows),
+            "12 rules with a level matched this week; the 10 most severe are shown · \
+             12 rules of a set that states no level matched this week; the 10 counted most are shown · "
+        );
+    }
+
+    #[test]
     fn a_rule_that_states_no_level_is_drawn_as_counted_and_says_so() {
         // A rule of a set that states no level shows that in the row, in the style of a rule
         // below high, and its matches are counted, never drawn as a finding.
         let meta = sigma::Meta {
             id: "y".to_string(),
-            finding_rule: "elastic-behaviour:y".to_string(),
+            name: "elastic-behaviour:y".to_string(),
             title: "Invented".to_string(),
             level: None,
             status: sigma::Status::Test,
@@ -1024,7 +1119,7 @@ detection:
         };
         rule_row(&mut out, &row, 3).unwrap();
         assert!(
-            out.contains("<span class=\"rk\">Elastic&#39;s behaviour rules</span>")
+            out.contains("<span class=\"src\">Invented (Elastic&#39;s behaviour rules)</span>")
                 && out.contains("<span class=\"lv lv-none\">No level stated</span>")
                 && out.contains("<span class=\"rs\">Counted</span>"),
             "{out}"

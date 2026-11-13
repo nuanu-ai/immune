@@ -2,9 +2,11 @@
 // (`matches.proto`) and a finding of a published rule (`findings.proto`) give them. Version 1 of
 // the contract; how a message is read is in `common.proto`.
 //
-// Values that will be added. A reader meets values of `FileAction`, and cases of `Event`'s
-// `body`, that it does not know: the core adds them within version 1. It treats one it does not
-// know as something it cannot judge.
+// Values that will be added. A reader meets values of `FileAction` and of a rule's `Level`, and
+// cases of `Event`'s `body`, that it does not know: the core adds them within version 1. It
+// treats one it does not know as something it cannot judge; a rule's level it does not know it
+// reads as the highest, as `common.proto` says, and that level never decides whether a match
+// raised a finding.
 
 syntax = "proto3";
 
@@ -14,9 +16,10 @@ import "immune/v1/common.proto";
 
 // A published rule, as the core ships it.
 message Rule {
-  // The name findings give the rule, its set's name and its id: `sigma:<id>` for SigmaHQ's,
+  // The rule's name: its set and its id, the same in every command. `sigma:<id>` for SigmaHQ's,
   // `elastic:<rule_id>` for Elastic's detection rules, `elastic-behaviour:<rule_id>` for
-  // Elastic's behaviour rules. The store's name for it.
+  // Elastic's behaviour rules. The store's name for it. A finding of a rule of a set that raises
+  // findings carries this name.
   string name = 1;
   // Its path in the shipped set, under the set's folder, `rules/sigma/`, `rules/elastic/` or
   // `rules/elastic-behaviour/`, as the prefix of `name` says. It moves between upstream commits.
@@ -31,6 +34,12 @@ message Rule {
   // Its `author`, which a message made from a match keeps, as the Detection Rule License asks
   // for SigmaHQ's rules.
   optional string author_text = 7;
+  // Its set: by its name for a machine, the prefix of `name` (`sigma`, `elastic` or
+  // `elastic-behaviour`), and in words for a person, such as "SigmaHQ's rule set". Rules of
+  // different sets can have the same title; these tell them apart. (`PublishedRuleMatched.source`
+  // is another thing: where the set comes from.)
+  string source = 8;
+  string set = 9;
 }
 
 // An event as the collector's log holds it. The case of `body` that is set names its kind; a

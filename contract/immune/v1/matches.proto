@@ -29,9 +29,11 @@
 //   the fields in its `fields_text`.
 // Otherwise the answer says what the core did not see, and the reader does not take it for calm.
 //
-// Values that will be added. A reader meets values of `Raised`, `CollectorState` and
-// `UnevaluatedReason`, and those `event.proto` names, that it does not know: the core adds them
-// within version 1. It treats one it does not know as something it cannot judge.
+// Values that will be added. A reader meets values of `Raised`, `CollectorState`,
+// `UnevaluatedReason` and a rule's `Level`, and those `event.proto` names, that it does not know:
+// the core adds them within version 1. It treats one it does not know as something it cannot
+// judge; a rule's level it does not know it reads as the highest, as `common.proto` says, and
+// that level never decides whether a match raised a finding: `raised` says that.
 
 syntax = "proto3";
 
@@ -87,12 +89,13 @@ message RuleMatch {
   repeated FindingRef findings = 5;
 }
 
-// What became of a match among the core's findings.
+// What became of a match among the core's findings. Values are added within version 1.
+// `UNSPECIFIED`, or a value the reader does not know, is read as something it cannot judge: the
+// reader judges the match itself.
 enum Raised {
   RAISED_UNSPECIFIED = 0;
-  // The rule is marked below high, or its set states no level (its `level` is
-  // `LEVEL_NOT_STATED`): its matches are counted and raise nothing. The reader judges the match
-  // itself.
+  // The rule is marked below high: its matches are counted and raise nothing. The reader judges
+  // the match itself.
   RAISED_BELOW_HIGH = 1;
   // The core's own reading raised a finding of the match or added it to one, as `findings` says.
   RAISED_FINDING = 2;
@@ -108,6 +111,9 @@ enum Raised {
   // It went to one of the rule's findings on this Mac, and the core cannot tell which. The reader
   // judges the match itself; `immune findings --all` lists the rule's findings.
   RAISED_UNRECORDED = 5;
+  // The rule's set states no level (its `level` is `LEVEL_NOT_STATED`): its matches are counted
+  // and raise nothing by themselves. The reader judges the match itself.
+  RAISED_LEVEL_NOT_STATED = 6;
 }
 
 // What was read after `after` up to `continue_after`, and what was not. Adding the stretches of
@@ -192,7 +198,7 @@ message Unevaluated {
   // Its path in the shipped set; for a rule not taken, the upstream file's path under its
   // repository's `rules/` folder.
   string file = 1;
-  // The name findings give it, `sigma:<id>`, `elastic:<rule_id>` or
+  // Its name, its set and its id as `Rule.name` gives it: `sigma:<id>`, `elastic:<rule_id>` or
   // `elastic-behaviour:<rule_id>`. Absent for a rule that could not be read.
   optional string name = 2;
   // Its `id`, `title` and level. Absent for a rule that could not be read. `level` is
@@ -209,6 +215,10 @@ message Unevaluated {
   // translated set did not take, what the translation said of it, and for `in_part` what a
   // translation left out that is not a missing field, such as a pattern it could not carry.
   optional string detail_text = 8;
+  // Its set, as `Rule.source` and `Rule.set` give it; present for a rule that could not be read
+  // too.
+  string source = 9;
+  string set = 10;
 }
 
 // Why a rule judges nothing here, or only part of what it means.

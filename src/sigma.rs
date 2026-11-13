@@ -5,9 +5,10 @@
 //! Three sets are shipped, each a `Source`: SigmaHQ's rules, unmodified, in `rules/sigma/`, and
 //! Elastic's detection rules and behaviour rules, translated mechanically into Sigma, in
 //! `rules/elastic/` and `rules/elastic-behaviour/`, each set with its NOTICE, compiled into the
-//! program. The source is a property of every loaded rule: it names the rule in findings
-//! (`sigma:<id>`, `elastic:<id>`, `elastic-behaviour:<id>`), its `Schema` says under which names
-//! an event is given to its rules, and it says whether its rules state a level. Another set is
+//! program. The source is a property of every loaded rule: a rule's name is its set and its id
+//! (`sigma:<id>`, `elastic:<id>`, `elastic-behaviour:<id>`), the same in every command, and a
+//! finding of a set that raises carries that name; its `Schema` says under which names an event
+//! is given to its rules, and it says whether its rules state a level. Another set is
 //! one more `Source`, not more code.
 //!
 //! What Sigma means is the evaluator's to say, `sigma-rust`'s: conditions, modifiers, case
@@ -344,7 +345,7 @@ pub static ECS: Schema = Schema {
 /// A published rule set this build carries. Every loaded rule knows its source; what tells one
 /// set from another is here, as data.
 pub struct Source {
-    /// The name a finding gives a rule of this set, before `:` and the rule's id.
+    /// The set's name for a machine: the part of a rule's name before `:` and the rule's id.
     pub name: &'static str,
     /// Who publishes the set, for a person.
     pub publisher: &'static str,
@@ -365,11 +366,9 @@ pub struct Source {
     pub files: &'static [(&'static str, &'static str)],
     /// How its rules name the parts of an event.
     pub schema: &'static Schema,
-    /// For a set translated into Sigma, the key of the block in which the translation records
-    /// each rule's upstream identity and the alternatives of the upstream rule it left out
-    /// (`in_part_missing_fields`). A translated file without that record is not evaluated:
-    /// what it left out would not be known. `None` for a set published in Sigma.
-    pub translation: Option<&'static str>,
+    /// For a set translated into Sigma, the shape the translator writes. `None` for a set
+    /// published in Sigma.
+    pub translation: Option<Translation>,
     /// For a translated set, the upstream rules that were not taken, after a header line, one
     /// a line, separated by tabs: the upstream file's path under its `rules/` folder, the rule's
     /// id, its name, its severity, the reason and the translation's detail.
@@ -379,6 +378,20 @@ pub struct Source {
     /// such a set is read without a level, and one that states a level is not read; a rule of
     /// any other set is not read without one. The core gives no rule a level of its own.
     pub states_levels: bool,
+}
+
+/// The shape of a file a translator writes: a file of a translated set is read only when it has
+/// that shape, so a key the translator does not write, such as a level the set does not state,
+/// is refused rather than ignored. The lists are taken from the shipped files.
+pub struct Translation {
+    /// The key of the block in which the translation records each rule's upstream identity and
+    /// the alternatives of the upstream rule it left out (`in_part_missing_fields`).
+    pub record: &'static str,
+    /// The keys a file may have at its top; a file may leave out one the translator writes only
+    /// for some rules, and has no other.
+    pub keys: &'static [&'static str],
+    /// The keys of the record: every one present, and no other.
+    pub record_keys: &'static [&'static str],
 }
 
 impl std::fmt::Debug for Source {
@@ -419,7 +432,38 @@ pub static ELASTIC: Source = Source {
     folder: "rules/elastic",
     files: ELASTIC_SHIPPED,
     schema: &ECS,
-    translation: Some("elastic"),
+    translation: Some(Translation {
+        record: "elastic",
+        // `falsepositives` only where the upstream rule names some.
+        keys: &[
+            "title",
+            "id",
+            "status",
+            "description",
+            "references",
+            "author",
+            "license",
+            "date",
+            "modified",
+            "tags",
+            "falsepositives",
+            "logsource",
+            "detection",
+            "level",
+            "elastic",
+        ],
+        record_keys: &[
+            "rule_id",
+            "severity",
+            "risk_score",
+            "query_sha256",
+            "kinds",
+            "in_part_missing_fields",
+            "also_asks_events",
+            "null_sensitive",
+            "folded_fields",
+        ],
+    }),
     not_taken: Some(include_str!("../rules/elastic/not-taken.tsv")),
     states_levels: true,
 };
@@ -441,7 +485,36 @@ pub static ELASTIC_BEHAVIOUR: Source = Source {
     folder: "rules/elastic-behaviour",
     files: ELASTIC_BEHAVIOUR_SHIPPED,
     schema: &ECS,
-    translation: Some("elastic"),
+    // No `level`, and the record's `severity` and `risk_score` are null.
+    translation: Some(Translation {
+        record: "elastic",
+        keys: &[
+            "title",
+            "id",
+            "status",
+            "description",
+            "references",
+            "license",
+            "tags",
+            "logsource",
+            "detection",
+            "elastic",
+        ],
+        record_keys: &[
+            "rule_id",
+            "version",
+            "severity",
+            "risk_score",
+            "query_sha256",
+            "kinds",
+            "in_part_missing_fields",
+            "also_asks_events",
+            "null_sensitive",
+            "folded_fields",
+            "actions_ignored",
+            "elastic_also_evaluates_on",
+        ],
+    }),
     not_taken: Some(include_str!("../rules/elastic-behaviour/not-taken.tsv")),
     states_levels: false,
 };
@@ -696,6 +769,11 @@ pub fn level_said(level: Option<Level>) -> &'static str {
 /// The words for a rule whose set states no level.
 pub const NO_LEVEL: &str = "no level stated";
 
+/// The heading of the rules whose set states no level, wherever rules are ordered or cut by
+/// severity. No level is not a place on that scale: those rules are a group of their own, after
+/// the rules with a level, and never ranked among them.
+pub const NO_LEVEL_GROUP: &str = "of a set that states no level";
+
 /// How mature a rule is, Sigma's statuses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -743,12 +821,13 @@ impl Status {
 #[derive(Debug)]
 pub struct Meta {
     pub id: String,
-    /// The id of a finding's rule when this rule raises one: its source's name and its id,
-    /// `sigma:<id>` or `elastic:<id>`.
-    pub finding_rule: String,
+    /// Its name: its set and its id, `sigma:<id>`, `elastic:<id>` or `elastic-behaviour:<id>`,
+    /// the same in every command. A finding of a rule of a set that raises carries it.
+    pub name: String,
     pub title: String,
-    /// `None` for a rule of a set that states no level (`Source::states_levels`). Ordered
-    /// after every level: `None` sorts below `Some`.
+    /// `None` for a rule of a set that states no level (`Source::states_levels`). That is not a
+    /// place on the scale of severity: wherever rules are ordered or cut by level, the rules
+    /// with none are a group of their own (`NO_LEVEL_GROUP`).
     pub level: Option<Level>,
     pub status: Status,
     /// The rule's `author` field. The Detection Rule License asks that a message made from a
@@ -774,6 +853,19 @@ impl Meta {
     pub fn level_name(&self) -> Option<&'static str> {
         self.level.map(Level::as_str)
     }
+
+    /// The rule as a person reads it in a listing: its title, then its set in words. Rules of
+    /// different sets can have the same title, so every listing for a person names a rule by
+    /// this, and a machine reads the set in the fields `source` and `set`.
+    pub fn label(&self) -> String {
+        label(&self.title, self.source)
+    }
+}
+
+/// A title and the set it is of, for a person: `Meta::label`, and the file of a rule that could
+/// not be read in place of its title.
+pub fn label(title: &str, source: &Source) -> String {
+    format!("{title} ({})", source.set)
 }
 
 /// What this level does with a rule. Whether a rule it can evaluate watches this Mac now is
@@ -909,6 +1001,11 @@ impl Loaded {
         self.detail.is_some()
     }
 
+    /// A rule read whole of a set that states no level: one of `NO_LEVEL_GROUP`.
+    pub fn states_no_level(&self) -> bool {
+        self.meta.as_ref().is_some_and(|m| m.level.is_none())
+    }
+
     /// Evaluated, wholly or in part, over events of this kind.
     fn asked_of(&self, kind: Kind) -> bool {
         self.kind == Some(kind) && !matches!(self.placement, Placement::NotEvaluated(_))
@@ -928,6 +1025,9 @@ impl Match<'_> {
     pub fn json(&self) -> Json {
         let m = self.meta;
         json!({
+            "name": m.name,
+            "source": m.source.name,
+            "set": m.source.set,
             "file": self.file,
             "events": self.kind.category(),
             "id_text": crate::status::text(&m.id),
@@ -992,11 +1092,11 @@ impl Rules {
             .find(|l| l.meta.as_ref().is_some_and(|m| m.id == id))
     }
 
-    /// A rule by the name findings give it, `sigma:<id>` or `elastic:<id>`.
-    pub fn by_finding_rule(&self, rule: &str) -> Option<&Loaded> {
+    /// A rule by its name, its set and its id.
+    pub fn by_name(&self, rule: &str) -> Option<&Loaded> {
         self.rules
             .iter()
-            .find(|l| l.meta.as_ref().is_some_and(|m| m.finding_rule == rule))
+            .find(|l| l.meta.as_ref().is_some_and(|m| m.name == rule))
     }
 
     /// The rules this event matches, in the order they are shipped. Only rules of its kind
@@ -1108,7 +1208,8 @@ impl Rules {
         let named = |l: &Loaded| {
             let mut v = json!({
                 "source": l.source.name,
-                "name": l.meta.as_ref().map(|m| m.finding_rule.as_str()),
+                "set": l.source.set,
+                "name": l.meta.as_ref().map(|m| m.name.as_str()),
                 "file": l.file,
                 "id_text": l.meta.as_ref().map(|m| crate::status::text(&m.id)),
                 "title_text": l.meta.as_ref().map(|m| crate::status::text(&m.title)),
@@ -1264,14 +1365,18 @@ impl Rules {
                 } else {
                     String::new()
                 };
-                format!(
-                    "  {:<15} {:<17} {}{matched}",
-                    level_said(m.level),
-                    l.source.name,
-                    m.title
-                )
+                format!("  {:<15} {}{matched}", level_said(m.level), m.label())
             }
-            None => format!("  {:<15} {:<17} {}", "?", l.source.name, l.file),
+            None => format!("  {:<15} {}", "?", label(l.file, l.source)),
+        };
+        // The rules of a set that states no level come after the rest under their own heading,
+        // as a group and never as a rank (`groups`).
+        let heading = |l: &Loaded, group: &[&Loaded], lines: &mut Vec<String>| {
+            let first = group.iter().find(|g| g.states_no_level());
+            if first.is_some_and(|f| std::ptr::eq(*f, l)) {
+                let n = group.iter().filter(|g| g.states_no_level()).count();
+                lines.push(format!("  {}: {n}", crate::pages::capital(NO_LEVEL_GROUP)));
+            }
         };
         let mut lines = vec![
             self.sources_said(),
@@ -1282,12 +1387,16 @@ impl Rules {
                 self.evaluated(Kind::File)
             ),
         ];
-        lines.extend(evaluated.into_iter().map(row));
+        for l in &evaluated {
+            heading(l, &evaluated, &mut lines);
+            lines.push(row(l));
+        }
         lines.push(format!(
             "Evaluated in part, some alternatives never match here: {}",
             in_part.len()
         ));
-        for l in in_part {
+        for l in &in_part {
+            heading(l, &in_part, &mut lines);
             lines.push(row(l));
             if let Placement::InPart(branches) = &l.placement {
                 for b in branches {
@@ -1296,7 +1405,8 @@ impl Rules {
             }
         }
         lines.push(format!("Not evaluated: {}", not_evaluated.len()));
-        for l in not_evaluated {
+        for l in &not_evaluated {
+            heading(l, &not_evaluated, &mut lines);
             lines.push(row(l));
             if let Placement::NotEvaluated(reason) = &l.placement {
                 let mut said = match reason {
@@ -1327,11 +1437,17 @@ impl Rules {
     }
 
     /// The rules split by placement: evaluated, in part, not evaluated, each from the most
-    /// severe down, in the order they are shipped within a level; a rule that states no level
-    /// after every level, and one that could not be read last.
+    /// severe down, in the order they are shipped within a level, then one that could not be
+    /// read; then, as a group of their own and not as a place on the scale, the rules of a set
+    /// that states no level (`NO_LEVEL_GROUP`).
     pub fn groups(&self) -> (Vec<&Loaded>, Vec<&Loaded>, Vec<&Loaded>) {
         let mut all: Vec<&Loaded> = self.rules.iter().collect();
-        all.sort_by_key(|l| std::cmp::Reverse(l.meta.as_ref().map(|m| m.level)));
+        all.sort_by_key(|l| {
+            (
+                l.states_no_level(),
+                std::cmp::Reverse(l.meta.as_ref().and_then(|m| m.level)),
+            )
+        });
         let mut groups = (Vec::new(), Vec::new(), Vec::new());
         for l in all {
             match l.placement {
@@ -1440,7 +1556,7 @@ impl Loading {
                 source,
                 meta: Some(Meta {
                     id: id.to_string(),
-                    finding_rule: format!("{}:{id}", source.name),
+                    name: format!("{}:{id}", source.name),
                     title: name.to_string(),
                     level,
                     // The translation writes `test` for every rule of the set, whatever the
@@ -1536,6 +1652,9 @@ fn load(
         Ok(v) => v,
         Err(e) => return not_parsed(e.to_string()),
     };
+    if let Err(said) = shape(&yaml, source) {
+        return not_parsed(said);
+    }
     let rule: sigma_rust::Rule = match serde_norway::from_value(yaml.clone()) {
         Ok(rule) => rule,
         Err(e) => return not_parsed(e.to_string()),
@@ -1545,7 +1664,11 @@ fn load(
         Err(said) => return not_parsed(said),
     };
     let kind = Kind::of(yaml["logsource"]["category"].as_str().unwrap_or_default());
-    let placement = match source.translation.map(|key| left_out(&yaml[key])) {
+    let placement = match source
+        .translation
+        .as_ref()
+        .map(|t| left_out(&yaml[t.record]))
+    {
         Some(Err(said)) => return not_parsed(said),
         Some(Ok(left)) => place(&yaml, layout, left),
         None => place(&yaml, layout, Vec::new()),
@@ -1569,7 +1692,7 @@ fn load(
 /// Without the record, what was left out is not known, and the rule is not evaluated.
 fn left_out(record: &Value) -> Result<Vec<Branch>, String> {
     let Some(items) = record["in_part_missing_fields"].as_sequence() else {
-        return Err("the translation's record of what it left out is missing".to_string());
+        return Err("the translation's record of what it left out is not a list".to_string());
     };
     items
         .iter()
@@ -2013,28 +2136,81 @@ impl Texts {
     }
 }
 
-/// Where a rule file states a level in any form, for a set that states none: a key named
-/// `level` in any case and with any value, or a severity or risk score in its translation's
-/// record that is not null. `None` when it states none. A rule of such a set that states one is
-/// not read: it would be evaluated without the level its file gives and raise nothing.
-fn level_stated(yaml: &Value, source: &Source) -> Option<String> {
-    let keys = yaml.as_mapping().into_iter().flatten().map(|(k, _)| k);
-    if let Some(key) = keys
-        .filter_map(Value::as_str)
-        .find(|k| k.eq_ignore_ascii_case("level"))
-    {
-        return Some(format!("its key `{key}`"));
+/// Whether a rule file has the shape its set's files have; the reason when it does not.
+///
+/// No mapping anywhere has the key `<<`. YAML 1.1 parsers that apply merge keys would read the
+/// keys it brings in, and the parser here keeps it as a key of its own, so a file with one means
+/// different things to different readers. This holds for every set.
+///
+/// A file of a translated set is exactly what the translator writes: its top keys are among
+/// those the translator writes, its record has exactly the record's keys, and every key is a
+/// plain string. Its level then follows from its set: a set that states no level has no `level`
+/// key, since the translator writes none, and a null `severity` and `risk_score` in the record;
+/// a translated set that states levels has the rule's `level` as the record's `severity`, as the
+/// translator copies it. An allow-list, so a key the translator never writes, in whatever case
+/// or spelling, is refused rather than ignored.
+fn shape(yaml: &Value, source: &Source) -> Result<(), String> {
+    fn merges(v: &Value) -> bool {
+        match v {
+            Value::Mapping(m) => m
+                .iter()
+                .any(|(k, v)| k.as_str() == Some("<<") || merges(k) || merges(v)),
+            Value::Sequence(s) => s.iter().any(merges),
+            Value::Tagged(t) => merges(&t.value),
+            _ => false,
+        }
     }
-    let record = &yaml[source.translation?];
-    ["severity", "risk_score"]
-        .into_iter()
-        .find(|k| !record[*k].is_null())
-        .map(|k| format!("its translation's `{k}`"))
+    if merges(yaml) {
+        return Err("the file has a merge key `<<`, which YAML readers read differently".into());
+    }
+    let Some(t) = &source.translation else {
+        return Ok(());
+    };
+    // The keys of a mapping that is one, each a plain string; `None` when one is not.
+    let keys = |v: &Value| -> Option<Vec<String>> {
+        v.as_mapping()?
+            .keys()
+            .map(|k| k.as_str().map(str::to_string))
+            .collect()
+    };
+    let Some(top) = keys(yaml) else {
+        return Err("the file is not a mapping of plain keys".into());
+    };
+    if let Some(k) = top.iter().find(|k| !t.keys.contains(&k.as_str())) {
+        return Err(format!("the translator writes no key {k:?}"));
+    }
+    let record = &yaml[t.record];
+    let Some(mut has) = keys(record) else {
+        return Err(format!(
+            "the translation's record `{}` is missing or not a mapping of plain keys",
+            t.record
+        ));
+    };
+    let mut wants: Vec<String> = t.record_keys.iter().map(|k| k.to_string()).collect();
+    has.sort();
+    wants.sort();
+    if has != wants {
+        return Err(format!(
+            "the translation's record has the keys {has:?}, and the translator writes {wants:?}"
+        ));
+    }
+    let severity = &record["severity"];
+    if source.states_levels {
+        if severity.as_str().is_none() || *severity != yaml["level"] {
+            return Err("the translation's `severity` is not the rule's `level`".into());
+        }
+    } else if !severity.is_null() || !record["risk_score"].is_null() {
+        return Err(
+            "the set states no level, and the translation's `severity` or `risk_score` is not null"
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 /// A rule is evaluated only with an id, so that a match can be named, and with a level, so that
-/// it can be weighed, unless its set states none: then it is evaluated without one, and one that
-/// states a level is not read, since its set gives none.
+/// it can be weighed, unless its set states none: then it is evaluated without one. That a file
+/// of such a set states no level is its shape's to hold (`shape`).
 fn meta(rule: &sigma_rust::Rule, yaml: &Value, source: &'static Source) -> Result<Meta, String> {
     // The evaluator refuses a level or status that is not Sigma's; it allows none.
     fn one_of<T: Copy>(table: &[(&str, T)], key: &str, yaml: &Value) -> Result<T, String> {
@@ -2048,15 +2224,11 @@ fn meta(rule: &sigma_rust::Rule, yaml: &Value, source: &'static Source) -> Resul
     let id = rule.id.clone().ok_or("the rule has no id")?;
     let level = if source.states_levels {
         Some(one_of(&LEVELS, "level", yaml)?)
-    } else if let Some(stated) = level_stated(yaml, source) {
-        return Err(format!(
-            "the set states no level, and the rule states one: {stated}"
-        ));
     } else {
         None
     };
     Ok(Meta {
-        finding_rule: format!("{}:{id}", source.name),
+        name: format!("{}:{id}", source.name),
         id,
         title: rule.title.clone(),
         level,
@@ -2314,7 +2486,9 @@ mod tests {
     /// Every shipped rule file is the file as it was taken, byte for byte: for every set, its
     /// sha256 is the one its folder's `SHA256SUMS` records (`rules/sigma/` as SigmaHQ published
     /// them, `rules/elastic/` and `rules/elastic-behaviour/` as the translator wrote them), and
-    /// the manifest names every file and no other. A set without a manifest fails here.
+    /// the manifest names every file and no other. A translated set's list of the upstream rules
+    /// it did not take, `not-taken.tsv`, is recorded with its files. A set without a manifest
+    /// fails here.
     #[test]
     fn every_shipped_rule_is_the_file_its_set_s_manifest_records() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -2328,10 +2502,13 @@ mod tests {
                     (path, hash)
                 })
                 .collect();
+            let not_taken = source.not_taken.map(|text| ("not-taken.tsv", text));
             let shipped: BTreeMap<&str, String> = source
                 .files
                 .iter()
-                .map(|(path, text)| (*path, crate::sha256::hex(text.as_bytes())))
+                .copied()
+                .chain(not_taken)
+                .map(|(path, text)| (path, crate::sha256::hex(text.as_bytes())))
                 .collect();
             assert_eq!(
                 recorded.keys().collect::<Vec<_>>(),
@@ -2443,7 +2620,7 @@ mod tests {
             let got: BTreeSet<String> = got
                 .iter()
                 .filter(|m| std::ptr::eq(m.meta.source, source))
-                .map(|m| m.meta.finding_rule.clone())
+                .map(|m| m.meta.name.clone())
                 .collect();
             if got != expected {
                 differ.push(format!(
@@ -2455,10 +2632,10 @@ mod tests {
                 let Some(m) = l.meta.as_ref().filter(|m| std::ptr::eq(m.source, source)) else {
                     continue;
                 };
-                if expected.contains(&m.finding_rule) {
-                    matched.insert(m.finding_rule.clone());
+                if expected.contains(&m.name) {
+                    matched.insert(m.name.clone());
                 } else {
-                    missed.insert(m.finding_rule.clone());
+                    missed.insert(m.name.clone());
                 }
             }
         }
@@ -2469,7 +2646,7 @@ mod tests {
             .rules
             .iter()
             .filter(|l| std::ptr::eq(l.source, source) && !l.not_taken())
-            .map(|l| l.meta.as_ref().unwrap().finding_rule.clone())
+            .map(|l| l.meta.as_ref().unwrap().name.clone())
             .collect();
         assert_eq!(all.len(), translated);
         assert_eq!(matched, all);
@@ -2482,9 +2659,30 @@ mod tests {
         let text = format!(
             "title: Invented\nid: 00000000-0000-4000-8000-000000000009\nstatus: test\n\
              level: high\nlogsource: {{\"product\": \"macos\", \"category\": \"{category}\"}}\n\
-             detection:\n{detection}elastic: {{\"in_part_missing_fields\": [{left_out}]}}\n"
+             detection:\n{detection}{}",
+            record_of(&ELASTIC, "\"high\"", left_out)
         );
         Box::leak(text.into_boxed_str())
+    }
+
+    /// The translation's record as the translator writes one for a rule of `source`: every key
+    /// of its record, with `severity` as given (a quoted level, or `null`), a risk score that
+    /// is null with it, and `left_out` as the list of what it left out. The other keys, which
+    /// nothing here reads, are null.
+    fn record_of(source: &Source, severity: &str, left_out: &str) -> String {
+        let t = source.translation.as_ref().unwrap();
+        let fields: Vec<String> = t
+            .record_keys
+            .iter()
+            .map(|k| match *k {
+                "severity" => format!("\"severity\": {severity}"),
+                "risk_score" if severity == "null" => "\"risk_score\": null".to_string(),
+                "risk_score" => "\"risk_score\": 47".to_string(),
+                "in_part_missing_fields" => format!("\"in_part_missing_fields\": [{left_out}]"),
+                k => format!("\"{k}\": null"),
+            })
+            .collect();
+        format!("{}: {{{}}}\n", t.record, fields.join(", "))
     }
 
     /// A translated rule is asked by the names Elastic's rules use, so its texts are searched
@@ -2522,7 +2720,7 @@ mod tests {
         );
         let bare = Box::leak(
             whole
-                .replace("elastic: {\"in_part_missing_fields\": []}\n", "")
+                .replace(&record_of(&ELASTIC, "\"high\"", ""), "")
                 .into_boxed_str(),
         );
         let rules = Rules::load_as(
@@ -2571,11 +2769,12 @@ mod tests {
         assert_eq!(
             rules.rules[4].placement,
             Placement::NotEvaluated(Reason::NotParsed(
-                "the translation's record of what it left out is missing".into()
+                "the translation's record `elastic` is missing or not a mapping of plain keys"
+                    .into()
             ))
         );
         assert_eq!(
-            rules.rules[2].meta.as_ref().unwrap().finding_rule,
+            rules.rules[2].meta.as_ref().unwrap().name,
             "elastic:00000000-0000-4000-8000-000000000009"
         );
         let insecure = start(
@@ -2825,7 +3024,7 @@ mod tests {
             let m = l.meta.as_ref().unwrap();
             assert_eq!(m.level_name(), yaml["elastic"]["severity"].as_str());
             assert_eq!(Some(m.id.as_str()), yaml["elastic"]["rule_id"].as_str());
-            assert_eq!(m.finding_rule, format!("elastic:{}", m.id));
+            assert_eq!(m.name, format!("elastic:{}", m.id));
             assert_eq!(Some(m.title.as_str()), yaml["title"].as_str());
             assert!(
                 m.author
@@ -2862,29 +3061,43 @@ mod tests {
             );
             assert_eq!(m.level, None, "{path}");
             assert_eq!(Some(m.id.as_str()), yaml["elastic"]["rule_id"].as_str());
-            assert_eq!(m.finding_rule, format!("elastic-behaviour:{}", m.id));
+            assert_eq!(m.name, format!("elastic-behaviour:{}", m.id));
             assert_eq!(Some(m.title.as_str()), yaml["title"].as_str());
         }
     }
 
-    /// Rules of different sets can have the same title, under different ids: an event that
-    /// matches both is counted once in each set, and a listing tells them apart by their set.
-    /// The pairs are counted here from the files, titles compared without case, and the
-    /// documents name every one, so a set that brings a new pair fails until they say so.
-    #[test]
-    fn every_title_two_sets_share_is_named_in_the_documents() {
+    /// The titles that rules of more than one set have, without case, each with its sets: among
+    /// the rules `which` keeps.
+    fn shared_titles(which: impl Fn(&Loaded) -> bool) -> Vec<(String, Vec<&'static str>)> {
         let mut sets_of: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
-        for l in Rules::shipped().rules.iter().filter(|l| !l.not_taken()) {
+        for l in Rules::shipped().rules.iter().filter(|l| which(l)) {
             let m = l.meta.as_ref().unwrap();
             sets_of
                 .entry(m.title.to_lowercase())
                 .or_default()
                 .insert(l.source.name);
         }
-        let shared: Vec<(&str, Vec<&str>)> = sets_of
-            .iter()
+        sets_of
+            .into_iter()
             .filter(|(_, sets)| sets.len() > 1)
-            .map(|(title, sets)| (title.as_str(), sets.iter().copied().collect()))
+            .map(|(title, sets)| (title, sets.into_iter().collect()))
+            .collect()
+    }
+
+    /// Rules of different sets can have the same title, under different ids: an event that
+    /// matches both is counted once in each set, and a listing tells them apart by their set.
+    /// The titles are counted here from the loaded rules, without case, among the rules
+    /// evaluated, wholly or in part, and among all listed, taken or not; the documents give
+    /// both numbers and name every title the evaluated rules share, so a set that brings a new
+    /// one fails until they say so.
+    #[test]
+    fn every_title_two_sets_share_is_named_in_the_documents() {
+        let listed = shared_titles(|l| l.meta.is_some());
+        let shared =
+            shared_titles(|l| matches!(l.placement, Placement::Evaluated | Placement::InPart(_)));
+        let shared: Vec<(&str, Vec<&str>)> = shared
+            .iter()
+            .map(|(t, s)| (t.as_str(), s.clone()))
             .collect();
         assert_eq!(
             shared,
@@ -2931,7 +3144,20 @@ mod tests {
                 "the behaviour NOTICE does not name {title}"
             );
         }
-        assert!(docs.contains("6 titles are shared by two sets"), "{docs}");
+        // Both numbers, from the loaded rules, in both documents.
+        let said = format!(
+            "{} titles are shared by two sets among the rules evaluated, and {} among all the rules listed, taken or not",
+            shared.len(),
+            listed.len()
+        );
+        assert!(
+            docs.contains(&said),
+            "docs/event-level.md does not say: {said}"
+        );
+        assert!(
+            notice.contains(&said),
+            "the behaviour NOTICE does not say: {said}"
+        );
     }
 
     /// The shipped rules for file events, by id.
@@ -2991,6 +3217,9 @@ mod tests {
         assert_eq!(
             s["drill"][3]["matches"],
             json!([{
+                "name": format!("sigma:{BINARY_PADDING}"),
+                "source": "sigma",
+                "set": "SigmaHQ's rule set",
                 "file": "rules/macos/process_creation/proc_creation_macos_binary_padding.yml",
                 "events": "process_creation",
                 "id_text": BINARY_PADDING,
@@ -3669,33 +3898,167 @@ mod tests {
         assert!(rules.evaluate(&x).is_empty());
     }
 
-    /// No level is invented. A rule of a set that states none, as Elastic's behaviour rules
-    /// state none, is evaluated without a level, matches like any rule and raises no finding by
-    /// itself, and its absence is null where a machine reads it. A rule of that set that states
-    /// a level is not read, since its set gives none, and a rule of a set that states levels is
-    /// still not read without one. The same holds for the upstream rules a set did not take: an
-    /// empty severity only for a set that states none, and only an empty one there.
+    /// An invented rule of a translated set as its translator writes one: `top` is more top
+    /// keys, `level` the rule's level line (empty for none) and `severity` the record's.
+    fn written(source: &Source, top: &str, level: &str, severity: &str) -> String {
+        format!(
+            "title: Invented\nid: 00000000-0000-4000-8000-00000000000b\nstatus: test\n{top}{level}\
+             logsource: {{\"product\": \"macos\", \"category\": \"process_creation\"}}\n\
+             detection:\n  s1: {{\"process.name|cased\": [\"curl\"]}}\n  condition: s1\n{}",
+            record_of(source, severity, "")
+        )
+    }
+
+    /// The reason a file was not read; a panic when it was.
+    fn refused(rules: &Rules) -> String {
+        match &rules.rules[0].placement {
+            Placement::NotEvaluated(Reason::NotParsed(said)) => said.clone(),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A file of a translated set is read only in the shape its translator writes, an
+    /// allow-list: top keys among the translator's, the record's keys exactly its, no merge key
+    /// `<<` anywhere. So a file of the set that states no level cannot carry a level in any
+    /// spelling the reader would ignore, and a file of the translated set that states levels
+    /// has the record's `severity` equal to its `level`. Every shipped file has that shape, and
+    /// so has none of SigmaHQ's a merge key.
     #[test]
-    fn a_rule_of_a_set_that_states_no_level_is_evaluated_and_raises_nothing_by_itself() {
-        // `record` is more of the translation's record, as the translator writes it.
-        let with = |level: &str, record: &str| -> &'static str {
-            Box::leak(
-                format!(
-                    "title: Invented\nid: 00000000-0000-4000-8000-00000000000b\nstatus: test\n{level}\
-                     logsource: {{\"product\": \"macos\", \"category\": \"process_creation\"}}\n\
-                     detection:\n  s1: {{\"process.name|cased\": [\"curl\"]}}\n  condition: s1\n\
-                     elastic: {{{record}\"in_part_missing_fields\": []}}\n"
-                )
-                .into_boxed_str(),
+    fn a_translated_rule_is_read_only_in_the_shape_its_translator_writes() {
+        for source in SOURCES {
+            for (path, text) in source.files {
+                let yaml: Value = serde_norway::from_str(text).unwrap();
+                assert_eq!(shape(&yaml, source), Ok(()), "{}/{path}", source.folder);
+            }
+        }
+        let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
+        let behaviour = |top: &str| written(&ELASTIC_BEHAVIOUR, top, "", "null");
+        // The record with more keys in front, or with some taken out.
+        let record = record_of(&ELASTIC_BEHAVIOUR, "null", "");
+        let with_record = |r: String| behaviour("").replace(&record, &r);
+        let in_record = |extra: &str| with_record(record.replacen("{", &format!("{{{extra}, "), 1));
+        let none = behaviour("");
+        assert_eq!(
+            Rules::load_as(&ELASTIC_BEHAVIOUR, &[("none.yml", leak(none.clone()))]).rules[0]
+                .placement,
+            Placement::Evaluated
+        );
+        for (case, text) in [
+            ("level", behaviour("level: high\n")),
+            ("Level", behaviour("Level: high\n")),
+            ("null level", behaviour("level: null\n")),
+            ("level with a space", behaviour("'level ': high\n")),
+            ("tagged level", behaviour("!x level: high\n")),
+            ("top severity", behaviour("severity: high\n")),
+            ("top Severity", behaviour("Severity: critical\n")),
+            ("top risk_score", behaviour("risk_score: 99\n")),
+            ("custom level", behaviour("custom: {level: high}\n")),
+            ("merge at the top", behaviour("<<: {level: high}\n")),
+            (
+                "anchor and merge",
+                behaviour("x-defaults: &d {level: critical}\n<<: *d\n"),
+            ),
+            (
+                "merge in the detection",
+                none.replace("  condition: s1", "  <<: {s2: x}\n  condition: s1"),
+            ),
+            ("merge in the record", in_record("<<: {severity: high}")),
+            (
+                "severity",
+                with_record(
+                    record_of(&ELASTIC_BEHAVIOUR, "\"critical\"", "")
+                        .replace("\"risk_score\": 47", "\"risk_score\": null"),
+                ),
+            ),
+            (
+                "risk_score",
+                with_record(record.replace("\"risk_score\": null", "\"risk_score\": 99")),
+            ),
+            ("record Severity", in_record("\"Severity\": \"high\"")),
+            ("record SEVERITY", in_record("\"SEVERITY\": \"high\"")),
+            ("record risk-score", in_record("\"risk-score\": 73")),
+            ("record riskScore", in_record("\"riskScore\": 73")),
+            ("record Risk_Score", in_record("\"Risk_Score\": 73")),
+            ("record level", in_record("\"level\": \"high\"")),
+            ("record integer key", in_record("1: 73")),
+            (
+                "record severity_mapping",
+                in_record("\"severity_mapping\": [{\"severity\": \"high\"}]"),
+            ),
+            (
+                "record without severity",
+                with_record(record.replace("\"severity\": null, \"risk_score\": null, ", "")),
+            ),
+        ] {
+            let rules = Rules::load_as(&ELASTIC_BEHAVIOUR, &[("variant.yml", leak(text))]);
+            assert!(
+                matches!(
+                    rules.rules[0].placement,
+                    Placement::NotEvaluated(Reason::NotParsed(_))
+                ),
+                "{case}: {:?}",
+                rules.rules[0].placement
+            );
+        }
+        // The translated set that states levels: the level is the record's severity.
+        let elastic = |level: &str, severity: &str| {
+            Rules::load_as(
+                &ELASTIC,
+                &[("variant.yml", leak(written(&ELASTIC, "", level, severity)))],
             )
         };
-        let rule = |level: &str| with(level, "\"severity\": null, \"risk_score\": null, ");
-        let none = Rules::load_as(&ELASTIC_BEHAVIOUR, &[("none.yml", rule(""))]);
+        assert_eq!(
+            elastic("level: high\n", "\"high\"").rules[0].placement,
+            Placement::Evaluated
+        );
+        for (level, severity) in [
+            ("level: high\n", "\"medium\""),
+            ("level: high\n", "null"),
+            ("", "\"high\""),
+            ("", "null"),
+        ] {
+            assert_eq!(
+                refused(&elastic(level, severity)),
+                "the translation's `severity` is not the rule's `level`",
+                "{level:?} {severity}"
+            );
+        }
+        // A merge key is refused in a file of any set.
+        let sigma = "title: Invented\nid: 00000000-0000-4000-8000-00000000000c\nstatus: test\n\
+                     level: low\n<<: {level: high}\nlogsource: {product: macos, category: process_creation}\n\
+                     detection:\n  s1: {Image|endswith: /curl}\n  condition: s1\n";
+        assert_eq!(
+            refused(&Rules::load_as(&SIGMAHQ, &[("merge.yml", sigma)])),
+            "the file has a merge key `<<`, which YAML readers read differently"
+        );
+        // A set that states no level has a translator's shape, and that shape has no `level`.
+        for source in SOURCES.iter().filter(|s| !s.states_levels) {
+            let t = source.translation.as_ref().unwrap();
+            assert!(!t.keys.iter().any(|k| k.eq_ignore_ascii_case("level")));
+            assert!(t.record_keys.contains(&"severity") && t.record_keys.contains(&"risk_score"));
+        }
+    }
+
+    /// No level is invented. A rule of a set that states none, as Elastic's behaviour rules
+    /// state none, is evaluated without a level, matches like any rule and raises no finding by
+    /// itself, and its absence is null where a machine reads it. A rule of a set that states
+    /// levels is still not read without one. The same holds for the upstream rules a set did not
+    /// take: an empty severity only for a set that states none, and only an empty one there.
+    #[test]
+    fn a_rule_of_a_set_that_states_no_level_is_evaluated_and_raises_nothing_by_itself() {
+        let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
+        let none = Rules::load_as(
+            &ELASTIC_BEHAVIOUR,
+            &[(
+                "none.yml",
+                leak(written(&ELASTIC_BEHAVIOUR, "", "", "null")),
+            )],
+        );
         let m = none.rules[0].meta.as_ref().unwrap();
         assert_eq!(none.rules[0].placement, Placement::Evaluated);
         assert_eq!((m.level, m.raises()), (None, false));
         assert_eq!(
-            m.finding_rule,
+            m.name,
             "elastic-behaviour:00000000-0000-4000-8000-00000000000b"
         );
         let curl = start("/usr/bin/curl", &["curl"], "/bin/zsh");
@@ -3704,35 +4067,19 @@ mod tests {
         assert_eq!(matched[0].json()["level"], Json::Null);
         assert_eq!(none.summary_json()["evaluated"][0]["level"], Json::Null);
         // A high rule of a set that states levels raises; the level alone decides.
-        let high = Rules::load_as(&ELASTIC, &[("high.yml", rule("level: high\n"))]);
+        let high = Rules::load_as(
+            &ELASTIC,
+            &[(
+                "high.yml",
+                leak(written(&ELASTIC, "", "level: high\n", "\"high\"")),
+            )],
+        );
         assert!(high.rules[0].meta.as_ref().unwrap().raises());
-        let refused = |rules: Rules| match &rules.rules[0].placement {
-            Placement::NotEvaluated(Reason::NotParsed(said)) => said.clone(),
-            other => panic!("{other:?}"),
-        };
-        // A file of a set that states no level is refused when it states one in any form: a
-        // `level` key in any case and with any value, or a severity or risk score in its
-        // translation's record.
-        for (text, stated) in [
-            (rule("level: high\n"), "its key `level`"),
-            (rule("Level: high\n"), "its key `Level`"),
-            (rule("level: null\n"), "its key `level`"),
-            (
-                with("", "\"severity\": \"critical\", \"risk_score\": null, "),
-                "its translation's `severity`",
-            ),
-            (
-                with("", "\"severity\": null, \"risk_score\": 99, "),
-                "its translation's `risk_score`",
-            ),
-        ] {
-            assert_eq!(
-                refused(Rules::load_as(&ELASTIC_BEHAVIOUR, &[("stated.yml", text)])),
-                format!("the set states no level, and the rule states one: {stated}")
-            );
-        }
+        let bare = "title: Invented\nid: 00000000-0000-4000-8000-00000000000d\nstatus: test\n\
+                    logsource: {product: macos, category: process_creation}\n\
+                    detection:\n  s1: {Image|endswith: /curl}\n  condition: s1\n";
         assert_eq!(
-            refused(Rules::load_as(&ELASTIC, &[("bare.yml", rule(""))])),
+            refused(&Rules::load_as(&SIGMAHQ, &[("bare.yml", bare)])),
             "the rule has no level"
         );
 
@@ -3832,6 +4179,7 @@ mod tests {
             padding,
             &json!({
                 "source": "sigma",
+                "set": "SigmaHQ's rule set",
                 "name": format!("sigma:{BINARY_PADDING}"),
                 "file": "rules/macos/process_creation/proc_creation_macos_binary_padding.yml",
                 "id_text": BINARY_PADDING,
@@ -3852,11 +4200,19 @@ mod tests {
                 .any(|l| l.contains("selection_meshagent needs OriginalFileName"))
         );
         assert!(lines.iter().any(|l| l == "Evaluated in full: 175, 162 on every program start and 13 on every file created or renamed"));
-        // A person reads that a rule states no level, in the level's column.
+        // A person reads that a rule states no level, in the level's column, and its set beside
+        // its title; the rules of such a set come after the rest under their own heading.
+        let at = |line: &str| lines.iter().position(|l| l == line);
+        let heading = at("  Of a set that states no level: 47").expect("the group's heading");
+        let ditto =
+            at("  no level stated Sensitive File Copy via Ditto (Elastic's behaviour rules)");
+        assert!(ditto.is_some_and(|d| d > heading), "{lines:?}");
         assert!(
             lines
+                [heading..at("Evaluated in part, some alternatives never match here: 23").unwrap()]
                 .iter()
-                .any(|l| l == "  no level stated elastic-behaviour Sensitive File Copy via Ditto"),
+                .skip(1)
+                .all(|l| l.starts_with("  no level stated ")),
             "{lines:?}"
         );
     }
