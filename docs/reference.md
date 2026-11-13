@@ -61,18 +61,35 @@ The downloads use a proxy only when the environment names one, as `/usr/bin/curl
 
 ## Watched places
 
-28 rows in `src/watched.rs`. Adding a place is adding a row.
+36 rows in `src/watched.rs`. Adding a place is adding a row. Each kind is one reading. A place a later version reads for the first time on a store that already exists is read for the first time: what it holds is its baseline and is told once by `watched.first-read`.
 
 | Kind | Places |
 |---|---|
 | `autostart item` | every entry in `~/Library/LaunchAgents`, `/Library/LaunchAgents`, `/Library/LaunchDaemons` |
+| `login or logout hook` | the `LoginHook` and `LogoutHook` keys of `/Library/Preferences/com.apple.loginwindow.plist` and `~/Library/Preferences/com.apple.loginwindow.plist`, each as `<file>#/<key>` |
 | `shell profile` | `/etc/zshenv`, `zprofile`, `zshrc`, `zlogin`, `zlogout`, `profile`, `bashrc`; in the home folder `.zshenv`, `.zprofile`, `.zshrc`, `.zlogin`, `.zlogout`, `.bash_profile`, `.bash_login`, `.profile`, `.bashrc`, `.bash_logout` |
 | `ssh access file` | `~/.ssh/config`, `authorized_keys`, `rc`; `/etc/ssh/ssh_config`, `sshd_config` and their `.d` folders |
+| `authentication module` | every entry in `/etc/pam.d`, `/usr/local/etc/pam.d`, `/usr/local/lib/pam` and `/Library/Security/SecurityAgentPlugins`; `/etc/pam.conf`, `/usr/local/etc/pam.conf` |
 | `git hook` | every entry in each checkout's `.git/hooks`, except git's `.sample` files |
 
 Never a private key, never known hosts. A checkout whose `.git` is a file, as in a worktree or a submodule, keeps its hooks elsewhere; its hooks reading is partial and says so.
 
-Not read: `core.hooksPath`, `ZDOTDIR`, fish, files pulled in by `Include` in the SSH configuration, cron, the git configuration, launchd jobs with no file on disk.
+Only the hooks count in the login window's preferences, since the rest of the file changes for other reasons. CoreFoundation parses the file, in the XML, binary or old text form. Each hook's value is encoded exactly and its checksum is `has_content` of `<file>#/<key>`: a string by its UTF-16 code units, with no conversion or normalisation, an array or dictionary element by element, any other value as CoreFoundation writes it alone in binary. The file is one unit and its hooks are entries of it. A file with no hook holds no entry. A file that is not a property list, or whose top is not a dictionary, is a failed reading with the reason. A hook whose value cannot be read is named as `<file>#/<key>` with the reason: one nested deeper than 32 levels, or larger than this version reads, more than 10,000 values or 1 MiB encoded, each value counted every time it is referred to. The other hook is still compared, what was known of the unread one is kept, and losing sight of it is judged as the part's own, so that losing sight of the whole file later is found too. The public name adds the part after `#`; the baseline keeps the physical path and part separate. A literal file and a selected part with the same public name can still share an entity ID across readers. A hook, PAM file or plugins folder read before that is there and cannot be read now is a finding of its rule, with the reason, and is never told as removed. The PAM places are where OpenPAM, as Apple builds it, looks for a policy and for a module named without a path (pam.conf(5) and Apple's OpenPAM source). `/usr/lib/pam` and `/usr/share/pam.d` are left out because only an update of macOS can change them. An authorization plugin is a bundle: Immune sees it arrive and go, and does not see a change inside it. The pages say so of each one instead of when it last changed, `immune status` counts such entries per kind (`presence_only`, with `presence_only_note`), and `immune finding <id>` says it of a finding about one. An entry the latest check did not read in full is shown as not read at the last check, with why, never as unchanged.
+
+Not read: `core.hooksPath`, `ZDOTDIR`, fish, files pulled in by `Include` in the SSH configuration, the git configuration. These places of persistence are left out, and `cannot_judge` and `not_covered` name them:
+
+- login and logout hooks in root's preferences, `/var/root/Library/Preferences/com.apple.loginwindow.plist`, where `sudo defaults write` puts them; only root can read the file;
+- login and logout hooks in ByHost preferences, `~/Library/Preferences/ByHost/com.apple.loginwindow.<host>.plist`, kept for one Mac;
+- login and logout hooks in Managed Preferences, `/Library/Managed Preferences`, which a device management profile writes;
+- a PAM policy a device management profile installs, which OpenPAM reads before `/etc/pam.d`;
+- the authorization database, which says which authorization plugins run;
+- the sudoers file and its folder, which only root can read;
+- login items and background items, whose database needs Full Disk Access;
+- crontabs, which only root can read. Listing one is a tool's output, and no documentation says that listing it raises no permission dialog;
+- launchd jobs with no file on disk, which only launchd itself could list;
+- the applications reopened at login, which macOS rewrites at every logout.
+
+StartupItems and periodic scripts are not watched because current macOS no longer runs them: SystemStarter, which ran StartupItems, was removed in OS X 10.10, and `periodic` in macOS 15.
 
 ## What runs by itself
 

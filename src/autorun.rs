@@ -59,6 +59,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
+use crate::baseline::Unit;
 use crate::watched::{self, Content, Entry, Look};
 
 /// Where a row's paths are looked for.
@@ -800,7 +801,7 @@ pub fn look_all<'a>(
             let dir = match crate::guarded::under(base, Path::new(folder), &homes) {
                 Ok(dir) => dir,
                 Err(g) => {
-                    all.look.not_into(shown(rel, pattern), g, home);
+                    all.look.not_into(Unit::whole(shown(rel, pattern)), g, home);
                     continue;
                 }
             };
@@ -828,7 +829,7 @@ fn matching(dir: &Path, rel: &str, pattern: &str, out: &mut Looked) -> Vec<Strin
     let Some((before, after)) = name.split_once('*') else {
         return vec![pattern.to_string()];
     };
-    let listing = crate::baseline::unit_of(&shown(rel, folder)).to_string();
+    let listing = Unit::whole(shown(rel, folder));
     let names = std::fs::read_dir(dir).and_then(|entries| {
         entries
             .map(|e| e.map(|e| e.file_name()))
@@ -880,7 +881,7 @@ fn shown(rel: &str, file: &str) -> String {
 /// be parsed, is a failure with its reason, and is not counted as looked at. A link into a
 /// folder macOS asks permission for is not followed, and is said.
 fn look(p: &Point, path: &Path, shown: &str, out: &mut Looked, homes: &[&Path], home: &Path) {
-    let shown = shown.to_string();
+    let shown = Unit::whole(shown);
     let link = match std::fs::symlink_metadata(path) {
         // Not there: read in full, it holds nothing.
         Err(e) if absent(&e) => return out.look.read.push(shown),
@@ -896,13 +897,13 @@ fn look(p: &Point, path: &Path, shown: &str, out: &mut Looked, homes: &[&Path], 
         Ok(path) => path,
         Err(g) => return out.look.not_into(shown, g, home),
     };
-    let mut found: Vec<(String, Content)> = Vec::new();
+    let mut found: Vec<(Unit, Content)> = Vec::new();
     if let Folders(ident) = p.part {
-        match folders(&path, ident, &shown, out, homes, home) {
+        match folders(&path, ident, &shown.path, out, homes, home) {
             Err(why) => return out.look.failed.push((shown, why)),
             Ok(names) => {
                 for name in names {
-                    let entry = format!("{shown}/{name}");
+                    let entry = Unit::whole(format!("{shown}/{name}"));
                     out.look.read.push(entry.clone());
                     out.look.seen.push(entry.clone());
                     found.push((entry, value(name.as_bytes())));
@@ -937,12 +938,12 @@ fn look(p: &Point, path: &Path, shown: &str, out: &mut Looked, homes: &[&Path], 
         Select(format, keys) => match select(&bytes, format, keys) {
             Selected::Values(values) => {
                 for (pointer, hash) in values {
-                    found.push((format!("{shown}#{pointer}"), Content::Value(hash)));
+                    found.push((Unit::part(&shown.path, pointer), Content::Value(hash)));
                 }
             }
             Selected::Whole(why) => {
                 found.push((shown.clone(), whole(&bytes)));
-                out.whole.push((shown, why));
+                out.whole.push((shown.path, why));
             }
         },
         Present | Entries(_) | Folders(_) => return,
@@ -952,11 +953,11 @@ fn look(p: &Point, path: &Path, shown: &str, out: &mut Looked, homes: &[&Path], 
 }
 
 /// Counts a place looked at and keeps what it holds as entries of the row.
-fn push(p: &Point, out: &mut Looked, found: Vec<(String, Content)>, link: Option<String>) {
+fn push(p: &Point, out: &mut Looked, found: Vec<(Unit, Content)>, link: Option<String>) {
     out.look.present += 1;
-    for (path, content) in found {
+    for (unit, content) in found {
         out.look.entries.push(Entry {
-            path,
+            unit,
             watched_as: p.watched_as().unwrap_or_default(),
             content,
             link: link.clone(),
@@ -985,7 +986,7 @@ fn folders(
             continue;
         }
         let id = ident.of(&name).to_string();
-        let unit = format!("{shown}/{id}");
+        let unit = Unit::whole(format!("{shown}/{id}"));
         let at = match crate::guarded::followed(&entry.path(), homes) {
             Ok(at) => at,
             Err(g) => {
@@ -1183,6 +1184,70 @@ fn anywhere(v: &Value, key: &str, holds: &str) -> bool {
         }),
         Value::Array(items) => items.iter().any(|i| anywhere(i, key, holds)),
         _ => false,
+    }
+}
+
+/// The source paths and selectors that could have produced a legacy name. Check every
+/// candidate: a checkout path or a selected key can itself contain a literal hash.
+pub fn legacy_units(
+    kind: &str,
+    name: &str,
+    checkout: impl Fn(&str) -> bool,
+    out: &mut std::collections::BTreeSet<Unit>,
+) {
+    let matches = |pattern: &str, value: &str| {
+        pattern
+            .split_once('*')
+            .map_or(pattern == value, |(head, tail)| {
+                value
+                    .strip_prefix(head)
+                    .is_some_and(|rest| rest.ends_with(tail))
+            })
+    };
+    let file_matches = |point: &Point, pattern: &str, file: &str| {
+        let n = pattern.split('/').count();
+        let mut segments = file.rsplitn(n + 1, '/');
+        let mut patterns = pattern.rsplit('/');
+        let file_matches = patterns.all(|p| segments.next().is_some_and(|f| matches(p, f)));
+        file_matches
+            && match point.scope {
+                Scope::Home => segments.next().is_none(),
+                Scope::Checkout => segments.next().is_some_and(&checkout),
+                Scope::NamedBy(_) => false,
+            }
+    };
+    let pointer_matches = |selector: &str, pointer: &str| {
+        let selector: Vec<_> = selector.split('/').collect();
+        let pointer: Vec<_> = pointer.split('/').collect();
+        selector.len() == pointer.len()
+            && selector.into_iter().zip(pointer).all(|(s, p)| {
+                if s.contains('*') {
+                    // Selectors compare the decoded key, not its escape in the public name.
+                    matches(s, &p.replace("~1", "/").replace("~0", "~"))
+                } else {
+                    s == p
+                }
+            })
+    };
+    for point in POINTS.iter().filter(|p| p.read_here() && p.kind() == kind) {
+        for pattern in point.paths {
+            if file_matches(point, pattern, name)
+                || matches!(point.part, Folders(_))
+                    && file_matches(point, pattern, crate::baseline::parent(name))
+            {
+                out.insert(Unit::whole(name));
+            }
+            if let Select(_, selectors) = point.part {
+                for (i, _) in name.match_indices("#/") {
+                    let (file, pointer) = (&name[..i], &name[i + 1..]);
+                    if file_matches(point, pattern, file)
+                        && selectors.iter().any(|s| pointer_matches(s, pointer))
+                    {
+                        out.insert(Unit::part(file, pointer));
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1694,7 +1759,7 @@ mod tests {
             x.look
                 .entries
                 .iter()
-                .map(|e| (e.path.clone(), e.content.literal()))
+                .map(|e| (e.unit.to_string(), e.content.literal()))
                 .collect::<Vec<_>>()
         };
         assert_eq!(

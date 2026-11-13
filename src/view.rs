@@ -1339,7 +1339,7 @@ fn watched_changed(conn: &Connection) -> rusqlite::Result<BTreeSet<String>> {
 /// Watched places: per kind, each file with when it was first seen and when its content last
 /// changed, and the coverage of each reading. Only checksums are in the store, never content.
 fn watched(conn: &Connection, out: &mut String, latest: &[Latest], now: i64) -> Out {
-    use crate::watched::{CONTENT, READER};
+    use crate::watched::READER;
     out.push_str("<section id=\"watched\">\n<h2>Watched places</h2>\n");
     out.push_str("<p class=\"muted\">Places where persistence lives. Each file is kept as a checksum of its content, never the content.</p>\n");
     let mut stmt = conn.prepare(
@@ -1389,6 +1389,7 @@ fn watched(conn: &Connection, out: &mut String, latest: &[Latest], now: i64) -> 
         f.content_since = at;
     }
     let changed = watched_changed(conn)?;
+    let now_known = crate::watched::content_now(conn)?;
     let read_by_us: Vec<&Latest> = latest.iter().filter(|r| r.reader == READER).collect();
     for (watched_as, kind) in crate::watched::kinds() {
         let readings: Vec<&&Latest> = read_by_us.iter().filter(|r| r.kind == kind).collect();
@@ -1453,19 +1454,27 @@ fn watched(conn: &Connection, out: &mut String, latest: &[Latest], now: i64) -> 
             td(out, "mono", &f.content)?;
             td(out, "mono", &f.link)?;
             td(out, "nowrap", &utc(f.first_seen))?;
-            let last = if changed.contains(id) {
-                utc(f.content_since)
+            // Never "unchanged" where the content is not compared: what the latest check did
+            // not read in full, a folder watched only for whether it is there, and content no
+            // reading read.
+            let now = now_known.get(id).filter(|n| !n.read());
+            let (class, last) = if let Some(n) = now {
+                ("", n.not_read())
+            } else if f.content.starts_with(crate::watched::NOT_A_FILE) {
+                ("", crate::watched::PRESENCE_ONLY.to_string())
+            } else if changed.contains(id) {
+                ("nowrap", utc(f.content_since))
+            } else if f.content.is_empty() && f.link.is_empty() {
+                ("", crate::watched::NEVER_READ.to_string())
             } else {
-                "not since first seen".to_string()
+                ("nowrap", "not since first seen".to_string())
             };
-            td(out, "nowrap", &last)?;
+            td(out, class, &last)?;
+            // The latest reading that speaks of it, never an earlier one.
             out.push_str("<td>");
-            if let Some(r) = read_by_us
-                .iter()
-                .find(|r| r.kind == CONTENT && r.scope == *id)
-            {
-                badge(out, &r.completeness, None)?;
-                if let Some(reason) = &r.reason {
+            if let Some(n) = now_known.get(id) {
+                badge(out, &n.completeness, None)?;
+                if let Some(reason) = &n.reason {
                     write!(out, " {}", esc(reason))?;
                 }
             }

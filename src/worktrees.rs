@@ -42,7 +42,7 @@ use serde_json::json;
 use crate::checkouts::Checkout;
 use crate::guarded::{self, Real};
 use crate::store::Reading;
-use crate::watched::Entry;
+use crate::{baseline::Unit, watched::Entry};
 
 /// The journal's entry for a place that appeared the same as in another checkout.
 pub const SAME: &str = "same_as_sibling";
@@ -165,16 +165,24 @@ impl Siblings {
     /// A path names one row of the tables, so the same path is the same kind of place, and a
     /// part is never equal to a whole file: their literals differ. `read` is every entry of
     /// this reading by its path.
-    pub fn same_as(&self, path: &str, read: &BTreeMap<&str, &Entry>) -> Option<(String, String)> {
+    pub fn same_as(&self, unit: &Unit, read: &BTreeMap<&Unit, &Entry>) -> Option<(String, Unit)> {
         let (worktree, within) = self
             .looked
             .iter()
-            .filter_map(|rel| Some((rel, path.strip_prefix(rel.as_str())?.strip_prefix('/')?)))
+            .filter_map(|rel| {
+                Some((
+                    rel,
+                    unit.path.strip_prefix(rel.as_str())?.strip_prefix('/')?,
+                ))
+            })
             .max_by_key(|(rel, _)| rel.len())?;
-        let part = read.get(path)?.content.literal()?;
+        let part = read.get(unit)?.content.literal()?;
         self.of.get(worktree)?.iter().find_map(|other| {
-            let there = format!("{other}/{within}");
-            let same = read.get(there.as_str())?.content.literal()? == part;
+            let there = Unit {
+                path: format!("{other}/{within}"),
+                part: unit.part.clone(),
+            };
+            let same = read.get(&there)?.content.literal()? == part;
             same.then(|| (other.clone(), there))
         })
     }

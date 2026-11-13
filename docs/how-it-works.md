@@ -114,7 +114,7 @@ Assertions live in three layers: draft, live and retracted.
 - Freshness is judged by one rule: a time more than five minutes ahead of this Mac's clock has no age, and what has no age is never fresh.
 - Retracted assertions are kept. An investigation looks back.
 
-What a reading finds is judged by what earlier readings can show. The unit is the smallest thing one failure can hit: one file that is read, or the listing of one folder. The store records each unit with the run that first read it. A file or a folder that fails is its own unit, and its neighbours are judged as usual.
+What a reading finds is judged by what earlier readings can show. The unit is the smallest thing one failure can hit: a file, a selected part of a file, or a folder listing. The reader gives the physical path and any selected key separately. A failed part leaves only that part unread; a failed file leaves every part unread. Reading a part or confirming its absence clears its own unread mark and ends the whole-file failure. A sibling's unread mark stays in force until that sibling is read or confirmed absent. Only reading the whole file establishes full coverage.
 
 Something found is one of three things:
 
@@ -126,7 +126,7 @@ Something that is there and cannot be read, or leads into a folder macOS asks pe
 
 Something read before is gone only when it is absent. Where its path is still there in another form, as a `.git` file where the `.git` folder was or a link where a checkout's folder was, that is losing sight of it: the checkout is kept, and its hooks read before are a finding. Something gone from a unit read in full is a change, whatever failed elsewhere in the same reading.
 
-`immune status`, the journal and the changes page count the same things. A difference marked as a first reading counts as read for the first time, not as added. On a store made before units were recorded, the first open fills them from what the store holds: every file recorded, every place of a kind read in full, every checkout found, and the folders a walk that read in full listed on the way. From then on one rule judges every reading, whichever run comes first.
+`immune status`, the journal and the changes page count the same things. A difference marked as a first reading counts as read for the first time, not as added. An older store can supply a baseline where the reader’s source identifies the physical path and the records show what was read. An ambiguous name cannot establish coverage. If the place cannot be read now, what was known about it stays in the store until a successful reading can compare it.
 
 A new worktree of a project the store already holds is compared with that project. Agents make worktrees all day, and each one holds the project's own settings, scripts and tasks byte for byte. When git made a new checkout as a linked worktree of a repository, and the store held another checkout of that repository before this reading, each place new in the worktree is compared with the place at the same path in that other checkout, as the same reading read it. The comparison uses what the reading already compares: the checksum of the file, or of the part that counts. Where the two are equal, the place is recorded like any other, so a later change in it is a finding, and its appearance raises none. The journal records it as `same_as_sibling`, with the checkout it matched. A finding that stands in that checkout stays as it is. Where they differ, or the other checkout has no such place, or it could not be read this time, the finding is raised as usual. Only the worktree's first reading is compared this way; a place that appears in it later is a finding as in any other checkout.
 
@@ -149,8 +149,10 @@ Each of Immune's own rules is plain code with an id, the ATT&CK technique where 
 | Rule | Fires on | Technique | Severity, confidence |
 |---|---|---|---|
 | `watched.autostart` | a launch agent or daemon added, changed or removed | T1543 | medium, low |
+| `watched.login-hook` | a login or logout hook in the login window's preferences, the system's or the user's, added, changed or removed | T1037.002 | high, medium |
 | `watched.shell-profile` | a zsh or bash startup file added, changed or removed | T1546.004 | medium, low |
 | `watched.ssh-access` | `~/.ssh/config`, `authorized_keys`, `rc` or the system's SSH configuration added, changed or removed | | high, low |
+| `watched.authentication` | a PAM policy or module, or an authorization plugin, added, changed or removed | T1556 | high, low |
 | `watched.git-hook` | a git hook in a checkout added, changed or removed | | medium, low |
 | `watched.first-read` | places read for the first time after the store's first check, one finding per check that names each place | | informational, low |
 | `integrity.app-seal` | an application's seal no longer verifies, version unchanged | T1554 | high, medium |
@@ -237,6 +239,7 @@ Where the industry has a proven name, format or rule set, Immune takes it. Its o
 | Indicators | STIX 2.1 object paths |
 | An answer that hides a finding until an end date, with a reason | the industry's practice for alert exceptions |
 | Content judged by its checksum against what is already in force | file integrity monitoring baselines (Tripwire, OSSEC), allow-listing by hash (Santa, AppLocker), "first seen" state in detection rules |
+| Which places of persistence are watched | the categories Objective-See's KnockKnock enumerates and MITRE ATT&CK's persistence techniques for macOS. Immune keeps the places current macOS still acts on, that a program running as the user can read without a permission dialog, and that have a normal state to compare with. The rest are named as limits |
 | Collector | Apple's `eslogger`, `jq` and `rotatelogs` |
 | Who a process is | Apple's audit token, the pid with its version, and the start time `eslogger` gives. The Elastic Common Schema leaves `process.entity_id`, an identifier that survives a reused pid, to each data source to build from what identifies a process; Immune hands over those parts as they are and builds no identifier of its own |
 | Reading on from a position the reader keeps | journald's cursors (`journalctl --after-cursor`) and the offsets a log broker's consumer commits |

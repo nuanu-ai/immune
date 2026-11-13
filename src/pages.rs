@@ -83,8 +83,14 @@ fn about(what: &str) -> &'static str {
         "startup items" => {
             "Programs macOS starts by itself when you log in or the Mac starts: the usual way for something unwanted to stay on a Mac."
         }
+        covered::LOGIN_HOOKS => {
+            "Scripts the login window runs with full control at every login and logout, a way Apple replaced years ago."
+        }
         "shell startup files" => "Files your terminal runs every time it opens a shell.",
         "SSH files" => "Your SSH settings, and the keys allowed to log in to this Mac.",
+        covered::LOGIN_MODULES => {
+            "The rules and plugins that decide how you log in, unlock and approve an administrator action, and how your password is checked."
+        }
         "git hooks in projects" => {
             "Scripts git runs by itself in your projects, for example before a commit."
         }
@@ -2131,7 +2137,7 @@ fn ways(conn: &Connection, out: &mut String, this: Option<&str>) -> Out {
 
 /// The watched files of one kind: where each is, when it was first seen and when it last
 /// changed. Only checksums are kept, never content. `gap` is what the list cannot claim
-/// (`unread`).
+/// (`unread`). An entry watched only for presence says so instead of when it changed.
 fn files(
     conn: &Connection,
     out: &mut String,
@@ -2154,6 +2160,15 @@ fn files(
     if first.is_empty() {
         return Ok(());
     }
+    let presence = watched::presence_only(conn)?;
+    let now = watched::content_now(conn)?;
+    let has_content: BTreeSet<String> = conn
+        .prepare(
+            "SELECT DISTINCT subject FROM assertion
+             WHERE layer = 'live' AND reader = ?1 AND predicate = 'has_content'",
+        )?
+        .query_map([watched::READER], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
     // A file whose content or link target was replaced, and when the current one was seen.
     let changed: BTreeMap<String, i64> = conn
         .prepare(
@@ -2172,10 +2187,19 @@ fn files(
         out.push_str("<tr>");
         view::td(out, "mono", &findings::place(&id, mac.as_ref()))?;
         view::td(out, "nowrap", &utc(at))?;
-        let last = changed
-            .get(&id)
-            .map_or("not since first seen".to_string(), |t| utc(*t));
-        view::td(out, "nowrap", &last)?;
+        // Never "unchanged" of what the latest check did not read in full.
+        let (class, last) = if let Some(n) = now.get(&id).filter(|n| !n.read()) {
+            ("", n.not_read())
+        } else if presence.contains(&id) {
+            ("", watched::PRESENCE_ONLY.to_string())
+        } else if let Some(t) = changed.get(&id) {
+            ("nowrap", utc(*t))
+        } else if !has_content.contains(&id) {
+            ("", watched::NEVER_READ.to_string())
+        } else {
+            ("nowrap", "not since first seen".to_string())
+        };
+        view::td(out, class, &last)?;
         out.push_str("</tr>\n");
     }
     out.push_str("</tbody></table></div>\n");
@@ -2819,6 +2843,20 @@ mod tests {
                 "{}",
                 p.name()
             );
+        }
+    }
+
+    #[test]
+    fn every_kind_of_watched_place_says_on_the_page_what_it_is_and_which_rule_tells_of_it() {
+        // A kind listed with no line leaves the owner a name without a meaning, and one no
+        // rule speaks about is watched without anyone being told of a change.
+        for p in &crate::watched::PLACES {
+            let (_, what, _) = covered::watched()
+                .into_iter()
+                .find(|w| matches!(w.0, Count::Files(a) if a == p.watched_as))
+                .unwrap_or_else(|| panic!("{}", p.watched_as));
+            assert!(about(what).ends_with('.'), "{what}");
+            assert_eq!(covered::rules_about(what).len(), 1, "{what}");
         }
     }
 

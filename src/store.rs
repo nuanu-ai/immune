@@ -493,6 +493,7 @@ pub fn open(path: &Path) -> Res<Connection> {
     give_id(&conn)?;
     conn.execute_batch(VOCABULARY)?;
     crate::autorun::add_kinds(&conn)?;
+    crate::watched::add_kinds(&conn)?;
     conn.execute_batch(OWNER)?;
     crate::owner::add_via(&conn)?;
     conn.execute_batch(THREATS)?;
