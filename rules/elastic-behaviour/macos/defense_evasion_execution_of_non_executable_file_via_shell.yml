@@ -1,0 +1,16 @@
+title: "Execution of Non-Executable File via Shell"
+id: "c0770406-7ede-4049-a7a1-999c15fb60bd"
+status: "test"
+description: "Detects the execution of an un-executable file, per file extension, via a shell interpreter. Sometimes threat actors\nwill masquerade their payloads as non-executable files in order to avoid suspicion and go unnoticed."
+references: ["https://github.com/elastic/protections-artifacts/blob/a87715d87a2babd51b37ff6c55f104fe7e567911/behavior/rules/macos/defense_evasion_execution_of_non_executable_file_via_shell.toml"]
+license: "Elastic License v2"
+tags: ["attack.t1036", "attack.t1059.004"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["bash", "sh", "zsh", "dash", "csh", "tcsh", "ksh", "tclsh", "fish"]}
+  s2: {"process.name|cased": ["tclsh*"]}
+  s3: {"process.command_line|cased": ["/bin/bash *", "/bin/sh *", "/bin/zsh *", "/bin/dash *", "/bin/csh *", "/bin/tcsh *", "/bin/ksh *", "/bin/tclsh*", "/bin/fish *", "/usr/bin/bash *", "/usr/bin/sh *", "/usr/bin/zsh *", "/usr/bin/dash *", "/usr/bin/csh *", "/usr/bin/tcsh *", "/usr/bin/ksh *", "/usr/bin/tclsh*", "/usr/bin/fish *", "/usr/local/bin/bash *", "/usr/local/bin/sh *", "/usr/local/bin/zsh *", "/usr/local/bin/dash *", "/usr/local/bin/csh *", "/usr/local/bin/tcsh *", "/usr/local/bin/ksh *", "/usr/local/bin/tclsh*", "/usr/local/bin/fish *", "/opt/homebrew/bin/bash *", "/opt/homebrew/bin/sh *", "/opt/homebrew/bin/zsh *", "/opt/homebrew/bin/dash *", "/opt/homebrew/bin/csh *", "/opt/homebrew/bin/tcsh *", "/opt/homebrew/bin/ksh *", "/opt/homebrew/bin/tclsh*", "/opt/homebrew/bin/fish *"]}
+  s4: {"process.command_line|cased": ["*.pid", "*.plist", "*.txt", "*.json", "*.tmp", "*.bin", "*.js", "*.nib", "*.log", "*.dat"]}
+  s5: {"process.args_count": 2}
+  condition: "((s1 or s2) and s3 and s4 and s5)"
+elastic: {"rule_id": "c0770406-7ede-4049-a7a1-999c15fb60bd", "severity": null, "risk_score": null, "query_sha256": "e0801f6b3ab7bfceb5704e672e77b069bf837d1416ac720e8babba703c17d02e", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": [], "folded_fields": [], "version": "1.0.22", "actions_ignored": ["kill_process process.entity_id", "kill_process process.parent.entity_id"], "elastic_also_evaluates_on": []}

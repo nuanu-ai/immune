@@ -1332,53 +1332,49 @@ pub fn published(rule: &str) -> Option<&'static crate::sigma::Loaded> {
 pub const PUBLISHED_KIND: &str = "program start matched by a published rule";
 pub const PUBLISHED_FILE_KIND: &str = "file event matched by a published rule";
 
-/// The program's own words for a finding of a published rule about program starts, with the
-/// name of the set the rule came from. The rule's title, its authors and the start it matched
+/// The program's own words for a finding of a published rule, with the name of the set the rule
+/// came from: for a rule about program starts, then for one about file events, a file created or
+/// renamed into a place the rule names. The rule's title, its authors and the event it matched
 /// are text from a source and stand beside these, in fields of their own.
-macro_rules! start_words {
-    ($set:literal) => {
-        Words {
-            title: "A program started on this Mac in a way that a published detection rule marks as high risk.",
-            meaning: concat!(
-                "The rule, named with this finding, comes from ",
-                $set,
-                " and was written from attacks seen elsewhere. Coding agents, build tools and people run the same commands for ordinary work, so a match is often harmless."
-            ),
-            advice: "Look at the program, its arguments and what started it, shown here. If you or a tool you use ran it, mark it expected; if nobody knows it, ask your agent to look into it.",
-        }
-    };
-}
-
-/// The same for a rule about file events: a file created or renamed into a place the rule
-/// names.
-macro_rules! file_words {
-    ($set:literal) => {
-        Words {
-            title: "A file was created or renamed on this Mac where a published detection rule marks it as high risk.",
-            meaning: concat!(
-                "The rule, named with this finding, comes from ",
-                $set,
-                " and was written from attacks seen elsewhere. Installers, updaters and people put files in the same places for ordinary work, so a match is often harmless."
-            ),
-            advice: "Look at the file and the program that wrote it, shown here. If you or a tool you use put it there, mark it expected; if nobody knows it, ask your agent to look into it.",
-        }
-    };
-}
+const START_TITLE: &str =
+    "A program started on this Mac in a way that a published detection rule marks as high risk.";
+const START_ORDINARY: &str = "Coding agents, build tools and people run the same commands for ordinary work, so a match is often harmless.";
+const START_ADVICE: &str = "Look at the program, its arguments and what started it, shown here. If you or a tool you use ran it, mark it expected; if nobody knows it, ask your agent to look into it.";
+const FILE_TITLE: &str = "A file was created or renamed on this Mac where a published detection rule marks it as high risk.";
+const FILE_ORDINARY: &str = "Installers, updaters and people put files in the same places for ordinary work, so a match is often harmless.";
+const FILE_ADVICE: &str = "Look at the file and the program that wrote it, shown here. If you or a tool you use put it there, mark it expected; if nobody knows it, ask your agent to look into it.";
 
 /// The words for a finding of a rule of this set: for a rule about program starts, then for
-/// one about file events. They differ between sets only in the set's name, which a person
-/// reads in the meaning.
+/// one about file events. They differ between sets only in the set's name, `Source::set`, which
+/// a person reads in the meaning, so no set can be given another's name. Each set's meanings are
+/// made once and kept for as long as the program runs.
 pub fn published_words(source: &crate::sigma::Source) -> (Words, Words) {
-    match source.name {
-        "elastic" => (
-            start_words!("Elastic's detection rules"),
-            file_words!("Elastic's detection rules"),
-        ),
-        _ => (
-            start_words!("SigmaHQ's rule set"),
-            file_words!("SigmaHQ's rule set"),
-        ),
-    }
+    type Made = std::collections::BTreeMap<&'static str, [&'static str; 2]>;
+    static MADE: std::sync::Mutex<Made> = std::sync::Mutex::new(Made::new());
+    let mut made = MADE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let [starts, files] = *made.entry(source.set).or_insert_with(|| {
+        [START_ORDINARY, FILE_ORDINARY].map(|ordinary| {
+            let meaning = format!(
+                "The rule, named with this finding, comes from {} and was written from attacks seen elsewhere. {ordinary}",
+                source.set
+            );
+            &*Box::leak(meaning.into_boxed_str())
+        })
+    });
+    (
+        Words {
+            title: START_TITLE,
+            meaning: starts,
+            advice: START_ADVICE,
+        },
+        Words {
+            title: FILE_TITLE,
+            meaning: files,
+            advice: FILE_ADVICE,
+        },
+    )
 }
 
 /// A finding of a published rule as an item: how bad is the rule's level, how sure follows its
@@ -1396,7 +1392,8 @@ fn published_item(f: &Found, l: &'static crate::sigma::Loaded) -> Option<Item> {
         kind,
         rule: Some(m.finding_rule.as_str()),
         technique: m.techniques.first().map(String::as_str),
-        severity: m.level.as_str(),
+        // A finding comes only from a rule that states a level; the absence is no level.
+        severity: m.level_name().unwrap_or_default(),
         confidence: Some(m.status.confidence()),
         state: f.state.clone(),
         change: f.change.clone(),

@@ -1,0 +1,13 @@
+title: "Killall Execution via Python"
+id: "3e176b0d-3dfd-44ae-8b75-9569463edde5"
+status: "test"
+description: "Detects when Python executes the Killall binary in order to kill a process."
+references: ["https://github.com/elastic/protections-artifacts/blob/a87715d87a2babd51b37ff6c55f104fe7e567911/behavior/rules/macos/defense_evasion_killall_execution_via_python.toml"]
+license: "Elastic License v2"
+tags: ["attack.t1562.001"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.parent.name": ["python*"]}
+  s2: {"process.name|cased": ["killall"]}
+  condition: "(s1 and s2)"
+elastic: {"rule_id": "3e176b0d-3dfd-44ae-8b75-9569463edde5", "severity": null, "risk_score": null, "query_sha256": "fe8056d8a56e1c214affa52de73f7debb2dbf56358dfc1dcf3ad666658b18e76", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": [], "folded_fields": [], "version": "1.0.3", "actions_ignored": ["kill_process process.parent.entity_id"], "elastic_also_evaluates_on": []}

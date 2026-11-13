@@ -1,0 +1,16 @@
+title: "Curl Execution via Automator Application"
+id: "3540b77a-80a6-42ea-b7f4-714291a28a62"
+status: "test"
+description: "Detects the execution of curl via an automator application. Threat actors have been using automator applications in\norder to bypass security controls and download second stage payloads as automator apps can be signed/trusted by the\nsystem and are generally not subject to scanning."
+references: ["https://github.com/elastic/protections-artifacts/blob/a87715d87a2babd51b37ff6c55f104fe7e567911/behavior/rules/macos/command_and_control_curl_execution_via_automator_application.toml"]
+license: "Elastic License v2"
+tags: ["attack.t1105"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.parent.name|cased": ["Application Stub", "Automator Application Stub"]}
+  s2: {"process.name": ["sh", "bash", "zsh", "tclsh*"]}
+  s3: {"process.args|contains|cased": ["\u0000-c\u0000"]}
+  s4: {"process.args|contains": ["\u0000curl", "\u0000nscurl"]}
+  s5: {"process.name|cased": ["curl", "nscurl"]}
+  condition: "(s1 and ((s2 and s3 and s4) or s5))"
+elastic: {"rule_id": "3540b77a-80a6-42ea-b7f4-714291a28a62", "severity": null, "risk_score": null, "query_sha256": "ab00e723cc898ea917a498307e28e2351e9816bbf06302020550a464680fde22", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": [], "folded_fields": [], "version": "1.0.5", "actions_ignored": ["kill_process process.entity_id", "kill_process process.parent.entity_id"], "elastic_also_evaluates_on": ["fork"]}

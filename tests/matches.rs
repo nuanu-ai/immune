@@ -1054,7 +1054,7 @@ fn no_collector_and_no_log_is_an_answer_that_says_so_and_names_the_rules_that_ju
         .iter()
         .filter(|u| u["reason"] == "not_collected")
         .collect();
-    assert_eq!(not_collected.len(), 11, "{m:#}");
+    assert_eq!(not_collected.len(), 14, "{m:#}");
     assert!(
         not_collected
             .iter()
@@ -1208,7 +1208,7 @@ fn unreadable_lines_are_counted_and_the_rules_that_judge_nothing_are_named_with_
         .iter()
         .filter(|u| u["reason"] == "not_collected")
         .collect();
-    assert_eq!(not_collected.len(), 11, "{unevaluated:#?}");
+    assert_eq!(not_collected.len(), 14, "{unevaluated:#?}");
     assert!(
         not_collected.iter().all(|u| u["detail_text"]
             == "the collector installed here records program starts only; installing the event level again adds files created and renamed"),
@@ -1227,12 +1227,16 @@ fn unreadable_lines_are_counted_and_the_rules_that_judge_nothing_are_named_with_
         reasons,
         [
             ("backslash_in_wildcard", 2),
-            ("in_part", 13),
-            ("needs_events", 23),
-            ("needs_fields", 23),
+            ("function", 1),
+            ("in_part", 23),
+            ("needs_events", 23 + 42),
+            ("needs_fields", 23 + 61),
+            ("never_true", 4),
             ("not_eql", 40),
-            ("sequence", 30),
-            ("spans_kinds", 1),
+            ("regex", 1),
+            ("sequence", 30 + 109),
+            ("spans_kinds", 1 + 1),
+            ("unsupported", 2),
         ]
         .into(),
     );
@@ -1317,6 +1321,71 @@ fn a_high_translated_rule_raises_a_finding_named_elastic_and_its_match_is_handed
 }
 
 #[test]
+fn a_behaviour_rule_states_no_level_so_its_match_is_counted_and_handed_over_and_raises_nothing() {
+    // Elastic's behaviour rules state no level, and the core gives them none of its own. A
+    // match of one is handed over like one below high, with the level unspecified, and counted
+    // in the hour like any match; it raises no finding, so the owner is told of nothing.
+    let dir = Dir::new("behaviour");
+    dir.install();
+    dir.append(
+        H00,
+        &start(
+            1,
+            &now_time(),
+            "/bin/zsh",
+            "/usr/bin/SetFile",
+            &["SetFile", "-a", "V", "/Users/example/x"],
+        ),
+    );
+    dir.run();
+    let rule = format!("elastic-behaviour:{SETFILE}");
+    assert!(dir.findings_named(&rule).is_empty());
+    let m = dir.matches(&[]);
+    let behaviour: Vec<&Value> = m["matches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|x| x["rule"]["name"] == rule.as_str())
+        .collect();
+    assert_eq!(behaviour.len(), 1, "{m:#}");
+    assert_eq!(
+        (
+            &behaviour[0]["rule"]["level"],
+            &behaviour[0]["rule"]["file"],
+            &behaviour[0]["raised"],
+            &behaviour[0]["findings"]
+        ),
+        (
+            &json!("unspecified"),
+            &json!("macos/defense_evasion_file_hidden_via_setfile.yml"),
+            &json!("below_high"),
+            &json!([])
+        )
+    );
+    let r = dir.report(&["status"]);
+    let counted: Vec<&Value> = r["rules"]["matched_last_day"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|x| x["id_text"] == SETFILE)
+        .collect();
+    assert_eq!(
+        counted,
+        [&json!({
+            "id_text": SETFILE,
+            "title_text": "File Hidden via SetFile",
+            "level": null,
+            "matches": 1,
+        })]
+    );
+    // No other rule matches this start, so nothing at all asks for a look.
+    assert_eq!(r["needs_a_look_total"], 0, "{r:#}");
+}
+
+/// Elastic's behaviour rule "File Hidden via SetFile".
+const SETFILE: &str = "2ed9c6bf-025e-4edf-a9ec-1493d0bb4f81";
+
+#[test]
 fn immune_rules_lists_both_sets_and_names_every_rule_not_taken_with_its_reason() {
     // `immune rules` says where each set comes from, and names every upstream rule a translated
     // set did not take with the translation's reason and detail, and every translated rule in
@@ -1366,11 +1435,60 @@ fn immune_rules_lists_both_sets_and_names_every_rule_not_taken_with_its_reason()
         [
             (json!("sigma"), json!(75), json!(0)),
             (json!("elastic"), json!(66), json!(119)),
+            (json!("elastic-behaviour"), json!(57), json!(221)),
         ]
     );
     let not_evaluated = rules["not_evaluated"].as_array().unwrap();
-    assert_eq!(not_evaluated.len(), 119);
-    assert!(not_evaluated.iter().all(|r| r["source"] == "elastic"));
+    assert_eq!(not_evaluated.len(), 119 + 221);
+    assert!(
+        not_evaluated
+            .iter()
+            .all(|r| r["source"] == "elastic" || r["source"] == "elastic-behaviour")
+    );
+    // Every reason the behaviour rules' translation gave has its code.
+    let mut codes: std::collections::BTreeMap<&str, usize> = Default::default();
+    for r in not_evaluated
+        .iter()
+        .filter(|r| r["source"] == "elastic-behaviour")
+    {
+        *codes.entry(r["reason"].as_str().unwrap()).or_default() += 1;
+    }
+    assert_eq!(
+        codes,
+        [
+            ("function", 1),
+            ("needs_events", 42),
+            ("needs_fields", 61),
+            ("never_true", 4),
+            ("regex", 1),
+            ("sequence", 109),
+            ("spans_kinds", 1),
+            ("unsupported", 2),
+        ]
+        .into()
+    );
+    // A behaviour rule not taken is named with the translation's reason, and with no level,
+    // since its set states none.
+    let never = not_evaluated
+        .iter()
+        .find(|r| r["id_text"] == "76259650-ed25-4d48-9cb2-e4a32073f945")
+        .unwrap();
+    assert_eq!(
+        (
+            &never["reason"],
+            &never["level"],
+            &never["name"],
+            &never["detail_text"]
+        ),
+        (
+            &json!("never_true"),
+            &Value::Null,
+            &json!("elastic-behaviour:76259650-ed25-4d48-9cb2-e4a32073f945"),
+            &json!(
+                "asks for a field every event of its kinds has to be absent: process.command_line"
+            )
+        )
+    );
     let sequence = not_evaluated
         .iter()
         .find(|r| r["id_text"] == "a0fbd7a9-1923-4e05-92df-b484168f17bc")
@@ -1416,6 +1534,19 @@ fn immune_rules_lists_both_sets_and_names_every_rule_not_taken_with_its_reason()
     let plain = String::from_utf8(dir.command(&["rules"], &[]).output().unwrap().stdout).unwrap();
     assert!(
         plain.contains("      correlates a sequence of events, which is not translated (Sequence)"),
+        "{plain}"
+    );
+    // The reasons the behaviour rules' translation added, each in its own words.
+    for said in [
+        "      could never be true over the events here (asks for a field",
+        "      needs a regular expression in EQL's syntax, which is not translated (regex match~(",
+        "      uses a function of EQL's that is not translated (expected a field, got length(",
+        "      compares one field with another, which a Sigma rule cannot (function startswith: ",
+    ] {
+        assert!(plain.contains(said), "{said}");
+    }
+    assert!(
+        plain.contains("  no level stated elastic-behaviour File Hidden via SetFile"),
         "{plain}"
     );
     assert!(
@@ -1503,6 +1634,10 @@ fn a_rule_a_translated_set_did_not_take_is_named_with_its_reason_and_what_the_tr
         v1::UnevaluatedReason::NeedsFields,
         v1::UnevaluatedReason::BackslashInWildcard,
         v1::UnevaluatedReason::SpansKinds,
+        v1::UnevaluatedReason::NeverTrue,
+        v1::UnevaluatedReason::Regex,
+        v1::UnevaluatedReason::Unsupported,
+        v1::UnevaluatedReason::Function,
         v1::UnevaluatedReason::InPart,
     ] {
         assert!(reasons.contains(&(why as i32)), "{why:?}");

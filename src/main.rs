@@ -1098,7 +1098,7 @@ fn replay_cmd(root: &Path, json: bool) -> ExitCode {
         serde_json::json!({
             "id_text": status::text(&h.meta.id),
             "title_text": status::text(&h.meta.title),
-            "level": h.meta.level.as_str(),
+            "level": h.meta.level_name(),
             "status": h.meta.status.as_str(),
             "matches": h.count,
         })
@@ -1171,8 +1171,8 @@ fn replay_cmd(root: &Path, json: bool) -> ExitCode {
                 ));
                 for h in hits {
                     say(&format!(
-                        "  {:<13} {:>7}  {}",
-                        h.meta.level.as_str(),
+                        "  {:<15} {:>7}  {}",
+                        sigma::level_said(h.meta.level),
                         h.count,
                         h.meta.title
                     ));

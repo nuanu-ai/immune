@@ -1085,7 +1085,7 @@ pub fn rules_section(level: Option<&crate::events::Level>) -> Value {
             json!({
                 "id_text": text(&m.id),
                 "title_text": text(&m.title),
-                "level": m.level.as_str(),
+                "level": m.level_name(),
                 "reason": "file_events_not_collected",
             })
         })
@@ -1102,7 +1102,7 @@ pub fn rules_section(level: Option<&crate::events::Level>) -> Value {
             json!({
                 "id_text": text(id),
                 "title_text": meta.map(|m| text(&m.title)),
-                "level": meta.map(|m| m.level.as_str()),
+                "level": meta.and_then(crate::sigma::Meta::level_name),
                 "matches": n,
             })
         })

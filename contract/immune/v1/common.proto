@@ -91,7 +91,9 @@ enum FindingState {
 }
 
 // OCSF's level names, for severity and confidence. `UNSPECIFIED`, or a value the reader does not
-// know, is read as the highest for a severity and as the lowest for a confidence.
+// know, is read as the highest for a severity and as the lowest for a confidence. A rule's
+// `level` (`event.proto`) is the exception: there `UNSPECIFIED` is a rule whose set states no
+// level, and it is read as no level.
 enum Level {
   LEVEL_UNSPECIFIED = 0;
   LEVEL_INFORMATIONAL = 1;

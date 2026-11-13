@@ -246,7 +246,7 @@ fn raised(
     hit: &Hit,
     meta: &Meta,
 ) -> rusqlite::Result<(v1::Raised, Vec<v1::FindingRef>)> {
-    if !meta.level.raises() {
+    if !meta.raises() {
         return Ok((v1::Raised::BelowHigh, Vec::new()));
     }
     let at: &LineAt = &hit.at;
@@ -305,7 +305,7 @@ pub fn rule(file: &str, m: &Meta) -> v1::Rule {
         file: file.to_string(),
         id_text: whole(&m.id),
         title_text: whole(&m.title),
-        level: value_of::<v1::Level>(m.level.as_str()),
+        level: m.level_name().map_or(0, value_of::<v1::Level>),
         techniques_text: m.techniques.iter().map(|t| whole(t)).collect(),
         author_text: m.author.as_deref().map(whole),
     }
@@ -406,6 +406,10 @@ fn unevaluated(collects: &Result<(), String>) -> Vec<v1::Unevaluated> {
                         Reason::NotEql => (Why::NotEql, Vec::new(), said),
                         Reason::BackslashInWildcard => (Why::BackslashInWildcard, Vec::new(), said),
                         Reason::SpansKinds => (Why::SpansKinds, Vec::new(), said),
+                        Reason::NeverTrue => (Why::NeverTrue, Vec::new(), said),
+                        Reason::Regex => (Why::Regex, Vec::new(), said),
+                        Reason::Unsupported => (Why::Unsupported, Vec::new(), said),
+                        Reason::Function => (Why::Function, Vec::new(), said),
                     },
                     (_, Some(why)) if l.kind == Some(Kind::File) => {
                         (Why::NotCollected, Vec::new(), Some(why.clone()))
@@ -433,7 +437,7 @@ fn unevaluated(collects: &Result<(), String>) -> Vec<v1::Unevaluated> {
                 name: meta.map(|m| m.finding_rule.clone()),
                 id_text: meta.map(|m| whole(&m.id)),
                 title_text: meta.map(|m| whole(&m.title)),
-                level: meta.map(|m| value_of::<v1::Level>(m.level.as_str())),
+                level: meta.and_then(Meta::level_name).map(value_of::<v1::Level>),
                 reason: why as i32,
                 fields_text: fields,
                 detail_text: detail.map(|d| whole(&d)),

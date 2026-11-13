@@ -771,7 +771,7 @@ impl Matched {
                 lines: Vec::new(),
             });
             hits.count += 1;
-            if m.meta.level.raises() {
+            if m.meta.raises() {
                 hits.lines.push(at.clone());
                 if hits.latest.len() == EVIDENCE {
                     hits.latest.pop_front();
@@ -1633,7 +1633,7 @@ fn record(
              ON CONFLICT (hour, rule) DO UPDATE SET matches = matches + excluded.matches",
             params![now / HOUR, id, hits.count],
         )?;
-        if !hits.meta.level.raises() {
+        if !hits.meta.raises() {
             continue;
         }
         // One finding per rule on this Mac: a repeated match of a rule whose finding stands

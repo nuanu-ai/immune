@@ -2275,7 +2275,7 @@ body.summary { background: var(--grp); color: var(--ink);
 .summary .lv-critical { background: var(--sev-critical); color: var(--card); }
 .summary .lv-high { background: var(--sev-high); color: var(--card); }
 .summary .lv-medium { background: var(--vuln-light); color: var(--ink); }
-.summary .lv-low, .summary .lv-informational { background: var(--grp); color: var(--sec); box-shadow: inset 0 0 0 1px var(--ln); }
+.summary .lv-low, .summary .lv-informational, .summary .lv-none { background: var(--grp); color: var(--sec); box-shadow: inset 0 0 0 1px var(--ln); }
 .summary .matched .all { padding-top: 10px; border-top: 1px solid var(--ln); font-size: 13px; color: var(--sec); }
 .summary .covers { display: flex; flex-direction: column; gap: 12px; }
 .summary .covers .sh { padding-bottom: 0; }

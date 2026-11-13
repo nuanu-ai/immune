@@ -1457,13 +1457,13 @@ pub fn rules(r: &serde_json::Value, events: Option<&crate::events::Level>, now: 
         .sources()
         .iter()
         .map(|s| match s.commit_date {
-            Some(date) => format!("{}, as published on {date}", s.publisher),
-            None => format!("{}, at commit {}", s.publisher, &s.commit[..12]),
+            Some(date) => format!("{}, as published on {date}", s.set),
+            None => format!("{}, at commit {}", s.set, &s.commit[..12]),
         })
         .collect();
     let mut out = top(
         RULES_TITLE,
-        &format!("From {} · this page made {}", from.join(" and "), utc(now)),
+        &format!("From {} · this page made {}", from.join("; "), utc(now)),
     );
     let r = &r["rules"];
     let mut w = |s: String| out.push_str(&s);
@@ -1498,14 +1498,17 @@ pub fn rules(r: &serde_json::Value, events: Option<&crate::events::Level>, now: 
         }
         let mut level: Option<&str> = None;
         for l in group {
-            let this = l.meta.as_ref().map_or("unknown", |m| m.level.as_str());
+            let (this, said) = match &l.meta {
+                None => ("unknown", "unknown"),
+                Some(m) => (m.level_name().unwrap_or("none"), sigma::level_said(m.level)),
+            };
             if level != Some(this) {
-                w(format!("<h3>{}</h3>\n", esc(&capital(this))));
+                w(format!("<h3>{}</h3>\n", esc(&capital(said))));
                 level = Some(this);
             }
             let title = l.meta.as_ref().map_or(l.file, |m| m.title.as_str());
             w(format!(
-                "<article class=\"rule\">\n<h4>{} <span class=\"chip lvl-{this}\">{this}</span></h4>\n",
+                "<article class=\"rule\">\n<h4>{} <span class=\"chip lvl-{this}\">{said}</span></h4>\n",
                 source(title)
             ));
             // How many times it matched in the last day: any count there is, and while the
@@ -1577,6 +1580,9 @@ pub fn rules(r: &serde_json::Value, events: Option<&crate::events::Level>, now: 
                         Reason::NotEql => "Not written in EQL, the only language translated into Sigma.".to_string(),
                         Reason::BackslashInWildcard => "Has a backslash in a wildcard pattern, whose meaning in Elasticsearch is not documented, so it is not translated.".to_string(),
                         Reason::SpansKinds => "Is about program starts and file events at once, which one Sigma rule cannot be.".to_string(),
+                        Reason::NeverTrue | Reason::Regex | Reason::Unsupported | Reason::Function => {
+                            format!("{}.", capital(&reason.said()))
+                        }
                     } + &l.detail.map_or(String::new(), |d| format!(" {}", source(d)))
                 )),
             }
@@ -1631,9 +1637,13 @@ pub fn rules(r: &serde_json::Value, events: Option<&crate::events::Level>, now: 
         include_str!("../rules/elastic/NOTICE"),
         "licensing/elastic-license",
     );
+    let behaviour_licence = named(
+        include_str!("../rules/elastic-behaviour/NOTICE"),
+        "licensing/elastic-license",
+    );
     let bare = |url: &'static str| url.strip_prefix("https://").unwrap_or(url);
     w(format!(
-        "<footer class=\"licence\">\n<p class=\"meta\">SigmaHQ's rules are copied unchanged from its rule set, <span class=\"mono\">{}</span>, at commit <span class=\"mono\">{}</span> of {}. They are licensed under the Detection Rule License 1.1, <span class=\"mono\">{}</span>, and each keeps its authors, shown with it.</p>\n<p class=\"meta\">Elastic's rules are translated mechanically into Sigma from its detection rules, <span class=\"mono\">{}</span>, at commit <span class=\"mono\">{}</span>; none is edited by hand. They carry Elastic License 2.0, <span class=\"mono\">{}</span>, and each keeps its authors, shown with it.</p>\n</footer>\n",
+        "<footer class=\"licence\">\n<p class=\"meta\">SigmaHQ's rules are copied unchanged from its rule set, <span class=\"mono\">{}</span>, at commit <span class=\"mono\">{}</span> of {}. They are licensed under the Detection Rule License 1.1, <span class=\"mono\">{}</span>, and each keeps its authors, shown with it.</p>\n<p class=\"meta\">Elastic's rules are translated mechanically into Sigma from its detection rules, <span class=\"mono\">{}</span>, at commit <span class=\"mono\">{}</span>; none is edited by hand. They carry Elastic License 2.0, <span class=\"mono\">{}</span>, and each keeps its authors, shown with it.</p>\n<p class=\"meta\">Elastic's behaviour rules are translated the same way from <span class=\"mono\">{}</span> at commit <span class=\"mono\">{}</span>, under Elastic License 2.0, <span class=\"mono\">{}</span>. They state no level and name no authors.</p>\n</footer>\n",
         esc(bare(sigma::SOURCE)),
         sigma::COMMIT,
         sigma::COMMIT_DATE,
@@ -1641,6 +1651,9 @@ pub fn rules(r: &serde_json::Value, events: Option<&crate::events::Level>, now: 
         esc(bare(sigma::ELASTIC.url)),
         sigma::ELASTIC.commit,
         esc(bare(elastic_licence)),
+        esc(bare(sigma::ELASTIC_BEHAVIOUR.url)),
+        sigma::ELASTIC_BEHAVIOUR.commit,
+        esc(bare(behaviour_licence)),
     ));
     out.push_str(FOOT);
     out

@@ -1,0 +1,16 @@
+title: "Background Process Execution via Shell"
+id: "603ac59e-9cca-4c48-9750-e38399079043"
+status: "test"
+description: "Detects when a binary located in a suspicious location gets executed by a shell interpreter and put in the background\nvia the & operator. Malwares may execute their payloads in the background in an effort to remain hidden."
+references: ["https://github.com/elastic/protections-artifacts/blob/a87715d87a2babd51b37ff6c55f104fe7e567911/behavior/rules/macos/execution_background_process_execution_via_shell.toml"]
+license: "Elastic License v2"
+tags: ["attack.t1059.004"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name": ["bash", "sh", "zsh", "tclsh*"]}
+  s2: {"process.args|contains|cased": ["\u0000-c\u0000"]}
+  s3: {"immune.folded.process.args|re": ["(?s)\\x00/[^\\x00]* \\&\\x00", "(?s)\\x00/[^\\x00]*\\&\\x00"]}
+  s4: {"process.args_count": 3}
+  s5: {"process.parent.executable": ["/private/tmp/*", "/var/tmp/*", "/tmp/*", "/var/folders/*", "/Library/Containers/*", "/Library/Graphics/*", "/Users/Shared/*", "/Users/*/Library/Preferences/*", "/var/root/*", "/Library/WebServer/*", "/Library/Preferences/*", "/Library/Services/*", "/Library/Fonts/*", "/usr/local/bin/*"]}
+  condition: "(s1 and s2 and s3 and s4 and s5)"
+elastic: {"rule_id": "603ac59e-9cca-4c48-9750-e38399079043", "severity": null, "risk_score": null, "query_sha256": "246e27e76ab12f2fe26d984e364526dd8b326b62590a8f6876646a5af7427c65", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": [], "folded_fields": ["process.args"], "version": "1.0.19", "actions_ignored": ["kill_process process.entity_id", "kill_process process.parent.entity_id"], "elastic_also_evaluates_on": []}

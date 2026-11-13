@@ -15,14 +15,18 @@ import "immune/v1/common.proto";
 // A published rule, as the core ships it.
 message Rule {
   // The name findings give the rule, its set's name and its id: `sigma:<id>` for SigmaHQ's,
-  // `elastic:<rule_id>` for Elastic's. The store's name for it.
+  // `elastic:<rule_id>` for Elastic's detection rules, `elastic-behaviour:<rule_id>` for
+  // Elastic's behaviour rules. The store's name for it.
   string name = 1;
-  // Its path in the shipped set, under the set's folder, `rules/sigma/` or `rules/elastic/`, as
-  // the prefix of `name` says. It moves between upstream commits.
+  // Its path in the shipped set, under the set's folder, `rules/sigma/`, `rules/elastic/` or
+  // `rules/elastic-behaviour/`, as the prefix of `name` says. It moves between upstream commits.
   string file = 2;
   // Its `id` and `title` as published, whole.
   string id_text = 3;
   string title_text = 4;
+  // Its level. `LEVEL_UNSPECIFIED` for a rule whose set states no level, as Elastic's behaviour
+  // rules state none: that says nothing of how severe a match is, and such a rule raises no
+  // finding by itself.
   Level level = 5;
   // ATT&CK techniques from its `attack.t…` tags, such as `T1027.001`.
   repeated string techniques_text = 6;

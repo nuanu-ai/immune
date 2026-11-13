@@ -2,11 +2,13 @@
 //! created or renamed: a process rule (`process_creation`) is asked only about a program start,
 //! a file rule (`file_event`) only about a file event.
 //!
-//! Two sets are shipped, each a `Source`: SigmaHQ's rules, unmodified, in `rules/sigma/`, and
-//! Elastic's detection rules translated mechanically into Sigma, in `rules/elastic/`, each set
-//! with its NOTICE, compiled into the program. The source is a property of every loaded rule: it
-//! names the rule in findings (`sigma:<id>`, `elastic:<id>`), and its `Schema` says under which
-//! names an event is given to its rules. A third set is one more `Source`, not more code.
+//! Three sets are shipped, each a `Source`: SigmaHQ's rules, unmodified, in `rules/sigma/`, and
+//! Elastic's detection rules and behaviour rules, translated mechanically into Sigma, in
+//! `rules/elastic/` and `rules/elastic-behaviour/`, each set with its NOTICE, compiled into the
+//! program. The source is a property of every loaded rule: it names the rule in findings
+//! (`sigma:<id>`, `elastic:<id>`, `elastic-behaviour:<id>`), its `Schema` says under which names
+//! an event is given to its rules, and it says whether its rules state a level. Another set is
+//! one more `Source`, not more code.
 //!
 //! What Sigma means is the evaluator's to say, `sigma-rust`'s: conditions, modifiers, case
 //! folding, what an absent field or `null` means. Nothing here re-implements it; the tests below
@@ -189,6 +191,71 @@ pub const ELASTIC_SHIPPED: &[(&str, &str)] = shipped![
     "macos/privilege_escalation_explicit_creds_via_scripting.yml",
 ];
 
+/// Elastic's behaviour rules for macOS, translated into Sigma: each file's path under
+/// `rules/elastic-behaviour`, which keeps the upstream folder under `behavior/rules/`, and its
+/// text. A test holds this list to the folder and every file to
+/// `rules/elastic-behaviour/SHA256SUMS`.
+pub const ELASTIC_BEHAVIOUR_SHIPPED: &[(&str, &str)] = shipped![
+    "rules/elastic-behaviour";
+    "macos/collection_sensitive_file_copy_via_ditto.yml",
+    "macos/command_and_control_curl_execution_via_automator_application.yml",
+    "macos/command_and_control_curl_local_file_read_or_write_via_osascript.yml",
+    "macos/command_and_control_malicious_homebrew_initial_access.yml",
+    "macos/command_and_control_potential_payload_download_via_applescript_applet.yml",
+    "macos/command_and_control_potential_xcsset_malware_infection.yml",
+    "macos/command_and_control_shlayer_malware_infection.yml",
+    "macos/command_and_control_suspicious_curl_to_oast_domain.yml",
+    "macos/command_and_control_suspicious_curl_user_agent.yml",
+    "macos/credential_access_dumping_account_hashes_via_built_in_commands.yml",
+    "macos/credential_access_keychain_credential_files_collected_via_archive_utility.yml",
+    "macos/credential_access_potential_access_to_kerberos_cached_credentials.yml",
+    "macos/credential_access_potential_credential_harvesting_via_python.yml",
+    "macos/credential_access_suspicious_trufflehog_execution_via_nodejs.yml",
+    "macos/credential_access_user_keychain_copied_via_script_interpreter.yml",
+    "macos/credential_access_user_keychain_copied_via_shell_interpreter.yml",
+    "macos/credential_access_user_keychain_copied_via_suspicious_parent.yml",
+    "macos/credential_access_web_browsers_password_access_via_command_line.yml",
+    "macos/defense_evasion_decoy_file_open_via_preview_app.yml",
+    "macos/defense_evasion_dylib_load_via_ssh_keygen.yml",
+    "macos/defense_evasion_elastic_endpoint_security_kernel_extension_unload.yml",
+    "macos/defense_evasion_execution_of_non_executable_file_via_shell.yml",
+    "macos/defense_evasion_file_hidden_via_setfile.yml",
+    "macos/defense_evasion_killall_execution_via_python.yml",
+    "macos/defense_evasion_launchpad_hijack.yml",
+    "macos/defense_evasion_modification_of_safari_settings_via_defaults_command.yml",
+    "macos/defense_evasion_operating_system_security_updates_disabled.yml",
+    "macos/defense_evasion_potential_masquerading_as_system_binary.yml",
+    "macos/defense_evasion_potential_privacy_control_bypass_via_localhost_secure_copy.yml",
+    "macos/defense_evasion_potential_tcc_bypass_via_electron_web_inspector_api.yml",
+    "macos/defense_evasion_suspicious_crypto_wallet_process_termination.yml",
+    "macos/defense_evasion_suspicious_dmg_file_creation_in_tmp_directory.yml",
+    "macos/defense_evasion_tccutil_reset_via_suspicious_binary.yml",
+    "macos/defense_evasion_terminal_window_hidden_or_closed_via_osascript.yml",
+    "macos/execution_arbitrary_python_code_execution_via_nodejs.yml",
+    "macos/execution_background_process_execution_via_shell.yml",
+    "macos/execution_cocoa_applet_binary_execution.yml",
+    "macos/execution_disown_execution_via_shell_command_from_volume_mount.yml",
+    "macos/execution_dscl_execution_via_osascript.yml",
+    "macos/execution_hidden_folder_or_file_access_in_tmp_via_python.yml",
+    "macos/execution_initial_access_discovery_via_applet_executable.yml",
+    "macos/execution_macos_interactive_shell_spawned_via_hidden_process.yml",
+    "macos/execution_osascript_execution_via_piped_applescript.yml",
+    "macos/execution_suspicious_apple_script_execution.yml",
+    "macos/execution_suspicious_audio_unit_plug_in_file_access.yml",
+    "macos/execution_suspicious_elevated_command_execution.yml",
+    "macos/execution_suspicious_installer_remote_plugin_service_child_process.yml",
+    "macos/execution_temporary_binary_execution_via_osascript.yml",
+    "macos/execution_volume_muted_via_osascript.yml",
+    "macos/execution_vscode_extension_install_via_uri_handler.yml",
+    "macos/exfiltration_user_keychain_exfiltration_via_curl.yml",
+    "macos/initial_access_suspicious_execution_via_script_editor.yml",
+    "macos/lateral_movement_potential_kerberos_attack_via_bifrost.yml",
+    "macos/persistence_potential_persistence_via_emond.yml",
+    "macos/persistence_unexpected_child_process_of_macos_screensaver_engine.yml",
+    "macos/privilege_escalation_potential_privilege_escalation_via_root_crontab_file_modification.yml",
+    "macos/privilege_escalation_potential_sip_bypass_via_the_shoveservice.yml",
+];
+
 /// One program start: the event level's, `crate::events::ProcessStart`, read from
 /// `eslogger`'s `exec`. Which field each of its parts is, and why, is in
 /// `crate::events::SIGMA_FIELDS` and `crate::events::ECS_FIELDS`, beside where the line is read. A
@@ -307,6 +374,11 @@ pub struct Source {
     /// a line, separated by tabs: the upstream file's path under its `rules/` folder, the rule's
     /// id, its name, its severity, the reason and the translation's detail.
     pub not_taken: Option<&'static str>,
+    /// Whether its rules state a level. Elastic's behaviour rules state none: Elastic's sensor
+    /// sets an alert's severity when it runs and does not publish which a rule gets. A rule of
+    /// such a set is read without a level, and one that states a level is not read; a rule of
+    /// any other set is not read without one. The core gives no rule a level of its own.
+    pub states_levels: bool,
 }
 
 impl std::fmt::Debug for Source {
@@ -330,6 +402,7 @@ pub static SIGMAHQ: Source = Source {
     schema: &SIGMA_TAXONOMY,
     translation: None,
     not_taken: None,
+    states_levels: true,
 };
 
 /// Elastic's detection rules for macOS, those that translate into Sigma exactly over this
@@ -348,10 +421,33 @@ pub static ELASTIC: Source = Source {
     schema: &ECS,
     translation: Some("elastic"),
     not_taken: Some(include_str!("../rules/elastic/not-taken.tsv")),
+    states_levels: true,
+};
+
+/// Elastic's behaviour rules for macOS, those that translate into Sigma exactly over this
+/// level's log, and the rest named with why. They state no level, so none of them raises a
+/// finding by itself; their matches are counted and handed over. The actions every one of them
+/// carries upstream, stopping a process, are recorded by the translation as ignored, and the
+/// core takes none.
+pub static ELASTIC_BEHAVIOUR: Source = Source {
+    name: "elastic-behaviour",
+    publisher: "Elastic",
+    set: "Elastic's behaviour rules",
+    url: "https://github.com/elastic/protections-artifacts",
+    commit: "a87715d87a2babd51b37ff6c55f104fe7e567911",
+    commit_date: None,
+    licence: "Elastic-2.0",
+    licence_name: "Elastic License 2.0",
+    folder: "rules/elastic-behaviour",
+    files: ELASTIC_BEHAVIOUR_SHIPPED,
+    schema: &ECS,
+    translation: Some("elastic"),
+    not_taken: Some(include_str!("../rules/elastic-behaviour/not-taken.tsv")),
+    states_levels: false,
 };
 
 /// Every set shipped, in the order their rules are listed and asked.
-pub static SOURCES: [&Source; 2] = [&SIGMAHQ, &ELASTIC];
+pub static SOURCES: [&Source; 3] = [&SIGMAHQ, &ELASTIC, &ELASTIC_BEHAVIOUR];
 
 /// Where each field of a schema stands among the values of an event: a program start's
 /// fields first, then a file event's, each followed by its folded companions where the schema
@@ -592,6 +688,14 @@ impl Level {
     }
 }
 
+/// What a person reads for a rule's level: its name, or that it states none.
+pub fn level_said(level: Option<Level>) -> &'static str {
+    level.map_or(NO_LEVEL, Level::as_str)
+}
+
+/// The words for a rule whose set states no level.
+pub const NO_LEVEL: &str = "no level stated";
+
 /// How mature a rule is, Sigma's statuses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
@@ -643,7 +747,9 @@ pub struct Meta {
     /// `sigma:<id>` or `elastic:<id>`.
     pub finding_rule: String,
     pub title: String,
-    pub level: Level,
+    /// `None` for a rule of a set that states no level (`Source::states_levels`). Ordered
+    /// after every level: `None` sorts below `Some`.
+    pub level: Option<Level>,
     pub status: Status,
     /// The rule's `author` field. The Detection Rule License asks that a message made from a
     /// match keeps it.
@@ -654,6 +760,20 @@ pub struct Meta {
     pub description: Option<String>,
     /// The set it comes from.
     pub source: &'static Source,
+}
+
+impl Meta {
+    /// Whether a match of this rule raises a finding: only a rule that states a level that
+    /// raises (`Level::raises`). A rule with no level is counted and handed over, like one
+    /// below high.
+    pub fn raises(&self) -> bool {
+        self.level.is_some_and(Level::raises)
+    }
+
+    /// Its level's name for a machine, `None` when it states none.
+    pub fn level_name(&self) -> Option<&'static str> {
+        self.level.map(Level::as_str)
+    }
 }
 
 /// What this level does with a rule. Whether a rule it can evaluate watches this Mac now is
@@ -705,6 +825,17 @@ pub enum Reason {
     BackslashInWildcard,
     /// It is about program starts and file events at once.
     SpansKinds,
+    /// It could never be true over the events here, such as one that asks for a field no event
+    /// of its kind has.
+    NeverTrue,
+    /// A part it cannot do without is a regular expression of EQL's, which is not translated.
+    Regex,
+    /// A part it cannot do without uses a function of EQL's that the translation does not
+    /// carry.
+    Unsupported,
+    /// A part it cannot do without compares one field of the event with another, which a Sigma
+    /// rule cannot.
+    Function,
 }
 
 impl Reason {
@@ -718,6 +849,10 @@ impl Reason {
             Reason::NotEql => "not_eql",
             Reason::BackslashInWildcard => "backslash_in_wildcard",
             Reason::SpansKinds => "spans_kinds",
+            Reason::NeverTrue => "never_true",
+            Reason::Regex => "regex",
+            Reason::Unsupported => "unsupported",
+            Reason::Function => "function",
         }
     }
 
@@ -734,6 +869,14 @@ impl Reason {
                 "has a backslash in a wildcard pattern, whose meaning in Elasticsearch is not documented".into()
             }
             Reason::SpansKinds => "is about program starts and file events at once".into(),
+            Reason::NeverTrue => "could never be true over the events here".into(),
+            Reason::Regex => {
+                "needs a regular expression in EQL's syntax, which is not translated".into()
+            }
+            Reason::Unsupported => "uses a function of EQL's that is not translated".into(),
+            Reason::Function => {
+                "compares one field with another, which a Sigma rule cannot".into()
+            }
         }
     }
 }
@@ -789,7 +932,7 @@ impl Match<'_> {
             "events": self.kind.category(),
             "id_text": crate::status::text(&m.id),
             "title_text": crate::status::text(&m.title),
-            "level": m.level.as_str(),
+            "level": m.level_name(),
             "status": m.status.as_str(),
             "techniques": m.techniques,
             "author_text": m.author.as_deref().map(crate::status::text),
@@ -969,7 +1112,7 @@ impl Rules {
                 "file": l.file,
                 "id_text": l.meta.as_ref().map(|m| crate::status::text(&m.id)),
                 "title_text": l.meta.as_ref().map(|m| crate::status::text(&m.title)),
-                "level": l.meta.as_ref().map(|m| m.level.as_str()),
+                "level": l.meta.as_ref().and_then(Meta::level_name),
                 "status": l.meta.as_ref().map(|m| m.status.as_str()),
                 "events": l.kind.map(Kind::category),
             });
@@ -1088,14 +1231,19 @@ impl Rules {
                     Some(date) => format!("at {} of {date}", &s.commit[..12]),
                     None => format!("at {}", &s.commit[..12]),
                 };
+                let levels = if s.states_levels {
+                    ""
+                } else {
+                    ", none with a level stated"
+                };
                 if s.translation.is_some() {
                     format!(
-                        "{n} from {} {at}, {} of them translated into Sigma and shipped, {not_taken} not taken",
-                        s.publisher,
+                        "{n} from {} {at}, {} of them translated into Sigma and shipped, {not_taken} not taken{levels}",
+                        s.set,
                         n - not_taken
                     )
                 } else {
-                    format!("{n} from {} {at}, all shipped", s.publisher)
+                    format!("{n} from {} {at}, all shipped{levels}", s.set)
                 }
             })
             .collect();
@@ -1115,13 +1263,13 @@ impl Rules {
                     String::new()
                 };
                 format!(
-                    "  {:<13} {:<8} {}{matched}",
-                    m.level.as_str(),
+                    "  {:<15} {:<17} {}{matched}",
+                    level_said(m.level),
                     l.source.name,
                     m.title
                 )
             }
-            None => format!("  {:<13} {:<8} {}", "?", l.source.name, l.file),
+            None => format!("  {:<15} {:<17} {}", "?", l.source.name, l.file),
         };
         let mut lines = vec![
             self.sources_said(),
@@ -1177,7 +1325,8 @@ impl Rules {
     }
 
     /// The rules split by placement: evaluated, in part, not evaluated, each from the most
-    /// severe down, in the order they are shipped within a level.
+    /// severe down, in the order they are shipped within a level; a rule that states no level
+    /// after every level, and one that could not be read last.
     pub fn groups(&self) -> (Vec<&Loaded>, Vec<&Loaded>, Vec<&Loaded>) {
         let mut all: Vec<&Loaded> = self.rules.iter().collect();
         all.sort_by_key(|l| std::cmp::Reverse(l.meta.as_ref().map(|m| m.level)));
@@ -1268,11 +1417,18 @@ impl Loading {
         let layout = self.layout(source.schema);
         let cells: Vec<&'static str> = line.split('\t').collect();
         let read = match cells[..] {
-            [file, id, name, severity, reason, detail] => LEVELS
+            // A set that states no level leaves the severity empty, and only such a set may.
+            [file, id, name, "", reason, detail] if !source.states_levels => {
+                Ok((file, id, name, None, reason, detail))
+            }
+            [file, id, name, severity, reason, detail] if source.states_levels => LEVELS
                 .iter()
                 .find(|(n, _)| *n == severity)
-                .map(|(_, level)| (file, id, name, *level, reason, detail))
+                .map(|(_, level)| (file, id, name, Some(*level), reason, detail))
                 .ok_or(format!("the severity {severity:?} is not a level")),
+            [_, _, _, severity, _, _] => Err(format!(
+                "the set states no level, and the line gives the severity {severity:?}"
+            )),
             _ => Err("the line has not six cells".to_string()),
         };
         let loaded = match read.and_then(|(file, id, name, level, reason, detail)| {
@@ -1336,6 +1492,10 @@ fn not_taken_reason(code: &str, detail: &str) -> Result<Reason, String> {
         "not_eql" => Reason::NotEql,
         "backslash_in_wildcard" => Reason::BackslashInWildcard,
         "spans_kinds" => Reason::SpansKinds,
+        "never_true" => Reason::NeverTrue,
+        "regex" => Reason::Regex,
+        "unsupported" => Reason::Unsupported,
+        "function" => Reason::Function,
         "needs_events" => Reason::NeedsEvents(detail.to_string()),
         "needs_fields" => Reason::NeedsFields(
             detail
@@ -1851,7 +2011,9 @@ impl Texts {
     }
 }
 
-/// A rule is evaluated only with an id and a level, so that a match can be named and weighed.
+/// A rule is evaluated only with an id, so that a match can be named, and with a level, so that
+/// it can be weighed, unless its set states none: then it is evaluated without one, and one that
+/// states a level is not read, since its set gives none.
 fn meta(rule: &sigma_rust::Rule, yaml: &Value, source: &'static Source) -> Result<Meta, String> {
     // The evaluator refuses a level or status that is not Sigma's; it allows none.
     fn one_of<T: Copy>(table: &[(&str, T)], key: &str, yaml: &Value) -> Result<T, String> {
@@ -1863,11 +2025,16 @@ fn meta(rule: &sigma_rust::Rule, yaml: &Value, source: &'static Source) -> Resul
             .ok_or(format!("the rule has no {key}"))
     }
     let id = rule.id.clone().ok_or("the rule has no id")?;
+    let level = match (source.states_levels, yaml["level"].is_null()) {
+        (true, _) => Some(one_of(&LEVELS, "level", yaml)?),
+        (false, true) => None,
+        (false, false) => return Err("the set states no level, and the rule has one".to_string()),
+    };
     Ok(Meta {
         finding_rule: format!("{}:{id}", source.name),
         id,
         title: rule.title.clone(),
-        level: one_of(&LEVELS, "level", yaml)?,
+        level,
         status: one_of(&STATUSES, "status", yaml)?,
         author: rule.author.clone(),
         techniques: rule
@@ -2075,9 +2242,12 @@ mod tests {
         // Of Elastic's 185 rules for macOS, 66 translated: 12 of them with an alternative the
         // translation left out, and 119 not taken.
         assert_eq!(totals("elastic"), [66, 119, 54, 12, 119]);
+        // Of Elastic's 278 behaviour rules for macOS, 57 translated: 10 of them with an
+        // alternative the translation left out, and 221 not taken.
+        assert_eq!(totals("elastic-behaviour"), [57, 221, 47, 10, 221]);
         assert_eq!(
             s["totals"],
-            json!({ "shipped": 141, "not_taken": 119, "evaluated": 128, "in_part": 13, "not_evaluated": 119 })
+            json!({ "shipped": 198, "not_taken": 340, "evaluated": 175, "in_part": 23, "not_evaluated": 340 })
         );
         let ids = |key: &str, source: &str, events: &str| -> Vec<String> {
             let mut ids: Vec<String> = s[key]
@@ -2096,9 +2266,14 @@ mod tests {
         assert_eq!(ids("evaluated", "sigma", FILE_CATEGORY), FILE_RULES);
         assert_eq!(ids("evaluated", "elastic", CATEGORY).len(), 49);
         assert_eq!(ids("evaluated", "elastic", FILE_CATEGORY).len(), 5);
+        assert_eq!(ids("evaluated", "elastic-behaviour", CATEGORY).len(), 44);
+        assert_eq!(
+            ids("evaluated", "elastic-behaviour", FILE_CATEGORY).len(),
+            3
+        );
         assert_eq!(
             (rules.evaluated(Kind::Process), rules.evaluated(Kind::File)),
-            (69 + 49, 5 + 5)
+            (69 + 49 + 44, 5 + 5 + 3)
         );
         // No two rules share an id: the store counts matches by a rule's id.
         let all: Vec<&str> = rules
@@ -2108,36 +2283,47 @@ mod tests {
             .map(|m| m.id.as_str())
             .collect();
         assert_eq!(all.iter().collect::<BTreeSet<_>>().len(), all.len());
-        assert_eq!(all.len(), 260);
+        assert_eq!(all.len(), 538);
     }
 
     /// Every translated file is the translator's output byte for byte: its sha256 is the one
-    /// `rules/elastic/SHA256SUMS` records, and the manifest names every file and no other.
+    /// its set's `SHA256SUMS` records (`rules/elastic/`, `rules/elastic-behaviour/`), and the
+    /// manifest names every file and no other.
     #[test]
     fn every_translated_rule_is_the_file_the_translator_wrote() {
-        let manifest = include_str!("../rules/elastic/SHA256SUMS");
-        let recorded: BTreeMap<&str, &str> = manifest
-            .lines()
-            .map(|l| {
-                let (hash, path) = l.split_once("  ").unwrap();
-                (path, hash)
-            })
-            .collect();
-        let shipped: BTreeMap<&str, String> = ELASTIC_SHIPPED
-            .iter()
-            .map(|(path, text)| (*path, crate::sha256::hex(text.as_bytes())))
-            .collect();
-        assert_eq!(recorded.len(), 66);
-        assert_eq!(
-            recorded.keys().collect::<Vec<_>>(),
-            shipped.keys().collect::<Vec<_>>()
-        );
-        for (path, hash) in &shipped {
-            assert_eq!(recorded[path], hash, "{path} differs from the manifest");
+        for (source, manifest, files) in [
+            (&ELASTIC, include_str!("../rules/elastic/SHA256SUMS"), 66),
+            (
+                &ELASTIC_BEHAVIOUR,
+                include_str!("../rules/elastic-behaviour/SHA256SUMS"),
+                57,
+            ),
+        ] {
+            let recorded: BTreeMap<&str, &str> = manifest
+                .lines()
+                .map(|l| {
+                    let (hash, path) = l.split_once("  ").unwrap();
+                    (path, hash)
+                })
+                .collect();
+            let shipped: BTreeMap<&str, String> = source
+                .files
+                .iter()
+                .map(|(path, text)| (*path, crate::sha256::hex(text.as_bytes())))
+                .collect();
+            assert_eq!(recorded.len(), files, "{}", source.name);
+            assert_eq!(
+                recorded.keys().collect::<Vec<_>>(),
+                shipped.keys().collect::<Vec<_>>()
+            );
+            for (path, hash) in &shipped {
+                assert_eq!(recorded[path], hash, "{path} differs from the manifest");
+            }
         }
     }
 
-    /// One sample of `tests/elastic/samples.jsonl` as the event level would record it.
+    /// One sample of `tests/elastic/samples.jsonl` or `tests/elastic-behaviour/samples.jsonl`
+    /// as the event level would record it.
     enum Sample {
         Start(ProcessStart),
         File(FileEvent),
@@ -2158,7 +2344,8 @@ mod tests {
                         .collect(),
                     parent_executable: text("parent_executable"),
                     working_directory: text("working_directory"),
-                    pid: number("pid").unwrap(),
+                    // The behaviour set's samples give no pid, which no rule reads.
+                    pid: number("pid").unwrap_or_default(),
                     parent_pid: number("parent_pid"),
                     user_id: number("user_id"),
                     signing_id: text("signing_id"),
@@ -2187,8 +2374,33 @@ mod tests {
         // with the rules the reference said it matches. The one call the core's reading and
         // `immune matches` both make must give Elastic's rules exactly those: none fewer, none
         // more.
+        samples_match_as_the_reference_said(
+            &ELASTIC,
+            include_str!("../tests/elastic/samples.jsonl"),
+            66,
+        );
+    }
+
+    #[test]
+    fn elastic_s_behaviour_rules_match_the_samples_exactly_as_the_reference_said() {
+        // The same for Elastic's behaviour rules (`rules/elastic-behaviour/NOTICE`), whose
+        // samples are in `tests/elastic-behaviour/samples.jsonl`. That they state no level
+        // changes nothing in what they match.
+        samples_match_as_the_reference_said(
+            &ELASTIC_BEHAVIOUR,
+            include_str!("../tests/elastic-behaviour/samples.jsonl"),
+            57,
+        );
+    }
+
+    /// Every sample matches exactly the rules of `source` the reference said, and every one of
+    /// its `translated` rules is held to a sample it must match and one of its kind it must not.
+    fn samples_match_as_the_reference_said(
+        source: &'static Source,
+        samples: &str,
+        translated: usize,
+    ) {
         let rules = Rules::shipped();
-        let samples = include_str!("../tests/elastic/samples.jsonl");
         let mut differ = Vec::new();
         let mut matched: BTreeSet<String> = BTreeSet::new();
         let mut missed: BTreeSet<String> = BTreeSet::new();
@@ -2207,7 +2419,7 @@ mod tests {
             };
             let got: BTreeSet<String> = got
                 .iter()
-                .filter(|m| std::ptr::eq(m.meta.source, &ELASTIC))
+                .filter(|m| std::ptr::eq(m.meta.source, source))
                 .map(|m| m.meta.finding_rule.clone())
                 .collect();
             if got != expected {
@@ -2217,7 +2429,7 @@ mod tests {
                 ));
             }
             for l in rules.rules.iter().filter(|l| l.kind == Some(kind)) {
-                let Some(m) = l.meta.as_ref().filter(|m| std::ptr::eq(m.source, &ELASTIC)) else {
+                let Some(m) = l.meta.as_ref().filter(|m| std::ptr::eq(m.source, source)) else {
                     continue;
                 };
                 if expected.contains(&m.finding_rule) {
@@ -2230,15 +2442,15 @@ mod tests {
         assert!(differ.is_empty(), "{}", differ.join("\n"));
         // Every translated rule is held to a sample it must match and one of its kind it must
         // not.
-        let translated: BTreeSet<String> = rules
+        let all: BTreeSet<String> = rules
             .rules
             .iter()
-            .filter(|l| std::ptr::eq(l.source, &ELASTIC) && !l.not_taken())
+            .filter(|l| std::ptr::eq(l.source, source) && !l.not_taken())
             .map(|l| l.meta.as_ref().unwrap().finding_rule.clone())
             .collect();
-        assert_eq!(translated.len(), 66);
-        assert_eq!(matched, translated);
-        assert_eq!(missed, translated);
+        assert_eq!(all.len(), translated);
+        assert_eq!(matched, all);
+        assert_eq!(missed, all);
     }
 
     /// An invented rule as the translator writes one, of Elastic's set: `left_out` is the list
@@ -2588,7 +2800,7 @@ mod tests {
                 .find(|l| std::ptr::eq(l.source, &ELASTIC) && l.file == *path)
                 .unwrap();
             let m = l.meta.as_ref().unwrap();
-            assert_eq!(Some(m.level.as_str()), yaml["elastic"]["severity"].as_str());
+            assert_eq!(m.level_name(), yaml["elastic"]["severity"].as_str());
             assert_eq!(Some(m.id.as_str()), yaml["elastic"]["rule_id"].as_str());
             assert_eq!(m.finding_rule, format!("elastic:{}", m.id));
             assert_eq!(Some(m.title.as_str()), yaml["title"].as_str());
@@ -2680,7 +2892,7 @@ mod tests {
         let m = rules.evaluate(&truncate);
         let m = m.iter().find(|m| m.meta.id == BINARY_PADDING).unwrap();
         assert_eq!(m.meta.title, "Binary Padding - MacOS");
-        assert_eq!(m.meta.level, Level::High);
+        assert_eq!(m.meta.level, Some(Level::High));
         assert_eq!(m.meta.status, Status::Test);
         assert_eq!(m.meta.techniques, ["T1027.001"]);
         assert_eq!(
@@ -2968,7 +3180,7 @@ mod tests {
             .filter(|l| std::ptr::eq(l.source, &SIGMAHQ))
             .filter(|l| !matches!(l.placement, Placement::NotEvaluated(_)))
             .filter_map(|l| l.meta.as_ref())
-            .filter(|m| m.level >= Level::High)
+            .filter(|m| m.raises())
             .map(|m| m.id.as_str())
             .collect();
         let sampled: BTreeSet<&str> = samples
@@ -3335,6 +3547,80 @@ mod tests {
         assert!(rules.evaluate(&x).is_empty());
     }
 
+    /// No level is invented. A rule of a set that states none, as Elastic's behaviour rules
+    /// state none, is evaluated without a level, matches like any rule and raises no finding by
+    /// itself, and its absence is null where a machine reads it. A rule of that set that states
+    /// a level is not read, since its set gives none, and a rule of a set that states levels is
+    /// still not read without one. The same holds for the upstream rules a set did not take: an
+    /// empty severity only for a set that states none, and only an empty one there.
+    #[test]
+    fn a_rule_of_a_set_that_states_no_level_is_evaluated_and_raises_nothing_by_itself() {
+        let rule = |level: &str| -> &'static str {
+            Box::leak(
+                format!(
+                    "title: Invented\nid: 00000000-0000-4000-8000-00000000000b\nstatus: test\n{level}\
+                     logsource: {{\"product\": \"macos\", \"category\": \"process_creation\"}}\n\
+                     detection:\n  s1: {{\"process.name|cased\": [\"curl\"]}}\n  condition: s1\n\
+                     elastic: {{\"in_part_missing_fields\": []}}\n"
+                )
+                .into_boxed_str(),
+            )
+        };
+        let none = Rules::load_as(&ELASTIC_BEHAVIOUR, &[("none.yml", rule(""))]);
+        let m = none.rules[0].meta.as_ref().unwrap();
+        assert_eq!(none.rules[0].placement, Placement::Evaluated);
+        assert_eq!((m.level, m.raises()), (None, false));
+        assert_eq!(
+            m.finding_rule,
+            "elastic-behaviour:00000000-0000-4000-8000-00000000000b"
+        );
+        let curl = start("/usr/bin/curl", &["curl"], "/bin/zsh");
+        let matched = none.evaluate(&curl);
+        assert_eq!(matched.len(), 1);
+        assert_eq!(matched[0].json()["level"], Json::Null);
+        assert_eq!(none.summary_json()["evaluated"][0]["level"], Json::Null);
+        // A high rule of a set that states levels raises; the level alone decides.
+        let high = Rules::load_as(&ELASTIC, &[("high.yml", rule("level: high\n"))]);
+        assert!(high.rules[0].meta.as_ref().unwrap().raises());
+        let refused = |rules: Rules| match &rules.rules[0].placement {
+            Placement::NotEvaluated(Reason::NotParsed(said)) => said.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            refused(Rules::load_as(
+                &ELASTIC_BEHAVIOUR,
+                &[("stated.yml", rule("level: high\n"))]
+            )),
+            "the set states no level, and the rule has one"
+        );
+        assert_eq!(
+            refused(Rules::load_as(&ELASTIC, &[("bare.yml", rule(""))])),
+            "the rule has no level"
+        );
+
+        let not_taken = |source: &'static Source, severity: &str| {
+            let line = format!("macos/x.toml\tid-1\tInvented\t{severity}\tsequence\tSequence");
+            let mut loading = Loading::default();
+            loading.not_taken(source, Box::leak(line.into_boxed_str()));
+            let l = loading.done().rules.remove(0);
+            match (l.meta, l.placement) {
+                (Some(m), Placement::NotEvaluated(Reason::Sequence)) => Ok(m.level),
+                (None, Placement::NotEvaluated(Reason::NotParsed(said))) => Err(said),
+                other => panic!("{:?}", other.1),
+            }
+        };
+        assert_eq!(not_taken(&ELASTIC_BEHAVIOUR, ""), Ok(None));
+        assert_eq!(not_taken(&ELASTIC, "medium"), Ok(Some(Level::Medium)));
+        assert_eq!(
+            not_taken(&ELASTIC_BEHAVIOUR, "high"),
+            Err("the set states no level, and the line gives the severity \"high\"".into())
+        );
+        assert_eq!(
+            not_taken(&ELASTIC, ""),
+            Err("the severity \"\" is not a level".into())
+        );
+    }
+
     /// The summary an agent reads has stable names, says what this level gives, and lists
     /// the most severe rules first.
     #[test]
@@ -3363,9 +3649,28 @@ mod tests {
             (&json!("elastic"), &json!("Elastic-2.0"), &json!(true))
         );
         assert_eq!(elastic["commit"], ELASTIC.commit);
+        let behaviour = &s["sources"][2];
+        assert_eq!(
+            (&behaviour["name"], &behaviour["url"], &behaviour["commit"]),
+            (
+                &json!("elastic-behaviour"),
+                &json!("https://github.com/elastic/protections-artifacts"),
+                &json!("a87715d87a2babd51b37ff6c55f104fe7e567911")
+            )
+        );
+        // The most severe first; a rule that states no level, `null`, after every level.
         let evaluated = s["evaluated"].as_array().unwrap();
         assert_eq!(evaluated[0]["level"], "high");
-        assert_eq!(evaluated[evaluated.len() - 1]["level"], "informational");
+        let stated = evaluated.iter().take_while(|r| !r["level"].is_null());
+        assert_eq!(stated.last().unwrap()["level"], "informational");
+        let none: Vec<&Json> = evaluated.iter().filter(|r| r["level"].is_null()).collect();
+        assert_eq!(none.len(), 47);
+        assert!(none.iter().all(|r| r["source"] == "elastic-behaviour"));
+        assert!(
+            evaluated[evaluated.len() - 47..]
+                .iter()
+                .all(|r| r["level"].is_null())
+        );
         let padding = evaluated
             .iter()
             .find(|r| r["id_text"] == BINARY_PADDING)
@@ -3386,14 +3691,21 @@ mod tests {
         let lines = Rules::shipped().summary_lines(None);
         assert_eq!(
             lines[0],
-            "Published rules for macOS: 75 from SigmaHQ at d7c9da10c170 of 2026-11-10, all shipped; 185 from Elastic at 032ac5ecb0b4, 66 of them translated into Sigma and shipped, 119 not taken."
+            "Published rules for macOS: 75 from SigmaHQ's rule set at d7c9da10c170 of 2026-11-10, all shipped; 185 from Elastic's detection rules at 032ac5ecb0b4, 66 of them translated into Sigma and shipped, 119 not taken; 278 from Elastic's behaviour rules at a87715d87a2b, 57 of them translated into Sigma and shipped, 221 not taken, none with a level stated."
         );
         assert!(
             lines
                 .iter()
                 .any(|l| l.contains("selection_meshagent needs OriginalFileName"))
         );
-        assert!(lines.iter().any(|l| l == "Evaluated in full: 128, 118 on every program start and 10 on every file created or renamed"));
+        assert!(lines.iter().any(|l| l == "Evaluated in full: 175, 162 on every program start and 13 on every file created or renamed"));
+        // A person reads that a rule states no level, in the level's column.
+        assert!(
+            lines
+                .iter()
+                .any(|l| l == "  no level stated elastic-behaviour Sensitive File Copy via Ditto"),
+            "{lines:?}"
+        );
     }
 
     /// A value as a text it stands for: a wildcard made a letter or nothing, an escape undone,
@@ -3810,6 +4122,17 @@ mod tests {
         ];
         for (image, args, parent) in translated {
             base.push(start(image, args, parent));
+        }
+        // Elastic's behaviour rules meet the kept samples they match, the reference's events.
+        for line in include_str!("../tests/elastic-behaviour/samples.jsonl").lines() {
+            let sample: Json = serde_json::from_str(line).unwrap();
+            if sample["matches"].as_array().is_some_and(Vec::is_empty) {
+                continue;
+            }
+            match Sample::of(&sample["event"]) {
+                Sample::Start(s) => base.push(s),
+                Sample::File(f) => files.push(f),
+            }
         }
         let mut grep = start(
             "/usr/bin/grep",

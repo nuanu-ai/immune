@@ -1,0 +1,14 @@
+title: "Suspicious Curl User Agent"
+id: "e26e47b7-ec35-4060-8b35-32d01fae159e"
+status: "test"
+description: "Detects curl commands using the \"cur1\" user agent string, associated with BlueNoroff/Lazarus Group campaigns. This\ndeliberate misspelling is a reliable indicator of nation-state attacks targeting cryptocurrency sectors."
+references: ["https://github.com/elastic/protections-artifacts/blob/a87715d87a2babd51b37ff6c55f104fe7e567911/behavior/rules/macos/command_and_control_suspicious_curl_user_agent.toml"]
+license: "Elastic License v2"
+tags: ["attack.t1105"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["curl"]}
+  s2: {"process.args|contains": ["\u0000cur1-"]}
+  s3: {"process.command_line": ["*cur1-*"]}
+  condition: "(s1 and (s2 or s3))"
+elastic: {"rule_id": "e26e47b7-ec35-4060-8b35-32d01fae159e", "severity": null, "risk_score": null, "query_sha256": "4afe80b1555cae81b26d0e9b0020c91399851f79a0c8439beab5a195beb1d354", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": [], "folded_fields": [], "version": "1.0.3", "actions_ignored": ["kill_process process.entity_id", "kill_process process.parent.entity_id"], "elastic_also_evaluates_on": []}

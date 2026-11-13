@@ -1,0 +1,13 @@
+title: "Temporary Binary Execution via Osascript"
+id: "a75b6762-fc64-4c96-b3b8-48ed000d997b"
+status: "test"
+description: "Detects when a binary is executed from a temporary directory via osascript. Threat actors have been see leveraging\napplescript to automate post execution tasks, such as downloading and executing a binary from a temporary directory."
+references: ["https://github.com/elastic/protections-artifacts/blob/a87715d87a2babd51b37ff6c55f104fe7e567911/behavior/rules/macos/execution_temporary_binary_execution_via_osascript.toml"]
+license: "Elastic License v2"
+tags: ["attack.t1059.002"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.executable|cased": ["/tmp/*", "/private/tmp/*"]}
+  s2: {"process.parent.name|cased": ["osascript"]}
+  condition: "(s1 and s2)"
+elastic: {"rule_id": "a75b6762-fc64-4c96-b3b8-48ed000d997b", "severity": null, "risk_score": null, "query_sha256": "c4f223f098c548cf83005e20ebb43feaf3b2395b26492f0d89c304c19cbdbec9", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": [], "folded_fields": [], "version": "1.0.3", "actions_ignored": ["kill_process process.entity_id", "kill_process process.parent.entity_id"], "elastic_also_evaluates_on": []}

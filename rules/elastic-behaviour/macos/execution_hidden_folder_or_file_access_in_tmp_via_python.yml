@@ -1,0 +1,18 @@
+title: "Hidden Folder or File Access in Tmp via Python"
+id: "7f165456-b724-4a83-b006-002c902ccee7"
+status: "test"
+description: "Detects possible Python based malware that stage their files in a hidden directory or file that sits within the tmp\ndirectory. This rule looks for Python executions where the process arguments include references to hidden folders or\nfiles in the tmp directory."
+references: ["https://github.com/elastic/protections-artifacts/blob/a87715d87a2babd51b37ff6c55f104fe7e567911/behavior/rules/macos/execution_hidden_folder_or_file_access_in_tmp_via_python.toml"]
+license: "Elastic License v2"
+tags: ["attack.t1059.004", "attack.t1059.006"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.parent.name": ["python*"]}
+  s2: {"process.name|cased": ["mkdir", "osascript", "sh", "bash", "zsh", "dash", "csh", "tcsh", "ksh", "tclsh", "fish"]}
+  s3: {"process.name|cased": ["tclsh*"]}
+  s4: {"process.args|contains|cased": ["\u0000/tmp/.", "\u0000/private/tmp/."]}
+  s5: {"process.args_count": 2}
+  s6: {"process.args|re": ["(?s)\\x00/tmp/\\.ansible\\-[^\\x00]*/ansible\\-tmp\\-[^\\x00]*/AnsiballZ_[^\\x00]*\\.py\\x00", "(?s)\\x00/private/tmp/\\.ansible\\-[^\\x00]*/ansible\\-tmp\\-[^\\x00]*/AnsiballZ_[^\\x00]*\\.py\\x00"]}
+  s7: {"process.args|exists": true}
+  condition: "(s1 and (s2 or s3) and s4 and s5 and (s7 and not s6))"
+elastic: {"rule_id": "7f165456-b724-4a83-b006-002c902ccee7", "severity": null, "risk_score": null, "query_sha256": "2b8acd7cc194f86b40e1fd66b9312901765fc227adfc93d14e8964193101e9ad", "kinds": ["start"], "in_part_missing_fields": ["needs_fields process.Ext.effective_parent.name"], "also_asks_events": [], "null_sensitive": ["process.args"], "folded_fields": [], "version": "1.0.15", "actions_ignored": ["kill_process process.entity_id", "kill_process process.parent.entity_id"], "elastic_also_evaluates_on": ["fork"]}

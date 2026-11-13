@@ -1,0 +1,15 @@
+title: "Malicious Homebrew Initial Access"
+id: "88cb5440-a3fd-465a-8fbf-3769df14a577"
+status: "test"
+description: "Detects attempts to trick users into installing a malicious version of Homebrew that spoofs the official Homebrew\ninstallation url. This has been observed several times in the wild as a method of gaining initial access by adversaries\nand red teams alike."
+references: ["https://github.com/elastic/protections-artifacts/blob/a87715d87a2babd51b37ff6c55f104fe7e567911/behavior/rules/macos/command_and_control_malicious_homebrew_initial_access.toml"]
+license: "Elastic License v2"
+tags: ["attack.t1105", "attack.t1204"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["curl"]}
+  s2: {"immune.folded.process.args|re": ["(?s)\\x00http[^\\x00]*/homebrew/install/head/install\\.sh\\x00"]}
+  s3: {"process.args|contains": ["\u0000https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh\u0000"]}
+  s4: {"process.args|exists": true}
+  condition: "(s1 and s2 and (s4 and not s3))"
+elastic: {"rule_id": "88cb5440-a3fd-465a-8fbf-3769df14a577", "severity": null, "risk_score": null, "query_sha256": "722611c4ffd89084127d7d25e8b2549b176d1e3717db3e0cdc870d5264aaead4", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": ["process.args"], "folded_fields": ["process.args"], "version": "1.0.4", "actions_ignored": ["kill_process process.parent.entity_id"], "elastic_also_evaluates_on": []}

@@ -1,0 +1,16 @@
+title: "Decoy file Open via Preview App"
+id: "87bbe441-6b10-47b8-bd1b-0732cb4bb7c8"
+status: "test"
+description: "Detects the use of the Open binary to open a file from a suspicious location via the Apple Preview application. Threat\nactors commonly display decoy files or images to appear legitimate and distract users from malicious activities running\nin the background, often as part of Gatekeeper bypass or initial infection chains."
+references: ["https://github.com/elastic/protections-artifacts/blob/a87715d87a2babd51b37ff6c55f104fe7e567911/behavior/rules/macos/defense_evasion_decoy_file_open_via_preview_app.toml"]
+license: "Elastic License v2"
+tags: ["attack.t1036", "attack.t1204.002"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["open"]}
+  s2: {"process.args|contains|cased": ["\u0000-a\u0000", "\u0000-g\u0000"]}
+  s3: {"process.args|contains|cased": ["\u0000/System/Applications/Preview.app\u0000"]}
+  s4: {"process.args|contains|cased": ["\u0000/Users/Shared/", "\u0000/tmp/", "\u0000/private/tmp/", "\u0000/var/tmp/", "\u0000/private/var/tmp/", "\u0000/var/root/", "\u0000/private/var/root/"]}
+  s5: {"process.args_count|lte": 4}
+  condition: "(s1 and s2 and s3 and s4 and s5)"
+elastic: {"rule_id": "87bbe441-6b10-47b8-bd1b-0732cb4bb7c8", "severity": null, "risk_score": null, "query_sha256": "b146793280166882676d5ad373b2498b3cc294408981608be37abdafc90ce28c", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": [], "folded_fields": [], "version": "1.0.1", "actions_ignored": ["kill_process process.entity_id", "kill_process process.parent.entity_id"], "elastic_also_evaluates_on": []}

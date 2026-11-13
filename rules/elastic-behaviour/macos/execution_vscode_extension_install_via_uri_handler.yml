@@ -1,0 +1,14 @@
+title: "VScode Extension Install via URI Handler"
+id: "0832e2f1-cb90-4fb1-a484-5c98e3d06ec5"
+status: "test"
+description: "Detects when VScode attempts to retrieve a file via its URI handler in order to download, install and execute a VScode\nextension. An alternate method for installing extensions, not mentioned in the VSCode docs, is via the VSCode URI\nhandler. The vscode:// URI protocol handler is registered automatically when VSCode is installed. When opening a URL\nsuch as vscode://hellothere.test from a browser, a prompt will first be shown to open the URL in VSCode. After opening,\nthe URL argument vscode://hellothere.test will be sent to the registered command line \"Code.exe\" \"--open-url\" \"--\"\n\"vscode://hellothere.test\"."
+references: ["https://github.com/elastic/protections-artifacts/blob/a87715d87a2babd51b37ff6c55f104fe7e567911/behavior/rules/macos/execution_vscode_extension_install_via_uri_handler.toml"]
+license: "Elastic License v2"
+tags: ["attack.t1059.004", "attack.t1204.001"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["code"]}
+  s2: {"process.args|contains": ["\u0000--open-url\u0000"]}
+  s3: {"process.args|contains": ["\u0000vscode://"]}
+  condition: "(s1 and s2 and s3)"
+elastic: {"rule_id": "0832e2f1-cb90-4fb1-a484-5c98e3d06ec5", "severity": null, "risk_score": null, "query_sha256": "3a4bb04d22d6ddf304981c91dedb1f443c110a62d7a4e7084f2b9259e66ddafd", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": [], "folded_fields": [], "version": "1.0.3", "actions_ignored": ["kill_process process.entity_id", "kill_process process.parent.entity_id"], "elastic_also_evaluates_on": ["fork"]}

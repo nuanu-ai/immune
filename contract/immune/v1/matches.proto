@@ -4,11 +4,11 @@
 // events are in `event.proto`.
 //
 // The core evaluates published rules over the program starts and file events its collector
-// writes to a log that lives a day: SigmaHQ's rules for macOS, and Elastic's detection rules for
-// macOS translated into Sigma. This answer gives every match of every rule, of
-// every level, each with the event it matched, in the order of the log. A match of a rule marked
-// high or critical also raised a finding; the others are only counted in the store. Events that
-// matched no rule are not given.
+// writes to a log that lives a day: SigmaHQ's rules for macOS, and Elastic's detection rules and
+// behaviour rules for macOS translated into Sigma. This answer gives every match of every rule,
+// of every level and with none, each with the event it matched, in the order of the log. A match
+// of a rule marked high or critical also raised a finding; the others, and those of a rule whose
+// set states no level, are only counted in the store. Events that matched no rule are not given.
 //
 // The queue is the log itself, read again. The store keeps no event, and the caller keeps its
 // own place: it passes `continue_after` back as `--after` to read on. The place is the core's own
@@ -90,8 +90,8 @@ message RuleMatch {
 // What became of a match among the core's findings.
 enum Raised {
   RAISED_UNSPECIFIED = 0;
-  // The rule is marked below high: its matches are counted and raise nothing. The reader judges
-  // the match itself.
+  // The rule is marked below high, or its set states no level (its `level` is unspecified): its
+  // matches are counted and raise nothing. The reader judges the match itself.
   RAISED_BELOW_HIGH = 1;
   // The core's own reading raised a finding of the match or added it to one, as `findings` says.
   RAISED_FINDING = 2;
@@ -191,10 +191,11 @@ message Unevaluated {
   // Its path in the shipped set; for a rule not taken, the upstream file's path under its
   // repository's `rules/` folder.
   string file = 1;
-  // The name findings give it, `sigma:<id>` or `elastic:<rule_id>`. Absent for a rule that
-  // could not be read.
+  // The name findings give it, `sigma:<id>`, `elastic:<rule_id>` or
+  // `elastic-behaviour:<rule_id>`. Absent for a rule that could not be read.
   optional string name = 2;
-  // Its `id`, `title` and level. Absent for a rule that could not be read.
+  // Its `id`, `title` and level. Absent for a rule that could not be read; `level` is also
+  // absent for a rule whose set states no level, which has a `name`.
   optional string id_text = 3;
   optional string title_text = 4;
   optional Level level = 5;
@@ -235,4 +236,15 @@ enum UnevaluatedReason {
   UNEVALUATED_REASON_BACKSLASH_IN_WILDCARD = 9;
   // It is about program starts and file events at once.
   UNEVALUATED_REASON_SPANS_KINDS = 10;
+  // The four below are also a translation's reasons for not taking a rule. It could never be
+  // true over the events here, such as one that asks for a field no event of its kind has.
+  UNEVALUATED_REASON_NEVER_TRUE = 11;
+  // A part it cannot do without is a regular expression in EQL's syntax, which is not
+  // translated.
+  UNEVALUATED_REASON_REGEX = 12;
+  // A part it cannot do without uses a function of EQL's that is not translated.
+  UNEVALUATED_REASON_UNSUPPORTED = 13;
+  // A part it cannot do without compares one field of the event with another, which a Sigma
+  // rule cannot.
+  UNEVALUATED_REASON_FUNCTION = 14;
 }

@@ -1,0 +1,18 @@
+title: "Arbitrary Python Code Execution via Nodejs"
+id: "f8ec483c-dc3b-4d60-b863-65f61b4d382e"
+status: "test"
+description: "Detects the execution of arbitrary Python code via Nodejs."
+references: ["https://github.com/elastic/protections-artifacts/blob/a87715d87a2babd51b37ff6c55f104fe7e567911/behavior/rules/macos/execution_arbitrary_python_code_execution_via_nodejs.toml"]
+license: "Elastic License v2"
+tags: ["attack.t1059.006"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name": ["python*"]}
+  s2: {"process.args|contains|cased": ["\u0000-c\u0000"]}
+  s3: {"process.parent.name|cased": ["node"]}
+  s4: {"process.command_line": ["*os.system*", "*subprocess.run*", "*subprocess.Popen*", "*exec(*", "*eval(*"]}
+  s5: {"process.command_line": ["*subprocess.run*"]}
+  s6: {"process.command_line": ["*/bin/ps\",*"]}
+  s7: {"process.command_line": ["*-c import sys;exec(eval(sys.stdin.readline()))"]}
+  condition: "(s1 and s2 and s3 and s4 and (not s5 or not s6) and not s7)"
+elastic: {"rule_id": "f8ec483c-dc3b-4d60-b863-65f61b4d382e", "severity": null, "risk_score": null, "query_sha256": "4c3652e8e3f2852e4b6d1bfc24470860b54b6c4711cbc52f87e17f7fdd4eaf01", "kinds": ["start"], "in_part_missing_fields": ["needs_fields process.Ext.effective_parent.name"], "also_asks_events": [], "null_sensitive": [], "folded_fields": [], "version": "1.0.7", "actions_ignored": ["kill_process process.entity_id", "kill_process process.parent.entity_id"], "elastic_also_evaluates_on": []}

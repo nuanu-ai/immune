@@ -570,11 +570,12 @@ fn bars(h: &events::Series) -> String {
 /// One rule's row: its title as data in an element of its own, its level, a bar for its count
 /// against the `most` any rule counted, the count, and its finding, linked, or "Counted".
 fn rule_row(out: &mut String, row: &Row, most: i64) -> Out {
-    let level = row.meta.level.as_str();
+    // A rule with no level stated is drawn as one below high, and says it states none.
+    let level = row.meta.level_name().unwrap_or("none");
     let state = match row.finding {
         Some((id, true)) => format!("<a class=\"look\" href=\"#{}\">Finding</a>", esc(id)),
         Some((id, false)) => format!("<a href=\"#answered-{}\">Finding, answered</a>", esc(id)),
-        None if row.meta.level.raises() => "Finding".to_string(),
+        None if row.meta.raises() => "Finding".to_string(),
         None => "Counted".to_string(),
     };
     writeln!(
@@ -582,7 +583,7 @@ fn rule_row(out: &mut String, row: &Row, most: i64) -> Out {
         "<div class=\"rr\" data-rule=\"{}\"><span class=\"rt src\">{}</span><span class=\"rl\"><span class=\"lv lv-{level}\">{}</span></span><span class=\"rb\" aria-hidden=\"true\"><span style=\"width:{}%\"></span></span><span class=\"rc\">{}</span><span class=\"rs\">{state}</span></div>",
         esc(&row.meta.id),
         esc(&row.meta.title),
-        esc(&crate::pages::capital(level)),
+        esc(&crate::pages::capital(sigma::level_said(row.meta.level))),
         (row.count * 100 / most.max(1)).max(1),
         num(row.count),
     )?;
@@ -907,7 +908,7 @@ detection:
             id: "x".to_string(),
             finding_rule: "sigma:x".to_string(),
             title: "<b>Padding</b> & \"co\"".to_string(),
-            level: sigma::Level::Medium,
+            level: Some(sigma::Level::Medium),
             status: sigma::Status::Test,
             author: None,
             techniques: Vec::new(),
@@ -931,6 +932,35 @@ detection:
         assert!(
             out.contains("width:50%")
                 && out.contains("<span class=\"rc\">1,234</span><span class=\"rs\">Counted</span>"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn a_rule_that_states_no_level_is_drawn_as_counted_and_says_so() {
+        // A rule of a set that states no level shows that in the row, in the style of a rule
+        // below high, and its matches are counted, never drawn as a finding.
+        let meta = sigma::Meta {
+            id: "y".to_string(),
+            finding_rule: "elastic-behaviour:y".to_string(),
+            title: "Invented".to_string(),
+            level: None,
+            status: sigma::Status::Test,
+            author: None,
+            techniques: Vec::new(),
+            description: None,
+            source: &sigma::ELASTIC_BEHAVIOUR,
+        };
+        let mut out = String::new();
+        let row = Row {
+            meta: &meta,
+            count: 3,
+            finding: None,
+        };
+        rule_row(&mut out, &row, 3).unwrap();
+        assert!(
+            out.contains("<span class=\"lv lv-none\">No level stated</span>")
+                && out.contains("<span class=\"rs\">Counted</span>"),
             "{out}"
         );
     }

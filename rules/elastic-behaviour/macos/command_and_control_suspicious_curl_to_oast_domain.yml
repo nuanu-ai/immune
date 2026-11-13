@@ -1,0 +1,13 @@
+title: "Suspicious Curl to OAST Domain"
+id: "f0d4b092-8bc7-4625-9290-5f4a530a167f"
+status: "test"
+description: "Detects when curl is used to make an outbound network connection to a .oast domain. Threat actors have been recently\nseen using .oast domains in order to exfiltrate sensitive data from infected systems."
+references: ["https://github.com/elastic/protections-artifacts/blob/a87715d87a2babd51b37ff6c55f104fe7e567911/behavior/rules/macos/command_and_control_suspicious_curl_to_oast_domain.toml"]
+license: "Elastic License v2"
+tags: ["attack.t1105"]
+logsource: {"product": "macos", "category": "process_creation"}
+detection:
+  s1: {"process.name|cased": ["curl", "nscurl"]}
+  s2: {"process.command_line": ["*.oast*"]}
+  condition: "(s1 and s2)"
+elastic: {"rule_id": "f0d4b092-8bc7-4625-9290-5f4a530a167f", "severity": null, "risk_score": null, "query_sha256": "650f42fbf7a3bcd5a5c37982bbd860efed9c250f9a945daf3169a24d1e971662", "kinds": ["start"], "in_part_missing_fields": [], "also_asks_events": [], "null_sensitive": [], "folded_fields": [], "version": "1.0.4", "actions_ignored": ["kill_process process.entity_id", "kill_process process.parent.entity_id"], "elastic_also_evaluates_on": []}
