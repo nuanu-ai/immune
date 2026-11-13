@@ -1187,12 +1187,12 @@ fn unchanged_input_is_not_copied_again_as_raw_input() {
 }
 
 #[test]
-fn without_homebrew_the_brew_reading_has_nothing_to_read_and_earlier_brew_facts_are_retracted() {
-    // A colleague's Mac may have no Homebrew. That is not a failure, and what an earlier
-    // run read there is no longer there.
+fn without_homebrew_the_brew_reading_has_nothing_to_read_and_is_not_a_failure() {
+    // A colleague's Mac may have no Homebrew. That is not a failure. (One an earlier check
+    // read and this one does not find is lost sight of, not this: see
+    // `a_tool_read_before_and_not_found_now_is_lost_sight_of_and_never_told_as_not_installed`.)
     let dir = Dir::new("no-brew");
     let store = dir.store();
-    immune(&store, &dir.input("brew.txt", SAMPLE));
     let absent = dir.0.join("absent");
     let report = ok(immune_run(&dir.0, &store)
         .arg("--brew")
@@ -1202,20 +1202,12 @@ fn without_homebrew_the_brew_reading_has_nothing_to_read_and_earlier_brew_facts_
         .arg("--checkouts-root")
         .arg(&absent));
 
-    assert!(
-        !rows(&store, LIVE).iter().any(|r| r.contains("/brew")),
-        "brew facts are still live"
-    );
     assert_eq!(
         rows(
             &store,
             "SELECT completeness, reason FROM coverage WHERE reader = 'brew' ORDER BY id DESC LIMIT 1"
         ),
         ["full|Homebrew is not installed on this machine"]
-    );
-    assert!(
-        report.contains("Since last run: +0 added, 0 changed, 6 removed."),
-        "{report}"
     );
     assert!(report.contains("Homebrew is not installed"), "{report}");
     assert!(!report.contains("could not be read"), "{report}");
@@ -1498,8 +1490,8 @@ fn after_a_container_version_variable_changes_the_old_version_is_retracted() {
              ORDER BY scope"
         ),
         [
-            "container:machine:web-1/blog|partial|only version variables and the WordPress core version are read",
-            "container:machine:web-1/shop|partial|only version variables and the WordPress core version are read",
+            "container:machine:web-1/blog|partial|only version variables are read",
+            "container:machine:web-1/shop|partial|only version variables are read",
         ]
     );
     assert!(
@@ -1508,6 +1500,137 @@ fn after_a_container_version_variable_changes_the_old_version_is_retracted() {
             "SELECT 1 FROM assertion WHERE kind = 'container contents'"
         )
         .is_empty()
+    );
+}
+
+#[test]
+fn the_probe_runs_no_command_inside_a_container_and_holds_no_rule_for_one_product() {
+    // The probe only reads: it ran a command inside each WordPress container to read a version
+    // that nothing judged, and asked Proxmox for a version nothing read.
+    let probe =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/probe.sh"))
+            .unwrap();
+    assert!(!probe.contains(" exec "), "{probe}");
+    assert!(
+        !probe.contains("##wp") && !probe.contains("##pve"),
+        "{probe}"
+    );
+}
+
+#[test]
+fn a_kind_no_longer_read_is_set_aside_once_and_never_told_as_read_in_full_or_removed() {
+    // WordPress still runs in the container; this version only stopped reading its version
+    // file. A full reading that found nothing would say it is gone and that the container was
+    // read; the Changes and Gone pages would list it as removed. It is a kind with no reader.
+    let dir = Dir::new("retired-kind");
+    let store = dir.store();
+    let brew = dir.input("brew.txt", SAMPLE);
+    let servers = dir.0.join("servers");
+    let absent = dir.0.join("absent");
+    put(&servers, "web-1.txt", WEB_1);
+    immune_all(&store, &brew, &servers, &absent);
+    let wp = "component:container:machine:web-1/blog/wordpress-core/wordpress";
+    let blog = "container:machine:web-1/blog";
+    {
+        let conn = Connection::open(&store).unwrap();
+        conn.execute(
+            "INSERT INTO entity (id, type) VALUES (?1, 'component')",
+            [wp],
+        )
+        .unwrap();
+        for (predicate, object) in [("part_of", blog), ("has_version", "6.6.2")] {
+            conn.execute(
+                "INSERT INTO assertion (layer, subject, predicate, object, reader, scope, kind,
+                                        source_ref, basis, observed_at, run_id)
+                 VALUES ('live', ?1, ?2, ?3, 'servers', ?4, 'wordpress core version',
+                         'raw/earlier/servers/web-1.txt:31', 'observed', 1, 'earlier')",
+                [wp, predicate, object, blog],
+            )
+            .unwrap();
+        }
+        // Another container, whose version file the earlier version could not read.
+        conn.execute(
+            "INSERT OR IGNORE INTO entity (id, type) VALUES ('container:machine:web-1/oldblog', 'container')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO coverage (reader, run_id, observed_at, scope, kind, completeness, reason, cause)
+             VALUES ('servers', 'earlier', 1, 'container:machine:web-1/oldblog',
+                     'wordpress core version', 'none', 'no version file', 'failed')",
+            [],
+        )
+        .unwrap();
+    }
+    let said = immune_all(&store, &brew, &servers, &absent);
+    assert!(
+        !rows(&store, LIVE).iter().any(|l| l.starts_with(wp)),
+        "{:#?}",
+        rows(&store, LIVE)
+    );
+    let why = "no longer read by this version: the probe no longer reads WordPress's version file inside a container; a container's WORDPRESS_VERSION variable is read with its other version variables";
+    let latest = "SELECT c.scope || '|' || c.completeness || '|' || ifnull(c.cause, 'NULL') || '|' || c.reason
+                  FROM coverage c WHERE c.kind = 'wordpress core version'
+                    AND c.id = (SELECT MAX(id) FROM coverage WHERE scope = c.scope AND kind = c.kind)
+                  ORDER BY c.scope";
+    assert_eq!(
+        rows(&store, latest),
+        [
+            format!("{blog}|none|no_reader|{why}"),
+            format!("container:machine:web-1/oldblog|none|no_reader|{why}"),
+        ]
+    );
+    // Closed with an entry of its own, with why; never `removed`.
+    let entries =
+        "SELECT entry || '|' || subject || '|' || predicate || '|' || old_value || '|' || text
+                   FROM journal WHERE kind = 'wordpress core version' ORDER BY seq";
+    assert_eq!(
+        rows(&store, entries),
+        [
+            format!("retired|{wp}|has_version|6.6.2|{why}"),
+            format!("retired|{wp}|part_of|{blog}|{why}"),
+        ]
+    );
+    assert!(
+        said.contains(
+            "No longer read by this version: wordpress core version, 2 facts set aside and not counted as removed."
+        ),
+        "{said}"
+    );
+    let pages = view(&store);
+    assert!(!section(&pages, "gone").contains("wordpress"), "{pages}");
+    assert!(!pages.contains("wordpress-core"), "{pages}");
+    // Once set aside, nothing more is written about it, and nothing more is said.
+    let again = immune_all(&store, &brew, &servers, &absent);
+    assert_eq!(rows(&store, latest).len(), 2);
+    assert_eq!(
+        rows(
+            &store,
+            "SELECT COUNT(*) FROM coverage WHERE kind = 'wordpress core version'"
+        ),
+        // The earlier version's one, and one for each scope set aside.
+        ["3"]
+    );
+    assert_eq!(rows(&store, entries).len(), 2);
+    assert!(!again.contains("No longer read"), "{again}");
+    // One more fact of that kind, as a store an earlier version wrote, is told once too.
+    Connection::open(&store)
+        .unwrap()
+        .execute(
+            "INSERT INTO assertion (layer, subject, predicate, object, reader, scope, kind,
+                                    source_ref, basis, observed_at, run_id)
+             VALUES ('live', ?1, 'has_version', '6.7.0', 'servers', 'container:machine:web-1/oldblog',
+                     'wordpress core version', 'raw/earlier/servers/web-1.txt:40', 'observed', 1,
+                     'earlier')",
+            [wp],
+        )
+        .unwrap();
+    let once_more = immune_all(&store, &brew, &servers, &absent);
+    assert!(
+        once_more.contains(
+            "No longer read by this version: wordpress core version, 1 fact set aside and not counted as removed."
+        ),
+        "{once_more}"
     );
 }
 
@@ -3088,7 +3211,7 @@ fn a_name_with_direction_controls_is_printed_and_shown_escaped_and_kept_as_read(
 
 #[test]
 fn a_reason_from_a_source_is_printed_escaped() {
-    // A failed reading quotes its source in the one report line.
+    // A state the source gives is quoted where a person reads it, and kept as given.
     let h = Home::new("hidden-reason", None, None);
     let tailscale = fake(
         &h.dir.0.join("bin").join("tailscale"),
@@ -3096,20 +3219,279 @@ fn a_reason_from_a_source_is_printed_escaped() {
     );
     let printed = h.servers_with(&tailscale);
     let report = h.run(&h.dir.0.join("absent"), &tailscale);
+    let status = ok(immune_cmd(&h.home)
+        .args(["status", "--store"])
+        .arg(h.store()));
 
-    let escaped = "its state is Need\\u{202e}Login";
-    for (what, text) in [("immune servers", &printed), ("immune run", &report)] {
+    let escaped = "Need\\u{202e}Login";
+    for (what, text) in [("immune servers", &printed), ("immune status", &status)] {
         assert!(
             text.contains(escaped) && !text.contains('\u{202E}'),
             "{what}: {text}"
         );
     }
+    assert!(!report.contains('\u{202E}'), "{report}");
     assert_eq!(
         rows(
             &h.store(),
             "SELECT reason FROM coverage WHERE kind = 'tailnet peers'"
         ),
-        ["tailscale is not running, its state is Need\u{202E}Login"]
+        ["Tailscale is in a state this version does not know: Need\u{202E}Login"]
+    );
+}
+
+#[test]
+fn each_tailscale_state_is_told_as_what_it_is_with_the_date_the_tailnet_was_last_read() {
+    // Switched off is the owner's choice: no failed reading at every check, and no empty
+    // tailnet either. Waiting for a login or an approval is the owner's to fix. Starting is not
+    // readable this time. In every one, the devices known before are kept, and what is said
+    // carries when the tailnet was last read in full, on the status and beside the devices
+    // the page still lists.
+    let h = Home::new("tailnet-off", None, None);
+    let bin = h.dir.0.join("bin");
+    let absent = h.dir.0.join("absent");
+    let on = fake(&bin.join("on").join("tailscale"), TAILNET);
+    h.run(&absent, &on);
+    let read_at = rows(
+        &h.store(),
+        "SELECT MAX(observed_at) FROM coverage WHERE kind = 'tailnet peers' AND completeness = 'full'",
+    )[0]
+    .parse::<i64>()
+    .unwrap();
+    let state = |name: &str, s: &str| {
+        fake(
+            &bin.join(name).join("tailscale"),
+            &format!(
+                r#"{{ "BackendState": "{s}", "Peer": {{ "nodekey:x": {{ "HostName": "new-box", "TailscaleIPs": ["100.64.0.9"], "OS": "linux" }} }} }}"#
+            ),
+        )
+    };
+    let status = || -> serde_json::Value {
+        let v: serde_json::Value = serde_json::from_str(&ok(immune_cmd(&h.home)
+            .args(["status", "--json", "--store"])
+            .arg(h.store())))
+        .unwrap();
+        v["result"].clone()
+    };
+    let item = |r: &serde_json::Value, id: &str| -> Option<serde_json::Value> {
+        r["not_covered"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|u| u["id"] == id)
+            .cloned()
+    };
+    let live = || {
+        rows(
+            &h.store(),
+            "SELECT DISTINCT subject FROM assertion WHERE reader = 'tailnet' AND layer = 'live'
+             ORDER BY subject",
+        )
+    };
+    let latest = || {
+        rows(
+            &h.store(),
+            "SELECT completeness || '|' || cause FROM coverage WHERE kind = 'tailnet peers'
+             ORDER BY id DESC LIMIT 1",
+        )
+    };
+
+    // Switched off.
+    let off = state("off", "Stopped");
+    let report = h.run(&absent, &off);
+    let printed = h.servers_with(&off);
+    assert_eq!(latest(), ["none|not_given"]);
+    assert_eq!(live(), ["machine:build-box", "machine:phone"]);
+    assert!(!report.contains("could not be read"), "{report}");
+    assert!(
+        printed.contains("Tailnet peers: not read, Tailscale is switched off on this Mac."),
+        "{printed}"
+    );
+    let r = status();
+    assert_eq!(r["this_mac"]["state"], "watched", "{r:#}");
+    assert!(item(&r, "could-not-read").is_none(), "{r:#}");
+    let told = item(&r, "tailnet-switched-off").unwrap_or_else(|| panic!("{r:#}"));
+    assert_eq!(told["who"], "nothing");
+    assert_eq!(told["scope"], "servers");
+    assert_eq!(told["since"], iso_utc(read_at));
+    assert!(
+        told["title"].as_str().unwrap().starts_with(&format!(
+            "Tailscale is switched off on this Mac, so your tailnet was not looked at since {} ",
+            &iso_utc(read_at)[..10]
+        )),
+        "{told:#}"
+    );
+    // The page still lists the devices known, says when they were read, and never says that
+    // there are none.
+    let page = view(&h.store());
+    for id in ["servers", "your-devices", "other-devices"] {
+        let s = section(&page, id);
+        assert!(
+            s.contains("Tailscale is switched off on this Mac")
+                && s.contains(&format!("last read in full {}", &iso_utc(read_at)[..10]))
+                && !s.contains("None seen")
+                && !s.contains("None known"),
+            "{s}"
+        );
+    }
+    // Kept and listed: build-box among the servers, the phone among the devices.
+    assert!(section(&page, "servers").contains("build-box"), "{page}");
+    assert!(
+        section(&page, "your-devices").contains("phone")
+            || section(&page, "other-devices").contains("phone"),
+        "{page}"
+    );
+
+    // Waiting for the owner: not connected, and the owner's to fix.
+    h.run(&absent, &state("login", "NeedsLogin"));
+    let r = status();
+    let told = item(&r, "tailnet-not-connected").unwrap_or_else(|| panic!("{r:#}"));
+    assert_eq!(told["who"], "you");
+    assert_eq!(told["since"], iso_utc(read_at));
+    assert!(
+        told["meaning"]
+            .as_str()
+            .unwrap()
+            .starts_with("Why: Tailscale on this Mac waits for you to log in."),
+        "{told:#}"
+    );
+    assert!(item(&r, "tailnet-switched-off").is_none());
+
+    // Starting: not readable this time, a reading that failed; the devices it lists are not
+    // taken.
+    h.run(&absent, &state("starting", "Starting"));
+    assert_eq!(latest(), ["none|failed"]);
+    assert_eq!(live(), ["machine:build-box", "machine:phone"]);
+    let r = status();
+    assert!(item(&r, "could-not-read").is_some(), "{r:#}");
+    for id in ["tailnet-switched-off", "tailnet-not-connected"] {
+        assert!(item(&r, id).is_none(), "{id}: {r:#}");
+    }
+
+    // Connected again, it is read, and nothing more is said.
+    h.run(&absent, &on);
+    let r = status();
+    for id in [
+        "tailnet-switched-off",
+        "tailnet-not-connected",
+        "could-not-read",
+    ] {
+        assert!(item(&r, id).is_none(), "{id}: {r:#}");
+    }
+}
+
+#[test]
+fn a_tool_read_before_and_not_found_now_is_lost_sight_of_and_never_told_as_not_installed() {
+    // An earlier version found Homebrew and Tailscale through PATH; this one looks only at
+    // their installers' places. "Read in full, not installed" would close every fact read
+    // from them as removed and say the programs and machines are gone. The store, not the
+    // caller's environment, tells the two apart: the same answer whoever starts the check.
+    let h = Home::new("tool-lost", None, None);
+    let bin = h.dir.0.join("bin");
+    let absent = h.dir.0.join("absent");
+    let brew_at = h.dir.0.join("elsewhere").join("brew");
+    let tailscale_at = h.dir.0.join("elsewhere").join("tailscale");
+    h.run(&absent, &fake(&bin.join("on").join("tailscale"), TAILNET));
+    let live = |reader: &str| {
+        rows(
+            &h.store(),
+            &format!("SELECT COUNT(*) FROM assertion WHERE reader = '{reader}' AND layer = 'live'"),
+        )[0]
+        .clone()
+    };
+    let (brew_before, tailnet_before) = (live("brew"), live("tailnet"));
+    assert_ne!(brew_before, "0");
+    assert_ne!(tailnet_before, "0");
+    // Neither is at a place this version looks now.
+    let not_found = |home: &Path, store: &Path| {
+        ok(immune_run(home, store)
+            .arg("--brew")
+            .arg(&brew_at)
+            .arg("--servers-input")
+            .arg(&absent)
+            .arg("--checkouts-root")
+            .arg(&absent)
+            .arg("--tailscale")
+            .arg(&tailscale_at))
+    };
+    let said = not_found(&h.home, &h.store());
+    let latest = rows(
+        &h.store(),
+        "SELECT c.reader || '|' || c.completeness || '|' || c.cause || '|' || c.reason
+         FROM coverage c WHERE c.reader IN ('brew', 'tailnet')
+           AND c.id = (SELECT MAX(id) FROM coverage
+                       WHERE reader = c.reader AND scope = c.scope AND kind = c.kind)
+         ORDER BY c.reader",
+    );
+    assert_eq!(
+        latest,
+        [
+            format!(
+                "brew|none|not_given|Homebrew was read before and is not found now at the places this version looks for it: {}",
+                brew_at.display()
+            ),
+            format!(
+                "tailnet|none|not_given|Tailscale was read before and is not found now at the places this version looks for it: {}",
+                tailscale_at.display()
+            ),
+        ]
+    );
+    assert!(said.contains("Homebrew was read before"), "{said}");
+    assert!(!said.contains("Homebrew is not installed"), "{said}");
+    // Kept, and nothing journaled as removed.
+    assert_eq!(
+        (live("brew"), live("tailnet")),
+        (brew_before, tailnet_before)
+    );
+    assert_eq!(
+        rows(
+            &h.store(),
+            "SELECT COUNT(*) FROM journal WHERE entry = 'removed' AND reader IN ('brew', 'tailnet')"
+        ),
+        ["0"]
+    );
+    let v: serde_json::Value = serde_json::from_str(&ok(immune_cmd(&h.home)
+        .args(["status", "--json", "--store"])
+        .arg(h.store())))
+    .unwrap();
+    let items: Vec<&serde_json::Value> = v["result"]["not_covered"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|u| u["id"] == "read-before-not-found")
+        .collect();
+    assert_eq!(items.len(), 1, "{v:#}");
+    assert!(
+        items[0]["title"]
+            .as_str()
+            .unwrap()
+            .starts_with("Homebrew and Tailscale were read before and are not found now"),
+        "{:#}",
+        items[0]
+    );
+    let program: serde_json::Value = serde_json::from_str(&ok(immune_cmd(&h.home)
+        .args(["program", "git", "--json", "--store"])
+        .arg(h.store())))
+    .unwrap();
+    assert_eq!(program["presence"], "held", "{program:#}");
+
+    // With nothing read from them before, not found at those places is not installed.
+    let fresh = Dir::new("tool-never");
+    let home = fresh.0.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let store = fresh.0.join("store").join("store.db");
+    let said = not_found(&home, &store);
+    assert!(said.contains("Homebrew is not installed"), "{said}");
+    assert_eq!(
+        rows(
+            &store,
+            "SELECT reader || '|' || completeness || '|' || reason FROM coverage
+             WHERE reader IN ('brew', 'tailnet') ORDER BY reader"
+        ),
+        [
+            "brew|full|Homebrew is not installed on this machine",
+            "tailnet|full|Tailscale is not installed on this machine"
+        ]
     );
 }
 
@@ -4044,6 +4426,204 @@ fn a_folder_macos_asks_permission_for_is_never_entered_through_a_link_and_what_w
     for reader in ["lockfiles", "ssh-config", "known-hosts"] {
         assert_eq!(guarded(reader), ["full|NULL"], "{reader}");
     }
+}
+
+#[test]
+fn projects_kept_in_desktop_or_documents_are_said_not_looked_into_and_the_list_never_reads_as_all()
+{
+    // The walk enters no folder macOS asks permission for, so a project kept in Documents is
+    // never found. The page's list of projects must not read as every project on the Mac, and
+    // the status must say those folders were not looked into and that this version cannot.
+    let dir = Dir::new("projects-guarded");
+    let home = dir.0.join("home");
+    checkout(&home, "dev/shop");
+    checkout(&home, "Documents/notes-app");
+    std::fs::create_dir_all(home.join("Desktop")).unwrap();
+    let _shut = Locked::new(home.join("Documents"));
+    ok(immune_run(&home, &dir.store())
+        .arg("--brew-input")
+        .arg(dir.input("brew.txt", SAMPLE))
+        .arg("--servers-input")
+        .arg(dir.0.join("absent")));
+
+    let page = view(&dir.store());
+    let projects = section(&page, "projects");
+    assert!(
+        projects.contains(
+            "<p>Not looked into: Desktop and Documents. macOS asks your permission before a program looks inside these folders, and this version does not ask, so a new project kept there is not found. One found there before is listed as it was, and nothing inside it is read.</p>"
+        ),
+        "{projects}"
+    );
+    assert!(projects.contains("dev/shop") && !projects.contains("notes-app"));
+
+    let status: serde_json::Value = serde_json::from_str(&ok(immune_cmd(&home)
+        .args(["status", "--json", "--store"])
+        .arg(dir.store())))
+    .unwrap();
+    let items = status["result"]["not_covered"].as_array().unwrap();
+    let guarded = items
+        .iter()
+        .find(|u| u["id"] == "protected-folders")
+        .unwrap_or_else(|| panic!("{items:#?}"));
+    assert_eq!(
+        guarded["title"],
+        "Projects inside Desktop and Documents are not checked."
+    );
+    assert!(
+        guarded["meaning"]
+            .as_str()
+            .unwrap()
+            .starts_with("This version does not look inside them"),
+        "{guarded:#}"
+    );
+
+    // With no project found, the list says where it looked, not that there is none. A folder
+    // only the ssh settings lead into is not one where projects were not looked for.
+    std::fs::remove_dir_all(home.join("dev")).unwrap();
+    put(&home, ".ssh/config", "Include ~/Downloads/more\nHost web\n");
+    ok(immune_run(&home, &dir.store())
+        .arg("--brew-input")
+        .arg(dir.input("brew.txt", SAMPLE))
+        .arg("--servers-input")
+        .arg(dir.0.join("absent")));
+    let page = view(&dir.store());
+    let projects = section(&page, "projects");
+    assert!(
+        projects.contains("None found in the folders looked into.")
+            && projects.contains("<p>Not looked into: Desktop and Documents. "),
+        "{projects}"
+    );
+}
+
+#[test]
+fn no_list_on_any_page_says_nothing_is_there_when_what_fills_it_was_not_read_in_full() {
+    // Every list section takes its empty text from the coverage of what fills it. With every
+    // latest reading made not full, no page may state that something is absent. The summary's
+    // lines are lists too: what is watched, and the known vulnerabilities.
+    let dir = Dir::new("lists-not-read");
+    let store = dir.store();
+    let absent = dir.0.join("absent");
+    immune_all(
+        &store,
+        &dir.input("brew.txt", "{\"formulae\": [], \"casks\": []}"),
+        &absent,
+        &absent,
+    );
+    let pages = view(&store);
+    assert!(pages.contains("None found here."), "{pages}");
+    assert!(pages.contains("none on this Mac now"), "{pages}");
+    Connection::open(&store)
+        .unwrap()
+        .execute(
+            "INSERT INTO coverage (reader, run_id, observed_at, scope, kind, completeness, reason, cause)
+             SELECT reader, run_id, observed_at, scope, kind, 'none', 'an invented gap', 'failed'
+             FROM coverage c
+             WHERE c.id = (SELECT MAX(id) FROM coverage
+                           WHERE reader = c.reader AND scope = c.scope AND kind = c.kind)",
+            [],
+        )
+        .unwrap();
+    let pages = view(&store);
+    for absence in [
+        "None found",
+        "None seen",
+        "None known.",
+        "None is known.",
+        "none on this Mac now",
+        "None is known in the packages",
+        "None is known to be used in attacks",
+    ] {
+        assert!(!pages.contains(absence), "{absence}: {pages}");
+    }
+    assert!(pages.contains("an invented gap"), "{pages}");
+}
+
+#[test]
+fn the_page_beyond_this_mac_says_when_the_check_its_lists_rest_on_was_made() {
+    // "None known" over a check months old reads as now. The page says when its last full
+    // check was, as the page of this Mac does.
+    let dir = Dir::new("beyond-dated");
+    let store = dir.store();
+    let absent = dir.0.join("absent");
+    let brew = dir.input("brew.txt", SAMPLE);
+    immune_all(&store, &brew, &absent, &absent);
+    view(&store);
+    let finished: i64 = rows(
+        &store,
+        "SELECT MAX(at) FROM journal WHERE entry = 'run_finished'",
+    )[0]
+    .parse()
+    .unwrap();
+    let page =
+        std::fs::read_to_string(store.parent().unwrap().join("view").join("beyond.html")).unwrap();
+    let date = rows(
+        &store,
+        &format!("SELECT strftime('%Y-%m-%d %H:%M', {finished}, 'unixepoch')"),
+    )[0]
+    .clone();
+    assert!(
+        page.contains(&format!("Last full check {date} UTC")),
+        "{date}: {page}"
+    );
+}
+
+#[test]
+fn the_walks_own_limits_are_named_once_and_a_project_found_in_documents_before_stays_listed() {
+    // iCloud Drive and other cloud storage live in the home folder's Library, which the walk
+    // does not enter by design; nor hidden folders, links or deep folders. Named nowhere, the
+    // list of projects would read as every project on the Mac. A project found in Documents by
+    // a check pointed there is kept, not told as gone, when the usual walk cannot look.
+    let dir = Dir::new("projects-walk-limits");
+    let home = dir.0.join("home");
+    for rel in [
+        "Library/Mobile Documents/com~apple~CloudDocs/dev/cloud-app",
+        "Library/CloudStorage/Invented/dev/drive-app",
+        ".config/dev/hidden-app",
+        "a/b/c/d/e/deep-app",
+        "Documents/notes-app",
+    ] {
+        checkout(&home, rel);
+    }
+    checkout(&dir.0, "elsewhere/linked-app");
+    std::os::unix::fs::symlink(dir.0.join("elsewhere"), home.join("work")).unwrap();
+    let run = |root: Option<&Path>| {
+        let mut cmd = immune_run(&home, &dir.store());
+        cmd.arg("--brew-input")
+            .arg(dir.input("brew.txt", SAMPLE))
+            .arg("--servers-input")
+            .arg(dir.0.join("absent"));
+        if let Some(root) = root {
+            cmd.arg("--checkouts-root").arg(root);
+        }
+        ok(&mut cmd);
+    };
+    run(Some(&home.join("Documents")));
+    run(None);
+    let page = view(&dir.store());
+    let projects = section(&page, "projects");
+    assert!(
+        projects.contains("notes-app")
+            && ![
+                "cloud-app",
+                "drive-app",
+                "hidden-app",
+                "deep-app",
+                "linked-app"
+            ]
+            .iter()
+            .any(|p| projects.contains(p)),
+        "{projects}"
+    );
+    assert!(
+        projects.contains(
+            "Projects are looked for in your home folder, but not in Library (which holds iCloud Drive and other cloud storage), Applications, Movies, Music, Pictures and Public directly in it, not in hidden folders or folders named node_modules, target or vendor, not through a link to a folder, and not deeper than 5 folders down."
+        ),
+        "{projects}"
+    );
+    assert_eq!(
+        projects.matches("not through a link to a folder").count(),
+        1
+    );
 }
 
 #[test]
@@ -11100,7 +11680,7 @@ fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_f
     }
     assert!(
         section(page, "limits").contains(
-            "<h3>The list of vulnerabilities attackers are using could not be downloaded.</h3>"
+            "<h3>The list of vulnerabilities attackers are using could not be downloaded since the first check.</h3>"
         ),
         "{page}"
     );

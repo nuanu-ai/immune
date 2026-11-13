@@ -406,13 +406,25 @@ fn unread_kind(question: v1::Question) -> &'static str {
 /// Adds to the answer a reading made by rule rather than read from the store: not made, with
 /// the core's own words for why, in its place in the order of scope, reader and kind.
 pub fn by_rule(known: &mut v1::Known, reader: &str, kind: &str, scope: &str, reason: &str) {
+    by_rule_for(known, reader, kind, scope, reason, v1::Cause::NotGiven);
+}
+
+/// The same, for a reason of its own: a limit of this version is `NoReader`.
+pub fn by_rule_for(
+    known: &mut v1::Known,
+    reader: &str,
+    kind: &str,
+    scope: &str,
+    reason: &str,
+    cause: v1::Cause,
+) {
     let reading = v1::Coverage {
         reader: reader.to_string(),
         kind: kind.to_string(),
         scope_text: whole(scope),
         completeness: v1::Completeness::None as i32,
         reason_text: Some(reason.to_string()),
-        cause: Some(v1::Cause::NotGiven as i32),
+        cause: Some(cause as i32),
         observed_at: None,
         lacks: Vec::new(),
     };

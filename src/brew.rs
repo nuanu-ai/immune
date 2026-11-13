@@ -29,6 +29,13 @@ pub const RAW: &str = "brew.jsonl";
 
 /// Where Homebrew puts `brew`: Apple Silicon, then Intel.
 const STANDARD: [&str; 2] = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"];
+/// What a person calls it.
+pub const NAME: &str = "Homebrew";
+
+/// The places `brew` is looked for, as a reason names them.
+pub fn places() -> Vec<String> {
+    STANDARD.iter().map(|p| p.to_string()).collect()
+}
 /// The arguments that ask for every installed package in the machine form.
 const ARGS: [&str; 3] = ["info", "--json=v2", "--installed"];
 /// Homebrew's documented switches: do not update Homebrew itself, send no analytics.
@@ -45,13 +52,10 @@ pub enum Found {
     NotInstalled,
     /// `brew` is here and could not be read, with the reason.
     Failed(String),
-    /// `brew` was not found, and a place to look for it leads into these folders macOS asks
-    /// permission for, which were not looked into: it may be there.
-    NotLookedInto(Vec<PathBuf>),
 }
 
 /// `input` is a saved answer of brew to read instead of running it. `brew` is the one place
-/// to look for brew instead of the standard places and PATH. `home` is the home folder.
+/// to look for brew instead of the standard places. `home` is the home folder.
 pub fn read(input: Option<&Path>, brew: Option<&Path>, home: &Path) -> Found {
     let json = match input {
         Some(path) => match std::fs::read_to_string(path) {
@@ -59,10 +63,8 @@ pub fn read(input: Option<&Path>, brew: Option<&Path>, home: &Path) -> Found {
             Err(e) => return Found::Failed(format!("cannot read {}: {e}", path.display())),
         },
         None => {
-            let brew = match find(brew, home) {
-                Ok(Some(brew)) => brew,
-                Ok(None) => return Found::NotInstalled,
-                Err(guarded) => return Found::NotLookedInto(guarded),
+            let Some(brew) = find(brew, home) else {
+                return Found::NotInstalled;
             };
             match run(&brew) {
                 Ok(text) => text,
@@ -95,20 +97,17 @@ fn run(brew: &Path) -> Result<String, String> {
     String::from_utf8(out.stdout).map_err(|_| "brew output is not UTF-8".to_string())
 }
 
-/// Where brew is, if anywhere; `Err` with the folders macOS asks permission for that were not
-/// looked into when it was found nowhere else.
-fn find(at: Option<&Path>, home: &Path) -> Result<Option<PathBuf>, Vec<PathBuf>> {
+/// Where brew is, if at either standard place. A `brew` anywhere else is another Homebrew, at a
+/// prefix of its own choosing, and is neither looked for nor run: what is found must not
+/// depend on the PATH of whoever started the check (`managers.rs`).
+fn find(at: Option<&Path>, home: &Path) -> Option<PathBuf> {
     if let Some(path) = at {
-        return Ok(path.is_file().then(|| path.to_path_buf()));
+        return path.is_file().then(|| path.to_path_buf());
     }
     let standard: Vec<PathBuf> = STANDARD.iter().map(PathBuf::from).collect();
     let homes = crate::watched::homes(home);
     let homes = [homes[0].as_path(), homes[1].as_path()];
-    let found = crate::tools::find("brew", &standard, &crate::tools::path(), &homes);
-    match found.at {
-        None if !found.guarded.is_empty() => Err(found.guarded),
-        at => Ok(at),
-    }
+    crate::tools::find(&standard, &homes).at
 }
 
 /// The raw copy made from brew's answer, in its order. Anything out of the shape

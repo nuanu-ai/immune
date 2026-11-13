@@ -189,6 +189,23 @@ pub fn last_good_at(conn: &Connection, source: &str) -> rusqlite::Result<Option<
     )
 }
 
+/// Why the feed's latest reading failed, when it did. `None` in a store made before the
+/// feeds' tables.
+pub fn last_failure(conn: &Connection, source: &str) -> rusqlite::Result<Option<String>> {
+    if !has_tables(conn)? {
+        return Ok(None);
+    }
+    Ok(conn
+        .query_row(
+            "SELECT reason FROM feed_reading WHERE source = ?1 AND outcome = 'failed'
+               AND id = (SELECT MAX(id) FROM feed_reading WHERE source = ?1)",
+            [source],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten())
+}
+
 /// The arguments curl is run with for a feed: the catalogue's invocation with the feed's cap
 /// and time, the body to `output`, and the feed's own last ETag. Nothing else goes in.
 pub fn request(feed: &Feed, output: &Path, etag: Option<&str>) -> Vec<String> {
@@ -249,7 +266,7 @@ pub fn get(
     if feed.every > 0
         && let Some(conn) = conn
         && let Some(at) = last_good_at(conn, feed.source)?
-        && now - at <= feed.every
+        && crate::store::age(at, now).is_some_and(|age| age <= feed.every)
     {
         return Ok(Got::NotDue);
     }

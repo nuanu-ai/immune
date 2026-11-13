@@ -45,7 +45,13 @@ pub const CANNOT_JUDGE: &[&str] = &[
     // Lockfiles of npm and crates.io are matched (`vulnerabilities`); the rest is planned in
     // docs/threats.md.
     "no vulnerability is matched against installed software, servers' packages or ecosystems other than npm and crates.io yet",
+    // Homebrew and npm are read; other package managers are named only when looked for, and
+    // every tool is looked for at its installers' default places only (`managers`, `tools`).
+    OTHER_MANAGERS,
 ];
+/// What this version cannot judge of software installed on this Mac, whatever the table of
+/// package managers holds.
+pub const OTHER_MANAGERS: &str = "software installed by a package manager other than Homebrew and npm is not checked, and Homebrew or Tailscale installed outside the places their installers use by default is not found";
 /// The sections of a result that hold numbers, in the order of the result.
 const SECTIONS: [&str; 15] = [
     "needs_a_look",
@@ -265,7 +271,7 @@ pub fn summary(conn: &Connection, run: RunMark, home: &Path) -> Res<Summary> {
         no_reader_for: no_reader_for(conn)?,
         integrity: crate::integrity::summary(conn, &run.id)?,
         feeds: crate::osv::states(conn)?,
-        vulnerabilities: crate::vulnerabilities::totals(conn)?,
+        vulnerabilities: crate::vulnerabilities::totals(conn, crate::now_secs())?,
         changes,
         run,
     })

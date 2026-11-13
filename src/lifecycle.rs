@@ -8,8 +8,13 @@
 //! is retracted in the same run, whatever that reading's completeness was, and with it what
 //! was read inside anything located there. The entity's removal is the one event; what was
 //! inside it adds none.
+//!
+//! A kind an earlier version read and this one does not is retired, which is neither a full
+//! reading nor a removal: nothing was looked at, so nothing is known to be gone. Its facts are
+//! closed with a journal entry of their own, `retired`, that says why, and its reading becomes
+//! `none` with no reader. It is done once per scope.
 
-use crate::store::{Event, Reading};
+use crate::store::{Cause, Event, Gap, Reading};
 use rusqlite::{Transaction, params};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -112,6 +117,62 @@ fn compare(tx: &Transaction, r: &Reading, full: bool) -> rusqlite::Result<Vec<Ev
         });
     }
     Ok(events)
+}
+
+/// How the reason of the reading of a retired kind begins; why follows.
+pub const NO_LONGER_READ: &str = "no longer read by this version: ";
+
+/// Retires one kind of one reader (see the top of this file) in every scope that holds live
+/// facts of it, or whose latest reading of it does not say it is retired yet. `r` gives the
+/// reader, the kind, the run and its time; its scope is ignored. Returns the facts closed and
+/// the scopes retired, both 0 once it was done.
+pub fn retire(tx: &Transaction, r: &Reading, why: &str) -> rusqlite::Result<(usize, usize)> {
+    let reason = format!("{NO_LONGER_READ}{why}");
+    let scopes: Vec<String> = tx
+        .prepare(
+            "SELECT scope FROM assertion WHERE layer = 'live' AND reader = ?1 AND kind = ?2
+             UNION
+             SELECT c.scope FROM coverage c
+             WHERE c.reader = ?1 AND c.kind = ?2
+               AND c.id = (SELECT MAX(id) FROM coverage
+                           WHERE reader = c.reader AND scope = c.scope AND kind = c.kind)
+               AND NOT (c.completeness = 'none' AND c.reason IS ?3)
+             ORDER BY 1",
+        )?
+        .query_map(params![r.reader, r.kind, reason], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut closed = 0;
+    for scope in &scopes {
+        let here = Reading { scope, ..*r };
+        for ((subject, predicate), objects) in load(tx, &here, "live")? {
+            for id in objects.values() {
+                tx.execute(
+                    "UPDATE assertion SET layer = 'retracted', retracted_at = ?1, retracted_by = ?2
+                     WHERE id = ?3",
+                    params![r.at, r.run_id, id],
+                )?;
+            }
+            closed += objects.len();
+            tx.execute(
+                "INSERT INTO journal (at, run_id, entry, reader, scope, kind, subject, predicate,
+                                      old_value, text)
+                 VALUES (?1, ?2, 'retired', ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    r.at,
+                    r.run_id,
+                    r.reader,
+                    scope,
+                    r.kind,
+                    subject,
+                    predicate,
+                    joined(&objects),
+                    reason
+                ],
+            )?;
+        }
+        crate::store::put_coverage(tx, &here, "none", Some(&reason), &Gap::of(Cause::NoReader))?;
+    }
+    Ok((closed, scopes.len()))
 }
 
 /// Retracts everything read inside an entity once nothing says where it is any more, and

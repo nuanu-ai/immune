@@ -34,6 +34,7 @@ mod known_hosts;
 mod lifecycle;
 mod lockfiles;
 mod machine;
+mod managers;
 mod map;
 mod matches;
 mod osv;
@@ -196,7 +197,7 @@ struct Args {
     store: PathBuf,
     /// The name of this machine in ids.
     machine: String,
-    /// The one place to look for brew instead of the standard places and PATH.
+    /// The one place to look for brew instead of the standard places.
     brew: Option<PathBuf>,
     brew_input: Option<PathBuf>,
     /// Files the owner's read-only sweep wrote, one per server. `None`: the `sweep`
@@ -2211,6 +2212,7 @@ fn survey(args: &ServersArgs) -> Result<Survey, Box<dyn Error>> {
             traces::Found::Failed(reason) => {
                 said.push(format!("{kind}: could not be read, {reason}"));
             }
+            traces::Found::Off(why) => said.push(format!("{kind}: not read, {why}")),
             traces::Found::Guarded(folder) => said.push(format!(
                 "{kind}: not read, it leads into {}, which macOS asks permission for",
                 guarded::shown(folder, &args.home)
@@ -3156,30 +3158,7 @@ fn read_brew(run: &mut Run, args: &Args) -> Result<(), Box<dyn Error>> {
         at,
         observed_at: at,
     };
-    let mut met = Vec::new();
     match brew::read(args.brew_input.as_deref(), args.brew.as_deref(), &args.home) {
-        // Not found, and PATH names a folder macOS asks permission for: what was known stays.
-        brew::Found::NotLookedInto(folders) => {
-            run.readers += 1;
-            let shown: Vec<String> = folders
-                .iter()
-                .map(|g| guarded::shown(g, &args.home))
-                .collect();
-            let reason = format!(
-                "{}Homebrew was not found elsewhere, and PATH names {}, which macOS asks permission for",
-                guarded::NOT_LOOKED_INTO,
-                shown.join(", ")
-            );
-            run.apply(
-                &reading,
-                brew::BASIS,
-                "none",
-                Some(&reason),
-                &Gap::of(Cause::NotGiven),
-                &[],
-            )?;
-            met = folders;
-        }
         brew::Found::Output(raw) => {
             run.readers += 1;
             let raw_file = run.keep_raw(brew::READER, brew::RAW, raw.as_bytes())?;
@@ -3196,18 +3175,24 @@ fn read_brew(run: &mut Run, args: &Args) -> Result<(), Box<dyn Error>> {
                 &statements,
             )?;
         }
-        // Read in full: there is nothing, so what was there before is gone.
+        // Not at the places this version looks: lost sight of when an earlier check read it,
+        // else not installed, read in full with nothing there.
         brew::Found::NotInstalled => {
-            run.apply(
+            let places = match args.brew.as_deref() {
+                Some(at) => vec![at.display().to_string()],
+                None => brew::places(),
+            };
+            if !tool_not_found(
+                run,
                 &reading,
                 brew::BASIS,
-                "full",
-                Some(brew::NOT_INSTALLED),
-                &Gap::default(),
-                &[],
-            )?;
-            run.notes
-                .push("Homebrew is not installed, nothing to read.".to_string());
+                brew::NOT_INSTALLED,
+                brew::NAME,
+                &places,
+            )? {
+                run.notes
+                    .push("Homebrew is not installed, nothing to read.".to_string());
+            }
         }
         brew::Found::Failed(reason) => {
             run.readers += 1;
@@ -3217,13 +3202,73 @@ fn read_brew(run: &mut Run, args: &Args) -> Result<(), Box<dyn Error>> {
                 .push(format!("Homebrew could not be read: {reason}."));
         }
     }
-    not_looked_into_when_met(run, brew::READER, &met, &args.home)?;
+    // Homebrew is looked for only at its two places, which no folder macOS asks permission
+    // for holds; an earlier reading that met one is closed.
+    not_looked_into_when_met(run, brew::READER, &[], &args.home)?;
+    Ok(())
+}
+
+/// A tool this version looks for at fixed places and did not find there. With nothing its
+/// reader wrote in force in the store, it is not installed: read in full, nothing there. With
+/// facts its reader wrote still in force, an earlier check read it from somewhere this version
+/// does not look: the reading is `none`, its reason names the places looked and says it was
+/// read before, and the facts are kept. The store decides, not the caller's environment, so the
+/// answer is the same whoever starts the check. Returns whether it was lost sight of.
+fn tool_not_found(
+    run: &mut Run,
+    reading: &Reading,
+    basis: &str,
+    absent: &str,
+    name: &str,
+    places: &[String],
+) -> rusqlite::Result<bool> {
+    let held: bool = run.tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM assertion
+                        WHERE layer = 'live' AND reader = ?1 AND scope = ?2 AND kind = ?3)",
+        rusqlite::params![reading.reader, reading.scope, reading.kind],
+        |r| r.get(0),
+    )?;
+    if !held {
+        run.apply(reading, basis, "full", Some(absent), &Gap::default(), &[])?;
+        return Ok(false);
+    }
+    let reason = format!("{name}{}{}", tools::READ_BEFORE, places.join(", "));
+    let gap = Gap::of(Cause::NotGiven);
+    run.apply(reading, basis, "none", Some(&reason), &gap, &[])?;
+    run.notes.push(format!(
+        "{reason}; what was read from it is kept, not counted as removed."
+    ));
+    Ok(true)
+}
+
+/// Retires the kinds of a reader this version no longer reads (`lifecycle::retire`), and says
+/// so once in the run's line, in its own words: never as something removed.
+fn retire(run: &mut Run, reader: &'static str, kinds: &[(&str, &str)]) -> rusqlite::Result<()> {
+    let run_id = run.run_id.to_string();
+    for (kind, why) in kinds {
+        let reading = Reading {
+            reader,
+            scope: "",
+            kind,
+            run_id: &run_id,
+            at: run.at,
+            observed_at: run.at,
+        };
+        let (facts, scopes) = lifecycle::retire(run.tx, &reading, why)?;
+        if scopes > 0 {
+            run.notes.push(format!(
+                "No longer read by this version: {kind}, {} set aside and not counted as removed.",
+                things(facts as i64, "fact", "facts")
+            ));
+        }
+    }
     Ok(())
 }
 
 /// `dir` is the folder given on the command line; without one, the sweep folder next to
 /// the store, which is there only once a sweep has been run.
 fn read_servers(run: &mut Run, dir: Option<&Path>) -> Result<(), Box<dyn Error>> {
+    retire(run, servers::READER, &servers::RETIRED)?;
     let default = run.home.join("sweep");
     let Some(dir) = dir.or(Some(&default)).filter(|d| d.is_dir()) else {
         run.notes.push(match dir {
@@ -3733,6 +3778,15 @@ fn read_traces(run: &mut Run, args: &Args) -> Result<(), Box<dyn Error>> {
             _ => Vec::new(),
         };
         match found {
+            // The command is not at the places this version looks: lost sight of when an
+            // earlier check read it, else not installed.
+            traces::Found::Absent(note) if reader == tailnet::READER => {
+                let places = match args.tailscale.as_deref() {
+                    Some(at) => vec![at.display().to_string()],
+                    None => tailnet::places(&args.home),
+                };
+                tool_not_found(run, &reading, basis, note, tailnet::NAME, &places)?;
+            }
             // Read in full: there is nothing, so what was there before is gone.
             traces::Found::Absent(note) => {
                 run.apply(&reading, basis, "full", Some(note), &Gap::default(), &[])?
@@ -3762,6 +3816,13 @@ fn read_traces(run: &mut Run, args: &Args) -> Result<(), Box<dyn Error>> {
                 run.apply(&reading, basis, "none", Some(&reason), &gap, &[])?;
                 run.notes
                     .push(format!("The {kind} could not be read: {reason}."));
+            }
+            // Switched off by the owner: nothing was asked of it, what was known from it stays
+            // as it was, and the source does not give it now. Said once, in what is not
+            // covered, never as a reading that failed.
+            traces::Found::Off(why) => {
+                let gap = Gap::of(Cause::NotGiven);
+                run.apply(&reading, basis, "none", Some(&why), &gap, &[])?;
             }
             // Its file leads into a folder macOS asks permission for: not read, and what was
             // known from it stays as it was.
@@ -4734,10 +4795,61 @@ fn read_integrity(run: &mut Run, args: &Args) -> Result<Vec<findings::Observed>,
         run.readers += 1;
     }
     let mut guarded: Vec<PathBuf> = kinds.iter().flat_map(|k| k.guarded.clone()).collect();
+    guarded.extend(read_managers(run, args)?);
     guarded.sort();
     guarded.dedup();
     not_looked_into_when_met(run, integrity::READER, &guarded, &args.home)?;
     Ok(integrity::observed(run.tx, &run_id)?)
+}
+
+/// The package managers on this Mac that no reader reads, named by kind: none read, with
+/// what this build has no reader for; none, not given, when nothing was found but a place
+/// leads into a folder macOS asks permission for; or full (`managers.rs`). Returns those
+/// folders.
+fn read_managers(run: &mut Run, args: &Args) -> rusqlite::Result<Vec<PathBuf>> {
+    let (run_id, machine) = (run.run_id.to_string(), run.machine.to_string());
+    let reading = Reading {
+        reader: integrity::READER,
+        scope: &machine,
+        kind: managers::KIND,
+        run_id: &run_id,
+        at: run.at,
+        observed_at: run.at,
+    };
+    let homes = watched::homes(&args.home);
+    let homes = [homes[0].as_path(), homes[1].as_path()];
+    let found = managers::found(&args.system_root, &homes);
+    if !found.names.is_empty() {
+        let reason = format!("{}{}", managers::NOT_READ, found.names.join(", "));
+        let gap = Gap {
+            cause: Some(Cause::NoReader),
+            lacks: found
+                .names
+                .iter()
+                .map(|name| Lack::new(managers::NO_READER, Some(name)))
+                .collect(),
+        };
+        run.apply(&reading, integrity::BASIS, "none", Some(&reason), &gap, &[])?;
+    } else if !found.guarded.is_empty() {
+        let shown: Vec<String> = found
+            .guarded
+            .iter()
+            .map(|g| guarded::shown(g, &args.home))
+            .collect();
+        let reason = format!("{}{}", guarded::NOT_LOOKED_INTO, shown.join(", "));
+        let gap = Gap::of(Cause::NotGiven);
+        run.apply(&reading, integrity::BASIS, "none", Some(&reason), &gap, &[])?;
+    } else {
+        run.apply(
+            &reading,
+            integrity::BASIS,
+            "full",
+            None,
+            &Gap::default(),
+            &[],
+        )?;
+    }
+    Ok(found.guarded)
 }
 
 // ---- End of integrity of what is installed. ----

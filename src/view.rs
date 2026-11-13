@@ -1844,8 +1844,15 @@ fn retracted(conn: &Connection, out: &mut String) -> Out {
     type Row = (String, String, String, String, i64, Option<i64>, String);
     let rows: Vec<Row> = conn
         .prepare(
+            // A fact of a kind no longer read was set aside, not found gone
+            // (`lifecycle::retire`).
             "SELECT subject, predicate, object, reader, observed_at, retracted_at, source_ref
-             FROM assertion WHERE layer = 'retracted'
+             FROM assertion a WHERE layer = 'retracted'
+               AND NOT EXISTS (SELECT 1 FROM journal j
+                               WHERE j.entry = 'retired' AND j.run_id = a.retracted_by
+                                 AND j.reader = a.reader AND j.scope = a.scope
+                                 AND j.kind = a.kind AND j.subject = a.subject
+                                 AND j.predicate = a.predicate)
              ORDER BY retracted_at DESC, subject, predicate, object",
         )?
         .query_map([], |r| {

@@ -40,7 +40,6 @@ command -v ip >/dev/null 2>&1 && A=$(ip -o addr show 2>/dev/null | awk '{print $
 [ -z "$A" ] && command -v ifconfig >/dev/null 2>&1 && A=$(ifconfig -a 2>/dev/null | awk '/^[^ \t]/{i=$1; sub(/:$/,"",i)} $1=="inet"||$1=="inet6"{a=$2; if(a=="addr:")a=$3; sub(/^addr:/,"",a); print i"\t"a}')
 [ -n "$A" ] && printf '%s\n' "$A"
 echo "##reboot_required"; [ -f /var/run/reboot-required ] && echo yes || echo no
-echo "##pve"; command -v pveversion >/dev/null 2>&1 && pveversion 2>/dev/null
 # Every package dpkg lists, removed ones included: status, name, version, and the source
 # package and version it was built from.
 echo "##dpkg_with_source"; dpkg-query -W -f='${db:Status-Abbrev}\t${Package}\t${Version}\t${source:Package}\t${source:Version}\n' 2>/dev/null
@@ -51,6 +50,5 @@ if [ -n "$D" ]; then
   echo "##docker_ps"; $D ps --format '{{.Image}}\t{{.Names}}\t{{.Status}}'
   echo "##docker_images"; $D images --format '{{.Repository}}:{{.Tag}}' | sort -u
   echo "##container_versions"; for c in $($D ps -q); do n=$($D inspect --format '{{.Name}}' "$c"); $D inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$c" | grep -E '^[A-Z0-9_]*VERSION=' | sed "s|^|$n\t|"; done
-  echo "##wp"; for c in $($D ps --format '{{.Names}} {{.Image}}' | awk '$2 ~ /wordpress/ && $2 !~ /cli/ {print $1}'); do v=$($D exec "$c" sh -c "grep -h 'wp_version =' /var/www/html/wp-includes/version.php 2>/dev/null" | tr -d " ;'\$"); printf '%s\t%s\n' "$c" "$v"; done
 fi
 echo "##end"

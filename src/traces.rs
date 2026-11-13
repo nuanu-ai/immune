@@ -66,6 +66,9 @@ pub enum Found {
     Read(Seen),
     /// The source is here and could not be read, with the reason.
     Failed(String),
+    /// The source is here and says it is not connected, in the program's fixed words for its
+    /// state: not a failure, and not a reading that found nothing.
+    Off(String),
     /// The source leads into this folder macOS asks permission for, which was not entered.
     Guarded(PathBuf),
 }

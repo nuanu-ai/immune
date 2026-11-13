@@ -534,6 +534,11 @@ fn a_mac_without_any_of_these_places_is_read_in_full_and_is_not_a_failure() {
     let readings = e.status()["readings"].clone();
     for r in readings.as_array().unwrap() {
         assert_eq!(r["completeness"], "full");
+        // No package manager without a reader is here either, and that needs no note.
+        if r["kind"] == "software of package managers this version does not read" {
+            assert!(r["reason_text"].is_null(), "{r}");
+            continue;
+        }
         let note = r["reason_text"].as_str().unwrap();
         assert!(
             note.starts_with("none of these places is on this machine"),
@@ -1023,4 +1028,165 @@ fn a_place_of_apps_or_a_packages_file_linked_into_documents_is_not_looked_into_a
         titles,
         ["Installed apps and packages inside Documents are not checked."]
     );
+}
+
+/// An executable stand-in at `path` that leaves `marker` if anything runs it.
+fn stand_in(path: &Path, marker: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    put(path, &format!("#!/bin/sh\ntouch '{}'\n", marker.display()));
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn package_managers_this_version_does_not_read_are_named_by_kind_as_a_limit_and_never_run() {
+    // Software installed with MacPorts, Nix, pkgsrc, conda, or npm under nvm is read by no
+    // reader. Unnamed, the report reads as if all installed software were covered. They are
+    // looked for only where their installers put them by default, so the same Mac gives the
+    // same reading whatever PATH the check was started with, and nothing found is run.
+    let e = Estate::new("managers");
+    let ran = e.0.join("ran");
+    stand_in(&e.system().join("opt/local/bin/port"), &ran);
+    std::fs::create_dir_all(e.system().join("nix/store")).unwrap();
+    // pkgsrc bootstrapped from source has no pkgin; pkg_info is in every installation.
+    stand_in(&e.system().join("opt/pkg/sbin/pkg_info"), &ran);
+    stand_in(&e.home().join("miniconda3/bin/conda"), &ran);
+    put(
+        &e.home()
+            .join(".nvm/versions/node/v20.11.0/lib/node_modules/invented-cli/package.json"),
+        r#"{"name": "invented-cli", "version": "1.0.0"}"#,
+    );
+    // At a place of its own choosing, a manager is not found, whatever PATH names: a
+    // Homebrew of its own, and MacPorts at another prefix.
+    stand_in(&e.system().join("invented/brew-elsewhere/bin/brew"), &ran);
+    stand_in(&e.system().join("opt/macports/bin/port"), &ran);
+    let names = "MacPorts, Nix, pkgsrc, conda, npm packages installed globally under nvm";
+    let latest = || -> String {
+        e.db()
+            .query_row(
+                "SELECT completeness || '|' || ifnull(cause, 'NULL') || '|' || ifnull(reason, 'NULL')
+                 FROM coverage WHERE reader = 'integrity'
+                   AND kind = 'software of package managers this version does not read'
+                 ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    for path in [
+        "/invented/brew-elsewhere/bin:/opt/macports/bin:/usr/bin:/bin",
+        "/usr/bin:/bin:/usr/sbin:/sbin",
+    ] {
+        e.run_with_path(path);
+        assert_eq!(
+            latest(),
+            format!("none|no_reader|not read: {names}"),
+            "{path}"
+        );
+    }
+    assert!(!ran.exists(), "a package manager found was run");
+
+    let not_covered = || -> Vec<serde_json::Value> {
+        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+            .args(["status", "--json", "--store"])
+            .arg(e.store())
+            .output()
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        v["result"]["not_covered"].as_array().unwrap().clone()
+    };
+    let items = not_covered();
+    let item = items
+        .iter()
+        .find(|u| u["id"] == "package-managers-not-read")
+        .unwrap_or_else(|| panic!("{items:#?}"));
+    assert_eq!(item["who"], "nothing");
+    assert_eq!(item["scope"], "this_mac");
+    assert_eq!(item["count"], 5);
+    assert_eq!(
+        item["title"],
+        "Software installed with MacPorts, Nix, pkgsrc, conda and npm packages installed globally under nvm is not checked by this version."
+    );
+    // What the places cannot see is said once, as a standing limit.
+    assert_eq!(
+        items
+            .iter()
+            .filter(|u| u["id"] == "package-managers-elsewhere-not-found")
+            .count(),
+        1
+    );
+    // Never told as something a project depends on.
+    assert!(
+        items.iter().all(|u| u["id"] != "not-understood"),
+        "{items:#?}"
+    );
+    // A person reads the names once, in the sentence, not again after it.
+    let said = Command::new(env!("CARGO_BIN_EXE_immune"))
+        .args(["status", "--store"])
+        .arg(e.store())
+        .output()
+        .unwrap();
+    let said = String::from_utf8(said.stdout).unwrap();
+    assert!(
+        said.lines().any(|l| l
+            == "Limit of this version: Software installed with MacPorts, Nix, pkgsrc, conda and npm packages installed globally under nvm is not checked by this version."),
+        "{said}"
+    );
+    // An agent finds each one by name among what this build has no reader for.
+    let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+        .args(["status", "--json", "--store"])
+        .arg(e.store())
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let named: Vec<&str> = v["result"]["no_reader_for"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{v:#}"))
+        .iter()
+        .filter(|n| n["what"] == "package manager on this Mac")
+        .map(|n| n["what_text"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        named,
+        [
+            "MacPorts",
+            "Nix",
+            "conda",
+            "npm packages installed globally under nvm",
+            "pkgsrc"
+        ]
+    );
+
+    // With none of them here, the reading is full and nothing is said.
+    for gone in ["opt/local", "nix", "opt/pkg"] {
+        std::fs::remove_dir_all(e.system().join(gone)).unwrap();
+    }
+    for gone in ["miniconda3", ".nvm"] {
+        std::fs::remove_dir_all(e.home().join(gone)).unwrap();
+    }
+    e.run_with_path("/invented/brew-elsewhere/bin:/opt/macports/bin");
+    assert_eq!(latest(), "full|NULL|NULL");
+    assert!(
+        not_covered()
+            .iter()
+            .all(|u| u["id"] != "package-managers-not-read")
+    );
+
+    // A default place that is a link into a folder macOS asks permission for is not entered,
+    // and that folder is named among those not looked into, not taken as holding nothing.
+    let docs = e.home().join("Documents");
+    put(&docs.join("macports/bin/port"), "");
+    std::os::unix::fs::symlink(docs.join("macports"), e.system().join("opt/local")).unwrap();
+    e.run_with_path("/usr/bin:/bin");
+    assert_eq!(latest(), "none|not_given|not looked into: ~/Documents");
+    let folders: String = e
+        .db()
+        .query_row(
+            "SELECT completeness || '|' || reason FROM coverage
+             WHERE reader = 'integrity' AND kind = 'folders macOS asks permission for'
+             ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(folders, "none|not looked into: ~/Documents");
 }

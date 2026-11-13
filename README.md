@@ -88,7 +88,7 @@ Immune names its own blind spots in every answer. Each reader records what it co
 
 For a vulnerability there are four answers: affects me; does not affect me, known for certain; does not affect me, no signs; don't know, with a reason from a closed list. "Known for certain" needs a full and fresh reading of the place and current data. A fact that rests only on text, such as a README or an agent's session, is weak and never supports it.
 
-`immune status` lists what is not covered, one item per cause, and says who can act on each: `you` (a server you have not swept, a file whose permissions keep Immune out) or `nothing` (a limit of this version). Today those limits include:
+`immune status` lists what is not covered, one item per cause, and says who can act on each: `you` (a server you have not swept, a file whose permissions keep Immune out, a network that blocks a download) or `nothing` (a limit of this version). Today those limits include:
 
 - A connection at the moment it is made, and the name behind an address. Immune samples connections every 30 seconds and sees addresses only; `eslogger` has no network event.
 - A file modified in place or removed. The collector records files created and renamed only.
@@ -96,7 +96,8 @@ For a vulnerability there are four answers: affects me; does not affect me, know
 - One of SigmaHQ's rules, 12 of Elastic's translated detection rules and 10 of its translated behaviour rules have an alternative that needs a field `eslogger` does not give, or that the translation could not carry, so they are evaluated only in part. Of Elastic's other 119 detection rules for macOS, none is evaluated: 30 correlate a sequence of events, 40 are written in KQL or ES|QL, and 49 need events or fields the collector does not record or could not be translated exactly. Of its other 221 behaviour rules, none is evaluated: 109 correlate a sequence of events, and 112 need events or fields the collector does not record or could not be translated exactly. `immune rules` names each with its reason.
 - Without the collector: the moment a program starts, its command line, who started it, and which program created a file. The published rules then do not watch.
 - Vulnerabilities in installed apps, Homebrew packages, what servers run, and projects in other languages. Lockfiles Immune has no reader for, such as `requirements.txt`, `uv.lock` or `go.sum`, are named in the report.
-- Folders macOS asks permission for: Desktop, Documents, Downloads, iCloud Drive, other cloud storage, other apps' containers and anything under `/Volumes`. Immune never enters them, so macOS never shows you a permission dialog because of it, and the report says what was skipped.
+- Software installed by any package manager other than Homebrew and npm. Immune names a few when it finds them at their installers' default places (MacPorts, Nix, pkgsrc, Fink, conda, and npm under nvm), reads nothing they installed, and does not find the rest. Homebrew and Tailscale installed outside their default places are not found either. One that an earlier check read and this one does not find is reported as not found now, and what was known from it is kept.
+- Folders macOS asks permission for: Desktop, Documents, Downloads, iCloud Drive, other cloud storage, other apps' containers and anything under `/Volumes`. Immune never enters them, so macOS never shows you a permission dialog because of it. The report names those it met on the way, and the projects page says which folders the search for projects does not enter. A new project kept there is not found; one found there before stays listed as it was.
 - Which program changed a watched file in place.
 - Stopping anything. Immune reports, and it never blocks, suspends or kills a program.
 

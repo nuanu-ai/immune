@@ -225,6 +225,7 @@ const BUNDLES: &str = "application bundles in /Applications and ~/Applications";
 const KEGS: &str = "Homebrew kegs";
 const NPM: &str = "global npm packages";
 const BREW: &str = "brew packages";
+const MANAGERS: &str = "software of package managers this version does not read";
 const TINY: &str = "component:machine:mac/macos-app/org.example.tiny";
 const KEG: &str = "file:machine:mac//opt/homebrew/Cellar/tool/1.0";
 
@@ -276,9 +277,11 @@ fn unknown_known_and_read_in_full_and_known_but_not_read_are_three_different_pro
         finders,
         [
             ("brew", BREW),
+            ("immune", LIMIT),
             ("integrity", KEGS),
             ("integrity", BUNDLES),
-            ("integrity", NPM)
+            ("integrity", NPM),
+            ("integrity", MANAGERS)
         ]
     );
 
@@ -859,8 +862,14 @@ fn a_failure_to_answer_a_program_or_a_machine_is_not_a_message_of_the_contract()
 
 /// The reading made by rule that says no reading looks at the place asked about.
 fn unread(k: &v1::Known) -> Option<&v1::Coverage> {
-    k.coverage.iter().find(|c| c.reader == "immune")
+    k.coverage
+        .iter()
+        .find(|c| c.reader == "immune" && c.kind != LIMIT)
 }
+
+/// The reading made by rule that every answer `unknown` carries: other package managers are
+/// not read.
+const LIMIT: &str = "software of package managers this version does not look for";
 
 /// A refusal of a question: exit 2, no format, and the envelope's error.
 fn refused(e: &Estate, question: &str, what: &str) -> Value {
@@ -924,7 +933,14 @@ fn a_program_path_no_reading_looks_at_is_never_unknown_with_every_reading_full()
         "/usr/local/lib/node_modules/ghost",
     ] {
         let k = e.program(asked);
-        assert!(unread(&k).is_none() && all_full(&k), "{asked}");
+        // Every reading full but the standing limit that an answer `unknown` carries.
+        assert!(unread(&k).is_none(), "{asked}");
+        assert!(
+            k.coverage
+                .iter()
+                .all(|c| c.kind == LIMIT || c.completeness() == v1::Completeness::Full),
+            "{asked}"
+        );
     }
 }
 
@@ -1070,4 +1086,61 @@ fn a_machine_the_owner_set_aside_says_it_is_no_longer_checked() {
             .iter()
             .all(|c| c.kind != aside.kind)
     );
+}
+
+/// "Presence unknown" must not rest only on readings that were full: software MacPorts
+/// installed is read by none of them, and the answer says so by the reading that names it.
+#[test]
+fn a_program_answer_rests_also_on_the_package_managers_no_reader_reads() {
+    let e = Estate::new("program-managers");
+    e.put("system/opt/local/bin/port", "");
+    e.run();
+    let unknown = e.program("invented-tool");
+    assert_eq!(unknown.presence(), v1::Presence::Unknown);
+    let managers = unknown
+        .coverage
+        .iter()
+        .find(|c| c.kind == MANAGERS)
+        .unwrap_or_else(|| panic!("{:?}", readings(&unknown)));
+    assert_eq!(
+        (managers.completeness(), managers.cause()),
+        (v1::Completeness::None, v1::Cause::NoReader)
+    );
+    assert_eq!(managers.reason_text.as_deref(), Some("not read: MacPorts"));
+}
+
+#[test]
+fn a_program_not_known_carries_the_limit_that_other_package_managers_are_not_read() {
+    // The table of package managers names a few and is not complete. With none of them found
+    // its reading is full, yet a program installed by volta, pipx, cargo install or another
+    // manager is not found: "unknown" must say so, or it reads as "not on this Mac".
+    let e = Estate::new("program-limit");
+    e.run();
+    let unknown = e.program("invented-tool");
+    assert_eq!(unknown.presence(), v1::Presence::Unknown);
+    let limit = unknown
+        .coverage
+        .iter()
+        .find(|c| {
+            c.reader == "immune"
+                && c.kind == "software of package managers this version does not look for"
+        })
+        .unwrap_or_else(|| panic!("{:?}", readings(&unknown)));
+    assert_eq!(
+        (limit.completeness(), limit.cause(), limit.observed_at),
+        (v1::Completeness::None, v1::Cause::NoReader, None)
+    );
+    assert_eq!(
+        limit.reason_text.as_deref(),
+        Some(
+            "software installed by a package manager other than Homebrew and npm is not checked, and Homebrew or Tailscale installed outside the places their installers use by default is not found"
+        )
+    );
+    // The reading of the managers it looks for is full, and is not what carries it.
+    let managers = unknown
+        .coverage
+        .iter()
+        .find(|c| c.kind == MANAGERS)
+        .unwrap();
+    assert_eq!(managers.completeness(), v1::Completeness::Full);
 }
