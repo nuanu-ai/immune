@@ -55,7 +55,7 @@ pub fn one(
         return Ok(Err(Refused {
             code: "unknown_finding",
             message: "the store has no finding with this id",
-            example: "immune findings --json lists every finding with its id",
+            example: "immune findings --all lists every finding with its id; with --json, every one in every state",
             ids: Vec::new(),
         }));
     };
@@ -188,6 +188,7 @@ fn evidence(conn: &Connection, f: &Found) -> rusqlite::Result<Option<v1::evidenc
         match f.rule.split_once('.').map(|(family, _)| family) {
             Some("watched" | "autorun") => Body::PlaceChanged(v1::PlaceChanged {
                 change: change(f.change.as_deref()),
+                presence_only: crate::watched::last_presence_only(conn, &f.about)?,
             }),
             Some("integrity") => Body::ChangedInPlace(v1::ChangedInPlace {
                 became_text: became(),
@@ -202,8 +203,7 @@ fn evidence(conn: &Connection, f: &Found) -> rusqlite::Result<Option<v1::evidenc
     ))
 }
 
-/// A change as the store words it, as the contract's value: the store's `first read` is
-/// `first_read`.
+/// A change as the store words it, with spaces written as underscores in the contract.
 fn change(word: Option<&str>) -> i32 {
     value_of::<v1::Change>(&word.unwrap_or_default().replace(' ', "_"))
 }
@@ -371,9 +371,14 @@ mod tests {
             ("changed", v1::Change::Changed),
             ("gone", v1::Change::Gone),
             ("first read", v1::Change::FirstRead),
+            (crate::findings::NOT_READ, v1::Change::NotRead),
         ] {
             assert_eq!(change(Some(word)), value as i32, "{word}");
         }
         assert_eq!(change(None), v1::Change::Unspecified as i32);
+        assert_eq!(
+            change(Some("unknown change")),
+            v1::Change::Unspecified as i32
+        );
     }
 }

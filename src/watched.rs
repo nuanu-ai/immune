@@ -347,20 +347,30 @@ pub fn presence_only_by_kind(
     .collect()
 }
 
-/// Whether a watched entry, by id, was last read as something watched only for presence: by
-/// the latest content any reading gave it, so that a finding about one that went says so too.
-pub fn is_presence_only(conn: &rusqlite::Connection, subject: &str) -> rusqlite::Result<bool> {
+/// Whether the last retained observation was only of an entry's presence. An entry that went
+/// can still have an observation; a missing or unrecognised content value says nothing.
+pub fn last_presence_only(
+    conn: &rusqlite::Connection,
+    subject: &str,
+) -> rusqlite::Result<Option<bool>> {
     use rusqlite::OptionalExtension;
     let latest: Option<String> = conn
         .query_row(
             "SELECT object FROM assertion
              WHERE reader = ?1 AND subject = ?2 AND predicate = 'has_content'
+               AND layer IN ('live', 'retracted')
              ORDER BY id DESC LIMIT 1",
             rusqlite::params![READER, subject],
             |r| r.get(0),
         )
         .optional()?;
-    Ok(latest.is_some_and(|c| c.starts_with(NOT_A_FILE)))
+    Ok(match latest.as_deref() {
+        Some(content) if content.starts_with(NOT_A_FILE) => Some(true),
+        Some(content) if content.starts_with("sha256:") || content.starts_with("value sha256:") => {
+            Some(false)
+        }
+        _ => None,
+    })
 }
 
 /// What is in one watched file, as `has_content` says it, or why it could not be read.

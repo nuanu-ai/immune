@@ -39,6 +39,9 @@
 // scalar values and `case_text` at most 200; longer is refused, and every answer carries them
 // whole. Text with no visible character is empty.
 //
+// `immune verdict` reads the form it is told, `--proto` or `--json`, and answers in it. With no
+// form named it is refused as a misuse: a message is not typed as text.
+//
 // What this build does not read is refused, in either form: a field it does not know, a field
 // given twice, or both `match` and `finding`. A binary verdict must be the encoding this build
 // gives the same message.
@@ -141,6 +144,8 @@ message Verdicts {
 
 // The answer to `immune verdict`: what was recorded.
 message VerdictRecorded {
+  // The numbers of `Failure`'s fields, so that a failure never reads as an answer.
+  reserved 1000 to 1099;
   // The version of this contract: 1. A reader that meets another number stops.
   uint32 format = 1;
   // When the answer was made.

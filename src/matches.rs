@@ -26,11 +26,9 @@ use crate::events::{
     self, Arrival, Arrivals, Evidence, Hit, LineAt, Place, Queue, Stretch, WentTo,
 };
 use crate::sigma::{Kind, Meta, Placement, Reason, Rules};
-use crate::{findings, known, status, store, verdict, view};
-use prost::Message;
+use crate::{answer, findings, known, store, verdict};
 use rusqlite::Connection;
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -50,7 +48,7 @@ const NOT_INSTALLED: &str = "the event level is not installed";
 /// `immune matches`.
 pub struct MatchesArgs {
     pub store: PathBuf,
-    pub json: bool,
+    pub form: answer::Form,
     /// The place given with `--after`, as given, and as read.
     pub after: Option<(String, Place)>,
     pub limit: usize,
@@ -59,20 +57,21 @@ pub struct MatchesArgs {
 }
 
 /// Reads the arguments after `matches`.
-pub fn parse(mut it: impl Iterator<Item = String>) -> Result<MatchesArgs, String> {
-    let (mut store, mut form, mut after, mut limit, mut root) = (None, None, None, LIMIT, None);
-    while let Some(arg) = it.next() {
+pub fn parse(
+    it: impl Iterator<Item = String>,
+    options: &mut answer::Options,
+) -> Result<MatchesArgs, String> {
+    let (mut after, mut limit, mut root) = (None, LIMIT, None);
+    options.read(it, |arg, it| {
         match arg.as_str() {
-            "--store" => store = Some(crate::value(&mut it, &arg)?.into()),
-            "--system-root" => root = Some(crate::value(&mut it, &arg)?.into()),
-            _ if known::take_form(&arg, &mut form)? => {}
+            "--system-root" => root = Some(crate::value(it, &arg)?.into()),
             "--after" => {
-                let p = crate::value(&mut it, &arg)?;
+                let p = crate::value(it, &arg)?;
                 let place = Place::parse(&p).ok_or(AFTER)?;
                 after = Some((p, place));
             }
             "--limit" => {
-                limit = crate::value(&mut it, &arg)?
+                limit = crate::value(it, &arg)?
                     .parse::<usize>()
                     .ok()
                     .filter(|n| *n > 0)
@@ -80,10 +79,11 @@ pub fn parse(mut it: impl Iterator<Item = String>) -> Result<MatchesArgs, String
             }
             _ => return Err(format!("unexpected argument: {arg}")),
         }
-    }
+        Ok(())
+    })?;
     Ok(MatchesArgs {
-        store: store.map_or_else(crate::default_store, Ok)?,
-        json: form == Some(known::Form::Json),
+        store: options.store()?,
+        form: options.form(),
         after,
         limit,
         system_root: root.unwrap_or_else(|| PathBuf::from("/")),
@@ -96,66 +96,26 @@ enum Failure {
     Log(String),
 }
 
-/// Answers `immune matches`: the message on stdout, binary or JSON, or a failure: nothing on
-/// stdout in binary, the envelope with `--json`, and the exit codes the report commands use.
+/// Answers `immune matches` in the form asked, or fails as every command of the contract does,
+/// with the exit codes the report commands use.
 pub fn matches_cmd(args: &MatchesArgs) -> ExitCode {
-    let answer = match read(args, crate::now_secs()) {
-        Ok(answer) => answer,
-        Err(Failure::Store(why)) => {
-            return fail(
-                args.json,
-                "store_unreadable",
-                "the store cannot be read, so what became of a match cannot be told; nothing was evaluated",
-                why,
-                crate::EXIT_STORE,
-            );
-        }
-        Err(Failure::Log(why)) => {
-            return fail(
-                args.json,
-                "log_unreadable",
-                "the event log could not be read, so nothing was evaluated",
-                why,
-                1,
-            );
-        }
+    let (code, message, why, exit) = match read(args, crate::now_secs()) {
+        Ok(m) => return answer::print("matches", args.form, &m, crate::text::matches),
+        Err(Failure::Store(why)) => (
+            "store_unreadable",
+            "the store cannot be read, so what became of a match cannot be told; nothing was evaluated",
+            why,
+            crate::EXIT_STORE,
+        ),
+        Err(Failure::Log(why)) => (
+            "log_unreadable",
+            "the event log could not be read, so nothing was evaluated",
+            why,
+            1,
+        ),
     };
-    if args.json {
-        match serde_json::to_string(&answer) {
-            Ok(line) => println!("{line}"),
-            Err(e) => {
-                return fail(
-                    true,
-                    "store_unreadable",
-                    "the answer could not be printed",
-                    e.to_string(),
-                    crate::EXIT_STORE,
-                );
-            }
-        }
-    } else if std::io::stdout()
-        .write_all(&answer.encode_to_vec())
-        .is_err()
-    {
-        return ExitCode::FAILURE;
-    }
-    ExitCode::SUCCESS
-}
-
-fn fail(json: bool, code: &str, message: &str, why: String, exit: u8) -> ExitCode {
-    if json {
-        let failure = status::failure(
-            Some("matches"),
-            code,
-            message,
-            "immune matches --json",
-            &why,
-        );
-        println!("{}", known::envelope(failure));
-    } else {
-        eprintln!("immune: {message}: {}", view::shown(&why));
-    }
-    ExitCode::from(exit)
+    let error = answer::error(code, message, "immune matches --json", &why);
+    answer::fail("matches", args.form, error, exit)
 }
 
 /// What the store says about the log, read in one transaction.
@@ -632,7 +592,7 @@ mod tests {
         drop(crate::store::open(&dir.join("store.db")).unwrap());
         let args = MatchesArgs {
             store: dir.join("store.db"),
-            json: true,
+            form: answer::Form::Json,
             after: None,
             limit: LIMIT,
             system_root: root.clone(),
@@ -687,7 +647,7 @@ mod tests {
             &rules,
             &MatchesArgs {
                 store: args.store.clone(),
-                json: true,
+                form: answer::Form::Json,
                 after: Some((place.clone(), Place::parse(&place).unwrap())),
                 limit: LIMIT,
                 system_root: root.clone(),

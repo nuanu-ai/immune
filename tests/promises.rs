@@ -9302,7 +9302,15 @@ fn the_report_line_and_status_json_say_the_same_numbers_and_run_json_is_that_ans
     assert_eq!(ran["ok"], true);
     let mut after = status_json(&w.store());
     for v in [&mut ran["result"], &mut after] {
-        v.as_object_mut().unwrap().remove("generated_at");
+        let generated_at = v.as_object_mut().unwrap().remove("generated_at").unwrap();
+        // Each answer ends its event histograms at its own generation time.
+        for histogram in ["program_starts_by_hour", "program_starts_by_minute"] {
+            let ends_at = v["event_level"][histogram]
+                .as_object_mut()
+                .unwrap()
+                .remove("ends_at");
+            assert_eq!(ends_at.as_ref(), Some(&generated_at), "{histogram}");
+        }
     }
     assert_eq!(ran["result"], after);
     assert_eq!(after["watched"]["since_last_reading"]["changed"], 1);
@@ -11195,13 +11203,13 @@ fn a_change_in_a_watched_place_stays_open_through_quiet_runs_and_is_the_number_t
     assert_eq!(shown["technique_text"], item["technique"]);
     assert_eq!(
         shown["evidence"],
-        serde_json::json!({ "place_changed": { "change": "new" } })
+        serde_json::json!({ "place_changed": { "change": "new", "presence_only": false } })
     );
     assert_eq!(shown["answer"], serde_json::Value::Null);
     let (_, text, _) = finding_out(&w.store(), &[id]);
     for said in [
         rule["title"].as_str().unwrap(),
-        "rule watched.autostart, severity medium, confidence low, ATT&CK T1543.",
+        r#"rule watched.autostart, severity medium, confidence low, ATT&CK "T1543"."#,
         "State: open.",
         "Rests on 3 journal entries:",
     ] {
@@ -11788,7 +11796,7 @@ fn an_answer_says_who_gave_it_in_the_app_through_an_agent_or_from_the_command_li
         text.contains(" through your agent, expected until "),
         "{text}"
     );
-    assert!(text.contains(": they added a server."), "{text}");
+    assert!(text.contains(r#": "they added a server"."#), "{text}");
 }
 
 #[test]

@@ -179,3 +179,40 @@ fn an_enum_prints_as_its_name_and_never_as_a_number() {
     };
     assert!(serde_json::to_string(&unnamed).is_err());
 }
+
+/// A failure is never taken for an answer: `Failure` has no `format` and only numbers no answer
+/// uses, so read as any answer of the contract, in binary or in JSON, it reads as format 0, which
+/// a reader stops at.
+#[test]
+fn a_failure_read_as_any_answer_reads_format_zero() {
+    use prost::Message;
+    let failure = v1::Failure {
+        operation: "project".to_string(),
+        ok: false,
+        errors: vec![v1::Error {
+            code: "spelled_otherwise".to_string(),
+            message: "invented".to_string(),
+            example: Some("immune project <id> --json".to_string()),
+            detail_text: Some("invented detail".to_string()),
+            ids_text: vec!["checkout:machine:mac/dev/Shop".to_string()],
+        }],
+    };
+    let binary = failure.encode_to_vec();
+    let json = serde_json::to_string(&failure).unwrap();
+    macro_rules! reads_format_zero {
+        ($($answer:ty),*) => {$(
+            let decoded = <$answer>::decode(binary.as_slice()).unwrap();
+            assert_eq!(decoded.format, 0, "{}", stringify!($answer));
+            let parsed: $answer = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed.format, 0, "{}", stringify!($answer));
+        )*};
+    }
+    reads_format_zero!(
+        v1::Known,
+        v1::Matches,
+        v1::Findings,
+        v1::Finding,
+        v1::VerdictRecorded
+    );
+    assert_eq!(v1::Failure::decode(binary.as_slice()).unwrap(), failure);
+}

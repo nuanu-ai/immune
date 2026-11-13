@@ -2,24 +2,27 @@
 // more than one answer uses. Version 1 of the contract between the core and a program that runs
 // it. The answers are in `known.proto`, `matches.proto` and `findings.proto`; the events a rule
 // matched are in `event.proto`; the verdict the response layer gives back, and the answer to it,
-// are in `verdict.proto`.
+// are in `verdict.proto`. The failure that every command of the contract prints in place of an
+// answer is `Failure`, below.
 //
-// How it is read. A command of the contract prints one message on standard output: binary
-// protobuf with `--proto`, and with `--json` the same message as one line of JSON made by the
-// generated types. Binary is also the default, except for `immune findings` and `immune finding
-// <id>`, whose default is text for a person. The binary form is standard protobuf, and a program in another
-// language reads that. The JSON is Immune's own and is not protobuf's JSON mapping. Field names
-// in JSON are the names here, in snake_case. An enum value is named here with its enum's name as
-// a prefix, as protobuf's style asks (`CAUSE_NO_READER`); in JSON it prints without the prefix
-// and in lower case (`no_reader`), which is the store's own word. A 64-bit number prints as a
-// JSON number. An absent optional field prints as null. A one-of prints as an object with one
-// key, the name of the case that is set, such as `{"program_start": {...}}`.
+// How it is read. A command of the contract answers with one message, in the form it is asked
+// for: binary protobuf with `--proto`, the same message as one line of JSON made by the
+// generated types with `--json`, and with neither, text for a person rendered from the same
+// message. A program names its form on every call. The binary form is standard protobuf, and a
+// program in another language reads that. The JSON is Immune's own and is not protobuf's JSON
+// mapping. Field names in JSON are the names here, in snake_case. An enum value is named here
+// with its enum's name as a prefix, as protobuf's style asks (`CAUSE_NO_READER`); in JSON it
+// prints without the prefix and in lower case (`no_reader`), which is the store's own word. A
+// 64-bit number prints as a JSON number. An absent optional field prints as null. A one-of
+// prints as an object with one key, the name of the case that is set, such as
+// `{"program_start": {...}}`.
 //
-// A failure to answer (a bad argument, a store that cannot be read) is not a message of the
-// contract: the command exits with a non-zero code, as the report commands do. A reader checks the
-// exit code before it parses anything. In binary nothing is printed on stdout; with `--json` the
-// failure envelope is printed, and it has no `format`, so a reader that parses it all the same
-// sees format 0 and stops.
+// A failure to answer (a bad argument, a store that cannot be read) is the message `Failure`,
+// and the command exits with a non-zero code that says which kind. A reader checks the exit code
+// before it parses anything. With `--proto` the binary `Failure` is on stdout, with `--json` the
+// same message as JSON, and for a person it is on stderr with nothing on stdout. `Failure` has
+// no `format`, and its fields have numbers that no answer uses, so a reader that parses it as an
+// answer all the same reads format 0 and stops.
 //
 // An enum value this build of the reader does not know, and the value `UNSPECIFIED`, are read as
 // the unsafe case, which each enum's comment names. The generated types read an unknown word in
@@ -110,4 +113,36 @@ enum Level {
   // it does not know, so as the highest level, while the match's `raised` says it raised
   // nothing.
   LEVEL_NOT_STATED = 6;
+}
+
+// A command that did not answer, and why: printed in place of the answer, in the same form, and
+// the exit code says which kind of failure it is. It has no `format`. Field 1 is never used, and
+// its fields are numbered from 1000, which every answer keeps free (`reserved 1000 to 1099`), so
+// a `Failure` read as any answer of the contract reads as one of format 0, which no reader takes
+// for an answer.
+message Failure {
+  reserved 1;
+  reserved "format";
+  // The command that failed: `project`, `matches`, `verdict` and so on.
+  string operation = 1000;
+  // Always false, the same key as in the report commands' envelope.
+  bool ok = 1001;
+  // Why it did not answer; a failure has at least one.
+  repeated Error errors = 1002;
+}
+
+// One reason a command did not answer.
+message Error {
+  // A stable word a program acts on, such as `usage`, `store_unreadable` or `unknown_finding`.
+  string code = 1;
+  // What happened, in the core's own words.
+  string message = 2;
+  // A call that would be right, where there is one.
+  optional string example = 3;
+  // What the failure quotes: what the system or a parser said, a path, a part of what was sent.
+  // Absent when it quotes nothing.
+  optional string detail_text = 4;
+  // When a question fits more than one thing, every id it fits, whole, so each can be asked
+  // again.
+  repeated string ids_text = 5;
 }

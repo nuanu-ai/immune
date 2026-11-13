@@ -2,6 +2,8 @@
 //! binary on an invented estate under a temporary folder: checkouts with an editor's task
 //! file and lockfiles, and a list of indicators next to the store. Nothing real is read.
 
+use immune_contract::v1;
+use prost::Message;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -2766,6 +2768,24 @@ fn each_check_with_first_readings_raises_its_own_item_whatever_was_answered_abou
         .as_str()
         .unwrap()
         .to_string();
+    let whole = e.contract(&["finding", &first]);
+    assert_eq!(
+        whole["evidence"]["place_changed"].get("presence_only"),
+        Some(&serde_json::Value::Null)
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+        .args(["finding", &first, "--store"])
+        .arg(e.store())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        text.contains(
+            r#"First read: "checkout:machine:mac/.tools/helper". 1 thing runs by itself."#
+        ),
+        "{text}"
+    );
     let out = Command::new(env!("CARGO_BIN_EXE_immune"))
         .args([
             "finding",
@@ -3788,6 +3808,21 @@ fn a_plugin_watched_only_for_presence_is_said_so_in_status_and_in_its_finding() 
         assert!(out.status.success());
         String::from_utf8(out.stdout).unwrap()
     };
+    let presence = |id: &str, expected: bool| {
+        let json = e.contract(&["finding", id]);
+        assert_eq!(json["evidence"]["place_changed"]["presence_only"], expected);
+        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+            .args(["finding", id, "--proto", "--store"])
+            .arg(e.store())
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let found = v1::Finding::decode(out.stdout.as_slice()).unwrap();
+        let Some(v1::evidence::Body::PlaceChanged(place)) = found.evidence.unwrap().body else {
+            panic!("expected place_changed");
+        };
+        assert_eq!(place.presence_only, Some(expected));
+    };
     let status = text(&["status"]);
     assert!(
         status.contains(&format!("1 entry watched only for presence: {said}")),
@@ -3797,6 +3832,7 @@ fn a_plugin_watched_only_for_presence_is_said_so_in_status_and_in_its_finding() 
     assert_eq!(found.len(), 1, "{found:?}");
     let listed = e.contract(&["findings"]);
     let id = listed["findings"][0]["finding"]["id"].as_str().unwrap();
+    presence(id, true);
     let finding = text(&["finding", id]);
     assert!(
         finding.contains(&format!("Watched only for presence: {said}.")),
@@ -3819,5 +3855,26 @@ fn a_plugin_watched_only_for_presence_is_said_so_in_status_and_in_its_finding() 
         .as_str()
         .unwrap()
         .to_string();
+    presence(&id, false);
     assert!(!text(&["finding", &id]).contains("Watched only for presence"));
+
+    // The finding of a plugin that went still says how it was watched.
+    e.seen();
+    std::fs::remove_dir_all(
+        e.0.join("system/Library/Security/SecurityAgentPlugins/Example.bundle"),
+    )
+    .unwrap();
+    e.run();
+    let listed = e.contract(&["findings"]);
+    let gone = listed["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["finding"]["state"] == "open")
+        .unwrap()["finding"]["id"]
+        .as_str()
+        .unwrap();
+    let finding = e.contract(&["finding", gone]);
+    assert_eq!(finding["evidence"]["place_changed"]["change"], "gone");
+    presence(gone, true);
 }

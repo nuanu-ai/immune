@@ -145,14 +145,23 @@ Reserved: `copy_of`, `reachable_from`.
 
 ## Commands
 
-Every report command that takes `--json` prints one envelope with `format`, `operation`, `ok`, `errors` and `result`; an error has a `code`, a `message` and an `example`. A command of the contract prints its own message instead and uses the envelope only for a failure (see [the contract](#the-contract)). Exit codes: 0 answered, 1 from `immune matches`, `immune rules --over-log` and `immune verdict` when the event log cannot be read, 2 a misuse or an unknown id, 3 an unreadable store, 4 a check holding the store (ask again), 5 from `immune watch` when another watcher has the store. `--store <path>` points any command at another store.
+Every report command that takes `--json` prints one envelope with `format`, `operation`, `ok`, `errors` and `result`; an error has a `code`, a `message` and an `example`. A command of the contract prints its own message instead, and the message `Failure` for a failure (see [the contract](#the-contract)). `--store <path>` points any command at another store.
+
+| Exit | Means |
+|---|---|
+| 0 | answered |
+| 1 | the event log cannot be read: `immune matches`, `immune rules --over-log` and `immune verdict` |
+| 2 | a misuse or an unknown id |
+| 3 | an unreadable store |
+| 4 | a check holds the store; ask again |
+| 5 | another watcher has the store: `immune watch` |
 
 | Command | Does |
 |---|---|
 | `immune run [--json]` | A full check. Flags for tests and special cases: `--machine-name`, `--brew`, `--brew-input`, `--servers-input`, `--checkouts-root`, `--sessions-root`, `--tailscale`, `--threats-input`, `--osv-crates-input`, `--osv-npm-input`, `--curl`, `--system-root`, `--indicators` |
 | `immune status [--json]` | What the last finished check left, read-only |
-| `immune findings [--all] [--json \| --proto]` | Every finding, in every state, as the contract's `Findings` message; for a person, the open findings, or every one with `--all` |
-| `immune finding <id> [--json \| --proto]` | One finding whole, as the contract's `Finding` message: its words, where it is, its evidence, the journal entries it rests on and the person's answer; for a person, the same as text |
+| `immune findings [--all] [--json \| --proto]` | Every finding, in every state, as the contract's `Findings` message; its text for a person lists the open findings, or every one with `--all` |
+| `immune finding <id> [--json \| --proto]` | One finding whole, as the contract's `Finding` message: its words, where it is, its evidence, the journal entries it rests on and the person's answer |
 | `immune finding <id> expected --reason <text> [--days <n>] [--via app\|agent]` | Hide it for 30 days or `--days` |
 | `immune finding <id> seen [--reason <text>] [--via app\|agent]` | Close it |
 | `immune finding <id> reopen [--via app\|agent]` | Take an answer back |
@@ -164,7 +173,7 @@ Every report command that takes `--json` prints one envelope with `format`, `ope
 | `immune program <path, name or id> [--json \| --proto]` | The same for one program installed on this Mac: an application bundle, a Homebrew formula, cask or keg, a global npm package. It is a path (the bundle, the keg or the package's folder, or a file inside one), the name the store gives it (a bundle identifier, Homebrew's name, the package's name), or its id. No path is looked at on disk |
 | `immune machine [<name or id>] [--json \| --proto]` | The same for this Mac, or for another machine the store knows: a name or address it is known by, as `immune owner` takes one, or its id (`machine:<name>`). A machine known under several ids that the resolver links with `same_as` is answered with what was read under every one of them, whichever name is asked |
 | `immune matches [--after <place>] [--limit <n>] [--system-root <dir>] [--json \| --proto]` | Every rule match over the event log, of every level, each with the event it matched, as the contract's `Matches` message, read on from the place an earlier answer gave. It reads the log again and the store only, and writes nothing; without a store it fails |
-| `immune verdict [--system-root <dir>] [--json \| --proto]` | Records the response layer's verdict about a rule match or a finding: one `Verdict` message on standard input, binary or JSON with `--json`, answered with `VerdictRecorded` in the same form. A verdict never writes into a finding the core raised; a `suspicious` one raises a finding of Immune's own rule `verdict.suspicious` |
+| `immune verdict [--system-root <dir>] (--json \| --proto)` | Records the response layer's verdict about a rule match or a finding: one `Verdict` message on standard input, binary with `--proto` or JSON with `--json`, answered with `VerdictRecorded` in the same form; without a form it is refused. A verdict never writes into a finding the core raised; a `suspicious` one raises a finding of Immune's own rule `verdict.suspicious` |
 | `immune servers` | Lists the servers this Mac knows and writes the sweep script |
 | `immune owner [<name> retired\|not-mine --reason <text> \| <name> withdraw] [--via app\|agent] [--json]` | A statement that a machine is retired or not the user's, or the list of those that stand |
 | `immune view [--no-open] [--if-stale]` | Writes the HTML pages and opens the summary; with `--if-stale`, only when something they show changed or they are an hour old |
@@ -194,9 +203,9 @@ let known: v1::Known = serde_json::from_slice(&out.stdout)?;  // immune project 
 
 The crate's version follows the contract. Its major version is the `format` the messages carry, 1 for package `immune.v1`. Within version 1 the schema is only added to, and each change that adds to it raises the minor version, so a reader built on an older 1.x reads what a newer core prints. A change that leaves the messages as they are, such as a comment in the schema, raises the patch version. Version 2 of the contract is a new package, `immune.v2`, with `format` 2, and major version 2 of the crate.
 
-A command of the contract prints one message on stdout: binary protobuf by default, and the same message as one line of JSON with `--json`. Every command of the contract takes `--proto` too, so a program can always name the form it wants, and naming both is a misuse. `immune findings` and `immune finding <id>` are the exception to the default: without either flag they print the text for a person they printed before. The binary form is standard protobuf, and a program in another language reads that. The JSON is Immune's own and is not protobuf's JSON mapping. The generated types print it. Field names are the schema's, an enum is the name of its value without the enum's prefix and in lower case (`CAUSE_NOT_GIVEN` prints as `not_given`, the store's own word), a 64-bit number is a JSON number, and an absent optional field is null. Times are seconds since the epoch, UTC, in fields ending in `_at`.
+A command of the contract answers with one message, in one of three forms: binary protobuf with `--proto`, the same message as one line of JSON with `--json`, and with neither, text for a person rendered from that message alone, so a person, an agent and a program are given the same thing. Text from a source is set in quotes or a column of its own, escaped as in the message. A program names its form on every call. Naming both flags is a misuse and returns a JSON failure. `immune verdict` reads a message, which is not typed as text, so without a form it is refused. The binary form is standard protobuf, and a program in another language reads that. The JSON is Immune's own and is not protobuf's JSON mapping. The generated types print it. Field names are the schema's, an enum is the name of its value without the enum's prefix and in lower case (`CAUSE_NOT_GIVEN` prints as `not_given`, the store's own word), a 64-bit number is a JSON number, and an absent optional field is null. Times are seconds since the epoch, UTC, in fields ending in `_at`.
 
-A failure to answer is not a message, and a reader checks the exit code before it parses. In binary nothing is printed on stdout. With `--json` the failure envelope is printed without `format`, so a reader that parses it as the message all the same reads format 0 and stops. The exit codes are the ones above.
+A failure to answer is the message `Failure` in `common.proto`, and a reader checks the exit code, the ones above, before it parses. With `--proto` the binary `Failure` is on stdout, with `--json` the same as JSON, and for a person it is on stderr with nothing on stdout. It has `operation`, `ok` (always false) and `errors`, each with a stable `code`, the core's `message`, an `example` of a right call where there is one, `detail_text`, what the failure quotes (null when nothing), and `ids_text`, the ids a question fits when it fits several. `Failure` has no `format`, and its fields are numbered from 1000, which every answer reserves, so one read as any answer, in binary or JSON, reads format 0 and the reader stops.
 
 An enum value a reader does not know, and the value `unspecified`, are read as the unsafe case, which the schema names for each enum: for `Presence` not known, for `Completeness` not full, for `Cause` failed, for `FindingState` open, for a severity and for a rule's level the highest level and for a confidence the lowest, for `AnswerKind` no answer, for `Via` not known who gave it, for `Change` changed, and for `VerdictKind` no verdict. The generated types read a word they do not know as `unspecified`, so a value added within version 1 does not break an older reader.
 
@@ -241,7 +250,7 @@ As in every other answer, text from the Mac is only in fields ending in `_text`.
 
 The response layer gives a verdict about a finding, so it reads one whole. Both answers read the same findings as the status and the pages, in the same order: the most severe first, then the latest seen, then by id. A finding of a rule this build does not have is left out, as it is everywhere else.
 
-`Findings` lists every finding the store holds, in every state, each as its reference (`finding`: `id`, `rule`, `about_text`, `state`, `severity`, `confidence`, `urgent`) with `kind`, `title`, `where_text`, `first_seen_at`, `last_seen_at`, the person's `answer` and `verdicts`, what the response layer said about it, counted (see [`immune verdict`](#immune-verdict)). `latest_run_at` is absent when no run has finished. `--all` changes only the text for a person; the message carries every state either way.
+`Findings` lists every finding the store holds, in every state, each as its reference (`finding`: `id`, `rule`, `about_text`, `state`, `severity`, `confidence`, `urgent`) with `kind`, `title`, `where_text`, `first_seen_at`, `last_seen_at`, the person's `answer` and `verdicts`, what the response layer said about it, counted (see [`immune verdict`](#immune-verdict)). `latest_run_at` is absent when no full check has finished. The text says so and lists any findings already recorded. `--all` changes only the text for a person; the message carries every state either way.
 
 `Finding` is one finding whole:
 
@@ -262,7 +271,7 @@ The kinds of evidence, by rule:
 
 | Key | Rules | Holds |
 |---|---|---|
-| `place_changed` | `watched.*`, `autorun.*` | `change`: `new`, `changed`, `gone` or `first_read`. The digests before and after are in `rests_on` as `has_content`, never the content. A file that could no longer be read has no `change` of its own; the reason is in `rests_on`, the `not_read` entry's `new_value_text`. For `watched.first-read`, `rests_on` holds a `place_first_read` entry per place, with how many things it holds |
+| `place_changed` | `watched.*`, `autorun.*` | `change`: `new`, `changed`, `gone`, `first_read` or `not_read`. The digests before and after are in `rests_on` as `has_content`, never the content. The `not_read` journal entry gives the reason in `new_value_text`. `presence_only` describes the last retained observation. True means it saw only that the entry was there. False means it read the content the reader checks. The field is null if the store has no such observation. It gives no coverage or freshness for a later reading. For `watched.first-read`, `rests_on` holds a `place_first_read` entry per place, with how many things it holds |
 | `changed_in_place` | `integrity.*` | `became_text`: what an application's seal or signer became, as the reader wrote it; absent when what changed is a digest, which is in `rests_on` |
 | `indicator_matched` | `indicator.match` | `indicators_text`: the indicators the file or the connection matches, as STIX comparisons |
 | `detached_process` | `processes.detached-inline-code` | `pid` and `start_micros` of the process the latest sample saw; its program is `about_text`. Its command line is never kept |
@@ -300,13 +309,13 @@ A gap in `eslogger`'s numbering at the seam between two answers is counted in th
 
 One answer holds at most `--limit` matches, 1,000 by default. It also stops once the lines it matched come to 4 MiB, since arguments are never cut and one command line can be a megabyte. On an invented busy hour, 1,000 matches were 892 KB of JSON and 398 KB of binary protobuf; twenty matched starts with half a megabyte of arguments each stopped at 8, about 4.2 MB of JSON.
 
-Text in an event is given whole. No argument or path is cut, each argument is a string of its own, and hidden characters are escaped as elsewhere. The environment is not in the log and not in the answer. On a Mac without the collector, the answer has no matches, the state `not_installed` and the rules for file events in `unevaluated`, and the command exits with 0. Without a store, or with one that cannot be read, the command fails with `store_unreadable` and exit code 3, as the other commands of the contract do: without the store it cannot say what became of a match. A log that cannot be read is a failure with the code `log_unreadable` and exit code 1. With `--json` every failure prints the envelope without `format`, so a reader that takes it for a `Matches` reads format 0 and stops.
+Text in an event is given whole. No argument or path is cut, each argument is a string of its own, and hidden characters are escaped as elsewhere. The environment is not in the log and not in the answer. On a Mac without the collector, the answer has no matches, the state `not_installed` and the rules for file events in `unevaluated`, and the command exits with 0. Without a store, or with one that cannot be read, the command fails with `store_unreadable` and exit code 3, as the other commands of the contract do: without the store it cannot say what became of a match. A log that cannot be read is a failure with the code `log_unreadable` and exit code 1. Every failure is the message `Failure`, so a reader that takes it for a `Matches` reads format 0 and stops.
 
 The core cannot give these today: the parent's start time, which `eslogger` does not give in an `exec` message, so `parent` is the pid and pid version alone; and how many lines a deleted file held, so `gone` says only that lines are gone.
 
 ### `immune verdict`
 
-The response layer looks into a match or a finding and gives the core a verdict: `suspicious`, a person should see it, or `harmless`. `immune verdict` reads exactly one `Verdict` on standard input, binary protobuf by default and JSON with `--json`, records it, and prints `VerdictRecorded` in the same form. Standard input that is a terminal is refused: the command asks nothing. A verdict over 65,536 bytes is refused, never cut. What this build does not read is refused in either form: a field the schema does not name, at the top or inside `match` or `finding`, a field given twice, or both `match` and `finding`. A binary verdict must be the encoding this build gives the same message.
+The response layer looks into a match or a finding and gives the core a verdict: `suspicious`, a person should see it, or `harmless`. `immune verdict` reads exactly one `Verdict` on standard input, binary protobuf with `--proto` and JSON with `--json`, records it, and prints `VerdictRecorded` in the same form. Standard input that is a terminal is refused: the command asks nothing. A verdict over 65,536 bytes is refused, never cut. What this build does not read is refused in either form: a field the schema does not name, at the top or inside `match` or `finding`, a field given twice, or both `match` and `finding`. A binary verdict must be the encoding this build gives the same message.
 
 | Field of `Verdict` | Holds |
 |---|---|
@@ -333,11 +342,11 @@ What is shown beside a finding is `Verdicts`: `total`, `suspicious`, `listed` an
 
 `immune status --json` cuts what needs a look per source, in the one order: up to 50 of the core's findings and up to 50 of the response layer's, so that verdicts cannot push the core's findings out of the list.
 
-A failure prints nothing on stdout in binary, and the envelope without `format` with `--json`. Nothing is recorded, and a refused verdict writes nothing to the store: a file that is not a store of this format is not made into one.
+A failure is the message `Failure`, in the form named. Without a form the command is refused as a misuse before it reads standard input. Nothing is recorded, and a refused verdict writes nothing to the store: a file that is not a store of this format is not made into one.
 
 | Code | Exit | When |
 |---|---|---|
-| `usage` | 2 | standard input is a terminal, or the command line is wrong |
+| `usage` | 2 | no form is named, standard input is a terminal, or the command line is wrong |
 | `too_large` | 2 | the verdict is over 65,536 bytes |
 | `not_a_verdict` | 2 | it is not one `Verdict` of format 1 this build reads: it cannot be read, has a field the schema does not name or a field twice, names neither a match nor a finding or both, has no known kind, has a level that is not on the scale, lacks a level on a `suspicious` verdict, or has one on a `harmless` verdict |
 | `empty_reason`, `empty_case` | 2 | `reason_text` or `case_text` has no visible character |

@@ -207,7 +207,7 @@ fn a_place_where_code_runs_by_itself_is_read_whole_with_what_changed_and_what_it
     assert_eq!(whole["where_text"], "~/dev/shop/.vscode/tasks.json");
     assert_eq!(
         whole["evidence"],
-        json!({ "place_changed": { "change": "new" } })
+        json!({ "place_changed": { "change": "new", "presence_only": false } })
     );
     let rests = whole["rests_on"].as_array().unwrap();
     assert!(
@@ -281,7 +281,7 @@ fn a_place_where_code_runs_by_itself_is_read_whole_with_what_changed_and_what_it
     let rests = again["rests_on"].as_array().unwrap();
     assert_eq!(
         again["evidence"],
-        json!({ "place_changed": { "change": "changed" } })
+        json!({ "place_changed": { "change": "changed", "presence_only": false } })
     );
     assert_eq!(again["first_seen_at"], rests[0]["recorded_at"]);
     assert_eq!(again["last_seen_at"], rests[rests.len() - 1]["recorded_at"]);
@@ -330,6 +330,9 @@ fn software_changed_in_place_says_what_its_seal_became_and_what_it_was() {
         became.as_str().unwrap().starts_with("does not verify"),
         "{became}"
     );
+    let text =
+        String::from_utf8(e.immune(&["finding", item["id"].as_str().unwrap()]).stdout).unwrap();
+    assert!(text.contains("What it became: \"does not verify"), "{text}");
     // What it was is in the journal entry it rests on.
     let seal = whole["rests_on"]
         .as_array()
@@ -376,6 +379,14 @@ fn an_indicator_match_names_the_indicators_it_matched_as_the_list_gives_them() {
     assert_eq!(
         whole["evidence"]["indicator_matched"]["indicators_text"],
         item["value_text"]
+    );
+    let text =
+        String::from_utf8(e.immune(&["finding", item["id"].as_str().unwrap()]).stdout).unwrap();
+    assert!(
+        text.contains(&format!(
+            "Matched indicators: \"[file:hashes.'SHA-256' = '{hash}']\"."
+        )),
+        "{text}"
     );
 }
 
@@ -551,9 +562,9 @@ fn a_failure_never_parses_as_an_answer() {
     assert_eq!(v["errors"][0]["code"], "unknown_finding");
     let parsed: v1::Finding = serde_json::from_value(v.clone()).unwrap();
     assert_eq!(parsed.format, 0);
-    let binary = e.immune(&["finding", "f0000000000"]);
-    assert_eq!(binary.status.code(), Some(2));
-    assert!(binary.stdout.is_empty());
+    let text = e.immune(&["finding", "f0000000000"]);
+    assert_eq!(text.status.code(), Some(2));
+    assert!(text.stdout.is_empty());
 
     // A misuse of either command, as the contract fails.
     for args in [
@@ -691,7 +702,7 @@ fn a_store_an_older_build_made_gets_its_id_at_the_next_run_and_a_command_that_on
 }
 
 #[test]
-fn every_command_of_the_contract_takes_proto_for_its_default_form_and_refuses_two_forms() {
+fn every_command_of_the_contract_answers_in_binary_with_proto_and_refuses_two_forms() {
     let e = a_task_run_on_opening("proto");
     let root = e.system();
     let root = root.to_str().unwrap();
@@ -701,23 +712,20 @@ fn every_command_of_the_contract_takes_proto_for_its_default_form_and_refuses_tw
         vec!["machine"],
         vec!["matches", "--system-root", root],
     ] {
-        let default = e.immune(&args);
-        assert!(default.status.success(), "{args:?}");
         let mut proto = args.clone();
         proto.push("--proto");
         let named = e.immune(&proto);
         assert!(named.status.success(), "{args:?}");
+        let mut json = e.json(&args);
         // The time it was answered may differ by a second; the rest is the same message.
-        let strip = |bytes: &[u8]| -> Value {
-            let mut v = if args[0] == "matches" {
-                serde_json::to_value(v1::Matches::decode(bytes).unwrap()).unwrap()
-            } else {
-                serde_json::to_value(v1::Known::decode(bytes).unwrap()).unwrap()
-            };
-            v["answered_at"] = Value::Null;
-            v
+        let mut decoded = if args[0] == "matches" {
+            serde_json::to_value(v1::Matches::decode(named.stdout.as_slice()).unwrap()).unwrap()
+        } else {
+            serde_json::to_value(v1::Known::decode(named.stdout.as_slice()).unwrap()).unwrap()
         };
-        assert_eq!(strip(&named.stdout), strip(&default.stdout), "{args:?}");
+        decoded["answered_at"] = Value::Null;
+        json["answered_at"] = Value::Null;
+        assert_eq!(decoded, json, "{args:?}");
         let mut both = args.clone();
         both.extend(["--json", "--proto"]);
         let out = e.immune(&both);

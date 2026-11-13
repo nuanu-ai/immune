@@ -43,6 +43,48 @@ pub struct FindingRef {
     #[prost(bool, tag = "7")]
     pub urgent: bool,
 }
+/// A command that did not answer, and why: printed in place of the answer, in the same form, and
+/// the exit code says which kind of failure it is. It has no `format`. Field 1 is never used, and
+/// its fields are numbered from 1000, which every answer keeps free (`reserved 1000 to 1099`), so
+/// a `Failure` read as any answer of the contract reads as one of format 0, which no reader takes
+/// for an answer.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Failure {
+    /// The command that failed: `project`, `matches`, `verdict` and so on.
+    #[prost(string, tag = "1000")]
+    pub operation: ::prost::alloc::string::String,
+    /// Always false, the same key as in the report commands' envelope.
+    #[prost(bool, tag = "1001")]
+    pub ok: bool,
+    /// Why it did not answer; a failure has at least one.
+    #[prost(message, repeated, tag = "1002")]
+    pub errors: ::prost::alloc::vec::Vec<Error>,
+}
+/// One reason a command did not answer.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Error {
+    /// A stable word a program acts on, such as `usage`, `store_unreadable` or `unknown_finding`.
+    #[prost(string, tag = "1")]
+    pub code: ::prost::alloc::string::String,
+    /// What happened, in the core's own words.
+    #[prost(string, tag = "2")]
+    pub message: ::prost::alloc::string::String,
+    /// A call that would be right, where there is one.
+    #[prost(string, optional, tag = "3")]
+    pub example: ::core::option::Option<::prost::alloc::string::String>,
+    /// What the failure quotes: what the system or a parser said, a path, a part of what was sent.
+    /// Absent when it quotes nothing.
+    #[prost(string, optional, tag = "4")]
+    pub detail_text: ::core::option::Option<::prost::alloc::string::String>,
+    /// When a question fits more than one thing, every id it fits, whole, so each can be asked
+    /// again.
+    #[prost(string, repeated, tag = "5")]
+    pub ids_text: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
 /// Where a finding stands. `UNSPECIFIED`, or a value the reader does not know, is read as `open`.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
@@ -1489,7 +1531,6 @@ pub struct ListedFinding {
 #[serde(default)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Finding {
-    /// As in `Findings`.
     #[prost(uint32, tag = "1")]
     pub format: u32,
     #[prost(int64, tag = "2")]
@@ -1626,6 +1667,11 @@ pub struct PlaceChanged {
         deserialize_with = "crate::enum_from_name::<Change, _>"
     )]
     pub change: i32,
+    /// What the last retained observation could see. True if it could see only that the entry
+    /// was there. False if it read the content the reader checks. Absent when the store has no
+    /// such observation. Neither value gives the coverage or freshness of a later reading.
+    #[prost(bool, optional, tag = "2")]
+    pub presence_only: ::core::option::Option<bool>,
 }
 /// Installed software changed in place. The digests and verdicts before and after are in
 /// `rests_on`, as `has_digest`, `has_seal` and `signed_by`.
@@ -1888,6 +1934,10 @@ pub enum Change {
     /// store's word is `first read`.
     #[serde(rename = "first_read")]
     FirstRead = 4,
+    /// The place is there and could not be read. The latest occurrence's `not_read` journal
+    /// entry gives the reason in `new_value_text`.
+    #[serde(rename = "not_read")]
+    NotRead = 5,
 }
 impl Change {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1901,6 +1951,7 @@ impl Change {
             Self::Changed => "CHANGE_CHANGED",
             Self::Gone => "CHANGE_GONE",
             Self::FirstRead => "CHANGE_FIRST_READ",
+            Self::NotRead => "CHANGE_NOT_READ",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1911,6 +1962,7 @@ impl Change {
             "CHANGE_CHANGED" => Some(Self::Changed),
             "CHANGE_GONE" => Some(Self::Gone),
             "CHANGE_FIRST_READ" => Some(Self::FirstRead),
+            "CHANGE_NOT_READ" => Some(Self::NotRead),
             _ => None,
         }
     }

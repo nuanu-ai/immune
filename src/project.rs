@@ -39,7 +39,7 @@ const WHAT: &str = "immune project takes a path on this Mac, absolute or beginni
 /// `immune project <what>`.
 pub struct ProjectArgs {
     pub store: PathBuf,
-    pub json: bool,
+    pub form: crate::answer::Form,
     /// What was asked for, as given.
     pub asked: String,
     pub what: What,
@@ -58,9 +58,12 @@ pub enum What {
 
 /// Reads the arguments after `project`. An id or a path given as the core shows it, with its
 /// escapes, is the one the core showed.
-pub fn parse(it: impl Iterator<Item = String>) -> Result<ProjectArgs, String> {
-    let w = known::words(it)?;
-    let [asked] = <[String; 1]>::try_from(w.words).map_err(|_| WHAT.to_string())?;
+pub fn parse(
+    it: impl Iterator<Item = String>,
+    options: &mut crate::answer::Options,
+) -> Result<ProjectArgs, String> {
+    let words = known::words(it, options)?;
+    let [asked] = <[String; 1]>::try_from(words).map_err(|_| WHAT.to_string())?;
     let home = crate::user_home()?;
     let word = contract::unescape(&asked);
     let what = match known::path_of(&word, &home) {
@@ -69,8 +72,8 @@ pub fn parse(it: impl Iterator<Item = String>) -> Result<ProjectArgs, String> {
         None => return Err(WHAT.to_string()),
     };
     Ok(ProjectArgs {
-        store: w.store,
-        json: w.json,
+        store: options.store()?,
+        form: options.form(),
         asked,
         what,
         home,
@@ -79,68 +82,74 @@ pub fn parse(it: impl Iterator<Item = String>) -> Result<ProjectArgs, String> {
 
 /// Answers `immune project`.
 pub fn project_cmd(args: &ProjectArgs) -> ExitCode {
-    known::command("project", &args.store, args.json, |conn, now| {
-        let this = covered::this_machine(conn)?;
-        // A store no run has written names no Mac, and so no project on it.
-        let Some(this) = this else {
-            let q = question(&args.asked, None, None, None, None, &[]);
-            return known::known_of(conn, &q, &args.home, now).map(Ok);
-        };
-        // A path of this Mac, as an id of a checkout or a file names one.
-        let path = |id: &str| {
-            known::place_of(id)
-                .filter(|(machine, _)| *machine == this)
-                .map(|(_, rel)| rel.to_string())
-        };
-        let what = match &args.what {
-            What::Path(rel) => What::Path(rel.clone()),
-            What::Id(id) => match (known::type_of(conn, id)?.as_deref(), path(id)) {
-                // A project the store knows is answered for as it is named.
-                (Some(checkouts::TYPE), _) => What::Id(id.clone()),
-                (Some("file") | None, Some(rel)) => What::Path(rel),
-                // A project of another machine, which the store never heard of.
-                (None, None) if id.starts_with("checkout:") => What::Id(id.clone()),
-                (Some(_), _) => return Ok(Err(not_a_project(id))),
-                (None, None) => return Ok(Err(not_an_id(id))),
-            },
-        };
-        // The project's id, the place asked about, and why no reading looks there.
-        let (id, place, unread) = match &what {
-            What::Id(id) => (Some(id.clone()), None, None),
-            What::Path(rel) => match holding(conn, &this, rel)? {
-                Some(id) => (Some(id), None, None),
-                None => match through_link(conn, &this, rel, &args.home)? {
-                    Some(Found::At(id)) => (Some(id), None, None),
-                    Some(Found::Guarded(folder)) => (None, Some(folder), Some(UNREAD)),
-                    None => {
-                        let spelled = otherwise(conn, &this, rel)?;
-                        if !spelled.is_empty() {
-                            return Ok(Err(known::spelled_otherwise(
-                                spelled,
-                                "ask for one of them by its id, as in: immune project <id> --json",
-                            )));
-                        }
-                        let unread = (!checkouts::reaches(rel)).then_some(UNREAD);
-                        (
-                            Some(format!("checkout:{this}/{rel}")),
-                            Some(rel.clone()),
-                            unread,
-                        )
-                    }
+    known::command(
+        "project",
+        &args.store,
+        args.form,
+        |conn, now| {
+            let this = covered::this_machine(conn)?;
+            // A store no run has written names no Mac, and so no project on it.
+            let Some(this) = this else {
+                let q = question(&args.asked, None, None, None, None, &[]);
+                return known::known_of(conn, &q, &args.home, now).map(Ok);
+            };
+            // A path of this Mac, as an id of a checkout or a file names one.
+            let path = |id: &str| {
+                known::place_of(id)
+                    .filter(|(machine, _)| *machine == this)
+                    .map(|(_, rel)| rel.to_string())
+            };
+            let what = match &args.what {
+                What::Path(rel) => What::Path(rel.clone()),
+                What::Id(id) => match (known::type_of(conn, id)?.as_deref(), path(id)) {
+                    // A project the store knows is answered for as it is named.
+                    (Some(checkouts::TYPE), _) => What::Id(id.clone()),
+                    (Some("file") | None, Some(rel)) => What::Path(rel),
+                    // A project of another machine, which the store never heard of.
+                    (None, None) if id.starts_with("checkout:") => What::Id(id.clone()),
+                    (Some(_), _) => return Ok(Err(not_a_project(id))),
+                    (None, None) => return Ok(Err(not_an_id(id))),
                 },
-            },
-        };
-        let inside = inside_projects();
-        let q = question(
-            &args.asked,
-            id.as_deref(),
-            Some(&this),
-            place.as_deref(),
-            unread,
-            &inside,
-        );
-        known::known_of(conn, &q, &args.home, now).map(Ok)
-    })
+            };
+            // The project's id, the place asked about, and why no reading looks there.
+            let (id, place, unread) = match &what {
+                What::Id(id) => (Some(id.clone()), None, None),
+                What::Path(rel) => match holding(conn, &this, rel)? {
+                    Some(id) => (Some(id), None, None),
+                    None => match through_link(conn, &this, rel, &args.home)? {
+                        Some(Found::At(id)) => (Some(id), None, None),
+                        Some(Found::Guarded(folder)) => (None, Some(folder), Some(UNREAD)),
+                        None => {
+                            let spelled = otherwise(conn, &this, rel)?;
+                            if !spelled.is_empty() {
+                                return Ok(Err(known::spelled_otherwise(
+                                    spelled,
+                                    "ask for one of them by its id, as in: immune project <id> --json",
+                                )));
+                            }
+                            let unread = (!checkouts::reaches(rel)).then_some(UNREAD);
+                            (
+                                Some(format!("checkout:{this}/{rel}")),
+                                Some(rel.clone()),
+                                unread,
+                            )
+                        }
+                    },
+                },
+            };
+            let inside = inside_projects();
+            let q = question(
+                &args.asked,
+                id.as_deref(),
+                Some(&this),
+                place.as_deref(),
+                unread,
+                &inside,
+            );
+            known::known_of(conn, &q, &args.home, now).map(Ok)
+        },
+        crate::text::known,
+    )
 }
 
 /// The question of a project, by its id where the store can name one.

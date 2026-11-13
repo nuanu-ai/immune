@@ -10,6 +10,7 @@
 //! with the system curl.
 
 mod agent_folders;
+mod answer;
 mod autorun;
 mod baseline;
 mod beyond;
@@ -53,6 +54,7 @@ mod status;
 mod store;
 mod sweep;
 mod tailnet;
+mod text;
 mod threats;
 mod tools;
 mod traces;
@@ -81,8 +83,11 @@ const USAGE: &str = "usage: immune run [--store <path>] [--machine-name <name>] 
                   [--indicators <file>] [--json]
        immune status [--store <path>] [--json]
        immune findings [--all] [--store <path>] [--json | --proto]
-           every finding, in every state, as one protobuf message or the same as
-           JSON; for a person the open ones, or every one with --all
+           every finding, in every state, as one message: text for a person, which
+           lists the open ones or every one with --all, binary protobuf with --proto,
+           or the same as JSON with --json. The commands of the contract, findings,
+           finding <id>, project, program, machine and matches, answer in these three
+           forms, and fail with the message Failure in the same form
        immune finding <id> [--store <path>] [--json | --proto]
            one finding whole: its words, evidence, journal entries and answer
        immune finding <id> expected --reason <text> [--days <n>] [--via app|agent]
@@ -110,7 +115,7 @@ const USAGE: &str = "usage: immune run [--store <path>] [--machine-name <name>] 
            the answer for one vulnerability in every project, with what it rests on
        immune project <path or checkout id> [--store <path>] [--json | --proto]
            what the store knows of one project: its facts, what was read and what was
-           not, its findings; one protobuf message, or the same message as JSON
+           not, its findings
        immune program <path, name or id> [--store <path>] [--json | --proto]
            the same for one program installed on this Mac: an application, a Homebrew
            package or keg, a global npm package
@@ -128,11 +133,12 @@ const USAGE: &str = "usage: immune run [--store <path>] [--machine-name <name>] 
                       [--system-root <dir>] [--json | --proto]
            every rule match over the event log, of every level, each with the event
            it matched, command lines whole; what was read, lost and not evaluated; and
-           the position to read on from; one protobuf message, or the same as JSON
-       immune verdict [--store <path>] [--system-root <dir>] [--json | --proto]
+           the position to read on from
+       immune verdict [--store <path>] [--system-root <dir>] (--json | --proto)
            records the response layer's verdict about a match or a finding: one Verdict
-           message on standard input, binary or JSON with --json, and answers with what
-           was recorded in the same form. A verdict never closes or quiets a finding
+           message on standard input, binary with --proto or JSON with --json, and
+           answers with what was recorded in the same form; without a form it is
+           refused. A verdict never closes or quiets a finding
        immune sample [--store <path>] [--sample-input <file>] [--json]
        immune watch [--store <path>] [--system-root <dir>] [--sample-input <file>]
                     [--sample-every <seconds>] [--events-every <seconds>]
@@ -181,7 +187,7 @@ struct VulnerabilityArgs {
 /// the open findings, or every one with `--all`.
 struct FindingsArgs {
     store: PathBuf,
-    form: Option<known::Form>,
+    form: answer::Form,
     all: bool,
 }
 
@@ -190,11 +196,18 @@ struct FindingArgs {
     store: PathBuf,
     /// The answer's envelope as JSON: `--json` with an answer.
     json: bool,
-    /// The form of the contract's message, when the finding is only read.
-    form: Option<known::Form>,
+    /// The form of the contract's message, when the finding is only read; text after an answer
+    /// without `--json`.
+    form: answer::Form,
     id: String,
     act: Option<findings::Act>,
     via: findings::Via,
+}
+
+enum FindingVerb {
+    Expected,
+    Seen,
+    Reopen,
 }
 
 /// How long an `expected` mark lasts unless the owner says otherwise.
@@ -281,10 +294,15 @@ fn default_store() -> Result<PathBuf, String> {
     Ok(user_home()?.join(STORE_FOLDER).join("store.db"))
 }
 
-fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
-    let cmd = it.next().ok_or("no command given")?;
+fn parse_args(
+    cmd: Option<&str>,
+    mut it: impl Iterator<Item = String>,
+    options: &mut answer::Options,
+    finding_write: &mut bool,
+) -> Result<Cmd, String> {
+    let cmd = cmd.ok_or("no command given")?;
     let mut store = None;
-    match cmd.as_str() {
+    match cmd {
         "run" => {
             let (mut machine, mut brew, mut brew_input) = (None, None, None);
             let (mut servers_input, mut checkouts_root, mut tailscale) = (None, None, None);
@@ -436,56 +454,75 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
             }))
         }
         "findings" => {
-            let (mut form, mut all) = (None, false);
-            while let Some(arg) = it.next() {
-                match arg.as_str() {
-                    "--store" => store = Some(value(&mut it, &arg)?.into()),
-                    "--all" => all = true,
-                    _ if known::take_form(&arg, &mut form)? => {}
-                    _ => return Err(format!("unexpected argument: {arg}")),
+            let mut all = false;
+            options.read(it, |arg, _| match arg.as_str() {
+                "--all" => {
+                    all = true;
+                    Ok(())
                 }
-            }
-            let store = store.map_or_else(default_store, Ok)?;
-            Ok(Cmd::Findings(FindingsArgs { store, form, all }))
+                _ => Err(format!("unexpected argument: {arg}")),
+            })?;
+            Ok(Cmd::Findings(FindingsArgs {
+                store: options.store()?,
+                form: options.form(),
+                all,
+            }))
         }
         "finding" => {
-            let (mut form, mut reason, mut days, mut words) = (None, None, None, Vec::new());
-            let mut via = None;
-            while let Some(arg) = it.next() {
+            let (mut reason, mut days, mut via, mut words) = (None, None, None, Vec::new());
+            let parsed = options.read(it, |arg, it| {
                 match arg.as_str() {
-                    "--store" => store = Some(value(&mut it, &arg)?.into()),
-                    _ if known::take_form(&arg, &mut form)? => {}
-                    "--reason" => reason = Some(value(&mut it, &arg)?),
-                    "--days" => days = Some(value(&mut it, &arg)?),
-                    "--via" => via = Some(via_value(&mut it, &arg)?),
+                    "--reason" => reason = Some(value(it, &arg)?),
+                    "--days" => days = Some(value(it, &arg)?),
+                    "--via" => via = Some(via_value(it, &arg)?),
                     _ if arg.starts_with("--") => {
                         return Err(format!("unexpected argument: {arg}"));
                     }
                     _ => words.push(arg),
                 }
-            }
+                Ok(())
+            });
+            let verb = match words.get(1).map(String::as_str) {
+                Some("expected") => Some(FindingVerb::Expected),
+                Some("seen") => Some(FindingVerb::Seen),
+                Some("reopen") => Some(FindingVerb::Reopen),
+                _ => None,
+            };
+            *finding_write = verb.is_some();
+            parsed?;
+            let verb = match words.as_slice() {
+                [_] => None,
+                [_, word] => Some(verb.ok_or_else(|| {
+                    format!("the owner can answer expected or seen, or reopen, not {word}")
+                })?),
+                _ => {
+                    return Err(
+                        "immune finding takes an id, as in: immune finding f0123456789 seen"
+                            .to_string(),
+                    );
+                }
+            };
             // An agent answers only with the reason the owner agreed to, so that what was
             // quieted through it always says why.
-            let blank = |r: &Option<String>| r.as_deref().is_none_or(|r| r.trim().is_empty());
-            let answering = matches!(words.as_slice(), [_, v] if v == "expected" || v == "seen");
-            if via == Some(findings::Via::Agent) && answering && blank(&reason) {
+            let blank = reason.as_deref().is_none_or(|r| r.trim().is_empty());
+            if via == Some(findings::Via::Agent)
+                && matches!(verb, Some(FindingVerb::Expected | FindingVerb::Seen))
+                && blank
+            {
                 return Err(
                     "an answer through an agent needs the reason the owner agreed to: --reason <text>"
                         .to_string(),
                 );
             }
-            let act = match (words.as_slice(), reason, days) {
-                ([_], None, None) if via.is_none() => None,
-                ([_], ..) => {
+            let act = match (verb, reason, days) {
+                (None, None, None) if via.is_none() => None,
+                (None, ..) => {
                     return Err(
                         "--reason, --days and --via go with an answer: expected, seen or reopen"
                             .to_string(),
                     );
                 }
-                ([_, verb], Some(reason), days) if verb == "expected" => {
-                    if reason.trim().is_empty() {
-                        return Err("expected needs a reason: --reason <text>".to_string());
-                    }
+                (Some(FindingVerb::Expected), Some(reason), days) if !blank => {
                     let days = match days {
                         None => EXPECTED_DAYS,
                         Some(d) => d
@@ -499,43 +536,33 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
                         days,
                     }))
                 }
-                ([_, verb], None, _) if verb == "expected" => {
+                (Some(FindingVerb::Expected), ..) => {
                     return Err("expected needs a reason: --reason <text>".to_string());
                 }
-                ([_, verb], reason, None) if verb == "seen" => {
+                (Some(FindingVerb::Seen), reason, None) => {
                     let reason = reason.filter(|r| !r.trim().is_empty());
                     Some(findings::Act::Answer(findings::Answer::Seen { reason }))
                 }
-                ([_, verb], ..) if verb == "seen" => {
+                (Some(FindingVerb::Seen), ..) => {
                     return Err("seen takes no days".to_string());
                 }
-                ([_, verb], None, None) if verb == "reopen" => Some(findings::Act::Reopen),
-                ([_, verb], ..) if verb == "reopen" => {
+                (Some(FindingVerb::Reopen), None, None) => Some(findings::Act::Reopen),
+                (Some(FindingVerb::Reopen), ..) => {
                     return Err("reopen takes no reason and no days".to_string());
                 }
-                ([_, verb], ..) => {
-                    return Err(format!(
-                        "the owner can answer expected or seen, or reopen, not {verb}"
-                    ));
-                }
-                _ => {
-                    return Err(
-                        "immune finding takes an id, as in: immune finding f0123456789 seen"
-                            .to_string(),
-                    );
-                }
             };
+            let form = options.form();
             // An answer prints the report's envelope, with --json; only reading a finding is a
             // command of the contract.
-            if act.is_some() && form == Some(known::Form::Proto) {
+            if act.is_some() && form == answer::Form::Proto {
                 return Err(
                     "--proto is for reading a finding; an answer prints its envelope with --json"
                         .to_string(),
                 );
             }
             Ok(Cmd::Finding(FindingArgs {
-                store: store.map_or_else(default_store, Ok)?,
-                json: form == Some(known::Form::Json),
+                store: options.store()?,
+                json: form == answer::Form::Json,
                 form,
                 id: words[0].clone(),
                 act,
@@ -555,7 +582,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
                 }
             }
             let store = store.map_or_else(default_store, Ok)?;
-            match (cmd.as_str(), words.as_slice()) {
+            match (cmd, words.as_slice()) {
                 ("vulnerabilities", []) => Ok(Cmd::Vulnerabilities(VulnerabilityArgs {
                     store,
                     json,
@@ -574,11 +601,11 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
             }
         }
         "watch" => watch::parse(it).map(Cmd::Watch),
-        "project" => project::parse(it).map(Cmd::Project),
-        "program" => program::parse(it).map(Cmd::Program),
-        "machine" => machine::parse(it).map(Cmd::Machine),
-        "matches" => matches::parse(it).map(Cmd::Matches),
-        "verdict" => verdict::parse(it).map(Cmd::Verdict),
+        "project" => project::parse(it, options).map(Cmd::Project),
+        "program" => program::parse(it, options).map(Cmd::Program),
+        "machine" => machine::parse(it, options).map(Cmd::Machine),
+        "matches" => matches::parse(it, options).map(Cmd::Matches),
+        "verdict" => verdict::parse(it, options).map(Cmd::Verdict),
         "rules" => {
             let (mut json, mut over_log, mut system_root) = (false, false, None);
             while let Some(arg) = it.next() {
@@ -695,17 +722,52 @@ fn print_json(v: &serde_json::Value) {
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let cmd = match parse_args(args.iter().cloned()) {
+    let op = args.first().map(String::as_str);
+    let mut options = answer::Options::default();
+    let mut finding_write = false;
+    let cmd = match parse_args(
+        op,
+        args.iter().skip(1).cloned(),
+        &mut options,
+        &mut finding_write,
+    ) {
         Ok(cmd) => cmd,
         Err(e) => {
+            // Reading a finding uses the contract. Writing an answer still uses the report's
+            // envelope.
+            let contract = match op {
+                Some("project") => Some("immune project ~/<folder> --json"),
+                Some("program") => Some("immune program /Applications/<name>.app --json"),
+                Some("machine") => Some("immune machine --json"),
+                Some("matches") => Some("immune matches --json"),
+                Some("findings") => Some("immune findings --json"),
+                Some("finding") if !finding_write => Some("immune finding f0123456789 --json"),
+                Some("verdict") => Some("immune verdict --json < verdict.json"),
+                _ => None,
+            };
+            if let (Some(op), Some(example)) = (op, contract) {
+                let form = options.form();
+                let error = answer::error(
+                    "usage",
+                    "the command line is not one Immune understands; the usage is on stderr",
+                    example,
+                    &e,
+                );
+                let exit = answer::fail(op, form, error, EXIT_USAGE);
+                eprintln!("{USAGE}");
+                return exit;
+            }
             // `immune watch` answers only in machine-readable lines.
-            let op = args.first().map(String::as_str);
-            if args.iter().any(|a| a == "--json") || op == Some("watch") {
+            let report_json = if finding_write {
+                options.form() == answer::Form::Json
+            } else {
+                args.iter().any(|a| a == "--json") || op == Some("watch")
+            };
+            if report_json {
                 let op = op.filter(|o| {
                     [
                         "run",
                         "status",
-                        "findings",
                         "finding",
                         "sample",
                         "watch",
@@ -713,11 +775,6 @@ fn main() -> ExitCode {
                         "vulnerabilities",
                         "vulnerability",
                         "rules",
-                        "project",
-                        "program",
-                        "machine",
-                        "matches",
-                        "verdict",
                     ]
                     .contains(o)
                 });
@@ -726,38 +783,19 @@ fn main() -> ExitCode {
                     Some("run") => "immune run --json",
                     Some("vulnerabilities") => "immune vulnerabilities --json",
                     Some("vulnerability") => "immune vulnerability CVE-2023-4863 --json",
-                    Some("findings") => "immune findings --json",
-                    Some("finding") => "immune finding f0123456789 --json",
+                    Some("finding") => "immune finding f0123456789 seen --json",
                     Some("watch") => "immune watch",
                     Some("sample") => "immune sample --json",
                     Some("owner") => "immune owner --json",
-                    Some("project") => "immune project ~/<folder> --json",
-                    Some("program") => "immune program /Applications/<name>.app --json",
-                    Some("machine") => "immune machine --json",
-                    Some("matches") => "immune matches --json",
-                    Some("verdict") => "immune verdict --json < verdict.json",
                     _ => "immune status --json",
                 };
-                let v = status::failure(
+                print_json(&status::failure(
                     op,
                     "usage",
                     "the command line is not one Immune understands; the usage is on stderr",
                     example,
                     &e,
-                );
-                // A command of the contract fails in its own envelope, which no reader
-                // takes for an answer. `immune finding` is one when it only reads.
-                let answering = args
-                    .iter()
-                    .skip(2)
-                    .any(|a| ["expected", "seen", "reopen"].contains(&a.as_str()));
-                match op {
-                    Some(
-                        "project" | "program" | "machine" | "matches" | "findings" | "verdict",
-                    ) => print_json(&known::envelope(v)),
-                    Some("finding") if !answering => print_json(&known::envelope(v)),
-                    _ => print_json(&v),
-                }
+                ));
             }
             eprintln!("immune: {}\n{USAGE}", view::shown(&e));
             return ExitCode::from(EXIT_USAGE);
@@ -970,64 +1008,6 @@ pub fn read_events_held(path: &Path, system_root: &Path) -> Result<EventsRead, B
         failed: outcome.failed,
         at,
     })
-}
-
-/// A published rule's finding for a person, from its `published_rule` detail: the rule with
-/// its authors and licence, and the latest events it matched, program starts or, for a rule
-/// about file events, files created or renamed. Every value is already text from a source
-/// shown inert.
-fn published_rule_lines(d: &serde_json::Value) -> Vec<String> {
-    let s = |v: &serde_json::Value| v.as_str().unwrap_or("unknown").to_string();
-    let files = d["events"] == sigma::FILE_CATEGORY;
-    let mut lines = vec![format!(
-        "Rule: {}, by {}; from {} under the {}, {}.",
-        s(&d["title_text"]),
-        s(&d["author_text"]),
-        s(&d["source_name"]),
-        s(&d["licence_name"]),
-        s(&d["file"])
-    )];
-    let (one, many) = if files {
-        ("file event", "file events")
-    } else {
-        ("program start", "program starts")
-    };
-    lines.push(format!(
-        "It matched {} since this finding was raised; the latest:",
-        things(d["matches"].as_i64().unwrap_or(0), one, many)
-    ));
-    for e in d["evidence"].as_array().into_iter().flatten() {
-        if files {
-            let how = match e["source_text"].as_str() {
-                Some(from) => format!("renamed from {from}"),
-                None => "created".to_string(),
-            };
-            lines.push(format!(
-                "  {} {}: {how} by {}",
-                s(&e["timestamp_text"]),
-                s(&e["file_text"]),
-                s(&e["executable_text"])
-            ));
-            continue;
-        }
-        let args: Vec<String> = e["args_text"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .map(s)
-            .collect();
-        lines.push(format!(
-            "  {} {}: {} · started by {} · in {} · pid {} · signed {}",
-            s(&e["timestamp_text"]),
-            s(&e["executable_text"]),
-            args.join(" "),
-            s(&e["parent_executable_text"]),
-            s(&e["working_directory_text"]),
-            e["pid"],
-            s(&e["signing_id_text"])
-        ));
-    }
-    lines
 }
 
 // ---- `immune rules`: the published rules, what they did, and a replay over the log. ----
@@ -1573,10 +1553,6 @@ fn home(store: &Path) -> PathBuf {
     }
 }
 
-/// Writes the page next to the store, prints its path and opens it. Never writes to the store.
-/// At most this many findings are listed by `immune findings`; the total is always given.
-const FINDINGS_SHOWN: usize = 200;
-
 /// Every finding in the store as it stands at `now`; `None` when there is no store or no run
 /// of this build has looked for findings in it.
 fn read_findings(store: &Path, now: i64) -> Result<Option<Vec<findings::Found>>, Stop> {
@@ -1611,60 +1587,13 @@ const NO_FINDINGS_YET: &str = "no run of this build has looked for findings in t
 /// `immune findings`: every finding as the contract's `Findings`; for a person the open
 /// findings, or every one, with when each was last seen and where.
 fn findings_cmd(args: &FindingsArgs) -> ExitCode {
-    if let Some(form) = args.form {
-        return known::command(
-            "findings",
-            &args.store,
-            form == known::Form::Json,
-            |conn, now| finding_answer::list(conn, now).map(Ok),
-        );
-    }
-    let now = now_secs();
-    let found = match read_findings(&args.store, now) {
-        Ok(found) => found,
-        Err(e) => return store_failed(false, "findings", &e),
-    };
-    let items: Option<Vec<findings::Item>> = found.map(|all| {
-        let mut items: Vec<findings::Item> = all
-            .iter()
-            .filter(|f| args.all || f.state == "open")
-            .filter_map(findings::item)
-            .collect();
-        findings::order(&mut items);
-        items
-    });
-    let Some(items) = items else {
-        say(&format!("No findings: {NO_FINDINGS_YET}."));
-        return ExitCode::SUCCESS;
-    };
-    say(&format!(
-        "{}.",
-        things(
-            items.len() as i64,
-            if args.all { "finding" } else { "open finding" },
-            if args.all {
-                "findings"
-            } else {
-                "open findings"
-            }
-        )
-    ));
-    let rows: Vec<Vec<String>> = items
-        .iter()
-        .take(FINDINGS_SHOWN)
-        .map(|i| {
-            vec![
-                i.id.clone(),
-                i.state.clone(),
-                i.last_seen.map(view::utc).unwrap_or_default(),
-                i.words.title.to_string(),
-                i.place.clone().unwrap_or_default(),
-            ]
-        })
-        .collect();
-    print_table(&["Id", "State", "Last seen", "What", "Where"], &rows);
-    say("`immune finding <id>` shows one; expected and seen are the owner's answers.");
-    ExitCode::SUCCESS
+    known::command(
+        "findings",
+        &args.store,
+        args.form,
+        |conn, now| finding_answer::list(conn, now).map(Ok),
+        |m| text::findings(m, args.all),
+    )
 }
 
 /// `immune vulnerabilities` and `immune vulnerability <id>`: the answers matching gave, read only.
@@ -1827,13 +1756,18 @@ fn vulnerabilities_cmd(args: &VulnerabilityArgs) -> ExitCode {
 
 /// `immune finding <id>`: one finding with what it rests on, or the owner's answer to it.
 fn finding_cmd(args: &FindingArgs) -> ExitCode {
-    if let (None, Some(form)) = (&args.act, args.form) {
-        return known::command(
+    // Read, and after an answer for a person, it is the contract's message in the form asked.
+    let read = || {
+        known::command(
             "finding",
             &args.store,
-            form == known::Form::Json,
+            args.form,
             |conn, now| finding_answer::one(conn, &args.id, now),
-        );
+            text::finding,
+        )
+    };
+    if args.act.is_none() {
+        return read();
     }
     let unknown = |json: bool| {
         refuse(
@@ -1915,118 +1849,45 @@ fn finding_cmd(args: &FindingArgs) -> ExitCode {
             };
         }
     }
+    if !args.json {
+        return read();
+    }
     let found = match read_findings(&args.store, now) {
         Ok(found) => found.unwrap_or_default(),
         Err(e) => return store_failed(args.json, "finding", &e),
     };
-    let Some((f, item)) = found
+    let Some(item) = found
         .iter()
         .find(|f| f.id == args.id)
-        .and_then(|f| findings::item(f).map(|i| (f, i)))
+        .and_then(findings::item)
     else {
         return unknown(args.json);
     };
-    let read = |c: rusqlite::Connection| -> rusqlite::Result<_> {
-        Ok((
-            findings::basis(&c, &args.id)?,
-            verdict::of_finding(&c, &args.id, &f.rule)?,
-            watched::is_presence_only(&c, &f.about)?,
-        ))
-    };
-    let (basis, (_, _, verdicts), presence) = match store::open_read_only(&args.store)
+    let basis = match store::open_read_only(&args.store)
         .map_err(|e| e.to_string())
-        .and_then(|c| read(c).map_err(|e| e.to_string()))
+        .and_then(|c| findings::basis(&c, &args.id).map_err(|e| e.to_string()))
     {
         Ok(b) => b,
         Err(e) => return store_failed(args.json, "finding", &Stop::Store(e)),
     };
-    if args.json {
-        let mut v = findings::item_json(&item);
-        v["rests_on"] = serde_json::Value::Array(
-            basis
-                .iter()
-                .map(|b| {
-                    serde_json::json!({
-                        "journal_seq": b.seq,
-                        "at": view::iso(b.at),
-                        "run_id": b.run_id,
-                        "entry": b.entry,
-                        "predicate": b.predicate,
-                        "subject_text": b.subject.as_deref().map(status::text),
-                    })
+    let mut v = findings::item_json(&item);
+    v["rests_on"] = serde_json::Value::Array(
+        basis
+            .iter()
+            .map(|b| {
+                serde_json::json!({
+                    "journal_seq": b.seq,
+                    "at": view::iso(b.at),
+                    "run_id": b.run_id,
+                    "entry": b.entry,
+                    "predicate": b.predicate,
+                    "subject_text": b.subject.as_deref().map(status::text),
                 })
-                .collect(),
-        );
-        let r = serde_json::json!({ "finding": v, "answers_note": findings::ANSWERS_NOTE });
-        print_json(&status::envelope("finding", r));
-        return ExitCode::SUCCESS;
-    }
-    say(&format!("Finding {}: {}", item.id, item.words.title));
-    say(item.words.meaning);
-    say(item.words.advice);
-    if presence {
-        say(&format!(
-            "Watched only for presence: {}.",
-            watched::PRESENCE_ONLY
-        ));
-    }
-    let mut facts = vec![
-        format!("rule {}", item.rule.unwrap_or_default()),
-        format!("severity {}", item.severity),
-        format!("confidence {}", item.confidence.unwrap_or_default()),
-    ];
-    if let Some(t) = item.technique {
-        facts.push(format!("ATT&CK {t}"));
-    }
-    say(&format!("{}.", facts.join(", ")));
-    say(&format!(
-        "State: {}. First seen {}, last seen {}{}.",
-        item.state,
-        item.first_seen.map(view::utc).unwrap_or_default(),
-        item.last_seen.map(view::utc).unwrap_or_default(),
-        item.change
-            .as_deref()
-            .map(|c| format!(", latest change: {c}"))
-            .unwrap_or_default()
-    ));
-    if let Some(a) = &item.answer {
-        say(&format!(
-            "Answered {} {}{}{}.",
-            view::utc(a.at),
-            view::given_by(a.via),
-            a.until
-                .map(|u| format!(", expected until {}", view::utc(u)))
-                .unwrap_or_default(),
-            a.reason
-                .as_deref()
-                .map(|r| format!(": {}", view::shown(r)))
-                .unwrap_or_default()
-        ));
-    }
-    if let Some(s) = &item.verdicts {
-        say(&verdict::said(s));
-        if let Some(id) = &s.standing {
-            say(&format!(
-                "The response layer's finding about the same: {id}."
-            ));
-        }
-    }
-    for v in &verdicts {
-        say(&verdict::line(v));
-    }
-    say(&format!(
-        "Where: {}.",
-        view::shown(item.place.as_deref().unwrap_or_default())
-    ));
-    if let Some(d) = &item.detail {
-        published_rule_lines(d).iter().for_each(|l| say(l));
-    }
-    let seqs: Vec<String> = basis.iter().map(|b| b.seq.to_string()).collect();
-    say(&format!(
-        "Rests on {}: {}.",
-        things(basis.len() as i64, "journal entry", "journal entries"),
-        seqs.join(", ")
-    ));
+            })
+            .collect(),
+    );
+    let r = serde_json::json!({ "finding": v, "answers_note": findings::ANSWERS_NOTE });
+    print_json(&status::envelope("finding", r));
     ExitCode::SUCCESS
 }
 
@@ -2965,32 +2826,7 @@ fn last_reading(dir: &Path, names: &[&str]) -> (String, bool) {
 
 /// A plain text table with columns as wide as their widest cell, as the cells are shown.
 fn print_table(head: &[&str], rows: &[Vec<String>]) {
-    if rows.is_empty() {
-        println!("  none");
-        return;
-    }
-    let rows: Vec<Vec<String>> = rows
-        .iter()
-        .map(|row| row.iter().map(|cell| view::shown(cell)).collect())
-        .collect();
-    let mut widths: Vec<usize> = head.iter().map(|h| h.chars().count()).collect();
-    for row in &rows {
-        for (w, cell) in widths.iter_mut().zip(row) {
-            *w = (*w).max(cell.chars().count());
-        }
-    }
-    let line = |cells: Vec<&str>| {
-        let parts: Vec<String> = cells
-            .iter()
-            .zip(&widths)
-            .map(|(c, w)| format!("{c:<w$}"))
-            .collect();
-        println!("  {}", parts.join("  ").trim_end());
-    };
-    line(head.to_vec());
-    for row in &rows {
-        line(row.iter().map(String::as_str).collect());
-    }
+    print!("{}", text::table(head, rows));
 }
 
 /// Runs every reader and returns the report line, and the watched places that changed or

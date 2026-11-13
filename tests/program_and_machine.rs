@@ -156,7 +156,7 @@ impl Estate {
 
     /// The answer in binary, decoded with the generated types.
     fn known(&self, question: &str, what: Option<&str>) -> v1::Known {
-        let out = self.ask(question, what, &[]);
+        let out = self.ask(question, what, &["--proto"]);
         assert!(
             out.status.success(),
             "{what:?}: {}",

@@ -107,7 +107,7 @@ impl Home {
 
     /// The answer in binary, decoded with the generated types.
     fn known(&self, what: &str) -> v1::Known {
-        let out = self.project(what, &[]);
+        let out = self.project(what, &["--proto"]);
         assert!(
             out.status.success(),
             "{}",
@@ -494,11 +494,11 @@ fn text_from_a_source_is_only_in_text_fields() {
     assert_eq!(asked["asked_text"], "~/dev/a\\u{202e}b");
 }
 
-/// A failure to answer is not a message of the contract: a misuse or a store that cannot be read
-/// prints nothing on stdout in binary, the report commands' failure envelope with `--json`, and
-/// exits with their codes.
+/// A failure to answer is never taken for an answer: a misuse or a store that cannot be read
+/// prints nothing on stdout for a person, the message `Failure` with `--json`, and exits with the
+/// report commands' codes.
 #[test]
-fn a_failure_to_answer_is_not_a_message_of_the_contract() {
+fn a_failure_to_answer_is_never_taken_for_an_answer() {
     let h = Home::new("failure");
     // No store yet.
     let out = h.project("~/dev/shop", &[]);
@@ -643,7 +643,7 @@ fn a_finding_stays_in_the_answer_after_the_file_it_is_about_is_removed() {
             .iter()
             .all(|f| f.state() == v1::FindingState::Open)
     );
-    let out = h.ask("machine", None, &[]);
+    let out = h.ask("machine", None, &["--proto"]);
     let mac = v1::Known::decode(out.stdout.as_slice()).unwrap();
     let tasks = "file:machine:mac/dev/shop/.vscode/tasks.json";
     assert!(mac.findings.iter().any(|f| f.about_text == tasks));
