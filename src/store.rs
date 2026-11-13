@@ -487,6 +487,7 @@ pub fn open(path: &Path) -> Res<Connection> {
     conn.execute_batch(crate::vulnerabilities::SCHEMA)?;
     conn.execute_batch(crate::findings::SCHEMA)?;
     crate::findings::add_via(&conn)?;
+    conn.execute_batch(crate::agent_folders::SCHEMA)?;
     add_causes(&conn)?;
     conn.execute_batch(INDEXES)?;
     widen_journal(&mut conn)?;

@@ -3376,7 +3376,8 @@ fn read_agent_folders(
         .unwrap_or_else(|| args.home.join(agent_folders::SESSIONS));
     let home = std::fs::canonicalize(&args.home).unwrap_or_else(|_| args.home.clone());
     let homes = [args.home.as_path(), home.as_path()];
-    let sessions = match agent_folders::sessions(&dir, &homes) {
+    let held = agent_folders::held(run.tx)?;
+    let sessions = match agent_folders::sessions(&dir, &homes, &held, SystemTime::now()) {
         // Its sessions lead into a folder macOS asks permission for: not read, and what was
         // known from them stays as it was.
         agent_folders::Found::Guarded(folder) => {
@@ -3419,6 +3420,11 @@ fn read_agent_folders(
             Some(sessions)
         }
     };
+    // Where each file was read up to, in the run's transaction: committed with the facts
+    // derived from it or not at all.
+    if let Some(s) = &sessions {
+        agent_folders::keep(run.tx, &s.held)?;
+    }
     let mut found: BTreeMap<String, PathBuf> = BTreeMap::new();
     let mut unknown = BTreeSet::new();
     // Folders macOS asks permission for are not looked into, as in the walk, whatever name
@@ -5224,5 +5230,72 @@ mod tests {
         };
         assert!(!v.unvisited("dev/shop/vendor/lib/package.json"));
         assert!(v.unvisited("dev/shop/package.json"));
+    }
+
+    #[test]
+    fn where_sessions_were_read_up_to_is_committed_with_the_run_or_not_at_all() {
+        // A position kept apart from the facts read before it would, after a run that failed,
+        // stand for lines whose facts were never written.
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "immune-session-commit-{}-{nanos}",
+            std::process::id()
+        ));
+        let sessions = dir.join("sessions");
+        std::fs::create_dir_all(sessions.join("-invented-project")).unwrap();
+        std::fs::write(
+            sessions.join("-invented-project/s1.jsonl"),
+            "{\"type\":\"user\",\"cwd\":\"/invented/work\"}\n",
+        )
+        .unwrap();
+        let store_path = dir.join("store.db");
+        let args = Args {
+            store: store_path.clone(),
+            machine: "mac".to_string(),
+            brew: None,
+            brew_input: None,
+            servers_input: None,
+            home: dir.join("home"),
+            checkouts_root: None,
+            sessions_root: Some(sessions),
+            tailscale: None,
+            threats_input: None,
+            osv_crates_input: None,
+            osv_npm_input: None,
+            curl: None,
+            system_root: dir.join("no-system"),
+            indicators: None,
+            json: false,
+        };
+        let count = |conn: &rusqlite::Connection| -> i64 {
+            conn.query_row("SELECT COUNT(*) FROM session_file", [], |r| r.get(0))
+                .unwrap()
+        };
+        let mut conn = store::open(&store_path).unwrap();
+        {
+            let tx = conn.transaction().unwrap();
+            store::put_entity(&tx, "machine:mac").unwrap();
+            let mut run = Run {
+                tx: &tx,
+                home: &dir,
+                run_id: "run-1",
+                at: 1,
+                machine: "machine:mac",
+                events: Vec::new(),
+                notes: Vec::new(),
+                readers: 0,
+            };
+            read_agent_folders(&mut run, &args).unwrap();
+            assert_eq!(count(&tx), 1);
+            // Not visible outside the run's transaction before it commits.
+            let other = store::open_read_only(&store_path).unwrap();
+            assert_eq!(count(&other), 0);
+            // The run fails here: its transaction is dropped without a commit.
+        }
+        assert_eq!(count(&conn), 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -3252,7 +3252,12 @@ impl Agents {
     }
 
     fn cmd(&self) -> Command {
-        let mut cmd = immune_run(&self.home, &self.store());
+        self.cmd_for(&self.store())
+    }
+
+    /// `immune run` as `cmd`, into another store.
+    fn cmd_for(&self, store: &Path) -> Command {
+        let mut cmd = immune_run(&self.home, store);
         cmd.arg("--brew-input")
             .arg(self.dir.input("brew.txt", SAMPLE))
             .arg("--servers-input")
@@ -3476,6 +3481,226 @@ fn a_missing_session_folder_is_not_applicable_not_a_failure() {
     // Brew, the home walk and lockfiles; the absent sessions are not a reader that read.
     assert!(report.starts_with("3 readers,"), "{report}");
     assert!(report.contains("Since last run: no changes."), "{report}");
+}
+
+/// What a run left that a reading of sessions can change: live facts, the run's coverage, its
+/// events and the findings.
+fn what_a_run_left(store: &Path) -> Vec<Vec<String>> {
+    vec![
+        rows(store, LIVE),
+        rows(
+            store,
+            "SELECT reader, scope, kind, completeness, reason, cause FROM coverage
+             WHERE run_id = (SELECT run_id FROM coverage ORDER BY id DESC LIMIT 1)
+             ORDER BY reader, scope, kind",
+        ),
+        rows(store, LAST_RUN_EVENTS),
+        rows(
+            store,
+            "SELECT rule, about, occurrence, state, change FROM finding
+             ORDER BY rule, about, occurrence",
+        ),
+    ]
+}
+
+#[test]
+fn reading_sessions_on_from_where_the_last_reading_stopped_leaves_what_reading_every_byte_leaves() {
+    // The same session files go through growth, a line still being written, a folder that
+    // becomes a checkout after its session named it, replacement by a file of the same size,
+    // being cut short, deletion and return. One store goes on from its positions; the other
+    // has them removed before every run, so it reads every byte, as before positions were
+    // kept. Facts, coverage, events and findings must be the same after every run.
+    let a = Agents::new("agent-same");
+    let whole = a.dir.0.join("whole/store.db");
+    std::fs::create_dir_all(whole.parent().unwrap()).unwrap();
+    let app = checkout(&a.outside, "app");
+    put(&app, "Cargo.lock", CARGO_LOCK);
+    let later = a.outside.join("later");
+    std::fs::create_dir_all(&later).unwrap();
+    let tail = checkout(&a.outside, "tail");
+    let other = checkout(&a.outside, "other");
+    let s1 = session(&a.sessions, "s1", &[&app, &later]);
+    let s2 = session(&a.sessions, "s2", &[&other]);
+    let check = |step: &str| {
+        ok(&mut a.cmd());
+        if whole.exists() {
+            let conn = Connection::open(&whole).unwrap();
+            conn.execute("DELETE FROM session_file", []).unwrap();
+        }
+        ok(&mut a.cmd_for(&whole));
+        assert_eq!(
+            what_a_run_left(&a.store()),
+            what_a_run_left(&whole),
+            "{step}"
+        );
+    };
+    let append = |path: &Path, text: &str| {
+        let mut all = std::fs::read_to_string(path).unwrap_or_default();
+        all.push_str(text);
+        std::fs::write(path, all).unwrap();
+    };
+    let reply = "{\"type\":\"assistant\",\"message\":{\"content\":\"invented reply\"}}\n";
+
+    check("first reading");
+    append(&s1, reply);
+    // Named in the part of the session already read, it is a checkout only now.
+    put(&later, ".git/HEAD", "ref: refs/heads/main\n");
+    check("a folder named before becomes a checkout");
+    let partial = format!("{{\"type\":\"user\",\"cwd\":\"{}\"}}", tail.display());
+    append(&s1, &partial);
+    check("a line still being written");
+    append(&s1, "\n");
+    check("the line finished");
+    let text = std::fs::read_to_string(&s2).unwrap();
+    let same_size = text.replace("/other", "/tail_");
+    assert_eq!(same_size.len(), text.len());
+    std::fs::create_dir_all(a.outside.join("tail_/.git")).unwrap();
+    let replacement = a.sessions.join("replacement.tmp");
+    std::fs::write(&replacement, same_size).unwrap();
+    std::fs::rename(&replacement, &s2).unwrap();
+    check("replaced by a file of the same size");
+    let first_line = std::fs::read_to_string(&s1).unwrap().find('\n').unwrap() + 1;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&s1)
+        .unwrap()
+        .set_len(first_line as u64)
+        .unwrap();
+    check("cut short");
+    std::fs::remove_file(&s2).unwrap();
+    check("deleted");
+    session(&a.sessions, "s2", &[&other, &later]);
+    check("back");
+    std::fs::remove_dir_all(&app).unwrap();
+    check("a checkout's folder is gone");
+    // The store that goes on from its positions kept them.
+    assert_eq!(rows(&a.store(), "SELECT COUNT(*) FROM session_file"), ["2"]);
+}
+
+#[test]
+fn a_store_made_before_positions_were_kept_reads_every_session_once_and_nothing_changes() {
+    // A store written by an older build has no positions. Its first run with this build reads
+    // every session from the first byte and finds what it found before: nothing is added,
+    // changed or removed because of the upgrade.
+    let a = Agents::new("agent-upgrade");
+    let app = checkout(&a.outside, "app");
+    put(&app, "Cargo.lock", CARGO_LOCK);
+    session(&a.sessions, "s1", &[&app]);
+    a.run();
+    let before = rows(&a.store(), LIVE);
+    let coverage = a.agent_coverage();
+    let conn = Connection::open(a.store()).unwrap();
+    conn.execute("DROP TABLE session_file", []).unwrap();
+    drop(conn);
+
+    let report = a.run();
+
+    assert_eq!(rows(&a.store(), LIVE), before);
+    assert!(rows(&a.store(), LAST_RUN_EVENTS).is_empty());
+    assert_eq!(a.agent_coverage(), coverage);
+    assert!(report.contains("Since last run: no changes."), "{report}");
+    assert_eq!(rows(&a.store(), "SELECT COUNT(*) FROM session_file"), ["1"]);
+}
+
+#[test]
+fn a_position_that_cannot_be_trusted_is_dropped_and_the_session_read_from_its_first_byte() {
+    // Whatever is wrong with what the store kept of a session, the reading falls back to the
+    // whole file: a folder its first lines name is found when it becomes a checkout.
+    for (what, damage) in [
+        (
+            "a digest that does not match",
+            "UPDATE session_file SET digest = '00', folders = '[]'",
+        ),
+        (
+            "folders that do not read back",
+            "UPDATE session_file SET folders = 'not json'",
+        ),
+    ] {
+        let a = Agents::new("agent-untrusted");
+        let later = a.outside.join("later");
+        std::fs::create_dir_all(&later).unwrap();
+        let s1 = session(&a.sessions, "s1", &[&later]);
+        a.run();
+        let conn = Connection::open(a.store()).unwrap();
+        conn.execute(damage, []).unwrap();
+        drop(conn);
+        put(&later, ".git/HEAD", "ref: refs/heads/main\n");
+        let mut text = std::fs::read_to_string(&s1).unwrap();
+        text.push_str("{\"type\":\"assistant\",\"message\":{\"content\":\"invented\"}}\n");
+        std::fs::write(&s1, text).unwrap();
+
+        a.run();
+
+        assert_eq!(
+            rows(
+                &a.store(),
+                "SELECT subject FROM assertion WHERE layer = 'live' AND reader = 'agent-folders'"
+            ),
+            [a.outside_id("later")],
+            "{what}"
+        );
+    }
+}
+
+#[test]
+fn what_a_session_established_still_counts_while_the_session_cannot_be_read() {
+    // A reading that fails is partial and drops nothing it knew: a folder the session named
+    // before it became unreadable is found when it becomes a checkout, and the position stays
+    // for when the file can be read again.
+    use std::os::unix::fs::PermissionsExt;
+    let a = Agents::new("agent-unreadable");
+    let later = a.outside.join("later");
+    std::fs::create_dir_all(&later).unwrap();
+    let s1 = session(&a.sessions, "s1", &[&later]);
+    a.run();
+    let kept = rows(&a.store(), "SELECT position, digest FROM session_file");
+    put(&later, ".git/HEAD", "ref: refs/heads/main\n");
+    std::fs::set_permissions(&s1, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    a.run();
+    std::fs::set_permissions(&s1, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    assert_eq!(
+        rows(
+            &a.store(),
+            "SELECT subject FROM assertion WHERE layer = 'live' AND reader = 'agent-folders'"
+        ),
+        [a.outside_id("later")]
+    );
+    assert_eq!(
+        a.agent_coverage(),
+        ["partial|1 of 1 session file could not be read"]
+    );
+    assert_eq!(
+        rows(&a.store(), "SELECT position, digest FROM session_file"),
+        kept
+    );
+}
+
+#[test]
+fn of_a_session_the_store_keeps_its_working_folders_and_no_other_text() {
+    // Session files may be written by an attacker for an agent to read. What the store keeps
+    // to go on from a position is the working folders and numbers: no other text of a line.
+    let a = Agents::new("agent-kept");
+    let app = checkout(&a.outside, "app");
+    let s1 = session(&a.sessions, "s1", &[&app]);
+    let mut text = std::fs::read_to_string(&s1).unwrap();
+    text.push_str(
+        "{\"type\":\"user\",\"message\":{\"content\":\"invented-marker-ignore-previous\"}}\n",
+    );
+    std::fs::write(&s1, text).unwrap();
+
+    a.run();
+
+    let store = std::fs::read(a.store()).unwrap();
+    let has = |s: &str| store.windows(s.len()).any(|w| w == s.as_bytes());
+    assert!(!has("invented-marker-ignore-previous"));
+    assert!(!has("Invented summary"));
+    // The folder as the session recorded it.
+    assert_eq!(
+        rows(&a.store(), "SELECT folders FROM session_file"),
+        [serde_json::json!([app.display().to_string()]).to_string()]
+    );
 }
 
 #[test]
