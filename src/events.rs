@@ -1746,7 +1746,8 @@ fn has(conn: &Connection, table: &str) -> rusqlite::Result<bool> {
 /// rule as it describes itself, its authors among them, as the Detection Rule License asks of
 /// a message made from a match; the kind of event it is about, `events`; how many events it
 /// counts since it was raised; and the latest of them, newest first; and where the rule's set
-/// comes from, with its licence. Text from the rule or from an event is only in `_text` fields.
+/// comes from, with its licence, each by its address or identifier and by its name in words.
+/// Text from the rule or from an event is only in `_text` fields.
 pub fn finding_detail(
     conn: &Connection,
     finding: &str,
@@ -1756,7 +1757,9 @@ pub fn finding_detail(
 ) -> rusqlite::Result<Value> {
     let mut v = crate::sigma::Match { file, meta, kind }.json();
     v["licence"] = json!(meta.source.licence);
+    v["licence_name"] = json!(meta.source.licence_name);
     v["source"] = json!(meta.source.url);
+    v["source_name"] = json!(meta.source.set);
     let table = match kind {
         crate::sigma::Kind::Process => "rule_evidence",
         crate::sigma::Kind::File => "rule_file_evidence",

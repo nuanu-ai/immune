@@ -1305,6 +1305,19 @@ fn a_high_translated_rule_raises_a_finding_named_elastic_and_its_match_is_handed
         ),
         (&json!("finding"), &json!(finding), &json!("open"))
     );
+    // A person is told whose rule it is and under which licence, in words: in the finding's
+    // meaning, which the app's card shows, and in the line about the rule.
+    let out = dir.command(&["finding", finding, "--json"], &[]).output();
+    let whole: Value = serde_json::from_slice(&out.unwrap().stdout).unwrap();
+    let meaning = whole["meaning"].as_str().unwrap();
+    assert!(
+        meaning.contains("comes from Elastic's detection rules and"),
+        "{meaning}"
+    );
+    let out = dir.command(&["finding", finding], &[]).output().unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    let said = "; from Elastic's detection rules under the Elastic License 2.0, macos/collection_pbpaste_execution_via_unusual_parent.yml.";
+    assert!(text.contains(said), "{text}");
 }
 
 #[test]
@@ -1316,6 +1329,34 @@ fn immune_rules_lists_both_sets_and_names_every_rule_not_taken_with_its_reason()
     dir.install();
     dir.run();
     let rules = dir.report(&["rules"]);
+    // The words of a published rule's finding are given for each set, since they name it,
+    // and apart for a rule about file events.
+    let said = &rules["catalogue"]["published_rules"];
+    for (words, set, about) in [
+        (
+            &said["meaning_by_set"]["sigma"],
+            "SigmaHQ's rule set",
+            "run the same commands",
+        ),
+        (
+            &said["meaning_by_set"]["elastic"],
+            "Elastic's detection rules",
+            "run the same commands",
+        ),
+        (
+            &said["for_file_events"]["meaning_by_set"]["sigma"],
+            "SigmaHQ's rule set",
+            "put files in the same places",
+        ),
+        (
+            &said["for_file_events"]["meaning_by_set"]["elastic"],
+            "Elastic's detection rules",
+            "put files in the same places",
+        ),
+    ] {
+        let words = words.as_str().unwrap();
+        assert!(words.contains(set) && words.contains(about), "{words}");
+    }
     let sources: Vec<&Value> = rules["sources"].as_array().unwrap().iter().collect();
     assert_eq!(
         sources

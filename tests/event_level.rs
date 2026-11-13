@@ -1572,7 +1572,7 @@ fn a_binary_padding_start_raises_one_finding_with_its_authors_and_arguments_and_
     // For a person too: the rule with its authors, and the latest starts with their arguments.
     let text = dir.immune(&["finding", &id]);
     for said in [
-        "Rule: Binary Padding - MacOS, by Igor Fits, Mikhail Larin, oscd.community;",
+        "Rule: Binary Padding - MacOS, by Igor Fits, Mikhail Larin, oscd.community; from SigmaHQ's rule set under the Detection Rule License 1.1, ",
         "It matched 8 program starts since this finding was raised; the latest:",
         "/bin/dd: dd if=/dev/zero bs=1 count=9 · started by /bin/sh",
     ] {
@@ -2395,6 +2395,21 @@ fn a_file_a_high_rule_names_raises_one_finding_with_the_file_and_its_program_and
         .into_iter()
         .find(|f| f["finding"]["rule"] == format!("sigma:{AMOS}"))
         .unwrap();
+    // A rule about file events is told in the words about a file, never in those about a
+    // program start, and names its set as every finding of a published rule does.
+    let (title, meaning) = (
+        amos["title"].as_str().unwrap(),
+        amos["meaning"].as_str().unwrap(),
+    );
+    assert!(
+        title.starts_with("A file was created or renamed"),
+        "{title}"
+    );
+    assert!(
+        meaning.contains("comes from SigmaHQ's rule set and")
+            && meaning.contains("put files in the same places"),
+        "{meaning}"
+    );
     let p = &amos["evidence"]["published_rule_matched"];
     assert_eq!(p["matches"], 7);
     let evidence = p["events"].as_array().unwrap();
@@ -2409,7 +2424,7 @@ fn a_file_a_high_rule_names_raises_one_finding_with_the_file_and_its_program_and
     );
     let text = dir.immune(&["finding", amos["finding"]["id"].as_str().unwrap()]);
     for said in [
-        "Rule: Atomic MacOS Stealer - Persistence Indicators, by Jason Phang Vern - Onn, Robbin Ooi Zhen Heng (Gen Digital);",
+        "Rule: Atomic MacOS Stealer - Persistence Indicators, by Jason Phang Vern - Onn, Robbin Ooi Zhen Heng (Gen Digital); from SigmaHQ's rule set under the Detection Rule License 1.1, ",
         "It matched 7 file events since this finding was raised; the latest:",
         &format!(
             "2026-10-04T00:00:03.000003Z {daemon}: renamed from /private/tmp/x7.plist by /bin/mv"

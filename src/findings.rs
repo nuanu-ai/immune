@@ -1332,31 +1332,64 @@ pub fn published(rule: &str) -> Option<&'static crate::sigma::Loaded> {
 pub const PUBLISHED_KIND: &str = "program start matched by a published rule";
 pub const PUBLISHED_FILE_KIND: &str = "file event matched by a published rule";
 
-/// The program's own words for every finding of a published rule. The rule's title, its
-/// authors and the start it matched are text from a source and stand beside these, in fields
-/// of their own.
-pub const PUBLISHED_WORDS: Words = Words {
-    title: "A program started on this Mac in a way that a published detection rule marks as high risk.",
-    meaning: "The rule, named with this finding, comes from a published rule set and was written from attacks seen elsewhere. Coding agents, build tools and people run the same commands for ordinary work, so a match is often harmless.",
-    advice: "Look at the program, its arguments and what started it, shown here. If you or a tool you use ran it, mark it expected; if nobody knows it, ask your agent to look into it.",
-};
+/// The program's own words for a finding of a published rule about program starts, with the
+/// name of the set the rule came from. The rule's title, its authors and the start it matched
+/// are text from a source and stand beside these, in fields of their own.
+macro_rules! start_words {
+    ($set:literal) => {
+        Words {
+            title: "A program started on this Mac in a way that a published detection rule marks as high risk.",
+            meaning: concat!(
+                "The rule, named with this finding, comes from ",
+                $set,
+                " and was written from attacks seen elsewhere. Coding agents, build tools and people run the same commands for ordinary work, so a match is often harmless."
+            ),
+            advice: "Look at the program, its arguments and what started it, shown here. If you or a tool you use ran it, mark it expected; if nobody knows it, ask your agent to look into it.",
+        }
+    };
+}
 
 /// The same for a rule about file events: a file created or renamed into a place the rule
 /// names.
-pub const PUBLISHED_FILE_WORDS: Words = Words {
-    title: "A file was created or renamed on this Mac where a published detection rule marks it as high risk.",
-    meaning: "The rule, named with this finding, comes from a published rule set and was written from attacks seen elsewhere. Installers, updaters and people put files in the same places for ordinary work, so a match is often harmless.",
-    advice: "Look at the file and the program that wrote it, shown here. If you or a tool you use put it there, mark it expected; if nobody knows it, ask your agent to look into it.",
-};
+macro_rules! file_words {
+    ($set:literal) => {
+        Words {
+            title: "A file was created or renamed on this Mac where a published detection rule marks it as high risk.",
+            meaning: concat!(
+                "The rule, named with this finding, comes from ",
+                $set,
+                " and was written from attacks seen elsewhere. Installers, updaters and people put files in the same places for ordinary work, so a match is often harmless."
+            ),
+            advice: "Look at the file and the program that wrote it, shown here. If you or a tool you use put it there, mark it expected; if nobody knows it, ask your agent to look into it.",
+        }
+    };
+}
+
+/// The words for a finding of a rule of this set: for a rule about program starts, then for
+/// one about file events. They differ between sets only in the set's name, which a person
+/// reads in the meaning.
+pub fn published_words(source: &crate::sigma::Source) -> (Words, Words) {
+    match source.name {
+        "elastic" => (
+            start_words!("Elastic's detection rules"),
+            file_words!("Elastic's detection rules"),
+        ),
+        _ => (
+            start_words!("SigmaHQ's rule set"),
+            file_words!("SigmaHQ's rule set"),
+        ),
+    }
+}
 
 /// A finding of a published rule as an item: how bad is the rule's level, how sure follows its
 /// status (`sigma::Status::confidence`), and its first ATT&CK technique stands as the item's;
 /// every technique, the authors and the evidence are in `detail`.
 fn published_item(f: &Found, l: &'static crate::sigma::Loaded) -> Option<Item> {
     let m = l.meta.as_ref()?;
+    let (starts, files) = published_words(m.source);
     let (kind, words) = match l.kind {
-        Some(crate::sigma::Kind::File) => (PUBLISHED_FILE_KIND, PUBLISHED_FILE_WORDS),
-        _ => (PUBLISHED_KIND, PUBLISHED_WORDS),
+        Some(crate::sigma::Kind::File) => (PUBLISHED_FILE_KIND, files),
+        _ => (PUBLISHED_KIND, starts),
     };
     Some(Item {
         id: f.id.clone(),
@@ -1512,6 +1545,18 @@ pub fn item_json(i: &Item) -> Value {
 /// Every rule, and every cause of what is not covered, with its wording, for an agent to
 /// learn what each can say.
 pub fn catalogue_json() -> Value {
+    let sets = crate::sigma::SOURCES;
+    let (starts, files) = published_words(sets[0]);
+    let meanings = |of_files: bool| -> Value {
+        sets.iter()
+            .map(|s| {
+                let (starts, files) = published_words(s);
+                let words = if of_files { files } else { starts };
+                (s.name.to_string(), json!(words.meaning))
+            })
+            .collect::<serde_json::Map<String, Value>>()
+            .into()
+    };
     let rules: Vec<Value> = rules()
         .iter()
         .map(|r| {
@@ -1547,16 +1592,18 @@ pub fn catalogue_json() -> Value {
                 "experimental": crate::sigma::Status::Experimental.confidence(),
             },
             "finds": "event",
-            "title": PUBLISHED_WORDS.title,
-            "meaning": PUBLISHED_WORDS.meaning,
-            "advice": PUBLISHED_WORDS.advice,
+            // The title and the advice are the same for every set; the meaning names the
+            // set, so it is given for each by the name its rules carry.
+            "title": starts.title,
+            "meaning_by_set": meanings(false),
+            "advice": starts.advice,
             // A rule about file events raises a finding of its own kind and words; the rest
             // is the same.
             "for_file_events": {
                 "kind": PUBLISHED_FILE_KIND,
-                "title": PUBLISHED_FILE_WORDS.title,
-                "meaning": PUBLISHED_FILE_WORDS.meaning,
-                "advice": PUBLISHED_FILE_WORDS.advice,
+                "title": files.title,
+                "meaning_by_set": meanings(true),
+                "advice": files.advice,
             },
         },
         "not_covered": crate::covered::causes_json(),
@@ -1567,6 +1614,26 @@ pub fn catalogue_json() -> Value {
 #[cfg(test)]
 mod tests {
     use super::{CONFIDENCES, Connection, SEVERITIES, This, place, urgent};
+
+    #[test]
+    fn a_finding_of_a_published_rule_names_the_set_its_rule_came_from() {
+        // A person reading such a finding is told whose rule it is: the meaning names the
+        // set in words, for every set shipped and for both kinds of event. A set added
+        // without words of its own fails here.
+        for source in crate::sigma::SOURCES {
+            let (starts, files) = super::published_words(source);
+            for words in [starts, files] {
+                assert!(
+                    words
+                        .meaning
+                        .contains(&format!("comes from {} and", source.set)),
+                    "{}: {}",
+                    source.name,
+                    words.meaning
+                );
+            }
+        }
+    }
 
     #[test]
     fn only_a_finding_both_bad_and_sure_is_urgent_and_the_programs_health_never_is() {
