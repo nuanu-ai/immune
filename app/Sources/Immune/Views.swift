@@ -238,6 +238,15 @@ struct FindingCard: View {
           .textSelection(.enabled)
           .help(reason)
       }
+      if let verdict = row.verdict {
+        // Immune's words for the response layer's verdict, then its reason as data, whole and
+        // never folded: a reason cut short can say the opposite.
+        Text(verbatim: verdict)
+          .font(.system(size: 12)).foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+          .textSelection(.enabled)
+          .help(verdict)
+      }
       if !row.means.isEmpty {
         Plain(row.means).font(.system(size: 12)).foregroundStyle(.secondary)
       }

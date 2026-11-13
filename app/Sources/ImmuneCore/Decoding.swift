@@ -34,7 +34,7 @@ public struct Status: Sendable, Equatable {
   public var cannotJudge: [String]?
   public var noReaderFor: [NoReader]?
   public var notComputed: [NotComputed]?
-  /// What needs the owner's look, as Immune serves it, most severe first; at most 50.
+  /// What needs the owner's look, as Immune serves it, urgent first, then most severe; at most 50.
   public var needsALook: [Item]?
   public var needsALookTotal: Int?
   public var answersNote: String?
@@ -93,6 +93,16 @@ public struct Caveat: Sendable, Equatable {
 
 /// `published_rule` of a finding a published rule raised: the rule's title and authors,
 /// and the latest event it matched. Every field is text from a source but `action`.
+/// The response layer's leading verdict about a finding, as Immune chooses it. `said` is
+/// Immune's fixed words for the finding's verdicts; `reasonText` is the response layer's, data,
+/// whole. No verdict closes the finding.
+public struct Verdict: Sendable, Equatable {
+  /// `suspicious` or `harmless`.
+  public var kind: String?
+  public var said: String?
+  public var reasonText: String?
+}
+
 public struct PublishedRule: Sendable, Equatable {
   public var titleText: String?
   public var authorText: String?
@@ -218,6 +228,8 @@ public struct Item: Sendable, Equatable {
   public var technique: String?
   /// Present only for a finding a published rule raised.
   public var publishedRule: PublishedRule?
+  /// Present only when the response layer gave a verdict about it.
+  public var verdict: Verdict? = nil
   /// Immune decided this needs the owner now, from how bad and how sure. Missing, or
   /// not a boolean, is false: the app never decides it.
   public var urgent = false
@@ -604,6 +616,10 @@ public enum Decoding {
           executableText: latest?["executable_text"].string,
           parentExecutableText: latest?["parent_executable_text"].string,
           fileText: latest?["file_text"].string, action: latest?["action"].string)
+      },
+      verdict: i["verdict"].object.map {
+        Verdict(
+          kind: $0["kind"].string, said: $0["said"].string, reasonText: $0["reason_text"].string)
       },
       urgent: i["urgent"].bool ?? false)
   }

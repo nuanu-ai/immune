@@ -18,6 +18,7 @@ package immune.v1;
 
 import "immune/v1/common.proto";
 import "immune/v1/event.proto";
+import "immune/v1/verdict.proto";
 
 // The answer to `immune findings`: every finding the store holds, in every state.
 message Findings {
@@ -55,6 +56,11 @@ message ListedFinding {
   int64 last_seen_at = 6;
   // The person's answer, absent when it has none. A finding whose answer was taken back has none.
   Answer answer = 7;
+  // What the response layer said about it, counted: for a finding of the core, the verdicts that
+  // name it and its `verdict.suspicious` finding when one stands; for a `verdict.suspicious`
+  // finding, the verdicts of this occurrence, with the one that raised it. Absent when there are
+  // none.
+  Verdicts verdicts = 8;
 }
 
 // The answer to `immune finding <id>`: one finding whole.
@@ -88,6 +94,8 @@ message Finding {
   repeated JournalEntry rests_on = 15;
   // As in `Findings`.
   string answers_note = 16;
+  // As in `ListedFinding`, with the first verdict and the latest 20 listed.
+  Verdicts verdicts = 17;
 }
 
 // The person's answer to a finding.
@@ -149,6 +157,9 @@ message Evidence {
     VulnerablePackage vulnerable_package = 5;
     // `sigma:<id>` and `elastic:<rule_id>`: events a published rule matched.
     PublishedRuleMatched published_rule_matched = 6;
+    // `verdict.suspicious`: what the response layer judged suspicious. Its verdicts are in
+    // `Finding.verdicts`.
+    VerdictGiven verdict_given = 7;
   }
 }
 
@@ -246,6 +257,15 @@ message PublishedRuleMatched {
   // SPDX identifier.
   string source = 4;
   string licence = 5;
+}
+
+// What a `verdict.suspicious` finding is about, beside its verdicts.
+message VerdictGiven {
+  // The rule its verdicts are about: the match's rule, or the rule of the finding they named.
+  string rule = 1;
+  // For verdicts about matches, the events at those lines, newest first, at most five, as
+  // `immune matches` gives an event.
+  repeated Event events = 2;
 }
 
 // One entry of the journal, which only grows.

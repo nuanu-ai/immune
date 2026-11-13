@@ -55,6 +55,7 @@ mod tailnet;
 mod threats;
 mod tools;
 mod traces;
+mod verdict;
 mod view;
 mod vulnerabilities;
 mod watch;
@@ -127,6 +128,10 @@ const USAGE: &str = "usage: immune run [--store <path>] [--machine-name <name>] 
            every rule match over the event log, of every level, each with the event
            it matched, command lines whole; what was read, lost and not evaluated; and
            the position to read on from; one protobuf message, or the same as JSON
+       immune verdict [--store <path>] [--system-root <dir>] [--json | --proto]
+           records the response layer's verdict about a match or a finding: one Verdict
+           message on standard input, binary or JSON with --json, and answers with what
+           was recorded in the same form. A verdict never closes or quiets a finding
        immune sample [--store <path>] [--sample-input <file>] [--json]
        immune watch [--store <path>] [--system-root <dir>] [--sample-input <file>]
                     [--sample-every <seconds>] [--events-every <seconds>]
@@ -153,6 +158,7 @@ enum Cmd {
     Program(program::ProgramArgs),
     Machine(machine::MachineArgs),
     Matches(matches::MatchesArgs),
+    Verdict(verdict::VerdictArgs),
 }
 
 /// `immune rules`: the shipped rules with what the store says they did, or with `over_log` a
@@ -571,6 +577,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
         "program" => program::parse(it).map(Cmd::Program),
         "machine" => machine::parse(it).map(Cmd::Machine),
         "matches" => matches::parse(it).map(Cmd::Matches),
+        "verdict" => verdict::parse(it).map(Cmd::Verdict),
         "rules" => {
             let (mut json, mut over_log, mut system_root) = (false, false, None);
             while let Some(arg) = it.next() {
@@ -606,6 +613,14 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Cmd, String> {
         }
         _ => Err(format!("unknown command: {cmd}")),
     }
+}
+
+/// The machine the store's readings of this Mac are scoped to, and on a store no full run or
+/// watcher has read yet, this Mac by its name as a run names it. A sample, the watcher's
+/// reading of the event level and a verdict that raises a finding of a match all take it from
+/// here, so what they record is about one Mac.
+pub fn this_machine_or_named(conn: &rusqlite::Connection) -> rusqlite::Result<String> {
+    Ok(covered::this_machine(conn)?.unwrap_or_else(|| format!("machine:{}", machine_name())))
 }
 
 /// The name this Mac gives itself on the local network, else its short host name.
@@ -701,6 +716,7 @@ fn main() -> ExitCode {
                         "program",
                         "machine",
                         "matches",
+                        "verdict",
                     ]
                     .contains(o)
                 });
@@ -718,6 +734,7 @@ fn main() -> ExitCode {
                     Some("program") => "immune program /Applications/<name>.app --json",
                     Some("machine") => "immune machine --json",
                     Some("matches") => "immune matches --json",
+                    Some("verdict") => "immune verdict --json < verdict.json",
                     _ => "immune status --json",
                 };
                 let v = status::failure(
@@ -734,9 +751,9 @@ fn main() -> ExitCode {
                     .skip(2)
                     .any(|a| ["expected", "seen", "reopen"].contains(&a.as_str()));
                 match op {
-                    Some("project" | "program" | "machine" | "matches" | "findings") => {
-                        print_json(&known::envelope(v))
-                    }
+                    Some(
+                        "project" | "program" | "machine" | "matches" | "findings" | "verdict",
+                    ) => print_json(&known::envelope(v)),
                     Some("finding") if !answering => print_json(&known::envelope(v)),
                     _ => print_json(&v),
                 }
@@ -786,6 +803,7 @@ fn main() -> ExitCode {
         Cmd::Program(args) => return program::program_cmd(&args),
         Cmd::Machine(args) => return machine::machine_cmd(&args),
         Cmd::Matches(args) => return matches::matches_cmd(&args),
+        Cmd::Verdict(args) => return verdict::verdict_cmd(&args),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -850,8 +868,7 @@ pub fn sample_held(
     };
     let tx = conn.transaction()?;
     // The machine the readings of this Mac are scoped to, so the sample is of the same one.
-    let machine =
-        covered::this_machine(&tx)?.unwrap_or_else(|| format!("machine:{}", machine_name()));
+    let machine = this_machine_or_named(&tx)?;
     store::put_entity(&tx, &machine)?;
     let at = processes::At {
         run_id: &run_id,
@@ -940,8 +957,7 @@ pub fn read_events_held(path: &Path, system_root: &Path) -> Result<EventsRead, B
     );
     let mut conn = store::open(path).map_err(|e| Stop::Store(e.to_string()))?;
     let tx = conn.transaction()?;
-    let machine =
-        covered::this_machine(&tx)?.unwrap_or_else(|| format!("machine:{}", machine_name()));
+    let machine = this_machine_or_named(&tx)?;
     store::put_entity(&tx, &machine)?;
     let before = events::state(&tx)?;
     let outcome = events::read(&tx, &run_id, &machine, system_root, at)?;
@@ -1837,9 +1853,24 @@ fn finding_cmd(args: &FindingArgs) -> ExitCode {
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.subsec_nanos());
         let run_id = format!("owner-{now}-{nanos:09}");
+        // It writes as `immune verdict` does: under the run lock, with the write lock from the
+        // start of its transaction, and a store another writer holds is asked again.
+        let busy = |r: verdict::Refusal| {
+            refuse(
+                args.json,
+                "finding",
+                r.code,
+                r.message,
+                "immune finding <id> seen",
+                r.exit,
+            )
+        };
+        let (_lock, mut conn) = match verdict::writing(&args.store) {
+            Ok(held) => held,
+            Err(r) => return busy(r),
+        };
         let answered = (|| -> Result<(), Box<dyn Error>> {
-            let mut conn = store::open(&args.store).map_err(|e| Stop::Store(e.to_string()))?;
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             match act {
                 findings::Act::Answer(a) => {
                     findings::answer(&tx, &args.id, a, args.via, now, &run_id)?;
@@ -1870,9 +1901,15 @@ fn finding_cmd(args: &FindingArgs) -> ExitCode {
                     "immune findings lists the open findings",
                     EXIT_USAGE,
                 ),
-                None => match e.downcast_ref::<Stop>() {
-                    Some(stop) => store_failed(args.json, "finding", stop),
-                    None => store_failed(args.json, "finding", &Stop::Store(e.to_string())),
+                None => match e.downcast::<rusqlite::Error>() {
+                    Ok(e) => match verdict::Refusal::from(*e) {
+                        r if r.code == "run_in_progress" => busy(r),
+                        r => store_failed(args.json, "finding", &Stop::Store(r.detail)),
+                    },
+                    Err(e) => match e.downcast_ref::<Stop>() {
+                        Some(stop) => store_failed(args.json, "finding", stop),
+                        None => store_failed(args.json, "finding", &Stop::Store(e.to_string())),
+                    },
                 },
             };
         }
@@ -1881,16 +1918,22 @@ fn finding_cmd(args: &FindingArgs) -> ExitCode {
         Ok(found) => found.unwrap_or_default(),
         Err(e) => return store_failed(args.json, "finding", &e),
     };
-    let Some(item) = found
+    let Some((f, item)) = found
         .iter()
         .find(|f| f.id == args.id)
-        .and_then(findings::item)
+        .and_then(|f| findings::item(f).map(|i| (f, i)))
     else {
         return unknown(args.json);
     };
-    let basis = match store::open_read_only(&args.store)
+    let read = |c: rusqlite::Connection| -> rusqlite::Result<_> {
+        Ok((
+            findings::basis(&c, &args.id)?,
+            verdict::of_finding(&c, &args.id, &f.rule)?,
+        ))
+    };
+    let (basis, (_, _, verdicts)) = match store::open_read_only(&args.store)
         .map_err(|e| e.to_string())
-        .and_then(|c| findings::basis(&c, &args.id).map_err(|e| e.to_string()))
+        .and_then(|c| read(c).map_err(|e| e.to_string()))
     {
         Ok(b) => b,
         Err(e) => return store_failed(args.json, "finding", &Stop::Store(e)),
@@ -1951,6 +1994,17 @@ fn finding_cmd(args: &FindingArgs) -> ExitCode {
                 .map(|r| format!(": {}", view::shown(r)))
                 .unwrap_or_default()
         ));
+    }
+    if let Some(s) = &item.verdicts {
+        say(&verdict::said(s));
+        if let Some(id) = &s.standing {
+            say(&format!(
+                "The response layer's finding about the same: {id}."
+            ));
+        }
+    }
+    for v in &verdicts {
+        say(&verdict::line(v));
     }
     say(&format!(
         "Where: {}.",

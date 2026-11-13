@@ -1426,16 +1426,9 @@ fn collected(conn: &Connection) -> rusqlite::Result<(bool, Option<String>)> {
         .unwrap_or((false, None)))
 }
 
-/// One reading of the event level under `root`, at `now`, recorded in `tx`: the state, the
-/// counts, where each file was read up to, and coverage of this machine, one row in place of
-/// the one before, as samples keep theirs.
-pub fn read(
-    tx: &Transaction,
-    run_id: &str,
-    machine: &str,
-    root: &Path,
-    now: i64,
-) -> rusqlite::Result<Outcome> {
+/// Makes the level's tables in `tx` where they are missing: at every reading, and before a
+/// verdict keeps the event it is about (`verdict.rs`).
+pub fn schema(tx: &Transaction) -> rusqlite::Result<()> {
     let recorded = has(tx, "rule_line")?;
     tx.execute_batch(SCHEMA)?;
     if !recorded {
@@ -1447,6 +1440,20 @@ pub fn read(
             [],
         )?;
     }
+    Ok(())
+}
+
+/// One reading of the event level under `root`, at `now`, recorded in `tx`: the state, the
+/// counts, where each file was read up to, and coverage of this machine, one row in place of
+/// the one before, as samples keep theirs.
+pub fn read(
+    tx: &Transaction,
+    run_id: &str,
+    machine: &str,
+    root: &Path,
+    now: i64,
+) -> rusqlite::Result<Outcome> {
+    schema(tx)?;
     let left = left(tx)?;
     let found = look(root, &left, now, Rules::shipped());
     let mut opened = 0;
@@ -1662,11 +1669,6 @@ fn record(
             )?;
             opened += 1;
         }
-        tx.execute(
-            "INSERT INTO rule_finding (finding, matches) VALUES (?1, ?2)
-             ON CONFLICT (finding) DO UPDATE SET matches = matches + excluded.matches",
-            params![finding, hits.count],
-        )?;
         let mut line = tx.prepare(
             "INSERT OR REPLACE INTO rule_line (file, inode, offset, rule, finding)
              VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -1680,57 +1682,76 @@ fn record(
                 finding
             ])?;
         }
-        for e in &hits.latest {
-            match e {
-                Evidence::Start(s) => tx.execute(
-                    "INSERT INTO rule_evidence (finding, read_at, timestamp, executable, args,
+        keep(tx, &finding, now, hits.count, &hits.latest)?;
+    }
+    Ok(opened)
+}
+
+/// Keeps what one occurrence of a rule found with its finding: how many events, and the latest
+/// of them, at most `EVIDENCE`. The core's reading keeps a published rule's here, and a verdict
+/// keeps the event it is about (`verdict.rs`).
+pub fn keep(
+    tx: &Transaction,
+    finding: &str,
+    now: i64,
+    count: i64,
+    latest: &VecDeque<Evidence>,
+) -> rusqlite::Result<()> {
+    tx.execute(
+        "INSERT INTO rule_finding (finding, matches) VALUES (?1, ?2)
+         ON CONFLICT (finding) DO UPDATE SET matches = matches + excluded.matches",
+        params![finding, count],
+    )?;
+    for e in latest {
+        match e {
+            Evidence::Start(s) => tx.execute(
+                "INSERT INTO rule_evidence (finding, read_at, timestamp, executable, args,
                          parent_executable, working_directory, pid, parent_pid, user_id,
                          signing_id, team_id, platform_binary)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-                    params![
-                        finding,
-                        now,
-                        s.timestamp,
-                        s.executable,
-                        json!(s.args).to_string(),
-                        s.parent_executable,
-                        s.working_directory,
-                        s.pid,
-                        s.parent_pid,
-                        s.user_id,
-                        s.signing_id,
-                        s.team_id,
-                        s.platform_binary
-                    ],
-                )?,
-                Evidence::File(f) => tx.execute(
-                    "INSERT INTO rule_file_evidence (finding, read_at, timestamp, action, path,
+                params![
+                    finding,
+                    now,
+                    s.timestamp,
+                    s.executable,
+                    json!(s.args).to_string(),
+                    s.parent_executable,
+                    s.working_directory,
+                    s.pid,
+                    s.parent_pid,
+                    s.user_id,
+                    s.signing_id,
+                    s.team_id,
+                    s.platform_binary
+                ],
+            )?,
+            Evidence::File(f) => tx.execute(
+                "INSERT INTO rule_file_evidence (finding, read_at, timestamp, action, path,
                          source, executable)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    params![
-                        finding,
-                        now,
-                        f.timestamp,
-                        f.action,
-                        f.path,
-                        f.source,
-                        f.executable
-                    ],
-                )?,
-            };
-        }
-        for table in ["rule_evidence", "rule_file_evidence"] {
-            tx.execute(
-                &format!(
-                    "DELETE FROM {table} WHERE finding = ?1 AND rowid NOT IN
+                params![
+                    finding,
+                    now,
+                    f.timestamp,
+                    f.action,
+                    f.path,
+                    f.source,
+                    f.executable
+                ],
+            )?,
+        };
+    }
+    for table in ["rule_evidence", "rule_file_evidence"] {
+        tx.execute(
+            &format!(
+                "DELETE FROM {table} WHERE finding = ?1 AND rowid NOT IN
                          (SELECT rowid FROM {table} WHERE finding = ?1
                           ORDER BY rowid DESC LIMIT ?2)"
-                ),
-                params![finding, EVIDENCE as i64],
-            )?;
-        }
+            ),
+            params![finding, EVIDENCE as i64],
+        )?;
     }
-    Ok(opened)
+    Ok(())
 }
 
 /// Whether the store has a table: one this build creates at the first reading may be missing
@@ -1909,6 +1930,113 @@ impl std::fmt::Display for LineAt {
             .unwrap_or(&self.file);
         write!(f, "{hour}-{}-{}", self.inode, self.offset)
     }
+}
+
+impl LineAt {
+    /// A position exactly as `immune matches` printed it; `None` for any other text. The hour
+    /// must be one a log file's name gives, and the text must be what this build prints for the
+    /// place it reads, so a sign, a leading zero or anything left over is refused. A position
+    /// names no path: the file is the log file of that hour, looked up in the log folder.
+    pub fn parse(text: &str) -> Option<LineAt> {
+        let (hour, rest) = text.split_once('-')?;
+        let (inode, offset) = rest.split_once('-')?;
+        let file = format!("{PREFIX}{hour}{SUFFIX}");
+        hour_of(&file)?;
+        let at = LineAt {
+            file,
+            inode: inode.parse().ok()?,
+            offset: offset.parse().ok()?,
+        };
+        (at.to_string() == text).then_some(at)
+    }
+}
+
+/// What the log holds at a position, for a verdict about a match.
+pub enum AtLine {
+    /// The log no longer holds it: its file is gone, or a file of that hour now is another one.
+    Gone,
+    /// Its file is there and no whole line of an event begins at it.
+    NoLine,
+    /// The event whose line begins at it, with the rules it matched, in the order they are
+    /// shipped; none when it matched none.
+    Event(Box<Hit>),
+}
+
+/// Reads the one line at `at` in the log under `root` and evaluates its event at the one place
+/// an event is evaluated (`Into::judge`), as the core's own reading and `immune matches` do, so a
+/// verdict about a match is about what they matched. Nothing is read from the store or written
+/// to it. A failure is the reason, in the program's words.
+pub fn at_line(root: &Path, at: &LineAt) -> Result<AtLine, String> {
+    let failed = |e: &dyn std::fmt::Display| format!("{} in the event level's log: {e}", at.file);
+    let file = match std::fs::File::open(root.join(LOG).join(&at.file)) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(AtLine::Gone),
+        Err(e) => return Err(failed(&e)),
+    };
+    let meta = file.metadata().map_err(|e| failed(&e))?;
+    if meta.ino() != at.inode {
+        return Ok(AtLine::Gone);
+    }
+    // A log file is only appended to: a position past its end was never a line in it.
+    if at.offset >= meta.len() {
+        return Ok(AtLine::NoLine);
+    }
+    let mut lines = BufReader::new(file);
+    // A line begins at the start of the file or right after a newline.
+    let from = at.offset.saturating_sub(1);
+    lines.seek(SeekFrom::Start(from)).map_err(|e| failed(&e))?;
+    if at.offset > 0 {
+        let mut before = [0u8; 1];
+        lines.read_exact(&mut before).map_err(|e| failed(&e))?;
+        if before[0] != b'\n' {
+            return Ok(AtLine::NoLine);
+        }
+    }
+    let mut buf = Vec::new();
+    let n = lines.read_until(b'\n', &mut buf).map_err(|e| failed(&e))?;
+    if buf.last() != Some(&b'\n') {
+        return Ok(AtLine::NoLine);
+    }
+    let parsed = line(&buf[..n - 1])?;
+    let (mut tally, mut file_tally) = (Tally::default(), FileTally::default());
+    let (mut last_seq, mut file_seq, mut version) = (None, [None; 2], None);
+    let mut matched = Matched::default();
+    let mut sink = Sink {
+        hits: Vec::new(),
+        matches: 0,
+        bytes: 0,
+        limit: usize::MAX,
+    };
+    let mut into = Into {
+        tally: &mut tally,
+        file_tally: &mut file_tally,
+        last_seq: &mut last_seq,
+        file_seq: &mut file_seq,
+        version: &mut version,
+        rules: Rules::shipped(),
+        matched: &mut matched,
+        file: at.file.clone(),
+        inode: at.inode,
+        queue: Some(&mut sink),
+    };
+    let event = match parsed {
+        Line::Exec { start, .. } => {
+            into.judge(Subject::Start(&start), at.offset, n);
+            Evidence::Start(*start)
+        }
+        Line::File {
+            event: Some(event), ..
+        } => {
+            into.judge(Subject::File(&event), at.offset, n);
+            Evidence::File(*event)
+        }
+        _ => return Ok(AtLine::NoLine),
+    };
+    Ok(AtLine::Event(Box::new(sink.hits.pop().unwrap_or(Hit {
+        at: at.clone(),
+        event,
+        matched: Vec::new(),
+    }))))
 }
 
 /// A caller's place in the log, as `immune matches` prints it in `continue_after` and takes it

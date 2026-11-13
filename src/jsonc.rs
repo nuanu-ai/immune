@@ -49,6 +49,47 @@ pub fn read(bytes: &[u8], commas: bool) -> Result<Read, String> {
     Ok(Read { value, doubts })
 }
 
+/// Where strict JSON gives a key twice in one object, at any depth of objects, as a JSON
+/// pointer: the first such key, or `None`. A reader that keeps the last of two equal keys and
+/// one that keeps the first read two different messages, so a message read whole is refused for
+/// it. Arrays are not looked into: the one message read this way has no list, so an array in it
+/// is refused anyway. Not strict JSON is the crate's reason.
+pub fn twice(bytes: &[u8]) -> Result<Option<String>, String> {
+    let text = std::str::from_utf8(bytes).map_err(|e| format!("not UTF-8: {e}"))?;
+    let strict = ParseOptions {
+        allow_comments: false,
+        allow_trailing_commas: false,
+        allow_loose_object_property_names: false,
+        allow_missing_commas: false,
+        allow_single_quoted_strings: false,
+        allow_hexadecimal_numbers: false,
+        allow_unary_plus_numbers: false,
+        allow_bare_decimal_point_numbers: false,
+        allow_non_finite_numbers: false,
+        allow_extended_string_escapes: false,
+    };
+    let parsed = jsonc_parser::parse_to_ast(text, &CollectOptions::default(), &strict)
+        .map_err(|e| e.to_string())?;
+    fn first(v: &ast::Value, at: &str) -> Option<String> {
+        match v {
+            ast::Value::Object(o) => {
+                let mut keys = std::collections::BTreeSet::new();
+                o.properties.iter().find_map(|p| {
+                    let name = p.name.as_str();
+                    let here = format!("{at}/{}", name.replace('~', "~0").replace('/', "~1"));
+                    if keys.insert(name.to_string()) {
+                        first(&p.value, &here)
+                    } else {
+                        Some(here)
+                    }
+                })
+            }
+            _ => None,
+        }
+    }
+    Ok(parsed.value.as_ref().and_then(|v| first(v, "")))
+}
+
 fn convert(v: &ast::Value, at: &str, doubts: &mut Vec<String>) -> Result<Value, String> {
     Ok(match v {
         ast::Value::StringLit(s) => Value::String(s.value.to_string()),

@@ -334,6 +334,194 @@ impl FileAction {
         }
     }
 }
+/// A verdict, as the response layer sends it to `immune verdict`.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Verdict {
+    /// The version of this contract: 1. The core refuses another number.
+    #[prost(uint32, tag = "1")]
+    pub format: u32,
+    /// The store the response layer read the answer it judges from: its `store_id`. A verdict whose
+    /// store is not the one the command writes to is refused, since a finding's id is unique only
+    /// within one store.
+    #[prost(string, tag = "2")]
+    pub store_id: ::prost::alloc::string::String,
+    /// What the response layer concluded. Required: `UNSPECIFIED`, or a value the core does not
+    /// know, is refused.
+    #[prost(enumeration = "VerdictKind", tag = "5")]
+    #[serde(
+        serialize_with = "crate::enum_name::<VerdictKind, _>",
+        deserialize_with = "crate::enum_from_name::<VerdictKind, _>"
+    )]
+    pub kind: i32,
+    /// Why, in the response layer's words. Required, at most 1,000 Unicode scalar values.
+    #[prost(string, tag = "6")]
+    pub reason_text: ::prost::alloc::string::String,
+    /// The response layer's own reference to its case, so the person can find it there. Required,
+    /// at most 200 Unicode scalar values.
+    #[prost(string, tag = "7")]
+    pub case_text: ::prost::alloc::string::String,
+    /// How bad the response layer judges it, and how sure it is, on the core's scale: the levels of
+    /// the finding it raises. Both are required on a `suspicious` verdict and refused on a
+    /// `harmless` one; a confidence is low, medium or high.
+    #[prost(enumeration = "Level", optional, tag = "8")]
+    #[serde(
+        serialize_with = "crate::optional_enum_name::<Level, _>",
+        deserialize_with = "crate::optional_enum_from_name::<Level, _>"
+    )]
+    pub severity: ::core::option::Option<i32>,
+    #[prost(enumeration = "Level", optional, tag = "9")]
+    #[serde(
+        serialize_with = "crate::optional_enum_name::<Level, _>",
+        deserialize_with = "crate::optional_enum_from_name::<Level, _>"
+    )]
+    pub confidence: ::core::option::Option<i32>,
+    /// What it is about: a match or a finding. Required.
+    #[prost(oneof = "verdict::About", tags = "3, 4")]
+    #[serde(flatten)]
+    pub about: ::core::option::Option<verdict::About>,
+}
+/// Nested message and enum types in `Verdict`.
+pub mod verdict {
+    /// What it is about: a match or a finding. Required.
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum About {
+        /// A rule match, as `immune matches` named it.
+        #[prost(message, tag = "3")]
+        Match(super::AboutMatch),
+        /// A finding, by its id.
+        #[prost(message, tag = "4")]
+        Finding(super::AboutFinding),
+    }
+}
+/// A rule match, as `immune matches` names it: the position of the event's line and the rule's
+/// name, both as that answer printed them. The position names a line of the log under the
+/// `--system-root` the command is given, as `immune run` reads the log under its own.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AboutMatch {
+    /// The opaque token `immune matches` gave in `position`, whole.
+    #[prost(string, tag = "1")]
+    pub position: ::prost::alloc::string::String,
+    /// The rule's `name`, as `immune matches` printed it: `sigma:<id>`, `elastic:<rule_id>` or
+    /// `elastic-behaviour:<rule_id>`. A rule whose set states no level can be named like any other.
+    #[prost(string, tag = "2")]
+    pub rule: ::prost::alloc::string::String,
+}
+/// A finding, by its id as the core gave it.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AboutFinding {
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+}
+/// A verdict as the core recorded it.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RecordedVerdict {
+    /// The verdict as it was sent and kept: what it named, its kind, its reason and case, and its
+    /// levels. Its text is escaped as all text in the contract is.
+    #[prost(message, optional, tag = "1")]
+    pub verdict: ::core::option::Option<Verdict>,
+    /// When the core recorded it.
+    #[prost(int64, tag = "2")]
+    pub recorded_at: i64,
+    /// The `verdict.suspicious` finding a `suspicious` verdict was recorded in. Absent for a
+    /// `harmless` one.
+    #[prost(message, optional, tag = "3")]
+    pub finding: ::core::option::Option<FindingRef>,
+    /// It raised that occurrence of the finding: no occurrence was open or expected when it came.
+    #[prost(bool, tag = "4")]
+    pub raised: bool,
+}
+/// The verdicts about a finding or a match, as an answer gives them.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Verdicts {
+    /// How many there are: about this finding of the core, by its id; recorded in this occurrence
+    /// of a `verdict.suspicious` finding; or about this match.
+    #[prost(uint32, tag = "1")]
+    pub total: u32,
+    /// How many of them are `suspicious`.
+    #[prost(uint32, tag = "2")]
+    pub suspicious: u32,
+    /// The verdicts listed, oldest first: the first of them and the latest 20 at most. In a list of
+    /// findings, only the one that raised a `verdict.suspicious` finding's occurrence, and none for
+    /// a finding of the core.
+    #[prost(message, repeated, tag = "3")]
+    pub listed: ::prost::alloc::vec::Vec<RecordedVerdict>,
+    /// For a finding of the core: the `verdict.suspicious` finding of the same rule and thing, when
+    /// one is open or marked expected.
+    #[prost(message, optional, tag = "4")]
+    pub verdict_finding: ::core::option::Option<FindingRef>,
+}
+/// The answer to `immune verdict`: what was recorded.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct VerdictRecorded {
+    /// The version of this contract: 1. A reader that meets another number stops.
+    #[prost(uint32, tag = "1")]
+    pub format: u32,
+    /// When the answer was made.
+    #[prost(int64, tag = "2")]
+    pub answered_at: i64,
+    /// The store it was recorded in, as in every answer (`common.proto`).
+    #[prost(string, optional, tag = "3")]
+    pub store_id: ::core::option::Option<::prost::alloc::string::String>,
+    /// The verdict as recorded. When the same verdict was recorded before, the one recorded then.
+    #[prost(message, optional, tag = "4")]
+    pub recorded: ::core::option::Option<RecordedVerdict>,
+    /// The same message, equal in what it names, its kind, its reason, its case and both levels, was
+    /// recorded before and its finding is still open, or it is `harmless`; nothing was recorded now.
+    #[prost(bool, tag = "5")]
+    pub already_recorded: bool,
+}
+/// What the response layer concluded about a match or a finding. `UNSPECIFIED`, or a value the
+/// reader does not know, is read as no verdict: the core refuses one, and a reader of a recorded
+/// verdict takes it for something it cannot judge.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum VerdictKind {
+    #[serde(rename = "unspecified")]
+    Unspecified = 0,
+    /// It looked into it and says a person should see it: it raises a `verdict.suspicious` finding.
+    #[serde(rename = "suspicious")]
+    Suspicious = 1,
+    /// It looked into it and judged it harmless. This is its opinion, kept beside what it is about.
+    #[serde(rename = "harmless")]
+    Harmless = 2,
+}
+impl VerdictKind {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "VERDICT_KIND_UNSPECIFIED",
+            Self::Suspicious => "VERDICT_KIND_SUSPICIOUS",
+            Self::Harmless => "VERDICT_KIND_HARMLESS",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "VERDICT_KIND_UNSPECIFIED" => Some(Self::Unspecified),
+            "VERDICT_KIND_SUSPICIOUS" => Some(Self::Suspicious),
+            "VERDICT_KIND_HARMLESS" => Some(Self::Harmless),
+            _ => None,
+        }
+    }
+}
 /// What the store knows of one thing and of the things inside it. The same message answers for a
 /// project, a program or a machine; what differs is which thing is asked for.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -793,9 +981,15 @@ pub struct RuleMatch {
     /// The findings the match was added to, each with its state, when `raised` is `finding`. One
     /// today. A finding's state says whether the person has already answered it: a match added to a
     /// finding marked `expected`, or to one marked `seen` since, raises nothing the person sees.
-    /// `immune finding <id>` shows one.
+    /// `immune finding <id>` shows one. After them, the `verdict.suspicious` finding of the latest
+    /// `suspicious` verdict about the match, whatever `raised` is.
     #[prost(message, repeated, tag = "5")]
     pub findings: ::prost::alloc::vec::Vec<FindingRef>,
+    /// The response layer's verdicts about this match. The `verdict.suspicious` finding a
+    /// `suspicious` one went to is also among `findings`; `raised` stays what the core did. Absent
+    /// when there are none.
+    #[prost(message, optional, tag = "6")]
+    pub verdicts: ::core::option::Option<Verdicts>,
 }
 /// What was read after `after` up to `continue_after`, and what was not. Adding the stretches of
 /// answers that follow one another gives what one reading of the whole log gives.
@@ -1192,7 +1386,7 @@ pub struct Findings {
 /// A finding as a list gives it. `immune finding <id>` gives it whole.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(default)]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ListedFinding {
     #[prost(message, optional, tag = "1")]
     pub finding: ::core::option::Option<FindingRef>,
@@ -1214,6 +1408,12 @@ pub struct ListedFinding {
     /// The person's answer, absent when it has none. A finding whose answer was taken back has none.
     #[prost(message, optional, tag = "7")]
     pub answer: ::core::option::Option<Answer>,
+    /// What the response layer said about it, counted: for a finding of the core, the verdicts that
+    /// name it and its `verdict.suspicious` finding when one stands; for a `verdict.suspicious`
+    /// finding, the verdicts of this occurrence, with the one that raised it. Absent when there are
+    /// none.
+    #[prost(message, optional, tag = "8")]
+    pub verdicts: ::core::option::Option<Verdicts>,
 }
 /// The answer to `immune finding <id>`: one finding whole.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -1265,6 +1465,9 @@ pub struct Finding {
     /// As in `Findings`.
     #[prost(string, tag = "16")]
     pub answers_note: ::prost::alloc::string::String,
+    /// As in `ListedFinding`, with the first verdict and the latest 20 listed.
+    #[prost(message, optional, tag = "17")]
+    pub verdicts: ::core::option::Option<Verdicts>,
 }
 /// The person's answer to a finding.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -1303,7 +1506,7 @@ pub struct Answer {
 #[serde(default)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Evidence {
-    #[prost(oneof = "evidence::Body", tags = "1, 2, 3, 4, 5, 6")]
+    #[prost(oneof = "evidence::Body", tags = "1, 2, 3, 4, 5, 6, 7")]
     #[serde(flatten)]
     pub body: ::core::option::Option<evidence::Body>,
 }
@@ -1335,6 +1538,10 @@ pub mod evidence {
         /// `sigma:<id>` and `elastic:<rule_id>`: events a published rule matched.
         #[prost(message, tag = "6")]
         PublishedRuleMatched(super::PublishedRuleMatched),
+        /// `verdict.suspicious`: what the response layer judged suspicious. Its verdicts are in
+        /// `Finding.verdicts`.
+        #[prost(message, tag = "7")]
+        VerdictGiven(super::VerdictGiven),
     }
 }
 /// A watched place that changed. What was read of it before and after is in `rests_on`, as
@@ -1464,6 +1671,19 @@ pub struct PublishedRuleMatched {
     pub source: ::prost::alloc::string::String,
     #[prost(string, tag = "5")]
     pub licence: ::prost::alloc::string::String,
+}
+/// What a `verdict.suspicious` finding is about, beside its verdicts.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct VerdictGiven {
+    /// The rule its verdicts are about: the match's rule, or the rule of the finding they named.
+    #[prost(string, tag = "1")]
+    pub rule: ::prost::alloc::string::String,
+    /// For verdicts about matches, the events at those lines, newest first, at most five, as
+    /// `immune matches` gives an event.
+    #[prost(message, repeated, tag = "2")]
+    pub events: ::prost::alloc::vec::Vec<Event>,
 }
 /// One entry of the journal, which only grows.
 #[derive(serde::Serialize, serde::Deserialize)]

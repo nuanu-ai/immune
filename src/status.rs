@@ -970,9 +970,17 @@ pub fn result(state: Option<&State>, running: bool, path: &Path, now: i64) -> Va
         );
     } else {
         let items = &st.needs.items;
+        // The cut is taken per source, in the one order: up to `NEEDS_SHOWN` of the core's
+        // findings and up to as many of the response layer's, so that verdicts cannot push the
+        // core's findings out of the list.
+        let mut taken = [0; 2];
         let shown: Vec<Value> = items
             .iter()
-            .take(NEEDS_SHOWN)
+            .filter(|i| {
+                let source = usize::from(i.rule == Some(crate::verdict::RULE));
+                taken[source] += 1;
+                taken[source] <= NEEDS_SHOWN
+            })
             .map(findings::item_json)
             .collect();
         out.insert("needs_a_look".into(), Value::Array(shown));

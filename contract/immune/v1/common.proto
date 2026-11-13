@@ -1,7 +1,8 @@
 // What every message of the contract shares: how it is read, its conventions, and the types
 // more than one answer uses. Version 1 of the contract between the core and a program that runs
 // it. The answers are in `known.proto`, `matches.proto` and `findings.proto`; the events a rule
-// matched are in `event.proto`.
+// matched are in `event.proto`; the verdict the response layer gives back, and the answer to it,
+// are in `verdict.proto`.
 //
 // How it is read. A command of the contract prints one message on standard output: binary
 // protobuf with `--proto`, and with `--json` the same message as one line of JSON made by the
