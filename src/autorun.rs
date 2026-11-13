@@ -14,15 +14,16 @@
 //! `docs/reference.md` lists what is read.
 //!
 //! A row that is read goes through the watched places reader like any other watched file,
-//! one reading per row scoped to the machine and, for a project row, covering every checkout:
-//! its first reading on this Mac is the baseline, and an entry that appears later, in a
-//! checkout the store held or in one that is new, or whose part changes, is a finding of the
-//! rule of its trigger and scope. A row read for the first time after an upgrade is a kind
-//! read for the first time: a baseline too. A project row is not read before checkouts were
-//! ever looked for on this Mac, as when the watcher reads while the first full run is still
-//! asking for its data: knowing no checkout, that reading would be the baseline and every
-//! project the run then finds would be new. A reading speaks only for the checkouts it looked
-//! into: what the store holds about the others is kept as it was.
+//! one reading per row scoped to the machine and, for a project row, covering every checkout.
+//! What it finds in a checkout, or in the home folder, the first time a reading looks through
+//! that place in full is the place's baseline; an entry that appears later there, or in a
+//! checkout that arrived later, or whose part changes, is a finding of the rule of its trigger
+//! and scope (`apply_watched` in `main.rs`). A row read for the first time after an upgrade
+//! has no place looked through: a baseline too. A project row is not read before checkouts
+//! were ever looked for on this Mac, as when the watcher reads while the first full run is
+//! still asking for its data: it would look into no checkout and say it read every one. A
+//! reading speaks only for the checkouts it looked into: what the store holds about the
+//! others is kept as it was.
 //!
 //! How the part that counts is taken, a closed set:
 //!
@@ -605,6 +606,18 @@ impl Point {
             (_, Folders(_), _) => format!("no folder in {}", self.name()),
             _ => format!("no checkout has {}", self.name()),
         }
+    }
+
+    /// The places in the home folder a row of the home folder looks through, as ids name them:
+    /// each of its files, or the folder of a name with a `*`, which is every such file there.
+    pub fn home_places(&self) -> Vec<String> {
+        self.paths
+            .iter()
+            .map(|p| match p.rsplit_once('/') {
+                Some((folder, name)) if name.contains('*') => folder.to_string(),
+                _ => p.to_string(),
+            })
+            .collect()
     }
 
     /// The largest file of this row read.
@@ -1230,6 +1243,21 @@ fn absent(e: &std::io::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_home_row_whose_name_has_a_star_looks_through_the_folder_that_holds_such_files() {
+        // What it finds there is that folder's, so it is judged against what was read there.
+        let p = home(
+            &[".tool/a.json", ".tool/x/*.json"],
+            Bytes,
+            StartAgent,
+            "t",
+            Never,
+            (None, "low", "low"),
+            "",
+        );
+        assert_eq!(p.home_places(), [".tool/a.json", ".tool/x"]);
+    }
 
     #[test]
     fn a_task_set_to_run_on_opening_is_found_however_the_file_is_written() {

@@ -11,6 +11,7 @@ const TASKS_KIND: &str = "editor tasks set to run when a checkout's folder is op
 const OTHERS_KIND: &str = "other ways a checkout runs code by itself";
 const LIST_KIND: &str = "indicator list given as a file";
 const UNMATCHED_KIND: &str = "indicators against what this build does not match them with";
+const AUTOSTART_KIND: &str = "launch agents and daemons";
 
 /// A task file as an editor writes it, with a task set to run when the folder is opened.
 const ON_OPEN: &str = r#"{
@@ -654,6 +655,8 @@ fn a_way_read_for_the_first_time_on_a_store_that_never_read_it_is_its_baseline()
          DELETE FROM assertion WHERE kind LIKE '% of each checkout, the part that runs by itself'
               OR scope LIKE '%#/%';
          DELETE FROM coverage WHERE kind LIKE '% of each checkout, the part that runs by itself'
+              OR scope LIKE '%#/%';
+         DELETE FROM place_read WHERE kind LIKE '% of each checkout, the part that runs by itself'
               OR scope LIKE '%#/%';",
     )
     .unwrap();
@@ -703,6 +706,330 @@ fn a_run_pointed_at_one_folder_speaks_only_for_its_projects_and_the_next_run_fin
             "~/dev/blog/package.json#/scripts/preinstall"
         )]
     );
+}
+
+#[test]
+fn a_first_run_pointed_at_one_folder_is_no_baseline_for_projects_elsewhere_and_what_appears_where_it_looked_is_found()
+ {
+    // The first reading of a way code runs by itself looked into the projects of one folder
+    // only. What the projects elsewhere held was never read, so the first run that looks
+    // into them finds it as their baseline. What appears where the first run did look, and
+    // a clone that arrives after the first run that looked everywhere, are found.
+    let e = Estate::new("pointed-first");
+    let shop = e.checkout("dev/shop");
+    let blog = e.checkout("dev/blog");
+    let site = e.checkout("work/site");
+    // Beside the folder, not in it, though its name begins the same.
+    let tools = e.checkout("devtools/cli");
+    for c in [&shop, &blog, &site, &tools] {
+        package(c, "\"postinstall\": \"node setup.js\"");
+        agent(c, HOOK);
+    }
+    e.run_in(&e.home().join("dev"));
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+    package(
+        &blog,
+        "\"postinstall\": \"node setup.js\", \"preinstall\": \"node x.js\"",
+    );
+    let report = e.run();
+    assert_eq!(
+        e.found(),
+        [pair(
+            "autorun.package-install",
+            "~/dev/blog/package.json#/scripts/preinstall"
+        )]
+    );
+    // What the projects elsewhere hold is not counted as new either.
+    assert!(report.contains(", 1 new, 0 changed, 0 gone"), "{report}");
+    e.seen();
+    // A run pointed at a folder outside the home folder, never looked through before.
+    let outside = e.0.join("outside/tool");
+    put(&outside.join(".git/HEAD"), "ref: refs/heads/main\n");
+    package(&outside, "\"preinstall\": \"node x.js\"");
+    e.run_in(&e.0.join("outside"));
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+    let new = e.checkout("work/new");
+    package(&new, "\"preinstall\": \"node x.js\"");
+    e.run();
+    assert_eq!(
+        e.found(),
+        [pair(
+            "autorun.package-install",
+            "~/work/new/package.json#/scripts/preinstall"
+        )]
+    );
+}
+
+#[test]
+fn a_project_file_that_could_not_be_read_is_no_baseline_for_what_it_holds_and_a_neighbour_still_is()
+{
+    // The first reading of editor tasks could not parse one project's task file and read the
+    // other's. When the file can be read, what it holds is its baseline; a task that appears
+    // in the project that was read is found.
+    let e = Estate::new("unparsed-then-read");
+    let shop = e.checkout("dev/shop");
+    let blog = e.checkout("dev/blog");
+    put(
+        &shop.join(".vscode/tasks.json"),
+        "{ \"tasks\": [ { \"label\": } ] }",
+    );
+    put(&blog.join(".vscode/tasks.json"), ON_ASK);
+    e.run();
+    assert!(
+        e.coverage(TASKS_KIND)
+            .starts_with("partial|could not be read: dev/shop/.vscode/tasks.json ("),
+        "{}",
+        e.coverage(TASKS_KIND)
+    );
+    put(&shop.join(".vscode/tasks.json"), ON_OPEN);
+    put(&blog.join(".vscode/tasks.json"), ON_OPEN);
+    e.run();
+    assert_eq!(
+        e.found(),
+        [pair("autorun.folder-open", "~/dev/blog/.vscode/tasks.json")]
+    );
+}
+
+/// Takes every permission off a folder and gives them back when dropped.
+struct Locked(PathBuf);
+
+impl Locked {
+    fn new(path: PathBuf) -> Locked {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        Locked(path)
+    }
+}
+
+impl Drop for Locked {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+    }
+}
+
+#[test]
+fn a_watched_place_that_could_not_be_read_is_said_and_what_it_holds_when_first_read_is_its_baseline()
+ {
+    // A reading that could not list one folder of autostart items says so, and is no baseline
+    // for that folder: what it holds when it is first read is not news. It is the baseline of
+    // the folders it did read, where an item that appears later is found.
+    let e = Estate::new("unreadable-place");
+    let agents = e.home().join("Library/LaunchAgents");
+    put(&agents.join("com.invented.sync.plist"), "<plist/>\n");
+    let system = e.0.join("system/Library/LaunchAgents");
+    put(&system.join("com.invented.helper.plist"), "<plist/>\n");
+    {
+        let _locked = Locked::new(agents.clone());
+        let report = e.run();
+        assert!(
+            e.coverage(AUTOSTART_KIND)
+                .starts_with("partial|could not be read: Library/LaunchAgents ("),
+            "{}",
+            e.coverage(AUTOSTART_KIND)
+        );
+        assert!(
+            report.contains("not read in full: launch agents and daemons (partial)"),
+            "{report}"
+        );
+    }
+    put(&system.join("com.invented.other.plist"), "<plist/>\n");
+    e.run();
+    assert_eq!(
+        e.found(),
+        [pair(
+            "watched.autostart",
+            "/Library/LaunchAgents/com.invented.other.plist"
+        )]
+    );
+    assert_eq!(e.coverage(AUTOSTART_KIND), "full|");
+}
+
+#[test]
+fn a_reading_that_read_nothing_is_still_the_baseline_of_the_places_it_found_empty() {
+    // The only autostart folder that was there could not be listed, so the reading read
+    // nothing. It still looked at the folders that were not there: an item that appears in
+    // one of them is found, and counted, while what the locked folder held is its baseline.
+    let e = Estate::new("read-nothing");
+    let agents = e.home().join("Library/LaunchAgents");
+    put(&agents.join("com.invented.sync.plist"), "<plist/>\n");
+    {
+        let _locked = Locked::new(agents.clone());
+        e.run();
+        assert!(
+            e.coverage(AUTOSTART_KIND)
+                .starts_with("none|could not be read: Library/LaunchAgents ("),
+            "{}",
+            e.coverage(AUTOSTART_KIND)
+        );
+    }
+    let system = e.0.join("system/Library/LaunchAgents");
+    put(&system.join("com.invented.other.plist"), "<plist/>\n");
+    let report = e.run();
+    assert_eq!(
+        e.found(),
+        [pair(
+            "watched.autostart",
+            "/Library/LaunchAgents/com.invented.other.plist"
+        )]
+    );
+    assert!(report.contains(", 1 new, 0 changed, 0 gone"), "{report}");
+}
+
+#[test]
+fn on_a_store_from_before_places_were_recorded_what_appeared_since_its_last_reading_is_found() {
+    // The first reading by this version on an older store judges every kind as before: what
+    // appeared since the older version's last reading is found, in every kind it reads.
+    let e = Estate::new("from-before");
+    let shop = e.checkout("dev/shop");
+    package(&shop, "\"postinstall\": \"node setup.js\"");
+    put(&e.home().join(".zshrc"), "export A=1\n");
+    e.run();
+    let db = Connection::open(e.store()).unwrap();
+    db.execute_batch("DELETE FROM place_read;").unwrap();
+    drop(db);
+    put(
+        &e.home()
+            .join("Library/LaunchAgents/com.invented.sync.plist"),
+        "<plist/>\n",
+    );
+    put(&e.home().join(".zlogin"), "export B=1\n");
+    put(&shop.join(".git/hooks/pre-push"), "#!/bin/sh\n");
+    package(
+        &shop,
+        "\"postinstall\": \"node setup.js\", \"preinstall\": \"node x.js\"",
+    );
+    let new = e.checkout("dev/new");
+    package(&new, "\"preinstall\": \"node x.js\"");
+    e.run();
+    assert_eq!(
+        e.found(),
+        [
+            pair(
+                "autorun.package-install",
+                "~/dev/new/package.json#/scripts/preinstall"
+            ),
+            pair(
+                "autorun.package-install",
+                "~/dev/shop/package.json#/scripts/preinstall"
+            ),
+            pair(
+                "watched.autostart",
+                "~/Library/LaunchAgents/com.invented.sync.plist"
+            ),
+            pair("watched.git-hook", "~/dev/shop/.git/hooks/pre-push"),
+            pair("watched.shell-profile", "~/.zlogin"),
+        ]
+    );
+}
+
+#[test]
+fn hooks_first_read_when_a_checkouts_git_file_becomes_a_folder_are_its_baseline() {
+    // While `.git` is a file the hooks are kept elsewhere and were not read. When it becomes
+    // a folder, the hooks found in it are their baseline; a hook added after that is found.
+    let e = Estate::new("git-file");
+    let tree = e.home().join("dev/tree");
+    put(
+        &tree.join(".git"),
+        "gitdir: /invented/.git/worktrees/tree\n",
+    );
+    e.run();
+    std::fs::remove_file(tree.join(".git")).unwrap();
+    put(&tree.join(".git/HEAD"), "ref: refs/heads/main\n");
+    put(&tree.join(".git/hooks/pre-commit"), "#!/bin/sh\n");
+    e.run();
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+    put(&tree.join(".git/hooks/post-merge"), "#!/bin/sh\n");
+    e.run();
+    assert_eq!(
+        e.found(),
+        [pair("watched.git-hook", "~/dev/tree/.git/hooks/post-merge")]
+    );
+}
+
+/// An agent's session that worked in these folders.
+fn session(e: &Estate, name: &str, cwd: &Path) {
+    put(
+        &e.0.join(format!("sessions/{name}/session.jsonl")),
+        &format!("{}\n", serde_json::json!({ "cwd": cwd })),
+    );
+}
+
+#[test]
+fn a_project_found_through_agents_sessions_is_its_baseline_at_their_first_reading_and_one_started_later_is_found()
+ {
+    // Agents work in folders the walk of the home folder never sees. A project their sessions
+    // lead to at the first reading of the sessions was already there; one an agent starts in
+    // after that arrived later, and what runs by itself in it is found.
+    let e = Estate::new("agents-later");
+    let old = e.0.join("elsewhere/old");
+    put(&old.join(".git/HEAD"), "ref: refs/heads/main\n");
+    package(&old, "\"preinstall\": \"node x.js\"");
+    session(&e, "old", &old);
+    e.run_with(&e.home(), &e.0.join("sessions"));
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+    let new = e.0.join("elsewhere/new");
+    put(&new.join(".git/HEAD"), "ref: refs/heads/main\n");
+    package(&new, "\"preinstall\": \"node x.js\"");
+    session(&e, "new", &new);
+    e.run_with(&e.home(), &e.0.join("sessions"));
+    let found = e.found();
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].0, "autorun.package-install");
+    assert!(
+        found[0]
+            .1
+            .ends_with("elsewhere/new/package.json#/scripts/preinstall"),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn a_project_in_a_folder_the_walk_skips_is_its_baseline_when_agents_sessions_are_first_read() {
+    // The sessions could not be read at the first check. The walk went through the home
+    // folder but not into its hidden folders, so a project there that the sessions lead to
+    // later was never looked at: what it holds is its baseline.
+    let e = Estate::new("agents-hidden");
+    let hidden = e.home().join(".tools/helper");
+    put(&hidden.join(".git/HEAD"), "ref: refs/heads/main\n");
+    package(&hidden, "\"preinstall\": \"node x.js\"");
+    put(&e.0.join("sessions"), "not a folder\n");
+    e.run_with(&e.home(), &e.0.join("sessions"));
+    std::fs::remove_file(e.0.join("sessions")).unwrap();
+    session(&e, "helper", &hidden);
+    e.run_with(&e.home(), &e.0.join("sessions"));
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+    assert!(
+        !e.rows(
+            "SELECT subject FROM assertion WHERE layer = 'live'
+               AND subject LIKE '%.tools/helper/package.json#/scripts/preinstall'"
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn a_place_a_newer_version_reads_for_the_first_time_raises_nothing_about_what_it_holds() {
+    // A new row in a kind of place the store has read for long: its first reading is that
+    // place's baseline, and a change in it after that is found.
+    let e = Estate::new("new-place");
+    put(&e.home().join(".zshrc"), "export A=1\n");
+    put(&e.home().join(".bash_login"), "export B=1\n");
+    e.run();
+    // As a version that did not read ~/.bash_login left the store.
+    let db = Connection::open(e.store()).unwrap();
+    db.execute_batch(
+        "DELETE FROM assertion WHERE subject LIKE '%/.bash_login' OR scope LIKE '%/.bash_login';
+         DELETE FROM coverage WHERE scope LIKE '%/.bash_login';
+         DELETE FROM place_read WHERE place = '.bash_login';",
+    )
+    .unwrap();
+    drop(db);
+    e.run();
+    assert!(e.rules().is_empty(), "{:?}", e.findings(false));
+    put(&e.home().join(".bash_login"), "export B=2\n");
+    e.run();
+    assert_eq!(e.found(), [pair("watched.shell-profile", "~/.bash_login")]);
 }
 
 #[test]
@@ -930,7 +1257,8 @@ fn a_place_in_the_home_folder_read_for_the_first_time_on_an_existing_store_is_it
          DELETE FROM assertion WHERE kind LIKE '~/%' OR scope LIKE '%#/%'
               OR scope LIKE '%/.vscode/extensions/%';
          DELETE FROM coverage WHERE kind LIKE '~/%' OR kind LIKE 'other places in the home folder%'
-              OR scope LIKE '%#/%' OR scope LIKE '%/.vscode/extensions/%';",
+              OR scope LIKE '%#/%' OR scope LIKE '%/.vscode/extensions/%';
+         DELETE FROM place_read WHERE kind LIKE '~/%';",
     )
     .unwrap();
     drop(db);

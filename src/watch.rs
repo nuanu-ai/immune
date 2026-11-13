@@ -808,7 +808,6 @@ fn read_held(
         run_id: &run_id,
         at,
         machine: &machine,
-        events: Vec::new(),
         notes: Vec::new(),
         readers: 0,
     };

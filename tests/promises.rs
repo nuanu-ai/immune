@@ -7738,6 +7738,15 @@ fn a_checkout_that_is_gone_takes_its_hooks_with_it() {
             format!("removed|{shop_id}|holds_autorun_point|.git/hooks|NULL"),
         ]
     );
+    // Both are changes: neither is journaled as a first reading.
+    assert_eq!(
+        rows(
+            &w.store(),
+            "SELECT count(*) FROM journal WHERE text = 'first reading of its place'
+               AND run_id = (SELECT run_id FROM journal ORDER BY seq DESC LIMIT 1)"
+        ),
+        ["0"]
+    );
     assert!(
         !rows(&w.store(), LIVE)
             .iter()
@@ -7763,7 +7772,8 @@ fn the_first_reading_of_watched_places_counts_nothing_as_new() {
         .unwrap()
         .execute_batch(
             "DELETE FROM coverage WHERE reader = 'watched-places';
-             DELETE FROM assertion WHERE reader = 'watched-places';",
+             DELETE FROM assertion WHERE reader = 'watched-places';
+             DELETE FROM place_read WHERE reader = 'watched-places';",
         )
         .unwrap();
     put(&app, ".git/hooks/pre-commit", "#!/bin/sh\n");

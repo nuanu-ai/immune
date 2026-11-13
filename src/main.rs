@@ -2968,7 +2968,6 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
         run_id: &run_id,
         at,
         machine: &machine,
-        events: Vec::new(),
         notes: Vec::new(),
         readers: 0,
     };
@@ -3032,7 +3031,6 @@ struct Run<'a> {
     at: i64,
     /// This machine's id.
     machine: &'a str,
-    events: Vec<Event>,
     /// Sentences for the end of the report line: inputs that were not there.
     notes: Vec<String>,
     /// Readers that had input to read.
@@ -3063,18 +3061,36 @@ impl Run<'_> {
         gap: &Gap,
         statements: &[(&str, &Statement)],
     ) -> rusqlite::Result<()> {
+        self.apply_judged(r, completeness, reason, gap, statements, &mut |_| Ok(true))?;
+        Ok(())
+    }
+
+    /// The same, judging each difference before it is journaled: one that `change` says is
+    /// not a change is its place's first reading, journaled as such. Returns the changes.
+    fn apply_judged(
+        &mut self,
+        r: &Reading,
+        completeness: &str,
+        reason: Option<&str>,
+        gap: &Gap,
+        statements: &[(&str, &Statement)],
+        change: &mut dyn FnMut(&Event) -> rusqlite::Result<bool>,
+    ) -> rusqlite::Result<Vec<Event>> {
         if completeness != "none" {
             for (basis, s) in statements {
                 store::put_draft(self.tx, r, basis, s)?;
             }
         }
         store::put_coverage(self.tx, r, completeness, reason, gap)?;
-        let events = lifecycle::promote(self.tx, r, completeness)?;
-        for e in &events {
-            store::journal_event(self.tx, r, e)?;
+        let mut changes = Vec::new();
+        for e in lifecycle::promote(self.tx, r, completeness)? {
+            let is_change = change(&e)?;
+            store::journal_event(self.tx, r, &e, !is_change)?;
+            if is_change {
+                changes.push(e);
+            }
         }
-        self.events.extend(events);
-        Ok(())
+        Ok(changes)
     }
 
     /// Saves raw input unless it equals the last saved copy of the same input, and returns
@@ -3351,6 +3367,10 @@ fn read_checkouts(
         &gap,
         &statements,
     )?;
+    // The folder the walk went through: a checkout that appears in it later arrived later
+    // (`arrived`). A folder in it that could not be listed does not keep it from counting:
+    // otherwise one such folder, there for good, would make every later clone a baseline.
+    store::record_places(run.tx, &reading, &[checkouts::rel(home, root)])?;
     Ok(Some(walk.checkouts))
 }
 
@@ -3898,6 +3918,9 @@ struct Placed {
     coverage: Option<(&'static str, Option<String>)>,
     /// What the reading held about checkouts it did not look into, made again as it was.
     kept: Vec<Statement>,
+    /// The places it looks at, by their paths as ids name them: a watched place, or each
+    /// checkout for a reading over checkouts.
+    places: Vec<String>,
 }
 
 /// A reading of this machine over its checkouts speaks only for the checkouts it looked into.
@@ -4045,6 +4068,7 @@ fn read_watched(
             git_file: false,
             coverage: None,
             kept: Vec::new(),
+            places: watched::machine_places(kind),
         });
     }
     for c in checkouts {
@@ -4054,7 +4078,8 @@ fn read_watched(
             watched::Hooks::Looked(look) => (look, false),
         };
         // Every checkout is read, those with no hooks too: the first hook planted in a
-        // checkout the store already held is then new, not the baseline.
+        // checkout the store already held is then new, not the baseline. Hooks kept elsewhere
+        // were not looked at.
         placed.push(Placed {
             scope,
             watched_as: watched::HOOK,
@@ -4063,16 +4088,17 @@ fn read_watched(
             git_file,
             coverage: None,
             kept: Vec::new(),
+            places: watched::checkout_places(&c.rel),
         });
     }
     // Each way code runs by itself that is read here, in every checkout or in the home
-    // folder, as one reading of this machine: its first is the baseline, and a checkout that
-    // arrives later with such a part is new, which is what its trigger's rule is for. A
-    // reading of the checkouts is of those it was given: before checkouts were ever looked
-    // for on this machine it would know none and become the baseline, and every project the
-    // first full run finds would be new. That happens when the watcher reads while the first
-    // run is still asking for its data, so it is not read then; and what is held about a
-    // checkout not looked into is kept as it was.
+    // folder, as one reading of this machine. Its places are each checkout it looks into, or
+    // the row's files in the home folder: what appears in one an earlier reading looked
+    // through is new, and so is what a checkout that arrived later holds, which is what its
+    // trigger's rule is for (`arrived`). Before checkouts were ever looked for on this
+    // machine a reading over them would look into none and say that it read every checkout,
+    // so it is not made then; and what is held about a checkout not looked into is kept as
+    // it was.
     let visited = Visited::of(run.tx, &machine, checkouts)?;
     for point in autorun::POINTS.iter().filter(|p| p.read_here()) {
         let (looked, kept) = match point.scope {
@@ -4100,6 +4126,11 @@ fn read_watched(
                 )
             }
         };
+        let places = if point.scope != autorun::Scope::Home {
+            checkouts.iter().map(|c| c.rel.clone()).collect()
+        } else {
+            point.home_places()
+        };
         placed.push(Placed {
             scope: machine.clone(),
             watched_as: point.watched_as().unwrap_or_default(),
@@ -4108,6 +4139,7 @@ fn read_watched(
             look: looked.look,
             git_file: false,
             kept,
+            places,
         });
     }
 
@@ -4201,6 +4233,15 @@ fn read_watched(
         };
         let prefix = format!("file:{machine}/");
         let path_of = |id: &str| id.strip_prefix(&prefix).unwrap_or(id).to_string();
+        let looked = if p.git_file {
+            Vec::new()
+        } else {
+            watched::looked_through(&p.places, &p.look)
+        };
+        let judged = Judged::Entries {
+            places: &p.places,
+            looked: &looked,
+        };
         let mut new = BTreeSet::new();
         for (kind, subject, predicate, old) in apply_watched(
             run,
@@ -4209,6 +4250,7 @@ fn read_watched(
             reason.as_deref(),
             &gap,
             &statements,
+            judged,
         )? {
             match (kind, predicate.as_str()) {
                 ("added", "watched_as") => {
@@ -4305,7 +4347,15 @@ fn read_watched(
             // nothing was known before, and still named.
             let first_read = completeness == "full"
                 && store::only_failed_before(run.tx, watched::READER, &id, watched::CONTENT)?;
-            let events = apply_watched(run, &reading, completeness, reason, &gap, &statements)?;
+            let events = apply_watched(
+                run,
+                &reading,
+                completeness,
+                reason,
+                &gap,
+                &statements,
+                Judged::Content,
+            )?;
             if first_read {
                 observe(findings::FIRST_READ, e.watched_as, &id);
                 rows.push(vec![
@@ -4360,9 +4410,25 @@ fn not_full_words(completeness: &str) -> &'static str {
     }
 }
 
-/// Applies one reading of the watched places reader and returns its events as kind,
-/// subject, predicate and old value. A reading with no earlier one that read something is
-/// the baseline: its events are journaled and counted as nothing new.
+/// How the differences of one reading of the watched places reader are judged.
+enum Judged<'a> {
+    /// A reading of which entries a kind of place holds. Something that appears is a change
+    /// only in a place an earlier reading looked through in full, or in a checkout that
+    /// arrived later; anywhere else it is that place's baseline. `places` are the places the
+    /// reading looks at and `looked` those it looked through in full.
+    Entries {
+        places: &'a [String],
+        looked: &'a [String],
+    },
+    /// A reading of one file's content, scoped to the file: the first that read something is
+    /// its baseline.
+    Content,
+}
+
+/// Applies one reading of the watched places reader and returns its changes as kind,
+/// subject, predicate and old value. What is not a change, as `Judged` says, is journaled as
+/// its place's first reading and counted as nothing new. Something that is gone is always a
+/// change: an earlier reading recorded it, so it looked where it was.
 fn apply_watched(
     run: &mut Run,
     r: &Reading,
@@ -4370,25 +4436,92 @@ fn apply_watched(
     reason: Option<&str>,
     gap: &Gap,
     statements: &[Statement],
+    judged: Judged,
 ) -> Result<Vec<Change>, Box<dyn Error>> {
-    let baseline = !store::read_before(run.tx, r.reader, r.scope, r.kind)?;
-    let before = run.events.len();
-    run.apply(r, watched::BASIS, completeness, reason, gap, statements)?;
-    if baseline {
-        run.events.truncate(before);
-        return Ok(Vec::new());
-    }
-    Ok(run.events[before..]
-        .iter()
-        .map(|e| {
-            (
-                e.kind,
-                e.subject.clone(),
-                e.predicate.clone(),
-                e.old.clone(),
-            )
-        })
+    let read_before = store::read_before(run.tx, r.reader, r.scope, r.kind, r.run_id)?;
+    let with_basis: Vec<(&str, &Statement)> =
+        statements.iter().map(|s| (watched::BASIS, s)).collect();
+    let tx = run.tx;
+    let events = match judged {
+        Judged::Content => {
+            run.apply_judged(r, completeness, reason, gap, &with_basis, &mut |_| {
+                Ok(read_before)
+            })?
+        }
+        Judged::Entries { places, looked } => {
+            let seen = store::places_read(tx, r)?;
+            let prefix = format!("file:{}/", run.machine);
+            let events = run.apply_judged(r, completeness, reason, gap, &with_basis, &mut |e| {
+                if e.kind != "added" {
+                    return Ok(true);
+                }
+                // A store whose readings recorded no place is judged as it was before.
+                let Some(seen) = &seen else {
+                    return Ok(read_before);
+                };
+                let path = e.subject.strip_prefix(&prefix).unwrap_or(&e.subject);
+                // Every entry is in a place the reading looks at; one that were not would be
+                // a place of its own, never looked through.
+                let place = watched::place_of(path, places).unwrap_or(path);
+                Ok(seen.contains(place) || arrived(tx, r, place)?)
+            })?;
+            // A reading that read nothing still looked through the places that are not there.
+            store::record_places(tx, r, looked)?;
+            events
+        }
+    };
+    Ok(events
+        .into_iter()
+        .map(|e| (e.kind, e.subject, e.predicate, e.old))
         .collect())
+}
+
+/// Whether `rel`, a place no earlier reading of `r`'s kind looked through, is a checkout that
+/// arrived later: it is new to the store in this run, and a reader that found it had looked
+/// where it is in an earlier run, so what it holds was not there then. The walk for
+/// checkouts looked through the folder it went through; the agents' sessions are read whole.
+/// A checkout that was there and that no reading could have seen, such as one outside the
+/// folder a run was pointed at, or any before checkouts were first looked for, did not
+/// arrive: what it holds is its baseline.
+fn arrived(tx: &rusqlite::Transaction, r: &Reading, rel: &str) -> rusqlite::Result<bool> {
+    let checkout = format!("checkout:{}/{rel}", r.scope);
+    if !store::new_in_run(tx, &checkout, r.run_id)? {
+        return Ok(false);
+    }
+    if store::located_by(tx, &checkout, agent_folders::READER)?
+        && store::read_before(
+            tx,
+            agent_folders::READER,
+            r.scope,
+            agent_folders::KIND,
+            r.run_id,
+        )?
+    {
+        return Ok(true);
+    }
+    if !store::located_by(tx, &checkout, checkouts::READER)? {
+        return Ok(false);
+    }
+    let walk = Reading {
+        reader: checkouts::READER,
+        kind: checkouts::KIND,
+        ..*r
+    };
+    Ok(match store::places_read(tx, &walk)? {
+        // A store whose walks recorded no folder: any earlier walk counts, as it did.
+        None => store::read_before(tx, checkouts::READER, r.scope, checkouts::KIND, r.run_id)?,
+        Some(folders) => folders.iter().any(|f| within(rel, f)),
+    })
+}
+
+/// Whether a checkout, `rel` as ids name it, is in the folder `folder` a walk went through:
+/// `.` is the home folder, which holds every path not written from `/`.
+fn within(rel: &str, folder: &str) -> bool {
+    if folder == "." {
+        return !rel.starts_with('/');
+    }
+    rel.strip_prefix(folder)
+        .is_some_and(|rest| rest.starts_with('/'))
 }
 
 /// One sentence about watched places for the report line. Paths are never in it.
@@ -4527,13 +4660,24 @@ fn read_other_autoruns(
         at,
         observed_at: at,
     };
-    run.apply(
-        &on_machine(autorun::PRESENT_KIND),
-        watched::BASIS,
+    // Which ways each checkout holds is not a finding; its first reading is journaled as one.
+    let present_kind = on_machine(autorun::PRESENT_KIND);
+    let read_before = store::read_before(
+        run.tx,
+        present_kind.reader,
+        present_kind.scope,
+        present_kind.kind,
+        present_kind.run_id,
+    )?;
+    let with_basis: Vec<(&str, &Statement)> =
+        statements.iter().map(|s| (watched::BASIS, s)).collect();
+    run.apply_judged(
+        &present_kind,
         "full",
         None,
         &Gap::default(),
-        &statements,
+        &with_basis,
+        &mut |_| Ok(read_before),
     )?;
     let (completeness, reason, gap) = if present.is_empty() {
         ("full", None, Gap::default())
