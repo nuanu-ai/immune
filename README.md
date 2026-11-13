@@ -120,7 +120,7 @@ flowchart TD
 
 Each reader writes statements with where it read them and how the source knows: observed (the thing itself), declared (a description tooling enforces, such as a lockfile) or mentioned (text). The parts talk to each other only through the store. A run writes a draft, and only a reading that covered a place in full can retract what it said before about that place. Every difference between runs is an entry in the journal, and a retracted statement is kept for later investigation. The app has no logic of its own. It shows what the commands return, so you and your agent see the same thing.
 
-More detail: [how it works](docs/how-it-works.md), [what is read and every command](docs/reference.md), [threat data and matching](docs/threats.md), [the collector](docs/event-level.md).
+More detail: [how it works](docs/how-it-works.md), [what is read and every command](docs/reference.md), [threat data and matching](docs/threats.md), [the collector](docs/event-level.md), [attack simulations](docs/atomic.md).
 
 ## For AI agents
 
