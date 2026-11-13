@@ -281,6 +281,8 @@ pub struct Source {
     pub name: &'static str,
     /// Who publishes the set, for a person.
     pub publisher: &'static str,
+    /// The set's name in words, as a finding says to a person where its rule came from.
+    pub set: &'static str,
     /// The repository, and the commit the rules were taken at.
     pub url: &'static str,
     pub commit: &'static str,
@@ -288,6 +290,8 @@ pub struct Source {
     pub commit_date: Option<&'static str>,
     /// The licence the rule files carry, by its SPDX identifier.
     pub licence: &'static str,
+    /// The same licence by its name in words.
+    pub licence_name: &'static str,
     /// The folder the shipped files are in, relative to the repository, with their NOTICE.
     pub folder: &'static str,
     /// Every rule file shipped: its path under `folder` and its text.
@@ -315,10 +319,12 @@ impl std::fmt::Debug for Source {
 pub static SIGMAHQ: Source = Source {
     name: "sigma",
     publisher: "SigmaHQ",
+    set: "SigmaHQ's rule set",
     url: SOURCE,
     commit: COMMIT,
     commit_date: Some(COMMIT_DATE),
     licence: LICENCE,
+    licence_name: "Detection Rule License 1.1",
     folder: FOLDER,
     files: SHIPPED,
     schema: &SIGMA_TAXONOMY,
@@ -331,10 +337,12 @@ pub static SIGMAHQ: Source = Source {
 pub static ELASTIC: Source = Source {
     name: "elastic",
     publisher: "Elastic",
+    set: "Elastic's detection rules",
     url: "https://github.com/elastic/detection-rules",
     commit: "032ac5ecb0b4035a12b03dd25164e2fbcfae9fad",
     commit_date: None,
     licence: "Elastic-2.0",
+    licence_name: "Elastic License 2.0",
     folder: "rules/elastic",
     files: ELASTIC_SHIPPED,
     schema: &ECS,

@@ -960,11 +960,11 @@ fn published_rule_lines(d: &serde_json::Value) -> Vec<String> {
     let s = |v: &serde_json::Value| v.as_str().unwrap_or("unknown").to_string();
     let files = d["events"] == sigma::FILE_CATEGORY;
     let mut lines = vec![format!(
-        "Rule: {}, by {}; from {} under the licence {}, {}.",
+        "Rule: {}, by {}; from {} under the {}, {}.",
         s(&d["title_text"]),
         s(&d["author_text"]),
-        s(&d["source"]),
-        s(&d["licence"]),
+        s(&d["source_name"]),
+        s(&d["licence_name"]),
         s(&d["file"])
     )];
     let (one, many) = if files {
