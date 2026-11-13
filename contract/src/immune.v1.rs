@@ -385,7 +385,10 @@ pub struct Known {
     ///    aside by the owner`, completeness `none`, the reason naming what the owner said and the day;
     /// - a path that no reading looking for things of its kind looks at, answered `unknown`:
     ///    `immune`, `places the readings that find projects look in` (or programs), completeness
-    ///    `none`.
+    ///    `none`;
+    /// - a program the store never heard of (`immune program`, presence `unknown`): `immune`,
+    ///    `software of package managers this version does not look for`, completeness `none`, cause
+    ///    `no_reader`, the reason naming what this version does not read or find.
     #[prost(message, repeated, tag = "8")]
     pub coverage: ::prost::alloc::vec::Vec<Coverage>,
     /// The findings about the thing, about its parts whether what was read of them is in force or

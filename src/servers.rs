@@ -23,11 +23,22 @@ pub const KERNEL_PACKAGE: &str = "running kernel package";
 pub const CONTAINERS: &str = "containers";
 /// Every `*_VERSION` variable of a running container: the sweep prints all of them.
 pub const VARIABLES: &str = "container version variables";
-/// The WordPress core version of a container that runs a WordPress image.
-pub const WORDPRESS: &str = "wordpress core version";
-/// What is inside a container as a whole. Only the two kinds above are read, so this
-/// reading is never full and makes no assertions: nothing may claim a container was read.
+/// What is inside a container as a whole. Only the kind above is read, so this reading is
+/// never full and makes no assertions: nothing may claim a container was read.
 pub const CONTENTS: &str = "container contents";
+/// Kinds an earlier version read and this one does not, with why. What an earlier version
+/// read of one stays live until a run retracts it, once, with this reason: a fact nothing
+/// reads any more must not look as if it were still read.
+///
+/// The WordPress core version was read from a file inside each container whose image name
+/// held `wordpress`, by a command run inside it: a rule for one product, whose result nothing
+/// judged. A container of WordPress's own image gives its version as `WORDPRESS_VERSION`, read
+/// with every other version variable. What that does not follow is a core updated in place
+/// inside the container.
+pub const RETIRED: [(&str, &str); 1] = [(
+    "wordpress core version",
+    "the probe no longer reads WordPress's version file inside a container; a container's WORDPRESS_VERSION variable is read with its other version variables",
+)];
 /// The names and addresses the server gives itself. A file from a probe that did not print
 /// them has no such reading and links to nothing.
 pub const IDENTITY: &str = "own names and addresses";
@@ -47,7 +58,7 @@ const OLDER_PROBE: &str = "the file came from an older probe, which did not read
 const DPKG: &str = "dpkg_with_source";
 const DPKG_OLD: &str = "dpkg";
 const NO_RIGHTS: &str = "no rights to list containers";
-const CONTENTS_PARTIAL: &str = "only version variables and the WordPress core version are read";
+const CONTENTS_PARTIAL: &str = "only version variables are read";
 /// What the probe prints when docker refused, and when there is no docker.
 const REFUSED: &str = "no access";
 const NOT_INSTALLED: &str = "docker not installed";
@@ -59,8 +70,7 @@ pub const VISIT: &str = "sweep visit";
 /// What this build has no reader for on a server, in its own words.
 pub const PACKAGE_MANAGER: &str = "package manager";
 pub const OTHER_MANAGER: &str = "a package manager the probe does not look for";
-pub const CONTAINER_CONTENTS: &str =
-    "container contents other than version variables and the WordPress core version";
+pub const CONTAINER_CONTENTS: &str = "container contents other than version variables";
 
 /// What the sweep left for one server: its reading, its failed visit, or both.
 pub struct Input {
@@ -454,7 +464,6 @@ pub fn readings(machine: &str, text: &str, raw_file: &str) -> Vec<Outcome> {
     let variables = s
         .contains_key("container_versions")
         .then(|| pairs(&s, "container_versions"));
-    let wordpress = s.get("wp").map(Vec::as_slice).unwrap_or_default();
     for (container, name) in &containers {
         let (container, name) = (container.as_str(), *name);
         match &variables {
@@ -480,29 +489,6 @@ pub fn readings(machine: &str, text: &str, raw_file: &str) -> Vec<Outcome> {
                 }
                 out.push(full(container, VARIABLES, st));
             }
-        }
-        // The probe looks for the WordPress version only in WordPress containers.
-        for (n, line) in wordpress {
-            let (row, value) = line.split_once('\t').unwrap_or((line, ""));
-            if row.trim() != name {
-                continue;
-            }
-            // The probe prints `wp_version=<version>`; a bare version is accepted too.
-            let version = value.split_once('=').map_or(value, |(_, v)| v).trim();
-            if version.is_empty() {
-                out.push(not_read(
-                    container,
-                    WORDPRESS,
-                    Cause::NotGiven,
-                    "the WordPress version file was not found",
-                ));
-                continue;
-            }
-            let component = format!("component:{container}/wordpress-core/wordpress");
-            let mut st = Vec::new();
-            say(&mut st, &component, "part_of", container, *n);
-            say(&mut st, &component, "has_version", version, *n);
-            out.push(full(container, WORDPRESS, st));
         }
         out.push(Outcome {
             scope: container.to_string(),

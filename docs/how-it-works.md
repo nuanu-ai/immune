@@ -92,14 +92,14 @@ Coverage is a statement about a reading, not about the world. Every reader write
 | `completeness` | `full`, `partial` or `none` |
 | `reason` | required for `partial` and `none`. On `full` it is an optional note |
 
-A reader first finds out whether its source exists on this Mac. A source that is not there, such as Homebrew on a Mac without it, is not applicable: a full reading that found nothing, with that note, and not a failure. A source that is there and cannot be read is a failed reading, `none` with its reason. A source Immune has no reader for, such as a `requirements.txt` beside the lockfiles it does read, is named as having no reader. These three stay apart all the way to the app.
+A reader first finds out whether its source exists on this Mac. A source that is not there, such as Homebrew on a Mac without it, is not applicable: a full reading that found nothing, with that note, and not a failure. A source that is there and cannot be read is a failed reading, `none` with its reason. A source that is there and says it is not connected, such as Tailscale switched off or waiting for a login, gives nothing for now: `none` with the cause `not_given`, so what was known from it stays, and it is not a failure. Its documented states are a table, each with fixed words; a state in which it cannot be read this time, or one this version does not know, is a failed reading. A source Immune has no reader for, such as a `requirements.txt` beside the lockfiles it does read, or software installed with MacPorts or Nix, is named as having no reader. These four stay apart all the way to the app.
 
 Two rules are invariants, each with its test:
 
 - "Does not affect me, known for certain" needs `full` coverage of that scope and kind, and fresh.
 - A missing reading is not evidence of absence. A reader that could not read a scope retracts nothing in it.
 
-`immune status` turns coverage into what a person reads: one item per cause in `not_covered`, never one per machine or file, each saying who can act on it. `you` means the user can, for a server not swept or a file whose permissions keep Immune out. `nothing` means it is a limit of this version or something tried again at every check. A gap in coverage is never counted as something that needs a look. Agents also get the detail in `coverage`, `cannot_judge` and `no_reader_for`.
+`immune status` turns coverage into what a person reads: one item per cause in `not_covered`, never one per machine or file, each saying who can act on it. `you` means the user can, for a server not swept, a file whose permissions keep Immune out, or a network that blocks a download. `nothing` means it is a limit of this version or something tried again at every check. A gap in coverage is never counted as something that needs a look. Agents also get the detail in `coverage`, `cannot_judge` and `no_reader_for`.
 
 ## Lifecycle
 
@@ -110,6 +110,8 @@ Assertions live in three layers: draft, live and retracted.
 - Under partial coverage new assertions still become live and nothing is retracted. Under no coverage nothing changes.
 - Each difference is an event, `added`, `changed` or `removed`, counted per subject and predicate, so a new version of a component is one `changed` event.
 - When a checkout or a container is gone, everything read inside it is retracted with it, as one `removed` event.
+- A kind an earlier version read and this one does not has no reading any more. Once per scope, its facts are closed by a journal entry of their own, `retired`, with the reason, and its reading becomes `none` with no reader. It is never told as removed or gone, and the run's line says it once.
+- Freshness is judged by one rule: a time more than five minutes ahead of this Mac's clock has no age, and what has no age is never fresh.
 - Retracted assertions are kept. An investigation looks back.
 
 What a reading finds is judged by what earlier readings can show. The unit is the smallest thing one failure can hit: one file that is read, or the listing of one folder. The store records each unit with the run that first read it. A file or a folder that fails is its own unit, and its neighbours are judged as usual.

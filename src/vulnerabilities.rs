@@ -370,14 +370,25 @@ pub fn freshness(conn: &Connection, now: i64) -> rusqlite::Result<Vec<Fresh>> {
             [feed.source],
             |r| r.get(0),
         )?;
-        let not_current = match reading {
+        // The newest change is the source's time, compared as text in the same form.
+        let ahead = crate::view::iso(now + crate::store::AHEAD_ALLOWED);
+        let not_current = match reading.map(|(_, at)| (at, crate::store::age(at, now))) {
             None => Some("it has never been read".to_string()),
-            Some((_, at)) if now - at > feed.current_for => Some(format!(
+            Some((at, None)) => Some(format!(
+                "it was last read {}, and {}",
+                crate::view::utc(at),
+                crate::store::AHEAD
+            )),
+            Some((at, Some(age))) if age > feed.current_for => Some(format!(
                 "it was last read {}, more than {} hours before this check",
                 crate::view::utc(at),
                 feed.current_for / 3600
             )),
             _ => match newest {
+                Some(t) if t.as_str() > ahead.as_str() => Some(format!(
+                    "its newest record changed {t}, and {}",
+                    crate::store::AHEAD
+                )),
                 Some(t) if t.as_str() >= crate::view::iso(now - NEWEST_CHANGE).as_str() => None,
                 Some(t) => Some(format!(
                     "its newest record changed {t}, more than 7 days before this check"
@@ -1105,7 +1116,28 @@ pub struct Totals {
     pub catalogue_compared: Vec<&'static str>,
 }
 
-pub fn totals(conn: &Connection) -> rusqlite::Result<Totals> {
+/// The feeds whose data is not current at `now`, each with why: an answer of "not affected"
+/// that rests on one is "don't know" when it is asked, whatever the check that wrote it found.
+pub fn stale_at(conn: &Connection, now: i64) -> rusqlite::Result<HashMap<&'static str, String>> {
+    Ok(freshness(conn, now)?
+        .into_iter()
+        .filter_map(|f| f.not_current.map(|why| (f.feed.source, why)))
+        .collect())
+}
+
+/// An answer as it stands when asked: "not affected" whose feed is not current at that time
+/// becomes "don't know" because of the data (`stale_at`).
+fn judged_now<'a>(answer: &'a str, reason: &'a str, stale: bool) -> (&'a str, &'a str) {
+    if answer == "not_affected" && stale {
+        ("unknown", FEED_NOT_READ)
+    } else {
+        (answer, reason)
+    }
+}
+
+/// The totals as they stand at `now`: the answers the last check wrote, with "not affected"
+/// counted as "don't know" where its data is not current at `now`.
+pub fn totals(conn: &Connection, now: i64) -> rusqlite::Result<Totals> {
     if !has_tables(conn)? {
         return Ok(Totals::default());
     }
@@ -1118,12 +1150,30 @@ pub fn totals(conn: &Connection) -> rusqlite::Result<Totals> {
         catalogue_compared: catalogue_compared(conn)?,
         ..Totals::default()
     };
-    let counts: Vec<(String, String, i64)> = conn
+    let stale = stale_at(conn, now)?;
+    let stale_eco: HashSet<&str> = FEEDS
+        .iter()
+        .filter(|f| stale.contains_key(f.source))
+        .map(|f| f.ecosystem)
+        .collect();
+    let mut counts: Vec<(String, String, i64)> = Vec::new();
+    let rows: Vec<(String, String, String, i64)> = conn
         .prepare(
-            "SELECT answer, reason, COUNT(*) FROM vulnerability_answer GROUP BY answer, reason",
+            "SELECT answer, reason, source, COUNT(*) FROM vulnerability_answer
+             GROUP BY answer, reason, source",
         )?
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
         .collect::<rusqlite::Result<_>>()?;
+    for (answer, reason, source, n) in &rows {
+        let (answer, reason) = judged_now(answer, reason, stale.contains_key(source.as_str()));
+        match counts
+            .iter_mut()
+            .find(|(a, r, _)| a == answer && r == reason)
+        {
+            Some(c) => c.2 += n,
+            None => counts.push((answer.to_string(), reason.to_string(), *n)),
+        }
+    }
     for (answer, _, n) in &counts {
         let n = *n as usize;
         match answer.as_str() {
@@ -1158,11 +1208,27 @@ pub fn totals(conn: &Connection) -> rusqlite::Result<Totals> {
     // A package counts once, under the first reason of its "don't know" answers.
     let unknown: Vec<(String, String, String, String)> = conn
         .prepare(
-            "SELECT checkout, ecosystem, package, reason FROM vulnerability_answer
-             WHERE answer = 'unknown'",
+            "SELECT checkout, ecosystem, package, answer, reason, source FROM vulnerability_answer
+             WHERE answer != 'affected'",
         )?
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
-        .collect::<rusqlite::Result<_>>()?;
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .filter_map(|(c, e, p, answer, reason, source)| {
+            let (answer, reason) =
+                judged_now(&answer, &reason, stale.contains_key(source.as_str()));
+            (answer == "unknown").then(|| (c, e, p, reason.to_string()))
+        })
+        .collect();
     let rank_of = |reason: &str| {
         REASONS
             .iter()
@@ -1179,13 +1245,23 @@ pub fn totals(conn: &Connection) -> rusqlite::Result<Totals> {
     // so every package of such a place is "don't know" with the feed's reason. One that no
     // record held names has no answer of its own and is one more "don't know" answer here,
     // standing for the records the data lacks.
-    let stale: HashSet<(String, String)> = conn
-        .prepare("SELECT checkout, ecosystem FROM vulnerability_place WHERE feed = 'not_current'")?
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .collect::<rusqlite::Result<_>>()?;
+    let stale_places: HashSet<(String, String)> = conn
+        .prepare("SELECT checkout, ecosystem, feed FROM vulnerability_place")?
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|(_, e, feed)| feed == "not_current" || stale_eco.contains(e.as_str()))
+        .map(|(c, e, _)| (c, e))
+        .collect();
     let mut unanswered = 0;
     for (c, e, p) in held_packages(conn)?.into_keys() {
-        if !stale.contains(&(c.clone(), e.to_string())) {
+        if !stale_places.contains(&(c.clone(), e.to_string())) {
             continue;
         }
         if let std::collections::btree_map::Entry::Vacant(slot) = first.entry((c, e.to_string(), p))
@@ -1330,7 +1406,9 @@ pub fn at_shown(at: &str) -> String {
     }
 }
 
-fn affecting_json(a: &Affecting, this: Option<&crate::findings::This>) -> Value {
+/// `exploited` is unknown (null) while the list of vulnerabilities used in attacks was never read:
+/// a record not on a list never read is not known to be off it.
+fn affecting_json(a: &Affecting, this: Option<&crate::findings::This>, listed: bool) -> Value {
     let releases: Vec<Value> = a
         .affected()
         .iter()
@@ -1343,7 +1421,7 @@ fn affecting_json(a: &Affecting, this: Option<&crate::findings::This>) -> Value 
         "modified": a.modified,
         "kind": a.kind,
         "label": a.label,
-        "exploited": a.exploited,
+        "exploited": if a.exploited || listed { json!(a.exploited) } else { Value::Null },
         "project_text": crate::status::text(&crate::findings::place(&a.checkout, this)),
         "ecosystem": a.ecosystem,
         "package_text": crate::status::text(&a.package),
@@ -1401,7 +1479,7 @@ fn feeds_json(conn: &Connection, now: i64) -> rusqlite::Result<Value> {
 /// The status's part about known vulnerabilities, beside what needs a look and never counted
 /// in it.
 pub fn status_json(conn: &Connection, now: i64) -> rusqlite::Result<Value> {
-    let t = totals(conn)?;
+    let t = totals(conn, now)?;
     let mut v = totals_json(&t);
     v["matched_this_store"] = json!(t.matched);
     v["feeds"] = feeds_json(conn, now)?;
@@ -1416,12 +1494,13 @@ pub const SHOWN: usize = 200;
 pub fn list_json(conn: &Connection, now: i64) -> rusqlite::Result<Value> {
     let this = crate::findings::This::of(conn, crate::covered::this_machine(conn)?)?;
     let list = affecting(conn)?;
-    let t = totals(conn)?;
+    let t = totals(conn, now)?;
+    let listed = crate::threats::last_good(conn).unwrap_or(None).is_some();
     Ok(json!({
         "generated_at": crate::view::iso(now),
         "totals": totals_json(&t),
         "feeds": feeds_json(conn, now)?,
-        "affected": list.iter().take(SHOWN).map(|a| affecting_json(a, this.as_ref())).collect::<Vec<_>>(),
+        "affected": list.iter().take(SHOWN).map(|a| affecting_json(a, this.as_ref(), listed)).collect::<Vec<_>>(),
         "affected_total": list.len(),
         "not_answered": { "informational_records": t.informational },
         "declared_note": DECLARED,
@@ -1517,20 +1596,34 @@ pub fn one_json(conn: &Connection, id: &str, now: i64) -> rusqlite::Result<Value
     } else {
         Vec::new()
     };
+    // Whether the data is current is judged now, when it is asked, not as the check found it.
+    let stale = stale_at(conn, now)?;
+    let stale_of = |eco: &str| {
+        FEEDS
+            .iter()
+            .find(|f| f.ecosystem == eco)
+            .and_then(|f| stale.get(f.source))
+    };
     // A place's answer for a record that names none of its packages, from the conditions of
     // the place: "not affected" only when its lockfiles were all read and the data is
-    // current, with this certainty.
+    // current, at the check and now, with this certainty.
     let derived = |p: &Place, certainty: &str| {
         let mut a = json!({ "project_text": place_of(&p.0), "ecosystem": p.1 });
+        let now_stale = stale_of(&p.1);
         match (p.2.as_str(), p.4.as_str()) {
-            ("full", "current") => {
+            ("full", "current") if now_stale.is_none() => {
                 a["answer"] = json!("not_affected");
                 a["certainty"] = json!(certainty);
             }
             ("full", _) => {
                 a["answer"] = json!("unknown");
                 a["reason"] = json!(FEED_NOT_READ);
-                a["detail_text"] = json!(p.5.as_deref().map(crate::status::text));
+                a["detail_text"] = json!(
+                    now_stale
+                        .map(String::as_str)
+                        .or(p.5.as_deref())
+                        .map(crate::status::text)
+                );
             }
             _ => {
                 a["answer"] = json!("unknown");
@@ -1650,7 +1743,19 @@ pub fn one_json(conn: &Connection, id: &str, now: i64) -> rusqlite::Result<Value
                 Ok((q.get::<_, String>(0)?, v))
             })?;
             for row in rows {
-                let (checkout, v) = row?;
+                let (checkout, mut v) = row?;
+                // "Not affected" stands only while its data is current now.
+                if let (Some(why), Some("not_affected")) =
+                    (stale.get(r.source.as_str()), v["answer"].as_str())
+                {
+                    v["answer"] = json!("unknown");
+                    v["reason"] = json!(FEED_NOT_READ);
+                    v["detail_text"] = json!(crate::status::text(why));
+                    if let Some(o) = v.as_object_mut() {
+                        o.remove("certainty");
+                        o.remove("openvex");
+                    }
+                }
                 m.entry(checkout).or_default().push(v);
             }
             m

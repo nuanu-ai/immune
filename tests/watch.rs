@@ -2359,7 +2359,8 @@ fn a_sample_that_opens_a_finding_says_so_in_one_line_and_a_quiet_sample_says_not
             "home-autorun",
             "vulnerability-list-not-downloaded",
             "vulnerability-data-old",
-            "vulnerabilities-not-compared"
+            "vulnerabilities-not-compared",
+            "package-managers-elsewhere-not-found"
         ],
         "{r:#}"
     );

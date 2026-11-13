@@ -3077,8 +3077,15 @@ struct PublishedRules {
 
 @Suite("Program starts: the day at a glance while the level runs, its state quietly when not")
 struct ProgramStarts {
+  /// One moment for the whole test, on a whole second. Immune writes a time in whole seconds:
+  /// a time cut to the second, then compared with a clock read again later, can make 12
+  /// seconds read as 13 on a busy Mac.
+  let now = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down))
+
   func with(_ level: Any?) -> Panel {
-    panel(quiet(removing: ["result", "event_level"], setting: level))
+    Panel.of(
+      Interpret.reading(from: quiet(removing: ["result", "event_level"], setting: level)),
+      now: now)
   }
 
   static let restart =
@@ -3096,7 +3103,7 @@ struct ProgramStarts {
     if let caveats { words["caveats"] = caveats }
     return [
       "state": "running", "program_starts": ["last_day": 4812, "since_check": 12],
-      "read_at": Date().addingTimeInterval(-12).formatted(.iso8601),
+      "read_at": now.addingTimeInterval(-12).formatted(.iso8601),
       "program_starts_by_hour": ["ends_at": "2026-11-10T10:00:00Z", "counts": hours],
       "program_starts_by_minute": [
         "ends_at": "2026-11-10T10:00:00Z", "counts": minutes, "last_hour": 812,

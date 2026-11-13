@@ -97,7 +97,7 @@ CREATE TABLE raw_input (
 /// What the journal records. The list only grows: a store whose journal was made with a
 /// shorter list is made again with this one when it is opened, so a new kind of entry is a
 /// new word here and nothing else.
-const JOURNAL_ENTRIES: [&str; 22] = [
+const JOURNAL_ENTRIES: [&str; 23] = [
     "run_started",
     "added",
     "changed",
@@ -129,6 +129,9 @@ const JOURNAL_ENTRIES: [&str; 22] = [
     // Something an earlier reading read in full that is there and could not be read, with why,
     // see `baseline.rs`.
     "not_read",
+    // A fact of a kind this version no longer reads, closed with why: not a removal, see
+    // `lifecycle::retire`.
+    "retired",
 ];
 
 /// The journal. It cannot be rebuilt from raw input, so it only grows. Its entries are the
@@ -248,7 +251,8 @@ INSERT OR IGNORE INTO predicate (name, object_kind, status) VALUES
 INSERT OR IGNORE INTO coverage_kind (name) VALUES
     ('application bundles in /Applications and ~/Applications'), ('Homebrew kegs'),
     ('global npm packages'),
-    ('code kept by applications not signed by Apple under ~/Library/Application Support');
+    ('code kept by applications not signed by Apple under ~/Library/Application Support'),
+    ('software of package managers this version does not read');
 -- What runs by itself, see src/autorun.rs, and indicators, see src/indicators.rs.
 INSERT OR IGNORE INTO predicate (name, object_kind, status) VALUES
     ('matches_indicator', 'literal', 'used');
@@ -1001,6 +1005,19 @@ pub fn read_any(conn: &Connection, reader: &str) -> rusqlite::Result<bool> {
     )
 }
 
+/// How far ahead of this Mac's clock a time may be and still be taken as now: clocks of two
+/// sources differ by seconds, not by minutes.
+pub const AHEAD_ALLOWED: i64 = 5 * 60;
+/// Why a reading whose time is ahead of the clock has no age.
+pub const AHEAD: &str = "its time is ahead of this Mac's clock, so how old it is is not known";
+
+/// The age at `now` of what was read at `at`, both UTC seconds. A time ahead of the clock by
+/// more than `AHEAD_ALLOWED` gives none: the clock was set back, or the time is wrong, and
+/// what has no age is never taken as fresh. Every judgment of freshness goes through this.
+pub fn age(at: i64, now: i64) -> Option<i64> {
+    (at <= now + AHEAD_ALLOWED).then(|| (now - at).max(0))
+}
+
 /// When one reader last read a scope in full.
 pub fn last_read(conn: &Connection, reader: &str, scope: &str) -> rusqlite::Result<Option<i64>> {
     conn.query_row(
@@ -1163,4 +1180,19 @@ pub fn journal_threat(
         params![at, run_id, entry, source, subject, old, new],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_time_more_than_a_few_minutes_ahead_of_the_clock_has_no_age_and_a_little_ahead_is_now() {
+        // Two clocks differ by seconds; a reading dated later than that is not fresh forever.
+        let now = 2_000_000_000;
+        assert_eq!(age(now - 90, now), Some(90));
+        assert_eq!(age(now + 60, now), Some(0));
+        assert_eq!(age(now + AHEAD_ALLOWED, now), Some(0));
+        assert_eq!(age(now + AHEAD_ALLOWED + 1, now), None);
+    }
 }

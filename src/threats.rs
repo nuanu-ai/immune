@@ -126,6 +126,125 @@ pub fn answer(status: std::process::ExitStatus, said: &[u8], asked_with_etag: bo
     }
 }
 
+/// Why a download failed, for a person: a clause in plain words, and whether fixing it is
+/// certainly this Mac's or its network's to do. That is so only for a write that failed, a
+/// certificate this Mac does not trust, and a proxy that asks for a password or fails its own
+/// handshake. For anything else who has to act is not known from here, and it is not said.
+#[derive(Debug, PartialEq)]
+pub struct Why {
+    pub said: &'static str,
+    pub yours: bool,
+}
+
+const fn not_yours(said: &'static str) -> Why {
+    Why { said, yours: false }
+}
+
+const fn yours(said: &'static str) -> Why {
+    Why { said, yours: true }
+}
+
+const NOT_WRITTEN: Why = yours("the download could not be written on this Mac's disk");
+const CERTIFICATE: Why = yours(
+    "this Mac does not trust the certificate shown for the server: this Mac's clock may be wrong, or the network may inspect encrypted traffic",
+);
+const PROXY_PASSWORD: Why = yours("the proxy between this Mac and the server asks for a password");
+const PROXY_HANDSHAKE: Why =
+    yours("the proxy between this Mac and the server failed its own handshake");
+const PROXY_REFUSED: Why =
+    not_yours("the proxy between this Mac and the server refused the connection");
+const REFUSED: Why = not_yours("the server, or something between, refused the download");
+const SERVER: Why = not_yours("the server answered with an error");
+const CUT: Why = not_yours("the connection was cut off");
+const NOT_DATA: Why = not_yours("what came back was not the data asked for");
+const OTHER: Why = not_yours("the download failed; what failed is listed with this");
+
+/// curl's exit codes, as curl(1) documents them under EXIT CODES, each with fixed words. A
+/// code not here is `OTHER`, with curl's own words beside it. 22 and 56 are read further.
+const CURL_EXITS: [(u32, Why); 12] = [
+    (
+        5,
+        not_yours("the proxy named for the download could not be looked up"),
+    ),
+    (6, not_yours("the server's name could not be looked up")),
+    (7, not_yours("no connection to the server could be made")),
+    (23, NOT_WRITTEN),
+    (28, not_yours("the server did not answer in time")),
+    (
+        35,
+        not_yours("the encrypted connection to the server could not be set up"),
+    ),
+    (
+        47,
+        not_yours("the server sent the download on too many times"),
+    ),
+    (52, not_yours("the server answered nothing")),
+    (55, CUT),
+    (56, CUT),
+    (60, CERTIFICATE),
+    (97, PROXY_HANDSHAKE),
+];
+
+/// Why a download failed, read from the reason the program wrote for it: curl's exit code with
+/// what curl said; the HTTP status a server answered; this Mac failing to run curl or to keep
+/// what came; or, for anything else, a body that was not the data, one case whatever the source.
+pub fn why(reason: &str) -> Why {
+    if let Some(rest) = reason.strip_prefix("curl failed, ") {
+        // `answer` writes `curl failed, exit status: <code>: <what curl said>`.
+        let Some((code, said)) = rest
+            .strip_prefix("exit status: ")
+            .and_then(|r| r.split_once(':'))
+        else {
+            return OTHER;
+        };
+        return match code.parse::<u32>() {
+            // With `--fail`, `The requested URL returned error: <status>`.
+            Ok(22) => status(said.rsplit(' ').next().unwrap_or_default()),
+            // The proxy's answer to CONNECT: `CONNECT tunnel failed, response <status>` or
+            // `Received HTTP code <status> from proxy after CONNECT`.
+            Ok(56) if said.contains("CONNECT") => {
+                if said.contains(" 407") {
+                    PROXY_PASSWORD
+                } else {
+                    PROXY_REFUSED
+                }
+            }
+            Ok(code) => CURL_EXITS
+                .into_iter()
+                .find(|(c, _)| *c == code)
+                .map_or(OTHER, |(_, w)| w),
+            Err(_) => OTHER,
+        };
+    }
+    if let Some(code) = reason.strip_prefix("the server answered HTTP ") {
+        return status(code);
+    }
+    // This Mac could not run curl or keep what came: not an answer from anyone.
+    if LOCAL.iter().any(|p| reason.starts_with(p)) {
+        return OTHER;
+    }
+    NOT_DATA
+}
+
+/// How a reason begins when this Mac could not run curl or keep what came.
+const LOCAL: [&str; 5] = [
+    "cannot run ",
+    "curl did not finish",
+    "cannot make ",
+    "cannot read ",
+    "could not be read",
+];
+
+/// What an HTTP status other than the data's says. A refusal may come from the server or from
+/// anything between, so who has to act is not known; a proxy asking for a password is.
+fn status(code: &str) -> Why {
+    match code {
+        "407" => PROXY_PASSWORD,
+        "401" | "403" | "451" => REFUSED,
+        _ => SERVER,
+    }
+}
+
 /// Fetches the catalogue with curl. The body is read from curl's output under the cap, so
 /// a body that decompresses to more than the cap is not read either.
 pub fn fetch(curl: &Path, etag: Option<&str>) -> Fetched {
@@ -374,7 +493,134 @@ pub fn record(tx: &Transaction, run_id: &str, at: i64, entries: &[Entry]) -> rus
 
 #[cfg(test)]
 mod tests {
-    use super::{parse, valid_etag};
+    use super::*;
+
+    #[test]
+    fn a_failed_download_is_told_by_what_curl_says_and_who_acts_only_when_that_is_certain() {
+        // The samples are curl's own messages for each exit code (curl(1), EXIT CODES), as
+        // `answer` writes them into the reason, and the program's own reasons. Telling a
+        // person "the network blocked it, ask whoever runs it" when the server refused, or
+        // when this Mac's proxy setting names nothing, sends them to the wrong place.
+        let curl = |code: u32, said: &str| {
+            why(&format!(
+                "curl failed, exit status: {code}: curl: ({code}) {said}"
+            ))
+        };
+        let words = |code: u32| CURL_EXITS.iter().find(|(c, _)| *c == code).unwrap().1.said;
+        let cases = [
+            (
+                curl(5, "Could not resolve proxy: invented-proxy.example"),
+                not_yours(words(5)),
+            ),
+            (
+                curl(6, "Could not resolve host: www.cisa.gov"),
+                not_yours(words(6)),
+            ),
+            (
+                curl(7, "Failed to connect to www.cisa.gov port 443 after 4 ms"),
+                not_yours(words(7)),
+            ),
+            (
+                curl(
+                    23,
+                    "Failure writing output to destination, passed 16384 returned 0",
+                ),
+                NOT_WRITTEN,
+            ),
+            (
+                curl(28, "Connection timed out after 30001 milliseconds"),
+                not_yours(words(28)),
+            ),
+            (
+                curl(
+                    35,
+                    "LibreSSL SSL_connect: SSL_ERROR_SYSCALL in connection to www.cisa.gov:443",
+                ),
+                not_yours(words(35)),
+            ),
+            (
+                curl(47, "Maximum (50) redirects followed"),
+                not_yours(words(47)),
+            ),
+            (curl(52, "Empty reply from server"), not_yours(words(52))),
+            (curl(55, "Send failure: Broken pipe"), CUT),
+            (curl(56, "Recv failure: Connection reset by peer"), CUT),
+            (
+                curl(56, "CONNECT tunnel failed, response 407"),
+                PROXY_PASSWORD,
+            ),
+            (
+                curl(56, "Received HTTP code 403 from proxy after CONNECT"),
+                PROXY_REFUSED,
+            ),
+            (curl(97, "SOCKS: unable to connect"), PROXY_HANDSHAKE),
+            (
+                curl(60, "SSL certificate problem: certificate is not yet valid"),
+                CERTIFICATE,
+            ),
+            (
+                curl(
+                    60,
+                    "SSL: certificate subject name 'invented' does not match target host name 'www.cisa.gov'",
+                ),
+                CERTIFICATE,
+            ),
+            (
+                curl(77, "error setting certificate verify locations"),
+                OTHER,
+            ),
+            (curl(22, "The requested URL returned error: 401"), REFUSED),
+            (curl(22, "The requested URL returned error: 403"), REFUSED),
+            (curl(22, "The requested URL returned error: 451"), REFUSED),
+            (
+                curl(22, "The requested URL returned error: 407"),
+                PROXY_PASSWORD,
+            ),
+            (curl(22, "The requested URL returned error: 503"), SERVER),
+            (why("the server answered HTTP 403"), REFUSED),
+            (why("the server answered HTTP 407"), PROXY_PASSWORD),
+            (why("the server answered HTTP 302"), SERVER),
+            // A body that is not the data, one case whatever the source.
+            (why("not JSON: expected value at line 1 column 1"), NOT_DATA),
+            (why("no list of vulnerabilities"), NOT_DATA),
+            (why("not a zip archive"), NOT_DATA),
+            (why("the archive holds no records"), NOT_DATA),
+            (why("curl failed, signal: 9 (SIGKILL): "), OTHER),
+            (why("curl failed, exit status: x: y"), OTHER),
+            (
+                why("cannot run /usr/bin/curl: No such file (os error 2)"),
+                OTHER,
+            ),
+            (why("curl did not finish: interrupted"), OTHER),
+            (why("cannot make /invented: denied"), OTHER),
+            (why("cannot read /invented: denied"), OTHER),
+            (why("could not be read: broken pipe"), OTHER),
+        ];
+        for (i, (got, want)) in cases.into_iter().enumerate() {
+            assert_eq!(got, want, "case {i}");
+        }
+        // Who has to act is said only for these.
+        let all = CURL_EXITS.iter().map(|(_, w)| w).chain([
+            &PROXY_PASSWORD,
+            &PROXY_REFUSED,
+            &REFUSED,
+            &SERVER,
+            &NOT_DATA,
+            &OTHER,
+        ]);
+        let yours: Vec<&str> = all.filter(|w| w.yours).map(|w| w.said).collect();
+        assert_eq!(
+            yours,
+            [
+                NOT_WRITTEN.said,
+                CERTIFICATE.said,
+                PROXY_HANDSHAKE.said,
+                PROXY_PASSWORD.said
+            ]
+        );
+        // A wrong clock is named first, as the likelier cause on a person's Mac.
+        assert!(CERTIFICATE.said.find("clock") < CERTIFICATE.said.find("inspect"));
+    }
 
     fn catalogue(ids: &[serde_json::Value]) -> Vec<u8> {
         let list: Vec<serde_json::Value> = ids

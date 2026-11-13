@@ -47,13 +47,39 @@ const PRUNED: [&str; 3] = ["node_modules", "target", "vendor"];
 /// Folders macOS makes in the home folder that hold media, applications or settings.
 /// Pruned only directly under the home folder: elsewhere they are ordinary names.
 const PRUNED_IN_HOME: [&str; 6] = [
-    "Library",
+    LIBRARY,
     "Applications",
     "Movies",
     "Music",
     "Pictures",
     "Public",
 ];
+/// The home folder's Library, where iCloud Drive and other cloud storage keep their files.
+const LIBRARY: &str = "Library";
+
+/// What the walk does not look in by design, in a person's words made from the walk's own
+/// limits, so the words cannot drift from the code.
+pub fn not_walked() -> String {
+    let in_home: Vec<String> = PRUNED_IN_HOME
+        .iter()
+        .map(|n| {
+            if *n == LIBRARY {
+                format!("{n} (which holds iCloud Drive and other cloud storage)")
+            } else {
+                n.to_string()
+            }
+        })
+        .collect();
+    let in_home: Vec<&str> = in_home.iter().map(String::as_str).collect();
+    format!(
+        "Projects are looked for in your home folder, but not in {} directly in it, not in hidden folders or folders named {}, not through a link to a folder, and not deeper than {MAX_DEPTH} folders down.",
+        crate::covered::listed(&in_home),
+        match PRUNED.split_last() {
+            Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
+            None => String::new(),
+        }
+    )
+}
 
 pub struct Checkout {
     /// Path relative to the home folder, with `/` between parts; the full path when the

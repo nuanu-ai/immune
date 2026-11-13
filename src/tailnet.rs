@@ -14,11 +14,13 @@
 //! `openbsd` and so on. It is not `runs_os`, the release name a server gives itself.
 //!
 //! Tailscale that is not installed has nothing to read. Tailscale that is installed and
-//! stopped or logged out could not be read, and says so. Tailscale whose command cannot
-//! reach the daemon could not be read either; the reason names each way that was tried.
+//! answers that it is not connected, stopped or logged out, is in a state the owner chose:
+//! its peers are not known while it is off, those seen before stay as they were, and that is
+//! not a failure. Tailscale whose command cannot reach the daemon could not be read; the
+//! reason names each way that was tried.
 //!
 //! The command is looked for in the app in `/Applications` and in the user's own
-//! `Applications`, and in the Homebrew prefixes, then on PATH as `crate::tools` says. A
+//! `Applications`, and in the Homebrew prefixes, and nowhere else (`crate::tools`). A
 //! daemon started by hand may listen on a
 //! socket of its own, given to it as `--socket=<path>`: when the command cannot reach the
 //! daemon on the default socket, the sockets of running `tailscaled` processes are tried.
@@ -36,6 +38,79 @@ pub const READER: &str = "tailnet";
 pub const KIND: &str = "tailnet peers";
 pub const BASIS: &str = "observed";
 pub const NOT_INSTALLED: &str = "Tailscale is not installed on this machine";
+/// The one state in which Tailscale is connected and gives its peers.
+const RUNNING: &str = "Running";
+
+/// What a state other than `Running` is, in fixed words.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Told {
+    /// The reason of the reading.
+    pub reason: &'static str,
+    /// Not connected, and the person's to fix.
+    pub yours: bool,
+    /// Not readable this time: a failed reading, which the next check tries again.
+    pub retry: bool,
+}
+
+/// The states `BackendState` documents (tailscale's `ipn/backend.go`), other than `Running`.
+pub const STATES: [(&str, Told); 6] = [
+    (
+        "Stopped",
+        Told {
+            reason: "Tailscale is switched off on this Mac",
+            yours: false,
+            retry: false,
+        },
+    ),
+    (
+        "NeedsLogin",
+        Told {
+            reason: "Tailscale on this Mac waits for you to log in",
+            yours: true,
+            retry: false,
+        },
+    ),
+    (
+        "NeedsMachineAuth",
+        Told {
+            reason: "Tailscale on this Mac waits for an admin of your tailnet to approve this Mac",
+            yours: true,
+            retry: false,
+        },
+    ),
+    (
+        "InUseOtherUser",
+        Told {
+            reason: "Tailscale on this Mac is in use by another user of this Mac",
+            yours: true,
+            retry: false,
+        },
+    ),
+    (
+        "Starting",
+        Told {
+            reason: "Tailscale was starting and gave no list of devices yet; the next check reads it again",
+            yours: false,
+            retry: true,
+        },
+    ),
+    (
+        "NoState",
+        Told {
+            reason: "Tailscale had not started and gave no list of devices yet; the next check reads it again",
+            yours: false,
+            retry: true,
+        },
+    ),
+];
+
+/// How the reason begins for a state this version does not know; the state follows, as data.
+pub const UNKNOWN_STATE: &str = "Tailscale is in a state this version does not know: ";
+
+/// What the reason of a reading of the tailnet tells, when it is one of the fixed ones.
+pub fn told(reason: &str) -> Option<Told> {
+    STATES.iter().map(|(_, t)| *t).find(|t| t.reason == reason)
+}
 /// The `relation_to_owner` of a peer of another user, without tags.
 pub const OTHER_USER: &str = "other user's device";
 /// The `relation_to_owner` of a peer of the same user as this machine, without tags.
@@ -100,8 +175,7 @@ pub fn read(at: Option<&Path>, home: &Path) -> Found {
         None => {
             let homes = crate::watched::homes(home);
             let homes = [homes[0].as_path(), homes[1].as_path()];
-            let found =
-                crate::tools::find("tailscale", &installed(home), &crate::tools::path(), &homes);
+            let found = crate::tools::find(&installed(home), &homes);
             // Found nowhere else, it may be where it was not looked for.
             if let (None, Some(g)) = (&found.at, found.guarded.first()) {
                 return Found::Guarded(g.clone());
@@ -110,6 +184,20 @@ pub fn read(at: Option<&Path>, home: &Path) -> Found {
         }
     };
     read_from(cli.as_deref(), processes)
+}
+
+/// What a person calls it.
+pub const NAME: &str = "Tailscale";
+
+/// The places the command is looked for, as a reason names them, the home folder as `~`.
+pub fn places(home: &Path) -> Vec<String> {
+    installed(home)
+        .iter()
+        .map(|p| match p.strip_prefix(home) {
+            Ok(rel) => format!("~/{}", rel.display()),
+            Err(_) => p.display().to_string(),
+        })
+        .collect()
 }
 
 /// Where Tailscale's installers put the command, in order.
@@ -169,7 +257,9 @@ fn read_from(cli: Option<&Path>, processes: impl Fn() -> String) -> Found {
         match run(cli, socket.as_deref()) {
             Ok((true, stdout, _)) => {
                 return match parse(&stdout) {
-                    Ok(seen) => Found::Read(seen),
+                    Ok(Answer::Peers(seen)) => Found::Read(seen),
+                    Ok(Answer::State(t)) if t.retry => Found::Failed(t.reason.to_string()),
+                    Ok(Answer::State(t)) => Found::Off(t.reason.to_string()),
                     Err(e) => Found::Failed(e),
                 };
             }
@@ -268,14 +358,30 @@ fn text<'a>(v: &'a Value, key: &str) -> &'a str {
     v.get(key).and_then(Value::as_str).unwrap_or("").trim()
 }
 
-/// The peers in the output of `tailscale status --json`, in the order of their names.
-pub fn parse(json: &str) -> Result<Seen, String> {
+/// What `tailscale status --json` answered.
+pub enum Answer {
+    /// Connected: its peers, in the order of their names.
+    Peers(Seen),
+    /// Another state Tailscale documents, as `STATES` tells it.
+    State(Told),
+}
+
+/// The peers in the output of `tailscale status --json`, or the state it is in when it is not
+/// connected. Peers are taken only in `Running`, even when another state lists some. A state
+/// is matched as Tailscale spells it; any other, or none, is not read.
+pub fn parse(json: &str) -> Result<Answer, String> {
     let v: Value = serde_json::from_str(json)
         .map_err(|e| format!("tailscale status gave no readable answer: {e}"))?;
     let state = text(&v, "BackendState");
-    if state != "Running" {
-        let state = if state.is_empty() { "unknown" } else { state };
-        return Err(format!("tailscale is not running, its state is {state}"));
+    if state.is_empty() {
+        return Err("tailscale status gave no state".to_string());
+    }
+    if state != RUNNING {
+        return STATES
+            .iter()
+            .find(|(s, _)| *s == state)
+            .map(|(_, t)| Answer::State(*t))
+            .ok_or_else(|| format!("{UNKNOWN_STATE}{state}"));
     }
     let mut peers: Vec<&Value> = v
         .get("Peer")
@@ -355,14 +461,14 @@ pub fn parse(json: &str) -> Result<Seen, String> {
             host.relation = first.map(|r| (r, *n));
         }
     }
-    Ok(Seen {
+    Ok(Answer::Peers(Seen {
         extract: extract.into_text(),
         hosts,
         partial: None,
         gap: Gap::default(),
         third_party,
         guarded: Vec::new(),
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -452,17 +558,65 @@ exit 1";
     }
 
     #[test]
-    fn tailscale_that_is_stopped_or_logged_out_is_a_failed_reading_with_its_state() {
-        // A stopped tailnet is not an empty one: its peers are unknown, not gone.
-        let dir = folder("stopped");
-        let cli = command(
-            &dir,
-            "echo '{ \"BackendState\": \"NeedsLogin\", \"Peer\": {} }'",
-        );
-        let Found::Failed(reason) = read_from(Some(&cli), String::new) else {
-            panic!("a logged out tailnet was read");
+    fn each_state_tailscale_documents_is_told_as_what_it_is_and_any_other_is_a_reading_that_failed()
+    {
+        // Switched off is the owner's choice; waiting for a login or an approval is not
+        // connected and the owner's to fix; starting is not readable this time. None of them is
+        // an empty tailnet, and peers a state other than Running lists are not taken.
+        let dir = folder("states");
+        let peer =
+            "\"nodekey:a\": { \"HostName\": \"new-box\", \"TailscaleIPs\": [\"100.64.0.9\"] }";
+        let at = |state: &str| {
+            let cli = command(
+                &dir,
+                &format!("echo '{{ \"BackendState\": \"{state}\", \"Peer\": {{ {peer} }} }}'"),
+            );
+            read_from(Some(&cli), String::new)
         };
-        assert_eq!(reason, "tailscale is not running, its state is NeedsLogin");
+        let off = |state: &str| match at(state) {
+            Found::Off(said) => said,
+            _ => panic!("{state}: not told as not connected"),
+        };
+        let failed = |state: &str| match at(state) {
+            Found::Failed(said) => said,
+            _ => panic!("{state}: not told as a reading that failed"),
+        };
+        assert_eq!(off("Stopped"), "Tailscale is switched off on this Mac");
+        for (state, words) in [
+            (
+                "NeedsLogin",
+                "Tailscale on this Mac waits for you to log in",
+            ),
+            (
+                "NeedsMachineAuth",
+                "Tailscale on this Mac waits for an admin of your tailnet to approve this Mac",
+            ),
+            (
+                "InUseOtherUser",
+                "Tailscale on this Mac is in use by another user of this Mac",
+            ),
+        ] {
+            assert_eq!(off(state), words);
+            assert!(told(words).is_some_and(|t| t.yours && !t.retry), "{state}");
+        }
+        assert!(told(&off("Stopped")).is_some_and(|t| !t.yours && !t.retry));
+        for state in ["Starting", "NoState"] {
+            let said = failed(state);
+            assert!(said.ends_with("the next check reads it again"), "{said}");
+        }
+        // Spelled otherwise, or free text, is a state this version does not know.
+        for state in ["running", "Stopped. Nothing else to check"] {
+            assert_eq!(
+                failed(state),
+                format!("Tailscale is in a state this version does not know: {state}")
+            );
+        }
+        // An answer that names no state at all is one this reader cannot read.
+        let cli = command(&dir, "echo '{ \"Peer\": {} }'");
+        let Found::Failed(reason) = read_from(Some(&cli), String::new) else {
+            panic!("an answer without a state was taken as one");
+        };
+        assert_eq!(reason, "tailscale status gave no state");
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -481,7 +635,7 @@ exit 1";
 
     #[test]
     fn the_command_is_looked_for_wherever_tailscale_is_installed() {
-        // In the app in either Applications folder, or from Homebrew; PATH comes after them.
+        // In the app in either Applications folder, or from Homebrew; never on PATH.
         let home = Path::new("/Users/invented");
         assert_eq!(
             installed(home),

@@ -2,16 +2,22 @@
 //! about this Mac, so a program planted where a lookup would find it could write any facts.
 //!
 //! Tools that come with macOS are run by their absolute path and never looked up. Homebrew
-//! and Tailscale live in different places on different Macs: they are looked for in the
-//! places their installers put them, and only then on PATH, where only absolute folders are
-//! taken and only regular files that may be executed. A program in the current folder, or
-//! one reached through a relative entry of PATH, is never run.
+//! and Tailscale are looked for only in the places their installers put them, and only a
+//! regular file that may be executed is run. Nothing of the caller's environment, PATH
+//! included, decides which program runs or what is found: the same Mac gives the same reading
+//! whoever starts the check, and a program in the current folder or anywhere on PATH is
+//! never run.
 //!
 //! This does not protect against a process running as the owner, which can replace a tool in
 //! any folder the owner can write, the Homebrew prefix included.
 
-use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+
+/// How the reason of a reading goes on after a tool's name when the tool is not at the places
+/// this version looks and the store holds what an earlier check read from it: lost sight of,
+/// never "not installed". The places follow.
+pub const READ_BEFORE: &str =
+    " was read before and is not found now at the places this version looks for it: ";
 
 /// The system's own tools, where every Mac has them.
 pub const SCUTIL: &str = "/usr/sbin/scutil";
@@ -34,16 +40,12 @@ pub struct Found {
     pub guarded: Vec<PathBuf>,
 }
 
-/// The first runnable program among `known`, else the first `name` in an absolute folder of
-/// `path`, a value in the form of PATH. Relative and empty entries are skipped, and so is a
-/// place that leads into a folder macOS asks permission for, whatever name leads there: it
-/// is named in `guarded`. `homes` are the home folder's names.
-pub fn find(name: &str, known: &[PathBuf], path: &OsStr, homes: &[&Path]) -> Found {
-    let on_path = std::env::split_paths(path)
-        .filter(|dir| dir.is_absolute())
-        .map(|dir| dir.join(name));
+/// The first runnable program among `known`. A place that leads into a folder macOS asks
+/// permission for, whatever name leads there, is not looked into: it is named in `guarded`.
+/// `homes` are the home folder's names.
+pub fn find(known: &[PathBuf], homes: &[&Path]) -> Found {
     let mut guarded = Vec::new();
-    for candidate in known.iter().cloned().chain(on_path) {
+    for candidate in known.iter().cloned() {
         match crate::guarded::real(&candidate, homes) {
             crate::guarded::Real::At(real) if runnable(&real) => {
                 return Found {
@@ -56,11 +58,6 @@ pub fn find(name: &str, known: &[PathBuf], path: &OsStr, homes: &[&Path]) -> Fou
         }
     }
     Found { at: None, guarded }
-}
-
-/// PATH of this process.
-pub fn path() -> std::ffi::OsString {
-    std::env::var_os("PATH").unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -76,51 +73,37 @@ mod tests {
     }
 
     #[test]
-    fn a_program_in_the_current_folder_or_reached_through_a_relative_path_entry_is_never_run() {
-        // What a found tool prints is stored as facts about this Mac. A relative entry of
-        // PATH is resolved against whatever folder the program was started in.
-        let cwd = std::env::current_dir().unwrap();
-        let rel = PathBuf::from("target").join(format!("immune-tools-{}", std::process::id()));
-        let abs = cwd.join(&rel);
-        let _ = std::fs::remove_dir_all(&abs);
-        file(&abs.join("relative/tool"), 0o755);
-        file(&abs.join("not-executable/tool"), 0o644);
-        std::fs::create_dir_all(abs.join("folder/tool")).unwrap();
-        file(&abs.join("real/tool"), 0o755);
-        file(&abs.join("known/tool"), 0o755);
-
-        let entries = [
-            rel.join("relative"),
-            PathBuf::new(),
-            PathBuf::from("."),
-            abs.join("not-executable"),
-            abs.join("folder"),
-            abs.join("real"),
+    fn only_a_runnable_file_at_a_known_place_is_taken() {
+        // What a found tool prints is stored as facts about this Mac: a folder or a file that
+        // may not be run is passed over for the next place.
+        let base = std::env::temp_dir().join(format!("immune-tools-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        file(&base.join("not-executable/tool"), 0o644);
+        std::fs::create_dir_all(base.join("folder/tool")).unwrap();
+        file(&base.join("known/tool"), 0o755);
+        let known = [
+            base.join("not-executable/tool"),
+            base.join("folder/tool"),
+            base.join("known/tool"),
         ];
-        let path = std::env::join_paths(&entries).unwrap();
-        let at = |known: &[PathBuf], path: &OsStr| find("tool", known, path, &[&abs]).at;
-        assert_eq!(at(&[], &path), Some(abs.join("real/tool")));
-        let only_relative = std::env::join_paths(&entries[..5]).unwrap();
-        assert_eq!(at(&[], &only_relative), None);
-        // The places an installer puts the tool come before PATH, and are checked the same way.
-        let known = [abs.join("folder/tool"), abs.join("known/tool")];
-        assert_eq!(at(&known, &path), Some(abs.join("known/tool")));
-        let _ = std::fs::remove_dir_all(&abs);
+        let found = find(&known, &[&base]);
+        let _ = std::fs::remove_dir_all(&base);
+        assert_eq!(found.at, Some(base.join("known/tool")));
     }
 
     #[test]
-    fn a_folder_of_path_in_a_folder_macos_asks_permission_for_is_not_looked_into_whatever_name_leads_there()
+    fn a_known_place_in_a_folder_macos_asks_permission_for_is_not_looked_into_whatever_name_leads_there()
      {
-        // A run the app starts must not make macOS ask the owner for his Documents because
-        // PATH names a folder there, directly or through a link.
+        // A run the app starts must not make macOS ask the owner for his Documents because a
+        // place to look leads there, directly or through a link.
         let base =
             std::env::temp_dir().join(format!("immune-tools-guarded-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         file(&base.join("Documents/bin/tool"), 0o755);
         std::os::unix::fs::symlink(base.join("Documents/bin"), base.join("bin")).unwrap();
-        let path = std::env::join_paths([base.join("bin"), base.join("Documents/bin")]).unwrap();
+        let known = [base.join("bin/tool"), base.join("Documents/bin/tool")];
         let real = std::fs::canonicalize(&base).unwrap();
-        let found = find("tool", &[], &path, &[&base, &real]);
+        let found = find(&known, &[&base, &real]);
         let _ = std::fs::remove_dir_all(&base);
         assert_eq!(
             found,

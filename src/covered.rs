@@ -364,7 +364,8 @@ pub const NOTHING: &str = "nothing";
 
 /// The fixed words of one cause of what is not covered, for a person: plain words, what it
 /// means for him, and whether he can do something about it. A title is given for one and
-/// for many. In the words `{n}` is the count and `{examples}` the examples, as a list.
+/// for many. In the words `{n}` is the count, `{examples}` the first examples and `{all}` every
+/// one, as a list.
 pub struct Cause {
     pub id: &'static str,
     pub who: &'static str,
@@ -435,6 +436,34 @@ pub const READING_FAILED: Cause = Cause {
     advice: "Nothing to do for now: they are tried again at every check. If one stays, your agent can find out why.",
 };
 
+pub const TAILNET_OFF: Cause = Cause {
+    id: "tailnet-switched-off",
+    who: NOTHING,
+    scope: "servers",
+    kind: "tailnet not looked at while Tailscale is switched off",
+    title: [
+        "Tailscale is switched off on this Mac, so your tailnet was not looked at since {date}.",
+        "Tailscale is switched off on this Mac, so your tailnet was not looked at since {date}.",
+    ],
+    meaning: "Devices known from your tailnet on that date are kept as they were, but a new one, or one that is gone, is not seen until Tailscale is on again.",
+    meaning_none: None,
+    advice: "Nothing to do if you switched it off yourself. Your tailnet is looked at again at the first check after Tailscale connects.",
+};
+
+pub const TAILNET_NEEDS_YOU: Cause = Cause {
+    id: "tailnet-not-connected",
+    who: YOU,
+    scope: "servers",
+    kind: "tailnet not looked at while Tailscale waits for the owner",
+    title: [
+        "Tailscale on this Mac is not connected, so your tailnet was not looked at since {date}.",
+        "Tailscale on this Mac is not connected, so your tailnet was not looked at since {date}.",
+    ],
+    meaning: "Why: {reasons}. Devices known from your tailnet on that date are kept as they were, but a new one, or one that is gone, is not seen until Tailscale connects.",
+    meaning_none: None,
+    advice: "Open Tailscale and do what it asks: log in, ask an admin of your tailnet to approve this Mac, or switch it to your own account.",
+};
+
 pub const GUARDED: Cause = Cause {
     id: "protected-folders",
     who: NOTHING,
@@ -444,7 +473,7 @@ pub const GUARDED: Cause = Cause {
         "{what} inside {examples} are not checked.",
         "{what} inside {examples} are not checked.",
     ],
-    meaning: "macOS asks for permission before a program may look there, and this program does not ask on its own. If nothing of these is kept there, nothing is missed.",
+    meaning: "This version does not look inside them: macOS asks for your permission before a program may, and this version does not ask. If nothing of these is kept there, nothing is missed.",
     meaning_none: None,
     advice: "Nothing to do for now. Including them from the app comes in a later version.",
 };
@@ -461,6 +490,48 @@ pub const NOT_UNDERSTOOD: Cause = Cause {
     meaning: "They tell what your projects or servers depend on, for example {examples}. A change in them is not noticed yet.",
     meaning_none: None,
     advice: "Nothing to do. Support for them comes in later versions.",
+};
+
+pub const OTHER_MANAGERS: Cause = Cause {
+    id: "package-managers-not-read",
+    who: NOTHING,
+    scope: "this_mac",
+    kind: "software installed by package managers this version does not read",
+    title: [
+        "Software installed with {all} is not checked by this version.",
+        "Software installed with {all} is not checked by this version.",
+    ],
+    meaning: "This version checks applications, what Homebrew installed in /opt/homebrew or /usr/local, and the npm packages installed globally in /opt/homebrew/lib/node_modules or /usr/local/lib/node_modules. It does not read what these installed, so a change in it goes unseen.",
+    meaning_none: None,
+    advice: "Nothing to do. This is a limit of this version.",
+};
+
+pub const TOOL_LOST: Cause = Cause {
+    id: "read-before-not-found",
+    who: NOTHING,
+    scope: "this_mac",
+    kind: "tools read before and not found now",
+    title: [
+        "{what} was read before and is not found now, so it was not looked at since {date}.",
+        "{what} were read before and are not found now, so they were not looked at since {date}.",
+    ],
+    meaning: "An earlier check read it, and this version looks for it only where its installer puts it by default: {reasons}. What was known from it is kept as it was and nothing of it is said to be gone, but a change in it is not seen.",
+    meaning_none: None,
+    advice: "Nothing to do if it is installed somewhere else on purpose: this version does not look there. It is read again at the first check that finds it at one of these places.",
+};
+
+pub const MANAGERS_ELSEWHERE: Cause = Cause {
+    id: "package-managers-elsewhere-not-found",
+    who: NOTHING,
+    scope: "this_mac",
+    kind: "software of other package managers, and tools installed at other places",
+    title: [
+        "Software installed by a package manager other than Homebrew and npm is not checked.",
+        "Software installed by a package manager other than Homebrew and npm is not checked.",
+    ],
+    meaning: "This version reads what Homebrew installed and the npm packages installed globally in /opt/homebrew/lib/node_modules or /usr/local/lib/node_modules. Software from any other package manager is not checked, and only the few managers this version looks for are named when found, so a manager not named may still be here. Homebrew, Tailscale and those few are looked for only where their installers put them by default, the same on every Mac, and one installed elsewhere is not found.",
+    meaning_none: None,
+    advice: "Nothing to do. This is a limit of this version.",
 };
 
 pub const PROJECT_AUTORUN: Cause = Cause {
@@ -497,12 +568,26 @@ pub const THREATS_UNREAD: Cause = Cause {
     scope: "threats",
     kind: "vulnerability list not downloaded",
     title: [
-        "The list of vulnerabilities attackers are using could not be downloaded.",
-        "The list of vulnerabilities attackers are using could not be downloaded.",
+        "The list of vulnerabilities attackers are using could not be downloaded since {date}.",
+        "The list of vulnerabilities attackers are using could not be downloaded since {date}.",
     ],
-    meaning: "This is normal when the Mac is offline. Until it is downloaded, new ones go unannounced.",
+    meaning: "Why: {reasons}. Until it is downloaded, a vulnerability attackers start using after that date is not announced. The download uses a proxy only when the environment names one; it does not read the macOS proxy settings.",
     meaning_none: None,
-    advice: "Nothing to do. It is tried again at every check.",
+    advice: "Nothing to do if this Mac was offline: it is tried again at every check. If it stays while the Mac is online, ask your agent to look at why.",
+};
+
+pub const THREATS_FIXABLE: Cause = Cause {
+    id: "vulnerability-list-not-downloaded-fixable",
+    who: YOU,
+    scope: "threats",
+    kind: "vulnerability list not downloaded for a cause on this Mac or its network",
+    title: [
+        "The list of vulnerabilities attackers are using could not be downloaded since {date}, for a cause on this Mac or its network.",
+        "The list of vulnerabilities attackers are using could not be downloaded since {date}, for a cause on this Mac or its network.",
+    ],
+    meaning: "Why: {reasons}. Until it is downloaded, a vulnerability attackers start using after that date is not announced.",
+    meaning_none: None,
+    advice: "Fix what the reason names: free space on this Mac's disk, set its clock right, or give the proxy the password it asks for. If the clock is right and the network inspects encrypted traffic, ask whoever runs it to let this Mac reach www.cisa.gov over HTTPS.",
 };
 
 pub const VULNERABILITIES_UNKNOWN: Cause = Cause {
@@ -528,9 +613,23 @@ pub const VULNERABILITY_DATA_OLD: Cause = Cause {
         "The list of known vulnerabilities could not be updated since {date}.",
         "The list of known vulnerabilities could not be updated since {date}.",
     ],
-    meaning: "It is downloaded again at every check. Until it is, a vulnerability published after that date is not known here.",
+    meaning: "Why: {reasons}. It is downloaded again at every check. Until it is, a vulnerability published after that date is not known here. The download uses a proxy only when the environment names one; it does not read the macOS proxy settings.",
     meaning_none: None,
-    advice: "Nothing to do if you were offline. If it stays, ask your agent to look at why the download fails.",
+    advice: "Nothing to do if this Mac was offline. If it stays while the Mac is online, ask your agent to look at why.",
+};
+
+pub const VULNERABILITY_DATA_FIXABLE: Cause = Cause {
+    id: "vulnerability-data-not-updated-fixable",
+    who: YOU,
+    scope: "threats",
+    kind: "list of known vulnerabilities not updated for a cause on this Mac or its network",
+    title: [
+        "The list of known vulnerabilities could not be updated since {date}, for a cause on this Mac or its network.",
+        "The list of known vulnerabilities could not be updated since {date}, for a cause on this Mac or its network.",
+    ],
+    meaning: "Why: {reasons}. It is downloaded again at every check. Until it is, a vulnerability published after that date is not known here.",
+    meaning_none: None,
+    advice: "Fix what the reason names: free space on this Mac's disk, set its clock right, or give the proxy the password it asks for. If the clock is right and the network inspects encrypted traffic, ask whoever runs it to let this Mac reach osv-vulnerabilities.storage.googleapis.com over HTTPS.",
 };
 
 pub const NOT_COMPARED: Cause = Cause {
@@ -618,7 +717,7 @@ pub const FILES_NOT_COLLECTED: Cause = Cause {
 };
 
 /// Every cause, in the order items are listed: what the owner can fix first.
-pub const CAUSES: [&Cause; 17] = [
+pub const CAUSES: [&Cause; 24] = [
     &SERVERS_NOT_CHECKED,
     &SERVERS_NOT_OPENED,
     &NOT_PERMITTED,
@@ -628,22 +727,32 @@ pub const CAUSES: [&Cause; 17] = [
     &EVENTS_FAILING,
     &EVENTS_SILENT,
     &FILES_NOT_COLLECTED,
+    &TAILNET_OFF,
+    &TAILNET_NEEDS_YOU,
+    &TOOL_LOST,
     &GUARDED,
     &NOT_UNDERSTOOD,
+    &OTHER_MANAGERS,
+    &MANAGERS_ELSEWHERE,
     &PROJECT_AUTORUN,
     &HOME_AUTORUN,
     &THREATS_UNREAD,
+    &THREATS_FIXABLE,
     &VULNERABILITY_DATA_OLD,
+    &VULNERABILITY_DATA_FIXABLE,
     &VULNERABILITIES_UNKNOWN,
     &NOT_COMPARED,
 ];
 
 /// Each sentence of `status::CANNOT_JUDGE`, told for a person, one for one: the builder who
 /// closes a gap deletes the sentence and its line here, and the item goes with them.
-pub const LIMITS: [(&str, &Cause); 1] = [(
-    "no vulnerability is matched against installed software, servers' packages or ecosystems other than npm and crates.io yet",
-    &NOT_COMPARED,
-)];
+pub const LIMITS: [(&str, &Cause); 2] = [
+    (
+        "no vulnerability is matched against installed software, servers' packages or ecosystems other than npm and crates.io yet",
+        &NOT_COMPARED,
+    ),
+    (status::OTHER_MANAGERS, &MANAGERS_ELSEWHERE),
+];
 
 /// The scopes of what is not covered.
 pub const SCOPES: [&str; 4] = ["this_mac", "projects", "servers", "threats"];
@@ -697,9 +806,11 @@ impl Uncovered {
             .next()
             .map(|c| c.to_uppercase().chain(chars).collect())
             .unwrap_or_default();
+        let all: Vec<&str> = self.examples.iter().map(String::as_str).collect();
         numbers(words, self.cause)
             .replace("{n}", &self.count.to_string())
             .replace("{examples}", &listed(&shown))
+            .replace("{all}", &listed(&all))
             .replace("{date}", &date)
             .replace("{reasons}", &reasons)
             .replace("{what}", &what)
@@ -719,8 +830,9 @@ impl Uncovered {
     /// What is told apart from the words: the examples, unless the words name them, and the
     /// value.
     pub fn apart(&self) -> Vec<&str> {
-        let named =
-            self.cause.title[1].contains("{examples}") || self.cause.meaning.contains("{examples}");
+        let named = ["{examples}", "{all}"]
+            .iter()
+            .any(|p| self.cause.title[1].contains(p) || self.cause.meaning.contains(p));
         let mut out: Vec<&str> = Vec::new();
         if !named {
             out.extend(self.examples.iter().map(String::as_str));
@@ -884,26 +996,79 @@ pub fn not_covered(
         }
     }
 
+    // Tailscale that is not connected, as its latest reading left it, since the tailnet was
+    // last read in full. A state not readable this time is a reading that failed, above.
+    if let Some((r, t)) = latest
+        .iter()
+        .filter(|r| r.reader == crate::tailnet::READER)
+        .find_map(|r| Some((r, crate::tailnet::told(r.reason.as_deref()?)?)))
+        .filter(|(_, t)| !t.retry)
+    {
+        out.push(Uncovered {
+            since: r.last_full,
+            reasons: vec![t.reason.to_string()],
+            ..Uncovered::new(
+                if t.yours {
+                    &TAILNET_NEEDS_YOU
+                } else {
+                    &TAILNET_OFF
+                },
+                1,
+            )
+        });
+    }
+
+    // Tools an earlier check read and this one did not find at the places it looks: one item,
+    // since the oldest last full reading of them.
+    let lost: Vec<&Latest> = latest
+        .iter()
+        .filter(|r| r.completeness == "none")
+        .filter(|r| {
+            r.reason
+                .as_deref()
+                .is_some_and(|s| s.contains(crate::tools::READ_BEFORE))
+        })
+        .collect();
+    if !lost.is_empty() {
+        let mut what: Vec<&'static str> = Vec::new();
+        for r in &lost {
+            let name = match r.reader.as_str() {
+                crate::brew::READER => crate::brew::NAME,
+                crate::tailnet::READER => crate::tailnet::NAME,
+                _ => continue,
+            };
+            if !what.contains(&name) {
+                what.push(name);
+            }
+        }
+        // The places each was looked for, after its name.
+        let reasons: Vec<String> = lost
+            .iter()
+            .filter_map(|r| r.reason.as_deref()?.split_once(crate::tools::READ_BEFORE))
+            .map(|(name, places)| format!("{name} at {places}"))
+            .collect();
+        let n = what.len();
+        if n > 0 {
+            out.push(Uncovered {
+                since: lost.iter().filter_map(|r| r.last_full).min(),
+                reasons,
+                what,
+                ..Uncovered::new(&TOOL_LOST, n)
+            });
+        }
+    }
+
     // Folders macOS protects, whichever reader did not look into them, and what each reader
     // looks at, in the order of `GUARDED_WHAT`.
     let mut folders = BTreeSet::new();
     let mut what = BTreeSet::new();
     let mut at = None;
     for r in latest.iter().filter(|r| r.kind == guarded::KIND) {
-        let named = r
-            .reason
-            .as_deref()
-            .and_then(|s| s.strip_prefix(guarded::NOT_LOOKED_INTO))
-            .unwrap_or_default();
-        folders.extend(
-            named
-                .split(", ")
-                .filter(|f| !f.is_empty())
-                .map(plain_folder),
-        );
+        let named = not_looked_into(r);
         if !named.is_empty() {
             what.insert(guarded_what(&r.reader));
         }
+        folders.extend(named);
         at = at.max(Some(r.at));
     }
     if !folders.is_empty() {
@@ -930,6 +1095,11 @@ pub fn not_covered(
     let (in_home, lacks): (Vec<_>, Vec<_>) = lacks
         .into_iter()
         .partition(|(_, what, _)| what == autorun::OTHER_HOME);
+    // Package managers on this Mac are told in their own item, below.
+    let lacks: Vec<_> = lacks
+        .into_iter()
+        .filter(|(_, what, _)| what != crate::managers::NO_READER)
+        .collect();
     let looked = latest.iter().any(|r| {
         r.reader == watched::READER
             && r.kind == autorun::OTHERS_KIND
@@ -962,6 +1132,20 @@ pub fn not_covered(
             ..Uncovered::new(&NOT_UNDERSTOOD, kinds.len())
         });
     }
+    // Package managers on this Mac that no reader reads, each named, in the order the latest
+    // reading found them.
+    if let Some(names) = latest
+        .iter()
+        .filter(|r| r.reader == integrity::READER && r.kind == crate::managers::KIND)
+        .find_map(|r| r.reason.as_deref()?.strip_prefix(crate::managers::NOT_READ))
+    {
+        let names: Vec<String> = names.split(", ").map(str::to_string).collect();
+        out.push(Uncovered {
+            count: names.len(),
+            examples: names,
+            ..Uncovered::new(&OTHER_MANAGERS, 0)
+        });
+    }
     out.extend(project_autorun);
     // The same for the places of the home folder, told once the home folder was looked at.
     let home_read = latest
@@ -985,26 +1169,64 @@ pub fn not_covered(
         });
     }
 
+    // A download that failed, told with why in a person's words: the network's doing, which
+    // the owner can take up, or what passes by itself.
     if let Some(Catalogue::Failed { reason, last, .. }) = catalogue {
+        let why = crate::threats::why(reason);
         out.push(Uncovered {
             since: last.map(|(at, _)| at),
             value: Some(reason.clone()),
-            ..Uncovered::new(&THREATS_UNREAD, 1)
+            reasons: vec![why.said.to_string()],
+            ..Uncovered::new(
+                if why.yours {
+                    &THREATS_FIXABLE
+                } else {
+                    &THREATS_UNREAD
+                },
+                1,
+            )
         });
     }
-    // The vulnerability data, judged as the latest run judged it: current or not.
+    // The vulnerability data, judged as the latest run judged it: current or not, and why not,
+    // feed by feed: why its latest download failed, else why what it holds is not current.
     if let Some(run) = status::latest_finished(conn)?
         && let Some(since) = crate::vulnerabilities::stale(conn, run.started_at)?
     {
+        let (mut reasons, mut failures, mut yours) = (Vec::new(), Vec::new(), false);
+        for f in crate::vulnerabilities::freshness(conn, run.started_at)? {
+            let Some(not_current) = f.not_current else {
+                continue;
+            };
+            let failed = crate::osv::last_failure(conn, f.feed.source)?;
+            let ecosystem = f.feed.ecosystem;
+            match failed {
+                Some(reason) => {
+                    let why = crate::threats::why(&reason);
+                    yours |= why.yours;
+                    reasons.push(format!("{ecosystem}: {}", why.said));
+                    failures.push(format!("{ecosystem}: {reason}"));
+                }
+                None => reasons.push(format!("{ecosystem}: {not_current}")),
+            }
+        }
         out.push(Uncovered {
             since,
-            ..Uncovered::new(&VULNERABILITY_DATA_OLD, 1)
+            reasons,
+            value: (!failures.is_empty()).then(|| failures.join("; ")),
+            ..Uncovered::new(
+                if yours {
+                    &VULNERABILITY_DATA_FIXABLE
+                } else {
+                    &VULNERABILITY_DATA_OLD
+                },
+                1,
+            )
         });
     }
     // Packages whose answer is "don't know", one count, with each reason and its count. The
     // data not being current is the item above, and here it is the reason for the packages
     // it leaves untold.
-    let t = crate::vulnerabilities::totals(conn)?;
+    let t = crate::vulnerabilities::totals(conn, crate::now_secs())?;
     if t.packages_unknown > 0 {
         out.push(Uncovered {
             reasons: t
@@ -1049,6 +1271,32 @@ const GUARDED_WHAT: [(&[&str], &str); 7] = [
     (&[crate::brew::READER, crate::tailnet::READER], "tools"),
     (&[], "files"),
 ];
+
+/// The folders macOS protects that a reading of what a reader did not look into names, as a
+/// person names them.
+fn not_looked_into(r: &Latest) -> Vec<String> {
+    let named = r
+        .reason
+        .as_deref()
+        .and_then(|s| s.strip_prefix(guarded::NOT_LOOKED_INTO))
+        .unwrap_or_default();
+    named
+        .split(", ")
+        .filter(|f| !f.is_empty())
+        .map(plain_folder)
+        .collect()
+}
+
+/// The folders macOS protects that the latest readings that find projects did not look into,
+/// as a person names them, each once: a project kept there is not found.
+pub fn projects_not_looked_into(latest: &[Latest]) -> Vec<String> {
+    let folders: BTreeSet<String> = latest
+        .iter()
+        .filter(|r| r.kind == guarded::KIND && guarded_what(&r.reader) == 0)
+        .flat_map(not_looked_into)
+        .collect();
+    folders.into_iter().collect()
+}
 
 /// Where a reader is in `GUARDED_WHAT`.
 fn guarded_what(reader: &str) -> usize {
@@ -1139,9 +1387,9 @@ pub fn uncovered_json(u: &Uncovered) -> Value {
     })
 }
 
-/// Every cause with its words, for an agent to learn what each can say. `{n}` and
-/// `{examples}` stand for the count and the examples of an item, and `{what}` for what it
-/// is, as a list.
+/// Every cause with its words, for an agent to learn what each can say. `{n}`, `{all}` and
+/// `{examples}` stand for the count, every example and the first examples of an item, and
+/// `{what}` for what it is, as a list.
 pub fn causes_json() -> Value {
     Value::Array(
         CAUSES

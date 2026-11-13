@@ -32,12 +32,15 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 /// The readings that find programs on a Mac, as reader and kind. Their latest reading of this
-/// Mac speaks for every program the store never heard of.
-const FOUND_BY: [(&str, &str); 4] = [
+/// Mac speaks for every program the store never heard of. The last finds none: it says which
+/// package managers no reader reads, so a program one of them installed is never answered as
+/// absent on the others alone.
+const FOUND_BY: [(&str, &str); 5] = [
     (integrity::READER, integrity::BUNDLES),
     (integrity::READER, integrity::KEGS),
     (integrity::READER, integrity::NPM),
     (brew::READER, brew::KIND),
+    (integrity::READER, crate::managers::KIND),
 ];
 
 /// What `immune program` takes as a program.
@@ -103,9 +106,30 @@ pub fn program_cmd(args: &ProgramArgs) -> ExitCode {
             found_by: &found_by,
             inside: &[],
         };
-        known::known_of(conn, &q, &args.home, now).map(Ok)
+        let mut known = known::known_of(conn, &q, &args.home, now)?;
+        // A program the store never heard of may be one a package manager this version does
+        // not read installed: the answer says so, whatever the table of managers found.
+        if let (true, Some(machine)) = (
+            known.presence == v1::Presence::Unknown as i32,
+            this.as_deref(),
+        ) {
+            known::by_rule_for(
+                &mut known,
+                known::RULE_READER,
+                OTHER_MANAGERS_KIND,
+                machine,
+                OTHER_MANAGERS_LIMIT,
+                v1::Cause::NoReader,
+            );
+        }
+        Ok(Ok(known))
     })
 }
+
+/// The kind of the reading made by rule for what no reader of this version finds programs in.
+const OTHER_MANAGERS_KIND: &str = "software of package managers this version does not look for";
+/// Its reason: the standing limit, in the words of what this version cannot judge.
+const OTHER_MANAGERS_LIMIT: &str = crate::status::OTHER_MANAGERS;
 
 /// The programs a question names, and the path it asked about, as ids name paths, when it was one.
 #[derive(Default)]
