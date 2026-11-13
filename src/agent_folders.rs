@@ -19,12 +19,20 @@
 //! rest gives what a reading from the first byte gives. A position is trusted only when the
 //! bytes before it are shown to be the bytes read: the file has the same inode, and either
 //! its change time is unchanged or the bytes before the position hash to the digest kept.
-//! The kernel sets the change time on every write, every change of size and every change of
-//! the modification time, and no program can set it (setattrlist(2)). A change time taken
-//! less than a second after the file last changed never stands for its content, as git does
-//! not trust an index entry that is "racily clean". Anything else is read from the first
-//! byte. A last line without its line break is read, as a reading from the first byte reads
-//! it, but the position stays before it.
+//!
+//! An unchanged change time stands for unchanged content only on APFS and HFS+, where the
+//! kernel moves it on a write, a change of size and a change of the modification time, and
+//! no program can set it (setattrlist(2)). On any other volume (FAT, exFAT, SMB, NFS, FUSE),
+//! where a program may set it or it moves in steps of seconds, the bytes before the position
+//! are hashed every time. Even on APFS and HFS+ there are two cases in which changed bytes
+//! are not seen until the change time moves: a write through a shared mapping of the file,
+//! until the mapping is synced or unmapped, and a change to the volume while it was not
+//! mounted. A program that can do either can as well rewrite the session file outright, and
+//! a reading from the first byte would see no more than this one. A change time taken less
+//! than a second after the file last changed never stands for its content, as git does not
+//! trust an index entry that is "racily clean". Anything else is read from the first byte.
+//! A last line without its line break is read, as a reading from the first byte reads it,
+//! but the position stays before it.
 
 use crate::sha256::Hasher;
 use rusqlite::{Connection, Transaction, params};
@@ -253,6 +261,7 @@ fn read_session(path: &Path, before: Option<&Held>, settled_before: i64, out: &m
             stat: Stat::of(&file.metadata()?),
             before,
             settled_before,
+            change_time_kept: change_time_kept(&file),
         };
         read_from(&mut file, &then, &mut whole, &mut last, &mut out.cost)
     });
@@ -279,6 +288,34 @@ struct Then<'a> {
     stat: Stat,
     before: Option<&'a Held>,
     settled_before: i64,
+    /// Whether the file's volume keeps a change time no program can set.
+    change_time_kept: bool,
+}
+
+/// The file systems whose change time no program can set, by the type name `statfs` gives:
+/// APFS and HFS+.
+const CHANGE_TIME_KEPT: [&[u8]; 2] = [b"apfs", b"hfs"];
+
+/// Whether the volume of `file` is one of those. `false` when `fstatfs` fails.
+fn change_time_kept(file: &File) -> bool {
+    use std::os::fd::AsRawFd;
+    // SAFETY: `statfs` is plain data, so all zeros is a valid value, and fstatfs writes only
+    // into the one structure it is given, for a descriptor that stays open during the call.
+    let mut fs: libc::statfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstatfs(file.as_raw_fd(), &mut fs) } != 0 {
+        return false;
+    }
+    let name: Vec<u8> = fs
+        .f_fstypename
+        .iter()
+        .take_while(|&&c| c != 0)
+        .map(|&c| c as u8)
+        .collect();
+    kept_by(&name)
+}
+
+fn kept_by(fs_type: &[u8]) -> bool {
+    CHANGE_TIME_KEPT.contains(&fs_type)
 }
 
 /// Reads a session from where it can be trusted that the last reading stopped. The whole
@@ -296,7 +333,7 @@ fn read_from<R: Read + Seek>(
     // Another file at the path is read from its first byte, even one that begins with the
     // same bytes.
     let same_file = then.before.filter(|b| b.stat.inode == stat.inode);
-    if let Some(b) = same_file.filter(|b| b.settled && b.stat == stat) {
+    if let Some(b) = same_file.filter(|b| then.change_time_kept && b.settled && b.stat == stat) {
         // Not written to since: only what follows the position, a line still being written.
         cost.unchanged += 1;
         whole.folders.clone_from(&b.folders);
@@ -405,7 +442,9 @@ pub fn held(conn: &Connection) -> rusqlite::Result<BTreeMap<PathBuf, Held>> {
          FROM session_file",
     )?;
     let rows = stmt.query_map([], |r| {
-        let path: Vec<u8> = r.get(0)?;
+        let Ok(path) = r.get::<_, Vec<u8>>(0) else {
+            return Ok(None);
+        };
         let n = |i: usize| r.get::<_, i64>(i).ok().and_then(|v| u64::try_from(v).ok());
         let entry = || -> Option<Held> {
             let folders: String = r.get(6).ok()?;
@@ -872,6 +911,7 @@ mod tests {
                 stat: Stat { inode: 1, ctime_ns },
                 before: None,
                 settled_before,
+                change_time_kept: true,
             };
             let (mut whole, mut last) = (Parsed::default(), Parsed::default());
             read_from(
@@ -887,6 +927,92 @@ mod tests {
         };
         assert!(!settled_at(7, 7));
         assert!(settled_at(6, 7));
+    }
+
+    #[test]
+    fn on_a_volume_whose_change_time_a_program_can_set_a_rewrite_with_its_times_put_back_is_read_from_the_first_byte()
+     {
+        // On FAT, exFAT, SMB, NFS or FUSE a program can put the change time back, or it moves
+        // in steps of seconds. A test cannot mount such a volume, so its type is given: the
+        // same file with the same change time, rewritten in place, is hashed and read whole.
+        let stat = Stat {
+            inode: 3,
+            ctime_ns: 10,
+        };
+        let read = |text: &str, before: Option<&Held>, change_time_kept: bool| {
+            let then = Then {
+                stat,
+                before,
+                settled_before: 1_000,
+                change_time_kept,
+            };
+            let (mut whole, mut last) = (Parsed::default(), Parsed::default());
+            let mut cost = Cost::default();
+            let held = read_from(
+                &mut Cursor::new(text.as_bytes().to_vec()),
+                &then,
+                &mut whole,
+                &mut last,
+                &mut cost,
+            )
+            .unwrap()
+            .unwrap();
+            (held, whole.folders, cost)
+        };
+        let (before, _, _) = read(&turn("/invented/w0", 1), None, true);
+        assert!(before.settled);
+        let rewritten = turn("/invented/w1", 1);
+
+        let (_, folders, cost) = read(&rewritten, Some(&before), false);
+        assert_eq!(cost.from_start, 1);
+        assert_eq!(folders, BTreeSet::from(["/invented/w1".to_string()]));
+        // On APFS or HFS+ the same stat is taken as unchanged content.
+        let (_, _, cost) = read(&rewritten, Some(&before), true);
+        assert_eq!(cost.unchanged, 1);
+
+        for fs_type in ["msdos", "exfat", "smbfs", "nfs", "macfuse", "webdav", ""] {
+            assert!(!kept_by(fs_type.as_bytes()), "{fs_type}");
+        }
+        assert!(kept_by(b"apfs") && kept_by(b"hfs"));
+        // The folder of the tests is on the Mac's own APFS volume.
+        let t = Trial::new("fs-type");
+        let path = t.file("-invented-a/s1.jsonl");
+        std::fs::write(&path, "").unwrap();
+        assert!(change_time_kept(&File::open(&path).unwrap()));
+    }
+
+    #[test]
+    fn a_kept_row_that_does_not_read_back_is_dropped_and_its_file_read_from_the_first_byte() {
+        // A row written by hand or by another build must not stop every reading: it is left
+        // out, and the file it was about has no position.
+        let t = Trial::new("bad-row");
+        let mut store = crate::store::open(&t.root.join("store.db")).unwrap();
+        let tx = store.transaction().unwrap();
+        let entry = Held {
+            stat: Stat {
+                inode: 1,
+                ctime_ns: 2,
+            },
+            settled: true,
+            position: 0,
+            digest: crate::sha256::hex(b""),
+            folders: BTreeSet::new(),
+            unparsed: 0,
+        };
+        let good = BTreeMap::from([(PathBuf::from("/invented/good.jsonl"), entry)]);
+        keep(&tx, &good).unwrap();
+        for path in ["'/invented/text.jsonl'", "NULL"] {
+            tx.execute(
+                &format!(
+                    "INSERT INTO session_file VALUES ({path}, 1, 1, 1, 0, '{}', '[]', 0)",
+                    crate::sha256::hex(b"")
+                ),
+                [],
+            )
+            .unwrap();
+        }
+
+        assert_eq!(held(&tx).unwrap(), good);
     }
 
     #[test]
@@ -997,6 +1123,7 @@ mod tests {
             stat: stat(4),
             before: None,
             settled_before: 0,
+            change_time_kept: true,
         };
         let (mut whole, mut last) = (Parsed::default(), Parsed::default());
         let mut cost = Cost::default();
@@ -1019,6 +1146,7 @@ mod tests {
             stat: stat(5),
             before: Some(&before),
             settled_before: 0,
+            change_time_kept: true,
         };
         let (mut whole, mut last) = (Parsed::default(), Parsed::default());
         assert!(read_from(&mut failing, &then, &mut whole, &mut last, &mut cost).is_err());
