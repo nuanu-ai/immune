@@ -28,6 +28,14 @@
 //   a match of it is a match; that it did not match says nothing of the alternatives that need
 //   the fields in its `fields_text`.
 // Otherwise the answer says what the core did not see, and the reader does not take it for calm.
+// Quiet rests on `unevaluated`, which covers the lines this answer read, and not on the lists of
+// what arrives in `collector`, which are the core's latest reading and may be older than them.
+// A group that only some lines fill by nature, as `script` is, is judged by the core's latest
+// reading alone: one start without a script cannot tell a program that runs none from a field the
+// collector stopped filling. After the collector stops filling such a group, an answer over lines
+// the core has not read yet can stay quiet until the core's reading has counted the group's bound,
+// 1,000 program starts for `script`, and for as long as the core does not read at all. No shipped
+// rule reads such a group.
 //
 // Values that will be added. A reader meets values of `Raised`, `CollectorState`,
 // `UnevaluatedReason` and a rule's `Level`, and those `event.proto` names, that it does not know:
@@ -182,10 +190,15 @@ message Collector {
   // Files in the log folder that are not the collector's own, by their names: not read.
   uint64 foreign_files = 8;
   // What a collector may keep beyond what the first one kept, `identity`, `script` and
-  // `signature`, each in one of four lists by what the lines read up to the end of the stretch
-  // say of it. Kept is decided by what arrives, never by a record. A rule that reads one that
-  // does not arrive is listed in `unevaluated` with `not_collected`, and `detail_text` says which
-  // of the first three it is.
+  // `signature`, each in one of five lists by what the core's latest reading stored, at
+  // `status_read_at`, and not by the stretch: only that reading reads every log file to its end
+  // and so knows which one the collector is writing now, and only that file's lines say it. Kept
+  // is decided by what arrives, never by a record. A rule that reads one that does not arrive is
+  // listed in `unevaluated` with `not_collected`, and `detail_text` says which of the other four
+  // it is. So is a rule that reads one some line of this answer did not give, whatever these
+  // lists say: a line without its key, which the rule was not asked about, or, for `identity`
+  // and `signature`, a line with the key and no value; `detail_text` then says that the lines of
+  // this answer did not carry it.
   //
   // `not_kept`: the latest line lacks it, so the collector that wrote it is an earlier one, which
   // keeps none of them.
@@ -193,11 +206,25 @@ message Collector {
   // Lines carry it, and none read has given it a value yet.
   repeated string kept_never_filled = 10;
   // No line that would carry it has been read, as before the first line of a new install, or
-  // when an answer read nothing after a place an earlier build printed.
+  // the store holds no reading of the core's yet.
   repeated string not_yet_known = 11;
   // Lines give it a value, each with the time of the first line that did, as the lines' times
   // give it.
   repeated Arriving arriving = 12;
+  // Lines gave it values and then stopped: the latest lines carry it with no value, as many in
+  // a row as tell that the collector no longer fills it, one for a field every process has and a
+  // thousand program starts of the file being written for `script`. Each with the time of the
+  // first of them.
+  repeated NoLongerArriving no_longer_arriving = 13;
+}
+
+// One of what a collector may keep that no longer arrives.
+message NoLongerArriving {
+  // `identity`, `script` or `signature`.
+  string name = 1;
+  // The time of the first of the lines in a row that gave it no value, in seconds since the
+  // epoch.
+  int64 since = 2;
 }
 
 // One of what a collector may keep, arriving: lines give it values.
@@ -246,9 +273,9 @@ message Unevaluated {
   repeated string fields_text = 7;
   // For `needs_events` the kind of event it is about; for `not_parsed` what the parser said; for
   // `not_collected` why the collector here is not taken to record file events, or to keep what
-  // the rule reads. For a rule a translated set did not take, what the translation said of it,
-  // and for `in_part` what a translation left out that is not a missing field, such as a
-  // pattern it could not carry.
+  // the rule reads, or that lines this answer read did not give it. For a rule a translated set
+  // did not take, what the translation said of it, and for `in_part` what a translation left out
+  // that is not a missing field, such as a pattern it could not carry.
   optional string detail_text = 8;
   // Its set, as `Rule.source` and `Rule.set` give it; present for a rule that could not be read
   // too.

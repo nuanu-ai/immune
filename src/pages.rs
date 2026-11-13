@@ -1631,6 +1631,7 @@ fn rules_page(
             match not_arriving {
                 Some(crate::events::Arrival::NotKept) => w("<p class=\"missing\">Not watching on this Mac: it reads what the collector installed here does not keep. Installing the event level again adds it.</p>\n".to_string()),
                 Some(crate::events::Arrival::Kept(None)) => w("<p class=\"missing\">Not watching on this Mac: it reads what the collector keeps and no line has given a value for yet.</p>\n".to_string()),
+                Some(crate::events::Arrival::NoLonger(_)) => w("<p class=\"missing\">Not watching on this Mac: it reads what the collector keeps, and the latest lines give no value for it.</p>\n".to_string()),
                 Some(_) => w("<p class=\"missing\">Not watching on this Mac: it reads what no line read so far would carry, so whether the collector keeps it is not yet known.</p>\n".to_string()),
                 None => {}
             }
@@ -2695,8 +2696,8 @@ mod tests {
             ],
         );
         let on = Arrival::Kept(Some(1));
-        let sig = |a| Arrivals([on, on, a, on, a]);
-        let script = |a| Arrivals([on, a, on, on, on]);
+        let sig = |a| Arrivals::from([on, on, a, on, a]);
+        let script = |a| Arrivals::from([on, a, on, on, on]);
         let level_as = |state: &str, collected: bool, arrivals| Level {
             state: state.to_string(),
             read_at: 0,
@@ -2737,6 +2738,15 @@ mod tests {
             "{empty}"
         );
         assert!(!empty.contains("No match in the last day"), "{empty}");
+        let stopped = page(&level(sig(Arrival::NoLonger(1))));
+        assert_eq!(
+            stopped
+                .matches("Not watching on this Mac: it reads what the collector keeps, and the latest lines give no value for it.")
+                .count(),
+            2,
+            "{stopped}"
+        );
+        assert!(!stopped.contains("No match in the last day"), "{stopped}");
         let unknown = page(&level(sig(Arrival::Unknown)));
         assert_eq!(
             unknown

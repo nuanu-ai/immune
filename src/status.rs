@@ -1600,7 +1600,7 @@ mod tests {
     /// a program start and in a file event alike.
     fn signature(signature: Arrival) -> Arrivals {
         let on = Arrival::Kept(Some(1_791_072_002));
-        Arrivals([on, on, signature, on, signature])
+        Arrivals::from([on, on, signature, on, signature])
     }
 
     fn running(arrivals: Arrivals) -> Level {
@@ -1656,6 +1656,7 @@ mod tests {
         for (arrivals, reason) in [
             (signature(Arrival::NotKept), "collector_does_not_keep"),
             (signature(Arrival::Kept(None)), "kept_never_filled"),
+            (signature(Arrival::NoLonger(1)), "no_longer_arriving"),
             (signature(Arrival::Unknown), "not_yet_known"),
             (Arrivals::default(), "not_yet_known"),
         ] {
@@ -1679,7 +1680,7 @@ mod tests {
             );
         }
         // Lines that lack it say most: an earlier collector, whatever the other kind says.
-        let mixed = Arrivals([
+        let mixed = Arrivals::from([
             Arrival::Kept(Some(1)),
             Arrival::Kept(Some(1)),
             Arrival::Kept(Some(1)),

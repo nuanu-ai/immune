@@ -1156,10 +1156,15 @@ pub struct Collector {
     #[prost(uint64, tag = "8")]
     pub foreign_files: u64,
     /// What a collector may keep beyond what the first one kept, `identity`, `script` and
-    /// `signature`, each in one of four lists by what the lines read up to the end of the stretch
-    /// say of it. Kept is decided by what arrives, never by a record. A rule that reads one that
-    /// does not arrive is listed in `unevaluated` with `not_collected`, and `detail_text` says which
-    /// of the first three it is.
+    /// `signature`, each in one of five lists by what the core's latest reading stored, at
+    /// `status_read_at`, and not by the stretch: only that reading reads every log file to its end
+    /// and so knows which one the collector is writing now, and only that file's lines say it. Kept
+    /// is decided by what arrives, never by a record. A rule that reads one that does not arrive is
+    /// listed in `unevaluated` with `not_collected`, and `detail_text` says which of the other four
+    /// it is. So is a rule that reads one some line of this answer did not give, whatever these
+    /// lists say: a line without its key, which the rule was not asked about, or, for `identity`
+    /// and `signature`, a line with the key and no value; `detail_text` then says that the lines of
+    /// this answer did not carry it.
     ///
     /// `not_kept`: the latest line lacks it, so the collector that wrote it is an earlier one, which
     /// keeps none of them.
@@ -1169,13 +1174,32 @@ pub struct Collector {
     #[prost(string, repeated, tag = "10")]
     pub kept_never_filled: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// No line that would carry it has been read, as before the first line of a new install, or
-    /// when an answer read nothing after a place an earlier build printed.
+    /// the store holds no reading of the core's yet.
     #[prost(string, repeated, tag = "11")]
     pub not_yet_known: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// Lines give it a value, each with the time of the first line that did, as the lines' times
     /// give it.
     #[prost(message, repeated, tag = "12")]
     pub arriving: ::prost::alloc::vec::Vec<Arriving>,
+    /// Lines gave it values and then stopped: the latest lines carry it with no value, as many in
+    /// a row as tell that the collector no longer fills it, one for a field every process has and a
+    /// thousand program starts of the file being written for `script`. Each with the time of the
+    /// first of them.
+    #[prost(message, repeated, tag = "13")]
+    pub no_longer_arriving: ::prost::alloc::vec::Vec<NoLongerArriving>,
+}
+/// One of what a collector may keep that no longer arrives.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct NoLongerArriving {
+    /// `identity`, `script` or `signature`.
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    /// The time of the first of the lines in a row that gave it no value, in seconds since the
+    /// epoch.
+    #[prost(int64, tag = "2")]
+    pub since: i64,
 }
 /// One of what a collector may keep, arriving: lines give it values.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -1228,9 +1252,9 @@ pub struct Unevaluated {
     pub fields_text: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// For `needs_events` the kind of event it is about; for `not_parsed` what the parser said; for
     /// `not_collected` why the collector here is not taken to record file events, or to keep what
-    /// the rule reads. For a rule a translated set did not take, what the translation said of it,
-    /// and for `in_part` what a translation left out that is not a missing field, such as a
-    /// pattern it could not carry.
+    /// the rule reads, or that lines this answer read did not give it. For a rule a translated set
+    /// did not take, what the translation said of it, and for `in_part` what a translation left out
+    /// that is not a missing field, such as a pattern it could not carry.
     #[prost(string, optional, tag = "8")]
     pub detail_text: ::core::option::Option<::prost::alloc::string::String>,
     /// Its set, as `Rule.source` and `Rule.set` give it; present for a rule that could not be read

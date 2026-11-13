@@ -1448,11 +1448,12 @@ fn unreadable_lines_are_counted_and_the_rules_that_judge_nothing_are_named_with_
         (&json!(2), &json!(1), &json!(1))
     );
     assert_eq!(m["collector"]["file_events_collected"], false);
-    // An earlier collector keeps none of what a later one keeps, and the answer names it.
-    assert_eq!(
-        m["collector"]["not_kept"],
-        json!(["identity", "script", "signature"])
-    );
+    // An earlier collector keeps none of what a later one keeps, and the answer names it once
+    // the core's reading has read its lines; until then nothing is known of it.
+    let all = json!(["identity", "script", "signature"]);
+    assert_eq!(m["collector"]["not_yet_known"], all);
+    dir.run();
+    assert_eq!(dir.matches(&[])["collector"]["not_kept"], all);
     let unevaluated = m["unevaluated"].as_array().unwrap();
     let in_part = unevaluated.iter().find(|u| u["file"] == IN_PART).unwrap();
     assert_eq!(
