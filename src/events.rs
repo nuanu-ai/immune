@@ -3,9 +3,10 @@
 //! administrator" in `docs/how-it-works.md`. The collecting side runs as root and is data in
 //! `scripts/event-level/`: launchd runs `/usr/bin/eslogger exec create rename` into a FIFO,
 //! Apple's `jq` keeps of each message only what this reader uses, under `eslogger`'s own
-//! names, and Apple's `rotatelogs` appends that to one file per hour in a folder only root and
-//! the installing account can read; the root side deletes files older than a day, and the
-//! oldest while the log is over its size cap, and notes each deletion in `removed`. This
+//! names, and Apple's `rotatelogs` writes that into a new file at each hour and at 128 MiB, in a
+//! folder only root and the installing account can read; the root side deletes files older
+//! than a day, and the oldest while the log is over its size cap, each time a file is started
+//! and every ten minutes, and notes each deletion in `removed`. This
 //! reader runs as the owner, without rights, on the collection path: no model and no network.
 //! It reads the log honestly and counts, and evaluates every program start and file event it
 //! reads against SigmaHQ's published rules for macOS (`src/sigma.rs`), loaded once per
@@ -23,7 +24,9 @@
 //! and inode; a line still being written is left for the next reading. A file that is gone is
 //! forgotten, so a deleted file is never read again and one with the same name and another
 //! inode is read from its start. A line that is not a JSON object, such as the two halves of
-//! a line `rotatelogs` split between two files, is counted and skipped. A message of a kind
+//! a line `rotatelogs` split between two files, is counted and skipped, and so is the marker
+//! the filter writes for a message `jq` could not read, which is counted as such and not as a
+//! loss. A message of a kind
 //! other than `exec`, `create` and `rename` is counted and ignored. A message without a field this reader needs, or
 //! with an unknown `schema_version`, means the format changed: the reading fails with the
 //! reason, never with a default, and nothing is taken as read, so a build that knows the new
@@ -57,7 +60,7 @@
 //! start read again after it is matched once.
 //!
 //! File events. The same collector subscribes to `create` and `rename` as well, and its filter
-//! writes each as one line in the same hourly files, `exec-…` though they hold more than
+//! writes each as one line in the same files, `exec-…` though they hold more than
 //! `exec` now: the name stays, so the files an older collector wrote are read and deleted as
 //! before and nothing else changes. A file event is the file's path, a rename's source too,
 //! and the program that did it; it is asked only of the rules for file events, a program start
@@ -74,6 +77,18 @@
 //! older than the collector's launch daemon: an install that replaces the daemon without
 //! writing it again leaves a record that says nothing. Until then the rules for file events
 //! are said by name not to watch, with why, and coverage of file events is none.
+//!
+//! Who a process is. The collector keeps, beside a pid, the pid's version from the audit token
+//! and the process's start time, for the program started, the process that acted and, as pid
+//! and pid version, the parent; and the script a start names and some code-signing details
+//! (`KEEPS`). A collector installed before it did keeps none of them, and its lines are read as
+//! before: what a line lacks is absent. Each line says by its own keys which of `KEEPS` its
+//! collector kept, and a rule that reads a field one of them fills is not asked about a line
+//! that lacks it. What arrives says the same of the Mac (`Arrival`): each of `KEEPS` is not
+//! kept while the latest line of a kind that marks it lacks its key, kept and never filled
+//! while lines carry the key and none a value, and arriving from the first line that gave one;
+//! before any line, not yet known. A rule that reads one watches only while it arrives, and is
+//! otherwise named as not watching, with which.
 
 use crate::sigma::{Match, Meta, Rules, Subject};
 use crate::store::{Cause, Gap, Reading};
@@ -93,11 +108,64 @@ pub const KIND_FILES: &str = "file events on this Mac, from Apple's eslogger";
 /// The installer's record of what the collector records: the eslogger arguments of the
 /// installed launch daemon, as Apple's `plutil` extracts them, a JSON array of strings.
 pub const COLLECTS: &str = "Library/Application Support/ai.nuanu.immune/event-level/collects";
+/// The tidy job's launch daemon. Its fourth argument is the cap of the log in bytes, which only
+/// the installer writes there.
+pub const TIDY_PLIST: &str = "Library/LaunchDaemons/ai.nuanu.immune.event-tidy.plist";
+/// Why the cap of the log is not known while the collector is installed and its tidy job is not.
+pub const NO_TIDY: &str = "the tidy job's launch daemon is not installed, so nothing keeps the log under a cap; installing the event level again puts it back";
 /// The file events collected, as `eslogger` names them.
 pub const FILE_KINDS: [&str; 2] = ["create", "rename"];
 /// Why file events are not counted as collected, in the program's words.
 pub const STARTS_ONLY: &str = "the collector installed here records program starts only; installing the event level again adds files created and renamed";
 pub const REPLACED: &str = "the collector's launch daemon was replaced after the record of what it collects was written, so file events are not counted as collected; installing the event level again settles it";
+/// What a collector may keep beyond what the first one kept, by the names the status and the
+/// contract give them, each with what it is in a person's words:
+/// - `identity`: the pid version and start time of a program started and of the process that
+///   acted, in a program start and in a file event, and the pid and pid version of the parent;
+/// - `script`: the script a program start names;
+/// - `signature`: the code-signing flags of a program started and of the program before it,
+///   and the signing id of a program that created or renamed a file.
+pub const KEEPS: [(&str, &str); 3] = [
+    ("identity", "who each process is"),
+    ("script", "the script a program start runs"),
+    ("signature", "code-signing details"),
+];
+/// A set of `KEEPS`, one bit for each in their order.
+pub type Keeps = u8;
+pub const IDENTITY: Keeps = 1;
+pub const SCRIPT: Keeps = 2;
+pub const SIGNATURE: Keeps = 4;
+#[cfg(test)]
+pub const ALL_KEPT: Keeps = IDENTITY | SCRIPT | SIGNATURE;
+/// Where a line marks each of `KEEPS`, by the kind of event it is about: a program start carries
+/// all three, a file event who the process that acted is and its signer. Each is marked by one
+/// key, which the filter that keeps it writes on every line of the kind, null when eslogger gave
+/// nothing: `event.exec.target.start_time`, `event.exec.script` and
+/// `event.exec.target.codesigning_flags` in a program start; `process.start_time` and
+/// `process.signing_id` in a file event. That last one is the field a rule reads
+/// (`ECS_KEPT`), so whether it arrives is decided by the field itself.
+pub const MARKS: [(crate::sigma::Kind, Keeps); 5] = [
+    (crate::sigma::Kind::Process, IDENTITY),
+    (crate::sigma::Kind::Process, SCRIPT),
+    (crate::sigma::Kind::Process, SIGNATURE),
+    (crate::sigma::Kind::File, IDENTITY),
+    (crate::sigma::Kind::File, SIGNATURE),
+];
+/// Why a rule that reads one of `KEEPS` does not watch, by what the lines say of it
+/// (`Arrival`), in the program's words.
+pub const NOT_KEPT: &str = "the lines the collector installed here writes do not carry it: it is an earlier collector, and installing the event level again adds it";
+pub const NEVER_FILLED: &str =
+    "the collector installed here keeps it, and no line read has carried a value for it yet";
+pub const NOT_YET_KNOWN: &str = "no line that would carry it has been read yet, so whether the collector installed here keeps it is not yet known";
+/// The fields rules are given that only a collector that keeps one of `KEEPS` fills, by the
+/// kind of event, the field's name under the Elastic Common Schema, and what fills it. A rule
+/// that reads one is not asked about a line whose collector did not keep it, and watches only
+/// while values of it arrive (`Arrival`); otherwise it is named as not watching, with which.
+pub const ECS_KEPT: [(crate::sigma::Kind, &str, Keeps); 1] = [(
+    crate::sigma::Kind::File,
+    "process.code_signature.signing_id",
+    SIGNATURE,
+)];
 /// The level of access the events come from.
 pub const LEVEL: &str = "Apple's eslogger as administrator";
 /// How the run id of a watcher's reading begins.
@@ -111,7 +179,8 @@ pub const ESLOGGER_SAID: &str = "eslogger.err";
 pub const SCRIPTS_SAID: &str = "scripts.err";
 /// The root side's notes of what it deleted: `<when> <file> <bytes> age|cap`, one a line.
 pub const REMOVED: &str = "removed";
-/// The log files: `exec-YYYYMMDDTHH.jsonl`, one per hour, so their names sort in time.
+/// The log files: `exec-<run>-<start>.jsonl`, or an earlier collector's `exec-YYYYMMDDTHH.jsonl`
+/// (`Key`).
 const PREFIX: &str = "exec-";
 const SUFFIX: &str = ".jsonl";
 /// No line written for this long means the level does not record. The root side's tidy job
@@ -276,6 +345,29 @@ CREATE TABLE IF NOT EXISTS rule_file_evidence (
     source     TEXT,           -- a rename's source
     executable TEXT NOT NULL   -- the program that did it
 );
+-- An earlier build kept what the installer's record said the collector keeps; lines say it now.
+DROP TABLE IF EXISTS event_kept;
+-- What the lines read say of each of `KEEPS`, by kind of event (`MARKS`): a row once a line of
+-- the kind was read, none before.
+CREATE TABLE IF NOT EXISTS event_arrival (
+    kind   TEXT NOT NULL,     -- program_start or file_event
+    keep   TEXT NOT NULL,     -- identity, script or signature
+    kept   INTEGER NOT NULL,  -- whether the latest line of the kind holds its key
+    filled INTEGER,           -- since then, the time of the first line that gave it a value
+    PRIMARY KEY (kind, keep)
+);
+-- The filter's markers read whose number in eslogger's numbering no gap has taken in yet.
+CREATE TABLE IF NOT EXISTS event_marks (
+    id      INTEGER PRIMARY KEY CHECK (id = 1),
+    pending INTEGER NOT NULL
+);
+-- The cap of the log, as the latest reading of an installed collector found it in the tidy
+-- job's launch daemon: its bytes, or why it could not be read.
+CREATE TABLE IF NOT EXISTS event_cap (
+    id    INTEGER PRIMARY KEY CHECK (id = 1),
+    bytes INTEGER,  -- NULL when it could not be read
+    why   TEXT      -- the program's words, NULL when it was read
+);
 INSERT OR IGNORE INTO coverage_kind (name) VALUES
     ('program starts on this Mac, from Apple''s eslogger'),
     ('file events on this Mac, from Apple''s eslogger');
@@ -298,6 +390,8 @@ INSERT OR IGNORE INTO coverage_kind (name) VALUES
 /// | the euid of `event.exec.target.audit_token` | `user_id` | `process.user.id` | |
 /// | `event.exec.target.signing_id`, `.team_id` | `signing_id`, `team_id` | `process.code_signature.*` | |
 /// | `event.exec.target.is_platform_binary` | `platform_binary` | none | |
+///
+/// What a collector that keeps `KEEPS` adds is in `who`, and no rule is given it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ProcessStart {
     pub timestamp: String,
@@ -313,6 +407,42 @@ pub struct ProcessStart {
     pub signing_id: Option<String>,
     pub team_id: Option<String>,
     pub platform_binary: Option<bool>,
+    pub who: Box<Who>,
+    /// Which of `KEEPS` the collector that wrote the line kept.
+    pub kept: Keeps,
+}
+
+/// Who the processes of a program start are, the script and the code-signing flags: what a
+/// collector that keeps `KEEPS` adds to a start, each absent where the line does not give it.
+///
+/// | eslogger | here |
+/// |---|---|
+/// | the pidversion of `event.exec.target.audit_token`, `.start_time` | `pid_version`, `started` |
+/// | `event.exec.target.parent_audit_token` | `parent` |
+/// | `process.audit_token`, `process.start_time` | `instigator` |
+/// | `event.exec.script.path` | `script` |
+/// | `event.exec.target.codesigning_flags`, `process.codesigning_flags` | `codesigning_flags`, `instigator_codesigning_flags` |
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Who {
+    pub pid_version: Option<i64>,
+    /// When the process started, as eslogger writes it.
+    pub started: Option<String>,
+    pub parent: Identity,
+    /// The same process before this `exec`.
+    pub instigator: Identity,
+    pub script: Option<String>,
+    pub codesigning_flags: Option<i64>,
+    pub instigator_codesigning_flags: Option<i64>,
+}
+
+/// Who a process is, as far as a line of the log says: its pid and the pid's version, from an
+/// audit token, and when it started. Each is absent where the line does not give it, or gives
+/// it in a shape this reader does not know.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Identity {
+    pub pid: Option<i64>,
+    pub pid_version: Option<i64>,
+    pub started: Option<String>,
 }
 
 /// How a Sigma field's value is taken from a program start; `None` leaves the field absent,
@@ -418,6 +548,11 @@ pub const ECS_FIELDS: [(&str, Take); 11] = [
 /// the destination in Elastic's rename events; pySigma's macOS pipeline for `eslogger` data
 /// maps `file_event` to every file event, `TargetFilename` to `file.path`. Every shipped file
 /// rule asks where a file appeared, which a rename into place is as much as a create.
+///
+/// A collector that keeps `KEEPS` also gives who the program that did it is, from
+/// `process.audit_token` and `process.start_time` (`instigator`), and its signing id,
+/// `process.signing_id` (`signing_id`), which Elastic's rules read as
+/// `process.code_signature.signing_id`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FileEvent {
     pub timestamp: String,
@@ -426,6 +561,10 @@ pub struct FileEvent {
     pub path: String,
     pub source: Option<String>,
     pub executable: String,
+    pub instigator: Identity,
+    pub signing_id: Option<String>,
+    /// Which of `KEEPS` the collector that wrote the line kept.
+    pub kept: Keeps,
 }
 
 /// The folders at the top of every Mac that are links into `/private`. Endpoint Security
@@ -462,7 +601,7 @@ pub const FILE_SIGMA_FIELDS: [(&str, FileTake); 2] = [
 /// a program start. The path is given as Endpoint Security gives it, and only so: the translation
 /// was checked without a second name through macOS's links into `/private`, and Elastic's rules
 /// write `/private/...` where they mean it.
-pub const FILE_ECS_FIELDS: [(&str, FileTake); 7] = [
+pub const FILE_ECS_FIELDS: [(&str, FileTake); 8] = [
     // What Elastic Defend writes for a file created, and for one renamed.
     ("event.type", |f, _| {
         Some(
@@ -493,6 +632,12 @@ pub const FILE_ECS_FIELDS: [(&str, FileTake); 7] = [
     ("process.name", |f, _| {
         Some(basename(&f.executable).to_string())
     }),
+    // The signing id of the program that did it, as Endpoint Security gives it: Elastic's
+    // `process.code_signature.signing_id`, "the identifier used to sign the process", on a
+    // file event. Only a collector that keeps `SIGNATURE` writes it (`ECS_KEPT`).
+    ("process.code_signature.signing_id", |f, _| {
+        f.signing_id.clone()
+    }),
 ];
 
 /// One line of the log, as read.
@@ -515,6 +660,10 @@ pub enum Line {
     Other,
     /// Not a JSON object.
     Unreadable,
+    /// The filter's marker, `{"unreadable":true}`: a message of eslogger it could not read or
+    /// shape (`scripts/event-level/filter.jq`). Counted as a line that could not be read, and
+    /// the number it took in eslogger's numbering is not counted as lost by the kernel.
+    Marker,
 }
 
 /// Reads one line. `Err` says the format changed: a message without a field this reader
@@ -523,6 +672,9 @@ pub fn line(bytes: &[u8]) -> Result<Line, String> {
     let Ok(Value::Object(m)) = serde_json::from_slice::<Value>(bytes) else {
         return Ok(Line::Unreadable);
     };
+    if m.get("unreadable") == Some(&Value::Bool(true)) && !m.contains_key("event") {
+        return Ok(Line::Marker);
+    }
     let changed = |what: &str| {
         format!("a message without {what}: the format of eslogger or of its filter has changed")
     };
@@ -581,6 +733,8 @@ fn file(
             .filter(|p| p.starts_with('/'))
             .map(str::to_string)
     };
+    let process = m.get("process");
+    let has = |key: &str| process.and_then(|p| p.get(key)).is_some();
     Some(FileEvent {
         timestamp: m.get("time")?.as_str()?.to_string(),
         action,
@@ -589,8 +743,76 @@ fn file(
             "rename" => Some(path(e.get("source"))?),
             _ => None,
         },
-        executable: path(m.get("process").and_then(|p| p.pointer("/executable/path")))?,
+        executable: path(process.and_then(|p| p.pointer("/executable/path")))?,
+        instigator: process.map(identity).unwrap_or_default(),
+        signing_id: text(process.and_then(|p| p.get("signing_id"))),
+        kept: kept(&[
+            (has("start_time"), IDENTITY),
+            (has("signing_id"), SIGNATURE),
+        ]),
     })
+}
+
+/// A text, or absent for anything else.
+fn text(v: Option<&Value>) -> Option<String> {
+    v.and_then(Value::as_str).map(str::to_string)
+}
+
+/// Which of `KEEPS` a line's collector kept, from the keys the line holds: the filter that keeps
+/// one writes its key on every line, null when eslogger gave nothing, and an earlier filter
+/// never writes it.
+fn kept(marks: &[(bool, Keeps)]) -> Keeps {
+    marks
+        .iter()
+        .filter(|(has, _)| *has)
+        .fold(0, |kept, (_, k)| kept | k)
+}
+
+/// Which of `KEEPS` a program start gives a value for, by the keys that mark them (`MARKS`).
+fn filled_start(s: &ProcessStart) -> Keeps {
+    kept(&[
+        (s.who.started.is_some(), IDENTITY),
+        (s.who.script.is_some(), SCRIPT),
+        (s.who.codesigning_flags.is_some(), SIGNATURE),
+    ])
+}
+
+/// Which of `KEEPS` a file event gives a value for, by the keys that mark them (`MARKS`).
+fn filled_file(f: &FileEvent) -> Keeps {
+    kept(&[
+        (f.instigator.started.is_some(), IDENTITY),
+        (f.signing_id.is_some(), SIGNATURE),
+    ])
+}
+
+/// When a line happened, in seconds, as its time gives it, or else `now`.
+fn second_of(timestamp: &str, now: i64) -> i64 {
+    instant(timestamp).map_or(now, |(secs, _)| secs)
+}
+
+/// Who a process eslogger describes is: the pid and pid version of its `audit_token` and its
+/// `start_time`, each absent when the line does not give it as eslogger writes it.
+fn identity(process: &Value) -> Identity {
+    let (pid, pid_version) = other_token(process.get("audit_token"));
+    Identity {
+        pid,
+        pid_version,
+        started: text(process.get("start_time")),
+    }
+}
+
+/// The pid and pid version of an audit token that is not the one a program start needs: as an
+/// object, or as the eight words of `audit_token_t` (`token`); any other shape gives neither,
+/// and fails nothing.
+fn other_token(v: Option<&Value>) -> (Option<i64>, Option<i64>) {
+    match v {
+        Some(Value::Object(m)) => (
+            m.get("pid").and_then(Value::as_i64),
+            m.get("pidversion").and_then(Value::as_i64),
+        ),
+        Some(Value::Array(words)) if words.len() == 8 => (words[5].as_i64(), words[7].as_i64()),
+        _ => (None, None),
+    }
 }
 
 /// The program start an `exec` message describes, or the name of a field it needs and lacks.
@@ -599,8 +821,10 @@ fn start(v: &Value) -> Result<ProcessStart, &'static str> {
     const TOKEN: &str = "event.exec.target.audit_token";
     let exec = v.pointer("/event/exec").ok_or("event.exec")?;
     let target = exec.get("target").ok_or("event.exec.target")?;
-    let text = |v: Option<&Value>| v.and_then(Value::as_str).map(str::to_string);
     let token = token(target.get("audit_token").ok_or(TOKEN)?).ok_or(TOKEN)?;
+    let instigator = v.get("process");
+    let has = |v: &Value, key: &str| v.get(key).is_some();
+    let (parent_pid, parent_version) = other_token(target.get("parent_audit_token"));
     Ok(ProcessStart {
         timestamp: text(v.get("time")).ok_or("time")?,
         executable: text(target.pointer("/executable/path"))
@@ -621,20 +845,43 @@ fn start(v: &Value) -> Result<ProcessStart, &'static str> {
         signing_id: text(target.get("signing_id")),
         team_id: text(target.get("team_id")),
         platform_binary: target.get("is_platform_binary").and_then(Value::as_bool),
+        who: Box::new(Who {
+            pid_version: token.2,
+            started: text(target.get("start_time")),
+            parent: Identity {
+                pid: parent_pid,
+                pid_version: parent_version,
+                started: None,
+            },
+            instigator: instigator.map(identity).unwrap_or_default(),
+            script: text(exec.pointer("/script/path")),
+            codesigning_flags: target.get("codesigning_flags").and_then(Value::as_i64),
+            instigator_codesigning_flags: instigator
+                .and_then(|p| p.get("codesigning_flags"))
+                .and_then(Value::as_i64),
+        }),
+        kept: kept(&[
+            (has(target, "start_time"), IDENTITY),
+            (has(exec, "script"), SCRIPT),
+            (has(target, "codesigning_flags"), SIGNATURE),
+        ]),
     })
 }
 
-/// The pid and effective user id of an audit token. `eslogger` writes it as an object with
-/// named fields, and in some builds as the eight words of `audit_token_t`, in the order
-/// OpenBSM's `audit_token_to_*` read them: auid, euid, egid, ruid, rgid, pid, asid,
+/// The pid, effective user id and pid version of an audit token. `eslogger` writes it as an
+/// object with named fields, and in some builds as the eight words of `audit_token_t`, in the
+/// order OpenBSM's `audit_token_to_*` read them: auid, euid, egid, ruid, rgid, pid, asid,
 /// pidversion. Mullvad's parser accepts both the same way.
-fn token(v: &Value) -> Option<(i64, Option<i64>)> {
+fn token(v: &Value) -> Option<(i64, Option<i64>, Option<i64>)> {
     match v {
         Value::Object(m) => Some((
             m.get("pid")?.as_i64()?,
             m.get("euid").and_then(Value::as_i64),
+            m.get("pidversion").and_then(Value::as_i64),
         )),
-        Value::Array(words) if words.len() == 8 => Some((words[5].as_i64()?, words[1].as_i64())),
+        Value::Array(words) if words.len() == 8 => {
+            Some((words[5].as_i64()?, words[1].as_i64(), words[7].as_i64()))
+        }
         _ => None,
     }
 }
@@ -812,6 +1059,10 @@ struct Log {
     /// Whether the collector installed here is established to record file events, or why not:
     /// not given, or a record that is there and could not be read.
     collects: Result<(), (Cause, String)>,
+    /// What the lines say of each of `KEEPS`, after the last line read.
+    arrivals: Arrivals,
+    /// The filter's markers no gap has taken in yet.
+    pending: u64,
 }
 
 /// Where the last reading left off: each file's inode and offset, the last sequence number of
@@ -823,6 +1074,8 @@ struct Left {
     last_seq: Option<u64>,
     file_seq: [Option<u64>; 2],
     counted: Option<i64>,
+    arrivals: Arrivals,
+    pending: u64,
 }
 
 /// Reads the log under `root` from where `left` says, at `now`, and evaluates every program
@@ -848,6 +1101,8 @@ fn look(root: &Path, left: &Left, now: i64, rules: &'static Rules) -> Found {
     }
     let mut last_seq = left.last_seq;
     let mut file_seq = left.file_seq;
+    let mut arrivals = left.arrivals;
+    let mut pending = left.pending;
     let mut version = None;
     let mut files = Vec::new();
     let mut times = Vec::new();
@@ -859,6 +1114,9 @@ fn look(root: &Path, left: &Left, now: i64, rules: &'static Rules) -> Found {
             last_seq: &mut last_seq,
             file_seq: &mut file_seq,
             version: &mut version,
+            arrivals: &mut arrivals,
+            pending: &mut pending,
+            now,
             rules,
             matched: &mut matched,
             file: String::new(),
@@ -895,7 +1153,84 @@ fn look(root: &Path, left: &Left, now: i64, rules: &'static Rules) -> Found {
         state,
         said,
         collects,
+        arrivals,
+        pending,
     }))
+}
+
+/// The cap of the log under `root`, in bytes, as the installed tidy job is given it: the fourth
+/// argument of its launch daemon, read by Apple's `plutil`. A launch daemon that is there and
+/// cannot be read, or whose argument is not a whole number of bytes, is a failed reading with
+/// its reason, never a guess.
+///
+/// The cap is read only from that launch daemon, which belongs to root and which only the
+/// installer writes. No file or setting a program running as the user can change sets it: a
+/// cap such a program could shrink would let it empty the log, and that is quieting.
+fn log_cap(root: &Path) -> Result<u64, String> {
+    use std::sync::Mutex;
+    let path = root.join(TIDY_PLIST);
+    let failed = |e: &dyn std::fmt::Display| {
+        format!("the cap of the event level's log could not be read: {e}")
+    };
+    let meta = match std::fs::metadata(&path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(NO_TIDY.to_string()),
+        Err(e) => return Err(failed(&e)),
+    };
+    // `immune watch` reads the log every few seconds, and `plutil` started each time would be a
+    // program start the collector records: the answer is kept while the file is the same.
+    type Seen = Option<(
+        (std::path::PathBuf, u64, i64, i64, u64),
+        Result<u64, String>,
+    )>;
+    static SEEN: Mutex<Seen> = Mutex::new(None);
+    let key = (
+        path.clone(),
+        meta.ino(),
+        meta.mtime(),
+        meta.mtime_nsec(),
+        meta.len(),
+    );
+    if let Ok(seen) = SEEN.lock()
+        && let Some((k, cap)) = seen.as_ref()
+        && *k == key
+    {
+        return cap.clone();
+    }
+    let out = std::process::Command::new(crate::integrity::PLUTIL)
+        .args(["-extract", "ProgramArguments", "json", "-o", "-"])
+        .arg(&path)
+        .stdin(std::process::Stdio::null())
+        .output();
+    let cap = match out {
+        Err(e) => Err(failed(&e)),
+        Ok(out) if !out.status.success() => Err(failed(&format!(
+            "plutil: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))),
+        Ok(out) => serde_json::from_slice::<Value>(&out.stdout)
+            .ok()
+            .and_then(|v| v.get(3).and_then(Value::as_str).and_then(bytes_of))
+            .ok_or_else(|| {
+                failed(&"its fourth argument is not a cap tidy.sh takes, a whole number of bytes of at least 1 GiB")
+            }),
+    };
+    // A failure is not kept: the next reading runs plutil again.
+    if let Ok(mut seen) = SEEN.lock() {
+        *seen = cap.as_ref().ok().map(|bytes| (key, Ok(*bytes)));
+    }
+    cap
+}
+
+/// A cap as tidy.sh takes one: digits only, so no sign, without a leading zero, at most 16 of
+/// them, and at least 1 GiB, the smallest the installer writes. tidy.sh refuses anything else
+/// and deletes nothing to keep the log under it.
+fn bytes_of(text: &str) -> Option<u64> {
+    let digits = !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
+    let form = digits && text.len() <= 16 && !text.starts_with('0');
+    form.then(|| text.parse().ok())
+        .flatten()
+        .filter(|n| *n >= 1 << 30)
 }
 
 /// Whether the collector installed here is established to record file events: the installer's
@@ -931,6 +1266,158 @@ fn collects(root: &Path, daemon: &std::fs::Metadata) -> Result<(), (Cause, Strin
     } else {
         Err(not_given(STARTS_ONLY))
     }
+}
+
+/// What the lines read so far say of one of `KEEPS` in one kind of event (`MARKS`). Kept is
+/// decided by what arrives, never by a record: a field counts only once a line carried a value
+/// for it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Arrival {
+    /// No line of the kind has been read.
+    #[default]
+    Unknown,
+    /// The latest line of the kind lacks its key: the collector that wrote it does not keep it.
+    NotKept,
+    /// Lines carry its key; with the time of the first line since then that gave it a value,
+    /// when one did. Without one, the collector keeps it and eslogger has filled it in no line.
+    Kept(Option<i64>),
+}
+
+impl Arrival {
+    /// What a line of the kind, at `t`, says after what was said before: whether it holds the
+    /// key, and whether a value under it. A line without the key starts it again.
+    fn after(self, has: bool, filled: bool, t: i64) -> Arrival {
+        match (has, self) {
+            (false, _) => Arrival::NotKept,
+            (true, Arrival::Kept(Some(since))) => Arrival::Kept(Some(since)),
+            (true, _) => Arrival::Kept(filled.then_some(t)),
+        }
+    }
+
+    /// How far it is from arriving: what a rule that reads it is named with when they differ.
+    fn distance(self) -> u8 {
+        match self {
+            Arrival::NotKept => 3,
+            Arrival::Unknown => 2,
+            Arrival::Kept(None) => 1,
+            Arrival::Kept(Some(_)) => 0,
+        }
+    }
+
+    /// Why a rule that reads it does not watch, in the program's words; `None` while it arrives.
+    pub fn why(self) -> Option<&'static str> {
+        match self {
+            Arrival::NotKept => Some(NOT_KEPT),
+            Arrival::Unknown => Some(NOT_YET_KNOWN),
+            Arrival::Kept(None) => Some(NEVER_FILLED),
+            Arrival::Kept(Some(_)) => None,
+        }
+    }
+
+    /// Its stable name in the status, beside a rule that does not watch.
+    pub fn reason(self) -> Option<&'static str> {
+        match self {
+            Arrival::NotKept => Some("collector_does_not_keep"),
+            Arrival::Unknown => Some("not_yet_known"),
+            Arrival::Kept(None) => Some("kept_never_filled"),
+            Arrival::Kept(Some(_)) => None,
+        }
+    }
+}
+
+/// What the lines read so far say of each of `KEEPS` in each kind of event, in the order of
+/// `MARKS`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Arrivals(pub [Arrival; 5]);
+
+impl Arrivals {
+    /// Takes in one line of `kind` at `t`: which of `KEEPS` it holds the key of, and which a
+    /// value under.
+    fn line(&mut self, kind: crate::sigma::Kind, kept: Keeps, filled: Keeps, t: i64) {
+        for (a, (k, keep)) in self.0.iter_mut().zip(MARKS) {
+            if k == kind {
+                *a = a.after(kept & keep != 0, filled & keep != 0, t);
+            }
+        }
+    }
+
+    /// What the lines say of one of `KEEPS`: of the kinds that mark it, the one furthest from
+    /// arriving; arriving only when it arrives in each, since the latest of them began to.
+    pub fn of(&self, keep: Keeps) -> Arrival {
+        self.0
+            .iter()
+            .zip(MARKS)
+            .filter(|(_, (_, k))| *k == keep)
+            .map(|(a, _)| *a)
+            .reduce(|a, b| match (a, b) {
+                (Arrival::Kept(Some(x)), Arrival::Kept(Some(y))) => Arrival::Kept(Some(x.max(y))),
+                _ if b.distance() > a.distance() => b,
+                _ => a,
+            })
+            .unwrap_or_default()
+    }
+
+    /// Of a set of `KEEPS`, the one furthest from arriving, as a rule that reads them all is
+    /// named with.
+    pub fn worst(&self, keeps: Keeps) -> Arrival {
+        of(keeps)
+            .map(|(name, _)| self.of(keeps_named(&[name])))
+            .max_by_key(|a| a.distance())
+            .unwrap_or(Arrival::Kept(Some(0)))
+    }
+
+    /// What of `KEEPS` does not arrive: a rule that reads it does not watch.
+    pub fn not_arriving(&self) -> Keeps {
+        (0..KEEPS.len())
+            .map(|i| 1 << i)
+            .filter(|keep| !matches!(self.of(*keep), Arrival::Kept(Some(_))))
+            .fold(0, |set, keep| set | keep)
+    }
+
+    /// The names of `KEEPS` the lines say this of, in their order.
+    pub fn named(&self, state: impl Fn(Arrival) -> bool) -> Vec<&'static str> {
+        KEEPS
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| state(self.of(1 << i)))
+            .map(|(_, (name, _))| *name)
+            .collect()
+    }
+
+    /// The names of `KEEPS` that arrive, each with the time since when.
+    pub fn arriving(&self) -> Vec<(&'static str, i64)> {
+        KEEPS
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (name, _))| match self.of(1 << i) {
+                Arrival::Kept(Some(since)) => Some((*name, since)),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+/// The set of `KEEPS` these names name; a name it does not know names nothing.
+fn keeps_named(names: &[impl AsRef<str>]) -> Keeps {
+    KEEPS
+        .iter()
+        .enumerate()
+        .filter(|(_, (name, _))| names.iter().any(|n| n.as_ref() == *name))
+        .fold(0, |keeps, (i, _)| keeps | 1 << i)
+}
+
+/// The names of a set of `KEEPS`, in their order.
+pub fn names(keeps: Keeps) -> Vec<&'static str> {
+    of(keeps).map(|(name, _)| *name).collect()
+}
+
+/// The `KEEPS` in a set, in their order.
+fn of(keeps: Keeps) -> impl Iterator<Item = &'static (&'static str, &'static str)> {
+    KEEPS
+        .iter()
+        .enumerate()
+        .filter(move |(i, _)| keeps & (1 << i) != 0)
+        .map(|(_, k)| k)
 }
 
 /// The root side's notes of what it deleted, `<when> <file> <bytes> age|cap` a line; a note
@@ -991,6 +1478,12 @@ struct Into<'a> {
     last_seq: &'a mut Option<u64>,
     file_seq: &'a mut [Option<u64>; 2],
     version: &'a mut Option<u64>,
+    /// What the lines say of each of `KEEPS`, taken on line by line.
+    arrivals: &'a mut Arrivals,
+    /// Markers read whose number in eslogger's numbering no gap has taken in yet.
+    pending: &'a mut u64,
+    /// The time of the reading: a line whose time cannot be read is taken to be of it.
+    now: i64,
     rules: &'static Rules,
     matched: &'a mut Matched,
     /// The log file being read, by its name and inode: where each line evaluated is.
@@ -1074,20 +1567,33 @@ fn read_from(mut file: std::fs::File, from: u64, into: &mut Into) -> Result<Upto
                 start,
             } => {
                 let t = &mut *into.tally;
-                count_seq(seq, into.last_seq, (&mut t.lost, &mut t.unknown_gaps));
+                let counts = (&mut t.lost, &mut t.unknown_gaps);
+                count_seq(seq, into.last_seq, counts, into.pending);
                 t.starts += 1;
                 *into.version = v.or(*into.version);
+                into.arrivals.line(
+                    crate::sigma::Kind::Process,
+                    start.kept,
+                    filled_start(&start),
+                    second_of(&start.timestamp, into.now),
+                );
                 into.judge(Subject::Start(&start), begins, n)
             }
             Line::File { kind, seq, event } => {
                 let t = &mut *into.file_tally;
                 if let Some(seq) = seq {
                     let last = &mut into.file_seq[kind];
-                    count_seq(seq, last, (&mut t.lost, &mut t.unknown_gaps));
+                    count_seq(seq, last, (&mut t.lost, &mut t.unknown_gaps), into.pending);
                 }
                 match event {
                     Some(e) => {
                         t.files += 1;
+                        into.arrivals.line(
+                            crate::sigma::Kind::File,
+                            e.kept,
+                            filled_file(&e),
+                            second_of(&e.timestamp, into.now),
+                        );
                         into.judge(Subject::File(&e), begins, n)
                     }
                     None => {
@@ -1102,6 +1608,11 @@ fn read_from(mut file: std::fs::File, from: u64, into: &mut Into) -> Result<Upto
             }
             Line::Unreadable => {
                 into.tally.unreadable += 1;
+                false
+            }
+            Line::Marker => {
+                into.tally.unreadable += 1;
+                *into.pending += 1;
                 false
             }
         };
@@ -1190,40 +1701,77 @@ struct Opened {
 /// One of the collector's log files, as listed.
 struct LogFile {
     name: String,
-    /// The hour its name gives, `YYYYMMDDHH` as a number.
-    hour: u64,
+    /// Where its name puts it in the order files are written (`Key`).
+    key: Key,
     /// When it was last written to: seconds, and nanoseconds within the second.
     mtime: (i64, i64),
-    /// Its hour is over: a file of a later hour was written to at or after this one was last.
-    /// rotatelogs moves to the next hour's file and does not come back, so a line left without
-    /// its newline at the end of this one is never finished. The file of the latest hour is
-    /// never over, nor one written after it, as when the clock was set back.
+    /// It is over: a file later in the order was written to at or after this one was last.
+    /// rotatelogs moves to the next file and does not come back, so a line left without its
+    /// newline at the end of this one is never finished. The last file is never over, nor one
+    /// written after it, as when the clock was set back.
     over: bool,
+}
+
+/// Where a log file's name puts it in the order files are written. The collector names a file
+/// `exec-<run>-<start>.jsonl`, when its run of the filter began and when the file was started,
+/// each `YYYYMMDDTHHMMSS` in UTC (`scripts/event-level/collect.sh`); `run` and `at` are those as
+/// numbers, `YYYYMMDDHHMMSS`. An earlier collector named a file by its hour alone,
+/// `exec-YYYYMMDDTHH.jsonl`: `run` is 0 and `at` the hour, `YYYYMMDDHH`, so its files come
+/// before any of a later collector's, as they were written before it was installed. Ordered by
+/// run, then by start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Key {
+    run: u64,
+    at: u64,
+}
+
+impl Key {
+    /// A key some log file's name can give: an hour of a date for an earlier collector's, a
+    /// second of a date for both of a later one's numbers.
+    fn real(&self) -> bool {
+        match self.run {
+            0 => real_hour(self.at),
+            run => real_second(run) && real_second(self.at),
+        }
+    }
 }
 
 /// The files the root side writes in the log folder beside the log: what eslogger and the
 /// scripts print, and the notes of deletions. tidy.sh shortens each through a copy named with
 /// `.new` added.
-const SIDE_FILES: [&str; 3] = [ESLOGGER_SAID, SCRIPTS_SAID, REMOVED];
+const SIDE_FILES: [&str; 4] = [ESLOGGER_SAID, SCRIPTS_SAID, REMOVED, "tidy.lock"];
 
-/// The hour a log file's name gives, `YYYYMMDDHH` as a number, for a name in exactly the form
-/// rotatelogs writes, `exec-YYYYMMDDTHH.jsonl`, of an hour of a date. `None` for any other name:
-/// such a file is not the collector's and is never read.
-fn hour_of(name: &str) -> Option<u64> {
+/// The number the digits of `b` write, for bytes that are digits but for a `T` at `t`; `None`
+/// for any others.
+fn stamp(b: &[u8], t: usize) -> Option<u64> {
+    let form = b.iter().enumerate().all(|(i, c)| match i {
+        _ if i == t => *c == b'T',
+        _ => c.is_ascii_digit(),
+    });
+    form.then(|| {
+        b.iter()
+            .filter(|c| c.is_ascii_digit())
+            .fold(0, |n, c| n * 10 + u64::from(c - b'0'))
+    })
+}
+
+/// Where a log file's name puts it (`Key`), for a name in exactly a form a collector writes,
+/// of a real date and time; `None` for any other name: such a file is not the collector's and
+/// is never read.
+fn key_of(name: &str) -> Option<Key> {
     let b = name.strip_prefix(PREFIX)?.strip_suffix(SUFFIX)?.as_bytes();
-    let form = b.len() == 11
-        && b.iter().enumerate().all(|(i, c)| match i {
-            8 => *c == b'T',
-            _ => c.is_ascii_digit(),
-        });
-    if !form {
-        return None;
-    }
-    let hour = b
-        .iter()
-        .filter(|c| c.is_ascii_digit())
-        .fold(0, |n, c| n * 10 + u64::from(c - b'0'));
-    real_hour(hour).then_some(hour)
+    let key = match b.len() {
+        11 => Key {
+            run: 0,
+            at: stamp(b, 8)?,
+        },
+        31 if b[15] == b'-' => Key {
+            run: stamp(&b[..15], 8)?,
+            at: stamp(&b[16..], 8)?,
+        },
+        _ => return None,
+    };
+    key.real().then_some(key)
 }
 
 /// Whether `YYYYMMDDHH` is an hour of a date: a month from 1 to 12, a day from 1 to 31, an hour
@@ -1233,9 +1781,19 @@ fn real_hour(hour: u64) -> bool {
     hour < 10_000_000_000 && (1..=12).contains(&month) && (1..=31).contains(&day) && h < 24
 }
 
-/// The name of the log file of an hour, `YYYYMMDDHH` as a number.
-fn name_of(hour: u64) -> String {
-    format!("{PREFIX}{:08}T{:02}{SUFFIX}", hour / 100, hour % 100)
+/// Whether `YYYYMMDDHHMMSS` is a second of a date: an hour of a date, a minute from 0 to 59 and
+/// a second from 0 to 60, as `strftime(3)` writes a leap second.
+fn real_second(second: u64) -> bool {
+    real_hour(second / 10_000) && second / 100 % 100 < 60 && second % 100 <= 60
+}
+
+/// The name of the log file a key is of.
+fn name_of(key: Key) -> String {
+    let stamp = |n: u64| format!("{:08}T{:06}", n / 1_000_000, n % 1_000_000);
+    match key.run {
+        0 => format!("{PREFIX}{:08}T{:02}{SUFFIX}", key.at / 100, key.at % 100),
+        run => format!("{PREFIX}{}-{}{SUFFIX}", stamp(run), stamp(key.at)),
+    }
 }
 
 /// Looks at the source without reading a line. `Err(None)` is a level not installed, `Err` with
@@ -1256,7 +1814,7 @@ fn open(root: &Path) -> Result<Opened, Option<String>> {
         let name = entry.map_err(failed)?.file_name();
         // A log file's name is ASCII, so a name that is not text is another file.
         let name = name.to_string_lossy();
-        let Some(hour) = hour_of(&name) else {
+        let Some(key) = key_of(&name) else {
             let side = |s: &&str| name == *s || name.strip_suffix(".new") == Some(*s);
             if !SIDE_FILES.iter().any(side) {
                 foreign += 1;
@@ -1270,12 +1828,12 @@ fn open(root: &Path) -> Result<Opened, Option<String>> {
         };
         files.push(LogFile {
             name: name.to_string(),
-            hour,
+            key,
             mtime: (meta.mtime(), meta.mtime_nsec()),
             over: false,
         });
     }
-    files.sort_by_key(|f| f.hour);
+    files.sort_by_key(|f| f.key);
     for i in 0..files.len() {
         files[i].over = files[i + 1..].iter().any(|g| g.mtime >= files[i].mtime);
     }
@@ -1289,13 +1847,27 @@ fn open(root: &Path) -> Result<Opened, Option<String>> {
 }
 
 /// Counts what the sequence number says was lost since the last one of its kind: into `lost`
-/// a gap, into `unknown` a number that fell back.
-fn count_seq(seq: u64, last: &mut Option<u64>, (lost, unknown): (&mut i64, &mut i64)) {
+/// a gap, into `unknown` a number that fell back. A gap first takes in the numbers of the
+/// filter's markers read before it (`pending`), which are counted as lines that could not be
+/// read and not again as lost. A marker does not say which kind its message was, so the gap
+/// it is taken from may be another kind's: the two kinds' losses may then trade one, and the
+/// sum is right. A number that fell back is a restart, a loss of unknown size, and takes in
+/// every marker before it.
+fn count_seq(
+    seq: u64,
+    last: &mut Option<u64>,
+    (lost, unknown): (&mut i64, &mut i64),
+    pending: &mut u64,
+) {
     if let Some(l) = *last {
         if seq > l + 1 {
-            *lost += (seq - l - 1) as i64;
+            let gap = seq - l - 1;
+            let markers = gap.min(*pending);
+            *pending -= markers;
+            *lost += (gap - markers) as i64;
         } else if seq <= l {
             *unknown += 1;
+            *pending = 0;
         }
     }
     *last = Some(seq);
@@ -1304,16 +1876,20 @@ fn count_seq(seq: u64, last: &mut Option<u64>, (lost, unknown): (&mut i64, &mut 
 /// The state the root side's own evidence gives: refused or failing when `eslogger` or the
 /// scripts printed something after the log was last written to, silent when nothing has been
 /// written for `SILENT_AFTER` since the last write or, before any, the install, else running.
-/// `written` is when each log file was last written to. A time later than `now` is no sign of
-/// life: a file's time can be set ahead, and a clock set back leaves the times written before
-/// ahead of it.
+/// `written` is when each log file was last written to. A time ahead of `now` by more than
+/// the clock's allowance (`store::age`) is no sign of life: a file's time can be set ahead, and
+/// a clock set back leaves the times written before ahead of it. A time ahead by less is the
+/// collector writing while this reading went on, since `now` is when the reading began.
 fn judge(
     dir: &Path,
     installed_at: i64,
     written: impl IntoIterator<Item = i64>,
     now: i64,
 ) -> (&'static str, Option<(&'static str, String)>) {
-    let written = written.into_iter().filter(|w| *w <= now).max();
+    let written = written
+        .into_iter()
+        .filter(|w| crate::store::age(*w, now).is_some())
+        .max();
     for (by, name) in [("eslogger", ESLOGGER_SAID), ("scripts", SCRIPTS_SAID)] {
         let path = dir.join(name);
         let Ok(meta) = std::fs::metadata(&path) else {
@@ -1338,7 +1914,7 @@ fn judge(
         return (state, Some((by, last)));
     }
     let quiet_since = written.unwrap_or(installed_at);
-    if now - quiet_since > SILENT_AFTER || quiet_since > now {
+    if crate::store::age(quiet_since, now).is_none_or(|age| age > SILENT_AFTER) {
         (SILENT, None)
     } else {
         (RUNNING, None)
@@ -1467,6 +2043,9 @@ pub fn read(
         Found::NotInstalled => {
             put_level(tx, now, state, None, (None, None), (None, None, None))?;
             tx.execute("DELETE FROM event_files", [])?;
+            tx.execute("DELETE FROM event_arrival", [])?;
+            tx.execute("DELETE FROM event_marks", [])?;
+            tx.execute("DELETE FROM event_cap", [])?;
         }
         // Nothing is taken as read.
         Found::Failed(why) => {
@@ -1477,6 +2056,7 @@ pub fn read(
                      reason = excluded.reason",
                 params![now, state, why],
             )?;
+            put_cap(tx, &log_cap(root))?;
         }
         Found::Read(log) => {
             tx.execute("DELETE FROM event_file", [])?;
@@ -1522,6 +2102,13 @@ pub fn read(
                     seq(1)
                 ],
             )?;
+            put_arrivals(tx, &log.arrivals)?;
+            tx.execute(
+                "INSERT INTO event_marks (id, pending) VALUES (1, ?1)
+                 ON CONFLICT (id) DO UPDATE SET pending = excluded.pending",
+                [log.pending as i64],
+            )?;
+            put_cap(tx, &log_cap(root))?;
             opened = record(tx, run_id, machine, now, &log.matched)?;
             // A line of a file the reading no longer finds cannot be asked about again.
             for table in ["rule_line", "rule_line_from"] {
@@ -1901,12 +2488,15 @@ pub fn replay(root: &Path, now: i64) -> Replay {
 /// for every rule it matched. An argument list is never cut and can be a megabyte, so the
 /// count of matches alone does not keep an answer small.
 pub const BYTES: usize = 4 << 20;
-/// The most log files a place holds. The root side deletes a file not written to for a day, so
-/// the log holds about 25; a log of more cannot be read on from a place, and an answer fails
-/// rather than leave files out of it.
-const MAX_FILES: usize = 256;
-/// The version of a place's encoding, its first number.
-const PLACE_VERSION: u64 = 1;
+/// The most log files a place holds. The root side deletes a file not written to for a day, and
+/// a file holds at most an hour or 128 MiB, so a day's log is about 25 files, one more for each
+/// 128 MiB written and one more each time the filter started again: a day of a building Mac at
+/// the rates the installer states is about 170. A log of more cannot be read on from a place,
+/// and an answer fails rather than leave files out of it.
+const MAX_FILES: usize = 4096;
+/// The version of a place's encoding this build writes, its first number. It reads version 1
+/// too, which an earlier build wrote while every log file was named by its hour.
+const PLACE_VERSION: u64 = 2;
 
 /// Where a line of the log is: its file's name and inode, and the byte offset where the line
 /// begins. A log file is only appended to, so a line keeps its place until its file is deleted,
@@ -1918,9 +2508,11 @@ pub struct LineAt {
     pub offset: u64,
 }
 
-/// A line's place as `immune matches` gives it in `position`: the hour its file's name gives,
-/// the file's inode and the offset, such as `20261004T00-48151623-4096`. The core's own words,
-/// for a reader to keep and compare whole; nothing reads it back.
+/// A line's place as `immune matches` gives it in `position`: its file's name without `exec-`
+/// and `.jsonl`, the file's inode and the offset, such as
+/// `20261004T000013-20261004T000000-48151623-4096`, or `20261004T00-48151623-4096` in a file an
+/// earlier collector named by its hour. The core's own words, for a reader to keep and compare
+/// whole; nothing reads it back.
 impl std::fmt::Display for LineAt {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         let hour = self
@@ -1933,15 +2525,16 @@ impl std::fmt::Display for LineAt {
 }
 
 impl LineAt {
-    /// A position exactly as `immune matches` printed it; `None` for any other text. The hour
-    /// must be one a log file's name gives, and the text must be what this build prints for the
+    /// A position exactly as `immune matches` printed it; `None` for any other text. The name
+    /// must be one a collector gives a log file, and the text must be what this build prints for the
     /// place it reads, so a sign, a leading zero or anything left over is refused. A position
     /// names no path: the file is the log file of that hour, looked up in the log folder.
     pub fn parse(text: &str) -> Option<LineAt> {
-        let (hour, rest) = text.split_once('-')?;
-        let (inode, offset) = rest.split_once('-')?;
-        let file = format!("{PREFIX}{hour}{SUFFIX}");
-        hour_of(&file)?;
+        // The inode and the offset are the last two parts: a file's name may hold a dash.
+        let (rest, offset) = text.rsplit_once('-')?;
+        let (name, inode) = rest.rsplit_once('-')?;
+        let file = format!("{PREFIX}{name}{SUFFIX}");
+        key_of(&file)?;
         let at = LineAt {
             file,
             inode: inode.parse().ok()?,
@@ -1966,7 +2559,7 @@ pub enum AtLine {
 /// an event is evaluated (`Into::judge`), as the core's own reading and `immune matches` do, so a
 /// verdict about a match is about what they matched. Nothing is read from the store or written
 /// to it. A failure is the reason, in the program's words.
-pub fn at_line(root: &Path, at: &LineAt) -> Result<AtLine, String> {
+pub fn at_line(root: &Path, at: &LineAt, now: i64) -> Result<AtLine, String> {
     let failed = |e: &dyn std::fmt::Display| format!("{} in the event level's log: {e}", at.file);
     let file = match std::fs::File::open(root.join(LOG).join(&at.file)) {
         Ok(f) => f,
@@ -2001,6 +2594,7 @@ pub fn at_line(root: &Path, at: &LineAt) -> Result<AtLine, String> {
     let (mut tally, mut file_tally) = (Tally::default(), FileTally::default());
     let (mut last_seq, mut file_seq, mut version) = (None, [None; 2], None);
     let mut matched = Matched::default();
+    let (mut arrivals, mut pending) = (Arrivals::default(), 0);
     let mut sink = Sink {
         hits: Vec::new(),
         matches: 0,
@@ -2013,6 +2607,9 @@ pub fn at_line(root: &Path, at: &LineAt) -> Result<AtLine, String> {
         last_seq: &mut last_seq,
         file_seq: &mut file_seq,
         version: &mut version,
+        arrivals: &mut arrivals,
+        pending: &mut pending,
+        now,
         rules: Rules::shipped(),
         matched: &mut matched,
         file: at.file.clone(),
@@ -2040,63 +2637,101 @@ pub fn at_line(root: &Path, at: &LineAt) -> Result<AtLine, String> {
 }
 
 /// A caller's place in the log, as `immune matches` prints it in `continue_after` and takes it
-/// in `--after`: for each log file, its hour, its inode, how far it was read, and whether its
-/// hour was over (`LogFile::over`) when it was read to its end; and the last number eslogger
-/// gave each kind of event read, so that a gap at the seam between two answers is counted.
+/// in `--after`: for each log file, where its name puts it (`Key`), its inode, how far it was
+/// read, and whether it was over (`LogFile::over`) when it was read to its end; the last number
+/// eslogger gave each kind of event read, and the filter's markers no gap has taken in yet, so
+/// that a gap at the seam between two answers is counted once; and what the lines read say of
+/// each of `KEEPS`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Place {
     /// The last `seq_num` of a program start, a file created and a file renamed.
     seq: [Option<u64>; 3],
-    /// In the order of their hours, each hour once.
+    pending: u64,
+    arrivals: Arrivals,
+    /// In the order of their keys, each key once.
     files: Vec<Kept>,
 }
 
 /// One log file in a place.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Kept {
-    hour: u64,
+    key: Key,
     inode: u64,
     /// Every byte before it was read.
     offset: u64,
-    /// Read to its end with its hour over: no line is left in it unread.
+    /// Read to its end, and over: no line is left in it unread.
     finished: bool,
 }
 
 /// A place is printed as lower-case hexadecimal of a run of numbers, each an unsigned varint in
-/// protobuf's encoding, written and read by prost: the encoding's version, 1; each of the three
-/// last numbers plus one, 0 for none; how many files; then for each file the difference of its
-/// hour (`YYYYMMDDHH` as a number) from the file's before, from 0 for the first, doubled, plus
-/// one when it is finished; its inode; and its offset. Hexadecimal, because sixteen characters
-/// pass through a shell and an argument parser untouched and are checked one by one, and it
-/// needs no encoder of someone else's format but the varint, which is prost's. A day of 25 files
-/// is about 270 bytes, so about 540 characters.
+/// protobuf's encoding, written and read by prost. Version 2: the encoding's version, 2; each
+/// of the three last numbers plus one, 0 for none; the markers pending; for each of `MARKS`, 0
+/// for `Unknown`, 1 for `NotKept`, 2 for kept and never filled, or 3 plus the second it began to
+/// arrive; how many files; then for each file the difference of its run from the file's before
+/// (from 0 for the first); when the run is the same, the difference of its start from the file's
+/// before (from 0 for the first), else its start, doubled, plus one when it is finished; its
+/// inode; and its offset. Version 1, which an earlier build wrote, has no markers and no
+/// arrivals, and gives each file's hour as the difference from the one before, doubled, plus
+/// one when finished. Hexadecimal, because sixteen characters pass through a shell and an
+/// argument parser untouched and are checked one by one, and it needs no encoder of someone
+/// else's format but the varint, which is prost's. A day of 25 files is about 360 bytes, so
+/// about 730 characters.
 impl std::fmt::Display for Place {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let mut bytes = Vec::new();
-        let mut put = |n: u64| prost::encoding::encode_varint(n, &mut bytes);
-        put(PLACE_VERSION);
-        for s in self.seq {
-            put(s.map_or(0, |s| s + 1));
-        }
-        put(self.files.len() as u64);
-        let mut hour = 0;
-        for k in &self.files {
-            put(((k.hour - hour) << 1) | u64::from(k.finished));
-            put(k.inode);
-            put(k.offset);
-            hour = k.hour;
-        }
+        let bytes = self.encode(PLACE_VERSION);
         bytes.iter().try_for_each(|b| write!(f, "{b:02x}"))
     }
 }
 
 impl Place {
-    /// A place as `immune matches` prints it; `None` for any other text. Read strictly: the
-    /// version this build writes, at most `MAX_FILES` files, each a real hour and later than the
-    /// one before, and the text exactly as this build prints the place it reads. That last
-    /// check also holds the text to lower-case hexadecimal, to its length, and to nothing left
-    /// over, and no two texts are one place. A place never names a path: a file is only looked
-    /// up among those the log folder lists.
+    /// The place's numbers in the encoding of `version`, 1 or 2, as varints.
+    fn encode(&self, version: u64) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let mut put = |n: u64| prost::encoding::encode_varint(n, &mut bytes);
+        put(version);
+        for s in self.seq {
+            put(s.map_or(0, |s| s + 1));
+        }
+        if version >= 2 {
+            put(self.pending);
+            for a in self.arrivals.0 {
+                put(match a {
+                    Arrival::Unknown => 0,
+                    Arrival::NotKept => 1,
+                    Arrival::Kept(None) => 2,
+                    Arrival::Kept(Some(t)) => 3 + t.max(0) as u64,
+                });
+            }
+        }
+        put(self.files.len() as u64);
+        let mut before = Key { run: 0, at: 0 };
+        for k in &self.files {
+            let finished = u64::from(k.finished);
+            if version >= 2 {
+                put(k.key.run - before.run);
+                let at = if k.key.run == before.run {
+                    k.key.at - before.at
+                } else {
+                    k.key.at
+                };
+                put((at << 1) | finished);
+            } else {
+                put(((k.key.at - before.at) << 1) | finished);
+            }
+            put(k.inode);
+            put(k.offset);
+            before = k.key;
+        }
+        bytes
+    }
+
+    /// A place as `immune matches` prints it, or as an earlier build printed it; `None` for any
+    /// other text. Read strictly: version 1 or 2, at most `MAX_FILES` files, each of a key some
+    /// log file's name can give and later than the one before, and the text exactly as this
+    /// build prints the place it reads in that version. That last check also holds the text to
+    /// lower-case hexadecimal, to its length, and to nothing left over, and no two texts are one
+    /// place. A place never names a path: a file is only looked up among those the log folder
+    /// lists.
     pub fn parse(text: &str) -> Option<Place> {
         let bytes: Vec<u8> = text
             .as_bytes()
@@ -2105,36 +2740,68 @@ impl Place {
             .collect::<Option<_>>()?;
         let mut buf = bytes.as_slice();
         let mut next = || prost::encoding::decode_varint(&mut buf).ok();
-        // The version: another than this build's prints differently below.
-        next()?;
-        let mut seq = [None; 3];
-        for s in &mut seq {
+        let version = next()?;
+        if !(1..=PLACE_VERSION).contains(&version) {
+            return None;
+        }
+        let mut place = Place::default();
+        for s in &mut place.seq {
             *s = next()?.checked_sub(1);
+        }
+        if version >= 2 {
+            place.pending = next()?;
+            for a in &mut place.arrivals.0 {
+                *a = match next()? {
+                    0 => Arrival::Unknown,
+                    1 => Arrival::NotKept,
+                    2 => Arrival::Kept(None),
+                    t => Arrival::Kept(Some(i64::try_from(t - 3).ok()?)),
+                };
+            }
         }
         let n = next()?;
         if n > MAX_FILES as u64 {
             return None;
         }
-        let mut files = Vec::new();
-        let mut hour: u64 = 0;
+        let mut before = Key { run: 0, at: 0 };
         for _ in 0..n {
-            let step = next()?;
-            if step >> 1 == 0 {
+            let key = if version >= 2 {
+                let run = before.run.checked_add(next()?)?;
+                let step = next()?;
+                let at = if run == before.run {
+                    if step >> 1 == 0 {
+                        return None;
+                    }
+                    before.at.checked_add(step >> 1)?
+                } else {
+                    step >> 1
+                };
+                (Key { run, at }, step & 1 == 1)
+            } else {
+                let step = next()?;
+                if step >> 1 == 0 {
+                    return None;
+                }
+                let at = before.at.checked_add(step >> 1)?;
+                (Key { run: 0, at }, step & 1 == 1)
+            };
+            if !key.0.real() {
                 return None;
             }
-            hour = hour.checked_add(step >> 1)?;
-            if !real_hour(hour) {
-                return None;
-            }
-            files.push(Kept {
-                hour,
-                finished: step & 1 == 1,
+            place.files.push(Kept {
+                key: key.0,
+                finished: key.1,
                 inode: next()?,
                 offset: next()?,
             });
+            before = key.0;
         }
-        let place = Place { seq, files };
-        (place.to_string() == text).then_some(place)
+        let printed: String = place
+            .encode(version)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        (printed == text).then_some(place)
     }
 }
 
@@ -2176,6 +2843,8 @@ pub struct Stretch {
     pub said: Option<(&'static str, String)>,
     pub written: Option<i64>,
     pub collects: Result<(), (Cause, String)>,
+    /// What the lines say of each of `KEEPS`, after the last line read.
+    pub arrivals: Arrivals,
     /// Files in the log folder that are not the collector's own: not read.
     pub foreign: u64,
 }
@@ -2240,23 +2909,25 @@ pub fn queue(root: &Path, after: Option<&Place>, limit: usize, now: i64) -> Queu
     // Whether a file the place held, now gone or replaced, had lines the place did not read. The
     // root side's note says how much it held when it was deleted; without one, as after an
     // uninstall, only a file read to its end with its hour over held no more.
-    let unread = |k: &Kept| match deleted.get(&name_of(k.hour)) {
+    let unread = |k: &Kept| match deleted.get(&name_of(k.key)) {
         Some(bytes) => *bytes > k.offset,
         None => !k.finished,
     };
-    let held_of: BTreeMap<u64, &Kept> = held.files.iter().map(|k| (k.hour, k)).collect();
-    // The hours of files the place held whose unread lines are gone.
-    let mut gone: Vec<u64> = held
+    let held_of: BTreeMap<Key, &Kept> = held.files.iter().map(|k| (k.key, k)).collect();
+    // The keys of files the place held whose unread lines are gone.
+    let mut gone: Vec<Key> = held
         .files
         .iter()
-        .filter(|k| files.binary_search_by_key(&k.hour, |f| f.hour).is_err() && unread(k))
-        .map(|k| k.hour)
+        .filter(|k| files.binary_search_by_key(&k.key, |f| f.key).is_err() && unread(k))
+        .map(|k| k.key)
         .collect();
     let mut tally = Tally::default();
     let mut file_tally = FileTally::default();
     let mut matched = Matched::default();
     let mut last_seq = held.seq[0];
     let mut file_seq = [held.seq[1], held.seq[2]];
+    let mut arrivals = held.arrivals;
+    let mut pending = held.pending;
     let mut version = None;
     let mut sink = Sink {
         hits: Vec::new(),
@@ -2274,6 +2945,9 @@ pub fn queue(root: &Path, after: Option<&Place>, limit: usize, now: i64) -> Queu
             last_seq: &mut last_seq,
             file_seq: &mut file_seq,
             version: &mut version,
+            arrivals: &mut arrivals,
+            pending: &mut pending,
+            now,
             rules: Rules::shipped(),
             matched: &mut matched,
             file: String::new(),
@@ -2283,7 +2957,7 @@ pub fn queue(root: &Path, after: Option<&Place>, limit: usize, now: i64) -> Queu
         // The same file is read on from where the place left it. Another of its name, or one
         // shorter than the place read, is another file, read from its start, and the one the
         // place held is replaced.
-        let was = held_of.get(&f.hour).copied();
+        let was = held_of.get(&f.key).copied();
         let mut replaced = false;
         let from = |m: &std::fs::Metadata| match was {
             Some(k) if k.inode == m.ino() && k.offset <= m.len() => k.offset,
@@ -2296,16 +2970,16 @@ pub fn queue(root: &Path, after: Option<&Place>, limit: usize, now: i64) -> Queu
             Ok(Some(read)) => read,
             // Deleted between the listing and now.
             Ok(None) => {
-                gone.extend(was.filter(|k| unread(k)).map(|k| k.hour));
+                gone.extend(was.filter(|k| unread(k)).map(|k| k.key));
                 continue;
             }
             Err(why) => return Queue::Failed(why),
         };
         if replaced {
-            gone.extend(was.filter(|k| unread(k)).map(|k| k.hour));
+            gone.extend(was.filter(|k| unread(k)).map(|k| k.key));
         }
         place.files.push(Kept {
-            hour: f.hour,
+            key: f.key,
             inode: read.inode,
             offset: read.to,
             finished: f.over && read.to == read.len,
@@ -2324,12 +2998,14 @@ pub fn queue(root: &Path, after: Option<&Place>, limit: usize, now: i64) -> Queu
     place.files.extend(
         files[stopped..]
             .iter()
-            .filter_map(|f| held_of.get(&f.hour).map(|k| (*k).clone())),
+            .filter_map(|f| held_of.get(&f.key).map(|k| (*k).clone())),
     );
     place.seq = [last_seq, file_seq[0], file_seq[1]];
+    place.pending = pending;
+    place.arrivals = arrivals;
     let gone_at = gone.into_iter().min();
     let kept_from = gone_at.and_then(|g| {
-        let f = files.iter().find(|f| f.hour >= g)?;
+        let f = files.iter().find(|f| f.key >= g)?;
         let inode = std::fs::metadata(dir.join(&f.name)).ok()?.ino();
         Some(LineAt {
             file: f.name.clone(),
@@ -2352,6 +3028,7 @@ pub fn queue(root: &Path, after: Option<&Place>, limit: usize, now: i64) -> Queu
         said,
         written,
         collects,
+        arrivals,
         foreign,
     }))
 }
@@ -2584,6 +3261,74 @@ fn put_level(
     Ok(())
 }
 
+/// The cap of the log as this reading found it in the tidy job's launch daemon, whatever else the
+/// reading came to.
+fn put_cap(tx: &Transaction, cap: &Result<u64, String>) -> rusqlite::Result<()> {
+    tx.execute(
+        "INSERT INTO event_cap (id, bytes, why) VALUES (1, ?1, ?2)
+         ON CONFLICT (id) DO UPDATE SET bytes = excluded.bytes, why = excluded.why",
+        params![cap.as_ref().ok().map(|b| *b as i64), cap.as_ref().err()],
+    )?;
+    Ok(())
+}
+
+/// The names `event_arrival` gives a kind of event.
+fn kind_name(kind: crate::sigma::Kind) -> &'static str {
+    match kind {
+        crate::sigma::Kind::Process => "program_start",
+        crate::sigma::Kind::File => "file_event",
+    }
+}
+
+/// What the lines read say of each of `KEEPS`, one row for each of `MARKS` that a line spoke of.
+fn put_arrivals(tx: &Transaction, arrivals: &Arrivals) -> rusqlite::Result<()> {
+    tx.execute("DELETE FROM event_arrival", [])?;
+    for (a, (kind, keep)) in arrivals.0.iter().zip(MARKS) {
+        let (kept, filled) = match a {
+            Arrival::Unknown => continue,
+            Arrival::NotKept => (false, None),
+            Arrival::Kept(filled) => (true, *filled),
+        };
+        tx.execute(
+            "INSERT INTO event_arrival (kind, keep, kept, filled) VALUES (?1, ?2, ?3, ?4)",
+            params![kind_name(kind), names(keep)[0], kept, filled],
+        )?;
+    }
+    Ok(())
+}
+
+/// What the lines read say of each of `KEEPS`, as the latest reading left it; nothing is known
+/// before any reading of this version.
+fn arrivals(conn: &Connection) -> rusqlite::Result<Arrivals> {
+    let mut arrivals = Arrivals::default();
+    if !has(conn, "event_arrival")? {
+        return Ok(arrivals);
+    }
+    let mut stmt = conn.prepare("SELECT kind, keep, kept, filled FROM event_arrival")?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, bool>(2)?,
+            r.get::<_, Option<i64>>(3)?,
+        ))
+    })?;
+    for row in rows {
+        let (kind, keep, kept, filled) = row?;
+        let at = MARKS
+            .iter()
+            .position(|(k, m)| kind_name(*k) == kind && names(*m) == [keep.as_str()]);
+        if let Some(i) = at {
+            arrivals.0[i] = if kept {
+                Arrival::Kept(filled)
+            } else {
+                Arrival::NotKept
+            };
+        }
+    }
+    Ok(arrivals)
+}
+
 /// Where the last reading left off.
 fn left(tx: &Transaction) -> rusqlite::Result<Left> {
     let files = tx
@@ -2610,11 +3355,18 @@ fn left(tx: &Transaction) -> rusqlite::Result<Left> {
         )
         .optional()?;
     let seq = |s: Option<i64>| s.map(|s| s as u64);
+    let pending: Option<i64> = tx
+        .query_row("SELECT pending FROM event_marks WHERE id = 1", [], |r| {
+            r.get(0)
+        })
+        .optional()?;
     Ok(Left {
         files,
         last_seq: row.and_then(|r| r.0).map(|s| s as u64),
         file_seq: file_seq.map_or([None, None], |(c, r)| [seq(c), seq(r)]),
         counted: row.and_then(|r| r.1),
+        arrivals: arrivals(tx)?,
+        pending: pending.map_or(0, |p| p as u64),
     })
 }
 
@@ -2640,6 +3392,12 @@ pub struct Level {
     /// Program starts read over the last hour, minute by minute.
     pub starts_by_minute: Series,
     pub files: Files,
+    /// What the lines read say of each of `KEEPS`, as the latest reading left it: nothing is
+    /// known before any reading of a collector's lines, or while none is installed.
+    pub arrivals: Arrivals,
+    /// The cap of the log in bytes, or why it could not be read, as the latest reading of an
+    /// installed collector found it; `None` before any such reading, or while none is installed.
+    pub cap: Option<Result<u64, String>>,
 }
 
 /// File events, as the latest reading left them.
@@ -2659,8 +3417,13 @@ impl Level {
         self.state == RUNNING && self.files.collected
     }
 
+    /// What of `KEEPS` does not arrive: a rule that reads it does not watch.
+    pub fn not_arriving(&self) -> Keeps {
+        self.arrivals.not_arriving()
+    }
+
     /// Every file event the log held over the last day was read: none lost, none that could
-    /// not be made out, no line unreadable and no hour deleted early.
+    /// not be made out, no line unreadable and no file deleted early.
     pub fn files_whole(&self) -> bool {
         self.files.last_day.gaps().is_empty() && self.last_day.shared_whole()
     }
@@ -2756,6 +3519,8 @@ pub fn level(conn: &Connection, now: i64) -> rusqlite::Result<Option<Level>> {
     };
     Ok(Some(Level {
         files,
+        arrivals: arrivals(conn)?,
+        cap: cap(conn)?,
         state,
         read_at,
         written,
@@ -2770,6 +3535,32 @@ pub fn level(conn: &Connection, now: i64) -> rusqlite::Result<Option<Level>> {
         starts_by_hour: starts_by_hour(conn, now)?,
         starts_by_minute: starts_by_minute(conn, now)?,
     }))
+}
+
+/// The cap of the log, as the latest reading left it.
+fn cap(conn: &Connection) -> rusqlite::Result<Option<Result<u64, String>>> {
+    if !has(conn, "event_cap")? {
+        return Ok(None);
+    }
+    let row: Option<(Option<i64>, Option<String>)> = conn
+        .query_row("SELECT bytes, why FROM event_cap WHERE id = 1", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .optional()?;
+    Ok(row.map(|(bytes, why)| match bytes {
+        Some(b) => Ok(b as u64),
+        None => Err(why.unwrap_or_default()),
+    }))
+}
+
+/// A cap in a person's words: whole GiB when it is, else bytes.
+pub fn cap_words(bytes: u64) -> String {
+    const GIB: u64 = 1 << 30;
+    if bytes.is_multiple_of(GIB) {
+        format!("{} GiB", bytes / GIB)
+    } else {
+        format!("{bytes} bytes")
+    }
 }
 
 /// How many program starts matched each rule in readings from the hour that holds `from` on.
@@ -2844,7 +3635,7 @@ pub fn json(l: &Level) -> Value {
     let pair = |f: fn(&Tally) -> i64| json!({ "since_check": f(&l.since_check), "last_day": f(&l.last_day) });
     let files = |f: fn(&FileTally) -> i64| json!({ "since_check": f(&l.files.since_check), "last_day": f(&l.files.last_day) });
     let said = words(l);
-    json!({
+    let mut v = json!({
         "state": l.state,
         "level": LEVEL,
         "read_at": crate::view::iso(l.read_at),
@@ -2862,6 +3653,20 @@ pub fn json(l: &Level) -> Value {
         "reason_text": l.reason.as_deref().map(crate::status::text),
         "silent_after_seconds": SILENT_AFTER,
         "cannot_see": cannot_see(l),
+        // What a collector may keep beyond what the first one kept (`identity`, `script`,
+        // `signature`), each in one of four lists by what the lines read say of it: `not_kept`,
+        // the latest line lacks it, so the collector installed here is an earlier one;
+        // `kept_never_filled`, lines carry it and none has given it a value yet;
+        // `not_yet_known`, no line that would carry it has been read; and `arriving`, with the
+        // time of the first line that gave it a value. A rule that reads one that does not
+        // arrive is named in the rules' `not_watching`.
+        "not_kept": l.arrivals.named(|a| a == Arrival::NotKept),
+        "kept_never_filled": l.arrivals.named(|a| a == Arrival::Kept(None)),
+        "not_yet_known": l.arrivals.named(|a| a == Arrival::Unknown),
+        "arriving": l.arrivals.arriving().iter().map(|(name, since)| json!({
+            "name": name,
+            "since": crate::view::iso(*since),
+        })).collect::<Vec<_>>(),
         // Files created and renamed. `collected` is true only when the collector installed
         // here is established to record them; else `not_collected_reason` says why, in the
         // program's words, and the rules for file events do not watch. Lines that could not be
@@ -2889,7 +3694,18 @@ pub fn json(l: &Level) -> Value {
         // caveat a sentence of its own, none when nothing was lost; `caveats` holds the same
         // caveats in a few words each, under stable names. The program's own words.
         "in_words": in_words(&said),
-    })
+    });
+    // The cap of the log in bytes, as the installed tidy job is given it, or why it could not
+    // be read; both absent until a reading found the collector installed.
+    match &l.cap {
+        Some(Ok(bytes)) => v["log_cap_bytes"] = json!(bytes),
+        Some(Err(why)) => {
+            v["log_cap_bytes"] = Value::Null;
+            v["log_cap_reason"] = json!(why);
+        }
+        None => {}
+    }
+    v
 }
 
 /// `program_starts_by_minute`, in the status and in what a watcher says after a reading.
@@ -2978,6 +3794,33 @@ fn how_often(n: i64) -> String {
 /// that is a short moment in which program starts were not seen, and is said so, neither
 /// hidden nor made more of.
 pub fn words(l: &Level) -> Said {
+    let mut said = state_words(l);
+    // An earlier collector keeps less than this version reads, as its latest lines show: said
+    // in every state it is installed in, and as a caveat while it records.
+    let missing = keeps_named(&l.arrivals.named(|a| a == Arrival::NotKept));
+    if missing != 0 {
+        let what: Vec<&str> = of(missing).map(|(_, words)| *words).collect();
+        let list = match what.split_last() {
+            Some((last, [])) => last.to_string(),
+            Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+            None => String::new(),
+        };
+        said.notes.push(format!(
+            "The collector installed here is an earlier one and does not keep {list}; installing the event level again adds {}.",
+            if what.len() == 1 { "it" } else { "them" }
+        ));
+        if l.state == RUNNING {
+            said.caveats.push(Caveat {
+                kind: "earlier_collector",
+                short: "reinstall needed".to_string(),
+            });
+        }
+    }
+    said
+}
+
+/// The level's state in words, before what its collector does not keep.
+fn state_words(l: &Level) -> Said {
     let counted = crate::view::counted;
     let not_seen = |state: &'static str, why: String| Said {
         state,
@@ -3031,31 +3874,35 @@ pub fn words(l: &Level) -> Said {
                 short(
                     "deleted_early",
                     d.removed_cap,
-                    "hour deleted early",
-                    "hours deleted early",
+                    "file deleted early",
+                    "files deleted early",
                 );
                 notes.push(format!(
-                    "{} deleted early to keep the log under its size limit.",
+                    "{} deleted early to keep the log under its size limit{}.",
                     counted(
                         d.removed_cap,
-                        "hour of the log was",
-                        "hours of the log were"
-                    )
+                        "file of the log was",
+                        "files of the log were"
+                    ),
+                    match &l.cap {
+                        Some(Ok(bytes)) => format!(" of {}", cap_words(*bytes)),
+                        _ => String::new(),
+                    }
                 ));
             }
             if d.removed_unread > 0 {
                 short(
                     "deleted_unread",
                     d.removed_unread,
-                    "hour deleted unread",
-                    "hours deleted unread",
+                    "file deleted unread",
+                    "files deleted unread",
                 );
                 notes.push(format!(
                     "{} deleted before they were read.",
                     counted(
                         d.removed_unread,
-                        "hour of the log was",
-                        "hours of the log were"
+                        "file of the log was",
+                        "files of the log were"
                     )
                 ));
             }
@@ -3101,6 +3948,89 @@ pub fn words(l: &Level) -> Said {
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_cap_reported_is_the_one_tidy_sh_takes_and_is_said_in_gib_or_in_bytes_never_rounded() {
+        // tidy.sh takes its cap as at most 16 digits without a leading zero, of at least 1 GiB,
+        // and refuses anything else, so the status reports a cap only where tidy.sh has one: no
+        // zero, no sign, no leading zero, nothing its arithmetic would wrap.
+        for (text, read) in [
+            ("2147483648", Some(2147483648)),
+            ("1073741824", Some(1073741824)),
+            ("1073741823", None),
+            ("01073741824", None),
+            ("0", None),
+            ("00", None),
+            ("9999999999999999", Some(9999999999999999)),
+            ("10000000000000000", None),
+            ("+2147483648", None),
+            ("-1", None),
+            ("2G", None),
+            ("", None),
+            ("99999999999999999999", None),
+        ] {
+            assert_eq!(bytes_of(text), read, "{text}");
+        }
+        assert_eq!(cap_words(2147483648), "2 GiB");
+        assert_eq!(cap_words(1073741825), "1073741825 bytes");
+    }
+
+    #[test]
+    fn the_cap_is_read_again_only_when_the_tidy_job_s_launch_daemon_changed_and_a_failure_is_never_kept()
+     {
+        // `immune watch` reads the log every few seconds, and each `plutil` it started would be
+        // a program start in the log: the same file, by inode, size and time, is not read again.
+        // A reading that failed is not kept: the next one runs plutil again, even on a file
+        // that looks the same.
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("immune-events-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let plist = dir.join(TIDY_PLIST);
+        std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
+        let shipped = include_str!("../scripts/event-level/ai.nuanu.immune.event-tidy.plist");
+        // Writes `text` over the file in place, then gives it back the times it had before, so
+        // it keeps its inode, its size when `text` is as long, and its time.
+        let rewrite = |text: &str| {
+            let meta = std::fs::metadata(&plist).unwrap();
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&plist)
+                .unwrap()
+                .write_all(text.as_bytes())
+                .unwrap();
+            let times = [
+                libc::timespec {
+                    tv_sec: meta.atime(),
+                    tv_nsec: meta.atime_nsec(),
+                },
+                libc::timespec {
+                    tv_sec: meta.mtime(),
+                    tv_nsec: meta.mtime_nsec(),
+                },
+            ];
+            let path = std::ffi::CString::new(plist.as_os_str().as_encoded_bytes()).unwrap();
+            // SAFETY: a valid C path and two timespecs, as utimensat(2) takes them.
+            let set = unsafe { libc::utimensat(libc::AT_FDCWD, path.as_ptr(), times.as_ptr(), 0) };
+            assert_eq!(set, 0);
+        };
+        std::fs::write(&plist, shipped).unwrap();
+        assert_eq!(log_cap(&dir), Ok(2147483648));
+        // The same size, inode and time, other bytes: taken as the same file.
+        rewrite(&shipped.replace("2147483648", "3221225472"));
+        assert_eq!(log_cap(&dir), Ok(2147483648));
+        // Another file: read again.
+        std::fs::remove_file(&plist).unwrap();
+        std::fs::write(&plist, shipped.replace("2147483648", "5368709120")).unwrap();
+        assert_eq!(log_cap(&dir), Ok(5368709120));
+        // A file that cannot be read, then the same file by inode, size and time that can.
+        std::fs::remove_file(&plist).unwrap();
+        std::fs::write(&plist, shipped.replace("2147483648", "53687091x0")).unwrap();
+        assert!(log_cap(&dir).is_err());
+        assert!(log_cap(&dir).is_err());
+        rewrite(&shipped.replace("2147483648", "6442450944"));
+        assert_eq!(log_cap(&dir), Ok(6442450944));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Bytes as lower-case hexadecimal, as a place is printed.
     fn hex(bytes: &[u8]) -> String {
         bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -3115,57 +4045,83 @@ mod tests {
         out
     }
 
+    /// A file of a later collector's, of run `run` started at `at`, both `YYYYMMDDHHMMSS`.
+    fn kept_at(run: u64, at: u64, i: u64, finished: bool) -> Kept {
+        Kept {
+            key: Key { run, at },
+            inode: 150_000_000 + i * 40_000,
+            offset: 300_000_000 + i,
+            finished,
+        }
+    }
+
     #[test]
     fn a_place_is_taken_back_only_as_the_core_printed_it_and_a_day_of_it_is_short() {
         // `--after` comes from a caller. Only the text the core printed is taken: anything
-        // else is refused as a misuse, and nothing in a place names a path. A day of 25 hourly
-        // files fits a command line.
+        // else is refused as a misuse, and nothing in a place names a path. A day of 25 files
+        // fits a command line.
         let day = Place {
             seq: [Some(4_000_000), None, Some(0)],
+            pending: 1,
+            arrivals: Arrivals([
+                Arrival::Kept(Some(1_791_072_002)),
+                Arrival::Kept(None),
+                Arrival::NotKept,
+                Arrival::Unknown,
+                Arrival::Kept(Some(1_791_072_003)),
+            ]),
             files: (0..25u64)
-                .map(|i| Kept {
-                    hour: 2026100300 + if i < 24 { i } else { 100 },
-                    inode: 150_000_000 + i * 40_000,
-                    offset: 300_000_000 + i,
-                    finished: i < 24,
+                .map(|i| {
+                    let run = 20261003000013 + if i < 24 { 0 } else { 1_000_000 };
+                    let at = if i < 24 {
+                        20261003000000 + i * 10_000
+                    } else {
+                        20261004000000
+                    };
+                    kept_at(run, at, i, i < 24)
                 })
                 .collect(),
         };
         let text = day.to_string();
         assert_eq!(Place::parse(&text), Some(day.clone()));
-        assert!(text.len() < 600, "{} characters", text.len());
+        assert!(text.len() < 800, "{} characters", text.len());
         println!("a place of a day of 25 files: {} characters", text.len());
         let empty = Place::default().to_string();
-        assert_eq!(empty, "0100000000");
+        assert_eq!(empty, "0200000000000000000000");
         assert_eq!(Place::parse(&empty), Some(Place::default()));
-        let one = |step: u64| hex(&varints(&[1, 0, 0, 0, 1, step, 7, 9]));
-        assert!(Place::parse(&one(2026100400 << 1)).is_some());
-        let two = |step: u64| {
-            hex(&varints(&[
-                1,
-                0,
-                0,
-                0,
-                2,
-                2026100400 << 1,
-                7,
-                9,
-                step,
-                8,
-                9,
-            ]))
+        let head = [2, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let one = |run: u64, step: u64| hex(&varints(&[&head[..], &[1, run, step, 7, 9]].concat()));
+        assert!(Place::parse(&one(20261004000013, 20261004000000 << 1)).is_some());
+        let two = |run: u64, step: u64| {
+            hex(&varints(
+                &[
+                    &head[..],
+                    &[
+                        2,
+                        20261004000013,
+                        20261004000000 << 1,
+                        7,
+                        9,
+                        run,
+                        step,
+                        8,
+                        9,
+                    ],
+                ]
+                .concat(),
+            ))
         };
-        assert!(Place::parse(&two(2)).is_some());
+        // The same run, a later start; a later run, any start.
+        assert!(Place::parse(&two(0, 2)).is_some());
+        assert!(Place::parse(&two(1, 20261003000000 << 1)).is_some());
         let most = |n: u64| Place {
-            seq: [None; 3],
             files: (0..n)
-                .map(|i| Kept {
-                    hour: 2026100100 + i / 24 * 100 + i % 24,
-                    inode: i,
-                    offset: i,
-                    finished: false,
+                .map(|i| {
+                    let second = i / 3600 * 10_000 + i / 60 % 60 * 100 + i % 60;
+                    kept_at(20261001000000, 20261001000000 + second, i, false)
                 })
                 .collect(),
+            ..Place::default()
         };
         let full = most(MAX_FILES as u64);
         assert_eq!(Place::parse(&full.to_string()), Some(full));
@@ -3177,17 +4133,23 @@ mod tests {
             format!("{text}00"),
             text[..text.len() - 1].to_string(),
             format!(" {text}"),
-            hex(&varints(&[2, 0, 0, 0, 0])),
+            hex(&varints(&[3, 0, 0, 0, 0])),
+            hex(&varints(&[0, 0, 0, 0, 0])),
             // The same numbers in a longer varint: one place, one text.
-            "810000000000".to_string(),
-            // Hours that are not hours, and one that does not follow the one before.
-            one(2026130400 << 1),
-            one(2026100424 << 1),
-            one(2026100000 << 1),
-            one(12026100400 << 1),
-            one(0),
-            two(0),
-            two(1),
+            "820000000000000000000000".to_string(),
+            // Seconds that are not seconds, and a file that does not follow the one before.
+            one(20261004000013, 20261304000000 << 1),
+            one(20261004000013, 20261004240000 << 1),
+            one(20261004000013, 20261004006000 << 1),
+            one(20261004000013, 20261004000061 << 1),
+            one(20261304000013, 20261004000000 << 1),
+            one(120261004000013, 20261004000000 << 1),
+            one(20261004000013, 0),
+            one(0, 20261004000000 << 1),
+            two(0, 0),
+            two(0, 1),
+            // An arrival's time beyond what a second holds.
+            hex(&varints(&[2, 0, 0, 0, 0, u64::MAX, 0, 0, 0, 0, 0])),
             too_many,
             "0".repeat(20_000),
         ] {
@@ -3196,12 +4158,91 @@ mod tests {
     }
 
     #[test]
-    fn only_a_file_named_as_rotatelogs_names_an_hour_is_a_log_file() {
-        // A file in the log folder is the collector's only in the exact form it writes, of an
-        // hour of a date; any other is never read, and a place can name no other.
-        assert_eq!(hour_of("exec-20261004T00.jsonl"), Some(2026100400));
-        assert_eq!(hour_of("exec-20261231T23.jsonl"), Some(2026123123));
-        assert_eq!(name_of(2026100409), "exec-20261004T09.jsonl");
+    fn a_place_an_earlier_build_printed_is_read_on_from_where_it_was() {
+        // A response layer holds a place across an upgrade: one printed when every file was
+        // named by its hour reads on, and is refused only as any other text would be.
+        let v1 = |numbers: &[u64]| hex(&varints(numbers));
+        let held = v1(&[1, 5, 0, 0, 2, 2026100400 << 1 | 1, 7, 90, 2 << 1, 8, 30]);
+        let place = Place::parse(&held).expect("a version-1 place is read");
+        assert_eq!(place.seq, [Some(4), None, None]);
+        assert_eq!(
+            place.files,
+            [
+                Kept {
+                    key: Key {
+                        run: 0,
+                        at: 2026100400
+                    },
+                    inode: 7,
+                    offset: 90,
+                    finished: true,
+                },
+                Kept {
+                    key: Key {
+                        run: 0,
+                        at: 2026100402
+                    },
+                    inode: 8,
+                    offset: 30,
+                    finished: false,
+                },
+            ]
+        );
+        assert_eq!((place.pending, place.arrivals), (0, Arrivals::default()));
+        // What it prints next is this build's version, and it reads that back.
+        assert!(place.to_string().starts_with("02"));
+        assert_eq!(Place::parse(&place.to_string()), Some(place));
+        for bad in [
+            v1(&[1, 0, 0, 0, 1, 2026130400 << 1, 7, 9]),
+            v1(&[1, 0, 0, 0, 2, 2026100400 << 1, 7, 9, 0, 8, 9]),
+            format!("{held}00"),
+        ] {
+            assert_eq!(Place::parse(&bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn only_a_file_named_as_a_collector_names_one_is_a_log_file_and_names_sort_as_written() {
+        // A file in the log folder is the collector's only in an exact form a collector writes,
+        // of a real date and time; any other is never read, and a place can name no other. An
+        // earlier collector's files, named by the hour, come before a later one's, and a later
+        // one's go by run, then by start.
+        let old = key_of("exec-20261004T00.jsonl").unwrap();
+        assert_eq!(
+            old,
+            Key {
+                run: 0,
+                at: 2026100400
+            }
+        );
+        assert_eq!(
+            key_of("exec-20261231T23.jsonl"),
+            Some(Key {
+                run: 0,
+                at: 2026123123
+            })
+        );
+        assert_eq!(
+            name_of(Key {
+                run: 0,
+                at: 2026100409
+            }),
+            "exec-20261004T09.jsonl"
+        );
+        let new = "exec-20261004T093012-20261004T090000.jsonl";
+        let k = key_of(new).unwrap();
+        assert_eq!(
+            k,
+            Key {
+                run: 20261004093012,
+                at: 20261004090000
+            }
+        );
+        assert_eq!(name_of(k), new);
+        let later_in_run = key_of("exec-20261004T093012-20261004T094511.jsonl").unwrap();
+        let next_run = key_of("exec-20261004T100002-20261004T100000.jsonl").unwrap();
+        let leap = key_of("exec-20261231T235960-20261231T235960.jsonl").unwrap();
+        assert!(old < k && k < later_in_run && later_in_run < next_run && next_run < leap);
         for bad in [
             "exec-20261004T24.jsonl",
             "exec-20261304T00.jsonl",
@@ -3217,8 +4258,16 @@ mod tests {
             "exec-zz.jsonl",
             "exec-2026100\u{0663}T00.jsonl",
             "exec-../../x.jsonl",
+            "exec-20261004T093012-20261004T096000.jsonl",
+            "exec-20261004T093012-20261004T090061.jsonl",
+            "exec-20261004T243012-20261004T090000.jsonl",
+            "exec-20261004T093012_20261004T090000.jsonl",
+            "exec-20261004T093012-20261004T09000.jsonl",
+            "exec-20261004T093012-20261004X090000.jsonl",
+            "exec-20261004T093012-20261004T090000-.jsonl",
+            "exec-20261004T09301-220261004T090000.jsonl",
         ] {
-            assert_eq!(hour_of(bad), None, "{bad}");
+            assert_eq!(key_of(bad), None, "{bad}");
         }
     }
 
@@ -3300,6 +4349,190 @@ mod tests {
         assert!(said.contains("event.exec.target.audit_token"), "{said}");
     }
 
+    /// An `exec` line as the filter writes it now, which keeps who each process is: `before` is
+    /// the process before the `exec`, `parent` the parent's audit token, `script` the script.
+    fn kept_exec(before: &str, target: &str, parent: &str, script: &str) -> String {
+        format!(
+            r#"{{"schema_version":1,"version":10,"seq_num":7,"global_seq_num":7,"time":"2026-10-04T00:00:02.000002Z","process":{{"executable":{{"path":"/bin/zsh"}},{before},"codesigning_flags":570522385}},"event":{{"exec":{{"args":["sh","run.sh"],"cwd":{{"path":"/Users/example"}},"script":{script},"target":{{"executable":{{"path":"/bin/sh"}},"audit_token":{target},"start_time":"2026-10-04T00:00:01.900000Z","parent_audit_token":{parent},"ppid":401,"signing_id":"com.apple.sh","team_id":null,"is_platform_binary":true,"codesigning_flags":570522304}}}}}}}}"#
+        )
+    }
+
+    fn start_of(text: &str) -> ProcessStart {
+        match line(text.as_bytes()) {
+            Ok(Line::Exec { start, .. }) => *start,
+            other => panic!("{other:?}: {text}"),
+        }
+    }
+
+    #[test]
+    fn who_each_process_of_a_start_is_read_from_either_shape_and_a_shape_nobody_expects_is_absent()
+    {
+        // A pid is reused; with its version and start time it names one process. The reader
+        // takes the audit token of the process before the `exec`, of the program started and of
+        // the parent in both shapes eslogger has written, and the script. A shape it does not
+        // know leaves that part absent and the start read: only the started program's pid is
+        // needed, and it is the one part whose absence fails a reading.
+        let before = r#""audit_token":{"pid":402,"pidversion":9401},"start_time":"2026-10-04T00:00:01.900000Z""#;
+        let s = start_of(&kept_exec(
+            before,
+            r#"{"pid":402,"euid":501,"pidversion":9402}"#,
+            r#"{"pid":401,"pidversion":9300}"#,
+            r#"{"path":"/Users/example/run.sh"}"#,
+        ));
+        let at = Some("2026-10-04T00:00:01.900000Z".to_string());
+        assert_eq!(
+            (s.pid, s.who.pid_version, s.who.started.clone(), s.user_id),
+            (402, Some(9402), at.clone(), Some(501))
+        );
+        assert_eq!(
+            s.who.instigator,
+            Identity {
+                pid: Some(402),
+                pid_version: Some(9401),
+                started: at.clone()
+            }
+        );
+        assert_eq!(
+            s.who.parent,
+            Identity {
+                pid: Some(401),
+                pid_version: Some(9300),
+                started: None
+            }
+        );
+        assert_eq!(s.who.script.as_deref(), Some("/Users/example/run.sh"));
+        assert_eq!(
+            (s.who.codesigning_flags, s.who.instigator_codesigning_flags),
+            (Some(570522304), Some(570522385))
+        );
+        assert_eq!(s.kept, ALL_KEPT);
+        // The eight words of audit_token_t, for each of the three.
+        let s = start_of(&kept_exec(
+            r#""audit_token":[501,501,20,501,20,402,100001,9401],"start_time":null"#,
+            "[501,501,20,501,20,402,100001,9402]",
+            "[501,501,20,501,20,401,100001,9300]",
+            "null",
+        ));
+        assert_eq!(
+            (s.pid, s.who.pid_version, s.user_id),
+            (402, Some(9402), Some(501))
+        );
+        assert_eq!(
+            (
+                s.who.instigator.pid,
+                s.who.instigator.pid_version,
+                s.who.instigator.started
+            ),
+            (Some(402), Some(9401), None)
+        );
+        assert_eq!(
+            (s.who.parent.pid, s.who.parent.pid_version),
+            (Some(401), Some(9300))
+        );
+        assert_eq!(s.who.script, None);
+        assert_eq!(s.kept, ALL_KEPT);
+        // Shapes nobody expects: absent, and the start read whole.
+        let s = start_of(&kept_exec(
+            r#""audit_token":"402","start_time":{"tv_sec":1}"#,
+            r#"{"pid":402,"euid":501,"pidversion":"9402"}"#,
+            "[401,9300]",
+            r#"{"path":["/Users/example/run.sh"]}"#,
+        ));
+        assert_eq!((s.pid, s.who.pid_version), (402, None));
+        assert_eq!(s.who.instigator, Identity::default());
+        assert_eq!(s.who.parent, Identity::default());
+        assert_eq!(s.who.script, None);
+        assert_eq!(s.args, ["sh", "run.sh"]);
+        // A line of the collector before it kept them: as it was always read, keeping none.
+        let s = start_of(&exec(7, OBJECT));
+        assert_eq!(
+            (
+                s.who.pid_version,
+                s.who.started.clone(),
+                s.who.script.clone(),
+                s.kept
+            ),
+            (None, None, None, 0)
+        );
+        assert_eq!(
+            (s.who.instigator, s.who.parent, s.who.codesigning_flags),
+            (Identity::default(), Identity::default(), None)
+        );
+        // What each mark stands for: a line that kept only some says so.
+        let no_script = kept_exec(before, OBJECT, "null", "null").replace(r#""script":null,"#, "");
+        assert_eq!(start_of(&no_script).kept, IDENTITY | SIGNATURE);
+        let no_flags = kept_exec(before, OBJECT, "null", "null")
+            .replace(r#","codesigning_flags":570522304"#, "");
+        assert_eq!(start_of(&no_flags).kept, IDENTITY | SCRIPT);
+        let no_start = kept_exec(before, OBJECT, "null", "null").replace(
+            r#""start_time":"2026-10-04T00:00:01.900000Z","parent"#,
+            r#""parent"#,
+        );
+        assert_eq!(start_of(&no_start).kept, SCRIPT | SIGNATURE);
+    }
+
+    #[test]
+    fn who_did_a_file_event_is_read_where_its_line_gives_it_and_an_older_line_keeps_none() {
+        // As for a start: the program that created or renamed a file, by its audit token in
+        // either shape and its start time, and its signing id, which a rule of Elastic's reads.
+        let kept = |token: &str, started: &str, signing: &str| {
+            created(3, "/Users/example/a").replace(
+                r#"{"executable":{"path":"/usr/bin/curl"}}"#,
+                &format!(
+                    r#"{{"executable":{{"path":"/usr/bin/curl"}},"audit_token":{token},"start_time":{started},"signing_id":{signing}}}"#
+                ),
+            )
+        };
+        let file_of = |text: &str| match line(text.as_bytes()) {
+            Ok(Line::File { event: Some(f), .. }) => *f,
+            other => panic!("{other:?}: {text}"),
+        };
+        let f = file_of(&kept(
+            r#"{"pid":500,"pidversion":9500}"#,
+            r#""2026-10-04T00:00:02.5Z""#,
+            r#""com.apple.curl""#,
+        ));
+        assert_eq!(
+            f.instigator,
+            Identity {
+                pid: Some(500),
+                pid_version: Some(9500),
+                started: Some("2026-10-04T00:00:02.5Z".into())
+            }
+        );
+        assert_eq!(
+            (f.signing_id.as_deref(), f.kept),
+            (Some("com.apple.curl"), IDENTITY | SIGNATURE)
+        );
+        let f = file_of(&kept("[501,501,20,501,20,500,100001,9500]", "null", "null"));
+        assert_eq!(
+            (
+                f.instigator.pid,
+                f.instigator.pid_version,
+                f.signing_id,
+                f.kept
+            ),
+            (Some(500), Some(9500), None, IDENTITY | SIGNATURE)
+        );
+        let f = file_of(&kept(
+            r#""500""#,
+            r#"{"tv_sec":1}"#,
+            r#"["com.apple.curl"]"#,
+        ));
+        assert_eq!((f.instigator, f.signing_id), (Identity::default(), None));
+        assert_eq!(f.path, "/Users/example/a");
+        let f = file_of(&created(3, "/Users/example/a"));
+        assert_eq!(
+            (f.instigator, f.signing_id, f.kept),
+            (Identity::default(), None, 0)
+        );
+        // What each mark stands for: a line that kept only one says so.
+        let only_who = kept("null", "null", "null").replace(r#","signing_id":null"#, "");
+        assert_eq!(file_of(&only_who).kept, IDENTITY);
+        let only_signer = kept("null", "null", "null").replace(r#","start_time":null"#, "");
+        assert_eq!(file_of(&only_signer).kept, SIGNATURE);
+    }
+
     /// A file event as the filter writes it, with invented content.
     fn created(seq: u64, path: &str) -> String {
         format!(
@@ -3333,6 +4566,7 @@ mod tests {
                 path: "/private/tmp/6202033".into(),
                 source: None,
                 executable: "/usr/bin/curl".into(),
+                ..FileEvent::default()
             }
         );
         let renamed = r#"{"schema_version":1,"seq_num":2,"time":"t","process":{"executable":{"path":"/bin/mv"}},"event":{"rename":{"destination":"/Library/LaunchDaemons/b.plist","source":"/private/tmp/a.plist"}}}"#;
@@ -3759,6 +4993,8 @@ mod tests {
             starts_by_hour: Series::default(),
             starts_by_minute: Series::default(),
             files: Files::default(),
+            arrivals: Default::default(),
+            cap: None,
         };
         let said = words(&l);
         assert_eq!(said.short(), "on, 49,842 in the last day");
@@ -3816,6 +5052,8 @@ mod tests {
                 counts: vec![2, 0, 3],
             },
             files: Files::default(),
+            arrivals: Default::default(),
+            cap: None,
         };
         let v = json(&l);
         assert_eq!(
@@ -3863,6 +5101,8 @@ mod tests {
             starts_by_hour: Series::default(),
             starts_by_minute: Series::default(),
             files: Files::default(),
+            arrivals: Default::default(),
+            cap: None,
         };
         let said = words(&l);
         let shorts: Vec<_> = said
@@ -3876,8 +5116,8 @@ mod tests {
                 ("restarts", "1 restart"),
                 ("lost", "12 lost"),
                 ("unreadable", "3 unreadable lines"),
-                ("deleted_early", "2 hours deleted early"),
-                ("deleted_unread", "1 hour deleted unread"),
+                ("deleted_early", "2 files deleted early"),
+                ("deleted_unread", "1 file deleted unread"),
             ]
         );
         assert_eq!(said.caveats.len(), said.notes.len());
@@ -3963,13 +5203,66 @@ mod tests {
     fn a_gap_in_the_numbering_is_counted_and_a_restart_is_a_loss_of_unknown_size() {
         let mut t = Tally::default();
         let mut last = None;
+        let mut pending = 0;
         for seq in [1, 2, 5, 6, 1, 2] {
-            count_seq(seq, &mut last, (&mut t.lost, &mut t.unknown_gaps));
+            count_seq(
+                seq,
+                &mut last,
+                (&mut t.lost, &mut t.unknown_gaps),
+                &mut pending,
+            );
         }
         assert_eq!((t.lost, t.unknown_gaps), (2, 1));
         // The first number ever read says nothing about what came before.
         let (mut t, mut last) = (Tally::default(), None);
-        count_seq(40, &mut last, (&mut t.lost, &mut t.unknown_gaps));
+        count_seq(
+            40,
+            &mut last,
+            (&mut t.lost, &mut t.unknown_gaps),
+            &mut pending,
+        );
         assert_eq!((t.lost, t.unknown_gaps, last), (0, 0, Some(40)));
+    }
+
+    #[test]
+    fn a_message_the_filter_marked_unreadable_is_counted_once_and_never_again_as_lost() {
+        // Two markers, then a gap of three: two of the numbers are the markers' messages, one
+        // the kernel dropped. A marker no gap took in is still pending, and a restart takes in
+        // every marker before it, since what was lost across it is of unknown size.
+        let (mut t, mut last, mut pending) = (Tally::default(), Some(10), 2);
+        count_seq(
+            14,
+            &mut last,
+            (&mut t.lost, &mut t.unknown_gaps),
+            &mut pending,
+        );
+        assert_eq!((t.lost, pending), (1, 0));
+        let mut pending = 3;
+        count_seq(
+            16,
+            &mut last,
+            (&mut t.lost, &mut t.unknown_gaps),
+            &mut pending,
+        );
+        assert_eq!((t.lost, pending), (1, 2));
+        count_seq(
+            17,
+            &mut last,
+            (&mut t.lost, &mut t.unknown_gaps),
+            &mut pending,
+        );
+        assert_eq!((t.lost, pending), (1, 2));
+        count_seq(
+            3,
+            &mut last,
+            (&mut t.lost, &mut t.unknown_gaps),
+            &mut pending,
+        );
+        assert_eq!((t.lost, t.unknown_gaps, pending), (1, 1, 0));
+        // The filter's marker is told from a line that is not an object and from a message.
+        assert_eq!(line(br#"{"unreadable":true}"#), Ok(Line::Marker));
+        assert_eq!(line(br#""unreadable""#), Ok(Line::Unreadable));
+        assert!(line(br#"{"unreadable":true,"event":{"exec":{}}}"#).is_err());
+        assert!(line(br#"{"unreadable":false}"#).is_err());
     }
 }

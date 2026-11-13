@@ -1021,6 +1021,36 @@ fn a_verdict_finding_about_a_rule_a_later_build_drops_stays_listed_and_can_be_op
 }
 
 #[test]
+fn a_position_in_a_log_file_named_by_run_and_second_is_taken_as_immune_matches_printed_it() {
+    // The collector names a file by its run and the second it began, so the name holds a dash.
+    // A verdict names a match by the position `immune matches` printed, whole.
+    let mac = Mac::new("named-by-second");
+    std::fs::write(
+        mac.log().join("exec-20261004T000013-20261004T000000.jsonl"),
+        sw_vers(1),
+    )
+    .unwrap();
+    mac.run();
+    let m = mac.matches();
+    let position = m["matches"][0]["position"].as_str().unwrap().to_string();
+    assert!(
+        position.starts_with("20261004T000013-20261004T000000-"),
+        "{position}"
+    );
+    let answer = mac.send(&about_match(
+        &mac.store_id(),
+        &position,
+        SW_VERS,
+        "suspicious",
+    ));
+    assert_eq!(answer["recorded"]["raised"], true, "{answer:#}");
+    assert_eq!(
+        answer["recorded"]["verdict"]["match"]["position"],
+        position.as_str()
+    );
+}
+
+#[test]
 fn the_same_message_is_recorded_once_while_its_finding_is_open_and_raises_the_next_after_an_answer()
 {
     let mac = Mac::new("same");

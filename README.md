@@ -45,7 +45,9 @@ Then open System Settings, Privacy & Security, Full Disk Access, and allow `/usr
 - `RESULT: REFUSED`: Full Disk Access is missing, so nothing is recorded. Once you allow it, the collector starts by itself within seconds.
 - `RESULT: INSTALLED, NOT RECORDING YET`: nothing was written in ten seconds and `eslogger` printed no refusal.
 
-The collector is three launch daemons, `ai.nuanu.immune.eslogger`, `ai.nuanu.immune.event-filter` and `ai.nuanu.immune.event-tidy`. They run only `eslogger`, `jq` and `rotatelogs` from macOS, with their scripts copied into `/Library/Application Support/ai.nuanu.immune/event-level`, a folder only root can write. A program's environment and a file's contents are never written. The log keeps one day and at most 500 MiB, and only root and the account that installed it can read it. The collector acts on no process, file or connection. To remove it with its logs:
+When `immune status` says the collector installed here is an earlier one, run the same script again: it replaces the collector and keeps the logs. The script runs as root what your checkout holds, so run it from a checkout you trust.
+
+The collector is three launch daemons, `ai.nuanu.immune.eslogger`, `ai.nuanu.immune.event-filter` and `ai.nuanu.immune.event-tidy`. They run only `eslogger`, `jq` and `rotatelogs` from macOS, with their scripts copied into `/Library/Application Support/ai.nuanu.immune/event-level`, a folder only root can write. A program's environment and a file's contents are never written. The log keeps one day, and its cap is 2 GiB, or what `--log-gib <n>` gives the install. It can pass the cap by the file being written (128 MiB, more only when more than that arrives within a second) and by what is written while old files are deleted. Heavy writing pushes older lines out early; Immune counts them and says the day is partial. Only root and the account that installed it can read the log. The collector acts on no process, file or connection. To remove it with its logs:
 
 ```sh
 sudo /bin/sh scripts/event-level/uninstall
@@ -105,7 +107,7 @@ For a vulnerability there are four answers: affects me; does not affect me, know
 
 ```mermaid
 flowchart TD
-    collector["Collector, optional, as root<br/>eslogger, jq, rotatelogs"] --> log[("Log of program starts and file events<br/>one day, 500 MiB at most")]
+    collector["Collector, optional, as root<br/>eslogger, jq, rotatelogs"] --> log[("Log of program starts and file events<br/>one day, a 2 GiB cap and one 128 MiB file")]
     mac["Files and tools on this Mac<br/>launchd, shells, SSH, git, apps, lockfiles"] --> readers
     feeds["Public data over HTTPS<br/>CISA KEV, OSV"] --> readers
     log --> readers["Readers<br/>facts with their source, and coverage"]

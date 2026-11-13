@@ -22,7 +22,9 @@
 //! (`rule_line`), never a guess.
 
 use crate::contract::{v1, value_of};
-use crate::events::{self, Evidence, Hit, LineAt, Place, Queue, Stretch, WentTo};
+use crate::events::{
+    self, Arrival, Arrivals, Evidence, Hit, LineAt, Place, Queue, Stretch, WentTo,
+};
 use crate::sigma::{Kind, Meta, Placement, Reason, Rules};
 use crate::{findings, known, status, store, verdict, view};
 use prost::Message;
@@ -167,6 +169,11 @@ struct Held {
 }
 
 fn read(args: &MatchesArgs, now: i64) -> Result<v1::Matches, Failure> {
+    read_with(Rules::shipped(), args, now)
+}
+
+/// `read`, naming in `unevaluated` these rules. Matching itself is the shipped rules'.
+fn read_with(rules: &Rules, args: &MatchesArgs, now: i64) -> Result<v1::Matches, Failure> {
     if !args.store.is_file() {
         return Err(Failure::Store(format!(
             "there is no store at {}; `immune run` makes it",
@@ -210,7 +217,7 @@ fn read(args: &MatchesArgs, now: i64) -> Result<v1::Matches, Failure> {
                 gone,
                 ..Default::default()
             });
-            answer.unevaluated = unevaluated(&Err(NOT_INSTALLED.to_string()));
+            answer.unevaluated = unevaluated(rules, &Err(NOT_INSTALLED.to_string()), None);
         }
         Queue::Read(s) => {
             let mut collector = collector(&s);
@@ -251,7 +258,11 @@ fn read(args: &MatchesArgs, now: i64) -> Result<v1::Matches, Failure> {
             }
             answer.collector = Some(collector);
             answer.stretch = Some(stretch(&s));
-            answer.unevaluated = unevaluated(&s.collects.clone().map_err(|(_, why)| why));
+            answer.unevaluated = unevaluated(
+                rules,
+                &s.collects.clone().map_err(|(_, why)| why),
+                Some(&s.arrivals),
+            );
             answer.continue_after = Some(s.place.to_string());
             answer.more = s.more;
         }
@@ -346,12 +357,22 @@ pub fn rule(file: &str, m: &Meta) -> v1::Rule {
     }
 }
 
-/// A process the log gives only the program of.
-fn program(executable: &str) -> v1::Process {
+/// A process the log gives the program of, and who it is as far as the log says.
+fn program(executable: &str, who: &events::Identity) -> v1::Process {
+    let started = who.started.as_deref().and_then(events::instant);
     v1::Process {
         executable_text: whole(executable),
+        pid: who.pid,
+        pid_version: who.pid_version,
+        started_at: started.map(|s| s.0),
+        started_nanos: started.map(|s| s.1),
         ..Default::default()
     }
+}
+
+/// Code-signing flags as the contract gives them: the kernel's 32 bits, or absent.
+fn flags(f: Option<i64>) -> Option<u32> {
+    f.and_then(|f| u32::try_from(f).ok())
 }
 
 /// An event as the contract gives it: every field the log holds, each whole.
@@ -365,17 +386,33 @@ pub fn event(e: &Evidence) -> v1::Event {
                 happened_at,
                 happened_nanos,
                 process: Some(v1::Process {
-                    executable_text: whole(&s.executable),
                     pid: Some(s.pid),
                     user_id: s.user_id,
                     signing_id_text: s.signing_id.as_deref().map(whole),
                     team_id_text: s.team_id.as_deref().map(whole),
                     platform_binary: s.platform_binary,
+                    codesigning_flags: flags(s.who.codesigning_flags),
+                    ..program(
+                        &s.executable,
+                        &events::Identity {
+                            pid: Some(s.pid),
+                            pid_version: s.who.pid_version,
+                            started: s.who.started.clone(),
+                        },
+                    )
                 }),
-                instigator: s.parent_executable.as_deref().map(program),
+                instigator: s.parent_executable.as_deref().map(|p| v1::Process {
+                    codesigning_flags: flags(s.who.instigator_codesigning_flags),
+                    ..program(p, &s.who.instigator)
+                }),
                 parent_pid: s.parent_pid,
                 args_text: s.args.iter().map(|a| whole(a)).collect(),
                 working_directory_text: s.working_directory.as_deref().map(whole),
+                parent: s.who.parent.pid.map(|pid| v1::Identity {
+                    pid: Some(pid),
+                    pid_version: s.who.parent.pid_version,
+                }),
+                script_text: s.who.script.as_deref().map(whole),
             }),
             Evidence::File(f) => Body::FileEvent(v1::FileEvent {
                 happened_at,
@@ -383,7 +420,10 @@ pub fn event(e: &Evidence) -> v1::Event {
                 action: value_of::<v1::FileAction>(f.action),
                 path_text: whole(&f.path),
                 source_text: f.source.as_deref().map(whole),
-                instigator: Some(program(&f.executable)),
+                instigator: Some(v1::Process {
+                    signing_id_text: f.signing_id.as_deref().map(whole),
+                    ..program(&f.executable, &f.instigator)
+                }),
             }),
         }),
     }
@@ -414,17 +454,45 @@ fn collector(s: &Stretch) -> v1::Collector {
         written_at: s.written,
         file_events_collected: s.collects.is_ok(),
         foreign_files: s.foreign,
+        not_kept: named(&s.arrivals, Arrival::NotKept),
+        kept_never_filled: named(&s.arrivals, Arrival::Kept(None)),
+        not_yet_known: named(&s.arrivals, Arrival::Unknown),
+        arriving: s
+            .arrivals
+            .arriving()
+            .into_iter()
+            .map(|(name, since)| v1::Arriving {
+                name: name.to_string(),
+                since,
+            })
+            .collect(),
         ..Default::default()
     }
 }
 
-/// The shipped rules that judge nothing here, or only in part, each with why, in the order they
-/// are shipped. `collects` is whether file events are collected here, or why not.
-fn unevaluated(collects: &Result<(), String>) -> Vec<v1::Unevaluated> {
+/// The names of what a collector may keep that the lines say this of.
+fn named(arrivals: &Arrivals, state: Arrival) -> Vec<String> {
+    arrivals
+        .named(|a| a == state)
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
+/// The rules that judge nothing here, or only in part, each with why, in the order they are
+/// shipped. `collects` is whether file events are collected here, or why not; `arrivals` what
+/// the lines read say of what a collector may keep, so that a rule that reads one that does not
+/// arrive judges nothing, `None` when no collector is installed.
+fn unevaluated(
+    rules: &Rules,
+    collects: &Result<(), String>,
+    arrivals: Option<&Arrivals>,
+) -> Vec<v1::Unevaluated> {
+    let not_arriving = arrivals.map_or(0, Arrivals::not_arriving);
     use v1::UnevaluatedReason as Why;
     let not_collected = collects.as_ref().err();
     let texts = |items: &[String]| items.iter().map(|s| whole(s)).collect();
-    Rules::shipped()
+    rules
         .rules
         .iter()
         .filter_map(|l| {
@@ -449,6 +517,13 @@ fn unevaluated(collects: &Result<(), String>) -> Vec<v1::Unevaluated> {
                     (_, Some(why)) if l.kind == Some(Kind::File) => {
                         (Why::NotCollected, Vec::new(), Some(why.clone()))
                     }
+                    _ if l.silenced_by(not_arriving) => (
+                        Why::NotCollected,
+                        texts(&l.needs_fields),
+                        arrivals
+                            .and_then(|a| a.worst(l.needs & not_arriving).why())
+                            .map(str::to_string),
+                    ),
                     (Placement::InPart(branches), _) => {
                         let mut fields: Vec<String> =
                             branches.iter().flat_map(|b| b.fields.clone()).collect();
@@ -481,4 +556,156 @@ fn unevaluated(collects: &Result<(), String>) -> Vec<v1::Unevaluated> {
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::{NEVER_FILLED, NOT_KEPT, NOT_YET_KNOWN};
+    use crate::sigma::ELASTIC;
+
+    #[test]
+    fn a_rule_that_reads_what_does_not_arrive_is_handed_over_as_judging_nothing_with_which() {
+        // The response layer reads a quiet queue as calm only for the rules that judge: a rule
+        // that reads what no line gives a value for is listed, with the field and which of the
+        // three it is, and is not once values arrive.
+        let text = format!(
+            "title: Invented\nid: 00000000-0000-4000-8000-000000000001\nstatus: test\n\
+             level: high\nlogsource: {{\"product\": \"macos\", \"category\": \"file_event\"}}\n\
+             detection:\n  s1: {{\"process.code_signature.signing_id|cased\": [\"com.example\"]}}\n  condition: s1\n{}",
+            crate::sigma::testing::record_of(&ELASTIC, "\"high\"", "")
+        );
+        let rules = Rules::load_as(
+            &ELASTIC,
+            &[("signer.yml", Box::leak(text.into_boxed_str()))],
+        );
+        let on = Arrival::Kept(Some(1));
+        let sig = |a| Arrivals([on, on, a, on, a]);
+        for (state, why) in [
+            (Arrival::NotKept, NOT_KEPT),
+            (Arrival::Kept(None), NEVER_FILLED),
+            (Arrival::Unknown, NOT_YET_KNOWN),
+        ] {
+            let listed = unevaluated(&rules, &Ok(()), Some(&sig(state)));
+            assert_eq!(listed.len(), 1);
+            assert_eq!(
+                (
+                    listed[0].reason,
+                    listed[0].fields_text.clone(),
+                    listed[0].detail_text.as_deref()
+                ),
+                (
+                    v1::UnevaluatedReason::NotCollected as i32,
+                    vec!["process.code_signature.signing_id".to_string()],
+                    Some(why)
+                )
+            );
+        }
+        let identity = Arrivals([Arrival::NotKept, on, on, Arrival::NotKept, on]);
+        assert!(unevaluated(&rules, &Ok(()), Some(&identity)).is_empty());
+        assert!(unevaluated(&rules, &Ok(()), Some(&sig(on))).is_empty());
+    }
+
+    #[test]
+    fn the_queue_hands_over_a_rule_that_reads_what_its_lines_do_not_give_as_judging_nothing() {
+        // The answer itself, not only its part: whether a rule judges is decided by what the
+        // lines read carry, never by a record. A log an earlier collector wrote lacks the field,
+        // a later collector's carries it empty, and only a line that gives it a value lets the
+        // rule judge; each is said in the collector's lists.
+        let dir =
+            std::env::temp_dir().join(format!("immune-matches-arrival-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let root = dir.join("root");
+        std::fs::create_dir_all(root.join(events::LOG)).unwrap();
+        let plist = root.join(events::PLIST);
+        std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
+        std::fs::write(&plist, "<plist/>").unwrap();
+        let start = |seq: u64, extra: &str| {
+            format!(
+                r#"{{"schema_version":1,"version":10,"seq_num":{seq},"global_seq_num":{seq},"time":"2026-10-04T00:00:02.000002Z","process":{{"executable":{{"path":"/bin/zsh"}}}},"event":{{"exec":{{"args":["git","status"],"cwd":{{"path":"/Users/example/dev/site"}},{extra}"target":{{"executable":{{"path":"/usr/bin/git"}},"audit_token":{{"pid":402,"euid":501}},"ppid":401,"signing_id":"com.apple.git","team_id":null,"is_platform_binary":true}}}}}}}}
+"#
+            )
+        };
+        let log = root.join(events::LOG).join("exec-20261004T00.jsonl");
+        // A program start as an earlier collector wrote it: no script, no start time.
+        std::fs::write(&log, start(1, "")).unwrap();
+        drop(crate::store::open(&dir.join("store.db")).unwrap());
+        let args = MatchesArgs {
+            store: dir.join("store.db"),
+            json: true,
+            after: None,
+            limit: LIMIT,
+            system_root: root.clone(),
+        };
+        let rules = crate::sigma::testing::process_kept();
+        let unevaluated_why = |answer: &v1::Matches| {
+            assert_eq!(answer.unevaluated.len(), 1, "{:?}", answer.unevaluated);
+            let u = &answer.unevaluated[0];
+            assert_eq!(
+                (u.reason, u.fields_text.clone()),
+                (
+                    v1::UnevaluatedReason::NotCollected as i32,
+                    vec!["process.working_directory".to_string()],
+                )
+            );
+            u.detail_text.clone()
+        };
+        let answer = read_with(&rules, &args, 1_791_000_000).ok().unwrap();
+        let c = answer.collector.as_ref().unwrap();
+        assert_eq!(c.not_kept, ["identity", "script", "signature"]);
+        assert!(c.kept_never_filled.is_empty() && c.arriving.is_empty());
+        assert_eq!(unevaluated_why(&answer).as_deref(), Some(NOT_KEPT));
+        // A later collector's line that carries the script empty: kept, never filled.
+        std::fs::write(&log, start(1, "") + &start(2, r#""script":null,"#)).unwrap();
+        let answer = read_with(&rules, &args, 1_791_000_000).ok().unwrap();
+        assert_eq!(
+            answer.collector.as_ref().unwrap().kept_never_filled,
+            ["script"]
+        );
+        assert_eq!(unevaluated_why(&answer).as_deref(), Some(NEVER_FILLED));
+        // A line that gives it a value: it arrives, since that line, and the rule judges.
+        std::fs::write(
+            &log,
+            start(1, "")
+                + &start(2, r#""script":null,"#)
+                + &start(3, r#""script":{"path":"/Users/example/x.sh"},"#),
+        )
+        .unwrap();
+        let answer = read_with(&rules, &args, 1_791_000_000).ok().unwrap();
+        assert_eq!(
+            answer.collector.as_ref().unwrap().arriving,
+            [v1::Arriving {
+                name: "script".into(),
+                since: 1_791_072_002
+            }]
+        );
+        assert!(answer.unevaluated.is_empty(), "{:?}", answer.unevaluated);
+        // An answer that reads on from a place where nothing new was written says the same:
+        // what the lines said travels with the place.
+        let place = answer.continue_after.clone().unwrap();
+        let again = read_with(
+            &rules,
+            &MatchesArgs {
+                store: args.store.clone(),
+                json: true,
+                after: Some((place.clone(), Place::parse(&place).unwrap())),
+                limit: LIMIT,
+                system_root: root.clone(),
+            },
+            1_791_000_000,
+        )
+        .ok()
+        .unwrap();
+        assert!(again.unevaluated.is_empty(), "{:?}", again.unevaluated);
+        // With no collector the state says nothing is judged, and no rule about program
+        // starts is put down to what a collector that is not there keeps.
+        std::fs::remove_file(&plist).unwrap();
+        let answer = read_with(&rules, &args, 1_791_000_000).ok().unwrap();
+        assert_eq!(
+            answer.collector.as_ref().unwrap().state,
+            v1::CollectorState::NotInstalled as i32
+        );
+        assert!(answer.unevaluated.is_empty(), "{:?}", answer.unevaluated);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

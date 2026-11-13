@@ -1,9 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- The event level's retention: every ten minutes /bin/sh runs tidy.sh, which deletes log
-     files older than a day, then the oldest while the log is larger than its cap of 500 MiB
-     (524288000 bytes), and keeps what eslogger and the scripts print small. It was copied
-     by the installer into a folder only root can write. -->
+     files older than a day, then the oldest while the log is larger than its cap, and keeps
+     what eslogger and the scripts print small. The cap is the last argument, in bytes: 2 GiB
+     (2147483648) unless the installer was given another with --log-gib, or kept the one of a
+     collector installed before. rotated.sh reads the cap from here when it runs tidy.sh at
+     each new log file. The installer copies this into a folder only root can write and writes
+     the cap there; nothing else sets it. -->
 <plist version="1.0">
 <dict>
 	<key>Label</key>
@@ -13,7 +16,7 @@
 		<string>/bin/sh</string>
 		<string>/Library/Application Support/ai.nuanu.immune/event-level/tidy.sh</string>
 		<string>/Library/Application Support/ai.nuanu.immune/event-level/log</string>
-		<string>524288000</string>
+		<string>2147483648</string>
 	</array>
 	<key>StandardOutPath</key>
 	<string>/dev/null</string>

@@ -216,8 +216,9 @@ pub mod event {
     }
 }
 /// A process, as far as the collector keeps it. Only `executable_text` is always there; the rest
-/// is absent where the event does not give it. Nothing here identifies a process beyond its pid,
-/// which is reused once the process ends.
+/// is absent where the event does not give it. A pid is reused once the process ends; with its
+/// `pid_version` and when it started, `started_at`, it names one process. A collector installed
+/// before it kept these gives neither.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -237,6 +238,29 @@ pub struct Process {
     pub team_id_text: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(bool, optional, tag = "6")]
     pub platform_binary: ::core::option::Option<bool>,
+    /// The pid's version, `pidversion` in its audit token, given as an object or as the eight
+    /// words of `audit_token_t`.
+    #[prost(int64, optional, tag = "7")]
+    pub pid_version: ::core::option::Option<i64>,
+    /// When it started, from eslogger's `start_time`: seconds since the epoch and the nanoseconds
+    /// within that second. Absent when the log's time is not in the form eslogger writes.
+    #[prost(int64, optional, tag = "8")]
+    pub started_at: ::core::option::Option<i64>,
+    #[prost(uint32, optional, tag = "9")]
+    pub started_nanos: ::core::option::Option<u32>,
+    /// Its code-signing flags, eslogger's `codesigning_flags`, as the kernel's `CS_*` bits.
+    #[prost(uint32, optional, tag = "10")]
+    pub codesigning_flags: ::core::option::Option<u32>,
+}
+/// Who a process is, without its program: the pid and the pid's version of an audit token.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Identity {
+    #[prost(int64, optional, tag = "1")]
+    pub pid: ::core::option::Option<i64>,
+    #[prost(int64, optional, tag = "2")]
+    pub pid_version: ::core::option::Option<i64>,
 }
 /// A program started: an `exec` message from Apple's `eslogger`, as the collector keeps it. The
 /// environment is never kept.
@@ -251,14 +275,15 @@ pub struct ProgramStart {
     pub happened_at: ::core::option::Option<i64>,
     #[prost(uint32, optional, tag = "2")]
     pub happened_nanos: ::core::option::Option<u32>,
-    /// The process with the program started, `event.exec.target`: its executable, pid, user id and
-    /// signature.
+    /// The process with the program started, `event.exec.target`: its executable, pid, user id,
+    /// signature, pid version, start time and code-signing flags.
     #[prost(message, optional, tag = "3")]
     pub process: ::core::option::Option<Process>,
-    /// The same process before this `exec`, `process` in eslogger's message: today only its
-    /// program, `process.executable.path`. After a fork or `posix_spawn` that is the parent's
-    /// program; after an `exec` without a fork it is a wrapper that replaced itself, such as `nohup`
-    /// or `env`. Absent when the log does not give it.
+    /// The same process before this `exec`, `process` in eslogger's message: its program,
+    /// `process.executable.path`, and its pid, pid version, start time and code-signing flags.
+    /// After a fork or `posix_spawn` that program is the parent's; after an `exec` without a fork
+    /// it is a wrapper that replaced itself, such as `nohup` or `env`. Absent when the log does not
+    /// give its program.
     #[prost(message, optional, tag = "4")]
     pub instigator: ::core::option::Option<Process>,
     /// `event.exec.target.ppid`.
@@ -270,6 +295,14 @@ pub struct ProgramStart {
     /// `event.exec.cwd.path`.
     #[prost(string, optional, tag = "7")]
     pub working_directory_text: ::core::option::Option<::prost::alloc::string::String>,
+    /// The parent, `event.exec.target.parent_audit_token`. Absent when the log does not give its
+    /// pid.
+    #[prost(message, optional, tag = "8")]
+    pub parent: ::core::option::Option<Identity>,
+    /// The script the program runs, `event.exec.script.path`, when the start is of an interpreter
+    /// that runs a script file.
+    #[prost(string, optional, tag = "9")]
+    pub script_text: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// A file created or renamed: a `create` or `rename` message from `eslogger`, as the collector
 /// keeps it.
@@ -294,8 +327,8 @@ pub struct FileEvent {
     /// Where a renamed file was. Absent for a file created.
     #[prost(string, optional, tag = "5")]
     pub source_text: ::core::option::Option<::prost::alloc::string::String>,
-    /// The process that did it, `process` in eslogger's message: today only its program,
-    /// `process.executable.path`.
+    /// The process that did it, `process` in eslogger's message: its program,
+    /// `process.executable.path`, its pid, pid version and start time, and its `signing_id`.
     #[prost(message, optional, tag = "6")]
     pub instigator: ::core::option::Option<Process>,
 }
@@ -1040,7 +1073,7 @@ pub struct Stretch {
 /// The collector and what it records.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(default)]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Collector {
     /// Its state, judged from its log when this answer was made, the way the core's own reading
     /// judges it. This is the state that speaks for the stretch just read. Only while it is
@@ -1080,6 +1113,40 @@ pub struct Collector {
     /// Files in the log folder that are not the collector's own, by their names: not read.
     #[prost(uint64, tag = "8")]
     pub foreign_files: u64,
+    /// What a collector may keep beyond what the first one kept, `identity`, `script` and
+    /// `signature`, each in one of four lists by what the lines read up to the end of the stretch
+    /// say of it. Kept is decided by what arrives, never by a record. A rule that reads one that
+    /// does not arrive is listed in `unevaluated` with `not_collected`, and `detail_text` says which
+    /// of the first three it is.
+    ///
+    /// `not_kept`: the latest line lacks it, so the collector that wrote it is an earlier one, which
+    /// keeps none of them.
+    #[prost(string, repeated, tag = "9")]
+    pub not_kept: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Lines carry it, and none read has given it a value yet.
+    #[prost(string, repeated, tag = "10")]
+    pub kept_never_filled: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// No line that would carry it has been read, as before the first line of a new install, or
+    /// when an answer read nothing after a place an earlier build printed.
+    #[prost(string, repeated, tag = "11")]
+    pub not_yet_known: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Lines give it a value, each with the time of the first line that did, as the lines' times
+    /// give it.
+    #[prost(message, repeated, tag = "12")]
+    pub arriving: ::prost::alloc::vec::Vec<Arriving>,
+}
+/// One of what a collector may keep, arriving: lines give it values.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Arriving {
+    /// `identity`, `script` or `signature`.
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    /// The time of the first line that gave it a value since lines began to carry it, in seconds
+    /// since the epoch.
+    #[prost(int64, tag = "2")]
+    pub since: i64,
 }
 /// A shipped rule that is not evaluated over the events here, or only in part, or a rule of a
 /// translated set that was not taken.
@@ -1118,9 +1185,10 @@ pub struct Unevaluated {
     #[prost(string, repeated, tag = "7")]
     pub fields_text: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// For `needs_events` the kind of event it is about; for `not_parsed` what the parser said; for
-    /// `not_collected` why the collector here is not taken to record file events. For a rule a
-    /// translated set did not take, what the translation said of it, and for `in_part` what a
-    /// translation left out that is not a missing field, such as a pattern it could not carry.
+    /// `not_collected` why the collector here is not taken to record file events, or to keep what
+    /// the rule reads. For a rule a translated set did not take, what the translation said of it,
+    /// and for `in_part` what a translation left out that is not a missing field, such as a
+    /// pattern it could not carry.
     #[prost(string, optional, tag = "8")]
     pub detail_text: ::core::option::Option<::prost::alloc::string::String>,
     /// Its set, as `Rule.source` and `Rule.set` give it; present for a rule that could not be read
@@ -1275,7 +1343,8 @@ pub enum UnevaluatedReason {
     #[serde(rename = "in_part")]
     InPart = 5,
     /// A rule for file events, and the collector here is not installed or not established to
-    /// record them.
+    /// record them; or a rule that reads what the collector here does not keep, its fields in
+    /// `fields_text`.
     #[serde(rename = "not_collected")]
     NotCollected = 6,
     /// The four below are a translation's reasons for not taking a rule of a set translated into

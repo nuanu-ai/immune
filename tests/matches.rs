@@ -295,6 +295,120 @@ fn file_event(seq: u64, kind: &str, program: &str, path: &str) -> String {
     ) + "\n"
 }
 
+/// Lines as the root side's filter writes them from whole eslogger messages: Apple's jq run
+/// with `filter.jq` as collect.sh runs it.
+fn filtered(messages: &[Value]) -> String {
+    let mut jq = Command::new("/usr/bin/jq")
+        .args(["--raw-input", "--compact-output", "-f"])
+        .arg(Path::new(SCRIPTS).join("filter.jq"))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = jq.stdin.take().unwrap();
+    for m in messages {
+        writeln!(input, "{m}").unwrap();
+    }
+    drop(input);
+    let out = jq.wait_with_output().unwrap();
+    assert!(out.status.success());
+    String::from_utf8(out.stdout).unwrap()
+}
+
+#[test]
+fn a_match_hands_over_who_the_process_was_as_the_collector_keeps_it() {
+    // The response layer looks into a match by the process behind it, and a pid alone is
+    // reused. Each match carries what the collector keeps of who the process was: the program
+    // started, with its pid version, start time and code-signing flags; the process before the
+    // `exec`; the parent's pid and pid version; the script; and for a file event the program
+    // that did it, with its signing id. Here from whole messages through the filter itself.
+    let dir = Dir::new("identity");
+    dir.install();
+    dir.run();
+    let token = |pid: u64, version: u64| json!({"pid": pid, "euid": 501, "pidversion": version, "asid": 100001});
+    let process = |path: &str, audit_token: Value| {
+        json!({
+            "executable": {"path": path, "path_truncated": false},
+            "audit_token": audit_token, "parent_audit_token": [501, 501, 20, 501, 20, 401, 100001, 9300],
+            "ppid": 401, "signing_id": "com.example.tool", "team_id": null,
+            "is_platform_binary": false, "codesigning_flags": 570522385,
+            "start_time": "2026-10-04T00:00:01.900000Z",
+        })
+    };
+    let exec = json!({
+        "schema_version": 1, "version": 10, "seq_num": 1, "global_seq_num": 1, "time": T0,
+        "process": process("/bin/sh", token(402, 9401)),
+        "event": {"exec": {
+            "env": ["INVENTED=1"], "args": DD, "cwd": {"path": CWD},
+            "script": {"path": "/Users/example/pad.sh", "path_truncated": false},
+            "target": process("/bin/dd", token(402, 9402)),
+        }},
+    });
+    let create = json!({
+        "schema_version": 1, "version": 10, "seq_num": 1, "global_seq_num": 2, "time": T0,
+        "process": process("/usr/local/bin/node", json!([501, 501, 20, 501, 20, 500, 100001, 9500])),
+        "event": {"create": {"destination_type": 0, "destination": {"existing_file": {"path": "/private/tmp/6202033", "path_truncated": false}}}},
+    });
+    dir.append(H00, &filtered(&[exec, create]));
+    let m = dir.matches(&[]);
+    assert_eq!(rules_of(&m), [PADDING, AXIOS]);
+    // 2026-10-04T00:00:01.900000Z
+    let started = (1_791_072_001i64, 900_000_000i64);
+    let start = &m["matches"][0]["event"]["program_start"];
+    let p = &start["process"];
+    assert_eq!(
+        (
+            &p["pid"],
+            &p["pid_version"],
+            &p["started_at"],
+            &p["started_nanos"],
+            &p["codesigning_flags"]
+        ),
+        (
+            &json!(402),
+            &json!(9402),
+            &json!(started.0),
+            &json!(started.1),
+            &json!(570522385)
+        )
+    );
+    let i = &start["instigator"];
+    assert_eq!(
+        (
+            &i["executable_text"],
+            &i["pid"],
+            &i["pid_version"],
+            &i["started_at"],
+            &i["codesigning_flags"]
+        ),
+        (
+            &json!("/bin/sh"),
+            &json!(402),
+            &json!(9401),
+            &json!(started.0),
+            &json!(570522385)
+        )
+    );
+    assert_eq!(start["parent"], json!({"pid": 401, "pid_version": 9300}));
+    assert_eq!(start["script_text"], "/Users/example/pad.sh");
+    let f = &m["matches"][1]["event"]["file_event"]["instigator"];
+    assert_eq!(
+        (
+            &f["pid"],
+            &f["pid_version"],
+            &f["started_at"],
+            &f["signing_id_text"]
+        ),
+        (
+            &json!(500),
+            &json!(9500),
+            &json!(started.0),
+            &json!("com.example.tool")
+        )
+    );
+    assert_eq!(m["collector"]["not_kept"], json!([]));
+}
+
 /// The time now as eslogger writes it, a microsecond past the second.
 fn now_time() -> String {
     let out = Command::new("/bin/date")
@@ -456,6 +570,10 @@ fn a_match_says_which_finding_it_went_to_as_the_core_recorded_it_with_the_person
                     "signing_id_text": "com.example.tool",
                     "team_id_text": null,
                     "platform_binary": false,
+                    "pid_version": null,
+                    "started_at": null,
+                    "started_nanos": null,
+                    "codesigning_flags": null,
                 },
                 "instigator": {
                     "executable_text": "/bin/zsh",
@@ -464,10 +582,16 @@ fn a_match_says_which_finding_it_went_to_as_the_core_recorded_it_with_the_person
                     "signing_id_text": null,
                     "team_id_text": null,
                     "platform_binary": null,
+                    "pid_version": null,
+                    "started_at": null,
+                    "started_nanos": null,
+                    "codesigning_flags": null,
                 },
                 "parent_pid": 401,
                 "args_text": ["sw_vers", "-productVersion"],
                 "working_directory_text": CWD,
+                "parent": null,
+                "script_text": null,
             },
         })
     );
@@ -968,6 +1092,132 @@ fn a_file_the_place_held_is_gone_only_when_lines_in_it_were_not_read() {
     );
 }
 
+/// A place as a build before this one printed it, version 1: the last numbers, then for each
+/// file its hour's difference from the one before, doubled, plus one when finished, its inode
+/// and its offset, each a varint, in lower-case hexadecimal.
+fn place_v1(seq: [u64; 3], files: &[(u64, bool, u64, u64)]) -> String {
+    let mut bytes = Vec::new();
+    let mut put = |mut n: u64| {
+        while n >= 0x80 {
+            bytes.push((n as u8) | 0x80);
+            n >>= 7;
+        }
+        bytes.push(n as u8);
+    };
+    put(1);
+    for s in seq {
+        put(s + 1);
+    }
+    put(files.len() as u64);
+    let mut before = 0;
+    for (hour, finished, inode, offset) in files {
+        put(((hour - before) << 1) | u64::from(*finished));
+        put(*inode);
+        put(*offset);
+        before = *hour;
+    }
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[test]
+fn a_log_an_earlier_collector_began_and_a_later_one_went_on_is_read_in_the_order_it_was_written() {
+    // Installed over an earlier collector, the log holds files named by the hour and files
+    // named by run and start. They are read in the order they were written, the earlier
+    // collector's first, by one answer or by many; a place an earlier build printed reads on
+    // from where it was; and the root side's notes of deletions count what was read and what
+    // was not, under both kinds of name.
+    let dir = Dir::new("mixed");
+    dir.install();
+    dir.run();
+    let (n1, n2, n3) = (
+        "exec-20261004T013012-20261004T010000.jsonl",
+        "exec-20261004T013012-20261004T014511.jsonl",
+        "exec-20261004T020004-20261004T020000.jsonl",
+    );
+    dir.append(H00, &(dd(1) + &git(2)));
+    dir.append(H01, &dd(3));
+    dir.append(n1, &(dd(4) + &dd(5)));
+    dir.append(n2, &dd(6));
+    let now = SystemTime::now();
+    for (i, name) in [H00, H01, n1, n2].iter().enumerate() {
+        dir.touch(name, now - Duration::from_secs(400 - 100 * i as u64));
+    }
+    let whole = dir.matches(&[]);
+    let positions: Vec<&str> = whole["matches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["position"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        positions,
+        [
+            dir.position(H00, 0),
+            dir.position(H01, 0),
+            dir.position(n1, 0),
+            dir.position(n1, dd(4).len()),
+            dir.position(n2, 0),
+        ]
+    );
+    assert_eq!(whole["stretch"]["program_starts_lost"], 0);
+    let (paged, sums, _) = pages(&dir, None, "1");
+    assert_eq!(&json!(paged), &whole["matches"]);
+    assert_eq!(sums, [6, 0, 0, 0]);
+    // A place printed before the upgrade, after H00 was read to its end with its hour over
+    // and H01 had begun: the answer goes on from there, over both kinds of name.
+    let held = place_v1(
+        [2, 0, 0],
+        &[
+            (
+                2026100400,
+                true,
+                dir.inode(H00),
+                (dd(1) + &git(2)).len() as u64,
+            ),
+            (2026100401, false, dir.inode(H01), 0),
+        ],
+    );
+    let on = dir.matches(&["--after", &held]);
+    let from: Vec<&str> = on["matches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["position"].as_str().unwrap())
+        .collect();
+    assert_eq!(from, positions[1..]);
+    assert_eq!(
+        (
+            &on["stretch"]["program_starts_lost"],
+            &on["stretch"]["gone"]
+        ),
+        (&json!(0), &json!(false))
+    );
+    // The core's own reading reads them all. A file of either kind deleted once read loses
+    // nothing; one deleted before it was read is counted, once.
+    dir.run();
+    // Notes are counted by the second after the reading before.
+    std::thread::sleep(Duration::from_millis(1100));
+    dir.tidy_away(H00);
+    dir.tidy_away(n1);
+    dir.append(n3, &git(7));
+    dir.tidy_away(n3);
+    std::thread::sleep(Duration::from_millis(1100));
+    dir.run();
+    let l = &dir.report(&["status"])["event_level"];
+    assert_eq!(
+        (
+            &l["files_removed_unread"]["last_day"],
+            &l["program_starts"]["last_day"],
+            &l["lost"]["last_day"]
+        ),
+        (&json!(1), &json!(6), &json!(0)),
+        "{l:#}"
+    );
+    // The place from before the upgrade, whose H00 is gone read to its end, has lost nothing.
+    let on = dir.matches(&["--after", &held]);
+    assert_eq!(on["stretch"]["gone"], false);
+}
+
 #[test]
 fn only_the_collector_s_own_files_are_read_and_the_others_are_counted() {
     // A file in the log folder named otherwise than rotatelogs names a log file is not the
@@ -984,6 +1234,8 @@ fn only_the_collector_s_own_files_are_read_and_the_others_are_counted() {
     for side in ["eslogger.err", "removed", "removed.new"] {
         dir.append(side, "");
     }
+    // tidy.sh's lock, a folder, is the collector's own too.
+    std::fs::create_dir(dir.log().join("tidy.lock")).unwrap();
     let m = dir.matches(&[]);
     assert_eq!(
         (&m["matches"], &m["collector"]["foreign_files"]),
@@ -1123,10 +1375,12 @@ fn without_a_store_the_answer_is_a_failure_that_never_parses_as_a_calm_message()
     );
     // A log of more files than a place holds fails rather than leave files out of the place.
     std::fs::write(dir.log().join(H00), "").unwrap();
-    for day in 1..=11 {
-        for hour in 0..24 {
-            dir.append(&format!("exec-202610{day:02}T{hour:02}.jsonl"), "");
-        }
+    for i in 0..=4096 {
+        let (h, m, s) = (i / 3600, i / 60 % 60, i % 60);
+        dir.append(
+            &format!("exec-20261001T000000-20261001T{h:02}{m:02}{s:02}.jsonl"),
+            "",
+        );
     }
     let out = dir.matches_output(&["--json"]);
     assert_eq!(out.status.code(), Some(1));
@@ -1192,6 +1446,11 @@ fn unreadable_lines_are_counted_and_the_rules_that_judge_nothing_are_named_with_
         (&json!(2), &json!(1), &json!(1))
     );
     assert_eq!(m["collector"]["file_events_collected"], false);
+    // An earlier collector keeps none of what a later one keeps, and the answer names it.
+    assert_eq!(
+        m["collector"]["not_kept"],
+        json!(["identity", "script", "signature"])
+    );
     let unevaluated = m["unevaluated"].as_array().unwrap();
     let in_part = unevaluated.iter().find(|u| u["file"] == IN_PART).unwrap();
     assert_eq!(

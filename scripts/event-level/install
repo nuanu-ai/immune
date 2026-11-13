@@ -1,29 +1,33 @@
 #!/bin/sh
 # Installs the event level of Immune. The owner runs it once, with his administrator
 # password:
-#   sudo /bin/sh scripts/event-level/install
+#   sudo /bin/sh scripts/event-level/install [--log-gib <n>]
 # and removes everything it installs, logs included, with:
 #   sudo /bin/sh scripts/event-level/uninstall
 #
 # Apple's eslogger, run by launchd as root, records every program start on this Mac, and
 # every file created or renamed. Apple's jq keeps of each only what the reader uses, so a
 # program's environment and file descriptors, and a file's contents, are never written, and
-# Apple's rotatelogs appends that to one file per hour. After the daemons are in place it
-# records what the collector records, `collects`: the eslogger arguments of the launch daemon
-# it installed, as Apple's plutil reads them, so the reader can tell a collector that records
-# file events from one installed before it did, whose log holds none. A job every
-# ten minutes deletes what is older than a day, and the oldest files while the log is larger
-# than 500 MiB. Only programs macOS ships run as root, and only from files this script copies
-# into a folder only root can write; nothing of ours is executed from a place
-# the owner's account can change. It only collects: it acts on no process, file or
-# connection. The log is readable by root and by the account that ran this through sudo, and
-# by no other account: an access-control entry for that one account, narrower than a group.
+# Apple's rotatelogs appends that to the log, a new file at each hour and at 128 MiB. After the
+# daemons are in place it records what the collector records, `collects`: the eslogger
+# arguments of the launch daemon it installed, as Apple's plutil reads them, so the reader can
+# tell a collector that records file events from one installed before it did, whose log holds
+# none. What the filter keeps needs no record: each line says it. Each time rotatelogs starts a
+# file, and every ten minutes, tidy.sh deletes what is older than a day, and the oldest files
+# while the log is larger than its cap: --log-gib whole GiB, at least 1; without it, the cap of
+# the collector already installed, or 2 GiB when there is none. Only programs macOS ships run as
+# root, and only from files this script copies into a folder only root can write; nothing of
+# ours is executed from a place the owner's account can change once it is installed. This
+# script itself runs as root what the checkout it is in holds, so it is run from a checkout the
+# owner trusts. It only collects: it acts on no process, file or connection. The log is
+# readable by root and by the account that ran this through sudo, and by no other account: an
+# access-control entry for that one account, narrower than a group.
 #
 # It is idempotent: run again, it stops what it started before, puts every file back and
-# starts it again, keeping the logs. Run over an installation that records program starts
-# only, it is the upgrade: the hourly files keep their names, and those already written are
-# read as before. It says what it will put where before it does anything, and stops with a
-# reason and a non-zero exit when a step fails.
+# starts it again, keeping the logs. Run over an earlier installation, it is the upgrade: the
+# files it wrote keep their names and are read and deleted as before. It says what it will put
+# where before it does anything, and stops with a reason and a non-zero exit when a step fails;
+# once it has stopped the collector that ran before, a failure also says what it left.
 
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
@@ -36,14 +40,137 @@ FIFO="$RUN/events.fifo"
 DAEMONS=/Library/LaunchDaemons
 # In the order they are started: the filter is reading before eslogger writes.
 LABELS='ai.nuanu.immune.event-filter ai.nuanu.immune.eslogger ai.nuanu.immune.event-tidy'
+# Run by /bin/sh, so read, not executed.
 SCRIPTS='collect.sh filter.jq tidy.sh'
+# Executed by rotatelogs at each new file, so executable.
+HOOK=rotated.sh
 
 here=$(cd "$(/usr/bin/dirname "$0")" && pwd -P) || exit 1
 
+# What this install has done to the collector, for a failure to say what it left: empty before
+# it stopped the one that ran before; `stopped` from then on; `partly` once it started one of the
+# launch daemons again; empty again once all are started.
+left=
 fail() {
     echo "install: $*" >&2
+    case $left in
+    stopped)
+        echo "install: the collector is stopped, so nothing is recorded until this script runs again and succeeds. Immune goes on showing the level as running for up to 15 minutes after the last line was written, and then says it is silent." >&2
+        ;;
+    partly)
+        echo "install: the collector is partly started: some of its launch daemons run and others do not, so it may record nothing until this script runs again and succeeds. Immune goes on showing the level as running for up to 15 minutes after the last line was written, and then says it is silent." >&2
+        ;;
+    esac
     exit 1
 }
+
+# BEGIN the log's cap
+# The cap of the log is set here and nowhere else: written in bytes into the tidy job's launch
+# daemon, which belongs to root, and read back from there. No file or setting a program
+# running as the user can change sets it: a cap such a program could shrink would let it empty
+# the log, and that is quieting. It is given as a whole number of GiB, at least 1. The ceiling
+# is for the shell's arithmetic, which is 64 bits wide: above 8589934591 GiB the bytes would
+# wrap and tidy.sh would compare the log with a wrong number. 1048576 GiB (1 PiB) is far above
+# any disk and far below that.
+GIB=1073741824
+CEILING_GIB=1048576
+usage() {
+    echo "usage: sudo /bin/sh $here/install [--log-gib <n>]"
+    echo "  --log-gib <n>  the most the log holds, in whole GiB from 1 to $CEILING_GIB;"
+    echo "                 without it, the cap of the collector installed here, or 2 GiB"
+}
+# A number of GiB as --log-gib takes it: digits only, no leading zero, at most the ceiling.
+gib_ok() {
+    case $1 in
+    '' | *[!0-9]* | 0*) return 1 ;;
+    esac
+    [ "${#1}" -le 7 ] && [ "$1" -le "$CEILING_GIB" ]
+}
+# A cap in bytes as a launch daemon may hold one: digits only, no leading zero, at least 1 GiB
+# and at most the ceiling.
+bytes_ok() {
+    case $1 in
+    '' | *[!0-9]* | 0*) return 1 ;;
+    esac
+    [ "${#1}" -le 16 ] && [ "$1" -ge "$GIB" ] && [ "$1" -le $((CEILING_GIB * GIB)) ]
+}
+# The cap to install and where it came from, "<bytes> <given|kept|default>", from the GiB
+# given (or nothing), the tidy job's launch daemon installed now, and the one to install,
+# whose cap is the default.
+cap_of() {
+    if [ -n "$1" ]; then
+        echo "$(($1 * GIB)) given"
+        return
+    fi
+    kept=$(/usr/bin/plutil -extract ProgramArguments.3 raw -o - "$2" 2>/dev/null) || kept=
+    if bytes_ok "$kept"; then
+        echo "$kept kept"
+        return
+    fi
+    default=$(/usr/bin/plutil -extract ProgramArguments.3 raw -o - "$3") && bytes_ok "$default" ||
+        return 1
+    echo "$default default"
+}
+# Writes a cap in bytes into a tidy job's launch daemon.
+write_cap() {
+    /usr/bin/plutil -replace ProgramArguments.3 -string "$1" "$2"
+}
+# A cap in a person's words: whole GiB when it is, else bytes.
+cap_words() {
+    if [ $(($1 % GIB)) -eq 0 ]; then echo "$(($1 / GIB)) GiB"; else echo "$1 bytes"; fi
+}
+# The most a log file holds before rotatelogs starts the next one: SEGMENT_MIB in collect.sh.
+SEGMENT=134217728
+# What a cap means at the rates this script states, from what tidy.sh does: each time
+# rotatelogs starts a file, at the hour or at 128 MiB, it deletes the files written longest ago
+# until the log is under the cap, never the one being written; and it deletes a file not
+# written to for a day. A quiet Mac writes 1000 bytes for each of 2 starts and 600 for each of
+# 20 file events a second, 1209600000 bytes a day; one building, at 100 starts and 200 file
+# events a second, 792000000 an hour. Prints three lines: how much of its day a quiet Mac
+# keeps; the fewest and most hours a building Mac keeps, in tenths and never more than a day:
+# from the cap less the file just deleted, at most a segment, to the cap and the file being
+# written; and the most disk in tenths of a GB, the cap or a building Mac's day, whichever is
+# less, and the file being written.
+cap_means() {
+    day=1209600000
+    if [ "$1" -ge "$day" ]; then echo "its day"; else echo "about its last $(($1 * 24 / day)) hours"; fi
+    hour=792000000
+    hours() {
+        h=$(((($1) * 10 + hour / 2) / hour))
+        [ "$h" -ge 0 ] || h=0
+        [ "$h" -le 240 ] || h=240
+        echo "$((h / 10)).$((h % 10))"
+    }
+    echo "$(hours "$1 - $SEGMENT") $(hours "$1 + $SEGMENT")"
+    kept=$1
+    [ "$kept" -le $((hour * 24)) ] || kept=$((hour * 24))
+    tenths=$(((kept + SEGMENT + 50000000) / 100000000))
+    echo "$((tenths / 10)).$((tenths % 10))"
+}
+refuse() {
+    echo "install: $*" >&2
+    usage >&2
+    exit 64
+}
+# The arguments: sets `given` to the GiB given, or refuses them with the usage.
+parse_args() {
+    given=
+    while [ "$#" -gt 0 ]; do
+        case $1 in
+        --log-gib)
+            [ "$#" -ge 2 ] || refuse "--log-gib needs a whole number of GiB"
+            gib_ok "$2" || refuse "the log's cap is a whole number of GiB from 1 to $CEILING_GIB, and $2 is not"
+            given=$2
+            shift 2
+            ;;
+        *) refuse "$1 is not an argument this script takes" ;;
+        esac
+    done
+}
+# END the log's cap
+
+# The arguments are refused before anything is looked at or changed.
+parse_args "$@"
 
 # A step that must succeed.
 step() {
@@ -63,7 +190,7 @@ fi
 [ "$(/usr/bin/id -u "$user" 2>/dev/null)" = "$uid" ] ||
     fail "SUDO_USER and SUDO_UID do not name one account"
 
-for f in $SCRIPTS; do
+for f in $SCRIPTS $HOOK; do
     [ -f "$here/$f" ] || fail "$here/$f is missing"
 done
 for l in $LABELS; do
@@ -92,53 +219,72 @@ if [ -e "$TOP" ] || [ -L "$TOP" ]; then
     root_only "$TOP" || fail "$TOP exists and can be changed by an account other than root"
 fi
 
+# The cap: given, or the one the collector installed here holds, or the default; installing
+# again never shrinks the log by itself.
+TIDY="$DAEMONS/ai.nuanu.immune.event-tidy.plist"
+capped=$(cap_of "$given" "$TIDY" "$here/ai.nuanu.immune.event-tidy.plist") ||
+    fail "$here/ai.nuanu.immune.event-tidy.plist does not give the log a cap"
+cap=${capped% *}
+case ${capped#* } in
+given) from="given with --log-gib" ;;
+kept) from="kept from the collector installed here" ;;
+*) from="the default" ;;
+esac
+capw=$(cap_words "$cap")
+means=$(cap_means "$cap")
+quiet=$(echo "$means" | /usr/bin/sed -n 1p)
+building=$(echo "$means" | /usr/bin/sed -n 2p)
+disk=$(echo "$means" | /usr/bin/sed -n 3p)
+if [ "$building" = "24.0 24.0" ]; then
+    holds="its day"
+else
+    holds="between about ${building% *} and ${building#* } hours"
+fi
+
 cat <<EOF
 This installs the event level, and changes nothing else on this Mac:
   $LIB
-      root, 755: collect.sh, filter.jq, tidy.sh, and collects, the arguments eslogger is
-      started with (root, 644)
+      root, 755: collect.sh, filter.jq, tidy.sh (root, 644) and rotated.sh (root, 755);
+      collects, the arguments eslogger is started with (root, 644)
   $RUN
       root, 700: events.fifo, the pipe from eslogger to the filter (root, 600)
   $LOG
       root, 700, readable by $user alone through an access-control entry:
-      exec-<hour>.jsonl, one file per hour (UTC); eslogger.err and scripts.err, what eslogger
-      and these scripts print; removed, what was deleted and why
+      exec-<run>-<start>.jsonl, a new file at each hour and at 128 MiB, named by when the
+      filter's run began and when the file was started (UTC); eslogger.err and scripts.err,
+      what eslogger and these scripts print; removed, what was deleted and why
   $DAEMONS/ai.nuanu.immune.eslogger.plist
       runs /usr/bin/eslogger exec create rename as root
   $DAEMONS/ai.nuanu.immune.event-filter.plist
-      runs collect.sh as root: jq keeps what the reader uses, rotatelogs writes the log
+      runs collect.sh as root: jq keeps what the reader uses, rotatelogs writes the log and
+      runs rotated.sh, and so tidy.sh, at each new file
   $DAEMONS/ai.nuanu.immune.event-tidy.plist
-      runs tidy.sh as root every ten minutes: deletes logs older than a day, and the oldest
-      while the log is larger than 500 MiB
+      runs tidy.sh as root every ten minutes; it holds the log's cap, $capw ($cap bytes),
+      $from. tidy.sh deletes logs older than a day, and the oldest while the log is larger
+      than its cap
 It records every program start on this Mac, of every account, with its arguments, and every
-file created or renamed, with its path and the program that did it; the environment of a
-program and the contents of a file are never written; files changed in place, closed or
-removed are not recorded. eslogger needs Full Disk Access, granted to /usr/bin/eslogger in
-System Settings > Privacy & Security > Full Disk Access; without it eslogger stops at once,
-nothing is recorded, and Immune says macOS refuses it.
-What it costs on disk: about 600 bytes a program start and about 350 bytes a file event. A
-quiet Mac starting 2 programs and creating 20 files a second writes about 700 MB a day; one
-building, at 100 starts and 200 files a second, about 11 GB a day, more than the cap, which
-then deletes the oldest hours first, so the log holds its last hour or so. The log is a
-buffer: while the app is open it is read every ten seconds, and what is read is judged and
-counted. Hours deleted before they were read are
-counted, and Immune says the day is partial. The log never holds more than
-500 MiB, plus what ten minutes of writing add: at most about 0.6 GB of disk.
+file created or renamed, with its path and the program that did it, and who each process is:
+its pid version and start time, its users and groups, and who signed it; the environment of
+a program and the contents of a file are never written; files changed in place, closed or
+removed are not recorded. eslogger needs
+Full Disk Access, granted to /usr/bin/eslogger in System Settings > Privacy & Security > Full
+Disk Access; without it eslogger stops at once, nothing is recorded, and Immune says macOS
+refuses it.
+What it costs on disk: about 1000 bytes a program start and about 600 bytes a file event. A
+quiet Mac starting 2 programs and creating 20 files a second writes about 1.2 GB a day, and
+the log holds $quiet. One building, at 100 starts and 200 files a second, writes about 790 MB
+an hour, and the log holds $holds. A line is kept a day at most. Each time a new file is
+started, tidy.sh deletes the oldest files until the log is under its cap, so the log is never
+larger than its cap, plus the file being written (128 MiB, or more if more than that arrives
+within one second), plus what is written while tidy.sh runs: for the building Mac, at most
+about $disk GB of disk. Heavy writing pushes older lines out before their day is over. The
+log is a buffer: while the app is open it is read every ten seconds, and what is read is
+judged and counted. Lines deleted before they were read are counted, and Immune then says the
+day is partial.
 EOF
 
-# What an earlier install started is stopped, so that it is replaced whole.
-for l in $LABELS; do
-    if /bin/launchctl print "system/$l" >/dev/null 2>&1; then
-        step /bin/launchctl bootout "system/$l"
-        n=0
-        while /bin/launchctl print "system/$l" >/dev/null 2>&1; do
-            n=$((n + 1))
-            [ "$n" -le 20 ] || fail "$l did not stop within ten seconds"
-            /bin/sleep 0.5
-        done
-    fi
-done
-
+# What can fail without touching the collector that runs now is done first: the folders, the
+# pipe and who may read the log. None of it stops or changes a collector that runs.
 # A symbolic link where a folder belongs makes mkdir fail, and the install stops there.
 for d in "$TOP:755" "$LIB:755" "$RUN:700" "$LOG:700"; do
     path=${d%:*}
@@ -147,10 +293,6 @@ for d in "$TOP:755" "$LIB:755" "$RUN:700" "$LOG:700"; do
     step /bin/chmod "${d##*:}" "$path"
     step /bin/chmod -N "$path"
 done
-for f in $SCRIPTS; do
-    step /usr/bin/install -o root -g wheel -m 644 "$here/$f" "$LIB/$f"
-done
-
 if [ ! -p "$FIFO" ]; then
     step /bin/rm -f "$FIFO"
     step /usr/bin/mkfifo -m 600 "$FIFO"
@@ -168,9 +310,31 @@ step /usr/bin/find "$LOG" -type f -exec /usr/sbin/chown root:wheel {} +
 step /usr/bin/find "$LOG" -type f -exec /bin/chmod 600 {} +
 step /usr/bin/find "$LOG" -type f -exec /bin/chmod +a "user:$user allow read,readattr,readextattr,readsecurity" {} +
 
+# What an earlier install started is stopped, so that it is replaced whole.
+for l in $LABELS; do
+    if /bin/launchctl print "system/$l" >/dev/null 2>&1; then
+        left=stopped
+        step /bin/launchctl bootout "system/$l"
+        n=0
+        while /bin/launchctl print "system/$l" >/dev/null 2>&1; do
+            n=$((n + 1))
+            [ "$n" -le 20 ] || fail "$l did not stop within ten seconds"
+            /bin/sleep 0.5
+        done
+    fi
+done
+
+for f in $SCRIPTS; do
+    step /usr/bin/install -o root -g wheel -m 644 "$here/$f" "$LIB/$f"
+done
+step /usr/bin/install -o root -g wheel -m 755 "$here/$HOOK" "$LIB/$HOOK"
+
 for l in $LABELS; do
     step /usr/bin/install -o root -g wheel -m 644 "$here/$l.plist" "$DAEMONS/$l.plist"
 done
+step write_cap "$cap" "$TIDY"
+step /usr/sbin/chown root:wheel "$TIDY"
+step /bin/chmod 644 "$TIDY"
 # What the collector records, as the launch daemon just installed says it, written after it so
 # that it is never older: the reader counts file events as collected only from this, and an
 # install that replaces the daemon without writing it again leaves it older, which counts for
@@ -178,9 +342,13 @@ done
 step /usr/bin/plutil -extract ProgramArguments json -o "$LIB/collects" "$DAEMONS/ai.nuanu.immune.eslogger.plist"
 step /usr/sbin/chown root:wheel "$LIB/collects"
 step /bin/chmod 644 "$LIB/collects"
+# A record an earlier install wrote of what its filter kept: lines say it now.
+step /bin/rm -f "$LIB/keeps"
 for l in $LABELS; do
     step /bin/launchctl bootstrap system "$DAEMONS/$l.plist"
+    left=partly
 done
+left=
 
 # The verdict, in one line the owner can read at a glance: whether program starts and file
 # events are being written. The programs this script starts are program starts themselves,

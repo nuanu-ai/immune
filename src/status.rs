@@ -1131,14 +1131,22 @@ const MATCHED_SHOWN: usize = 10;
 /// while `file_events_collected`, the collector installed here being established to record
 /// them. `watching_rules` counts the rules that watch now; one evaluated in part or not at all
 /// is never among them, and a rule for file events whose events are not collected is named in
-/// `not_watching` with its reason. `judged` says how much of the last day the watching rules
-/// judged: `all`, `part` when the log lost events they read, could not read lines or deleted
-/// hours before they were read, or `none` while the level does not run, each but `all` with
-/// its fixed words in `judged_note`. Matches in the last day are served whether or not the
-/// level runs now: they happened.
+/// `not_watching` with its reason, as is a rule that reads what the collector installed here
+/// does not keep (`crate::events::KEEPS`), with what it does not keep. `judged` says how much
+/// of the last day the watching rules judged: `all`, `part` when the log lost events they
+/// read, could not read lines or deleted hours before they were read, or `none` while the
+/// level does not run, each but `all` with its fixed words in `judged_note`. Matches in the
+/// last day are served whether or not the level runs now: they happened.
 pub fn rules_section(level: Option<&crate::events::Level>) -> Value {
+    rules_section_of(crate::sigma::Rules::shipped(), level)
+}
+
+/// `rules_section` for these rules.
+pub(crate) fn rules_section_of(
+    rules: &crate::sigma::Rules,
+    level: Option<&crate::events::Level>,
+) -> Value {
     use crate::sigma::Kind;
-    let rules = crate::sigma::Rules::shipped();
     let (evaluated, in_part, not_evaluated) = rules.groups();
     let watching = level.filter(|l| l.state == crate::events::RUNNING);
     let files = watching.is_some_and(|l| l.files_watched());
@@ -1172,25 +1180,48 @@ pub fn rules_section(level: Option<&crate::events::Level>) -> Value {
         },
     };
     let file_rules = rules.evaluated(Kind::File);
-    let watching_rules = match watching {
-        None => 0,
-        Some(_) => rules.evaluated(Kind::Process) + if files { file_rules } else { 0 },
+    let not_arriving = watching.map_or(0, |l| l.not_arriving());
+    // While the level runs, a rule evaluated in full watches unless its events are not
+    // collected or it reads what does not arrive; then it is named, with why: the collector
+    // does not keep it, keeps it and never filled it, or no line that would carry it was read.
+    let unwatched = |l: &crate::sigma::Loaded| -> Option<(&'static str, Vec<&'static str>)> {
+        let level = watching?;
+        if l.kind == Some(Kind::File) && !files {
+            Some(("file_events_not_collected", Vec::new()))
+        } else if l.silenced_by(not_arriving) {
+            let missing = l.needs & not_arriving;
+            Some((
+                level.arrivals.worst(missing).reason()?,
+                crate::events::names(missing),
+            ))
+        } else {
+            None
+        }
     };
-    // While the level runs and file events are not collected, the rules for them are named.
+    let watching_of = |kind: Kind| {
+        evaluated
+            .iter()
+            .filter(|l| l.kind == Some(kind) && watching.is_some() && unwatched(l).is_none())
+            .count()
+    };
+    let watching_file_rules = watching_of(Kind::File);
+    let watching_rules = watching_of(Kind::Process) + watching_file_rules;
     let not_watching: Vec<Value> = evaluated
         .iter()
-        .filter(|_| watching.is_some() && !files)
-        .filter(|l| l.kind == Some(Kind::File))
-        .filter_map(|l| l.meta.as_ref())
-        .map(|m| {
-            json!({
+        .filter_map(|l| Some((l.meta.as_ref()?, unwatched(l)?)))
+        .map(|(m, (reason, not_arriving))| {
+            let mut v = json!({
                 "id_text": text(&m.id),
                 "title_text": text(&m.title),
                 "level": m.level_name(),
                 "source": m.source.name,
                 "set": m.source.set,
-                "reason": "file_events_not_collected",
-            })
+                "reason": reason,
+            });
+            if !not_arriving.is_empty() {
+                v["not_arriving"] = json!(not_arriving);
+            }
+            v
         })
         .collect();
     let empty = BTreeMap::new();
@@ -1224,6 +1255,7 @@ pub fn rules_section(level: Option<&crate::events::Level>) -> Value {
         "watching": watching.is_some(),
         "watching_rules": watching_rules,
         "file_rules": file_rules,
+        "watching_file_rules": watching_file_rules,
         "file_events_collected": files,
         "not_watching": not_watching,
         "judged": judged,
@@ -1527,4 +1559,137 @@ fn no_reader_section(list: &[NoReader]) -> Value {
             })
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::{Arrival, Arrivals, Files, Level, RUNNING, Series, Tally};
+    use crate::sigma::{ELASTIC, Rules};
+
+    /// A rule of Elastic's set as the translation writes one, about `category`.
+    fn rule(id: &str, category: &str, detection: &str) -> &'static str {
+        let text = format!(
+            "title: Invented {id}\nid: {id}\nstatus: test\nlevel: high\n\
+             logsource: {{\"product\": \"macos\", \"category\": \"{category}\"}}\n\
+             detection:\n{detection}{}",
+            crate::sigma::testing::record_of(&ELASTIC, "\"high\"", "")
+        );
+        Box::leak(text.into_boxed_str())
+    }
+
+    /// What the lines say: everything arrives but the signer, which is as `signature` says, in
+    /// a program start and in a file event alike.
+    fn signature(signature: Arrival) -> Arrivals {
+        let on = Arrival::Kept(Some(1_791_072_002));
+        Arrivals([on, on, signature, on, signature])
+    }
+
+    fn running(arrivals: Arrivals) -> Level {
+        Level {
+            state: RUNNING.to_string(),
+            read_at: 0,
+            written: None,
+            said_by: None,
+            said: None,
+            reason: None,
+            version: None,
+            since_check: Tally::default(),
+            last_day: Tally::default(),
+            matches_last_day: BTreeMap::new(),
+            matches_last_week: BTreeMap::new(),
+            starts_by_hour: Series::default(),
+            starts_by_minute: Series::default(),
+            files: Files {
+                collected: true,
+                ..Files::default()
+            },
+            arrivals,
+            cap: None,
+        }
+    }
+
+    #[test]
+    fn a_rule_that_reads_what_does_not_arrive_is_named_with_which_and_never_counted_as_watching() {
+        // No false calm: a rule watches only while lines give values for what it reads. While
+        // the latest lines lack it, carry it empty, or no line was read, the rule is not among
+        // those watching and is named with which of the three and what does not arrive.
+        let rules = Rules::load_as(
+            &ELASTIC,
+            &[
+                (
+                    "signer.yml",
+                    rule(
+                        "00000000-0000-4000-8000-000000000001",
+                        "file_event",
+                        "  s1: {\"process.code_signature.signing_id|cased\": [\"com.example\"]}\n  condition: s1\n",
+                    ),
+                ),
+                (
+                    "start.yml",
+                    rule(
+                        "00000000-0000-4000-8000-000000000002",
+                        "process_creation",
+                        "  s1: {\"process.name|cased\": [\"curl\"]}\n  condition: s1\n",
+                    ),
+                ),
+            ],
+        );
+        for (arrivals, reason) in [
+            (signature(Arrival::NotKept), "collector_does_not_keep"),
+            (signature(Arrival::Kept(None)), "kept_never_filled"),
+            (signature(Arrival::Unknown), "not_yet_known"),
+            (Arrivals::default(), "not_yet_known"),
+        ] {
+            let r = rules_section_of(&rules, Some(&running(arrivals)));
+            assert_eq!(
+                (&r["watching_rules"], &r["watching_file_rules"]),
+                (&json!(1), &json!(0)),
+                "{r}"
+            );
+            assert_eq!(
+                r["not_watching"],
+                json!([{
+                    "id_text": "00000000-0000-4000-8000-000000000001",
+                    "title_text": "Invented 00000000-0000-4000-8000-000000000001",
+                    "level": "high",
+                    "source": "elastic",
+                    "set": "Elastic's detection rules",
+                    "reason": reason,
+                    "not_arriving": ["signature"],
+                }])
+            );
+        }
+        // Lines that lack it say most: an earlier collector, whatever the other kind says.
+        let mixed = Arrivals([
+            Arrival::Kept(Some(1)),
+            Arrival::Kept(Some(1)),
+            Arrival::Kept(Some(1)),
+            Arrival::Kept(Some(1)),
+            Arrival::NotKept,
+        ]);
+        let r = rules_section_of(&rules, Some(&running(mixed)));
+        assert_eq!(r["not_watching"][0]["reason"], "collector_does_not_keep");
+        let now = running(signature(Arrival::Kept(Some(1_791_072_003))));
+        let r = rules_section_of(&rules, Some(&now));
+        assert_eq!(
+            (
+                &r["watching_rules"],
+                &r["watching_file_rules"],
+                &r["not_watching"]
+            ),
+            (&json!(2), &json!(1), &json!([])),
+            "{r}"
+        );
+        // Not running: nothing watches and nothing is named for what the collector keeps.
+        let silent = Level {
+            state: crate::events::SILENT.to_string(),
+            ..running(Arrivals::default())
+        };
+        let r = rules_section_of(&rules, Some(&silent));
+        assert_eq!(
+            (&r["watching_rules"], &r["not_watching"]),
+            (&json!(0), &json!([]))
+        );
+    }
 }
