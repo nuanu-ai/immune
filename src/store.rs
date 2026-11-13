@@ -97,7 +97,7 @@ CREATE TABLE raw_input (
 /// What the journal records. The list only grows: a store whose journal was made with a
 /// shorter list is made again with this one when it is opened, so a new kind of entry is a
 /// new word here and nothing else.
-const JOURNAL_ENTRIES: [&str; 20] = [
+const JOURNAL_ENTRIES: [&str; 22] = [
     "run_started",
     "added",
     "changed",
@@ -123,6 +123,12 @@ const JOURNAL_ENTRIES: [&str; 20] = [
     // A place new in a worktree that is the same as in another checkout of its repository,
     // and so raised no finding, see `worktrees.rs`.
     "same_as_sibling",
+    // A place read for the first time, with how many things it held that were taken as its
+    // baseline, see `baseline.rs`.
+    "place_first_read",
+    // Something an earlier reading read in full that is there and could not be read, with why,
+    // see `baseline.rs`.
+    "not_read",
 ];
 
 /// The journal. It cannot be rebuilt from raw input, so it only grows. Its entries are the
@@ -154,24 +160,6 @@ CREATE TRIGGER journal_no_delete BEFORE DELETE ON journal
         entries.join(", ")
     )
 }
-
-/// The places a reader looked through in full, each recorded once, by the first reading of
-/// its reader, scope and kind that did: a watched place, a checkout's files of one kind, the
-/// folder a walk for checkouts went through. Something that appears is a change only in a
-/// place an earlier reading looked through; anywhere else it is that place's baseline,
-/// whatever else was read before. Created on every open, like the owner's word: a store made
-/// before it has none, and is judged as before until a reading records some.
-const PLACES_READ: &str = "
-CREATE TABLE IF NOT EXISTS place_read (
-    reader TEXT NOT NULL,
-    scope  TEXT NOT NULL,
-    kind   TEXT NOT NULL,
-    place  TEXT NOT NULL,     -- a path as ids name it
-    run_id TEXT NOT NULL,     -- the run of the first reading that looked through it in full
-    at     INTEGER NOT NULL,  -- UTC seconds
-    PRIMARY KEY (reader, scope, kind, place)
-);
-";
 
 /// The owner's word: what the owner said about an entity, next to the facts and never an
 /// edit of them. A withdrawn statement is kept with the time it was withdrawn. Created on
@@ -283,9 +271,9 @@ INSERT OR IGNORE INTO coverage_kind (name) VALUES ('folders macOS asks permissio
 ///
 /// Every reading adds coverage rows, a watcher's too, and none is ever deleted. The latest
 /// reading of a kind, which a watcher asks for at every reading to know which machine it
-/// reads, is found through `coverage_latest_of_kind`. Without it, and with
-/// `only_failed_before` counting every earlier reading, a watcher's reading looked through
-/// every reading before it: 3 ms after ten readings, 124 ms after ten thousand.
+/// reads, is found through `coverage_latest_of_kind`. Without it a watcher's reading looked
+/// through every reading before it: 3 ms after ten readings, 124 ms after ten thousand,
+/// measured when it also counted every earlier failed reading, which it no longer does.
 ///
 /// The status and the view ask for the latest reading of each reader, scope and kind, when
 /// each was last read in full, and what one run read. `LATEST` finds the first through
@@ -499,7 +487,6 @@ pub fn open(path: &Path) -> Res<Connection> {
     conn.execute_batch(VOCABULARY)?;
     crate::autorun::add_kinds(&conn)?;
     conn.execute_batch(OWNER)?;
-    conn.execute_batch(PLACES_READ)?;
     crate::owner::add_via(&conn)?;
     conn.execute_batch(THREATS)?;
     conn.execute_batch(crate::osv::SCHEMA)?;
@@ -511,6 +498,7 @@ pub fn open(path: &Path) -> Res<Connection> {
     conn.execute_batch(INDEXES)?;
     widen_journal(&mut conn)?;
     conn.execute_batch(JOURNAL_INDEXES)?;
+    crate::baseline::open(&mut conn)?;
     Ok(conn)
 }
 
@@ -979,83 +967,26 @@ pub fn read_before(
     )
 }
 
-/// What the journal says of a difference that its place's first reading found: it is
-/// recorded, and it is not a change.
+/// What the journal says of a difference found where nobody could have known what was there
+/// before: during the store's first check. It is recorded, and it is not a change.
 pub const FIRST_READING: &str = "first reading of its place";
+/// What the journal says of a difference found in a place read for the first time after the
+/// store's first check: it is recorded, it is not a change, and it is told once.
+pub const READ_FIRST: &str = "read for the first time";
 
-/// The places of this reader, scope and kind that readings of runs before `r`'s looked
-/// through in full. `None` when the reader recorded no place in any earlier run, as in a store
-/// made before places were recorded: what a reading of it finds is then judged as it was.
-pub fn places_read(tx: &Transaction, r: &Reading) -> rusqlite::Result<Option<BTreeSet<String>>> {
-    let recorded: bool = tx.query_row(
-        "SELECT EXISTS (SELECT 1 FROM place_read WHERE reader = ?1 AND run_id != ?2)",
-        params![r.reader, r.run_id],
-        |row| row.get(0),
-    )?;
-    if !recorded {
-        return Ok(None);
-    }
-    // The walk for checkouts records its folder before the watched places are read in the
-    // same run: only earlier runs count.
-    tx.prepare(
-        "SELECT place FROM place_read
-         WHERE reader = ?1 AND scope = ?2 AND kind = ?3 AND run_id != ?4",
-    )?
-    .query_map(params![r.reader, r.scope, r.kind, r.run_id], |row| {
-        row.get(0)
-    })?
-    .collect::<rusqlite::Result<_>>()
-    .map(Some)
-}
-
-/// Records the places a reading looked through in full; one recorded before keeps its first.
-pub fn record_places(tx: &Transaction, r: &Reading, places: &[String]) -> rusqlite::Result<()> {
-    let mut stmt = tx.prepare(
-        "INSERT OR IGNORE INTO place_read (reader, scope, kind, place, run_id, at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-    )?;
-    for place in places {
-        stmt.execute(params![r.reader, r.scope, r.kind, place, r.run_id, r.at])?;
-    }
-    Ok(())
-}
-
-/// Whether this reader says where the entity is, live.
-pub fn located_by(tx: &Transaction, subject: &str, reader: &str) -> rusqlite::Result<bool> {
-    tx.query_row(
-        "SELECT EXISTS (SELECT 1 FROM assertion WHERE layer = 'live' AND subject = ?1
-                          AND predicate = 'located_on' AND reader = ?2)",
-        params![subject, reader],
-        |row| row.get(0),
-    )
-}
-
-/// Whether nothing the store holds live says where the entity is from a run before `run_id`:
-/// it is new to the store in this run.
-pub fn new_in_run(tx: &Transaction, subject: &str, run_id: &str) -> rusqlite::Result<bool> {
-    tx.query_row(
-        "SELECT NOT EXISTS (SELECT 1 FROM assertion WHERE layer = 'live' AND subject = ?1
-                              AND predicate = 'located_on' AND run_id != ?2)",
-        params![subject, run_id],
-        |row| row.get(0),
-    )
-}
-
-/// Whether every earlier reading of this kind by this reader in this scope read nothing,
-/// and there was at least one. Asked as two that stop at the first row that answers them, not
-/// as a count of every earlier reading: it is asked for each watched file at every reading.
-pub fn only_failed_before(
+/// Whether a reading of this kind by this reader in an earlier run than `run_id` read this
+/// scope in full.
+pub fn read_full_before(
     conn: &Connection,
     reader: &str,
     scope: &str,
     kind: &str,
+    run_id: &str,
 ) -> rusqlite::Result<bool> {
     conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM coverage WHERE reader = ?1 AND scope = ?2 AND kind = ?3)
-            AND NOT EXISTS (SELECT 1 FROM coverage
-                            WHERE reader = ?1 AND scope = ?2 AND kind = ?3
-                              AND completeness IN ('full', 'partial'))",
-        params![reader, scope, kind],
+        "SELECT EXISTS (SELECT 1 FROM coverage WHERE reader = ?1 AND scope = ?2 AND kind = ?3
+                          AND completeness = 'full' AND run_id != ?4)",
+        params![reader, scope, kind, run_id],
         |r| r.get(0),
     )
 }
@@ -1180,13 +1111,13 @@ pub fn journal_owner(
     Ok(())
 }
 
-/// One difference a reading found; `first` when it is its place's first reading, which the
-/// entry says in its text.
+/// One difference a reading found, with `text` when it is not a change: `FIRST_READING` or
+/// `READ_FIRST`.
 pub fn journal_event(
     tx: &Transaction,
     r: &Reading,
     e: &Event,
-    first: bool,
+    text: Option<&str>,
 ) -> rusqlite::Result<()> {
     tx.execute(
         "INSERT INTO journal (at, run_id, entry, reader, scope, kind, subject, predicate,
@@ -1203,7 +1134,7 @@ pub fn journal_event(
             e.predicate,
             e.old,
             e.new,
-            first.then_some(FIRST_READING)
+            text
         ],
     )?;
     Ok(())

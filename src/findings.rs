@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS finding (
     -- after the owner has seen the one before.
     occurrence     INTEGER NOT NULL,
     state          TEXT NOT NULL CHECK (state IN ('open', 'expected', 'seen', 'cleared')),
-    change         TEXT,  -- what the latest occurrence was: new, changed, gone or first read
+    change         TEXT,  -- what the latest occurrence was: new, changed, gone, not read or
+                          -- first read
     first_seen_at  INTEGER NOT NULL,
     first_seen_run TEXT NOT NULL,
     last_seen_at   INTEGER NOT NULL,
@@ -79,7 +80,7 @@ pub struct Words {
 
 /// What a run saw in a watched place, as the rules read it.
 pub struct Observed {
-    /// `new`, `changed`, `gone` or `first read`.
+    /// `new`, `changed`, `gone` or `not read`.
     pub change: &'static str,
     /// The kind of place, the literal of `watched_as`.
     pub place: String,
@@ -108,6 +109,9 @@ fn changed_in(o: &Observed, place: &str) -> bool {
 }
 
 pub const FIRST_READ: &str = "first read";
+/// What a run saw of something an earlier run read in full that is there and could not be
+/// read: losing sight of it is a change (`baseline.rs`).
+pub const NOT_READ: &str = "not read";
 
 fn autostart() -> Rule {
     Rule {
@@ -183,21 +187,72 @@ fn git_hook() -> Rule {
     }
 }
 
-fn first_read() -> Rule {
+/// The rule of the item that tells the places read for the first time in a check. It is
+/// raised once for a check by `first_read`, never by one thing seen.
+pub const FIRST_READ_RULE: &str = "watched.first-read";
+
+fn first_read_rule() -> Rule {
     Rule {
-        id: "watched.first-read",
-        kind: "file read for the first time",
+        id: FIRST_READ_RULE,
+        kind: "places read for the first time",
         technique: None,
         severity: "informational",
         confidence: "low",
         finds: "event",
         words: Words {
-            title: "A file that is checked for changes could be opened for the first time.",
-            meaning: "Until now it could not be opened, so a change to it before today would have gone unseen; this is normal after a permission was fixed.",
-            advice: "Look at the file once, so that from now on only changes to it are shown.",
+            title: "Some places on this Mac were read for the first time, and what runs by itself in them was taken as their starting point.",
+            meaning: "They could not be read before, or were not known, so a change in them before today would have gone unseen; this is normal after a permission was fixed, a folder was checked for the first time or a project was found later.",
+            advice: "Look once at the places named here and what runs by itself in them; from now on only changes there are shown.",
         },
-        fires: |o| o.change == FIRST_READ,
+        fires: |_| false,
     }
+}
+
+/// Raises the item that tells the places this run read for the first time, by the journal
+/// entries that name them, or adds them to the one that stands. Returns whether it opened one.
+pub fn first_read(
+    tx: &Transaction,
+    run_id: &str,
+    at: i64,
+    machine: &str,
+) -> rusqlite::Result<bool> {
+    let any: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM journal WHERE run_id = ?1 AND entry = 'place_first_read')",
+        [run_id],
+        |r| r.get(0),
+    )?;
+    if !any {
+        return Ok(false);
+    }
+    let (id, opened) = occur(tx, FIRST_READ_RULE, machine, FIRST_READ, run_id, at)?;
+    tx.execute(
+        "INSERT INTO finding_basis (finding, journal)
+         SELECT ?1, seq FROM journal WHERE run_id = ?2 AND entry = 'place_first_read'",
+        params![id, run_id],
+    )?;
+    Ok(opened)
+}
+
+/// What the item of places read for the first time names: each place with how many things it
+/// held, from its latest occurrence's entries.
+fn first_read_places(conn: &Connection, id: &str, this: Option<&This>) -> rusqlite::Result<String> {
+    let rows: Vec<(String, String)> = conn
+        .prepare(
+            "SELECT j.subject, j.new_value FROM finding_basis b JOIN journal j ON j.seq = b.journal
+             WHERE b.finding = ?1 AND j.entry = 'place_first_read' ORDER BY j.seq",
+        )?
+        .query_map([id], |r| {
+            Ok((
+                r.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(rows
+        .iter()
+        .map(|(subject, n)| format!("{} ({n})", place(subject, this)))
+        .collect::<Vec<_>>()
+        .join("; "))
 }
 
 // ---- Integrity of what is installed: what the integrity reader saw change while the
@@ -614,7 +669,7 @@ pub fn rules() -> [Rule; 20] {
         shell_profile(),
         ssh_access(),
         git_hook(),
-        first_read(),
+        first_read_rule(),
         app_seal(),
         app_signer(),
         package_files(),
@@ -695,7 +750,7 @@ fn raise(
         "INSERT INTO finding_basis (finding, journal)
          SELECT ?1, seq FROM journal
          WHERE run_id = ?2 AND reader IN (?3, ?5, ?6, ?7)
-           AND entry IN ('added', 'changed', 'removed', 'sampled') AND subject = ?4",
+           AND entry IN ('added', 'changed', 'removed', 'sampled', 'not_read') AND subject = ?4",
         params![
             id,
             run_id,
@@ -874,11 +929,13 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Found>>> 
                 (SELECT object FROM assertion a WHERE a.subject = f.about
                    AND a.predicate = 'installed_at' ORDER BY a.id DESC LIMIT 1),
                 (SELECT j.new_value FROM finding_basis b JOIN journal j ON j.seq = b.journal
-                 WHERE b.finding = f.id AND j.entry IN ('added', 'changed', 'sampled')
-                   AND j.predicate = CASE f.rule WHEN 'integrity.app-seal' THEN 'has_seal'
-                                                 WHEN 'integrity.app-signer' THEN 'signed_by'
-                                                 WHEN 'indicator.match' THEN 'matches_indicator'
-                                                 END
+                 WHERE b.finding = f.id
+                   AND ((j.entry IN ('added', 'changed', 'sampled')
+                         AND j.predicate = CASE f.rule WHEN 'integrity.app-seal' THEN 'has_seal'
+                                                       WHEN 'integrity.app-signer' THEN 'signed_by'
+                                                       WHEN 'indicator.match' THEN 'matches_indicator'
+                                                       END)
+                        OR (f.change = 'not read' AND j.entry = 'not_read'))
                  ORDER BY j.seq DESC LIMIT 1),
                 {via},
                 EXISTS (SELECT 1 FROM finding g WHERE g.rule = f.rule AND g.about = f.about
@@ -918,6 +975,10 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Found>>> 
     .map(|f| {
         f.and_then(|mut f| {
             f.in_force = in_force(&f, now);
+            // The item of places read for the first time names them, from what it rests on.
+            if f.rule == FIRST_READ_RULE {
+                f.became = Some(first_read_places(conn, &f.id, this.as_ref())?);
+            }
             // A finding about a dependency says where its lockfile lines are and what records
             // it rests on, from the answers that stand now. They are read once for all such
             // findings, not once for each.

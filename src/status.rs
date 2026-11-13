@@ -291,33 +291,25 @@ struct Baselines {
     /// For each reading of a reader in `BASELINED`, the run whose reading of it first read
     /// something. The two readers' kinds differ, so scope and kind name one reading.
     first: HashMap<(String, String), String>,
-    /// The first journal entry of the first run that recorded a place the watched places
-    /// reader looked through. From there on a reading of that reader says in each entry
-    /// whether it was its place's first reading, and `first` no longer speaks for it.
-    places_from: Option<i64>,
+    /// The last journal entry written before units were recorded (`baseline.rs`). After it a
+    /// reading of the watched places says in each entry whether it was a first reading, and
+    /// `first` no longer speaks for it.
+    units_since: Option<i64>,
 }
 
-/// The baselines of the journal: before places were recorded, a reading's events are the
+/// The baselines of the journal: before units were recorded, a reading's events are the
 /// baseline when it was the first of its scope and kind to read something.
 fn baselines(conn: &Connection) -> rusqlite::Result<Baselines> {
-    let recorded: bool = conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'place_read')",
-        [],
-        |r| r.get(0),
-    )?;
-    let places_from = if recorded {
-        conn.query_row(
-            "SELECT MIN(seq) FROM journal
-             WHERE run_id IN (SELECT run_id FROM place_read WHERE reader = ?1)",
-            [watched::READER],
+    let units_since = conn
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM meta WHERE key = ?1",
+            [crate::baseline::UNITS_SINCE],
             |r| r.get(0),
-        )?
-    } else {
-        None
-    };
+        )
+        .optional()?;
     Ok(Baselines {
         first: first_readings(conn)?,
-        places_from,
+        units_since,
     })
 }
 
@@ -358,10 +350,12 @@ struct Journaled {
     predicate: String,
     old: Option<String>,
     new: Option<String>,
+    /// A first reading: recorded and counted as nothing new.
+    first: bool,
 }
 
-/// The differences of one run, or of every run, oldest first, from one reader or all,
-/// without the baseline of the watched places.
+/// The differences of one run, or of every run, oldest first, from one reader or all, each
+/// with whether it is a first reading.
 fn journaled(
     conn: &Connection,
     run_id: Option<&str>,
@@ -375,56 +369,114 @@ fn journaled(
     } else {
         "?1 IS NULL"
     };
-    // A difference a reading journaled as its place's first reading is not a change either.
     let mut stmt = conn.prepare(&format!(
         "SELECT at, run_id, entry, reader, scope, kind, subject, predicate, old_value, new_value,
-                seq
+                seq, text IN (?3, ?4)
          FROM journal
          WHERE {run} AND entry IN ('added', 'changed', 'removed') AND (?2 IS NULL OR reader = ?2)
-           AND text IS NOT ?3
          ORDER BY seq"
     ))?;
-    let rows = stmt.query_map(params![run_id, reader, store::FIRST_READING], |r| {
-        let reader: Option<String> = r.get(3)?;
-        let kind: Option<String> = r.get(5)?;
-        let e = Journaled {
-            at: r.get(0)?,
-            run_id: r.get(1)?,
-            entry: r.get(2)?,
-            scope: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
-            subject: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
-            predicate: r.get::<_, Option<String>>(7)?.unwrap_or_default(),
-            old: r.get(8)?,
-            new: r.get(9)?,
-        };
-        let seq: i64 = r.get(10)?;
-        let judged = reader.as_deref() == Some(watched::READER)
-            && base.places_from.is_some_and(|from| seq >= from);
-        let baseline = reader.as_deref().is_some_and(|r| BASELINED.contains(&r))
-            && !judged
-            && base.first.get(&(e.scope.clone(), kind.unwrap_or_default())) == Some(&e.run_id);
-        Ok((!baseline).then_some(e))
-    })?;
-    rows.filter_map(Result::transpose).collect()
+    let rows = stmt.query_map(
+        params![run_id, reader, store::FIRST_READING, store::READ_FIRST],
+        |r| {
+            let reader: Option<String> = r.get(3)?;
+            let kind: Option<String> = r.get(5)?;
+            let seq: i64 = r.get(10)?;
+            // A difference a reading journaled as a first reading is not a change; before
+            // readings said so, the first reading of each scope and kind was the baseline.
+            let marked = r.get::<_, Option<bool>>(11)?.unwrap_or(false);
+            let judged = reader.as_deref() == Some(watched::READER)
+                && base.units_since.is_some_and(|since| seq > since);
+            let mut e = Journaled {
+                at: r.get(0)?,
+                run_id: r.get(1)?,
+                entry: r.get(2)?,
+                scope: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                subject: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
+                predicate: r.get::<_, Option<String>>(7)?.unwrap_or_default(),
+                old: r.get(8)?,
+                new: r.get(9)?,
+                first: marked,
+            };
+            e.first |= reader.as_deref().is_some_and(|r| BASELINED.contains(&r))
+                && !judged
+                && base.first.get(&(e.scope.clone(), kind.unwrap_or_default())) == Some(&e.run_id);
+            Ok(e)
+        },
+    )?;
+    rows.collect()
 }
 
 /// Counts things, not assertions: a new component is one addition however many assertions
-/// it brings.
+/// it brings. A first reading counts as nothing new.
 fn since(conn: &Connection, run_id: &str, base: &Baselines) -> rusqlite::Result<Since> {
     let events = journaled(conn, Some(run_id), None, base)?;
+    Ok(count_since(&events))
+}
+
+fn count_since(events: &[Journaled]) -> Since {
     let count = |entry: &str| {
         events
             .iter()
-            .filter(|e| e.entry == entry)
+            .filter(|e| e.entry == entry && !e.first)
             .map(|e| e.subject.as_str())
             .collect::<HashSet<_>>()
             .len()
     };
-    Ok(Since {
+    Since {
         added: count("added"),
         changed: count("changed"),
         removed: count("removed"),
-    })
+    }
+}
+
+/// One difference a run journaled, as the page of changes shows it.
+pub struct RunEvent {
+    pub entry: String,
+    pub subject: String,
+    pub predicate: String,
+    pub old: Option<String>,
+    pub new: Option<String>,
+    /// A first reading: what was there, taken as the baseline.
+    pub first: bool,
+}
+
+/// What one run journaled, counted as the report and `immune status` count it, and how many
+/// things it read for the first time and took as their baseline.
+pub fn run_changes(
+    conn: &Connection,
+    run_id: &str,
+) -> rusqlite::Result<(Since, usize, Vec<RunEvent>)> {
+    let mut events = journaled(conn, Some(run_id), None, &baselines(conn)?)?;
+    // The store's first run, as the report calls it: everything it found is the baseline.
+    let first_run: bool = conn.query_row(
+        "SELECT NOT EXISTS (SELECT 1 FROM journal WHERE entry = 'run_finished' AND run_id != ?1
+                              AND seq < (SELECT MIN(seq) FROM journal WHERE run_id = ?1))",
+        [run_id],
+        |r| r.get(0),
+    )?;
+    if first_run {
+        events.iter_mut().for_each(|e| e.first = true);
+    }
+    let first = events
+        .iter()
+        .filter(|e| e.first)
+        .map(|e| e.subject.as_str())
+        .collect::<HashSet<_>>()
+        .len();
+    let since = count_since(&events);
+    let events = events
+        .into_iter()
+        .map(|e| RunEvent {
+            entry: e.entry,
+            subject: e.subject,
+            predicate: e.predicate,
+            old: e.old,
+            new: e.new,
+            first: e.first,
+        })
+        .collect();
+    Ok((since, first, events))
 }
 
 /// A file's path from its id, `file:<machine>/<path>`.
@@ -438,7 +490,8 @@ fn path_of(id: &str) -> &str {
 /// disappears is gone, and one whose content or link target was replaced is changed unless
 /// it is new in the same run.
 fn file_changes(conn: &Connection, base: &Baselines) -> rusqlite::Result<Vec<FileChange>> {
-    let events = journaled(conn, None, Some(watched::READER), base)?;
+    let mut events = journaled(conn, None, Some(watched::READER), base)?;
+    events.retain(|e| !e.first);
     let new: HashSet<(&str, &str)> = events
         .iter()
         .filter(|e| e.entry == "added" && e.predicate == "watched_as")

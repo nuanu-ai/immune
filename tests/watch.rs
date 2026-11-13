@@ -1315,10 +1315,12 @@ fn what_changes_between_the_watchers_first_reading_and_the_first_check_where_the
 }
 
 #[test]
-fn a_place_the_watcher_read_first_is_its_baseline_and_what_appears_there_later_is_found() {
+fn a_place_the_watcher_read_first_after_the_first_check_is_told_once_and_what_appears_there_later_is_found()
+ {
     // The full check could not list the home folder's autostart items; the watcher's reading
-    // could. What the folder held then is its baseline, and an item added after that reading
-    // is found by the next check, though no check ever read the folder before.
+    // could. What the folder held then is its baseline, told once as read for the first time,
+    // and an item added after that reading is found by the next check, though no check ever
+    // read the folder before.
     let mac = Mac::new("watcher-baseline");
     let agents = mac.home().join("Library/LaunchAgents");
     mac.put("Library/LaunchAgents/com.invented.sync.plist", "<plist/>\n");
@@ -1337,10 +1339,13 @@ fn a_place_the_watcher_read_first_is_its_baseline_and_what_appears_there_later_i
     mac.run();
     assert_eq!(
         found(&mac),
-        [(
-            "watched.autostart".to_string(),
-            "~/Library/LaunchAgents/com.invented.other.plist".to_string()
-        )]
+        [
+            (
+                "watched.autostart".to_string(),
+                "~/Library/LaunchAgents/com.invented.other.plist".to_string()
+            ),
+            ("watched.first-read".to_string(), "mac".to_string()),
+        ]
     );
 }
 
@@ -1354,7 +1359,7 @@ fn after_an_upgrade_a_clone_made_before_the_first_full_check_is_found_though_the
     mac.run();
     Connection::open(mac.store())
         .unwrap()
-        .execute_batch("DELETE FROM place_read;")
+        .execute_batch("DROP TABLE unit_read; DELETE FROM meta WHERE key = 'units_since';")
         .unwrap();
     assert!(mac.watch().started().stop().success());
     mac.put("dev/new/.git/HEAD", "ref: refs/heads/main\n");

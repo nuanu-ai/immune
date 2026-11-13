@@ -1692,10 +1692,6 @@ fn changes(conn: &Connection, out: &mut String) -> Out {
         out.push_str("<p>No runs yet.</p>\n");
     }
 
-    let mut events_stmt = conn.prepare(
-        "SELECT entry, subject, predicate, old_value, new_value FROM journal
-         WHERE run_id = ?1 AND entry IN ('added', 'changed', 'removed') ORDER BY seq",
-    )?;
     // Whether a partial reading ever made an assertion: one that never did has nothing
     // that could be removed, so removals there are not unknown.
     let mut not_full_stmt = conn.prepare(
@@ -1718,12 +1714,9 @@ fn changes(conn: &Connection, out: &mut String) -> Out {
         crate::store::LATEST
     ))?;
     for (i, (run_id, at, finished, report)) in runs.iter().enumerate() {
-        type Event = (String, String, String, Option<String>, Option<String>);
-        let events: Vec<Event> = events_stmt
-            .query_map([run_id], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
-            })?
-            .collect::<rusqlite::Result<_>>()?;
+        // Counted as the report and `immune status` count them: what was read for the first
+        // time is the baseline, shown as such and never as added.
+        let (since, first, events) = crate::status::run_changes(conn, run_id)?;
         let not_full: Vec<(String, String, String, Option<String>, bool)> = not_full_stmt
             .query_map([run_id], |r| {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
@@ -1745,23 +1738,18 @@ fn changes(conn: &Connection, out: &mut String) -> Out {
                 r.2 == "none" && r.1 != crate::events::KIND && r.1 != crate::events::KIND_FILES
             });
 
-        // Counts things, not assertions, as the report does.
-        let count = |kind: &str| {
-            events
-                .iter()
-                .filter(|e| e.0 == kind)
-                .map(|e| e.1.as_str())
-                .collect::<BTreeSet<_>>()
-                .len()
-        };
         // No events is "no changes" only when the run finished, read everything in full
         // and read again every scope read before.
-        let counts = format!(
+        let mut counts = format!(
             "+{} added, {} changed, {} removed",
-            count("added"),
-            count("changed"),
-            count("removed")
+            since.added, since.changed, since.removed
         );
+        if first > 0 {
+            counts.push_str(&format!(
+                ", {} read for the first time and kept as the baseline",
+                plural(first, "thing", "things")
+            ));
+        }
         let mut unknown = Vec::new();
         if partial {
             unknown.push("removals unknown where a reading was partial");
@@ -1828,13 +1816,14 @@ fn changes(conn: &Connection, out: &mut String) -> Out {
         if !events.is_empty() {
             out.push_str("<div class=\"scroll\"><table class=\"dense\">\n");
             thead(out, &["Change", "Component", "Where", "What", "Value"]);
-            for (entry, subject, predicate, old, new) in &events {
-                write!(out, "<tr class=\"{}\">", esc(entry))?;
+            for e in &events {
+                let entry = if e.first { "first reading" } else { &e.entry };
+                write!(out, "<tr class=\"{}\">", esc(&e.entry))?;
                 td(out, "", entry)?;
-                td_component(out, subject)?;
-                td(out, "mono", component_place(subject))?;
-                td(out, "", what(predicate))?;
-                let value = match (old, new) {
+                td_component(out, &e.subject)?;
+                td(out, "mono", component_place(&e.subject))?;
+                td(out, "", what(&e.predicate))?;
+                let value = match (&e.old, &e.new) {
                     (Some(o), Some(n)) => format!("{o} → {n}"),
                     (Some(v), None) | (None, Some(v)) => v.clone(),
                     (None, None) => String::new(),

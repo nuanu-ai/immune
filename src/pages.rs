@@ -781,7 +781,7 @@ const KEPT_AS_LIST: &str = "Kept as a list. Nothing tells you about a change her
 const NOTIFIES: &str = "Sends a notification";
 /// The rule about a match of a list of indicators, which is about no one kind.
 const INDICATOR_RULE: &str = "indicator.match";
-/// The rule about a file read for the first time, which is about every watched file.
+/// The rule about places read for the first time, which is about every watched kind.
 const FIRST_READ_RULE: &str = "watched.first-read";
 
 /// Whether a list of indicators was read at the last full check: `Some(true)` read in full,

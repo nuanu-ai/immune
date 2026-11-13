@@ -131,67 +131,6 @@ pub fn kinds() -> Vec<(&'static str, &'static str)> {
     out
 }
 
-/// The places of one kind on this machine, each by its path as ids name it, as
-/// `look_machine` names them.
-pub fn machine_places(kind: &str) -> Vec<String> {
-    PLACES
-        .iter()
-        .filter(|p| p.kind == kind)
-        .filter_map(|p| match p.base {
-            Base::Home => Some(p.path.to_string()),
-            Base::System => Some(format!("/{}", p.path)),
-            Base::Checkout => None,
-        })
-        .collect()
-}
-
-/// The places of a checkout, `rel` as ids name it, as `look_checkout` names them.
-pub fn checkout_places(rel: &str) -> Vec<String> {
-    PLACES
-        .iter()
-        .filter(|p| p.base == Base::Checkout)
-        .map(|p| format!("{rel}/{}", p.path))
-        .collect()
-}
-
-/// The places of `places` a look went through in full: nothing that could not be looked at
-/// or was not looked into is the place or inside it.
-pub fn looked_through(places: &[String], look: &Look) -> Vec<String> {
-    let missed: Vec<&str> = look
-        .failed
-        .iter()
-        .chain(&look.unreached)
-        .map(|(path, _)| path.as_str())
-        .collect();
-    places
-        .iter()
-        .filter(|p| !missed.iter().any(|m| *m == p.as_str() || inside(m, p)))
-        .cloned()
-        .collect()
-}
-
-/// The place of `places` that holds what is at `path`, a path as ids name it, a part taken
-/// from a file after its `#`: the deepest.
-pub fn place_of<'a>(path: &str, places: &'a [String]) -> Option<&'a str> {
-    places
-        .iter()
-        .filter(|p| path == p.as_str() || inside(path, p) || part_of(path, p))
-        .max_by_key(|p| p.len())
-        .map(String::as_str)
-}
-
-/// Whether `path` is inside the folder `folder`, both as ids name them.
-fn inside(path: &str, folder: &str) -> bool {
-    path.strip_prefix(folder)
-        .is_some_and(|rest| rest.starts_with('/'))
-}
-
-/// Whether `path` names a part taken from the file `file`.
-fn part_of(path: &str, file: &str) -> bool {
-    path.strip_prefix(file)
-        .is_some_and(|rest| rest.starts_with('#'))
-}
-
 /// What is in one watched file, as `has_content` says it, or why it could not be read.
 #[derive(Debug, PartialEq)]
 pub enum Content {
@@ -244,6 +183,11 @@ pub struct Look {
     pub unreached: Vec<(String, String)>,
     /// Every such folder met, a link's target among them, for the reader's coverage.
     pub guarded: Vec<PathBuf>,
+    /// The units read in full, by their paths as ids name them: a file looked at, found or
+    /// absent, and a folder listed or found absent (`baseline.rs`).
+    pub read: Vec<String>,
+    /// The units found present, read or not.
+    pub seen: Vec<String>,
 }
 
 impl Look {
@@ -396,10 +340,15 @@ fn look_place(look: &mut Look, p: &Place, base: &Path, shown: &str, at: &Where) 
     };
     if !p.folder {
         match examine(&path, look, at) {
-            Examined::Absent => {}
-            Examined::Unknown(why) => look.failed.push((shown.to_string(), why)),
+            Examined::Absent => look.read.push(shown.to_string()),
+            Examined::Unknown(why) => {
+                look.seen.push(shown.to_string());
+                look.failed.push((shown.to_string(), why));
+            }
             Examined::Present(content, link) => {
                 look.present += 1;
+                look.read.push(shown.to_string());
+                look.seen.push(shown.to_string());
                 look.entries.push(Entry {
                     path: shown.to_string(),
                     watched_as: p.watched_as,
@@ -422,10 +371,13 @@ fn look_place(look: &mut Look, p: &Place, base: &Path, shown: &str, at: &Where) 
     });
     let names = match listing {
         Ok(names) => names,
-        Err(e) if absent(&e) => return,
+        // A folder that is not there was listed in full: it holds nothing.
+        Err(e) if absent(&e) => return look.read.push(shown.to_string()),
         Err(e) => return look.failed.push((shown.to_string(), e.to_string())),
     };
     look.present += 1;
+    look.read.push(shown.to_string());
+    look.seen.push(shown.to_string());
     for name in names {
         let text = name.to_string_lossy();
         if p.base == Base::Checkout && text.ends_with(SAMPLE) {
@@ -434,13 +386,20 @@ fn look_place(look: &mut Look, p: &Place, base: &Path, shown: &str, at: &Where) 
         let entry = format!("{shown}/{text}");
         match examine(&path.join(&name), look, at) {
             Examined::Absent => {}
-            Examined::Unknown(why) => look.failed.push((entry, why)),
-            Examined::Present(content, link) => look.entries.push(Entry {
-                path: entry,
-                watched_as: p.watched_as,
-                content,
-                link,
-            }),
+            Examined::Unknown(why) => {
+                look.seen.push(entry.clone());
+                look.failed.push((entry, why));
+            }
+            Examined::Present(content, link) => {
+                look.read.push(entry.clone());
+                look.seen.push(entry.clone());
+                look.entries.push(Entry {
+                    path: entry,
+                    watched_as: p.watched_as,
+                    content,
+                    link,
+                });
+            }
         }
     }
 }
@@ -557,45 +516,6 @@ pub fn field(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_thing_belongs_to_the_deepest_place_that_holds_it_and_never_to_a_neighbour_with_a_longer_name()
-     {
-        // A project kept inside another, as agents keep worktrees, is judged as its own
-        // project; `dev/shopping` is not inside `dev/shop`.
-        let places = [
-            "dev/shop".to_string(),
-            "dev/shop/.claude/worktrees/fix".to_string(),
-        ];
-        let place = |path| place_of(path, &places);
-        assert_eq!(
-            place("dev/shop/.claude/worktrees/fix/package.json#/scripts/x"),
-            Some("dev/shop/.claude/worktrees/fix")
-        );
-        assert_eq!(place("dev/shop/package.json#/scripts/x"), Some("dev/shop"));
-        assert_eq!(place("dev/shopping/package.json"), None);
-        let files = [".claude/settings.json".to_string()];
-        assert_eq!(
-            place_of(".claude/settings.json#/hooks", &files),
-            Some(".claude/settings.json")
-        );
-        assert_eq!(place_of(".claude/settings.json.bak", &files), None);
-    }
-
-    #[test]
-    fn a_place_is_looked_through_only_when_nothing_at_it_or_inside_it_failed() {
-        let places = [
-            "dev/shop".to_string(),
-            "dev/blog".to_string(),
-            "dev/b".to_string(),
-        ];
-        let look = Look {
-            failed: vec![("dev/shop/.vscode/tasks.json".to_string(), "x".to_string())],
-            unreached: vec![("dev/blog".to_string(), "x".to_string())],
-            ..Look::default()
-        };
-        assert_eq!(looked_through(&places, &look), ["dev/b"]);
-    }
 
     #[test]
     fn a_file_swapped_for_a_named_pipe_after_it_was_looked_at_never_holds_the_run() {
