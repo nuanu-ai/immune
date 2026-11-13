@@ -1103,6 +1103,9 @@ pub fn rules_section(level: Option<&crate::events::Level>) -> Value {
                 "id_text": text(id),
                 "title_text": meta.map(|m| text(&m.title)),
                 "level": meta.and_then(crate::sigma::Meta::level_name),
+                // Its set, by name and in words: two sets can have rules of the same title.
+                "source": meta.map(|m| m.source.name),
+                "set": meta.map(|m| m.source.set),
                 "matches": n,
             })
         })

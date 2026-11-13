@@ -43,11 +43,13 @@ What the translations rest on:
 - The 3 file rules would also be evaluated on kinds of file event the log does not hold, such as
   files modified or opened. One of them also asks for files modified, which never match here.
 
-5 of the 57 have the same name as one of the 66 detection rules in `rules/elastic/`, under a
-different rule id: Dumping Account Hashes via Built-In Commands, Modification of Safari Settings
-via Defaults Command, Potential Privacy Control Bypass via Localhost Secure Copy, Potential
-Kerberos Attack via Bifrost, and Unexpected Child Process of macOS Screensaver Engine. An event
-that matches both is counted once in each set.
+6 of the 57 have the same name as a rule of another shipped set, under a different id. 5 share
+it with one of the 66 detection rules in `rules/elastic/`: Dumping Account Hashes via Built-In
+Commands, Modification of Safari Settings via Defaults Command, Potential Privacy Control
+Bypass via Localhost Secure Copy, Potential Kerberos Attack via Bifrost, and Unexpected Child
+Process of macOS Screensaver Engine. One shares it with a SigmaHQ rule in `rules/sigma/`:
+Potential XCSSET Malware Infection. An event that matches both is counted once in each set,
+and every listing names the set.
 
 `not-taken.tsv` lists the other 221 rules, each with its upstream path, rule id, name, an empty
 severity, the reason it was not taken and the translation's detail: `sequence` (it correlates

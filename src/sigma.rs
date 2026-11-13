@@ -1169,6 +1169,8 @@ impl Rules {
                 json!({
                     "name": s.name,
                     "publisher": s.publisher,
+                    "set": s.set,
+                    "states_levels": s.states_levels,
                     "url": s.url,
                     "commit": s.commit,
                     "commit_date": s.commit_date,
@@ -2011,6 +2013,25 @@ impl Texts {
     }
 }
 
+/// Where a rule file states a level in any form, for a set that states none: a key named
+/// `level` in any case and with any value, or a severity or risk score in its translation's
+/// record that is not null. `None` when it states none. A rule of such a set that states one is
+/// not read: it would be evaluated without the level its file gives and raise nothing.
+fn level_stated(yaml: &Value, source: &Source) -> Option<String> {
+    let keys = yaml.as_mapping().into_iter().flatten().map(|(k, _)| k);
+    if let Some(key) = keys
+        .filter_map(Value::as_str)
+        .find(|k| k.eq_ignore_ascii_case("level"))
+    {
+        return Some(format!("its key `{key}`"));
+    }
+    let record = &yaml[source.translation?];
+    ["severity", "risk_score"]
+        .into_iter()
+        .find(|k| !record[*k].is_null())
+        .map(|k| format!("its translation's `{k}`"))
+}
+
 /// A rule is evaluated only with an id, so that a match can be named, and with a level, so that
 /// it can be weighed, unless its set states none: then it is evaluated without one, and one that
 /// states a level is not read, since its set gives none.
@@ -2025,10 +2046,14 @@ fn meta(rule: &sigma_rust::Rule, yaml: &Value, source: &'static Source) -> Resul
             .ok_or(format!("the rule has no {key}"))
     }
     let id = rule.id.clone().ok_or("the rule has no id")?;
-    let level = match (source.states_levels, yaml["level"].is_null()) {
-        (true, _) => Some(one_of(&LEVELS, "level", yaml)?),
-        (false, true) => None,
-        (false, false) => return Err("the set states no level, and the rule has one".to_string()),
+    let level = if source.states_levels {
+        Some(one_of(&LEVELS, "level", yaml)?)
+    } else if let Some(stated) = level_stated(yaml, source) {
+        return Err(format!(
+            "the set states no level, and the rule states one: {stated}"
+        ));
+    } else {
+        None
     };
     Ok(Meta {
         finding_rule: format!("{}:{id}", source.name),
@@ -2286,19 +2311,16 @@ mod tests {
         assert_eq!(all.len(), 538);
     }
 
-    /// Every translated file is the translator's output byte for byte: its sha256 is the one
-    /// its set's `SHA256SUMS` records (`rules/elastic/`, `rules/elastic-behaviour/`), and the
-    /// manifest names every file and no other.
+    /// Every shipped rule file is the file as it was taken, byte for byte: for every set, its
+    /// sha256 is the one its folder's `SHA256SUMS` records (`rules/sigma/` as SigmaHQ published
+    /// them, `rules/elastic/` and `rules/elastic-behaviour/` as the translator wrote them), and
+    /// the manifest names every file and no other. A set without a manifest fails here.
     #[test]
-    fn every_translated_rule_is_the_file_the_translator_wrote() {
-        for (source, manifest, files) in [
-            (&ELASTIC, include_str!("../rules/elastic/SHA256SUMS"), 66),
-            (
-                &ELASTIC_BEHAVIOUR,
-                include_str!("../rules/elastic-behaviour/SHA256SUMS"),
-                57,
-            ),
-        ] {
+    fn every_shipped_rule_is_the_file_its_set_s_manifest_records() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        for source in SOURCES {
+            let manifest = std::fs::read_to_string(root.join(source.folder).join("SHA256SUMS"))
+                .unwrap_or_else(|e| panic!("{}: {e}", source.name));
             let recorded: BTreeMap<&str, &str> = manifest
                 .lines()
                 .map(|l| {
@@ -2311,10 +2333,11 @@ mod tests {
                 .iter()
                 .map(|(path, text)| (*path, crate::sha256::hex(text.as_bytes())))
                 .collect();
-            assert_eq!(recorded.len(), files, "{}", source.name);
             assert_eq!(
                 recorded.keys().collect::<Vec<_>>(),
-                shipped.keys().collect::<Vec<_>>()
+                shipped.keys().collect::<Vec<_>>(),
+                "{}",
+                source.name
             );
             for (path, hash) in &shipped {
                 assert_eq!(recorded[path], hash, "{path} differs from the manifest");
@@ -2810,6 +2833,105 @@ mod tests {
                     .is_some_and(|a| a.starts_with("Elastic"))
             );
         }
+    }
+
+    /// Every behaviour rule is loaded as its own file says: no level, since its record states no
+    /// severity and no risk score, and Elastic's id and name, so a listing names it as Elastic
+    /// does. A file whose record states a severity would not load (see
+    /// `a_rule_of_a_set_that_states_no_level_is_evaluated_and_raises_nothing_by_itself`).
+    #[test]
+    fn an_elastic_behaviour_rule_keeps_its_id_and_name_and_states_no_level() {
+        let rules = Rules::shipped();
+        for (path, text) in ELASTIC_BEHAVIOUR_SHIPPED {
+            let yaml: Value = serde_norway::from_str(text).unwrap();
+            let l = rules
+                .rules
+                .iter()
+                .find(|l| std::ptr::eq(l.source, &ELASTIC_BEHAVIOUR) && l.file == *path)
+                .unwrap();
+            let m = l.meta.as_ref().unwrap();
+            assert!(yaml["elastic"]["severity"].is_null(), "{path}");
+            assert!(yaml["elastic"]["risk_score"].is_null(), "{path}");
+            assert!(
+                yaml.as_mapping()
+                    .unwrap()
+                    .keys()
+                    .filter_map(Value::as_str)
+                    .all(|k| !k.eq_ignore_ascii_case("level")),
+                "{path}"
+            );
+            assert_eq!(m.level, None, "{path}");
+            assert_eq!(Some(m.id.as_str()), yaml["elastic"]["rule_id"].as_str());
+            assert_eq!(m.finding_rule, format!("elastic-behaviour:{}", m.id));
+            assert_eq!(Some(m.title.as_str()), yaml["title"].as_str());
+        }
+    }
+
+    /// Rules of different sets can have the same title, under different ids: an event that
+    /// matches both is counted once in each set, and a listing tells them apart by their set.
+    /// The pairs are counted here from the files, titles compared without case, and the
+    /// documents name every one, so a set that brings a new pair fails until they say so.
+    #[test]
+    fn every_title_two_sets_share_is_named_in_the_documents() {
+        let mut sets_of: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
+        for l in Rules::shipped().rules.iter().filter(|l| !l.not_taken()) {
+            let m = l.meta.as_ref().unwrap();
+            sets_of
+                .entry(m.title.to_lowercase())
+                .or_default()
+                .insert(l.source.name);
+        }
+        let shared: Vec<(&str, Vec<&str>)> = sets_of
+            .iter()
+            .filter(|(_, sets)| sets.len() > 1)
+            .map(|(title, sets)| (title.as_str(), sets.iter().copied().collect()))
+            .collect();
+        assert_eq!(
+            shared,
+            [
+                (
+                    "dumping account hashes via built-in commands",
+                    vec!["elastic", "elastic-behaviour"]
+                ),
+                (
+                    "modification of safari settings via defaults command",
+                    vec!["elastic", "elastic-behaviour"]
+                ),
+                (
+                    "potential kerberos attack via bifrost",
+                    vec!["elastic", "elastic-behaviour"]
+                ),
+                (
+                    "potential privacy control bypass via localhost secure copy",
+                    vec!["elastic", "elastic-behaviour"]
+                ),
+                (
+                    "potential xcsset malware infection",
+                    vec!["elastic-behaviour", "sigma"]
+                ),
+                (
+                    "unexpected child process of macos screensaver engine",
+                    vec!["elastic", "elastic-behaviour"]
+                ),
+            ]
+        );
+        let docs = include_str!("../docs/event-level.md").to_lowercase();
+        let notice = include_str!("../rules/elastic-behaviour/NOTICE")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
+        for (title, _) in &shared {
+            assert!(
+                docs.contains(title),
+                "docs/event-level.md does not name {title}"
+            );
+            assert!(
+                notice.contains(title),
+                "the behaviour NOTICE does not name {title}"
+            );
+        }
+        assert!(docs.contains("6 titles are shared by two sets"), "{docs}");
     }
 
     /// The shipped rules for file events, by id.
@@ -3555,17 +3677,19 @@ mod tests {
     /// empty severity only for a set that states none, and only an empty one there.
     #[test]
     fn a_rule_of_a_set_that_states_no_level_is_evaluated_and_raises_nothing_by_itself() {
-        let rule = |level: &str| -> &'static str {
+        // `record` is more of the translation's record, as the translator writes it.
+        let with = |level: &str, record: &str| -> &'static str {
             Box::leak(
                 format!(
                     "title: Invented\nid: 00000000-0000-4000-8000-00000000000b\nstatus: test\n{level}\
                      logsource: {{\"product\": \"macos\", \"category\": \"process_creation\"}}\n\
                      detection:\n  s1: {{\"process.name|cased\": [\"curl\"]}}\n  condition: s1\n\
-                     elastic: {{\"in_part_missing_fields\": []}}\n"
+                     elastic: {{{record}\"in_part_missing_fields\": []}}\n"
                 )
                 .into_boxed_str(),
             )
         };
+        let rule = |level: &str| with(level, "\"severity\": null, \"risk_score\": null, ");
         let none = Rules::load_as(&ELASTIC_BEHAVIOUR, &[("none.yml", rule(""))]);
         let m = none.rules[0].meta.as_ref().unwrap();
         assert_eq!(none.rules[0].placement, Placement::Evaluated);
@@ -3586,13 +3710,27 @@ mod tests {
             Placement::NotEvaluated(Reason::NotParsed(said)) => said.clone(),
             other => panic!("{other:?}"),
         };
-        assert_eq!(
-            refused(Rules::load_as(
-                &ELASTIC_BEHAVIOUR,
-                &[("stated.yml", rule("level: high\n"))]
-            )),
-            "the set states no level, and the rule has one"
-        );
+        // A file of a set that states no level is refused when it states one in any form: a
+        // `level` key in any case and with any value, or a severity or risk score in its
+        // translation's record.
+        for (text, stated) in [
+            (rule("level: high\n"), "its key `level`"),
+            (rule("Level: high\n"), "its key `Level`"),
+            (rule("level: null\n"), "its key `level`"),
+            (
+                with("", "\"severity\": \"critical\", \"risk_score\": null, "),
+                "its translation's `severity`",
+            ),
+            (
+                with("", "\"severity\": null, \"risk_score\": 99, "),
+                "its translation's `risk_score`",
+            ),
+        ] {
+            assert_eq!(
+                refused(Rules::load_as(&ELASTIC_BEHAVIOUR, &[("stated.yml", text)])),
+                format!("the set states no level, and the rule states one: {stated}")
+            );
+        }
         assert_eq!(
             refused(Rules::load_as(&ELASTIC, &[("bare.yml", rule(""))])),
             "the rule has no level"
@@ -3657,6 +3795,21 @@ mod tests {
                 &json!("https://github.com/elastic/protections-artifacts"),
                 &json!("a87715d87a2babd51b37ff6c55f104fe7e567911")
             )
+        );
+        // Each set says in words what it is and whether its rules state levels.
+        let said: Vec<(&Json, &Json)> = s["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| (&x["set"], &x["states_levels"]))
+            .collect();
+        assert_eq!(
+            said,
+            [
+                (&json!("SigmaHQ's rule set"), &json!(true)),
+                (&json!("Elastic's detection rules"), &json!(true)),
+                (&json!("Elastic's behaviour rules"), &json!(false)),
+            ]
         );
         // The most severe first; a rule that states no level, `null`, after every level.
         let evaluated = s["evaluated"].as_array().unwrap();

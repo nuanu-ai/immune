@@ -2264,6 +2264,8 @@ body.summary { background: var(--grp); color: var(--ink);
   padding: 10px 0; border-top: 1px solid var(--ln); font-size: 14px; }
 .summary .rr .rl { min-width: 0; }
 .summary .rr .rt { overflow-wrap: anywhere; }
+/* The set a rule comes from, under its title: two sets can have rules of the same title. */
+.summary .rr .rk { display: block; font-size: 12px; color: var(--sec); }
 .summary .rr .rc { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
 .summary .rr .rs { text-align: right; font-size: 13px; color: var(--sec); }
 .summary .rr .rs a { color: var(--sec); }

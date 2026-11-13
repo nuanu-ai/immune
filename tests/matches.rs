@@ -1323,7 +1323,7 @@ fn a_high_translated_rule_raises_a_finding_named_elastic_and_its_match_is_handed
 #[test]
 fn a_behaviour_rule_states_no_level_so_its_match_is_counted_and_handed_over_and_raises_nothing() {
     // Elastic's behaviour rules state no level, and the core gives them none of its own. A
-    // match of one is handed over like one below high, with the level unspecified, and counted
+    // match of one is handed over like one below high, with the level `not_stated`, and counted
     // in the hour like any match; it raises no finding, so the owner is told of nothing.
     let dir = Dir::new("behaviour");
     dir.install();
@@ -1356,7 +1356,7 @@ fn a_behaviour_rule_states_no_level_so_its_match_is_counted_and_handed_over_and_
             &behaviour[0]["findings"]
         ),
         (
-            &json!("unspecified"),
+            &json!("not_stated"),
             &json!("macos/defense_evasion_file_hidden_via_setfile.yml"),
             &json!("below_high"),
             &json!([])
@@ -1375,6 +1375,8 @@ fn a_behaviour_rule_states_no_level_so_its_match_is_counted_and_handed_over_and_
             "id_text": SETFILE,
             "title_text": "File Hidden via SetFile",
             "level": null,
+            "source": "elastic-behaviour",
+            "set": "Elastic's behaviour rules",
             "matches": 1,
         })]
     );
@@ -1421,6 +1423,27 @@ fn immune_rules_lists_both_sets_and_names_every_rule_not_taken_with_its_reason()
     ] {
         let words = words.as_str().unwrap();
         assert!(words.contains(set) && words.contains(about), "{words}");
+    }
+    // Only the sets whose rules state levels raise findings; the catalogue names no finding a
+    // behaviour rule could raise by itself, and says why it raises none.
+    assert_eq!(
+        said["rule"],
+        "sigma:<the rule's id> or elastic:<the rule's id>"
+    );
+    assert_eq!(said["raised_by_sets"], json!(["sigma", "elastic"]));
+    assert_eq!(
+        said["sets_that_raise_nothing"],
+        json!([{
+            "name": "elastic-behaviour",
+            "set": "Elastic's behaviour rules",
+            "why": "its rules state no level, so a match is counted and handed over and raises no finding by itself",
+        }])
+    );
+    for meanings in [
+        &said["meaning_by_set"],
+        &said["for_file_events"]["meaning_by_set"],
+    ] {
+        assert!(meanings.get("elastic-behaviour").is_none(), "{meanings}");
     }
     let sources: Vec<&Value> = rules["sources"].as_array().unwrap().iter().collect();
     assert_eq!(
@@ -1607,6 +1630,13 @@ fn a_rule_a_translated_set_did_not_take_is_named_with_its_reason_and_what_the_tr
             ]),
             &Value::Null
         )
+    );
+    // A rule of a set that states no level is given as such, never as `unspecified`, which a
+    // reader takes for the highest severity.
+    let never = by_name("elastic-behaviour:76259650-ed25-4d48-9cb2-e4a32073f945");
+    assert_eq!(
+        (&never["level"], &never["reason"]),
+        (&json!("not_stated"), &json!("never_true"))
     );
     let papercut = by_name("elastic:a2d4508e-e9c2-41f6-9466-0c3aed8cc2c9");
     assert_eq!(

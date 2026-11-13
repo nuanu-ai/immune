@@ -460,40 +460,11 @@ fn watching(out: &mut String, r: &Value, level: Option<&Level>) -> Out {
         ));
     }
     // What the rest need, by kind: what a rule needs, said for one and for several.
-    let mut needs: BTreeMap<(String, String), usize> = BTreeMap::new();
+    let mut needs: BTreeMap<(&str, &str), usize> = BTreeMap::new();
     for l in not_evaluated {
-        let (one, many) = match &l.placement {
-            // Which kinds is said on the rules page; here, only that they are not collected.
-            Placement::NotEvaluated(Reason::NeedsEvents(_)) => (
-                "needs a kind of event not collected".to_string(),
-                "need kinds of event not collected".to_string(),
-            ),
-            Placement::NotEvaluated(Reason::NeedsFields(_)) => (
-                "needs details a program start does not give".to_string(),
-                "need details a program start does not give".to_string(),
-            ),
-            Placement::NotEvaluated(Reason::KeywordSearch) => (
-                "searches whole messages".to_string(),
-                "search whole messages".to_string(),
-            ),
-            Placement::NotEvaluated(Reason::Sequence) => (
-                "is a sequence of events, not translated".to_string(),
-                "are sequences of events, not translated".to_string(),
-            ),
-            Placement::NotEvaluated(Reason::NotEql) => (
-                "is not in EQL, not translated".to_string(),
-                "are not in EQL, not translated".to_string(),
-            ),
-            Placement::NotEvaluated(Reason::BackslashInWildcard | Reason::SpansKinds) => (
-                "could not be translated exactly".to_string(),
-                "could not be translated exactly".to_string(),
-            ),
-            _ => (
-                "could not be read".to_string(),
-                "could not be read".to_string(),
-            ),
-        };
-        *needs.entry((one, many)).or_default() += 1;
+        if let Placement::NotEvaluated(reason) = &l.placement {
+            *needs.entry(not_evaluated_said(reason)).or_default() += 1;
+        }
     }
     for ((one, many), n) in needs {
         rest.push(format!("{n} {}", if n == 1 { one } else { many }));
@@ -522,6 +493,53 @@ fn watching(out: &mut String, r: &Value, level: Option<&Level>) -> Out {
         &meter,
         &notes,
     )
+}
+
+/// Why a rule is not evaluated, as the summary says it, for one rule and for several. Every
+/// reason has its own words, so a rule that could not be read is never counted with rules that
+/// were read and not taken, and a reason added later must be given words here.
+fn not_evaluated_said(reason: &Reason) -> (&'static str, &'static str) {
+    match reason {
+        // Which kinds is said on the rules page; here, only that they are not collected.
+        Reason::NeedsEvents(_) => (
+            "needs a kind of event not collected",
+            "need kinds of event not collected",
+        ),
+        Reason::NeedsFields(_) => (
+            "needs details a program start does not give",
+            "need details a program start does not give",
+        ),
+        Reason::KeywordSearch => ("searches whole messages", "search whole messages"),
+        Reason::NotParsed(_) => ("could not be read", "could not be read"),
+        Reason::Sequence => (
+            "is a sequence of events, not translated",
+            "are sequences of events, not translated",
+        ),
+        Reason::NotEql => (
+            "is not in EQL, not translated",
+            "are not in EQL, not translated",
+        ),
+        Reason::BackslashInWildcard | Reason::SpansKinds => (
+            "could not be translated exactly",
+            "could not be translated exactly",
+        ),
+        Reason::NeverTrue => (
+            "could never be true over the events here",
+            "could never be true over the events here",
+        ),
+        Reason::Regex => (
+            "needs a regular expression in EQL's syntax, not translated",
+            "need regular expressions in EQL's syntax, not translated",
+        ),
+        Reason::Unsupported => (
+            "uses a function of EQL's that is not translated",
+            "use functions of EQL's that are not translated",
+        ),
+        Reason::Function => (
+            "compares one field with another",
+            "compare one field with another",
+        ),
+    }
 }
 
 /// The file events of the last day, as the section says them.
@@ -580,9 +598,10 @@ fn rule_row(out: &mut String, row: &Row, most: i64) -> Out {
     };
     writeln!(
         out,
-        "<div class=\"rr\" data-rule=\"{}\"><span class=\"rt src\">{}</span><span class=\"rl\"><span class=\"lv lv-{level}\">{}</span></span><span class=\"rb\" aria-hidden=\"true\"><span style=\"width:{}%\"></span></span><span class=\"rc\">{}</span><span class=\"rs\">{state}</span></div>",
+        "<div class=\"rr\" data-rule=\"{}\"><span class=\"rt\"><span class=\"src\">{}</span> <span class=\"rk\">{}</span></span><span class=\"rl\"><span class=\"lv lv-{level}\">{}</span></span><span class=\"rb\" aria-hidden=\"true\"><span style=\"width:{}%\"></span></span><span class=\"rc\">{}</span><span class=\"rs\">{state}</span></div>",
         esc(&row.meta.id),
         esc(&row.meta.title),
+        esc(row.meta.source.set),
         esc(&crate::pages::capital(sigma::level_said(row.meta.level))),
         (row.count * 100 / most.max(1)).max(1),
         num(row.count),
@@ -924,7 +943,7 @@ detection:
         rule_row(&mut out, &row, 2_468).unwrap();
         assert!(
             out.contains(
-                "<span class=\"rt src\">&lt;b&gt;Padding&lt;/b&gt; &amp; &quot;co&quot;</span>"
+                "<span class=\"rt\"><span class=\"src\">&lt;b&gt;Padding&lt;/b&gt; &amp; &quot;co&quot;</span> <span class=\"rk\">SigmaHQ&#39;s rule set</span></span>"
             ),
             "{out}"
         );
@@ -934,6 +953,52 @@ detection:
                 && out.contains("<span class=\"rc\">1,234</span><span class=\"rs\">Counted</span>"),
             "{out}"
         );
+    }
+
+    #[test]
+    fn the_rules_not_evaluated_are_counted_by_their_own_reason_and_none_as_unreadable() {
+        // A rule that was read and not taken is never counted as one that could not be read:
+        // each reason has its own words, so a real failure to read stands apart.
+        let mut out = String::new();
+        watching(&mut out, &Value::Null, None).unwrap();
+        let note = "175 would watch once program starts are seen; 23 are checked in part and not counted; \
+                    1 compares one field with another; 4 could never be true over the events here; \
+                    4 could not be translated exactly; 139 are sequences of events, not translated; \
+                    40 are not in EQL, not translated; 65 need kinds of event not collected; \
+                    1 needs a regular expression in EQL's syntax, not translated; \
+                    84 need details a program start does not give; \
+                    2 use functions of EQL's that are not translated";
+        assert!(out.contains(&esc(note)), "{out}");
+        assert!(!out.contains("could not be read"), "{out}");
+    }
+
+    #[test]
+    fn only_a_rule_that_could_not_be_read_is_said_to_be_unreadable_for_any_count() {
+        // The note above shows one form of each reason, for today's counts; the other form is
+        // shown when a count changes, so every reason is held here in both.
+        let unreadable = not_evaluated_said(&Reason::NotParsed(String::new()));
+        assert_eq!(unreadable, ("could not be read", "could not be read"));
+        for reason in [
+            Reason::NeedsEvents(String::new()),
+            Reason::NeedsFields(Vec::new()),
+            Reason::KeywordSearch,
+            Reason::Sequence,
+            Reason::NotEql,
+            Reason::BackslashInWildcard,
+            Reason::SpansKinds,
+            Reason::NeverTrue,
+            Reason::Regex,
+            Reason::Unsupported,
+            Reason::Function,
+        ] {
+            let (one, many) = not_evaluated_said(&reason);
+            for said in [one, many] {
+                assert!(
+                    !said.is_empty() && !said.contains(unreadable.0),
+                    "{reason:?}: {said}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -959,7 +1024,8 @@ detection:
         };
         rule_row(&mut out, &row, 3).unwrap();
         assert!(
-            out.contains("<span class=\"lv lv-none\">No level stated</span>")
+            out.contains("<span class=\"rk\">Elastic&#39;s behaviour rules</span>")
+                && out.contains("<span class=\"lv lv-none\">No level stated</span>")
                 && out.contains("<span class=\"rs\">Counted</span>"),
             "{out}"
         );

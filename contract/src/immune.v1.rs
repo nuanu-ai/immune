@@ -91,9 +91,7 @@ impl FindingState {
     }
 }
 /// OCSF's level names, for severity and confidence. `UNSPECIFIED`, or a value the reader does not
-/// know, is read as the highest for a severity and as the lowest for a confidence. A rule's
-/// `level` (`event.proto`) is the exception: there `UNSPECIFIED` is a rule whose set states no
-/// level, and it is read as no level.
+/// know, is read as the highest for a severity and as the lowest for a confidence.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
@@ -110,6 +108,12 @@ pub enum Level {
     High = 4,
     #[serde(rename = "critical")]
     Critical = 5,
+    /// The rule's set states no level, as Elastic's behaviour rules state none. It is not a
+    /// severity: it says nothing of how bad a match is, and such a rule raises no finding by
+    /// itself. Only a rule's level takes it (`Rule.level`, `Unevaluated.level`); a finding's
+    /// severity or confidence never does.
+    #[serde(rename = "not_stated")]
+    NotStated = 6,
 }
 impl Level {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -124,6 +128,7 @@ impl Level {
             Self::Medium => "LEVEL_MEDIUM",
             Self::High => "LEVEL_HIGH",
             Self::Critical => "LEVEL_CRITICAL",
+            Self::NotStated => "LEVEL_NOT_STATED",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -135,6 +140,7 @@ impl Level {
             "LEVEL_MEDIUM" => Some(Self::Medium),
             "LEVEL_HIGH" => Some(Self::High),
             "LEVEL_CRITICAL" => Some(Self::Critical),
+            "LEVEL_NOT_STATED" => Some(Self::NotStated),
             _ => None,
         }
     }
@@ -158,9 +164,7 @@ pub struct Rule {
     pub id_text: ::prost::alloc::string::String,
     #[prost(string, tag = "4")]
     pub title_text: ::prost::alloc::string::String,
-    /// Its level. `LEVEL_UNSPECIFIED` for a rule whose set states no level, as Elastic's behaviour
-    /// rules state none: that says nothing of how severe a match is, and such a rule raises no
-    /// finding by itself.
+    /// Its level; `LEVEL_NOT_STATED` for a rule whose set states none.
     #[prost(enumeration = "Level", tag = "5")]
     #[serde(
         serialize_with = "crate::enum_name::<Level, _>",
@@ -880,8 +884,8 @@ pub struct Unevaluated {
     /// `elastic-behaviour:<rule_id>`. Absent for a rule that could not be read.
     #[prost(string, optional, tag = "2")]
     pub name: ::core::option::Option<::prost::alloc::string::String>,
-    /// Its `id`, `title` and level. Absent for a rule that could not be read; `level` is also
-    /// absent for a rule whose set states no level, which has a `name`.
+    /// Its `id`, `title` and level. Absent for a rule that could not be read. `level` is
+    /// `LEVEL_NOT_STATED` for a rule whose set states none.
     #[prost(string, optional, tag = "3")]
     pub id_text: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag = "4")]
@@ -916,8 +920,9 @@ pub struct Unevaluated {
 pub enum Raised {
     #[serde(rename = "unspecified")]
     Unspecified = 0,
-    /// The rule is marked below high, or its set states no level (its `level` is unspecified): its
-    /// matches are counted and raise nothing. The reader judges the match itself.
+    /// The rule is marked below high, or its set states no level (its `level` is
+    /// `LEVEL_NOT_STATED`): its matches are counted and raise nothing. The reader judges the match
+    /// itself.
     #[serde(rename = "below_high")]
     BelowHigh = 1,
     /// The core's own reading raised a finding of the match or added it to one, as `findings` says.

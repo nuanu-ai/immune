@@ -1527,6 +1527,8 @@ fn a_binary_padding_start_raises_one_finding_with_its_authors_and_arguments_and_
             "id_text": PADDING,
             "title_text": "Binary Padding - MacOS",
             "level": "high",
+            "source": "sigma",
+            "set": "SigmaHQ's rule set",
             "matches": 1,
         }])
     );
@@ -1620,6 +1622,8 @@ fn a_medium_rule_s_match_is_counted_raises_nothing_and_keeps_no_argument() {
         "id_text": SW_VERS,
         "title_text": "System Information Discovery Using sw_vers",
         "level": "medium",
+        "source": "sigma",
+        "set": "SigmaHQ's rule set",
         "matches": 1,
     }]);
     assert_eq!(r["rules"]["matched_last_day"], medium, "{:#}", r["rules"]);

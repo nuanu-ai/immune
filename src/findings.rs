@@ -1542,7 +1542,10 @@ pub fn item_json(i: &Item) -> Value {
 /// Every rule, and every cause of what is not covered, with its wording, for an agent to
 /// learn what each can say.
 pub fn catalogue_json() -> Value {
-    let sets = crate::sigma::SOURCES;
+    // Only a set whose rules state levels raises findings; a rule of a set that states none is
+    // counted and handed over, and raises nothing by itself.
+    let (sets, silent): (Vec<&crate::sigma::Source>, Vec<&crate::sigma::Source>) =
+        crate::sigma::SOURCES.iter().partition(|s| s.states_levels);
     let (starts, files) = published_words(sets[0]);
     let meanings = |of_files: bool| -> Value {
         sets.iter()
@@ -1575,13 +1578,22 @@ pub fn catalogue_json() -> Value {
         "rules": rules,
         // Every finding of a published rule says the same words; the rule is in its own field.
         "published_rules": {
-            "rule": crate::sigma::SOURCES
+            "rule": sets
                 .iter()
                 .map(|s| format!("{}:<the rule's id>", s.name))
                 .collect::<Vec<_>>()
                 .join(" or "),
             "kind": PUBLISHED_KIND,
+            "raised_by_sets": sets.iter().map(|s| s.name).collect::<Vec<_>>(),
             "raised_by_levels": ["high", "critical"],
+            "sets_that_raise_nothing": silent
+                .iter()
+                .map(|s| json!({
+                    "name": s.name,
+                    "set": s.set,
+                    "why": "its rules state no level, so a match is counted and handed over and raises no finding by itself",
+                }))
+                .collect::<Vec<_>>(),
             "severity": "the rule's level",
             "confidence_by_status": {
                 "stable": crate::sigma::Status::Stable.confidence(),

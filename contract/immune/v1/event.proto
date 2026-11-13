@@ -24,9 +24,7 @@ message Rule {
   // Its `id` and `title` as published, whole.
   string id_text = 3;
   string title_text = 4;
-  // Its level. `LEVEL_UNSPECIFIED` for a rule whose set states no level, as Elastic's behaviour
-  // rules state none: that says nothing of how severe a match is, and such a rule raises no
-  // finding by itself.
+  // Its level; `LEVEL_NOT_STATED` for a rule whose set states none.
   Level level = 5;
   // ATT&CK techniques from its `attack.t…` tags, such as `T1027.001`.
   repeated string techniques_text = 6;

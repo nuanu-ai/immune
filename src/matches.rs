@@ -299,13 +299,20 @@ fn whole(s: &str) -> String {
     known::whole(s)
 }
 
+/// A rule's level as the contract gives it: `not_stated` for a rule whose set states none,
+/// never `unspecified`, which a reader takes for the highest severity.
+fn level(m: &Meta) -> i32 {
+    m.level_name()
+        .map_or(v1::Level::NotStated as i32, value_of::<v1::Level>)
+}
+
 pub fn rule(file: &str, m: &Meta) -> v1::Rule {
     v1::Rule {
         name: m.finding_rule.clone(),
         file: file.to_string(),
         id_text: whole(&m.id),
         title_text: whole(&m.title),
-        level: m.level_name().map_or(0, value_of::<v1::Level>),
+        level: level(m),
         techniques_text: m.techniques.iter().map(|t| whole(t)).collect(),
         author_text: m.author.as_deref().map(whole),
     }
@@ -437,7 +444,7 @@ fn unevaluated(collects: &Result<(), String>) -> Vec<v1::Unevaluated> {
                 name: meta.map(|m| m.finding_rule.clone()),
                 id_text: meta.map(|m| whole(&m.id)),
                 title_text: meta.map(|m| whole(&m.title)),
-                level: meta.and_then(Meta::level_name).map(value_of::<v1::Level>),
+                level: meta.map(level),
                 reason: why as i32,
                 fields_text: fields,
                 detail_text: detail.map(|d| whole(&d)),

@@ -90,8 +90,9 @@ message RuleMatch {
 // What became of a match among the core's findings.
 enum Raised {
   RAISED_UNSPECIFIED = 0;
-  // The rule is marked below high, or its set states no level (its `level` is unspecified): its
-  // matches are counted and raise nothing. The reader judges the match itself.
+  // The rule is marked below high, or its set states no level (its `level` is
+  // `LEVEL_NOT_STATED`): its matches are counted and raise nothing. The reader judges the match
+  // itself.
   RAISED_BELOW_HIGH = 1;
   // The core's own reading raised a finding of the match or added it to one, as `findings` says.
   RAISED_FINDING = 2;
@@ -194,8 +195,8 @@ message Unevaluated {
   // The name findings give it, `sigma:<id>`, `elastic:<rule_id>` or
   // `elastic-behaviour:<rule_id>`. Absent for a rule that could not be read.
   optional string name = 2;
-  // Its `id`, `title` and level. Absent for a rule that could not be read; `level` is also
-  // absent for a rule whose set states no level, which has a `name`.
+  // Its `id`, `title` and level. Absent for a rule that could not be read. `level` is
+  // `LEVEL_NOT_STATED` for a rule whose set states none.
   optional string id_text = 3;
   optional string title_text = 4;
   optional Level level = 5;
