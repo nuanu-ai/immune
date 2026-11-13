@@ -1,22 +1,24 @@
 //! File-system events from FSEvents, the watcher macOS itself ships in CoreServices and
-//! maintains: it learns of a change under a path from the kernel and keeps a per-volume
-//! history of them. This file only calls it, the way `sha256.rs` calls CommonCrypto; there is
-//! no watcher of our own here.
+//! maintains: it learns of a change under a path from the kernel. This file only calls it, the
+//! way `sha256.rs` calls CommonCrypto; there is no watcher of our own here. A stream starts
+//! from now: nothing from before it is replayed, and its caller reads everything at start.
 //!
 //! Every declaration is copied from the macOS SDK on the build Mac,
 //! `MacOSX26.5.sdk/System/Library/Frameworks/CoreServices.framework/Frameworks/
 //! FSEvents.framework/Headers/FSEvents.h` (cited as `FSEvents.h:<line>`), from
-//! `CoreFoundation.framework/Headers` (`CFBase.h`, `CFArray.h`, `CFString.h`, `CFUUID.h`,
-//! `CFDate.h`) and from `usr/include/dispatch` (`queue.h`, `object.h`, `base.h`).
+//! `CoreFoundation.framework/Headers` (`CFBase.h`, `CFArray.h`, `CFString.h`, `CFDate.h`)
+//! and from `usr/include/dispatch` (`queue.h`, `object.h`, `base.h`).
 //!
 //! What an event says is not trusted: its flags are "simply hints" (`FSEvents.h:365`) and
 //! the stream "should NOT be treated as a form of historical log". A batch only says that
-//! something under the watched paths changed, with the event ids, so the caller reads the
-//! places again. Paths in events are never looked at.
+//! something under the watched paths changed, with the paths FSEvents names, so that the
+//! caller reads again the places those paths are in. The paths only choose what is
+//! read again, and nothing is ever opened by them. A batch whose events FSEvents says were
+//! dropped or coalesced, or that names no path for one, says that anything may have changed.
 //!
 //! The callback's contract. FSEvents calls `callback` on the serial dispatch queue this file
 //! creates, one call at a time, never on the caller's thread. The callback reads the flags and
-//! ids FSEvents lends it for the length of the call, touches nothing but the `Sink` its stream
+//! paths FSEvents lends it for the length of the call, touches nothing but the `Sink` its stream
 //! owns, which is immutable after the stream is created and whose `deliver` is `Send + Sync`,
 //! and hands one `Batch` to it. It never unwinds into FSEvents: a panic aborts the process.
 //! `Drop` stops and invalidates the stream, then waits for the queue to drain, so no callback
@@ -41,19 +43,12 @@ type CFRef = *const c_void;
 /// `kCFStringEncodingUTF8 = 0x08000100` (`CFString.h:113`).
 const UTF8: CFStringEncoding = 0x0800_0100;
 
-/// `CFUUIDBytes`, sixteen `UInt8` fields `byte0` to `byte15` (`CFUUID.h:22-38`).
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct CFUUIDBytes([u8; 16]);
-
 // FSEvents types.
 /// `FSEventStreamEventId`: `typedef UInt64` (`FSEvents.h:579`).
-pub type EventId = u64;
+type EventId = u64;
 /// `FSEventStreamCreateFlags` and `FSEventStreamEventFlags`: `typedef UInt32`
 /// (`FSEvents.h:197`, `FSEvents.h:357`).
 type Flags = u32;
-/// `dev_t`: `typedef __int32_t __darwin_dev_t;` (`usr/include/sys/_types.h:69`).
-pub type Dev = libc::dev_t;
 /// `FSEventStreamRef` and `ConstFSEventStreamRef`: pointers to an opaque struct
 /// (`FSEvents.h:592`, `FSEvents.h:600`).
 type StreamRef = *mut c_void;
@@ -61,17 +56,22 @@ type StreamRef = *mut c_void;
 type Queue = *mut c_void;
 
 /// `kFSEventStreamEventIdSinceNow = 0xFFFFFFFFFFFFFFFFULL` (`FSEvents.h:582`).
-pub const SINCE_NOW: EventId = u64::MAX;
+const SINCE_NOW: EventId = u64::MAX;
 /// `kFSEventStreamCreateFlagFileEvents = 0x00000010` (`FSEvents.h:275`).
 const CREATE_FILE_EVENTS: Flags = 0x10;
-/// `kFSEventStreamCreateFlagFullHistory = 0x00000080` (`FSEvents.h:308`).
-const CREATE_FULL_HISTORY: Flags = 0x80;
-/// `kFSEventStreamEventFlagEventIdsWrapped = 0x00000008` (`FSEvents.h:422`). Every other
-/// flag, events dropped (`MustScanSubDirs`, `FSEvents.h:398`) included, needs nothing more
-/// than the reading of every watched place that any event brings.
-const IDS_WRAPPED: Flags = 0x08;
-/// `kFSEventStreamEventFlagHistoryDone = 0x00000010` (`FSEvents.h:435`).
-const HISTORY_DONE: Flags = 0x10;
+/// The flags after which the path of an event does not say where the change is, so every
+/// watched place is read again: `MustScanSubDirs = 0x01` (`FSEvents.h:398`), events were
+/// coalesced or lost and everything under the path must be read (`UserDropped` and
+/// `KernelDropped` come only with it and, as `FSEvents.h:400-411` says, need no check of their
+/// own); `RootChanged = 0x20` (`FSEvents.h:448`), which FSEvents sends only to a stream made
+/// with `kFSEventStreamCreateFlagWatchRoot` (`FSEvents.h:255`), which `start` does not ask
+/// for: a folder on the way to a watched path that is replaced brings no event here;
+/// `Mount = 0x40` and `Unmount = 0x80` (`FSEvents.h:463`, `476`), a volume came or went under
+/// a watched path. No event id is kept, so `EventIdsWrapped` means nothing here.
+const EVERYWHERE: Flags = 0x01 | 0x20 | 0x40 | 0x80;
+/// The most paths a batch, or the changes gathered for one reading, names one by one; past it
+/// every watched place is read again, which costs what any reading cost before.
+pub const MOST_PATHS: usize = 4096;
 
 /// `struct FSEventStreamContext` (`FSEvents.h:609-644`), declared under
 /// `#pragma pack(push, 2)` (`FSEvents.h:44`). Its five fields are each eight bytes, so the
@@ -124,8 +124,6 @@ unsafe extern "C" {
     ) -> CFRef;
     /// `const CFArrayCallBacks kCFTypeArrayCallBacks` (`CFArray.h:92`).
     static kCFTypeArrayCallBacks: c_void;
-    /// `CFUUIDBytes CFUUIDGetUUIDBytes(CFUUIDRef uuid)` (`CFUUID.h:69`).
-    fn CFUUIDGetUUIDBytes(uuid: CFRef) -> CFUUIDBytes;
 }
 
 #[link(name = "CoreServices", kind = "framework")]
@@ -159,12 +157,6 @@ unsafe extern "C" {
     /// `void FSEventStreamRelease(FSEventStreamRef)` (`FSEvents.h:1123`): the refcount
     /// starts at one, so one release after create frees it.
     fn FSEventStreamRelease(stream: StreamRef);
-    /// `FSEventStreamEventId FSEventsGetCurrentEventId(void)` (`FSEvents.h:973`).
-    fn FSEventsGetCurrentEventId() -> EventId;
-    /// `CFUUIDRef FSEventsCopyUUIDForDevice(dev_t dev)` (`FSEvents.h:181-182` in the
-    /// declaration list, documented at `FSEvents.h:976-990`): `CF_RETURNS_RETAINED`, NULL
-    /// when history is not available for the device.
-    fn FSEventsCopyUUIDForDevice(dev: Dev) -> CFRef;
 }
 
 unsafe extern "C" {
@@ -180,21 +172,47 @@ unsafe extern "C" {
     fn dispatch_release(object: Queue);
 }
 
-/// What one callback said: how many events in it say something may have changed, the
-/// largest id among them, and whether the history asked for has been delivered in full.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+/// What one callback said: how many events in it say something may have changed, and where
+/// the changes are.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Batch {
     pub events: usize,
-    pub latest: EventId,
-    pub history_done: bool,
+    pub at: Where,
+}
+
+/// Where changes are: at these paths, as FSEvents names them, or anywhere under the watched
+/// paths. No path at all names no place, and is read as anywhere (`watch::to_read`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Where {
+    Paths(std::collections::BTreeSet<std::path::PathBuf>),
+    Anywhere,
+}
+
+impl Default for Where {
+    fn default() -> Where {
+        Where::Paths(std::collections::BTreeSet::new())
+    }
+}
+
+impl Where {
+    /// Both: anywhere when either is, or more paths than `MOST_PATHS` together.
+    pub fn and(self, other: Where) -> Where {
+        match (self, other) {
+            (Where::Paths(mut a), Where::Paths(b)) => {
+                a.extend(b);
+                if a.len() > MOST_PATHS {
+                    Where::Anywhere
+                } else {
+                    Where::Paths(a)
+                }
+            }
+            _ => Where::Anywhere,
+        }
+    }
 }
 
 /// What a stream hands its batches to. Immutable once the stream exists.
 struct Sink {
-    /// Events at or before this id are not counted: the full first chunk of history
-    /// re-delivers some (measured on macOS 26: the event at exactly the id asked from, and
-    /// earlier ones in its chunk).
-    since: EventId,
     deliver: Box<dyn Fn(Batch) + Send + Sync>,
 }
 
@@ -213,16 +231,13 @@ const NOT_UTF8: &str = "the path is not UTF-8, which FSEvents takes paths in";
 
 impl Stream {
     /// Starts a stream on `paths`, which need not exist yet, delivering batches to `deliver`
-    /// from FSEvents' queue. With `since`, FSEvents first replays what happened under the
-    /// paths after that event id, then sends a batch with `history_done`; the whole first
-    /// chunk of history is asked for (`FullHistory`, `FSEvents.h:297-308`), so an event stored
-    /// under an earlier id is not skipped, and the caller decides what is new by the ids.
-    /// `latency` is how long FSEvents gathers events into one batch, in seconds. A path
-    /// FSEvents cannot take is refused and the rest are watched; `Err` when none can be, or
-    /// the stream cannot be created or started.
+    /// from FSEvents' queue, of the changes made from now (`SinceNow`). When it returns, the
+    /// stream is registered with FSEvents to receive events (`FSEventStreamStart`,
+    /// `FSEvents.h:1266-1268`), so a change made after it brings an event. `latency` is how long FSEvents gathers events
+    /// into one batch, in seconds. A path FSEvents cannot take is refused and the rest are
+    /// watched; `Err` when none can be, or the stream cannot be created or started.
     pub fn start(
         paths: &[&Path],
-        since: Option<EventId>,
         latency: f64,
         deliver: Box<dyn Fn(Batch) + Send + Sync>,
     ) -> Result<(Stream, Refused), String> {
@@ -268,20 +283,13 @@ impl Stream {
             return Err("CoreFoundation could not make the list of paths".to_string());
         }
 
-        let sink = Box::into_raw(Box::new(Sink {
-            since: since.unwrap_or(0),
-            deliver,
-        }));
+        let sink = Box::into_raw(Box::new(Sink { deliver }));
         let context = Context {
             version: 0,
             info: sink.cast(),
             retain: std::ptr::null(),
             release: std::ptr::null(),
             copy_description: std::ptr::null(),
-        };
-        let (since_when, flags) = match since {
-            Some(id) => (id, CREATE_FILE_EVENTS | CREATE_FULL_HISTORY),
-            None => (SINCE_NOW, CREATE_FILE_EVENTS),
         };
         // SAFETY: `context` is read during the call only (its fields are copied out);
         // `array` is valid. The stream is owned here and released exactly once: below on
@@ -292,9 +300,9 @@ impl Stream {
                 callback,
                 &context,
                 array,
-                since_when,
+                SINCE_NOW,
                 latency,
-                flags,
+                CREATE_FILE_EVENTS,
             )
         };
         // SAFETY: the array was created above; the stream, if any, keeps what it needs.
@@ -369,70 +377,62 @@ extern "C" fn callback(
     _stream: StreamRef,
     info: *mut c_void,
     count: usize,
-    _paths: *mut c_void,
+    paths: *mut c_void,
     flags: *const Flags,
-    ids: *const EventId,
+    _ids: *const EventId,
 ) {
     let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if info.is_null() || count == 0 || flags.is_null() || ids.is_null() {
+        if info.is_null() || count == 0 || flags.is_null() {
             return;
         }
-        // SAFETY: FSEvents passes `count` flags and `count` ids, valid for this call
+        // SAFETY: FSEvents passes `count` flags, valid for this call
         // (`FSEvents.h:665-668`); `info` is the `Sink` this stream owns, freed only after the
         // stream is stopped and the queue drained.
-        let (flags, ids, sink) = unsafe {
+        let (flags, sink) = unsafe {
             (
                 std::slice::from_raw_parts(flags, count),
-                std::slice::from_raw_parts(ids, count),
                 &*(info as *const Sink),
             )
         };
-        (sink.deliver)(summarise(flags, ids, sink.since));
+        // Without `UseCFTypes` the paths are "a raw C array of raw C strings", one per event,
+        // freed by FSEvents after the callback returns (`FSEvents.h:674-677`): each is copied
+        // out here. A missing one names no path.
+        let named: Vec<Option<std::path::PathBuf>> = if paths.is_null() {
+            vec![None; count]
+        } else {
+            // SAFETY: `count` pointers, valid for this call, as above.
+            let each = unsafe { std::slice::from_raw_parts(paths as *const *const c_char, count) };
+            each.iter()
+                .map(|&p| {
+                    // SAFETY: a non-null pointer FSEvents gives is a NUL-terminated string
+                    // valid for this call.
+                    (!p.is_null()).then(|| {
+                        let bytes = unsafe { std::ffi::CStr::from_ptr(p) }.to_bytes();
+                        std::path::PathBuf::from(std::ffi::OsStr::from_bytes(bytes))
+                    })
+                })
+                .collect()
+        };
+        (sink.deliver)(summarise(flags, &named));
     }));
     if run.is_err() {
         std::process::abort();
     }
 }
 
-/// One batch from the flags and ids of one callback. The sentinel that ends the history says
-/// nothing changed and its id is not one to resume from. An event at or before `since` was
-/// handled before, except that the ids have wrapped and every id is new.
-fn summarise(flags: &[Flags], ids: &[EventId], since: EventId) -> Batch {
+/// One batch from the flags and paths of one callback. An event whose flags say the path does
+/// not place the change (`EVERYWHERE`), or that names no path, makes the batch say anywhere.
+fn summarise(flags: &[Flags], paths: &[Option<std::path::PathBuf>]) -> Batch {
     let mut b = Batch::default();
-    for (&f, &id) in flags.iter().zip(ids) {
-        if f & HISTORY_DONE != 0 {
-            b.history_done = true;
-            continue;
-        }
-        if id <= since && f & IDS_WRAPPED == 0 {
-            continue;
-        }
+    for (&f, path) in flags.iter().zip(paths) {
         b.events += 1;
-        b.latest = b.latest.max(id);
+        let here = match path {
+            Some(path) if f & EVERYWHERE == 0 => Where::Paths([path.clone()].into()),
+            _ => Where::Anywhere,
+        };
+        b.at = std::mem::take(&mut b.at).and(here);
     }
     b
-}
-
-/// The most recent event id on this Mac, system-wide.
-pub fn current_event_id() -> EventId {
-    // SAFETY: takes nothing and returns a number.
-    unsafe { FSEventsGetCurrentEventId() }
-}
-
-/// The identity of the FSEvents history of a volume, as 32 hex digits, or `None` when that
-/// volume keeps no history. A different identity means the history was discarded or purged.
-pub fn volume_identity(dev: Dev) -> Option<String> {
-    // SAFETY: takes a device number; the result is owned here (`CF_RETURNS_RETAINED`) and
-    // released once after its bytes are read.
-    let uuid = unsafe { FSEventsCopyUUIDForDevice(dev) };
-    if uuid.is_null() {
-        return None;
-    }
-    // SAFETY: `uuid` is a valid CFUUID until the release that follows.
-    let bytes = unsafe { CFUUIDGetUUIDBytes(uuid) };
-    // SAFETY: released once.
-    unsafe { CFRelease(uuid) };
-    Some(bytes.0.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 #[cfg(test)]
@@ -450,13 +450,13 @@ mod tests {
         std::fs::canonicalize(&dir).unwrap()
     }
 
-    fn start(paths: &[&Path], since: Option<EventId>) -> (Stream, Refused, mpsc::Receiver<Batch>) {
+    fn start(paths: &[&Path]) -> (Stream, Refused, mpsc::Receiver<Batch>) {
         let (tx, rx) = mpsc::channel();
         let tx = std::sync::Mutex::new(tx);
         let deliver = Box::new(move |b: Batch| {
             let _ = tx.lock().unwrap().send(b);
         });
-        let (stream, refused) = Stream::start(paths, since, 0.1, deliver).unwrap();
+        let (stream, refused) = Stream::start(paths, 0.1, deliver).unwrap();
         (stream, refused, rx)
     }
 
@@ -466,7 +466,7 @@ mod tests {
     /// a failing run.
     const DEADLINE: Duration = Duration::from_secs(120);
 
-    /// Waits for a batch with an event, skipping the end-of-history sentinel. `write` runs
+    /// Waits for a batch with an event. `write` runs
     /// first and again after every second without one: under load a single write can arrive
     /// later than any short wait, and a repeated one says the same thing.
     fn event_after(rx: &mpsc::Receiver<Batch>, write: impl Fn()) -> Option<Batch> {
@@ -482,38 +482,22 @@ mod tests {
         None
     }
 
-    /// What a stream replays from history, summed up to its end-of-history batch, or `None`
-    /// when that batch does not come.
-    fn replay(rx: &mpsc::Receiver<Batch>) -> Option<Batch> {
-        let start = std::time::Instant::now();
-        let mut replayed = Batch::default();
-        while start.elapsed() < DEADLINE {
-            if let Ok(b) = rx.recv_timeout(Duration::from_secs(1)) {
-                replayed.events += b.events;
-                replayed.latest = replayed.latest.max(b.latest);
-                if b.history_done {
-                    replayed.history_done = true;
-                    return Some(replayed);
-                }
-            }
-        }
-        None
-    }
-
     #[test]
     fn a_write_under_a_watched_path_that_did_not_exist_at_start_is_delivered_as_a_batch() {
         // The watcher subscribes to places before they exist: the first autostart item ever
         // made must still be seen.
         let dir = temp("later");
         let folder = dir.join("Library/LaunchAgents");
-        let (stream, refused, rx) = start(&[&folder], None);
+        let (stream, refused, rx) = start(&[&folder]);
         assert!(refused.is_empty());
         let b = event_after(&rx, || {
             std::fs::create_dir_all(&folder).unwrap();
             std::fs::write(folder.join("item.plist"), "x").unwrap();
-        })
-        .expect("an event for a path created after the stream started");
-        assert!(b.latest > 0 && b.latest <= current_event_id());
+        });
+        assert!(
+            b.is_some(),
+            "an event for a path created after the stream started"
+        );
         drop(stream);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -524,94 +508,75 @@ mod tests {
         let dir = temp("utf8");
         let bad = dir.join(std::ffi::OsStr::from_bytes(b"bad\xff"));
         let good = dir.join("good");
-        let (stream, refused, rx) = start(&[&bad, &good], None);
+        let (stream, refused, rx) = start(&[&bad, &good]);
         assert_eq!(refused, vec![(0, NOT_UTF8)]);
         assert!(event_after(&rx, || std::fs::write(&good, "x").unwrap()).is_some());
         drop(stream);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    fn named(paths: &[&str]) -> Vec<Option<std::path::PathBuf>> {
+        paths.iter().map(|p| Some(p.into())).collect()
+    }
+
+    fn at(paths: &[&str]) -> Where {
+        Where::Paths(paths.iter().map(std::path::PathBuf::from).collect())
+    }
+
     #[test]
-    fn history_since_an_id_is_replayed_and_then_marked_done() {
-        // A change made while no stream ran is in the per-volume history. It need not come
-        // before the end-of-history batch: when fseventsd has not yet stored it, it comes
-        // after (measured: 4 of 20 times on a busy Mac, 2 to 14 s later). The watcher counts
-        // it either way, so the promise is that both come.
-        let dir = temp("history");
-        let file = dir.join("profile");
-        let before = current_event_id();
-        std::fs::write(&file, "changed while nobody watched").unwrap();
-        let (stream, _, rx) = start(&[&file], Some(before));
-        let started = std::time::Instant::now();
-        let mut seen = Batch::default();
-        while started.elapsed() < DEADLINE && !(seen.history_done && seen.events > 0) {
+    fn an_event_whose_flags_say_events_were_dropped_or_coalesced_says_the_change_may_be_anywhere() {
+        // FSEvents says where it lost events only roughly ("/" when dropped): what it names
+        // cannot choose what is read again, or a change it lost would never be read.
+        let flags = [0x01, 0x01 | 0x02, 0x01 | 0x04, 0x20, 0x40, 0x80];
+        for flag in flags {
+            let b = summarise(&[0x1000, flag], &named(&["/w/a", "/w"]));
+            assert_eq!(b.at, Where::Anywhere, "{flag:#x}");
+        }
+        // Plain file events name where the change is.
+        let plain = [0x100, 0x200, 0x800, 0x1000, 0x10000, 0x20000];
+        for flag in plain {
+            let b = summarise(&[flag], &named(&["/w/a"]));
+            assert_eq!(b.at, at(&["/w/a"]), "{flag:#x}");
+        }
+    }
+
+    #[test]
+    fn an_event_that_names_no_path_says_the_change_may_be_anywhere() {
+        let b = summarise(&[0x1000, 0x1000], &[Some("/w/a".into()), None]);
+        assert_eq!(b.at, Where::Anywhere);
+    }
+
+    #[test]
+    fn more_paths_than_the_most_named_one_by_one_say_anywhere_and_anywhere_stays() {
+        let many: Where = Where::Paths((0..MOST_PATHS).map(|i| format!("/w/{i}").into()).collect());
+        assert_eq!(many.clone().and(at(&["/w/0"])), many);
+        assert_eq!(many.clone().and(at(&["/w/more"])), Where::Anywhere);
+        assert_eq!(Where::Anywhere.and(at(&["/w/a"])), Where::Anywhere);
+        assert_eq!(at(&["/w/a"]).and(Where::Anywhere), Where::Anywhere);
+        assert_eq!(at(&["/w/a"]).and(at(&["/w/b"])), at(&["/w/a", "/w/b"]));
+    }
+
+    #[test]
+    fn a_batch_names_the_path_of_the_file_written() {
+        // The watcher reads again only the places a change is in, so the path must be the
+        // one FSEvents gave, copied whole before FSEvents frees it.
+        let dir = temp("named");
+        let folder = dir.join("Library/LaunchAgents");
+        std::fs::create_dir_all(&folder).unwrap();
+        let file = folder.join("com.example.agent.plist");
+        let (stream, _, rx) = start(&[&folder]);
+        // A batch that says anywhere, as FSEvents may under load, places nothing and is
+        // passed over.
+        let start = std::time::Instant::now();
+        let mut named = false;
+        while start.elapsed() < DEADLINE && !named {
+            std::fs::write(&file, "x").unwrap();
             if let Ok(b) = rx.recv_timeout(Duration::from_secs(1)) {
-                seen.events += b.events;
-                seen.latest = seen.latest.max(b.latest);
-                seen.history_done |= b.history_done;
+                named = matches!(&b.at, Where::Paths(p) if p.contains(&file));
             }
         }
         drop(stream);
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(seen.history_done, "the end of history is marked");
-        assert!(seen.events > 0 && seen.latest > before);
-    }
-
-    #[test]
-    fn the_end_of_history_is_not_an_event_and_its_id_is_not_kept() {
-        let b = summarise(&[0x1000, HISTORY_DONE, 0x01], &[7, 99, 5], 0);
-        assert_eq!(
-            b,
-            Batch {
-                events: 2,
-                latest: 7,
-                history_done: true
-            }
-        );
-    }
-
-    #[test]
-    fn events_at_or_before_the_id_asked_from_are_not_counted_unless_the_ids_wrapped() {
-        let b = summarise(&[0x1000, 0x1000, IDS_WRAPPED, 0x1000], &[40, 41, 3, 42], 41);
-        assert_eq!(
-            b,
-            Batch {
-                events: 2,
-                latest: 42,
-                history_done: false
-            }
-        );
-    }
-
-    #[test]
-    fn a_restart_from_the_last_id_handled_replays_nothing_when_nothing_changed() {
-        // FullHistory re-delivers the event at the id asked from; it was handled before.
-        let dir = temp("nothing");
-        let file = dir.join("profile");
-        let (stream, _, rx) = start(&[&file], None);
-        // Written once: a second write would be a change after the id handled.
-        std::fs::write(&file, "once").unwrap();
-        let handled = event_after(&rx, || {}).expect("the live write").latest;
-        drop(stream);
-        let (stream, _, rx) = start(&[&file], Some(handled));
-        let replayed = replay(&rx);
-        // Anything still on its way would come right after the end of history.
-        let mut events = replayed.as_ref().map_or(0, |b| b.events);
-        while let Ok(b) = rx.recv_timeout(Duration::from_millis(500)) {
-            events += b.events;
-        }
-        drop(stream);
-        let _ = std::fs::remove_dir_all(&dir);
-        assert!(replayed.is_some(), "the end of history is marked");
-        assert_eq!(events, 0);
-    }
-
-    #[test]
-    fn the_volume_of_the_temporary_folder_keeps_a_history_with_a_stable_identity() {
-        use std::os::unix::fs::MetadataExt;
-        let dev = std::fs::metadata(std::env::temp_dir()).unwrap().dev() as Dev;
-        let id = volume_identity(dev).expect("the data volume keeps FSEvents history");
-        assert_eq!(id.len(), 32);
-        assert_eq!(volume_identity(dev), Some(id));
+        assert!(named);
     }
 }

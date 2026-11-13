@@ -7,7 +7,7 @@
 use rusqlite::Connection;
 use serde_json::Value;
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -443,7 +443,9 @@ fn a_watchers_reading_shows_in_the_view_as_what_it_is_and_not_as_a_run_that_did_
     drop(w);
     let pages = mac.view();
     assert!(!pages.contains("did not finish"), "{pages}");
-    let shown = "watcher&#39;s reading of the watched places: +0 added, 1 changed, 0 removed";
+    // Named by what it read, the place the change was in.
+    let shown =
+        "watcher&#39;s reading of shell profiles of zsh and bash: +0 added, 1 changed, 0 removed";
     assert!(pages.contains(shown), "{pages}");
     assert!(!pages.contains("were not read in this run"), "{pages}");
 }
@@ -558,60 +560,47 @@ fn a_thousand_changes_are_one_reading() {
 }
 
 #[test]
-fn a_change_made_while_the_watcher_was_stopped_is_read_when_it_starts_again() {
-    let mac = Mac::new("replay");
+fn every_start_reads_every_place_a_change_made_while_stopped_is_found_and_none_is_said_when_none_was_made()
+ {
+    // The first line after `watching` is the start's reading of every place, whatever the
+    // store says of earlier watchers: what changed while none ran is in it.
+    let mac = Mac::new("restart");
     mac.put(".zshrc", "one\n");
+    mac.put("Library/LaunchAgents/org.example.sync.plist", "<plist/>\n");
     let w = mac.watch().started();
     assert!(w.stop().success());
     mac.put(".zshrc", "two\n");
     let mut w = mac.watch();
     w.next("watching");
-    w.until("read", |v| count(v, "changed") == 1);
+    let first = w.next("read");
+    assert_eq!(count(&first, "changed"), 1, "{:?}", w.seen);
+    let needs = count(&first, "needs_a_look_total");
     assert!(w.lines("problem").is_empty(), "{:?}", w.seen);
     assert!(w.stop().success());
 
-    // Nothing changed while it was stopped: the history says so and nothing is read. The
-    // first reading after the restart is the one a new change brings.
+    // Nothing changed while it was stopped: the start still reads every place, records no
+    // change, opens nothing, and the number that needs a look stays as it was.
+    let before = latest_watched(&mac);
     let mut w = mac.watch();
     w.next("watching");
-    // A reading the replay brought would come before the change. The replay is delivered at
-    // once after `watching`, then 0.2 s of event latency and the 1 s quiet period; measured, it
-    // reads about 1.1 s after start. Three seconds is that with room for a loaded machine.
-    std::thread::sleep(Duration::from_secs(3));
-    mac.put(".zshrc", "three\n");
     let first = w.next("read");
-    assert_eq!(count(&first, "changed"), 1);
-    assert!(w.lines("problem").is_empty());
-}
-
-#[test]
-fn a_stored_event_id_that_cannot_be_used_is_said_and_everything_is_read_once() {
-    let mac = Mac::new("unusable");
-    mac.put(".zshrc", "one\n");
-    assert!(mac.watch().started().stop().success());
-    // An id ahead of this Mac's own, as after the store was moved from another Mac.
-    let conn = Connection::open(mac.store()).unwrap();
-    conn.execute("UPDATE watcher SET event_id = '18446744073709551614'", [])
-        .unwrap();
-    drop(conn);
-    mac.put(".zshrc", "two\n");
-    let mut w = mac.watch();
-    w.next("watching");
-    let problem = w.next("problem");
-    assert_eq!(problem["code"], "history_unusable");
-    w.until("read", |v| count(v, "changed") == 1);
+    let said: Vec<u64> = ["new", "changed", "gone", "opened"]
+        .iter()
+        .map(|c| count(&first, c))
+        .collect();
+    assert_eq!(said, [0, 0, 0, 0], "{first}");
+    assert_eq!(count(&first, "needs_a_look_total"), needs);
+    let after = latest_watched(&mac);
+    assert_eq!(after.len(), before.len());
+    for (was, now) in before.iter().zip(&after) {
+        assert_ne!(
+            was.2, now.2,
+            "{} of {} was not read at the start",
+            now.1, now.0
+        );
+    }
+    assert!(w.lines("problem").is_empty(), "{:?}", w.seen);
     assert!(w.stop().success());
-
-    // A history that is not the one the id belongs to, as after it was purged.
-    let conn = Connection::open(mac.store()).unwrap();
-    conn.execute("UPDATE watcher SET volumes = '0123456789abcdef'", [])
-        .unwrap();
-    drop(conn);
-    mac.put(".zshrc", "three\n");
-    let mut w = mac.watch();
-    w.next("watching");
-    assert_eq!(w.next("problem")["code"], "history_unusable");
-    w.until("read", |v| count(v, "changed") == 1);
 }
 
 #[test]
@@ -820,13 +809,16 @@ fn status_says_watching_only_while_a_live_watcher_holds_the_store() {
     // reading of the one before; until it reads, it has read nothing. The store keeps whole
     // seconds, so 1.1 s is the least wait that puts the two in different seconds.
     std::thread::sleep(Duration::from_millis(1100));
+    // The run lock is held, as by a full run, so the start's reading waits for it.
+    let folder = std::fs::File::open(mac.root.join("store")).unwrap();
+    folder.lock().unwrap();
     let mut w = mac.watch();
     w.next("watching");
     let watching = mac.status()["result"]["watching"].clone();
     assert!(watching["since"].as_str().unwrap().ends_with('Z'));
     assert!(watching["last_read"].is_null(), "{watching}");
     assert_eq!(watching["cannot_see"].as_array().unwrap().len(), 3);
-    mac.put(".zshrc", "read\n");
+    folder.unlock().unwrap();
     w.next("read");
     let watching = mac.status()["result"]["watching"].clone();
     assert!(watching["last_read"].as_str().unwrap() >= watching["since"].as_str().unwrap());
@@ -1543,6 +1535,10 @@ fn a_reading_that_failed_is_a_problem_line_and_the_watcher_reads_again_later() {
     use std::os::unix::fs::PermissionsExt;
     let mac = Mac::new("failed");
     let mut w = mac.watch().started();
+    let last_read = "SELECT CAST(last_read AS TEXT) FROM watcher";
+    let read_every_place = mac.rows(last_read);
+    // So that a reading after it cannot have the same time to the second.
+    std::thread::sleep(Duration::from_millis(1100));
     let mode = |m| std::fs::set_permissions(mac.store(), std::fs::Permissions::from_mode(m));
     mode(0o444).unwrap();
     mac.put(".zshrc", "one\n");
@@ -1551,6 +1547,9 @@ fn a_reading_that_failed_is_a_problem_line_and_the_watcher_reads_again_later() {
     mode(0o644).unwrap();
     mac.put(".zprofile", "two\n");
     w.until("read", |v| count(v, "new") == 2);
+    // What a failed reading would have read is not all that may have changed since: it is
+    // tried again as a reading of every place.
+    assert_ne!(mac.rows(last_read), read_every_place);
 }
 
 #[test]
@@ -2641,4 +2640,435 @@ fn the_view_after_ten_thousand_readings_is_made_as_quickly_as_on_the_first_day()
         later < first * 3 / 2 + Duration::from_millis(5),
         "the view took {first:?} on the first day, {later:?} after ten thousand readings"
     );
+}
+
+/// The latest reading of each scope and kind of the watched places: scope, kind, the run that
+/// made it and its completeness.
+fn latest_watched(mac: &Mac) -> Vec<(String, String, String, String)> {
+    let conn = Connection::open(mac.store()).unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT scope, kind, run_id, completeness FROM coverage c
+             WHERE reader = 'watched-places'
+               AND id = (SELECT MAX(id) FROM coverage l
+                         WHERE (l.reader, l.scope, l.kind) = (c.reader, c.scope, c.kind))
+             ORDER BY scope, kind",
+        )
+        .unwrap();
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+#[test]
+fn a_change_in_one_watched_place_reads_again_only_its_reading_and_every_other_keeps_its_time() {
+    // A reading of one place that wrote coverage for every place would say all of them were
+    // read when they were not; one that read them all would read every place at every change.
+    // A place that leads into Documents keeps it said that the reader did not look there: only
+    // a reading of every place can say what it met.
+    use std::os::unix::fs::symlink;
+    let mac = Mac::new("touched");
+    mac.put(".zshrc", "export A=1\n");
+    mac.put("Library/LaunchAgents/org.example.sync.plist", "<plist/>\n");
+    mac.put("Documents/ssh/config", "Host web\n");
+    symlink(mac.home().join("Documents/ssh"), mac.home().join(".ssh")).unwrap();
+    let mut w = mac.watch().started();
+    let before = latest_watched(&mac);
+    let last_read = "SELECT CAST(last_read AS TEXT) FROM watcher";
+    let read_every_place = mac.rows(last_read);
+    // So that a reading after it cannot have the same time to the second.
+    std::thread::sleep(Duration::from_millis(1100));
+    mac.put(".zshrc", "export A=2\n");
+    w.until("read", |v| count(v, "changed") == 1);
+    let after = latest_watched(&mac);
+    assert_eq!(after.len(), before.len());
+    let read_again = |scope: &str, kind: &str| {
+        (kind == "shell profiles of zsh and bash" && scope.starts_with("machine:"))
+            || (kind == "content of a watched file" && scope.ends_with("/.zshrc"))
+    };
+    for (was, now) in before.iter().zip(&after) {
+        assert_eq!((&was.0, &was.1), (&now.0, &now.1));
+        if read_again(&now.0, &now.1) {
+            assert_ne!(was.2, now.2, "{now:?}");
+            assert!(now.2.starts_with("watch-"));
+        } else {
+            assert_eq!(was, now, "read again though no change was in it");
+        }
+    }
+    assert_eq!(before.iter().filter(|r| read_again(&r.0, &r.1)).count(), 2);
+    let guarded = after
+        .iter()
+        .find(|r| r.1 == "folders macOS asks permission for")
+        .unwrap();
+    assert_eq!(guarded.3, "none");
+    // When every place was last read is not moved by a reading of some.
+    assert_eq!(mac.rows(last_read), read_every_place);
+}
+
+/// How many readings the store keeps.
+fn readings(mac: &Mac) -> i64 {
+    mac.rows("SELECT CAST(COUNT(*) AS TEXT) FROM coverage")[0]
+        .parse()
+        .unwrap()
+}
+
+#[test]
+fn a_mac_checked_every_hour_keeps_no_more_readings_after_a_month_than_after_a_day() {
+    // Every full run reads everything; the readings no page or answer asks for one by one are
+    // folded as it ends, so the store stops growing by them. The 20 latest runs are kept whole
+    // (`store::RUNS_KEPT`).
+    let mac = Mac::new("month");
+    mac.put(".zshrc", "export A=1\n");
+    mac.put("dev/shop/.git/HEAD", "ref: refs/heads/main\n");
+    mac.put("dev/shop/package.json", r#"{"scripts": {"test": "true"}}"#);
+    let mut counts = Vec::new();
+    for _ in 0..25 {
+        mac.run();
+        counts.push(readings(&mac));
+    }
+    // Each run adds its readings until there are 22 runs: the 20 kept whole, and the first and
+    // the last of what is older. From then on a run adds as many as it folds.
+    assert!(counts[..22].windows(2).all(|w| w[0] < w[1]), "{counts:?}");
+    assert!(counts[21..].iter().all(|n| *n == counts[21]), "{counts:?}");
+    // The changes page still lists the runs kept whole as having read everything.
+    let pages = mac.view();
+    assert!(!pages.contains("were not read in this run"), "{pages}");
+}
+
+#[test]
+fn the_first_check_of_a_store_kept_whole_before_folds_its_readings_and_gives_the_space_back() {
+    // A store an earlier build kept every reading of: its first full run folds them, and the
+    // file shrinks, so that a year of readings does not stay on the disk as free pages.
+    let mac = Mac::new("earlier");
+    mac.put(".zshrc", "export A=1\n");
+    mac.run();
+    {
+        // A year of hourly readings before the first, as an earlier build left them: older
+        // than every run, so with ids below them.
+        let conn = Connection::open(mac.store()).unwrap();
+        conn.execute(
+            "WITH RECURSIVE n (i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 8760)
+             INSERT INTO coverage (id, reader, run_id, observed_at, scope, kind, completeness,
+                                   reason, cause)
+             SELECT -(i * 10000 + id), reader, 'earlier-' || i, observed_at - i * 3600, scope,
+                    kind, completeness, reason, cause
+             FROM n, coverage WHERE id > 0",
+            [],
+        )
+        .unwrap();
+    }
+    let size = || std::fs::metadata(mac.store()).unwrap().len();
+    let (rows, before) = (readings(&mac), size());
+    mac.run();
+    assert!(readings(&mac) * 100 < rows, "{} of {rows}", readings(&mac));
+    assert!(size() * 10 < before, "{} bytes of {before}", size());
+}
+
+#[test]
+fn a_watcher_started_again_reads_every_place_at_its_first_reading_however_small_the_change() {
+    // What a watcher reads by the paths of a change is what changed since it read every place;
+    // one started again, which goes on from the history FSEvents kept, has not read them yet.
+    let mac = Mac::new("again-all");
+    mac.put(".zshrc", "one\n");
+    mac.put("Library/LaunchAgents/org.example.sync.plist", "<plist/>\n");
+    assert!(mac.watch().started().stop().success());
+    let before = latest_watched(&mac);
+    let last_read = "SELECT CAST(last_read AS TEXT) FROM watcher";
+    let read_every_place = mac.rows(last_read);
+    // So that a reading after it cannot have the same time to the second.
+    std::thread::sleep(Duration::from_millis(1100));
+    let mut w = mac.watch();
+    w.next("watching");
+    // After the history kept while it was stopped, which says nothing changed: as measured in
+    // `a_change_made_while_the_watcher_was_stopped_is_read_when_it_starts_again`.
+    std::thread::sleep(Duration::from_secs(3));
+    mac.put(".zshrc", "two\n");
+    w.until("read", |v| count(v, "changed") == 1);
+    assert_ne!(mac.rows(last_read), read_every_place);
+    let after = latest_watched(&mac);
+    assert_eq!(after.len(), before.len());
+    assert!(
+        before.iter().zip(&after).all(|(was, now)| was.2 != now.2),
+        "{after:?}"
+    );
+    assert!(w.stop().success());
+}
+
+#[test]
+fn changes_in_two_places_that_come_before_the_reading_is_due_are_both_read() {
+    // A reading waits for a quiet second after a change; a second change meanwhile adds its
+    // places to those of the first, and never takes their place.
+    let mac = Mac::new("two-batches");
+    mac.put(".zshrc", "one\n");
+    let mut w = mac.watch().started();
+    mac.put(".zshrc", "two\n");
+    // Long enough for FSEvents to deliver the first change on its own, short of the quiet second.
+    std::thread::sleep(Duration::from_millis(500));
+    mac.put("Library/LaunchAgents/org.example.sync.plist", "<plist/>\n");
+    let seen = std::cell::Cell::new((0, 0));
+    w.until("read", |v| {
+        let (changed, new) = seen.get();
+        seen.set((changed + count(v, "changed"), new + count(v, "new")));
+        seen.get() == (1, 1)
+    });
+}
+
+#[test]
+fn a_reading_of_some_places_between_two_of_every_place_saves_no_second_copy_of_an_unchanged_listing()
+ {
+    // A copy of what was read is saved only when it differs from the last one of its name: a
+    // reading of some places is saved under a name of its own, so that the next reading of
+    // every place is not saved again only because a shorter listing came between.
+    let mac = Mac::new("raw-apart");
+    mac.put(".zshrc", "export A=1\n");
+    // A place the reading of some places does not list.
+    mac.put("Library/LaunchAgents/org.example.sync.plist", "<plist/>\n");
+    let copies = |mac: &Mac| {
+        std::fs::read_dir(mac.store().with_file_name("raw"))
+            .unwrap()
+            .filter(|d| {
+                d.as_ref()
+                    .unwrap()
+                    .path()
+                    .join("watched-places.txt")
+                    .exists()
+            })
+            .count()
+    };
+    let mut w = mac.watch().started();
+    let first = copies(&mac);
+    assert!(first >= 1);
+    // Written again as it was: the place is touched, and what is read of it is the same.
+    mac.put(".zshrc", "export A=1\n");
+    w.next("read");
+    assert!(w.stop().success());
+    mac.run();
+    assert_eq!(copies(&mac), first);
+}
+
+const PROFILES: &str = "shell profiles of zsh and bash";
+const AGENTS: &str = "launch agents and daemons";
+
+/// A watcher that looks again at what to watch every two seconds, as it does every minute.
+fn looking(mac: &Mac) -> Watcher {
+    let mut cmd = mac.watch_cmd();
+    cmd.args(["--alive-every", "2"]);
+    Watcher::start(cmd).started()
+}
+
+/// The run that made the latest reading of this kind of watched places on this Mac.
+fn read_by(mac: &Mac, kind: &str) -> String {
+    latest_watched(mac)
+        .into_iter()
+        .find(|r| r.0.starts_with("machine:") && r.1 == kind)
+        .unwrap_or_else(|| panic!("{kind} was read"))
+        .2
+}
+
+/// Writes through `path` and asserts that the reading of `kind` is made again by the
+/// watcher's next look at what to watch, whatever the path of the change was taken for.
+fn read_again_by_the_next_look(mac: &Mac, w: &mut Watcher, kind: &str, path: &Path) {
+    let before = read_by(mac, kind);
+    std::fs::write(path, "changed\n").unwrap();
+    w.next("read");
+    if read_by(mac, kind) == before {
+        w.next("alive");
+        w.next("read");
+    }
+    assert_ne!(read_by(mac, kind), before, "{kind} was not read again");
+}
+
+#[test]
+fn a_file_one_reading_reaches_by_a_name_in_another_case_is_read_again_by_the_next_look() {
+    // A shell profile that is a link to a launch agent, spelled in another case: FSEvents names
+    // the file as it is on the disk, which is in the launch agents' place only.
+    use std::os::unix::fs::symlink;
+    let mac = Mac::new("other-case");
+    let file = mac.put("Library/LaunchAgents/helper.plist", "<plist/>\n");
+    let link = mac.home().join("LIBRARY/LaunchAgents/helper.plist");
+    symlink(link, mac.home().join(".zshrc")).unwrap();
+    let mut w = looking(&mac);
+    read_again_by_the_next_look(&mac, &mut w, PROFILES, &file);
+    assert!(w.stop().success());
+}
+
+#[test]
+fn a_file_one_reading_reaches_by_a_name_in_another_unicode_form_is_read_again_by_the_next_look() {
+    // The same with a name made on the disk decomposed and named by the link composed, which
+    // the file system takes as one name.
+    use std::os::unix::fs::symlink;
+    let mac = Mac::new("other-form");
+    let file = mac.put("Library/LaunchAgents/cafe\u{301}.plist", "<plist/>\n");
+    let link = mac.home().join("Library/LaunchAgents/caf\u{e9}.plist");
+    symlink(link, mac.home().join(".zshrc")).unwrap();
+    let mut w = looking(&mac);
+    read_again_by_the_next_look(&mac, &mut w, PROFILES, &file);
+    assert!(w.stop().success());
+}
+
+#[test]
+fn what_a_new_link_to_a_watched_path_leads_to_is_read_again_by_the_next_look() {
+    // A launch agent made as a link to a shell profile the watcher subscribes to already: no
+    // path is new, but a change there is now one of the launch agents too.
+    use std::os::unix::fs::symlink;
+    let mac = Mac::new("new-link");
+    let profile = mac.put(".zlogin", "echo one\n");
+    std::fs::create_dir_all(mac.home().join("Library/LaunchAgents")).unwrap();
+    let mut w = looking(&mac);
+    let agent = mac
+        .home()
+        .join("Library/LaunchAgents/org.example.helper.plist");
+    symlink(&profile, agent).unwrap();
+    w.until("read", |v| count(v, "new") == 1);
+    read_again_by_the_next_look(&mac, &mut w, AGENTS, &profile);
+    assert!(w.stop().success());
+}
+
+#[test]
+fn what_a_launch_agent_leads_to_through_a_link_outside_every_watched_place_is_read_again_by_the_next_look()
+ {
+    // A launch agent that is a link to a link outside every watched place, which leads to one
+    // shell profile and is turned to another: both are watched already, so no path changes,
+    // and nothing watched is written. What the launch agent leads to has changed.
+    use std::os::unix::fs::symlink;
+    let mac = Mac::new("hop");
+    let bashrc = mac.put(".bashrc", "echo one\n");
+    let zprofile = mac.put(".zprofile", "echo two\n");
+    let elsewhere = mac.root.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let hop = elsewhere.join("agent");
+    symlink(&bashrc, &hop).unwrap();
+    std::fs::create_dir_all(mac.home().join("Library/LaunchAgents")).unwrap();
+    let agent = mac
+        .home()
+        .join("Library/LaunchAgents/org.example.helper.plist");
+    symlink(&hop, agent).unwrap();
+    let mut w = looking(&mac);
+    let agents = read_by(&mac, AGENTS);
+    std::fs::remove_file(&hop).unwrap();
+    symlink(&zprofile, &hop).unwrap();
+    w.next("read");
+    assert_ne!(read_by(&mac, AGENTS), agents);
+    assert!(w.stop().success());
+}
+
+#[test]
+fn a_link_outside_every_watched_place_turned_while_the_watcher_was_stopping_is_read_at_its_start() {
+    // The launch agent leads through a link outside every watched place, which is turned to
+    // another shell profile; the watcher stops before its next look, so no look saw the map
+    // change. No full run follows and nothing watched is written: the start alone reads it.
+    use std::os::unix::fs::symlink;
+    let mac = Mac::new("hop-restart");
+    let bashrc = mac.put(".bashrc", "echo one\n");
+    let zprofile = mac.put(".zprofile", "echo two\n");
+    let elsewhere = mac.root.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let hop = elsewhere.join("agent");
+    symlink(&bashrc, &hop).unwrap();
+    std::fs::create_dir_all(mac.home().join("Library/LaunchAgents")).unwrap();
+    let agent = mac
+        .home()
+        .join("Library/LaunchAgents/org.example.helper.plist");
+    symlink(&hop, agent).unwrap();
+    let w = not_looking(&mac);
+    let agents = read_by(&mac, AGENTS);
+    std::fs::remove_file(&hop).unwrap();
+    symlink(&zprofile, &hop).unwrap();
+    assert!(w.stop().success());
+    assert_eq!(read_by(&mac, AGENTS), agents, "read before the start");
+    let mut w = mac.watch();
+    w.next("watching");
+    let first = w.next("read");
+    assert_ne!(read_by(&mac, AGENTS), agents);
+    assert_eq!(count(&first, "changed"), 1, "{first}");
+    assert!(w.stop().success());
+}
+
+#[test]
+fn the_event_id_an_earlier_build_kept_is_emptied_so_that_build_reads_every_place_at_its_start() {
+    // An earlier build replays from the id in `watcher.event_id` and reads every place only
+    // when there is none. An id left there while this build ran would have it replay from a
+    // point whose history it was never shown to cover.
+    let mac = Mac::new("event-id");
+    mac.put(".zshrc", "one\n");
+    assert!(mac.watch().started().stop().success());
+    let row = "SELECT event_id || '|' || volumes FROM watcher";
+    assert_eq!(mac.rows(row), ["|"]);
+    // As an earlier build left the row.
+    let conn = Connection::open(mac.store()).unwrap();
+    conn.execute(
+        "UPDATE watcher SET event_id = '4242', volumes = '0123456789abcdef'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    assert!(mac.watch().started().stop().success());
+    assert_eq!(mac.rows(row), ["|"]);
+}
+
+/// A watcher that does not look at what to watch while a test runs: what it owes is not made.
+fn not_looking(mac: &Mac) -> Watcher {
+    let mut cmd = mac.watch_cmd();
+    cmd.args(["--alive-every", "3600"]);
+    Watcher::start(cmd).started()
+}
+
+#[test]
+fn a_reading_of_every_place_owed_when_the_watcher_stops_is_made_after_it_starts_again() {
+    // A shell profile that is a link to a launch agent spelled in another case: a write to the
+    // launch agent is read as the launch agents' alone, and every place is owed. The watcher
+    // stops before its next look, as when the app quits or the Mac restarts.
+    use std::os::unix::fs::symlink;
+    let mac = Mac::new("owed-restart");
+    let file = mac.put("Library/LaunchAgents/helper.plist", "<plist/>\n");
+    let link = mac.home().join("LIBRARY/LaunchAgents/helper.plist");
+    symlink(link, mac.home().join(".zshrc")).unwrap();
+    let mut w = not_looking(&mac);
+    let profiles = read_by(&mac, PROFILES);
+    std::fs::write(&file, "changed\n").unwrap();
+    w.next("read");
+    assert_eq!(
+        read_by(&mac, PROFILES),
+        profiles,
+        "a reading of some places"
+    );
+    assert!(w.stop().success());
+    let mut w = mac.watch();
+    w.next("watching");
+    w.next("read");
+    assert_ne!(read_by(&mac, PROFILES), profiles);
+    assert!(w.stop().success());
+}
+
+#[test]
+fn a_change_only_another_readings_link_reaches_is_found_after_the_watcher_starts_again() {
+    // A hook sample of a checkout, which git never runs, that `~/.zshrc` links to by a name in
+    // another case: the reading of the hooks finds nothing to record, and only a reading of
+    // every place finds the profile changed. The watcher stops before it makes that reading.
+    use std::os::unix::fs::symlink;
+    let mac = Mac::new("owed-sample");
+    mac.put("dev/app/.git/HEAD", "ref: refs/heads/main\n");
+    let sample = mac.put(
+        "dev/app/.git/hooks/pre-commit.sample",
+        "#!/bin/sh\nexit 0\n",
+    );
+    let link = mac.home().join("dev/app/.git/HOOKS/pre-commit.sample");
+    symlink(link, mac.home().join(".zshrc")).unwrap();
+    mac.run();
+    let mut w = not_looking(&mac);
+    let profiles = read_by(&mac, PROFILES);
+    std::fs::write(&sample, "#!/bin/sh\necho two\n").unwrap();
+    w.next("read");
+    assert_eq!(
+        read_by(&mac, PROFILES),
+        profiles,
+        "a reading of some places"
+    );
+    assert!(w.stop().success());
+    let mut w = mac.watch();
+    w.next("watching");
+    w.next("read");
+    assert!(w.stop().success());
+    assert!(!mac.journaled(".zshrc", "changed").is_empty());
 }

@@ -3,18 +3,33 @@
 //! the menu-bar app, and installs nothing.
 //!
 //! The mechanism is FSEvents (`fsevents.rs`). An event is not trusted: it only says that
-//! something under the watched paths changed. After a quiet period the watcher runs the
-//! watched-places reading of `immune run` and its rules, through the same code (`watch_places`),
-//! as a small run of that reader alone, under the same run lock, in one transaction. The
-//! lifecycle makes the events and the rules the findings, as in a full run; the reading opens
-//! nothing that is not a regular file and keeps no content. A small run writes no
-//! `run_started` or `run_finished`: those mark full runs, which `immune status` reports on.
+//! something under the watched paths changed, and where. After a quiet period the watcher runs
+//! the watched-places reading of `immune run` and its rules, through the same code
+//! (`watch_places`), as a small run of that reader alone, under the same run lock, in one
+//! transaction. The lifecycle makes the events and the rules the findings, as in a full run;
+//! the reading opens nothing that is not a regular file and keeps no content. A small run
+//! writes no `run_started` or `run_finished`: those mark full runs, which `immune status`
+//! reports on.
 //!
-//! The last event id handled is kept with the identity of the FSEvents history of each volume
-//! watched, in the `watcher` table, and written in the transaction of the reading that handled
-//! it: an id is kept only once what it stands for is in the store. Every change with an id at
-//! or before it happened before that reading began. At start FSEvents replays what happened
-//! since; when the id cannot be used, the watcher says why and reads at once.
+//! What is read again. Each watched place belongs to one reading of `immune run`, a scope and a
+//! kind, which writes its own coverage. A reading after events reads again only the readings
+//! whose places the events' paths are in (`touched`), each whole, so no row of coverage says
+//! a place was read when it was not, and every other reading keeps its own time. Every place
+//! is read when that cannot be told: the watcher's first reading, a reading after one that
+//! failed, a look at what to watch that found something new, a new way to a place or recovered,
+//! events FSEvents says it dropped or coalesced, and a path in no watched place. The paths only
+//! decide what is read first: whether a path is in a place is told by its spelling, and a file
+//! reached by a link spelled in another case or Unicode form, or by a hard link, is not told by
+//! it. So after any reading of some places every place is read at the next look at what to
+//! watch, a minute later at most, unless one was read since: the place a change names is read
+//! within seconds, every other within about a minute.
+//!
+//! Every start reads every place at once, whatever the store holds: what changed while no
+//! watcher ran, and whatever one that stopped still owed, is read then, and nothing a watcher
+//! knew only in memory is lost when it stops. A reading of every place on a Mac where nothing
+//! changed records no change and opens nothing. The start closes the gap by its order: the
+//! stream is running before that reading begins (`watch`), so a change made meanwhile is
+//! either seen by the reading or brings an event and a reading after it. No event id is kept.
 //!
 //! Threads. The main thread owns the store, the stream and stdout. FSEvents calls back on its
 //! own queue and only sends a batch into a channel; a signal handler only writes one byte into
@@ -70,7 +85,7 @@ use std::time::{Duration, Instant};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 
-use crate::fsevents::{self, EventId};
+use crate::fsevents::{self, Where};
 use crate::{autorun, checkouts, status, store, watched};
 
 /// How long the watcher waits after the last event before it reads: a burst of writes, such
@@ -110,11 +125,17 @@ pub const CANNOT_SEE: [&str; 3] = [
 const TABLE: &str = "
 CREATE TABLE IF NOT EXISTS watcher (
     id        INTEGER PRIMARY KEY CHECK (id = 1),
-    last_read INTEGER NOT NULL,  -- when a watcher last read the watched places, UTC seconds
-    event_id  TEXT NOT NULL,     -- the last FSEvents event id handled, in decimal
-    volumes   TEXT NOT NULL      -- the FSEvents history identity of each volume watched
+    last_read INTEGER NOT NULL,  -- when a watcher last read every watched place, UTC seconds
+    event_id  TEXT NOT NULL,     -- empty; kept for earlier builds, see below
+    volumes   TEXT NOT NULL      -- empty; kept for earlier builds, see below
 );
 ";
+// `event_id` and `volumes` were where a watcher kept the FSEvents event id it had read up to,
+// and the history of each volume it belonged to, for the next one to replay from. Nothing
+// replays now: every start reads every place. The columns stay so that a store this build
+// writes still opens in an earlier one, and every reading of every place empties them. An
+// earlier build finds no id in an empty `event_id` and so, at its start, reads every place
+// and replays nothing; it would otherwise replay from an id this build left behind.
 
 /// What failed in a watcher and has not succeeded since: one row per kind, made by its first
 /// failure, under the run lock, as `watcher` is. A row older than the watcher that holds the
@@ -253,24 +274,26 @@ pub fn watch(args: &WatchArgs) -> ExitCode {
         }
         Err(e) => return unreadable(&e),
     };
-    let stored = match stored(&args.store) {
-        Ok(stored) => stored,
-        Err(e) => return unreadable(&e),
-    };
+    if let Err(e) = readable(&args.store) {
+        return unreadable(&e);
+    }
     let mut w = Watcher {
         args,
         folder,
         tx,
         stream: None,
         wanted: Vec::new(),
+        targets: Vec::new(),
+        read_everything: false,
+        owed: false,
         paths: Vec::new(),
-        volumes: String::new(),
-        handled: None,
         parent,
         signers: crate::processes::Signers::default(),
         standing: BTreeSet::new(),
     };
-    let (problems, since) = match w.subscribe(stored) {
+    // The stream is started here, and the reading of every place only in `run`, after it: a
+    // change made in between is seen by that reading or brings an event.
+    let problems = match w.subscribe() {
         Ok(found) => found,
         Err(e) => return failed(&e),
     };
@@ -284,7 +307,7 @@ pub fn watch(args: &WatchArgs) -> ExitCode {
     if !emit(&watching) || problems.iter().any(|p| !emit(p)) {
         return ExitCode::SUCCESS;
     }
-    w.run(rx, since);
+    w.run(rx);
     ExitCode::SUCCESS
 }
 
@@ -341,32 +364,13 @@ fn problem(code: &str, detail: &str) -> Value {
     )
 }
 
-/// What the store kept of the watcher that ran before: the last id it handled and the
-/// identities of the volumes that id belongs to.
-#[derive(Debug, PartialEq)]
-struct Stored {
-    event_id: EventId,
-    volumes: String,
-}
-
-/// What the last watcher kept, read without writing: nothing while there is no store or no
-/// watcher has read yet. A store this build cannot read stops the watcher here.
-fn stored(path: &Path) -> Result<Option<Stored>, Box<dyn Error>> {
-    if !path.exists() {
-        return Ok(None);
+/// Whether the store, where there is one, is one this build can read, read without writing.
+/// A store it cannot read stops the watcher here, before it watches anything.
+fn readable(path: &Path) -> Result<(), Box<dyn Error>> {
+    if path.exists() {
+        store::open_read_only(path)?;
     }
-    let conn = store::open_read_only(path)?;
-    if !has_table(&conn, "watcher")? {
-        return Ok(None);
-    }
-    let row: Option<(String, String)> = conn
-        .query_row(
-            "SELECT event_id, volumes FROM watcher WHERE id = 1",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()?;
-    Ok(row.and_then(|(id, volumes)| id.parse().ok().map(|event_id| Stored { event_id, volumes })))
+    Ok(())
 }
 
 fn has_table(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
@@ -377,24 +381,6 @@ fn has_table(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
     )
 }
 
-/// Why a stored id cannot be used, or `None` when FSEvents can replay from it.
-fn unusable(stored: &Stored, volumes: &str, current: EventId) -> Option<&'static str> {
-    if volumes.is_empty() || volumes.split(' ').any(|v| v == NO_HISTORY) {
-        Some("a watched volume keeps no FSEvents history")
-    } else if stored.volumes != volumes {
-        Some(
-            "the FSEvents history of the watched volumes is not the one the stored id belongs to: it was discarded or purged, or the volumes watched changed",
-        )
-    } else if stored.event_id > current {
-        Some("the stored event id is ahead of this Mac's")
-    } else {
-        None
-    }
-}
-
-/// How a volume without FSEvents history is named among the identities.
-const NO_HISTORY: &str = "none";
-
 struct Watcher<'a> {
     args: &'a WatchArgs,
     folder: PathBuf,
@@ -402,12 +388,17 @@ struct Watcher<'a> {
     stream: Option<fsevents::Stream>,
     /// The paths asked for, FSEvents refusing some or not.
     wanted: Vec<PathBuf>,
+    /// Each path asked for with the reading its place belongs to.
+    targets: Vec<(PathBuf, Reading)>,
+    /// Whether this watcher has read every watched place: until it has, every reading does.
+    read_everything: bool,
+    /// Whether a reading of every place is owed: a reading of some places was made since the
+    /// last one of every place, or what a change in a watched path reads changed. The next look
+    /// at what to watch makes it. Only memory holds it: a watcher started again reads every
+    /// place at its start, so what this one owed is read then.
+    owed: bool,
     /// The paths the stream watches.
     paths: Vec<PathBuf>,
-    /// The identities of the FSEvents histories of the volumes the paths are on.
-    volumes: String,
-    /// The last event id handled, as the store keeps it.
-    handled: Option<EventId>,
     /// The process that started the watcher. When it is gone the watcher is an orphan, its
     /// parent now another process, and it stops: a new app must be able to start its own.
     parent: libc::pid_t,
@@ -418,55 +409,33 @@ struct Watcher<'a> {
     standing: BTreeSet<&'static str>,
 }
 
-/// A reading that is due: when, since which event it was first due, and the latest id it
-/// will have handled.
+/// A reading that is due: when, since which event it was first due, and where the changes it
+/// reads are.
 struct Due {
     first: Instant,
     at: Instant,
-    latest: EventId,
+    changed: Where,
 }
 
 impl Watcher<'_> {
-    /// Subscribes to the watched places. Returns the problem lines, and the id a reading at
-    /// start must record, or `None` when FSEvents replays from the stored id instead.
-    fn subscribe(
-        &mut self,
-        stored: Option<Stored>,
-    ) -> Result<(Vec<Value>, Option<EventId>), String> {
-        let (wanted, mut problems) = self.derive().map_err(|e| e.to_string())?;
-        let volumes = identities(&wanted);
-        let current = fsevents::current_event_id();
-        let since = match &stored {
-            Some(s) => match unusable(s, &volumes, current) {
-                Some(why) => {
-                    problems.push(problem("history_unusable", why));
-                    None
-                }
-                None => Some(s.event_id),
-            },
-            None => None,
-        };
-        problems.extend(self.start(wanted, volumes, since)?);
-        self.handled = since;
-        // Without a usable id, what changed while no watcher ran is read now; `current` was
-        // taken before the stream started, so nothing after it is missed.
-        Ok((problems, since.is_none().then_some(current)))
+    /// Subscribes to the watched places: the stream is running when it returns. Returns the
+    /// problem lines.
+    fn subscribe(&mut self) -> Result<Vec<Value>, String> {
+        let (wanted, targets, mut problems) = self.derive().map_err(|e| e.to_string())?;
+        self.targets = targets;
+        problems.extend(self.start(wanted)?);
+        Ok(problems)
     }
 
     /// Starts a stream on `wanted` in place of the one running, if any. Returns the problem
     /// lines of the paths FSEvents refused.
-    fn start(
-        &mut self,
-        wanted: Vec<PathBuf>,
-        volumes: String,
-        since: Option<EventId>,
-    ) -> Result<Vec<Value>, String> {
+    fn start(&mut self, wanted: Vec<PathBuf>) -> Result<Vec<Value>, String> {
         let tx = self.tx.clone();
         let deliver = Box::new(move |b: fsevents::Batch| {
             let _ = tx.send(Msg::Events(b));
         });
         let refs: Vec<&Path> = wanted.iter().map(PathBuf::as_path).collect();
-        let (stream, refused) = fsevents::Stream::start(&refs, since, LATENCY, deliver)?;
+        let (stream, refused) = fsevents::Stream::start(&refs, LATENCY, deliver)?;
         let problems = refused
             .iter()
             .map(|(i, why)| place_problem(&wanted[*i], why))
@@ -481,33 +450,35 @@ impl Watcher<'_> {
             .filter(|(i, _)| !refused.contains(i))
             .map(|(_, p)| p)
             .collect();
-        self.volumes = volumes;
         Ok(problems)
     }
 
     /// The paths to watch now, from the table of places and the checkouts the store holds,
-    /// and a problem line for each place that cannot be watched.
-    fn derive(&self) -> Result<(Vec<PathBuf>, Vec<Value>), Box<dyn Error>> {
-        let (_, found) = holds(self.args)?;
+    /// each path with the reading its place belongs to, and a problem line for each place that
+    /// cannot be watched.
+    fn derive(&self) -> Result<Derived, Box<dyn Error>> {
+        let (machine, found) = holds(self.args)?;
         let homes = watched::homes(&self.args.home);
         let homes = [homes[0].as_path(), homes[1].as_path()];
         let mut wanted = BTreeSet::new();
+        let mut targets = Vec::new();
         let mut problems = Vec::new();
-        for (place, folder) in places(&self.args.home, &self.args.system_root, &found) {
-            match subscribed(&place, folder, &homes) {
-                Ok(paths) => wanted.extend(paths),
-                Err(why) => problems.push(place_problem(&place, &why)),
+        for p in places(&self.args.home, &self.args.system_root, &machine, &found) {
+            match subscribed(&p.path, p.folder, &homes) {
+                Ok(paths) => {
+                    targets.extend(paths.iter().map(|path| (path.clone(), p.reading.clone())));
+                    wanted.extend(paths);
+                }
+                Err(why) => problems.push(place_problem(&p.path, &why)),
             }
         }
-        Ok((wanted.into_iter().collect(), problems))
+        Ok((wanted.into_iter().collect(), targets, problems))
     }
 
-    fn run(&mut self, rx: mpsc::Receiver<Msg>, at_start: Option<EventId>) {
-        let mut due = at_start.map(|latest| Due {
-            first: Instant::now(),
-            at: Instant::now(),
-            latest,
-        });
+    /// Runs until stopped, starting with a reading of every place, due at once. The stream is
+    /// running already (`subscribe`).
+    fn run(&mut self, rx: mpsc::Receiver<Msg>) {
+        let mut due = Some(every_place(Instant::now()));
         let mut alive = Instant::now() + self.args.alive_every;
         // The first sample is taken at start, after the reading due then, and the first
         // reading of program starts after it.
@@ -525,12 +496,12 @@ impl Watcher<'_> {
                         None => Due {
                             first: now,
                             at: now + QUIET,
-                            latest: b.latest,
+                            changed: b.at,
                         },
                         Some(d) => Due {
                             at: (now + QUIET).min(d.first + MOST_WAIT),
-                            latest: d.latest.max(b.latest),
                             first: d.first,
+                            changed: d.changed.and(b.at),
                         },
                     });
                 }
@@ -541,15 +512,16 @@ impl Watcher<'_> {
             }
             let now = Instant::now();
             if let Some(d) = due.take_if(|d| d.at <= now) {
-                match self.read(d.latest) {
+                match self.read(&d.changed) {
                     Ok(Some(counts)) => {
-                        self.handled = Some(d.latest);
                         if !emit(&line("read", counts)) {
                             return;
                         }
                     }
                     // Stopped while it waited for a full run to finish.
                     Ok(None) => return,
+                    // Tried again with every place: what the failed reading would have read is
+                    // not all that may have changed since.
                     Err(e) => {
                         if !emit(&problem("read_failed", &e.to_string())) {
                             return;
@@ -557,7 +529,7 @@ impl Watcher<'_> {
                         due = Some(Due {
                             first: now,
                             at: now + RETRY,
-                            latest: d.latest,
+                            changed: Where::Anywhere,
                         });
                     }
                 }
@@ -637,13 +609,7 @@ impl Watcher<'_> {
                         // What changed in a place newly watched, or in one not watched while
                         // looks failed, is read now.
                         if found.is_some() || recovered {
-                            let latest = due.as_ref().map_or(0, |d| d.latest);
-                            let latest = latest.max(self.handled.unwrap_or(0));
-                            due = Some(Due {
-                                first: now,
-                                at: now,
-                                latest,
-                            });
+                            due = Some(every_place(now));
                         }
                     }
                     Err(e) => {
@@ -652,6 +618,13 @@ impl Watcher<'_> {
                             return;
                         }
                     }
+                }
+                // What a change names decides only what is read first: after a reading of
+                // some places, every place is read at this look, so that a place the change
+                // was not mapped to is read within a minute, and a burst of changes costs one
+                // reading of every place a minute.
+                if self.owed {
+                    due = Some(every_place(now));
                 }
             }
         }
@@ -663,26 +636,39 @@ impl Watcher<'_> {
     }
 
     /// Looks again at what should be watched, after a full run may have changed the
-    /// checkouts. Returns `None` when nothing changed, else the new problem lines.
+    /// checkouts. Returns `None` when the paths did not change, else the new problem lines. What
+    /// a change in each path reads is taken anew every time, and when that changed, a reading of
+    /// every place is owed (`owed`).
     fn again(&mut self) -> Result<Option<Vec<Value>>, String> {
-        let (wanted, mut problems) = self.derive().map_err(|e| e.to_string())?;
+        let (wanted, targets, mut problems) = self.derive().map_err(|e| e.to_string())?;
+        // Where a watched path now leads to the place of another reading, as when a link on
+        // the way to it, outside every watched place, was turned, nothing watched need have
+        // been written: every place is owed, and read at this look.
+        self.owed |= targets != self.targets;
+        self.targets = targets;
         if wanted == self.wanted {
             return Ok(None);
         }
-        let volumes = identities(&wanted);
-        problems.extend(self.start(wanted, volumes, None)?);
+        problems.extend(self.start(wanted)?);
         Ok(Some(problems))
     }
 
-    /// One reading of the watched places, as a small run of that reader alone, recording
-    /// `latest` as handled. `None` when the watcher was stopped, or orphaned, while it waited for the run
-    /// lock. The counts are of this reading, the baseline counting as nothing new.
-    fn read(&mut self, latest: EventId) -> Result<Option<Value>, Box<dyn Error>> {
+    /// One reading of the watched places, as a small run of that reader alone: of the readings
+    /// the changes are in, or of every place where that cannot be told. `None` when the watcher
+    /// was stopped, or orphaned, while it waited for the run lock. The counts are of this
+    /// reading, the baseline counting as nothing new.
+    fn read(&mut self, changed: &Where) -> Result<Option<Value>, Box<dyn Error>> {
+        let only = to_read(&self.targets, changed, self.read_everything);
         let Some(_lock) = self.lock()? else {
             return Ok(None);
         };
-        let read = read_held(self.args, &self.folder, &self.volumes, latest);
+        let read = read_held(self.args, &self.folder, only.as_ref());
         self.mark_held(READ, read.as_ref().err().map(|e| e.to_string()));
+        // The first reading is of every place (`to_read`), and one that failed is tried again as
+        // one of every place (`run`): after any reading, every place was read or is read next,
+        // and after one of some places, every place is owed.
+        self.read_everything = true;
+        self.owed = only.is_some();
         read.map(Some)
     }
 
@@ -787,13 +773,12 @@ fn mark(store: &Path, what: &str, failed: Option<&str>) -> Result<(), Box<dyn Er
 }
 
 /// One reading of the watched places under the run lock the caller holds, as a small run of
-/// that reader alone, recording `latest` as handled with the identities of `volumes`. The
-/// counts are of this reading, the baseline counting as nothing new.
+/// that reader alone: of `only` these readings, or of every place, which records when every
+/// place was last read. The counts are of this reading, the baseline counting as nothing new.
 fn read_held(
     args: &WatchArgs,
     folder: &Path,
-    volumes: &str,
-    latest: EventId,
+    only: Option<&BTreeSet<Reading>>,
 ) -> Result<Value, Box<dyn Error>> {
     let (machine, found) = holds(args)?;
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?;
@@ -812,16 +797,20 @@ fn read_held(
         readers: 0,
     };
     // The reading and the rules of `immune run`: a change seen here is a finding at once.
-    let (rows, opened) = crate::watch_places(&mut run, &reader_args(args), &found)?;
+    let (rows, opened) = crate::watch_places(&mut run, &reader_args(args), &found, only)?;
     // What needs a look after it, counted by the code `immune status --json` counts it with.
     let needs = status::needs(&tx, at)?.items.len();
     tx.execute_batch(TABLE)?;
-    tx.execute(
-        "INSERT INTO watcher (id, last_read, event_id, volumes) VALUES (1, ?1, ?2, ?3)
-         ON CONFLICT (id) DO UPDATE SET last_read = excluded.last_read,
-             event_id = excluded.event_id, volumes = excluded.volumes",
-        params![at, latest.to_string(), volumes],
-    )?;
+    // The row says when every place was last read: only a reading of every place moves it. It
+    // empties what an earlier build kept to replay from (`TABLE`).
+    if only.is_none() {
+        tx.execute(
+            "INSERT INTO watcher (id, last_read, event_id, volumes) VALUES (1, ?1, '', '')
+             ON CONFLICT (id) DO UPDATE SET last_read = excluded.last_read,
+                 event_id = excluded.event_id, volumes = excluded.volumes",
+            [at],
+        )?;
+    }
     tx.commit()?;
     let count = |change: &str| rows.iter().filter(|r| r[0] == change).count();
     Ok(json!({
@@ -925,32 +914,99 @@ fn held_checkouts(
         .collect())
 }
 
-/// Every watched place on this machine as a path, and whether it is a folder whose entries
-/// are watched: the table of places, the hooks folder of each checkout, and the files of
-/// each checkout through which something runs by itself (`autorun::files`), and the places of
-/// the home folder through which a tool's own settings do (`autorun::home_places`).
-fn places(home: &Path, system: &Path, found: &[checkouts::Checkout]) -> Vec<(PathBuf, bool)> {
+/// A reading of the watched places as `immune run` writes its coverage: its scope and kind.
+pub type Reading = (String, String);
+
+/// The paths to watch, each path with the reading its place belongs to, and the problem lines.
+type Derived = (Vec<PathBuf>, Vec<(PathBuf, Reading)>, Vec<Value>);
+
+/// One watched place: its path, whether it is a folder whose entries are watched, and the
+/// reading it belongs to.
+struct Place {
+    path: PathBuf,
+    folder: bool,
+    reading: Reading,
+}
+
+/// Every watched place on this machine: the table of places, the hooks folder of each
+/// checkout, and the files of each checkout through which something runs by itself
+/// (`autorun::files`), and the places of the home folder through which a tool's own settings
+/// do (`autorun::home_places`).
+fn places(home: &Path, system: &Path, machine: &str, found: &[checkouts::Checkout]) -> Vec<Place> {
     let mut out = Vec::new();
+    let mut add = |path: PathBuf, folder: bool, scope: &str, kind: &str| {
+        out.push(Place {
+            path,
+            folder,
+            reading: (scope.to_string(), kind.to_string()),
+        })
+    };
     for p in &watched::PLACES {
         match p.base {
-            watched::Base::Home => out.push((home.join(p.path), p.folder)),
-            watched::Base::System => out.push((system.join(p.path), p.folder)),
+            watched::Base::Home => add(home.join(p.path), p.folder, machine, p.kind),
+            watched::Base::System => add(system.join(p.path), p.folder, machine, p.kind),
             watched::Base::Checkout => {
                 for c in found {
-                    out.push((c.path.join(p.path), p.folder));
+                    let scope = format!("checkout:{machine}/{}", c.rel);
+                    add(c.path.join(p.path), p.folder, &scope, p.kind);
                 }
             }
         }
     }
     for c in found {
-        for file in autorun::files() {
-            out.push((c.path.join(file), false));
+        for (file, kind) in autorun::files() {
+            add(c.path.join(file), false, machine, &kind);
         }
     }
-    for (place, folder) in autorun::home_places() {
-        out.push((home.join(place), folder));
+    for (place, folder, kind) in autorun::home_places() {
+        add(home.join(place), folder, machine, &kind);
     }
     out
+}
+
+/// What a reading of changes `changed` reads: the readings they are in, or every place
+/// (`None`) until this watcher has read every place once, when FSEvents cannot say where they
+/// are, and when one of their paths is in no reading's place.
+fn to_read(
+    targets: &[(PathBuf, Reading)],
+    changed: &Where,
+    read_everything: bool,
+) -> Option<BTreeSet<Reading>> {
+    match changed {
+        // No path is no place named: every place is read, never none.
+        Where::Paths(paths) if read_everything && !paths.is_empty() => touched(targets, paths),
+        _ => None,
+    }
+}
+
+/// A reading of every place, due now.
+fn every_place(now: Instant) -> Due {
+    Due {
+        first: now,
+        at: now,
+        changed: Where::Anywhere,
+    }
+}
+
+/// The readings the changes at `paths` are in: each reading one of whose watched paths is the
+/// path, holds it, or lies under it, as a folder made or moved on the way to a place.
+/// `None` when a path is in no reading's place: what changed cannot be told, and every place
+/// is read.
+fn touched(targets: &[(PathBuf, Reading)], paths: &BTreeSet<PathBuf>) -> Option<BTreeSet<Reading>> {
+    let mut out = BTreeSet::new();
+    for path in paths {
+        let mut placed = false;
+        for (watched, reading) in targets {
+            if path.starts_with(watched) || watched.starts_with(path) {
+                out.insert(reading.clone());
+                placed = true;
+            }
+        }
+        if !placed {
+            return None;
+        }
+    }
+    Some(out)
 }
 
 /// The paths FSEvents is given for one place: the place by the real path of its folder, and
@@ -1024,24 +1080,6 @@ fn place_problem(place: &Path, why: &str) -> Value {
     problem("place_not_watched", &format!("{}: {why}", place.display()))
 }
 
-/// The identities of the FSEvents histories of the volumes the paths are on, sorted, with
-/// `none` for a volume that keeps no history.
-fn identities(paths: &[PathBuf]) -> String {
-    use std::os::unix::fs::MetadataExt;
-    let mut devices = BTreeSet::new();
-    for path in paths {
-        // The nearest folder that exists is on the volume the path will be on.
-        if let Some(m) = path.ancestors().find_map(|p| std::fs::metadata(p).ok()) {
-            devices.insert(m.dev() as fsevents::Dev);
-        }
-    }
-    let ids: BTreeSet<String> = devices
-        .into_iter()
-        .map(|d| fsevents::volume_identity(d).unwrap_or_else(|| NO_HISTORY.to_string()))
-        .collect();
-    ids.into_iter().collect::<Vec<_>>().join(" ")
-}
-
 /// SIGTERM and SIGINT stop the watcher: the handler writes one byte to a pipe, which is all it
 /// may safely do, and a thread waiting on the pipe sets `STOP` and tells the main loop.
 fn on_signals(tx: Sender<Msg>) -> std::io::Result<()> {
@@ -1094,7 +1132,7 @@ extern "C" fn on_signal(_: libc::c_int) {
 
 /// What `immune status --json` says about the watcher: `null` unless one holds its lock on this
 /// store now, so a watcher that died never shows as watching. `since` is from the lock file;
-/// `last_read` is the latest reading of a watcher, if this one made it; `failed` is what has
+/// `last_read` is the latest reading of every place by a watcher, if this one made it; `failed` is what has
 /// failed in this one and not succeeded since, with what the failure said.
 pub fn status(store: &Path) -> Value {
     let folder = crate::home(store);
@@ -1177,7 +1215,7 @@ pub fn failures(conn: &Connection, folder: &Path) -> rusqlite::Result<Vec<Failur
         .collect()
 }
 
-/// When a watcher last read the watched places of this store, whichever watcher it was;
+/// When a watcher last read every watched place of this store, whichever watcher it was;
 /// `None` when none ever did.
 pub fn last_read(conn: &Connection) -> rusqlite::Result<Option<i64>> {
     if !has_table(conn, "watcher")? {
@@ -1192,13 +1230,6 @@ pub fn last_read(conn: &Connection) -> rusqlite::Result<Option<i64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn stored(event_id: EventId, volumes: &str) -> Stored {
-        Stored {
-            event_id,
-            volumes: volumes.to_string(),
-        }
-    }
 
     #[test]
     fn a_watchers_reading_after_ten_thousand_readings_is_as_quick_as_the_first() {
@@ -1269,7 +1300,7 @@ mod tests {
             (0..5)
                 .map(|_| {
                     let t = Instant::now();
-                    read_held(&w, &folder, "", 1).unwrap();
+                    read_held(&w, &folder, None).unwrap();
                     t.elapsed()
                 })
                 .min()
@@ -1305,15 +1336,80 @@ mod tests {
         );
     }
 
+    fn reading(scope: &str, kind: &str) -> Reading {
+        (scope.to_string(), kind.to_string())
+    }
+
+    /// Places of three readings: a watched folder, a profile with a link elsewhere, and a
+    /// checkout's hooks.
+    fn targets() -> Vec<(PathBuf, Reading)> {
+        let (mac, hooks) = ("machine:mac", "checkout:machine:mac/dev/app");
+        vec![
+            (
+                "/h/Library/LaunchAgents".into(),
+                reading(mac, watched::AUTOSTART_KIND),
+            ),
+            ("/h/.zshrc".into(), reading(mac, watched::PROFILE_KIND)),
+            ("/h/.zprofile".into(), reading(mac, watched::PROFILE_KIND)),
+            (
+                "/dotfiles/zprofile".into(),
+                reading(mac, watched::PROFILE_KIND),
+            ),
+            (
+                "/h/dev/app/.git/hooks".into(),
+                reading(hooks, watched::HOOK_KIND),
+            ),
+        ]
+    }
+
+    fn at(paths: &[&str]) -> Where {
+        Where::Paths(paths.iter().map(PathBuf::from).collect())
+    }
+
     #[test]
-    fn a_stored_id_is_used_only_on_the_same_histories_and_never_ahead_of_this_mac() {
-        // A replay from an id that belongs to another history would silently miss changes.
-        assert_eq!(unusable(&stored(10, "a b"), "a b", 10), None);
-        assert!(unusable(&stored(10, "a b"), "a c", 20).is_some());
-        assert!(unusable(&stored(10, "a"), "a b", 20).is_some());
-        assert!(unusable(&stored(11, "a"), "a", 10).is_some());
-        assert!(unusable(&stored(10, "a none"), "a none", 20).is_some());
-        assert!(unusable(&stored(10, ""), "", 20).is_some());
+    fn a_change_reads_again_only_the_readings_its_path_is_in() {
+        let t = targets();
+        let read = |paths: &[&str]| to_read(&t, &at(paths), true);
+        let autostart = reading("machine:mac", watched::AUTOSTART_KIND);
+        let profiles = reading("machine:mac", watched::PROFILE_KIND);
+        let hooks = reading("checkout:machine:mac/dev/app", watched::HOOK_KIND);
+        // An entry of a watched folder, a watched file, a link's target, a hook.
+        assert_eq!(
+            read(&["/h/Library/LaunchAgents/org.example.plist"]),
+            Some([autostart.clone()].into())
+        );
+        assert_eq!(read(&["/h/.zshrc"]), Some([profiles.clone()].into()));
+        assert_eq!(
+            read(&["/dotfiles/zprofile"]),
+            Some([profiles.clone()].into())
+        );
+        assert_eq!(
+            read(&["/h/dev/app/.git/hooks/pre-commit", "/h/.zshrc"]),
+            Some([profiles.clone(), hooks.clone()].into())
+        );
+        // A folder made or moved on the way to places is every reading under it.
+        assert_eq!(read(&["/h/Library"]), Some([autostart.clone()].into()));
+        assert_eq!(read(&["/h/dev"]), Some([hooks].into()));
+    }
+
+    #[test]
+    fn every_place_is_read_where_the_change_cannot_be_placed_and_until_every_place_was_read_once() {
+        let t = targets();
+        // A path in no reading's place, alone or among others: a name only like one, as an
+        // editor's swap file, is not the place.
+        for paths in [
+            &["/elsewhere/file"][..],
+            &["/h/.zshrc.swp"],
+            &["/h/.zshrc", "/h/Documents/x"],
+        ] {
+            assert_eq!(to_read(&t, &at(paths), true), None, "{paths:?}");
+        }
+        // Events FSEvents dropped or coalesced.
+        assert_eq!(to_read(&t, &Where::Anywhere, true), None);
+        // No path at all: never a reading of nothing.
+        assert_eq!(to_read(&t, &Where::default(), true), None);
+        // The watcher's first reading, and every one until a reading of every place succeeds.
+        assert_eq!(to_read(&t, &at(&["/h/.zshrc"]), false), None);
     }
 
     #[test]

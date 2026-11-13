@@ -2831,8 +2831,10 @@ mod tests {
             // A row not watched live says why; a path with a `*` cannot be watched live.
             for path in p.paths {
                 let live = match p.scope {
-                    autorun::Scope::Home => autorun::home_places().iter().any(|(h, _)| h == path),
-                    _ => autorun::files().contains(path),
+                    autorun::Scope::Home => {
+                        autorun::home_places().iter().any(|(h, _, _)| h == path)
+                    }
+                    _ => autorun::files().iter().any(|(f, _)| f == path),
                 };
                 assert_eq!(live, p.hourly.is_none(), "{path}");
                 assert!(!live || !path.contains('*'), "{path}");

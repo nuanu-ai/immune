@@ -2886,7 +2886,7 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     if any_checkouts {
         read_lockfiles(&mut run, args, &found)?;
     }
-    let (watched, mut opened) = watch_places(&mut run, args, &found)?;
+    let (watched, mut opened) = watch_places(&mut run, args, &found, None)?;
     read_other_autoruns(&mut run, &args.home, &found)?;
     let mut changed = read_integrity(&mut run, args)?;
     changed.extend(read_indicators(&mut run, args, &found)?);
@@ -2922,6 +2922,9 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     // The time the run finished, so that its start and its end are both in the journal.
     store::journal_note(&tx, now_secs(), &run_id, "run_finished", "")?;
     tx.commit()?;
+    // The readings no page or answer asks for one by one any more are folded, under the run
+    // lock still held; what the run did is committed, whatever comes of that.
+    store::tidy(&conn);
     Ok((line, watched))
 }
 
@@ -4059,14 +4062,16 @@ fn kept(
 
 /// Reads the watched places, moves what they hold through the lifecycle and raises what the
 /// rules find, all in the run's transaction. `immune run` calls it among the other readers; a
-/// small run of the watched places alone calls it with nothing else. Returns the rows printed
-/// under the report line and how many findings it opened.
+/// small run of the watched places alone calls it with nothing else, and with `only` the
+/// readings, by scope and kind, that a change touched. Returns the rows printed under the
+/// report line and how many findings it opened.
 fn watch_places(
     run: &mut Run,
     args: &Args,
     checkouts: &[checkouts::Checkout],
+    only: Option<&BTreeSet<watch::Reading>>,
 ) -> Result<(Rows, usize), Box<dyn Error>> {
-    let (rows, seen) = read_watched(run, args, checkouts)?;
+    let (rows, seen) = read_watched(run, args, checkouts, only)?;
     let mut opened = findings::detect(run.tx, run.run_id, run.at, &seen)?;
     opened += usize::from(findings::first_read(
         run.tx,
@@ -4084,12 +4089,19 @@ fn watch_places(
 /// baseline, or read for the first time. Returns the rows the run prints after its line:
 /// change, kind, path and why, where paths are text from the machine; and what changed, for
 /// the rules. What the line counts is read back from the store by `status::summary`.
+///
+/// With `only`, it makes only those readings, each whole, and writes coverage for them alone:
+/// what it did not read keeps the coverage, and the time, of the reading that last read it.
 fn read_watched(
     run: &mut Run,
     args: &Args,
     checkouts: &[checkouts::Checkout],
+    only: Option<&BTreeSet<watch::Reading>>,
 ) -> Result<(Rows, Vec<findings::Observed>), Box<dyn Error>> {
     let (run_id, machine) = (run.run_id.to_string(), run.machine.to_string());
+    let wanted = |scope: &str, kind: &str| {
+        only.is_none_or(|o| o.contains(&(scope.to_string(), kind.to_string())))
+    };
     let mut rows: Rows = Vec::new();
     let mut seen = Vec::new();
     let mut observe = |change: &'static str, place: &str, file: &str| {
@@ -4106,7 +4118,7 @@ fn read_watched(
     let rels: Vec<String> = checkouts.iter().map(|c| c.rel.clone()).collect();
     let mut placed = Vec::new();
     for (watched_as, kind) in watched::kinds() {
-        if kind == watched::HOOK_KIND {
+        if kind == watched::HOOK_KIND || !wanted(&machine, kind) {
             continue;
         }
         placed.push(Placed {
@@ -4122,6 +4134,9 @@ fn read_watched(
     }
     for c in checkouts {
         let scope = format!("checkout:{machine}/{}", c.rel);
+        if !wanted(&scope, watched::HOOK_KIND) {
+            continue;
+        }
         let (look, elsewhere) = match watched::look_checkout(&c.path, &c.rel, &args.home) {
             watched::Hooks::GitFile => (
                 watched::Look::default(),
@@ -4146,9 +4161,13 @@ fn read_watched(
     // A checkout the store holds that is still there in another form, as a link where its
     // folder was: it is not gone, and its hooks are not looked at through the link.
     for rel in checkouts::moved(run.tx, &machine, &args.home, &rels)? {
+        let scope = format!("checkout:{machine}/{rel}");
+        if !wanted(&scope, watched::HOOK_KIND) {
+            continue;
+        }
         let why = format!("{rel} {}", checkouts::MOVED);
         placed.push(Placed {
-            scope: format!("checkout:{machine}/{rel}"),
+            scope,
             watched_as: watched::HOOK,
             kind: watched::HOOK_KIND.to_string(),
             look: watched::Look::default(),
@@ -4165,6 +4184,9 @@ fn read_watched(
     // it was.
     let visited = Visited::of(run.tx, &machine, checkouts)?;
     for point in autorun::POINTS.iter().filter(|p| p.read_here()) {
+        if !wanted(&machine, &point.kind()) {
+            continue;
+        }
         let (looked, kept, over) = match point.scope {
             autorun::Scope::Home => (
                 autorun::look_all(point, [(args.home.as_path(), "")].into_iter(), &args.home),
@@ -4231,7 +4253,14 @@ fn read_watched(
         }
         lines.push(mine);
     }
-    let raw_file = run.keep_raw(watched::READER, watched::RAW, raw.as_bytes())?;
+    // A reading of some places is kept apart from one of every place, so that neither is saved
+    // again only because the other came between.
+    let raw_name = if only.is_some() {
+        watched::RAW_SOME
+    } else {
+        watched::RAW
+    };
+    let raw_file = run.keep_raw(watched::READER, raw_name, raw.as_bytes())?;
     // A place new in a new worktree, the same as in another checkout of its repository as this
     // reading read it, raises no finding (`worktrees.rs`).
     let siblings = worktrees::Siblings::of(run.tx, &machine, &run_id, checkouts, &args.home)?;
@@ -4635,7 +4664,11 @@ fn read_watched(
         .collect();
     guarded.sort();
     guarded.dedup();
-    not_looked_into_when_met(run, watched::READER, &guarded, &args.home)?;
+    // Which folders macOS asks permission for the reader met is said by a reading of every
+    // place: one of some places did not meet those the others lead into.
+    if only.is_none() {
+        not_looked_into_when_met(run, watched::READER, &guarded, &args.home)?;
+    }
     if placed.iter().any(|p| {
         !p.look.entries.is_empty()
             || !p.look.failed.is_empty()

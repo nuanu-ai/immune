@@ -15,7 +15,10 @@ use std::fmt::Write;
 
 use crate::servers::VISIT;
 
-const RUNS_SHOWN: i64 = 20;
+/// The runs the changes page lists (`store::listed_runs`).
+const RUNS_SHOWN: i64 = crate::store::RUNS_KEPT;
+/// The most kinds of watched places a watcher's reading is named by on the changes page.
+const KINDS_NAMED: usize = 3;
 /// The latest run is shown open only when its changes fit on a screen or a few.
 const EVENTS_SHOWN_OPEN: usize = 500;
 
@@ -1702,27 +1705,9 @@ fn changes(conn: &Connection, out: &mut String) -> Out {
         out,
         "<section id=\"changes\">\n<h2>Changes</h2>\n<p class=\"muted\">The last {RUNS_SHOWN} runs, newest first.</p>\n"
     )?;
-    let mut runs_stmt = conn.prepare(
-        "SELECT run_id, MIN(at),
-                MAX(entry = 'run_finished'),
-                MAX(CASE WHEN entry = 'report' THEN text END)
-         FROM journal WHERE entry NOT IN ('owner_said', 'owner_withdrew')
-         GROUP BY run_id
-         HAVING MAX(entry = 'run_started') OR run_id LIKE ?2 OR run_id LIKE ?3
-         ORDER BY MAX(seq) DESC LIMIT ?1",
-    )?;
-    // A run is what the journal says started as one, and a watcher's reading or a sample is shown
-    // as what it is. An answer, a statement or a verdict is not a run, whatever its id.
-    let runs: Vec<(String, i64, bool, Option<String>)> = runs_stmt
-        .query_map(
-            rusqlite::params![
-                RUNS_SHOWN,
-                format!("{}%", crate::watch::RUN_PREFIX),
-                format!("{}%", crate::processes::RUN_PREFIX)
-            ],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-        )?
-        .collect::<rusqlite::Result<_>>()?;
+    // The runs whose every reading the store keeps (`store::listed_runs`), so that what the page
+    // says of each does not change when older readings are folded.
+    let runs = crate::store::listed_runs(conn)?;
     if runs.is_empty() {
         out.push_str("<p>No runs yet.</p>\n");
     }
@@ -1748,7 +1733,12 @@ fn changes(conn: &Connection, out: &mut String) -> Out {
            AND r.scope NOT IN (SELECT id FROM gone_entity)",
         crate::store::LATEST
     ))?;
-    for (i, (run_id, at, finished, report)) in runs.iter().enumerate() {
+    // What a watcher's reading read: the kinds its readings are of, a file's content aside.
+    let mut kinds_stmt = conn.prepare(
+        "SELECT DISTINCT kind FROM coverage WHERE run_id = ?1 AND kind != ?2 ORDER BY kind",
+    )?;
+    for (i, run) in runs.iter().enumerate() {
+        let (run_id, at, finished, report) = (&run.run_id, &run.at, &run.finished, &run.report);
         // Counted as the report and `immune status` count them: what was read for the first
         // time is the baseline, shown as such and never as added.
         let (since, first, events) = crate::status::run_changes(conn, run_id)?;
@@ -1804,7 +1794,17 @@ fn changes(conn: &Connection, out: &mut String) -> Out {
         let summary = if sampled {
             "sample of running programs and their connections".to_string()
         } else if watcher {
-            format!("watcher's reading of the watched places: {summary}")
+            // A reading of some places names them; one of every place, too many to name, says
+            // how many kinds it read.
+            let kinds: Vec<String> = kinds_stmt
+                .query_map(params![run_id, crate::watched::CONTENT], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            let read = if kinds.len() <= KINDS_NAMED {
+                kinds.join(", ")
+            } else {
+                format!("{} kinds of watched places", kinds.len())
+            };
+            format!("watcher's reading of {read}: {summary}")
         } else {
             summary
         };
@@ -2421,5 +2421,97 @@ mod tests {
         assert_eq!(utc(951_782_400), "2000-02-29 00:00 UTC");
         assert_eq!(utc(1_731_196_800), "2024-11-10 00:00 UTC");
         assert_eq!(utc(4_107_542_340), "2100-02-28 23:59 UTC");
+    }
+
+    #[test]
+    fn the_changes_page_says_the_same_of_every_run_it_lists_after_a_fold() {
+        // The fold keeps every reading of the runs the page lists (`store::listed_runs`), a
+        // watcher's readings before the first full check among them: a run that could not read
+        // a kind still says so after older readings were folded.
+        use crate::store::{
+            Cause, Event, Gap, Reading, journal_event, journal_note, put_coverage, put_entity,
+        };
+        use crate::watched::{AUTOSTART_KIND, PROFILE_KIND, READER};
+        let dir = std::env::temp_dir().join(format!(
+            "immune-view-fold-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut conn = crate::store::open(&dir.join("store.db")).unwrap();
+        let mac = "machine:mac";
+        // `journaled`: a reading the page lists, that recorded a change; `full`: a full run.
+        let write = |conn: &mut rusqlite::Connection, i: i64, journaled: bool, full: bool| {
+            let at = 1_900_000_000 + i * 60;
+            let run_id = if full {
+                format!("{at}-000000000")
+            } else {
+                format!("{}{at}-000000000", crate::watch::RUN_PREFIX)
+            };
+            if full {
+                journal_note(conn, at, &run_id, "run_started", "").unwrap();
+            }
+            let tx = conn.transaction().unwrap();
+            put_entity(&tx, mac).unwrap();
+            let r = |kind| Reading {
+                reader: READER,
+                scope: mac,
+                kind,
+                run_id: &run_id,
+                at,
+                observed_at: at,
+            };
+            // The shell profiles could not be read; the launch agents were.
+            let denied = Gap::of(Cause::Failed);
+            put_coverage(&tx, &r(PROFILE_KIND), "none", Some("denied"), &denied).unwrap();
+            put_coverage(&tx, &r(AUTOSTART_KIND), "full", None, &Gap::default()).unwrap();
+            if journaled {
+                let e = Event {
+                    kind: "changed",
+                    subject: format!("file:{mac}/Library/LaunchAgents/org.example.plist"),
+                    predicate: "has_content".to_string(),
+                    old: Some(format!("a{i}")),
+                    new: Some(format!("b{i}")),
+                };
+                journal_event(&tx, &r(AUTOSTART_KIND), &e, None).unwrap();
+            }
+            if full {
+                journal_note(&tx, at, &run_id, "report", "").unwrap();
+                journal_note(&tx, at, &run_id, "run_finished", "").unwrap();
+            }
+            tx.commit().unwrap();
+        };
+        // Readings that changed nothing, which no page lists; then five that the page lists,
+        // then three full checks.
+        for i in 0..10 {
+            write(&mut conn, i, false, false);
+        }
+        for i in 10..15 {
+            write(&mut conn, i, true, false);
+        }
+        for i in 15..18 {
+            write(&mut conn, i, true, true);
+        }
+        let page = |conn: &rusqlite::Connection| {
+            let mut out = String::new();
+            super::changes(conn, &mut out).unwrap();
+            out
+        };
+        let before = page(&conn);
+        let unknown = "changes unknown where nothing was read";
+        assert_eq!(before.matches(unknown).count(), 8);
+        // A watcher's reading names the kinds it read, not every watched place.
+        let named = esc(&format!(
+            "watcher's reading of {AUTOSTART_KIND}, {PROFILE_KIND}:"
+        ));
+        assert_eq!(before.matches(&named).count(), 5);
+        let folded = crate::store::fold(&conn).unwrap();
+        let after = page(&conn);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(folded.removed, 16);
+        assert_eq!(after, before);
     }
 }
