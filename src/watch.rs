@@ -125,17 +125,9 @@ pub const CANNOT_SEE: [&str; 3] = [
 const TABLE: &str = "
 CREATE TABLE IF NOT EXISTS watcher (
     id        INTEGER PRIMARY KEY CHECK (id = 1),
-    last_read INTEGER NOT NULL,  -- when a watcher last read every watched place, UTC seconds
-    event_id  TEXT NOT NULL,     -- empty; kept for earlier builds, see below
-    volumes   TEXT NOT NULL      -- empty; kept for earlier builds, see below
+    last_read INTEGER NOT NULL   -- when a watcher last read every watched place, UTC seconds
 );
 ";
-// `event_id` and `volumes` were where a watcher kept the FSEvents event id it had read up to,
-// and the history of each volume it belonged to, for the next one to replay from. Nothing
-// replays now: every start reads every place. The columns stay so that a store this build
-// writes still opens in an earlier one, and every reading of every place empties them. An
-// earlier build finds no id in an empty `event_id` and so, at its start, reads every place
-// and replays nothing; it would otherwise replay from an id this build left behind.
 
 /// What failed in a watcher and has not succeeded since: one row per kind, made by its first
 /// failure, under the run lock, as `watcher` is. A row older than the watcher that holds the
@@ -813,13 +805,11 @@ fn read_held(
     // What needs a look after it, counted by the code `immune status --json` counts it with.
     let needs = status::needs(&tx, at)?.items.len();
     tx.execute_batch(TABLE)?;
-    // The row says when every place was last read: only a reading of every place moves it. It
-    // empties what an earlier build kept to replay from (`TABLE`).
+    // The row says when every place was last read: only a reading of every place moves it.
     if only.is_none() {
         tx.execute(
-            "INSERT INTO watcher (id, last_read, event_id, volumes) VALUES (1, ?1, '', '')
-             ON CONFLICT (id) DO UPDATE SET last_read = excluded.last_read,
-                 event_id = excluded.event_id, volumes = excluded.volumes",
+            "INSERT INTO watcher (id, last_read) VALUES (1, ?1)
+             ON CONFLICT (id) DO UPDATE SET last_read = excluded.last_read",
             [at],
         )?;
     }
@@ -1293,7 +1283,10 @@ mod tests {
             "gitdir: ../shop/.git/worktrees/shop-fix\n",
         );
         // A server the owner's check has read.
-        put(dir.join("servers/web-1.txt"), "##end\n");
+        put(
+            dir.join("servers/web-1.txt"),
+            "##os_release\n##kernel_package\n##package_managers\ndpkg\n##dpkg_with_source\n##docker_access\n##end\n",
+        );
         put(dir.join("brew.json"), r#"{"formulae": [], "casks": []}"#);
         let (store, absent) = (dir.join("store/store.db"), dir.join("absent"));
         crate::run(&crate::Args {

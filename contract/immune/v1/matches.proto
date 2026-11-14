@@ -78,8 +78,7 @@ message Matches {
   // The shipped rules that are not evaluated over these events, or only in part, each with why.
   repeated Unevaluated unevaluated = 9;
   // The store this answer was read from, as in every answer (`common.proto`): random, made once
-  // when the store was made. Absent for a store an older build made that no command has written
-  // to since: until one does, nothing tells it apart from another store.
+  // when the store was made.
   optional string store_id = 10;
 }
 
@@ -123,10 +122,10 @@ enum Raised {
   // The core's own reading read the line and no finding holds the match, as a build that lacked
   // the rule leaves it. The reader judges the match itself.
   RAISED_NO_FINDING = 4;
-  // The core's own reading read the line before the core kept which finding each match went to.
-  // It went to one of the rule's findings on this Mac, and the core cannot tell which. The reader
-  // judges the match itself; `immune findings --all` lists the rule's findings.
-  RAISED_UNRECORDED = 5;
+  // 5 was `RAISED_UNRECORDED`, a line read before the core kept which finding each match went to.
+  // No store the core reads holds such a line.
+  reserved 5;
+  reserved "RAISED_UNRECORDED";
   // The rule's set states no level (its `level` is `LEVEL_NOT_STATED`): its matches are counted
   // and raise nothing by themselves. The reader judges the match itself.
   RAISED_LEVEL_NOT_STATED = 6;

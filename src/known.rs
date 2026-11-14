@@ -167,20 +167,7 @@ fn read<T>(store: &Path, ask: impl FnOnce(&Connection) -> rusqlite::Result<T>) -
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| Stop::Store(e.to_string()))?;
-    ask(&tx).map_err(|e| Stop::Store(older(e.to_string())))
-}
-
-/// What a failure to read the store says. A store of this format written by an older build lacks
-/// a column or a table that a run of this build adds when it opens the store: SQLite says
-/// so in these words, and the owner is told what it is and what to do.
-fn older(e: String) -> String {
-    if e.starts_with("no such column") || e.starts_with("no such table") {
-        format!(
-            "the store was written by an older build of Immune; `immune run` brings it up to date ({e})"
-        )
-    } else {
-        e
-    }
+    ask(&tx).map_err(|e| Stop::Store(e.to_string()))
 }
 
 /// Whether the store has an entity with this id, of any type.
@@ -233,7 +220,7 @@ pub fn known_of(
         answered_at: now,
         presence: v1::Presence::Unknown as i32,
         latest_run_at: status::latest_finished(conn)?.and_then(|r| r.finished_at),
-        store_id: store::id(conn)?,
+        store_id: Some(store::id(conn)?),
         ..Default::default()
     };
     let thing = match q.id {
@@ -598,9 +585,7 @@ fn finding_refs(
     now: i64,
     about: impl Fn(&str) -> bool,
 ) -> rusqlite::Result<Vec<v1::FindingRef>> {
-    let Some(found) = findings::all(conn, now)? else {
-        return Ok(Vec::new());
-    };
+    let found = findings::all(conn, now)?;
     let mut items: Vec<findings::Item> = found
         .iter()
         .filter(|f| about(&f.about))

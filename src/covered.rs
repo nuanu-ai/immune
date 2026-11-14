@@ -1418,14 +1418,6 @@ fn plain_lack(what: &str, name: Option<&str>) -> String {
 /// What the latest readings found this version has no reader for: the scope it was found in,
 /// what it is and its name.
 fn lacks(conn: &Connection) -> rusqlite::Result<Vec<(String, String, Option<String>)>> {
-    let has_table: bool = conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'coverage_lack')",
-        [],
-        |r| r.get(0),
-    )?;
-    if !has_table {
-        return Ok(Vec::new());
-    }
     conn.prepare(&format!(
         "{}
          SELECT DISTINCT c.scope, l.what, l.name

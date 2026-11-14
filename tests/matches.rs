@@ -843,10 +843,11 @@ fn a_match_says_which_finding_it_went_to_as_the_core_recorded_it_with_the_person
 }
 
 #[test]
-fn a_line_read_with_no_finding_and_one_read_before_the_record_are_told_apart_and_never_guessed() {
-    // A match the core's own reading read, and that no finding holds, says so; one it read
-    // before the store kept which finding each match went to says it cannot tell. Neither is
-    // tied to a finding by a guess.
+fn a_line_read_with_no_finding_says_so_and_a_store_without_the_record_fails_and_is_never_guessed() {
+    // A match the core's own reading read, and that no finding holds, says so; it is never tied
+    // to a finding by a guess. A store of this format keeps which finding each match went to
+    // from its first reading: one that lacks the record is damaged, and the answer fails rather
+    // than say that no finding holds a match.
     let dir = Dir::new("unrecorded");
     dir.install();
     dir.run();
@@ -858,45 +859,37 @@ fn a_line_read_with_no_finding_and_one_read_before_the_record_are_told_apart_and
     // As a build that lacked the rule leaves it: read, and nothing recorded of it.
     store.execute("DELETE FROM rule_line", []).unwrap();
     assert_eq!(raised_of(&dir.matches(&[])), [r("no_finding")]);
-    // As a store from before the record: the line read, and no record kept at all.
-    store
-        .execute_batch("DROP TABLE rule_line; DROP TABLE rule_line_from;")
-        .unwrap();
-    assert_eq!(raised_of(&dir.matches(&[])), [r("unrecorded")]);
-    // A reading of this build begins the record: what it reads now is told, what was read
-    // before is not.
+    // A file the reading no longer finds takes its record with it.
     dir.append(H00, &dd(3));
     dir.run();
-    assert_eq!(
-        raised_of(&dir.matches(&[])),
-        [r("unrecorded"), to(&first, "open")]
-    );
-    // The first line read with the record kept is told apart from those before it.
-    store.execute("DELETE FROM rule_line", []).unwrap();
-    assert_eq!(
-        raised_of(&dir.matches(&[])),
-        [r("unrecorded"), r("no_finding")]
-    );
-    // A file the reading no longer finds takes its record with it.
-    dir.append(H00, &dd(5));
-    dir.run();
-    let count = |table: &str| -> i64 {
+    let count = || -> i64 {
         store
-            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM rule_line", [], |r| r.get(0))
             .unwrap()
     };
-    assert_eq!((count("rule_line"), count("rule_line_from")), (1, 1));
+    assert_eq!(count(), 1);
     dir.append(H01, &git(4));
     dir.tidy_away(H00);
     dir.run();
-    let rows: i64 = store
-        .query_row(
-            "SELECT (SELECT COUNT(*) FROM rule_line) + (SELECT COUNT(*) FROM rule_line_from)",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(rows, 0);
+    assert_eq!(count(), 0);
+    dir.append(H01, &dd(5));
+    dir.run();
+    store.execute_batch("DROP TABLE rule_line").unwrap();
+    let out = dir.matches_output(&["--json"]);
+    assert_eq!(out.status.code(), Some(3));
+    let failure: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        failure["errors"][0]["code"], "store_unreadable",
+        "{failure}"
+    );
+    assert!(
+        failure["errors"][0]["detail_text"]
+            .as_str()
+            .unwrap()
+            .contains("lacks a table or column of its format, so it is damaged"),
+        "{failure}"
+    );
+    assert_eq!(failure.get("matches"), None);
 }
 
 #[test]
@@ -1282,7 +1275,7 @@ fn a_file_the_place_held_is_gone_only_when_lines_in_it_were_not_read() {
     );
 }
 
-/// A place as a build before this one printed it, version 1: the last numbers, then for each
+/// A place as an earlier build printed it, version 1: the last numbers, then for each
 /// file its hour's difference from the one before, doubled, plus one when finished, its inode
 /// and its offset, each a varint, in lower-case hexadecimal.
 fn place_v1(seq: [u64; 3], files: &[(u64, bool, u64, u64)]) -> String {
@@ -1313,8 +1306,8 @@ fn place_v1(seq: [u64; 3], files: &[(u64, bool, u64, u64)]) -> String {
 fn a_log_an_earlier_collector_began_and_a_later_one_went_on_is_read_in_the_order_it_was_written() {
     // Installed over an earlier collector, the log holds files named by the hour and files
     // named by run and start. They are read in the order they were written, the earlier
-    // collector's first, by one answer or by many; a place an earlier build printed reads on
-    // from where it was; and the root side's notes of deletions count what was read and what
+    // collector's first, by one answer or by many; a place an earlier build printed is refused;
+    // and the root side's notes of deletions count what was read and what
     // was not, under both kinds of name.
     let dir = Dir::new("mixed");
     dir.install();
@@ -1353,8 +1346,9 @@ fn a_log_an_earlier_collector_began_and_a_later_one_went_on_is_read_in_the_order
     let (paged, sums, _) = pages(&dir, None, "1");
     assert_eq!(&json!(paged), &whole["matches"]);
     assert_eq!(sums, [6, 0, 0, 0]);
-    // A place printed before the upgrade, after H00 was read to its end with its hour over
-    // and H01 had begun: the answer goes on from there, over both kinds of name.
+    // A place an earlier build printed, after H00 was read to its end with its hour over and
+    // H01 had begun, is not read on from: the answer fails as a misuse that says to start from
+    // the oldest line kept, and never reads as nothing new.
     let held = place_v1(
         [2, 0, 0],
         &[
@@ -1367,21 +1361,18 @@ fn a_log_an_earlier_collector_began_and_a_later_one_went_on_is_read_in_the_order
             (2026100401, false, dir.inode(H01), 0),
         ],
     );
-    let on = dir.matches(&["--after", &held]);
-    let from: Vec<&str> = on["matches"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|m| m["position"].as_str().unwrap())
-        .collect();
-    assert_eq!(from, positions[1..]);
-    assert_eq!(
-        (
-            &on["stretch"]["program_starts_lost"],
-            &on["stretch"]["gone"]
-        ),
-        (&json!(0), &json!(false))
+    let out = dir.matches_output(&["--json", "--after", &held]);
+    assert_eq!(out.status.code(), Some(2));
+    let failure: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(failure["errors"][0]["code"], "usage");
+    assert!(
+        failure["errors"][0]["detail_text"]
+            .as_str()
+            .unwrap()
+            .contains("run immune matches without --after"),
+        "{failure}"
     );
+    assert_eq!(failure.get("matches"), None);
     // The core's own reading reads them all. A file of either kind deleted once read loses
     // nothing; one deleted before it was read is counted, once.
     dir.run();
@@ -1403,9 +1394,6 @@ fn a_log_an_earlier_collector_began_and_a_later_one_went_on_is_read_in_the_order
         (&json!(1), &json!(6), &json!(0)),
         "{l:#}"
     );
-    // The place from before the upgrade, whose H00 is gone read to its end, has lost nothing.
-    let on = dir.matches(&["--after", &held]);
-    assert_eq!(on["stretch"]["gone"], false);
 }
 
 #[test]
@@ -2621,130 +2609,6 @@ fn a_secret_on_a_command_line_reaches_no_answer_and_no_file_and_the_rules_beside
             assert!(!holds(bytes, secret), "{what} holds {secret}");
         }
     }
-}
-
-#[test]
-fn what_an_earlier_build_kept_uncut_is_cut_once_and_no_old_byte_is_left_in_the_store_or_its_pages()
-{
-    // A store an earlier build kept holds arguments, what the collector printed and the text of
-    // verdicts as they were. The first build that cuts opens it for writing and cuts them in
-    // their rows and in the journal, leaves no old byte in the file's free pages or a journal
-    // beside it, and removes the pages made from it. What is shown of it then is cut.
-    let dir = Dir::new("clean");
-    dir.install();
-    dir.run();
-    let (secrets, lines) = secret_starts(1);
-    dir.append(H00, &lines);
-    dir.run();
-    let id = dir.findings_named(JAMF).pop().unwrap();
-    let [password, grepped, token] = &secrets;
-    let raw = json!([
-        "curl",
-        "-u",
-        format!("someone:{password}"),
-        "https://jamf.example.invalid/JSSResource/computers"
-    ])
-    .to_string();
-    {
-        let db = rusqlite::Connection::open(dir.store()).unwrap();
-        db.execute(
-            "UPDATE rule_evidence SET args = ?1 WHERE finding = ?2",
-            [&raw, &id],
-        )
-        .unwrap();
-        db.execute(
-            // Refused, so a report also lists what it said among what is not covered.
-            "UPDATE event_level SET said = ?1, said_by = 'eslogger', state = 'refused'",
-            [format!("jq: error near --password {grepped}")],
-        )
-        .unwrap();
-        let reason = format!("invented: the token {token} was the person's");
-        db.execute(
-            "INSERT INTO journal (at, run_id, entry, subject, new_value, text)
-             VALUES (1, 'verdict-1', 'verdict', ?1, 'harmless', ?2)",
-            [
-                &id,
-                &json!({ "named": id, "reason": reason, "case": "case-1" }).to_string(),
-            ],
-        )
-        .unwrap();
-        db.execute(
-            "INSERT INTO verdict (at, journal, kind, named, position, rule, finding, raised,
-                                  severity, confidence, reason, case_ref)
-             VALUES (1, last_insert_rowid(), 'harmless', ?1, NULL, NULL, NULL, 0, NULL, NULL,
-                     ?2, 'case-1')",
-            [&id, &reason],
-        )
-        .unwrap();
-        db.execute(
-            "UPDATE meta SET value = '4' WHERE key = 'format_version'",
-            [],
-        )
-        .unwrap();
-    }
-    let page = dir.0.join("store/view.html");
-    std::fs::write(&page, format!("<p>{password}</p>")).unwrap();
-    std::fs::create_dir_all(dir.0.join("store/view")).unwrap();
-    std::fs::write(dir.0.join("store/view/made.json"), grepped).unwrap();
-    let mut files = Vec::new();
-    files_under(&dir.0.join("store"), &mut files);
-    let kept_raw =
-        |files: &[(PathBuf, Vec<u8>)], secret: &str| files.iter().any(|(_, b)| holds(b, secret));
-    assert!(secrets.iter().all(|s| kept_raw(&files, s)));
-    // Read only, an older store is not cleaned, and what it shows is cut all the same.
-    let shown = dir
-        .command(&["finding", &id, "--json"], &[])
-        .output()
-        .unwrap();
-    assert!(shown.status.success());
-    assert!(!holds(&shown.stdout, password));
-    let status = dir.command(&["status", "--json"], &[]).output().unwrap();
-    assert!(status.status.success());
-    assert!(!holds(&status.stdout, password) && !holds(&status.stdout, grepped));
-    let mut files = Vec::new();
-    files_under(&dir.0.join("store"), &mut files);
-    assert!(kept_raw(&files, password) && kept_raw(&files, grepped));
-    dir.run();
-    let mut files = Vec::new();
-    files_under(&dir.0.join("store"), &mut files);
-    for secret in &secrets {
-        let held: Vec<_> = files
-            .iter()
-            .filter(|(_, b)| holds(b, secret))
-            .map(|(p, _)| p)
-            .collect();
-        assert!(held.is_empty(), "{secret} is still in {held:?}");
-    }
-    assert!(!page.exists() || !holds(&std::fs::read(&page).unwrap(), password));
-    let db = rusqlite::Connection::open(dir.store()).unwrap();
-    let reason: String = db
-        .query_row("SELECT reason FROM verdict", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(
-        reason,
-        "invented: the token \\cut{gitleaks:github-pat 40} was the person's"
-    );
-    // The journal's guard, lifted for the cut, is back.
-    assert!(db.execute("UPDATE journal SET text = 'x'", []).is_err());
-    let finding = dir
-        .command(&["finding", &id, "--json"], &[])
-        .output()
-        .unwrap();
-    let finding: Value = serde_json::from_slice(&finding.stdout).unwrap();
-    assert_eq!(
-        finding["evidence"]["published_rule_matched"]["events"][0]["program_start"]["cuts"],
-        json!([{ "argument": 2, "kind": "gitleaks:curl-auth-user", "length": 24 }])
-    );
-    // Once: a store cleaned is not cleaned again, so what it keeps cut is read as cut.
-    dir.run();
-    let again = dir
-        .command(&["finding", &id, "--json"], &[])
-        .output()
-        .unwrap();
-    assert_eq!(
-        serde_json::from_slice::<Value>(&again.stdout).unwrap()["evidence"],
-        finding["evidence"]
-    );
 }
 
 #[test]

@@ -8,14 +8,10 @@ use std::fs::{File, TryLockError};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-/// Format 5 keeps text from a source with its secrets cut and in the store's form (see
-/// `secrets::Form`). A store of format 4 is accepted only to be cleaned: this build reads it
-/// cut on the fly, and the first open for writing cleans it and raises it to 5
-/// (`secrets::clean`). A build of format 4 refuses a store of 5 as newer, so it never writes
-/// raw text into a cleaned store.
-pub const FORMAT_VERSION: &str = "5";
-/// The format a store had before secrets were cut, taken only to be cleaned.
-pub const UNCLEANED_FORMAT: &str = "4";
+/// The store's format. A store of any other format is refused and left as it is: this build
+/// reads only what a build of format 6 wrote, with every table and column this build reads and
+/// text from a source kept cut, in the store's form (see `secrets`).
+pub const FORMAT_VERSION: &str = "6";
 
 const SCHEMA: &str = "
 CREATE TABLE meta (
@@ -79,7 +75,15 @@ CREATE TABLE coverage (
     -- Why the reading was not full. On a full reading it is a note: why there was
     -- nothing to read, such as a tool that is not installed.
     reason       TEXT,
+    -- Why the reading is incomplete, from a closed set (`Cause`); none on a full reading.
+    cause        TEXT CHECK (cause IN ('failed', 'no_reader', 'not_given')),
     CHECK (completeness = 'full' OR reason IS NOT NULL)
+);
+-- What a reading found that this build has no reader for (`Lack`).
+CREATE TABLE coverage_lack (
+    coverage INTEGER NOT NULL REFERENCES coverage (id),
+    what     TEXT NOT NULL,
+    name     TEXT  -- as the source gives it, where it names one
 );
 
 -- Containers and checkouts that were somewhere and are no longer anywhere. What was read
@@ -184,7 +188,8 @@ CREATE TABLE IF NOT EXISTS owner_statement (
     said         TEXT NOT NULL CHECK (said IN ('retired', 'not mine')),
     reason       TEXT NOT NULL,
     made_at      INTEGER NOT NULL,  -- UTC seconds
-    withdrawn_at INTEGER            -- UTC seconds
+    withdrawn_at INTEGER,           -- UTC seconds
+    via          TEXT               -- how it was given: app, agent or command
 );
 ";
 
@@ -415,31 +420,6 @@ impl Gap {
     }
 }
 
-/// Why a reading is incomplete, as data: a cause from a closed set, and what this build has
-/// no reader for. Added on open, so a store of the current format takes it without a rebuild;
-/// readings written before have no cause, which is read as `failed`.
-fn add_causes(conn: &Connection) -> Res<()> {
-    let has_cause: bool = conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('coverage') WHERE name = 'cause')",
-        [],
-        |r| r.get(0),
-    )?;
-    if !has_cause {
-        conn.execute_batch(
-            "ALTER TABLE coverage ADD COLUMN cause TEXT
-                 CHECK (cause IN ('failed', 'no_reader', 'not_given'));",
-        )?;
-    }
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS coverage_lack (
-             coverage INTEGER NOT NULL REFERENCES coverage (id),
-             what     TEXT NOT NULL,
-             name     TEXT  -- as the source gives it, where it names one
-         );",
-    )?;
-    Ok(())
-}
-
 /// One reading: which reader looked for which kind of thing in which scope.
 /// `at` is the time of the run; `observed_at` is when the source itself was read,
 /// which for a server file is when the sweep wrote it.
@@ -496,30 +476,24 @@ pub fn open(path: &Path) -> Res<Connection> {
             "INSERT INTO meta (key, value) VALUES ('format_version', ?1)",
             [FORMAT_VERSION],
         )?;
+        give_id(&tx)?;
         tx.commit()?;
     }
     check_format(&conn, path)?;
-    give_id(&conn)?;
     conn.execute_batch(VOCABULARY)?;
     crate::autorun::add_kinds(&conn)?;
     crate::watched::add_kinds(&conn)?;
     conn.execute_batch(OWNER)?;
-    crate::owner::add_via(&conn)?;
     conn.execute_batch(THREATS)?;
     conn.execute_batch(crate::osv::SCHEMA)?;
     conn.execute_batch(crate::vulnerabilities::SCHEMA)?;
     conn.execute_batch(crate::findings::SCHEMA)?;
-    crate::findings::add_via(&conn)?;
     conn.execute_batch(crate::agent_folders::SCHEMA)?;
     conn.execute_batch(crate::verdict::SCHEMA)?;
-    add_causes(&conn)?;
     conn.execute_batch(INDEXES)?;
     widen_journal(&mut conn)?;
     conn.execute_batch(JOURNAL_INDEXES)?;
     crate::baseline::open(&mut conn)?;
-    // What a build before this one kept uncut is cut once, before anything is read or written.
-    let folder = path.parent().filter(|p| !p.as_os_str().is_empty());
-    crate::secrets::clean(&mut conn, folder.unwrap_or(Path::new(".")))?;
     Ok(conn)
 }
 
@@ -555,18 +529,17 @@ fn widen_journal(conn: &mut Connection) -> Res<()> {
 
 /// The store's own id, as every message of the contract carries it (`store_id`): a finding's id
 /// is unique only within one store, and a store deleted and made again can give it to another
-/// finding. `None` for a store an older build made that nothing has opened for writing since.
-pub fn id(conn: &Connection) -> rusqlite::Result<Option<String>> {
+/// finding. Every store of this format holds one from when it is made; a store without it fails
+/// to read.
+pub fn id(conn: &Connection) -> rusqlite::Result<String> {
     conn.query_row("SELECT value FROM meta WHERE key = 'store_id'", [], |r| {
         r.get(0)
     })
-    .optional()
 }
 
-/// Gives the store its id once: when it is made, or the first time this build opens an older
-/// store for writing. 16 random bytes from `getentropy`, which macOS ships, as hexadecimal. It is
-/// never derived from anything on the Mac, so it says nothing about it. An id already kept is
-/// never replaced, so two processes that open a store without one at once keep the first.
+/// Gives the store its id, in the transaction that makes it. 16 random bytes from `getentropy`,
+/// which macOS ships, as hexadecimal. It is never derived from anything on the Mac, so it says
+/// nothing about it.
 fn give_id(conn: &Connection) -> Res<()> {
     let mut bytes = [0u8; 16];
     // SAFETY: the pointer and the length are those of `bytes`, which outlives the call;
@@ -580,7 +553,7 @@ fn give_id(conn: &Connection) -> Res<()> {
     }
     let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
     conn.execute(
-        "INSERT OR IGNORE INTO meta (key, value) VALUES ('store_id', ?1)",
+        "INSERT INTO meta (key, value) VALUES ('store_id', ?1)",
         [hex],
     )?;
     Ok(())
@@ -669,9 +642,6 @@ fn check_format(conn: &Connection, path: &Path) -> Res<()> {
     let Some(version) = version else {
         return Err(format!("{} is not a store of this tool", path.display()).into());
     };
-    if version == UNCLEANED_FORMAT {
-        return Ok(());
-    }
     let (Ok(found), Ok(ours)) = (version.parse::<u32>(), FORMAT_VERSION.parse::<u32>()) else {
         return Err(format!("store format {version} is not supported").into());
     };
@@ -692,6 +662,20 @@ fn check_format(conn: &Connection, path: &Path) -> Res<()> {
         .into());
     }
     Ok(())
+}
+
+/// What a failure to read a store of this format says. Such a store holds every table and
+/// column this build reads, so one that lacks one was changed by something other than a build
+/// of this format: SQLite's own words say which, and the person is told what it means.
+pub fn damaged(e: &str) -> String {
+    if e.contains("no such column") || e.contains("no such table") {
+        format!(
+            "the store lacks a table or column of its format, so it is damaged ({e}). Nothing \
+             was changed. Move it aside or pass another --store."
+        )
+    } else {
+        e.to_string()
+    }
 }
 
 /// How long a run waits for the run lock before it says another run is in progress. A
@@ -863,8 +847,7 @@ pub fn put_coverage(
         r.reader,
         r.kind
     );
-    // An incomplete reading without a cause is read back as failed, like one written
-    // before causes were kept.
+    // An incomplete reading without a cause is read back as failed.
     let cause = gap.cause.map(Cause::literal);
     tx.execute(
         "INSERT INTO coverage (reader, run_id, observed_at, scope, kind, completeness, reason,
@@ -1019,8 +1002,7 @@ const FOLD_AT_ONCE: i64 = 10_000;
 
 /// Folds the history of readings older than the runs kept whole (`FOLDED`), outside any
 /// transaction of the caller's, in transactions of `FOLD_AT_ONCE` readings, so that a reading
-/// unchanged for a year is two rows and not one per run; on a store kept by an earlier build,
-/// the first full run folds the whole history that way. A fold cut short leaves only readings
+/// unchanged for a year is two rows and not one per run. A fold cut short leaves only readings
 /// that lay between two of the same kept, and the next one goes on. Nothing a finding or an
 /// answer rests on is a coverage row, and the latest reading of each reader, scope and kind is
 /// never taken out.
@@ -2219,7 +2201,7 @@ mod tests {
     /// process holds none. Returns the copy and the store's committed id.
     fn hot(dir: &Path) -> (std::path::PathBuf, String) {
         let live = dir.join("live.db");
-        let committed = id(&open(&live).unwrap()).unwrap().unwrap();
+        let committed = id(&open(&live).unwrap()).unwrap();
         let writer = Connection::open(&live).unwrap();
         writer
             .execute_batch(
@@ -2241,7 +2223,7 @@ mod tests {
         let dir = crate::common::Scratch::new("hot-unit");
         let (path, committed) = hot(&dir);
         let conn = open_read_only(&path).unwrap();
-        assert_eq!(id(&conn).unwrap(), Some(committed));
+        assert_eq!(id(&conn).unwrap(), committed);
         assert!(!dir.join("store.db-journal").exists());
         assert!(conn.execute_batch("CREATE TABLE t (a)").is_err());
     }

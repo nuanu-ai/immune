@@ -143,25 +143,19 @@ pub fn judged(
             .insert(eco.to_string());
         *packages.entry(scope).or_default() += 1;
     }
-    // A store an older build left, opened only for reading, may not hold the answers yet:
-    // then nothing was compared, and no project is calm.
-    let tables = crate::vulnerabilities::has_tables(conn)?;
     let mut places: HashSet<(String, String)> = HashSet::new();
     let mut unknown: HashSet<String> = HashSet::new();
-    if tables {
-        let mut stmt = conn.prepare(
-            "SELECT checkout, ecosystem FROM vulnerability_place
-             WHERE lockfiles = 'full' AND feed = 'current'",
-        )?;
-        for row in stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))? {
-            places.insert(row?);
-        }
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT checkout FROM vulnerability_answer WHERE answer = 'unknown'",
-        )?;
-        for row in stmt.query_map([], |r| r.get(0))? {
-            unknown.insert(row?);
-        }
+    let mut stmt = conn.prepare(
+        "SELECT checkout, ecosystem FROM vulnerability_place
+         WHERE lockfiles = 'full' AND feed = 'current'",
+    )?;
+    for row in stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))? {
+        places.insert(row?);
+    }
+    let mut stmt = conn
+        .prepare("SELECT DISTINCT checkout FROM vulnerability_answer WHERE answer = 'unknown'")?;
+    for row in stmt.query_map([], |r| r.get(0))? {
+        unknown.insert(row?);
     }
     let mut out = HashMap::new();
     for c in checkouts {

@@ -880,7 +880,7 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("immune: {}", said(&e.to_string()));
+            eprintln!("immune: {}", said(&store::damaged(&e.to_string())));
             ExitCode::FAILURE
         }
     }
@@ -966,7 +966,7 @@ fn sample_cmd(args: &SampleArgs) -> ExitCode {
             m.answered_at = now_secs();
             m.store_id = store::open_read_only(&args.store)
                 .ok()
-                .and_then(|c| store::id(&c).ok().flatten());
+                .and_then(|c| store::id(&c).ok());
             answer::print("sample", args.form, &m, text::sample)
         }
         Err(e) => {
@@ -1057,7 +1057,7 @@ fn rules_cmd(args: &RulesArgs) -> ExitCode {
         let conn = store::open_read_only(&args.store).map_err(|e| Stop::Store(e.to_string()))?;
         Ok((
             events::level(&conn, now).map_err(unreadable)?,
-            store::id(&conn).map_err(unreadable)?,
+            Some(store::id(&conn).map_err(unreadable)?),
         ))
     })();
     let (level, store_id) = match read {
@@ -2150,7 +2150,7 @@ fn owner_cmd(args: &OwnerArgs) -> ExitCode {
             Ok((
                 owner::standing(&conn)?,
                 owner::withdrawn(&conn)?,
-                store::id(&conn)?,
+                Some(store::id(&conn)?),
             ))
         });
         let (standing, withdrawn, store_id) = match listed {
@@ -2203,7 +2203,7 @@ fn owner_cmd(args: &OwnerArgs) -> ExitCode {
     let mut m = v1::StatementMade {
         format: 1,
         answered_at: at,
-        store_id: store::id(&conn).ok().flatten(),
+        store_id: store::id(&conn).ok(),
         machine_text: known::whole(owner::bare(&entity)),
         names_text: machine
             .iter()

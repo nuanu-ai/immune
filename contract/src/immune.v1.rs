@@ -758,8 +758,7 @@ pub struct Known {
     #[prost(int64, optional, tag = "12")]
     pub latest_run_at: ::core::option::Option<i64>,
     /// The store this answer was read from, as in every answer (`common.proto`): random, made once
-    /// when the store was made. Absent for a store an older build made that no command has written
-    /// to since: until one does, nothing tells it apart from another store.
+    /// when the store was made.
     #[prost(string, optional, tag = "13")]
     pub store_id: ::core::option::Option<::prost::alloc::string::String>,
 }
@@ -1110,8 +1109,7 @@ pub struct Matches {
     #[prost(message, repeated, tag = "9")]
     pub unevaluated: ::prost::alloc::vec::Vec<Unevaluated>,
     /// The store this answer was read from, as in every answer (`common.proto`): random, made once
-    /// when the store was made. Absent for a store an older build made that no command has written
-    /// to since: until one does, nothing tells it apart from another store.
+    /// when the store was made.
     #[prost(string, optional, tag = "10")]
     pub store_id: ::core::option::Option<::prost::alloc::string::String>,
 }
@@ -1373,11 +1371,6 @@ pub enum Raised {
     /// the rule leaves it. The reader judges the match itself.
     #[serde(rename = "no_finding")]
     NoFinding = 4,
-    /// The core's own reading read the line before the core kept which finding each match went to.
-    /// It went to one of the rule's findings on this Mac, and the core cannot tell which. The reader
-    /// judges the match itself; `immune findings --all` lists the rule's findings.
-    #[serde(rename = "unrecorded")]
-    Unrecorded = 5,
     /// The rule's set states no level (its `level` is `LEVEL_NOT_STATED`): its matches are counted
     /// and raise nothing by themselves. The reader judges the match itself.
     #[serde(rename = "level_not_stated")]
@@ -1395,7 +1388,6 @@ impl Raised {
             Self::Finding => "RAISED_FINDING",
             Self::NotReadYet => "RAISED_NOT_READ_YET",
             Self::NoFinding => "RAISED_NO_FINDING",
-            Self::Unrecorded => "RAISED_UNRECORDED",
             Self::LevelNotStated => "RAISED_LEVEL_NOT_STATED",
         }
     }
@@ -1407,7 +1399,6 @@ impl Raised {
             "RAISED_FINDING" => Some(Self::Finding),
             "RAISED_NOT_READ_YET" => Some(Self::NotReadYet),
             "RAISED_NO_FINDING" => Some(Self::NoFinding),
-            "RAISED_UNRECORDED" => Some(Self::Unrecorded),
             "RAISED_LEVEL_NOT_STATED" => Some(Self::LevelNotStated),
             _ => None,
         }
@@ -1584,8 +1575,7 @@ pub struct Findings {
     #[prost(int64, tag = "2")]
     pub answered_at: i64,
     /// The store this answer was read from, as in every answer (`common.proto`): random, made once
-    /// when the store was made. Absent for a store an older build made that no command has written
-    /// to since: until one does, nothing tells it apart from another store.
+    /// when the store was made.
     #[prost(string, optional, tag = "3")]
     pub store_id: ::core::option::Option<::prost::alloc::string::String>,
     /// When the core's latest run that finished ended. Absent when no run has finished: then only
@@ -2673,7 +2663,7 @@ pub struct Status {
     #[prost(int64, tag = "2")]
     pub answered_at: i64,
     /// The store this answer was read from, as in every answer (`common.proto`). Absent when there
-    /// is no store, and for a store an older build made that no command has written to since.
+    /// is no store.
     #[prost(string, optional, tag = "3")]
     pub store_id: ::core::option::Option<::prost::alloc::string::String>,
     /// A full check is in progress now. Everything else describes the latest one that finished.

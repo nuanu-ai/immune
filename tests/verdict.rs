@@ -182,10 +182,19 @@ impl Mac {
 
     /// A full run that reads nothing real: the project, the records and the log under the root.
     fn run(&self) {
+        let out = self.run_cmd().output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// The command of a full run that reads nothing real.
+    fn run_cmd(&self) -> Command {
         let empty = self.0.join("empty");
-        let out = self
-            .command(&["run", "--machine-name", "mac", "--system-root"])
-            .arg(self.root())
+        let mut c = self.command(&["run", "--machine-name", "mac", "--system-root"]);
+        c.arg(self.root())
             .arg("--brew-input")
             .arg(self.0.join("brew.json"))
             .args(["--osv-crates-input", "none", "--osv-npm-input"])
@@ -198,14 +207,8 @@ impl Mac {
             .arg("--servers-input")
             .arg(&empty)
             .arg("--indicators")
-            .arg(self.0.join("indicators.json"))
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+            .arg(self.0.join("indicators.json"));
+        c
     }
 
     fn json(&self, args: &[&str]) -> Value {
@@ -2348,138 +2351,6 @@ fn a_verdict_s_text_that_spells_a_mark_out_is_kept_and_shown_as_text() {
 }
 
 #[test]
-fn a_store_not_yet_cleaned_prints_no_secret_from_any_kind_of_kept_text() {
-    // A store an earlier build kept holds text as it was read. Until a run cleans it, every
-    // command that only reads it cuts each kind of kept text as it reads it: the arguments of
-    // evidence, what the collector printed, a verdict's reason and case, and the reasons of an
-    // answer and of a statement about a machine.
-    let mac = Mac::new("uncleaned");
-    let at = mac.append(&sw_vers(1));
-    mac.run();
-    let store = mac.store_id();
-    mac.send(&about_match(
-        &store,
-        &mac.position(at),
-        SW_VERS,
-        "suspicious",
-    ));
-    let own = mac.verdict_findings().pop().unwrap();
-    let placeholder = ["--reason", "invented: placeholder", "--via", "agent"];
-    let seq = read(&mac);
-    let out = mac.answer(
-        &own,
-        &[&["seen", "--journal-seq", &seq][..], &placeholder].concat(),
-    );
-    assert_eq!(out.status.code(), Some(0));
-    let out = mac
-        .command(&[&["owner", "mac", "retired"][..], &placeholder].concat())
-        .output()
-        .unwrap();
-    assert_eq!(out.status.code(), Some(0));
-    let token = format!("{}{}", ["gh", "p_"].concat(), invented(9, 36));
-    {
-        let db = rusqlite::Connection::open(mac.store()).unwrap();
-        // As an earlier build kept it: what the store's form would write `\u{5c}` is a source's
-        // own text here, never an escape.
-        let said = format!("invented: the token {token} was used \\u{{5c}}");
-        db.execute(
-            "UPDATE verdict SET reason = ?1, case_ref = ?1",
-            [said.as_str()],
-        )
-        .unwrap();
-        db.execute(
-            "UPDATE rule_evidence SET args = ?1",
-            [json!(["sw_vers", "-productVersion", token]).to_string()],
-        )
-        .unwrap();
-        db.execute(
-            "UPDATE event_level SET state = 'refused', said_by = 'eslogger', said = ?1",
-            [said.as_str()],
-        )
-        .unwrap();
-        db.execute(
-            "UPDATE finding SET reason = ?1 WHERE reason IS NOT NULL",
-            [said.as_str()],
-        )
-        .unwrap();
-        db.execute("UPDATE owner_statement SET reason = ?1", [said.as_str()])
-            .unwrap();
-        db.execute(
-            "UPDATE meta SET value = '4' WHERE key = 'format_version'",
-            [],
-        )
-        .unwrap();
-    }
-    let root = mac.root();
-    let root = root.to_str().unwrap();
-    let mut printed = Vec::new();
-    for args in [
-        vec!["status", "--json"],
-        vec!["status"],
-        vec!["findings", "--all", "--json"],
-        vec!["findings", "--all", "--proto"],
-        vec!["findings", "--all"],
-        vec!["owner", "--json"],
-        vec!["owner"],
-        vec!["finding", own.as_str(), "--json"],
-        vec!["finding", own.as_str(), "--proto"],
-        vec!["finding", own.as_str()],
-        vec!["matches", "--json", "--system-root", root],
-        vec!["view", "--no-open"],
-    ] {
-        let out = mac.command(&args).output().unwrap();
-        assert!(
-            out.status.success(),
-            "{args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        printed.push((format!("{args:?}"), out.stdout));
-    }
-    let db = rusqlite::Connection::open(mac.store()).unwrap();
-    let kept: String = db
-        .query_row("SELECT reason FROM verdict", [], |r| r.get(0))
-        .unwrap();
-    assert!(kept.contains(&token), "only a run cleans the store");
-    let whole = mac.finding(&own).to_string();
-    for field in ["reason_text", "case_text"] {
-        let shown = format!(
-            "\"{field}\":\"invented: the token \\\\cut{{gitleaks:github-pat 40}} was used \\\\u{{5c}}u{{5c}}\""
-        );
-        assert!(whole.contains(&shown), "{whole}");
-    }
-    let status = String::from_utf8_lossy(&printed[0].1).to_string();
-    assert!(
-        status.contains(
-            "\"said_text\":\"invented: the token \\\\cut{gitleaks:github-pat 40} was used \\\\u{5c}u{5c}\""
-        ),
-        "{status}"
-    );
-    assert_eq!(
-        mac.finding(&own)["answer"]["reason_text"],
-        "invented: the token \\cut{gitleaks:github-pat 40} was used \\u{5c}u{5c}"
-    );
-    let owner = mac.command(&["owner", "--json"]).output().unwrap().stdout;
-    let owner = String::from_utf8_lossy(&owner);
-    assert!(
-        owner.contains(
-            "\"reason_text\":\"invented: the token \\\\cut{gitleaks:github-pat 40} was used \\\\u{5c}u{5c}\""
-        ),
-        "{owner}"
-    );
-    files_under(&mac.0.join("store"), &mut printed);
-    for (what, bytes) in printed {
-        // The store itself still holds the text until a run cleans it.
-        if what.contains("store.db") {
-            continue;
-        }
-        assert!(
-            !bytes.windows(token.len()).any(|w| w == token.as_bytes()),
-            "{what}"
-        );
-    }
-}
-
-#[test]
 fn an_answer_or_a_statement_whose_reason_holds_a_secret_is_taken_with_its_reason_cut() {
     // A reason is the person's decision, given by them or by their agent: it is taken whatever
     // it holds, never refused, and kept and shown with its secrets cut. The command's answer
@@ -2589,10 +2460,11 @@ fn an_answer_or_a_statement_whose_reason_holds_a_secret_is_taken_with_its_reason
 }
 
 #[test]
-fn a_store_of_format_4_is_cleaned_into_format_5_which_a_build_of_4_refuses_as_newer() {
-    // The cleaned state is the store's format, so a build from before cutting, which knows
-    // format 4, refuses a cleaned store as newer and never writes raw text into it. This build
-    // takes format 4 only to clean it, and refuses anything else it does not know.
+fn a_store_of_another_format_is_refused_by_every_command_and_left_unchanged() {
+    // This build reads only a store of its own format. A store of any other, older or newer,
+    // is refused by every command and by the app's status, with what to do, and is not changed:
+    // not a byte of it, and no journal or write-ahead file is left beside it. None of the
+    // refusals reads as an answer with nothing in it.
     let mac = Mac::new("format");
     let at = mac.append(&sw_vers(1));
     mac.run();
@@ -2603,36 +2475,9 @@ fn a_store_of_format_4_is_cleaned_into_format_5_which_a_build_of_4_refuses_as_ne
         SW_VERS,
         "suspicious",
     ));
-    let token = format!("{}{}", ["gh", "p_"].concat(), invented(41, 36));
-    let format = || -> String {
-        rusqlite::Connection::open(mac.store())
-            .unwrap()
-            .query_row(
-                "SELECT value FROM meta WHERE key = 'format_version'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap()
-    };
-    assert_eq!(format(), "5");
-    {
-        let db = rusqlite::Connection::open(mac.store()).unwrap();
-        db.execute(
-            "UPDATE verdict SET reason = ?1",
-            [format!("invented: {token}")],
-        )
-        .unwrap();
-        db.execute(
-            "UPDATE meta SET value = '4' WHERE key = 'format_version'",
-            [],
-        )
-        .unwrap();
-    }
-    mac.run();
-    assert_eq!(format(), "5");
-    let file = std::fs::read(mac.store()).unwrap();
-    assert!(!file.windows(token.len()).any(|w| w == token.as_bytes()));
-    for (version, said) in [("6", "newer format"), ("3", "older format")] {
+    let id = mac.verdict_findings().pop().unwrap();
+    let verdict = about_finding(&store, &id, "harmless", "case-1").to_string();
+    let format = |version: &str| {
         rusqlite::Connection::open(mac.store())
             .unwrap()
             .execute(
@@ -2640,11 +2485,72 @@ fn a_store_of_format_4_is_cleaned_into_format_5_which_a_build_of_4_refuses_as_ne
                 [version],
             )
             .unwrap();
-        let out = mac.command(&["status", "--json"]).output().unwrap();
-        assert_ne!(out.status.code(), Some(0), "{version}");
-        let all = String::from_utf8_lossy(&out.stdout).to_string()
-            + &String::from_utf8_lossy(&out.stderr);
-        assert!(all.contains(said), "{version}: {all}");
+    };
+    let root = mac.root();
+    let root = root.to_str().unwrap();
+    let missing = mac.0.join("missing");
+    let missing = missing.to_str().unwrap();
+    for (version, said) in [
+        ("5", "is from an older format (5)"),
+        ("4", "is from an older format (4)"),
+        ("7", "is from a newer format (7)"),
+    ] {
+        format(version);
+        let before = std::fs::read(mac.store()).unwrap();
+        for args in [
+            vec!["status", "--json"],
+            vec!["status"],
+            vec!["findings", "--json"],
+            vec!["finding", id.as_str(), "--json"],
+            vec!["project", "~/dev/shop", "--json"],
+            vec!["program", "sw_vers", "--json"],
+            vec!["machine", "mac", "--json"],
+            vec!["matches", "--json", "--system-root", root],
+            vec!["rules", "--json"],
+            vec!["vulnerabilities", "--json"],
+            vec!["owner", "--json"],
+            vec!["owner", "mac", "retired", "--reason", "invented"],
+            vec!["servers", "--tailscale", missing],
+            vec!["view", "--no-open"],
+            vec!["verdict", "--json"],
+            vec!["run"],
+        ] {
+            let mut cmd = if args == ["run"] {
+                mac.run_cmd()
+            } else {
+                mac.command(&args)
+            };
+            cmd.stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let mut child = cmd.spawn().unwrap();
+            // A command that does not read standard input may have exited already.
+            let _ = child.stdin.take().unwrap().write_all(verdict.as_bytes());
+            let out = child.wait_with_output().unwrap();
+            assert_ne!(out.status.code(), Some(0), "{version} {args:?}");
+            let all = String::from_utf8_lossy(&out.stdout).to_string()
+                + &String::from_utf8_lossy(&out.stderr);
+            assert!(all.contains(said), "{version} {args:?}: {all}");
+            if version != "7" {
+                assert!(
+                    all.contains(
+                        "Nothing was changed. Move the old store aside or pass another --store."
+                    ),
+                    "{version} {args:?}: {all}"
+                );
+            }
+            assert_eq!(
+                std::fs::read(mac.store()).unwrap(),
+                before,
+                "{version} {args:?}"
+            );
+            for beside in ["store.db-journal", "store.db-wal", "store.db-shm"] {
+                assert!(
+                    !mac.0.join("store").join(beside).exists(),
+                    "{version} {args:?}: {beside}"
+                );
+            }
+        }
     }
 }
 
@@ -2692,15 +2598,11 @@ fn a_verdict_about_a_match_keeps_the_event_it_read_again_cut() {
 }
 
 #[test]
-fn a_refused_verdict_gives_no_store_an_id_and_makes_no_store_of_a_file() {
+fn a_refused_verdict_changes_not_a_byte_of_the_store_and_makes_no_store_of_a_file() {
     let mac = Mac::new("refusal-writes-nothing");
     mac.run();
-    let db = rusqlite::Connection::open(mac.store()).unwrap();
-    db.execute("DELETE FROM meta WHERE key = 'store_id'", [])
-        .unwrap();
-    drop(db);
     let bytes = std::fs::read(mac.store()).unwrap();
-    let v = about_finding("", "f0", "harmless", "case-1");
+    let v = about_finding(&"0".repeat(32), "f0", "harmless", "case-1");
     mac.refused(v.to_string().as_bytes(), "another_store", 2);
     assert_eq!(std::fs::read(mac.store()).unwrap(), bytes);
     std::fs::write(mac.store(), b"").unwrap();

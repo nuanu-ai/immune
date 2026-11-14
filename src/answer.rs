@@ -98,7 +98,7 @@ pub fn stopped(e: &Stop, example: &str) -> (v1::Error, u8) {
                 "store_unreadable",
                 "the store cannot be read; nothing was changed",
                 example,
-                detail,
+                &crate::store::damaged(detail),
             ),
             EXIT_STORE,
         ),

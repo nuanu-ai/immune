@@ -2636,10 +2636,10 @@ fn a_server_whose_addresses_could_not_be_listed_keeps_the_addresses_read_before(
     );
 }
 
-/// A server file from the probe before it read the release, the sources of packages, the
-/// package that owns the kernel and the package managers: dpkg's list had names and versions
-/// only, removed packages included.
-const WEB_1_OLDER_PROBE: &str = "\
+/// A server file from an earlier probe, before it printed the release, the sources of
+/// packages, the package that owns the kernel and the package managers: dpkg's list had names
+/// and versions only, removed packages included.
+const WEB_1_EARLIER_PROBE: &str = "\
 ##os
 Ubuntu 24.04.1 LTS
 ##kernel
@@ -2658,57 +2658,55 @@ docker not installed
 ";
 
 #[test]
-fn a_file_from_an_older_probe_is_still_read_links_to_nothing_and_claims_nothing_it_did_not_read() {
-    // Files the owner already has were written before the probe said who the server is,
-    // what release it runs, what each package was built from and which package owns the
-    // kernel. They are read as before; what they do not hold is a reading that read
-    // nothing, so a matcher can tell it from a reading that found nothing. The release is
-    // never guessed from the pretty name.
-    let dir = Dir::new("older-probe");
-    let servers = dir.0.join("servers");
-    put(&servers, "a.txt", WEB_1_OLDER_PROBE);
-    put(&servers, "b.txt", WEB_1_OLDER_PROBE);
-    immune_all(
-        &dir.store(),
-        &dir.input("brew.txt", SAMPLE),
-        &servers,
-        &dir.0.join("absent"),
-    );
-
-    let older = "the file came from an older probe, which did not read this";
+fn a_file_from_an_earlier_probe_is_a_failed_reading_that_says_to_run_the_probe_again() {
+    // This build reads only what the probe of this version prints. A complete file from an
+    // earlier probe is not read in part: every reading of it fails with the reason and what to
+    // do, it claims nothing, and it retracts nothing an earlier reading found.
+    let dir = Dir::new("earlier-probe");
+    let (servers, absent) = (dir.0.join("servers"), dir.0.join("absent"));
+    let brew = dir.input("brew.txt", SAMPLE);
+    put(&servers, "a.txt", WEB_1);
+    put(&servers, "b.txt", WEB_1_EARLIER_PROBE);
+    immune_all(&dir.store(), &brew, &servers, &absent);
+    let earlier = "the file came from an earlier probe, which this version does not read; run the probe again";
     assert_eq!(
         rows(
             &dir.store(),
-            "SELECT scope, kind, completeness, COALESCE(reason, '') FROM coverage
-             WHERE reader = 'servers' AND scope = 'machine:a' ORDER BY kind"
+            "SELECT kind, completeness, COALESCE(cause, 'NULL'), COALESCE(reason, '')
+             FROM coverage WHERE reader = 'servers' AND scope = 'machine:b' ORDER BY kind"
         ),
         [
-            "machine:a|containers|full|".to_string(),
-            format!("machine:a|running kernel package|none|{older}"),
-            "machine:a|sweep visit|full|".to_string(),
-            format!("machine:a|system package sources|none|{older}"),
-            "machine:a|system packages|full|".to_string(),
-            format!("machine:a|system release|none|{older}"),
+            format!("containers|none|failed|{earlier}"),
+            format!("running kernel package|none|failed|{earlier}"),
+            "sweep visit|full|NULL|".to_string(),
+            format!("system package sources|none|failed|{earlier}"),
+            format!("system packages|none|failed|{earlier}"),
+            format!("system release|none|failed|{earlier}"),
         ]
     );
-    assert_eq!(
+    assert!(
         rows(
             &dir.store(),
-            "SELECT subject, predicate, object FROM assertion
-             WHERE layer = 'live' AND subject LIKE '%machine:a%' ORDER BY subject, predicate"
-        ),
-        [
-            "component:machine:a/deb/bash|has_version|5.2.21-2ubuntu4",
-            "component:machine:a/deb/bash|part_of|machine:a",
-            "component:machine:a/deb/openssl|has_version|3.0.13-0ubuntu3.4",
-            "component:machine:a/deb/openssl|part_of|machine:a",
-            "component:machine:a/snap/core22|has_version|20240823",
-            "component:machine:a/snap/core22|part_of|machine:a",
-            "machine:a|runs_kernel|6.8.0-45-generic",
-            "machine:a|runs_os|Ubuntu 24.04.1 LTS",
-        ]
+            "SELECT subject FROM assertion WHERE layer = 'live' AND subject LIKE '%machine:b%'"
+        )
+        .is_empty()
     );
-    assert!(rows(&dir.store(), SAME_AS).is_empty());
+    // A server read before, whose file is then one an earlier probe printed, keeps what it
+    // was found to hold.
+    let live = "SELECT subject, predicate, object FROM assertion
+         WHERE layer = 'live' AND subject LIKE '%machine:a%' ORDER BY subject, predicate";
+    let before = rows(&dir.store(), live);
+    assert!(before.len() > 3, "{before:?}");
+    put(&servers, "a.txt", WEB_1_EARLIER_PROBE);
+    immune_all(&dir.store(), &brew, &servers, &absent);
+    assert_eq!(rows(&dir.store(), live), before);
+    assert_eq!(
+        causes(&dir.store(), "servers")
+            .iter()
+            .filter(|c| c.starts_with("machine:a|"))
+            .count(),
+        5
+    );
 }
 
 #[test]
@@ -4065,10 +4063,9 @@ fn reading_sessions_on_from_where_the_last_reading_stopped_leaves_what_reading_e
 }
 
 #[test]
-fn a_store_made_before_positions_were_kept_reads_every_session_once_and_nothing_changes() {
-    // A store written by an older build has no positions. Its first run with this build reads
-    // every session from the first byte and finds what it found before: nothing is added,
-    // changed or removed because of the upgrade.
+fn a_store_whose_positions_were_deleted_reads_every_session_once_and_nothing_changes() {
+    // Deleting the rows of `session_file` makes the next run read every session from the first
+    // byte, and it finds what it found before: nothing is added, changed or removed.
     let a = Agents::new("agent-upgrade");
     let app = checkout(&a.outside, "app");
     put(&app, "Cargo.lock", CARGO_LOCK);
@@ -4077,7 +4074,7 @@ fn a_store_made_before_positions_were_kept_reads_every_session_once_and_nothing_
     let before = rows(&a.store(), LIVE);
     let coverage = a.agent_coverage();
     let conn = Connection::open(a.store()).unwrap();
-    conn.execute("DROP TABLE session_file", []).unwrap();
+    conn.execute("DELETE FROM session_file", []).unwrap();
     drop(conn);
 
     let report = a.run();
@@ -5706,7 +5703,7 @@ fn an_agent_cannot_set_a_machine_aside_without_a_reason() {
 fn no_machine_is_set_aside_silently() {
     // A statement the owner did not make in the app is listed apart in the status, with its
     // reason as data, until it is withdrawn. It is never added to what needs a look. One
-    // made before who gave it was kept is not taken for one made outside the app.
+    // whose giver this build does not know is not taken for one made outside the app.
     let h = Home::new("word-outside-app", Some(SSH_CONFIG_THREE), None);
     h.run(&h.absent(), &h.none());
     h.owner(&[
@@ -5765,10 +5762,10 @@ fn no_machine_is_set_aside_silently() {
     // Withdrawn from the app: gone from the list.
     h.owner(&["machine:web-1", "withdraw", "--via", "app"]);
     assert_eq!(h.statements_outside().0, 1);
-    // A store from before who gave a statement was kept: none is listed as made outside it.
+    // A giver this build does not know: none is listed as made outside the app.
     Connection::open(h.store())
         .unwrap()
-        .execute_batch("ALTER TABLE owner_statement DROP COLUMN via")
+        .execute_batch("UPDATE owner_statement SET via = 'elsewhere'")
         .unwrap();
     assert_eq!(h.statements_outside().0, 0);
     let listed = h.owner_json(&[]);
@@ -5965,71 +5962,6 @@ fn an_unknown_or_ambiguous_name_is_an_error_that_changes_nothing() {
     // Named by its id, the machine is one.
     h.owner(&["machine:a", "retired", "--reason", "Gone"]);
     assert_eq!(rows(&h.store(), OWNER_WORDS), ["machine:a|retired|Gone|0"]);
-}
-
-#[test]
-fn a_store_of_the_current_format_takes_the_first_statement_without_losing_its_journal() {
-    // The journal is the one thing raw input cannot rebuild. The owner's store, made before
-    // the owner's word, must take it as it is.
-    let h = Home::new(
-        "word-first",
-        Some("Host web-1\n    HostName 203.0.113.5\n"),
-        None,
-    );
-    h.run(&h.absent(), &h.none());
-    h.run(&h.absent(), &h.none());
-    Connection::open(h.store())
-        .unwrap()
-        .execute_batch(
-            "DROP TABLE owner_statement;
-             CREATE TABLE journal_before (
-                 seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL,
-                 run_id TEXT NOT NULL,
-                 entry TEXT NOT NULL CHECK (entry IN ('run_started', 'added', 'changed',
-                                                      'removed', 'report', 'run_finished')),
-                 reader TEXT, scope TEXT, kind TEXT, subject TEXT, predicate TEXT,
-                 old_value TEXT, new_value TEXT, text TEXT);
-             INSERT INTO journal_before SELECT * FROM journal;
-             DROP TABLE journal;
-             ALTER TABLE journal_before RENAME TO journal;
-             CREATE TRIGGER journal_no_update BEFORE UPDATE ON journal
-                 BEGIN SELECT RAISE(ABORT, 'journal is append-only'); END;
-             CREATE TRIGGER journal_no_delete BEFORE DELETE ON journal
-                 BEGIN SELECT RAISE(ABORT, 'journal is append-only'); END;",
-        )
-        .unwrap();
-    let all = "SELECT * FROM journal ORDER BY seq";
-    let before = rows(&h.store(), all);
-    // As it is, the store is read by the view and by `immune servers`.
-    view(&h.store());
-    h.servers();
-    assert_eq!(rows(&h.store(), all), before);
-
-    h.owner(&["web-1", "retired", "--reason", "Moved to a new host"]);
-    h.run(&h.absent(), &h.none());
-
-    let after = rows(&h.store(), all);
-    assert_eq!(after[..before.len()], before[..]);
-    assert!(
-        after[before.len()].contains("|owner_said|"),
-        "{}",
-        after[before.len()]
-    );
-    let seqs: Vec<i64> = rows(&h.store(), "SELECT seq FROM journal ORDER BY seq")
-        .iter()
-        .map(|s| s.parse().unwrap())
-        .collect();
-    assert!(seqs.windows(2).all(|w| w[1] == w[0] + 1), "{seqs:?}");
-    assert_eq!(
-        rows(
-            &h.store(),
-            "SELECT value FROM meta WHERE key = 'format_version'"
-        ),
-        ["5"]
-    );
-    let conn = Connection::open(h.store()).unwrap();
-    assert!(conn.execute("DELETE FROM journal", []).is_err());
-    assert!(conn.execute("UPDATE journal SET text = ''", []).is_err());
 }
 
 #[test]
@@ -7098,70 +7030,6 @@ fn text_from_the_catalogue_is_shown_escaped_and_kept_as_read() {
     );
 }
 
-#[test]
-fn a_store_made_before_the_threat_list_takes_its_tables_and_journal_entries_without_losing_its_journal()
- {
-    // The journal is the one thing raw input cannot rebuild. The owner's store, made before
-    // the threat list, must take it as it is, in the same format.
-    let f = Feed::new("kev-old-store");
-    f.run_with(&[]);
-    f.run_with(&[]);
-    Connection::open(f.store())
-        .unwrap()
-        .execute_batch(
-            "DROP TABLE threat;
-             DROP TABLE feed_reading;
-             CREATE TABLE journal_before (
-                 seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL,
-                 run_id TEXT NOT NULL,
-                 entry TEXT NOT NULL CHECK (entry IN ('run_started', 'added', 'changed',
-                                                      'removed', 'report', 'run_finished',
-                                                      'owner_said', 'owner_withdrew')),
-                 reader TEXT, scope TEXT, kind TEXT, subject TEXT, predicate TEXT,
-                 old_value TEXT, new_value TEXT, text TEXT);
-             INSERT INTO journal_before SELECT * FROM journal;
-             DROP TABLE journal;
-             ALTER TABLE journal_before RENAME TO journal;
-             CREATE TRIGGER journal_no_update BEFORE UPDATE ON journal
-                 BEGIN SELECT RAISE(ABORT, 'journal is append-only'); END;
-             CREATE TRIGGER journal_no_delete BEFORE DELETE ON journal
-                 BEGIN SELECT RAISE(ABORT, 'journal is append-only'); END;",
-        )
-        .unwrap();
-    let all = "SELECT * FROM journal ORDER BY seq";
-    let before = rows(&f.store(), all);
-    // As it is, the store is read by the view.
-    assert!(section(&view(&f.store()), "threats").contains("has never been read"));
-    assert_eq!(rows(&f.store(), all), before);
-
-    f.run(&kev(&kev_base()));
-    f.run(&kev(&kev_plus_one()));
-
-    let after = rows(&f.store(), all);
-    assert_eq!(after[..before.len()], before[..]);
-    let entries: Vec<&str> = after[before.len()..]
-        .iter()
-        .map(|r| r.split('|').nth(3).unwrap())
-        .filter(|e| e.starts_with("threat"))
-        .collect();
-    assert_eq!(entries, ["threats_first_read", "threat_added"]);
-    let seqs: Vec<i64> = rows(&f.store(), "SELECT seq FROM journal ORDER BY seq")
-        .iter()
-        .map(|s| s.parse().unwrap())
-        .collect();
-    assert!(seqs.windows(2).all(|w| w[1] == w[0] + 1), "{seqs:?}");
-    assert_eq!(
-        rows(
-            &f.store(),
-            "SELECT value FROM meta WHERE key = 'format_version'"
-        ),
-        ["5"]
-    );
-    let conn = Connection::open(f.store()).unwrap();
-    assert!(conn.execute("DELETE FROM journal", []).is_err());
-    assert!(conn.execute("UPDATE journal SET text = ''", []).is_err());
-}
-
 /// A server file as the current probe writes it, with the given os-release fields, owners of
 /// the running kernel as `dpkg-query -S` prints them, package managers and dpkg rows as
 /// `dpkg-query -W -f='${db:Status-Abbrev}\t${Package}\t${Version}\t${source:Package}\t${source:Version}\n'`
@@ -7422,10 +7290,6 @@ fn a_server_whose_package_manager_the_program_cannot_read_is_a_reading_that_read
                 "empty",
                 &server(UBUNTU, "", "dpkg\n", "rc \tnano\t7.2-2\tnano\t7.2-2\n"),
             ),
-            (
-                "nolist",
-                &server(UBUNTU, "", "dpkg\n", "").replace("##dpkg_with_source\n", ""),
-            ),
         ],
     );
 
@@ -7451,10 +7315,6 @@ fn a_server_whose_package_manager_the_program_cannot_read_is_a_reading_that_read
     assert_eq!(
         reading_of(&store, "empty", "system packages"),
         "none|the package list is empty"
-    );
-    assert_eq!(
-        reading_of(&store, "nolist", "system packages"),
-        "none|the sweep has no package list"
     );
     let partial = "partial|only dpkg is read; packages of rpm are not";
     assert_eq!(reading_of(&store, "both", "system packages"), partial);
@@ -7821,7 +7681,7 @@ fn the_probe_asks_dpkg_which_package_owns_the_running_kernel_and_the_reader_read
 
     let dpkg = probe_part("echo \"##dpkg_with_source\"", "echo \"##dpkg_with_source\"");
     let file = format!(
-        "{}\n##package_managers\ndpkg\n{}\n##end\n",
+        "##os_release\n{}\n##package_managers\ndpkg\n{}\n##docker_access\ndocker not installed\n##end\n",
         run(&kernel, "/boot/vmlinuz-6.8.0-45-generic"),
         run(&dpkg, "")
     );
@@ -10190,58 +10050,6 @@ fn problem_groups(r: &serde_json::Value) -> Vec<String> {
 }
 
 #[test]
-fn a_section_an_older_probe_did_not_write_is_not_given_never_failed_and_retracts_nothing() {
-    // A file from an older probe holds no release, no sources and no kernel package. That
-    // is not a reading that failed: the source does not hold it, and an agent told it failed
-    // would try to fix what is not broken. It also says nothing about what an earlier
-    // reading found there, so nothing an earlier reading left is retracted by it.
-    let dir = Dir::new("not-given");
-    let (servers, absent) = (dir.0.join("servers"), dir.0.join("absent"));
-    let brew = dir.input("brew.txt", SAMPLE);
-    put(&servers, "a.txt", WEB_1);
-    immune_all(&dir.store(), &brew, &servers, &absent);
-    let release_and_sources = "SELECT subject, predicate, object FROM assertion
-         WHERE layer = 'live' AND predicate IN ('runs_release', 'built_from')
-         ORDER BY subject, predicate";
-    let before = rows(&dir.store(), release_and_sources);
-    assert_eq!(before.len(), 3, "{before:?}");
-
-    put(&servers, "a.txt", WEB_1_OLDER_PROBE);
-    let report = immune_all(&dir.store(), &brew, &servers, &absent);
-    // Nothing here lacks a reader, and the report says nothing about readers.
-    assert!(!report.contains("no reader"), "{report}");
-
-    assert_eq!(
-        causes(&dir.store(), "servers"),
-        [
-            "machine:a|running kernel package|none|not_given",
-            "machine:a|system package sources|none|not_given",
-            "machine:a|system release|none|not_given",
-        ]
-    );
-    assert_eq!(rows(&dir.store(), release_and_sources), before);
-    let r = status_json(&dir.store());
-    let c = &r["coverage"];
-    // The fourth is this Mac's program starts: the event level is not installed here.
-    assert_eq!(
-        (c["not_given"].as_i64(), c["failed"].as_i64()),
-        (Some(4), Some(0)),
-        "{c:#}"
-    );
-    assert_eq!(c["none"], 4, "{c:#}");
-    assert_eq!(c["unreached_total"], 0, "{c:#}");
-    assert_eq!(
-        problem_groups(&r),
-        [
-            "not_given|events|program starts on this Mac, from Apple's eslogger|1",
-            "not_given|servers|running kernel package|1",
-            "not_given|servers|system package sources|1",
-            "not_given|servers|system release|1",
-        ]
-    );
-}
-
-#[test]
 fn a_lockfile_of_a_kind_without_a_reader_is_named_as_such_by_status_and_the_report() {
     // A lockfile this build cannot read is not a reading that failed: the build has no reader
     // for it. What the build cannot judge on this estate is part of every report, and
@@ -10360,6 +10168,30 @@ fn a_lockfile_of_a_kind_without_a_reader_is_named_as_such_by_status_and_the_repo
     );
 }
 
+/// A server file whose system does not give its release and whose packages give no source.
+const WEB_1_NOT_GIVEN: &str = "\
+##os
+Ubuntu 24.04.1 LTS
+##os_release
+VERSION_CODENAME\tnoble
+##kernel
+6.8.0-45-generic
+##kernel_package
+##package_managers
+dpkg
+##reboot_required
+no
+##pve
+##dpkg_with_source
+ii \tbash\t5.2.21-2ubuntu4\t\t
+ii \topenssl\t3.0.13-0ubuntu3.4\t\t
+##snap
+core22\t20240823
+##docker_access
+docker not installed
+##end
+";
+
 #[test]
 fn a_machine_that_could_not_be_reached_is_named_once_and_what_it_leaves_unread_is_not_repeated() {
     // A visit that failed and a sweep that broke off before its end both leave no current
@@ -10373,7 +10205,7 @@ fn a_machine_that_could_not_be_reached_is_named_once_and_what_it_leaves_unread_i
     put(
         &servers,
         "web-new.txt",
-        &format!("##taken_at\n{taken}\n{WEB_1_OLDER_PROBE}"),
+        &format!("##taken_at\n{taken}\n{WEB_1_NOT_GIVEN}"),
     );
     h.run(&servers, &h.none());
     let (first, second) = (1_767_412_800, 1_767_499_200); // 2026-01-03 and 2026-01-04 04:00 UTC
@@ -10433,7 +10265,6 @@ fn a_machine_that_could_not_be_reached_is_named_once_and_what_it_leaves_unread_i
         problem_groups(&r),
         [
             "not_given|events|program starts on this Mac, from Apple's eslogger|1",
-            "not_given|servers|running kernel package|1",
             "not_given|servers|system package sources|1",
             "not_given|servers|system release|1",
         ],
@@ -10449,11 +10280,9 @@ fn a_machine_that_could_not_be_reached_is_named_once_and_what_it_leaves_unread_i
 }
 
 #[test]
-fn a_store_from_before_causes_were_kept_shows_its_incomplete_readings_as_failed() {
-    // A store written before the cause was kept has incomplete readings with no cause. Not
-    // knowing why, the program never calls them anything milder than failed, and what this
-    // build has no reader for is not computed rather than given as nothing. A run on such a
-    // store adds what it lacks and leaves the old rows as they were.
+fn an_incomplete_reading_without_a_cause_is_never_called_milder_than_failed() {
+    // An incomplete reading whose cause the store does not hold is, not knowing why, never
+    // called anything milder than failed.
     let w = Watch::new("before-causes");
     std::fs::create_dir_all(w.home()).unwrap();
     let shop = checkout(w.home(), "dev/shop");
@@ -10471,9 +10300,9 @@ fn a_store_from_before_causes_were_kept_shows_its_incomplete_readings_as_failed(
         .unwrap();
     let r = status_json(&w.store());
     assert_eq!(classes(&r), [2, 0, 0]);
-    // For a person they are not a failure of his Mac: the first run of this build reads them
-    // again and says why, so a status read before it, or while it runs, is not alarmed by
-    // numbers that run is about to change.
+    // For a person they are not a failure of his Mac: the next run reads them again and says
+    // why, so a status read before it, or while it runs, is not alarmed by numbers that run is
+    // about to change.
     assert_eq!(r["this_mac"]["state"], "watched", "{r:#}");
     assert!(
         r["not_covered"]
@@ -10483,48 +10312,6 @@ fn a_store_from_before_causes_were_kept_shows_its_incomplete_readings_as_failed(
             .all(|u| u["id"] != "could-not-read"),
         "{r:#}"
     );
-    conn.execute_batch("DROP TABLE coverage_lack; ALTER TABLE coverage DROP COLUMN cause;")
-        .unwrap();
-    drop(conn);
-    let r = status_json(&w.store());
-    assert_eq!(classes(&r), [2, 0, 0]);
-    assert!(
-        problem_groups(&r).contains(&"failed|lockfiles|lockfile dependencies|1".to_string()),
-        "{r:#}"
-    );
-    assert!(r["no_reader_for"].is_null(), "{r:#}");
-    assert!(
-        r["not_computed"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|n| n["section"] == "no_reader_for"),
-        "{r:#}"
-    );
-
-    w.run();
-    let ids: Vec<serde_json::Value> = status_json(&w.store())["not_covered"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|u| u["id"].clone())
-        .collect();
-    assert!(ids.contains(&"not-understood".into()), "{ids:?}");
-    assert_eq!(
-        rows(
-            &w.store(),
-            "SELECT value FROM meta WHERE key = 'format_version'"
-        ),
-        ["5"]
-    );
-    assert_eq!(
-        rows(
-            &w.store(),
-            "SELECT COUNT(*) FROM coverage WHERE completeness != 'full' AND cause IS NULL"
-        ),
-        ["1"]
-    );
-    assert_eq!(classes(&status_json(&w.store())), [0, 1, 1]);
 }
 
 /// Every string of a value that is not under a key ending in `_text`.
@@ -11941,9 +11728,8 @@ fn expected_hides_a_finding_until_its_end_and_only_a_change_after_the_mark_opens
 }
 
 #[test]
-fn neither_a_baseline_nor_the_first_run_of_this_build_on_an_older_store_raises_anything() {
-    // Everything found on the first reading is the baseline. A store whose watched places were
-    // read before this build looked for findings must not turn its history into findings.
+fn a_first_reading_of_every_kind_of_place_is_the_baseline_and_raises_nothing() {
+    // Everything found on the first reading is the baseline.
     // A match of an indicator is not a change but a state the list asks about, so it is found
     // at the first reading: see tests/runs_by_itself.rs. So is a dependency on a malicious or
     // exploited package: see tests/vulnerability_data.rs.
@@ -11956,37 +11742,6 @@ fn neither_a_baseline_nor_the_first_run_of_this_build_on_an_older_store_raises_a
         (s.raise)(&w);
     }
     w.run();
-    assert!(needs_findings(&w.store()).is_empty());
-    put(w.home(), ".zshrc", "export EDITOR=nano\n");
-    w.run();
-    // As the store was before this build: the change is in the journal, nothing else.
-    Connection::open(w.store())
-        .unwrap()
-        .execute_batch("DROP TABLE finding_basis; DROP TABLE finding;")
-        .unwrap();
-    let r = status_json(&w.store());
-    assert!(r["needs_a_look"].is_null());
-    assert!(
-        r["not_computed"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|n| n["section"] == "needs_a_look")
-    );
-    let (_, printed, _) = status_out(&w.store(), &[]);
-    assert!(printed.contains("Needs a look: not known yet"), "{printed}");
-    let page = &view_pages(&w.store())[0].1;
-    // The headline says it cannot tell, and the line under it says why.
-    let band = section(page, "this-mac");
-    assert!(
-        band.contains("<h1>I can't tell</h1>")
-            && band.contains(
-                " · no run of this build has looked for findings yet; the next run does · "
-            ),
-        "{band}"
-    );
-    let report = w.run();
-    assert!(report.contains(" Nothing needs a look."), "{report}");
     assert!(needs_findings(&w.store()).is_empty());
 }
 
@@ -12525,9 +12280,9 @@ fn nothing_is_quieted_silently() {
 }
 
 #[test]
-fn an_answer_from_before_who_gave_it_was_kept_is_not_shown_as_given_outside_the_app() {
-    // Before this version nothing kept who gave an answer, and most were given in the app.
-    // Such an answer is never listed as quieted outside the app; the page and the finding
+fn an_answer_whose_giver_this_build_does_not_know_is_not_shown_as_given_outside_the_app() {
+    // Who gave an answer is kept as a word, and a later build may keep one this build does not
+    // know. Such an answer is never listed as quieted outside the app; the page and the finding
     // say plainly that who gave it is not known.
     let w = Watch::new("answer-before-via");
     let (profile, ..) = three_findings(&w);
@@ -12536,10 +12291,9 @@ fn an_answer_from_before_who_gave_it_was_kept_is_not_shown_as_given_outside_the_
         &w.store(),
         &[&profile, "seen", "--via", "app", "--journal-seq", &read],
     );
-    // The store as an older version left it: no column for who gave an answer.
     Connection::open(w.store())
         .unwrap()
-        .execute_batch("ALTER TABLE finding DROP COLUMN via")
+        .execute_batch("UPDATE finding SET via = 'elsewhere' WHERE via IS NOT NULL")
         .unwrap();
     assert_eq!(outside_app(&w.store()), (0, vec![]));
     let all = findings_json(&w.store(), &["--all"]);
@@ -12561,7 +12315,8 @@ fn an_answer_from_before_who_gave_it_was_kept_is_not_shown_as_given_outside_the_
         row.contains(" given before this version recorded who</span>"),
         "{row}"
     );
-    // Opened by this version, the store takes the column and the answer stays unknown.
+    // A run leaves the word as it is, and the answer stays unknown.
+    w.run();
     assert_eq!(outside_app(&w.store()), (0, vec![]));
 }
 

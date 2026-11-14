@@ -208,9 +208,8 @@ pub struct Summary {
     pub catalogue: Option<Catalogue>,
     /// Every change of a watched place the journal holds, oldest first.
     pub changes: Vec<FileChange>,
-    /// What this build has no reader for on this estate; `None` on a store made before it
-    /// was recorded.
-    pub no_reader_for: Option<Vec<NoReader>>,
+    /// What this build has no reader for on this estate.
+    pub no_reader_for: Vec<NoReader>,
     /// What is installed and whether it changed in place; `None`: never read.
     pub integrity: Option<crate::integrity::Summary>,
     /// Each feed of vulnerability data: what it holds and how its latest reading went.
@@ -230,15 +229,7 @@ pub struct NoReader {
 }
 
 /// What the latest readings found this build has no reader for, most places first.
-fn no_reader_for(conn: &Connection) -> rusqlite::Result<Option<Vec<NoReader>>> {
-    let has_table: bool = conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'coverage_lack')",
-        [],
-        |r| r.get(0),
-    )?;
-    if !has_table {
-        return Ok(None);
-    }
+fn no_reader_for(conn: &Connection) -> rusqlite::Result<Vec<NoReader>> {
     conn.prepare(&format!(
         "{}
          SELECT l.what, l.name, COUNT(DISTINCT c.scope) AS places
@@ -255,8 +246,7 @@ fn no_reader_for(conn: &Connection) -> rusqlite::Result<Option<Vec<NoReader>>> {
             places: r.get(2)?,
         })
     })?
-    .collect::<rusqlite::Result<_>>()
-    .map(Some)
+    .collect()
 }
 
 /// Reads what `run` left. `home` is the store's folder, where the sweep's skip list is.
@@ -614,15 +604,6 @@ fn watched_summary(
 
 /// The latest reading of the threat catalogue, with what it changed in the threat list.
 pub fn catalogue(conn: &Connection) -> rusqlite::Result<Option<Catalogue>> {
-    // A store made before the threat list has no tables for it until a run opens it.
-    let has_tables: bool = conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'feed_reading')",
-        [],
-        |r| r.get(0),
-    )?;
-    if !has_tables {
-        return Ok(None);
-    }
     type Row = (i64, String, i64, String, Option<String>, Option<i64>);
     let latest: Option<Row> = conn
         .query_row(
@@ -710,9 +691,8 @@ pub struct State {
     pub presence_only: BTreeMap<String, i64>,
     /// What needs a look now: findings only.
     pub needs: findings::Needs,
-    /// The findings whose answer is in force now, the latest answer first; `None` before
-    /// any run of this build looked for findings.
-    pub answered: Option<Vec<findings::Item>>,
+    /// The findings whose answer is in force now, the latest answer first.
+    pub answered: Vec<findings::Item>,
     /// The owner's statements that stand: machines set aside as retired or not theirs.
     pub standing: Vec<crate::owner::Standing>,
     /// Is this Mac watched, and how.
@@ -940,7 +920,7 @@ pub fn message(
             reason: reason.to_string(),
         });
     };
-    out.store_id = crate::store::id(conn)?;
+    out.store_id = Some(crate::store::id(conn)?);
     // Of the same state of the store as what needs a look: the caller reads `state` and this in
     // one transaction.
     out.journal_seq = Some(findings::journal_seq(conn)?);
@@ -1014,25 +994,18 @@ pub fn message(
                 Some(i) => out.integrity = Some(crate::integrity::message(i)),
                 None => absent("integrity", "installed software has never been read"),
             }
-            match &s.no_reader_for {
-                Some(list) => {
-                    out.no_reader_for = Some(v1::NoReaderFor {
-                        items: list
-                            .iter()
-                            .take(NO_READER_SHOWN)
-                            .map(|r| v1::NoReader {
-                                what: r.what.clone(),
-                                what_text: r.name.as_deref().map(whole),
-                                where_count: n(r.places),
-                            })
-                            .collect(),
+            out.no_reader_for = Some(v1::NoReaderFor {
+                items: s
+                    .no_reader_for
+                    .iter()
+                    .take(NO_READER_SHOWN)
+                    .map(|r| v1::NoReader {
+                        what: r.what.clone(),
+                        what_text: r.name.as_deref().map(whole),
+                        where_count: n(r.places),
                     })
-                }
-                None => absent(
-                    "no_reader_for",
-                    "the store was made before this was recorded; the next run records it",
-                ),
-            }
+                    .collect(),
+            });
         }
         None => {
             for section in [
@@ -1055,74 +1028,60 @@ pub fn message(
         out.coverage = Some(coverage_message(&st.problems));
     }
     // Every finding, so that a finding named from another (a verdict's) is given by reference.
-    let found = findings::all(conn, now)?.unwrap_or_default();
+    let found = findings::all(conn, now)?;
     let items: Vec<findings::Item> = found.iter().map(findings::item).collect();
     let refs = crate::finding_answer::refs(&items);
     let store_id = out.store_id.clone();
-    if st.needs.findings_unknown {
-        absent(
-            "needs_a_look",
-            "no run of this build has looked for findings yet; the next run does",
-        );
-    } else {
-        let all = &st.needs.items;
-        // The cut is taken per source, in the one order, urgent first: up to `NEEDS_SHOWN` of
-        // the core's findings and up to as many of the response layer's, so that neither source
-        // can push the other's findings out of the list. Within a source the order puts urgent
-        // findings first, so its cut never drops an urgent finding while it keeps one that is
-        // not; `urgent_total` says how many urgent ones there are over both.
-        let mut taken = [0; 2];
-        let mut kept: Vec<&findings::Item> = Vec::new();
-        for i in all {
-            let source = usize::from(i.rule == crate::verdict::RULE);
-            taken[source] += 1;
-            if taken[source] <= NEEDS_SHOWN {
-                kept.push(i);
-            }
+    let all = &st.needs.items;
+    // The cut is taken per source, in the one order, urgent first: up to `NEEDS_SHOWN` of
+    // the core's findings and up to as many of the response layer's, so that neither source
+    // can push the other's findings out of the list. Within a source the order puts urgent
+    // findings first, so its cut never drops an urgent finding while it keeps one that is
+    // not; `urgent_total` says how many urgent ones there are over both.
+    let mut taken = [0; 2];
+    let mut kept: Vec<&findings::Item> = Vec::new();
+    for i in all {
+        let source = usize::from(i.rule == crate::verdict::RULE);
+        taken[source] += 1;
+        if taken[source] <= NEEDS_SHOWN {
+            kept.push(i);
         }
-        let mut shown = Vec::new();
-        for i in kept {
-            let f = found.iter().find(|f| f.id == i.id);
-            shown.push(v1::LookFinding {
-                finding: Some(crate::finding_answer::listed(i, store_id.as_deref(), &refs)),
-                meaning: i.words.meaning.to_string(),
-                advice: i.words.advice.to_string(),
-                value_text: i.value.as_deref().map(whole),
-                technique_text: i.technique.map(whole),
-                change: i.change.as_deref().map(crate::finding_answer::change_of),
-                evidence: match f {
-                    Some(f) => crate::finding_answer::evidence(conn, f)?
-                        .map(|body| v1::Evidence { body: Some(body) }),
-                    None => None,
-                },
-            });
-        }
-        out.needs_a_look = Some(v1::NeedsALook {
-            items: shown,
-            total: n(all.len()),
-            urgent_total: n(all.iter().filter(|i| i.urgent()).count()),
+    }
+    let mut shown = Vec::new();
+    for i in kept {
+        let f = found.iter().find(|f| f.id == i.id);
+        shown.push(v1::LookFinding {
+            finding: Some(crate::finding_answer::listed(i, store_id.as_deref(), &refs)),
+            meaning: i.words.meaning.to_string(),
+            advice: i.words.advice.to_string(),
+            value_text: i.value.as_deref().map(whole),
+            technique_text: i.technique.map(whole),
+            change: i.change.as_deref().map(crate::finding_answer::change_of),
+            evidence: match f {
+                Some(f) => crate::finding_answer::evidence(conn, f)?
+                    .map(|body| v1::Evidence { body: Some(body) }),
+                None => None,
+            },
         });
     }
-    match &st.answered {
-        Some(answered) => {
-            let outside: Vec<&findings::Item> = answered
-                .iter()
-                .filter(|i| i.answer.as_ref().is_some_and(|a| a.via.outside_app()))
-                .collect();
-            out.answered_outside_app = Some(v1::AnsweredOutsideApp {
-                total: n(outside.len()),
-                items: outside
-                    .iter()
-                    .take(NEEDS_SHOWN)
-                    .map(|i| crate::finding_answer::listed(i, store_id.as_deref(), &refs))
-                    .collect(),
-            });
-        }
-        None => absent(
-            "answered_outside_app",
-            "no run of this build has looked for findings yet; the next run does",
-        ),
-    }
+    out.needs_a_look = Some(v1::NeedsALook {
+        items: shown,
+        total: n(all.len()),
+        urgent_total: n(all.iter().filter(|i| i.urgent()).count()),
+    });
+    let outside: Vec<&findings::Item> = st
+        .answered
+        .iter()
+        .filter(|i| i.answer.as_ref().is_some_and(|a| a.via.outside_app()))
+        .collect();
+    out.answered_outside_app = Some(v1::AnsweredOutsideApp {
+        total: n(outside.len()),
+        items: outside
+            .iter()
+            .take(NEEDS_SHOWN)
+            .map(|i| crate::finding_answer::listed(i, store_id.as_deref(), &refs))
+            .collect(),
+    });
     out.statements_outside_app = Some(crate::owner::outside_app(&st.standing, NEEDS_SHOWN));
     out.not_computed = not_computed;
     let _ = value_of::<v1::Level>;

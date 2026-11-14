@@ -628,10 +628,7 @@ fn matched(out: &mut String, st: &crate::status::State, level: Option<&Level>) -
         if let Some(i) = st.needs.items.iter().find(of) {
             return Some((i.id.as_str(), true));
         }
-        st.answered
-            .as_ref()
-            .and_then(|a| a.iter().find(of))
-            .map(|i| (i.id.as_str(), false))
+        st.answered.iter().find(of).map(|i| (i.id.as_str(), false))
     };
     let mut rows: Vec<Row> = week
         .iter()

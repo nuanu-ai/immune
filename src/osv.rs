@@ -189,12 +189,8 @@ pub fn last_good_at(conn: &Connection, source: &str) -> rusqlite::Result<Option<
     )
 }
 
-/// Why the feed's latest reading failed, when it did. `None` in a store made before the
-/// feeds' tables.
+/// Why the feed's latest reading failed, when it did.
 pub fn last_failure(conn: &Connection, source: &str) -> rusqlite::Result<Option<String>> {
-    if !has_tables(conn)? {
-        return Ok(None);
-    }
     Ok(conn
         .query_row(
             "SELECT reason FROM feed_reading WHERE source = ?1 AND outcome = 'failed'
@@ -230,17 +226,6 @@ pub fn lock_fetch(home: &Path) -> std::io::Result<Option<std::fs::File>> {
     }
 }
 
-/// Whether the store has the feeds' tables: one made before them has none until a run
-/// opens it.
-fn has_tables(conn: &Connection) -> rusqlite::Result<bool> {
-    conn.query_row(
-        "SELECT COUNT(*) = 2 FROM sqlite_master
-         WHERE type = 'table' AND name IN ('advisory', 'feed_reading')",
-        [],
-        |r| r.get(0),
-    )
-}
-
 /// Asks for a feed, or takes the archive given instead. Run before the run lock is taken, with
 /// the store open only to read, or with no store yet: what it needs of the store, the ETag
 /// and when the feed was last read, is read first, and the download touches nothing in it.
@@ -259,10 +244,6 @@ pub fn get(
             downloaded: false,
         });
     }
-    let conn = match conn {
-        Some(conn) if has_tables(conn)? => Some(conn),
-        _ => None,
-    };
     if feed.every > 0
         && let Some(conn) = conn
         && let Some(at) = last_good_at(conn, feed.source)?
@@ -1282,22 +1263,8 @@ impl State {
 
 /// The state of every feed.
 pub fn states(conn: &Connection) -> rusqlite::Result<Vec<State>> {
-    let has_tables = has_tables(conn)?;
     let mut out = Vec::new();
     for feed in &FEEDS {
-        if !has_tables {
-            out.push(State {
-                feed,
-                latest: None,
-                good_at: None,
-                changed_at: None,
-                records: 0,
-                malicious: 0,
-                withdrawn: 0,
-                counts: None,
-            });
-            continue;
-        }
         let latest = conn
             .query_row(
                 "SELECT run_id, at, outcome, reason FROM feed_reading

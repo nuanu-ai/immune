@@ -23,7 +23,7 @@
 
 use crate::contract::{v1, value_of};
 use crate::events::{
-    self, Arrival, Arrivals, Evidence, Hit, Lacked, LineAt, Place, Queue, Stretch, WentTo,
+    self, Arrival, Arrivals, Evidence, Hit, Lacked, LineAt, Place, Queue, Stretch,
 };
 use crate::secrets::Args;
 use crate::sigma::{Kind, Meta, Placement, Reason, Rules};
@@ -41,7 +41,7 @@ const FORMAT: u32 = 1;
 /// small too.
 pub const LIMIT: usize = 1000;
 
-const AFTER: &str = "--after takes the place an answer of immune matches printed in continue_after, whole and as printed";
+const AFTER: &str = "--after takes the place an answer of immune matches printed in continue_after, whole and as printed; for a place this version cannot read, such as one an earlier version printed, run immune matches without --after to start from the oldest line kept";
 
 /// Why rules for file events judge nothing while the collector is not installed.
 const NOT_INSTALLED: &str = "the event level is not installed";
@@ -105,7 +105,7 @@ pub fn matches_cmd(args: &MatchesArgs) -> ExitCode {
         Err(Failure::Store(why)) => (
             "store_unreadable",
             "the store cannot be read, so what became of a match cannot be told; nothing was evaluated",
-            why,
+            crate::store::damaged(&why),
             crate::EXIT_STORE,
         ),
         Err(Failure::Log(why)) => (
@@ -158,7 +158,7 @@ fn read_with(rules: &Rules, args: &MatchesArgs, now: i64) -> Result<v1::Matches,
         format: FORMAT,
         answered_at: now,
         after: after.map(|(text, _)| text.clone()),
-        store_id: store::id(&tx).map_err(|e| unreadable(&e))?,
+        store_id: Some(store::id(&tx).map_err(|e| unreadable(&e))?),
         ..Default::default()
     };
     let status_state = |c: &mut v1::Collector| {
@@ -259,7 +259,7 @@ fn raised(
         return Ok((v1::Raised::NotReadYet, Vec::new()));
     }
     Ok(match events::went_to(conn, at, &meta.name)? {
-        WentTo::Finding(id) => {
+        Some(id) => {
             // Every finding of a shipped rule is among them; the id alone stands for one that
             // is not.
             let finding = held.findings.get(&id).cloned();
@@ -269,16 +269,13 @@ fn raised(
             });
             (v1::Raised::Finding, vec![finding])
         }
-        WentTo::None => (v1::Raised::NoFinding, Vec::new()),
-        WentTo::Unrecorded => (v1::Raised::Unrecorded, Vec::new()),
+        None => (v1::Raised::NoFinding, Vec::new()),
     })
 }
 
 /// Every finding in the store, by id, as `immune project` and the others name one.
 fn finding_refs(conn: &Connection, now: i64) -> rusqlite::Result<BTreeMap<String, v1::FindingRef>> {
-    let Some(found) = findings::all(conn, now)? else {
-        return Ok(BTreeMap::new());
-    };
+    let found = findings::all(conn, now)?;
     Ok(found
         .iter()
         .map(findings::item)
@@ -853,43 +850,6 @@ mod tests {
         assert_eq!(
             named(&ask(&signer(), &store, &root, Some(&place))),
             not_in_lines
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_store_an_earlier_build_left_tells_what_it_said_arrived_as_not_yet_known() {
-        // The build before this one told a field arriving for ever after one value. Its row,
-        // the script kept and filled, is not taken for arriving: the answer says not yet known
-        // and names the rule that reads it, and is never quiet.
-        let rules = crate::sigma::testing::process_kept();
-        let (dir, root) = installed_root("old-store");
-        log_file(
-            &root,
-            "exec-20261004T00.jsonl",
-            &(git(1, "old") + &git(2, "old")),
-            100,
-        );
-        let store = dir.join("store.db");
-        let conn = crate::store::open(&store).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE event_arrival (kind TEXT NOT NULL, keep TEXT NOT NULL,
-                 kept INTEGER NOT NULL, filled INTEGER, PRIMARY KEY (kind, keep));
-             INSERT INTO event_arrival VALUES ('program_start', 'script', 1, 5);",
-        )
-        .unwrap();
-        drop(conn);
-        let a = ask(&rules, &store, &root, None);
-        let c = a.collector.as_ref().unwrap();
-        assert!(c.arriving.is_empty(), "{:?}", c.arriving);
-        assert!(c.not_yet_known.contains(&"script".to_string()));
-        assert!(!quiet(&a));
-        assert_eq!(
-            named(&a),
-            [(
-                v1::UnevaluatedReason::NotCollected as i32,
-                Some(NOT_YET_KNOWN)
-            )]
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

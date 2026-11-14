@@ -19,6 +19,9 @@ const WAIT: Duration = Duration::from_secs(30);
 /// Where the event level's log is, under the system root.
 const EVENT_LOG: &str = "Library/Application Support/ai.nuanu.immune/event-level/log";
 
+/// A server file the probe of this version printed, with nothing in its sections.
+const SERVER: &str = "##os_release\n##kernel_package\n##package_managers\ndpkg\n##dpkg_with_source\n##docker_access\n##end\n";
+
 /// An invented Mac: a home folder, a system root and a store folder, all temporary.
 struct Mac {
     root: PathBuf,
@@ -494,7 +497,7 @@ fn a_watchers_reading_shows_in_the_view_as_what_it_is_and_not_as_a_run_that_did_
     mac.put(".zshrc", "one\n");
     let servers = mac.root.join("servers");
     std::fs::create_dir_all(&servers).unwrap();
-    std::fs::write(servers.join("web-1.txt"), "##end\n").unwrap();
+    std::fs::write(servers.join("web-1.txt"), SERVER).unwrap();
     assert!(
         mac.run_cmd_servers(&servers)
             .output()
@@ -2482,7 +2485,7 @@ fn a_sample_that_opens_a_finding_says_so_in_one_line_and_a_quiet_sample_says_not
     // A server read by the run, which a sample never reads.
     let servers = mac.root.join("servers");
     std::fs::create_dir_all(&servers).unwrap();
-    std::fs::write(servers.join("web-1.txt"), "##end\n").unwrap();
+    std::fs::write(servers.join("web-1.txt"), SERVER).unwrap();
     assert!(
         mac.run_cmd_servers(&servers)
             .output()
@@ -2756,14 +2759,14 @@ fn a_mac_checked_every_hour_keeps_no_more_readings_after_a_month_than_after_a_da
 
 #[test]
 fn the_first_check_of_a_store_kept_whole_before_folds_its_readings_and_gives_the_space_back() {
-    // A store an earlier build kept every reading of: its first full run folds them, and the
-    // file shrinks, so that a year of readings does not stay on the disk as free pages.
+    // A store that holds a year of readings older than every run kept whole: its next full run
+    // folds them, and the file shrinks, so that they do not stay on the disk as free pages.
     let mac = Mac::new("earlier");
     mac.put(".zshrc", "export A=1\n");
     mac.run();
     {
-        // A year of hourly readings before the first, as an earlier build left them: older
-        // than every run, so with ids below them.
+        // A year of hourly readings before the first: older than every run, so with ids below
+        // them.
         let conn = Connection::open(mac.store()).unwrap();
         conn.execute(
             "WITH RECURSIVE n (i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 8760)
@@ -3001,28 +3004,6 @@ fn a_link_outside_every_watched_place_turned_while_the_watcher_was_stopping_is_r
     assert_ne!(read_by(&mac, AGENTS), agents);
     assert_eq!(count(&first, "changed"), 1, "{first}");
     assert!(w.stop().success());
-}
-
-#[test]
-fn the_event_id_an_earlier_build_kept_is_emptied_so_that_build_reads_every_place_at_its_start() {
-    // An earlier build replays from the id in `watcher.event_id` and reads every place only
-    // when there is none. An id left there while this build ran would have it replay from a
-    // point whose history it was never shown to cover.
-    let mac = Mac::new("event-id");
-    mac.put(".zshrc", "one\n");
-    assert!(mac.watch().started().stop().success());
-    let row = "SELECT event_id || '|' || volumes FROM watcher";
-    assert_eq!(mac.rows(row), ["|"]);
-    // As an earlier build left the row.
-    let conn = Connection::open(mac.store()).unwrap();
-    conn.execute(
-        "UPDATE watcher SET event_id = '4242', volumes = '0123456789abcdef'",
-        [],
-    )
-    .unwrap();
-    drop(conn);
-    assert!(mac.watch().started().stop().success());
-    assert_eq!(mac.rows(row), ["|"]);
 }
 
 /// A watcher that does not look at what to watch while a test runs: what it owes is not made.
