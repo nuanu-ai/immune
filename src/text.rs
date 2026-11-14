@@ -1010,6 +1010,12 @@ fn counted_sentences(s: &v1::Status, f: &v1::FinishedCheck) -> String {
             });
         }
     }
+    if f.set_aside > 0 {
+        line.push_str(&format!(
+            " {} set aside as no longer read by this version, not counted as removed.",
+            count(f.set_aside, "fact", "facts")
+        ));
+    }
     line.push(' ');
     line.push_str(&match &s.watched {
         None => "Watched places: never read.".to_string(),

@@ -1933,9 +1933,7 @@ fn unread(
     now: i64,
     extra: &[String],
 ) -> Option<String> {
-    let fresh = |r: &Latest| {
-        crate::store::age(r.at, now).is_some() && latest_run.is_some_and(|run| r.at >= run)
-    };
+    let fresh = |r: &Latest| crate::look::fresh(r.at, latest_run, now);
     let mut seen = BTreeSet::new();
     let mut said: Vec<String> = readings
         .iter()
@@ -1990,10 +1988,9 @@ fn readings_of(count: Count, coverage: &[Latest]) -> Vec<&Latest> {
         Count::Files(as_) => {
             let mut kinds = crate::autorun::kinds_of(as_);
             kinds.extend(
-                watched::PLACES
-                    .iter()
-                    .filter(|p| p.watched_as == as_)
-                    .map(|p| p.kind.to_string()),
+                crate::autorun::places()
+                    .filter(|(_, k)| k.0 == as_)
+                    .map(|(_, k)| k.1.to_string()),
             );
             kinds
         }
@@ -2297,33 +2294,30 @@ fn ways(conn: &Connection, out: &mut String, this: Option<&str>) -> Out {
         )?;
         out.push_str("<div class=\"scroll\"><table class=\"dense\">\n");
         view::thead(out, &["File", "What runs it", "Asks first", "Read", column]);
-        for p in autorun::POINTS
-            .iter()
-            .filter(|p| (p.scope == Scope::Home) == home)
-        {
+        for (p, way) in autorun::ways().filter(|(p, _)| (p.scope == Scope::Home) == home) {
             let words = if home {
-                p.trigger.words_home()
+                way.trigger.words_home()
             } else {
-                p.trigger.words()
+                way.trigger.words()
             };
-            let runs = format!("{} ({})", capital(words), p.tool);
+            let runs = format!("{} ({})", capital(words), way.tool);
             let read = match p.part {
                 Part::Present => "Not read",
-                Part::Entries(_) => "Read: every entry",
-                _ if p.hourly.is_some() => "Read at each hourly check",
+                Part::Entries => "Read: every entry",
+                _ if p.hourly().is_some() => "Read at each hourly check",
                 Part::Folders(_) => "Read: every folder, by name",
                 _ => "Read",
             };
             let here = match p.scope {
                 Scope::NamedBy(_) => "Not looked for".to_string(),
-                Scope::Checkout => grouped(holding(&p.name(), false)?),
+                Scope::Checkout | Scope::System => grouped(holding(&p.name(), false)?),
                 Scope::Home if holding(&p.name(), true)? > 0 => "Yes".to_string(),
                 Scope::Home => "No".to_string(),
             };
             out.push_str("<tr>");
             view::td(out, "mono", &p.name())?;
             view::td(out, "", &runs)?;
-            view::td(out, "", p.asks.words())?;
+            view::td(out, "", way.asks.words())?;
             view::td(out, "", read)?;
             view::td(out, "", &here)?;
             out.push_str("</tr>\n");
@@ -2764,6 +2758,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_list_of_watched_places_or_of_ways_read_at_a_time_ahead_of_the_clock_never_says_none_found()
+    {
+        // A time from the future proves nothing, whichever kind of autorun point the list is
+        // of: a kind of watched place, or a way a project runs code.
+        let (run, now) = (1_000_000, 1_000_100);
+        let mcp = crate::autorun::POINTS
+            .iter()
+            .find(|p| p.paths == [".mcp.json"])
+            .unwrap();
+        for (count, kind) in [
+            (
+                Count::Files(watched::PROFILE),
+                watched::PROFILE_KIND.to_string(),
+            ),
+            (Count::Files(crate::autorun::AGENT_START.0), mcp.kind()),
+        ] {
+            let at = |at| Latest {
+                reader: watched::READER.to_string(),
+                scope: "machine:mac".to_string(),
+                kind: kind.clone(),
+                completeness: "full".to_string(),
+                reason: None,
+                cause: None,
+                at,
+                last_full: Some(at),
+            };
+            let ahead = [at(now + crate::store::AHEAD_ALLOWED + 1)];
+            let said = unread(&readings_of(count, &ahead), Some(run), now, &[]);
+            assert!(said.is_some_and(|s| s.contains(&kind)), "{kind}");
+            let on_time = [at(run)];
+            assert_eq!(
+                unread(&readings_of(count, &on_time), Some(run), now, &[]),
+                None
+            );
+        }
+    }
+
+    #[test]
     fn a_list_says_nothing_is_there_only_when_every_reading_that_fills_it_is_full_and_fresh() {
         // "None found" on a list whose reading failed, was partial, was taken by an earlier
         // check, is dated ahead of the clock, or never ran, is false calm.
@@ -2980,7 +3012,7 @@ mod tests {
         // Adding a product is adding a row. Every place that tells or acts on what runs by
         // itself takes it from the table: a row read here that one of them missed would be
         // read and never told, or told and never watched live.
-        use crate::autorun::{self, POINTS};
+        use crate::autorun;
         let dir = crate::common::Scratch::at(
             std::env::temp_dir().join(format!("immune-ways-{}", std::process::id())),
         );
@@ -2997,7 +3029,7 @@ mod tests {
             .unwrap();
         drop(conn);
         let _ = std::fs::remove_dir_all(&dir);
-        for p in &POINTS {
+        for (p, way) in autorun::ways() {
             let cell = format!("<td class=\"mono\">{}</td>", esc(&p.name()));
             assert!(page.contains(&cell));
             // A row read only at the hourly check says so where it says it is read.
@@ -3005,7 +3037,7 @@ mod tests {
             let line = &rest[..rest.find("</tr>").unwrap()];
             assert_eq!(
                 line.contains(">Read at each hourly check<"),
-                p.hourly.is_some(),
+                p.hourly().is_some(),
                 "{line}"
             );
             if !p.read_here() {
@@ -3022,7 +3054,7 @@ mod tests {
                     }
                     _ => autorun::files().iter().any(|(f, _)| f == path),
                 };
-                assert_eq!(live, p.hourly.is_none(), "{path}");
+                assert_eq!(live, p.hourly().is_none(), "{path}");
                 assert!(!live || !path.contains('*'), "{path}");
             }
             assert!(registered.contains(&p.kind()), "{}", p.kind());
@@ -3037,7 +3069,7 @@ mod tests {
             assert_eq!(rules.len(), 1, "{}", p.name());
             assert_eq!(
                 (rules[0].technique, rules[0].severity, rules[0].confidence),
-                (p.technique, p.severity, p.confidence),
+                (way.technique, way.severity, way.confidence),
                 "{}",
                 p.name()
             );
@@ -3048,11 +3080,11 @@ mod tests {
     fn every_kind_of_watched_place_says_on_the_page_what_it_is_and_which_rule_tells_of_it() {
         // A kind listed with no line leaves the owner a name without a meaning, and one no
         // rule speaks about is watched without anyone being told of a change.
-        for p in &crate::watched::PLACES {
+        for (_, (watched_as, _)) in crate::autorun::places() {
             let (_, what, _) = covered::watched()
                 .into_iter()
-                .find(|w| matches!(w.0, Count::Files(a) if a == p.watched_as))
-                .unwrap_or_else(|| panic!("{}", p.watched_as));
+                .find(|w| matches!(w.0, Count::Files(a) if a == watched_as))
+                .unwrap_or_else(|| panic!("{}", watched_as));
             assert!(about(what).ends_with('.'), "{what}");
             assert_eq!(covered::rules_about(what).len(), 1, "{what}");
         }

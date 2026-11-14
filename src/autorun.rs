@@ -60,7 +60,8 @@ use std::path::Path;
 use serde_json::Value;
 
 use crate::baseline::Unit;
-use crate::watched::{self, Content, Entry, Look};
+use crate::look::{Absent, Look};
+use crate::watched::{self, Content, Entry};
 
 /// Where a row's paths are looked for.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -69,6 +70,8 @@ pub enum Scope {
     Checkout,
     /// In the home folder.
     Home,
+    /// From the root of the system, `/` unless a test gives another.
+    System,
     /// Where another file names it: the setting given. Not looked for in this version.
     NamedBy(&'static str),
 }
@@ -112,11 +115,20 @@ impl Ident {
     }
 }
 
-/// How the part that counts is taken.
+/// How the part that counts is taken. The first three are read by the watched places reader
+/// (`watched.rs`), the rest but `Present` by this file.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Part {
-    /// Every entry of a folder, read by the watched places reader as the place of this kind.
-    Entries(&'static str),
+    /// Every entry of a folder, each read as `File` is.
+    Entries,
+    /// The whole file, by its checksum; what it is when it is not a regular file.
+    File,
+    /// The values at these top-level keys of a property list, each an entry of its own named
+    /// `<file>#/<key>`, by the checksum of the value's exact encoding (`plist.rs`): for a
+    /// preferences file whose other settings change for their own reasons. A key that is not
+    /// there is no entry; a file that is not a property list is a place that failed, and a key
+    /// whose value cannot be read is a part that failed, named `<file>#/<key>`.
+    Keys(&'static [&'static str]),
     /// The folders in a folder, by what identifies each apart from its version.
     Folders(Ident),
     /// The whole file while a property of this name holds this value, in any case, anywhere.
@@ -174,26 +186,61 @@ pub struct Kept {
 /// and what it is in a line.
 pub type Watched = (&'static str, &'static str, &'static str);
 
-/// One known way code runs by itself.
-pub struct Point {
-    pub scope: Scope,
-    /// Paths from the scope; a segment may hold one `*`.
-    pub paths: &'static [&'static str],
-    pub part: Part,
+/// A kind of watched place: the literal of `watched_as` and the coverage kind of its reading.
+pub type Kind = (&'static str, &'static str);
+
+/// What a known way to run code is: the routine action, the tool, whether it asks first, the
+/// ATT&CK technique and how bad and how sure a change is.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Way {
     pub trigger: Trigger,
     pub tool: &'static str,
     pub asks: Asks,
     pub technique: Option<&'static str>,
     pub severity: &'static str,
     pub confidence: &'static str,
-    /// The page the row rests on; empty where the note found none that could be read. Data
-    /// for whoever reads or extends the table: no page of this program links out.
+}
+
+/// How a row is watched.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Watch {
+    /// A watcher subscribes to its files, so that a write to one is read within seconds.
+    Live,
+    /// Read at each full run and by a watcher's reading of every place, not at every write to
+    /// its file, for this reason.
+    Hourly(&'static str),
+    /// Not read: whether it is there is looked at by each full run.
+    Presence,
+}
+
+/// The major versions of macOS on which a row's behaviour was verified; none for a row not
+/// checked on any.
+pub type Checked = &'static [u32];
+/// A row whose behaviour no record says was verified on any version of macOS.
+pub const NOT_CHECKED: Checked = &[];
+
+/// One autorun point: a known way a file makes code run on a routine action, or a place where
+/// persistence lives. KnockKnock calls it a persistent item and osquery a startup item.
+pub struct Point {
+    pub scope: Scope,
+    /// Paths from the scope; a segment may hold one `*`.
+    pub paths: &'static [&'static str],
+    pub part: Part,
+    /// For a known way a file makes a tool run code by itself: what the way is. The ways are
+    /// what the page lists and the status counts.
+    pub way: Option<Way>,
+    /// For a watched place: what it is watched as and the coverage kind of its reading.
+    pub place: Option<Kind>,
+    pub watch: Watch,
+    /// The page or catalogue the row was taken from: the tool's or Apple's documentation, a
+    /// manual page, an ATT&CK technique, KnockKnock's or osquery's category. Empty where none
+    /// could be established. Data for whoever reads or extends the table: no page of this
+    /// program links out.
     #[allow(dead_code)]
     pub source: &'static str,
+    /// The versions of macOS the row was checked on (`not_checked_on`).
+    pub checked_on: Checked,
     pub kept: Option<Kept>,
-    /// Why a row read here is read only at each full run and when a watcher starts, not at
-    /// every write to its file; `None` for a row the watcher subscribes to.
-    pub hourly: Option<&'static str>,
 }
 
 /// The keys of Claude Code's project settings that run something or let it run unasked
@@ -312,15 +359,44 @@ const fn row(
         scope: Scope::Checkout,
         paths,
         part,
-        trigger,
-        tool,
-        asks,
-        technique: levels.0,
-        severity: levels.1,
-        confidence: levels.2,
+        way: Some(Way {
+            trigger,
+            tool,
+            asks,
+            technique: levels.0,
+            severity: levels.1,
+            confidence: levels.2,
+        }),
+        place: None,
+        watch: match part {
+            Present => Watch::Presence,
+            _ => Watch::Live,
+        },
         source,
+        checked_on: NOT_CHECKED,
         kept: None,
-        hourly: None,
+    }
+}
+
+/// A watched place: a file, or with `Entries` a folder whose every entry is watched. Each is
+/// watched live.
+const fn place(
+    kind: Kind,
+    scope: Scope,
+    path: &'static [&'static str],
+    part: Part,
+    source: &'static str,
+) -> Point {
+    Point {
+        scope,
+        paths: path,
+        part,
+        way: None,
+        place: Some(kind),
+        watch: Watch::Live,
+        source,
+        checked_on: NOT_CHECKED,
+        kept: None,
     }
 }
 
@@ -412,12 +488,79 @@ pub const EDITOR_EXTENSION: Watched = (
     "Extensions installed in an editor, each by its publisher and name; a new version of one is not news.",
 );
 
-/// Every known way, the project rows first, then the home folder. The order is the page's.
+/// The keys of the login window's preferences that name a script it runs as root at every
+/// login and logout (Apple, "Customizing Login and Logout"; KnockKnock's `LogInOutHooks`).
+const LOGIN_HOOK_KEYS: &[&str] = &["LoginHook", "LogoutHook"];
+
+/// Where the rows of watched places were taken from, as the rules and comments that came with
+/// them name it.
+const LAUNCHD: &str =
+    "MITRE ATT&CK T1543, Create or Modify System Process: Launch Agent and Launch Daemon";
+const LOGIN_HOOK: &str = "Apple, Customizing Login and Logout; KnockKnock's LogInOutHooks; MITRE ATT&CK T1037.002, Login Hook";
+const SHELL: &str = "MITRE ATT&CK T1546.004, Unix Shell Configuration Modification";
+const AUTHORIZED_KEYS: &str = "MITRE ATT&CK, SSH Authorized Keys";
+const OPENPAM: &str = "pam.conf(5) and OpenPAM's openpam_configure.c as Apple builds it; MITRE ATT&CK T1556, Modify Authentication Process: Pluggable Authentication Modules";
+const AUTH_PLUGINS: &str =
+    "MITRE ATT&CK T1556, Modify Authentication Process; Elastic's rule on authorization plugins";
+
+/// Every autorun point, one row each. The watched places first, in the order of their view and
+/// report; then the known ways, the project rows first, then the home folder, in the order of
+/// the page. The hooks of a checkout are both: a watched place and a known way.
+///
+/// The watched places hold on every Mac; none is a private key or known hosts. They were laid
+/// next to the categories Objective-See's KnockKnock enumerates and MITRE ATT&CK's persistence
+/// techniques for macOS, keeping what a program running as the user can read without a
+/// permission dialog, what current macOS still acts on, and what has a normal state. A place
+/// added later is read for the first time on a store that already exists: what it holds is
+/// told once, never raised by its kind's rule (`baseline.rs`).
 #[rustfmt::skip]
-pub const POINTS: [Point; 52] = [
+pub static POINTS: [Point; 87] = [
+    place(watched::AUTOSTARTS, Scope::Home, &["Library/LaunchAgents"], Entries, LAUNCHD),
+    place(watched::AUTOSTARTS, Scope::System, &["Library/LaunchAgents"], Entries, LAUNCHD),
+    place(watched::AUTOSTARTS, Scope::System, &["Library/LaunchDaemons"], Entries, LAUNCHD),
+    // Root's own preferences, where `sudo defaults write` puts a hook, only root can read.
+    place(watched::LOGIN_HOOKS, Scope::System, &["Library/Preferences/com.apple.loginwindow.plist"], Keys(LOGIN_HOOK_KEYS), LOGIN_HOOK),
+    place(watched::LOGIN_HOOKS, Scope::Home, &["Library/Preferences/com.apple.loginwindow.plist"], Keys(LOGIN_HOOK_KEYS), LOGIN_HOOK),
+    place(watched::PROFILES, Scope::System, &["etc/zshenv"], File, SHELL),
+    place(watched::PROFILES, Scope::System, &["etc/zprofile"], File, SHELL),
+    place(watched::PROFILES, Scope::System, &["etc/zshrc"], File, SHELL),
+    place(watched::PROFILES, Scope::System, &["etc/zlogin"], File, SHELL),
+    place(watched::PROFILES, Scope::System, &["etc/zlogout"], File, SHELL),
+    place(watched::PROFILES, Scope::System, &["etc/profile"], File, SHELL),
+    place(watched::PROFILES, Scope::System, &["etc/bashrc"], File, SHELL),
+    place(watched::PROFILES, Scope::Home, &[".zshenv"], File, SHELL),
+    place(watched::PROFILES, Scope::Home, &[".zprofile"], File, SHELL),
+    place(watched::PROFILES, Scope::Home, &[".zshrc"], File, SHELL),
+    place(watched::PROFILES, Scope::Home, &[".zlogin"], File, SHELL),
+    place(watched::PROFILES, Scope::Home, &[".zlogout"], File, SHELL),
+    place(watched::PROFILES, Scope::Home, &[".bash_profile"], File, SHELL),
+    place(watched::PROFILES, Scope::Home, &[".bash_login"], File, SHELL),
+    place(watched::PROFILES, Scope::Home, &[".profile"], File, SHELL),
+    place(watched::PROFILES, Scope::Home, &[".bashrc"], File, SHELL),
+    place(watched::PROFILES, Scope::Home, &[".bash_logout"], File, SHELL),
+    place(watched::SSH_FILES, Scope::Home, &[".ssh/config"], File, ""),
+    place(watched::SSH_FILES, Scope::Home, &[".ssh/authorized_keys"], File, AUTHORIZED_KEYS),
+    place(watched::SSH_FILES, Scope::Home, &[".ssh/rc"], File, ""),
+    place(watched::SSH_FILES, Scope::System, &["etc/ssh/ssh_config"], File, ""),
+    place(watched::SSH_FILES, Scope::System, &["etc/ssh/sshd_config"], File, ""),
+    place(watched::SSH_FILES, Scope::System, &["etc/ssh/ssh_config.d"], Entries, ""),
+    place(watched::SSH_FILES, Scope::System, &["etc/ssh/sshd_config.d"], Entries, ""),
+    // OpenPAM as Apple builds it looks for a service's policy in these, in this order, after
+    // one a device management profile installs and before `/usr/share/pam.d` (pam.conf(5);
+    // `openpam_configure.c`). A module named without a path is looked for in `/usr/lib/pam`,
+    // then in `/usr/local/lib/pam`. Only an update of macOS changes what is in `/usr/share`
+    // and `/usr/lib`.
+    place(watched::AUTHS, Scope::System, &["etc/pam.d"], Entries, OPENPAM),
+    place(watched::AUTHS, Scope::System, &["etc/pam.conf"], File, OPENPAM),
+    place(watched::AUTHS, Scope::System, &["usr/local/etc/pam.d"], Entries, OPENPAM),
+    place(watched::AUTHS, Scope::System, &["usr/local/etc/pam.conf"], File, OPENPAM),
+    place(watched::AUTHS, Scope::System, &["usr/local/lib/pam"], Entries, OPENPAM),
+    // Each plugin is a bundle: its arrival and departure are seen, a change inside it is not.
+    // Which plugins run is said by the authorization database, which is not read.
+    place(watched::AUTHS, Scope::System, &["Library/Security/SecurityAgentPlugins"], Entries, AUTH_PLUGINS),
     Point { kept: Some(TASK), ..row(&[".vscode/tasks.json"], WholeWhen(CommentsAndCommas, "runOn", "folderOpen"), OpenInEditor, "VS Code, Cursor", DependsOnSetting, (EVENT, "high", "medium"), "https://code.visualstudio.com/docs/editor/tasks") },
     row(&[".vscode/settings.json"], Select(CommentsAndCommas, VSCODE_SETTINGS), OpenInEditor, "VS Code and its forks", DependsOnSetting, (EVENT, "high", "low"), "https://code.visualstudio.com/docs/editor/workspace-trust"),
-    Point { hourly: Some(NO_FIXED_NAME), ..row(&["*.code-workspace"], Select(CommentsAndCommas, WORKSPACE), OpenInEditor, "VS Code and its forks", DependsOnSetting, (EVENT, "high", "low"), "https://maccarita.com/posts/idesaster") },
+    Point { watch: Watch::Hourly(NO_FIXED_NAME), ..row(&["*.code-workspace"], Select(CommentsAndCommas, WORKSPACE), OpenInEditor, "VS Code and its forks", DependsOnSetting, (EVENT, "high", "low"), "https://maccarita.com/posts/idesaster") },
     row(&[".vscode/mcp.json"], Select(CommentsAndCommas, &["/servers/*"]), StartAgent, "VS Code", OncePerContent, (EVENT, "high", "medium"), "https://code.visualstudio.com/docs/agents/reference/mcp-configuration"),
     row(&[".idea"], Present, OpenInEditor, "JetBrains IDEs", OncePerFolder, (EVENT, "high", "low"), "https://www.jetbrains.com/help/idea/project-security.html"),
     row(&[".zed/settings.json"], Present, OpenInEditor, "Zed", NotKnown, (EVENT, "high", "low"), "https://maccarita.com/posts/idesaster"),
@@ -447,7 +590,7 @@ pub const POINTS: [Point; 52] = [
     row(&["gradlew", "gradle/wrapper", "*.gradle", "*.gradle.kts"], Present, BuildOrTest, "Gradle, IntelliJ", DependsOnSetting, (EVENT, "high", "low"), "https://docs.gradle.org/current/userguide/gradle_wrapper.html"),
     row(&["composer.json"], Present, InstallPackages, "Composer", Never, (INSTALLER, "high", "low"), "https://getcomposer.org/doc/articles/scripts.md"),
     row(&["*.xcodeproj"], Present, BuildOrTest, "Xcode", NotKnown, (EVENT, "high", "low"), "https://attack.mitre.org/techniques/T1546/"),
-    row(&[".git/hooks"], Entries(watched::HOOK), GitCommand, "git", Never, (None, "medium", "low"), "https://git-scm.com/docs/githooks"),
+    Point { place: Some(watched::HOOKS), ..row(&[".git/hooks"], Entries, GitCommand, "git", Never, (None, "medium", "low"), "https://git-scm.com/docs/githooks") },
     row(&[".git/config"], Present, GitCommand, "git", Never, (EVENT, "high", "medium"), "https://git-scm.com/docs/git-config"),
     Point { scope: Scope::NamedBy("core.hooksPath"), ..row(&[], Present, GitCommand, "git", Never, (EVENT, "medium", "low"), "https://git-scm.com/docs/githooks") },
     row(&[".gitmodules", ".git/modules"], Present, GitCommand, "git", Never, (EVENT, "high", "low"), "https://securitylabs.datadoghq.com/articles/git-arbitrary-file-write/"),
@@ -457,7 +600,7 @@ pub const POINTS: [Point; 52] = [
     row(&[".devcontainer/devcontainer.json", ".devcontainer.json"], Select(CommentsAndCommas, DEVCONTAINER), OpenInEditor, "Dev Containers", DependsOnSetting, (EVENT, "high", "low"), "https://containers.dev/implementors/json_reference/"),
     row(&[".github/workflows"], Present, GitCommand, "a self-hosted runner", Never, (EVENT, "high", "low"), "https://www.wiz.io/blog/shai-hulud-2-0-ongoing-supply-chain-attack"),
     home(&[".claude/settings.json"], Select(Strict, CLAUDE_USER), StartAgent, "Claude Code", Never, (EVENT, "high", "medium"), "https://code.claude.com/docs/en/settings-reference"),
-    Point { hourly: Some(REWRITTEN), ..home(&[".claude.json"], Select(Strict, CLAUDE_STATE), StartAgent, "Claude Code", Never, (EVENT, "high", "medium"), "https://code.claude.com/docs/en/mcp") },
+    Point { watch: Watch::Hourly(REWRITTEN), ..home(&[".claude.json"], Select(Strict, CLAUDE_STATE), StartAgent, "Claude Code", Never, (EVENT, "high", "medium"), "https://code.claude.com/docs/en/mcp") },
     home(&["Library/Application Support/Claude/claude_desktop_config.json"], Select(Strict, MCP_SERVERS), StartAgent, "Claude Desktop", Never, (EVENT, "high", "medium"), "https://modelcontextprotocol.io/docs/develop/connect-local-servers"),
     home(&[".cursor/mcp.json"], Select(CommentsAndCommas, MCP_SERVERS), StartAgent, "Cursor", OncePerContent, (EVENT, "high", "medium"), "https://cursor.com/docs/context/mcp"),
     home(&[".cursor/hooks.json"], Select(CommentsAndCommas, &["/hooks"]), StartAgent, "Cursor", Never, (EVENT, "high", "medium"), "https://cursor.com/docs/agent/hooks"),
@@ -540,6 +683,12 @@ impl Point {
                 .map(|p| format!("~/{p}"))
                 .collect::<Vec<_>>()
                 .join(", "),
+            Scope::System => self
+                .paths
+                .iter()
+                .map(|p| format!("/{p}"))
+                .collect::<Vec<_>>()
+                .join(", "),
         }
     }
 
@@ -548,23 +697,38 @@ impl Point {
         self.part != Present
     }
 
+    /// Why the row is read only at each full run and at a watcher's reading of every place, not
+    /// at every write to its file; `None` for a row the watcher subscribes to or one not read.
+    pub fn hourly(&self) -> Option<&'static str> {
+        match self.watch {
+            Watch::Hourly(why) => Some(why),
+            _ => None,
+        }
+    }
+
     /// Whether a watcher subscribes to its files, so that a write to one is read within
     /// seconds.
     pub fn live(&self) -> bool {
-        self.read_here() && self.hourly.is_none()
+        self.read_here() && self.watch == Watch::Live
     }
 
     /// Whether it is read by this file, in a reading of its own, rather than as a place of
     /// the watched places reader.
     pub fn read_here(&self) -> bool {
-        !matches!(self.part, Present | Entries(_))
+        !matches!(self.part, Present | Entries | File | Keys(_))
     }
 
-    /// The coverage kind of the reading of this row in every checkout, or in the home folder.
+    /// Whether it is read by the watched places reader, as a place of its kind.
+    pub fn watched_place(&self) -> bool {
+        self.place.is_some() && matches!(self.part, Entries | File | Keys(_))
+    }
+
+    /// The coverage kind of the reading of this row: of its kind of place, or of this row in
+    /// every checkout or in the home folder.
     pub fn kind(&self) -> String {
         match (self.kept, self.part, self.scope) {
+            _ if self.place.is_some() => self.place.unwrap_or_default().1.to_string(),
             (Some(k), _, _) => k.kind.to_string(),
-            (_, Entries(_), _) => watched::HOOK_KIND.to_string(),
             (_, Folders(_), _) => format!("{}, every folder by name", self.name()),
             (_, _, Scope::Home) => format!("{}, the part that runs by itself", self.name()),
             _ => format!(
@@ -579,7 +743,8 @@ impl Point {
         if let Some(k) = self.kept {
             return Some(k.watched);
         }
-        match (self.scope, self.trigger) {
+        let way = self.way?;
+        match (self.scope, way.trigger) {
             (Scope::Checkout, OpenInEditor) => Some(EDITOR_OPEN),
             (Scope::Checkout, InstallPackages) => Some(PACKAGE_INSTALL),
             (Scope::Checkout, StartAgent) => Some(AGENT_START),
@@ -591,9 +756,9 @@ impl Point {
 
     /// The literal of `watched_as` of what this row finds.
     pub fn watched_as(&self) -> Option<&'static str> {
-        match self.part {
-            Entries(as_) => Some(as_),
-            _ => self.watched().map(|w| w.0),
+        match self.place {
+            Some((as_, _)) => Some(as_),
+            None => self.watched().map(|w| w.0),
         }
     }
 
@@ -619,11 +784,79 @@ impl Point {
     }
 }
 
+/// The rows that are known ways a file makes a tool run code by itself, each with what the way
+/// is, in the order of the page.
+pub fn ways() -> impl Iterator<Item = (&'static Point, Way)> {
+    POINTS.iter().filter_map(|p| Some((p, p.way?)))
+}
+
+/// The rows the watched places reader reads, each with its kind, in the order of the view and
+/// the report.
+pub fn places() -> impl Iterator<Item = (&'static Point, Kind)> {
+    POINTS
+        .iter()
+        .filter(|p| p.watched_place())
+        .filter_map(|p| Some((p, p.place?)))
+}
+
+/// The version of macOS this Mac runs, by its major number, as `sw_vers` gives it; or not
+/// known, which is never a version a row was checked on. No command says it yet; the tests pin
+/// what it answers.
+#[allow(dead_code)]
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum MacOs {
+    Major(u32),
+    NotKnown,
+}
+
+#[allow(dead_code)]
+impl MacOs {
+    /// The major version in what `sw_vers -productVersion` prints: `15.1.1`, `26.0`, `14`.
+    pub fn of(said: &str) -> MacOs {
+        let major = said.trim().split('.').next().unwrap_or_default();
+        match major.parse::<u32>() {
+            Ok(n) if n > 0 && major.bytes().all(|b| b.is_ascii_digit()) => MacOs::Major(n),
+            _ => MacOs::NotKnown,
+        }
+    }
+
+    /// This Mac's, asked of the system's own tool.
+    pub fn running() -> MacOs {
+        std::process::Command::new(crate::tools::SW_VERS)
+            .arg("-productVersion")
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .map_or(MacOs::NotKnown, |out| {
+                MacOs::of(&String::from_utf8_lossy(&out.stdout))
+            })
+    }
+}
+
+/// The rows whose behaviour no record says was checked on this version of macOS. On a version
+/// that is not known, every row.
+#[allow(dead_code)]
+pub fn not_checked_on(macos: MacOs) -> Vec<&'static Point> {
+    not_checked_in(&POINTS, macos)
+}
+
+fn not_checked_in(points: &[Point], macos: MacOs) -> Vec<&Point> {
+    points
+        .iter()
+        .filter(|p| match macos {
+            MacOs::Major(n) => !p.checked_on.contains(&n),
+            MacOs::NotKnown => true,
+        })
+        .collect()
+}
+
 /// How many known ways of a scope this version reads, and how many are known. `NamedBy` rows
 /// count with the checkout's.
 pub fn counts(home: bool) -> (usize, usize) {
-    let of: Vec<&Point> = POINTS
-        .iter()
+    let of: Vec<&Point> = ways()
+        .map(|(p, _)| p)
         .filter(|p| (p.scope == Scope::Home) == home)
         .collect();
     (of.iter().filter(|p| p.read()).count(), of.len())
@@ -703,10 +936,9 @@ pub fn about(what: &str) -> &'static str {
 /// A rule's technique, severity and confidence, taken from the rows read whose findings are
 /// `watched_as`.
 pub fn levels(watched_as: &str) -> (Option<&'static str>, &'static str, &'static str) {
-    POINTS
-        .iter()
-        .find(|p| p.read_here() && p.watched_as() == Some(watched_as))
-        .map(|p| (p.technique, p.severity, p.confidence))
+    ways()
+        .find(|(p, _)| p.read_here() && p.watched_as() == Some(watched_as))
+        .map(|(_, w)| (w.technique, w.severity, w.confidence))
         .unwrap_or((None, "medium", "low"))
 }
 
@@ -721,8 +953,8 @@ pub fn fires(place: &str, change: &str, watched_as: &str) -> bool {
 /// is present and not read. One that is not full may be about any checkout. A row that is not
 /// read here has a kind no reading writes.
 pub fn checkout_kinds() -> Vec<String> {
-    let mut kinds: Vec<String> = POINTS
-        .iter()
+    let mut kinds: Vec<String> = ways()
+        .map(|(p, _)| p)
         .filter(|p| p.scope != Scope::Home)
         .map(Point::kind)
         .collect();
@@ -840,17 +1072,15 @@ fn matching(dir: &Path, rel: &str, pattern: &str, out: &mut Looked) -> Vec<Strin
     });
     let names = match names {
         Ok(names) => names,
-        Err(e) if absent(&e) => {
-            out.look.read.push(listing);
-            return Vec::new();
-        }
         Err(e) => {
-            out.look.failed.push((listing, e.to_string()));
+            match Absent::on_the_way(&e) {
+                Some(absent) => out.look.absent(listing, absent),
+                None => out.look.not_looked_at(listing, e.to_string()),
+            }
             return Vec::new();
         }
     };
-    out.look.read.push(listing.clone());
-    out.look.seen.push(listing);
+    out.look.read(listing);
     let mut found: Vec<String> = names
         .into_iter()
         .map(|n| n.to_string_lossy().into_owned())
@@ -886,45 +1116,47 @@ fn shown(rel: &str, file: &str) -> String {
 fn look(p: &Point, path: &Path, shown: &str, out: &mut Looked, homes: &[&Path], home: &Path) {
     let shown = Unit::whole(shown);
     let link = match std::fs::symlink_metadata(path) {
-        // Not there: read in full, it holds nothing.
-        Err(e) if absent(&e) => return out.look.read.push(shown),
-        Err(e) => return out.look.failed.push((shown, e.to_string())),
+        Err(e) => {
+            // Not there: read in full, it holds nothing.
+            return match Absent::on_the_way(&e) {
+                Some(absent) => out.look.absent(shown, absent),
+                None => out.look.not_looked_at(shown, e.to_string()),
+            };
+        }
         Ok(m) if m.file_type().is_symlink() => std::fs::read_link(path)
             .ok()
             .map(|t| t.to_string_lossy().into_owned()),
         Ok(_) => None,
     };
     // There, read or not.
-    out.look.seen.push(shown.clone());
     let path = match crate::guarded::followed(path, homes) {
         Ok(path) => path,
-        Err(g) => return out.look.not_into(shown, g, home),
+        Err(g) => return out.look.there_not_into(shown, g, home),
     };
     let mut found: Vec<(Unit, Content)> = Vec::new();
     if let Folders(ident) = p.part {
         match folders(&path, ident, &shown.path, out, homes, home) {
-            Err(why) => return out.look.failed.push((shown, why)),
+            Err(why) => return out.look.unread(shown, why),
             Ok(names) => {
                 for name in names {
                     let entry = Unit::whole(format!("{shown}/{name}"));
-                    out.look.read.push(entry.clone());
-                    out.look.seen.push(entry.clone());
+                    out.look.read(entry.clone());
                     found.push((entry, value(name.as_bytes())));
                 }
             }
         }
-        out.look.read.push(shown);
+        out.look.read(shown);
         return push(p, out, found, link);
     }
     let bytes = match read_capped(&path, p.cap()) {
         Ok(bytes) => bytes,
-        Err(why) => return out.look.failed.push((shown, why)),
+        Err(why) => return out.look.unread(shown, why),
     };
     let whole = |bytes: &[u8]| Content::Hash(format!("sha256:{}", crate::sha256::hex(bytes)));
     let unit = shown.clone();
     match p.part {
         WholeWhen(format, key, holds) => match whole_when(&bytes, format, key, holds) {
-            Err(why) => return out.look.failed.push((shown, why)),
+            Err(why) => return out.look.unread(shown, why),
             Ok(true) => found.push((shown, whole(&bytes))),
             Ok(false) => {}
         },
@@ -949,9 +1181,10 @@ fn look(p: &Point, path: &Path, shown: &str, out: &mut Looked, homes: &[&Path], 
                 out.whole.push((shown.path, why));
             }
         },
-        Present | Entries(_) | Folders(_) => return,
+        // Not a part this file reads: there, and not read.
+        Present | Entries | File | Keys(_) | Folders(_) => return out.look.there(shown),
     }
-    out.look.read.push(unit);
+    out.look.read(unit);
     push(p, out, found, link);
 }
 
@@ -993,8 +1226,7 @@ fn folders(
         let at = match crate::guarded::followed(&entry.path(), homes) {
             Ok(at) => at,
             Err(g) => {
-                looked.look.seen.push(unit.clone());
-                looked.look.not_into(unit, g, home);
+                looked.look.there_not_into(unit, g, home);
                 continue;
             }
         };
@@ -1002,8 +1234,7 @@ fn folders(
             Ok(m) if m.is_dir() => {}
             Ok(_) => continue,
             Err(e) => {
-                looked.look.seen.push(unit.clone());
-                looked.look.failed.push((unit, e.to_string()));
+                looked.look.unread(unit, e.to_string());
                 continue;
             }
         }
@@ -1216,7 +1447,7 @@ pub fn legacy_units(
             && match point.scope {
                 Scope::Home => segments.next().is_none(),
                 Scope::Checkout => segments.next().is_some_and(&checkout),
-                Scope::NamedBy(_) => false,
+                Scope::System | Scope::NamedBy(_) => false,
             }
     };
     let pointer_matches = |selector: &str, pointer: &str| {
@@ -1268,8 +1499,8 @@ pub fn runs_on_open(bytes: &[u8]) -> Result<bool, String> {
 pub fn present(base: &Path, scope: Scope, home: &Path) -> Vec<&'static Point> {
     let homes = watched::homes(home);
     let homes = [homes[0].as_path(), homes[1].as_path()];
-    POINTS
-        .iter()
+    ways()
+        .map(|(p, _)| p)
         .filter(|p| p.scope == scope && holds(base, p, &homes))
         .collect()
 }
@@ -1331,6 +1562,164 @@ fn absent(e: &std::io::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every row's stable names, counts and levels, in the form `tests/autorun-points-main.txt`
+    /// was written in by the build on `main` before its two lists became this table.
+    fn names() -> String {
+        let mut out = String::new();
+        for (p, (watched_as, kind)) in places() {
+            let base = match p.scope {
+                Scope::Home => "home",
+                Scope::System => "system",
+                _ => "checkout",
+            };
+            let counts = match p.part {
+                Keys(keys) => format!("keys {}", keys.join(",")),
+                _ => "whole".to_string(),
+            };
+            for path in p.paths {
+                let folder = p.part == Entries;
+                out.push_str(&format!(
+                    "place\t{watched_as}\t{kind}\t{base}\t{path}\t{folder}\t{counts}\n"
+                ));
+            }
+        }
+        for (p, w) in ways() {
+            let part = match p.part {
+                Entries => format!("Entries({:?})", p.watched_as().unwrap_or_default()),
+                other => format!("{other:?}"),
+            };
+            out.push_str(&format!(
+                "way\t{}\t{:?}\t{}\t{:?}\t{}\t{}\t{}\t{:?}\t{}\t{}\t{}\t{}\t{:?}\t{}\t{}\t{part}\t{:?}\t{}\n",
+                p.name(),
+                p.scope,
+                p.kind(),
+                p.watched_as(),
+                p.read(),
+                p.read_here(),
+                p.live(),
+                p.hourly(),
+                w.trigger.words(),
+                w.trigger.words_home(),
+                w.tool,
+                w.asks.words(),
+                w.technique,
+                w.severity,
+                w.confidence,
+                p.watched(),
+                p.nothing(),
+            ));
+        }
+        out.push_str(&format!("files\t{:?}\n", files()));
+        out.push_str(&format!("home_places\t{:?}\n", home_places()));
+        out.push_str(&format!("watched\t{:?}\n", watched()));
+        out.push_str(&format!("checkout_kinds\t{:?}\n", checkout_kinds()));
+        out.push_str(&format!(
+            "counts\t{:?}\t{:?}\n",
+            counts(false),
+            counts(true)
+        ));
+        out.push_str(&format!("place_kinds\t{:?}\n", watched::kinds()));
+        for w in watched() {
+            out.push_str(&format!(
+                "of\t{}\t{:?}\t{:?}\t{}\n",
+                w.0,
+                kinds_of(w.0),
+                levels(w.0),
+                live(w.0)
+            ));
+        }
+        out
+    }
+
+    #[test]
+    fn a_store_an_earlier_build_wrote_finds_every_row_under_the_names_counts_and_levels_it_had() {
+        // A store keeps its history, and raises nothing new, only while every kind of reading,
+        // every literal of what a thing is watched as, every rule's levels and every count is
+        // spelled as the build before the one table spelled it. The file was written by that
+        // build, from its two lists.
+        let before = include_str!("../tests/autorun-points-main.txt");
+        let now = names();
+        for (was, is) in before.lines().zip(now.lines()) {
+            assert_eq!(is, was);
+        }
+        assert_eq!(now.lines().count(), before.lines().count());
+        // 36 watched places, 41 ways in a project and 11 in the home folder: one table.
+        assert_eq!(
+            (places().count(), ways().count(), POINTS.len()),
+            (36, 52, 87)
+        );
+    }
+
+    #[test]
+    fn the_running_version_is_read_from_what_sw_vers_prints_and_one_not_read_is_not_known() {
+        for (said, macos) in [
+            ("15.1.1\n", MacOs::Major(15)),
+            ("26.0\n", MacOs::Major(26)),
+            ("14\n", MacOs::Major(14)),
+            ("", MacOs::NotKnown),
+            ("\n", MacOs::NotKnown),
+            ("0.1\n", MacOs::NotKnown),
+            ("+15.1\n", MacOs::NotKnown),
+            ("fifteen\n", MacOs::NotKnown),
+        ] {
+            assert_eq!(MacOs::of(said), macos, "{said:?}");
+        }
+        // The Mac that runs this test runs a version macOS's own tool can say.
+        assert!(matches!(MacOs::running(), MacOs::Major(n) if n >= 11));
+    }
+
+    #[test]
+    fn a_row_is_checked_only_on_the_versions_it_names_and_on_a_version_not_known_on_none() {
+        let on = |checked_on: Checked| Point {
+            checked_on,
+            ..row(
+                &["a.json"],
+                Present,
+                StartAgent,
+                "a tool",
+                Never,
+                (EVENT, "high", "low"),
+                "",
+            )
+        };
+        let rows = [on(&[15, 26]), on(NOT_CHECKED), on(&[14])];
+        let not = |macos| -> Vec<Checked> {
+            not_checked_in(&rows, macos)
+                .iter()
+                .map(|p| p.checked_on)
+                .collect()
+        };
+        assert_eq!(not(MacOs::Major(26)), [NOT_CHECKED, &[14][..]]);
+        assert_eq!(not(MacOs::Major(14)), [&[15, 26][..], NOT_CHECKED]);
+        assert_eq!(not(MacOs::Major(27)).len(), 3);
+        assert_eq!(not(MacOs::NotKnown).len(), 3);
+        // No row of this table has a record of being checked on any version.
+        assert_eq!(not_checked_on(MacOs::Major(26)).len(), POINTS.len());
+    }
+
+    #[test]
+    fn every_row_names_the_source_it_was_taken_from_except_those_no_record_establishes() {
+        // A row whose source is not known says so with none; these are they, named in
+        // `docs/reference.md`, and a new row without one is a choice made here.
+        let none: Vec<String> = POINTS
+            .iter()
+            .filter(|p| p.source.is_empty())
+            .map(Point::name)
+            .collect();
+        assert_eq!(
+            none,
+            [
+                "~/.ssh/config",
+                "~/.ssh/rc",
+                "/etc/ssh/ssh_config",
+                "/etc/ssh/sshd_config",
+                "/etc/ssh/ssh_config.d",
+                "/etc/ssh/sshd_config.d",
+                ".nvim.lua, .nvimrc, .exrc",
+            ]
+        );
+    }
 
     #[test]
     fn a_task_set_to_run_on_opening_is_found_however_the_file_is_written() {
@@ -1584,8 +1973,8 @@ mod tests {
     fn a_kind_shows_within_seconds_only_while_one_of_its_rows_is_watched_live() {
         // What the page says of how fast a change shows: a kind whose every row is read only
         // at the hourly check is hourly; one live row makes it live.
-        let of = |hourly| Point {
-            hourly,
+        let of = |watch| Point {
+            watch,
             ..row(
                 &["a.json"],
                 Select(Strict, MCP_SERVERS),
@@ -1597,9 +1986,9 @@ mod tests {
             )
         };
         let w = AGENT_START.0;
-        assert!(!live_in(&[of(Some(REWRITTEN))], w));
-        assert!(live_in(&[of(Some(REWRITTEN)), of(None)], w));
-        assert!(!live_in(&[of(None)], AGENT_SETTINGS.0));
+        assert!(!live_in(&[of(Watch::Hourly(REWRITTEN))], w));
+        assert!(live_in(&[of(Watch::Hourly(REWRITTEN)), of(Watch::Live)], w));
+        assert!(!live_in(&[of(Watch::Live)], AGENT_SETTINGS.0));
     }
 
     #[test]
@@ -1633,7 +2022,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
         let l = &looked.look;
         assert_eq!(
-            (l.present, l.failed.len(), l.entries.len(), held),
+            (l.present, l.failed().len(), l.entries.len(), held),
             (0, 0, 0, false)
         );
     }

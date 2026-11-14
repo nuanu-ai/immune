@@ -1327,16 +1327,11 @@ pub fn projects_gap(latest: &[Latest], this: Option<&str>) -> Option<&'static st
 /// so what is said of it rests on the walk that finds them.
 pub fn in_projects(count: Count) -> bool {
     match count {
-        Count::Files(as_) => {
-            watched::PLACES
-                .iter()
-                .any(|p| p.watched_as == as_ && p.base == watched::Base::Checkout)
-                || autorun::POINTS.iter().any(|p| {
-                    p.read_here()
-                        && p.watched_as() == Some(as_)
-                        && matches!(p.scope, autorun::Scope::Checkout)
-                })
-        }
+        Count::Files(as_) => autorun::POINTS.iter().any(|p| {
+            (p.read_here() || p.watched_place())
+                && p.watched_as() == Some(as_)
+                && matches!(p.scope, autorun::Scope::Checkout)
+        }),
         Count::Dependencies => true,
         Count::Installed(_) => false,
     }

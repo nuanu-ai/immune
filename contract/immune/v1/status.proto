@@ -444,6 +444,10 @@ message FinishedCheck {
   SinceCheck since_previous_run = 4;
   // What cannot be known about those changes, in the core's words.
   repeated string unknown = 5;
+  // Facts closed since the check before as no longer read by this version, by this check or by
+  // a watcher's reading in between, each with a journal entry `retired`: never counted as
+  // removed in `since_previous_run`. The check's line says the same. Since 1.10.0.
+  uint64 set_aside = 6;
 }
 
 message CheckReadings {

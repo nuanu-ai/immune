@@ -1,5 +1,5 @@
 {
-  "answered_at": 1794652132,
+  "answered_at": 1794654688,
   "answered_outside_app": {
     "items": [],
     "total": 0
@@ -458,7 +458,7 @@
         0,
         2
       ],
-      "ends_at": 1794652132,
+      "ends_at": 1794654688,
       "step_seconds": 3600
     },
     "program_starts_by_minute": {
@@ -524,10 +524,10 @@
         0,
         2
       ],
-      "ends_at": 1794652132,
+      "ends_at": 1794654688,
       "step_seconds": 60
     },
-    "read_at": 1794652131,
+    "read_at": 1794654688,
     "reason_text": null,
     "said_by": null,
     "said_text": null,
@@ -541,7 +541,7 @@
       "last_day": 0,
       "since_check": 0
     },
-    "written_at": 1794652131
+    "written_at": 1794654688
   },
   "format": 1,
   "integrity": {
@@ -587,9 +587,9 @@
   "journal_seq": 41,
   "last_finished_run": {
     "check": {
-      "finished_at": 1794652132,
-      "id": "1794652131-968037000",
-      "started_at": 1794652131
+      "finished_at": 1794654688,
+      "id": "1794654688-143885000",
+      "started_at": 1794654688
     },
     "first_run": false,
     "readings": {
@@ -598,6 +598,7 @@
       "not_repeated": 0,
       "partial": 1
     },
+    "set_aside": 0,
     "since_previous_run": {
       "added": 1,
       "changed": 1,
@@ -609,9 +610,9 @@
     ]
   },
   "last_run": {
-    "finished_at": 1794652132,
-    "id": "1794652131-968037000",
-    "started_at": 1794652131
+    "finished_at": 1794654688,
+    "id": "1794654688-143885000",
+    "started_at": 1794654688
   },
   "needs_a_look": {
     "items": [
@@ -635,10 +636,10 @@
             "state": "open",
             "urgent": false
           },
-          "first_seen_at": 1794652131,
+          "first_seen_at": 1794654688,
           "kind": "shell profile",
           "kind_title": "Shell startup file",
-          "last_seen_at": 1794652131,
+          "last_seen_at": 1794654688,
           "thing": null,
           "title": "A file your terminal runs every time it starts was added, changed or removed.",
           "verdicts": null,
@@ -660,18 +661,18 @@
         "finding": {
           "answer": null,
           "finding": {
-            "about_text": "check:machine:mac/1794652131-968037000",
+            "about_text": "check:machine:mac/1794654688-143885000",
             "confidence": "low",
-            "id": "fd7f58795a5",
+            "id": "f590d5ad401",
             "rule": "watched.first-read",
             "severity": "informational",
             "state": "open",
             "urgent": false
           },
-          "first_seen_at": 1794652131,
+          "first_seen_at": 1794654688,
           "kind": "places read for the first time",
           "kind_title": "Read for the first time",
-          "last_seen_at": 1794652131,
+          "last_seen_at": 1794654688,
           "thing": "1 place",
           "title": "Some places on this Mac were read for the first time, and what runs by itself in them was taken as their starting point.",
           "verdicts": null,
@@ -717,7 +718,7 @@
       "kind": "servers that could not be opened",
       "meaning": "A server that refuses or does not answer cannot be checked; the reason is listed with each one.",
       "scope": "servers",
-      "since_at": 1794652132,
+      "since_at": 1794654688,
       "title": "4 servers could not be opened at the last server check.",
       "value_text": null,
       "who": "you"
@@ -749,7 +750,7 @@
       "kind": "files their permissions keep closed",
       "meaning": "Their permissions do not let this program open them, so a change in them goes unseen. Where they are and the reason are listed with them.",
       "scope": "this_mac",
-      "since_at": 1794652131,
+      "since_at": 1794654688,
       "title": "4 files could not be opened because of their permissions.",
       "value_text": null,
       "who": "you"
@@ -764,7 +765,7 @@
       "kind": "ways a project runs code by itself that are not read",
       "meaning": "None of the others is present in the projects that were looked at. Not every folder was looked at, so of the projects in the rest this says nothing.",
       "scope": "projects",
-      "since_at": 1794652131,
+      "since_at": 1794654688,
       "title": "This version reads 13 of the 41 known ways a project can make code run by itself.",
       "value_text": null,
       "who": "nothing"
@@ -779,7 +780,7 @@
       "kind": "places in the home folder where a tool's settings run code by itself that are not read",
       "meaning": "None of the others is present on this Mac now.",
       "scope": "this_mac",
-      "since_at": 1794652131,
+      "since_at": 1794654688,
       "title": "This version reads 7 of the 11 known places where a developer tool's own settings can make code run by itself.",
       "value_text": null,
       "who": "nothing"
@@ -809,8 +810,8 @@
       "kind": "list of known vulnerabilities not current",
       "meaning": "Why: crates.io: the download failed; what failed is listed with this; npm: its newest record changed 2025-09-12T01:13:34Z, more than 7 days before this check. It is downloaded again at every check. Until it is, a vulnerability published after that date is not known here. The download uses a proxy only when the environment names one; it does not read the macOS proxy settings.",
       "scope": "threats",
-      "since_at": 1794652131,
-      "title": "The list of known vulnerabilities could not be updated since 2026-11-14 10:28 UTC.",
+      "since_at": 1794654688,
+      "title": "The list of known vulnerabilities could not be updated since 2026-11-14 11:11 UTC.",
       "value_text": "crates.io: cannot read none: No such file or directory (os error 2)",
       "who": "nothing"
     },
@@ -946,9 +947,9 @@
       }
     ]
   },
-  "store_id": "b44f1c0d896af2ff803312e1e56b3623",
+  "store_id": "9a57f544da31f6101e52d2f28c87bd2d",
   "this_mac": {
-    "checked_at": 1794652132,
+    "checked_at": 1794654688,
     "fresh": true,
     "fresh_for_seconds": 7200,
     "live": true,
@@ -1039,7 +1040,7 @@
     ]
   },
   "threats": {
-    "checked_at": 1794652131,
+    "checked_at": 1794654688,
     "entries": null,
     "first_reading": null,
     "gone": null,
@@ -1081,7 +1082,7 @@
         "ecosystem": "npm",
         "matched": true,
         "not_current_why": "its newest record changed 2025-09-12T01:13:34Z, more than 7 days before this check",
-        "read_at": 1794652131,
+        "read_at": 1794654688,
         "source": "osv-npm"
       }
     ],
@@ -1109,7 +1110,7 @@
       {
         "asked_this_run": true,
         "changed_at": null,
-        "checked_at": 1794652131,
+        "checked_at": 1794654688,
         "ecosystem": "crates.io",
         "first_reading": null,
         "malicious_records": null,
@@ -1124,14 +1125,14 @@
       },
       {
         "asked_this_run": true,
-        "changed_at": 1794652131,
-        "checked_at": 1794652131,
+        "changed_at": 1794654688,
+        "checked_at": 1794654688,
         "ecosystem": "npm",
         "first_reading": null,
         "malicious_records": 1,
         "matched": true,
         "outcome": "unchanged",
-        "read_at": 1794652131,
+        "read_at": 1794654688,
         "reason_text": null,
         "records": 1,
         "since_last_reading": null,
@@ -1144,11 +1145,11 @@
   "watched": {
     "changes": [
       {
-        "at": 1794652131,
+        "at": 1794654688,
         "change": "changed",
         "kind": "shell profile",
         "path_text": ".zshrc",
-        "run_id": "1794652131-968037000"
+        "run_id": "1794654688-143885000"
       }
     ],
     "changes_total": 1,

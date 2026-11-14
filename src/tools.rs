@@ -24,6 +24,8 @@ pub const SCUTIL: &str = "/usr/sbin/scutil";
 pub const HOSTNAME: &str = "/bin/hostname";
 pub const OPEN: &str = "/usr/bin/open";
 pub const PS: &str = "/bin/ps";
+#[allow(dead_code)]
+pub const SW_VERS: &str = "/usr/bin/sw_vers";
 
 /// Whether `path` may be run: a regular file, after following links, with an execute bit.
 pub fn runnable(path: &Path) -> bool {

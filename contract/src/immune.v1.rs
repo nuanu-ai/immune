@@ -3193,6 +3193,11 @@ pub struct FinishedCheck {
     /// What cannot be known about those changes, in the core's words.
     #[prost(string, repeated, tag = "5")]
     pub unknown: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Facts closed since the check before as no longer read by this version, by this check or by
+    /// a watcher's reading in between, each with a journal entry `retired`: never counted as
+    /// removed in `since_previous_run`. The check's line says the same. Since 1.10.0.
+    #[prost(uint64, tag = "6")]
+    pub set_aside: u64,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(default)]

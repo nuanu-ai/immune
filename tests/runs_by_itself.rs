@@ -124,12 +124,17 @@ impl Estate {
 
     /// The command of a run, not started.
     fn command(&self, root: Option<&Path>, sessions: &Path) -> Command {
+        self.command_as("mac", root, sessions)
+    }
+
+    /// The command of a run on a machine named `machine`, not started.
+    fn command_as(&self, machine: &str, root: Option<&Path>, sessions: &Path) -> Command {
         let empty = self.0.join("empty");
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_immune"));
         cmd.env("HOME", self.home())
             .env("PATH", "/usr/bin:/bin")
             .current_dir(&self.0)
-            .args(["run", "--machine-name", "mac", "--store"])
+            .args(["run", "--machine-name", machine, "--store"])
             .arg(self.store())
             .arg("--system-root")
             .arg(self.0.join("system"))
@@ -2798,6 +2803,29 @@ fn an_editor_extension_installed_as_a_link_into_a_guarded_folder_is_found() {
 }
 
 #[test]
+fn an_extension_there_since_the_first_check_as_a_link_into_a_guarded_folder_is_not_new_once_it_reads()
+ {
+    // It was seen at the first check, though not looked into: once it is a folder that can be
+    // read, it is read for the first time, never a new extension.
+    let e = Estate::new("guarded-then-folder");
+    e.checkout("dev/shop");
+    let ext = e.home().join(".vscode/extensions");
+    let real = e.home().join("Documents/x/invented.linked-1.0.0");
+    std::fs::create_dir_all(&real).unwrap();
+    link(real.to_str().unwrap(), &ext.join("invented.linked-1.0.0"));
+    e.full();
+    e.full();
+    std::fs::remove_file(ext.join("invented.linked-1.0.0")).unwrap();
+    put(&ext.join("invented.linked-1.0.0/package.json"), "{}\n");
+    e.full();
+    assert!(
+        !e.rules().contains(&"autorun.editor-extension".to_string()),
+        "{:?}",
+        e.found()
+    );
+}
+
+#[test]
 fn a_clone_made_after_the_first_check_is_found_when_its_files_or_hooks_lead_into_a_guarded_folder()
 {
     let e = Estate::new("guarded-clone");
@@ -4017,4 +4045,461 @@ fn a_plugin_watched_only_for_presence_is_said_so_in_status_and_in_its_finding() 
     let finding = e.contract(&["finding", gone]);
     assert_eq!(finding["evidence"]["place_changed"]["change"], "gone");
     presence(gone, true);
+}
+
+#[test]
+fn what_an_earlier_build_read_and_no_row_names_now_is_retired_never_counted_or_told_as_removed() {
+    // A shell profile and a key of a project's MCP servers that an earlier build read, and
+    // that no row of this build names: the next full run closes them as retired, with why.
+    let e = Estate::new("retired");
+    put(&e.home().join(".zshrc"), "export A=1\n");
+    let c = e.checkout("dev/app");
+    put(
+        &c.join(".mcp.json"),
+        r#"{"mcpServers": {"x": {"command": "npx"}}}"#,
+    );
+    e.run();
+    let gone = [
+        (
+            "file:machine:mac/.zfoo",
+            "file:machine:mac/.zshrc",
+            "shell profiles of zsh and bash",
+        ),
+        (
+            "file:machine:mac/dev/app/.mcp.json#/other/x",
+            "file:machine:mac/dev/app/.mcp.json#/mcpServers/x",
+            ".mcp.json of each checkout, the part that runs by itself",
+        ),
+    ];
+    {
+        // As the earlier build left them, beside what this build still reads.
+        let db = Connection::open(e.store()).unwrap();
+        for (subject, like, kind) in gone {
+            db.execute(
+                "INSERT INTO entity (id, type) VALUES (?1, 'file')",
+                [subject],
+            )
+            .unwrap();
+            let copied = db
+                .execute(
+                    "INSERT INTO assertion (layer, subject, predicate, object, reader, scope, kind,
+                                            source_ref, basis, observed_at, run_id)
+                     SELECT layer, ?1, predicate, object, reader, scope, kind, source_ref, basis,
+                            observed_at, run_id
+                     FROM assertion WHERE layer = 'live' AND subject = ?2 AND kind = ?3",
+                    [subject, like, kind],
+                )
+                .unwrap();
+            assert_eq!(copied, 2, "{like}");
+        }
+    }
+    let watched = |e: &Estate| -> i64 {
+        e.rows(
+            "SELECT CAST(COUNT(*) AS TEXT) FROM assertion WHERE layer = 'live' AND predicate = 'watched_as'",
+        )[0]
+        .parse()
+        .unwrap()
+    };
+    let before = watched(&e);
+    let said = e.run();
+    // Nothing is closed silently: the run's line says it once, with how many.
+    let note = "No longer read by this version: what no row of its table of autorun points \
+                names, 4 facts set aside and not counted as removed.";
+    assert!(said.contains(note), "{said}");
+    assert!(!e.run().contains("No longer read by this version"));
+    assert_eq!(
+        e.rows(
+            "SELECT subject, predicate FROM journal WHERE entry = 'retired'
+             ORDER BY subject, predicate"
+        ),
+        [
+            "file:machine:mac/.zfoo|located_on",
+            "file:machine:mac/.zfoo|watched_as",
+            "file:machine:mac/dev/app/.mcp.json#/other/x|located_on",
+            "file:machine:mac/dev/app/.mcp.json#/other/x|watched_as",
+        ]
+    );
+    assert_eq!(
+        e.rows("SELECT CAST(COUNT(*) AS TEXT) FROM journal WHERE entry = 'removed'"),
+        ["0"]
+    );
+    assert_eq!(
+        e.rows("SELECT CAST(COUNT(*) AS TEXT) FROM finding WHERE about LIKE '%.zfoo' OR about LIKE '%/other/x'"),
+        ["0"]
+    );
+    // What this build reads is still watched; the two are not counted any more.
+    assert_eq!(watched(&e) + 2, before);
+}
+
+#[test]
+fn a_machine_named_with_a_slash_a_hash_and_a_space_is_told_what_a_plainly_named_one_is() {
+    // An id is never cut into parts: a machine's name may hold any of these, and what is
+    // watched, retired, removed or raised does not depend on it.
+    let odd = "a/b #c";
+    let estates = [
+        ("mac", Estate::new("named-plain")),
+        (odd, Estate::new("named-odd")),
+    ];
+    let told = |machine: &str, e: &Estate| -> Vec<String> {
+        let id = format!("machine:{machine}").replace('\'', "''");
+        let mut told = e.rows(&format!(
+            "SELECT entry, replace(scope, '{id}', 'M'), kind, replace(subject, '{id}', 'M'),
+                    predicate, replace(COALESCE(old_value, ''), '{id}', 'M'),
+                    replace(COALESCE(new_value, ''), '{id}', 'M')
+             FROM journal
+             WHERE entry NOT IN ('run_started', 'run_finished', 'report', 'finding_raised')
+             ORDER BY 1, 2, 3, 4, 5, 6, 7"
+        ));
+        told.extend(e.rows(&format!(
+            "SELECT rule, replace(about, '{id}', 'M'), state, change FROM finding ORDER BY 1, 2"
+        )));
+        told
+    };
+    let run = |machine: &str, e: &Estate| {
+        let out = e
+            .command_as(machine, None, &e.0.join("empty"))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    for (machine, e) in &estates {
+        put(&e.home().join(".zshrc"), "export A=1\n");
+        let c = e.checkout("dev/app");
+        put(&c.join(".git/hooks/pre-commit"), "#!/bin/sh\n");
+        put(
+            &c.join(".mcp.json"),
+            r#"{"mcpServers": {"x": {"command": "npx"}}}"#,
+        );
+        run(machine, e);
+        run(machine, e);
+    }
+    let [(plain, p), (_, o)] = &estates;
+    // Unchanged: nothing is retired or read again as added.
+    assert_eq!(told(odd, o), told(plain, p));
+    assert_eq!(
+        o.rows("SELECT CAST(COUNT(*) AS TEXT) FROM journal WHERE entry = 'retired'"),
+        ["0"]
+    );
+    for (machine, e) in &estates {
+        std::fs::remove_file(e.home().join("dev/app/.git/hooks/pre-commit")).unwrap();
+        run(machine, e);
+    }
+    // A hook removed is gone, and raises its rule.
+    assert_eq!(told(odd, o), told(plain, p));
+    assert!(
+        o.rows("SELECT rule || ' ' || change FROM finding")
+            .contains(&"watched.git-hook gone".to_string())
+    );
+}
+
+// Every level of what holds a watched thing, step by step.
+
+/// A watched thing at one level of what holds it: a key in a file, a file, a folder, a project,
+/// a project's `.git`, a folder of the home folder; with a hook in a project that stays, and a
+/// key of a place.
+#[derive(Clone, Copy, Debug)]
+enum Level {
+    Key,
+    PlaceKey,
+    Hook,
+    File,
+    Folder,
+    Project,
+    GitDir,
+    HomeFolder,
+}
+
+impl Level {
+    /// The estate without the thing.
+    fn base(self, e: &Estate) {
+        let h = e.home();
+        put(&h.join(".bash_profile"), "export EXAMPLE=2\n");
+        put(&h.join(".ssh/config"), "Host example\n");
+        put(&e.0.join("system/etc/zshrc"), "# example\n");
+        let other = e.checkout("dev/other");
+        put(&other.join(".git/hooks/post-checkout"), "#!/bin/sh\n");
+        put(
+            &other.join(".mcp.json"),
+            r#"{"mcpServers": {"y": {"command": "uvx"}}}"#,
+        );
+        match self {
+            Level::Key | Level::Hook => project(e, ""),
+            Level::PlaceKey => login(e, ""),
+            Level::GitDir => put(
+                &h.join("dev/app/.mcp.json"),
+                r#"{"mcpServers": {"x": {"command": "npx"}}}"#,
+            ),
+            _ => {}
+        }
+    }
+
+    /// What is made unreadable and removed: the thing, or what holds it.
+    fn container(self, e: &Estate) -> PathBuf {
+        e.home().join(match self {
+            Level::Key => "dev/app/.mcp.json",
+            Level::PlaceKey => "Library/Preferences/com.apple.loginwindow.plist",
+            Level::Hook => "dev/app/.git/hooks/post-merge",
+            Level::File => ".zshrc",
+            Level::Folder => "Library/LaunchAgents",
+            Level::Project => "dev/app",
+            Level::GitDir => "dev/app/.git",
+            Level::HomeFolder => ".claude",
+        })
+    }
+
+    /// The thing, in one of its versions.
+    fn write(self, e: &Estate, v: &str) {
+        let h = e.home();
+        match self {
+            Level::Key => put(
+                &h.join("dev/app/.mcp.json"),
+                &format!(
+                    r#"{{"mcpServers": {{"x": {{"command": "npx"}}, "k": {{"command": "uvx{v}"}}}}}}"#
+                ),
+            ),
+            Level::PlaceKey => login(e, v),
+            Level::Hook => put(&self.container(e), &format!("#!/bin/sh\necho {v}\n")),
+            Level::File => put(&self.container(e), &format!("export EXAMPLE={v}\n")),
+            Level::Folder => put(
+                &h.join("Library/LaunchAgents/org.example.a.plist"),
+                &format!(
+                    r#"<plist version="1.0"><dict><key>Label</key><string>a{v}</string></dict></plist>"#
+                ),
+            ),
+            Level::Project => project(e, v),
+            Level::GitDir => {
+                put(&h.join("dev/app/.git/HEAD"), "ref: refs/heads/main\n");
+                put(
+                    &h.join("dev/app/.git/hooks/pre-commit"),
+                    &format!("#!/bin/sh\necho {v}\n"),
+                );
+            }
+            Level::HomeFolder => put(
+                &h.join(".claude/settings.json"),
+                &format!(
+                    r#"{{"hooks": {{"Stop": [{{"command": "echo {v}"}}]}}, "env": {{"A": "1"}}}}"#
+                ),
+            ),
+        }
+    }
+
+    /// The thing removed: a key from its file, anything else with what it is in.
+    fn remove(self, e: &Estate) {
+        match self {
+            Level::Key => put(
+                &self.container(e),
+                r#"{"mcpServers": {"x": {"command": "npx"}}}"#,
+            ),
+            Level::PlaceKey => login(e, ""),
+            _ => {
+                let at = self.container(e);
+                if at.is_dir() {
+                    std::fs::remove_dir_all(at).unwrap();
+                } else {
+                    std::fs::remove_file(at).unwrap();
+                }
+            }
+        }
+    }
+
+    fn shut(self, e: &Estate) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(self.container(e), std::fs::Permissions::from_mode(0o000))
+            .unwrap();
+    }
+
+    fn open(self, e: &Estate) {
+        use std::os::unix::fs::PermissionsExt;
+        let at = self.container(e);
+        std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if at.is_file() {
+            std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+    }
+}
+
+/// The checkout `dev/app` with a hook and a server an agent is told to start.
+fn project(e: &Estate, v: &str) {
+    let app = e.checkout("dev/app");
+    put(
+        &app.join(".git/hooks/pre-commit"),
+        &format!("#!/bin/sh\necho {v}\n"),
+    );
+    put(
+        &app.join(".mcp.json"),
+        &format!(r#"{{"mcpServers": {{"x": {{"command": "npx{v}"}}}}}}"#),
+    );
+}
+
+/// The user's login window preferences, with a login hook when `v` is not empty.
+fn login(e: &Estate, v: &str) {
+    let hook = if v.is_empty() {
+        String::new()
+    } else {
+        format!("<key>LoginHook</key><string>/opt/example/hook{v}.sh</string>")
+    };
+    put(
+        &e.home()
+            .join("Library/Preferences/com.apple.loginwindow.plist"),
+        &format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>{hook}<key>OtherSetting</key><string>x</string></dict></plist>
+"#
+        ),
+    );
+}
+
+/// What one full run journaled after the entry `after`, by kind, and the findings it raised as
+/// rule and change.
+fn step_since(e: &Estate, after: i64) -> String {
+    let entries = e.rows(&format!(
+        "SELECT entry || ' ' || COUNT(*) FROM journal
+         WHERE seq > {after}
+           AND entry NOT IN ('run_started', 'run_finished', 'report', 'finding_raised')
+         GROUP BY entry ORDER BY entry"
+    ));
+    let raised = e.rows(&format!(
+        "SELECT f.rule || ' ' || f.change FROM journal j JOIN finding f ON f.id = j.subject
+         WHERE j.seq > {after} AND j.entry = 'finding_raised' ORDER BY 1"
+    ));
+    format!("{}; {}", entries.join(", "), raised.join(", "))
+}
+
+/// The thing of `level` added, changed, removed, brought back, made unreadable, readable again,
+/// unreadable again, removed while the store last saw it unreadable, and brought back, with a
+/// full run after each step and every finding marked seen.
+fn chain(level: Level) -> Vec<String> {
+    let e = Estate::new(&format!("level-{level:?}"));
+    level.base(&e);
+    e.full();
+    e.full();
+    let steps: [fn(Level, &Estate); 9] = [
+        |l, e| l.write(e, "1"),
+        |l, e| l.write(e, "2"),
+        |l, e| l.remove(e),
+        |l, e| l.write(e, "1"),
+        |l, e| l.shut(e),
+        |l, e| l.open(e),
+        |l, e| l.shut(e),
+        |l, e| {
+            l.open(e);
+            l.remove(e);
+        },
+        |l, e| l.write(e, "1"),
+    ];
+    let mut told = Vec::new();
+    for step in steps {
+        step(level, &e);
+        let after = e.last_entry();
+        e.full();
+        told.push(step_since(&e, after));
+        e.seen();
+    }
+    told
+}
+
+#[test]
+fn a_thing_added_changed_removed_hidden_and_brought_back_at_every_level_is_told_as_it_happened() {
+    // What a step does is told by that step, once: a change with its finding, what is gone with
+    // what held it as removed, what cannot be read as not read and never as gone, and what
+    // comes back, a project cloned again at the same path among them, as new. The table is what
+    // the build before the one table of autorun points told, step for step.
+    let same = |rule: &str| -> Vec<String> {
+        vec![
+            format!("added 3; {rule} new"),
+            format!("changed 1; {rule} changed"),
+            format!("removed 2; {rule} gone"),
+            format!("added 3; {rule} new"),
+            format!("not_read 1; {rule} not read"),
+            "; ".to_string(),
+            format!("not_read 1; {rule} not read"),
+            format!("removed 2; {rule} gone"),
+            format!("added 3; {rule} new"),
+        ]
+    };
+    let lines = |steps: [&str; 9]| -> Vec<String> { steps.map(String::from).to_vec() };
+    let both = "added 8; autorun.agent-start new, watched.git-hook new";
+    let settings = "added 7; autorun.agent-settings new, autorun.agent-settings new";
+    let cases: Vec<(Level, Vec<String>)> = vec![
+        (
+            Level::Key,
+            lines([
+                "added 3; autorun.agent-start new",
+                "changed 1; autorun.agent-start changed",
+                // A server an agent is no longer told to start is no finding.
+                "removed 2; ",
+                "added 3; autorun.agent-start new",
+                "not_read 1; autorun.agent-start not read",
+                "; ",
+                "not_read 1; autorun.agent-start not read",
+                "removed 2; ",
+                "added 3; autorun.agent-start new",
+            ]),
+        ),
+        (Level::PlaceKey, same("watched.login-hook")),
+        (Level::Hook, same("watched.git-hook")),
+        (Level::File, same("watched.shell-profile")),
+        (Level::Folder, same("watched.autostart")),
+        (
+            Level::Project,
+            lines([
+                both,
+                "changed 2; autorun.agent-start changed, watched.git-hook changed",
+                // Its hook and its server go with the project, told as removed.
+                "removed 4; ",
+                // Cloned again at the same path: new.
+                both,
+                // A project that cannot be listed is not found, and what was read in it is kept.
+                "removed 1; ",
+                "added 1; ",
+                "removed 1; ",
+                "removed 3; ",
+                both,
+            ]),
+        ),
+        (
+            Level::GitDir,
+            lines([
+                "added 8, place_first_read 1; watched.first-read first read",
+                "changed 1; watched.git-hook changed",
+                // No longer a checkout: its hook and its server go with its `.git`.
+                "removed 4; ",
+                both,
+                "changed 1, not_read 1; watched.git-hook not read",
+                "changed 1; ",
+                "changed 1, not_read 1; watched.git-hook not read",
+                "removed 4; ",
+                both,
+            ]),
+        ),
+        (
+            Level::HomeFolder,
+            lines([
+                settings,
+                "changed 1; autorun.agent-settings changed",
+                "removed 5; ",
+                settings,
+                "changed 1, not_read 1; autorun.agent-settings not read",
+                "changed 1; ",
+                "changed 1, not_read 1; autorun.agent-settings not read",
+                "removed 5; ",
+                settings,
+            ]),
+        ),
+    ];
+    let told: Vec<Vec<String>> = std::thread::scope(|s| {
+        let runs: Vec<_> = cases
+            .iter()
+            .map(|(level, _)| s.spawn(move || chain(*level)))
+            .collect();
+        runs.into_iter().map(|r| r.join().unwrap()).collect()
+    });
+    for ((level, expected), told) in cases.iter().zip(&told) {
+        assert_eq!(told, expected, "{level:?}");
+    }
 }

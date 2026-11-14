@@ -949,14 +949,17 @@ fn places(home: &Path, system: &Path, machine: &str, found: &[checkouts::Checkou
             reading: (scope.to_string(), kind.to_string()),
         })
     };
-    for p in &watched::PLACES {
-        match p.base {
-            watched::Base::Home => add(home.join(p.path), p.folder, machine, p.kind),
-            watched::Base::System => add(system.join(p.path), p.folder, machine, p.kind),
-            watched::Base::Checkout => {
-                for c in found {
-                    let scope = format!("checkout:{machine}/{}", c.rel);
-                    add(c.path.join(p.path), p.folder, &scope, p.kind);
+    for (p, (_, kind)) in autorun::places() {
+        let folder = p.part == autorun::Part::Entries;
+        for path in p.paths {
+            match p.scope {
+                autorun::Scope::Home => add(home.join(path), folder, machine, kind),
+                autorun::Scope::System => add(system.join(path), folder, machine, kind),
+                _ => {
+                    for c in found {
+                        let scope = format!("checkout:{machine}/{}", c.rel);
+                        add(c.path.join(path), folder, &scope, kind);
+                    }
                 }
             }
         }
