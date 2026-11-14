@@ -16,9 +16,9 @@ use crate::{autorun, indicators, integrity, sha256, watched};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 
-/// Created on every open, so a store of the current format takes it without a rebuild.
+/// Part of the store's schema (`store::schema`).
 pub const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS finding (
+CREATE TABLE finding (
     id             TEXT PRIMARY KEY,
     rule           TEXT NOT NULL,
     about          TEXT NOT NULL REFERENCES entity (id),
@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS finding (
     UNIQUE (rule, about, occurrence)
 );
 -- What a finding rests on: journal entries by their sequence number.
-CREATE TABLE IF NOT EXISTS finding_basis (
+CREATE TABLE finding_basis (
     finding TEXT NOT NULL REFERENCES finding (id),
     journal INTEGER NOT NULL
 );
@@ -49,23 +49,6 @@ CREATE TABLE IF NOT EXISTS finding_basis (
 pub const SEVERITIES: [&str; 5] = ["informational", "low", "medium", "high", "critical"];
 /// The levels of how sure that it is something bad, OCSF's `confidence_id` names.
 pub const CONFIDENCES: [&str; 3] = ["low", "medium", "high"];
-
-/// How an answer was given, kept with it. A table made before this was kept takes the column
-/// on open; an answer given before has none and is read as `unknown`.
-pub fn add_via(conn: &Connection) -> rusqlite::Result<()> {
-    if !has_via(conn)? {
-        conn.execute_batch("ALTER TABLE finding ADD COLUMN via TEXT")?;
-    }
-    Ok(())
-}
-
-fn has_via(conn: &Connection) -> rusqlite::Result<bool> {
-    conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('finding') WHERE name = 'via')",
-        [],
-        |r| r.get(0),
-    )
-}
 
 /// What every listing of findings says to an agent that reads it.
 pub const ANSWERS_NOTE: &str = "Answer a finding only after the owner has agreed in this conversation, having been told what it is and what the options are. Pass --via agent and the reason the owner agreed to. The app shows every answer given this way.";
@@ -998,25 +981,11 @@ fn state_at(
     }
 }
 
-fn has_table(conn: &Connection) -> rusqlite::Result<bool> {
-    conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'finding')",
-        [],
-        |r| r.get(0),
-    )
-}
-
-/// Every finding, newest first; `None` on a store no run of this build has opened.
-pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Found>>> {
-    if !has_table(conn)? {
-        return Ok(None);
-    }
+/// Every finding, newest first.
+pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Vec<Found>> {
     let this = This::of(conn, this_machine(conn)?)?;
-    // A store opened only for reading since this build keeps no `via` yet.
-    let via = if has_via(conn)? { "via" } else { "NULL" };
-    let form = crate::secrets::form(conn)?;
     let mut affecting: Option<Vec<crate::vulnerabilities::Affecting>> = None;
-    conn.prepare(&format!(
+    conn.prepare(
         "SELECT id, rule, about, state, change, first_seen_at, first_seen_run, last_seen_at,
                 last_seen_run, answered_at, reason, until_at,
                 (SELECT object FROM assertion a WHERE a.subject = f.about
@@ -1030,11 +999,11 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Found>>> 
                                                        END)
                         OR (f.change = 'not read' AND j.entry = 'not_read'))
                  ORDER BY j.seq DESC LIMIT 1),
-                {via},
+                via,
                 EXISTS (SELECT 1 FROM finding g WHERE g.rule = f.rule AND g.about = f.about
                           AND g.occurrence > f.occurrence)
-         FROM finding f ORDER BY last_seen_at DESC, id"
-    ))?
+         FROM finding f ORDER BY last_seen_at DESC, id",
+    )?
     .query_map([], |r| {
         let (state, answered_at, until, last): (String, Option<i64>, Option<i64>, i64) =
             (r.get(3)?, r.get(9)?, r.get(11)?, r.get(7)?);
@@ -1058,7 +1027,7 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Found>>> 
             answered_at,
             reason: r
                 .get::<_, Option<String>>(10)?
-                .map(|s| crate::secrets::Kept::AnswerReason.read(form, &s)),
+                .map(|s| crate::secrets::Kept::AnswerReason.read(&s)),
             until,
             became: r.get(13)?,
             thing: None,
@@ -1107,7 +1076,7 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Found>>> 
     .collect::<rusqlite::Result<Vec<Found>>>()
     .and_then(|mut found| {
         crate::verdict::attach(conn, &mut found)?;
-        Ok(Some(found))
+        Ok(found)
     })
 }
 
@@ -1183,8 +1152,8 @@ impl Via {
         }
     }
 
-    /// How a stored answer or statement was given: one kept before this was recorded, or
-    /// with a value this build does not know, is `Unknown`.
+    /// How a stored answer or statement was given: none, or a value this build does not know,
+    /// is `Unknown`.
     pub fn stored(v: Option<&str>) -> Via {
         match v {
             Some("app") => Via::App,
@@ -1243,7 +1212,7 @@ pub fn pair(
     with: &str,
     at: i64,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let all = all(tx, at)?.unwrap_or_default();
+    let all = all(tx, at)?;
     let Some(a) = all.iter().find(|f| shown(f, id)) else {
         return Err(refused(Refused::Unknown));
     };
@@ -1308,7 +1277,7 @@ pub fn unchanged(
         return Err(refused(Refused::ReadAhead));
     }
     let matches_join = !matches!(act, Act::Answer(Answer::Expected { .. }));
-    let items: Vec<Item> = all(tx, at)?.unwrap_or_default().iter().map(item).collect();
+    let items: Vec<Item> = all(tx, at)?.iter().map(item).collect();
     // Each named finding, then the response layer's findings it shows.
     let mut checked: Vec<&str> = Vec::new();
     for id in ids {
@@ -1351,7 +1320,6 @@ pub fn of_with(e: Box<dyn std::error::Error>) -> Box<dyn std::error::Error> {
 
 fn found(tx: &Transaction, id: &str, at: i64) -> Result<Found, Box<dyn std::error::Error>> {
     all(tx, at)?
-        .unwrap_or_default()
         .into_iter()
         .find(|f| shown(f, id))
         .ok_or_else(|| refused(Refused::Unknown))
@@ -1372,7 +1340,7 @@ pub fn answer(
     }
     let via = via.literal();
     // The reason is the person's decision and is taken whatever it holds, cut as a source's
-    // text is (`secrets::Kept::AnswerReason`, `AnswerEntry`).
+    // text is, in its row and its journal entry (`secrets::Kept::AnswerReason`).
     let kept = |r: &str| crate::secrets::Text::source(r).store();
     let (entry, state, reason, until, text) = match a {
         Answer::Expected { reason, days } => {
@@ -1458,16 +1426,14 @@ fn in_force(f: &Found, now: i64) -> bool {
 }
 
 /// Every finding whose answer is in force now, whoever gave it, the latest answer first.
-pub fn answered(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Item>>> {
-    let Some(found) = all(conn, now)? else {
-        return Ok(None);
-    };
+pub fn answered(conn: &Connection, now: i64) -> rusqlite::Result<Vec<Item>> {
+    let found = all(conn, now)?;
     let mut items: Vec<Item> = found.iter().filter(|f| f.in_force).map(item).collect();
     items.sort_by(|a, b| {
         let at = |i: &Item| i.answer.as_ref().map(|a| a.at);
         at(b).cmp(&at(a)).then_with(|| a.id.cmp(&b.id))
     });
-    Ok(Some(items))
+    Ok(items)
 }
 
 #[derive(Debug)]
@@ -1937,26 +1903,18 @@ pub fn item(f: &Found) -> Item {
 /// Everything that needs a look now, newest first.
 pub struct Needs {
     pub items: Vec<Item>,
-    /// No run of this build has looked for findings in this store yet.
-    pub findings_unknown: bool,
 }
 
 /// The open findings. What the program does not cover is not among them: it is apart, in
 /// `covered.rs`, and never something to look at.
 pub fn needs(conn: &Connection, now: i64) -> rusqlite::Result<Needs> {
-    let found = all(conn, now)?;
-    let findings_unknown = found.is_none();
-    let mut items: Vec<Item> = found
-        .unwrap_or_default()
+    let mut items: Vec<Item> = all(conn, now)?
         .iter()
         .filter(|f| f.state == "open")
         .map(item)
         .collect();
     order(&mut items);
-    Ok(Needs {
-        items,
-        findings_unknown,
-    })
+    Ok(Needs { items })
 }
 
 /// The order of everything that needs a look, and of findings: urgent first, then the most

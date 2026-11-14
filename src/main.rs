@@ -910,6 +910,8 @@ fn sample(args: &SampleArgs) -> Result<processes::Report, Box<dyn Error>> {
     let home = home(&args.store);
     store_folder(&home)?;
     let _lock = store::lock_run(&home)?.ok_or(Stop::RunInProgress)?;
+    // `immune sample` makes the store where there is none; a watcher's sample only opens it.
+    drop(store::open_or_make(&args.store).map_err(|e| Stop::Store(e.to_string()))?);
     let (report, _) = sample_held(
         &args.store,
         args.input.as_deref(),
@@ -962,7 +964,7 @@ fn sample_cmd(args: &SampleArgs) -> ExitCode {
             m.answered_at = now_secs();
             m.store_id = store::open_read_only(&args.store)
                 .ok()
-                .and_then(|c| store::id(&c).ok().flatten());
+                .and_then(|c| store::id(&c).ok());
             answer::print("sample", args.form, &m, text::sample)
         }
         Err(e) => {
@@ -1053,7 +1055,7 @@ fn rules_cmd(args: &RulesArgs) -> ExitCode {
         let conn = store::open_read_only(&args.store).map_err(|e| Stop::Store(e.to_string()))?;
         Ok((
             events::level(&conn, now).map_err(unreadable)?,
-            store::id(&conn).map_err(unreadable)?,
+            Some(store::id(&conn).map_err(unreadable)?),
         ))
     })();
     let (level, store_id) = match read {
@@ -1367,7 +1369,10 @@ fn finding_cmd(args: &FindingArgs) -> ExitCode {
     let run_id = format!("owner-{now}-{nanos:09}");
     // It writes as `immune verdict` does: under the run lock, with the write lock from the
     // start of its transaction, and a store another writer holds is asked again.
-    let busy = |r: verdict::Refusal| refuse(r.code, r.message, "immune finding <id> seen", r.exit);
+    let busy = |r: verdict::Refusal| {
+        let error = answer::error(r.code, r.message, "immune finding <id> seen", &r.detail);
+        answer::fail("finding", args.form, error, r.exit)
+    };
     let (lock, mut conn) = match verdict::writing(&args.store) {
         Ok(held) => held,
         Err(r) => return busy(r),
@@ -2159,7 +2164,7 @@ fn owner_cmd(args: &OwnerArgs) -> ExitCode {
             Ok((
                 owner::standing(&conn)?,
                 owner::withdrawn(&conn)?,
-                store::id(&conn)?,
+                Some(store::id(&conn)?),
             ))
         });
         let (standing, withdrawn, store_id) = match listed {
@@ -2212,7 +2217,7 @@ fn owner_cmd(args: &OwnerArgs) -> ExitCode {
     let mut m = v1::StatementMade {
         format: 1,
         answered_at: at,
-        store_id: store::id(&conn).ok().flatten(),
+        store_id: store::id(&conn).ok(),
         machine_text: known::whole(owner::bare(&entity)),
         names_text: machine
             .iter()
@@ -2387,7 +2392,7 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     // Held until the run returns: a second run stops here and writes nothing. A watcher's
     // reading, `immune watch`, is waited out.
     let _lock = store::lock_run_past_watcher(&home)?.ok_or(Stop::RunInProgress)?;
-    let mut conn = store::open(&args.store).map_err(|e| Stop::Store(e.to_string()))?;
+    let mut conn = store::open_or_make(&args.store).map_err(|e| Stop::Store(e.to_string()))?;
     store::journal_note(&conn, at, &run_id, "run_started", "")?;
 
     let tx = conn.transaction()?;
@@ -3582,15 +3587,8 @@ impl Visited {
 fn kept(
     tx: &rusqlite::Transaction,
     r: &Reading,
-    checkouts: &Visited,
     keep: impl Fn(Option<&Unit>) -> bool,
 ) -> rusqlite::Result<Vec<Statement>> {
-    let prefix = format!("file:{}/", r.scope);
-    let machine_prefix = r
-        .scope
-        .split_once('/')
-        .map(|(machine, _)| machine.strip_prefix("checkout:").unwrap_or(machine))
-        .map(|machine| format!("file:{machine}/"));
     let mut kept = Vec::new();
     let mut stmt = tx.prepare(
         "SELECT a.subject, a.predicate, a.object, a.source_ref, u.path, u.part FROM assertion a
@@ -3614,25 +3612,12 @@ fn kept(
             "located_on" => "located_on",
             _ => continue,
         };
-        let unit = if let Some(path) = path {
-            Some(Unit {
-                path,
-                part: part.unwrap_or_default(),
-            })
-        } else {
-            subject
-                .strip_prefix(&prefix)
-                .or_else(|| {
-                    machine_prefix
-                        .as_deref()
-                        .and_then(|m| subject.strip_prefix(m))
-                })
-                .and_then(|p| {
-                    baseline::legacy_unit(r.kind, p, |rel| {
-                        checkouts.held.contains(rel) || checkouts.looked.contains(rel)
-                    })
-                })
-        };
+        // Every entry a reading of this format holds was recorded with its unit, in the
+        // transaction that made it, and a unit's row is never taken out.
+        let unit = path.map(|path| Unit {
+            path,
+            part: part.unwrap_or_default(),
+        });
         if keep(unit.as_ref()) {
             kept.push(Statement {
                 subject,
@@ -3809,7 +3794,7 @@ fn read_watched(
                         checkouts.iter().map(|c| (c.path.as_path(), c.rel.as_str())),
                         &args.home,
                     ),
-                    kept(run.tx, &reading, &visited, |unit| match unit {
+                    kept(run.tx, &reading, |unit| match unit {
                         Some(unit) => visited.unvisited(&unit.path),
                         None => !visited.held.is_subset(&visited.looked),
                     })?,
@@ -3940,7 +3925,7 @@ fn read_watched(
         // so that the rest of the reading is compared whole: what is gone from a unit read in
         // full is gone, whatever failed elsewhere. A part of a file that could not be read,
         // its neighbours read, keeps only its own. Hooks kept elsewhere keep all of theirs.
-        statements.extend(kept(tx, &reading, &visited, |unit| {
+        statements.extend(kept(tx, &reading, |unit| {
             p.elsewhere.is_some() || !p.look.retracts(unit)
         })?);
         baseline::remember_units(tx, &reading, &units)?;
@@ -5249,7 +5234,7 @@ mod tests {
             conn.query_row("SELECT COUNT(*) FROM session_file", [], |r| r.get(0))
                 .unwrap()
         };
-        let mut conn = store::open(&store_path).unwrap();
+        let mut conn = store::open_or_make(&store_path).unwrap();
         {
             let tx = conn.transaction().unwrap();
             store::put_entity(&tx, "machine:mac").unwrap();
@@ -5281,7 +5266,7 @@ mod tests {
         // about a host key and the folders that could not be listed all stay, and the run prints
         // its line as it keeps it.
         let scratch = common::Scratch::new("run-line-pieces");
-        let conn = store::open(&scratch.0.join("store.db")).unwrap();
+        let conn = store::open_or_make(&scratch.0.join("store.db")).unwrap();
         let mark = status::RunMark {
             id: "1767412800-000000000".to_string(),
             started_at: 1_767_412_800,

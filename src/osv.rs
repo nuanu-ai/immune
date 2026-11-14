@@ -25,10 +25,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
 /// The tables of the vulnerability data. Advisories are not facts: like threats they live in
-/// their own tables and never touch assertions. Created on every open. Text in them is the
+/// their own tables and never touch assertions. Part of the store's schema (`store::schema`). Text in them is the
 /// feed's own and is partly written by an attacker.
 pub const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS advisory (
+CREATE TABLE advisory (
     source        TEXT NOT NULL,     -- the feed, such as 'osv-npm'
     id            TEXT NOT NULL,
     modified      TEXT NOT NULL,     -- as the record gives it
@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS advisory (
     CHECK ((gone_at IS NULL) = (gone_run IS NULL))
 );
 -- What an advisory affects, one row per affected package of the feed's own ecosystem.
-CREATE TABLE IF NOT EXISTS advisory_affects (
+CREATE TABLE advisory_affects (
     source        TEXT NOT NULL,
     advisory      TEXT NOT NULL,
     ecosystem     TEXT NOT NULL,     -- as the record gives it
@@ -60,16 +60,16 @@ CREATE TABLE IF NOT EXISTS advisory_affects (
     informational TEXT,              -- RustSec's kind of informational advisory
     FOREIGN KEY (source, advisory) REFERENCES advisory (source, id)
 );
-CREATE INDEX IF NOT EXISTS advisory_affects_name ON advisory_affects (ecosystem, normalized);
-CREATE INDEX IF NOT EXISTS advisory_affects_advisory ON advisory_affects (source, advisory);
+CREATE INDEX advisory_affects_name ON advisory_affects (ecosystem, normalized);
+CREATE INDEX advisory_affects_advisory ON advisory_affects (source, advisory);
 -- What the status, the view and every run ask of the records held now: how many there are of
 -- each kind (`held`), the newest change (`freshness`) and how many are informational. Each was
 -- a read of the whole table, about 235,000 rows and 40 MB for npm, several times per
 -- `immune status`. Each index holds what its question reads, so it is answered from the index
 -- alone: `advisory_held` by a pass over its entries for one feed, the other two by a look-up.
-CREATE INDEX IF NOT EXISTS advisory_held ON advisory (source, gone_at, kind, withdrawn);
-CREATE INDEX IF NOT EXISTS advisory_newest ON advisory (source, gone_at, modified);
-CREATE INDEX IF NOT EXISTS advisory_informational ON advisory (kind, withdrawn, gone_at);
+CREATE INDEX advisory_held ON advisory (source, gone_at, kind, withdrawn);
+CREATE INDEX advisory_newest ON advisory (source, gone_at, modified);
+CREATE INDEX advisory_informational ON advisory (kind, withdrawn, gone_at);
 ";
 
 /// One feed of vulnerability data.
@@ -189,12 +189,8 @@ pub fn last_good_at(conn: &Connection, source: &str) -> rusqlite::Result<Option<
     )
 }
 
-/// Why the feed's latest reading failed, when it did. `None` in a store made before the
-/// feeds' tables.
+/// Why the feed's latest reading failed, when it did.
 pub fn last_failure(conn: &Connection, source: &str) -> rusqlite::Result<Option<String>> {
-    if !has_tables(conn)? {
-        return Ok(None);
-    }
     Ok(conn
         .query_row(
             "SELECT reason FROM feed_reading WHERE source = ?1 AND outcome = 'failed'
@@ -230,17 +226,6 @@ pub fn lock_fetch(home: &Path) -> std::io::Result<Option<std::fs::File>> {
     }
 }
 
-/// Whether the store has the feeds' tables: one made before them has none until a run
-/// opens it.
-fn has_tables(conn: &Connection) -> rusqlite::Result<bool> {
-    conn.query_row(
-        "SELECT COUNT(*) = 2 FROM sqlite_master
-         WHERE type = 'table' AND name IN ('advisory', 'feed_reading')",
-        [],
-        |r| r.get(0),
-    )
-}
-
 /// Asks for a feed, or takes the archive given instead. Run before the run lock is taken, with
 /// the store open only to read, or with no store yet: what it needs of the store, the ETag
 /// and when the feed was last read, is read first, and the download touches nothing in it.
@@ -259,10 +244,6 @@ pub fn get(
             downloaded: false,
         });
     }
-    let conn = match conn {
-        Some(conn) if has_tables(conn)? => Some(conn),
-        _ => None,
-    };
     if feed.every > 0
         && let Some(conn) = conn
         && let Some(at) = last_good_at(conn, feed.source)?
@@ -1282,22 +1263,8 @@ impl State {
 
 /// The state of every feed.
 pub fn states(conn: &Connection) -> rusqlite::Result<Vec<State>> {
-    let has_tables = has_tables(conn)?;
     let mut out = Vec::new();
     for feed in &FEEDS {
-        if !has_tables {
-            out.push(State {
-                feed,
-                latest: None,
-                good_at: None,
-                changed_at: None,
-                records: 0,
-                malicious: 0,
-                withdrawn: 0,
-                counts: None,
-            });
-            continue;
-        }
         let latest = conn
             .query_row(
                 "SELECT run_id, at, outcome, reason FROM feed_reading

@@ -22,10 +22,10 @@ const FORMAT: u32 = 1;
 
 /// Every finding the store holds, in every state, the most severe first.
 pub fn list(conn: &Connection, now: i64) -> rusqlite::Result<v1::Findings> {
-    let found = all(conn, now)?;
+    let found = findings::all(conn, now)?;
     let mut items: Vec<Item> = found.iter().map(findings::item).collect();
     findings::order(&mut items);
-    let store_id = store::id(conn)?;
+    let store_id = Some(store::id(conn)?);
     let refs = refs(&items);
     Ok(v1::Findings {
         format: FORMAT,
@@ -50,7 +50,7 @@ pub fn one(
     with: Option<&str>,
     now: i64,
 ) -> rusqlite::Result<Result<v1::Finding, Refused>> {
-    let found = all(conn, now)?;
+    let found = findings::all(conn, now)?;
     let mut one = of(conn, &found, id, now)?;
     if let (Some(f), Some(with)) = (one.as_mut(), with) {
         let items: Vec<Item> = found.iter().map(findings::item).collect();
@@ -92,7 +92,7 @@ pub fn of(
             new_value_text: b.new_value.as_deref().map(whole),
         })
         .collect();
-    let store_id = store::id(conn)?;
+    let store_id = Some(store::id(conn)?);
     let items: Vec<Item> = found.iter().map(findings::item).collect();
     let refs = refs(&items);
     let verdicts = verdict::verdicts(
@@ -125,14 +125,6 @@ pub fn of(
         thing: i.thing.clone(),
         kind_title: findings::kind_title(i.kind).to_string(),
     }))
-}
-
-/// Every finding. The table of findings is read first, so that a store an older build left
-/// without it fails as written by an older build (`known::read` says so) rather than reading
-/// as a store with no findings.
-fn all(conn: &Connection, now: i64) -> rusqlite::Result<Vec<Found>> {
-    conn.query_row("SELECT COUNT(*) FROM finding", [], |_| Ok(()))?;
-    Ok(findings::all(conn, now)?.unwrap_or_default())
 }
 
 /// Every finding by id, as an answer names one.
@@ -244,22 +236,9 @@ pub fn change_of(word: &str) -> i32 {
     value_of::<v1::Change>(&word.replace(' ', "_"))
 }
 
-/// Whether the store has a table: one a reading of this build creates may be missing from a
-/// store no such reading has written.
-fn has(conn: &Connection, table: &str) -> rusqlite::Result<bool> {
-    conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-        [table],
-        |r| r.get(0),
-    )
-}
-
 /// How many events a published rule's finding counts since it was raised; `None` when the
 /// store holds no count for it.
 fn rule_count(conn: &Connection, finding: &str) -> rusqlite::Result<Option<u64>> {
-    if !has(conn, "rule_finding")? {
-        return Ok(None);
-    }
     let n: Option<i64> = conn
         .query_row(
             "SELECT matches FROM rule_finding WHERE finding = ?1",
@@ -277,16 +256,8 @@ fn rule_events(
     finding: &str,
     kind: sigma::Kind,
 ) -> rusqlite::Result<Vec<v1::Event>> {
-    let table = match kind {
-        sigma::Kind::Process => "rule_evidence",
-        sigma::Kind::File => "rule_file_evidence",
-    };
-    if !has(conn, table)? {
-        return Ok(Vec::new());
-    }
     // A row's arguments are read back cut, and cut again, so a set newer than the one that kept
     // them applies; the start made from the row holds none.
-    let form = crate::secrets::form(conn)?;
     let read: Vec<(Evidence, Args)> = match kind {
         sigma::Kind::Process => conn
             .prepare(
@@ -310,7 +281,7 @@ fn rule_events(
                     platform_binary: r.get(10)?,
                     ..ProcessStart::default()
                 });
-                Ok((start, Args::stored(&args, form)))
+                Ok((start, Args::stored(&args)))
             })?
             .collect::<rusqlite::Result<_>>()?,
         sigma::Kind::File => conn

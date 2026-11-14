@@ -52,8 +52,8 @@ pub const SESSIONS: &str = ".claude/projects";
 /// The note of a full reading when there are no sessions to read.
 pub const NOT_HERE: &str = "no Claude Code sessions on this machine";
 
-/// Created on every open of the store: a store made before it starts with no positions, so
-/// its first reading is from the first byte of every file.
+/// Part of the store's schema (`store::schema`). A new store has no positions, so its first
+/// reading is from the first byte of every file.
 pub const SCHEMA: &str = "
 -- Where each agent session file was read up to, see agent_folders.rs. Every byte before
 -- `position` is whole lines already read; `digest` is the SHA-256 of those bytes; `folders`
@@ -61,7 +61,7 @@ pub const SCHEMA: &str = "
 -- working folder that are not JSON. The inode and change time are the file's at that
 -- reading; `settled` is 0 when the file had changed too shortly before for an unchanged
 -- change time to stand for it.
-CREATE TABLE IF NOT EXISTS session_file (
+CREATE TABLE session_file (
     path     BLOB PRIMARY KEY,
     inode    INTEGER NOT NULL,
     ctime_ns INTEGER NOT NULL,
@@ -986,7 +986,7 @@ mod tests {
         // A row written by hand or by another build must not stop every reading: it is left
         // out, and the file it was about has no position.
         let t = Trial::new("bad-row");
-        let mut store = crate::store::open(&t.root.join("store.db")).unwrap();
+        let mut store = crate::store::open_or_make(&t.root.join("store.db")).unwrap();
         let tx = store.transaction().unwrap();
         let entry = Held {
             stat: Stat {
@@ -1177,7 +1177,7 @@ mod tests {
     fn what_the_store_keeps_of_a_session_reads_back_as_it_was_kept() {
         // Otherwise every reading would go back to the first byte, or trust what it should not.
         let t = Trial::new("kept");
-        let store = crate::store::open(&t.root.join("store.db")).unwrap();
+        let store = crate::store::open_or_make(&t.root.join("store.db")).unwrap();
         let entry = Held {
             stat: Stat {
                 // Past what a signed 64-bit integer holds.

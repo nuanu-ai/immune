@@ -255,7 +255,7 @@ pub fn given_by(via: crate::findings::Via) -> &'static str {
         crate::findings::Via::App => "in the app",
         crate::findings::Via::Agent => "through your agent",
         crate::findings::Via::Command => "from the command line",
-        crate::findings::Via::Unknown => "given before this version recorded who",
+        crate::findings::Via::Unknown => "how it came is not recorded",
     }
 }
 
@@ -557,20 +557,13 @@ pub struct Latest {
 /// Readings that are not full come first. Readings inside a container or checkout that
 /// is gone no longer count and are left out. `immune status` counts coverage from this too.
 pub fn latest_coverage(conn: &Connection) -> rusqlite::Result<Vec<Latest>> {
-    // A store opened read-only may predate the column: its readings have no cause.
-    let has_cause: bool = conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('coverage') WHERE name = 'cause')",
-        [],
-        |r| r.get(0),
-    )?;
-    let cause = if has_cause { "c.cause" } else { "NULL" };
     conn.prepare(&format!(
         "{latest}
          SELECT c.reader, c.scope, c.kind, c.completeness, c.reason, c.observed_at,
                 (SELECT MAX(f.observed_at) FROM coverage f
                  WHERE f.reader = c.reader AND f.scope = c.scope AND f.kind = c.kind
                    AND f.completeness = 'full'),
-                {cause}
+                c.cause
          FROM latest c
          WHERE c.scope NOT IN (SELECT id FROM gone_entity)
          ORDER BY c.completeness = 'full', c.completeness, c.reader, c.scope, c.kind",
@@ -1513,12 +1506,6 @@ pub fn catalogue(conn: &Connection, out: &mut String, now: i64) -> Out {
         "<section id=\"threats\">\n<h2>Vulnerabilities used in real attacks</h2>\n<p>{}</p>",
         esc(CATALOGUE_IS)
     )?;
-    // A store made before the threat list has no tables for it until a run opens it.
-    let has_tables: bool = conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'feed_reading')",
-        [],
-        |r| r.get(0),
-    )?;
     // The latest reading, and the latest one that read the catalogue.
     type Reading = (
         String,
@@ -1529,9 +1516,6 @@ pub fn catalogue(conn: &Connection, out: &mut String, now: i64) -> Out {
         Option<String>,
     );
     let reading = |outcomes: &str| -> rusqlite::Result<Option<Reading>> {
-        if !has_tables {
-            return Ok(None);
-        }
         conn.query_row(
             &format!(
                 "SELECT run_id, outcome, at, reason, raw_path, sha256 FROM feed_reading
@@ -2439,7 +2423,7 @@ mod tests {
         ));
         let _removed = crate::common::Scratch::at(dir.clone());
         std::fs::create_dir_all(&dir).unwrap();
-        let mut conn = crate::store::open(&dir.join("store.db")).unwrap();
+        let mut conn = crate::store::open_or_make(&dir.join("store.db")).unwrap();
         let mac = "machine:mac";
         // `journaled`: a reading the page lists, that recorded a change; `full`: a full run.
         let write = |conn: &mut rusqlite::Connection, i: i64, journaled: bool, full: bool| {
@@ -2527,7 +2511,7 @@ mod tests {
         let scratch = crate::common::Scratch::new("view-reason-cut");
         let dir = scratch.0.clone();
         let store = dir.join("store.db");
-        let mut conn = crate::store::open(&store).unwrap();
+        let mut conn = crate::store::open_or_make(&store).unwrap();
         // Invented, of a kind the patterns know, and put together so none stands in the file.
         let token = format!(
             "{}{}",
@@ -2615,7 +2599,6 @@ mod tests {
             rusqlite::params![crate::osv::FEEDS[0].source, run_id, at, said],
         )
         .unwrap();
-        crate::events::schema(&tx).unwrap();
         // What the collector printed, as the store keeps it: a source's backslash as `\u{5c}`.
         let collector = "the log said \\u{5c}n";
         tx.execute(

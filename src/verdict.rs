@@ -27,7 +27,7 @@ use crate::contract::{v1, value_of};
 use crate::events::{self, AtLine, LineAt};
 use crate::findings::{self, CONFIDENCES, Found, SEVERITIES, Words};
 use crate::known::{self, whole};
-use crate::secrets::{Form, Kept, Text, holds};
+use crate::secrets::{Kept, Text, holds};
 use crate::sigma::Rules;
 use crate::{Stop, answer, store};
 use prost::Message;
@@ -65,9 +65,9 @@ pub const WORDS: Words = Words {
     advice: "Read its reason and look at what it is about. Mark this finding seen once you have. Immune's own finding about the same thing, if there is one, keeps an answer of its own; one answer that names both answers both.",
 };
 
-/// Created on every open, so a store of the current format takes it without a rebuild.
+/// Part of the store's schema (`store::schema`).
 pub const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS verdict (
+CREATE TABLE verdict (
     id         INTEGER PRIMARY KEY,
     at         INTEGER NOT NULL,
     journal    INTEGER NOT NULL,  -- its entry in the journal, `verdict`
@@ -83,9 +83,9 @@ CREATE TABLE IF NOT EXISTS verdict (
     case_ref   TEXT NOT NULL,     -- text from the response layer
     CHECK ((named IS NULL) = (position IS NOT NULL AND rule IS NOT NULL))
 );
-CREATE INDEX IF NOT EXISTS verdict_named ON verdict (named);
-CREATE INDEX IF NOT EXISTS verdict_finding ON verdict (finding);
-CREATE INDEX IF NOT EXISTS verdict_match ON verdict (position, rule);
+CREATE INDEX verdict_named ON verdict (named);
+CREATE INDEX verdict_finding ON verdict (finding);
+CREATE INDEX verdict_match ON verdict (position, rule);
 ";
 
 /// What the response layer concluded.
@@ -128,48 +128,35 @@ pub struct Recorded {
 const COLUMNS: &str =
     "at, kind, named, position, rule, finding, raised, severity, confidence, reason, case_ref";
 
-/// A verdict's row, read in the store's `form`.
-fn row(form: Form) -> impl Fn(&rusqlite::Row) -> rusqlite::Result<Recorded> {
-    move |r| {
-        let kind: String = r.get(1)?;
-        Ok(Recorded {
-            at: r.get(0)?,
-            kind: if kind == "suspicious" {
-                Kind::Suspicious
-            } else {
-                Kind::Harmless
-            },
-            named: r.get(2)?,
-            position: r.get(3)?,
-            rule: r.get(4)?,
-            finding: r.get(5)?,
-            raised: r.get(6)?,
-            severity: r.get(7)?,
-            confidence: r.get(8)?,
-            reason: Kept::Reason.read(form, &r.get::<_, String>(9)?),
-            case: Kept::Case.read(form, &r.get::<_, String>(10)?),
-        })
-    }
-}
-
-fn has_table(conn: &Connection) -> rusqlite::Result<bool> {
-    conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'verdict')",
-        [],
-        |r| r.get(0),
-    )
+/// A verdict's row.
+fn row(r: &rusqlite::Row) -> rusqlite::Result<Recorded> {
+    let kind: String = r.get(1)?;
+    Ok(Recorded {
+        at: r.get(0)?,
+        kind: if kind == "suspicious" {
+            Kind::Suspicious
+        } else {
+            Kind::Harmless
+        },
+        named: r.get(2)?,
+        position: r.get(3)?,
+        rule: r.get(4)?,
+        finding: r.get(5)?,
+        raised: r.get(6)?,
+        severity: r.get(7)?,
+        confidence: r.get(8)?,
+        reason: Kept::Reason.read(&r.get::<_, String>(9)?),
+        case: Kept::Case.read(&r.get::<_, String>(10)?),
+    })
 }
 
 /// The verdicts that meet `cond`, counted, and listed oldest first: the first and the latest
-/// `LISTED`. A store without the table has none.
+/// `LISTED`.
 pub fn listed(
     conn: &Connection,
     cond: &str,
     args: &[&dyn rusqlite::ToSql],
 ) -> rusqlite::Result<(u32, u32, Vec<Recorded>)> {
-    if !has_table(conn)? {
-        return Ok((0, 0, Vec::new()));
-    }
     let (total, suspicious): (u32, u32) = conn.query_row(
         &format!(
             "SELECT COUNT(*), COALESCE(SUM(kind = 'suspicious'), 0) FROM verdict WHERE {cond}"
@@ -184,7 +171,7 @@ pub fn listed(
                     OR id IN (SELECT id FROM verdict WHERE {cond} ORDER BY id DESC LIMIT {LISTED}))
              ORDER BY id"
         ))?
-        .query_map(args, row(crate::secrets::form(conn)?))?
+        .query_map(args, row)?
         .collect::<rusqlite::Result<_>>()?;
     Ok((total, suspicious, list))
 }
@@ -220,9 +207,6 @@ pub struct Summary {
 
 /// Gives each finding what it carries of the verdicts (`Summary`).
 pub fn attach(conn: &Connection, found: &mut [Found]) -> rusqlite::Result<()> {
-    if !has_table(conn)? {
-        return Ok(());
-    }
     let rank = |column: &str, scale: &[&str]| {
         let whens: String = scale
             .iter()
@@ -267,7 +251,7 @@ pub fn attach(conn: &Connection, found: &mut [Found]) -> rusqlite::Result<()> {
     }
     for v in conn
         .prepare(&format!("SELECT {COLUMNS} FROM verdict WHERE raised"))?
-        .query_map([], row(crate::secrets::form(conn)?))?
+        .query_map([], row)?
     {
         let v = v?;
         if let Some(s) = v.finding.as_ref().and_then(|f| of_finding.get_mut(f)) {
@@ -815,7 +799,6 @@ fn take(args: &VerdictArgs) -> Result<v1::VerdictRecorded, Refusal> {
                 )?;
             }
             if let Some(e) = event {
-                events::schema(&tx)?;
                 events::keep(&tx, &finding, now, 1, &VecDeque::from([e]))?;
             }
             (Some(finding), raised)
@@ -855,23 +838,19 @@ fn check(
     now: i64,
 ) -> Result<Option<events::Evidence>, Refusal> {
     let id = store::id(conn)?;
-    if id.as_deref() != Some(sent.store_id.as_str()) {
+    if id != sent.store_id {
         return Err(refused(
             "another_store",
             "the verdict names another store than the one it was given to; nothing was recorded",
             format!(
                 "the verdict names {}, and this store is {}",
-                sent.store_id,
-                id.as_deref().unwrap_or("without an id")
+                sent.store_id, id
             ),
         ));
     }
     match &sent.about {
         About::Finding(id) => {
-            let known = findings::all(conn, now)?
-                .unwrap_or_default()
-                .iter()
-                .any(|f| f.id == *id);
+            let known = findings::all(conn, now)?.iter().any(|f| f.id == *id);
             if !known {
                 return Err(refused(
                     "unknown_finding",
@@ -974,15 +953,14 @@ fn answer(
     already: bool,
     now: i64,
 ) -> Result<v1::VerdictRecorded, Refusal> {
-    let store_id = store::id(tx)?;
+    let store_id = Some(store::id(tx)?);
     let r = tx.query_row(
         &format!("SELECT {COLUMNS} FROM verdict WHERE id = ?1"),
         [id],
-        row(crate::secrets::form(tx)?),
+        row,
     )?;
     let finding = match &r.finding {
         Some(f) => findings::all(tx, now)?
-            .unwrap_or_default()
             .iter()
             .find(|x| &x.id == f)
             .map(|f| known::finding_ref(&findings::item(f))),

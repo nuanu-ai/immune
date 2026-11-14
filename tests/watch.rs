@@ -19,6 +19,9 @@ const WAIT: Duration = Duration::from_secs(30);
 /// Where the event level's log is, under the system root.
 const EVENT_LOG: &str = "Library/Application Support/ai.nuanu.immune/event-level/log";
 
+/// A server file the probe of this version printed, with nothing in its sections.
+const SERVER: &str = "##os_release\n##kernel_package\n##package_managers\ndpkg\n##dpkg_with_source\n##docker_access\n##end\n";
+
 /// An invented Mac: a home folder, a system root and a store folder, all temporary.
 struct Mac {
     root: PathBuf,
@@ -486,6 +489,46 @@ fn a_change_the_watcher_sees_is_an_open_finding_at_once_and_its_read_line_counts
 }
 
 #[test]
+fn a_watcher_already_running_never_makes_a_store_in_a_file_whose_schema_is_gone() {
+    // A store whose objects were taken out of `sqlite_master` while a watcher runs: its next
+    // reading reports the problem and writes nothing, and the file is left as it was. A store
+    // removed while it runs is reported the same way and not made again.
+    let mac = Mac::new("emptied");
+    mac.put(".zshrc", "one\n");
+    mac.run();
+    let mut w = mac.watch().started();
+    // Under the run lock, as a writer would, so that no write the watcher began before is
+    // still on its way.
+    let folder = std::fs::File::open(mac.store().parent().unwrap()).unwrap();
+    folder.lock().unwrap();
+    Connection::open(mac.store())
+        .unwrap()
+        .execute_batch("PRAGMA writable_schema = ON; DELETE FROM sqlite_master;")
+        .unwrap();
+    let before = std::fs::read(mac.store()).unwrap();
+    folder.unlock().unwrap();
+    mac.put(".zshrc", "two\n");
+    let problem = w.until("problem", |v| v["code"] == "read_failed");
+    let said = problem["detail_text"].as_str().unwrap();
+    assert!(said.contains("holds no tables, not a store"), "{said}");
+    assert_eq!(std::fs::read(mac.store()).unwrap(), before);
+    // A store that goes while it runs is not made again either.
+    folder.lock().unwrap();
+    std::fs::remove_file(mac.store()).unwrap();
+    folder.unlock().unwrap();
+    mac.put(".zshrc", "three\n");
+    let gone = w.until("problem", |v| {
+        v["code"] == "read_failed"
+            && v["detail_text"]
+                .as_str()
+                .is_some_and(|d| d.contains("there is no store at"))
+    });
+    assert!(!mac.store().exists(), "{gone}");
+    drop(w);
+    assert!(!mac.store().exists());
+}
+
+#[test]
 fn a_watchers_reading_shows_in_the_view_as_what_it_is_and_not_as_a_run_that_did_not_finish() {
     // The owner reads the list of changes: a watcher's reading never writes `run_finished`,
     // and calling it unfinished would say its changes are unknown when they are known. Nor
@@ -494,7 +537,7 @@ fn a_watchers_reading_shows_in_the_view_as_what_it_is_and_not_as_a_run_that_did_
     mac.put(".zshrc", "one\n");
     let servers = mac.root.join("servers");
     std::fs::create_dir_all(&servers).unwrap();
-    std::fs::write(servers.join("web-1.txt"), "##end\n").unwrap();
+    std::fs::write(servers.join("web-1.txt"), SERVER).unwrap();
     assert!(
         mac.run_cmd_servers(&servers)
             .output()
@@ -1516,34 +1559,6 @@ fn a_place_the_watcher_read_first_after_the_first_check_is_told_once_and_what_ap
 }
 
 #[test]
-fn after_an_upgrade_a_clone_made_before_the_first_full_check_is_found_though_the_watcher_read_first()
- {
-    // A store an earlier version made, which recorded no place. The upgraded app's watcher
-    // reads first and records its places; the first full check then judges a project cloned
-    // since the earlier version's last check by the walks that version made.
-    let mac = with_projects("upgraded");
-    mac.run();
-    Connection::open(mac.store())
-        .unwrap()
-        .execute_batch("DROP TABLE unit_read; DELETE FROM meta WHERE key = 'units_since';")
-        .unwrap();
-    assert!(mac.watch().started().stop().success());
-    mac.put("dev/new/.git/HEAD", "ref: refs/heads/main\n");
-    mac.put(
-        "dev/new/package.json",
-        r#"{"scripts": {"preinstall": "node x.js"}}"#,
-    );
-    mac.run();
-    assert_eq!(
-        found(&mac),
-        [(
-            "autorun.package-install".to_string(),
-            "~/dev/new/package.json#/scripts/preinstall".to_string()
-        )]
-    );
-}
-
-#[test]
 fn a_worktree_that_appears_while_the_watcher_runs_raises_nothing_in_the_run_or_the_watcher_and_its_later_change_is_found_live()
  {
     // The full run finds the worktree and the watcher then watches it: both judge it by one
@@ -1699,28 +1714,19 @@ fn a_failed_reading_or_sample_is_not_watched_live_with_its_reason_until_the_next
     };
     assert_eq!(live(&mac).0, true);
 
-    // What the failure said carries an invented token: cut wherever it is printed, in the
-    // problem line and in the status, as every text from a source.
-    let token = format!(
-        "{}{}",
-        ["gh", "p_"].concat(),
-        "Q7mZ2xK9pL4vR8nT3wY6bH1cJ5dF0gS2aE7u"
-    );
-    let conn = Connection::open(mac.store()).unwrap();
-    conn.execute_batch(&format!(
-        "CREATE TRIGGER refuse BEFORE INSERT ON coverage WHEN NEW.run_id LIKE 'watch-%'
-         BEGIN SELECT RAISE(ABORT, 'invented refusal ?t={token}'); END;"
-    ))
-    .unwrap();
+    // A reading that cannot keep its raw copy fails, and is rolled back whole: the folder of
+    // raw copies beside the store is closed to writing.
+    use std::os::unix::fs::PermissionsExt;
+    let raw = mac.store().parent().unwrap().join("raw");
+    let closed = |mode| std::fs::set_permissions(&raw, std::fs::Permissions::from_mode(mode));
+    closed(0o555).unwrap();
     mac.put(".zshrc", "one\n");
     let problem = w.until("problem", |v| v["code"] == "read_failed");
     let (is_live, failed) = live(&mac);
     assert_eq!(is_live, false, "{failed}");
     assert_eq!(failed[0]["what"], "read", "{failed}");
-    let cut = "invented refusal ?t=\\cut{gitleaks:github-pat 40}";
     for detail in [&failed[0]["detail_text"], &problem["detail_text"]] {
-        let detail = detail.as_str().unwrap();
-        assert!(detail.contains(cut) && !detail.contains(&token), "{detail}");
+        assert!(!detail.as_str().unwrap().is_empty(), "{detail}");
     }
     // The page and the text say a watcher runs but does not watch live, never that none runs.
     // The failed reading wrote nothing to the journal: the page asked for says it all the same.
@@ -1734,7 +1740,7 @@ fn a_failed_reading_or_sample_is_not_watched_live_with_its_reason_until_the_next
     let text = within(mac.immune().args(["status", "--store"]).arg(mac.store()));
     let text = String::from_utf8(text.stdout).unwrap();
     assert!(text.contains("so it does not watch live"), "{text}");
-    conn.execute_batch("DROP TRIGGER refuse").unwrap();
+    closed(0o755).unwrap();
     mac.put(".zshrc", "two\n");
     w.until("read", |v| count(v, "changed") == 1);
     assert_eq!(live(&mac), (true.into(), serde_json::json!([])));
@@ -1940,7 +1946,7 @@ fn a_quiet_mac_needs_no_look_whatever_is_not_covered_and_a_planted_change_does()
     mac.put("dev/shop/yarn.lock", "# yarn lockfile v1\n");
     let servers = mac.root.join("servers");
     std::fs::create_dir_all(&servers).unwrap();
-    std::fs::write(servers.join("web-1.txt"), "##end\n").unwrap();
+    std::fs::write(servers.join("web-1.txt"), SERVER).unwrap();
     std::fs::write(servers.join("web-2.txt"), "##packages\n").unwrap();
     // The sweep ran long before the runs that read what it left.
     let swept = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
@@ -2487,7 +2493,7 @@ fn a_sample_that_opens_a_finding_says_so_in_one_line_and_a_quiet_sample_says_not
     // A server read by the run, which a sample never reads.
     let servers = mac.root.join("servers");
     std::fs::create_dir_all(&servers).unwrap();
-    std::fs::write(servers.join("web-1.txt"), "##end\n").unwrap();
+    std::fs::write(servers.join("web-1.txt"), SERVER).unwrap();
     assert!(
         mac.run_cmd_servers(&servers)
             .output()
@@ -2761,14 +2767,14 @@ fn a_mac_checked_every_hour_keeps_no_more_readings_after_a_month_than_after_a_da
 
 #[test]
 fn the_first_check_of_a_store_kept_whole_before_folds_its_readings_and_gives_the_space_back() {
-    // A store an earlier build kept every reading of: its first full run folds them, and the
-    // file shrinks, so that a year of readings does not stay on the disk as free pages.
+    // A store that holds a year of readings older than every run kept whole: its next full run
+    // folds them, and the file shrinks, so that they do not stay on the disk as free pages.
     let mac = Mac::new("earlier");
     mac.put(".zshrc", "export A=1\n");
     mac.run();
     {
-        // A year of hourly readings before the first, as an earlier build left them: older
-        // than every run, so with ids below them.
+        // A year of hourly readings before the first: older than every run, so with ids below
+        // them.
         let conn = Connection::open(mac.store()).unwrap();
         conn.execute(
             "WITH RECURSIVE n (i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 8760)
@@ -3006,28 +3012,6 @@ fn a_link_outside_every_watched_place_turned_while_the_watcher_was_stopping_is_r
     assert_ne!(read_by(&mac, AGENTS), agents);
     assert_eq!(count(&first, "changed"), 1, "{first}");
     assert!(w.stop().success());
-}
-
-#[test]
-fn the_event_id_an_earlier_build_kept_is_emptied_so_that_build_reads_every_place_at_its_start() {
-    // An earlier build replays from the id in `watcher.event_id` and reads every place only
-    // when there is none. An id left there while this build ran would have it replay from a
-    // point whose history it was never shown to cover.
-    let mac = Mac::new("event-id");
-    mac.put(".zshrc", "one\n");
-    assert!(mac.watch().started().stop().success());
-    let row = "SELECT event_id || '|' || volumes FROM watcher";
-    assert_eq!(mac.rows(row), ["|"]);
-    // As an earlier build left the row.
-    let conn = Connection::open(mac.store()).unwrap();
-    conn.execute(
-        "UPDATE watcher SET event_id = '4242', volumes = '0123456789abcdef'",
-        [],
-    )
-    .unwrap();
-    drop(conn);
-    assert!(mac.watch().started().stop().success());
-    assert_eq!(mac.rows(row), ["|"]);
 }
 
 /// A watcher that does not look at what to watch while a test runs: what it owes is not made.

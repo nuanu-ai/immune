@@ -4,9 +4,10 @@ name = "immune-contract"
 # every message of package `immune.v1` carries, so 1 for `immune.v1`; a version 2 of the schema
 # (package `immune.v2`, `format` 2) makes major version 2. Within a major version the schema is
 # only added to, and each change that adds to it raises the minor version, so a reader built on
-# an older 1.x reads what a newer core prints. A change that leaves the messages as they are,
+# an older 1.x reads what a newer core prints. A value or a field the core no longer gives is
+# reserved by its number and its name and never used again; that also raises the minor version. A change that leaves the messages as they are,
 # such as a comment in the schema, raises the patch version.
-version = "1.13.1"
+version = "1.14.0"
 edition = "2024"
 rust-version = "1.89"
 license = "MIT"

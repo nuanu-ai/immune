@@ -25,11 +25,11 @@ use serde_json::{Value, json};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-/// The tables of the answers. Created on every open.
+/// The tables of the answers, part of the store's schema (`store::schema`).
 pub const SCHEMA: &str = "
 -- One answer per advisory, checkout and package the checkout's lockfiles hold, as the latest
 -- run gave it.
-CREATE TABLE IF NOT EXISTS vulnerability_answer (
+CREATE TABLE vulnerability_answer (
     checkout   TEXT NOT NULL,      -- the checkout's entity id
     ecosystem  TEXT NOT NULL,
     package    TEXT NOT NULL,      -- the package's name in the registry
@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS vulnerability_answer (
     PRIMARY KEY (checkout, ecosystem, package, source, advisory)
 );
 -- An answer that changed or went, with when it stopped holding.
-CREATE TABLE IF NOT EXISTS vulnerability_answer_past (
+CREATE TABLE vulnerability_answer_past (
     checkout   TEXT NOT NULL,
     ecosystem  TEXT NOT NULL,
     package    TEXT NOT NULL,
@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS vulnerability_answer_past (
 );
 -- One row per checkout and matched ecosystem: whether the conditions for 'does not affect me,
 -- known for certain' hold there, so the answer for any advisory is derived on demand.
-CREATE TABLE IF NOT EXISTS vulnerability_place (
+CREATE TABLE vulnerability_place (
     checkout        TEXT NOT NULL,
     ecosystem       TEXT NOT NULL,
     lockfiles       TEXT NOT NULL CHECK (lockfiles IN ('full', 'partial', 'not_read')),
@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS vulnerability_place (
     PRIMARY KEY (checkout, ecosystem)
 );
 -- The catalogue's exploited CVEs that records of the data are linked to through aliases.
-CREATE TABLE IF NOT EXISTS vulnerability_linked (
+CREATE TABLE vulnerability_linked (
     cve       TEXT NOT NULL,
     source    TEXT NOT NULL,
     advisory  TEXT NOT NULL,
@@ -337,28 +337,10 @@ pub struct Fresh {
     pub not_current: Option<String>,
 }
 
-fn has_feed_tables(conn: &Connection) -> rusqlite::Result<bool> {
-    conn.query_row(
-        "SELECT COUNT(*) = 2 FROM sqlite_master
-         WHERE type = 'table' AND name IN ('advisory', 'feed_reading')",
-        [],
-        |r| r.get(0),
-    )
-}
-
 /// Each feed: whether it was read whole within its limit and its newest change is recent.
 pub fn freshness(conn: &Connection, now: i64) -> rusqlite::Result<Vec<Fresh>> {
-    let tables = has_feed_tables(conn)?;
     let mut out = Vec::new();
     for feed in &FEEDS {
-        if !tables {
-            out.push(Fresh {
-                feed,
-                reading: None,
-                not_current: Some("it has never been read".to_string()),
-            });
-            continue;
-        }
         let reading: Option<(i64, i64)> = conn
             .query_row(
                 "SELECT id, at FROM feed_reading WHERE source = ?1 AND outcome != 'failed'
@@ -979,26 +961,12 @@ impl Affecting {
     }
 }
 
-/// Whether the store holds the tables of the answers: a store an older build left, opened
-/// only for reading, does not.
-pub fn has_tables(conn: &Connection) -> rusqlite::Result<bool> {
-    conn.query_row(
-        "SELECT COUNT(*) = 3 FROM sqlite_master WHERE type = 'table'
-         AND name IN ('vulnerability_answer', 'vulnerability_place', 'vulnerability_linked')",
-        [],
-        |r| r.get(0),
-    )
-}
-
 /// The ecosystems whose lockfile packages the latest check compared with current data, in
 /// the order of `FEEDS`. Through the records linked to it, this is all of the catalogue that
 /// is compared with the estate: an ecosystem counts only where some checkout's lockfiles were
 /// read in that check and its data was current then. Empty: the catalogue is compared with
 /// nothing.
 pub fn catalogue_compared(conn: &Connection) -> rusqlite::Result<Vec<&'static str>> {
-    if !has_tables(conn)? {
-        return Ok(Vec::new());
-    }
     let mut out = Vec::new();
     for feed in &FEEDS {
         let compared: bool = conn.query_row(
@@ -1029,9 +997,6 @@ pub fn catalogue_said(compared: &[&str]) -> String {
 
 /// Every "affects me" answer, most severe first by the source's label, then by project.
 pub fn affecting(conn: &Connection) -> rusqlite::Result<Vec<Affecting>> {
-    if !has_tables(conn)? {
-        return Ok(Vec::new());
-    }
     let mut list: Vec<Affecting> = conn
         .prepare(
             "SELECT v.checkout, v.ecosystem, v.package, v.source, v.advisory, v.modified,
@@ -1140,9 +1105,6 @@ fn judged_now<'a>(answer: &'a str, reason: &'a str, stale: bool) -> (&'a str, &'
 /// The totals as they stand at `now`: the answers the last check wrote, with "not affected"
 /// counted as "don't know" where its data is not current at `now`.
 pub fn totals(conn: &Connection, now: i64) -> rusqlite::Result<Totals> {
-    if !has_tables(conn)? {
-        return Ok(Totals::default());
-    }
     let mut t = Totals {
         matched: conn.query_row(
             "SELECT EXISTS (SELECT 1 FROM vulnerability_place)",
@@ -1295,37 +1257,24 @@ pub fn totals(conn: &Connection, now: i64) -> rusqlite::Result<Totals> {
         .map(|(i, code)| (*code, first.values().filter(|r| **r == i).count()))
         .filter(|(_, n)| *n > 0)
         .collect();
-    t.informational = if has_feed_tables(conn)? {
-        conn.query_row(
-            "SELECT COUNT(*) FROM advisory
-             WHERE kind = 'informational' AND withdrawn IS NULL AND gone_at IS NULL",
-            [],
-            |r| r.get::<_, i64>(0),
-        )? as usize
-    } else {
-        0
-    };
-    // A store made before the catalogue was kept has no table of it until a run opens it.
-    let has_threats: bool = conn.query_row(
-        "SELECT COUNT(*) = 2 FROM sqlite_master
-         WHERE type = 'table' AND name IN ('threat', 'feed_reading')",
+    t.informational = conn.query_row(
+        "SELECT COUNT(*) FROM advisory
+         WHERE kind = 'informational' AND withdrawn IS NULL AND gone_at IS NULL",
+        [],
+        |r| r.get::<_, i64>(0),
+    )? as usize;
+    let read: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM feed_reading WHERE source = ?1 AND outcome != 'failed')",
+        [crate::threats::SOURCE],
+        |r| r.get(0),
+    )?;
+    let catalogue: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM threat t WHERE t.gone_at IS NULL
+           AND NOT EXISTS (SELECT 1 FROM vulnerability_linked l WHERE l.cve = t.id)",
         [],
         |r| r.get(0),
     )?;
-    if has_threats {
-        let read: bool = conn.query_row(
-            "SELECT EXISTS (SELECT 1 FROM feed_reading WHERE source = ?1 AND outcome != 'failed')",
-            [crate::threats::SOURCE],
-            |r| r.get(0),
-        )?;
-        let catalogue: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM threat t WHERE t.gone_at IS NULL
-               AND NOT EXISTS (SELECT 1 FROM vulnerability_linked l WHERE l.cve = t.id)",
-            [],
-            |r| r.get(0),
-        )?;
-        t.no_signs = read.then_some(catalogue as usize);
-    }
+    t.no_signs = read.then_some(catalogue as usize);
     Ok(t)
 }
 
@@ -1401,8 +1350,8 @@ pub fn totals_message(
     now: i64,
 ) -> rusqlite::Result<Option<crate::contract::v1::VulnerabilityTotals>> {
     use crate::contract::v1;
-    // Matching runs in every check that finishes, over tables a store of an older build lacks.
-    if !has_tables(conn)? || crate::status::latest_finished(conn)?.is_none() {
+    // Matching runs in every check that finishes.
+    if crate::status::latest_finished(conn)?.is_none() {
         return Ok(None);
     }
     let t = totals(conn, now)?;
@@ -1463,9 +1412,6 @@ struct Held {
 }
 
 fn held_records(conn: &Connection, id: &str) -> rusqlite::Result<Vec<Held>> {
-    if !has_feed_tables(conn)? {
-        return Ok(Vec::new());
-    }
     // A record by its own id, or by an alias such as a CVE id. The alias is matched as the
     // whole quoted string inside the JSON array, never as a part of one.
     let quoted = serde_json::to_string(id).unwrap_or_default();
@@ -1527,7 +1473,7 @@ pub fn list(conn: Option<&Connection>, now: i64) -> rusqlite::Result<v1::Vulnera
     let this = crate::findings::This::of(conn, crate::covered::this_machine(conn)?)?;
     let all = affecting(conn)?;
     let listed = crate::threats::last_good(conn).unwrap_or(None).is_some();
-    out.store_id = crate::store::id(conn)?;
+    out.store_id = Some(crate::store::id(conn)?);
     out.totals = totals_message(conn, now)?;
     if out.totals.is_none() {
         for section in ["totals", "affected"] {
@@ -1614,7 +1560,7 @@ pub fn one(conn: Option<&Connection>, id: &str, now: i64) -> rusqlite::Result<v1
         out.not_computed.push(no_store("vulnerability"));
         return Ok(out);
     };
-    out.store_id = crate::store::id(conn)?;
+    out.store_id = Some(crate::store::id(conn)?);
     let this = crate::findings::This::of(conn, crate::covered::this_machine(conn)?)?;
     let place_of = |c: &str| whole(&crate::findings::place(c, this.as_ref()));
     let records = held_records(conn, id)?;
@@ -1630,10 +1576,10 @@ pub fn one(conn: Option<&Connection>, id: &str, now: i64) -> rusqlite::Result<v1
         None
     };
     let in_catalogue = out.in_catalogue == Some(true);
-    let places: Vec<Place> = if has_tables(conn)? {
-        conn.prepare(
+    let places: Vec<Place> = conn
+        .prepare(
             "SELECT checkout, ecosystem, lockfiles, lockfiles_why, feed, feed_why, read_at
-                 FROM vulnerability_place ORDER BY checkout, ecosystem",
+             FROM vulnerability_place ORDER BY checkout, ecosystem",
         )?
         .query_map([], |r| {
             Ok((
@@ -1646,10 +1592,7 @@ pub fn one(conn: Option<&Connection>, id: &str, now: i64) -> rusqlite::Result<v1
                 r.get(6)?,
             ))
         })?
-        .collect::<rusqlite::Result<_>>()?
-    } else {
-        Vec::new()
-    };
+        .collect::<rusqlite::Result<_>>()?;
     // Whether the data is current is judged now, when it is asked, not as the check found it.
     let stale = stale_at(conn, now)?;
     let stale_of = |eco: &str| {

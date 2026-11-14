@@ -347,7 +347,7 @@ fn finding_rows<'a>(
 
 /// Every row of the table, from the state's open and answered findings.
 fn rows_of(st: &crate::status::State) -> Vec<FindingRow<'_>> {
-    finding_rows(&st.needs.items, st.answered.as_deref().unwrap_or_default())
+    finding_rows(&st.needs.items, &st.answered)
 }
 
 /// What the band and the tabs count: things, as the rows show them. A finding and the response
@@ -393,7 +393,7 @@ fn findings_table(
 ) -> Out {
     let rows = rows_of(st);
     let counts = shown(&rows);
-    let found = findings::all(conn, now)?.unwrap_or_default();
+    let found = findings::all(conn, now)?;
     writeln!(
         out,
         "<section id=\"findings\" class=\"findings\">\n<div class=\"wsh\"><h2>Findings</h2><nav class=\"tabs\" aria-label=\"Findings\"><a id=\"open\" href=\"#open\">Open <span class=\"tn\">{}</span></a><a id=\"answered\" href=\"#answered\">Answered <span class=\"tn\">{}</span></a><a id=\"all\" href=\"#all\">All <span class=\"tn\">{}</span></a></nav></div>",
@@ -3042,7 +3042,7 @@ mod tests {
             std::env::temp_dir().join(format!("immune-ways-{}", std::process::id())),
         );
         std::fs::create_dir_all(&dir).unwrap();
-        let conn = crate::store::open(&dir.join("store.db")).unwrap();
+        let conn = crate::store::open_or_make(&dir.join("store.db")).unwrap();
         let mut page = String::new();
         ways(&conn, &mut page, None).unwrap();
         let registered: Vec<String> = conn
@@ -3119,7 +3119,7 @@ mod tests {
     /// not exist; the folder it made goes, also when the test fails.
     fn this_mac_page() -> String {
         let dir = crate::common::Scratch::new("told");
-        let conn = crate::store::open(&dir.0.join("store.db")).unwrap();
+        let conn = crate::store::open_or_make(&dir.0.join("store.db")).unwrap();
         let st = crate::status::state(&conn, &dir.0.join("no-home"), 1_791_000_000).unwrap();
         this_mac(&conn, &st, 1_791_000_000).unwrap()
     }

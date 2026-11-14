@@ -29,8 +29,7 @@ message Findings {
   // When the answer was made.
   int64 answered_at = 2;
   // The store this answer was read from, as in every answer (`common.proto`): random, made once
-  // when the store was made. Absent for a store an older build made that no command has written
-  // to since: until one does, nothing tells it apart from another store.
+  // when the store was made.
   optional string store_id = 3;
   // When the core's latest run that finished ended. Absent when no run has finished: then only
   // what the watcher found between runs can be here, and an empty list says nothing.
@@ -181,7 +180,7 @@ enum Via {
   VIA_AGENT = 2;
   // On the command line, naming neither.
   VIA_COMMAND = 3;
-  // Given before the store kept how answers came.
+  // How the answer came is not recorded.
   VIA_UNKNOWN = 4;
 }
 

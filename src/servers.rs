@@ -39,8 +39,8 @@ pub const RETIRED: [(&str, &str); 1] = [(
     "wordpress core version",
     "the probe no longer reads WordPress's version file inside a container; a container's WORDPRESS_VERSION variable is read with its other version variables",
 )];
-/// The names and addresses the server gives itself. A file from a probe that did not print
-/// them has no such reading and links to nothing.
+/// The names and addresses the server gives itself. A file without them has no such
+/// reading and links to nothing.
 pub const IDENTITY: &str = "own names and addresses";
 
 /// Interfaces of container networks and virtual bridges, by the prefixes Docker, libvirt,
@@ -52,11 +52,21 @@ const BRIDGES: [&str; 11] = [
 ];
 
 pub const NOT_COMPLETE: &str = "the sweep of this server did not complete";
-/// What a file from a probe that did not yet read a kind says about it.
-const OLDER_PROBE: &str = "the file came from an older probe, which did not read this";
-/// dpkg's list with each package's status and source, and the list an older probe printed.
+/// The sections of what is installed that `scripts/probe.sh` prints on every server, whatever
+/// is installed there. A complete file that lacks one came from an earlier probe, which printed
+/// another shape, and this build does not read it.
+const SECTIONS: [&str; 5] = [
+    "os_release",
+    "kernel_package",
+    "package_managers",
+    DPKG,
+    "docker_access",
+];
+/// What every reading of a file from an earlier probe says.
+pub const OLDER_PROBE: &str =
+    "the file came from an earlier probe, which this version does not read; run the probe again";
+/// dpkg's list with each package's status and source.
 const DPKG: &str = "dpkg_with_source";
-const DPKG_OLD: &str = "dpkg";
 const NO_RIGHTS: &str = "no rights to list containers";
 const CONTENTS_PARTIAL: &str = "only version variables are read";
 /// What the probe prints when docker refused, and when there is no docker.
@@ -278,11 +288,15 @@ pub fn taken_at(text: &str) -> Option<i64> {
 }
 
 /// The readings of one server file. `raw_file` is the saved copy, relative to the store's
-/// folder. A file that does not reach `##end` is a read that did not happen.
+/// folder. A file that does not reach `##end` is a read that did not happen, and so is one that
+/// lacks a section every probe of this version prints (`SECTIONS`).
 pub fn readings(machine: &str, text: &str, raw_file: &str) -> Vec<Outcome> {
     let s = sections(text);
     if !s.contains_key("end") {
         return nothing_read(machine, NOT_COMPLETE);
+    }
+    if !SECTIONS.iter().all(|k| s.contains_key(k)) {
+        return nothing_read(machine, OLDER_PROBE);
     }
     let at = |n: usize| format!("{raw_file}:{n}");
     let say = |out: &mut Vec<Statement>, subject: &str, predicate, object: &str, n| {
@@ -334,16 +348,16 @@ pub fn readings(machine: &str, text: &str, raw_file: &str) -> Vec<Outcome> {
     // System packages, with the system itself, the sources they were built from and the
     // package that owns the running kernel. These three are read only through dpkg.
     let dpkg = debs(&s);
-    let managers = s.get("package_managers").map(|rows| {
-        rows.iter()
-            .map(|(_, l)| l.trim())
-            .filter(|l| !l.is_empty())
-            .collect::<Vec<_>>()
-    });
-    let unread = managers.as_deref().map_or(Vec::new(), |m| {
-        m.iter().copied().filter(|m| *m != "dpkg").collect()
-    });
-    let no_reader = managers.as_deref().is_some_and(|m| !m.contains(&"dpkg"));
+    let managers: Vec<&str> = s
+        .get("package_managers")
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .map(|(_, l)| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect();
+    let unread: Vec<&str> = managers.iter().copied().filter(|m| *m != "dpkg").collect();
+    let no_reader = !managers.contains(&"dpkg");
     // Package managers there that this build has no reader for.
     let lacks: Vec<Lack> = unread
         .iter()
@@ -368,11 +382,6 @@ pub fn readings(machine: &str, text: &str, raw_file: &str) -> Vec<Outcome> {
                 "the program has no reader for the package manager this server uses: {}",
                 unread.join(", ")
             ),
-        ))
-    } else if !s.contains_key(DPKG) && !s.contains_key(DPKG_OLD) {
-        Some((
-            Gap::of(Cause::NotGiven),
-            "the sweep has no package list".to_string(),
         ))
     } else if dpkg.is_empty() {
         // An empty list is a missing dpkg, not a server with nothing installed.
@@ -427,50 +436,37 @@ pub fn readings(machine: &str, text: &str, raw_file: &str) -> Vec<Outcome> {
         };
         out.push(reading(machine, PACKAGES, partial.clone(), gap, st));
 
-        if s.contains_key(DPKG) {
-            let mut st = Vec::new();
-            for d in &dpkg {
-                if let Some((source, version)) = d.source {
-                    let component = format!("component:{machine}/deb/{}", d.name);
-                    say(
-                        &mut st,
-                        &component,
-                        "built_from",
-                        &format!("{source} {version}"),
-                        d.n,
-                    );
-                }
+        let mut st = Vec::new();
+        for d in &dpkg {
+            if let Some((source, version)) = d.source {
+                let component = format!("component:{machine}/deb/{}", d.name);
+                say(
+                    &mut st,
+                    &component,
+                    "built_from",
+                    &format!("{source} {version}"),
+                    d.n,
+                );
             }
-            let missing = dpkg.iter().filter(|d| d.source.is_none()).count();
-            // Packages of a manager without a reader are worse than packages dpkg gives no
-            // source for, and only the worse is said.
-            let (reason, gap) = match (&partial, missing) {
-                (Some(p), _) => (Some(p.clone()), no_reader),
-                (None, 0) => (None, Gap::default()),
-                (None, _) => (
-                    Some(format!("{missing} of the packages give no source")),
-                    Gap::of(Cause::NotGiven),
-                ),
-            };
-            out.push(reading(machine, SOURCES, reason, gap, st));
-        } else {
-            out.push(not_read(machine, SOURCES, Cause::NotGiven, OLDER_PROBE));
         }
+        let missing = dpkg.iter().filter(|d| d.source.is_none()).count();
+        // Packages of a manager without a reader are worse than packages dpkg gives no
+        // source for, and only the worse is said.
+        let (reason, gap) = match (&partial, missing) {
+            (Some(p), _) => (Some(p.clone()), no_reader),
+            (None, 0) => (None, Gap::default()),
+            (None, _) => (
+                Some(format!("{missing} of the packages give no source")),
+                Gap::of(Cause::NotGiven),
+            ),
+        };
+        out.push(reading(machine, SOURCES, reason, gap, st));
 
-        if s.contains_key("kernel_package") {
-            let mut st = Vec::new();
-            for (n, package) in kernel_packages(&s) {
-                say(&mut st, machine, "runs_kernel_package", package, n);
-            }
-            out.push(full(machine, KERNEL_PACKAGE, st));
-        } else {
-            out.push(not_read(
-                machine,
-                KERNEL_PACKAGE,
-                Cause::NotGiven,
-                OLDER_PROBE,
-            ));
+        let mut st = Vec::new();
+        for (n, package) in kernel_packages(&s) {
+            say(&mut st, machine, "runs_kernel_package", package, n);
         }
+        out.push(full(machine, KERNEL_PACKAGE, st));
     }
 
     // Containers. Docker that is not installed has nothing to list: that is a full read.
@@ -561,27 +557,14 @@ struct Deb<'a> {
     n: usize,
     name: &'a str,
     version: &'a str,
-    /// The source package and version, `None` in a file from an older probe or when dpkg
-    /// did not give them.
+    /// The source package and version, `None` when dpkg did not give them.
     source: Option<(&'a str, &'a str)>,
 }
 
 /// The packages whose files are on the server. dpkg also lists a package that was removed
 /// and not purged, with only its configuration files left, and one it knows as not
-/// installed; neither is a component. An older probe printed only names and versions of
-/// whatever dpkg listed.
+/// installed; neither is a component.
 fn debs<'a>(s: &Sections<'a>) -> Vec<Deb<'a>> {
-    if !s.contains_key(DPKG) {
-        return pairs(s, DPKG_OLD)
-            .into_iter()
-            .map(|(n, name, version)| Deb {
-                n,
-                name,
-                version,
-                source: None,
-            })
-            .collect();
-    }
     let rows = s.get(DPKG).map(Vec::as_slice).unwrap_or_default();
     rows.iter()
         .filter_map(|(n, line)| {
@@ -636,9 +619,6 @@ fn kernel_packages<'a>(s: &Sections<'a>) -> Vec<(usize, &'a str)> {
 /// quote, as with text after the closing quote, or holding a blank, which an unquoted shell
 /// value cannot, was not read the way the shell reads it: it is taken as not given.
 fn release(machine: &str, s: &Sections, raw_file: &str) -> Outcome {
-    if !s.contains_key("os_release") {
-        return not_read(machine, RELEASE, Cause::NotGiven, OLDER_PROBE);
-    }
     let fields = pairs(s, "os_release");
     let plain = |v: &str| !v.contains(['"', '\'']) && !v.contains(char::is_whitespace);
     let field = |key: &str| {

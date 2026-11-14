@@ -649,9 +649,9 @@ fn at<'a>(v: &'a Value, path: &[&str]) -> &'a Value {
         .fold(v, |v, k| v.get(*k).unwrap_or(&Value::Null))
 }
 
-/// Unknown is never zero and never false: with no store, with a store no check finished in, and
-/// with a store a part of which could not be read, no command answers with a number or a `false`
-/// for what was not computed, as JSON, as binary or as text. What each message names in
+/// Unknown is never zero and never false: with no store, and with a store no check finished
+/// in, no command answers with a number or a `false` for what was not computed, as JSON, as
+/// binary or as text. What each message names in
 /// `not_computed` is absent, and so is what rests on a reading never made: what the rules do now
 /// before any reading of the event level, the vulnerability counts before the lockfiles were
 /// ever matched, and whether a record is on the catalogue of exploited vulnerabilities before
@@ -671,25 +671,6 @@ fn unknown_is_never_zero_or_false_in_any_form() {
             .success()
     );
     assert!(empty.store().exists());
-    // A check finished, and the vulnerability data the store holds cannot be read: its tables
-    // are gone, as in a store a build before them made. The catalogue was never read.
-    let part = Estate::new("unknown-part");
-    part.put("dev/shop/.git/HEAD", "ref: refs/heads/main\n");
-    part.put(
-        "dev/shop/package-lock.json",
-        r#"{"lockfileVersion": 3, "packages": {"": {"name": "shop"}, "node_modules/left-pad": {"version": "1.3.0"}}}"#,
-    );
-    part.run();
-    let db = rusqlite::Connection::open(part.store()).unwrap();
-    for table in [
-        "vulnerability_answer",
-        "vulnerability_place",
-        "vulnerability_linked",
-    ] {
-        db.execute(&format!("DROP TABLE IF EXISTS {table}"), [])
-            .unwrap();
-    }
-    drop(db);
     // What rests on a reading never made, in each case, by the command that gives it.
     let rules_now = [
         "watching",
@@ -698,7 +679,7 @@ fn unknown_is_never_zero_or_false_in_any_form() {
         "file_events_collected",
         "matched_last_day_total",
     ];
-    for (e, event_level_read) in [(&none, false), (&empty, false), (&part, true)] {
+    for e in [&none, &empty] {
         for args in readers(e) {
             let args: Vec<&str> = args.iter().map(String::as_str).collect();
             let mut answers = Vec::new();
@@ -724,7 +705,7 @@ fn unknown_is_never_zero_or_false_in_any_form() {
                     "rules" => Some(&v["now"]),
                     _ => None,
                 };
-                if let Some(now) = now.filter(|_| !event_level_read) {
+                if let Some(now) = now {
                     for field in rules_now {
                         assert!(now[field].is_null(), "{args:?}: {field}\n{now:#}");
                     }
@@ -778,9 +759,6 @@ fn unknown_is_never_zero_or_false_in_any_form() {
                         assert!(f[count].is_null(), "{args:?}: {count}\n{f:#}");
                     }
                 }
-                if args[0] == "status" && event_level_read {
-                    assert!(!feeds.is_empty(), "{v:#}");
-                }
             }
             // The text says what is not known, and never a count for it.
             let text = e.immune(&args);
@@ -792,7 +770,7 @@ fn unknown_is_never_zero_or_false_in_any_form() {
                     let note = answers[0]["declared_note"].as_str().unwrap();
                     assert!(!note.is_empty() && text.contains(note), "{text}");
                 }
-                "rules" if !event_level_read => {
+                "rules" => {
                     assert!(text.contains("Whether it is on is not known yet"), "{text}");
                     assert!(!text.contains("It is not on"), "{text}");
                 }
@@ -800,8 +778,6 @@ fn unknown_is_never_zero_or_false_in_any_form() {
             }
         }
     }
-    // A path that tells one apart: an answer the core computed still holds its numbers.
-    assert!(at(&part.json(&["status"]), &["needs_a_look", "total"]).is_u64());
 }
 
 /// Two readings of this user's processes a minute apart, as the watcher takes from launch: a

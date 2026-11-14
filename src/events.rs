@@ -262,9 +262,9 @@ pub const CANNOT_SEE: [&str; 6] = [
 pub const FILES_NOT_SEEN: &str =
     "files created and renamed: the collector installed here does not record them";
 
-/// Created at the first reading, in its transaction.
+/// The level's tables, part of the store's schema (`store::schema`). Empty until the first reading.
 pub const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS event_level (
+CREATE TABLE event_level (
     id        INTEGER PRIMARY KEY CHECK (id = 1),
     read_at   INTEGER NOT NULL,  -- the latest reading, UTC seconds
     state     TEXT NOT NULL,     -- not_installed, running, refused, failing, silent, failed
@@ -277,13 +277,13 @@ CREATE TABLE IF NOT EXISTS event_level (
     counted   INTEGER            -- notes of deletions up to this time are counted
 );
 -- Where each log file was read up to: every byte before `offset` is whole lines already read.
-CREATE TABLE IF NOT EXISTS event_file (
+CREATE TABLE event_file (
     name   TEXT PRIMARY KEY,
     inode  INTEGER NOT NULL,
     offset INTEGER NOT NULL
 );
 -- What one reading of a log read, kept for two days.
-CREATE TABLE IF NOT EXISTS event_count (
+CREATE TABLE event_count (
     at           INTEGER NOT NULL,
     starts       INTEGER NOT NULL,  -- program starts read
     lost         INTEGER NOT NULL,  -- program starts missing from the numbering
@@ -295,21 +295,21 @@ CREATE TABLE IF NOT EXISTS event_count (
 );
 -- How many program starts matched each published rule, by the hour of the reading that read
 -- them, kept a week. A rule's id and a number: nothing of the start.
-CREATE TABLE IF NOT EXISTS rule_match (
+CREATE TABLE rule_match (
     hour    INTEGER NOT NULL,  -- the reading's time, UTC seconds divided by 3600
     rule    TEXT NOT NULL,     -- the rule's id
     matches INTEGER NOT NULL,
     PRIMARY KEY (hour, rule)
 );
 -- How many program starts a finding from a published rule counts since it was raised.
-CREATE TABLE IF NOT EXISTS rule_finding (
+CREATE TABLE rule_finding (
     finding TEXT PRIMARY KEY REFERENCES finding (id),
     matches INTEGER NOT NULL
 );
 -- The latest program starts a finding from a published rule rests on, at most five per
 -- finding. The one place arguments enter the store; the environment never does. Field
 -- names are the Elastic Common Schema's.
-CREATE TABLE IF NOT EXISTS rule_evidence (
+CREATE TABLE rule_evidence (
     finding           TEXT NOT NULL REFERENCES finding (id),
     read_at           INTEGER NOT NULL,
     timestamp         TEXT NOT NULL,
@@ -326,7 +326,7 @@ CREATE TABLE IF NOT EXISTS rule_evidence (
 );
 -- File events: whether the collector installed here is established to record them, why not,
 -- and the latest sequence number of each kind read, NULL before any.
-CREATE TABLE IF NOT EXISTS event_files (
+CREATE TABLE event_files (
     id          INTEGER PRIMARY KEY CHECK (id = 1),
     collected   INTEGER NOT NULL,
     why         TEXT,              -- why they are not counted as collected, the program's words
@@ -338,7 +338,7 @@ CREATE TABLE IF NOT EXISTS event_files (
 -- by its name, its set and its id; and the finding. Only rules marked high or critical raise
 -- one. A row of a log file the reading no longer finds is removed, so a row lives as long as its
 -- line.
-CREATE TABLE IF NOT EXISTS rule_line (
+CREATE TABLE rule_line (
     file    TEXT NOT NULL,
     inode   INTEGER NOT NULL,
     offset  INTEGER NOT NULL,
@@ -346,16 +346,8 @@ CREATE TABLE IF NOT EXISTS rule_line (
     finding TEXT NOT NULL REFERENCES finding (id),
     PRIMARY KEY (file, inode, offset, rule)
 ) WITHOUT ROWID;
--- Where each log file had been read up to when this store began keeping rule_line: a match on
--- a line before that went to a finding the store cannot name. Removed with its file.
-CREATE TABLE IF NOT EXISTS rule_line_from (
-    file   TEXT NOT NULL,
-    inode  INTEGER NOT NULL,
-    offset INTEGER NOT NULL,
-    PRIMARY KEY (file, inode)
-);
 -- What one reading read of file events, kept for two days beside event_count.
-CREATE TABLE IF NOT EXISTS event_file_count (
+CREATE TABLE event_file_count (
     at           INTEGER NOT NULL,
     files        INTEGER NOT NULL,  -- file events read
     lost         INTEGER NOT NULL,  -- file events missing from the numbering
@@ -364,7 +356,7 @@ CREATE TABLE IF NOT EXISTS event_file_count (
 );
 -- The latest file events a finding from a published rule rests on, at most five per finding:
 -- the file and the program, nothing more.
-CREATE TABLE IF NOT EXISTS rule_file_evidence (
+CREATE TABLE rule_file_evidence (
     finding    TEXT NOT NULL REFERENCES finding (id),
     read_at    INTEGER NOT NULL,
     timestamp  TEXT NOT NULL,
@@ -373,28 +365,26 @@ CREATE TABLE IF NOT EXISTS rule_file_evidence (
     source     TEXT,           -- a rename's source
     executable TEXT NOT NULL   -- the program that did it
 );
--- An earlier build kept what the installer's record said the collector keeps; lines say it now.
-DROP TABLE IF EXISTS event_kept;
 -- What the lines read say of each of `KEEPS`, by kind of event (`MARKS`): a row once a line of
 -- the kind was read, none before.
-CREATE TABLE IF NOT EXISTS event_arrival (
+CREATE TABLE event_arrival (
     kind   TEXT NOT NULL,     -- program_start or file_event
     keep   TEXT NOT NULL,     -- identity, script or signature
     kept   INTEGER NOT NULL,  -- whether the latest line of the kind holds its key
     filled INTEGER,           -- while it arrives, the time of the first line that gave it a value
     stopped INTEGER,          -- when it no longer arrives, since when
     quiet  INTEGER NOT NULL DEFAULT 0,  -- while it arrives, lines in a row since without a value
-    quiet_from INTEGER,       -- and the time of the first of them
+    quiet_from INTEGER NOT NULL,  -- and the time of the first of them, 0 while there are none
     PRIMARY KEY (kind, keep)
 );
 -- The filter's markers read whose number in eslogger's numbering no gap has taken in yet.
-CREATE TABLE IF NOT EXISTS event_marks (
+CREATE TABLE event_marks (
     id      INTEGER PRIMARY KEY CHECK (id = 1),
     pending INTEGER NOT NULL
 );
 -- The cap of the log, as the latest reading of an installed collector found it in the tidy
 -- job's launch daemon: its bytes, or why it could not be read.
-CREATE TABLE IF NOT EXISTS event_cap (
+CREATE TABLE event_cap (
     id    INTEGER PRIMARY KEY CHECK (id = 1),
     bytes INTEGER,  -- NULL when it could not be read
     why   TEXT      -- the program's words, NULL when it was read
@@ -2182,9 +2172,6 @@ pub struct Outcome {
 /// The level's state as the latest reading left it, without reading anything else; `None`
 /// before any reading.
 pub fn state(conn: &Connection) -> rusqlite::Result<Option<String>> {
-    if !has(conn, "event_level")? {
-        return Ok(None);
-    }
     conn.query_row("SELECT state FROM event_level WHERE id = 1", [], |r| {
         r.get(0)
     })
@@ -2197,11 +2184,7 @@ pub fn state(conn: &Connection) -> rusqlite::Result<Option<String>> {
 /// second, do not move it: the pages say their count as made, and the live file says it now.
 /// Readings that took nothing leave it as it was.
 pub fn basis(conn: &Connection) -> rusqlite::Result<String> {
-    if !has(conn, "event_level")? {
-        return Ok(String::new());
-    }
     // What the collector said, read cut as every reader reads it: this goes into a page's file.
-    let form = crate::secrets::form(conn)?;
     let level = conn
         .query_row(
             "SELECT state, last_seq, said_by, said, reason FROM event_level WHERE id = 1",
@@ -2214,7 +2197,7 @@ pub fn basis(conn: &Connection) -> rusqlite::Result<String> {
                         r.get::<_, Option<i64>>(1)?,
                         r.get::<_, Option<String>>(2)?,
                         r.get::<_, Option<String>>(3)?
-                            .map(|s| crate::secrets::Kept::Said.read(form, &s).store()),
+                            .map(|s| crate::secrets::Kept::Said.read(&s).store()),
                         r.get::<_, Option<String>>(4)?,
                     )
                 ))
@@ -2229,11 +2212,8 @@ pub fn basis(conn: &Connection) -> rusqlite::Result<String> {
 }
 
 /// Whether file events are counted as collected, and why not, as the latest reading left it;
-/// not collected before any reading of this version.
+/// read only once the level has been read, with the tables the reading made.
 fn collected(conn: &Connection) -> rusqlite::Result<(bool, Option<String>)> {
-    if !has(conn, "event_files")? {
-        return Ok((false, None));
-    }
     Ok(conn
         .query_row(
             "SELECT collected, why FROM event_files WHERE id = 1",
@@ -2242,31 +2222,6 @@ fn collected(conn: &Connection) -> rusqlite::Result<(bool, Option<String>)> {
         )
         .optional()?
         .unwrap_or((false, None)))
-}
-
-/// Makes the level's tables in `tx` where they are missing: at every reading, and before a
-/// verdict keeps the event it is about (`verdict.rs`).
-pub fn schema(tx: &Transaction) -> rusqlite::Result<()> {
-    let recorded = has(tx, "rule_line")?;
-    tx.execute_batch(SCHEMA)?;
-    // A store an earlier build made keeps no run of lines without a value.
-    if !has_run(tx)? {
-        tx.execute_batch(
-            "ALTER TABLE event_arrival ADD COLUMN stopped INTEGER;
-             ALTER TABLE event_arrival ADD COLUMN quiet INTEGER NOT NULL DEFAULT 0;
-             ALTER TABLE event_arrival ADD COLUMN quiet_from INTEGER;",
-        )?;
-    }
-    if !recorded {
-        // The store begins to keep which finding each match went to. What was read before is
-        // not in it, and is told apart from a line no finding holds.
-        tx.execute(
-            "INSERT INTO rule_line_from (file, inode, offset)
-             SELECT name, inode, offset FROM event_file",
-            [],
-        )?;
-    }
-    Ok(())
 }
 
 /// One reading of the event level under `root`, at `now`, recorded in `tx`: the state, the
@@ -2279,7 +2234,6 @@ pub fn read(
     root: &Path,
     now: i64,
 ) -> rusqlite::Result<Outcome> {
-    schema(tx)?;
     let left = left(tx)?;
     let found = look(root, &left, now, Rules::shipped());
     let mut opened = 0;
@@ -2361,15 +2315,11 @@ pub fn read(
             put_cap(tx, &log_cap(root))?;
             opened = record(tx, run_id, machine, now, &log.matched)?;
             // A line of a file the reading no longer finds cannot be asked about again.
-            for table in ["rule_line", "rule_line_from"] {
-                tx.execute(
-                    &format!(
-                        "DELETE FROM {table} WHERE NOT EXISTS (SELECT 1 FROM event_file e
-                             WHERE e.name = {table}.file AND e.inode = {table}.inode)"
-                    ),
-                    [],
-                )?;
-            }
+            tx.execute(
+                "DELETE FROM rule_line WHERE NOT EXISTS (SELECT 1 FROM event_file e
+                     WHERE e.name = rule_line.file AND e.inode = rule_line.inode)",
+                [],
+            )?;
             let (by, said) = match &log.said {
                 Some((by, said)) => (Some(*by), Some(said.as_str())),
                 None => (None, None),
@@ -2593,16 +2543,6 @@ pub fn keep(
     Ok(())
 }
 
-/// Whether the store has a table: one this build creates at the first reading may be missing
-/// from a store read before it.
-fn has(conn: &Connection, table: &str) -> rusqlite::Result<bool> {
-    conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-        [table],
-        |r| r.get(0),
-    )
-}
-
 /// What a finding from a published rule carries beside its words, each in its own field: the
 /// rule as it describes itself, its authors among them, as the Detection Rule License asks of
 /// a message made from a match; the kind of event it is about, `events`; how many events it
@@ -2624,20 +2564,11 @@ pub fn finding_detail(
     // prefix of `name`, and `set` and `source_name` give it in words.
     v["source"] = json!(meta.source.url);
     v["source_name"] = json!(meta.source.set);
-    let table = match kind {
-        crate::sigma::Kind::Process => "rule_evidence",
-        crate::sigma::Kind::File => "rule_file_evidence",
+    let evidence = match kind {
+        crate::sigma::Kind::Process => evidence(conn, finding)?,
+        crate::sigma::Kind::File => file_evidence(conn, finding)?,
     };
-    let (matches, evidence) = if has(conn, table)? {
-        let evidence = match kind {
-            crate::sigma::Kind::Process => evidence(conn, finding)?,
-            crate::sigma::Kind::File => file_evidence(conn, finding)?,
-        };
-        (counted(conn, finding)?, evidence)
-    } else {
-        (0, Vec::new())
-    };
-    v["matches"] = json!(matches);
+    v["matches"] = json!(counted(conn, finding)?);
     v["evidence"] = json!(evidence);
     Ok(v)
 }
@@ -2681,7 +2612,6 @@ fn counted(conn: &Connection, finding: &str) -> rusqlite::Result<i64> {
 /// forged.
 fn evidence(conn: &Connection, finding: &str) -> rusqlite::Result<Vec<Value>> {
     let text = |s: Option<String>| s.as_deref().map(crate::status::text);
-    let form = crate::secrets::form(conn)?;
     conn.prepare(
         "SELECT timestamp, executable, args, parent_executable, working_directory, pid,
                 parent_pid, user_id, signing_id, team_id, platform_binary
@@ -2689,7 +2619,7 @@ fn evidence(conn: &Connection, finding: &str) -> rusqlite::Result<Vec<Value>> {
     )?
     .query_map([finding], |r| {
         let args: Vec<String> = serde_json::from_str(&r.get::<_, String>(2)?).unwrap_or_default();
-        let args = crate::secrets::Args::stored(&args, form);
+        let args = crate::secrets::Args::stored(&args);
         Ok(json!({
             "timestamp_text": crate::status::text(&r.get::<_, String>(0)?),
             "executable_text": crate::status::text(&r.get::<_, String>(1)?),
@@ -2758,9 +2688,8 @@ pub const BYTES: usize = 4 << 20;
 /// the rates the installer states is about 170. A log of more cannot be read on from a place,
 /// and an answer fails rather than leave files out of it.
 const MAX_FILES: usize = 4096;
-/// The version of a place's encoding this build writes, its first number. It reads versions 1
-/// and 2 too, which earlier builds wrote: version 1 while every log file was named by its hour,
-/// version 2 while a place carried what the lines said arrives.
+/// The version of a place's encoding, its first number. This build writes it and reads only
+/// it: a place of another version is refused as any text that is not a place is.
 const PLACE_VERSION: u64 = 3;
 
 /// Where a line of the log is: its file's name and inode, and the byte offset where the line
@@ -2913,9 +2842,6 @@ pub struct Place {
     /// The last `seq_num` of a program start, a file created and a file renamed.
     seq: [Option<u64>; 3],
     pending: u64,
-    /// What a place of version 2 said of each of `MARKS`, its numbers as read: kept only so
-    /// that its text is held to one form, and otherwise ignored.
-    said: Vec<u64>,
     /// In the order of their keys, each key once.
     files: Vec<Kept>,
 }
@@ -2932,55 +2858,41 @@ struct Kept {
 }
 
 /// A place is printed as lower-case hexadecimal of a run of numbers, each an unsigned varint in
-/// protobuf's encoding, written and read by prost. Version 3: the encoding's version, 3; each
-/// of the three last numbers plus one, 0 for none; the markers pending; how many files; then
-/// for each file the difference of its run from the file's before (from 0 for the first); when
-/// the run is the same, the difference of its start from the file's before (from 0 for the
-/// first), else its start, doubled, plus one when it is finished; its inode; and its offset.
-/// Version 2, which an earlier build wrote, has after the markers one number for each of
-/// `MARKS`, what its lines said arrives: 0, 1, 2, or 3 plus a second; they are read and
-/// ignored. Version 1 has no markers, and gives each file's hour as the difference from the one
-/// before, doubled, plus one when finished. Hexadecimal, because sixteen characters pass through a shell and an
-/// argument parser untouched and are checked one by one, and it needs no encoder of someone
-/// else's format but the varint, which is prost's. A day of 25 files is about 360 bytes, so
-/// about 730 characters.
+/// protobuf's encoding, written and read by prost: the encoding's version, 3; each of the three
+/// last numbers plus one, 0 for none; the markers pending; how many files; then for each file
+/// the difference of its run from the file's before (from 0 for the first); when the run is the
+/// same, the difference of its start from the file's before (from 0 for the first), else its
+/// start, doubled, plus one when it is finished; its inode; and its offset. Hexadecimal, because
+/// sixteen characters pass through a shell and an argument parser untouched and are checked one
+/// by one, and it needs no encoder of someone else's format but the varint, which is prost's. A
+/// day of 25 files is about 360 bytes, so about 730 characters.
 impl std::fmt::Display for Place {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let bytes = self.encode(PLACE_VERSION);
+        let bytes = self.encode();
         bytes.iter().try_for_each(|b| write!(f, "{b:02x}"))
     }
 }
 
 impl Place {
-    /// The place's numbers in the encoding of `version`, 1, 2 or 3, as varints.
-    fn encode(&self, version: u64) -> Vec<u8> {
+    /// The place's numbers as varints.
+    fn encode(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
         let mut put = |n: u64| prost::encoding::encode_varint(n, &mut bytes);
-        put(version);
+        put(PLACE_VERSION);
         for s in self.seq {
             put(s.map_or(0, |s| s + 1));
         }
-        if version >= 2 {
-            put(self.pending);
-        }
-        if version == 2 {
-            self.said.iter().for_each(|n| put(*n));
-        }
+        put(self.pending);
         put(self.files.len() as u64);
         let mut before = Key { run: 0, at: 0 };
         for k in &self.files {
-            let finished = u64::from(k.finished);
-            if version >= 2 {
-                put(k.key.run - before.run);
-                let at = if k.key.run == before.run {
-                    k.key.at - before.at
-                } else {
-                    k.key.at
-                };
-                put((at << 1) | finished);
+            put(k.key.run - before.run);
+            let at = if k.key.run == before.run {
+                k.key.at - before.at
             } else {
-                put(((k.key.at - before.at) << 1) | finished);
-            }
+                k.key.at
+            };
+            put((at << 1) | u64::from(k.finished));
             put(k.inode);
             put(k.offset);
             before = k.key;
@@ -2988,13 +2900,12 @@ impl Place {
         bytes
     }
 
-    /// A place as `immune matches` prints it, or as an earlier build printed it; `None` for any
-    /// other text. Read strictly: version 1, 2 or 3, at most `MAX_FILES` files, each of a key some
-    /// log file's name can give and later than the one before, and the text exactly as this
-    /// build prints the place it reads in that version. That last check also holds the text to
-    /// lower-case hexadecimal, to its length, and to nothing left over, and no two texts are one
-    /// place. A place never names a path: a file is only looked up among those the log folder
-    /// lists.
+    /// A place as `immune matches` prints it; `None` for any other text, a place of another
+    /// version of the encoding among them. Read strictly: at most `MAX_FILES` files, each of a
+    /// key some log file's name can give and later than the one before, and the text exactly as
+    /// this build prints the place it reads. That last check also holds the text to lower-case
+    /// hexadecimal, to its length, and to nothing left over, and no two texts are one place. A
+    /// place never names a path: a file is only looked up among those the log folder lists.
     pub fn parse(text: &str) -> Option<Place> {
         let bytes: Vec<u8> = text
             .as_bytes()
@@ -3003,67 +2914,43 @@ impl Place {
             .collect::<Option<_>>()?;
         let mut buf = bytes.as_slice();
         let mut next = || prost::encoding::decode_varint(&mut buf).ok();
-        let version = next()?;
-        if !(1..=PLACE_VERSION).contains(&version) {
+        if next()? != PLACE_VERSION {
             return None;
         }
         let mut place = Place::default();
         for s in &mut place.seq {
             *s = next()?.checked_sub(1);
         }
-        if version >= 2 {
-            place.pending = next()?;
-        }
-        if version == 2 {
-            for _ in MARKS {
-                // A second its build could write: 3 plus at most the largest one.
-                let n = next()?;
-                i64::try_from(n.saturating_sub(3)).ok()?;
-                place.said.push(n);
-            }
-        }
+        place.pending = next()?;
         let n = next()?;
         if n > MAX_FILES as u64 {
             return None;
         }
         let mut before = Key { run: 0, at: 0 };
         for _ in 0..n {
-            let key = if version >= 2 {
-                let run = before.run.checked_add(next()?)?;
-                let step = next()?;
-                let at = if run == before.run {
-                    if step >> 1 == 0 {
-                        return None;
-                    }
-                    before.at.checked_add(step >> 1)?
-                } else {
-                    step >> 1
-                };
-                (Key { run, at }, step & 1 == 1)
-            } else {
-                let step = next()?;
+            let run = before.run.checked_add(next()?)?;
+            let step = next()?;
+            let at = if run == before.run {
                 if step >> 1 == 0 {
                     return None;
                 }
-                let at = before.at.checked_add(step >> 1)?;
-                (Key { run: 0, at }, step & 1 == 1)
+                before.at.checked_add(step >> 1)?
+            } else {
+                step >> 1
             };
-            if !key.0.real() {
+            let key = Key { run, at };
+            if !key.real() {
                 return None;
             }
             place.files.push(Kept {
-                key: key.0,
-                finished: key.1,
+                key,
+                finished: step & 1 == 1,
                 inode: next()?,
                 offset: next()?,
             });
-            before = key.0;
+            before = key;
         }
-        let printed: String = place
-            .encode(version)
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let printed: String = place.encode().iter().map(|b| format!("{b:02x}")).collect();
         (printed == text).then_some(place)
     }
 }
@@ -3313,52 +3200,23 @@ fn more_after(dir: &Path, files: &[LogFile], k: usize, to: u64) -> std::io::Resu
         .any(|f| std::fs::metadata(dir.join(&f.name)).is_ok_and(|m| m.len() > 0)))
 }
 
-/// Which finding the core's own reading recorded a match as going to.
-pub enum WentTo {
-    Finding(String),
-    /// Read with the record kept, and no finding holds it.
-    None,
-    /// Read before the store kept the record.
-    Unrecorded,
-}
-
-/// Which finding the core's own reading recorded the match of `rule` (by its name) on
-/// the line at `at` as going to, for a line it has read.
-pub fn went_to(conn: &Connection, at: &LineAt, rule: &str) -> rusqlite::Result<WentTo> {
-    if !has(conn, "rule_line")? {
-        return Ok(WentTo::Unrecorded);
-    }
-    let (inode, offset) = (at.inode as i64, at.offset as i64);
-    let finding: Option<String> = conn
-        .query_row(
-            "SELECT finding FROM rule_line
-             WHERE file = ?1 AND inode = ?2 AND offset = ?3 AND rule = ?4",
-            params![at.file, inode, offset, rule],
-            |r| r.get(0),
-        )
-        .optional()?;
-    if let Some(f) = finding {
-        return Ok(WentTo::Finding(f));
-    }
-    let from: Option<i64> = conn
-        .query_row(
-            "SELECT offset FROM rule_line_from WHERE file = ?1 AND inode = ?2",
-            params![at.file, inode],
-            |r| r.get(0),
-        )
-        .optional()?;
-    Ok(match from {
-        Some(from) if offset < from => WentTo::Unrecorded,
-        _ => WentTo::None,
-    })
+/// Which finding the core's own reading recorded the match of `rule` (by its name) on the line
+/// at `at` as going to, for a line it has read; `None` when no finding holds it. The reading
+/// that read the line made the record's table with the table of where it read up to, so a store
+/// without it fails to read.
+pub fn went_to(conn: &Connection, at: &LineAt, rule: &str) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT finding FROM rule_line
+         WHERE file = ?1 AND inode = ?2 AND offset = ?3 AND rule = ?4",
+        params![at.file, at.inode as i64, at.offset as i64, rule],
+        |r| r.get(0),
+    )
+    .optional()
 }
 
 /// Where the core's own reading has read each log file up to, by name: the file's inode and the
 /// offset before which every byte is read. Empty before any reading.
 pub fn read_up_to(conn: &Connection) -> rusqlite::Result<BTreeMap<String, (u64, u64)>> {
-    if !has(conn, "event_file")? {
-        return Ok(BTreeMap::new());
-    }
     conn.prepare("SELECT name, inode, offset FROM event_file")?
         .query_map([], |r| {
             Ok((
@@ -3372,9 +3230,6 @@ pub fn read_up_to(conn: &Connection) -> rusqlite::Result<BTreeMap<String, (u64, 
 /// The level's state as the latest reading left it, with when that reading was made: what
 /// `immune status` serves. `None` before any reading.
 pub fn state_read(conn: &Connection) -> rusqlite::Result<Option<(String, i64)>> {
-    if !has(conn, "event_level")? {
-        return Ok(None);
-    }
     conn.query_row(
         "SELECT state, read_at FROM event_level WHERE id = 1",
         [],
@@ -3573,31 +3428,21 @@ fn put_arrivals(tx: &Transaction, arrivals: &Arrivals) -> rusqlite::Result<()> {
 }
 
 /// What the lines read say of each of `KEEPS`, as the latest reading left it; nothing is known
-/// before any reading. Read-only commands call it on a store an earlier build left, before any
-/// reading of this build has added the run's columns. A row of that build's shape, a kept field
-/// with a value and no run, is not yet known: that build told a field arriving for ever after
-/// one value. Such a row has no `quiet_from`, before the columns are added and after, while this
-/// build writes one on every row. A run no build stores, as long as the bound of its mark or
+/// before any reading. A run no build stores, as long as the bound of its mark or
 /// longer, is told as no longer arriving, since its first line: a store is a file a program
 /// running as the user can rewrite, and what it says never makes calm.
 pub fn arrivals(conn: &Connection) -> rusqlite::Result<Arrivals> {
     let mut arrivals = Arrivals::default();
-    if !has(conn, "event_arrival")? {
-        return Ok(arrivals);
-    }
-    let sql = if has_run(conn)? {
-        "SELECT kind, keep, kept, filled, stopped, quiet, quiet_from FROM event_arrival"
-    } else {
-        "SELECT kind, keep, kept, filled, NULL, 0, NULL FROM event_arrival"
-    };
-    let mut stmt = conn.prepare(sql)?;
+    let mut stmt = conn.prepare(
+        "SELECT kind, keep, kept, filled, stopped, quiet, quiet_from FROM event_arrival",
+    )?;
     let rows = stmt.query_map([], |r| {
         Ok((
             (r.get::<_, String>(0)?, r.get::<_, String>(1)?),
             r.get::<_, bool>(2)?,
             (r.get::<_, Option<i64>>(3)?, r.get::<_, Option<i64>>(4)?),
             r.get::<_, i64>(5)?.max(0) as u64,
-            r.get::<_, Option<i64>>(6)?,
+            r.get::<_, i64>(6)?,
         ))
     })?;
     for row in rows {
@@ -3606,14 +3451,10 @@ pub fn arrivals(conn: &Connection) -> rusqlite::Result<Arrivals> {
             .iter()
             .position(|(k, m, _)| kind_name(*k) == kind && names(*m) == [keep.as_str()]);
         if let Some(i) = at {
-            let quiet = Quiet {
-                lines,
-                from: from.unwrap_or_default(),
-            };
+            let quiet = Quiet { lines, from };
             arrivals.0[i] = match (kept, stopped, filled) {
                 (false, _, _) => Arrival::NotKept,
                 (true, Some(since), _) => Arrival::NoLonger(since),
-                (true, None, Some(_)) if from.is_none() => Arrival::Unknown,
                 (true, None, Some(_)) if lines >= MARKS[i].2 => Arrival::NoLonger(quiet.from),
                 (true, None, Some(since)) => {
                     arrivals.1[i] = quiet;
@@ -3624,16 +3465,6 @@ pub fn arrivals(conn: &Connection) -> rusqlite::Result<Arrivals> {
         }
     }
     Ok(arrivals)
-}
-
-/// Whether `event_arrival` has the columns of the run, which this build adds at its first
-/// reading.
-fn has_run(conn: &Connection) -> rusqlite::Result<bool> {
-    conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('event_arrival') WHERE name = 'stopped')",
-        [],
-        |r| r.get(0),
-    )
 }
 
 /// Where the last reading left off.
@@ -3801,9 +3632,6 @@ fn series(conn: &Connection, now: i64, step: i64, n: usize, from: i64) -> rusqli
 
 /// The level, or `None` before any reading of it.
 pub fn level(conn: &Connection, now: i64) -> rusqlite::Result<Option<Level>> {
-    if !has(conn, "event_level")? {
-        return Ok(None);
-    }
     let row = conn
         .query_row(
             "SELECT state, read_at, written, said_by, said, reason, version
@@ -3841,10 +3669,7 @@ pub fn level(conn: &Connection, now: i64) -> rusqlite::Result<Option<Level>> {
         read_at,
         written,
         said_by,
-        said: match said {
-            Some(s) => Some(crate::secrets::Kept::Said.read(crate::secrets::form(conn)?, &s)),
-            None => None,
-        },
+        said: said.map(|s| crate::secrets::Kept::Said.read(&s)),
         reason,
         version,
         since_check: tally_since(conn, check)?,
@@ -3858,9 +3683,6 @@ pub fn level(conn: &Connection, now: i64) -> rusqlite::Result<Option<Level>> {
 
 /// The cap of the log, as the latest reading left it.
 fn cap(conn: &Connection) -> rusqlite::Result<Option<Result<u64, String>>> {
-    if !has(conn, "event_cap")? {
-        return Ok(None);
-    }
     let row: Option<(Option<i64>, Option<String>)> = conn
         .query_row("SELECT bytes, why FROM event_cap WHERE id = 1", [], |r| {
             Ok((r.get(0)?, r.get(1)?))
@@ -3884,9 +3706,6 @@ pub fn cap_words(bytes: u64) -> String {
 
 /// How many program starts matched each rule in readings from the hour that holds `from` on.
 fn matches_since(conn: &Connection, from: i64) -> rusqlite::Result<BTreeMap<String, i64>> {
-    if !has(conn, "rule_match")? {
-        return Ok(BTreeMap::new());
-    }
     conn.prepare("SELECT rule, SUM(matches) FROM rule_match WHERE hour >= ?1 GROUP BY rule")?
         .query_map([from / HOUR], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect()
@@ -3915,12 +3734,8 @@ fn tally_since(conn: &Connection, from: i64) -> rusqlite::Result<Tally> {
     )
 }
 
-/// The counts of file events of every reading at or after `from`; none in a store read before
-/// this version.
+/// The counts of file events of every reading at or after `from`.
 fn file_tally_since(conn: &Connection, from: i64) -> rusqlite::Result<FileTally> {
-    if !has(conn, "event_file_count")? {
-        return Ok(FileTally::default());
-    }
     conn.query_row(
         "SELECT COALESCE(SUM(files), 0), COALESCE(SUM(lost), 0),
                 COALESCE(SUM(unknown_gaps), 0), COALESCE(SUM(unreadable), 0)
@@ -4366,7 +4181,6 @@ mod tests {
         let day = Place {
             seq: [Some(4_000_000), None, Some(0)],
             pending: 1,
-            said: Vec::new(),
             files: (0..25u64)
                 .map(|i| {
                     let run = 20261003000013 + if i < 24 { 0 } else { 1_000_000 };
@@ -4386,7 +4200,7 @@ mod tests {
         let empty = Place::default().to_string();
         assert_eq!(empty, "030000000000");
         assert_eq!(Place::parse(&empty), Some(Place::default()));
-        let head = [2, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let head = [3, 0, 0, 0, 0];
         let one = |run: u64, step: u64| hex(&varints(&[&head[..], &[1, run, step, 7, 9]].concat()));
         assert!(Place::parse(&one(20261004000013, 20261004000000 << 1)).is_some());
         let two = |run: u64, step: u64| {
@@ -4445,9 +4259,6 @@ mod tests {
             one(0, 20261004000000 << 1),
             two(0, 0),
             two(0, 1),
-            // A version 2 arrival's time beyond what a second holds.
-            hex(&varints(&[2, 0, 0, 0, 0, u64::MAX, 0, 0, 0, 0, 0])),
-            hex(&varints(&[2, 0, 0, 0, 0, 3 + (1 << 63), 0, 0, 0, 0, 0])),
             // Version 3 holds nothing of what arrives.
             hex(&varints(&[3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])),
             hex(&varints(&[3, 0, 0, 0, 0, 3, 7, 0, 0, 0, 0, 0, 0])),
@@ -4459,40 +4270,13 @@ mod tests {
     }
 
     #[test]
-    fn a_place_an_earlier_build_printed_is_read_on_from_where_it_was() {
-        // A response layer holds a place across an upgrade: one printed when every file was
-        // named by its hour reads on, and is refused only as any other text would be.
-        let v1 = |numbers: &[u64]| hex(&varints(numbers));
-        let held = v1(&[1, 5, 0, 0, 2, 2026100400 << 1 | 1, 7, 90, 2 << 1, 8, 30]);
-        let place = Place::parse(&held).expect("a version-1 place is read");
-        assert_eq!(place.seq, [Some(4), None, None]);
-        assert_eq!(
-            place.files,
-            [
-                Kept {
-                    key: Key {
-                        run: 0,
-                        at: 2026100400
-                    },
-                    inode: 7,
-                    offset: 90,
-                    finished: true,
-                },
-                Kept {
-                    key: Key {
-                        run: 0,
-                        at: 2026100402
-                    },
-                    inode: 8,
-                    offset: 30,
-                    finished: false,
-                },
-            ]
-        );
-        assert_eq!((place.pending, place.said.len()), (0, 0));
-        // One version 2 printed carries what its lines said arrives: read and ignored, so its
-        // text is still held to one form, and the place it prints next carries none of it.
-        let held2 = v1(&[
+    fn a_place_of_an_earlier_encoding_is_refused_and_never_read_on() {
+        // A place is read only in the encoding this build prints. One an earlier build printed,
+        // version 1 or 2, is refused as any other text is, so `--after` fails and never reads as
+        // nothing new after it.
+        let held = |numbers: &[u64]| hex(&varints(numbers));
+        let version_1 = held(&[1, 5, 0, 0, 2, 2026100400 << 1 | 1, 7, 90, 2 << 1, 8, 30]);
+        let version_2 = held(&[
             2,
             5,
             0,
@@ -4504,35 +4288,17 @@ mod tests {
             2,
             0,
             1,
-            0,
-            2026100400 << 1,
+            20261004000013,
+            20261004000000 << 1,
             7,
             90,
         ]);
-        let v2 = Place::parse(&held2).expect("a version-2 place is read");
-        assert_eq!(
-            (v2.seq, v2.pending, v2.files.len()),
-            ([Some(4), None, None], 1, 1)
-        );
-        assert_eq!(hex(&v2.encode(2)), held2);
-        let next = Place::parse(&v2.to_string()).expect("its next place is read back");
-        assert_eq!(
-            (next.seq, next.pending, &next.files),
-            (v2.seq, 1, &v2.files)
-        );
-        assert!(next.said.is_empty() && next.to_string().len() < held2.len());
-        // What it prints next is this build's version, and it reads that back.
-        assert!(place.to_string().starts_with("03"));
-        assert_eq!(Place::parse(&place.to_string()), Some(place));
-        for bad in [
-            v1(&[1, 0, 0, 0, 1, 2026130400 << 1, 7, 9]),
-            v1(&[1, 0, 0, 0, 2, 2026100400 << 1, 7, 9, 0, 8, 9]),
-            format!("{held}00"),
-            format!("{held2}00"),
-            v1(&[2, 5, 0, 0, 1, 3 + 7, 0, 1, 2, 0]),
-        ] {
+        for bad in [version_1, version_2] {
             assert_eq!(Place::parse(&bad), None, "{bad}");
         }
+        // The same numbers under this build's version are a place.
+        let now = held(&[3, 5, 0, 0, 1, 1, 20261004000013, 20261004000000 << 1, 7, 90]);
+        assert!(Place::parse(&now).is_some());
     }
 
     #[test]
@@ -5230,7 +4996,7 @@ mod tests {
         let plist = dir.join("root").join(PLIST);
         std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
         std::fs::write(&plist, "<plist/>").unwrap();
-        let mut conn = crate::store::open(&dir.join("store.db")).unwrap();
+        let mut conn = crate::store::open_or_make(&dir.join("store.db")).unwrap();
         let now = 1_791_000_000;
         let read = |conn: &mut rusqlite::Connection, at: i64| {
             let tx = conn.transaction().unwrap();
@@ -5264,7 +5030,7 @@ mod tests {
         let plist = dir.join("root").join(PLIST);
         std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
         std::fs::write(&plist, "<plist/>").unwrap();
-        let mut conn = crate::store::open(&dir.join("store.db")).unwrap();
+        let mut conn = crate::store::open_or_make(&dir.join("store.db")).unwrap();
         let read = |conn: &mut rusqlite::Connection, at: i64| {
             let tx = conn.transaction().unwrap();
             crate::store::put_entity(&tx, "machine:mac").unwrap();
@@ -5305,7 +5071,7 @@ mod tests {
         let plist = dir.join("root").join(PLIST);
         std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
         std::fs::write(&plist, "<plist/>").unwrap();
-        let mut conn = crate::store::open(&dir.join("store.db")).unwrap();
+        let mut conn = crate::store::open_or_make(&dir.join("store.db")).unwrap();
         // On the hour, so that each reading below is in an hour of its own.
         let now = 1_791_000_000;
         assert_eq!(now % HOUR, 0);
@@ -6067,8 +5833,7 @@ mod tests {
     #[test]
     fn a_run_of_lines_without_a_value_is_counted_across_readings() {
         // The core reads every ten seconds, so the run of starts without a script goes on from
-        // where the last reading left it, in the store. An earlier build's store has no such
-        // run and is given one.
+        // where the last reading left it, in the store.
         let now = 1_791_090_000;
         let root = installed("arrival-run");
         let name = "exec-20261004T000013-20261004T000000.jsonl";
@@ -6083,12 +5848,7 @@ mod tests {
             std::env::temp_dir().join(format!("immune-events-run-{}", std::process::id())),
         );
         std::fs::create_dir_all(&dir).unwrap();
-        let mut conn = crate::store::open(&dir.join("store.db")).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE event_arrival (kind TEXT NOT NULL, keep TEXT NOT NULL,
-                 kept INTEGER NOT NULL, filled INTEGER, PRIMARY KEY (kind, keep));",
-        )
-        .unwrap();
+        let mut conn = crate::store::open_or_make(&dir.join("store.db")).unwrap();
         let read = |conn: &mut rusqlite::Connection| {
             let tx = conn.transaction().unwrap();
             crate::store::put_entity(&tx, "machine:mac").unwrap();
@@ -6138,56 +5898,6 @@ mod tests {
         assert!(include_str!("../docs/event-level.md").contains(
             "1,000 program starts in a row without one, counted in the file the collector is writing as the core reads it"
         ));
-    }
-
-    #[test]
-    fn a_store_an_earlier_build_left_is_answered_from_before_its_first_reading_by_this_one() {
-        // `immune status`, `rules` and `matches` read the store without a reading of their own,
-        // and the store an earlier build left has no columns for the run yet. They answer. A
-        // field kept and never filled is so, and one not kept is not kept; a field that build
-        // told arriving is not yet known, since it told one arriving for ever after one value,
-        // and stays so once this build's first reading has added the columns.
-        let dir = crate::common::Scratch::at(
-            std::env::temp_dir().join(format!("immune-events-old-{}", std::process::id())),
-        );
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("store.db");
-        let mut conn = crate::store::open(&path).unwrap();
-        let tx = conn.transaction().unwrap();
-        schema(&tx).unwrap();
-        tx.commit().unwrap();
-        conn.execute_batch(
-            "ALTER TABLE event_arrival DROP COLUMN stopped;
-             ALTER TABLE event_arrival DROP COLUMN quiet;
-             ALTER TABLE event_arrival DROP COLUMN quiet_from;
-             INSERT INTO event_level (id, read_at, state) VALUES (1, 1, 'running');
-             INSERT INTO event_arrival VALUES ('program_start', 'script', 1, 5);
-             INSERT INTO event_arrival VALUES ('program_start', 'identity', 1, NULL);
-             INSERT INTO event_arrival VALUES ('program_start', 'signature', 0, NULL);",
-        )
-        .unwrap();
-        drop(conn);
-        let conn = crate::store::open_read_only(&path).unwrap();
-        let level = level(&conn, 10).unwrap().expect("the level is read");
-        assert_eq!(
-            level.arrivals,
-            Arrivals::from([
-                Arrival::Kept(None),
-                Arrival::Unknown,
-                Arrival::NotKept,
-                Arrival::Unknown,
-                Arrival::Unknown,
-            ])
-        );
-        drop(conn);
-        let mut conn = crate::store::open(&path).unwrap();
-        let tx = conn.transaction().unwrap();
-        schema(&tx).unwrap();
-        assert!(has_run(&tx).unwrap());
-        assert_eq!(arrivals(&tx).unwrap().0[1], Arrival::Unknown);
-        drop(tx);
-        drop(conn);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -6297,10 +6007,7 @@ mod tests {
             std::env::temp_dir().join(format!("immune-events-forged-{}", std::process::id())),
         );
         std::fs::create_dir_all(&dir).unwrap();
-        let mut conn = crate::store::open(&dir.join("store.db")).unwrap();
-        let tx = conn.transaction().unwrap();
-        schema(&tx).unwrap();
-        tx.commit().unwrap();
+        let conn = crate::store::open_or_make(&dir.join("store.db")).unwrap();
         conn.execute_batch(
             "INSERT INTO event_arrival VALUES ('program_start', 'script', 1, 5, NULL, 1000, 6);
              INSERT INTO event_arrival VALUES ('program_start', 'identity', 1, 5, NULL, 9, 6);

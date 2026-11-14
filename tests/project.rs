@@ -538,8 +538,8 @@ fn a_failure_to_answer_is_never_taken_for_an_answer() {
             assert_eq!(parsed.format, 0);
         }
     }
-    // A store written by an older build, without a table a run of this build adds, is told as
-    // such, with what to do.
+    // A store that lacks a table of its format is damaged: it is told as such, with what to do,
+    // and never answered as if the table were empty.
     h.checkout("dev/shop");
     h.run(&[]);
     rusqlite::Connection::open(h.store())
@@ -551,8 +551,8 @@ fn a_failure_to_answer_is_never_taken_for_an_answer() {
     assert!(out.stdout.is_empty());
     let said = String::from_utf8_lossy(&out.stderr);
     assert!(
-        said.contains("written by an older build")
-            && said.contains("`immune run` brings it up to date"),
+        said.contains("is damaged: it lacks the table")
+            && said.contains("Move the old store aside or pass another --store"),
         "{said}"
     );
 }

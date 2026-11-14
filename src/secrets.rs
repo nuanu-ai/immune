@@ -42,8 +42,8 @@
 //! `\u{5c}`, so a bare one begins a mark no source can forge, and every printed event also lists
 //! its cuts. In the store a source's backslash is written the same way, so a mark read back is
 //! always the core's own; text from a source (`Text::source`) never yields one. `Kept` lists
-//! every kind of kept text that may hold a secret, and both the one-time cleaning of a store and
-//! every reader of such text go by it.
+//! the kinds of kept text that may hold a secret and are read back as text, and every reader of
+//! such text goes by it.
 //!
 //! If the set does not load whole (its sum differs, a key this build does not read, a pattern
 //! that does not compile, a self-test on planted fakes that is not cut), nothing is printed or
@@ -114,14 +114,6 @@ pub fn mark(kind: &str, length: usize) -> String {
     format!("\\cut{{{kind} {length}}}")
 }
 
-/// How stored arguments are written: as the source gave them, by a build before this one, or
-/// cut, with a source's backslash written `\u{5c}` and marks bare.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Form {
-    Raw,
-    Cut,
-}
-
 /// An event's arguments, cut.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Args(pub Vec<Vec<Piece>>);
@@ -134,10 +126,10 @@ impl Args {
 
     /// Arguments as the store holds them, cut again: a set newer than the one that cut them
     /// applies to what is shown.
-    pub fn stored(args: &[String], form: Form) -> Args {
+    pub fn stored(args: &[String]) -> Args {
         Args(cut_with(
             set().ok(),
-            args.iter().map(|a| pieces(a, form)).collect(),
+            args.iter().map(|a| parse(a)).collect(),
         ))
     }
 
@@ -269,102 +261,25 @@ pub fn said_within(s: &str, cap: usize) -> String {
     Text::source(s).said_within(cap)
 }
 
-/// The kinds of text the store keeps that may hold a secret: the arguments of evidence, the last
-/// line the collector printed, a verdict's reason and case, the reason of a person's answer to
-/// a finding and of a statement about a machine, each in its row and, where it has one, in its
-/// journal entry. This one list is what the cleaning rewrites (`clean_with`, by
-/// `Kept::rewrite`), and each kind's readers read it through `Kept::read` or `Args::stored`, cut
-/// again. The tests go through the list with a `match`, so a kind added here does not build until
-/// it is cleaned, read and tested.
+/// The kinds of text the store keeps, beside the arguments of evidence (`Args::stored`), that
+/// may hold a secret and are read back as text: the last line the collector printed, a verdict's
+/// reason and case, and the reason of a person's answer to a finding and of a statement about a
+/// machine. Each is kept cut, in the store's form, and its readers read it through `Kept::read`,
+/// cut again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kept {
-    Arguments,
     Said,
     Reason,
     Case,
-    VerdictEntry,
     AnswerReason,
-    AnswerEntry,
     OwnerReason,
-    OwnerEntry,
 }
 
 impl Kept {
-    pub const ALL: [Kept; 9] = [
-        Kept::Arguments,
-        Kept::Said,
-        Kept::Reason,
-        Kept::Case,
-        Kept::VerdictEntry,
-        Kept::AnswerReason,
-        Kept::AnswerEntry,
-        Kept::OwnerReason,
-        Kept::OwnerEntry,
-    ];
-
-    /// The table and the column that keep it, and which of its rows: the journal keeps every
-    /// kind of entry, and only these are rewritten.
-    fn place(self) -> (&'static str, &'static str, &'static str) {
-        match self {
-            Kept::Arguments => ("rule_evidence", "args", ""),
-            Kept::Said => ("event_level", "said", ""),
-            Kept::Reason => ("verdict", "reason", ""),
-            Kept::Case => ("verdict", "case_ref", ""),
-            Kept::VerdictEntry => ("journal", "text", " WHERE entry = 'verdict'"),
-            Kept::AnswerReason => ("finding", "reason", ""),
-            Kept::AnswerEntry => (
-                "journal",
-                "text",
-                " WHERE entry IN ('finding_expected', 'finding_seen')",
-            ),
-            Kept::OwnerReason => ("owner_statement", "reason", ""),
-            Kept::OwnerEntry => ("journal", "text", " WHERE entry = 'owner_said'"),
-        }
-    }
-
-    /// The fields of a journal entry kept as JSON that hold this kind's text; none for a text
-    /// kept as it is.
-    fn fields(self) -> &'static [&'static str] {
-        match self {
-            Kept::VerdictEntry => &VERDICT_ENTRY_TEXT,
-            Kept::AnswerEntry => &["reason"],
-            _ => &[],
-        }
-    }
-
     /// One text of this kind as the store keeps it, read cut: marks are read only in the store's
-    /// own form, and a set newer than the one that kept it applies. The arguments of evidence are
-    /// read whole by `Args::stored`.
-    pub fn read(self, form: Form, s: &str) -> Text {
-        Text(cut_one(set().ok(), pieces(s, form)))
-    }
-
-    /// One value of this kind as an earlier build kept it, as the store keeps it now.
-    fn rewrite(self, set: &Set, s: &str) -> String {
-        let source = |s: &str| show(&cut_one(Some(set), text_pieces(s)), &store_escape);
-        match self {
-            Kept::Arguments => {
-                let args: Vec<String> = serde_json::from_str(s).unwrap_or_default();
-                serde_json::json!(raw_in(Some(set), &args).store()).to_string()
-            }
-            Kept::VerdictEntry | Kept::AnswerEntry => {
-                let Ok(mut v) = serde_json::from_str::<Value>(s) else {
-                    return s.to_string();
-                };
-                for key in self.fields() {
-                    if let Some(t) = v[*key].as_str() {
-                        v[*key] = Value::String(source(t));
-                    }
-                }
-                v.to_string()
-            }
-            Kept::Said
-            | Kept::Reason
-            | Kept::Case
-            | Kept::AnswerReason
-            | Kept::OwnerReason
-            | Kept::OwnerEntry => source(s),
-        }
+    /// own form, and a set newer than the one that kept it applies.
+    pub fn read(self, s: &str) -> Text {
+        Text(cut_one(set().ok(), parse(s)))
     }
 }
 
@@ -384,126 +299,6 @@ fn holds_in(set: Result<&Set, &str>, s: &str) -> Result<bool, &'static str> {
     Ok(cut_one(Some(set), text_pieces(s))
         .iter()
         .any(|p| matches!(p, Piece::Cut { .. })))
-}
-
-/// How the store's kept texts are written: cut, in the store's form, in a store of the current
-/// format, else as a build before this one kept them, in a store of format 4 not yet cleaned
-/// (`store::UNCLEANED_FORMAT`). The format is what says it, so a build from before this one,
-/// which refuses the newer format, never writes raw text into a cleaned store. A store opened
-/// only to read is never cleaned, and what it prints is cut all the same.
-pub fn form(conn: &rusqlite::Connection) -> rusqlite::Result<Form> {
-    let version: String = conn.query_row(
-        "SELECT value FROM meta WHERE key = 'format_version'",
-        [],
-        |r| r.get(0),
-    )?;
-    Ok(if version == crate::store::UNCLEANED_FORMAT {
-        Form::Raw
-    } else {
-        Form::Cut
-    })
-}
-
-/// Cuts what a build before this one kept, once: every kind of `Kept`. Overwritten content is
-/// zeroed (`secure_delete`), the file is then rebuilt (`VACUUM`), and with the rollback journal
-/// deleted on commit no old byte is left in the store's files. The pages made from the store are
-/// removed; the next `immune view` makes them again. Backups and snapshots made before, and the
-/// collector's log, are not reached. With a set that did not load nothing is rewritten, and
-/// printing withholds every text.
-pub fn clean(
-    conn: &mut rusqlite::Connection,
-    folder: &std::path::Path,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // Asked first, so a store already clean never waits for the set to load.
-    if form(conn)? == Form::Cut {
-        return Ok(());
-    }
-    clean_with(set().ok(), conn, folder)
-}
-
-fn clean_with(
-    set: Option<&Set>,
-    conn: &mut rusqlite::Connection,
-    folder: &std::path::Path,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use rusqlite::OptionalExtension;
-    let Some(set) = set else {
-        return Ok(());
-    };
-    conn.pragma_update(None, "secure_delete", true)?;
-    let tx = conn.transaction()?;
-    for kind in Kept::ALL {
-        let (table, column, only) = kind.place();
-        let exists: bool = tx.query_row(
-            "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-            [table],
-            |r| r.get(0),
-        )?;
-        if !exists {
-            continue;
-        }
-        let rows: Vec<(i64, Option<String>)> = tx
-            .prepare(&format!("SELECT rowid, {column} FROM {table}{only}"))?
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<rusqlite::Result<_>>()?;
-        let changed: Vec<(i64, String)> = rows
-            .into_iter()
-            .filter_map(|(id, text)| {
-                let text = text?;
-                let new = kind.rewrite(set, &text);
-                (new != text).then_some((id, new))
-            })
-            .collect();
-        if changed.is_empty() {
-            continue;
-        }
-        // The journal is append-only; its guard is lifted for these entries alone and put back
-        // as it was, in the same transaction.
-        let guard: Option<String> = tx
-            .query_row(
-                "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ?1
-                 AND name = ?2",
-                [table, "journal_no_update"],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if guard.is_some() {
-            tx.execute_batch("DROP TRIGGER journal_no_update")?;
-        }
-        for (id, new) in changed {
-            tx.execute(
-                &format!("UPDATE {table} SET {column} = ?1 WHERE rowid = ?2"),
-                rusqlite::params![new, id],
-            )?;
-        }
-        if let Some(guard) = guard {
-            tx.execute_batch(&guard)?;
-        }
-    }
-    tx.execute(
-        "UPDATE meta SET value = ?1 WHERE key = 'format_version'",
-        [crate::store::FORMAT_VERSION],
-    )?;
-    tx.commit()?;
-    // Rebuilds the file without its free pages. secure_delete has already zeroed what the
-    // updates freed, so a store another process holds at this moment is left as it is.
-    let _ = conn.execute_batch("VACUUM");
-    for page in [
-        folder.join(crate::view::SUMMARY),
-        folder.join(crate::view::DETAILS),
-    ] {
-        let gone = if page.is_dir() {
-            std::fs::remove_dir_all(&page)
-        } else {
-            std::fs::remove_file(&page)
-        };
-        if let Err(e) = gone
-            && e.kind() != std::io::ErrorKind::NotFound
-        {
-            return Err(format!("{}: {e}", page.display()).into());
-        }
-    }
-    Ok(())
 }
 
 fn store_escape(s: &str) -> String {
@@ -553,15 +348,6 @@ fn text_pieces(s: &str) -> Vec<Piece> {
         Vec::new()
     } else {
         vec![Piece::Text(s.to_string())]
-    }
-}
-
-/// The pieces of a kept text: as a source wrote it, from a build before this one, or in the
-/// store's form, where a source's backslash is `\u{5c}`, so every mark in it is the core's.
-fn pieces(s: &str, form: Form) -> Vec<Piece> {
-    match form {
-        Form::Raw => text_pieces(s),
-        Form::Cut => parse(s),
     }
 }
 
@@ -2095,7 +1881,7 @@ mod tests {
             &token,
         ]);
         let kept = Args::raw(&args);
-        let back = Args::stored(&kept.store(), Form::Cut);
+        let back = Args::stored(&kept.store());
         assert_eq!(back, kept);
         assert_eq!(kinds(&back), ["gitleaks:github-pat"]);
         assert_eq!(&plain(&back)[..3], &args[..3]);
@@ -2103,17 +1889,13 @@ mod tests {
 
     #[test]
     fn a_row_kept_before_a_secret_was_recognised_is_cut_when_it_is_shown() {
-        // Rows of an older build hold arguments as the log gave them; rows of an older set hold
-        // what it did not know. Both are cut when they are read.
+        // Rows kept under an older set hold what it did not know: it is cut when it is read.
         let token = format!("{}{}", ["gh", "p_"].concat(), body(ALNUM, 36, 25));
         let args = strings(&["tool", &token]);
-        for form in [Form::Raw, Form::Cut] {
-            assert_eq!(kinds(&Args::stored(&args, form)), ["gitleaks:github-pat"]);
-        }
-        // A backslash an older build kept as it was is a backslash, not an escape.
+        assert_eq!(kinds(&Args::stored(&args)), ["gitleaks:github-pat"]);
         assert_eq!(
-            plain(&Args::stored(&strings(&["a\\u{41}"]), Form::Raw)),
-            ["a\\u{41}"]
+            Kept::Said.read(&format!("said {token}")).cuts(),
+            [("gitleaks:github-pat", 40)]
         );
     }
 
@@ -2134,11 +1916,11 @@ mod tests {
                 &m,
                 &format!("API_KEY={m}"),
             ]);
-            let a = Args::stored(&stored, Form::Cut);
+            let a = Args::stored(&stored);
             assert_eq!(a.cuts().len(), 4, "{kind}: {:?}", a.cuts());
             assert_eq!(a.store(), stored, "{kind}");
             let said = format!("said --password {m}");
-            assert_eq!(Kept::Said.read(Form::Cut, &said).store(), said);
+            assert_eq!(Kept::Said.read(&said).store(), said);
         }
     }
 
@@ -2687,132 +2469,6 @@ mod tests {
     }
 
     #[test]
-    fn every_kind_of_kept_text_is_read_cut_before_the_cleaning_and_kept_in_the_store_s_form_after()
-    {
-        // The one list, `Kept::ALL`: each kind, as an earlier build kept it, holding a token and a
-        // mark-shaped text a source wrote, is read cut while the store is not yet clean, and the
-        // cleaning leaves it in the store's form, read back the same.
-        let token = format!("{}{}", ["gh", "p_"].concat(), body(ALNUM, 36, 30));
-        let source = format!("err \\cut{{a 1}} {token}");
-        let c = rusqlite::Connection::open_in_memory().unwrap();
-        c.execute_batch(
-            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
-             INSERT INTO meta VALUES ('format_version', '4');
-             CREATE TABLE journal (seq INTEGER PRIMARY KEY, entry TEXT, text TEXT);
-             CREATE TRIGGER journal_no_update BEFORE UPDATE ON journal
-                 BEGIN SELECT RAISE(ABORT, 'append-only'); END;
-             CREATE TABLE rule_evidence (args TEXT);
-             CREATE TABLE event_level (id INTEGER PRIMARY KEY, said TEXT);
-             CREATE TABLE verdict (id INTEGER PRIMARY KEY, reason TEXT, case_ref TEXT);
-             CREATE TABLE finding (id INTEGER PRIMARY KEY, reason TEXT);
-             CREATE TABLE owner_statement (id INTEGER PRIMARY KEY, reason TEXT);",
-        )
-        .unwrap();
-        // A kept value read as its readers read it, in the store's store form.
-        let read = |kind: Kept, form: Form, kept: &str| -> String {
-            match kind {
-                Kept::Arguments => {
-                    let args: Vec<String> = serde_json::from_str(kept).unwrap();
-                    Args::stored(&args, form).store().join(" ")
-                }
-                Kept::VerdictEntry | Kept::AnswerEntry => {
-                    let v: Value = serde_json::from_str(kept).unwrap();
-                    kind.fields()
-                        .iter()
-                        .map(|k| kind.read(form, v[*k].as_str().unwrap()).store())
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                }
-                _ => kind.read(form, kept).store(),
-            }
-        };
-        let mut kept = Vec::new();
-        for kind in Kept::ALL {
-            let (sql, raw) = match kind {
-                Kept::Arguments => (
-                    "INSERT INTO rule_evidence (args) VALUES (?1)",
-                    serde_json::json!(["tool", source]).to_string(),
-                ),
-                Kept::Said => (
-                    "INSERT INTO event_level (id, said) VALUES (1, ?1)",
-                    source.clone(),
-                ),
-                Kept::Reason => (
-                    "INSERT INTO verdict (reason, case_ref) VALUES (?1, 'c')",
-                    source.clone(),
-                ),
-                Kept::Case => (
-                    "INSERT INTO verdict (reason, case_ref) VALUES ('r', ?1)",
-                    source.clone(),
-                ),
-                Kept::VerdictEntry => (
-                    "INSERT INTO journal (entry, text) VALUES ('verdict', ?1)",
-                    serde_json::json!({ "reason": source, "case": source }).to_string(),
-                ),
-                Kept::AnswerReason => ("INSERT INTO finding (reason) VALUES (?1)", source.clone()),
-                Kept::AnswerEntry => (
-                    "INSERT INTO journal (entry, text) VALUES ('finding_expected', ?1)",
-                    serde_json::json!({ "via": "agent", "reason": source }).to_string(),
-                ),
-                Kept::OwnerReason => (
-                    "INSERT INTO owner_statement (reason) VALUES (?1)",
-                    source.clone(),
-                ),
-                Kept::OwnerEntry => (
-                    "INSERT INTO journal (entry, text) VALUES ('owner_said', ?1)",
-                    source.clone(),
-                ),
-            };
-            c.execute(sql, [&raw]).unwrap();
-            let shown = read(kind, Form::Raw, &raw);
-            assert!(!shown.contains(&token), "{kind:?}: {shown}");
-            // The mark-shaped text a source wrote stays text: escaped, never a bare mark.
-            assert!(shown.contains("\\u{5c}cut{a 1}"), "{kind:?}: {shown}");
-            kept.push((kind, c.last_insert_rowid(), shown));
-        }
-        // The journal is append-only: an entry of another kind is never rewritten, plain or with
-        // fields of the same names as one the list holds.
-        let others = [
-            (
-                "report",
-                serde_json::json!({ "reason": source, "case": source }).to_string(),
-            ),
-            ("not_read", source.clone()),
-        ];
-        let mut other_rows = Vec::new();
-        for (entry, text) in &others {
-            c.execute(
-                "INSERT INTO journal (entry, text) VALUES (?1, ?2)",
-                [*entry, text.as_str()],
-            )
-            .unwrap();
-            other_rows.push((c.last_insert_rowid(), text.clone()));
-        }
-        let mut c = c;
-        clean(&mut c, &std::env::temp_dir().join("immune-no-folder-kept")).unwrap();
-        for (row, text) in other_rows {
-            let after: String = c
-                .query_row("SELECT text FROM journal WHERE rowid = ?1", [row], |r| {
-                    r.get(0)
-                })
-                .unwrap();
-            assert_eq!(after, text);
-        }
-        for (kind, row, before) in kept {
-            let (table, column, _) = kind.place();
-            let after: String = c
-                .query_row(
-                    &format!("SELECT {column} FROM {table} WHERE rowid = ?1"),
-                    [row],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert!(!after.contains(&token), "{kind:?}: {after}");
-            assert_eq!(read(kind, Form::Cut, &after), before, "{kind:?}");
-        }
-    }
-
-    #[test]
     fn a_line_packed_with_matches_is_cut_well_within_a_second() {
         // gitleaks's generic rule checks its 1,445 stopwords for every match; as one automaton
         // a line of the cap packed with matches costs milliseconds in a release build. The
@@ -2880,9 +2536,7 @@ mod tests {
                     assert_eq!(t.shown(str::to_string), s);
                     let kept = t.store();
                     assert_eq!(kept, s.replace('\\', "\\u{5c}"));
-                    for kind in Kept::ALL {
-                        assert_eq!(kind.read(Form::Cut, &kept).store(), kept, "{s}");
-                    }
+                    assert_eq!(Kept::Said.read(&kept).store(), kept, "{s}");
                 }
                 let fv = "\\cut{immune:flag-value 11}";
                 for (s, cut) in [
@@ -3517,43 +3171,6 @@ mod tests {
             let shown = text(&s, str::to_string);
             assert!(shown.contains(kept), "{s}: {shown}");
         }
-    }
-
-    #[test]
-    fn a_store_is_cleaned_once_and_never_by_a_build_whose_set_did_not_load() {
-        let db = || {
-            let c = rusqlite::Connection::open_in_memory().unwrap();
-            c.execute_batch(
-                "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
-                 INSERT INTO meta VALUES ('format_version', '4');
-                 CREATE TABLE journal (seq INTEGER PRIMARY KEY, entry TEXT, text TEXT);
-                 CREATE TABLE rule_evidence (args TEXT);
-                 INSERT INTO rule_evidence VALUES ('[\"tool\",\"--password\",\"FakePw13\"]');",
-            )
-            .unwrap();
-            c
-        };
-        let args = |c: &rusqlite::Connection| -> String {
-            c.query_row("SELECT args FROM rule_evidence", [], |r| r.get(0))
-                .unwrap()
-        };
-        let nowhere = std::env::temp_dir().join(format!("immune-no-folder-{}", std::process::id()));
-        let mut c = db();
-        clean_with(None, &mut c, &nowhere).unwrap();
-        assert_eq!(form(&c).unwrap(), Form::Raw);
-        assert!(args(&c).contains("FakePw13"));
-        clean(&mut c, &nowhere).unwrap();
-        assert_eq!(form(&c).unwrap(), Form::Cut);
-        let cut = args(&c);
-        assert_eq!(
-            cut,
-            "[\"tool\",\"--password\",\"\\\\cut{immune:flag-value 8}\"]"
-        );
-        // Once: what a store keeps cut is not read as raw again.
-        c.execute("UPDATE rule_evidence SET args = '[\"a\\\\u{5c}b\"]'", [])
-            .unwrap();
-        clean(&mut c, &nowhere).unwrap();
-        assert_eq!(args(&c), "[\"a\\\\u{5c}b\"]");
     }
 
     #[test]

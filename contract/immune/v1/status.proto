@@ -38,7 +38,7 @@ message Status {
   // When the answer was made. Everything in it is of one state of the store at this time.
   int64 answered_at = 2;
   // The store this answer was read from, as in every answer (`common.proto`). Absent when there
-  // is no store, and for a store an older build made that no command has written to since.
+  // is no store.
   optional string store_id = 3;
   // A full check is in progress now. Everything else describes the latest one that finished.
   bool running = 4;
