@@ -934,6 +934,7 @@ fn on_the_page_a_finding_and_the_response_layer_s_own_are_one_row_counted_as_one
     assert_eq!(page.matches(&format!(" id=\"{own}\"")).count(), 1, "{page}");
     // The person answers the core's finding through an agent: the response layer's stays open,
     // and so does the row, which is under Answered too.
+    let seq = read(&mac);
     assert!(
         mac.answer(
             &padding,
@@ -942,7 +943,9 @@ fn on_the_page_a_finding_and_the_response_layer_s_own_are_one_row_counted_as_one
                 "--via",
                 "agent",
                 "--reason",
-                "invented: the person agreed"
+                "invented: the person agreed",
+                "--journal-seq",
+                &seq
             ]
         )
         .status
