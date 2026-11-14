@@ -348,7 +348,8 @@
           "first_seen_at": 1794569820,
           "last_seen_at": 1794569820,
           "answer": null,
-          "verdicts": null
+          "verdicts": null,
+          "kind_title": "Package in a project"
         },
         "meaning": "Meaning from the program.",
         "advice": "Advice from the program.",
@@ -392,7 +393,8 @@
               }
             ],
             "verdict_finding": null
-          }
+          },
+          "kind_title": "Response layer"
         },
         "meaning": "Meaning from the program.",
         "advice": "Advice from the program.",
@@ -431,7 +433,8 @@
               "confidence": null,
               "urgent": false
             }
-          }
+          },
+          "kind_title": "Program start"
         },
         "meaning": "Meaning from the program.",
         "advice": "Advice from the program.",
@@ -505,7 +508,8 @@
             "suspicious": 0,
             "listed": [],
             "verdict_finding": null
-          }
+          },
+          "kind_title": "Shell startup file"
         },
         "meaning": "Meaning from the program.",
         "advice": "Advice from the program.",
@@ -531,7 +535,8 @@
           "first_seen_at": 1794567120,
           "last_seen_at": 1794567120,
           "answer": null,
-          "verdicts": null
+          "verdicts": null,
+          "kind_title": "SSH file"
         },
         "meaning": "Meaning from the program.",
         "advice": "Advice from the program.",
@@ -557,7 +562,8 @@
           "first_seen_at": 1794564840,
           "last_seen_at": 1794564840,
           "answer": null,
-          "verdicts": null
+          "verdicts": null,
+          "kind_title": "Editor setting in a project"
         },
         "meaning": "Meaning from the program.",
         "advice": "Advice from the program.",

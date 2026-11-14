@@ -80,7 +80,8 @@ public enum VerdictTone: Sendable, Equatable {
 
 public enum FindingFacts {
   /// The thing itself, as data: the program that ran, a file event's file, a package by its
-  /// name; otherwise where it is, and Immune's title when nothing names a thing.
+  /// name; otherwise what Immune says it is about when no name from the Mac says it (`thing`),
+  /// where it is, and Immune's title when nothing names a thing.
   public static func object(_ f: Contract.Finding) -> String {
     switch f.evidence {
     case .publishedRule(_, _, let events, _), .verdictGiven(_, let events):
@@ -95,6 +96,7 @@ public enum FindingFacts {
       if let name = p.packageText { return Inert.whole(name) }
     default: break
     }
+    if let thing = f.thing, !thing.isEmpty { return Inert.text(thing, limit: 400) }
     if let place = f.whereText ?? f.finding?.aboutText, !place.isEmpty {
       return Inert.whole(place)
     }
@@ -253,10 +255,11 @@ public enum FindingFacts {
     return who(a.via) + ": " + said.prefix(1).lowercased() + said.dropFirst()
   }
 
-  /// The line under the thing: its kind, what happened and when, in the app's words: "Shell
-  /// startup file · changed · 11:37". "Needs you now" goes before it, when it does.
+  /// The line under the thing: its kind in Immune's words, what happened and when in the app's:
+  /// "Shell startup file · changed · 11:37". "Needs you now" goes before it, when it does. From
+  /// an Immune that gives no title for the kind, the kind's own name as Immune gave it.
   public static func caption(_ f: Contract.Finding, now: Date) -> String {
-    let kind = Words.kind(f.kind)
+    let kind = Words.kind(title: f.kindTitle, kind: f.kind)
     let change = change(f)
     let when = (f.lastSeenAt ?? f.firstSeenAt).map { Clock.at($0, now: now) }
     let parts = change?.lowercased() == kind?.lowercased() ? [kind, when] : [kind, change, when]
@@ -333,19 +336,6 @@ public enum FindingFacts {
   /// finding about it, which the app shows with it as one thing.
   public static func urgent(_ f: Contract.Finding) -> Bool {
     f.finding?.urgent == true || f.verdicts?.verdictFinding?.urgent == true
-  }
-
-  /// The other finding of a pair the app shows as one thing, by an id it can pass: for a finding
-  /// of the core, the response layer's own finding about it (`verdicts.verdict_finding`); for the
-  /// response layer's finding, the finding of the core the status lists with it. Nil for a
-  /// finding alone. Taken only from what `immune finding` and the status give.
-  public static func pair(_ f: Contract.Finding, id: String, rows: [Row]) -> String? {
-    if let other = f.verdicts?.verdictFinding?.id, other != id, Answer.isUsable(id: other) {
-      return other
-    }
-    let core = rows.first { !$0.isVerdictFinding && $0.item.verdict?.finding == id }?.item.id
-    if let core, core != id, Answer.isUsable(id: core) { return core }
-    return nil
   }
 
   /// What can be done with the opened finding, the primary first. It follows Immune's `urgent`:

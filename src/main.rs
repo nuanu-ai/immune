@@ -114,7 +114,7 @@ const USAGE: &str = "usage: immune run [--store <path>] [--machine-name <name>] 
            thing, and gives it the same answer in one transaction, or refuses both.
            --journal-seq is the journal_seq of the answer the findings were read in;
            the answer is refused if anything joined them since. seen and expected
-           with --with or with --via agent need it.
+           with --with, --via agent or --via app need it.
            --via says who gave it; without it, the command
            line. Answer a finding only after the owner has agreed in this conversation,
            having been told what it is and what the options are. Pass --via agent and
@@ -540,11 +540,11 @@ fn parse_args(
                 );
             }
             // Where an answer must name the read it rests on (`--journal-seq`), so that nothing
-            // that joined since is quieted unseen. Required for an answer to two findings, and
-            // for any answer through an agent, which always reads before it answers and whose
-            // read and answer are a conversation apart. Still optional from the command line and
-            // from the app: the app will pass it, and be required to here, in the change that
-            // redraws it. `reopen` quiets nothing and needs none.
+            // that joined since is quieted unseen. Required for an answer to two findings, for
+            // any answer through an agent, which always reads before it answers and whose read
+            // and answer are a conversation apart, and for any answer from the app, which answers
+            // on a card drawn from a read. Still optional from the command line. `reopen` quiets
+            // nothing and needs none.
             let quiets = matches!(verb, Some(FindingVerb::Expected | FindingVerb::Seen));
             if with.is_some() && quiets && seq.is_none() {
                 return Err(
@@ -555,6 +555,12 @@ fn parse_args(
             if via == Some(findings::Via::Agent) && quiets && seq.is_none() {
                 return Err(
                     "an answer through an agent needs --journal-seq <n>, the journal_seq of the answer (immune finding <id> --json) in which the owner was shown the finding"
+                        .to_string(),
+                );
+            }
+            if via == Some(findings::Via::App) && quiets && seq.is_none() {
+                return Err(
+                    "an answer from the app needs --journal-seq <n>, the journal_seq of the answer (immune finding <id> --json or immune status --json) the person answered on"
                         .to_string(),
                 );
             }

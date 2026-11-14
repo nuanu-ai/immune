@@ -332,7 +332,8 @@
               }
             ],
             "verdict_finding": null
-          }
+          },
+          "kind_title": "Response layer"
         },
         "meaning": "Meaning from the program.",
         "advice": "Advice from the program.",
@@ -371,7 +372,8 @@
               "confidence": null,
               "urgent": false
             }
-          }
+          },
+          "kind_title": "Program start"
         },
         "meaning": "Meaning from the program.",
         "advice": "Advice from the program.",
@@ -445,7 +447,8 @@
             "suspicious": 0,
             "listed": [],
             "verdict_finding": null
-          }
+          },
+          "kind_title": "Shell startup file"
         },
         "meaning": "Meaning from the program.",
         "advice": "Advice from the program.",

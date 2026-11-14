@@ -49,9 +49,14 @@ public struct Row: Sendable, Equatable, Identifiable {
       }
       if let program = rule.executableText { return Inert.whole(program) }
     }
+    if let thing { return Inert.text(thing, limit: 400) }
     if let place = item.whereText, !place.isEmpty { return Inert.whole(place) }
     return title
   }
+
+  /// What it is about in Immune's words, when no name from the Mac says it: the places a first
+  /// reading read, counted. Not data.
+  var thing: String? { item.thing.flatMap { $0.isEmpty ? nil : $0 } }
 
   /// A program start as its two parts: the program that ran, inert, and its arguments after the
   /// first as one line; nil for any other row. The row is cut from these (`Evidence.fit`), so
@@ -76,8 +81,10 @@ public struct Row: Sendable, Equatable, Identifiable {
   /// the row falls back to its own headline.
   public var objectIsData: Bool {
     let rule = item.publishedRule
-    return rule?.fileText != nil || !(rule?.argsText ?? []).isEmpty || rule?.executableText != nil
-      || !(item.whereText ?? "").isEmpty
+    if rule?.fileText != nil || !(rule?.argsText ?? []).isEmpty || rule?.executableText != nil {
+      return true
+    }
+    return thing == nil && !(item.whereText ?? "").isEmpty
   }
 
   /// The object is a path: a file or a place shaped as one, never a command line. A path is cut
@@ -89,11 +96,12 @@ public struct Row: Sendable, Equatable, Identifiable {
     return objectIsData && Inert.isPath(object)
   }
 
-  /// The kind and what happened, in the app's words: "Shell startup file · changed".
+  /// The kind in Immune's words and what happened in the app's: "Shell startup file · changed".
   /// What happened is left out when the kind already says it: a place read for the first time
-  /// reads "Read for the first time", once.
+  /// reads "Read for the first time", once. From an Immune that gives no title for the kind, the
+  /// kind's own name as Immune gave it; with neither, the rule's.
   public var meta: String {
-    let kind = Words.kind(item.kind)
+    let kind = Words.kind(title: item.kindTitle, kind: item.kind ?? item.rule)
     let change = item.change.map(Words.change)
     let parts = change?.lowercased() == kind?.lowercased() ? [kind] : [kind, change]
     return parts.compactMap { $0 }.joined(separator: " · ")
@@ -114,7 +122,7 @@ public struct Row: Sendable, Equatable, Identifiable {
   public var canAnswer: Bool { canOpen }
 
   /// A small SF Symbol for the kind of thing. Only a picture: an unknown kind gets a plain one.
-  public var symbol: String { Words.symbol(item.kind) }
+  public var symbol: String { Icons.kind(item.kind) }
 
   /// What reads this one item, for an agent: the immune binary this app runs, by its path.
   public var readCommand: String {
@@ -248,48 +256,16 @@ public enum Evidence {
   }
 }
 
-/// The app's words for Immune's kinds of finding and for what happened. A kind the app has no
-/// words for is Immune's own word, with a capital letter.
+/// The app's words for what happened and for the values of the contract's enums. A kind of
+/// finding is named in Immune's words (`kind_title`), never in the app's.
 public enum Words {
-  /// Each kind of thing Immune names: the app's words and the symbol of the design sheet's icon
-  /// table. A kind with no entry is any other file or application, drawn as `otherSymbol`.
-  static let kinds: [String: (String, String)] = [
-    "autostart item": ("Startup item", "power"),
-    "login or logout hook": ("Login hook", "person"),
-    "shell profile": ("Shell startup file", "terminal"),
-    "ssh access file": ("SSH file", "key"),
-    "authentication module": ("Authentication module", "lock"),
-    "git hook": ("Git hook", "arrow.triangle.branch"),
-    "setting or command an editor runs in a project": (
-      "Editor task that runs when a project is opened", "gearshape"
-    ),
-    "script run when a project's packages are installed": (
-      "Install script in a project", "gearshape"
-    ),
-    "program or tool a project tells a coding agent to run": (
-      "Agent tool in a project", "gearshape"
-    ),
-    "program or tool a coding agent is set to run": ("Agent tool", "gearshape"),
-    "editor extension": ("Editor extension", "puzzlepiece.extension"),
-    "places read for the first time": ("Read for the first time", "doc.text"),
-    "lockfile dependency": ("Package in a project", "shippingbox"),
-    "program start matched by a published rule": ("Program start", "play"),
-    "file event matched by a published rule": ("File created or renamed", "doc.badge.plus"),
-    "verdict of the response layer": ("Response layer: suspicious", "bubble.left"),
-    "match of an indicator from the list": ("Indicator match", "scope"),
-  ]
-  /// An application or any other file.
-  public static let otherSymbol = "doc"
-
-  public static func kind(_ kind: String?) -> String? {
-    guard let kind, !kind.isEmpty else { return nil }
-    if let words = kinds[kind] { return words.0 }
-    let shown = Inert.text(kind, limit: 80)
-    return shown.prefix(1).uppercased() + shown.dropFirst()
-  }
-
-  public static func symbol(_ kind: String?) -> String {
-    kind.flatMap { kinds[$0]?.1 } ?? otherSymbol
+  /// A kind as a person reads it: Immune's title for it, inert; from an Immune that gives none,
+  /// the kind's own name as Immune gave it, inert and as it is; nil when Immune gave neither.
+  public static func kind(title: String?, kind: String?) -> String? {
+    for given in [title, kind] {
+      if let given, !given.isEmpty { return Inert.text(given, limit: 80) }
+    }
+    return nil
   }
 
   // The app's words for the values of the contract's enums, keyed by the value as the JSON
@@ -357,9 +333,36 @@ public enum Words {
   }
 }
 
-/// The symbols of the design sheet's icon table that are not a kind's (those are in
-/// `Words.kinds`).
+/// The symbols of the design sheet's icon table. Only pictures: a kind's words are Immune's.
 public enum Icons {
+  /// Each kind of thing Immune names, by its stable name, and the symbol of the design sheet's
+  /// icon table. A kind with no entry is any other file or application, drawn as `otherSymbol`.
+  static let kinds: [String: String] = [
+    "autostart item": "power",
+    "login or logout hook": "person",
+    "shell profile": "terminal",
+    "ssh access file": "key",
+    "authentication module": "lock",
+    "git hook": "arrow.triangle.branch",
+    "setting or command an editor runs in a project": "gearshape",
+    "script run when a project's packages are installed": "gearshape",
+    "program or tool a project tells a coding agent to run": "gearshape",
+    "program or tool a coding agent is set to run": "gearshape",
+    "editor extension": "puzzlepiece.extension",
+    "places read for the first time": "doc.text",
+    "lockfile dependency": "shippingbox",
+    "program start matched by a published rule": "play",
+    "file event matched by a published rule": "doc.badge.plus",
+    "verdict of the response layer": "bubble.left",
+    "match of an indicator from the list": "scope",
+  ]
+  /// An application or any other file.
+  public static let otherSymbol = "doc"
+
+  public static func kind(_ kind: String?) -> String {
+    kind.flatMap { kinds[$0] } ?? otherSymbol
+  }
+
   public static let notSeen = "eye.slash"
   public static let answered = "person.badge.clock"
   public static let watched = "binoculars"
@@ -678,7 +681,7 @@ public struct Panel: Sendable, Equatable {
       guard let id = u.id else { return nil }
       let examples = u.examplesText ?? []
       let count = max(u.count ?? 0, examples.count)
-      let title = Inert.text(u.title ?? Words.kind(u.kind) ?? id, limit: 300)
+      let title = Inert.text(u.title ?? u.kind ?? id, limit: 300)
       let kind = u.kind.map { Inert.text($0, limit: 120) }.flatMap { $0.isEmpty ? nil : $0 }
       return NotSeenRow(
         id: id, title: title, example: examples.first.map { Inert.whole($0) },

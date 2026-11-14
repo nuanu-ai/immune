@@ -29,6 +29,17 @@ public enum Contract {
     public var evidence: Evidence?
     public var restsOn: [JournalEntry] = []
     public var verdicts: Verdicts?
+    /// `kind` as a person reads it, in Immune's words; nil from an Immune that does not give it.
+    public var kindTitle: String? = nil
+    /// What it is about, in Immune's words, when no name from the Mac says it.
+    public var thing: String? = nil
+    /// The other finding of a pair that the answer printed here was given to beside this one.
+    /// Only an answer's message carries it; a read never does.
+    public var answeredWith: FindingRef? = nil
+    /// The journal's latest sequence number in the store this message was read from: an answer
+    /// given on the card drawn from it passes it back as `--journal-seq`. Nil from an Immune that
+    /// does not give it.
+    public var journalSeq: Int? = nil
   }
 
   public struct FindingRef: Sendable, Equatable {
@@ -300,7 +311,10 @@ extension Decoding {
             }
           },
           verdictFinding: v["verdict_finding"].object.map(findingRef))
-      })
+      },
+      kindTitle: j["kind_title"].string, thing: j["thing"].string,
+      answeredWith: j["answered_with"].object.map(findingRef),
+      journalSeq: j["journal_seq"].int64)
   }
 
   /// A list of `Cut`, each field by its schema type: `argument` and `length` are counts.
