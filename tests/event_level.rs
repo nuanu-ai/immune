@@ -2273,6 +2273,9 @@ fn a_binary_padding_start_raises_one_finding_with_its_authors_and_arguments_and_
                     "started_at": null,
                     "started_nanos": null,
                     "codesigning_flags": null,
+                    "real_user_id": null,
+                    "group_id": null,
+                    "real_group_id": null,
                 },
                 "instigator": {
                     "executable_text": "/bin/sh",
@@ -2285,12 +2288,17 @@ fn a_binary_padding_start_raises_one_finding_with_its_authors_and_arguments_and_
                     "started_at": null,
                     "started_nanos": null,
                     "codesigning_flags": null,
+                    "real_user_id": null,
+                    "group_id": null,
+                    "real_group_id": null,
                 },
                 "parent_pid": 401,
                 "args_text": DD,
                 "working_directory_text": CWD,
                 "parent": null,
                 "script_text": null,
+                "responsible": null,
+                "process_group_id": null,
                 "cuts": [],
             }}],
             "source": "https://github.com/SigmaHQ/sigma",
@@ -2370,9 +2378,11 @@ fn a_binary_padding_start_raises_one_finding_with_its_authors_and_arguments_and_
     );
     assert_eq!(evidence[4]["program_start"]["args_text"][3], "count=5");
     let id = list[0]["finding"]["id"].as_str().unwrap().to_string();
-    // For a person too: the rule with its authors, and the latest starts with their arguments.
+    // For a person too: the rule with its authors, and the latest starts with their arguments
+    // and the user ids the evidence keeps.
     let text = dir.immune(&["finding", &id]);
     for said in [
+        r#" · pid 402 · signed "com.apple.git" · as user 501"#,
         r#"Rule: "Binary Padding - MacOS", by "Igor Fits, Mikhail Larin, oscd.community"; from SigmaHQ's rule set under the Detection Rule License 1.1, "#,
         "It matched 8 program starts since this finding was raised.",
         r#""/bin/dd": "dd" "if=/dev/zero" "bs=1" "count=9" "\" · started by forged · pid 1\u{a}Signed: legitimate" · started by "/bin/sh""#,
@@ -3424,6 +3434,9 @@ fn a_file_a_high_rule_names_raises_one_finding_with_the_file_and_its_program_and
                 "started_at": null,
                 "started_nanos": null,
                 "codesigning_flags": null,
+                "real_user_id": null,
+                "group_id": null,
+                "real_group_id": null,
             },
         }})
     };

@@ -331,8 +331,21 @@ fn program(executable: &str, who: &events::Identity) -> v1::Process {
         pid_version: who.pid_version,
         started_at: started.map(|s| s.0),
         started_nanos: started.map(|s| s.1),
+        user_id: who.user_id,
+        real_user_id: who.users.real_user_id,
+        group_id: who.users.group_id,
+        real_group_id: who.users.real_group_id,
         ..Default::default()
     }
+}
+
+/// A process the log gives the pid of, without its program, as the contract gives it: absent
+/// when the log does not give its pid.
+fn identity(who: &events::Identity) -> Option<v1::Identity> {
+    who.pid.map(|pid| v1::Identity {
+        pid: Some(pid),
+        pid_version: who.pid_version,
+    })
 }
 
 /// Code-signing flags as the contract gives them: the kernel's 32 bits, or absent.
@@ -362,8 +375,6 @@ pub fn event_cut(e: &Evidence, args: &Args) -> v1::Event {
                 happened_at,
                 happened_nanos,
                 process: Some(v1::Process {
-                    pid: Some(s.pid),
-                    user_id: s.user_id,
                     signing_id_text: s.signing_id.as_deref().map(whole),
                     team_id_text: s.team_id.as_deref().map(whole),
                     platform_binary: s.platform_binary,
@@ -374,6 +385,8 @@ pub fn event_cut(e: &Evidence, args: &Args) -> v1::Event {
                             pid: Some(s.pid),
                             pid_version: s.who.pid_version,
                             started: s.who.started.clone(),
+                            user_id: s.user_id,
+                            users: s.who.users.clone(),
                         },
                     )
                 }),
@@ -393,11 +406,10 @@ pub fn event_cut(e: &Evidence, args: &Args) -> v1::Event {
                     })
                     .collect(),
                 working_directory_text: s.working_directory.as_deref().map(whole),
-                parent: s.who.parent.pid.map(|pid| v1::Identity {
-                    pid: Some(pid),
-                    pid_version: s.who.parent.pid_version,
-                }),
+                parent: identity(&s.who.parent),
                 script_text: s.who.script.as_deref().map(whole),
+                responsible: identity(&s.who.responsible),
+                process_group_id: s.who.process_group,
             }),
             Evidence::File(f) => Body::FileEvent(v1::FileEvent {
                 happened_at,

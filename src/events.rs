@@ -78,9 +78,10 @@
 //! writing it again leaves a record that says nothing. Until then the rules for file events
 //! are said by name not to watch, with why, and coverage of file events is none.
 //!
-//! Who a process is. The collector keeps, beside a pid, the pid's version from the audit token
-//! and the process's start time, for the program started, the process that acted and, as pid
-//! and pid version, the parent; and the script a start names and some code-signing details
+//! Who a process is. The collector keeps, beside a pid, the pid's version, users and groups from
+//! the audit token and the process's start time, for the program started and the process that
+//! acted; as pid and pid version, the parent and the responsible process; the process group of
+//! the program started; and the script a start names and some code-signing details
 //! (`KEEPS`). A collector installed before it did keeps none of them, and its lines are read as
 //! before: what a line lacks is absent. Each line says by its own keys which of `KEEPS` its
 //! collector kept, and a rule that reads a field one of them fills is not asked about a line
@@ -124,8 +125,10 @@ pub const STARTS_ONLY: &str = "the collector installed here records program star
 pub const REPLACED: &str = "the collector's launch daemon was replaced after the record of what it collects was written, so file events are not counted as collected; installing the event level again settles it";
 /// What a collector may keep beyond what the first one kept, by the names the status and the
 /// contract give them, each with what it is in a person's words:
-/// - `identity`: the pid version and start time of a program started and of the process that
-///   acted, in a program start and in a file event, and the pid and pid version of the parent;
+/// - `identity`: the pid version, start time, users and groups of a program started and of the
+///   process that acted, in a program start and in a file event, the pid and pid version of the
+///   parent and of the responsible process, and the process group of the program started. The
+///   filter that keeps one keeps them all, so the start time marks them all (`MARKS`);
 /// - `script`: the script a program start names;
 /// - `signature`: the code-signing flags of a program started and of the program before it,
 ///   and the signing id of a program that created or renamed a file.
@@ -449,6 +452,12 @@ pub struct ProcessStart {
 /// | `process.audit_token`, `process.start_time` | `instigator` |
 /// | `event.exec.script.path` | `script` |
 /// | `event.exec.target.codesigning_flags`, `process.codesigning_flags` | `codesigning_flags`, `instigator_codesigning_flags` |
+/// | the ruid, egid and rgid of `event.exec.target.audit_token` | `users` |
+/// | `event.exec.target.responsible_audit_token` | `responsible` |
+/// | `event.exec.target.group_id` | `process_group` |
+///
+/// The users and groups, the responsible process and the process group are handed to the
+/// response layer and given to no rule.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Who {
     pub pid_version: Option<i64>,
@@ -460,16 +469,34 @@ pub struct Who {
     pub script: Option<String>,
     pub codesigning_flags: Option<i64>,
     pub instigator_codesigning_flags: Option<i64>,
+    /// The users and groups of the process started beside its effective user id, which is
+    /// `ProcessStart::user_id`.
+    pub users: Users,
+    /// The process macOS holds responsible for the one started: its pid and pid version.
+    pub responsible: Identity,
+    pub process_group: Option<i64>,
 }
 
 /// Who a process is, as far as a line of the log says: its pid and the pid's version, from an
-/// audit token, and when it started. Each is absent where the line does not give it, or gives
-/// it in a shape this reader does not know.
+/// audit token, when it started, and the users and groups of its audit token. Each is absent
+/// where the line does not give it, or gives it in a shape this reader does not know.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Identity {
     pub pid: Option<i64>,
     pub pid_version: Option<i64>,
     pub started: Option<String>,
+    /// The effective user id.
+    pub user_id: Option<i64>,
+    pub users: Users,
+}
+
+/// The real user id and the effective and real group ids of an audit token, `ruid`, `egid` and
+/// `rgid`, each absent where the line does not give it as a whole number.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Users {
+    pub real_user_id: Option<i64>,
+    pub group_id: Option<i64>,
+    pub real_group_id: Option<i64>,
 }
 
 /// How a Sigma field's value is taken from a program start; `None` leaves the field absent,
@@ -817,15 +844,40 @@ fn second_of(timestamp: &str, now: i64) -> i64 {
     instant(timestamp).map_or(now, |(secs, _)| secs)
 }
 
-/// Who a process eslogger describes is: the pid and pid version of its `audit_token` and its
-/// `start_time`, each absent when the line does not give it as eslogger writes it.
+/// Who a process eslogger describes is: the pid, pid version, users and groups of its
+/// `audit_token` and its `start_time`, each absent when the line does not give it as eslogger
+/// writes it.
 fn identity(process: &Value) -> Identity {
-    let (pid, pid_version) = other_token(process.get("audit_token"));
+    let token = process.get("audit_token");
+    let (pid, pid_version) = other_token(token);
+    let (user_id, users) = users(token);
     Identity {
         pid,
         pid_version,
         started: text(process.get("start_time")),
+        user_id,
+        users,
     }
+}
+
+/// The effective user id and the other users and groups of an audit token, in either shape
+/// `token` reads: as an object, by `euid`, `ruid`, `egid` and `rgid`, or as the eight words of
+/// `audit_token_t`, the second to the fifth. Any other shape gives none, and fails nothing.
+fn users(v: Option<&Value>) -> (Option<i64>, Users) {
+    let [user, real_user, group, real_group] = match v {
+        Some(Value::Object(m)) => ["euid", "ruid", "egid", "rgid"].map(|k| m.get(k)),
+        Some(Value::Array(words)) if words.len() == 8 => [1, 3, 2, 4].map(|i| words.get(i)),
+        _ => [None; 4],
+    }
+    .map(|v| v.and_then(Value::as_i64));
+    (
+        user,
+        Users {
+            real_user_id: real_user,
+            group_id: group,
+            real_group_id: real_group,
+        },
+    )
 }
 
 /// The pid and pid version of an audit token that is not the one a program start needs: as an
@@ -852,6 +904,7 @@ fn start(v: &Value) -> Result<ProcessStart, &'static str> {
     let instigator = v.get("process");
     let has = |v: &Value, key: &str| v.get(key).is_some();
     let (parent_pid, parent_version) = other_token(target.get("parent_audit_token"));
+    let (responsible_pid, responsible_version) = other_token(target.get("responsible_audit_token"));
     Ok(ProcessStart {
         timestamp: text(v.get("time")).ok_or("time")?,
         executable: text(target.pointer("/executable/path"))
@@ -878,7 +931,7 @@ fn start(v: &Value) -> Result<ProcessStart, &'static str> {
             parent: Identity {
                 pid: parent_pid,
                 pid_version: parent_version,
-                started: None,
+                ..Identity::default()
             },
             instigator: instigator.map(identity).unwrap_or_default(),
             script: text(exec.pointer("/script/path")),
@@ -886,6 +939,13 @@ fn start(v: &Value) -> Result<ProcessStart, &'static str> {
             instigator_codesigning_flags: instigator
                 .and_then(|p| p.get("codesigning_flags"))
                 .and_then(Value::as_i64),
+            users: users(target.get("audit_token")).1,
+            responsible: Identity {
+                pid: responsible_pid,
+                pid_version: responsible_version,
+                ..Identity::default()
+            },
+            process_group: target.get("group_id").and_then(Value::as_i64),
         }),
         kept: kept(&[
             (has(target, "start_time"), IDENTITY),
@@ -4640,7 +4700,8 @@ mod tests {
             Identity {
                 pid: Some(402),
                 pid_version: Some(9401),
-                started: at.clone()
+                started: at.clone(),
+                ..Identity::default()
             }
         );
         assert_eq!(
@@ -4648,7 +4709,8 @@ mod tests {
             Identity {
                 pid: Some(401),
                 pid_version: Some(9300),
-                started: None
+                started: None,
+                ..Identity::default()
             }
         );
         assert_eq!(s.who.script.as_deref(), Some("/Users/example/run.sh"));
@@ -4723,6 +4785,104 @@ mod tests {
     }
 
     #[test]
+    fn the_users_groups_responsible_process_and_process_group_are_read_as_given_and_a_wrong_shape_is_absent()
+     {
+        // The response layer puts matches together by the process they belong to. The reader
+        // takes the real user and the groups of the program started and of the process before
+        // the `exec`, from either shape of audit token, the responsible process and the process
+        // group. A value of another shape is absent, never guessed, and the start is read.
+        let with = |before: &str, target: &str, responsible: &str, group: &str| {
+            kept_exec(before, target, "null", "null").replace(
+                r#""ppid":401"#,
+                &format!(
+                    r#""responsible_audit_token":{responsible},"group_id":{group},"ppid":401"#
+                ),
+            )
+        };
+        let users = |real_user_id, group_id, real_group_id| Users {
+            real_user_id,
+            group_id,
+            real_group_id,
+        };
+        let told = |s: &ProcessStart| {
+            (
+                s.user_id,
+                s.who.users.clone(),
+                s.who.instigator.user_id,
+                s.who.instigator.users.clone(),
+                (s.who.responsible.pid, s.who.responsible.pid_version),
+                s.who.process_group,
+            )
+        };
+        let given = (
+            Some(501),
+            users(Some(502), Some(20), Some(21)),
+            Some(503),
+            users(Some(504), Some(22), Some(23)),
+            (Some(300), Some(9200)),
+            Some(400),
+        );
+        let object = with(
+            r#""audit_token":{"pid":402,"pidversion":9401,"euid":503,"egid":22,"ruid":504,"rgid":23}"#,
+            r#"{"pid":402,"pidversion":9402,"euid":501,"egid":20,"ruid":502,"rgid":21}"#,
+            r#"{"pid":300,"pidversion":9200}"#,
+            "400",
+        );
+        assert_eq!(told(&start_of(&object)), given);
+        // The eight words of audit_token_t: auid, euid, egid, ruid, rgid, pid, asid, pidversion.
+        let words = with(
+            r#""audit_token":[0,503,22,504,23,402,100001,9401]"#,
+            "[0,501,20,502,21,402,100001,9402]",
+            "[0,501,20,501,20,300,100001,9200]",
+            "400",
+        );
+        assert_eq!(told(&start_of(&words)), given);
+        // Shapes nobody expects: each such value absent, the rest kept, the start read.
+        let odd = with(
+            r#""audit_token":[0,503,22,504,23,402,100001]"#,
+            r#"{"pid":402,"pidversion":9402,"euid":501,"egid":"20","ruid":502.5,"rgid":[21]}"#,
+            r#""300""#,
+            r#""400""#,
+        );
+        let s = start_of(&odd);
+        assert_eq!(
+            told(&s),
+            (
+                Some(501),
+                Users::default(),
+                None,
+                Users::default(),
+                (None, None),
+                None
+            )
+        );
+        assert_eq!(s.args, ["sh", "run.sh"]);
+        let one_word = with(
+            r#""audit_token":null"#,
+            r#"[0,501,"20",502,21,402,100001,9402]"#,
+            "null",
+            "null",
+        );
+        assert_eq!(
+            start_of(&one_word).who.users,
+            users(Some(502), None, Some(21))
+        );
+        // A line of the collector before it kept them: none of them, and nothing fails.
+        let s = start_of(&exec(7, OBJECT));
+        assert_eq!(
+            told(&s),
+            (
+                Some(501),
+                Users::default(),
+                None,
+                Users::default(),
+                (None, None),
+                None
+            )
+        );
+    }
+
+    #[test]
     fn who_did_a_file_event_is_read_where_its_line_gives_it_and_an_older_line_keeps_none() {
         // As for a start: the program that created or renamed a file, by its audit token in
         // either shape and its start time, and its signing id, which a rule of Elastic's reads.
@@ -4748,7 +4908,8 @@ mod tests {
             Identity {
                 pid: Some(500),
                 pid_version: Some(9500),
-                started: Some("2026-10-04T00:00:02.5Z".into())
+                started: Some("2026-10-04T00:00:02.5Z".into()),
+                ..Identity::default()
             }
         );
         assert_eq!(

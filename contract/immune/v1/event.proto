@@ -54,7 +54,7 @@ message Event {
 // A process, as far as the collector keeps it. Only `executable_text` is always there; the rest
 // is absent where the event does not give it. A pid is reused once the process ends; with its
 // `pid_version` and when it started, `started_at`, it names one process. A collector installed
-// before it kept these gives neither.
+// before it kept these gives neither, and gives none of the user and group ids but `user_id`.
 message Process {
   // Its program, the path of its executable. Whole.
   string executable_text = 1;
@@ -74,6 +74,13 @@ message Process {
   optional uint32 started_nanos = 9;
   // Its code-signing flags, eslogger's `codesigning_flags`, as the kernel's `CS_*` bits.
   optional uint32 codesigning_flags = 10;
+  // Its real user id, `ruid` in its audit token. Since 1.12.0.
+  optional int64 real_user_id = 11;
+  // Its effective group id, `egid` in its audit token. This is the group of its user, not its
+  // process group, which `ProgramStart.process_group_id` gives. Since 1.12.0.
+  optional int64 group_id = 12;
+  // Its real group id, `rgid` in its audit token. Since 1.12.0.
+  optional int64 real_group_id = 13;
 }
 
 // Who a process is, without its program: the pid and the pid's version of an audit token.
@@ -90,11 +97,12 @@ message ProgramStart {
   // writes.
   optional int64 happened_at = 1;
   optional uint32 happened_nanos = 2;
-  // The process with the program started, `event.exec.target`: its executable, pid, user id,
-  // signature, pid version, start time and code-signing flags.
+  // The process with the program started, `event.exec.target`: its executable, pid, user and
+  // group ids, signature, pid version, start time and code-signing flags.
   Process process = 3;
   // The same process before this `exec`, `process` in eslogger's message: its program,
-  // `process.executable.path`, and its pid, pid version, start time and code-signing flags.
+  // `process.executable.path`, and its pid, user and group ids, pid version, start time and
+  // code-signing flags.
   // After a fork or `posix_spawn` that program is the parent's; after an `exec` without a fork
   // it is a wrapper that replaced itself, such as `nohup` or `env`. Absent when the log does not
   // give its program.
@@ -119,6 +127,13 @@ message ProgramStart {
   // cut; a reader never has to take marks out of the text. Empty when nothing was cut. Paths and
   // the working directory are not searched.
   repeated Cut cuts = 10;
+  // The process macOS holds responsible for the program started,
+  // `event.exec.target.responsible_audit_token`, such as the app that launched a helper: its pid
+  // and pid version. Absent when the log does not give its pid. Since 1.12.0.
+  Identity responsible = 11;
+  // The process group of the program started, `event.exec.target.group_id`: the pid of the
+  // group's leader. Since 1.12.0.
+  optional int64 process_group_id = 12;
 }
 
 // A piece of an argument cut out because it holds a secret, or an argument withheld whole.
@@ -150,7 +165,8 @@ message FileEvent {
   // Where a renamed file was. Absent for a file created.
   optional string source_text = 5;
   // The process that did it, `process` in eslogger's message: its program,
-  // `process.executable.path`, its pid, pid version and start time, and its `signing_id`.
+  // `process.executable.path`, its pid, user and group ids, pid version and start time, and its
+  // `signing_id`.
   Process instigator = 6;
 }
 
