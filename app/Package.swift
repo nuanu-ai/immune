@@ -5,8 +5,6 @@ import PackageDescription
 let package = Package(
   name: "Immune",
   platforms: [.macOS(.v15)],
-  // The product, and so the app's binary, is ImmuneApp: the bundle also holds `immune`, and
-  // on a case-insensitive volume `Immune` and `immune` would be one file.
   products: [.executable(name: "ImmuneApp", targets: ["Immune"])],
   targets: [
     // Everything that can be tested without a screen: decoding, the icon's state,

@@ -38,7 +38,7 @@ Each goes through the system's curl, with the ETag the source last sent when the
 
 `--disable` keeps `~/.curlrc` out. A redirect is not followed. "Not modified" is believed only in answer to Immune's own ETag. The body is held to the cap after decompression too. npm's archive is about 220 MB, 93% of it reports of malicious packages.
 
-The feeds are fetched before the store is locked for the check, under a lock of their own, so a long download holds up no watcher's reading and no status. A second check stops at that lock and writes nothing. The time limits keep a check inside the app's 30 minutes. For tests and offline use, `--threats-input <file>`, `--osv-crates-input <file>` and `--osv-npm-input <file>` read saved copies, and `--curl <path>` runs another curl.
+The feeds are fetched before the store is locked for the check, under a lock of their own, so a long download holds up no watcher's reading and no status. A second check stops at that lock and writes nothing. The time limits above are per request. [Background checks](core-service.md) have a separate 30-minute limit for the whole check. For tests and offline use, `--threats-input <file>`, `--osv-crates-input <file>` and `--osv-npm-input <file>` read saved copies, and `--curl <path>` runs another curl.
 
 ## Feed content is untrusted
 

@@ -6,12 +6,12 @@ What Immune reads on a Mac, where it looks, what it records and when; the vocabu
 
 | What | How | When |
 |---|---|---|
-| Places where persistence lives: launch agents and daemons, login and logout hooks, zsh and bash startup files, `~/.ssh/config`, `authorized_keys` and `rc`, the system's SSH configuration, PAM policies and modules, authorization plugins, git hooks in every project | A checksum of each file, never its content; for login hooks, a checksum of the hook alone | Within seconds while the app is open, otherwise at the hourly check |
-| Software changed in place: app bundles, Homebrew kegs, global npm packages, code that apps keep under Application Support | The app's code signature, verified by macOS; for the rest, a digest of file paths and change times | Hourly |
-| Files that make a tool run code by itself: install scripts in `package.json`, editor tasks that run when a folder opens, editor and dev container settings, coding agents' settings, hooks and MCP server lists, editor extensions | The part of the file that runs code, as a checksum. 13 of the 41 known ways in a project and 7 of the 11 known places in the home folder are read | Within seconds for most, hourly for the rest |
-| Dependencies in `package-lock.json`, `pnpm-lock.yaml` and `Cargo.lock` | Matched against OSV's data for npm and crates.io and against CISA's catalogue | Hourly |
-| The user's running programs and their internet connections | Read without administrator rights. An interpreter given code on its command line and left running without a terminal is a finding | Every 30 seconds while the app is open |
-| Every program start and every file created or renamed, with the collector | Checked against 198 published rules for macOS: the 75 of SigmaHQ, and 66 of Elastic's detection rules and 57 of its behaviour rules translated into Sigma. 175 are evaluated in full and 23 in part | About every 10 seconds while the app is open, and at every check |
+| Places where persistence lives: launch agents and daemons, login and logout hooks, zsh and bash startup files, `~/.ssh/config`, `authorized_keys` and `rc`, the system's SSH configuration, PAM policies and modules, authorization plugins, git hooks in every project | A checksum of each file, never its content; for login hooks, a checksum of the hook alone | Within seconds while the watcher runs, otherwise at a full check |
+| Software changed in place: app bundles, Homebrew kegs, global npm packages, code that apps keep under Application Support | The app's code signature, verified by macOS; for the rest, a digest of file paths and change times | At every full check |
+| Files that make a tool run code by itself: install scripts in `package.json`, editor tasks that run when a folder opens, editor and dev container settings, coding agents' settings, hooks and MCP server lists, editor extensions | The part of the file that runs code, as a checksum. 13 of the 41 known ways in a project and 7 of the 11 known places in the home folder are read | At every full check, and within seconds for most while the watcher runs |
+| Dependencies in `package-lock.json`, `pnpm-lock.yaml` and `Cargo.lock` | Matched against OSV's data for npm and crates.io and against CISA's catalogue | At every full check |
+| The user's running programs and their internet connections | Read without administrator rights. An interpreter given code on its command line and left running without a terminal is a finding | Every 30 seconds while the watcher runs |
+| Every program start and every file created or renamed, with the collector | Checked against 198 published rules for macOS: the 75 of SigmaHQ, and 66 of Elastic's detection rules and 57 of its behaviour rules translated into Sigma. 175 are evaluated in full and 23 in part | About every 10 seconds while the watcher runs, and at every check |
 | Indicators from an incident report that the user gives as `indicators.json`: SHA-256 hashes, domains, IPv4 addresses, URLs | Matched against watched files, lockfiles, editor tasks and connections | At every check |
 
 ## What this version does not see
@@ -33,7 +33,7 @@ What Immune reads on a Mac, where it looks, what it records and when; the vocabu
 
 | Name | Trigger |
 |---|---|
-| full check | `immune run`; the app starts one every hour while it is open, with a 30-minute limit |
+| full check | `immune run` on request. `immune watch --background` also starts one at startup and every hour, with a 30-minute limit. See [the background service](core-service.md). |
 | live | `immune watch`, about a second after FSEvents reports a change in a place it subscribes to: the readings that place belongs to, or every place, see [Watched places](#watched-places) |
 | sample | `immune watch` every 30 seconds, or `immune sample` |
 | events | `immune watch` every 10 seconds, and at every full check |
@@ -84,7 +84,7 @@ Read at every full check, not as readers of the Mac: CISA's catalogue and OSV's 
 
 A download that failed is one item of `not_covered`: since when the data is old, and why, in fixed words for each of curl's documented exit codes (curl(1), EXIT CODES), for the HTTP status, or for a body that was not the data, one case whatever the source. `who` is `you` only when the cause is certainly this Mac's or its network's to fix: a download that could not be written on the disk, a certificate this Mac does not trust (its clock may be wrong, or the network may inspect encrypted traffic), or a proxy that asks for a password or fails its own handshake. Those are `vulnerability-list-not-downloaded-fixable` and `vulnerability-data-not-updated-fixable`. Anything else, such as a refusal by the server or something between, a name that does not resolve or a connection that fails, is `vulnerability-list-not-downloaded` and `vulnerability-data-old`, with `who` `nothing`. What curl said is in `value_text`.
 
-The downloads use a proxy only when the environment names one, as `/usr/bin/curl` does; they do not read the macOS proxy settings, and the app's environment names none. On a network that lets connections out only through a proxy, they fail and are named as failed.
+Downloads use a proxy only when the core's environment names one, as `/usr/bin/curl` does. On a network that requires a proxy, run a manual check from a shell with the proxy set in its environment. If the background service cannot reach the feeds, coverage reports the download failure.
 
 ## Watched places
 
@@ -192,7 +192,7 @@ A command that only reads the store opens it read-only and creates nothing next 
 | Command | Does |
 |---|---|
 | `immune run [--json \| --proto]` | A full check, answered with `Status` once it has finished. Flags for tests and special cases: `--machine-name`, `--brew`, `--brew-input`, `--servers-input`, `--checkouts-root`, `--sessions-root`, `--tailscale`, `--threats-input`, `--osv-crates-input`, `--osv-npm-input`, `--curl`, `--system-root`, `--indicators` |
-| `immune status [--json \| --proto]` | What the last finished check left, read-only, as the contract's `Status` message (see [`immune status`](#immune-status)) |
+| `immune status [--json \| --proto]` | The latest findings, coverage and watcher state, read-only, as the contract's `Status` message (see [`immune status`](#immune-status)) |
 | `immune findings [--all] [--json \| --proto]` | Every finding, in every state, as the contract's `Findings` message; its text for a person lists the open findings, or every one with `--all` |
 | `immune finding <id> [--json \| --proto]` | One finding whole, as the contract's `Finding` message: its words, where it is, its evidence, the journal entries it rests on and the person's answer |
 | `immune finding <id> expected --reason <text> [--days <n>] [--via app\|agent] [--with <id>] [--journal-seq <n>] [--json \| --proto]` | Hide it for 30 days or `--days`; answered with the `Finding` as it left it. `--with` gives the same answer to the other finding of its pair (see [One answer for a pair](#one-answer-for-a-pair)), and `--journal-seq` names the read the answer rests on, required with `--with`, `--via agent` or `--via app` |
@@ -211,7 +211,7 @@ A command that only reads the store opens it read-only and creates nothing next 
 | `immune owner [<name> retired\|not-mine --reason <text> \| <name> withdraw] [--via app\|agent] [--json \| --proto]` | A statement that a machine is retired or not the user's, answered with `StatementMade`, or the list of those that stand, as `Statements` |
 | `immune view [--no-open] [--if-stale]` | Writes the HTML pages and opens the summary; with `--if-stale`, only when something they show changed or they are an hour old |
 | `immune sample [--json \| --proto]` | One sample of processes and connections, as `Sample` |
-| `immune watch [--sample-every <s>] [--events-every <s>] [--alive-every <s>]` | Runs until stopped, printing one JSON line per event: `watching`, `read`, `sample`, `program_starts`, `alive`, `problem` |
+| `immune watch [--sample-every <s>] [--events-every <s>] [--alive-every <s>] [--standalone \| --background]` | Runs until stopped and prints one JSON line per event (`watching`, `read`, `sample`, `program_starts`, `alive`, `problem`). `--standalone` continues after its parent exits. `--background` also schedules full checks. |
 
 In every answer, `title`, `meaning` and `advice` are Immune's fixed words. Anything taken from the machine or a feed is only in a field whose name ends in `_text`.
 
@@ -293,6 +293,8 @@ Every message carries `store_id`, the id of the store it was read from. A findin
 ### `immune status`
 
 `Status` is what the latest checks left: what needs a look, what is not covered, the collector, and how this Mac is watched.
+
+In `this_mac.watched`, `how` can be `live` (within seconds while a watcher runs), `sampled` (at the watcher's sample interval), `events` (while the collector records events), or `hourly` (at each full check). Automatic hourly checks require `immune watch --background`.
 
 `needs_a_look` lists open findings, urgent first, then the most severe, then the latest seen. It lists at most 50 of the core's findings and 50 of the response layer's, so neither source can push the other's findings out. `total` counts them all, and `urgent_total` counts the urgent ones among them all, not only those listed. Within each source urgent findings come first, so its cut never drops an urgent finding while it keeps one that is not; when a source has more urgent findings than its 50, `urgent_total` is more than the urgent ones listed. `immune findings` lists every finding.
 
@@ -532,6 +534,8 @@ The collector keeps its own files under `/Library/Application Support/ai.nuanu.i
 
 ## Updating and removing
 
-To update, run `git pull`, quit the app from the ⋯ menu of its panel, run `./build` and open the app again. `./build` refuses to run while the app is open.
+If you installed the core as a service, follow the [background service update procedure](core-service.md). For manual checks, run `git pull` and `./build` to update the core.
 
-To remove Immune, quit it, delete `Immune.app` and its data folder, `~/Library/Application Support/ai.nuanu.immune`, and run `defaults delete ai.nuanu.immune` to clear what it remembers about notifications. If the collector is installed, `sudo /bin/sh scripts/event-level/uninstall` removes it with its logs (see [event-level.md](event-level.md)).
+To update the optional app, quit it from the ⋯ menu of its panel, run `app/build /absolute/path/to/immune`, then open it again. If you move the core to a new path, rebuild the app and, if you use the service, install it again for the new path.
+
+To remove Immune, uninstall its service if installed and quit the app if open. Delete the core binary, `Immune.app` and the store folder at `~/Library/Application Support/ai.nuanu.immune`. Run `defaults delete ai.nuanu.immune` to clear the app's notification settings. If you installed the collector, `sudo /bin/sh scripts/event-level/uninstall` removes it and its logs. See [the background service](core-service.md) and [the collector](event-level.md).

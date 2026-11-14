@@ -1,38 +1,15 @@
 #!/bin/sh
-# Builds the menu-bar app on this Mac: immune in release, then the bundle around it.
-# An app built here is not quarantined, so macOS opens it with the ad hoc signature
-# app/build makes; no developer account is needed.
-# Usage: ./build
-# Prints the bundle's path on stdout; everything else goes to stderr.
-# Exits 2 when something it needs is missing or the app is running; it installs
-# nothing itself and asks nothing.
+# Builds only the core. Prints its absolute path on stdout; diagnostics go to stderr.
+# Installs and starts nothing.
 set -eu
 cd "$(dirname "$0")"
 . ./scripts/rust-path.sh
 . ./scripts/prerequisites.sh
+rust_prerequisites
 
-name=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleName' app/Info.plist)
-bundle="$(pwd)/target/app/$name.app"
-# The same folder by its real path, for when it was reached through a link.
-real="$(pwd -P)/target/app/$name.app"
-
-# app/build deletes the bundle before writing the new one; doing that under a running
-# app breaks it. Only programs started from this bundle count, not another copy.
-refuse_if_running() {
-  if ps -axww -o comm= | grep -qF -e "$bundle/Contents/" -e "$real/Contents/"; then
-    missing "$name is running from $bundle. Quit it from its menu-bar icon, then run ./build again."
-  fi
-}
-refuse_if_running
-
-# Where cargo put the binary, as cargo says it.
+# Respect CARGO_TARGET_DIR and cargo configuration by reading cargo's own artifact path.
 artifacts=$(cargo build --release --locked --message-format=json-render-diagnostics)
 immune=$(printf "%s\n" "$artifacts" | scripts/cargo-built.sh)
-[ -x "$immune" ] || missing "cargo finished without naming the immune it built"
-# Checked again: the build can take minutes, and the app may have been opened meanwhile.
-refuse_if_running
-built=$(app/build "$immune")
-
-echo "$built"
-echo "Built. Open it with: open \"$built\"" >&2
-echo "It runs only while it is open, as an icon in the menu bar; it installs nothing into the system." >&2
+[ -f "$immune" ] && [ -x "$immune" ] || missing "cargo finished without naming the immune it built"
+immune=$(cd "$(dirname "$immune")" && pwd -P)/$(basename "$immune")
+printf '%s\n' "$immune"

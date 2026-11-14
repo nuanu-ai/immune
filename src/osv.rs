@@ -107,7 +107,7 @@ pub const FEEDS: [Feed; 2] = [
     },
     // About 220 MB in 2026, 93% of it malicious-package reports: asked for once a day. Its
     // time, with crates.io's and the catalogue's 300 s each and a watcher's reading waited out
-    // for up to 60 s, keeps a run inside the app's 30 minutes (1,800 s): 1,560 s at most.
+    // for up to 60 s, leaves 240 s inside a background check's 30 minutes for its readers.
     Feed {
         source: "osv-npm",
         ecosystem: "npm",

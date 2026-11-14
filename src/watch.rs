@@ -1,6 +1,6 @@
 //! `immune watch`: learns within seconds that a watched place changed and records it, so that a
 //! change does not wait for the next full run. It runs until it is told to stop, as a child of
-//! the menu-bar app, and installs nothing.
+//! its caller, or independently with `--standalone`, and installs nothing.
 //!
 //! The mechanism is FSEvents (`fsevents.rs`). An event is not trusted: it only says that
 //! something under the watched paths changed, and where. After a quiet period the watcher runs
@@ -69,8 +69,8 @@
 //! seconds of processor time, mostly for pages nobody has open. A page is brought up to date
 //! when it is asked for, by `immune view --if-stale`, which writes only when something the pages
 //! rest on moved since they were made (`view::basis`). The watcher stops,
-//! with exit 0, when stdout is closed or its parent process is gone, so that an app that died
-//! leaves no watcher holding the store.
+//! with exit 0, when stdout is closed or its parent process is gone. `--standalone` keeps it
+//! running after its parent exits and permits launchd to supervise it directly.
 
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -80,7 +80,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
@@ -97,6 +97,10 @@ const MOST_WAIT: Duration = Duration::from_secs(5);
 const LATENCY: f64 = 0.2;
 /// How often the watcher says it is alive, and looks again at which checkouts the store holds.
 const ALIVE: Duration = Duration::from_secs(60);
+/// How long a supervised watcher may go without making progress on its loop.
+const STALLED: Duration = Duration::from_secs(180);
+const HEARTBEAT: &str = "heartbeat";
+const READY: &str = "ready";
 /// How long after a reading that failed it is tried again, unless an event comes first.
 const RETRY: Duration = Duration::from_secs(30);
 /// How often the watcher looks whether the process that started it is still there.
@@ -142,7 +146,7 @@ CREATE TABLE IF NOT EXISTS watcher (
 /// lock now is a past watcher's and is not read.
 const FAILED_TABLE: &str = "
 CREATE TABLE IF NOT EXISTS watcher_failed (
-    what   TEXT PRIMARY KEY,  -- `read`, `sample`, `resubscribe` or `events`
+    what   TEXT PRIMARY KEY,  -- `read`, `sample`, `resubscribe`, `events` or `full_check`
     at     INTEGER NOT NULL,  -- when it failed, UTC seconds
     detail TEXT NOT NULL      -- what the failure said
 );
@@ -156,6 +160,7 @@ pub const READ: &str = "read";
 pub const SAMPLED: &str = "sample";
 pub const RESUBSCRIBE: &str = "resubscribe";
 pub const EVENTS: &str = "events";
+pub const FULL_CHECK: &str = "full_check";
 
 /// A kind of failure in words, for a person.
 pub fn failed_words(what: &str) -> &'static str {
@@ -163,6 +168,7 @@ pub fn failed_words(what: &str) -> &'static str {
         READ => "reading of the watched places",
         SAMPLED => "sample of running programs",
         EVENTS => "reading of program starts",
+        FULL_CHECK => "full check",
         _ => "look at what to watch",
     }
 }
@@ -180,6 +186,10 @@ pub struct WatchArgs {
     /// How often it says it is alive and looks again at what to watch: `ALIVE`, shorter in
     /// tests.
     pub alive_every: Duration,
+    /// Run under a supervisor, independently of the process that started it.
+    pub standalone: bool,
+    /// Own the initial and hourly full checks, independently of any UI.
+    pub background: bool,
 }
 
 /// Parses what follows `immune watch`.
@@ -187,6 +197,8 @@ pub fn parse(mut it: impl Iterator<Item = String>) -> Result<WatchArgs, String> 
     let (mut store, mut system_root) = (None, None);
     let (mut sample_input, mut sample_every, mut alive_every) = (None, SAMPLE, ALIVE);
     let mut events_every = EVENTS_EVERY;
+    let mut standalone = false;
+    let mut background = false;
     fn seconds(it: &mut impl Iterator<Item = String>, arg: &str) -> Result<Duration, String> {
         crate::value(it, arg)?
             .parse::<u64>()
@@ -203,6 +215,11 @@ pub fn parse(mut it: impl Iterator<Item = String>) -> Result<WatchArgs, String> 
             "--sample-every" => sample_every = seconds(&mut it, &arg)?,
             "--events-every" => events_every = seconds(&mut it, &arg)?,
             "--alive-every" => alive_every = seconds(&mut it, &arg)?,
+            "--standalone" => standalone = true,
+            "--background" => {
+                background = true;
+                standalone = true;
+            }
             _ => return Err(format!("unexpected argument: {arg}")),
         }
     }
@@ -214,6 +231,8 @@ pub fn parse(mut it: impl Iterator<Item = String>) -> Result<WatchArgs, String> 
         sample_every,
         events_every,
         alive_every,
+        standalone,
+        background,
     })
 }
 
@@ -231,12 +250,11 @@ static SIGNAL_FD: AtomicI32 = AtomicI32::new(-1);
 /// `immune status --json` and a non-zero exit when it cannot watch at all.
 pub fn watch(args: &WatchArgs) -> ExitCode {
     // The parent is taken before anything else: taken later, a parent that died meanwhile
-    // would leave launchd recorded as the parent, and the watcher would never stop. A parent
-    // that is launchd already is one that is gone, since nothing starts a watcher from launchd
-    // in this build; it stops at once with exit 0 and prints nothing.
+    // would leave launchd recorded as the parent, and a parent-bound watcher would never stop.
+    // Only an explicitly standalone watcher accepts launchd as its parent.
     // SAFETY: getppid(2) takes nothing and cannot fail.
     let parent = unsafe { libc::getppid() };
-    if parent == 1 {
+    if parent == 1 && !args.standalone {
         return ExitCode::SUCCESS;
     }
     // Next, so that a stop asked for at any moment after this is a clean one.
@@ -259,12 +277,17 @@ pub fn watch(args: &WatchArgs) -> ExitCode {
         return unreadable(&e);
     }
     let started = crate::now_secs();
-    let _lock = match store::lock_watch(&folder) {
+    let watch_lock = match store::lock_watch(&folder) {
         Ok(Some(mut lock)) => {
             // The lock file says since when this watcher holds it; status reads it there.
+            let mark = if args.background {
+                format!("{started}\n{HEARTBEAT}")
+            } else {
+                started.to_string()
+            };
             let marked = lock
                 .set_len(0)
-                .and_then(|()| lock.write_all(started.to_string().as_bytes()));
+                .and_then(|()| lock.write_all(mark.as_bytes()));
             if let Err(e) = marked {
                 return unreadable(&e);
             }
@@ -282,9 +305,36 @@ pub fn watch(args: &WatchArgs) -> ExitCode {
         }
         Err(e) => return unreadable(&e),
     };
+    let heartbeat = if args.background {
+        match Heartbeat::start(&watch_lock, STALLED) {
+            Ok(heartbeat) => Some(heartbeat),
+            Err(e) => {
+                return failed(&format!(
+                    "the background watcher could not be supervised: {e}"
+                ));
+            }
+        }
+    } else {
+        None
+    };
     if let Err(e) = readable(&args.store) {
         return unreadable(&e);
     }
+    let checks = if args.background {
+        let binary = match std::env::current_exe() {
+            Ok(binary) => binary,
+            Err(e) => return failed(&format!("the core binary could not be located: {e}")),
+        };
+        let mut command = crate::background::command(&binary);
+        command
+            .arg("--store")
+            .arg(&args.store)
+            .arg("--system-root")
+            .arg(&args.system_root);
+        Some(crate::background::Checks::new(command))
+    } else {
+        None
+    };
     let mut w = Watcher {
         args,
         folder,
@@ -298,6 +348,9 @@ pub fn watch(args: &WatchArgs) -> ExitCode {
         parent,
         signers: crate::processes::Signers::default(),
         standing: BTreeSet::new(),
+        checks,
+        check_result: None,
+        heartbeat,
     };
     // The stream is started here, and the reading of every place only in `run`, after it: a
     // change made in between is seen by that reading or brings an event.
@@ -411,14 +464,68 @@ struct Watcher<'a> {
     owed: bool,
     /// The paths the stream watches.
     paths: Vec<PathBuf>,
-    /// The process that started the watcher. When it is gone the watcher is an orphan, its
-    /// parent now another process, and it stops: a new app must be able to start its own.
+    /// The process that started the watcher; its exit stops a parent-bound watcher.
     parent: libc::pid_t,
     /// Who signed what the samples track, kept across samples.
     signers: crate::processes::Signers,
     /// The kinds whose latest attempt failed, or whose failure may still stand in the store
     /// because clearing it failed: `READ`, `SAMPLED`, `RESUBSCRIBE`, `EVENTS`.
     standing: BTreeSet<&'static str>,
+    checks: Option<crate::background::Checks>,
+    /// Applied under the next run lock, so a failed full check is visible in status too.
+    check_result: Option<Result<(), String>>,
+    heartbeat: Option<Heartbeat<'a>>,
+}
+
+struct Heartbeat<'a> {
+    lock: &'a std::fs::File,
+    tx: Sender<()>,
+    next: Instant,
+    ready: bool,
+}
+
+impl<'a> Heartbeat<'a> {
+    fn start(lock: &'a std::fs::File, timeout: Duration) -> std::io::Result<Self> {
+        let (tx, rx) = mpsc::channel();
+        std::thread::Builder::new().spawn(move || {
+            if stalled(rx, timeout) {
+                // A stall can hold the run lock. Exiting releases it and launchd restarts us.
+                // SAFETY: _exit does not wait for user-space locks held by a stalled thread.
+                unsafe { libc::_exit(1) };
+            }
+        })?;
+        Ok(Self {
+            lock,
+            tx,
+            next: Instant::now(),
+            ready: false,
+        })
+    }
+
+    fn progress(&mut self) -> std::io::Result<()> {
+        if Instant::now() >= self.next {
+            self.lock.set_modified(SystemTime::now())?;
+            self.tx.send(()).map_err(std::io::Error::other)?;
+            self.next = Instant::now() + ALIVE;
+        }
+        Ok(())
+    }
+
+    fn read(&mut self) -> std::io::Result<()> {
+        if !self.ready {
+            self.lock.write_all(format!("\n{READY}").as_bytes())?;
+            self.ready = true;
+        }
+        Ok(())
+    }
+}
+
+fn stalled(rx: mpsc::Receiver<()>, timeout: Duration) -> bool {
+    loop {
+        if let Err(stopped) = rx.recv_timeout(timeout) {
+            return stopped == RecvTimeoutError::Timeout;
+        }
+    }
 }
 
 /// A reading that is due: when, since which event it was first due, and where the changes it
@@ -497,6 +604,9 @@ impl Watcher<'_> {
         let mut sample = Instant::now();
         let mut starts = Instant::now();
         loop {
+            if !self.progress() {
+                return;
+            }
             let next = due.as_ref().map_or(alive, |d| d.at.min(alive)).min(sample);
             let next = next.min(starts);
             let next = next.min(Instant::now() + PARENT);
@@ -526,6 +636,12 @@ impl Watcher<'_> {
             if let Some(d) = due.take_if(|d| d.at <= now) {
                 match self.read(&d.changed) {
                     Ok(Some(counts)) => {
+                        if let Some(heartbeat) = &mut self.heartbeat
+                            && let Err(why) = heartbeat.read()
+                        {
+                            emit(&problem("heartbeat_failed", &why.to_string()));
+                            return;
+                        }
                         if !emit(&line("read", counts)) {
                             return;
                         }
@@ -644,7 +760,7 @@ impl Watcher<'_> {
 
     fn orphaned(&self) -> bool {
         // SAFETY: getppid(2) takes nothing and cannot fail.
-        unsafe { libc::getppid() != self.parent }
+        !self.args.standalone && unsafe { libc::getppid() != self.parent }
     }
 
     /// Looks again at what should be watched, after a full run may have changed the
@@ -686,16 +802,22 @@ impl Watcher<'_> {
 
     /// The run lock, waited for; `None` when the watcher was stopped, or orphaned, meanwhile,
     /// or stdout is gone. A full run holds the lock for as long as it runs, minutes at times:
-    /// meanwhile the watcher says it is alive at its usual interval, since the app takes a
-    /// watcher that says nothing for three minutes for dead.
-    fn lock(&self) -> std::io::Result<Option<std::fs::File>> {
+    /// meanwhile the watcher refreshes its heartbeat and says it is alive at its usual interval.
+    fn lock(&mut self) -> std::io::Result<Option<std::fs::File>> {
         let mut alive = Instant::now() + self.args.alive_every;
         loop {
             if STOP.load(Ordering::SeqCst) || self.orphaned() {
                 return Ok(None);
             }
+            // The full check may hold this lock: its timeout must still be enforced here.
+            if !self.progress() {
+                return Ok(None);
+            }
             // Waits a little each time.
             if let Some(lock) = store::lock_run(&self.folder)? {
+                if let Some(result) = self.check_result.take() {
+                    self.mark_held(FULL_CHECK, result.err());
+                }
                 return Ok(Some(lock));
             }
             if alive <= Instant::now() {
@@ -705,6 +827,26 @@ impl Watcher<'_> {
                 }
             }
         }
+    }
+
+    fn progress(&mut self) -> bool {
+        if let Some(heartbeat) = &mut self.heartbeat
+            && let Err(why) = heartbeat.progress()
+        {
+            emit(&problem("heartbeat_failed", &why.to_string()));
+            return false;
+        }
+        if let Some(checks) = &mut self.checks
+            && let Some(result) = checks.tick(crate::now_secs())
+        {
+            if let Err(why) = &result
+                && !emit(&problem("full_check_failed", why))
+            {
+                return false;
+            }
+            self.check_result = Some(result);
+        }
+        true
     }
 
     /// One sample under the run lock: how many findings it opened and how many things need a
@@ -1150,10 +1292,7 @@ extern "C" fn on_signal(_: libc::c_int) {
 pub fn watcher(store: &Path) -> Option<crate::contract::v1::Watcher> {
     use crate::contract::v1;
     let folder = crate::home(store);
-    if !store::watch_in_progress(&folder).unwrap_or(false) {
-        return None;
-    }
-    let since = started(&folder);
+    let since = Some(responsive(&folder)?.0);
     let conn = store::open_read_only(store).ok();
     let last = conn
         .as_ref()
@@ -1181,22 +1320,38 @@ pub fn watcher(store: &Path) -> Option<crate::contract::v1::Watcher> {
 /// What the pages of the view rest on about the watcher: when the one that holds the store
 /// started, and what has failed in it and not succeeded since; `none` while none holds it.
 pub fn basis(conn: &Connection, folder: &Path) -> rusqlite::Result<String> {
-    if !store::watch_in_progress(folder).unwrap_or(false) {
+    let Some((since, ready)) = responsive(folder) else {
         return Ok("none".into());
-    }
+    };
     let failed: Vec<String> = failures(conn, folder)?
         .into_iter()
         .map(|f| f.what)
         .collect();
-    Ok(format!("{:?} {}", started(folder), failed.join(",")))
+    Ok(format!("{since} {ready} {}", failed.join(",")))
 }
 
-/// When the watcher that holds the lock now started, from its lock file. A watcher that has
-/// just taken its lock may not have written its start yet.
-fn started(folder: &Path) -> Option<i64> {
-    std::fs::read_to_string(folder.join(store::WATCH_LOCK))
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
+/// When a responsive watcher took the lock. Earlier and parent-bound watchers have only a
+/// start time. A background watcher must have touched the lock within the last three minutes.
+fn responsive(folder: &Path) -> Option<(i64, bool)> {
+    if !store::watch_in_progress(folder).unwrap_or(false) {
+        return None;
+    }
+    let path = folder.join(store::WATCH_LOCK);
+    let mark = std::fs::read_to_string(&path).ok()?;
+    let mut lines = mark.lines();
+    let since = lines.next()?.parse().ok()?;
+    if lines.next() == Some(HEARTBEAT) {
+        let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+        if modified.elapsed().ok()? >= STALLED {
+            return None;
+        }
+        return Some((since, lines.next() == Some(READY)));
+    }
+    Some((since, true))
+}
+
+pub fn watching_live(folder: &Path) -> bool {
+    responsive(folder).is_some_and(|(_, ready)| ready)
 }
 
 /// A failure of the watcher that stands: what failed (`READ`, `SAMPLED`, `RESUBSCRIBE`,
@@ -1211,10 +1366,7 @@ pub struct Failure {
 /// since. Empty while no watcher runs; a failure recorded before this one started is a past
 /// watcher's and is left out.
 pub fn failures(conn: &Connection, folder: &Path) -> rusqlite::Result<Vec<Failure>> {
-    if !store::watch_in_progress(folder).unwrap_or(false) {
-        return Ok(Vec::new());
-    }
-    let Some(since) = started(folder) else {
+    let Some((since, _)) = responsive(folder) else {
         return Ok(Vec::new());
     };
     if !has_table(conn, "watcher_failed")? {
@@ -1246,6 +1398,17 @@ pub fn last_read(conn: &Connection) -> rusqlite::Result<Option<i64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_background_stall_is_distinct_from_a_regular_shutdown_even_after_progress() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(()).unwrap();
+        assert!(stalled(rx, Duration::ZERO));
+        let (tx, rx) = mpsc::channel();
+        tx.send(()).unwrap();
+        drop(tx);
+        assert!(!stalled(rx, Duration::ZERO));
+    }
 
     // A store that has watched for months. The watcher reads at every change for as long as
     // the Mac runs, every reading adds to the history of what was looked through, and the app
@@ -1323,6 +1486,8 @@ mod tests {
             sample_every: SAMPLE,
             events_every: EVENTS_EVERY,
             alive_every: ALIVE,
+            standalone: false,
+            background: false,
         };
         let folder = crate::home(&store);
         read_held(&w, &folder, None).unwrap();

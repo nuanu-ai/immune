@@ -1,6 +1,5 @@
 // The menu-bar app: an AppKit status item and a popover around a SwiftUI view.
-// While it is open it keeps the program running: `immune watch` as a child process,
-// and a full check every hour (`HourlyCheck`).
+// It reads the independently running core through its commands.
 // AppKit owns the icon so that opening the panel is one known call (which
 // refreshes) and the count beside the icon is plain button text. There is no
 // window of the app's own: Details is the program's page, written and opened by
@@ -20,17 +19,14 @@ let appName =
 @MainActor
 final class Delegate: NSObject, NSApplicationDelegate {
   let model: AppModel
-  let watcher: Watcher
   private var item: NSStatusItem?
   private let popover = NSPopover()
   private var panel: NSHostingController<PanelView>?
   private var timers: [Timer] = []
   private var watching: AnyCancellable?
-  private var termination: DispatchSourceSignal?
 
-  init(model: AppModel, watcher: Watcher) {
+  init(model: AppModel) {
     self.model = model
-    self.watcher = watcher
   }
 
   func applicationDidFinishLaunching(_ notification: Notification) {
@@ -49,17 +45,12 @@ final class Delegate: NSObject, NSApplicationDelegate {
     // @Published sends the new value before it is stored; paint from the value.
     watching = model.$reading.sink { [weak self] reading in self?.paint(reading) }
 
-    // Every minute: read the status, then start the hourly check if it is due.
+    // Every minute: read the core’s status and update notifications.
     timers.append(
       Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
         Task { @MainActor in await self?.minute() }
       })
-    // Every half minute: the watcher's watchdog.
-    timers.append(
-      Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-        MainActor.assumeIsolated { self?.watcher.tick() }
-      })
-    // After the Mac wakes: one look soon after, never a burst (see `HourlyCheck`).
+    // After the Mac wakes, read its status again soon.
     NSWorkspace.shared.notificationCenter.addObserver(
       forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
     ) { [weak self] _ in
@@ -68,13 +59,6 @@ final class Delegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in await self?.minute() }
       }
     }
-    // SIGTERM quits like Quit does, so the watcher is stopped too.
-    signal(SIGTERM, SIG_IGN)
-    let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
-    source.setEventHandler { NSApp.terminate(nil) }
-    source.resume()
-    termination = source
-
     // The only place the app may ask for notifications: the running app. The
     // question is asked once in the app's life (see `Announcer.askOnce`).
     let announcer = Announcer(
@@ -86,7 +70,6 @@ final class Delegate: NSObject, NSApplicationDelegate {
       await announcer.askOnce()
       await model.refresh()
     }
-    watcher.start()
 
     // Test-only convenience, so the panel can be looked at without clicking.
     if CommandLine.arguments.contains("--open-panel") {
@@ -95,14 +78,8 @@ final class Delegate: NSObject, NSApplicationDelegate {
     }
   }
 
-  func applicationWillTerminate(_ notification: Notification) {
-    watcher.stop()
-    log("quit: watcher stopped")
-  }
-
   private func minute() async {
     await model.refresh()
-    if await model.checkIfDue() { log("hourly check done") }
   }
 
   /// The icon, its count and its tooltip, in the panel's own words for the state.
@@ -119,7 +96,7 @@ final class Delegate: NSObject, NSApplicationDelegate {
 
   private func panelView(maxHeight: CGFloat?) -> PanelView {
     PanelView(
-      model: model, watcher: WatcherBox(watcher), maxHeight: maxHeight,
+      model: model, maxHeight: maxHeight,
       openSettings: { openNotificationSettings() })
   }
 
@@ -170,7 +147,7 @@ func log(_ line: String) {
 }
 
 // Overrides of where Immune is and which store it reads are for tests and trials, and
-// only a debug build honours them. A release bundle always runs its own Immune on
+// only a debug build honours them. A release bundle always runs its configured core on
 // Immune's default store.
 #if DEBUG
   let overrides = (CommandLine.arguments, ProcessInfo.processInfo.environment)
@@ -187,7 +164,7 @@ func locate(_ arguments: [String], _ environment: [String: String]) -> (
   let found: URL
   switch ImmuneLocation.resolve(
     arguments: arguments, environment: environment,
-    executableDirectory: Bundle.main.executableURL?.deletingLastPathComponent())
+    configuredPath: Bundle.main.object(forInfoDictionaryKey: "ImmuneExecutablePath") as? String)
   {
   case .success(let url):
     log("immune: \(url.path)")
@@ -206,28 +183,6 @@ func locate(_ arguments: [String], _ environment: [String: String]) -> (
     log("store: refused: \(problem.words)")
     return (UnlocatedImmune(problem: problem), [], nil)
   }
-}
-
-/// A launcher that cannot start anything, for when Immune was not located.
-struct NoWatch: WatchLaunching {
-  @MainActor
-  func launch(
-    _ arguments: [String], onLine: @escaping @MainActor (Data) -> Void,
-    onDropped: @escaping @MainActor (Int) -> Void, onExit: @escaping @MainActor (Int32?) -> Void
-  ) -> Result<any WatchChild, LaunchFailure> { .failure(LaunchFailure("immune was not located")) }
-}
-
-@MainActor
-func makeWatcher(_ url: URL?, _ extra: [String], _ model: AppModel) -> Watcher {
-  let launcher: any WatchLaunching = url.map { ProcessWatchLauncher(executable: $0) } ?? NoWatch()
-  return Watcher(
-    launcher: launcher, arguments: ["watch"] + extra,
-    onRead: { Task { await model.refresh() } },
-    onStarts: { model.took($0) },
-    schedule: { wait, action in
-      log("watcher: next start in \(Int(wait)) s")
-      DispatchQueue.main.asyncAfter(deadline: .now() + wait) { MainActor.assumeIsolated(action) }
-    })
 }
 
 /// Debug only: prints the lines the panel shows for Immune's current answer, as plain
@@ -265,7 +220,7 @@ final class SilentNotifier: Notifying {
 /// `--render-seen` first presses Seen on the first finding (so a refusal from the
 /// stand-in shows); `--render-open` opens the first finding in the popover.
 @MainActor
-func renderPanel(_ model: AppModel, _ watcher: Watcher, to folder: URL) async -> Never {
+func renderPanel(_ model: AppModel, to folder: URL) async -> Never {
   // `--render-notify-off` draws the line shown when notifications are off, with a
   // stand-in for the system: a render never asks the system anything.
   if CommandLine.arguments.contains("--render-notify-off") {
@@ -281,24 +236,20 @@ func renderPanel(_ model: AppModel, _ watcher: Watcher, to folder: URL) async ->
   if CommandLine.arguments.contains("--render-open"), let first {
     await model.openFinding(first)
   }
-  // Give the watcher a moment, so the panel shows what it says.
-  watcher.start()
-  try? await Task.sleep(for: .milliseconds(1500))
   try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
   for (name, look) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
     let png = await Snapshot.png(
-      PanelView(model: model, watcher: WatcherBox(watcher)), appearance: look)
+      PanelView(model: model), appearance: look)
     try? png?.write(to: folder.appendingPathComponent("\(name).png"))
     log("rendered \(name).png")
   }
   // The same panel as text, beside the pictures.
   let panel = Panel.of(
     model.reading, now: Date(), checking: model.runInProgress, notes: model.notes,
-    notWatching: watcher.notWatching, answering: model.answering, refusals: model.refusals,
+    answering: model.answering, refusals: model.refusals,
     notificationsOff: model.notificationsOff, immune: model.immuneCommand)
   try? (panel.lines.joined(separator: "\n") + "\n").write(
     to: folder.appendingPathComponent("panel.txt"), atomically: true, encoding: .utf8)
-  watcher.stop()
   exit(0)
 }
 
@@ -311,9 +262,8 @@ let (immune, extra, immuneURL) = locate(overrides.0, overrides.1)
     let folder = URL(fileURLWithPath: CommandLine.arguments[i + 1])
     let model = AppModel(immune: immune, extraArguments: extra)
     model.immuneCommand = ImmuneCommand.at(immuneURL, extra: extra)
-    let watcher = makeWatcher(immuneURL, extra, model)
     NSApplication.shared.setActivationPolicy(.prohibited)
-    Task { @MainActor in await renderPanel(model, watcher, to: folder) }
+    Task { @MainActor in await renderPanel(model, to: folder) }
     NSApplication.shared.run()
   }
 #endif
@@ -325,7 +275,7 @@ model.immuneCommand = ImmuneCommand.at(immuneURL, extra: extra)
 // has a file of its own that Immune names, so no file URL carries a "#section".
 model.opener = { page in NSWorkspace.shared.open(page) }
 model.writePageAhead = true
-let delegate = Delegate(model: model, watcher: makeWatcher(immuneURL, extra, model))
+let delegate = Delegate(model: model)
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 app.delegate = delegate

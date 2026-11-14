@@ -742,11 +742,25 @@ pub fn state(conn: &Connection, home: &Path, now: i64) -> Res<State> {
     // watch did not fail. A failed reading of the event level stands for program starts
     // alone, which are then not claimed as seen.
     let failed = crate::watch::failures(conn, home)?;
-    let live = store::watch_in_progress(home).unwrap_or(false)
-        && failed.iter().all(|f| f.what == crate::watch::EVENTS);
+    let live = crate::watch::watching_live(home)
+        && failed.iter().all(|f| {
+            matches!(
+                f.what.as_str(),
+                crate::watch::EVENTS | crate::watch::FULL_CHECK
+            )
+        });
+    let events_failed = failed.iter().find(|f| f.what == crate::watch::EVENTS);
+    let full_check_failed = failed.iter().any(|f| f.what == crate::watch::FULL_CHECK);
     let mut this_mac = crate::covered::this_mac(conn, &coverage, live)?;
-    this_mac.failed = failed;
-    let event_level = crate::events::level(conn, now)?;
+    let mut event_level = crate::events::level(conn, now)?;
+    if let Some(failure) = events_failed
+        && let Some(level) = &mut event_level
+        && level.state == crate::events::RUNNING
+    {
+        level.state = crate::events::FAILED.into();
+        level.read_at = failure.at;
+        level.reason = Some(failure.detail.clone());
+    }
     // A collector that is installed and records nothing (refused, failing or silent), or that
     // runs and lost part of what it was to record over the last day (a gap in its numbering, a
     // restart it cannot account for, lines it could not read, log files the cap or the tidy job
@@ -756,15 +770,17 @@ pub fn state(conn: &Connection, home: &Path, now: i64) -> Res<State> {
     // failed reading does not count, so it is said here. Not installed is a limit the person can
     // lift, and `not_covered` says it.
     if this_mac.state == "watched"
-        && event_level.as_ref().is_some_and(|l| {
-            [
-                crate::events::REFUSED,
-                crate::events::FAILING,
-                crate::events::SILENT,
-            ]
-            .contains(&l.state.as_str())
-                || (l.state == crate::events::RUNNING && !l.judged_whole())
-        })
+        && (events_failed.is_some()
+            || full_check_failed
+            || event_level.as_ref().is_some_and(|l| {
+                [
+                    crate::events::REFUSED,
+                    crate::events::FAILING,
+                    crate::events::SILENT,
+                ]
+                .contains(&l.state.as_str())
+                    || (l.state == crate::events::RUNNING && !l.judged_whole())
+            }))
     {
         this_mac.state = "watched_in_part";
     }
@@ -777,6 +793,7 @@ pub fn state(conn: &Connection, home: &Path, now: i64) -> Res<State> {
             .watched
             .push((crate::covered::EVENTS, l.last_day.starts, "events"));
     }
+    this_mac.failed = failed;
     let not_covered =
         crate::covered::not_covered(conn, &coverage, &problems, catalogue(conn)?.as_ref())?;
     Ok(State {
@@ -859,7 +876,7 @@ pub fn failure(
     })
 }
 
-/// How long a status stays fresh after the latest full check finished: the app starts one every
+/// How long a status stays fresh after the latest full check finished: the service starts one every
 /// hour with a limit of 30 minutes, so an older check is one that should have been followed by
 /// another and was not.
 pub const FRESH_FOR: i64 = 2 * 60 * 60;

@@ -1603,12 +1603,18 @@ fn this_mac_said(out: &mut String, s: &v1::Status) {
         })
         .unwrap_or_default();
     let live = if m.live {
-        "a watcher runs now".to_string()
+        if failed.is_empty() {
+            "a watcher runs now".to_string()
+        } else {
+            format!("a watcher runs now, with a failed {}", failed.join(" and "))
+        }
     } else if !failed.is_empty() {
         format!(
             "a watcher runs, but its latest {} failed, so it does not watch live",
             failed.join(" and ")
         )
+    } else if s.watching.is_some() {
+        "a watcher runs now and has not completed its first reading".to_string()
     } else {
         "no watcher runs now".to_string()
     };

@@ -93,7 +93,7 @@ struct PanelOnScreen {
     var frames: [PanelPart: CGRect] = [:]
     let now = model.reading.status?.generatedAt ?? Date()
     let view = PanelView(
-      model: model, watcher: WatcherBox(nil), now: now, maxHeight: maxHeight,
+      model: model, now: now, maxHeight: maxHeight,
       probe: { part, rect in frames[part] = rect })
     let host = NSHostingView(rootView: view.fixedSize(horizontal: false, vertical: true))
     for _ in 0..<6 {
@@ -135,7 +135,7 @@ struct PanelOnScreen {
   )
   func coverageOfRealSize() throws {
     let p = panel(output("real/status-real-size.json"))
-    #expect(p.watched.map(\.title) == ["All the time", "Every hour"])
+    #expect(p.watched.map(\.title) == ["All the time", "Full checks"])
     #expect(p.watched.map(\.kinds) == [10, 5])
     #expect(p.watched.map(\.detail.count) == [10, 5])
     #expect(p.watched.first?.starts?.on == true)

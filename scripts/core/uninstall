@@ -1,0 +1,27 @@
+#!/bin/sh
+# Stop and remove only this user's core job; keep the binary, store and collector.
+set -eu
+
+fail() {
+    echo "uninstall: $*; the store and binary were kept" >&2
+    exit 1
+}
+[ "$#" -eq 0 ] || fail 'usage: /bin/sh scripts/core/uninstall'
+uid=$(id -u)
+[ "$uid" != 0 ] || fail 'run this as the user being watched, without sudo'
+case ${HOME-} in /*) ;; *) fail 'HOME must be an absolute path' ;; esac
+domain="gui/$uid"
+launchctl print "$domain" >/dev/null 2>&1 || fail 'the user login session is unavailable'
+agents="$HOME/Library/LaunchAgents"
+label=ai.nuanu.immune.watch
+file="$agents/$label.plist"
+[ ! -L "$file" ] || fail "refusing a symbolic link at $file"
+if [ -e "$file" ]; then
+    found=$(/usr/bin/plutil -extract Label raw -o - "$file") || fail "cannot read $file"
+    [ "$found" = "$label" ] || fail "another job occupies $file"
+fi
+if launchctl print "$domain/$label" >/dev/null 2>&1; then
+    launchctl bootout "$domain/$label" || fail "could not stop $label; its plist was kept"
+fi
+rm -f "$file" || fail "could not remove $label"
+echo 'The core job is removed. The binary, store and optional event collector were kept.'

@@ -53,9 +53,6 @@ public final class AppModel: ObservableObject {
   public var announcer: Announcer?
 
   private let immune: any ImmuneRunning
-  private let launchedAt: Date
-  /// When the app last started a check by itself.
-  private var lastAutoCheck: Date?
   /// Appended to every command; empty except in trials (`--store <path>`).
   private let extraArguments: [String]
 
@@ -63,28 +60,12 @@ public final class AppModel: ObservableObject {
   private let clock: @Sendable () -> Date
 
   public init(
-    immune: any ImmuneRunning, extraArguments: [String] = [], launchedAt: Date = Date(),
+    immune: any ImmuneRunning, extraArguments: [String] = [],
     clock: @escaping @Sendable () -> Date = { Date() }
   ) {
     self.immune = immune
     self.extraArguments = extraArguments
-    self.launchedAt = launchedAt
     self.clock = clock
-  }
-
-  /// The full check every hour while the app is open. Called on a timer and after
-  /// the Mac wakes; starts a check only when `HourlyCheck.isDue` says so. Returns
-  /// whether it started one.
-  @discardableResult
-  public func checkIfDue(now: Date = Date()) async -> Bool {
-    let due = HourlyCheck.isDue(
-      known: reading != .notYetRead,
-      lastFinished: reading.status?.lastFinishedRun?.finishedAt,
-      lastAutoCheck: lastAutoCheck, launchedAt: launchedAt, now: now,
-      running: !canRun)
-    guard due else { return false }
-    lastAutoCheck = now
-    return await runNow(for: .app)
   }
 
   public var light: Light { Light.of(reading, now: clock()) }
@@ -122,23 +103,8 @@ public final class AppModel: ObservableObject {
     if let o = opened { await readOpened(o.id) }
   }
 
-  /// Takes what the watcher said after a reading of program starts into the status read
-  /// last, as Immune said it: the panel's row shows it without a run of `immune status`. What the
-  /// line does not carry stays as the status said it; the caveats' sentences stay only while
-  /// the caveats are the same, and the next status brings them back.
-  public func took(_ said: EventLevel) {
-    guard case .read(var s, let errors) = reading else { return }
-    let before = s.eventLevel
-    var e = said
-    e.startsByHour = before?.startsByHour
-    e.notes = before?.caveats == said.caveats ? before?.notes : nil
-    s.eventLevel = e
-    reading = .read(s, errors: errors)
-  }
-
   /// Runs `immune run --json`, then refreshes. Returns false, and starts nothing,
-  /// when a run is in progress, here or as Immune last said. Check now is the owner's;
-  /// the hourly check passes `.app`.
+  /// when a run is in progress, here or as Immune last said. Check now is the owner’s.
   @discardableResult
   public func runNow(for whom: RunFor = .owner) async -> Bool {
     guard canRun else { return false }
@@ -405,9 +371,8 @@ public struct OpenedFinding: Sendable, Equatable {
   public let reading: FindingReading
 }
 
-/// When the app has the page written ahead of a click. A change read by the watcher can
-/// come every few seconds and writing the page costs seconds of processor time, so it is
-/// not written after each; a click on a page that is not current waits for it instead.
+/// When the app has the page written ahead of a click. Writing costs seconds of processor
+/// time, so it is not done after each refresh; a click on a page that is not current waits for it instead.
 public enum PageAhead {
   public static let every: TimeInterval = 30 * 60
 
@@ -415,26 +380,5 @@ public enum PageAhead {
   public static func isDue(lastAhead: Date?, now: Date) -> Bool {
     guard let last = lastAhead else { return true }
     return now.timeIntervalSince(last) >= every
-  }
-}
-
-/// When the app starts a full check by itself.
-public enum HourlyCheck {
-  public static let every: TimeInterval = 3600
-  /// The first check waits this long after launch, so the app settles first.
-  public static let afterLaunch: TimeInterval = 60
-
-  /// Due when the last finished check is an hour old or there is none, the app has
-  /// not itself tried within the hour (so a failing check, or a Mac that slept
-  /// through many hours, gives one check and not a burst), nothing is running, and
-  /// the app has been up a minute and knows the status.
-  public static func isDue(
-    known: Bool, lastFinished: Date?, lastAutoCheck: Date?, launchedAt: Date, now: Date,
-    running: Bool
-  ) -> Bool {
-    guard known, !running, now.timeIntervalSince(launchedAt) >= afterLaunch else { return false }
-    if let f = lastFinished, now.timeIntervalSince(f) < every { return false }
-    if let a = lastAutoCheck, now.timeIntervalSince(a) < every { return false }
-    return true
   }
 }

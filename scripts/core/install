@@ -1,0 +1,65 @@
+#!/bin/sh
+# Explicitly install or update the current user's core job. No app or root access is needed.
+set -eu
+umask 077
+
+changed=
+stage=
+fail() {
+    echo "install: $*" >&2
+    if [ -n "$changed" ]; then
+        echo 'install: the core job may be stopped; rerun install to recover. The store was kept. Check immune status --json for coverage.' >&2
+    fi
+    exit 1
+}
+trap '[ -z "$stage" ] || rm -rf "$stage"' EXIT
+trap 'exit 1' HUP INT TERM
+
+[ "$#" -eq 1 ] || fail 'usage: /bin/sh scripts/core/install /absolute/path/to/immune'
+uid=$(id -u)
+[ "$uid" != 0 ] || fail 'run this as the user being watched, without sudo'
+core=$1
+case $core in /*) ;; *) fail 'the core binary path must be absolute' ;; esac
+[ -f "$core" ] && [ -x "$core" ] || fail 'the core binary must be an executable file'
+help=$("$core" --help) || fail 'the core binary could not print its help'
+case $help in *--background*) ;; *) fail 'this core does not support watch --background; build the current core first' ;; esac
+case ${HOME-} in /*) ;; *) fail 'HOME must be an absolute path' ;; esac
+domain="gui/$uid"
+launchctl print "$domain" >/dev/null 2>&1 || fail 'the user login session is unavailable'
+agents="$HOME/Library/LaunchAgents"
+label=ai.nuanu.immune.watch
+file="$agents/$label.plist"
+[ ! -L "$file" ] || fail "refusing a symbolic link at $file"
+if [ -e "$file" ]; then
+    found=$(/usr/bin/plutil -extract Label raw -o - "$file") || fail "cannot read $file"
+    [ "$found" = "$label" ] || fail "another job occupies $file"
+fi
+mkdir -p "$agents"
+stage=$(mktemp -d "$agents/.immune-core.XXXXXX")
+file="$stage/$label.plist"
+/usr/bin/plutil -create xml1 "$file"
+/usr/bin/plutil -insert Label -string "$label" "$file"
+/usr/bin/plutil -insert ProgramArguments -array "$file"
+/usr/bin/plutil -insert ProgramArguments.0 -string "$core" "$file"
+/usr/bin/plutil -insert ProgramArguments.1 -string watch "$file"
+/usr/bin/plutil -insert ProgramArguments.2 -string --background "$file"
+/usr/bin/plutil -insert EnvironmentVariables -dictionary "$file"
+/usr/bin/plutil -insert EnvironmentVariables.HOME -string "$HOME" "$file"
+/usr/bin/plutil -insert StandardOutPath -string /dev/null "$file"
+/usr/bin/plutil -insert StandardErrorPath -string /dev/null "$file"
+/usr/bin/plutil -insert KeepAlive -bool YES "$file"
+/usr/bin/plutil -insert ThrottleInterval -integer 30 "$file"
+/usr/bin/plutil -lint "$file" >/dev/null
+
+echo "Installing the background core for this login from: $core"
+changed=yes
+if launchctl print "$domain/$label" >/dev/null 2>&1; then
+    launchctl bootout "$domain/$label" || fail "could not stop $label"
+fi
+mv "$stage/$label.plist" "$agents/$label.plist" || fail "could not replace $label"
+launchctl enable "$domain/$label" || fail "could not enable $label"
+launchctl bootstrap "$domain" "$agents/$label.plist" || fail "could not load $label"
+launchctl print "$domain/$label" >/dev/null || fail "$label is not loaded"
+changed=
+echo 'The core job is loaded. Use immune status --json to check what has actually been read.'
+echo 'Keep the binary at this path; rerun install after updating it or choosing another path.'

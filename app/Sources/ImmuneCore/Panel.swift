@@ -478,12 +478,11 @@ public struct Panel: Sendable, Equatable {
   /// Mac it could not judge and the person cannot fix; nil otherwise. The limits that hold on
   /// every Mac are not shown here.
   public var notJudged: GapRow?
-  /// What is watched, in two short lines: what is seen all the time and what is read every hour,
+  /// What is watched, in two short lines: what is seen all the time and what is read at full checks,
   /// each with how many kinds the status lists, and program starts with the event level's state.
   /// The full list by kind is the report's.
   public var watched: [CoverageLine] = []
-  /// This Mac's state as the status gives it (`watched`, `watched_in_part`, `not_checked`), for
-  /// the mark of what is watched; nil when the status does not say.
+  /// This Mac's coverage state for the mark of what is watched.
   public var watchedAs: String?
   /// Answers and statements given outside the app that are in force: always visible.
   public var answered: AnsweredRow?
@@ -491,8 +490,8 @@ public struct Panel: Sendable, Equatable {
   public var busy = false
   /// Plain lines about the last Check now or Open report.
   public var notes: [String] = []
-  /// "Not watching for changes right now: …", one quiet line, or nil.
-  public var notWatching: String?
+  /// Which background readings failed, or that the core is not watching.
+  public var watcherMessage: MessageRow?
   public var canCheck: Bool
   /// The answer being saved now, by the finding's or the machine's id.
   public var answering: String?
@@ -532,17 +531,7 @@ public struct Panel: Sendable, Equatable {
   /// that are off, a watcher that is not watching.
   public var messages: [MessageRow] {
     var out: [MessageRow] = []
-    if let notWatching {
-      let prefix = Watcher.notWatchingTitle + ": "
-      let why =
-        notWatching.hasPrefix(prefix)
-        ? String(notWatching.dropFirst(prefix.count)) : notWatching
-      let trimmed = why.hasSuffix(".") ? String(why.dropLast()) : why
-      out.append(
-        MessageRow(
-          kind: .notWatching, title: Watcher.notWatchingTitle,
-          detail: trimmed.prefix(1).uppercased() + trimmed.dropFirst()))
-    }
+    if let watcherMessage { out.append(watcherMessage) }
     if notificationsOff != nil {
       out.append(
         MessageRow(
@@ -561,12 +550,12 @@ public struct Panel: Sendable, Equatable {
 
   public static func of(
     _ reading: Reading, now: Date, checking: Bool = false, notes: [String] = [],
-    notWatching: String? = nil, answering: String? = nil, refusals: [String: String] = [:],
+    answering: String? = nil, refusals: [String: String] = [:],
     notificationsOff: Bool = false, immune: ImmuneCommand? = nil
   ) -> Panel {
     let light = Light.of(reading, now: now)
     var p = Panel(
-      light: light, headline: light.headline, notes: notes, notWatching: notWatching,
+      light: light, headline: light.headline, notes: notes,
       canCheck: !checking, answering: answering, refusals: refusals)
     if notificationsOff { p.notificationsOff = Announcer.offLine }
     switch reading {
@@ -578,6 +567,27 @@ public struct Panel: Sendable, Equatable {
       p.help = [helpLine]
       p.reason = reason + (detail.map { " immune said: " + Inert.text($0) } ?? "")
     case .read(let s, let errors):
+      let failures = (s.watchFailures ?? []).map { failure in
+        let what =
+          switch failure.what {
+          case "read": "Reading of watched places"
+          case "sample": "Sample of running programs"
+          case "resubscribe": "Refresh of watched places"
+          case "events": "Reading of program starts"
+          case "full_check": "Full check"
+          default: Inert.text(failure.what ?? "Reading", limit: 80)
+          }
+        return what + " failed"
+          + (failure.detailText.map { " · " + Inert.text($0, limit: 160) } ?? "")
+      }
+      if !failures.isEmpty {
+        p.watcherMessage = MessageRow(
+          kind: .watcher, title: "Background readings failed",
+          detail: failures.joined(separator: "\n"))
+      } else if s.thisMac?.live == false {
+        p.watcherMessage = MessageRow(
+          kind: .watcher, title: "Live watching is off", detail: "Check now to look at this Mac")
+      }
       let immuneChecking = s.running == true
       p.canCheck = !(checking || immuneChecking)
       p.fill(
@@ -643,11 +653,10 @@ public struct Panel: Sendable, Equatable {
 
     let lastCheck = mac?.checkedAt ?? s.lastFinishedRun?.finishedAt
     checkedAt = lastCheck.map { Clock.full($0) }
-    // While the watcher says it is not watching, live watching is not claimed, whatever
-    // the status says: the store may be what failed, and then the status cannot know.
-    let live = notWatching == nil ? mac?.live : mac?.live.map { _ in false }
+    let live = mac?.live
+    let inPart = mac?.state == "watched_in_part" || (live == true && watcherMessage != nil)
     glance = Self.glance(
-      inPart: mac?.state == "watched_in_part", live: live, lastCheck: lastCheck, now: now)
+      inPart: inPart, live: live, lastCheck: lastCheck, now: now)
 
     if case .cannotRead(let r) = light {
       headline = Self.cantTell
@@ -679,8 +688,10 @@ public struct Panel: Sendable, Equatable {
 
     firstDay = Self.firstDay(s, now: now)
     let parts = (mac?.watched ?? []).filter { $0.count != 0 }
-    watched = Self.coverage(parts, live: live == true, level: s.eventLevel)
-    watchedAs = mac?.state
+    watched = Self.coverage(
+      parts, live: live == true, level: s.eventLevel,
+      eventsFailed: s.watchFailures?.contains { $0.what == "events" } == true)
+    watchedAs = watcherMessage == nil ? mac?.state : "watched_in_part"
     let list = s.notCovered ?? []
     notSeen = list.filter { $0.who == "you" }.compactMap { u in
       guard let id = u.id else { return nil }
@@ -793,7 +804,7 @@ public struct Panel: Sendable, Equatable {
     if inPart { parts.append("watched in part") }
     switch live {
     case true?: parts.append(inPart ? "live" : "watched live")
-    case false?: parts.append(inPart ? "every hour" : "watched every hour")
+    case false?: parts.append("not watching live")
     case nil: break
     }
     parts.append(lastCheck.map { "checked " + Clock.since($0, now: now) } ?? "no full check yet")
@@ -842,21 +853,22 @@ public struct Panel: Sendable, Equatable {
     p.how == "live" || p.how == "sampled" || p.how == "events"
   }
 
-  /// What is watched, in two lines: seen all the time (live or sampled, while a watcher runs)
-  /// and read every hour. Without a live watcher everything is on the hourly line, and the first
-  /// line says that nothing is seen all the time. Program starts are not a kind of place: they
-  /// stand on the line they are read on, with the event level's state, and the kind the status
-  /// lists for them (`how` is `events`) is not counted.
-  static func coverage(_ parts: [WatchedPart], live: Bool, level: EventLevel?) -> [CoverageLine] {
+  /// What is watched all the time and what is read at full checks. Program starts have their own
+  /// mark on the line they are read on, using the event level and the latest watcher failure.
+  static func coverage(
+    _ parts: [WatchedPart], live: Bool, level: EventLevel?, eventsFailed: Bool = false
+  ) -> [CoverageLine] {
     let kinds = parts.filter { $0.how != "events" }
     let always = live ? kinds.filter(allTheTime) : []
-    let hourly = kinds.filter { p in !always.contains(p) }
-    let starts = level.map { e in
-      let on = e.state.flatMap { Words.collectorOn[$0] } ?? false
-      // Not on: Immune's words for the state, for the tooltip.
-      return Starts(
-        on: on, words: on ? nil : (e.stateWords ?? e.state).map { Inert.text($0, limit: 40) })
-    }
+    let checked = kinds.filter { p in !always.contains(p) }
+    let starts =
+      eventsFailed
+      ? Starts(on: false, words: "Reading failed")
+      : level.map { e in
+        let on = e.state.flatMap { Words.collectorOn[$0] } ?? false
+        return Starts(
+          on: on, words: on ? nil : (e.stateWords ?? e.state).map { Inert.text($0, limit: 40) })
+      }
     guard !kinds.isEmpty || starts != nil else { return [] }
     // Immune's own words as they are, for the tooltip: no capitals added, so "npm" stays "npm".
     func detail(_ list: [WatchedPart]) -> [String] {
@@ -866,10 +878,9 @@ public struct Panel: Sendable, Equatable {
     }
     return [
       CoverageLine(
-        live: true, kinds: always.count, starts: live ? starts : nil, detail: detail(always),
-        watcher: live),
+        live: true, kinds: always.count, starts: live ? starts : nil, detail: detail(always)),
       CoverageLine(
-        live: false, kinds: hourly.count, starts: live ? nil : starts, detail: detail(hourly)),
+        live: false, kinds: checked.count, starts: live ? nil : starts, detail: detail(checked)),
     ]
   }
 
@@ -953,7 +964,7 @@ public enum PanelState: String, Sendable, Equatable {
 
 /// A message of the app's own, as a row at the top of the list: what it is and a word on it.
 public struct MessageRow: Sendable, Equatable {
-  public enum Kind: String, Sendable, Equatable { case firstDay, notificationsOff, notWatching }
+  public enum Kind: String, Sendable, Equatable { case firstDay, notificationsOff, watcher }
   public let kind: Kind
   public let title: String
   public let detail: String
@@ -962,7 +973,7 @@ public struct MessageRow: Sendable, Equatable {
     switch kind {
     case .firstDay: Icons.firstDay
     case .notificationsOff: Icons.notificationsOff
-    case .notWatching: Icons.notWatching
+    case .watcher: Icons.notWatching
     }
   }
 }
@@ -1081,7 +1092,7 @@ public enum Number {
   }
 }
 
-/// One line of what is watched: seen all the time or read every hour, how many kinds the status
+/// One line of what is watched: seen all the time or read at full checks, how many kinds the status
 /// lists for it, and program starts when they are read on this line. `detail` is each kind in
 /// Immune's words with its count, for a tooltip.
 public struct CoverageLine: Sendable, Equatable {
@@ -1089,18 +1100,14 @@ public struct CoverageLine: Sendable, Equatable {
   public let kinds: Int
   public let starts: Starts?
   public let detail: [String]
-  /// For the line of what is seen all the time: whether a watcher runs at all.
-  public var watcher = true
-
-  public var title: String { live ? "All the time" : "Every hour" }
+  public var title: String { live ? "All the time" : "Full checks" }
   /// "10 kinds", or nil when there are none.
   public var kindsText: String? {
     kinds == 0 ? nil : kinds == 1 ? "1 kind" : Number.grouped(kinds) + " kinds"
   }
   /// What the line says without a dot when nothing is on it.
   public var none: String? {
-    if live && !watcher { return "none: the watcher is not running" }
-    return kindsText == nil && starts == nil ? "none" : nil
+    kindsText == nil && starts == nil ? "none" : nil
   }
   /// The line as text: "11 kinds · ●program starts", with a filled dot for program starts that
   /// are seen and a ring for those that are not.

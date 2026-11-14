@@ -230,8 +230,10 @@ fn state(
             )
         }
         Some(_) => match m.state {
-            "watched" => (GLYPH_CALM, "Nothing needs you".to_string()),
-            "watched_in_part" => (GLYPH_PART, "Nothing needs you".to_string()),
+            "watched" if m.live && m.failed.is_empty() => {
+                (GLYPH_CALM, "Nothing needs you".to_string())
+            }
+            "watched" | "watched_in_part" => (GLYPH_PART, "Nothing needs you".to_string()),
             _ => {
                 why.push("whether this Mac is watched is not known".to_string());
                 (GLYPH_UNKNOWN, "I can't tell".to_string())
@@ -251,16 +253,18 @@ fn state(
     parts.extend(why);
     let how = match (m.state, m.live) {
         ("not_checked", _) => None,
-        (_, false) if !m.failed.is_empty() => Some(format!(
-            "hourly only: the watcher's latest {} failed",
-            covered::watcher_failed(m)
-        )),
-        ("watched_in_part", true) => Some("watched in part · live".to_string()),
-        ("watched_in_part", false) => Some("watched in part · hourly only".to_string()),
-        (_, true) => Some("watched live".to_string()),
-        (_, false) => Some("hourly only".to_string()),
+        ("watched_in_part", true) => Some("watched in part · live"),
+        ("watched_in_part", false) => Some("watched in part · live watching is off"),
+        (_, true) => Some("watched live"),
+        (_, false) => Some("live watching is off"),
     };
-    parts.extend(how);
+    parts.extend(how.map(str::to_string));
+    if !m.failed.is_empty() {
+        parts.push(format!(
+            "the watcher's latest {} failed",
+            covered::watcher_failed(m)
+        ));
+    }
     parts.push(match m.checked_at {
         Some(t) => format!("last check {}", view::when(t, now)),
         None => "no full check yet".to_string(),
@@ -1056,7 +1060,7 @@ fn watched_table(
         let how = if m.live && fast {
             "within seconds"
         } else {
-            "every hour"
+            "at full checks"
         };
         let readings = readings_of(count, latest);
         let n = m.watched.iter().find(|w| w.0 == what).map(|w| w.1);
@@ -2328,7 +2332,7 @@ fn ways(conn: &Connection, out: &mut String, this: Option<&str>) -> Out {
             let read = match p.part {
                 Part::Present => "Not read",
                 Part::Entries => "Read: every entry",
-                _ if p.hourly().is_some() => "Read at each hourly check",
+                _ if p.hourly().is_some() => "Read at full checks",
                 Part::Folders(_) => "Read: every folder, by name",
                 _ => "Read",
             };
@@ -2782,6 +2786,50 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_fresh_report_is_calm_only_while_live_readings_are_working() {
+        let dir = crate::common::Scratch::new("report-live");
+        let conn = crate::store::open(&dir.join("store.db")).unwrap();
+        let now = 1_000_001;
+        let mut st = crate::status::state(&conn, &dir, now).unwrap();
+        st.this_mac.state = "watched";
+        st.this_mac.checked_at = Some(now - 1);
+        let r = v1::Status {
+            this_mac: Some(v1::ThisMac {
+                fresh: true,
+                ..Default::default()
+            }),
+            needs_a_look: Some(v1::NeedsALook::default()),
+            ..Default::default()
+        };
+        let band = |st: &crate::status::State| {
+            let mut out = String::new();
+            state(&conn, &mut out, st, &r, now).unwrap();
+            out
+        };
+        let stopped = band(&st);
+        assert!(stopped.contains(GLYPH_PART) && stopped.contains("live watching is off"));
+        st.this_mac.live = true;
+        assert!(band(&st).contains(GLYPH_CALM));
+        for (what, words) in [
+            (crate::watch::FULL_CHECK, "full check"),
+            (crate::watch::EVENTS, "reading of program starts"),
+        ] {
+            st.this_mac.failed = vec![crate::watch::Failure {
+                what: what.to_string(),
+                at: now,
+                detail: "invented refusal".to_string(),
+            }];
+            let failed = band(&st);
+            assert!(failed.contains(GLYPH_PART), "{failed}");
+            assert!(failed.contains("watched live"), "{failed}");
+            assert!(
+                failed.contains(&format!("latest {words} failed")),
+                "{failed}"
+            );
+        }
+    }
+
+    #[test]
     fn a_list_of_watched_places_or_of_ways_read_at_a_time_ahead_of_the_clock_never_says_none_found()
     {
         // A time from the future proves nothing, whichever kind of autorun point the list is
@@ -3056,11 +3104,11 @@ mod tests {
         for (p, way) in autorun::ways() {
             let cell = format!("<td class=\"mono\">{}</td>", esc(&p.name()));
             assert!(page.contains(&cell));
-            // A row read only at the hourly check says so where it says it is read.
+            // A row read only at full checks says so in its reading column.
             let rest = &page[page.find(&cell).unwrap()..];
             let line = &rest[..rest.find("</tr>").unwrap()];
             assert_eq!(
-                line.contains(">Read at each hourly check<"),
+                line.contains(">Read at full checks<"),
                 p.hourly().is_some(),
                 "{line}"
             );

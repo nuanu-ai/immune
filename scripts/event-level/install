@@ -307,7 +307,7 @@ started, tidy.sh deletes the oldest files until the log is under its cap, so the
 larger than its cap, plus the file being written (128 MiB, or more if more than that arrives
 within one second), plus what is written while tidy.sh runs: for the building Mac, at most
 about $disk GB of disk. Heavy writing pushes older lines out before their day is over. The
-log is a buffer: while the app is open it is read every ten seconds, and what is read is
+log is a buffer: while the watcher runs it is read every ten seconds, and what is read is
 judged and counted. Lines deleted before they were read are counted, and Immune then says the
 day is partial.
 EOF
@@ -416,7 +416,7 @@ echo
 case $verdict in
 running)
     echo "RESULT: RUNNING. Program starts and file events are being recorded."
-    echo "The panel and \`immune status\` say so within a minute while the app is open."
+    echo "The panel and \`immune status\` say so within a minute while the watcher runs."
     ;;
 starts_only)
     echo "RESULT: RUNNING IN PART. Program starts are being recorded; no file event was in ten seconds."

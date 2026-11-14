@@ -111,8 +111,15 @@ public enum Light: Sendable, Equatable {
     }
     // Calm only when Immune says this Mac is watched, wholly or in part; not checked,
     // or anything else, is not calm. What it does not cover never raises the icon.
-    return mac.state.flatMap { macStates[$0] }
-      ?? .cannotRead("Whether this Mac is watched is not reported.")
+    guard let state = mac.state.flatMap({ macStates[$0] }) else {
+      return .cannotRead("Whether this Mac is watched is not reported.")
+    }
+    guard state == .nothingToReport || state == .watchedInPart else { return state }
+    guard let live = mac.live else {
+      return .cannotRead("Whether the core is watching for changes is not reported.")
+    }
+    if !live || !(s.watchFailures ?? []).isEmpty { return .watchedInPart }
+    return state
   }
 
   /// The light for each value of `ThisMacState` (status.proto). A test walks the schema against

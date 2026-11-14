@@ -1,4 +1,4 @@
-// All decoding of what `immune status --json` and `immune watch` print lives in this one file,
+// All decoding of what `immune status --json` prints lives in this one file,
 // so a change of shape is cheap. The status is the contract's `Status`
 // (`contract/immune/v1/status.proto`), a failure its `Failure`. Every field is optional: a
 // missing field becomes nil and is shown as "not reported", never as zero or as fine. A field or
@@ -48,6 +48,8 @@ public struct Status: Sendable, Equatable {
   public var answersNote: String?
   /// Whether this Mac is watched, and how.
   public var thisMac: ThisMac?
+  /// Failures of the independently running watcher, as the core reports them.
+  public var watchFailures: [WatcherFailure]?
   /// What the program does not cover, a handful of items in its fixed words.
   public var notCovered: [Uncovered]?
   /// Answers that hide a finding now and were not given in the app.
@@ -199,6 +201,11 @@ public struct AnsweredItem: Sendable, Equatable {
   public var whereText: String?
   /// What Immune cut out of the reason.
   public var reasonCuts: [Contract.Cut] = []
+}
+
+public struct WatcherFailure: Sendable, Equatable {
+  public var what: String?
+  public var detailText: String?
 }
 
 /// The state of this Mac as Immune judges it.
@@ -437,24 +444,6 @@ public struct NotComputed: Sendable, Equatable {
   public var reason: String?
 }
 
-/// One line from `immune watch`.
-public enum WatchEvent: Sendable, Equatable {
-  /// Subscribed to the watched places.
-  case watching(places: Int?)
-  /// Re-read the watched places after something changed.
-  case read
-  /// A sample of running programs opened a finding.
-  case sample
-  /// A reading of program starts took some or changed the level's state: the level as it
-  /// left it, in numbers and Immune's fixed words.
-  case programStarts(EventLevel)
-  case alive
-  /// Something it survived, with what the failure said as text from a source.
-  case problem(code: String?, detailText: String? = nil)
-  /// It cannot watch: the error envelope it prints before it exits.
-  case failure(ImmuneError?)
-}
-
 public enum DecodeFailure: Error, Equatable {
   case notJSON
   case notAnObject
@@ -500,37 +489,6 @@ public enum Decoding {
   /// `Finding`, is not taken for one.
   static func isStatus(_ j: J) -> Bool {
     j["format"].count != nil && j["answered_at"].int64 != nil && j["store"].object != nil
-  }
-
-  /// One line of `immune watch`, or nil when it is not understood.
-  public static func watchLine(_ data: Data) -> WatchEvent? {
-    guard let any = try? JSONSerialization.jsonObject(with: data),
-      any is [String: Any]
-    else { return nil }
-    let j = J(any)
-    guard j["format"].count == knownFormat else { return nil }
-    if j["ok"].bool == false {
-      let e = j["errors"].array?.first.map {
-        ImmuneError(
-          code: $0["code"].string, message: $0["message"].string,
-          example: $0["example"].string, detailText: $0["detail_text"].string)
-      }
-      return .failure(e)
-    }
-    switch j["event"].string {
-    case "watching": return .watching(places: j["places"].count)
-    case "read": return .read
-    case "sample": return .sample
-    case "program_starts": return .programStarts(programStarts(j))
-    case "alive": return .alive
-    // `immune watch` as built puts the code beside `event`; a nested `problem` object is
-    // read too, so either shape is understood.
-    case "problem":
-      return .problem(
-        code: j["problem"]["code"].string ?? j["code"].string,
-        detailText: j["problem"]["detail_text"].string ?? j["detail_text"].string)
-    default: return nil
-    }
   }
 
   static func status(_ r: J) -> Status {
@@ -593,6 +551,11 @@ public enum Decoding {
             }
           }, fresh: m["fresh"].bool, staleReason: m["stale_reason"].string,
           freshFor: m["fresh_for_seconds"].count)
+      },
+      watchFailures: r["watching"].object?["failed"].array?.compactMap { f in
+        f.object.map {
+          WatcherFailure(what: $0["what"].string, detailText: $0["detail_text"].string)
+        }
       },
       notCovered: r["not_covered"].array?.compactMap { n in
         n.object.map {
@@ -669,19 +632,6 @@ public enum Decoding {
 
   static func caveats(_ a: J) -> [Caveat]? {
     a.array.map { $0.map { Caveat(kind: $0["kind"].string, short: $0["short"].string) } }
-  }
-
-  /// The `program_starts` line of `immune watch`: the level as that reading left it, as far as
-  /// the line says it; what it does not say (the day by the hour, the caveats' sentences) is
-  /// nil.
-  static func programStarts(_ j: J) -> EventLevel {
-    EventLevel(
-      state: j["state"].string, startsLastDay: j["program_starts_last_day"].count,
-      startsByHour: nil, stateWords: j["in_words"]["state"].string, notes: nil,
-      startsByMinute: counts(j["program_starts_by_minute"]["counts"]),
-      startsLastHour: j["program_starts_by_minute"]["last_hour"].count,
-      readAt: j["read_at"].date,
-      caveats: caveats(j["in_words"]["caveats"]))
   }
 
   /// One `LookFinding`: the finding as listed, and its words and evidence. Every item of

@@ -73,7 +73,7 @@ func panel(
   let refusal = expected.map { _ in "immune: the store is being written by another command" }
   let model = AppModel(
     immune: FixtureImmune(folder: fixtures, status: status, finding: answer, refusal: refusal))
-  model.immuneCommand = ImmuneCommand(path: "/Applications/Immune.app/Contents/MacOS/immune")
+  model.immuneCommand = ImmuneCommand(path: "/opt/example/bin/immune")
   await model.refresh()
   if let open { await model.openFinding(open) }
   // An Expected… Immune refused: the form stays open with the reason typed.
@@ -85,7 +85,7 @@ func panel(
   let when = moment ?? now
   for (look, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
     let view = PanelView(
-      model: model, watcher: WatcherBox(nil), now: when,
+      model: model, now: when,
       maxHeight: screen.map { PanelView.maxHeight(visible: $0) })
     write(await Snapshot.png(view, appearance: appearance), "panel", "\(name)-\(look).png")
   }

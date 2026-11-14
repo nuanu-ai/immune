@@ -12,6 +12,7 @@
 mod agent_folders;
 mod answer;
 mod autorun;
+mod background;
 mod baseline;
 mod beyond;
 mod brew;
@@ -165,10 +166,12 @@ const USAGE: &str = "usage: immune run [--store <path>] [--machine-name <name>] 
        immune sample [--store <path>] [--sample-input <file>] [--json | --proto]
        immune watch [--store <path>] [--system-root <dir>] [--sample-input <file>]
                     [--sample-every <seconds>] [--events-every <seconds>]
-                    [--alive-every <seconds>]
+                    [--alive-every <seconds>] [--standalone | --background]
                     one JSON line per event: watching, read, sample, program_starts,
                     alive, problem; a problem's code and detail_text sit beside event, flat;
-                    program starts are read every 10 seconds by default
+                    program starts are read every 10 seconds by default;
+                    --standalone continues after its parent exits;
+                    --background also runs a full check at start and every hour
                  exits 5 when another watcher has the store";
 
 enum Cmd {
@@ -799,7 +802,20 @@ fn print_json(v: &serde_json::Value) {
 }
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == background::CHECK_ARG) {
+        let [_, parent, op, ..] = args.as_slice() else {
+            return ExitCode::from(EXIT_USAGE);
+        };
+        if op != "run" {
+            return ExitCode::from(EXIT_USAGE);
+        }
+        if let Err(e) = background::supervise(parent) {
+            eprintln!("immune: {e}");
+            return ExitCode::FAILURE;
+        }
+        args.drain(..2);
+    }
     let op = args.first().map(String::as_str);
     let mut options = answer::Options::default();
     let mut finding_write = false;

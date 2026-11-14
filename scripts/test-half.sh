@@ -6,9 +6,7 @@
 # The binaries are read from the tree, so a new test file is in a share without being named
 # here: every file in tests/*.rs in name order, then the unit tests of the program (`--bins`).
 # The package has no library, so these are all that `cargo test` runs. Share N of M takes the
-# Nth, the (N+M)th and so on. With the times of a GitHub runner in November 2026 that puts
-# verdict and watch, the two slowest, in different halves, and gives about 2m35s of tests to
-# the first half and 2m50s to the second.
+# Nth, the (N+M)th and so on.
 set -eu
 cd "$(dirname "$0")/.."
 case "${1-}" in
