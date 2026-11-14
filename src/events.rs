@@ -130,8 +130,9 @@ pub const REPLACED: &str = "the collector's launch daemon was replaced after the
 ///   parent and of the responsible process, and the process group of the program started. The
 ///   filter that keeps one keeps them all, so the start time marks them all (`MARKS`);
 /// - `script`: the script a program start names;
-/// - `signature`: the code-signing flags of a program started and of the program before it,
-///   and the signing id of a program that created or renamed a file.
+/// - `signature`: the code-signing flags of a program started, and the signer of the process
+///   that acted, in a program start and in a file event: its signing id, team id, whether it is
+///   a platform binary and its code-signing flags.
 pub const KEEPS: [(&str, &str); 3] = [
     ("identity", "who each process is"),
     ("script", "the script a program start runs"),
@@ -452,12 +453,13 @@ pub struct ProcessStart {
 /// | `process.audit_token`, `process.start_time` | `instigator` |
 /// | `event.exec.script.path` | `script` |
 /// | `event.exec.target.codesigning_flags`, `process.codesigning_flags` | `codesigning_flags`, `instigator_codesigning_flags` |
+/// | `process.signing_id`, `.team_id`, `.is_platform_binary` | `instigator_signing_id`, `instigator_team_id`, `instigator_platform_binary` |
 /// | the ruid, egid and rgid of `event.exec.target.audit_token` | `users` |
 /// | `event.exec.target.responsible_audit_token` | `responsible` |
 /// | `event.exec.target.group_id` | `process_group` |
 ///
-/// The users and groups, the responsible process and the process group are handed to the
-/// response layer and given to no rule.
+/// The users and groups, the responsible process, the process group and the signer of the
+/// process before the `exec` are handed to the response layer and given to no rule.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Who {
     pub pid_version: Option<i64>,
@@ -469,6 +471,9 @@ pub struct Who {
     pub script: Option<String>,
     pub codesigning_flags: Option<i64>,
     pub instigator_codesigning_flags: Option<i64>,
+    pub instigator_signing_id: Option<String>,
+    pub instigator_team_id: Option<String>,
+    pub instigator_platform_binary: Option<bool>,
     /// The users and groups of the process started beside its effective user id, which is
     /// `ProcessStart::user_id`.
     pub users: Users,
@@ -596,6 +601,7 @@ pub const ECS_FIELDS: [(&str, Take); 11] = [
 /// | `rename.destination`, either form | `rename.destination` | `path` | `file.path` | `TargetFilename` |
 /// | `rename.source.path` | `rename.source` | `source` | `file.Ext.original.path` | |
 /// | `process.executable.path` | the same | `executable` | `process.executable` | `Image` |
+/// | `process.team_id`, `.is_platform_binary`, `.codesigning_flags` | the same | `team_id`, `platform_binary`, `codesigning_flags` | none | |
 ///
 /// For a rename, `TargetFilename` is where the file went: Sigma's own `file_rename` category
 /// on Windows names the destination so and the source `SourceFilename`; ECS's `file.path` is
@@ -606,7 +612,9 @@ pub const ECS_FIELDS: [(&str, Take); 11] = [
 /// A collector that keeps `KEEPS` also gives who the program that did it is, from
 /// `process.audit_token` and `process.start_time` (`instigator`), and its signing id,
 /// `process.signing_id` (`signing_id`), which Elastic's rules read as
-/// `process.code_signature.signing_id`.
+/// `process.code_signature.signing_id`. The rest of its signer, its team id, whether it is a
+/// platform binary and its code-signing flags, is handed to the response layer and given to no
+/// rule.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FileEvent {
     pub timestamp: String,
@@ -617,6 +625,9 @@ pub struct FileEvent {
     pub executable: String,
     pub instigator: Identity,
     pub signing_id: Option<String>,
+    pub team_id: Option<String>,
+    pub platform_binary: Option<bool>,
+    pub codesigning_flags: Option<i64>,
     /// Which of `KEEPS` the collector that wrote the line kept.
     pub kept: Keeps,
 }
@@ -800,6 +811,11 @@ fn file(
         executable: path(process.and_then(|p| p.pointer("/executable/path")))?,
         instigator: process.map(identity).unwrap_or_default(),
         signing_id: text(process.and_then(|p| p.get("signing_id"))),
+        team_id: text(process.and_then(|p| p.get("team_id"))),
+        platform_binary: flag(process.and_then(|p| p.get("is_platform_binary"))),
+        codesigning_flags: process
+            .and_then(|p| p.get("codesigning_flags"))
+            .and_then(Value::as_i64),
         kept: kept(&[
             (has("start_time"), IDENTITY),
             (has("signing_id"), SIGNATURE),
@@ -810,6 +826,11 @@ fn file(
 /// A text, or absent for anything else.
 fn text(v: Option<&Value>) -> Option<String> {
     v.and_then(Value::as_str).map(str::to_string)
+}
+
+/// True or false, or absent for anything else.
+fn flag(v: Option<&Value>) -> Option<bool> {
+    v.and_then(Value::as_bool)
 }
 
 /// Which of `KEEPS` a line's collector kept, from the keys the line holds: the filter that keeps
@@ -924,7 +945,7 @@ fn start(v: &Value) -> Result<ProcessStart, &'static str> {
         user_id: token.1,
         signing_id: text(target.get("signing_id")),
         team_id: text(target.get("team_id")),
-        platform_binary: target.get("is_platform_binary").and_then(Value::as_bool),
+        platform_binary: flag(target.get("is_platform_binary")),
         who: Box::new(Who {
             pid_version: token.2,
             started: text(target.get("start_time")),
@@ -939,6 +960,9 @@ fn start(v: &Value) -> Result<ProcessStart, &'static str> {
             instigator_codesigning_flags: instigator
                 .and_then(|p| p.get("codesigning_flags"))
                 .and_then(Value::as_i64),
+            instigator_signing_id: text(instigator.and_then(|p| p.get("signing_id"))),
+            instigator_team_id: text(instigator.and_then(|p| p.get("team_id"))),
+            instigator_platform_binary: flag(instigator.and_then(|p| p.get("is_platform_binary"))),
             users: users(target.get("audit_token")).1,
             responsible: Identity {
                 pid: responsible_pid,
@@ -4942,6 +4966,100 @@ mod tests {
         assert_eq!(file_of(&only_who).kept, IDENTITY);
         let only_signer = kept("null", "null", "null").replace(r#","start_time":null"#, "");
         assert_eq!(file_of(&only_signer).kept, SIGNATURE);
+    }
+
+    #[test]
+    fn the_signer_of_the_process_that_acted_is_read_as_given_and_a_wrong_shape_is_absent() {
+        // The process before an `exec` and the process behind a file event: its signing id,
+        // team id, platform flag and code-signing flags, as the line gives them. A value of
+        // another shape is absent and the line is read, a line without them reads as before,
+        // and what marks the signature kept is the same keys as before.
+        let signer = |signing: &str, team: &str, platform: &str, flags: &str| {
+            format!(
+                r#""signing_id":{signing},"team_id":{team},"is_platform_binary":{platform},"codesigning_flags":{flags}"#
+            )
+        };
+        let given = signer(
+            r#""com.example.tool""#,
+            r#""EXAMPLE123""#,
+            "false",
+            "570522385",
+        );
+        let odd = signer("7", "{}", r#""true""#, "2.5");
+        let start = |signer: &str| {
+            start_of(&exec(7, OBJECT).replace(
+                r#""process":{"executable":{"path":"/bin/zsh"}}"#,
+                &format!(r#""process":{{"executable":{{"path":"/bin/zsh"}},{signer}}}"#),
+            ))
+        };
+        let told = |s: &ProcessStart| {
+            (
+                s.who.instigator_signing_id.clone(),
+                s.who.instigator_team_id.clone(),
+                s.who.instigator_platform_binary,
+                s.who.instigator_codesigning_flags,
+            )
+        };
+        let s = start(&given);
+        assert_eq!(
+            told(&s),
+            (
+                Some("com.example.tool".into()),
+                Some("EXAMPLE123".into()),
+                Some(false),
+                Some(570522385)
+            )
+        );
+        // The program started keeps its own signer: none of the instigator's reaches it. Nor do
+        // the instigator's keys mark anything kept: the marks of a start are the target's.
+        assert_eq!(
+            (s.signing_id.clone(), s.team_id.clone(), s.platform_binary),
+            (Some("com.apple.git".into()), None, Some(true))
+        );
+        assert_eq!(s.kept, 0);
+        let s = start(&odd);
+        assert_eq!(told(&s), (None, None, None, None));
+        assert_eq!(s.args, ["git", "status", "--short"]);
+        assert_eq!(told(&start_of(&exec(7, OBJECT))), (None, None, None, None));
+        let file = |signer: &str| {
+            file_of_line(&created(3, "/Users/example/a").replace(
+                r#"{"executable":{"path":"/usr/bin/curl"}}"#,
+                &format!(r#"{{"executable":{{"path":"/usr/bin/curl"}},{signer}}}"#),
+            ))
+        };
+        let told = |f: &FileEvent| {
+            (
+                f.signing_id.clone(),
+                f.team_id.clone(),
+                f.platform_binary,
+                f.codesigning_flags,
+            )
+        };
+        let f = file(&given);
+        assert_eq!(
+            (told(&f), f.kept),
+            (
+                (
+                    Some("com.example.tool".into()),
+                    Some("EXAMPLE123".into()),
+                    Some(false),
+                    Some(570522385)
+                ),
+                SIGNATURE
+            )
+        );
+        let f = file(&odd);
+        assert_eq!((told(&f), f.kept), ((None, None, None, None), SIGNATURE));
+        assert_eq!(f.path, "/Users/example/a");
+        let f = file_of_line(&created(3, "/Users/example/a"));
+        assert_eq!((told(&f), f.kept), ((None, None, None, None), 0));
+    }
+
+    fn file_of_line(text: &str) -> FileEvent {
+        match line(text.as_bytes()) {
+            Ok(Line::File { event: Some(f), .. }) => *f,
+            other => panic!("{other:?}: {text}"),
+        }
     }
 
     /// A file event as the filter writes it, with invented content.

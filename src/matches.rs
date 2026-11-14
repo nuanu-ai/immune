@@ -391,6 +391,9 @@ pub fn event_cut(e: &Evidence, args: &Args) -> v1::Event {
                     )
                 }),
                 instigator: s.parent_executable.as_deref().map(|p| v1::Process {
+                    signing_id_text: s.who.instigator_signing_id.as_deref().map(whole),
+                    team_id_text: s.who.instigator_team_id.as_deref().map(whole),
+                    platform_binary: s.who.instigator_platform_binary,
                     codesigning_flags: flags(s.who.instigator_codesigning_flags),
                     ..program(p, &s.who.instigator)
                 }),
@@ -419,6 +422,9 @@ pub fn event_cut(e: &Evidence, args: &Args) -> v1::Event {
                 source_text: f.source.as_deref().map(whole),
                 instigator: Some(v1::Process {
                     signing_id_text: f.signing_id.as_deref().map(whole),
+                    team_id_text: f.team_id.as_deref().map(whole),
+                    platform_binary: f.platform_binary,
+                    codesigning_flags: flags(f.codesigning_flags),
                     ..program(&f.executable, &f.instigator)
                 }),
             }),
