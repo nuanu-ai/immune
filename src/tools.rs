@@ -76,8 +76,9 @@ mod tests {
     fn only_a_runnable_file_at_a_known_place_is_taken() {
         // What a found tool prints is stored as facts about this Mac: a folder or a file that
         // may not be run is passed over for the next place.
-        let base = std::env::temp_dir().join(format!("immune-tools-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = crate::common::Scratch::at(
+            std::env::temp_dir().join(format!("immune-tools-{}", std::process::id())),
+        );
         file(&base.join("not-executable/tool"), 0o644);
         std::fs::create_dir_all(base.join("folder/tool")).unwrap();
         file(&base.join("known/tool"), 0o755);
@@ -96,9 +97,9 @@ mod tests {
      {
         // A run the app starts must not make macOS ask the owner for his Documents because a
         // place to look leads there, directly or through a link.
-        let base =
-            std::env::temp_dir().join(format!("immune-tools-guarded-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = crate::common::Scratch::at(
+            std::env::temp_dir().join(format!("immune-tools-guarded-{}", std::process::id())),
+        );
         file(&base.join("Documents/bin/tool"), 0o755);
         std::os::unix::fs::symlink(base.join("Documents/bin"), base.join("bin")).unwrap();
         let known = [base.join("bin/tool"), base.join("Documents/bin/tool")];

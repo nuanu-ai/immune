@@ -5,6 +5,8 @@
 //! system's `codesign` at test time, a Homebrew keg and a global npm package. The system root
 //! and the home folder are temporary, so nothing real is read.
 
+mod common;
+
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -175,7 +177,7 @@ impl Estate {
 
 impl Drop for Estate {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        common::remove(&self.0);
     }
 }
 

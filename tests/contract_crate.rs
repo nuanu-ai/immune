@@ -3,6 +3,8 @@
 //! API alone, and serde_json as its JSON parser, as the crate leaves the parser to the reader.
 //! The real binary runs over an invented home folder, system root and store.
 
+mod common;
+
 use immune_contract::prost::Message;
 use immune_contract::v1;
 use serde_json::Value;
@@ -134,7 +136,7 @@ impl Estate {
 
 impl Drop for Estate {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        common::remove(&self.0);
     }
 }
 

@@ -2,6 +2,8 @@
 //! binary on an invented estate under a temporary folder: checkouts with an editor's task
 //! file and lockfiles, and a list of indicators next to the store. Nothing real is read.
 
+mod common;
+
 use immune_contract::v1;
 use prost::Message;
 use rusqlite::Connection;
@@ -346,7 +348,7 @@ impl Estate {
 
 impl Drop for Estate {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        common::remove(&self.0);
     }
 }
 
@@ -2922,6 +2924,9 @@ fn each_check_with_first_readings_raises_its_own_item_whatever_was_answered_abou
     // While that one is open, the next check's first readings are an item of their own.
     let other = e.checkout(".config/other");
     put(&other.join(".git/hooks/pre-push"), "#!/bin/sh\n");
+    // In a later second than the check before, so that the two items are listed in the order
+    // they came: the store keeps whole seconds, and a quick build runs both in one.
+    common::next_second();
     let printed = e.run_in(&e.home().join(".config"));
     assert!(printed.contains("1 new in this run"), "{printed}");
     assert_eq!(

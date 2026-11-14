@@ -6,6 +6,8 @@
 //! binary reading a temporary system root laid out as the install lays out the real one, with
 //! lines as the root side's filter writes them and invented content.
 
+mod common;
+
 use serde_json::{Value, json};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -147,7 +149,7 @@ impl Dir {
     /// A full run that starts in a later second than every reading before it, so that "since
     /// the latest full check", counted in seconds, is its reading alone.
     fn run_apart(&self) -> String {
-        std::thread::sleep(Duration::from_millis(1100));
+        common::next_second();
         self.run()
     }
 
@@ -259,7 +261,7 @@ impl Dir {
 
 impl Drop for Dir {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        common::remove(&self.0);
     }
 }
 

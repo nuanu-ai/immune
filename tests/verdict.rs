@@ -4,6 +4,8 @@
 //! real binary over an invented home folder and system root, with log lines as the collector's
 //! filter writes them, an invented project and invented content.
 
+mod common;
+
 use immune_contract::v1;
 use prost::Message;
 use serde_json::{Value, json};
@@ -372,7 +374,7 @@ impl Mac {
 
 impl Drop for Mac {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        common::remove(&self.0);
     }
 }
 

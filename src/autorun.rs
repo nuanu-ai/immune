@@ -1607,9 +1607,9 @@ mod tests {
         // Opening a file there raises a permission dialog. A row of the home folder that
         // named such a place is neither read nor looked for.
         use std::os::unix::fs::PermissionsExt;
-        let home =
-            std::env::temp_dir().join(format!("immune-autorun-guard-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
+        let home = crate::common::Scratch::at(
+            std::env::temp_dir().join(format!("immune-autorun-guard-{}", std::process::id())),
+        );
         std::fs::create_dir_all(home.join("Documents/tool")).unwrap();
         std::fs::write(home.join("Documents/tool/settings.json"), "{}").unwrap();
         // Shut, as macOS keeps it: had it been opened, the look would say it failed.
@@ -1627,7 +1627,7 @@ mod tests {
                 "",
             )
         };
-        let looked = look_all(&p, [(home.as_path(), "")].into_iter(), &home);
+        let looked = look_all(&p, [(home.0.as_path(), "")].into_iter(), &home);
         let held = holds(&home, &p, &[&home]);
         std::fs::set_permissions(home.join("Documents"), mode(0o755)).unwrap();
         let _ = std::fs::remove_dir_all(&home);
@@ -1665,6 +1665,7 @@ mod tests {
     fn every_key_of_every_row_read_by_key_is_an_entry_of_its_triggers_kind() {
         // A row is data: what it lists is what is read, with nothing else to write.
         let dir = std::env::temp_dir().join(format!("immune-autorun-keys-{}", std::process::id()));
+        let _removed = crate::common::Scratch::at(dir.clone());
         for p in POINTS.iter() {
             let Select(_, keys) = p.part else { continue };
             let _ = std::fs::remove_dir_all(&dir);
@@ -1699,8 +1700,9 @@ mod tests {
 
     #[test]
     fn a_path_with_a_star_matches_entries_that_begin_and_end_as_it_does() {
-        let dir = std::env::temp_dir().join(format!("immune-autorun-glob-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::common::Scratch::at(
+            std::env::temp_dir().join(format!("immune-autorun-glob-{}", std::process::id())),
+        );
         std::fs::create_dir_all(dir.join(".venv/lib/python3.12/site-packages")).unwrap();
         std::fs::write(dir.join(".venv/lib/python3.12/site-packages/a.pth"), "").unwrap();
         std::fs::write(dir.join("w.code-workspace"), "{}").unwrap();
@@ -1726,8 +1728,9 @@ mod tests {
     #[test]
     fn a_row_of_each_extraction_reads_its_part_and_derives_its_kind_from_the_table() {
         // A hypothetical row of each extraction this version does not use in the table yet.
-        let dir = std::env::temp_dir().join(format!("immune-autorun-row-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::common::Scratch::at(
+            std::env::temp_dir().join(format!("immune-autorun-row-{}", std::process::id())),
+        );
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("hook.pth"), "# x\nimport a\nimport b\n").unwrap();
         let bytes = Point {
@@ -1754,7 +1757,7 @@ mod tests {
                 "",
             )
         };
-        let at = [(dir.as_path(), "dev/a")];
+        let at = [(dir.0.as_path(), "dev/a")];
         let b = look_all(&bytes, at.iter().copied(), &dir);
         let l = look_all(&lines, at.iter().copied(), &dir);
         let _ = std::fs::remove_dir_all(&dir);

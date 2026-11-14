@@ -658,9 +658,10 @@ mod tests {
                 (vec![], vec!["identity"], 0),
             ),
         ] {
-            let dir = std::env::temp_dir()
-                .join(format!("immune-matches-page-{tag}-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
+            let dir = crate::common::Scratch::at(
+                std::env::temp_dir()
+                    .join(format!("immune-matches-page-{tag}-{}", std::process::id())),
+            );
             let root = dir.join("root");
             std::fs::create_dir_all(root.join(events::LOG)).unwrap();
             let plist = root.join(events::PLIST);
@@ -717,9 +718,10 @@ mod tests {
     }
 
     /// A system root with the collector installed and established to record file events.
-    fn installed_root(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("immune-matches-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn installed_root(tag: &str) -> (crate::common::Scratch, std::path::PathBuf) {
+        let dir = crate::common::Scratch::at(
+            std::env::temp_dir().join(format!("immune-matches-{tag}-{}", std::process::id())),
+        );
         let root = dir.join("root");
         std::fs::create_dir_all(root.join(events::LOG)).unwrap();
         let plist = root.join(events::PLIST);
@@ -1039,9 +1041,9 @@ mod tests {
         // nothing is known; a log an earlier collector wrote lacks the field, a later
         // collector's carries it empty, and only a line that gives it a value lets the rule
         // judge; each is said in the collector's lists.
-        let dir =
-            std::env::temp_dir().join(format!("immune-matches-arrival-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::common::Scratch::at(
+            std::env::temp_dir().join(format!("immune-matches-arrival-{}", std::process::id())),
+        );
         let root = dir.join("root");
         std::fs::create_dir_all(root.join(events::LOG)).unwrap();
         let plist = root.join(events::PLIST);

@@ -259,8 +259,9 @@ mod tests {
         // enter it: macOS would ask the owner's permission. The folder here cannot be
         // searched, so entering it would fail where not entering it succeeds.
         use std::os::unix::fs::{PermissionsExt, symlink};
-        let base = std::env::temp_dir().join(format!("immune-guarded-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = crate::common::Scratch::at(
+            std::env::temp_dir().join(format!("immune-guarded-{}", std::process::id())),
+        );
         std::fs::create_dir_all(base.join("Documents/proj")).unwrap();
         std::fs::create_dir_all(base.join("dev/shop")).unwrap();
         let home = std::fs::canonicalize(&base).unwrap();

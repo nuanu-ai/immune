@@ -2,6 +2,8 @@
 //! ask of the Mac is said once and asked by both, and the build finds the binary where cargo
 //! put it. The scripts run here against invented tools; `./build` itself is never run.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -69,7 +71,7 @@ impl Tools {
 
 impl Drop for Tools {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        common::remove(&self.0);
     }
 }
 

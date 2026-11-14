@@ -5,6 +5,8 @@
 //! that says which kind. Each test runs the real binary over an invented home folder and system
 //! root, so nothing of the Mac it runs on is read and the network is never asked.
 
+mod common;
+
 use immune_contract::v1;
 use prost::Message;
 use serde_json::{Value, json};
@@ -145,7 +147,7 @@ impl Estate {
 
 impl Drop for Estate {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        common::remove(&self.0);
     }
 }
 

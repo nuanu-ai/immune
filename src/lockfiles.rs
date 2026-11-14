@@ -1574,7 +1574,7 @@ snapshots:
         fn new(tag: &str, files: &[(&str, &str)]) -> Dir {
             let dir =
                 std::env::temp_dir().join(format!("immune-lock-{tag}-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
+            crate::common::remove(&dir);
             for (name, text) in files {
                 let path = dir.join(name);
                 std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -1610,7 +1610,7 @@ snapshots:
 
     impl Drop for Dir {
         fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
+            crate::common::remove(&self.0);
         }
     }
 

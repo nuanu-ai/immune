@@ -9,6 +9,8 @@
 //! program starts and file events in `tests/event_level.rs`, a vulnerable package in
 //! `tests/vulnerability_data.rs`; the others are here.
 
+mod common;
+
 use immune_contract::v1;
 use prost::Message;
 use serde_json::{Value, json};
@@ -153,7 +155,7 @@ impl Estate {
 
 impl Drop for Estate {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        common::remove(&self.0);
     }
 }
 
@@ -273,7 +275,7 @@ fn a_place_where_code_runs_by_itself_is_read_whole_with_what_changed_and_what_it
     assert_eq!(whole["finding"]["about_text"], rests[0]["subject_text"]);
 
     // Changed again while it is open: the same finding, last seen later, its latest change.
-    std::thread::sleep(std::time::Duration::from_millis(1100));
+    common::next_second();
     e.put(
         &e.home().join("dev/shop/.vscode/tasks.json"),
         "{\"version\": \"2.0.0\", \"tasks\": [{\"label\": \"setup\", \"command\": \"make\", \"runOptions\": {\"runOn\": \"folderOpen\"}}]}\n",
@@ -479,7 +481,7 @@ fn a_finding_the_person_answered_says_so_with_who_why_and_until_when_and_reopene
     assert_eq!(seen["in_force"], true);
 
     // Changed again after it was seen: the answer stays, and no longer hides what is new.
-    std::thread::sleep(std::time::Duration::from_millis(1100));
+    common::next_second();
     e.put(
         &e.home().join("dev/shop/.vscode/tasks.json"),
         "{\"version\": \"2.0.0\", \"tasks\": [{\"label\": \"setup\", \"command\": \"make\", \"runOptions\": {\"runOn\": \"folderOpen\"}}]}\n",

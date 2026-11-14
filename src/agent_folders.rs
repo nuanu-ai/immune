@@ -607,7 +607,7 @@ mod tests {
 
     impl Drop for Trial {
         fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.root);
+            crate::common::remove(&self.root);
         }
     }
 

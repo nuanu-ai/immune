@@ -6,6 +6,8 @@
 //!
 //! To regenerate after changing the schema: `IMMUNE_WRITE_CONTRACT=1 cargo test --test contract`.
 
+mod common;
+
 use immune_contract::v1;
 use prost_types::field_descriptor_proto::{Label, Type};
 use std::path::Path;
@@ -133,21 +135,12 @@ fn generate() -> String {
             }
         }
     }
-    let out = std::env::temp_dir().join(format!(
-        "immune-contract-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&out).unwrap();
-    config.out_dir(&out);
+    let out = common::Scratch::new("contract");
+    config.out_dir(&out.0);
     config
         .compile_fds(fds)
         .expect("prost-build generates the types");
     let code = std::fs::read_to_string(out.join("immune.v1.rs")).unwrap();
-    std::fs::remove_dir_all(&out).unwrap();
     format!("{HEADER}{code}")
 }
 

@@ -1366,7 +1366,7 @@ mod tests {
     impl Dir {
         fn new(tag: &str) -> Dir {
             let dir = std::env::temp_dir().join(format!("immune-osv-{tag}-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
+            crate::common::remove(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             Dir(dir)
         }
@@ -1374,7 +1374,7 @@ mod tests {
 
     impl Drop for Dir {
         fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
+            crate::common::remove(&self.0);
         }
     }
 
