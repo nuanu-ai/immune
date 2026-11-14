@@ -9429,7 +9429,7 @@ fn status_reads_a_store_in_a_folder_it_cannot_write_and_writes_nothing_anywhere(
 const WRITER: &str = "IMMUNE_TEST_WRITER_STORE";
 
 /// What the writer writes as the store's id, uncommitted until the test says `commit`.
-const UNCOMMITTED: &str = "written-by-a-writer-not-committed";
+const UNCOMMITTED: &str = "0123456789abcdef0123456789abcdef";
 
 /// A writer of the store in a process of its own, as a run or a watcher is. It is this test
 /// binary started again for the one test that starts it, with `WRITER` set: that test calls

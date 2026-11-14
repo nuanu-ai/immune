@@ -276,6 +276,11 @@ pub fn watch(args: &WatchArgs) -> ExitCode {
         }
         Err(e) => return unreadable(&e),
     };
+    // The watcher makes the store where there is none, at its start only: a store that goes or
+    // is emptied while it runs is a problem it reports, never one it makes again.
+    if let Err(e) = store::make_if_absent(&args.store) {
+        return unreadable(&e);
+    }
     let mut w = Watcher {
         args,
         folder,

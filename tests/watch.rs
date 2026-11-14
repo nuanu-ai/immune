@@ -489,6 +489,46 @@ fn a_change_the_watcher_sees_is_an_open_finding_at_once_and_its_read_line_counts
 }
 
 #[test]
+fn a_watcher_already_running_never_makes_a_store_in_a_file_whose_schema_is_gone() {
+    // A store whose objects were taken out of `sqlite_master` while a watcher runs: its next
+    // reading reports the problem and writes nothing, and the file is left as it was. A store
+    // removed while it runs is reported the same way and not made again.
+    let mac = Mac::new("emptied");
+    mac.put(".zshrc", "one\n");
+    mac.run();
+    let mut w = mac.watch().started();
+    // Under the run lock, as a writer would, so that no write the watcher began before is
+    // still on its way.
+    let folder = std::fs::File::open(mac.store().parent().unwrap()).unwrap();
+    folder.lock().unwrap();
+    Connection::open(mac.store())
+        .unwrap()
+        .execute_batch("PRAGMA writable_schema = ON; DELETE FROM sqlite_master;")
+        .unwrap();
+    let before = std::fs::read(mac.store()).unwrap();
+    folder.unlock().unwrap();
+    mac.put(".zshrc", "two\n");
+    let problem = w.until("problem", |v| v["code"] == "read_failed");
+    let said = problem["detail_text"].as_str().unwrap();
+    assert!(said.contains("holds no tables, not a store"), "{said}");
+    assert_eq!(std::fs::read(mac.store()).unwrap(), before);
+    // A store that goes while it runs is not made again either.
+    folder.lock().unwrap();
+    std::fs::remove_file(mac.store()).unwrap();
+    folder.unlock().unwrap();
+    mac.put(".zshrc", "three\n");
+    let gone = w.until("problem", |v| {
+        v["code"] == "read_failed"
+            && v["detail_text"]
+                .as_str()
+                .is_some_and(|d| d.contains("there is no store at"))
+    });
+    assert!(!mac.store().exists(), "{gone}");
+    drop(w);
+    assert!(!mac.store().exists());
+}
+
+#[test]
 fn a_watchers_reading_shows_in_the_view_as_what_it_is_and_not_as_a_run_that_did_not_finish() {
     // The owner reads the list of changes: a watcher's reading never writes `run_finished`,
     // and calling it unfinished would say its changes are unknown when they are known. Nor

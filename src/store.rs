@@ -469,10 +469,77 @@ fn schema() -> String {
     .join("\n")
 }
 
-/// Opens the store, making it in an empty file. A store of another format, or one that does
-/// not hold exactly the schema of this format and its id, is refused before anything is
-/// written and is left as it is: old stores are not converted and a damaged one is not
-/// repaired.
+/// Opens the store, making it first where no file is: what `immune run`, `immune sample` and
+/// the start of `immune watch` do. Every other command, and a watcher already running, only
+/// opens (`open`).
+pub fn open_or_make(path: &Path) -> Res<Connection> {
+    make_if_absent(path)?;
+    open(path)
+}
+
+/// Makes a store where no file is, and leaves alone whatever is at the path.
+pub fn make_if_absent(path: &Path) -> Res<()> {
+    match exists(path)? {
+        true => Ok(()),
+        false => make(path),
+    }
+}
+
+/// Whether anything is at the path, a file of any kind or a link, even one that leads nowhere.
+fn exists(path: &Path) -> Res<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(format!("cannot look at {}: {e}", path.display()).into()),
+    }
+}
+
+/// Makes a whole store where there was no file. It is made under a name of its own in the same
+/// folder, committed and closed, and then linked to the path with link(2), which fails if
+/// anything is at the path: so the path holds no file or a whole store, never a half-made one,
+/// whether the process dies part way or two commands make a store at once. The one that links
+/// second finds the other's store, keeps it and removes its own. A process killed before the
+/// link leaves only a file named `.<store>.making-…` beside the store, which no command reads.
+fn make(path: &Path) -> Res<()> {
+    let folder = path.parent().filter(|p| !p.as_os_str().is_empty());
+    let folder = folder.unwrap_or(Path::new("."));
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy())
+        .unwrap_or_default();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?;
+    let making = folder.join(format!(
+        ".{name}.making-{}-{}",
+        std::process::id(),
+        now.as_nanos()
+    ));
+    let made = (|| -> Res<()> {
+        let mut conn = Connection::open_with_flags(
+            &making,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE,
+        )?;
+        let tx = conn.transaction()?;
+        tx.execute_batch(&schema())?;
+        tx.execute(
+            "INSERT INTO meta (key, value) VALUES ('format_version', ?1)",
+            [FORMAT_VERSION],
+        )?;
+        give_id(&tx)?;
+        tx.commit()?;
+        conn.close().map_err(|(_, e)| e)?;
+        match std::fs::hard_link(&making, path) {
+            Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => Err(e.into()),
+            _ => Ok(()),
+        }
+    })();
+    let _ = std::fs::remove_file(&making);
+    made
+}
+
+/// Opens a store that is there. It never makes a store or a table, whatever the file holds:
+/// a file that is not a store of this format, or one that does not hold exactly the schema of
+/// this format and its id, is refused before anything is written and is left as it is. Old
+/// stores are not converted and a damaged one is not repaired.
 ///
 /// A run writes in one transaction that lasts the whole run. Readers such as `immune status`
 /// must be able to read the last committed state all that time, so the run never takes the
@@ -484,20 +551,16 @@ fn schema() -> String {
 /// seconds on every connection: a reader waits out the commit, and the commit waits out a
 /// reader.
 pub fn open(path: &Path) -> Res<Connection> {
-    let mut conn = Connection::open(path)?;
+    if !exists(path)? {
+        return Err(format!(
+            "there is no store at {}; `immune run` makes it",
+            path.display()
+        )
+        .into());
+    }
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     conn.pragma_update(None, "cache_spill", false)?;
     conn.pragma_update(None, "foreign_keys", true)?;
-    let objects: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_master", [], |r| r.get(0))?;
-    if objects == 0 {
-        let tx = conn.transaction()?;
-        tx.execute_batch(&schema())?;
-        tx.execute(
-            "INSERT INTO meta (key, value) VALUES ('format_version', ?1)",
-            [FORMAT_VERSION],
-        )?;
-        give_id(&tx)?;
-        tx.commit()?;
-    }
     check(&conn, path)?;
     conn.execute_batch(VOCABULARY)?;
     conn.execute_batch(crate::processes::KINDS)?;
@@ -607,72 +670,115 @@ fn writable(folder: &Path) -> bool {
 const START_OVER: &str = "Nothing was changed. Move the old store aside or pass another --store; \
                           the next run starts a store from the beginning.";
 
-/// Checks a store before anything else is done with it: its format, then that it holds exactly
-/// the schema of this format, then its id. A store that fails is refused with what to do and is
-/// not touched. So no answer ever rests on a table that is not there, and no writer makes again,
-/// empty, a table that was lost with what it held.
+/// What the refusal of a file that holds no store says to do.
+const NOT_A_STORE: &str = "Nothing was changed. Move it aside or pass another --store; the next \
+                           run makes a store where there is no file.";
+
+/// Checks a store before anything else is done with it: that the file is a store at all, its
+/// format, that it holds exactly the schema of this format, and its id. A store that fails is
+/// refused with what to do and is not touched. So no answer ever rests on a table that is not
+/// there, and no command makes again, empty, a table or a store that was lost with what it held.
+///
+/// Before the check, SQLite rolls back a journal a writer that died left beside the file
+/// (`open_read_only`, and the first read of a connection that may write). That cannot change
+/// what the check judges: it takes out only what that writer never committed, which no reader
+/// of the file would ever see.
 fn check(conn: &Connection, path: &Path) -> Res<()> {
     let at = path.display();
-    // Read whatever the store is: a table `meta` without the columns `key` and `value` names no
-    // format. Any other failure, such as a journal to roll back first, is returned as it is.
-    let has_meta: bool = conn.query_row(
-        "SELECT COUNT(*) = 2 FROM pragma_table_info('meta') WHERE name IN ('key', 'value')",
-        [],
-        |r| r.get(0),
-    )?;
-    let version: Option<String> = if has_meta {
-        conn.query_row(
-            "SELECT MAX(value) FROM meta WHERE key = 'format_version'",
-            [],
-            |r| r.get(0),
-        )?
-    } else {
-        None
+    let objects: i64 = match conn.query_row("SELECT COUNT(*) FROM sqlite_master", [], |r| r.get(0))
+    {
+        Err(e) if e.sqlite_error_code() == Some(rusqlite::ErrorCode::NotADatabase) => {
+            return Err(
+                format!("{at} is not a store: it is not an SQLite file. {NOT_A_STORE}").into(),
+            );
+        }
+        other => other?,
     };
-    let Some(version) = version else {
-        return Err(
-            format!("{at} is not a store of this tool: it names no format. {START_OVER}").into(),
-        );
-    };
-    let ours: u32 = FORMAT_VERSION.parse()?;
-    let Ok(found) = version.parse::<u32>() else {
-        return Err(format!(
-            "the store at {at} names a format this version does not know ({version:?}). {START_OVER}"
-        )
-        .into());
-    };
-    if found < ours {
-        return Err(format!(
-            "the store at {at} is from an older format ({found}); this version uses format {ours} \
-             and does not convert old stores. {START_OVER}"
-        )
+    if objects == 0 {
+        let empty = std::fs::metadata(path).is_ok_and(|m| m.len() == 0);
+        return Err(match empty {
+            true => format!("{at} is an empty file, not a store. {NOT_A_STORE}"),
+            false => {
+                format!("{at} is an SQLite file that holds no tables, not a store. {NOT_A_STORE}")
+            }
+        }
         .into());
     }
-    if found > ours {
+    let one = |key: &str| -> rusqlite::Result<Option<String>> {
+        // A table `meta` without the columns `key` and `value` holds no value; any other
+        // failure, such as a journal to roll back first, is returned as it is.
+        let readable: bool = conn.query_row(
+            "SELECT COUNT(*) = 2 FROM pragma_table_info('meta') WHERE name IN ('key', 'value')",
+            [],
+            |r| r.get(0),
+        )?;
+        if !readable {
+            return Ok(None);
+        }
+        let (rows, value): (i64, Option<String>) = conn.query_row(
+            "SELECT COUNT(*), MAX(CASE WHEN typeof(value) = 'text' THEN value END)
+             FROM meta WHERE key = ?1",
+            [key],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        Ok(value.filter(|_| rows == 1))
+    };
+    let Some(version) = one("format_version")? else {
         return Err(format!(
-            "the store at {at} is from a newer format ({found}) than this version knows ({ours}). \
-             Nothing was changed. Use the version of Immune that made it, or pass another --store."
+            "{at} is not a store of this tool: it does not name exactly one format. \
+                 {START_OVER}"
         )
         .into());
+    };
+    let ours: u32 = FORMAT_VERSION.parse()?;
+    // A format is a number written as `FORMAT_VERSION` is: digits, with no sign or leading zero.
+    let found = version
+        .parse::<u32>()
+        .ok()
+        .filter(|n| n.to_string() == version);
+    match found {
+        None => {
+            return Err(format!(
+                "the store at {at} names a format this version does not know ({version:?}). \
+                 {START_OVER}"
+            )
+            .into());
+        }
+        Some(found) if found < ours => {
+            return Err(format!(
+                "the store at {at} is from an older format ({found}); this version uses format \
+                 {ours} and does not convert old stores. {START_OVER}"
+            )
+            .into());
+        }
+        Some(found) if found > ours => {
+            return Err(format!(
+                "the store at {at} is from a newer format ({found}) than this version knows \
+                 ({ours}). Nothing was changed. Use the version of Immune that made it, or pass \
+                 another --store."
+            )
+            .into());
+        }
+        Some(_) => {}
     }
     if let Some(why) = differs(expected(), &shape(conn)?) {
         return Err(damaged(path, &why).into());
     }
-    let has_id: bool = conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM meta WHERE key = 'store_id' AND value != '')",
-        [],
-        |r| r.get(0),
-    )?;
-    if !has_id {
-        return Err(damaged(path, "it has no id").into());
+    if !one("store_id")?.is_some_and(|id| is_id(&id)) {
+        return Err(damaged(path, "it has no id of the form Immune gives one").into());
     }
     Ok(())
+}
+
+/// Whether `id` has the form `give_id` writes: 32 lower-case hexadecimal characters.
+fn is_id(id: &str) -> bool {
+    id.len() == 32 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 fn damaged(path: &Path, why: &str) -> String {
     format!(
         "the store at {} is damaged: {why}. A store of format {FORMAT_VERSION} holds exactly the \
-         tables this version makes, so something other than Immune changed it. {START_OVER}",
+         schema this version makes, so something other than Immune changed it. {START_OVER}",
         path.display()
     )
 }
@@ -689,80 +795,37 @@ fn expected() -> &'static Shape {
     })
 }
 
-/// A store's schema as the check compares it, by object (`table journal`, `index journal_run`):
-/// for a table, each column with its declared type, whether it may be null, its default, its
-/// place in the primary key and whether it is hidden, and each foreign key; for an index, its
-/// table, its columns in order with their direction and collation, and whether it is unique;
-/// for a view or a trigger, its table and its whole text, since either can change what a write
-/// does. SQLite's own tables, named `sqlite_`, are left out. CHECK constraints are not compared:
-/// SQLite gives them only inside a table's text, which holds its comments too, and a change to
-/// them is a change of format all the same, which raises `FORMAT_VERSION`.
+/// A store's schema as the check compares it: every object `sqlite_master` holds, SQLite's own
+/// among them (the indexes it makes for a UNIQUE or a primary key, the table that keeps
+/// AUTOINCREMENT's counters), by its type and name, with its table and its text. The text is
+/// the statement that made it, so it holds every column, type, constraint, collation, key and
+/// option, `WITHOUT ROWID` and AUTOINCREMENT among them. It is compared as `normal` gives it,
+/// with comments taken out and blank space made one space, so that a comment or the layout of
+/// the schema's source is not a change of format.
 type Shape = std::collections::BTreeMap<String, String>;
 
 fn shape(conn: &Connection) -> rusqlite::Result<Shape> {
-    let objects: Vec<(String, String, String, Option<String>)> = conn
-        .prepare(
-            "SELECT type, name, tbl_name, sql FROM sqlite_master
-             WHERE substr(name, 1, 7) != 'sqlite_' ORDER BY type, name",
-        )?
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
-        .collect::<rusqlite::Result<_>>()?;
-    let list = |sql: &str, args: &[&str]| -> rusqlite::Result<String> {
-        let mut stmt = conn.prepare(sql)?;
-        let n = stmt.column_count();
-        let rows = stmt
-            .query_map(rusqlite::params_from_iter(args), |r| {
-                (0..n)
-                    .map(|i| {
-                        Ok(match r.get_ref(i)? {
-                            rusqlite::types::ValueRef::Null => "null".to_string(),
-                            rusqlite::types::ValueRef::Integer(v) => v.to_string(),
-                            rusqlite::types::ValueRef::Real(v) => v.to_string(),
-                            rusqlite::types::ValueRef::Text(t)
-                            | rusqlite::types::ValueRef::Blob(t) => {
-                                format!("{:?}", String::from_utf8_lossy(t))
-                            }
-                        })
-                    })
-                    .collect::<rusqlite::Result<Vec<_>>>()
-                    .map(|v| v.join(" "))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows.join(", "))
-    };
-    let mut out = Shape::new();
-    for (kind, name, table, sql) in objects {
-        let detail = match kind.as_str() {
-            "table" => format!(
-                "columns {}; keys {}",
-                list(
-                    "SELECT name, type, \"notnull\", dflt_value, pk, hidden
-                     FROM pragma_table_xinfo(?1) ORDER BY cid",
-                    &[&name]
-                )?,
-                list(
-                    "SELECT \"from\", \"table\", \"to\" FROM pragma_foreign_key_list(?1)
-                     ORDER BY id, seq",
-                    &[&name]
-                )?
-            ),
-            "index" => format!(
-                "on {table} ({}) unique {}",
-                list(
-                    "SELECT name, desc, coll FROM pragma_index_xinfo(?1) WHERE key = 1
-                     ORDER BY seqno",
-                    &[&name]
-                )?,
-                list(
-                    "SELECT \"unique\" FROM pragma_index_list(?1) WHERE name = ?2",
-                    &[&table, &name]
-                )?
-            ),
-            _ => format!("on {table}: {}", sql.unwrap_or_default()),
-        };
-        out.insert(format!("{kind} {name}"), detail);
-    }
-    Ok(out)
+    conn.prepare("SELECT type, name, tbl_name, sql FROM sqlite_master")?
+        .query_map([], |r| {
+            let (kind, name): (String, String) = (r.get(0)?, r.get(1)?);
+            let (table, sql): (String, Option<String>) = (r.get(2)?, r.get(3)?);
+            Ok((
+                format!("{kind} {name}"),
+                format!("on {table}: {}", normal(sql.as_deref().unwrap_or_default())),
+            ))
+        })?
+        .collect()
+}
+
+/// A statement of the schema with its comments, from `--` to the end of the line, taken out and
+/// every run of blank space made one space. The schema's source holds no `--` and no run of
+/// blank space inside a quoted string, which a test pins, so this changes no string.
+fn normal(sql: &str) -> String {
+    sql.lines()
+        .map(|line| line.split_once("--").map_or(line, |(code, _)| code))
+        .flat_map(str::split_whitespace)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The first way a store's schema is not the one this format makes, in words; `None` when it
@@ -1597,6 +1660,131 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_schema_holds_no_quoted_text_that_the_comparison_would_change() {
+        // `normal` takes out `--` comments and makes blank space one. A quoted string or name
+        // holding `--`, a line break or a run of blank space would be changed by it, and two
+        // schemas that differ there would compare equal. Read as SQLite reads quotes.
+        let sql = schema();
+        let mut chars = sql.chars().peekable();
+        let mut quoted: Option<(char, String)> = None;
+        while let Some(c) = chars.next() {
+            match &mut quoted {
+                Some((q, text)) if c == *q && chars.peek() != Some(q) => {
+                    assert!(
+                        !text.contains("--")
+                            && !text.contains("  ")
+                            && !text.contains(['\n', '\t', '\r']),
+                        "{text:?}"
+                    );
+                    quoted = None;
+                }
+                Some((q, text)) => {
+                    if c == *q {
+                        chars.next();
+                    }
+                    text.push(c);
+                }
+                None if c == '-' && chars.peek() == Some(&'-') => {
+                    for c in chars.by_ref() {
+                        if c == '\n' {
+                            break;
+                        }
+                    }
+                }
+                None if c == '\'' || c == '"' => quoted = Some((c, String::new())),
+                None => {}
+            }
+        }
+        assert!(quoted.is_none());
+    }
+
+    #[test]
+    fn a_store_made_from_empty_is_accepted_by_its_own_check_and_compares_equal() {
+        let dir = crate::common::Scratch::new("made-equal");
+        let path = dir.join("store.db");
+        drop(open_or_make(&path).unwrap());
+        let conn = open_read_only(&path).unwrap();
+        assert_eq!(differs(expected(), &shape(&conn).unwrap()), None);
+        assert!(is_id(&id(&conn).unwrap()));
+        // Made once: a second open finds it and makes nothing.
+        let first = std::fs::read(&path).unwrap();
+        drop(open_or_make(&path).unwrap());
+        assert_eq!(
+            id(&open_read_only(&path).unwrap()).unwrap(),
+            id(&conn).unwrap()
+        );
+        assert_eq!(std::fs::read(&path).unwrap().len(), first.len());
+        // Nothing of the making is left beside it.
+        let beside: Vec<_> = std::fs::read_dir(&*dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(beside, [std::ffi::OsString::from("store.db")]);
+    }
+
+    #[test]
+    fn a_store_whose_schema_differs_only_in_comments_and_layout_is_accepted() {
+        // A comment or the layout of the schema's source is not a change of format: a store
+        // made by a build whose source said the same in other lines is still a store of it.
+        let dir = crate::common::Scratch::new("layout");
+        let path = dir.join("store.db");
+        drop(open_or_make(&path).unwrap());
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "PRAGMA writable_schema = ON;
+                 UPDATE sqlite_master SET sql = replace(replace(sql, '(', '( -- a note
+                    '), ' ', '   ') WHERE name = 'meta';",
+            )
+            .unwrap();
+        let conn = open(&path).unwrap();
+        let sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name = 'meta'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            sql.contains("note\n") && sql.contains("TABLE   meta"),
+            "{sql}"
+        );
+    }
+
+    #[test]
+    fn a_store_made_while_a_file_came_to_the_path_leaves_that_file_as_it_is() {
+        // Another command can put its store at the path between the look and the link: the
+        // link then finds it, and the store made here is dropped, not put in its place.
+        let dir = crate::common::Scratch::new("raced");
+        let path = dir.join("store.db");
+        std::fs::write(&path, b"another command's store").unwrap();
+        make(&path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"another command's store");
+        let beside: Vec<_> = std::fs::read_dir(&*dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(beside, [std::ffi::OsString::from("store.db")]);
+    }
+
+    #[test]
+    fn a_store_that_holds_a_table_sqlite_made_beyond_the_format_is_refused() {
+        // SQLite's own objects are compared too: `ANALYZE` adds `sqlite_stat1`, which changes
+        // how every query of the store is planned.
+        let dir = crate::common::Scratch::new("analyzed");
+        let path = dir.join("store.db");
+        drop(open_or_make(&path).unwrap());
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch("ANALYZE")
+            .unwrap();
+        let said = open(&path).err().unwrap().to_string();
+        assert!(said.contains("it holds a table sqlite_stat1"), "{said}");
+    }
+
+    #[test]
     fn a_time_more_than_a_few_minutes_ahead_of_the_clock_has_no_age_and_a_little_ahead_is_now() {
         // Two clocks differ by seconds; a reading dated later than that is not fresh forever.
         let now = 2_000_000_000;
@@ -1666,7 +1854,7 @@ mod tests {
                     .as_nanos()
             ));
             std::fs::create_dir_all(&dir).unwrap();
-            let conn = open(&dir.join("store.db")).unwrap();
+            let conn = open_or_make(&dir.join("store.db")).unwrap();
             Kept {
                 dir,
                 conn,
@@ -2308,7 +2496,7 @@ mod tests {
     /// process holds none. Returns the copy and the store's committed id.
     fn hot(dir: &Path) -> (std::path::PathBuf, String) {
         let live = dir.join("live.db");
-        let committed = id(&open(&live).unwrap()).unwrap();
+        let committed = id(&open_or_make(&live).unwrap()).unwrap();
         let writer = Connection::open(&live).unwrap();
         writer
             .execute_batch(

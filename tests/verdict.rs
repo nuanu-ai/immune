@@ -2546,7 +2546,7 @@ fn a_store_without_any_one_table_of_its_schema_is_refused_by_a_reader_and_by_a_w
         r.damage(&format!("DROP TABLE {table}"));
         // Without `meta` the store names no format; without any other table it is damaged.
         let said = if table == "meta" {
-            "names no format"
+            "does not name exactly one format"
         } else {
             "is damaged"
         };
@@ -2563,15 +2563,7 @@ fn a_writer_refuses_a_store_without_its_id_before_it_writes_and_never_reports_fa
     // A run or a sample on a store without its id once committed everything and then failed,
     // saying nothing was changed. The check comes before the first write.
     let r = Refusable::new("no-id");
-    let sample = r.mac.0.join("sample.json");
-    std::fs::write(
-        &sample,
-        json!({"at": now(), "processes": [], "connections": [], "other_users": [],
-               "unreadable": 0, "ended": 0, "sockets_unreadable": 0})
-        .to_string(),
-    )
-    .unwrap();
-    let sample = sample.to_str().unwrap();
+    let sample = r.sample.as_str();
     r.damage("DELETE FROM meta WHERE key = 'store_id'");
     r.refused_by(
         &[
@@ -2580,6 +2572,204 @@ fn a_writer_refuses_a_store_without_its_id_before_it_writes_and_never_reports_fa
         ],
         &["is damaged: it has no id", START_OVER],
     );
+}
+
+#[test]
+fn a_file_that_exists_is_never_given_a_schema_by_any_command() {
+    // A store is made only where no file was. A store whose objects were taken out of
+    // `sqlite_master` keeps its pages; a 0-byte file and a file that is not SQLite hold nothing
+    // of a store. Every command, reading or writing, refuses each as it is, and none makes a
+    // store in it under a new id.
+    let r = Refusable::new("no-schema");
+    r.damage("PRAGMA writable_schema = ON; DELETE FROM sqlite_master;");
+    r.refused_by_every_command(&[
+        "is an SQLite file that holds no tables, not a store",
+        NOT_A_STORE,
+    ]);
+    r.replace(b"");
+    r.refused_by_every_command(&["is an empty file, not a store", NOT_A_STORE]);
+    r.replace(b"invented notes, not a database\n");
+    r.refused_by_every_command(&["is not a store: it is not an SQLite file", NOT_A_STORE]);
+}
+
+#[test]
+fn two_first_commands_at_once_and_one_killed_part_way_leave_no_store_or_a_whole_one() {
+    // Where no file is, a store is made whole under a name of its own and linked into place.
+    let r = Refusable::new("first");
+    let fresh = r.mac.0.join("fresh");
+    let store = fresh.join("store.db");
+    let sample = |kill_after: Option<u64>| {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_immune"));
+        c.env("HOME", r.mac.home())
+            .args([
+                "sample",
+                "--json",
+                "--sample-input",
+                r.sample.as_str(),
+                "--store",
+            ])
+            .arg(&store)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = c.spawn().unwrap();
+        if let Some(ms) = kill_after {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+            let _ = child.kill();
+        }
+        child
+    };
+    // A first command killed part way, at moments from its start to its end.
+    for ms in [0, 2, 5, 10, 20, 40, 80] {
+        let _ = std::fs::remove_dir_all(&fresh);
+        let _ = sample(Some(ms)).wait();
+        if std::fs::symlink_metadata(&store).is_ok() {
+            let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+                .env("HOME", r.mac.home())
+                .args(["status", "--json", "--store"])
+                .arg(&store)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{ms} ms: {}",
+                String::from_utf8_lossy(&out.stdout)
+            );
+        }
+        for entry in std::fs::read_dir(&fresh).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            assert!(
+                // A journal beside a whole store is the killed command's own transaction after
+                // the store was in place, which the next open rolls back.
+                name == "store.db"
+                    || name == "store.db-journal"
+                    || name.starts_with(".store.db.making-")
+                    || !name.starts_with("store.db"),
+                "{ms} ms: {name}"
+            );
+        }
+    }
+    // Four first commands at once: one store, the same for all, and nothing left of the making.
+    let _ = std::fs::remove_dir_all(&fresh);
+    let children: Vec<_> = (0..4).map(|_| sample(None)).collect();
+    let ids: std::collections::BTreeSet<String> = children
+        .into_iter()
+        .map(|c| c.wait_with_output().unwrap())
+        .filter(|o| o.status.success())
+        .map(|o| {
+            let v: Value = serde_json::from_slice(&o.stdout).unwrap();
+            v["store_id"].as_str().unwrap().to_string()
+        })
+        .collect();
+    assert_eq!(ids.len(), 1, "{ids:?}");
+    let left: Vec<String> = std::fs::read_dir(&fresh)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.starts_with(".store.db"))
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+}
+
+#[test]
+fn a_store_whose_table_differs_only_in_a_check_a_unique_without_rowid_a_collation_or_autoincrement_is_refused()
+ {
+    // The comparison is of each object's text as SQLite keeps it, so what lives only there is
+    // compared too. Each table is made again with the one difference and its rows.
+    let r = Refusable::new("text");
+    let remade = |table: &str, made: &str| {
+        format!(
+            "PRAGMA legacy_alter_table = ON;
+             ALTER TABLE {table} RENAME TO old_{table};
+             {made};
+             INSERT INTO {table} SELECT * FROM old_{table};
+             DROP TABLE old_{table};"
+        )
+    };
+    for (table, made) in [
+        // Without the CHECK that a threat gone has a run that saw it go.
+        (
+            "threat",
+            "CREATE TABLE threat (source TEXT NOT NULL, id TEXT NOT NULL, vendor TEXT NOT NULL,
+             product TEXT NOT NULL, name TEXT NOT NULL, date_added TEXT NOT NULL,
+             first_run TEXT NOT NULL, first_seen_at INTEGER NOT NULL, gone_at INTEGER,
+             gone_run TEXT, PRIMARY KEY (source, id))",
+        ),
+        // Without the UNIQUE of a basis' strength.
+        (
+            "basis_kind",
+            "CREATE TABLE basis_kind (name TEXT PRIMARY KEY, strength INTEGER NOT NULL)",
+        ),
+        (
+            "raw_input",
+            "CREATE TABLE raw_input (reader TEXT NOT NULL, input TEXT NOT NULL, path TEXT NOT NULL,
+             run_id TEXT NOT NULL, PRIMARY KEY (reader, input)) WITHOUT ROWID",
+        ),
+        (
+            "coverage_kind",
+            "CREATE TABLE coverage_kind (name TEXT COLLATE NOCASE PRIMARY KEY)",
+        ),
+        (
+            "feed_reading",
+            "CREATE TABLE feed_reading (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL,
+             run_id TEXT NOT NULL, at INTEGER NOT NULL,
+             outcome TEXT NOT NULL CHECK (outcome IN ('read', 'unchanged', 'failed')),
+             reason TEXT, etag TEXT, sha256 TEXT, raw_path TEXT, entries INTEGER,
+             CHECK ((outcome = 'failed') = (reason IS NOT NULL)))",
+        ),
+    ] {
+        r.damage(&remade(table, made));
+        r.refused_by(
+            &[vec!["status", "--json"], vec!["run", "--json"]],
+            &["is damaged", START_OVER],
+        );
+    }
+}
+
+#[test]
+fn a_store_whose_id_or_format_has_another_form_is_refused() {
+    let r = Refusable::new("forms");
+    for (damage, said) in [
+        (
+            "UPDATE meta SET value = ' ' WHERE key = 'store_id'",
+            "it has no id of the form",
+        ),
+        (
+            "UPDATE meta SET value = 'x' WHERE key = 'store_id'",
+            "it has no id of the form",
+        ),
+        (
+            "UPDATE meta SET value = upper(value) || '' WHERE key = 'store_id'",
+            "it has no id of the form",
+        ),
+        (
+            "UPDATE meta SET value = substr(value, 2) WHERE key = 'store_id'",
+            "it has no id of the form",
+        ),
+        // Two rows of the format, in a `meta` made again without its key: the one that names
+        // a newer format is not taken for the store's.
+        (
+            "ALTER TABLE meta RENAME TO old_meta;
+             CREATE TABLE meta (key TEXT, value TEXT NOT NULL);
+             INSERT INTO meta SELECT * FROM old_meta;
+             DROP TABLE old_meta;
+             INSERT INTO meta VALUES ('format_version', '7');",
+            "does not name exactly one format",
+        ),
+        (
+            "UPDATE meta SET value = '06' WHERE key = 'format_version'",
+            "names a format this version does not know",
+        ),
+        (
+            "UPDATE meta SET value = ' 6' WHERE key = 'format_version'",
+            "names a format this version does not know",
+        ),
+    ] {
+        r.damage(damage);
+        r.refused_by(
+            &[vec!["status", "--json"], vec!["run", "--json"]],
+            &[said, START_OVER],
+        );
+    }
 }
 
 #[test]
@@ -2619,6 +2809,10 @@ fn a_command_that_only_reads_changes_not_a_byte_of_a_store_of_its_format() {
 const START_OVER: &str = "Nothing was changed. Move the old store aside or pass another --store; \
                           the next run starts a store from the beginning.";
 
+/// What the refusal of a file that holds no store says to do.
+const NOT_A_STORE: &str = "Nothing was changed. Move it aside or pass another --store; the next \
+                           run makes a store where there is no file.";
+
 /// A store with a finding of the response layer open and a finding the person saw, kept as it
 /// was so that each damage starts from it.
 struct Refusable {
@@ -2626,6 +2820,8 @@ struct Refusable {
     id: String,
     verdict: String,
     before: Vec<u8>,
+    /// A reading of no processes, for `immune sample`.
+    sample: String,
 }
 
 impl Refusable {
@@ -2645,12 +2841,22 @@ impl Refusable {
         assert!(mac.answer(&seen, &["seen"]).status.success());
         let id = mac.verdict_findings().pop().unwrap();
         let verdict = about_finding(&store, &id, "harmless", "case-1").to_string();
+        let sample = mac.0.join("sample.json");
+        std::fs::write(
+            &sample,
+            json!({"at": now(), "processes": [], "connections": [], "other_users": [],
+                   "unreadable": 0, "ended": 0, "sockets_unreadable": 0})
+            .to_string(),
+        )
+        .unwrap();
+        let sample = sample.to_str().unwrap().to_string();
         let before = std::fs::read(mac.store()).unwrap();
         let r = Refusable {
             mac,
             id,
             verdict,
             before,
+            sample,
         };
         assert_eq!(r.findings(), 2);
         r
@@ -2667,6 +2873,11 @@ impl Refusable {
 
     fn restore(&self) {
         std::fs::write(self.mac.store(), &self.before).unwrap();
+    }
+
+    /// Puts these bytes where the store was.
+    fn replace(&self, bytes: &[u8]) {
+        std::fs::write(self.mac.store(), bytes).unwrap();
     }
 
     /// The findings the store holds: the one of the response layer and the one seen.
@@ -2718,6 +2929,7 @@ impl Refusable {
                 vec!["verdict", "--json"],
                 vec!["run"],
                 vec!["run", "--json"],
+                vec!["sample", "--sample-input", self.sample.as_str()],
             ],
             said,
         );

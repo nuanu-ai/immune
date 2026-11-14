@@ -910,6 +910,8 @@ fn sample(args: &SampleArgs) -> Result<processes::Report, Box<dyn Error>> {
     let home = home(&args.store);
     store_folder(&home)?;
     let _lock = store::lock_run(&home)?.ok_or(Stop::RunInProgress)?;
+    // `immune sample` makes the store where there is none; a watcher's sample only opens it.
+    drop(store::open_or_make(&args.store).map_err(|e| Stop::Store(e.to_string()))?);
     let (report, _) = sample_held(
         &args.store,
         args.input.as_deref(),
@@ -2390,7 +2392,7 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     // Held until the run returns: a second run stops here and writes nothing. A watcher's
     // reading, `immune watch`, is waited out.
     let _lock = store::lock_run_past_watcher(&home)?.ok_or(Stop::RunInProgress)?;
-    let mut conn = store::open(&args.store).map_err(|e| Stop::Store(e.to_string()))?;
+    let mut conn = store::open_or_make(&args.store).map_err(|e| Stop::Store(e.to_string()))?;
     store::journal_note(&conn, at, &run_id, "run_started", "")?;
 
     let tx = conn.transaction()?;
@@ -5232,7 +5234,7 @@ mod tests {
             conn.query_row("SELECT COUNT(*) FROM session_file", [], |r| r.get(0))
                 .unwrap()
         };
-        let mut conn = store::open(&store_path).unwrap();
+        let mut conn = store::open_or_make(&store_path).unwrap();
         {
             let tx = conn.transaction().unwrap();
             store::put_entity(&tx, "machine:mac").unwrap();
@@ -5264,7 +5266,7 @@ mod tests {
         // about a host key and the folders that could not be listed all stay, and the run prints
         // its line as it keeps it.
         let scratch = common::Scratch::new("run-line-pieces");
-        let conn = store::open(&scratch.0.join("store.db")).unwrap();
+        let conn = store::open_or_make(&scratch.0.join("store.db")).unwrap();
         let mark = status::RunMark {
             id: "1767412800-000000000".to_string(),
             started_at: 1_767_412_800,

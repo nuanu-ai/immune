@@ -611,7 +611,7 @@ mod tests {
     /// A store with the facts of an earlier build, of the machine `machine:mac` and the
     /// checkout `dev/a`.
     fn earlier(dir: &Path) -> rusqlite::Connection {
-        let mut conn = crate::store::open(&dir.join("store.db")).unwrap();
+        let mut conn = crate::store::open_or_make(&dir.join("store.db")).unwrap();
         let tx = conn.transaction().unwrap();
         crate::store::put_entity(&tx, "machine:mac").unwrap();
         crate::store::put_entity(&tx, "checkout:machine:mac/dev/a").unwrap();

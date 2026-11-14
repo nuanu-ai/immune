@@ -588,7 +588,7 @@ mod tests {
 
     /// A reading of the log under `root` by the core, as `immune run` makes one, into `store`.
     fn core_reads(store: &std::path::Path, root: &std::path::Path) {
-        let mut conn = crate::store::open(store).unwrap();
+        let mut conn = crate::store::open_or_make(store).unwrap();
         let tx = conn.transaction().unwrap();
         crate::store::put_entity(&tx, "machine:mac").unwrap();
         events::read(&tx, "events-1", "machine:mac", root, 1_791_090_000).unwrap();
@@ -1033,7 +1033,7 @@ mod tests {
         let log = root.join(events::LOG).join("exec-20261004T00.jsonl");
         // A program start as an earlier collector wrote it: no script, no start time.
         std::fs::write(&log, start(1, "")).unwrap();
-        drop(crate::store::open(&dir.join("store.db")).unwrap());
+        drop(crate::store::open_or_make(&dir.join("store.db")).unwrap());
         let core = || core_reads(&dir.join("store.db"), &root);
         let args = MatchesArgs {
             store: dir.join("store.db"),

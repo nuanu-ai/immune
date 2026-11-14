@@ -4996,7 +4996,7 @@ mod tests {
         let plist = dir.join("root").join(PLIST);
         std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
         std::fs::write(&plist, "<plist/>").unwrap();
-        let mut conn = crate::store::open(&dir.join("store.db")).unwrap();
+        let mut conn = crate::store::open_or_make(&dir.join("store.db")).unwrap();
         let now = 1_791_000_000;
         let read = |conn: &mut rusqlite::Connection, at: i64| {
             let tx = conn.transaction().unwrap();
@@ -5030,7 +5030,7 @@ mod tests {
         let plist = dir.join("root").join(PLIST);
         std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
         std::fs::write(&plist, "<plist/>").unwrap();
-        let mut conn = crate::store::open(&dir.join("store.db")).unwrap();
+        let mut conn = crate::store::open_or_make(&dir.join("store.db")).unwrap();
         let read = |conn: &mut rusqlite::Connection, at: i64| {
             let tx = conn.transaction().unwrap();
             crate::store::put_entity(&tx, "machine:mac").unwrap();
@@ -5071,7 +5071,7 @@ mod tests {
         let plist = dir.join("root").join(PLIST);
         std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
         std::fs::write(&plist, "<plist/>").unwrap();
-        let mut conn = crate::store::open(&dir.join("store.db")).unwrap();
+        let mut conn = crate::store::open_or_make(&dir.join("store.db")).unwrap();
         // On the hour, so that each reading below is in an hour of its own.
         let now = 1_791_000_000;
         assert_eq!(now % HOUR, 0);
@@ -5848,7 +5848,7 @@ mod tests {
             std::env::temp_dir().join(format!("immune-events-run-{}", std::process::id())),
         );
         std::fs::create_dir_all(&dir).unwrap();
-        let mut conn = crate::store::open(&dir.join("store.db")).unwrap();
+        let mut conn = crate::store::open_or_make(&dir.join("store.db")).unwrap();
         let read = |conn: &mut rusqlite::Connection| {
             let tx = conn.transaction().unwrap();
             crate::store::put_entity(&tx, "machine:mac").unwrap();
@@ -6007,7 +6007,7 @@ mod tests {
             std::env::temp_dir().join(format!("immune-events-forged-{}", std::process::id())),
         );
         std::fs::create_dir_all(&dir).unwrap();
-        let conn = crate::store::open(&dir.join("store.db")).unwrap();
+        let conn = crate::store::open_or_make(&dir.join("store.db")).unwrap();
         conn.execute_batch(
             "INSERT INTO event_arrival VALUES ('program_start', 'script', 1, 5, NULL, 1000, 6);
              INSERT INTO event_arrival VALUES ('program_start', 'identity', 1, 5, NULL, 9, 6);

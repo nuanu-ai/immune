@@ -3042,7 +3042,7 @@ mod tests {
             std::env::temp_dir().join(format!("immune-ways-{}", std::process::id())),
         );
         std::fs::create_dir_all(&dir).unwrap();
-        let conn = crate::store::open(&dir.join("store.db")).unwrap();
+        let conn = crate::store::open_or_make(&dir.join("store.db")).unwrap();
         let mut page = String::new();
         ways(&conn, &mut page, None).unwrap();
         let registered: Vec<String> = conn
@@ -3119,7 +3119,7 @@ mod tests {
     /// not exist; the folder it made goes, also when the test fails.
     fn this_mac_page() -> String {
         let dir = crate::common::Scratch::new("told");
-        let conn = crate::store::open(&dir.0.join("store.db")).unwrap();
+        let conn = crate::store::open_or_make(&dir.0.join("store.db")).unwrap();
         let st = crate::status::state(&conn, &dir.0.join("no-home"), 1_791_000_000).unwrap();
         this_mac(&conn, &st, 1_791_000_000).unwrap()
     }

@@ -2423,7 +2423,7 @@ mod tests {
         ));
         let _removed = crate::common::Scratch::at(dir.clone());
         std::fs::create_dir_all(&dir).unwrap();
-        let mut conn = crate::store::open(&dir.join("store.db")).unwrap();
+        let mut conn = crate::store::open_or_make(&dir.join("store.db")).unwrap();
         let mac = "machine:mac";
         // `journaled`: a reading the page lists, that recorded a change; `full`: a full run.
         let write = |conn: &mut rusqlite::Connection, i: i64, journaled: bool, full: bool| {
@@ -2511,7 +2511,7 @@ mod tests {
         let scratch = crate::common::Scratch::new("view-reason-cut");
         let dir = scratch.0.clone();
         let store = dir.join("store.db");
-        let mut conn = crate::store::open(&store).unwrap();
+        let mut conn = crate::store::open_or_make(&store).unwrap();
         // Invented, of a kind the patterns know, and put together so none stands in the file.
         let token = format!(
             "{}{}",
