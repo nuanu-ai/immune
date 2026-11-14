@@ -126,6 +126,8 @@ pub fn of(
         evidence: evidence(conn, f)?.map(|body| v1::Evidence { body: Some(body) }),
         rests_on,
         answers_note: findings::ANSWERS_NOTE.to_string(),
+        thing: i.thing.clone(),
+        kind_title: findings::kind_title(i.kind).to_string(),
     }))
 }
 
@@ -169,6 +171,8 @@ pub fn listed(
         first_seen_at: i.first_seen.unwrap_or_default(),
         last_seen_at: i.last_seen.unwrap_or_default(),
         answer: i.answer.as_ref().map(answer),
+        thing: i.thing.clone(),
+        kind_title: findings::kind_title(i.kind).to_string(),
     }
 }
 

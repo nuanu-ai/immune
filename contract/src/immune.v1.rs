@@ -1577,7 +1577,7 @@ pub struct Findings {
     #[prost(string, tag = "6")]
     pub answers_note: ::prost::alloc::string::String,
     /// The journal's latest sequence number in the state of the store this answer was read from,
-    /// as in `Finding`. Since 1.8.0.
+    /// as in `Finding`. Since 1.9.0.
     #[prost(int64, tag = "7")]
     pub journal_seq: i64,
 }
@@ -1612,6 +1612,18 @@ pub struct ListedFinding {
     /// none.
     #[prost(message, optional, tag = "8")]
     pub verdicts: ::core::option::Option<Verdicts>,
+    /// What it is about, in the core's words, for a finding whose thing no name from the Mac says:
+    /// for `watched.first-read`, the places that check read for the first time, counted by kind,
+    /// such as `2 projects and 1 other place`; `where_text` is then the machine they are on.
+    /// Absent for every other finding: its thing is named by `where_text` and its evidence. Since
+    /// 1.8.0.
+    #[prost(string, optional, tag = "9")]
+    pub thing: ::core::option::Option<::prost::alloc::string::String>,
+    /// `kind` as a person reads it: a short title in sentence case, such as `Shell startup file`
+    /// for `shell profile`, the same wherever the core shows the kind. `kind` is the stable name to
+    /// match on. A kind this build has no title for is given as `kind`. Since 1.8.0.
+    #[prost(string, tag = "10")]
+    pub kind_title: ::prost::alloc::string::String,
 }
 /// The answer to `immune finding <id>`: one finding whole.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -1665,10 +1677,16 @@ pub struct Finding {
     /// As in `ListedFinding`, with the first verdict and the latest 20 listed.
     #[prost(message, optional, tag = "17")]
     pub verdicts: ::core::option::Option<Verdicts>,
+    /// As in `ListedFinding`. Since 1.8.0.
+    #[prost(string, optional, tag = "18")]
+    pub thing: ::core::option::Option<::prost::alloc::string::String>,
+    /// As in `ListedFinding`. Since 1.8.0.
+    #[prost(string, tag = "19")]
+    pub kind_title: ::prost::alloc::string::String,
     /// The other finding of the pair that an answer given with `--with` answered beside this one,
     /// as that answer left it: its `state` is the one it has now. Absent when the command named no
-    /// other finding, and when it only read. Since 1.8.0.
-    #[prost(message, optional, tag = "18")]
+    /// other finding, and when it only read. Since 1.9.0.
+    #[prost(message, optional, tag = "20")]
     pub answered_with: ::core::option::Option<FindingRef>,
     /// The journal's latest sequence number in the state of the store this answer was read from:
     /// what the reader has seen. An answer passes it back as `--journal-seq`, and is refused with
@@ -1681,8 +1699,8 @@ pub struct Finding {
     /// the rule; it refuses `seen` and `reopen`. One number covers every finding of the store, so
     /// it covers both findings of a pair; when they were read in two answers, pass the smaller of
     /// the two. Required with `--with` and with `--via agent` on `seen` and `expected`. `Findings`
-    /// and `Status` carry it too. Since 1.8.0.
-    #[prost(int64, tag = "19")]
+    /// and `Status` carry it too. Since 1.9.0.
+    #[prost(int64, tag = "21")]
     pub journal_seq: i64,
 }
 /// The person's answer to a finding.
@@ -2708,7 +2726,7 @@ pub struct Status {
     pub not_computed: ::prost::alloc::vec::Vec<NotComputed>,
     /// The journal's latest sequence number in the state of the store this answer was read from,
     /// as in `Finding`: an answer to a finding listed here passes it as `--journal-seq`. Absent when
-    /// there is no store. Since 1.8.0.
+    /// there is no store. Since 1.9.0.
     #[prost(int64, optional, tag = "27")]
     pub journal_seq: ::core::option::Option<i64>,
 }
@@ -3079,7 +3097,7 @@ pub struct Caveat {
 /// One thing the core does not cover, in its words: one per cause, never one per machine or file.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(default)]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Uncovered {
     /// The cause, a stable name.
     #[prost(string, tag = "1")]
@@ -3110,7 +3128,8 @@ pub struct Uncovered {
     #[prost(string, optional, tag = "10")]
     pub value_text: ::core::option::Option<::prost::alloc::string::String>,
     /// The things it is about, as the Mac names them: the first three, or every one for
-    /// `package-managers-not-read`. Whole.
+    /// `package-managers-not-read`. Names alone: what a source said of each is in `examples`.
+    /// Whole.
     #[prost(string, repeated, tag = "11")]
     pub examples_text: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// Where it holds: on every Mac, a limit of this version that no reading here raised, or on
@@ -3121,6 +3140,24 @@ pub struct Uncovered {
         deserialize_with = "crate::enum_from_name::<HoldsOn, _>"
     )]
     pub holds_on: i32,
+    /// The same things, one for each name of `examples_text` and in its order, each with what its
+    /// source said of it. Since 1.8.0.
+    #[prost(message, repeated, tag = "13")]
+    pub examples: ::prost::alloc::vec::Vec<UncoveredExample>,
+}
+/// One thing a cause of what is not covered is about.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UncoveredExample {
+    /// Its name, as in `examples_text`. Whole.
+    #[prost(string, tag = "1")]
+    pub name_text: ::prost::alloc::string::String,
+    /// What its source said of it, such as why it could not be opened or read, with the secrets the
+    /// core recognises cut out, each a mark as in `ProgramStart.args_text`. Absent when the source
+    /// said nothing.
+    #[prost(string, optional, tag = "2")]
+    pub reason_text: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// A check as the journal records it.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -3541,6 +3578,8 @@ pub struct ReadingGroup {
     pub reader: ::prost::alloc::string::String,
     #[prost(string, tag = "3")]
     pub kind: ::prost::alloc::string::String,
+    /// Why, as the reader wrote it, with the secrets the core recognises cut out, each a mark as in
+    /// `ProgramStart.args_text`.
     #[prost(string, optional, tag = "4")]
     pub reason_text: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(uint64, tag = "5")]
@@ -3558,6 +3597,7 @@ pub struct Unreached {
     /// When its visits began to fail.
     #[prost(int64, tag = "2")]
     pub since_at: i64,
+    /// Why its latest visit failed, cut as `ReadingGroup.reason_text` is.
     #[prost(string, optional, tag = "3")]
     pub reason_text: ::core::option::Option<::prost::alloc::string::String>,
 }

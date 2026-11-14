@@ -1,7 +1,7 @@
 {
   "advice": "Look at the program, its arguments and what started it, shown here. If you or a tool you use ran it, mark it expected; if nobody knows it, ask your agent to look into it.",
   "answer": null,
-  "answered_at": 1794597524,
+  "answered_at": 1794651097,
   "answered_with": null,
   "answers_note": "Answer a finding only after the owner has agreed in this conversation, having been told what it is and what the options are. Pass --via agent and the reason the owner agreed to. The app shows every answer given this way.",
   "evidence": {
@@ -124,11 +124,12 @@
     "state": "open",
     "urgent": false
   },
-  "first_seen_at": 1794597518,
+  "first_seen_at": 1794651096,
   "format": 1,
-  "journal_seq": 1795,
+  "journal_seq": 36,
   "kind": "program start matched by a published rule",
-  "last_seen_at": 1794597519,
+  "kind_title": "Program start",
+  "last_seen_at": 1794651097,
   "meaning": "The rule, named with this finding, comes from SigmaHQ's rule set and was written from attacks seen elsewhere. Coding agents, build tools and people run the same commands for ordinary work, so a match is often harmless.",
   "rests_on": [
     {
@@ -138,14 +139,15 @@
       "old_value_text": null,
       "predicate": null,
       "reader": "events",
-      "recorded_at": 1794597518,
-      "run_id": "1794597518-067940000",
+      "recorded_at": 1794651096,
+      "run_id": "1794651096-868936000",
       "seq": 17,
       "subject_text": "machine:mac"
     }
   ],
-  "store_id": "d33651be2c7f9f3bb28e6a58c8b62082",
+  "store_id": "5539c26c789b16bbd75d7433bc7bf269",
   "technique_text": "T1027.001",
+  "thing": null,
   "title": "A program started on this Mac in a way that a published detection rule marks as high risk.",
   "verdicts": null,
   "where_text": "mac"

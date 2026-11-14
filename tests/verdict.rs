@@ -3244,6 +3244,44 @@ fn with_with_an_answer_names_what_it_read_and_each_flag_once() {
 }
 
 #[test]
+fn who_gave_an_answer_or_a_statement_is_said_once() {
+    // A second --via would win silently: an agent's answer recorded as the app's, which needs
+    // no read. It is misuse, and nothing is recorded.
+    let (mac, core, _, _, _) = paired("via-once");
+    let bytes = std::fs::read(mac.store()).unwrap();
+    for (first, second) in [("agent", "app"), ("app", "agent"), ("app", "app")] {
+        let out = mac.answer(
+            &core,
+            &[
+                "seen",
+                "--via",
+                first,
+                "--reason",
+                "invented: they agreed",
+                "--via",
+                second,
+            ],
+        );
+        assert_eq!(out.status.code(), Some(2), "{first} {second}");
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(v["errors"][0]["code"], "usage", "{v:#}");
+        assert_eq!(
+            v["errors"][0]["detail_text"], "--via is given once",
+            "{v:#}"
+        );
+        let out = mac
+            .command(&[
+                "owner", "mac", "retired", "--reason", "invented", "--via", first, "--via", second,
+                "--json",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "owner {first} {second}");
+    }
+    assert!(std::fs::read(mac.store()).unwrap() == bytes);
+}
+
+#[test]
 fn an_answer_to_a_finding_of_a_rule_this_build_does_not_have_is_refused_and_records_nothing() {
     let (mac, core, verdict, _, _) = paired("pair-dropped");
     // A finding of the core whose rule a later build no longer ships: no answer shows it.

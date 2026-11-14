@@ -490,8 +490,12 @@ fn where_of(i: &findings::Item, mac: Option<&findings::This>) -> String {
 }
 
 /// The thing a finding is about, as data: the package and its releases, the program or file a
-/// rule matched, else where it is.
+/// rule matched, else where it is. A finding whose thing no name from the Mac says, the item of
+/// places read for the first time, is about what it names in the program's words.
 fn thing_of(i: &findings::Item, f: Option<&v1::Finding>) -> String {
+    if let Some(thing) = &i.thing {
+        return thing.clone();
+    }
     use v1::evidence::Body;
     let events: &[v1::Event] = match f.and_then(|f| f.evidence.as_ref()?.body.as_ref()) {
         Some(Body::VulnerablePackage(p)) => {
@@ -542,7 +546,8 @@ fn finding_row(
     } else {
         format!("answered-{}", esc(&i.id))
     };
-    let mut kind = capital(i.kind);
+    // The kind in the words a person reads, the same as the app's (`findings::kind_title`).
+    let mut kind = findings::kind_title(i.kind).to_string();
     if let Some(change) = &i.change {
         kind.push_str(" · ");
         kind.push_str(change);
@@ -1018,10 +1023,11 @@ fn watched_table(
     let mac = findings::This::of(conn, this.clone())?;
     let latest_run = crate::status::latest_finished(conn)?.map(|r| r.started_at);
     let fix_link = "<a href=\"#you-can-fix\">you can fix</a>";
+    // An example is the place's name alone (`covered::Example`), so it is matched whole.
     let can_fix = |place: &str| {
         fixable
             .iter()
-            .any(|u| u.examples.iter().any(|e| e.starts_with(place)))
+            .any(|u| u.examples.iter().any(|e| e.name == place))
     };
     writeln!(
         out,
@@ -1249,8 +1255,8 @@ fn you_can_fix(out: &mut String, fixable: &[&Uncovered]) -> Out {
             let apart = u.apart();
             if !apart.is_empty() {
                 out.push_str("<ul>\n");
-                for a in &apart {
-                    writeln!(out, "<li>{}</li>", esc(a))?;
+                for (name, reason) in &apart {
+                    writeln!(out, "<li>{}</li>", example(name, *reason))?;
                 }
                 out.push_str("</ul>\n");
             }
@@ -1445,6 +1451,20 @@ pub fn vulnerabilities(conn: &Connection, now: i64) -> Result<String, Box<dyn Er
     Ok(out)
 }
 
+/// One example of a thing not covered, as safe HTML: its name, and beside it what its source said
+/// of it. What a source said is prose from it: cut, as every such text is where it is printed,
+/// and escaped apart from the name.
+fn example(name: &str, reason: Option<&str>) -> String {
+    match reason {
+        Some(r) => format!(
+            "{}: {}",
+            esc(name),
+            esc(&crate::secrets::text(r, view::shown))
+        ),
+        None => esc(name),
+    }
+}
+
 /// One thing not covered, in full: its title, where, what it means and what to do.
 fn uncovered(out: &mut String, u: &Uncovered) -> Out {
     writeln!(
@@ -1456,8 +1476,8 @@ fn uncovered(out: &mut String, u: &Uncovered) -> Out {
     let apart = u.apart();
     if !apart.is_empty() {
         out.push_str("<ul class=\"readings mono\">\n");
-        for a in apart.iter().take(EXAMPLES_SHOWN) {
-            writeln!(out, "<li>{}</li>", esc(a))?;
+        for (name, reason) in apart.iter().take(EXAMPLES_SHOWN) {
+            writeln!(out, "<li>{}</li>", example(name, *reason))?;
         }
         if apart.len() > EXAMPLES_SHOWN {
             writeln!(

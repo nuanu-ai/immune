@@ -421,7 +421,7 @@ fn parse_args(
                 match arg.as_str() {
                     "--tailscale" => tailscale = Some(value(it, &arg)?.into()),
                     "--reason" => reason = Some(value(it, &arg)?),
-                    "--via" => via = Some(via_value(it, &arg)?),
+                    "--via" => via = Some(via_once(via, it, &arg)?),
                     _ if arg.starts_with("--") => {
                         return Err(format!("unexpected argument: {arg}"));
                     }
@@ -493,9 +493,10 @@ fn parse_args(
                 match arg.as_str() {
                     "--reason" => reason = Some(value(it, &arg)?),
                     "--days" => days = Some(value(it, &arg)?),
-                    "--via" => via = Some(via_value(it, &arg)?),
                     // Each names one thing, so a second is a misuse: the last would win, and
-                    // the first named would be left as it was without a word.
+                    // the first named would be left as it was without a word. A second `--via`
+                    // would turn an agent's answer into the app's, which needs no read.
+                    "--via" => via = Some(via_once(via, it, &arg)?),
                     "--with" => once(&mut with, it, &arg)?,
                     "--journal-seq" => once(&mut seq, it, &arg)?,
                     _ if arg.starts_with("--") => {
@@ -738,6 +739,19 @@ fn via_value(it: &mut impl Iterator<Item = String>, arg: &str) -> Result<finding
         "agent" => Ok(findings::Via::Agent),
         _ => Err("--via takes app or agent".to_string()),
     }
+}
+
+/// The value of `--via`, given once: a second says two things of who gave it.
+fn via_once(
+    before: Option<findings::Via>,
+    it: &mut impl Iterator<Item = String>,
+    arg: &str,
+) -> Result<findings::Via, String> {
+    let via = via_value(it, arg)?;
+    if before.is_some() {
+        return Err(format!("{arg} is given once"));
+    }
+    Ok(via)
 }
 
 /// Misuse of the command line.
@@ -1351,7 +1365,7 @@ fn finding_cmd(args: &FindingArgs) -> ExitCode {
         // An answer that names what it was read at is refused when anything joined either
         // finding since that the answer did not already take in, before it writes anything.
         if let Some(seq) = args.journal_seq {
-            findings::unchanged(&tx, &ids, seq, act)?;
+            findings::unchanged(&tx, &ids, seq, act, now)?;
         }
         let act_on = |id: &str| match act {
             findings::Act::Answer(a) => findings::answer(&tx, id, a, args.via, now, &run_id),

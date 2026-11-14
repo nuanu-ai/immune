@@ -1,7 +1,7 @@
 {
   "advice": "Read its reason and look at what it is about. Mark this finding seen once you have. Immune's own finding about the same thing, if there is one, keeps an answer of its own; one answer that names both answers both.",
   "answer": null,
-  "answered_at": 1794597522,
+  "answered_at": 1794651097,
   "answered_with": null,
   "answers_note": "Answer a finding only after the owner has agreed in this conversation, having been told what it is and what the options are. Pass --via agent and the reason the owner agreed to. The app shows every answer given this way.",
   "evidence": {
@@ -19,11 +19,12 @@
     "state": "open",
     "urgent": true
   },
-  "first_seen_at": 1794597521,
+  "first_seen_at": 1794651097,
   "format": 1,
-  "journal_seq": 1795,
+  "journal_seq": 36,
   "kind": "verdict of the response layer",
-  "last_seen_at": 1794597521,
+  "kind_title": "Response layer",
+  "last_seen_at": 1794651097,
   "meaning": "Another program that runs Immune, the response layer, looked into what a rule found here and judged it suspicious. The rule and the thing are named with this finding; the reason is the response layer's own, quoted.",
   "rests_on": [
     {
@@ -33,14 +34,15 @@
       "old_value_text": null,
       "predicate": null,
       "reader": null,
-      "recorded_at": 1794597521,
-      "run_id": "verdict-1794597521-505965000",
-      "seq": 33,
+      "recorded_at": 1794651097,
+      "run_id": "verdict-1794651097-312714000",
+      "seq": 34,
       "subject_text": "f2bd0942750"
     }
   ],
-  "store_id": "d33651be2c7f9f3bb28e6a58c8b62082",
+  "store_id": "5539c26c789b16bbd75d7433bc7bf269",
   "technique_text": null,
+  "thing": null,
   "title": "The response layer judged something on this Mac suspicious.",
   "verdicts": {
     "listed": [
@@ -62,7 +64,7 @@
             "length": 18
           }
         ],
-        "recorded_at": 1794597521,
+        "recorded_at": 1794651097,
         "verdict": {
           "case_text": "case-samples",
           "confidence": "high",
@@ -73,7 +75,7 @@
           "kind": "suspicious",
           "reason_text": "invented: the package was published by an account taken over; it ran tool --password=\\cut{immune:flag-value 18}",
           "severity": "critical",
-          "store_id": "d33651be2c7f9f3bb28e6a58c8b62082"
+          "store_id": "5539c26c789b16bbd75d7433bc7bf269"
         }
       }
     ],

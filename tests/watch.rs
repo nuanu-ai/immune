@@ -1953,6 +1953,11 @@ fn a_quiet_mac_needs_no_look_whatever_is_not_covered_and_a_planted_change_does()
             &serde_json::json!(["web-2"])
         )
     );
+    // Its source said nothing of it: no reason, never an empty one.
+    assert_eq!(
+        servers_item["examples"],
+        serde_json::json!([{"name_text": "web-2", "reason_text": null}])
+    );
     // Counted from the sweep itself, not from the run that read its files.
     assert_eq!(servers_item["since_at"], 1_700_000_000);
     assert_eq!(r["this_mac"]["live"], false);
@@ -2161,9 +2166,14 @@ fn a_watched_file_its_permissions_keep_closed_leaves_this_mac_watched_in_part_an
             &"1 file could not be opened because of its permissions.".into()
         )
     );
+    // The name alone, and what the system said of it beside it, in a field of its own.
+    assert_eq!(item["examples_text"], serde_json::json!(["~/.zprofile"]));
     assert_eq!(
-        item["examples_text"],
-        serde_json::json!(["~/.zprofile: Permission denied (os error 13)"])
+        item["examples"],
+        serde_json::json!([{
+            "name_text": "~/.zprofile",
+            "reason_text": "Permission denied (os error 13)"
+        }])
     );
     // The page opens on it, not in green, and lists it under what he can fix.
     let page = mac.view();
@@ -2178,6 +2188,13 @@ fn a_watched_file_its_permissions_keep_closed_leaves_this_mac_watched_in_part_an
     assert!(
         fix.contains("~/.zprofile: Permission denied (os error 13)"),
         "{fix}"
+    );
+    // The row of its kind among what is watched says so and leads there.
+    let watched = &page[page.find("<section id=\"watched-here\"").unwrap()..];
+    let watched = &watched[..watched.find("</section>").unwrap()];
+    assert!(
+        watched.contains("1 can't be read · <a href=\"#you-can-fix\">you can fix</a>"),
+        "{watched}"
     );
 }
 

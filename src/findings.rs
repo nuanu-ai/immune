@@ -233,6 +233,8 @@ fn git_hook() -> Rule {
 /// The rule of the item that tells the places read for the first time in a check. It is
 /// raised once for a check by `first_read`, never by one thing seen.
 pub const FIRST_READ_RULE: &str = "watched.first-read";
+/// What that item is about, as its `kind`.
+const FIRST_READ_KIND: &str = "places read for the first time";
 /// The prefix of the id of one check, `check:<machine>/<run id>`, which the item of places
 /// read for the first time is about.
 pub const CHECK: &str = "check:";
@@ -240,7 +242,7 @@ pub const CHECK: &str = "check:";
 fn first_read_rule() -> Rule {
     Rule {
         id: FIRST_READ_RULE,
-        kind: "places read for the first time",
+        kind: FIRST_READ_KIND,
         technique: None,
         severity: "informational",
         confidence: "low",
@@ -283,26 +285,49 @@ pub fn first_read(
     Ok(opened)
 }
 
-/// What the item of places read for the first time names: each place with how many things it
-/// held, from its latest occurrence's entries.
-fn first_read_places(conn: &Connection, id: &str, this: Option<&This>) -> rusqlite::Result<String> {
-    let rows: Vec<(String, String)> = conn
-        .prepare(
-            "SELECT j.subject, j.new_value FROM finding_basis b JOIN journal j ON j.seq = b.journal
+/// The places the item of places read for the first time rests on, each by its id with how
+/// many things it held, from its latest occurrence's entries.
+fn first_read_basis(conn: &Connection, id: &str) -> rusqlite::Result<Vec<(String, String)>> {
+    conn.prepare(
+        "SELECT j.subject, j.new_value FROM finding_basis b JOIN journal j ON j.seq = b.journal
              WHERE b.finding = ?1 AND j.entry = 'place_first_read' ORDER BY j.seq",
-        )?
-        .query_map([id], |r| {
-            Ok((
-                r.get::<_, Option<String>>(0)?.unwrap_or_default(),
-                r.get::<_, Option<String>>(1)?.unwrap_or_default(),
-            ))
-        })?
-        .collect::<rusqlite::Result<_>>()?;
-    Ok(rows
-        .iter()
+    )?
+    .query_map([id], |r| {
+        Ok((
+            r.get::<_, Option<String>>(0)?.unwrap_or_default(),
+            r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+        ))
+    })?
+    .collect()
+}
+
+/// What the item of places read for the first time names: each place with how many things it
+/// held.
+fn first_read_places(read: &[(String, String)], this: Option<&This>) -> String {
+    read.iter()
         .map(|(subject, n)| format!("{} ({n})", place(subject, this)))
         .collect::<Vec<_>>()
-        .join("; "))
+        .join("; ")
+}
+
+/// What the item of places read for the first time is about, in the program's words: the
+/// places counted by kind, projects and the others, such as `2 projects and 1 other place`.
+fn first_read_thing(read: &[(String, String)]) -> String {
+    let projects = read
+        .iter()
+        .filter(|(subject, _)| subject.starts_with("checkout:"))
+        .count() as i64;
+    let others = read.len() as i64 - projects;
+    let counted = crate::view::counted;
+    match (projects, others) {
+        (0, n) => counted(n, "place", "places"),
+        (p, 0) => counted(p, "project", "projects"),
+        (p, n) => format!(
+            "{} and {}",
+            counted(p, "project", "projects"),
+            counted(n, "other place", "other places")
+        ),
+    }
 }
 
 // ---- Integrity of what is installed: what the integrity reader saw change while the
@@ -944,6 +969,9 @@ pub struct Found {
     /// code directory the signature gives: told as text from a source.
     /// For a match of indicators, the indicators the file matches, as the list gives them.
     pub became: Option<String>,
+    /// What it is about, in the program's words, where no name from the Mac says it: for the
+    /// item of places read for the first time, those places counted by kind.
+    pub thing: Option<String>,
     /// For a published rule's finding, the rule, its count and its evidence, as
     /// `events::finding_detail` gives them.
     pub detail: Option<Value>,
@@ -1033,6 +1061,7 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Found>>> 
                 .map(|s| crate::secrets::Kept::AnswerReason.read(form, &s)),
             until,
             became: r.get(13)?,
+            thing: None,
             via: r.get(14)?,
             superseded: r.get(15)?,
             in_force: false,
@@ -1043,9 +1072,12 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Found>>> 
     .map(|f| {
         f.and_then(|mut f| {
             f.in_force = in_force(&f, now);
-            // The item of places read for the first time names them, from what it rests on.
+            // The item of places read for the first time names them, from what it rests on, and
+            // is about them, counted: the machine is where they are.
             if f.rule == FIRST_READ_RULE {
-                f.became = Some(first_read_places(conn, &f.id, this.as_ref())?);
+                let read = first_read_basis(conn, &f.id)?;
+                f.became = Some(first_read_places(&read, this.as_ref()));
+                f.thing = Some(first_read_thing(&read));
             }
             // A finding about a dependency says where its lockfile lines are and what records
             // it rests on, from the answers that stand now. They are read once for all such
@@ -1216,17 +1248,14 @@ pub fn pair(
     let Some(b) = all.iter().find(|f| shown(f, with)) else {
         return Err(refused(Refused::With(Box::new(Refused::Unknown))));
     };
-    let of = |v: &Found, f: &Found| verdict_of((&v.rule, &v.about), (&f.rule, &f.about));
-    if !(of(a, b) || of(b, a)) {
+    // Both are shown, so both are items; the pair is what the page folds into one row.
+    let (Some(a), Some(b)) = (item(a), item(b)) else {
+        return Err(refused(Refused::Unknown));
+    };
+    if !(one_thing(&a, &b) || one_thing(&b, &a)) {
         return Err(refused(Refused::NotPair));
     }
     Ok(())
-}
-
-/// The one predicate of a pair, as (rule, about): `v` is the response layer's
-/// `verdict.suspicious` finding of the rule that found `of`, about the same thing.
-fn verdict_of(v: (&str, &str), of: (&str, &str)) -> bool {
-    v.1 == of.1 && v.0.strip_prefix(crate::verdict::PREFIX) == Some(of.0)
 }
 
 /// The journal's latest sequence number: what a read of the store has seen. An answer that names
@@ -1253,7 +1282,8 @@ pub fn journal_seq(conn: &Connection) -> rusqlite::Result<i64> {
 ///
 /// A rule's finding shows its pair's other finding inside its own message
 /// (`verdicts.verdict_finding`), so the response layer's `verdict.suspicious` findings of its
-/// rule about the same thing (`verdict_of`, as `pair` checks it) are covered as if named, one
+/// rule about the same thing (`one_thing`, as `pair` and the page pair them) are covered as if
+/// named, one
 /// raised after `seq` included. Nothing else is checked: a newer occurrence of the same rule does
 /// not refuse taking back an older one's answer, which quiets nothing. Each of these is written
 /// in the transaction that makes the change, and the journal's numbers only grow
@@ -1272,30 +1302,27 @@ pub fn unchanged(
     ids: &[&str],
     seq: i64,
     act: &Act,
+    at: i64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if seq > journal_seq(tx)? {
         return Err(refused(Refused::ReadAhead));
     }
     let matches_join = !matches!(act, Act::Answer(Answer::Expected { .. }));
-    let rows = tx
-        .prepare("SELECT id, rule, about FROM finding")?
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let items: Vec<Item> = all(tx, at)?
+        .unwrap_or_default()
+        .iter()
+        .filter_map(item)
+        .collect();
     // Each named finding, then the response layer's findings it shows.
     let mut checked: Vec<&str> = Vec::new();
     for id in ids {
         checked.push(id);
-        if let Some((_, rule, about)) = rows.iter().find(|r| r.0 == *id) {
+        if let Some(named) = items.iter().find(|i| i.id == *id) {
             checked.extend(
-                rows.iter()
-                    .filter(|v| verdict_of((&v.1, &v.2), (rule, about)))
-                    .map(|v| v.0.as_str()),
+                items
+                    .iter()
+                    .filter(|own| one_thing(named, own))
+                    .map(|own| own.id.as_str()),
             );
         }
     }
@@ -1510,6 +1537,8 @@ pub struct Item {
     pub value: Option<String>,
     /// Where: a path, a machine.
     pub place: Option<String>,
+    /// What it is about, in the program's words, where no name from the Mac says it.
+    pub thing: Option<String>,
     /// The entity it is about, by its id: what the map of the summary marks.
     pub about: String,
     pub answer: Option<Answered>,
@@ -1523,7 +1552,8 @@ pub struct Item {
 /// The two findings are one thing to the person: `own` is the response layer's
 /// `verdict.suspicious` finding about the rule of `core`'s finding and about the same thing.
 /// Nothing else pairs two findings: findings of two rules about the same machine are two things,
-/// and a verdict finding with no partner is a thing of its own. The page and the answer pair by
+/// and a verdict finding with no partner is a thing of its own. The page, the answer (`pair` for
+/// `--with`) and the read guard (`unchanged`, which covers the partner a finding shows) pair by
 /// this alone.
 pub fn one_thing(core: &Item, own: &Item) -> bool {
     own.subject.as_deref().is_some_and(|s| core.rule == Some(s)) && own.about == core.about
@@ -1627,6 +1657,61 @@ pub fn published(rule: &str) -> Option<&'static crate::sigma::Loaded> {
 pub const PUBLISHED_KIND: &str = "program start matched by a published rule";
 pub const PUBLISHED_FILE_KIND: &str = "file event matched by a published rule";
 
+/// What a person reads for each kind of thing a finding is about: a short title in sentence
+/// case, the one name for it in the app, the pages and the text. `kind` stays the stable name,
+/// stored and matched; the title is only shown. A test walks every kind the program can raise
+/// (`kinds`) and fails for one this table lacks.
+const KIND_TITLES: [(&str, &str); 23] = [
+    (watched::AUTOSTART, "Startup item"),
+    (watched::LOGIN_HOOK, "Login hook"),
+    (watched::PROFILE, "Shell startup file"),
+    (watched::SSH, "SSH file"),
+    (watched::AUTH, "Authentication module"),
+    (watched::HOOK, "Git hook"),
+    (FIRST_READ_KIND, "Read for the first time"),
+    (integrity::SEAL_BROKEN, "App changed after signing"),
+    (integrity::SIGNER_CHANGED, "App signed by someone else"),
+    (integrity::FILES_CHANGED, "Package changed in place"),
+    (
+        integrity::CODE_OUTSIDE_CHANGED,
+        "App code changed outside the app",
+    ),
+    (autorun::RUNS_ON_OPEN, "Task run when a project opens"),
+    (autorun::EDITOR_OPEN.0, "Editor setting in a project"),
+    (autorun::PACKAGE_INSTALL.0, "Install script in a project"),
+    (autorun::AGENT_START.0, "Agent tool in a project"),
+    (autorun::AGENT_SETTINGS.0, "Coding agent tool"),
+    (autorun::EDITOR_EXTENSION.0, "Editor extension"),
+    (indicators::MATCHED, "Indicator match"),
+    (
+        crate::processes::DETACHED_INLINE,
+        "Script running in the background",
+    ),
+    (DEPENDENCY, "Package in a project"),
+    (PUBLISHED_KIND, "Program start"),
+    (PUBLISHED_FILE_KIND, "File created or renamed"),
+    (crate::verdict::KIND, "Response layer"),
+];
+
+/// A kind's title for a person, from `KIND_TITLES`; the kind as stored for one the table lacks.
+pub fn kind_title(kind: &str) -> &str {
+    KIND_TITLES
+        .iter()
+        .find(|(k, _)| *k == kind)
+        .map_or(kind, |(_, title)| title)
+}
+
+/// Every kind of thing a finding of this build can be about: its own rules', a published rule's
+/// for each kind of event, and the response layer's.
+#[cfg(test)]
+fn kinds() -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = rules().iter().map(|r| r.kind).collect();
+    out.extend([PUBLISHED_KIND, PUBLISHED_FILE_KIND, crate::verdict::KIND]);
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
 /// The program's own words for a finding of a published rule, with the name of the set the rule
 /// came from: for a rule about program starts, then for one about file events, a file created or
 /// renamed into a place the rule names. The rule's title, its authors and the event it matched
@@ -1701,6 +1786,7 @@ fn published_item(f: &Found, l: &'static crate::sigma::Loaded) -> Option<Item> {
         // app's card included, the authors travel with it, as the Detection Rule License asks.
         value: Some(published_value(m)),
         place: Some(f.place.clone()),
+        thing: None,
         about: f.about.clone(),
         answer: answered_of(f),
         verdicts: f.verdicts.clone(),
@@ -1756,6 +1842,7 @@ fn verdict_item(f: &Found, subject: &str) -> Option<Item> {
         words: crate::verdict::WORDS,
         value: Some(value),
         place: Some(f.place.clone()),
+        thing: None,
         about: f.about.clone(),
         answer: answered_of(f),
         verdicts: f.verdicts.clone(),
@@ -1786,6 +1873,7 @@ pub fn item(f: &Found) -> Option<Item> {
         words: r.words,
         value: f.became.clone(),
         place: Some(f.place.clone()),
+        thing: f.thing.clone(),
         about: f.about.clone(),
         answer: answered_of(f),
         verdicts: f.verdicts.clone(),
@@ -1981,6 +2069,7 @@ mod tests {
             in_force: false,
             place: "invented".into(),
             became: None,
+            thing: None,
             detail: None,
             verdicts: None,
         };
@@ -2015,6 +2104,7 @@ mod tests {
             in_force: false,
             place: "invented".into(),
             became: None,
+            thing: None,
             detail: None,
             verdicts: Some(crate::verdict::Summary {
                 levels: Some((3, 2)),
@@ -2126,5 +2216,62 @@ mod tests {
         assert_eq!(named("machine:mac"), Some("mac-2".to_string()));
         assert_eq!(named("machine:other"), None);
         assert!(This::of(&conn, None).unwrap().is_none());
+    }
+
+    #[test]
+    fn every_kind_a_finding_can_be_about_has_one_title_for_a_person_and_the_table_holds_no_other() {
+        // The app, the pages and the messages show a kind by these words; a kind left out
+        // would be shown by its stored name, and a title for a kind no rule raises is stale.
+        for kind in super::kinds() {
+            let title = super::kind_title(kind);
+            assert_ne!(title, kind, "no title for {kind:?}");
+            let first = title.chars().next().unwrap();
+            assert!(
+                first.is_uppercase() && !title.ends_with('.'),
+                "{title:?} is not a short title in sentence case"
+            );
+        }
+        let kinds = super::kinds();
+        for (kind, _) in super::KIND_TITLES {
+            assert!(kinds.contains(&kind), "{kind:?} is raised by no rule");
+        }
+        // A kind this build does not know is shown as it is stored.
+        assert_eq!(
+            super::kind_title("a kind from a later build"),
+            "a kind from a later build"
+        );
+    }
+
+    #[test]
+    fn the_item_of_places_read_for_the_first_time_is_about_those_places_counted_by_kind() {
+        // Its thing is what was read, projects told from the other places, never the machine.
+        let read = |ids: &[&str]| -> Vec<(String, String)> {
+            ids.iter()
+                .map(|id| (id.to_string(), "1".to_string()))
+                .collect()
+        };
+        let thing = |ids: &[&str]| super::first_read_thing(&read(ids));
+        assert_eq!(thing(&["checkout:machine:mac/dev/shop"]), "1 project");
+        assert_eq!(
+            thing(&["checkout:machine:mac/dev/a", "checkout:machine:mac/dev/b"]),
+            "2 projects"
+        );
+        assert_eq!(thing(&["file:machine:mac/.config/tool"]), "1 place");
+        assert_eq!(
+            thing(&[
+                "checkout:machine:mac/dev/a",
+                "checkout:machine:mac/dev/b",
+                "file:machine:mac/.config/tool"
+            ]),
+            "2 projects and 1 other place"
+        );
+        assert_eq!(
+            thing(&[
+                "checkout:machine:mac/dev/a",
+                "file:machine:mac/.config/tool",
+                "file:machine:mac/.config/other"
+            ]),
+            "1 project and 2 other places"
+        );
     }
 }
