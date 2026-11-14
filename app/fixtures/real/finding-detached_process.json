@@ -1,0 +1,59 @@
+{
+  "advice": "If you did not start something like this, ask your agent to find the process of the program named here and what started it, and stop it if nobody knows it.",
+  "answer": {
+    "given": "expected",
+    "given_at": 1794597521,
+    "in_force": true,
+    "reason_cuts": [
+      {
+        "argument": 0,
+        "kind": "immune:flag-value",
+        "length": 18
+      }
+    ],
+    "reason_text": "invented: my own tool, started as tool --password=\\cut{immune:flag-value 18}",
+    "until_at": 1797189521,
+    "via": "agent"
+  },
+  "answered_at": 1794597523,
+  "answers_note": "Answer a finding only after the owner has agreed in this conversation, having been told what it is and what the options are. Pass --via agent and the reason the owner agreed to. The app shows every answer given this way.",
+  "evidence": {
+    "detached_process": {
+      "pid": 4242,
+      "start_micros": 1794593919123456
+    }
+  },
+  "finding": {
+    "about_text": "file:machine:mac//opt/tools/bin/node",
+    "confidence": "medium",
+    "id": "fa6aa766b61",
+    "rule": "processes.detached-inline-code",
+    "severity": "high",
+    "state": "expected",
+    "urgent": true
+  },
+  "first_seen_at": 1794597459,
+  "format": 1,
+  "kind": "interpreter running code from its command line, detached",
+  "last_seen_at": 1794597459,
+  "meaning": "Tools and agents do this for a moment while they work; staying alive on its own, with no terminal or app it belongs to, is how some malware keeps hidden code running.",
+  "rests_on": [
+    {
+      "entry": "sampled",
+      "kind": "interpreter running code from its command line, detached",
+      "new_value_text": "interpreter given code on its command line",
+      "old_value_text": null,
+      "predicate": null,
+      "reader": "processes",
+      "recorded_at": 1794597459,
+      "run_id": "sample-1794597520-258176000",
+      "seq": 31,
+      "subject_text": "file:machine:mac//opt/tools/bin/node"
+    }
+  ],
+  "store_id": "d33651be2c7f9f3bb28e6a58c8b62082",
+  "technique_text": "T1059",
+  "title": "A program that runs scripts has been running code it was handed when it started, on its own in the background, for at least a minute.",
+  "verdicts": null,
+  "where_text": "/opt/tools/bin/node"
+}

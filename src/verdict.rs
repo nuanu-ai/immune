@@ -29,7 +29,7 @@ use crate::findings::{self, CONFIDENCES, Found, SEVERITIES, Words};
 use crate::known::{self, whole};
 use crate::secrets::{Form, Kept, Text, holds};
 use crate::sigma::Rules;
-use crate::{Stop, answer, store, view};
+use crate::{Stop, answer, store};
 use prost::Message;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::{Value, json};
@@ -319,29 +319,6 @@ pub fn said(s: &Summary) -> String {
     }
 }
 
-/// What `immune status --json` gives of the verdicts with a finding: for a `verdict.suspicious`
-/// finding the verdict that raised this occurrence, its text whole in `_text` fields; for a
-/// finding of the core only counts and the `verdict.suspicious` finding that stands.
-pub fn item_json(s: &Summary) -> Value {
-    match &s.opening {
-        Some(o) => json!({
-            "said": said(s),
-            "reason_text": o.reason.shown(view::shown),
-            "case_text": o.case.shown(view::shown),
-            "at": view::iso(o.at),
-            "severity": o.severity,
-            "confidence": o.confidence,
-            "more": s.total - 1,
-        }),
-        None => json!({
-            "said": said(s),
-            "total": s.total,
-            "suspicious": s.suspicious,
-            "finding": s.standing,
-        }),
-    }
-}
-
 /// A verdict as the contract gives it, with its finding by reference.
 pub fn recorded(
     r: &Recorded,
@@ -370,16 +347,7 @@ pub fn recorded(
         recorded_at: r.at,
         finding,
         raised: r.raised,
-        reason_cuts: r
-            .reason
-            .cuts()
-            .into_iter()
-            .map(|(kind, length)| v1::Cut {
-                argument: 0,
-                kind: kind.to_string(),
-                length: length as u64,
-            })
-            .collect(),
+        reason_cuts: crate::answer::reason_cuts(&r.reason),
     }
 }
 

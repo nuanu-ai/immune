@@ -43,6 +43,15 @@ public enum Contract {
     public var urgent = false
   }
 
+  /// A piece Immune cut out of a text because it held a secret: which argument (0 for a text of
+  /// one piece, such as a reason), what it was taken for, and how many characters. The text
+  /// holds a mark in its place, shown as Immune printed it.
+  public struct Cut: Sendable, Equatable {
+    public var argument: Int?
+    public var kind: String?
+    public var length: Int?
+  }
+
   /// The person's answer.
   public struct Answer: Sendable, Equatable {
     /// `expected` or `seen`.
@@ -55,6 +64,8 @@ public enum Contract {
     /// It hides the finding now. Missing or not a boolean is nil: not known, and so never taken
     /// to be over.
     public var inForce: Bool?
+    /// What was cut out of the reason.
+    public var reasonCuts: [Cut] = []
   }
 
   /// What a finding rests on, by its kind. A kind this app does not shape is `.other` with
@@ -123,6 +134,8 @@ public enum Contract {
     public var argsText: [String] = []
     public var workingDirectoryText: String?
     public var scriptText: String?
+    /// What was cut out of the arguments, each piece by its argument.
+    public var cuts: [Cut] = []
   }
 
   public struct FileEvent: Sendable, Equatable {
@@ -165,6 +178,8 @@ public enum Contract {
     public var severity: String?
     public var confidence: String?
     public var recordedAt: Date?
+    /// What was cut out of the reason.
+    public var reasonCuts: [Cut] = []
   }
 
   /// `Failure`: why a command of the contract did not answer.
@@ -259,13 +274,13 @@ extension Decoding {
         Contract.Answer(
           given: $0["given"].string, via: $0["via"].string, givenAt: $0["given_at"].seconds,
           reasonText: $0["reason_text"].string, untilAt: $0["until_at"].seconds,
-          inForce: $0["in_force"].bool)
+          inForce: $0["in_force"].bool, reasonCuts: cuts($0["reason_cuts"]))
       },
       evidence: j["evidence"].object.map(evidence),
       restsOn: (j["rests_on"].array ?? []).compactMap { e in
         e.object.map {
           Contract.JournalEntry(
-            seq: $0["seq"].count, recordedAt: $0["recorded_at"].seconds, entry: $0["entry"].string,
+            seq: $0["seq"].int64, recordedAt: $0["recorded_at"].seconds, entry: $0["entry"].string,
             kind: $0["kind"].string, predicate: $0["predicate"].string,
             subjectText: $0["subject_text"].string, oldValueText: $0["old_value_text"].string,
             newValueText: $0["new_value_text"].string)
@@ -280,11 +295,22 @@ extension Decoding {
               return Contract.RecordedVerdict(
                 kind: verdict["kind"].string, reasonText: verdict["reason_text"].string,
                 caseText: verdict["case_text"].string, severity: verdict["severity"].string,
-                confidence: verdict["confidence"].string, recordedAt: $0["recorded_at"].seconds)
+                confidence: verdict["confidence"].string, recordedAt: $0["recorded_at"].seconds,
+                reasonCuts: cuts($0["reason_cuts"]))
             }
           },
           verdictFinding: v["verdict_finding"].object.map(findingRef))
       })
+  }
+
+  /// A list of `Cut`, each field by its schema type: `argument` and `length` are counts.
+  static func cuts(_ a: J) -> [Contract.Cut] {
+    (a.array ?? []).compactMap { c in
+      c.object.map {
+        Contract.Cut(
+          argument: $0["argument"].count, kind: $0["kind"].string, length: $0["length"].count)
+      }
+    }
   }
 
   static func findingRef(_ f: J) -> Contract.FindingRef {
@@ -305,7 +331,7 @@ extension Decoding {
       return .indicatorMatched(indicatorsText: i["indicators_text"].string)
     }
     if let d = e["detached_process"].object {
-      return .detachedProcess(pid: d["pid"].count, startMicros: d["start_micros"].count)
+      return .detachedProcess(pid: d["pid"].int64, startMicros: d["start_micros"].int64)
     }
     if let v = e["vulnerable_package"].object {
       return .vulnerablePackage(
@@ -347,11 +373,11 @@ extension Decoding {
           happenedAt: s["happened_at"].seconds,
           executableText: s["process"]["executable_text"].string,
           signingIdText: s["process"]["signing_id_text"].string,
-          teamIdText: s["process"]["team_id_text"].string, pid: s["process"]["pid"].count,
+          teamIdText: s["process"]["team_id_text"].string, pid: s["process"]["pid"].int64,
           instigatorText: s["instigator"]["executable_text"].string,
           argsText: s["args_text"].array?.compactMap(\.string) ?? [],
           workingDirectoryText: s["working_directory_text"].string,
-          scriptText: s["script_text"].string))
+          scriptText: s["script_text"].string, cuts: cuts(s["cuts"])))
     }
     if let f = e["file_event"].object {
       return .fileEvent(
@@ -366,6 +392,6 @@ extension Decoding {
 }
 
 extension J {
-  /// A time of the contract: whole seconds since the epoch, UTC.
-  var seconds: Date? { count.map { Date(timeIntervalSince1970: TimeInterval($0)) } }
+  /// A time of the contract: an `int64` of whole seconds since the epoch, UTC.
+  var seconds: Date? { int64.map { Date(timeIntervalSince1970: TimeInterval($0)) } }
 }

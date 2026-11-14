@@ -10,7 +10,6 @@ use crate::status::{self, Catalogue, Problems};
 use crate::view::Latest;
 use crate::{autorun, findings, guarded, integrity, resolver, servers, watched};
 use rusqlite::{Connection, OptionalExtension, params};
-use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// What is watched on this Mac, in words a person knows: the kind of thing as the store
@@ -348,22 +347,6 @@ pub fn watcher_failed(m: &ThisMac) -> String {
     words.join(" and ")
 }
 
-pub fn this_mac_json(m: &ThisMac) -> Value {
-    let iso = |t: Option<i64>| t.map(crate::view::iso);
-    let watched: Vec<Value> = m
-        .watched
-        .iter()
-        .map(|(what, count, how)| json!({ "what": what, "count": count, "how": how }))
-        .collect();
-    json!({
-        "state": m.state,
-        "live": m.live,
-        "checked_at": iso(m.checked_at),
-        "live_read_at": iso(m.live_read_at),
-        "watched": watched,
-    })
-}
-
 /// Who can do something about a thing that is not covered: the owner, or nobody, because it
 /// is a limit of this version or passes by itself. Its words say which.
 pub const YOU: &str = "you";
@@ -371,8 +354,9 @@ pub const NOTHING: &str = "nothing";
 
 /// The fixed words of one cause of what is not covered, for a person: plain words, what it
 /// means for him, and whether he can do something about it. A title is given for one and
-/// for many. In the words `{n}` is the count, `{examples}` the first examples and `{all}` every
-/// one, as a list.
+/// for many. In the words `{n}` is the count, `{what}` what it is in the catalogue's own words,
+/// `{date}` a time, and `{reasons}` why, in the program's words. A name taken from the Mac never
+/// enters the words: it is an example, given apart as data.
 pub struct Cause {
     pub id: &'static str,
     pub who: &'static str,
@@ -383,8 +367,21 @@ pub struct Cause {
     pub title: [&'static str; 2],
     pub meaning: &'static str,
     /// What it means when the count is none, where that is said otherwise.
-    pub meaning_none: Option<&'static str>,
+    pub meaning_none: Option<NoneSaid>,
     pub advice: &'static str,
+}
+
+/// How "none" is said of a cause's count.
+pub enum NoneSaid {
+    /// Of places that are read wherever they are: only the words for none.
+    Read(&'static str),
+    /// Of what is in the projects a walk finds: none only after a whole walk
+    /// (`projects_walked_whole`), and otherwise none of what was looked at, with the rest not
+    /// known.
+    Walked {
+        whole: &'static str,
+        part: &'static str,
+    },
 }
 
 pub const SERVERS_NOT_CHECKED: Cause = Cause {
@@ -477,12 +474,12 @@ pub const GUARDED: Cause = Cause {
     scope: "projects",
     kind: "what is in folders macOS protects",
     title: [
-        "{what} inside {examples} are not checked.",
-        "{what} inside {examples} are not checked.",
+        "{what} inside a folder macOS protects are not checked.",
+        "{what} inside {n} folders macOS protects are not checked.",
     ],
     meaning: "This version does not look inside them: macOS asks for your permission before a program may, and this version does not ask. If nothing of these is kept there, nothing is missed.",
     meaning_none: None,
-    advice: "Nothing to do for now. Including them from the app comes in a later version.",
+    advice: "Nothing to do for now. What these folders hold was not judged on this Mac. Including them from the app comes in a later version.",
 };
 
 pub const NOT_UNDERSTOOD: Cause = Cause {
@@ -494,9 +491,9 @@ pub const NOT_UNDERSTOOD: Cause = Cause {
         "Some files and packages are not understood by this version yet.",
         "Some files and packages are not understood by this version yet.",
     ],
-    meaning: "They tell what your projects or servers depend on, for example {examples}. A change in them is not noticed yet.",
+    meaning: "They tell what your projects or servers depend on. A change in them is not noticed yet.",
     meaning_none: None,
-    advice: "Nothing to do. Support for them comes in later versions.",
+    advice: "Nothing to do. What these files say was not judged on this Mac. Support for them comes in later versions.",
 };
 
 pub const OTHER_MANAGERS: Cause = Cause {
@@ -505,12 +502,12 @@ pub const OTHER_MANAGERS: Cause = Cause {
     scope: "this_mac",
     kind: "software installed by package managers this version does not read",
     title: [
-        "Software installed with {all} is not checked by this version.",
-        "Software installed with {all} is not checked by this version.",
+        "Software installed with a package manager this version does not read is not checked.",
+        "Software installed with {n} package managers this version does not read is not checked.",
     ],
     meaning: "This version checks applications, what Homebrew installed in /opt/homebrew or /usr/local, and the npm packages installed globally in /opt/homebrew/lib/node_modules or /usr/local/lib/node_modules. It does not read what these installed, so a change in it goes unseen.",
     meaning_none: None,
-    advice: "Nothing to do. This is a limit of this version.",
+    advice: "Nothing to do. What these installed is left out of the answer on this Mac.",
 };
 
 pub const TOOL_LOST: Cause = Cause {
@@ -551,8 +548,11 @@ pub const PROJECT_AUTORUN: Cause = Cause {
         "This version reads {read} of the {known} known ways a project can make code run by itself.",
     ],
     meaning: "{n} of the others are present in your projects and are not read, so a change in them would go unseen.",
-    meaning_none: Some("None of the others is present in your projects now."),
-    advice: "Nothing to do. This is a limit of this version; the page lists every way and whether it is read.",
+    meaning_none: Some(NoneSaid::Walked {
+        whole: "None of the others is present in your projects now.",
+        part: "None of the others is present in the projects that were looked at. Not every folder was looked at, so of the projects in the rest this says nothing.",
+    }),
+    advice: "Nothing to do. A change in these is left out of the answer for your projects; the page lists every way and whether it is read.",
 };
 
 pub const HOME_AUTORUN: Cause = Cause {
@@ -565,8 +565,10 @@ pub const HOME_AUTORUN: Cause = Cause {
         "This version reads {read} of the {known} known places where a developer tool's own settings can make code run by itself.",
     ],
     meaning: "{n} of the others are present on this Mac and are not read, so a change in them would go unseen.",
-    meaning_none: Some("None of the others is present on this Mac now."),
-    advice: "Nothing to do. This is a limit of this version; the page lists every place and whether it is read.",
+    meaning_none: Some(NoneSaid::Read(
+        "None of the others is present on this Mac now.",
+    )),
+    advice: "Nothing to do. A change in these is left out of the answer on this Mac; the page lists every place and whether it is read.",
 };
 
 pub const THREATS_UNREAD: Cause = Cause {
@@ -608,7 +610,7 @@ pub const VULNERABILITIES_UNKNOWN: Cause = Cause {
     ],
     meaning: "Why, with how many packages each: {reasons}.",
     meaning_none: None,
-    advice: "Nothing to do. This is a limit of this version.",
+    advice: "Nothing to do. These packages are left out of the answer about known vulnerabilities.",
 };
 
 pub const VULNERABILITY_DATA_OLD: Cause = Cause {
@@ -797,6 +799,13 @@ pub struct Uncovered {
     /// What it is, each in a few words, where the words say `{what}`: a list that begins
     /// the sentence.
     pub what: Vec<&'static str>,
+    /// For a cause about what is in projects, the walk that finds them was whole: "none" is
+    /// said only then.
+    pub read_whole: bool,
+    /// True only where no reading of this Mac raised it: a limit of this version, the same on
+    /// every Mac. Set at the one place that adds those, `LIMITS`, and where a reading found
+    /// nothing of its kind here; everything else is of this Mac.
+    pub every_mac: bool,
 }
 
 impl Uncovered {
@@ -810,16 +819,12 @@ impl Uncovered {
             examples: Vec::new(),
             reasons: Vec::new(),
             what: Vec::new(),
+            read_whole: true,
+            every_mac: false,
         }
     }
 
     fn fill(&self, words: &str) -> String {
-        let shown: Vec<&str> = self
-            .examples
-            .iter()
-            .take(EXAMPLES)
-            .map(String::as_str)
-            .collect();
         let date = self
             .since
             .map_or("the first check".to_string(), crate::view::utc);
@@ -830,11 +835,8 @@ impl Uncovered {
             .next()
             .map(|c| c.to_uppercase().chain(chars).collect())
             .unwrap_or_default();
-        let all: Vec<&str> = self.examples.iter().map(String::as_str).collect();
         numbers(words, self.cause)
             .replace("{n}", &self.count.to_string())
-            .replace("{examples}", &listed(&shown))
-            .replace("{all}", &listed(&all))
             .replace("{date}", &date)
             .replace("{reasons}", &reasons)
             .replace("{what}", &what)
@@ -845,24 +847,30 @@ impl Uncovered {
     }
 
     pub fn meaning(&self) -> String {
-        match self.cause.meaning_none {
-            Some(none) if self.count == 0 => self.fill(none),
+        match &self.cause.meaning_none {
+            Some(NoneSaid::Read(none)) if self.count == 0 => self.fill(none),
+            Some(NoneSaid::Walked { whole, part }) if self.count == 0 => {
+                self.fill(if self.read_whole { whole } else { part })
+            }
             _ => self.fill(self.cause.meaning),
         }
     }
 
-    /// What is told apart from the words: the examples, unless the words name them, and the
-    /// value.
+    /// What is told apart from the words, as data: every example and the value.
     pub fn apart(&self) -> Vec<&str> {
-        let named = ["{examples}", "{all}"]
-            .iter()
-            .any(|p| self.cause.title[1].contains(p) || self.cause.meaning.contains(p));
-        let mut out: Vec<&str> = Vec::new();
-        if !named {
-            out.extend(self.examples.iter().map(String::as_str));
-        }
+        let mut out: Vec<&str> = self.examples.iter().map(String::as_str).collect();
         out.extend(self.value.as_deref());
         out
+    }
+
+    /// The examples given: the first `EXAMPLES`, or every one for a cause that names each.
+    pub fn examples(&self) -> &[String] {
+        let n = if EVERY_EXAMPLE.contains(&self.cause.id) {
+            self.examples.len()
+        } else {
+            EXAMPLES
+        };
+        &self.examples[..n.min(self.examples.len())]
     }
 }
 
@@ -1137,6 +1145,7 @@ pub fn not_covered(
     let mut project_autorun = None;
     if looked {
         let names: BTreeSet<&str> = ways.iter().filter_map(|(_, _, n)| n.as_deref()).collect();
+        let walked_whole = projects_walked_whole(latest, this);
         project_autorun = Some(Uncovered {
             since: latest
                 .iter()
@@ -1144,6 +1153,9 @@ pub fn not_covered(
                 .map(|r| r.at)
                 .max(),
             examples: names.iter().map(|n| n.to_string()).collect(),
+            // None of the ways not read is in a project here: what is left is the version's.
+            every_mac: names.is_empty(),
+            read_whole: walked_whole,
             ..Uncovered::new(&PROJECT_AUTORUN, names.len())
         });
     }
@@ -1194,6 +1206,7 @@ pub fn not_covered(
         out.push(Uncovered {
             since: home_read,
             examples: names.iter().map(|n| n.to_string()).collect(),
+            every_mac: names.is_empty(),
             ..Uncovered::new(&HOME_AUTORUN, names.len())
         });
     }
@@ -1267,7 +1280,10 @@ pub fn not_covered(
         });
     }
     // One for each sentence of `CANNOT_JUDGE`: a test pins the pairing.
-    out.extend(LIMITS.iter().map(|(_, cause)| Uncovered::new(cause, 1)));
+    out.extend(LIMITS.iter().map(|(_, cause)| Uncovered {
+        every_mac: true,
+        ..Uncovered::new(cause, 1)
+    }));
     Ok(out)
 }
 
@@ -1314,6 +1330,53 @@ fn not_looked_into(r: &Latest) -> Vec<String> {
         .filter(|f| !f.is_empty())
         .map(plain_folder)
         .collect()
+}
+
+/// Whether the walk that finds this Mac's projects was whole: the reading of this Mac's
+/// checkouts was full, not limited to a folder given nor short of one it could not list, and
+/// it entered every folder macOS protects. Every "none" or zero said about what is in projects,
+/// in the status, its text and the pages, rests on this, through `projects_gap`.
+pub fn projects_walked_whole(latest: &[Latest], this: Option<&str>) -> bool {
+    projects_gap(latest, this).is_none()
+}
+
+/// Why the walk that finds this Mac's projects was not whole, in the program's words; `None`
+/// when it was. Folder names are not in it: the status and the page name them apart.
+pub fn projects_gap(latest: &[Latest], this: Option<&str>) -> Option<&'static str> {
+    let full = latest.iter().any(|r| {
+        r.reader == crate::checkouts::READER
+            && r.kind == crate::checkouts::KIND
+            && this.is_some_and(|t| r.scope == t)
+            && r.completeness == "full"
+    });
+    if !full {
+        Some(
+            "the projects on this Mac were not all found, as the walk that finds them was not full",
+        )
+    } else if !projects_not_looked_into(latest).is_empty() {
+        Some("projects inside folders macOS protects were not looked into")
+    } else {
+        None
+    }
+}
+
+/// Whether a kind of watched thing is kept in projects: some place of it is in each checkout,
+/// so what is said of it rests on the walk that finds them.
+pub fn in_projects(count: Count) -> bool {
+    match count {
+        Count::Files(as_) => {
+            watched::PLACES
+                .iter()
+                .any(|p| p.watched_as == as_ && p.base == watched::Base::Checkout)
+                || autorun::POINTS.iter().any(|p| {
+                    p.read_here()
+                        && p.watched_as() == Some(as_)
+                        && matches!(p.scope, autorun::Scope::Checkout)
+                })
+        }
+        Count::Dependencies => true,
+        Count::Installed(_) => false,
+    }
 }
 
 /// The folders macOS protects that the latest readings that find projects did not look into,
@@ -1393,48 +1456,24 @@ fn lacks(conn: &Connection) -> rusqlite::Result<Vec<(String, String, Option<Stri
 
 /// The most examples given with one item.
 pub const EXAMPLES: usize = 3;
+/// The causes whose examples are each given, however many: the package managers not read, which
+/// a person needs by name to know what is left out.
+const EVERY_EXAMPLE: [&str; 1] = [OTHER_MANAGERS.id];
 
-pub fn uncovered_json(u: &Uncovered) -> Value {
-    let examples: Vec<Value> = u
-        .examples
+/// Every cause with its words, as the catalogue of `immune rules` gives them. `{n}` stands for
+/// the count, `{what}` for what it is, as a list, `{date}` for a time and `{reasons}` for why.
+pub fn causes() -> Vec<crate::contract::v1::CauseWords> {
+    CAUSES
         .iter()
-        .take(EXAMPLES)
-        .map(|e| status::text(e))
-        .collect();
-    json!({
-        "id": u.cause.id,
-        "who": u.cause.who,
-        "scope": u.scope,
-        "kind": u.cause.kind,
-        "title": u.title(),
-        "meaning": u.meaning(),
-        "advice": u.cause.advice,
-        "count": u.count,
-        "since": u.since.map(crate::view::iso),
-        "value_text": u.value.as_deref().map(status::text),
-        "examples_text": examples,
-    })
-}
-
-/// Every cause with its words, for an agent to learn what each can say. `{n}`, `{all}` and
-/// `{examples}` stand for the count, every example and the first examples of an item, and
-/// `{what}` for what it is, as a list.
-pub fn causes_json() -> Value {
-    Value::Array(
-        CAUSES
-            .iter()
-            .map(|c| {
-                json!({
-                    "id": c.id,
-                    "who": c.who,
-                    "kind": c.kind,
-                    "title": numbers(c.title[1], c),
-                    "meaning": c.meaning,
-                    "advice": c.advice,
-                })
-            })
-            .collect(),
-    )
+        .map(|c| crate::contract::v1::CauseWords {
+            id: c.id.to_string(),
+            who: c.who.to_string(),
+            kind: c.kind.to_string(),
+            title: numbers(c.title[1], c),
+            meaning: c.meaning.to_string(),
+            advice: c.advice.to_string(),
+        })
+        .collect()
 }
 
 /// What is not covered, for the report line, each by name: what the owner can fix, then

@@ -1,0 +1,223 @@
+// Known vulnerabilities in packages the projects' lockfiles declare: the answers to `immune
+// vulnerabilities` and `immune vulnerability <id>`, and the totals the status gives. Version 1 of
+// the contract between the core and a program that runs it. How a message is printed and read,
+// and the conventions for text, references, times and changes, are in `common.proto`.
+//
+// Each answer speaks for what a project's lockfiles declare, as `declared_note` says: what is
+// installed, or what was built from it, can differ. "Does not affect" is given only when every
+// lockfile of the place was read and the data is current, at the check and when asked; otherwise
+// the answer cannot be told, with why.
+//
+// Values that will be added. A reader meets values of `PackageAnswer` and `RecordData` that it
+// does not know: the core adds them within version 1. It treats one it does not know as an answer
+// that cannot be told.
+
+syntax = "proto3";
+
+package immune.v1;
+
+import "immune/v1/common.proto";
+import "immune/v1/findings.proto";
+
+// The answer to `immune vulnerabilities`: the "affects" answers, the most severe first.
+message Vulnerabilities {
+  // The numbers of `Failure`'s fields, so that a failure never reads as an answer.
+  reserved 1000 to 1099;
+  // The version of this contract: 1. A reader that meets another number stops.
+  uint32 format = 1;
+  int64 answered_at = 2;
+  // The store this answer was read from, as in every answer (`common.proto`).
+  optional string store_id = 3;
+  // Absent when there is no store, or the projects' lockfiles were never matched in it; then
+  // `not_computed` names `totals` and says why.
+  VulnerabilityTotals totals = 4;
+  // The packages a record affects. Absent when `totals` is, and then `not_computed` names
+  // `affected` too: nothing counted is never "none affected".
+  AffectedPackages affected = 5;
+  reserved 6;
+  // What every answer here speaks for, in the core's words.
+  string declared_note = 7;
+  // Why there is nothing to count, in the core's words, when there is no store.
+  repeated NotComputed not_computed = 8;
+}
+
+// The packages of projects that a record affects.
+message AffectedPackages {
+  // One per package and record, at most 200.
+  repeated AffectedPackage items = 1;
+  // How many there are.
+  uint64 total = 2;
+}
+
+// Counted answers of matching the lockfiles against the vulnerability data, as the latest check
+// wrote them, with "does not affect" that rests on data not current now counted as cannot be
+// told.
+message VulnerabilityTotals {
+  // Answers by package and record: affects, cannot be told, does not affect, known for certain.
+  uint64 affected = 1;
+  uint64 unknown = 2;
+  uint64 not_affected_known = 3;
+  // Entries of the catalogue no record names: "does not affect, no signs" for every lockfile.
+  // Absent when the catalogue was never read.
+  optional uint64 not_affected_no_signs = 4;
+  repeated Count affected_by_label = 5;
+  // Records that affect something, each counted once however many projects it affects, with the
+  // packages and projects they are in: what a person calls a known vulnerability.
+  uint64 affected_records = 6;
+  uint64 affected_packages = 7;
+  uint64 affected_projects = 8;
+  repeated Count affected_records_by_label = 9;
+  // "Cannot be told" answers by reason, and the packages with one, each under its first reason.
+  repeated Count unknown_by_reason = 10;
+  uint64 unknown_packages = 11;
+  repeated Count unknown_packages_by_reason = 12;
+  // Whether matching ever ran on this store.
+  bool matched_this_store = 13;
+  // Each feed, and whether its data is current now.
+  repeated FeedFreshness feeds = 14;
+  // Informational advisories held, such as an unmaintained crate, which this version does not
+  // answer.
+  uint64 informational_records = 15;
+}
+
+// Whether a feed's data is current now.
+message FeedFreshness {
+  string source = 1;
+  string ecosystem = 2;
+  // Its ecosystem is matched against the projects' lockfiles.
+  bool matched = 3;
+  // When its latest reading that read it whole or found it unchanged was made. Absent when none.
+  optional int64 read_at = 4;
+  bool current = 5;
+  // Why it is not current, in the core's words. Absent when it is.
+  optional string not_current_why = 6;
+}
+
+// A package a project's lockfiles declare, and a record that affects it.
+message AffectedPackage {
+  // The project, as a person recognises it; the package's ecosystem and its name. Whole.
+  string project_text = 1;
+  string ecosystem = 2;
+  string package_text = 3;
+  // The releases declared that the record affects, each with the lockfile line.
+  repeated PackageRelease releases = 4;
+  // The record, as a finding of a vulnerable package gives it.
+  PackageRecord record = 5;
+  reserved 6;
+  // The feed it comes from, its `modified` and its kind, as the feed gives them.
+  string feed = 7;
+  string modified_text = 8;
+  string kind = 9;
+  // When the data the answer rests on was read, and since when it has affected the package.
+  optional int64 data_read_at = 10;
+  int64 since_at = 11;
+}
+
+// The answer to `immune vulnerability <id>`: one record id or CVE id, in every project whose
+// lockfiles were read, with what it rests on. An id the data does not hold is said as such,
+// never as "does not affect".
+message Vulnerability {
+  // As in `Vulnerabilities`.
+  reserved 1000 to 1099;
+  uint32 format = 1;
+  int64 answered_at = 2;
+  optional string store_id = 3;
+  // The id asked about, as given. Whole.
+  string id_text = 4;
+  // The catalogue of exploited vulnerabilities holds it. Absent when the catalogue was never
+  // read, or there is no store.
+  optional bool in_catalogue = 5;
+  // Whether the data holds a record of it. Absent when there is no store; then `not_computed`
+  // says so.
+  optional RecordData data = 6;
+  // When it holds none, what that means, in the core's words.
+  optional string said = 7;
+  // When it holds none and the catalogue holds the id, the answer in each place from the
+  // conditions of the place.
+  repeated PlaceAnswer answers = 8;
+  // Each record that names it.
+  repeated RecordAnswers records = 9;
+  // As in `Vulnerabilities`.
+  string declared_note = 10;
+  repeated NotComputed not_computed = 11;
+}
+
+// Whether the data holds a record of an id. `UNSPECIFIED`, or a value the reader does not know,
+// is read as `unknown_id`.
+enum RecordData {
+  RECORD_DATA_UNSPECIFIED = 0;
+  RECORD_DATA_HELD = 1;
+  // The catalogue holds the id and no record of the data names it.
+  RECORD_DATA_NO_RECORD = 2;
+  // Neither holds it: nothing can be said, which is not "does not affect".
+  RECORD_DATA_UNKNOWN_ID = 3;
+}
+
+// A record the data holds, and its answer in each place.
+message RecordAnswers {
+  string record_text = 1;
+  // The database it comes from, in the core's words; the feed; the ecosystem.
+  string record_source = 2;
+  string feed = 3;
+  string ecosystem = 4;
+  string modified_text = 5;
+  string kind = 6;
+  optional string summary_text = 7;
+  // Whether it is answered: a withdrawn record, one that left the data, and an informational one
+  // are not, and `said` says why in the core's words.
+  bool answered = 8;
+  optional string said = 9;
+  repeated PlaceAnswer answers = 10;
+}
+
+// The answer in one place: per package the record names, or from the conditions of the place
+// when it names none of its packages.
+message PlaceAnswer {
+  string project_text = 1;
+  string ecosystem = 2;
+  // The packages the record names here. Empty when it names none: then the fields below answer.
+  repeated PackageAnswerOf packages = 3;
+  optional PackageAnswer answer = 4;
+  // `known`, or `no_signs` for an id no record names.
+  optional string certainty = 5;
+  // Why it cannot be told, the core's word, and what was said. Whole.
+  optional string reason = 6;
+  optional string detail_text = 7;
+  // OpenVEX's justification of "not affected".
+  optional string openvex = 8;
+  optional int64 data_read_at = 9;
+}
+
+// The answer for one package the record names.
+message PackageAnswerOf {
+  string package_text = 1;
+  PackageAnswer answer = 2;
+  string detail_text = 3;
+  // Each release declared, with its lockfile line, where it comes from, and whether the record
+  // affects it.
+  repeated DeclaredRelease entries = 4;
+  repeated string fixed_text = 5;
+  optional int64 data_read_at = 6;
+  int64 since_at = 7;
+  string record_modified_text = 8;
+  optional string reason = 9;
+  optional string certainty = 10;
+  optional string openvex = 11;
+}
+
+// What a package's answer is. `UNSPECIFIED`, or a value the reader does not know, is read as
+// `unknown`.
+enum PackageAnswer {
+  PACKAGE_ANSWER_UNSPECIFIED = 0;
+  PACKAGE_ANSWER_AFFECTED = 1;
+  PACKAGE_ANSWER_NOT_AFFECTED = 2;
+  PACKAGE_ANSWER_UNKNOWN = 3;
+}
+
+message DeclaredRelease {
+  optional string version_text = 1;
+  optional string at_text = 2;
+  // Where it comes from, the core's word, such as `registry`.
+  string from = 3;
+  bool affected = 4;
+}

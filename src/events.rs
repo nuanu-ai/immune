@@ -3649,6 +3649,15 @@ impl Level {
     pub fn files_whole(&self) -> bool {
         self.files.last_day.gaps().is_empty() && self.last_day.shared_whole()
     }
+
+    /// The rules judged all the log held over the last day: the level runs, and no program
+    /// start, nor a file event where they are collected, was lost, could not be read or was
+    /// deleted before it was read. `rules.judged` is `all` exactly when this holds.
+    pub fn judged_whole(&self) -> bool {
+        self.state == RUNNING
+            && self.last_day.whole()
+            && (!self.files_watched() || self.files_whole())
+    }
 }
 
 /// How many hours the series by hour counts: the last day.
@@ -3853,92 +3862,102 @@ pub fn cannot_see(l: &Level) -> Vec<&'static str> {
     said
 }
 
-/// `event_level` in `immune status --json`. What `eslogger` or the scripts printed, and why a
-/// reading failed, are text from a source, each in its own field.
-pub fn json(l: &Level) -> Value {
-    let iso = |t: Option<i64>| t.map(crate::view::iso);
-    let pair = |f: fn(&Tally) -> i64| json!({ "since_check": f(&l.since_check), "last_day": f(&l.last_day) });
-    let files = |f: fn(&FileTally) -> i64| json!({ "since_check": f(&l.files.since_check), "last_day": f(&l.files.last_day) });
+/// `event_level` of the contract's `Status`. What `eslogger` or the scripts printed, and why a
+/// reading failed, are text from a source, each in its own field, whole.
+pub fn message(l: &Level) -> crate::contract::v1::EventLevel {
+    use crate::contract::{v1, value_of};
+    use crate::known::whole;
+    let n = |x: i64| u64::try_from(x).unwrap_or(0);
+    let span = |f: fn(&Tally) -> i64| v1::Span {
+        since_check: n(f(&l.since_check)),
+        last_day: n(f(&l.last_day)),
+    };
+    let files = |f: fn(&FileTally) -> i64| v1::Span {
+        since_check: n(f(&l.files.since_check)),
+        last_day: n(f(&l.files.last_day)),
+    };
+    let series = |s: &Series| v1::Series {
+        ends_at: s.ends_at,
+        step_seconds: n(s.step),
+        counts: s.counts.iter().map(|c| n(*c)).collect(),
+    };
     let said = words(l);
-    let mut v = json!({
-        "state": l.state,
-        "level": LEVEL,
-        "read_at": crate::view::iso(l.read_at),
-        "written_at": iso(l.written),
-        "program_starts": pair(|t| t.starts),
-        "lost": pair(|t| t.lost),
-        "unknown_losses": pair(|t| t.unknown_gaps),
-        "unreadable_lines": pair(|t| t.unreadable),
-        "other_messages": pair(|t| t.other),
-        "files_removed_by_cap": pair(|t| t.removed_cap),
-        "files_removed_unread": pair(|t| t.removed_unread),
-        "message_version": l.version,
-        "said_by": l.said_by,
-        "said_text": l
-            .said
+    let names = |state: Arrival| -> Vec<String> {
+        l.arrivals
+            .named(|a| a == state)
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    };
+    v1::EventLevel {
+        state: value_of::<v1::CollectorState>(&l.state),
+        level: LEVEL.to_string(),
+        read_at: l.read_at,
+        written_at: l.written,
+        program_starts: Some(span(|t| t.starts)),
+        lost: Some(span(|t| t.lost)),
+        unknown_losses: Some(span(|t| t.unknown_gaps)),
+        unreadable_lines: Some(span(|t| t.unreadable)),
+        other_messages: Some(span(|t| t.other)),
+        files_removed_by_cap: Some(span(|t| t.removed_cap)),
+        files_removed_unread: Some(span(|t| t.removed_unread)),
+        message_version: l.version,
+        said_by: l.said_by.clone(),
+        // Read cut (`level`), as every reader of it reads it.
+        said_text: l.said.as_ref().map(|s| s.shown(whole)),
+        reason_text: l.reason.as_deref().map(whole),
+        silent_after_seconds: n(SILENT_AFTER),
+        cannot_see: cannot_see(l).into_iter().map(str::to_string).collect(),
+        not_kept: names(Arrival::NotKept),
+        kept_never_filled: names(Arrival::Kept(None)),
+        not_yet_known: names(Arrival::Unknown),
+        arriving: l
+            .arrivals
+            .arriving()
+            .into_iter()
+            .map(|(name, since)| v1::Arriving {
+                name: name.to_string(),
+                since,
+            })
+            .collect(),
+        file_events: Some(v1::FileEvents {
+            collected: l.files.collected,
+            not_collected_reason: l.files.why.clone().filter(|_| !l.files.collected),
+            kinds: FILE_KINDS.iter().map(|k| k.to_string()).collect(),
+            events: Some(files(|f| f.files)),
+            lost: Some(files(|f| f.lost)),
+            unknown_losses: Some(files(|f| f.unknown_gaps)),
+            unreadable_events: Some(files(|f| f.unreadable)),
+        }),
+        program_starts_by_hour: Some(series(&l.starts_by_hour)),
+        program_starts_by_minute: Some(series(&l.starts_by_minute)),
+        in_words: Some(v1::EventLevelWords {
+            state: said.state.to_string(),
+            notes: said.notes.clone(),
+            caveats: said
+                .caveats
+                .iter()
+                .map(|c| v1::Caveat {
+                    kind: c.kind.to_string(),
+                    short: c.short.clone(),
+                })
+                .collect(),
+        }),
+        log_cap_bytes: l.cap.as_ref().and_then(|c| c.as_ref().ok().copied()),
+        log_cap_reason_text: l
+            .cap
             .as_ref()
-            .map(|s| crate::status::capped(s.shown(crate::view::shown))),
-        "reason_text": l.reason.as_deref().map(crate::status::text),
-        "silent_after_seconds": SILENT_AFTER,
-        "cannot_see": cannot_see(l),
-        // What a collector may keep beyond what the first one kept (`identity`, `script`,
-        // `signature`), each in one of five lists by what the lines read say of it: `not_kept`,
-        // the latest line lacks it, so the collector installed here is an earlier one;
-        // `kept_never_filled`, lines carry it and none has given it a value yet;
-        // `not_yet_known`, no line that would carry it has been read; `arriving`, with the
-        // time of the first line that gave it a value; and `no_longer_arriving`, with the time
-        // of the first of the lines in a row that gave it none (`MARKS`). A rule that reads one
-        // that does not arrive is named in the rules' `not_watching`.
-        "not_kept": l.arrivals.named(|a| a == Arrival::NotKept),
-        "kept_never_filled": l.arrivals.named(|a| a == Arrival::Kept(None)),
-        "not_yet_known": l.arrivals.named(|a| a == Arrival::Unknown),
-        "arriving": l.arrivals.arriving().iter().map(|(name, since)| json!({
-            "name": name,
-            "since": crate::view::iso(*since),
-        })).collect::<Vec<_>>(),
-        "no_longer_arriving": l.arrivals.no_longer().iter().map(|(name, since)| json!({
-            "name": name,
-            "since": crate::view::iso(*since),
-        })).collect::<Vec<_>>(),
-        // Files created and renamed. `collected` is true only when the collector installed
-        // here is established to record them; else `not_collected_reason` says why, in the
-        // program's words, and the rules for file events do not watch. Lines that could not be
-        // read and hours deleted are in the counts above and judge file events too.
-        "file_events": {
-            "collected": l.files.collected,
-            "not_collected_reason": l.files.why.as_deref().filter(|_| !l.files.collected),
-            "kinds": FILE_KINDS,
-            "events": files(|f| f.files),
-            "lost": files(|f| f.lost),
-            "unknown_losses": files(|f| f.unknown_gaps),
-            "unreadable_events": files(|f| f.unreadable),
-        },
-        // For a drawing: program starts read in each hour of the last day, oldest first, the
-        // last hour ending at `ends_at`; they add up to `program_starts.last_day`.
-        "program_starts_by_hour": {
-            "ends_at": crate::view::iso(l.starts_by_hour.ends_at),
-            "hour_seconds": HOUR,
-            "counts": l.starts_by_hour.counts,
-        },
-        // The same minute by minute over the last hour, oldest first; they add up to the last
-        // of the hours above.
-        "program_starts_by_minute": minutes(&l.starts_by_minute),
-        // The level for a person, the words every surface takes: a short state, and each
-        // caveat a sentence of its own, none when nothing was lost; `caveats` holds the same
-        // caveats in a few words each, under stable names. The program's own words.
-        "in_words": in_words(&said),
-    });
-    // The cap of the log in bytes, as the installed tidy job is given it, or why it could not
-    // be read; both absent until a reading found the collector installed.
-    match &l.cap {
-        Some(Ok(bytes)) => v["log_cap_bytes"] = json!(bytes),
-        Some(Err(why)) => {
-            v["log_cap_bytes"] = Value::Null;
-            v["log_cap_reason"] = json!(why);
-        }
-        None => {}
+            .and_then(|c| c.as_ref().err().map(|why| whole(why))),
+        no_longer_arriving: l
+            .arrivals
+            .no_longer()
+            .into_iter()
+            .map(|(name, since)| v1::NoLongerArriving {
+                name: name.to_string(),
+                since,
+            })
+            .collect(),
     }
-    v
 }
 
 /// `program_starts_by_minute`, in the status and in what a watcher says after a reading.
@@ -3994,22 +4013,6 @@ impl Said {
             ),
             None => self.state.to_string(),
         }
-    }
-
-    /// One line, with what is counted named, then the caveats: what `immune status` prints.
-    pub fn line(&self) -> String {
-        let head = match self.last_day {
-            Some(n) => format!(
-                "{}, {} in the last day.",
-                self.state,
-                crate::view::counted(n, "program start", "program starts")
-            ),
-            None => format!("{}.", self.state),
-        };
-        std::iter::once(head)
-            .chain(self.notes.iter().cloned())
-            .collect::<Vec<_>>()
-            .join(" ")
     }
 }
 
@@ -5273,10 +5276,6 @@ mod tests {
                 short: "2 restarts".to_string()
             }]
         );
-        assert_eq!(
-            said.line(),
-            "on, 49,842 program starts in the last day. The collector restarted twice; program starts in those moments were not seen."
-        );
         l.last_day.unknown_gaps = 1_200;
         assert!(words(&l).notes[0].starts_with("The collector restarted 1,200 times;"));
         l.last_day = Tally::default();
@@ -5319,14 +5318,14 @@ mod tests {
             arrivals: Default::default(),
             cap: None,
         };
-        let v = json(&l);
+        let v = serde_json::to_value(message(&l)).unwrap();
         assert_eq!(
             v["program_starts_by_hour"],
-            json!({ "ends_at": crate::view::iso(1_791_000_000), "hour_seconds": 3600, "counts": [7] })
+            json!({ "ends_at": 1_791_000_000, "step_seconds": 3600, "counts": [7] })
         );
         assert_eq!(
             v["program_starts_by_minute"],
-            json!({ "ends_at": crate::view::iso(1_791_000_000), "minute_seconds": 60, "counts": [2, 0, 3], "last_hour": 5 })
+            json!({ "ends_at": 1_791_000_000, "step_seconds": 60, "counts": [2, 0, 3] })
         );
         assert_eq!(
             v["in_words"],

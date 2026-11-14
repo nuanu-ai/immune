@@ -1139,33 +1139,39 @@ pub fn sentence(s: Option<&Summary>) -> String {
     line
 }
 
-/// The section of `immune status --json`: counts only, and each reading's own words as text.
-pub fn section(s: &Summary) -> serde_json::Value {
-    let readings: Vec<serde_json::Value> = s
-        .readings
-        .iter()
-        .map(|(kind, completeness, reason)| {
-            serde_json::json!({
-                "kind": kind,
-                "completeness": completeness,
-                "reason_text": reason.as_deref().map(crate::status::text),
+/// `integrity` of the contract's `Status`: counts only, and each reading's own words, whole.
+pub fn message(s: &Summary) -> crate::contract::v1::Integrity {
+    use crate::contract::{v1, value_of};
+    let n = |x: i64| u64::try_from(x).unwrap_or(0);
+    v1::Integrity {
+        first_reading: s.first,
+        bundles: n(s.bundles),
+        bundles_by_signer: s
+            .signers
+            .iter()
+            .map(|(name, count)| v1::Count {
+                name: name.clone(),
+                count: n(*count),
             })
-        })
-        .collect();
-    serde_json::json!({
-        "first_reading": s.first,
-        "bundles": s.bundles,
-        "bundles_by_signer": s.signers,
-        "bundles_not_verifying": s.not_verifying,
-        "not_verifying_since_first_reading": s.not_verifying_since_first,
-        "seals_verified_this_run": s.verified,
-        "seals_carried_forward": s.carried,
-        "homebrew_kegs": s.kegs,
-        "global_npm_packages": s.packages,
-        "application_code_folders": s.app_folders,
-        "changed_while_version_stayed": s.changed_in_place,
-        "readings": readings,
-    })
+            .collect(),
+        bundles_not_verifying: n(s.not_verifying),
+        not_verifying_since_first_reading: n(s.not_verifying_since_first),
+        seals_verified_this_run: n(s.verified),
+        seals_carried_forward: n(s.carried),
+        homebrew_kegs: n(s.kegs),
+        global_npm_packages: n(s.packages),
+        application_code_folders: n(s.app_folders),
+        changed_while_version_stayed: s.changed_in_place as u64,
+        readings: s
+            .readings
+            .iter()
+            .map(|(kind, completeness, reason)| v1::IntegrityReading {
+                kind: kind.clone(),
+                completeness: value_of::<v1::Completeness>(completeness),
+                reason_text: reason.as_deref().map(crate::known::whole),
+            })
+            .collect(),
+    }
 }
 
 #[cfg(test)]

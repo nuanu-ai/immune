@@ -16,6 +16,8 @@
 //! Text from a record is the feed's, partly written by anyone: it is returned only in `_text`
 //! fields and escaped wherever it is shown, always with the record's id and its source.
 
+use crate::contract::v1;
+use crate::known::whole;
 use crate::osv::{FEEDS, Feed};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use semver::Version;
@@ -1392,10 +1394,6 @@ pub fn stale(conn: &Connection, now: i64) -> rusqlite::Result<Option<Option<i64>
 
 // ---- The machine-readable forms. ----
 
-fn iso(t: Option<i64>) -> Value {
-    t.map_or(Value::Null, |t| json!(crate::view::iso(t)))
-}
-
 /// Where a lockfile line is, as a person finds it: under the home folder unless it starts at
 /// the root.
 pub fn at_shown(at: &str) -> String {
@@ -1406,106 +1404,62 @@ pub fn at_shown(at: &str) -> String {
     }
 }
 
-/// `exploited` is unknown (null) while the list of vulnerabilities used in attacks was never read:
-/// a record not on a list never read is not known to be off it.
-fn affecting_json(a: &Affecting, this: Option<&crate::findings::This>, listed: bool) -> Value {
-    let releases: Vec<Value> = a
-        .affected()
-        .iter()
-        .map(|(v, at)| json!({ "version_text": crate::status::text(v), "at_text": crate::status::text(&at_shown(at)) }))
-        .collect();
-    json!({
-        "record": a.advisory,
-        "record_source": source_name(&a.advisory),
-        "feed": a.source,
-        "modified": a.modified,
-        "kind": a.kind,
-        "label": a.label,
-        "exploited": if a.exploited || listed { json!(a.exploited) } else { Value::Null },
-        "project_text": crate::status::text(&crate::findings::place(&a.checkout, this)),
-        "ecosystem": a.ecosystem,
-        "package_text": crate::status::text(&a.package),
-        "releases": releases,
-        "fixed_text": a.fixed.iter().map(|f| crate::status::text(f)).collect::<Vec<_>>(),
-        "aliases_text": a.aliases.iter().map(|f| crate::status::text(f)).collect::<Vec<_>>(),
-        "summary_text": a.summary.as_deref().map(crate::status::text),
-        "data_read_at": iso(a.read_at),
-        "since": crate::view::iso(a.since_at),
-    })
-}
-
-fn totals_json(t: &Totals) -> Value {
-    let by = |list: &[(&'static str, usize)]| -> Value {
-        Value::Object(
-            list.iter()
-                .map(|(k, n)| (k.to_string(), json!(n)))
-                .collect(),
-        )
+/// The totals as the contract gives them, with each feed and whether it is current now: the
+/// status's part about known vulnerabilities, and the totals of `immune vulnerabilities`.
+/// Absent when matching never ran on this store: nothing was counted, so nothing reads as 0.
+pub fn totals_message(
+    conn: &Connection,
+    now: i64,
+) -> rusqlite::Result<Option<crate::contract::v1::VulnerabilityTotals>> {
+    use crate::contract::v1;
+    // Matching runs in every check that finishes, over tables a store of an older build lacks.
+    if !has_tables(conn)? || crate::status::latest_finished(conn)?.is_none() {
+        return Ok(None);
+    }
+    let t = totals(conn, now)?;
+    let n = |x: usize| x as u64;
+    let by = |list: &[(&'static str, usize)]| -> Vec<v1::Count> {
+        list.iter()
+            .map(|(name, count)| v1::Count {
+                name: name.to_string(),
+                count: n(*count),
+            })
+            .collect()
     };
-    json!({
-        "affected": t.affected,
-        "unknown": t.unknown,
-        "not_affected_known": t.not_affected,
-        "not_affected_no_signs": t.no_signs,
-        "affected_by_label": by(&t.by_label),
-        "affected_records": t.records,
-        "affected_packages": t.packages,
-        "affected_projects": t.projects,
-        "affected_records_by_label": by(&t.records_by_label),
-        "unknown_by_reason": by(&t.by_reason),
-        "unknown_packages": t.packages_unknown,
-        "unknown_packages_by_reason": by(&t.packages_by_reason),
-    })
-}
-
-fn feeds_json(conn: &Connection, now: i64) -> rusqlite::Result<Value> {
-    Ok(Value::Array(
-        freshness(conn, now)?
+    Ok(Some(v1::VulnerabilityTotals {
+        affected: n(t.affected),
+        unknown: n(t.unknown),
+        not_affected_known: n(t.not_affected),
+        not_affected_no_signs: t.no_signs.map(n),
+        affected_by_label: by(&t.by_label),
+        affected_records: n(t.records),
+        affected_packages: n(t.packages),
+        affected_projects: n(t.projects),
+        affected_records_by_label: by(&t.records_by_label),
+        unknown_by_reason: by(&t.by_reason),
+        unknown_packages: n(t.packages_unknown),
+        unknown_packages_by_reason: by(&t.packages_by_reason),
+        matched_this_store: t.matched,
+        feeds: freshness(conn, now)?
             .iter()
-            .map(|f| {
-                json!({
-                    "source": f.feed.source,
-                    "ecosystem": f.feed.ecosystem,
-                    "matched": true,
-                    "read_at": iso(f.reading.map(|r| r.1)),
-                    "current": f.not_current.is_none(),
-                    "not_current_why": f.not_current,
-                })
+            .map(|f| v1::FeedFreshness {
+                source: f.feed.source.to_string(),
+                ecosystem: f.feed.ecosystem.to_string(),
+                matched: true,
+                read_at: f.reading.map(|r| r.1),
+                current: f.not_current.is_none(),
+                not_current_why: f.not_current.clone(),
             })
             .collect(),
-    ))
+        informational_records: n(t.informational),
+    }))
 }
 
-/// The status's part about known vulnerabilities, beside what needs a look and never counted
-/// in it.
-pub fn status_json(conn: &Connection, now: i64) -> rusqlite::Result<Value> {
-    let t = totals(conn, now)?;
-    let mut v = totals_json(&t);
-    v["matched_this_store"] = json!(t.matched);
-    v["feeds"] = feeds_json(conn, now)?;
-    v["not_answered"] = json!({ "informational_records": t.informational });
-    Ok(v)
-}
+/// Why the totals and the "affects" answers are absent from a store that has them not.
+pub const NEVER_MATCHED: &str = "the projects' lockfiles have never been matched against vulnerability data in this store; the next check does";
 
 /// The most "affects me" answers `immune vulnerabilities` lists; the total is always given.
 pub const SHOWN: usize = 200;
-
-/// `immune vulnerabilities --json`: the "affects me" answers, most severe first.
-pub fn list_json(conn: &Connection, now: i64) -> rusqlite::Result<Value> {
-    let this = crate::findings::This::of(conn, crate::covered::this_machine(conn)?)?;
-    let list = affecting(conn)?;
-    let t = totals(conn, now)?;
-    let listed = crate::threats::last_good(conn).unwrap_or(None).is_some();
-    Ok(json!({
-        "generated_at": crate::view::iso(now),
-        "totals": totals_json(&t),
-        "feeds": feeds_json(conn, now)?,
-        "affected": list.iter().take(SHOWN).map(|a| affecting_json(a, this.as_ref(), listed)).collect::<Vec<_>>(),
-        "affected_total": list.len(),
-        "not_answered": { "informational_records": t.informational },
-        "declared_note": DECLARED,
-    }))
-}
 
 /// A record the data holds, as `immune vulnerability` reads it.
 struct Held {
@@ -1562,20 +1516,131 @@ type Place = (
     Option<i64>,
 );
 
-/// `immune vulnerability <id> --json`: the answer for one record id or CVE id in every checkout
-/// whose lockfiles were read, with what it rests on. An id the data does not hold is said as
-/// such, never as "not affected".
-pub fn one_json(conn: &Connection, id: &str, now: i64) -> rusqlite::Result<Value> {
+// ---- The contract's messages. ----
+
+/// The version of the contract this build prints.
+const FORMAT: u32 = 1;
+
+/// `immune vulnerabilities`: the "affects" answers, most severe first, at most `SHOWN`, with the
+/// totals. Without a store there is nothing to count, and `not_computed` says so.
+pub fn list(conn: Option<&Connection>, now: i64) -> rusqlite::Result<v1::Vulnerabilities> {
+    let mut out = v1::Vulnerabilities {
+        format: FORMAT,
+        answered_at: now,
+        declared_note: DECLARED.to_string(),
+        ..Default::default()
+    };
+    let Some(conn) = conn else {
+        out.not_computed.push(no_store("totals"));
+        out.not_computed.push(no_store("affected"));
+        return Ok(out);
+    };
     let this = crate::findings::This::of(conn, crate::covered::this_machine(conn)?)?;
-    let place_of = |c: &str| crate::status::text(&crate::findings::place(c, this.as_ref()));
+    let all = affecting(conn)?;
+    let listed = crate::threats::last_good(conn).unwrap_or(None).is_some();
+    out.store_id = crate::store::id(conn)?;
+    out.totals = totals_message(conn, now)?;
+    if out.totals.is_none() {
+        for section in ["totals", "affected"] {
+            out.not_computed.push(v1::NotComputed {
+                section: section.to_string(),
+                reason: NEVER_MATCHED.to_string(),
+            });
+        }
+        return Ok(out);
+    }
+    out.affected = Some(v1::AffectedPackages {
+        items: all
+            .iter()
+            .take(SHOWN)
+            .map(|a| affected_message(a, this.as_ref(), listed))
+            .collect(),
+        total: all.len() as u64,
+    });
+    Ok(out)
+}
+
+/// Whether a record is used in attacks: known only once the list of them was read, or when a
+/// record is on it.
+pub fn exploited(on_list: bool, list_read: bool) -> Option<bool> {
+    (on_list || list_read).then_some(on_list)
+}
+
+fn no_store(section: &str) -> v1::NotComputed {
+    v1::NotComputed {
+        section: section.to_string(),
+        reason: "there is no store yet; `immune run` makes it".to_string(),
+    }
+}
+
+/// An "affects" answer: the package in its project and the record. Whether the record is used in
+/// attacks is absent while that list was never read, so that not known is never off the list.
+fn affected_message(
+    a: &Affecting,
+    this: Option<&crate::findings::This>,
+    listed: bool,
+) -> v1::AffectedPackage {
+    v1::AffectedPackage {
+        project_text: whole(&crate::findings::place(&a.checkout, this)),
+        ecosystem: a.ecosystem.clone(),
+        package_text: whole(&a.package),
+        releases: a
+            .affected()
+            .iter()
+            .map(|(v, at)| v1::PackageRelease {
+                version_text: whole(v),
+                at_text: whole(&at_shown(at)),
+            })
+            .collect(),
+        record: Some(v1::PackageRecord {
+            id_text: whole(&a.advisory),
+            aliases_text: a.aliases.iter().map(|s| whole(s)).collect(),
+            source: source_name(&a.advisory).to_string(),
+            label: a.label.to_string(),
+            exploited: exploited(a.exploited, listed),
+            summary_text: a.summary.as_deref().map(whole),
+            fixed_text: a.fixed.iter().map(|s| whole(s)).collect(),
+        }),
+        feed: a.source.clone(),
+        modified_text: whole(&a.modified),
+        kind: a.kind.clone(),
+        data_read_at: a.read_at,
+        since_at: a.since_at,
+    }
+}
+
+/// `immune vulnerability <id>`: the answer for one record id or CVE id in every checkout whose
+/// lockfiles were read, with what it rests on. An id the data does not hold is said as such,
+/// never as "not affected".
+pub fn one(conn: Option<&Connection>, id: &str, now: i64) -> rusqlite::Result<v1::Vulnerability> {
+    let mut out = v1::Vulnerability {
+        format: FORMAT,
+        answered_at: now,
+        // What was asked, cut: it may hold a secret.
+        id_text: crate::secrets::text(id, whole),
+        declared_note: DECLARED.to_string(),
+        ..Default::default()
+    };
+    let Some(conn) = conn else {
+        out.not_computed.push(no_store("vulnerability"));
+        return Ok(out);
+    };
+    out.store_id = crate::store::id(conn)?;
+    let this = crate::findings::This::of(conn, crate::covered::this_machine(conn)?)?;
+    let place_of = |c: &str| whole(&crate::findings::place(c, this.as_ref()));
     let records = held_records(conn, id)?;
-    let in_catalogue: bool = conn
-        .query_row(
+    // Not known while the catalogue was never read, nor when its table cannot be read.
+    out.in_catalogue = if crate::threats::last_good(conn).unwrap_or(None).is_some() {
+        conn.query_row(
             "SELECT EXISTS (SELECT 1 FROM threat WHERE id = ?1 AND gone_at IS NULL)",
             [id],
             |r| r.get(0),
         )
-        .unwrap_or(false);
+        .ok()
+    } else {
+        None
+    };
+    let in_catalogue = out.in_catalogue == Some(true);
     let places: Vec<Place> = if has_tables(conn)? {
         conn.prepare(
             "SELECT checkout, ecosystem, lockfiles, lockfiles_why, feed, feed_why, read_at
@@ -1604,185 +1669,177 @@ pub fn one_json(conn: &Connection, id: &str, now: i64) -> rusqlite::Result<Value
             .find(|f| f.ecosystem == eco)
             .and_then(|f| stale.get(f.source))
     };
+    let answer = |word: &str| crate::contract::value_of::<v1::PackageAnswer>(word);
     // A place's answer for a record that names none of its packages, from the conditions of
     // the place: "not affected" only when its lockfiles were all read and the data is
     // current, at the check and now, with this certainty.
     let derived = |p: &Place, certainty: &str| {
-        let mut a = json!({ "project_text": place_of(&p.0), "ecosystem": p.1 });
+        let mut a = v1::PlaceAnswer {
+            project_text: place_of(&p.0),
+            ecosystem: p.1.clone(),
+            data_read_at: p.6,
+            ..Default::default()
+        };
         let now_stale = stale_of(&p.1);
         match (p.2.as_str(), p.4.as_str()) {
             ("full", "current") if now_stale.is_none() => {
-                a["answer"] = json!("not_affected");
-                a["certainty"] = json!(certainty);
+                a.answer = Some(answer("not_affected"));
+                a.certainty = Some(certainty.to_string());
             }
             ("full", _) => {
-                a["answer"] = json!("unknown");
-                a["reason"] = json!(FEED_NOT_READ);
-                a["detail_text"] = json!(
-                    now_stale
-                        .map(String::as_str)
-                        .or(p.5.as_deref())
-                        .map(crate::status::text)
-                );
+                a.answer = Some(answer("unknown"));
+                a.reason = Some(FEED_NOT_READ.to_string());
+                a.detail_text = now_stale.map(String::as_str).or(p.5.as_deref()).map(whole);
             }
             _ => {
-                a["answer"] = json!("unknown");
-                a["reason"] = json!(PLACE_NOT_READ);
-                a["detail_text"] = json!(p.3.as_deref().map(crate::status::text));
+                a.answer = Some(answer("unknown"));
+                a.reason = Some(PLACE_NOT_READ.to_string());
+                a.detail_text = p.3.as_deref().map(whole);
             }
         }
-        a["data_read_at"] = iso(p.6);
         a
     };
-    let mut out = json!({
-        "generated_at": crate::view::iso(now),
-        "id_text": crate::status::cut_text(&crate::secrets::Text::source(id)),
-        "in_catalogue": in_catalogue,
-        "declared_note": DECLARED,
-    });
     if records.is_empty() {
         let (known, said) = if in_catalogue {
             (
-                "no_record",
+                v1::RecordData::NoRecord,
                 "The catalogue of exploited vulnerabilities holds this id, and no record of the npm or crates.io data names it: it does not affect any project's lockfiles, with no signs. The data does not claim to name every vulnerability a package may hold.",
             )
         } else {
             (
-                "unknown_id",
+                v1::RecordData::UnknownId,
                 "The data held here has no record with this id or alias, so nothing can be said about it; this is not an answer that it does not affect you.",
             )
         };
-        out["data"] = json!(known);
-        out["said"] = json!(said);
-        let answers: Vec<Value> = if in_catalogue {
-            places.iter().map(|p| derived(p, "no_signs")).collect()
-        } else {
-            Vec::new()
-        };
-        out["answers"] = Value::Array(answers);
+        out.data = Some(known as i32);
+        out.said = Some(said.to_string());
+        if in_catalogue {
+            out.answers = places.iter().map(|p| derived(p, "no_signs")).collect();
+        }
         return Ok(out);
     }
-    out["data"] = json!("held");
-    let mut list: Vec<Value> = Vec::new();
+    out.data = Some(v1::RecordData::Held as i32);
     for r in &records {
         let feed = FEEDS.iter().find(|f| f.source == r.source);
         let eco = feed.map_or("", |f| f.ecosystem);
-        let mut v = json!({
-            "record": r.id,
-            "record_source": source_name(&r.id),
-            "feed": r.source,
-            "ecosystem": eco,
-            "modified": r.modified,
-            "kind": r.kind,
-            "summary_text": r.summary.as_deref().map(crate::status::text),
-        });
+        let mut v = v1::RecordAnswers {
+            record_text: whole(&r.id),
+            record_source: source_name(&r.id).to_string(),
+            feed: r.source.clone(),
+            ecosystem: eco.to_string(),
+            modified_text: whole(&r.modified),
+            kind: r.kind.clone(),
+            summary_text: r.summary.as_deref().map(whole),
+            ..Default::default()
+        };
         if r.withdrawn.is_some() || r.gone {
-            v["answered"] = json!(false);
-            v["said"] = json!(if r.gone {
-                "The record has left the data, so it matches nothing."
-            } else {
-                "The record is withdrawn, so it matches nothing."
-            });
-            list.push(v);
+            v.said = Some(
+                if r.gone {
+                    "The record has left the data, so it matches nothing."
+                } else {
+                    "The record is withdrawn, so it matches nothing."
+                }
+                .to_string(),
+            );
+            out.records.push(v);
             continue;
         }
         if r.kind == "informational" {
-            v["answered"] = json!(false);
-            v["said"] = json!(
+            v.said = Some(
                 "An informational advisory, such as an unmaintained crate: this version does not answer these."
+                    .to_string(),
             );
-            list.push(v);
+            out.records.push(v);
             continue;
         }
-        v["answered"] = json!(true);
-        let stored: HashMap<String, Vec<Value>> = {
-            let mut m: HashMap<String, Vec<Value>> = HashMap::new();
-            let mut stmt = conn.prepare(
-                "SELECT checkout, package, answer, reason, detail, entries, fixed, read_at, since_at,
-                        modified
-                 FROM vulnerability_answer WHERE source = ?1 AND advisory = ?2
-                 ORDER BY checkout, package",
-            )?;
-            let rows = stmt.query_map(params![r.source, r.id], |q| {
-                let entries: String = q.get(5)?;
-                let fixed: String = q.get(6)?;
-                let answer: String = q.get(2)?;
-                let reason: String = q.get(3)?;
-                let entries: Value = serde_json::from_str(&entries).unwrap_or(Value::Null);
-                let at: Vec<Value> = entries
+        v.answered = true;
+        let mut stored: HashMap<String, Vec<v1::PackageAnswerOf>> = HashMap::new();
+        let mut stmt = conn.prepare(
+            "SELECT checkout, package, answer, reason, detail, entries, fixed, read_at, since_at,
+                    modified
+             FROM vulnerability_answer WHERE source = ?1 AND advisory = ?2
+             ORDER BY checkout, package",
+        )?;
+        let rows = stmt.query_map(params![r.source, r.id], |q| {
+            let entries: String = q.get(5)?;
+            let fixed: String = q.get(6)?;
+            let word: String = q.get(2)?;
+            let reason: String = q.get(3)?;
+            let entries: Value = serde_json::from_str(&entries).unwrap_or(Value::Null);
+            let mut p = v1::PackageAnswerOf {
+                package_text: whole(&q.get::<_, String>(1)?),
+                answer: answer(&word),
+                detail_text: whole(&q.get::<_, String>(4)?),
+                entries: entries
                     .as_array()
                     .into_iter()
                     .flatten()
-                    .map(|e| {
-                        json!({
-                            "version_text": e["version"].as_str().map(crate::status::text),
-                            "at_text": e["at"].as_str().map(|a| crate::status::text(&at_shown(a))),
-                            "from": e["from"],
-                            "affected": e["affected"],
-                        })
+                    .map(|e| v1::DeclaredRelease {
+                        version_text: e["version"].as_str().map(whole),
+                        at_text: e["at"].as_str().map(|a| whole(&at_shown(a))),
+                        from: e["from"].as_str().unwrap_or_default().to_string(),
+                        affected: e["affected"] == true,
                     })
-                    .collect();
-                let mut v = json!({
-                    "package_text": crate::status::text(&q.get::<_, String>(1)?),
-                    "answer": answer,
-                    "detail_text": crate::status::text(&q.get::<_, String>(4)?),
-                    "entries": at,
-                    "fixed_text": serde_json::from_str::<Vec<String>>(&fixed).unwrap_or_default().iter().map(|f| crate::status::text(f)).collect::<Vec<_>>(),
-                    "data_read_at": iso(q.get(7)?),
-                    "since": crate::view::iso(q.get(8)?),
-                    "record_modified": q.get::<_, String>(9)?,
-                });
-                match answer.as_str() {
-                    "unknown" => v["reason"] = json!(reason),
-                    "not_affected" => {
-                        v["certainty"] = json!("known");
-                        v["openvex"] = json!(if reason == "fixed" { "fixed" } else { "vulnerable_code_not_present" });
-                    }
-                    _ => {}
+                    .collect(),
+                fixed_text: serde_json::from_str::<Vec<String>>(&fixed)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|f| whole(f))
+                    .collect(),
+                data_read_at: q.get(7)?,
+                since_at: q.get(8)?,
+                record_modified_text: whole(&q.get::<_, String>(9)?),
+                ..Default::default()
+            };
+            match word.as_str() {
+                "unknown" => p.reason = Some(reason.clone()),
+                "not_affected" => {
+                    p.certainty = Some("known".to_string());
+                    p.openvex = Some(
+                        if reason == "fixed" {
+                            "fixed"
+                        } else {
+                            "vulnerable_code_not_present"
+                        }
+                        .to_string(),
+                    );
                 }
-                Ok((q.get::<_, String>(0)?, v))
-            })?;
-            for row in rows {
-                let (checkout, mut v) = row?;
-                // "Not affected" stands only while its data is current now.
-                if let (Some(why), Some("not_affected")) =
-                    (stale.get(r.source.as_str()), v["answer"].as_str())
-                {
-                    v["answer"] = json!("unknown");
-                    v["reason"] = json!(FEED_NOT_READ);
-                    v["detail_text"] = json!(crate::status::text(why));
-                    if let Some(o) = v.as_object_mut() {
-                        o.remove("certainty");
-                        o.remove("openvex");
-                    }
-                }
-                m.entry(checkout).or_default().push(v);
+                _ => {}
             }
-            m
-        };
-        let mut answers: Vec<Value> = Vec::new();
+            Ok((q.get::<_, String>(0)?, word, p))
+        })?;
+        for row in rows {
+            let (checkout, word, mut p) = row?;
+            // "Not affected" stands only while its data is current now.
+            if let (Some(why), "not_affected") = (stale.get(r.source.as_str()), word.as_str()) {
+                p.answer = answer("unknown");
+                p.reason = Some(FEED_NOT_READ.to_string());
+                p.detail_text = whole(why);
+                p.certainty = None;
+                p.openvex = None;
+            }
+            stored.entry(checkout).or_default().push(p);
+        }
         for p in places.iter().filter(|p| p.1 == eco) {
-            let a = match stored.get(&p.0) {
-                Some(found) => json!({
-                    "project_text": place_of(&p.0),
-                    "ecosystem": p.1,
-                    "packages": found,
-                }),
+            v.answers.push(match stored.remove(&p.0) {
+                Some(packages) => v1::PlaceAnswer {
+                    project_text: place_of(&p.0),
+                    ecosystem: p.1.clone(),
+                    packages,
+                    ..Default::default()
+                },
                 // The project holds no package the record names.
                 None => {
                     let mut a = derived(p, "known");
-                    if a["answer"] == "not_affected" {
-                        a["openvex"] = json!("component_not_present");
+                    if a.answer == Some(answer("not_affected")) {
+                        a.openvex = Some("component_not_present".to_string());
                     }
                     a
                 }
-            };
-            answers.push(a);
+            });
         }
-        v["answers"] = Value::Array(answers);
-        list.push(v);
+        out.records.push(v);
     }
-    out["records"] = Value::Array(list);
     Ok(out)
 }
 

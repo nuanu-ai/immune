@@ -1060,7 +1060,13 @@ fn a_machine_the_owner_set_aside_says_it_is_no_longer_checked() {
         .unwrap();
     // The day the statement was made, as the list of statements gives its time.
     let made = owner(&[]);
-    let day = &made["result"]["statements"][0]["at"].as_str().unwrap()[..10];
+    let at = made["statements"][0]["at"].as_i64().unwrap().to_string();
+    let day = std::process::Command::new("/bin/date")
+        .args(["-u", "-r", &at, "+%Y-%m-%d"])
+        .output()
+        .unwrap()
+        .stdout;
+    let day = String::from_utf8(day).unwrap().trim().to_string();
     assert_eq!(
         (
             aside.reader.as_str(),

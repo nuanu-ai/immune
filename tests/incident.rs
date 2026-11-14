@@ -176,12 +176,12 @@ impl Estate {
             .output()
             .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-        v["result"].clone()
+        v.clone()
     }
 
     /// Everything that needs a look, in the status's order, as rule (or kind) and where.
     fn needs(&self) -> Vec<(String, String)> {
-        self.status()["needs_a_look"]
+        looks(&self.status())
             .as_array()
             .unwrap()
             .iter()
@@ -195,7 +195,7 @@ impl Estate {
 
     /// What the status names as having no reader, as what and which.
     fn not_read(&self) -> Vec<(String, String)> {
-        self.status()["no_reader_for"]
+        self.status()["no_reader_for"]["items"]
             .as_array()
             .unwrap()
             .iter()
@@ -480,7 +480,7 @@ fn the_incident_of_7_october_is_reported_step_by_step() {
     // The next sample finds the interpreter's connection to the incident's address.
     leave_a_detached_interpreter_holding_a_connection(&e, t + 120);
     let seen = exactly(&e, &seen, Some(pair("indicator.match", INTERPRETER)));
-    let matched = e.status()["needs_a_look"]
+    let matched = looks(&e.status())
         .as_array()
         .unwrap()
         .iter()
@@ -514,7 +514,7 @@ fn the_incident_of_7_october_is_reported_step_by_step() {
 
     // The list as the owner sees it: every step that is caught, the most severe first.
     let status = e.status();
-    let severities: Vec<usize> = status["needs_a_look"]
+    let severities: Vec<usize> = looks(&status)
         .as_array()
         .unwrap()
         .iter()
@@ -529,7 +529,7 @@ fn the_incident_of_7_october_is_reported_step_by_step() {
         severities.windows(2).all(|w| w[0] >= w[1]),
         "{severities:?}"
     );
-    assert_eq!(status["needs_a_look_total"], 8);
+    assert_eq!(status["needs_a_look"]["total"], 8);
 
     // The summary page names every one, with where it is.
     let out = Command::new(env!("CARGO_BIN_EXE_immune"))
@@ -544,10 +544,33 @@ fn the_incident_of_7_october_is_reported_step_by_step() {
     );
     let summary = String::from_utf8(out.stdout).unwrap();
     let page = std::fs::read_to_string(summary.lines().next().unwrap()).unwrap();
-    for item in status["needs_a_look"].as_array().unwrap() {
+    for item in looks(&status).as_array().unwrap() {
         let id = item["id"].as_str().unwrap();
         let place = item["where_text"].as_str().unwrap();
         assert!(page.contains(&format!("id=\"{id}\"")), "{id}");
         assert!(page.contains(place), "{place}");
     }
+}
+
+/// What `needs_a_look` lists, each `LookFinding` read as one object: the finding's reference,
+/// the finding as listed and its words side by side, so a test names a field once.
+fn looks(status: &serde_json::Value) -> serde_json::Value {
+    let items = status["needs_a_look"]["items"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    items
+        .iter()
+        .map(|look| {
+            let mut flat = serde_json::Map::new();
+            for part in [&look["finding"]["finding"], &look["finding"], look] {
+                for (k, v) in part.as_object().into_iter().flatten() {
+                    if k != "finding" {
+                        flat.entry(k.clone()).or_insert_with(|| v.clone());
+                    }
+                }
+            }
+            serde_json::Value::Object(flat)
+        })
+        .collect()
 }

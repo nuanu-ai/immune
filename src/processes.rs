@@ -796,58 +796,46 @@ pub fn last_sample(conn: &rusqlite::Connection) -> rusqlite::Result<Option<(i64,
 }
 
 impl Report {
-    pub fn json(&self) -> Value {
+    /// The contract's `Sample`: counts only, never a command line.
+    pub fn message(&self) -> crate::contract::v1::Sample {
+        use crate::contract::v1;
         let s = &self.sample;
-        let interpreters = s.processes.iter().filter(|p| p.interpreter.is_some());
+        let n = |x: usize| x as u64;
         let inline: Vec<&Process> = s.processes.iter().filter(|p| p.shape.is_some()).collect();
-        json!({
-            "level": LEVEL,
-            "at": crate::view::iso(s.at),
-            "took_ms": self.took_ms as u64,
-            "processes": {
-                "read": s.processes.len(),
-                "unreadable": s.unreadable,
-                "ended_while_read": s.ended,
-                "other_users": s.other_users,
-            },
-            "interpreters": {
-                "seen": interpreters.count(),
-                "arguments_unreadable": s.args_unreadable,
-                "inline_code": inline.len(),
-                "inline_code_detached": inline.iter().filter(|p| p.detached).count(),
-            },
-            "connections": {
-                "read": s.connections.len(),
-                "matched_indicators": self.matched,
-                "unreadable": s.sockets_unreadable,
-            },
-            "tracked": { "new": self.tracked_new, "seen_again": self.tracked_again },
-            "findings_opened": self.findings_opened,
-            "rule": { "kind": DETACHED_INLINE, "min_apart_seconds": MIN_APART },
-            "cannot_see": CANNOT_SEE,
-        })
-    }
-
-    /// The report for a person: counts only.
-    pub fn line(&self) -> String {
-        let v = self.json();
-        let n = |a: &str, b: &str| v[a][b].as_u64().unwrap_or_default();
-        format!(
-            "Sample: {} processes read, {} unreadable, {} of other users not read; {} interpreters, \
-             {} given code on the command line, {} of them detached; {} connections. \
-             Tracking {} new, {} again; {} findings opened. Took {} ms.",
-            n("processes", "read"),
-            n("processes", "unreadable"),
-            n("processes", "other_users"),
-            n("interpreters", "seen"),
-            n("interpreters", "inline_code"),
-            n("interpreters", "inline_code_detached"),
-            n("connections", "read"),
-            self.tracked_new,
-            self.tracked_again,
-            self.findings_opened,
-            self.took_ms,
-        )
+        v1::Sample {
+            format: 1,
+            level: LEVEL.to_string(),
+            at: s.at,
+            took_ms: u64::try_from(self.took_ms).unwrap_or(u64::MAX),
+            processes: Some(v1::SampleProcesses {
+                read: n(s.processes.len()),
+                unreadable: n(s.unreadable),
+                ended_while_read: n(s.ended),
+                other_users: n(s.other_users),
+            }),
+            interpreters: Some(v1::SampleInterpreters {
+                seen: n(s
+                    .processes
+                    .iter()
+                    .filter(|p| p.interpreter.is_some())
+                    .count()),
+                arguments_unreadable: n(s.args_unreadable),
+                inline_code: n(inline.len()),
+                inline_code_detached: n(inline.iter().filter(|p| p.detached).count()),
+            }),
+            connections: Some(v1::SampleConnections {
+                read: n(s.connections.len()),
+                matched_indicators: n(self.matched),
+                unreadable: n(s.sockets_unreadable),
+            }),
+            tracked_new: n(self.tracked_new),
+            tracked_again: n(self.tracked_again),
+            findings_opened: n(self.findings_opened),
+            rule_kind: DETACHED_INLINE.to_string(),
+            rule_min_apart_seconds: MIN_APART as u64,
+            cannot_see: CANNOT_SEE.iter().map(|c| c.to_string()).collect(),
+            ..Default::default()
+        }
     }
 }
 

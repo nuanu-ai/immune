@@ -217,7 +217,7 @@ impl Mac {
     }
 
     fn status(&self) -> Value {
-        self.json(&["status"])["result"].clone()
+        self.json(&["status"]).clone()
     }
 
     fn findings(&self) -> Value {
@@ -260,7 +260,7 @@ impl Mac {
 
     /// What `immune status --json` shows of a finding in what needs a look.
     fn shown(&self, id: &str) -> Option<Value> {
-        self.status()["needs_a_look"]
+        looks(&self.status())
             .as_array()
             .unwrap()
             .iter()
@@ -535,7 +535,7 @@ fn core(mac: &Mac) -> String {
         }
     }
     let status = mac.status();
-    for i in status["needs_a_look"].as_array().unwrap() {
+    for i in looks(&status).as_array().unwrap() {
         if i["rule"] != VERDICT_RULE {
             out.push(format!(
                 "needs {} {} {}",
@@ -830,13 +830,12 @@ fn a_suspicious_verdict_raises_one_finding_of_its_rule_and_thing_that_only_the_p
     assert!(mac.shown(&malicious).is_none());
     // The core's finding names it, and says how many verdicts there are and nothing they said.
     let item = mac.shown(&padding).unwrap();
-    assert_eq!(item["verdict"]["finding"], own.as_str());
-    assert_eq!(item["verdict"]["total"], 1);
+    assert_eq!(item["verdicts"]["verdict_finding"]["id"], own.as_str());
     assert_eq!(
-        item["verdict"]["said"],
-        "1 verdict from the response layer, 1 suspicious."
+        (&item["verdicts"]["total"], &item["verdicts"]["suspicious"]),
+        (&json!(1), &json!(1))
     );
-    assert!(item["verdict"].get("reason_text").is_none());
+    assert_eq!(item["verdicts"]["listed"], json!([]));
     // It rests on the verdict that raised it, as a finding rests on what raised it.
     let text = mac.command(&["finding", &own]).output().unwrap();
     let text = String::from_utf8_lossy(&text.stdout);
@@ -855,24 +854,126 @@ fn a_suspicious_verdict_raises_one_finding_of_its_rule_and_thing_that_only_the_p
     // Once the person saw it, the core's finding no longer names it, and the next suspicious
     // verdict raises its next occurrence, which the core's finding names.
     assert!(mac.answer(&own, &["seen"]).status.success());
-    assert!(mac.shown(&padding).unwrap()["verdict"]["finding"].is_null());
+    assert!(mac.shown(&padding).unwrap()["verdicts"]["verdict_finding"].is_null());
     let mut again = about_finding(&store, &padding, "suspicious", "case-3");
     again["reason_text"] = json!("invented: it ran again");
     let next = mac.send(&again);
     assert_eq!(next["recorded"]["raised"], true);
     assert_ne!(next["recorded"]["finding"]["id"], own.as_str());
     let next_id = next["recorded"]["finding"]["id"].as_str().unwrap();
-    assert_eq!(mac.shown(&padding).unwrap()["verdict"]["finding"], next_id);
+    assert_eq!(
+        mac.shown(&padding).unwrap()["verdicts"]["verdict_finding"]["id"],
+        next_id
+    );
     // A verdict about the response layer's finding is about the same rule and thing: it goes to
     // that finding.
     let on_own = mac.send(&about_finding(&store, next_id, "suspicious", "case-4"));
     assert_eq!(on_own["recorded"]["finding"]["id"], next_id);
     // Its one-line form quotes the verdict that raised this occurrence, and counts the rest.
     let item = mac.shown(next_id).unwrap();
-    assert_eq!(item["verdict"]["reason_text"], "invented: it ran again");
-    assert_eq!(item["verdict"]["more"], 1);
+    let verdicts = &item["verdicts"];
+    assert_eq!(
+        verdicts["listed"][0]["verdict"]["reason_text"],
+        "invented: it ran again"
+    );
+    assert_eq!(
+        (
+            &verdicts["total"],
+            verdicts["listed"].as_array().unwrap().len()
+        ),
+        (&json!(2), 1)
+    );
     let about = item["value_text"].as_str().unwrap();
     assert!(about.starts_with("Binary Padding - MacOS, by "), "{about}");
+}
+
+/// Findings of the core inserted as a check would leave them: `n` of `rule`, each about an
+/// invented application, open.
+fn insert_findings(mac: &Mac, rule: &str, tag: &str, n: usize) -> Vec<String> {
+    let conn = rusqlite::Connection::open(mac.store()).unwrap();
+    (0..n)
+        .map(|k| {
+            let about = format!("file:machine:mac//Applications/Invented {tag} {k}.app");
+            conn.execute(
+                "INSERT OR IGNORE INTO entity (id, type) VALUES (?1, 'file')",
+                [&about],
+            )
+            .unwrap();
+            let id = format!("f{tag}{k:08x}");
+            conn.execute(
+                "INSERT INTO finding (id, rule, about, occurrence, state, first_seen_at,
+                                      first_seen_run, last_seen_at, last_seen_run)
+                 VALUES (?1, ?2, ?3, 1, 'open', 1, 'r', 1, 'r')",
+                rusqlite::params![id, rule, about],
+            )
+            .unwrap();
+            id
+        })
+        .collect()
+}
+
+/// What needs a look as the status lists it, by source: the core's and the response layer's.
+fn by_source(r: &Value) -> (Vec<Value>, Vec<Value>) {
+    looks(r)
+        .as_array()
+        .unwrap()
+        .iter()
+        .cloned()
+        .partition(|i| i["rule"] != "verdict.suspicious")
+}
+
+#[test]
+fn each_source_keeps_its_own_fifty_so_urgent_findings_of_one_never_push_out_the_other() {
+    // The core has more urgent findings than its fifty: the response layer's finding that is
+    // not urgent is listed all the same, beside the core's fifty urgent ones.
+    let mac = Mac::new("cut-core");
+    mac.package(true);
+    mac.run();
+    let store = mac.store_id();
+    let id = mac.latest(MALICIOUS).unwrap();
+    let own = mac.send(&about_finding(&store, &id, "suspicious", "case-1"))["recorded"]["finding"]
+        ["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(mac.shown(&own).unwrap()["urgent"], false);
+    // integrity.app-seal is high and medium: urgent.
+    insert_findings(&mac, "integrity.app-seal", "a", 51);
+    let r = mac.status();
+    let (core, layer) = by_source(&r);
+    assert_eq!((core.len(), layer.len()), (50, 1), "{:#}", looks(&r));
+    assert!(core.iter().all(|i| i["urgent"] == true));
+    assert!(mac.shown(&own).is_some());
+    assert_eq!(
+        r["needs_a_look"]["total"], 53,
+        "{:#}",
+        r["needs_a_look"]["total"]
+    );
+    assert_eq!(r["needs_a_look"]["urgent_total"], 52);
+
+    // The response layer has more urgent findings than its fifty: the core's findings that are
+    // not urgent are listed all the same, fifty of them, beside the layer's fifty urgent ones.
+    let mac = Mac::new("cut-layer");
+    mac.package(true);
+    mac.run();
+    let store = mac.store_id();
+    // watched.shell-profile is medium and low: not urgent.
+    let quiet = insert_findings(&mac, "watched.shell-profile", "b", 51);
+    for (k, id) in quiet.iter().enumerate() {
+        let v = levels(
+            about_finding(&store, id, "suspicious", &format!("case-{k}")),
+            ("critical", "high"),
+        );
+        assert!(mac.send_output(&v).status.success(), "{k}");
+    }
+    let r = mac.status();
+    let (core, layer) = by_source(&r);
+    assert_eq!((core.len(), layer.len()), (50, 50), "{:#}", looks(&r));
+    assert!(layer.iter().all(|i| i["urgent"] == true));
+    assert!(core.iter().any(|i| i["urgent"] == false), "{core:#?}");
+    // Urgent first within the core's own fifty.
+    let first_quiet = core.iter().position(|i| i["urgent"] == false).unwrap();
+    assert!(core[first_quiet..].iter().all(|i| i["urgent"] == false));
 }
 
 #[test]
@@ -1025,7 +1126,7 @@ fn a_verdict_finding_about_a_rule_a_later_build_drops_stays_listed_and_can_be_op
     assert!(mac.findings().to_string().contains(own));
     let status = mac.status();
     assert!(
-        status["needs_a_look"]
+        looks(&status)
             .as_array()
             .unwrap()
             .iter()
@@ -1688,15 +1789,6 @@ fn escaped(s: &str) -> String {
         .collect()
 }
 
-/// Text as a report's `_text` field shows it, at most 256 characters.
-fn capped(s: &str) -> String {
-    if s.chars().count() <= 256 {
-        s.to_string()
-    } else {
-        s.chars().take(255).chain(['…']).collect()
-    }
-}
-
 /// Sends a verdict about the match at `position` with this reason and case, in JSON or in
 /// binary: what was recorded, or the failure.
 fn send_reason(
@@ -1908,10 +2000,10 @@ fn the_core_s_cut_output_quoted_as_a_person_s_reason_or_by_the_collector_keeps_i
         assert!(out.status.success(), "{q}");
         let said: Value = serde_json::from_slice(&out.stdout).unwrap();
         if !loses(shape) {
-            assert_eq!(said["result"]["reason_text"], capped(q), "{q}");
-            assert_eq!(said["result"]["reason_cuts"], json!([]), "{q}");
-        } else if said["result"]["reason_text"] != capped(q) {
-            assert_ne!(said["result"]["reason_cuts"], json!([]), "{q}");
+            assert_eq!(said["said"]["reason_text"], escaped(q), "{q}");
+            assert_eq!(said["said"]["reason_cuts"], json!([]), "{q}");
+        } else if said["said"]["reason_text"] != escaped(q) {
+            assert_ne!(said["said"]["reason_cuts"], json!([]), "{q}");
         }
     }
     // What the collector printed is read on a run, one line at a time.
@@ -1923,7 +2015,7 @@ fn the_core_s_cut_output_quoted_as_a_person_s_reason_or_by_the_collector_keeps_i
         std::fs::write(mac.log().join("scripts.err"), format!("{q}\n")).unwrap();
         mac.run();
         let level = &mac.status()["event_level"];
-        assert_eq!(level["said_text"], capped(q), "{q}");
+        assert_eq!(level["said_text"], escaped(q), "{q}");
     }
 }
 
@@ -2051,7 +2143,7 @@ fn a_store_not_yet_cleaned_prints_no_secret_from_any_kind_of_kept_text() {
     let status = String::from_utf8_lossy(&printed[0].1).to_string();
     assert!(
         status.contains(
-            "\"said_text\":\"invented: the token \\\\cut{gitleaks:github-pat 40} was used \\\\u{5c}\""
+            "\"said_text\":\"invented: the token \\\\cut{gitleaks:github-pat 40} was used \\\\u{5c}u{5c}\""
         ),
         "{status}"
     );
@@ -2063,7 +2155,7 @@ fn a_store_not_yet_cleaned_prints_no_secret_from_any_kind_of_kept_text() {
     let owner = String::from_utf8_lossy(&owner);
     assert!(
         owner.contains(
-            "\"reason_text\":\"invented: the token \\\\cut{gitleaks:github-pat 40} was used \\\\u{5c}\""
+            "\"reason_text\":\"invented: the token \\\\cut{gitleaks:github-pat 40} was used \\\\u{5c}u{5c}\""
         ),
         "{owner}"
     );
@@ -2104,10 +2196,10 @@ fn an_answer_or_a_statement_whose_reason_holds_a_secret_is_taken_with_its_reason
     assert_eq!(out.status.code(), Some(0));
     let answered: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(
-        answered["result"]["finding"]["answer"]["reason_cuts"],
+        answered["answer"]["reason_cuts"],
         json!([
-            { "kind": "gitleaks:github-pat", "length": 40 },
-            { "kind": "immune:flag-value", "length": 11 }
+            { "argument": 0, "kind": "gitleaks:github-pat", "length": 40 },
+            { "argument": 0, "kind": "immune:flag-value", "length": 11 }
         ]),
         "{answered:#}"
     );
@@ -2132,8 +2224,8 @@ fn an_answer_or_a_statement_whose_reason_holds_a_secret_is_taken_with_its_reason
     );
     let said: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(
-        said["result"]["reason_cuts"],
-        json!([{ "kind": "gitleaks:github-pat", "length": 40 }]),
+        said["said"]["reason_cuts"],
+        json!([{ "argument": 0, "kind": "gitleaks:github-pat", "length": 40 }]),
         "{said:#}"
     );
     // For a person, the same in words.
@@ -2411,7 +2503,7 @@ fn the_sender_s_text_never_leaves_its_quotation_and_is_never_cut() {
         .unwrap()
         .to_string();
     assert_eq!(
-        mac2.shown(&own2).unwrap()["verdict"]["reason_text"],
+        mac2.shown(&own2).unwrap()["verdicts"]["listed"][0]["verdict"]["reason_text"],
         long.as_str()
     );
     assert_eq!(
@@ -2425,4 +2517,27 @@ fn the_sender_s_text_never_leaves_its_quotation_and_is_never_cut() {
             .lines()
             .any(|l| l.contains("class=\"verdict\"") && l.contains("keys out"))
     );
+}
+
+/// What `needs_a_look` lists, each `LookFinding` read as one object: the finding's reference,
+/// the finding as listed and its words side by side, so a test names a field once.
+fn looks(status: &serde_json::Value) -> serde_json::Value {
+    let items = status["needs_a_look"]["items"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    items
+        .iter()
+        .map(|look| {
+            let mut flat = serde_json::Map::new();
+            for part in [&look["finding"]["finding"], &look["finding"], look] {
+                for (k, v) in part.as_object().into_iter().flatten() {
+                    if k != "finding" {
+                        flat.entry(k.clone()).or_insert_with(|| v.clone());
+                    }
+                }
+            }
+            serde_json::Value::Object(flat)
+        })
+        .collect()
 }

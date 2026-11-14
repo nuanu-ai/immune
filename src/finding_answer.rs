@@ -113,14 +113,14 @@ fn all(conn: &Connection, now: i64) -> rusqlite::Result<Vec<Found>> {
 }
 
 /// Every finding by id, as an answer names one.
-fn refs(items: &[Item]) -> BTreeMap<String, v1::FindingRef> {
+pub fn refs(items: &[Item]) -> BTreeMap<String, v1::FindingRef> {
     items
         .iter()
         .map(|i| (i.id.clone(), known::finding_ref(i)))
         .collect()
 }
 
-fn listed(
+pub fn listed(
     i: &Item,
     store_id: Option<&str>,
     refs: &BTreeMap<String, v1::FindingRef>,
@@ -153,6 +153,11 @@ fn answer(a: &findings::Answered) -> v1::Answer {
         via: value_of::<v1::Via>(a.via.literal()),
         given_at: a.at,
         reason_text: a.reason.as_ref().map(|r| r.shown(whole)),
+        reason_cuts: a
+            .reason
+            .as_ref()
+            .map(crate::answer::reason_cuts)
+            .unwrap_or_default(),
         until_at: a.until,
         in_force: a.in_force,
     }
@@ -160,7 +165,7 @@ fn answer(a: &findings::Answered) -> v1::Answer {
 
 /// What a finding rests on, by the kind of its rule; `None` for a kind this build does not
 /// shape.
-fn evidence(conn: &Connection, f: &Found) -> rusqlite::Result<Option<v1::evidence::Body>> {
+pub fn evidence(conn: &Connection, f: &Found) -> rusqlite::Result<Option<v1::evidence::Body>> {
     use v1::evidence::Body;
     if let Some(l) = findings::published(&f.rule) {
         let (Some(meta), Some(kind)) = (&l.meta, l.kind) else {
@@ -206,7 +211,12 @@ fn evidence(conn: &Connection, f: &Found) -> rusqlite::Result<Option<v1::evidenc
 
 /// A change as the store words it, with spaces written as underscores in the contract.
 fn change(word: Option<&str>) -> i32 {
-    value_of::<v1::Change>(&word.unwrap_or_default().replace(' ', "_"))
+    change_of(word.unwrap_or_default())
+}
+
+/// The same for a word that is there.
+pub fn change_of(word: &str) -> i32 {
+    value_of::<v1::Change>(&word.replace(' ', "_"))
 }
 
 /// Whether the store has a table: one a reading of this build creates may be missing from a
@@ -354,13 +364,14 @@ fn package(conn: &Connection, about: &str) -> rusqlite::Result<v1::VulnerablePac
             at_text: whole(&vulnerabilities::at_shown(line)),
         })
         .collect();
+    let listed = crate::threats::last_good(conn).unwrap_or(None).is_some();
     for a in &mine {
         out.records.push(v1::PackageRecord {
             id_text: whole(&a.advisory),
             aliases_text: a.aliases.iter().map(|s| whole(s)).collect(),
             source: vulnerabilities::source_name(&a.advisory).to_string(),
             label: a.label.to_string(),
-            exploited: a.exploited,
+            exploited: vulnerabilities::exploited(a.exploited, listed),
             summary_text: a.summary.as_deref().map(whole),
             fixed_text: a.fixed.iter().map(|s| whole(s)).collect(),
         });

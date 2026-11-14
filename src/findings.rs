@@ -12,7 +12,7 @@
 //!
 //! What a finding rests on is kept by reference, as journal entries, never as content.
 
-use crate::{autorun, indicators, integrity, sha256, status, watched};
+use crate::{autorun, indicators, integrity, sha256, watched};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 
@@ -1293,35 +1293,6 @@ pub fn answered(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Item
     Ok(Some(items))
 }
 
-/// The answers in force known to have been given outside the app, by an agent or from the
-/// command line, listed apart so that nothing is quieted silently. An answer from before
-/// `via` was kept is not among them. Never counted as something to look at.
-pub fn outside_app_json(answered: &[Item], shown: usize) -> Value {
-    let outside: Vec<&Item> = answered
-        .iter()
-        .filter(|i| i.answer.as_ref().is_some_and(|a| a.via.outside_app()))
-        .collect();
-    let items: Vec<Value> = outside
-        .iter()
-        .take(shown)
-        .map(|i| {
-            let a = i.answer.as_ref().expect("filtered on an answer");
-            json!({
-                "id": i.id,
-                "title": i.words.title,
-                "answer": a.given,
-                "until": a.until.map(crate::view::iso),
-                "via": a.via.literal(),
-                "at": crate::view::iso(a.at),
-                "reason_text": a.reason.as_ref().map(status::cut_text),
-                "reason_cuts": a.reason.as_ref().map(status::cuts),
-                "where_text": i.place.as_deref().map(status::text),
-            })
-        })
-        .collect();
-    json!({ "total": outside.len(), "items": items })
-}
-
 #[derive(Debug)]
 pub struct RefusedError(pub Refused);
 
@@ -1365,8 +1336,6 @@ pub struct Item {
     /// The entity it is about, by its id: what the map of the summary marks.
     pub about: String,
     pub answer: Option<Answered>,
-    /// For a published rule's finding, the rule and the starts it matched, served as they are.
-    pub detail: Option<Value>,
     /// What it carries of the response layer's verdicts.
     pub verdicts: Option<crate::verdict::Summary>,
 }
@@ -1545,7 +1514,6 @@ fn published_item(f: &Found, l: &'static crate::sigma::Loaded) -> Option<Item> {
         place: Some(f.place.clone()),
         about: f.about.clone(),
         answer: answered_of(f),
-        detail: f.detail.clone(),
         verdicts: f.verdicts.clone(),
     })
 }
@@ -1600,7 +1568,6 @@ fn verdict_item(f: &Found, subject: &str) -> Option<Item> {
         place: Some(f.place.clone()),
         about: f.about.clone(),
         answer: answered_of(f),
-        detail: None,
         verdicts: f.verdicts.clone(),
     })
 }
@@ -1630,7 +1597,6 @@ pub fn item(f: &Found) -> Option<Item> {
         place: Some(f.place.clone()),
         about: f.about.clone(),
         answer: answered_of(f),
-        detail: None,
         verdicts: f.verdicts.clone(),
     })
 }
@@ -1660,14 +1626,16 @@ pub fn needs(conn: &Connection, now: i64) -> rusqlite::Result<Needs> {
     })
 }
 
-/// The order of everything that needs a look, and of findings: the most severe first, then
-/// the newest, then by id. The app shows the first few, so a severe finding is never under
-/// a mild item.
+/// The order of everything that needs a look, and of findings: urgent first, then the most
+/// severe, then the newest, then by id. Every list that is cut is cut in this order, so a cut
+/// never drops an urgent finding while it keeps one that is not, and a severe finding is never
+/// under a mild one.
 pub fn order(items: &mut [Item]) {
     let rank = |i: &Item| SEVERITIES.iter().position(|s| *s == i.severity);
     items.sort_by(|a, b| {
-        rank(b)
-            .cmp(&rank(a))
+        urgent(b.severity, b.confidence)
+            .cmp(&urgent(a.severity, a.confidence))
+            .then_with(|| rank(b).cmp(&rank(a)))
             .then_with(|| b.last_seen.cmp(&a.last_seen))
             .then_with(|| a.id.cmp(&b.id))
     });
@@ -1680,144 +1648,101 @@ pub fn urgent(severity: &str, confidence: Option<&str>) -> bool {
     matches!(severity, "high" | "critical") && matches!(confidence, Some("medium" | "high"))
 }
 
-/// An item in the machine-readable form. Text from a source is only in `_text` fields.
-pub fn item_json(i: &Item) -> Value {
-    let iso = |t: Option<i64>| t.map(crate::view::iso);
-    let mut v = json!({
-        "id": i.id,
-        // Every item is a finding; the field stays for those that read it.
-        "type": "finding",
-        "kind": i.kind,
-        "severity": i.severity,
-        "urgent": urgent(i.severity, i.confidence),
-        "state": i.state,
-        "first_seen": iso(i.first_seen),
-        "last_seen": iso(i.last_seen),
-        "title": i.words.title,
-        "meaning": i.words.meaning,
-        "advice": i.words.advice,
-        "value_text": i.value.as_deref().map(status::text),
-        "where_text": i.place.as_deref().map(status::text),
-    });
-    if let Some(rule) = i.rule {
-        v["rule"] = json!(rule);
-        v["confidence"] = json!(i.confidence);
-        v["change"] = json!(i.change);
-    }
-    if let Some(t) = i.technique {
-        v["technique"] = json!(t);
-    }
-    if let Some(d) = &i.detail {
-        v["published_rule"] = d.clone();
-    }
-    if let Some(s) = &i.verdicts {
-        v["verdict"] = crate::verdict::item_json(s);
-    }
-    if let Some(a) = &i.answer {
-        v["answer"] = json!({
-            "given": a.given,
-            "via": a.via.literal(),
-            "at": crate::view::iso(a.at),
-            "until": a.until.map(crate::view::iso),
-            "in_force": a.in_force,
-            "reason_text": a.reason.as_ref().map(status::cut_text),
-            "reason_cuts": a.reason.as_ref().map(status::cuts),
-        });
-    }
-    v
-}
-
-/// Every rule, and every cause of what is not covered, with its wording, for an agent to
-/// learn what each can say.
-pub fn catalogue_json() -> Value {
+/// Every rule, and every cause of what is not covered, with its wording, for an agent to learn
+/// what each can say: the catalogue of `immune rules`.
+pub fn catalogue() -> crate::contract::v1::Catalogue {
+    use crate::contract::{v1, value_of};
     // Only a set whose rules state levels raises findings; a rule of a set that states none is
     // counted and handed over, and raises nothing by itself.
     let (sets, silent): (Vec<&crate::sigma::Source>, Vec<&crate::sigma::Source>) =
         crate::sigma::SOURCES.iter().partition(|s| s.states_levels);
     let (starts, files) = published_words(sets[0]);
-    let meanings = |of_files: bool| -> Value {
+    let meanings = |of_files: bool| -> Vec<v1::SetMeaning> {
         sets.iter()
             .map(|s| {
                 let (starts, files) = published_words(s);
                 let words = if of_files { files } else { starts };
-                (s.name.to_string(), json!(words.meaning))
+                v1::SetMeaning {
+                    name: s.name.to_string(),
+                    meaning: words.meaning.to_string(),
+                }
             })
-            .collect::<serde_json::Map<String, Value>>()
-            .into()
+            .collect()
     };
-    let rules: Vec<Value> = rules()
-        .iter()
-        .map(|r| {
-            json!({
-                "id": r.id,
-                "kind": r.kind,
-                "technique": r.technique,
-                "severity": r.severity,
-                "confidence": r.confidence,
-                "urgent": urgent(r.severity, Some(r.confidence)),
-                "finds": r.finds,
-                "title": r.words.title,
-                "meaning": r.words.meaning,
-                "advice": r.words.advice,
+    let strings = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    v1::Catalogue {
+        rules: rules()
+            .iter()
+            .map(|r| v1::CoreRule {
+                id: r.id.to_string(),
+                kind: r.kind.to_string(),
+                technique: r.technique.map(str::to_string),
+                severity: value_of::<v1::Level>(r.severity),
+                confidence: value_of::<v1::Level>(r.confidence),
+                urgent: urgent(r.severity, Some(r.confidence)),
+                finds: r.finds.to_string(),
+                title: r.words.title.to_string(),
+                meaning: r.words.meaning.to_string(),
+                advice: r.words.advice.to_string(),
             })
-        })
-        .collect();
-    json!({
-        "rules": rules,
+            .collect(),
         // Every finding of a published rule says the same words; the rule is in its own field.
-        "published_rules": {
-            "rule": sets
+        published_rules: Some(v1::PublishedWords {
+            rule: sets
                 .iter()
                 .map(|s| format!("{}:<the rule's id>", s.name))
                 .collect::<Vec<_>>()
                 .join(" or "),
-            "kind": PUBLISHED_KIND,
-            "raised_by_sets": sets.iter().map(|s| s.name).collect::<Vec<_>>(),
-            "raised_by_levels": ["high", "critical"],
-            "sets_that_raise_nothing": silent
+            kind: PUBLISHED_KIND.to_string(),
+            raised_by_sets: sets.iter().map(|s| s.name.to_string()).collect(),
+            raised_by_levels: strings(&["high", "critical"]),
+            sets_that_raise_nothing: silent
                 .iter()
-                .map(|s| json!({
-                    "name": s.name,
-                    "set": s.set,
-                    "why": "its rules state no level, so a match is counted and handed over and raises no finding by itself",
-                }))
-                .collect::<Vec<_>>(),
-            "severity": "the rule's level",
-            "confidence_by_status": {
-                "stable": crate::sigma::Status::Stable.confidence(),
-                "test": crate::sigma::Status::Test.confidence(),
-                "experimental": crate::sigma::Status::Experimental.confidence(),
-            },
-            "finds": "event",
-            // The title and the advice are the same for every set; the meaning names the
-            // set, so it is given for each by the name its rules carry.
-            "title": starts.title,
-            "meaning_by_set": meanings(false),
-            "advice": starts.advice,
-            // A rule about file events raises a finding of its own kind and words; the rest
-            // is the same.
-            "for_file_events": {
-                "kind": PUBLISHED_FILE_KIND,
-                "title": files.title,
-                "meaning_by_set": meanings(true),
-                "advice": files.advice,
-            },
-        },
+                .map(|s| v1::SilentSet {
+                    name: s.name.to_string(),
+                    set: s.set.to_string(),
+                    why: "its rules state no level, so a match is counted and handed over and raises no finding by itself".to_string(),
+                })
+                .collect(),
+            severity: "the rule's level".to_string(),
+            confidence_by_status: [
+                crate::sigma::Status::Stable,
+                crate::sigma::Status::Test,
+                crate::sigma::Status::Experimental,
+            ]
+            .into_iter()
+            .map(|s| v1::StatusConfidence {
+                status: s.as_str().to_string(),
+                confidence: value_of::<v1::Level>(s.confidence()),
+            })
+            .collect(),
+            finds: "event".to_string(),
+            title: starts.title.to_string(),
+            meaning_by_set: meanings(false),
+            advice: starts.advice.to_string(),
+            for_file_events: Some(v1::FileEventWords {
+                kind: PUBLISHED_FILE_KIND.to_string(),
+                title: files.title.to_string(),
+                meaning_by_set: meanings(true),
+                advice: files.advice.to_string(),
+            }),
+        }),
         // A suspicious verdict of the response layer raises a finding of Immune's own rule; its
         // levels are the verdict's, and what it is about stands beside these words.
-        "verdict_rule": {
-            "id": crate::verdict::RULE,
-            "kind": crate::verdict::KIND,
-            "severity": "the highest a verdict of the occurrence gave",
-            "confidence": "the highest a verdict of the occurrence gave",
-            "finds": "event",
-            "title": crate::verdict::WORDS.title,
-            "meaning": crate::verdict::WORDS.meaning,
-            "advice": crate::verdict::WORDS.advice,
-        },
-        "not_covered": crate::covered::causes_json(),
-        "levels": { "severity": SEVERITIES, "confidence": CONFIDENCES },
-    })
+        verdict_rule: Some(v1::VerdictWords {
+            id: crate::verdict::RULE.to_string(),
+            kind: crate::verdict::KIND.to_string(),
+            severity: "the highest a verdict of the occurrence gave".to_string(),
+            confidence: "the highest a verdict of the occurrence gave".to_string(),
+            finds: "event".to_string(),
+            title: crate::verdict::WORDS.title.to_string(),
+            meaning: crate::verdict::WORDS.meaning.to_string(),
+            advice: crate::verdict::WORDS.advice.to_string(),
+        }),
+        not_covered: crate::covered::causes(),
+        severities: strings(&SEVERITIES),
+        confidences: strings(&CONFIDENCES),
+    }
 }
 
 #[cfg(test)]

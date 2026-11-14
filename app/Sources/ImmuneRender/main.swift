@@ -194,6 +194,7 @@ func main() async {
   _ = NSApplication.shared
   icons()
   await panel("1-calm", status: "panel-calm.json")
+  await panel("1b-calm-all-judged", status: "panel-calm-all-judged.json")
   await panel("2-two-findings", status: "panel-two.json")
   await panel("3-not-covered", status: "panel-in-part.json")
   await panel("4-program-start-and-verdict", status: "panel-start.json")
@@ -208,6 +209,8 @@ func main() async {
   await panel("11-cant-tell-with-findings", status: "panel-cant-tell.json")
   await panel("12-hostile-rows", status: "panel-hostile.json")
   await panel("13-open-hostile-program-start", status: "panel-hostile.json", open: "fa5b0f00c1d")
+  await panel("14-stale", status: "panel-stale.json")
+  await panel("15-stale-while-checking", status: "panel-stale-checking.json")
   exit(0)
 }
 

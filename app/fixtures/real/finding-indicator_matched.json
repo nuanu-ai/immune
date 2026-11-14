@@ -1,0 +1,56 @@
+{
+  "advice": "Do not open or run what is named here; find out how it got there, and treat this Mac as affected until you know.",
+  "answer": null,
+  "answered_at": 1794597523,
+  "answers_note": "Answer a finding only after the owner has agreed in this conversation, having been told what it is and what the options are. Pass --via agent and the reason the owner agreed to. The app shows every answer given this way.",
+  "evidence": {
+    "indicator_matched": {
+      "indicators_text": "[file:hashes.'SHA-256' = '128344f1f3352b53701662b12b748ff9df8ea044a2acf076d438e8f5a0a75911']"
+    }
+  },
+  "finding": {
+    "about_text": "file:machine:mac/.zshrc",
+    "confidence": "high",
+    "id": "f5738cc2fac",
+    "rule": "indicator.match",
+    "severity": "high",
+    "state": "open",
+    "urgent": true
+  },
+  "first_seen_at": 1794597519,
+  "format": 1,
+  "kind": "match of an indicator from the list",
+  "last_seen_at": 1794597519,
+  "meaning": "The list names files, sites and addresses that the attack is known to use, so a match is rarely chance; it is wrong only when the list itself is wrong.",
+  "rests_on": [
+    {
+      "entry": "changed",
+      "kind": "content of a watched file",
+      "new_value_text": "sha256:128344f1f3352b53701662b12b748ff9df8ea044a2acf076d438e8f5a0a75911",
+      "old_value_text": "sha256:5a2dd1f378a67a0883bfb4290feefd00d3e30811fb5d31f5bb605411de3f131a",
+      "predicate": "has_content",
+      "reader": "watched-places",
+      "recorded_at": 1794597519,
+      "run_id": "1794597519-131322000",
+      "seq": 23,
+      "subject_text": "file:machine:mac/.zshrc"
+    },
+    {
+      "entry": "added",
+      "kind": "indicators matched against watched files and texts read in checkouts",
+      "new_value_text": "[file:hashes.'SHA-256' = '128344f1f3352b53701662b12b748ff9df8ea044a2acf076d438e8f5a0a75911']",
+      "old_value_text": null,
+      "predicate": "matches_indicator",
+      "reader": "indicators",
+      "recorded_at": 1794597519,
+      "run_id": "1794597519-131322000",
+      "seq": 26,
+      "subject_text": "file:machine:mac/.zshrc"
+    }
+  ],
+  "store_id": "d33651be2c7f9f3bb28e6a58c8b62082",
+  "technique_text": null,
+  "title": "Something on this Mac matches a sign of a known attack from the list you gave.",
+  "verdicts": null,
+  "where_text": "~/.zshrc"
+}

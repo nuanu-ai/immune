@@ -1,8 +1,9 @@
 // What every message of the contract shares: how it is read, its conventions, and the types
 // more than one answer uses. Version 1 of the contract between the core and a program that runs
-// it. The answers are in `known.proto`, `matches.proto` and `findings.proto`; the events a rule
-// matched are in `event.proto`; the verdict the response layer gives back, and the answer to it,
-// are in `verdict.proto`. The failure that every command of the contract prints in place of an
+// it. The answers are in `known.proto`, `matches.proto`, `findings.proto`, `status.proto`,
+// `rules.proto`, `vulnerabilities.proto` and `owner.proto`; the events a rule matched are in
+// `event.proto`; the verdict the response layer gives back, and the answer to it, are in
+// `verdict.proto`. The failure that every command of the contract prints in place of an
 // answer is `Failure`, below.
 //
 // How it is read. A command of the contract answers with one message, in the form it is asked
@@ -145,4 +146,19 @@ message Error {
   // When a question fits more than one thing, every id it fits, whole, so each can be asked
   // again.
   repeated string ids_text = 5;
+}
+
+// A count under a name, where a set of counts is keyed by the core's words: a label, a reason, a
+// signer.
+message Count {
+  string name = 1;
+  uint64 count = 2;
+}
+
+// A part of an answer the core could not give, and why. The part is absent; this says so.
+message NotComputed {
+  // The part's field, such as `needs_a_look`.
+  string section = 1;
+  // Why, in the core's words.
+  string reason = 2;
 }

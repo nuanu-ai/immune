@@ -40,9 +40,15 @@ public enum Light: Sendable, Equatable {
   /// never an alarm, never counted, and never drawn as the calm of a Mac watched whole.
   case watchedInPart
   case attention(Int)
+  /// Nothing needs a look as far as Immune knows, and Immune says what it knows is old: its
+  /// last full check finished at `since`, or none has. Never calm, and never an incomplete
+  /// answer: it says that it is old and since when.
+  case stale(since: Date?)
   case cannotRead(String)
 
-  public static func of(_ reading: Reading) -> Light {
+  /// The light of a reading at `now`: a status Immune called fresh is old once `now` is past
+  /// its last full check by more than Immune's `fresh_for_seconds`.
+  public static func of(_ reading: Reading, now: Date) -> Light {
     switch reading {
     case .notYetRead: return .cannotRead("The program has not been read yet.")
     case .failed(let reason, _, _): return .cannotRead(reason)
@@ -54,11 +60,11 @@ public enum Light: Sendable, Equatable {
             + Inert.text(Interpret.words(e), limit: 300)
             + ".")
       }
-      return of(s)
+      return of(s, now: now)
     }
   }
 
-  static func of(_ s: Status) -> Light {
+  static func of(_ s: Status, now: Date) -> Light {
     // An answer with a value of another type than the one read is not a smaller valid answer.
     if let path = s.misfits.first {
       return .cannotRead(
@@ -80,14 +86,32 @@ public enum Light: Sendable, Equatable {
     guard let total = s.needsALookTotal, let items = s.needsALook else {
       return .cannotRead("What needs a look is not reported.")
     }
-    guard total >= items.count else {
+    // The urgent ones are counted over all of them: never more than all, never fewer than listed.
+    let listedUrgent = items.filter(\.urgent).count
+    guard total >= items.count, (s.needsALookUrgent ?? listedUrgent) <= total,
+      (s.needsALookUrgent ?? listedUrgent) >= listedUrgent
+    else {
       return .cannotRead("What needs a look does not add up.")
     }
     // A finding outranks everything else.
     if total > 0 { return .attention(total) }
+    // Calm only on a status Immune says is fresh: an old last check is not calm, however quiet;
+    // freshness not said is an answer that is not whole.
+    guard let mac = s.thisMac, let fresh = mac.fresh else {
+      return .cannotRead("Whether what Immune knows is fresh is not reported.")
+    }
+    guard fresh else { return .stale(since: mac.checkedAt) }
+    // Fresh when Immune answered; held past how long that holds, the same answer is old, by the
+    // same rule as Immune's own: more than `fresh_for_seconds` after the check. A status that
+    // does not say how long is taken at its word.
+    if let freshFor = mac.freshFor, let checked = mac.checkedAt,
+      now.timeIntervalSince(checked) > Double(freshFor)
+    {
+      return .stale(since: checked)
+    }
     // Calm only when Immune says this Mac is watched, wholly or in part; not checked,
     // or anything else, is not calm. What it does not cover never raises the icon.
-    switch s.thisMac?.state {
+    switch mac.state {
     case "watched": return .nothingToReport
     case "watched_in_part": return .watchedInPart
     default: return .cannotRead("Whether this Mac is watched is not reported.")
@@ -109,28 +133,40 @@ public enum Light: Sendable, Equatable {
     case .nothingToReport: "checkmark.shield"
     case .watchedInPart: "shield.lefthalf.filled"
     case .attention: "exclamationmark.triangle"
+    case .stale: "clock"
     case .cannotRead: "questionmark.circle"
     }
   }
 
   /// The large round symbol for the panel's headline, a different shape in each state: a
-  /// filled disc with a check, a ring with a check, an exclamation mark, a question mark.
+  /// filled disc with a check, a ring with a check, an exclamation mark, a clock, a question
+  /// mark.
   public var panelSymbol: String {
     switch self {
     case .nothingToReport: "checkmark.circle.fill"
     case .watchedInPart: "checkmark.circle"
     case .attention: "exclamationmark.circle.fill"
+    case .stale: "clock"
     case .cannotRead: "questionmark.circle.fill"
     }
   }
+
+  /// Whether this is an old answer, whatever its time.
+  public var isStale: Bool { if case .stale = self { true } else { false } }
 
   /// The headline before the panel says how many need the person now; see `Panel.headline`.
   public var headline: String {
     switch self {
     case .nothingToReport, .watchedInPart: "Nothing needs you"
     case .attention(let n): n == 1 ? "1 to look at" : "\(n) to look at"
+    case .stale(let since): Light.staleWords(since)
     case .cannotRead: "I can't tell."
     }
+  }
+
+  /// "Not checked since Nov 13, 2026 at 9:41 AM": an old answer, and since when.
+  public static func staleWords(_ since: Date?) -> String {
+    since.map { "Not checked since " + Clock.full($0) } ?? "No full check has finished"
   }
 }
 
@@ -145,8 +181,8 @@ public enum Interpret {
 
   /// Immune's raw output, turned into what the app knows. Any doubt is a failure. An answer is
   /// taken only when it is the message asked for: an object of the right format is not yet a
-  /// status, its `operation` must say it is one.
-  public static func reading(from o: ImmuneOutput, operation: String? = "status") -> Reading {
+  /// status, it must be the contract's `Status` (`Decoding.isStatus`).
+  public static func reading(from o: ImmuneOutput) -> Reading {
     if let why = o.launchFailure {
       return .failed(reason: "immune could not be started.", detailText: why, plain: notStarted)
     }
@@ -172,32 +208,22 @@ public enum Interpret {
           : "immune failed with exit code \(exit) and its answer is not understood.",
         detailText: said, plain: notUnderstood)
     }
-    guard env.format == Decoding.knownFormat else {
-      let f = env.format.map { "format \($0)" } ?? "no format"
-      return .failed(
-        reason: "immune's answer has \(f), which this app does not know.", detailText: nil,
-        plain: notUnderstood)
-    }
     if env.ok == false || exit != 0 {
       return .failed(
         reason: exit != 0 ? "immune failed with exit code \(exit)." : "immune reported a failure.",
         detailText: env.errors.first.map(words) ?? said,
         plain: env.errors.first?.code == "store_unreadable" ? cannotReadRecords : reported)
     }
-    guard env.ok == true else {
+    guard env.format == Decoding.knownFormat else {
+      let f = env.format.map { "format \($0)" } ?? "no format"
       return .failed(
-        reason: "immune's answer does not say whether it succeeded.", detailText: nil,
+        reason: "immune's answer has \(f), which this app does not know.", detailText: nil,
         plain: notUnderstood)
     }
-    guard operation == nil || env.operation == operation else {
+    // Only the status is taken: an object that is not one is not read as an empty status.
+    guard env.ok == true, let status = env.result else {
       return .failed(
-        reason: "immune's answer is not the \(operation ?? "") that was asked for.",
-        detailText: nil,
-        plain: notUnderstood)
-    }
-    guard let status = env.result else {
-      return .failed(
-        reason: "immune's answer has no result.", detailText: nil, plain: notUnderstood)
+        reason: "immune's answer is not the status.", detailText: nil, plain: notUnderstood)
     }
     return .read(status, errors: env.errors)
   }

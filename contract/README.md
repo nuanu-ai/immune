@@ -8,6 +8,12 @@ Depend on it by a git path at a commit: `immune-contract = { git = "https://gith
 
 Read binary output with `immune_contract::prost::Message`, as `v1::Known::decode(stdout.as_slice())`, and JSON output with any serde parser, as `serde_json::from_slice::<v1::Known>(&stdout)`.
 
+## What the contract covers
+
+The messages of the contract are the answers of `immune matches`, `immune findings`, `immune finding`, `immune project`, `immune program`, `immune machine`, `immune status`, `immune rules`, `immune vulnerabilities`, `immune owner` and `immune sample`, the `Verdict` a program sends to `immune verdict` and the `VerdictRecorded` it gets back, and `Failure`.
+
+Unknown is never zero and never false. A count, a total or a yes-or-no the core could not establish is an optional field that is absent (null in JSON), or it sits inside a message that is absent. A section the core could not give is absent and named in `not_computed` with the reason; a list that is there and empty means there is nothing in it. A reader that takes an absent number as 0 or an absent yes-or-no as `false` reads calm the core did not establish.
+
 ## The loop of a program that runs the core
 
 A program that judges what the core found runs four commands. Name the form on every call, `--proto` or `--json`: without one, a command prints text for a person, and `immune verdict` is refused. Check the exit code first: a failure is the message `Failure`, in the form named.
@@ -23,5 +29,7 @@ A `Verdict` names what it is about, a match by the `position` and the rule's `na
 A secret the core recognises in `reason_text` is cut where the reason is kept, and the verdict is recorded: `RecordedVerdict.reason_cuts` lists what was cut. A mark quoted from the core's output, bare or with its backslash doubled as JSON writes it, is a value already cut and is kept as text, so a reason can quote what the core printed. A key holding a secret is refused with `holds_secret` and is never rewritten: `case_text`, `store_id` or what the verdict names. A failure cuts what it repeats of what it was sent. Since 1.6.0.
 
 To keep the words of a quote of the core's output, quote it as the text form prints it, or leave a space after each cut value. A mark glued to more text in its word, as compact JSON writes `"…\cut{immune:flag-value 11}"],"cuts":`, starts a value that goes on, and the rest of that word is cut as after a real value. The reason is still recorded with every mark it quoted, and `reason_cuts` lists the cut.
+
+The person's reasons are cut the same way: an `Answer` in `immune finding` and `immune status`, and a `Statement` or `Said` in `immune owner`, carry `reason_text` cut and `reason_cuts` beside it. Cutting always runs, so an empty `reason_cuts` means nothing was cut. Since 1.7.0.
 
 A verdict never changes a finding the core raised. A `suspicious` one raises a finding of the rule `verdict.suspicious`, with the verdict's levels, which the person closes. A `harmless` one is kept and shown beside what it is about. The whole of it is in [the reference](../docs/reference.md#immune-verdict).

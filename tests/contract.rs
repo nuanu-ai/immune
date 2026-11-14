@@ -11,13 +11,17 @@ use prost_types::field_descriptor_proto::{Label, Type};
 use std::path::Path;
 
 /// The schema's files, relative to `contract/`.
-const SCHEMA: [&str; 6] = [
+const SCHEMA: [&str; 10] = [
     "immune/v1/common.proto",
     "immune/v1/event.proto",
     "immune/v1/verdict.proto",
     "immune/v1/known.proto",
     "immune/v1/matches.proto",
     "immune/v1/findings.proto",
+    "immune/v1/owner.proto",
+    "immune/v1/vulnerabilities.proto",
+    "immune/v1/status.proto",
+    "immune/v1/rules.proto",
 ];
 /// The generated file, relative to the repository.
 const GENERATED: &str = "contract/src/immune.v1.rs";
@@ -212,7 +216,50 @@ fn a_failure_read_as_any_answer_reads_format_zero() {
         v1::Matches,
         v1::Findings,
         v1::Finding,
-        v1::VerdictRecorded
+        v1::VerdictRecorded,
+        v1::Status,
+        v1::Rules,
+        v1::Replay,
+        v1::Vulnerabilities,
+        v1::Vulnerability,
+        v1::Statements,
+        v1::StatementMade,
+        v1::Sample
     );
     assert_eq!(v1::Failure::decode(binary.as_slice()).unwrap(), failure);
+}
+
+/// Unknown is never zero and never false, in the schema itself: in a message that names what it
+/// could not compute, a count or a boolean is `optional`, or sits in a message of its own that is
+/// absent, so that one not computed cannot be read as a counted 0 or a `false`, in binary or in
+/// JSON. Only what every answer knows whatever the store holds is plain: its format, when it was
+/// made, and whether the run lock is held.
+#[test]
+fn beside_not_computed_a_count_or_a_boolean_is_optional_or_in_a_message_of_its_own() {
+    const ALWAYS_KNOWN: [&str; 3] = ["format", "answered_at", "running"];
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let fds = protox::compile(SCHEMA, [root.join("contract")]).expect("the schema compiles");
+    let mut checked = 0;
+    for m in fds.file.iter().flat_map(|f| &f.message_type) {
+        if !m.field.iter().any(|f| f.name() == "not_computed") {
+            continue;
+        }
+        checked += 1;
+        for f in &m.field {
+            let scalar = !matches!(
+                f.r#type(),
+                Type::Message | Type::String | Type::Bytes | Type::Enum
+            );
+            if scalar && f.label() != Label::Repeated && !ALWAYS_KNOWN.contains(&f.name()) {
+                assert!(
+                    f.proto3_optional(),
+                    "{}.{} sits beside not_computed and is neither optional nor in a message of its own",
+                    m.name(),
+                    f.name()
+                );
+            }
+        }
+    }
+    // Status, Rules, Vulnerabilities and Vulnerability name what they could not compute.
+    assert!(checked >= 4, "{checked}");
 }

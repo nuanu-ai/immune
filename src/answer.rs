@@ -175,3 +175,16 @@ pub fn fail(op: &str, form: Form, mut error: v1::Error, exit: u8) -> ExitCode {
     }
     ExitCode::from(exit)
 }
+
+/// What was cut out of a text of one piece, a reason, as the contract lists it: `argument` 0,
+/// each piece by its kind and length, in order.
+pub fn reason_cuts(t: &crate::secrets::Text) -> Vec<crate::contract::v1::Cut> {
+    t.cuts()
+        .into_iter()
+        .map(|(kind, length)| crate::contract::v1::Cut {
+            argument: 0,
+            kind: kind.to_string(),
+            length: length as u64,
+        })
+        .collect()
+}

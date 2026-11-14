@@ -15,7 +15,7 @@ use crate::store::{self, Totals};
 use crate::view::{self, Latest};
 use crate::{ServerCounts, findings, resolver, servers, threats, watched};
 use rusqlite::{Connection, OptionalExtension, params};
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
@@ -715,9 +715,6 @@ pub struct State {
     pub this_mac: crate::covered::ThisMac,
     /// What the program does not cover, aggregated for a person.
     pub not_covered: Vec<crate::covered::Uncovered>,
-    /// Known vulnerabilities in packages the projects use, beside what needs a look and never
-    /// counted in it: `vulnerabilities::status_json`.
-    pub vulnerabilities: Value,
     /// The event level as its latest reading left it; `None` before any reading of it.
     pub event_level: Option<crate::events::Level>,
 }
@@ -746,6 +743,27 @@ pub fn state(conn: &Connection, home: &Path, now: i64) -> Res<State> {
     let mut this_mac = crate::covered::this_mac(conn, &coverage, live)?;
     this_mac.failed = failed;
     let event_level = crate::events::level(conn, now)?;
+    // A collector that is installed and records nothing (refused, failing or silent), or that
+    // runs and lost part of what it was to record over the last day (a gap in its numbering, a
+    // restart it cannot account for, lines it could not read, log files the cap or the tidy job
+    // deleted before they were read), leaves a place of this Mac read in part, as a reading that
+    // failed does: never the calm of a Mac watched whole. It holds as long as `rules.judged`
+    // says `part`. Its reading's coverage names the cause `not_given`, which the test of a
+    // failed reading does not count, so it is said here. Not installed is a limit the person can
+    // lift, and `not_covered` says it.
+    if this_mac.state == "watched"
+        && event_level.as_ref().is_some_and(|l| {
+            [
+                crate::events::REFUSED,
+                crate::events::FAILING,
+                crate::events::SILENT,
+            ]
+            .contains(&l.state.as_str())
+                || (l.state == crate::events::RUNNING && !l.judged_whole())
+        })
+    {
+        this_mac.state = "watched_in_part";
+    }
     // Program starts are watched only while the level records them.
     if let Some(l) = event_level
         .as_ref()
@@ -769,7 +787,6 @@ pub fn state(conn: &Connection, home: &Path, now: i64) -> Res<State> {
         standing: crate::owner::standing(conn)?,
         this_mac,
         not_covered,
-        vulnerabilities: crate::vulnerabilities::status_json(conn, now)?,
         event_level,
     })
 }
@@ -805,15 +822,6 @@ pub fn cut_text(t: &crate::secrets::Text) -> Value {
     Value::String(capped(t.shown(view::shown)))
 }
 
-/// What was cut out of a text a person or an agent gave, each piece by kind and length, so
-/// whoever gave it knows what was kept.
-pub fn cuts(t: &crate::secrets::Text) -> Value {
-    t.cuts()
-        .iter()
-        .map(|(kind, length)| json!({ "kind": kind, "length": length }))
-        .collect()
-}
-
 /// Text already shown, cut to `TEXT_CAP` characters.
 pub fn capped(shown: String) -> String {
     if shown.chars().count() <= TEXT_CAP {
@@ -822,21 +830,6 @@ pub fn capped(shown: String) -> String {
     let mut cut: String = shown.chars().take(TEXT_CAP - 1).collect();
     cut.push('…');
     cut
-}
-
-fn iso(secs: i64) -> Value {
-    Value::String(view::iso(secs))
-}
-
-/// The envelope of an answer.
-pub fn envelope(operation: &str, result: Value) -> Value {
-    json!({
-        "format": FORMAT,
-        "operation": operation,
-        "ok": true,
-        "errors": [],
-        "result": result,
-    })
 }
 
 /// The envelope of a failure. `message` and `example` are the program's own words; what the
@@ -862,110 +855,163 @@ pub fn failure(
     })
 }
 
-/// The result of `immune status`, and of `immune run` once it finished. `state` is `None` when
-/// there is no store. A section that cannot be computed is left out and named in
-/// `not_computed` with the reason; nothing unknown is given as zero.
-pub fn result(state: Option<&State>, running: bool, path: &Path, now: i64) -> Value {
-    let mut out = Map::new();
-    out.insert("generated_at".into(), iso(now));
-    out.insert("running".into(), json!(running));
-    let mut store =
-        json!({ "path_text": text(&path.display().to_string()), "exists": state.is_some() });
-    if state.is_some() {
-        // The pages `immune view` writes for its sections, so the app opens a file and never
-        // builds a path or depends on a `#section` surviving the hand-over to a browser.
-        store["view_sections"] = view::section_files(path)
-            .into_iter()
-            .map(|(anchor, file)| {
-                json!({ "section": anchor, "path_text": text(&file.display().to_string()) })
-            })
-            .collect();
-    }
-    out.insert("store".into(), store);
-    out.insert("cannot_judge".into(), json!(CANNOT_JUDGE));
-    // The published rules this build ships, `src/sigma.rs`, and what they did over the program
-    // starts the event level read.
-    out.insert(
-        "rules".into(),
-        rules_section(state.and_then(|s| s.event_level.as_ref())),
-    );
-    // Whether a watcher runs on this store now: `immune watch`, src/watch.rs.
-    out.insert("watching".into(), crate::watch::status(path));
-    let mut not_computed: Vec<Value> = Vec::new();
-    let mut absent = |section: &str, reason: &str| {
-        not_computed.push(json!({ "section": section, "reason": reason }));
+/// How long a status stays fresh after the latest full check finished: the app starts one every
+/// hour with a limit of 30 minutes, so an older check is one that should have been followed by
+/// another and was not.
+pub const FRESH_FOR: i64 = 2 * 60 * 60;
+
+/// The version of the contract this build prints.
+const CONTRACT_FORMAT: u32 = 1;
+
+/// A count as the contract gives it: never below zero.
+fn n<T: TryInto<u64>>(x: T) -> u64 {
+    x.try_into().unwrap_or(0)
+}
+
+/// The contract's `Status`: what `immune status` answers, and `immune run` once its check
+/// finished. `found` is every finding at `now`, read in the same transaction as `state`; `conn`
+/// is that transaction. Without a store, `conn` and `state` are `None`. A section that cannot be
+/// computed is absent and named in `not_computed` with the reason; nothing unknown is given as
+/// zero.
+pub fn message(
+    conn: Option<&Connection>,
+    state: Option<&State>,
+    running: bool,
+    path: &Path,
+    now: i64,
+) -> Res<crate::contract::v1::Status> {
+    use crate::contract::{v1, value_of};
+    use crate::known::whole;
+    let mut out = v1::Status {
+        format: CONTRACT_FORMAT,
+        answered_at: now,
+        running,
+        cannot_judge: CANNOT_JUDGE.iter().map(|s| s.to_string()).collect(),
+        rules: Some(rules_now(state.and_then(|s| s.event_level.as_ref()))),
+        watching: crate::watch::watcher(path),
+        answers_note: findings::ANSWERS_NOTE.to_string(),
+        ..Default::default()
     };
-    let Some(st) = state else {
-        out.insert(
-            "this_mac".into(),
-            crate::covered::this_mac_json(&crate::covered::ThisMac::unchecked(false)),
-        );
+    out.store = Some(v1::StoreFile {
+        path_text: whole(&path.display().to_string()),
+        exists: state.is_some(),
+        view_sections: match state {
+            Some(_) => view::section_files(path)
+                .into_iter()
+                .map(|(anchor, file)| v1::ViewSection {
+                    section: anchor.to_string(),
+                    path_text: whole(&file.display().to_string()),
+                })
+                .collect(),
+            None => Vec::new(),
+        },
+    });
+    let mut absent = |section: &str, reason: &str| {
+        out.not_computed.push(v1::NotComputed {
+            section: section.to_string(),
+            reason: reason.to_string(),
+        });
+    };
+    let (Some(conn), Some(st)) = (conn, state) else {
         for section in SECTIONS {
             absent(section, "there is no store yet; `immune run` makes it");
         }
-        out.insert("not_computed".into(), Value::Array(not_computed));
-        return Value::Object(out);
+        out.this_mac = Some(this_mac_message(
+            &crate::covered::ThisMac::unchecked(false),
+            now,
+        ));
+        return Ok(out);
     };
-    out.insert(
-        "this_mac".into(),
-        crate::covered::this_mac_json(&st.this_mac),
-    );
-    // The event level, `src/events.rs`: every program start, when it is installed.
+    let mut not_computed = Vec::new();
+    let mut absent = |section: &str, reason: &str| {
+        not_computed.push(v1::NotComputed {
+            section: section.to_string(),
+            reason: reason.to_string(),
+        });
+    };
+    out.store_id = crate::store::id(conn)?;
+    out.this_mac = Some(this_mac_message(&st.this_mac, now));
     match &st.event_level {
-        Some(l) => {
-            out.insert("event_level".into(), crate::events::json(l));
-        }
+        Some(l) => out.event_level = Some(crate::events::message(l)),
         None => absent(
             "event_level",
             "program starts have not been looked for yet; the next check does",
         ),
     }
-    let not_covered: Vec<Value> = st
-        .not_covered
-        .iter()
-        .map(crate::covered::uncovered_json)
-        .collect();
-    out.insert("not_covered_total".into(), json!(not_covered.len()));
-    out.insert("not_covered".into(), Value::Array(not_covered));
+    out.not_covered = st.not_covered.iter().map(uncovered_message).collect();
     match &st.last {
-        Some(l) => {
-            out.insert(
-                "last_run".into(),
-                json!({
-                    "id": l.id,
-                    "started_at": iso(l.started_at),
-                    "finished_at": l.finished_at.map(iso),
-                    "finished": l.finished_at.is_some(),
-                }),
-            );
-        }
+        Some(l) => out.last_run = Some(mark(l)),
         None => absent("last_run", "no run has started"),
     }
     match &st.summary {
         Some(s) => {
-            out.insert("last_finished_run".into(), finished_run(s));
-            out.insert("estate".into(), estate(s));
+            let t = &s.totals;
+            out.last_finished_run = Some(v1::FinishedCheck {
+                check: Some(mark(&s.run)),
+                first_run: s.first_run,
+                readings: Some(v1::CheckReadings {
+                    partial: n(t.partial),
+                    failed: n(t.none),
+                    not_repeated: n(t.not_repeated),
+                    machines_unread: n(t.machines_unread),
+                }),
+                since_previous_run: (!s.first_run).then(|| v1::SinceCheck {
+                    added: n(s.since.added),
+                    changed: n(s.since.changed),
+                    removed: n(s.since.removed),
+                }),
+                unknown: if s.first_run {
+                    Vec::new()
+                } else {
+                    unknown(t).into_iter().map(str::to_string).collect()
+                },
+            });
+            let sv = &s.servers;
+            out.estate = Some(v1::Estate {
+                machines: n(t.machines),
+                servers: n(sv.known),
+                servers_offered: n(sv.offered),
+                servers_read: n(sv.read),
+                servers_in_last_check: n(sv.in_last_check),
+                servers_checked_in_last_check: n(sv.checked_in_last_check),
+                servers_system_not_given: n(sv.system_not_given),
+                own_devices: n(sv.own_devices),
+                other_devices: n(sv.other_devices),
+                machines_set_aside: n(sv.set_aside),
+                machines_seen_after_owner_word_text: sv.seen.iter().map(|m| whole(m)).collect(),
+                checkouts: n(t.checkouts),
+                components: n(t.components),
+            });
             match &s.watched {
-                Some(w) => {
-                    out.insert("watched".into(), watched_section(st, s, w));
-                }
+                Some(w) => out.watched = Some(watched_message(st, s, w)),
                 None => absent("watched", "watched places have never been read"),
             }
-            out.insert("threats".into(), threats_section(s.catalogue.as_ref()));
-            out.insert(
-                "vulnerability_data".into(),
-                feeds_section(&s.feeds, &s.run.id),
-            );
-            out.insert("vulnerabilities".into(), st.vulnerabilities.clone());
+            out.threats = Some(threats_message(s.catalogue.as_ref()));
+            out.vulnerability_data = Some(v1::VulnerabilityData {
+                matched: true,
+                feeds: s.feeds.iter().map(|f| feed_message(f, &s.run.id)).collect(),
+            });
+            out.vulnerabilities = crate::vulnerabilities::totals_message(conn, now)?;
+            if out.vulnerabilities.is_none() {
+                absent("vulnerabilities", crate::vulnerabilities::NEVER_MATCHED);
+            }
             match &s.integrity {
-                Some(i) => {
-                    out.insert("integrity".into(), crate::integrity::section(i));
-                }
+                Some(i) => out.integrity = Some(crate::integrity::message(i)),
                 None => absent("integrity", "installed software has never been read"),
             }
             match &s.no_reader_for {
                 Some(list) => {
-                    out.insert("no_reader_for".into(), no_reader_section(list));
+                    out.no_reader_for = Some(v1::NoReaderFor {
+                        items: list
+                            .iter()
+                            .take(NO_READER_SHOWN)
+                            .map(|r| v1::NoReader {
+                                what: r.what.clone(),
+                                what_text: r.name.as_deref().map(whole),
+                                where_count: n(r.places),
+                            })
+                            .collect(),
+                    })
                 }
                 None => absent(
                     "no_reader_for",
@@ -991,105 +1037,168 @@ pub fn result(state: Option<&State>, running: bool, path: &Path, now: i64) -> Va
     if st.coverage.is_empty() {
         absent("coverage", "nothing has been read yet");
     } else {
-        out.insert("coverage".into(), coverage_section(&st.problems));
+        out.coverage = Some(coverage_message(&st.problems));
     }
+    // Every finding, so that a finding named from another (a verdict's) is given by reference.
+    let found = findings::all(conn, now)?.unwrap_or_default();
+    let items: Vec<findings::Item> = found.iter().filter_map(findings::item).collect();
+    let refs = crate::finding_answer::refs(&items);
+    let store_id = out.store_id.clone();
     if st.needs.findings_unknown {
         absent(
             "needs_a_look",
             "no run of this build has looked for findings yet; the next run does",
         );
     } else {
-        let items = &st.needs.items;
-        // The cut is taken per source, in the one order: up to `NEEDS_SHOWN` of the core's
-        // findings and up to as many of the response layer's, so that verdicts cannot push the
-        // core's findings out of the list.
+        let all = &st.needs.items;
+        let is_urgent = |i: &findings::Item| findings::urgent(i.severity, i.confidence);
+        // The cut is taken per source, in the one order, urgent first: up to `NEEDS_SHOWN` of
+        // the core's findings and up to as many of the response layer's, so that neither source
+        // can push the other's findings out of the list. Within a source the order puts urgent
+        // findings first, so its cut never drops an urgent finding while it keeps one that is
+        // not; `urgent_total` says how many urgent ones there are over both.
         let mut taken = [0; 2];
-        let shown: Vec<Value> = items
-            .iter()
-            .filter(|i| {
-                let source = usize::from(i.rule == Some(crate::verdict::RULE));
-                taken[source] += 1;
-                taken[source] <= NEEDS_SHOWN
-            })
-            .map(findings::item_json)
-            .collect();
-        out.insert("needs_a_look".into(), Value::Array(shown));
-        out.insert("needs_a_look_total".into(), json!(items.len()));
-        out.insert("answers_note".into(), json!(findings::ANSWERS_NOTE));
+        let mut kept: Vec<&findings::Item> = Vec::new();
+        for i in all {
+            let source = usize::from(i.rule == Some(crate::verdict::RULE));
+            taken[source] += 1;
+            if taken[source] <= NEEDS_SHOWN {
+                kept.push(i);
+            }
+        }
+        let mut shown = Vec::new();
+        for i in kept {
+            let f = found.iter().find(|f| f.id == i.id);
+            shown.push(v1::LookFinding {
+                finding: Some(crate::finding_answer::listed(i, store_id.as_deref(), &refs)),
+                meaning: i.words.meaning.to_string(),
+                advice: i.words.advice.to_string(),
+                value_text: i.value.as_deref().map(whole),
+                technique_text: i.technique.map(whole),
+                change: i
+                    .change
+                    .as_deref()
+                    .filter(|_| i.rule.is_some())
+                    .map(crate::finding_answer::change_of),
+                evidence: match f {
+                    Some(f) => crate::finding_answer::evidence(conn, f)?
+                        .map(|body| v1::Evidence { body: Some(body) }),
+                    None => None,
+                },
+            });
+        }
+        out.needs_a_look = Some(v1::NeedsALook {
+            items: shown,
+            total: n(all.len()),
+            urgent_total: n(all.iter().filter(|i| is_urgent(i)).count()),
+        });
     }
     match &st.answered {
         Some(answered) => {
-            out.insert(
-                "answered_outside_app".into(),
-                findings::outside_app_json(answered, NEEDS_SHOWN),
-            );
+            let outside: Vec<&findings::Item> = answered
+                .iter()
+                .filter(|i| i.answer.as_ref().is_some_and(|a| a.via.outside_app()))
+                .collect();
+            out.answered_outside_app = Some(v1::AnsweredOutsideApp {
+                total: n(outside.len()),
+                items: outside
+                    .iter()
+                    .take(NEEDS_SHOWN)
+                    .map(|i| crate::finding_answer::listed(i, store_id.as_deref(), &refs))
+                    .collect(),
+            });
         }
         None => absent(
             "answered_outside_app",
             "no run of this build has looked for findings yet; the next run does",
         ),
     }
-    out.insert(
-        "statements_outside_app".into(),
-        crate::owner::outside_app_json(&st.standing, NEEDS_SHOWN),
-    );
-    out.insert("not_computed".into(), Value::Array(not_computed));
-    Value::Object(out)
+    out.statements_outside_app = Some(crate::owner::outside_app(&st.standing, NEEDS_SHOWN));
+    out.not_computed = not_computed;
+    let _ = value_of::<v1::Level>;
+    Ok(out)
 }
 
-fn finished_run(s: &Summary) -> Value {
-    let t = &s.totals;
-    let (since, unknown) = if s.first_run {
-        (Value::Null, Vec::new())
-    } else {
-        (
-            json!({ "added": s.since.added, "changed": s.since.changed, "removed": s.since.removed }),
-            unknown(t),
-        )
+/// A run as the contract gives it.
+fn mark(r: &RunMark) -> crate::contract::v1::CheckMark {
+    crate::contract::v1::CheckMark {
+        id: r.id.clone(),
+        started_at: r.started_at,
+        finished_at: r.finished_at,
+    }
+}
+
+/// `this_mac`, with whether what the status says is fresh: the latest full check finished
+/// within `FRESH_FOR` of `now`.
+fn this_mac_message(m: &crate::covered::ThisMac, now: i64) -> crate::contract::v1::ThisMac {
+    use crate::contract::{v1, value_of};
+    // Through `store::age`, as every judgment of freshness: a time ahead of the clock has no
+    // age and is never fresh.
+    let stale_reason = match m.checked_at.map(|at| (at, crate::store::age(at, now))) {
+        None => Some("no full check has finished on this store".to_string()),
+        Some((at, None)) => Some(format!(
+            "the latest full check is dated {}: {}",
+            view::utc(at),
+            crate::store::AHEAD
+        )),
+        Some((at, Some(age))) if age > FRESH_FOR => Some(format!(
+            "the latest full check finished at {}, more than {} hours before this answer, and none has finished since",
+            view::utc(at),
+            FRESH_FOR / 3600
+        )),
+        Some(_) => None,
     };
-    json!({
-        "id": s.run.id,
-        "started_at": iso(s.run.started_at),
-        "finished_at": s.run.finished_at.map(iso),
-        "first_run": s.first_run,
-        "readings": {
-            "partial": t.partial,
-            "failed": t.none,
-            "not_repeated": t.not_repeated,
-            "machines_unread": t.machines_unread,
-        },
-        "since_previous_run": since,
-        "unknown": unknown,
-    })
+    v1::ThisMac {
+        state: value_of::<v1::ThisMacState>(m.state),
+        live: m.live,
+        checked_at: m.checked_at,
+        live_read_at: m.live_read_at,
+        watched: m
+            .watched
+            .iter()
+            .map(|(what, count, how)| v1::WatchedThing {
+                what: what.to_string(),
+                count: n(*count),
+                how: how.to_string(),
+            })
+            .collect(),
+        fresh: stale_reason.is_none(),
+        stale_reason,
+        fresh_for_seconds: n(FRESH_FOR),
+    }
 }
 
-fn estate(s: &Summary) -> Value {
-    json!({
-        "machines": s.totals.machines,
-        "servers": s.servers.known,
-        "servers_offered": s.servers.offered,
-        "servers_read": s.servers.read,
-        "servers_in_last_check": s.servers.in_last_check,
-        "servers_checked_in_last_check": s.servers.checked_in_last_check,
-        "servers_system_not_given": s.servers.system_not_given,
-        "own_devices": s.servers.own_devices,
-        "other_devices": s.servers.other_devices,
-        "machines_set_aside": s.servers.set_aside,
-        "machines_seen_after_owner_word": s.servers.seen.len(),
-        "checkouts": s.totals.checkouts,
-        "components": s.totals.components,
-    })
+fn uncovered_message(u: &crate::covered::Uncovered) -> crate::contract::v1::Uncovered {
+    use crate::known::whole;
+    crate::contract::v1::Uncovered {
+        id: u.cause.id.to_string(),
+        who: u.cause.who.to_string(),
+        scope: u.scope.to_string(),
+        kind: u.cause.kind.to_string(),
+        title: u.title(),
+        meaning: u.meaning(),
+        advice: u.cause.advice.to_string(),
+        count: n(u.count),
+        since_at: u.since,
+        value_text: u.value.as_deref().map(whole),
+        examples_text: u.examples().iter().map(|e| whole(e)).collect(),
+        holds_on: if u.every_mac {
+            crate::contract::v1::HoldsOn::EveryMac
+        } else {
+            crate::contract::v1::HoldsOn::ThisMac
+        } as i32,
+    }
 }
 
-fn watched_section(st: &State, s: &Summary, w: &Watched) -> Value {
-    // On the first reading these are zeros: everything found is the baseline.
-    let since = json!({ "new": w.new, "changed": w.changed, "gone": w.gone });
+fn watched_message(st: &State, s: &Summary, w: &Watched) -> crate::contract::v1::WatchedPlaces {
+    use crate::contract::{v1, value_of};
+    use crate::known::whole;
     let mine: Vec<&Latest> = st
         .coverage
         .iter()
         .filter(|r| r.reader == watched::READER)
         .collect();
-    let kinds: Vec<Value> = watched::kinds()
+    let kinds = watched::kinds()
         .into_iter()
         .map(|(watched_as, kind)| {
             let rows: Vec<&&Latest> = mine.iter().filter(|r| r.kind == kind).collect();
@@ -1098,13 +1207,13 @@ fn watched_section(st: &State, s: &Summary, w: &Watched) -> Value {
                 .get(watched_as)
                 .copied()
                 .unwrap_or_default();
-            let n = |c: &str| rows.iter().filter(|r| r.completeness == c).count();
-            let (full, partial, none) = (n("full"), n("partial"), n("none"));
+            let count = |c: &str| rows.iter().filter(|r| r.completeness == c).count();
+            let (full, partial, none) = (count("full"), count("partial"), count("none"));
             let coverage = match (full, partial, none) {
-                (0, 0, 0) => Value::Null,
-                (_, 0, 0) => json!("full"),
-                (0, 0, _) => json!("none"),
-                _ => json!("partial"),
+                (0, 0, 0) => None,
+                (_, 0, 0) => Some("full"),
+                (0, 0, _) => Some("none"),
+                _ => Some("partial"),
             };
             let mut reasons: Vec<&str> = Vec::new();
             for r in rows.iter().filter(|r| r.completeness != "full") {
@@ -1117,72 +1226,190 @@ fn watched_section(st: &State, s: &Summary, w: &Watched) -> Value {
                 (true, [only]) => only.reason.clone(),
                 _ => None,
             };
-            json!({
-                "kind": watched_as,
-                "files": st.files.get(watched_as).copied().unwrap_or_default(),
-                "presence_only": presence,
-                "presence_only_note": (presence > 0).then_some(watched::PRESENCE_ONLY),
-                "coverage": coverage,
-                "readings": { "full": full, "partial": partial, "none": none },
-                "reason_text": reason.as_deref().map(text),
-            })
+            v1::WatchedKind {
+                kind: watched_as.to_string(),
+                files: n(st.files.get(watched_as).copied().unwrap_or_default()),
+                presence_only: n(presence),
+                presence_only_note: (presence > 0).then(|| watched::PRESENCE_ONLY.to_string()),
+                coverage: coverage.map(value_of::<v1::Completeness>),
+                readings: Some(v1::CompletenessCounts {
+                    full: n(full),
+                    partial: n(partial),
+                    none: n(none),
+                }),
+                reason_text: reason.as_deref().map(whole),
+            }
         })
         .collect();
-    let content_not_read = mine
-        .iter()
-        .filter(|r| r.kind == watched::CONTENT && r.completeness != "full")
-        .count();
-    let changes: Vec<Value> = s
-        .changes
-        .iter()
-        .rev()
-        .take(CHANGES_SHOWN)
-        .map(|c| {
-            json!({
-                "at": iso(c.at),
-                "run_id": c.run_id,
-                "change": c.change,
-                "kind": c.kind,
-                "path_text": text(&c.path),
+    v1::WatchedPlaces {
+        files: n(w.files),
+        first_reading: w.first,
+        since_last_reading: (!w.first).then(|| v1::PlaceCounts {
+            new: n(w.new),
+            changed: n(w.changed),
+            gone: n(w.gone),
+        }),
+        kinds,
+        content_not_read: n(mine
+            .iter()
+            .filter(|r| r.kind == watched::CONTENT && r.completeness != "full")
+            .count()),
+        changes: s
+            .changes
+            .iter()
+            .rev()
+            .take(CHANGES_SHOWN)
+            .map(|c| v1::PlaceChange {
+                at: c.at,
+                run_id: c.run_id.clone(),
+                change: crate::finding_answer::change_of(c.change),
+                kind: c.kind.clone(),
+                path_text: whole(&c.path),
             })
-        })
-        .collect();
-    json!({
-        "files": w.files,
-        "first_reading": w.first,
-        "since_last_reading": since,
-        "kinds": kinds,
-        "content_not_read": content_not_read,
-        "changes": changes,
-        "changes_total": s.changes.len(),
-    })
+            .collect(),
+        changes_total: n(s.changes.len()),
+    }
 }
 
-/// How many rules that matched in the last day the status lists; the rest are counted.
-const MATCHED_SHOWN: usize = 10;
-
-/// The published rules this build ships, counted by what the event level lets them do, and
-/// what they did. `watching` is true only while the event level's latest state is `running`:
-/// then every program start read is judged by the rules for program starts evaluated in full,
-/// and every file created or renamed by the rules for file events evaluated in full, but only
-/// while `file_events_collected`, the collector installed here being established to record
-/// them. `watching_rules` counts the rules that watch now; one evaluated in part or not at all
-/// is never among them, and a rule for file events whose events are not collected is named in
-/// `not_watching` with its reason, as is a rule that reads what the collector installed here
-/// does not keep (`crate::events::KEEPS`), with what it does not keep. `judged` says how much
-/// of the last day the watching rules judged: `all`, `part` when the log lost events they
-/// read, could not read lines or deleted hours before they were read, or `none` while the
-/// level does not run, each but `all` with its fixed words in `judged_note`. Matches in the
-/// last day are served whether or not the level runs now: they happened.
-pub fn rules_section(level: Option<&crate::events::Level>) -> Value {
-    rules_section_of(crate::sigma::Rules::shipped(), level)
+/// The latest reading of the catalogue, as `threats_section` says it.
+fn threats_message(c: Option<&Catalogue>) -> crate::contract::v1::Threats {
+    use crate::contract::v1::{FeedOutcome, Threats};
+    let mut t = Threats {
+        source: threats::SOURCE.to_string(),
+        matched: false,
+        ..Default::default()
+    };
+    match c {
+        Some(Catalogue::Read {
+            total,
+            new,
+            gone,
+            first,
+            at,
+        }) => {
+            t.outcome = FeedOutcome::Read as i32;
+            t.entries = Some(n(*total));
+            t.first_reading = Some(*first);
+            t.new = Some(n(*new));
+            t.gone = Some(n(*gone));
+            t.read_at = Some(*at);
+            t.checked_at = Some(*at);
+        }
+        Some(Catalogue::Unchanged { total, at }) => {
+            t.outcome = FeedOutcome::Unchanged as i32;
+            t.entries = Some(n(*total));
+            t.first_reading = Some(false);
+            t.new = Some(0);
+            t.gone = Some(0);
+            t.read_at = Some(*at);
+            t.checked_at = Some(*at);
+        }
+        Some(Catalogue::Failed { reason, last, at }) => {
+            t.outcome = FeedOutcome::Failed as i32;
+            t.reason_text = Some(crate::known::whole(reason));
+            t.entries = last.map(|(_, held)| n(held));
+            t.read_at = last.map(|(at, _)| at);
+            t.checked_at = Some(*at);
+        }
+        None => t.outcome = FeedOutcome::NeverRead as i32,
+    }
+    t
 }
 
-/// `rules_section` for these rules.
-pub(crate) fn rules_section_of(
+/// One feed of vulnerability data, as `feeds_section` says it.
+fn feed_message(s: &crate::osv::State, run_id: &str) -> crate::contract::v1::FeedState {
+    use crate::contract::v1::{FeedChanges, FeedOutcome, FeedState};
+    let mut f = FeedState {
+        source: s.feed.source.to_string(),
+        ecosystem: s.feed.ecosystem.to_string(),
+        asked_this_run: s.asked_in(run_id),
+        read_at: s.good_at,
+        changed_at: s.changed_at,
+        checked_at: s.latest.as_ref().map(|(_, at, ..)| *at),
+        // Nothing is counted of a feed never read whole.
+        records: s.good_at.map(|_| n(s.records)),
+        malicious_records: s.good_at.map(|_| n(s.malicious)),
+        withdrawn_records: s.good_at.map(|_| n(s.withdrawn)),
+        matched: true,
+        ..Default::default()
+    };
+    match &s.latest {
+        None => f.outcome = FeedOutcome::NeverRead as i32,
+        Some((_, _, outcome, reason)) if outcome == "failed" => {
+            f.outcome = FeedOutcome::Failed as i32;
+            f.reason_text = Some(crate::known::whole(reason.as_deref().unwrap_or_default()));
+        }
+        Some((_, _, outcome, _)) if outcome == "read" && s.asked_in(run_id) => {
+            f.outcome = FeedOutcome::Read as i32;
+            if let Some(c) = &s.counts {
+                f.first_reading = Some(c.first);
+                f.since_last_reading = Some(FeedChanges {
+                    new: n(c.new),
+                    changed: n(c.changed),
+                    withdrawn: n(c.withdrawn),
+                    gone: n(c.gone),
+                });
+            }
+        }
+        Some(_) => f.outcome = FeedOutcome::Unchanged as i32,
+    }
+    f
+}
+
+fn coverage_message(p: &Problems) -> crate::contract::v1::CoverageSummary {
+    use crate::contract::{v1, value_of};
+    use crate::known::whole;
+    let class = |c: &str| n(p.classes.get(c).copied().unwrap_or_default());
+    v1::CoverageSummary {
+        readings: n(p.readings),
+        full: n(p.full),
+        partial: n(p.partial),
+        none: n(p.none),
+        implied_by_unreached: n(p.implied),
+        failed: class("failed"),
+        no_reader: class("no_reader"),
+        not_given: class("not_given"),
+        read_nothing: class("read_nothing"),
+        problems: p
+            .groups
+            .iter()
+            .take(PROBLEMS_SHOWN)
+            .map(|g| v1::ReadingGroup {
+                class: value_of::<v1::ReadingClass>(g.class),
+                reader: g.reader.clone(),
+                kind: g.kind.clone(),
+                reason_text: g.reason.as_deref().map(whole),
+                count: n(g.scopes.len()),
+                examples_text: g.scopes.iter().take(EXAMPLES).map(|s| whole(s)).collect(),
+            })
+            .collect(),
+        problems_total: n(p.groups.len()),
+        unreached: p
+            .unreached
+            .iter()
+            .take(UNREACHED_SHOWN)
+            .map(|u| v1::Unreached {
+                scope_text: whole(&u.scope),
+                since_at: u.since,
+                reason_text: u.reason.as_deref().map(whole),
+            })
+            .collect(),
+        unreached_total: n(p.unreached.len()),
+    }
+}
+
+/// The published rules this build ships and what they do now, as the contract gives them.
+pub fn rules_now(level: Option<&crate::events::Level>) -> crate::contract::v1::RulesNow {
+    rules_now_of(crate::sigma::Rules::shipped(), level)
+}
+
+/// `rules_now` for these rules: see `rules_section`.
+pub(crate) fn rules_now_of(
     rules: &crate::sigma::Rules,
     level: Option<&crate::events::Level>,
-) -> Value {
+) -> crate::contract::v1::RulesNow {
+    use crate::contract::{v1, value_of};
+    use crate::known::whole;
     use crate::sigma::Kind;
     let (evaluated, in_part, not_evaluated) = rules.groups();
     let watching = level.filter(|l| l.state == crate::events::RUNNING);
@@ -1191,32 +1418,31 @@ pub(crate) fn rules_section_of(
     let files_whole = !files || watching.is_none_or(|l| l.files_whole());
     let (judged, note) = match watching {
         None => (
-            "none",
+            v1::Judged::None,
             Some("The event level is not running, so no program start is judged now."),
         ),
         Some(_) => match (starts_whole, files_whole) {
-            (true, true) => ("all", None),
+            (true, true) => (v1::Judged::All, None),
             (false, true) => (
-                "part",
+                v1::Judged::Part,
                 Some(
                     "Over the last day some program starts were lost, could not be read or were deleted before they were read, so the rules judged only those that were read.",
                 ),
             ),
             (true, false) => (
-                "part",
+                v1::Judged::Part,
                 Some(
                     "Over the last day some file events were lost, could not be read or were deleted before they were read, so the rules judged only those that were read.",
                 ),
             ),
             (false, false) => (
-                "part",
+                v1::Judged::Part,
                 Some(
                     "Over the last day some program starts and file events were lost, could not be read or were deleted before they were read, so the rules judged only those that were read.",
                 ),
             ),
         },
     };
-    let file_rules = rules.evaluated(Kind::File);
     let not_arriving = watching.map_or(0, |l| l.not_arriving());
     // While the level runs, a rule evaluated in full watches unless its events are not
     // collected or it reads what does not arrive; then it is named, with why: the collector
@@ -1243,156 +1469,53 @@ pub(crate) fn rules_section_of(
     };
     let watching_file_rules = watching_of(Kind::File);
     let watching_rules = watching_of(Kind::Process) + watching_file_rules;
-    let not_watching: Vec<Value> = evaluated
+    let not_watching = evaluated
         .iter()
-        .filter_map(|l| Some((l.meta.as_ref()?, unwatched(l)?)))
-        .map(|(m, (reason, not_arriving))| {
-            let mut v = json!({
-                "id_text": text(&m.id),
-                "title_text": text(&m.title),
-                "level": m.level_name(),
-                "source": m.source.name,
-                "set": m.source.set,
-                "reason": reason,
-            });
-            if !not_arriving.is_empty() {
-                v["not_arriving"] = json!(not_arriving);
-            }
-            v
+        .filter_map(|l| Some((l, l.meta.as_ref()?, unwatched(l)?)))
+        .map(|(l, m, (reason, not_arriving))| v1::NotWatching {
+            rule: Some(crate::matches::rule(l.file, m)),
+            reason: value_of::<v1::NotWatchingReason>(reason),
+            not_arriving: not_arriving.into_iter().map(str::to_string).collect(),
         })
         .collect();
     let empty = BTreeMap::new();
     let day = level.map_or(&empty, |l| &l.matches_last_day);
     let mut matched: Vec<(&String, &i64)> = day.iter().collect();
     matched.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
-    let shown: Vec<Value> = matched
-        .iter()
-        .take(MATCHED_SHOWN)
-        .map(|(id, n)| {
-            let meta = rules.by_id(id).and_then(|l| l.meta.as_ref());
-            json!({
-                "id_text": text(id),
-                "title_text": meta.map(|m| text(&m.title)),
-                "level": meta.and_then(crate::sigma::Meta::level_name),
-                // Its set, by name and in words: two sets can have rules of the same title.
-                "source": meta.map(|m| m.source.name),
-                "set": meta.map(|m| m.source.set),
-                "matches": n,
+    v1::RulesNow {
+        shipped: n(rules.rules.iter().filter(|l| !l.not_taken()).count()),
+        not_taken: n(rules.rules.iter().filter(|l| l.not_taken()).count()),
+        evaluated: n(evaluated.len()),
+        in_part: n(in_part.len()),
+        not_evaluated: n(not_evaluated.len()),
+        // Before any reading of the event level, what the rules do now is not known.
+        watching: level.map(|_| watching.is_some()),
+        watching_rules: level.map(|_| n(watching_rules)),
+        file_rules: n(rules.evaluated(Kind::File)),
+        watching_file_rules: level.map(|_| n(watching_file_rules)),
+        file_events_collected: watching.map(|_| files),
+        not_watching,
+        judged: judged as i32,
+        judged_note: note.map(str::to_string),
+        // Absent before any reading of the event level: nothing was counted.
+        matches_last_day: level.map(|_| n(day.values().sum::<i64>())),
+        matched_last_day: matched
+            .iter()
+            .take(MATCHED_SHOWN)
+            .map(|(id, count)| v1::RuleMatches {
+                id_text: whole(id),
+                rule: rules
+                    .by_id(id)
+                    .and_then(|l| l.meta.as_ref().map(|m| crate::matches::rule(l.file, m))),
+                matches: n(**count),
             })
-        })
-        .collect();
-    json!({
-        // Shipped as files; an upstream rule a translated set did not take is counted apart,
-        // and as not evaluated.
-        "shipped": rules.rules.iter().filter(|l| !l.not_taken()).count(),
-        "not_taken": rules.rules.iter().filter(|l| l.not_taken()).count(),
-        "evaluated": evaluated.len(),
-        "in_part": in_part.len(),
-        "not_evaluated": not_evaluated.len(),
-        "watching": watching.is_some(),
-        "watching_rules": watching_rules,
-        "file_rules": file_rules,
-        "watching_file_rules": watching_file_rules,
-        "file_events_collected": files,
-        "not_watching": not_watching,
-        "judged": judged,
-        "judged_note": note,
-        "matches_last_day": day.values().sum::<i64>(),
-        "matched_last_day": shown,
-        "matched_last_day_total": matched.len(),
-    })
+            .collect(),
+        matched_last_day_total: level.map(|_| n(matched.len())),
+    }
 }
 
-/// The latest reading of the catalogue. `outcome` is one of `read`, `unchanged`, `failed`
-/// and `never_read`. A first reading is the baseline: nothing in it counts as new or gone.
-/// After a failed reading what is new is unknown, so there is no count of new or gone.
-fn threats_section(c: Option<&Catalogue>) -> Value {
-    let mut v = match c {
-        Some(Catalogue::Read {
-            total,
-            new,
-            gone,
-            first,
-            at,
-        }) => json!({
-            "outcome": "read",
-            "entries": total,
-            "first_reading": first,
-            "new": new,
-            "gone": gone,
-            "read_at": iso(*at),
-            "checked_at": iso(*at),
-        }),
-        Some(Catalogue::Unchanged { total, at }) => json!({
-            "outcome": "unchanged",
-            "entries": total,
-            "first_reading": false,
-            "new": 0,
-            "gone": 0,
-            "read_at": iso(*at),
-            "checked_at": iso(*at),
-        }),
-        Some(Catalogue::Failed { reason, last, at }) => json!({
-            "outcome": "failed",
-            "reason_text": text(reason),
-            "entries": last.map(|(_, n)| n),
-            "read_at": last.map(|(at, _)| iso(at)),
-            "checked_at": iso(*at),
-        }),
-        None => json!({ "outcome": "never_read" }),
-    };
-    v["source"] = json!(threats::SOURCE);
-    v["matched"] = json!(false);
-    v
-}
-
-/// The feeds of vulnerability data, one entry each. `outcome` is the latest reading's: `read`,
-/// `unchanged`, `failed` or `never_read`; a run that did not ask for a feed, because its last
-/// good reading is recent, leaves it `unchanged` with `asked_this_run` false. `read_at` is when
-/// it was last read successfully, `changed_at` when what it holds last changed. `matched` says
-/// that its ecosystem is matched against the projects' lockfiles; the answers are in the part
-/// `vulnerabilities`.
-fn feeds_section(feeds: &[crate::osv::State], run_id: &str) -> Value {
-    let list: Vec<Value> = feeds
-        .iter()
-        .map(|s| {
-            let mut v = json!({
-                "source": s.feed.source,
-                "ecosystem": s.feed.ecosystem,
-                "asked_this_run": s.asked_in(run_id),
-                "read_at": s.good_at.map(iso),
-                "changed_at": s.changed_at.map(iso),
-                "checked_at": s.latest.as_ref().map(|(_, at, ..)| iso(*at)),
-                "records": s.records,
-                "malicious_records": s.malicious,
-                "withdrawn_records": s.withdrawn,
-                "matched": true,
-            });
-            match &s.latest {
-                None => v["outcome"] = json!("never_read"),
-                Some((_, _, outcome, reason)) if outcome == "failed" => {
-                    v["outcome"] = json!("failed");
-                    v["reason_text"] = text(reason.as_deref().unwrap_or_default());
-                }
-                Some((_, _, outcome, _)) if outcome == "read" && s.asked_in(run_id) => {
-                    v["outcome"] = json!("read");
-                    if let Some(c) = &s.counts {
-                        v["first_reading"] = json!(c.first);
-                        v["since_last_reading"] = json!({
-                            "new": c.new,
-                            "changed": c.changed,
-                            "withdrawn": c.withdrawn,
-                            "gone": c.gone,
-                        });
-                    }
-                }
-                Some(_) => v["outcome"] = json!("unchanged"),
-            }
-            v
-        })
-        .collect();
-    json!({ "matched": true, "feeds": list })
-}
+/// How many rules that matched in the last day the status lists; the rest are counted.
+const MATCHED_SHOWN: usize = 10;
 
 /// The class of a reading, from the store's own data: an incomplete reading is classed by its
 /// cause, and one written without a cause, before causes were kept, is `failed`; a full
@@ -1534,70 +1657,6 @@ pub fn problems(conn: &Connection, latest: &[Latest]) -> rusqlite::Result<Proble
     Ok(p)
 }
 
-/// Counts of the latest readings by class and by completeness, the problems grouped so that
-/// many readings with one reason are one entry with up to three of their scopes, and the
-/// machines that could not be reached.
-fn coverage_section(p: &Problems) -> Value {
-    let problems: Vec<Value> = p
-        .groups
-        .iter()
-        .take(PROBLEMS_SHOWN)
-        .map(|g| {
-            let examples: Vec<Value> = g.scopes.iter().take(EXAMPLES).map(|s| text(s)).collect();
-            json!({
-                "class": g.class,
-                "reader": g.reader,
-                "kind": g.kind,
-                "reason_text": g.reason.as_deref().map(text),
-                "count": g.scopes.len(),
-                "examples_text": examples,
-            })
-        })
-        .collect();
-    let unreached: Vec<Value> = p
-        .unreached
-        .iter()
-        .take(UNREACHED_SHOWN)
-        .map(|u| {
-            json!({
-                "scope_text": text(&u.scope),
-                "since": iso(u.since),
-                "reason_text": u.reason.as_deref().map(text),
-            })
-        })
-        .collect();
-    let mut v = json!({
-        "readings": p.readings,
-        "full": p.full,
-        "partial": p.partial,
-        "none": p.none,
-        "implied_by_unreached": p.implied,
-        "problems": problems,
-        "problems_total": p.groups.len(),
-        "unreached": unreached,
-        "unreached_total": p.unreached.len(),
-    });
-    for (class, n) in &p.classes {
-        v[*class] = json!(n);
-    }
-    v
-}
-
-fn no_reader_section(list: &[NoReader]) -> Value {
-    Value::Array(
-        list.iter()
-            .take(NO_READER_SHOWN)
-            .map(|n| {
-                json!({
-                    "what": n.what,
-                    "what_text": n.name.as_deref().map(text),
-                    "where_count": n.places,
-                })
-            })
-            .collect(),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1679,24 +1738,31 @@ mod tests {
             (signature(Arrival::Unknown), "not_yet_known"),
             (Arrivals::default(), "not_yet_known"),
         ] {
-            let r = rules_section_of(&rules, Some(&running(arrivals)));
+            let r = serde_json::to_value(rules_now_of(&rules, Some(&running(arrivals)))).unwrap();
             assert_eq!(
                 (&r["watching_rules"], &r["watching_file_rules"]),
                 (&json!(1), &json!(0)),
                 "{r}"
             );
+            let named = &r["not_watching"][0];
             assert_eq!(
-                r["not_watching"],
-                json!([{
-                    "id_text": "00000000-0000-4000-8000-000000000001",
-                    "title_text": "Invented 00000000-0000-4000-8000-000000000001",
-                    "level": "high",
-                    "source": "elastic",
-                    "set": "Elastic's detection rules",
-                    "reason": reason,
-                    "not_arriving": ["signature"],
-                }])
+                (
+                    &named["rule"]["id_text"],
+                    &named["rule"]["level"],
+                    &named["rule"]["source"],
+                    &named["reason"],
+                    &named["not_arriving"]
+                ),
+                (
+                    &json!("00000000-0000-4000-8000-000000000001"),
+                    &json!("high"),
+                    &json!("elastic"),
+                    &json!(reason),
+                    &json!(["signature"])
+                ),
+                "{r}"
             );
+            assert_eq!(r["not_watching"].as_array().map(Vec::len), Some(1));
         }
         // Lines that lack it say most: an earlier collector, whatever the other kind says.
         let mixed = Arrivals::from([
@@ -1706,10 +1772,10 @@ mod tests {
             Arrival::Kept(Some(1)),
             Arrival::NotKept,
         ]);
-        let r = rules_section_of(&rules, Some(&running(mixed)));
+        let r = serde_json::to_value(rules_now_of(&rules, Some(&running(mixed)))).unwrap();
         assert_eq!(r["not_watching"][0]["reason"], "collector_does_not_keep");
         let now = running(signature(Arrival::Kept(Some(1_791_072_003))));
-        let r = rules_section_of(&rules, Some(&now));
+        let r = serde_json::to_value(rules_now_of(&rules, Some(&now))).unwrap();
         assert_eq!(
             (
                 &r["watching_rules"],
@@ -1724,7 +1790,7 @@ mod tests {
             state: crate::events::SILENT.to_string(),
             ..running(Arrivals::default())
         };
-        let r = rules_section_of(&rules, Some(&silent));
+        let r = serde_json::to_value(rules_now_of(&rules, Some(&silent))).unwrap();
         assert_eq!(
             (&r["watching_rules"], &r["not_watching"]),
             (&json!(0), &json!([]))

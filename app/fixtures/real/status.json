@@ -1,0 +1,1484 @@
+{
+  "answered_at": 1794597521,
+  "answered_outside_app": {
+    "items": [
+      {
+        "answer": {
+          "given": "expected",
+          "given_at": 1794597521,
+          "in_force": true,
+          "reason_cuts": [
+            {
+              "argument": 0,
+              "kind": "immune:flag-value",
+              "length": 18
+            }
+          ],
+          "reason_text": "invented: my own tool, started as tool --password=\\cut{immune:flag-value 18}",
+          "until_at": 1797189521,
+          "via": "agent"
+        },
+        "finding": {
+          "about_text": "file:machine:mac//opt/tools/bin/node",
+          "confidence": "medium",
+          "id": "fa6aa766b61",
+          "rule": "processes.detached-inline-code",
+          "severity": "high",
+          "state": "expected",
+          "urgent": true
+        },
+        "first_seen_at": 1794597459,
+        "kind": "interpreter running code from its command line, detached",
+        "last_seen_at": 1794597459,
+        "title": "A program that runs scripts has been running code it was handed when it started, on its own in the background, for at least a minute.",
+        "verdicts": null,
+        "where_text": "/opt/tools/bin/node"
+      }
+    ],
+    "total": 1
+  },
+  "answers_note": "Answer a finding only after the owner has agreed in this conversation, having been told what it is and what the options are. Pass --via agent and the reason the owner agreed to. The app shows every answer given this way.",
+  "cannot_judge": [
+    "these places of persistence are not read: login and logout hooks in root's preferences, in ByHost preferences and in Managed Preferences, a PAM policy a device management profile installs, the authorization database, the sudoers file and its folder, login items and background items, crontabs, launchd jobs with no file on disk, and the applications reopened at login",
+    "no vulnerability is matched against installed software, servers' packages or ecosystems other than npm and crates.io yet",
+    "software installed by a package manager other than Homebrew and npm is not checked, and Homebrew or Tailscale installed outside the places their installers use by default is not found"
+  ],
+  "coverage": {
+    "failed": 0,
+    "full": 20,
+    "implied_by_unreached": 0,
+    "no_reader": 1,
+    "none": 1,
+    "not_given": 1,
+    "partial": 1,
+    "problems": [
+      {
+        "class": "no_reader",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
+        "kind": "indicators against what this build does not match them with",
+        "reader": "indicators",
+        "reason_text": "not matched: file:hashes.'SHA-256' against files of checkouts and installed software other than watched files"
+      },
+      {
+        "class": "not_given",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
+        "kind": "checkouts under the home folder",
+        "reader": "checkouts",
+        "reason_text": "only the given folder was walked"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
+        "kind": "indicator list given as a file",
+        "reader": "indicators",
+        "reason_text": "1 entries"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
+        "kind": "Homebrew kegs",
+        "reader": "integrity",
+        "reason_text": "compared by files' metadata between readings, since Homebrew keeps no record of a keg's files to verify against; __pycache__ folders are not compared"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
+        "kind": "application bundles in /Applications and ~/Applications",
+        "reader": "integrity",
+        "reason_text": "none of these places is on this machine; not covered: extended attributes, which no seal covers; a bundle changed and signed again shows only as another signer at the same version; an application that updates itself in place shows as a change of its digest"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
+        "kind": "code kept by applications not signed by Apple under ~/Library/Application Support",
+        "reader": "integrity",
+        "reason_text": "none of these places is on this machine; compared by the metadata of code files between readings; only a folder named like an application read here that Apple did not sign is looked into, so code kept under another name is not compared; caches, web storage, crash reports and logs are not compared"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
+        "kind": "global npm packages",
+        "reader": "integrity",
+        "reason_text": "none of these places is on this machine; compared by files' metadata between readings, since npm keeps no record of a global package's files to verify against; a global folder set in npm's configuration or by a version manager is not looked for, and a linked package is not read"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
+        "kind": "known hosts",
+        "reader": "known-hosts",
+        "reason_text": "there is no known_hosts file on this machine"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
+        "kind": "ssh configuration",
+        "reader": "ssh-config",
+        "reason_text": "there is no ssh configuration on this machine"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
+        "kind": "tailnet peers",
+        "reader": "tailnet",
+        "reason_text": "Tailscale is not installed on this machine"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
+        "kind": "*.code-workspace of each checkout, the part that runs by itself",
+        "reader": "watched-places",
+        "reason_text": "no checkout's *.code-workspace holds any of the keys read"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
+        "kind": ".claude/settings.json of each checkout, the part that runs by itself",
+        "reader": "watched-places",
+        "reason_text": "no checkout's .claude/settings.json holds any of the keys read"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
+        "kind": ".claude/settings.local.json of each checkout, the part that runs by itself",
+        "reader": "watched-places",
+        "reason_text": "no checkout's .claude/settings.local.json holds any of the keys read"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
+        "kind": ".cursor/hooks.json of each checkout, the part that runs by itself",
+        "reader": "watched-places",
+        "reason_text": "no checkout's .cursor/hooks.json holds any of the keys read"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
+        "kind": ".cursor/mcp.json of each checkout, the part that runs by itself",
+        "reader": "watched-places",
+        "reason_text": "no checkout's .cursor/mcp.json holds any of the keys read"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
+        "kind": ".devcontainer/devcontainer.json, .devcontainer.json of each checkout, the part that runs by itself",
+        "reader": "watched-places",
+        "reason_text": "no checkout's .devcontainer/devcontainer.json, .devcontainer.json holds any of the keys read"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
+        "kind": ".gemini/settings.json of each checkout, the part that runs by itself",
+        "reader": "watched-places",
+        "reason_text": "no checkout's .gemini/settings.json holds any of the keys read"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
+        "kind": ".mcp.json of each checkout, the part that runs by itself",
+        "reader": "watched-places",
+        "reason_text": "no checkout's .mcp.json holds any of the keys read"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
+        "kind": ".vscode/mcp.json of each checkout, the part that runs by itself",
+        "reader": "watched-places",
+        "reason_text": "no checkout's .vscode/mcp.json holds any of the keys read"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
+        "kind": ".vscode/settings.json of each checkout, the part that runs by itself",
+        "reader": "watched-places",
+        "reason_text": "no checkout's .vscode/settings.json holds any of the keys read"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
+        "kind": "PAM policies and modules, and authorization plugins",
+        "reader": "watched-places",
+        "reason_text": "none of these places is on this machine"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
+        "kind": "editor tasks set to run when a checkout's folder is opened",
+        "reader": "watched-places",
+        "reason_text": "no checkout has an editor task set to run when its folder is opened"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "checkout:machine:mac/dev/shop"
+        ],
+        "kind": "hooks in the checkout's .git folder",
+        "reader": "watched-places",
+        "reason_text": "the checkout has no hooks"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
+        "kind": "login and logout hooks in the login window's preferences",
+        "reader": "watched-places",
+        "reason_text": "none of these places is on this machine"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
+        "kind": "package.json of each checkout, the part that runs by itself",
+        "reader": "watched-places",
+        "reason_text": "no checkout's package.json holds any of the keys read"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
+        "kind": "ssh access files",
+        "reader": "watched-places",
+        "reason_text": "none of these places is on this machine"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
+        "kind": "~/.claude.json, the part that runs by itself",
+        "reader": "watched-places",
+        "reason_text": "none of the keys read is in ~/.claude.json"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
+        "kind": "~/.claude/settings.json, the part that runs by itself",
+        "reader": "watched-places",
+        "reason_text": "none of the keys read is in ~/.claude/settings.json"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
+        "kind": "~/.cursor/hooks.json, the part that runs by itself",
+        "reader": "watched-places",
+        "reason_text": "none of the keys read is in ~/.cursor/hooks.json"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
+        "kind": "~/.cursor/mcp.json, the part that runs by itself",
+        "reader": "watched-places",
+        "reason_text": "none of the keys read is in ~/.cursor/mcp.json"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
+        "kind": "~/.gemini/settings.json, the part that runs by itself",
+        "reader": "watched-places",
+        "reason_text": "none of the keys read is in ~/.gemini/settings.json"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
+        "kind": "~/.vscode/extensions, every folder by name",
+        "reader": "watched-places",
+        "reason_text": "no folder in ~/.vscode/extensions"
+      },
+      {
+        "class": "read_nothing",
+        "count": 1,
+        "examples_text": [
+          "machine:mac"
+        ],
+        "kind": "~/Library/Application Support/Claude/claude_desktop_config.json, the part that runs by itself",
+        "reader": "watched-places",
+        "reason_text": "none of the keys read is in ~/Library/Application Support/Claude/claude_desktop_config.json"
+      }
+    ],
+    "problems_total": 33,
+    "read_nothing": 31,
+    "readings": 53,
+    "unreached": [],
+    "unreached_total": 0
+  },
+  "estate": {
+    "checkouts": 1,
+    "components": 1,
+    "machines": 1,
+    "machines_seen_after_owner_word_text": [],
+    "machines_set_aside": 0,
+    "other_devices": 0,
+    "own_devices": 0,
+    "servers": 0,
+    "servers_checked_in_last_check": 0,
+    "servers_in_last_check": 0,
+    "servers_offered": 0,
+    "servers_read": 0,
+    "servers_system_not_given": 0
+  },
+  "event_level": {
+    "arriving": [],
+    "cannot_see": [
+      "connections: eslogger gives no network event",
+      "changes to files that already exist, and files removed: only files created and renamed are collected",
+      "program starts and file events while the level is not running",
+      "program starts and file events the kernel dropped: counted, not seen",
+      "program starts and file events deleted to keep the log under its size cap before they were read: counted, not seen",
+      "a program's environment: it is never written"
+    ],
+    "file_events": {
+      "collected": true,
+      "events": {
+        "last_day": 0,
+        "since_check": 0
+      },
+      "kinds": [
+        "create",
+        "rename"
+      ],
+      "lost": {
+        "last_day": 0,
+        "since_check": 0
+      },
+      "not_collected_reason": null,
+      "unknown_losses": {
+        "last_day": 0,
+        "since_check": 0
+      },
+      "unreadable_events": {
+        "last_day": 0,
+        "since_check": 0
+      }
+    },
+    "files_removed_by_cap": {
+      "last_day": 0,
+      "since_check": 0
+    },
+    "files_removed_unread": {
+      "last_day": 0,
+      "since_check": 0
+    },
+    "in_words": {
+      "caveats": [
+        {
+          "kind": "earlier_collector",
+          "short": "reinstall needed"
+        }
+      ],
+      "notes": [
+        "The collector installed here is an earlier one and does not keep who each process is, the script a program start runs and code-signing details; installing the event level again adds them."
+      ],
+      "state": "on"
+    },
+    "kept_never_filled": [],
+    "level": "Apple's eslogger as administrator",
+    "log_cap_bytes": 2147483648,
+    "log_cap_reason_text": null,
+    "lost": {
+      "last_day": 0,
+      "since_check": 0
+    },
+    "message_version": 10,
+    "no_longer_arriving": [],
+    "not_kept": [
+      "identity",
+      "script",
+      "signature"
+    ],
+    "not_yet_known": [],
+    "other_messages": {
+      "last_day": 0,
+      "since_check": 0
+    },
+    "program_starts": {
+      "last_day": 2,
+      "since_check": 1
+    },
+    "program_starts_by_hour": {
+      "counts": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        2
+      ],
+      "ends_at": 1794597521,
+      "step_seconds": 3600
+    },
+    "program_starts_by_minute": {
+      "counts": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        2
+      ],
+      "ends_at": 1794597521,
+      "step_seconds": 60
+    },
+    "read_at": 1794597519,
+    "reason_text": null,
+    "said_by": null,
+    "said_text": null,
+    "silent_after_seconds": 900,
+    "state": "running",
+    "unknown_losses": {
+      "last_day": 0,
+      "since_check": 0
+    },
+    "unreadable_lines": {
+      "last_day": 0,
+      "since_check": 0
+    },
+    "written_at": 1794597519
+  },
+  "format": 1,
+  "integrity": {
+    "application_code_folders": 0,
+    "bundles": 0,
+    "bundles_by_signer": [],
+    "bundles_not_verifying": 0,
+    "changed_while_version_stayed": 1,
+    "first_reading": false,
+    "global_npm_packages": 0,
+    "homebrew_kegs": 1,
+    "not_verifying_since_first_reading": 0,
+    "readings": [
+      {
+        "completeness": "full",
+        "kind": "application bundles in /Applications and ~/Applications",
+        "reason_text": "none of these places is on this machine; not covered: extended attributes, which no seal covers; a bundle changed and signed again shows only as another signer at the same version; an application that updates itself in place shows as a change of its digest"
+      },
+      {
+        "completeness": "full",
+        "kind": "Homebrew kegs",
+        "reason_text": "compared by files' metadata between readings, since Homebrew keeps no record of a keg's files to verify against; __pycache__ folders are not compared"
+      },
+      {
+        "completeness": "full",
+        "kind": "global npm packages",
+        "reason_text": "none of these places is on this machine; compared by files' metadata between readings, since npm keeps no record of a global package's files to verify against; a global folder set in npm's configuration or by a version manager is not looked for, and a linked package is not read"
+      },
+      {
+        "completeness": "full",
+        "kind": "code kept by applications not signed by Apple under ~/Library/Application Support",
+        "reason_text": "none of these places is on this machine; compared by the metadata of code files between readings; only a folder named like an application read here that Apple did not sign is looked into, so code kept under another name is not compared; caches, web storage, crash reports and logs are not compared"
+      },
+      {
+        "completeness": "full",
+        "kind": "software of package managers this version does not read",
+        "reason_text": null
+      }
+    ],
+    "seals_carried_forward": 0,
+    "seals_verified_this_run": 0
+  },
+  "last_finished_run": {
+    "check": {
+      "finished_at": 1794597519,
+      "id": "1794597519-131322000",
+      "started_at": 1794597519
+    },
+    "first_run": false,
+    "readings": {
+      "failed": 1,
+      "machines_unread": 0,
+      "not_repeated": 0,
+      "partial": 1
+    },
+    "since_previous_run": {
+      "added": 1,
+      "changed": 2,
+      "removed": 0
+    },
+    "unknown": [
+      "removals unknown where a reading was partial",
+      "changes unknown where nothing was read"
+    ]
+  },
+  "last_run": {
+    "finished_at": 1794597519,
+    "id": "1794597519-131322000",
+    "started_at": 1794597519
+  },
+  "needs_a_look": {
+    "items": [
+      {
+        "advice": "Read its reason and look at what it is about. Mark this finding seen once you have; Immune's own finding about the same thing, if there is one, is answered apart.",
+        "change": "new",
+        "evidence": {
+          "verdict_given": {
+            "events": [],
+            "rule": "integrity.package-files"
+          }
+        },
+        "finding": {
+          "answer": null,
+          "finding": {
+            "about_text": "file:machine:mac//opt/homebrew/Cellar/tool/1.0",
+            "confidence": "high",
+            "id": "f1be1cee73d",
+            "rule": "verdict.suspicious",
+            "severity": "critical",
+            "state": "open",
+            "urgent": true
+          },
+          "first_seen_at": 1794597521,
+          "kind": "verdict of the response layer",
+          "last_seen_at": 1794597521,
+          "title": "The response layer judged something on this Mac suspicious.",
+          "verdicts": {
+            "listed": [
+              {
+                "finding": {
+                  "about_text": "file:machine:mac//opt/homebrew/Cellar/tool/1.0",
+                  "confidence": "high",
+                  "id": "f1be1cee73d",
+                  "rule": "verdict.suspicious",
+                  "severity": "critical",
+                  "state": "open",
+                  "urgent": true
+                },
+                "raised": true,
+                "reason_cuts": [
+                  {
+                    "argument": 0,
+                    "kind": "immune:flag-value",
+                    "length": 18
+                  }
+                ],
+                "recorded_at": 1794597521,
+                "verdict": {
+                  "case_text": "case-samples",
+                  "confidence": "high",
+                  "finding": {
+                    "id": "f2bd0942750"
+                  },
+                  "format": 1,
+                  "kind": "suspicious",
+                  "reason_text": "invented: the package was published by an account taken over; it ran tool --password=\\cut{immune:flag-value 18}",
+                  "severity": "critical",
+                  "store_id": "d33651be2c7f9f3bb28e6a58c8b62082"
+                }
+              }
+            ],
+            "suspicious": 1,
+            "total": 1,
+            "verdict_finding": null
+          },
+          "where_text": "/opt/homebrew/Cellar/tool/1.0"
+        },
+        "meaning": "Another program that runs Immune, the response layer, looked into what a rule found here and judged it suspicious. The rule and the thing are named with this finding; the reason is the response layer's own, quoted.",
+        "technique_text": null,
+        "value_text": "Files of an installed command-line tool or package were changed in place, while its version stayed the same."
+      },
+      {
+        "advice": "Do not install or run that project again. Ask your agent to look into it; if its packages were installed here, treat the tokens and keys this Mac could reach as exposed.",
+        "change": "new",
+        "evidence": {
+          "vulnerable_package": {
+            "ecosystem": "npm",
+            "package_text": "ansi-regex",
+            "project_text": "checkout:machine:mac/dev/shop",
+            "records": [
+              {
+                "aliases_text": [
+                  "GHSA-jvhh-2m83-6w29"
+                ],
+                "exploited": null,
+                "fixed_text": [],
+                "id_text": "MAL-2025-46966",
+                "label": "malicious",
+                "source": "OpenSSF malicious packages",
+                "summary_text": "Malicious code in ansi-regex (npm)"
+              }
+            ],
+            "releases": [
+              {
+                "at_text": "~/dev/shop/package-lock.json#node_modules/ansi-regex",
+                "version_text": "6.2.1"
+              }
+            ]
+          }
+        },
+        "finding": {
+          "answer": null,
+          "finding": {
+            "about_text": "component:checkout:machine:mac/dev/shop/npm/ansi-regex",
+            "confidence": "high",
+            "id": "f9fd8d5f22f",
+            "rule": "lockfiles.malicious-package",
+            "severity": "critical",
+            "state": "open",
+            "urgent": true
+          },
+          "first_seen_at": 1794597518,
+          "kind": "lockfile dependency",
+          "last_seen_at": 1794597519,
+          "title": "A project on this Mac depends on a package that is known to be malicious.",
+          "verdicts": null,
+          "where_text": "~/dev/shop/package-lock.json#node_modules/ansi-regex"
+        },
+        "meaning": "The package, or this release of it, was reported as carrying harmful code. If the project's packages were installed on this Mac, that code may have run here.",
+        "technique_text": "T1195.001",
+        "value_text": "ansi-regex 6.2.1; MAL-2025-46966 from OpenSSF malicious packages: Malicious code in ansi-regex (npm)"
+      },
+      {
+        "advice": "If you did not edit it yourself, reinstall that package and look for what else changed.",
+        "change": "changed",
+        "evidence": {
+          "changed_in_place": {
+            "became_text": null
+          }
+        },
+        "finding": {
+          "answer": null,
+          "finding": {
+            "about_text": "file:machine:mac//opt/homebrew/Cellar/tool/1.0",
+            "confidence": "medium",
+            "id": "f2bd0942750",
+            "rule": "integrity.package-files",
+            "severity": "high",
+            "state": "open",
+            "urgent": true
+          },
+          "first_seen_at": 1794597519,
+          "kind": "installed package changed in place",
+          "last_seen_at": 1794597519,
+          "title": "Files of an installed command-line tool or package were changed in place, while its version stayed the same.",
+          "verdicts": {
+            "listed": [],
+            "suspicious": 1,
+            "total": 1,
+            "verdict_finding": {
+              "about_text": "file:machine:mac//opt/homebrew/Cellar/tool/1.0",
+              "confidence": "high",
+              "id": "f1be1cee73d",
+              "rule": "verdict.suspicious",
+              "severity": "critical",
+              "state": "open",
+              "urgent": true
+            }
+          },
+          "where_text": "/opt/homebrew/Cellar/tool/1.0"
+        },
+        "meaning": "Package managers put in a new version rather than change an installed one, so this is rare; it happens when something adds code to a tool you run.",
+        "technique_text": "T1554",
+        "value_text": null
+      },
+      {
+        "advice": "Do not open or run what is named here; find out how it got there, and treat this Mac as affected until you know.",
+        "change": "new",
+        "evidence": {
+          "indicator_matched": {
+            "indicators_text": "[file:hashes.'SHA-256' = '128344f1f3352b53701662b12b748ff9df8ea044a2acf076d438e8f5a0a75911']"
+          }
+        },
+        "finding": {
+          "answer": null,
+          "finding": {
+            "about_text": "file:machine:mac/.zshrc",
+            "confidence": "high",
+            "id": "f5738cc2fac",
+            "rule": "indicator.match",
+            "severity": "high",
+            "state": "open",
+            "urgent": true
+          },
+          "first_seen_at": 1794597519,
+          "kind": "match of an indicator from the list",
+          "last_seen_at": 1794597519,
+          "title": "Something on this Mac matches a sign of a known attack from the list you gave.",
+          "verdicts": null,
+          "where_text": "~/.zshrc"
+        },
+        "meaning": "The list names files, sites and addresses that the attack is known to use, so a match is rarely chance; it is wrong only when the list itself is wrong.",
+        "technique_text": null,
+        "value_text": "[file:hashes.'SHA-256' = '128344f1f3352b53701662b12b748ff9df8ea044a2acf076d438e8f5a0a75911']"
+      },
+      {
+        "advice": "Look at the program, its arguments and what started it, shown here. If you or a tool you use ran it, mark it expected; if nobody knows it, ask your agent to look into it.",
+        "change": "new",
+        "evidence": {
+          "published_rule_matched": {
+            "events": [
+              {
+                "program_start": {
+                  "args_text": [
+                    "dd",
+                    "if=/dev/zero",
+                    "bs=1",
+                    "count=1",
+                    "--password=\\cut{immune:flag-value 18}"
+                  ],
+                  "cuts": [
+                    {
+                      "argument": 4,
+                      "kind": "immune:flag-value",
+                      "length": 18
+                    }
+                  ],
+                  "happened_at": 1791072002,
+                  "happened_nanos": 2000,
+                  "instigator": {
+                    "codesigning_flags": null,
+                    "executable_text": "/bin/sh",
+                    "pid": null,
+                    "pid_version": null,
+                    "platform_binary": null,
+                    "signing_id_text": null,
+                    "started_at": null,
+                    "started_nanos": null,
+                    "team_id_text": null,
+                    "user_id": null
+                  },
+                  "parent": null,
+                  "parent_pid": 401,
+                  "process": {
+                    "codesigning_flags": null,
+                    "executable_text": "/bin/dd",
+                    "pid": 402,
+                    "pid_version": null,
+                    "platform_binary": true,
+                    "signing_id_text": "com.apple.dd",
+                    "started_at": null,
+                    "started_nanos": null,
+                    "team_id_text": null,
+                    "user_id": 501
+                  },
+                  "script_text": null,
+                  "working_directory_text": "/Users/example/dev/site"
+                }
+              },
+              {
+                "program_start": {
+                  "args_text": [
+                    "dd",
+                    "if=/dev/zero",
+                    "bs=1",
+                    "count=1"
+                  ],
+                  "cuts": [],
+                  "happened_at": 1791072002,
+                  "happened_nanos": 2000,
+                  "instigator": {
+                    "codesigning_flags": null,
+                    "executable_text": "/bin/sh",
+                    "pid": null,
+                    "pid_version": null,
+                    "platform_binary": null,
+                    "signing_id_text": null,
+                    "started_at": null,
+                    "started_nanos": null,
+                    "team_id_text": null,
+                    "user_id": null
+                  },
+                  "parent": null,
+                  "parent_pid": 401,
+                  "process": {
+                    "codesigning_flags": null,
+                    "executable_text": "/bin/dd",
+                    "pid": 402,
+                    "pid_version": null,
+                    "platform_binary": true,
+                    "signing_id_text": "com.apple.dd",
+                    "started_at": null,
+                    "started_nanos": null,
+                    "team_id_text": null,
+                    "user_id": 501
+                  },
+                  "script_text": null,
+                  "working_directory_text": "/Users/example/dev/site"
+                }
+              }
+            ],
+            "licence": "DRL-1.1",
+            "matches": 2,
+            "rule": {
+              "author_text": "Igor Fits, Mikhail Larin, oscd.community",
+              "file": "rules/macos/process_creation/proc_creation_macos_binary_padding.yml",
+              "id_text": "95361ce5-c891-4b0a-87ca-e24607884a96",
+              "level": "high",
+              "name": "sigma:95361ce5-c891-4b0a-87ca-e24607884a96",
+              "set": "SigmaHQ's rule set",
+              "source": "sigma",
+              "techniques_text": [
+                "T1027.001"
+              ],
+              "title_text": "Binary Padding - MacOS"
+            },
+            "source": "https://github.com/SigmaHQ/sigma"
+          }
+        },
+        "finding": {
+          "answer": null,
+          "finding": {
+            "about_text": "machine:mac",
+            "confidence": "low",
+            "id": "f13fda03d01",
+            "rule": "sigma:95361ce5-c891-4b0a-87ca-e24607884a96",
+            "severity": "high",
+            "state": "open",
+            "urgent": false
+          },
+          "first_seen_at": 1794597518,
+          "kind": "program start matched by a published rule",
+          "last_seen_at": 1794597519,
+          "title": "A program started on this Mac in a way that a published detection rule marks as high risk.",
+          "verdicts": null,
+          "where_text": "mac"
+        },
+        "meaning": "The rule, named with this finding, comes from SigmaHQ's rule set and was written from attacks seen elsewhere. Coding agents, build tools and people run the same commands for ordinary work, so a match is often harmless.",
+        "technique_text": "T1027.001",
+        "value_text": "Binary Padding - MacOS, by Igor Fits, Mikhail Larin, oscd.community"
+      },
+      {
+        "advice": "If you did not, open the file and look at its last lines.",
+        "change": "changed",
+        "evidence": {
+          "place_changed": {
+            "change": "changed",
+            "presence_only": false
+          }
+        },
+        "finding": {
+          "answer": null,
+          "finding": {
+            "about_text": "file:machine:mac/.zshrc",
+            "confidence": "low",
+            "id": "f2956a69d6b",
+            "rule": "watched.shell-profile",
+            "severity": "medium",
+            "state": "open",
+            "urgent": false
+          },
+          "first_seen_at": 1794597519,
+          "kind": "shell profile",
+          "last_seen_at": 1794597519,
+          "title": "A file your terminal runs every time it starts was added, changed or removed.",
+          "verdicts": null,
+          "where_text": "~/.zshrc"
+        },
+        "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
+        "technique_text": "T1546.004",
+        "value_text": null
+      }
+    ],
+    "total": 6,
+    "urgent_total": 4
+  },
+  "no_reader_for": {
+    "items": [
+      {
+        "what": "place indicators are not matched against",
+        "what_text": "file:hashes.'SHA-256' against files of checkouts and installed software other than watched files",
+        "where_count": 1
+      }
+    ]
+  },
+  "not_computed": [],
+  "not_covered": [
+    {
+      "advice": "Nothing to do. What these files say was not judged on this Mac. Support for them comes in later versions.",
+      "count": 1,
+      "examples_text": [
+        "some kinds of indicator in your list"
+      ],
+      "holds_on": "this_mac",
+      "id": "not-understood",
+      "kind": "files this version does not understand yet",
+      "meaning": "They tell what your projects or servers depend on. A change in them is not noticed yet.",
+      "scope": "this_mac",
+      "since_at": null,
+      "title": "Some files and packages are not understood by this version yet.",
+      "value_text": null,
+      "who": "nothing"
+    },
+    {
+      "advice": "Nothing to do. A change in these is left out of the answer for your projects; the page lists every way and whether it is read.",
+      "count": 0,
+      "examples_text": [],
+      "holds_on": "every_mac",
+      "id": "project-autorun",
+      "kind": "ways a project runs code by itself that are not read",
+      "meaning": "None of the others is present in the projects that were looked at. Not every folder was looked at, so of the projects in the rest this says nothing.",
+      "scope": "projects",
+      "since_at": 1794597519,
+      "title": "This version reads 13 of the 41 known ways a project can make code run by itself.",
+      "value_text": null,
+      "who": "nothing"
+    },
+    {
+      "advice": "Nothing to do. A change in these is left out of the answer on this Mac; the page lists every place and whether it is read.",
+      "count": 0,
+      "examples_text": [],
+      "holds_on": "every_mac",
+      "id": "home-autorun",
+      "kind": "places in the home folder where a tool's settings run code by itself that are not read",
+      "meaning": "None of the others is present on this Mac now.",
+      "scope": "this_mac",
+      "since_at": 1794597519,
+      "title": "This version reads 7 of the 11 known places where a developer tool's own settings can make code run by itself.",
+      "value_text": null,
+      "who": "nothing"
+    },
+    {
+      "advice": "Nothing to do if this Mac was offline: it is tried again at every check. If it stays while the Mac is online, ask your agent to look at why.",
+      "count": 1,
+      "examples_text": [],
+      "holds_on": "this_mac",
+      "id": "vulnerability-list-not-downloaded",
+      "kind": "vulnerability list not downloaded",
+      "meaning": "Why: the download failed; what failed is listed with this. Until it is downloaded, a vulnerability attackers start using after that date is not announced. The download uses a proxy only when the environment names one; it does not read the macOS proxy settings.",
+      "scope": "threats",
+      "since_at": null,
+      "title": "The list of vulnerabilities attackers are using could not be downloaded since the first check.",
+      "value_text": "cannot read none: No such file or directory (os error 2)",
+      "who": "nothing"
+    },
+    {
+      "advice": "Nothing to do if this Mac was offline. If it stays while the Mac is online, ask your agent to look at why.",
+      "count": 1,
+      "examples_text": [],
+      "holds_on": "this_mac",
+      "id": "vulnerability-data-old",
+      "kind": "list of known vulnerabilities not current",
+      "meaning": "Why: crates.io: the download failed; what failed is listed with this; npm: its newest record changed 2025-09-12T01:13:34Z, more than 7 days before this check. It is downloaded again at every check. Until it is, a vulnerability published after that date is not known here. The download uses a proxy only when the environment names one; it does not read the macOS proxy settings.",
+      "scope": "threats",
+      "since_at": 1794597519,
+      "title": "The list of known vulnerabilities could not be updated since 2026-11-13 19:18 UTC.",
+      "value_text": "crates.io: cannot read none: No such file or directory (os error 2)",
+      "who": "nothing"
+    },
+    {
+      "advice": "Nothing to do. These packages are left out of the answer about known vulnerabilities.",
+      "count": 1,
+      "examples_text": [],
+      "holds_on": "this_mac",
+      "id": "vulnerabilities-unknown",
+      "kind": "packages whose known vulnerabilities cannot be told",
+      "meaning": "Why, with how many packages each: 1 is in an ecosystem whose list of known vulnerabilities was never read or is not current.",
+      "scope": "projects",
+      "since_at": null,
+      "title": "For 1 of the packages your projects use, this version cannot tell whether a known vulnerability affects them.",
+      "value_text": null,
+      "who": "nothing"
+    },
+    {
+      "advice": "Nothing to do. This is a limit of this version.",
+      "count": 1,
+      "examples_text": [],
+      "holds_on": "every_mac",
+      "id": "persistence-not-read",
+      "kind": "places where something can be set to start by itself that are not read",
+      "meaning": "Login items and background items, scheduled commands, the list of who may act as the administrator, and login scripts kept in the administrator's own settings open only with permissions this app does not ask for. Login scripts set in ByHost preferences, kept for one Mac, or in Managed Preferences, which a device management profile writes, are not read in this version. Jobs started with no file on disk, and the apps reopened at login, which change at every logout, have nothing to compare against. A change in any of them goes unseen.",
+      "scope": "this_mac",
+      "since_at": null,
+      "title": "Some places where something can be set to start by itself on this Mac are not checked.",
+      "value_text": null,
+      "who": "nothing"
+    },
+    {
+      "advice": "Nothing to do. This comes in a later version.",
+      "count": 1,
+      "examples_text": [],
+      "holds_on": "every_mac",
+      "id": "vulnerabilities-not-compared",
+      "kind": "vulnerabilities not yet compared with installed software and servers",
+      "meaning": "The packages your projects list in package-lock.json, pnpm-lock.yaml and Cargo.lock are compared. Applications, Homebrew packages, what your servers run, and projects in other languages are not yet, so this version does not tell you which vulnerabilities affect them.",
+      "scope": "threats",
+      "since_at": null,
+      "title": "Known vulnerabilities are not yet compared with your installed software, your servers or projects of other kinds.",
+      "value_text": null,
+      "who": "nothing"
+    },
+    {
+      "advice": "Nothing to do. This is a limit of this version.",
+      "count": 1,
+      "examples_text": [],
+      "holds_on": "every_mac",
+      "id": "package-managers-elsewhere-not-found",
+      "kind": "software of other package managers, and tools installed at other places",
+      "meaning": "This version reads what Homebrew installed and the npm packages installed globally in /opt/homebrew/lib/node_modules or /usr/local/lib/node_modules. Software from any other package manager is not checked, and only the few managers this version looks for are named when found, so a manager not named may still be here. Homebrew, Tailscale and those few are looked for only where their installers put them by default, the same on every Mac, and one installed elsewhere is not found.",
+      "scope": "this_mac",
+      "since_at": null,
+      "title": "Software installed by a package manager other than Homebrew and npm is not checked.",
+      "value_text": null,
+      "who": "nothing"
+    }
+  ],
+  "rules": {
+    "evaluated": 175,
+    "file_events_collected": true,
+    "file_rules": 13,
+    "in_part": 23,
+    "judged": "all",
+    "judged_note": null,
+    "matched_last_day": [
+      {
+        "id_text": "95361ce5-c891-4b0a-87ca-e24607884a96",
+        "matches": 2,
+        "rule": {
+          "author_text": "Igor Fits, Mikhail Larin, oscd.community",
+          "file": "rules/macos/process_creation/proc_creation_macos_binary_padding.yml",
+          "id_text": "95361ce5-c891-4b0a-87ca-e24607884a96",
+          "level": "high",
+          "name": "sigma:95361ce5-c891-4b0a-87ca-e24607884a96",
+          "set": "SigmaHQ's rule set",
+          "source": "sigma",
+          "techniques_text": [
+            "T1027.001"
+          ],
+          "title_text": "Binary Padding - MacOS"
+        }
+      }
+    ],
+    "matched_last_day_total": 1,
+    "matches_last_day": 2,
+    "not_evaluated": 340,
+    "not_taken": 340,
+    "not_watching": [],
+    "shipped": 198,
+    "watching": true,
+    "watching_file_rules": 13,
+    "watching_rules": 175
+  },
+  "running": false,
+  "statements_outside_app": {
+    "items": [],
+    "total": 0
+  },
+  "store": {
+    "exists": true,
+    "path_text": "/Users/example/store.db",
+    "view_sections": [
+      {
+        "path_text": "/Users/example/view/section-watched-here.html",
+        "section": "watched-here"
+      },
+      {
+        "path_text": "/Users/example/view/section-vulnerabilities.html",
+        "section": "vulnerabilities"
+      },
+      {
+        "path_text": "/Users/example/view/section-you-can-fix.html",
+        "section": "you-can-fix"
+      },
+      {
+        "path_text": "/Users/example/view/section-limits.html",
+        "section": "limits"
+      },
+      {
+        "path_text": "/Users/example/view/section-answered.html",
+        "section": "answered"
+      },
+      {
+        "path_text": "/Users/example/view/section-as-it-happens.html",
+        "section": "as-it-happens"
+      }
+    ]
+  },
+  "store_id": "d33651be2c7f9f3bb28e6a58c8b62082",
+  "this_mac": {
+    "checked_at": 1794597519,
+    "fresh": true,
+    "fresh_for_seconds": 7200,
+    "live": false,
+    "live_read_at": null,
+    "stale_reason": null,
+    "state": "watched",
+    "watched": [
+      {
+        "count": 2,
+        "how": "hourly",
+        "what": "startup items"
+      },
+      {
+        "count": 1,
+        "how": "hourly",
+        "what": "shell startup files"
+      },
+      {
+        "count": 1,
+        "how": "hourly",
+        "what": "Homebrew packages"
+      },
+      {
+        "count": 1,
+        "how": "hourly",
+        "what": "packages your projects depend on"
+      },
+      {
+        "count": 2,
+        "how": "events",
+        "what": "program starts"
+      }
+    ]
+  },
+  "threats": {
+    "checked_at": 1794597519,
+    "entries": null,
+    "first_reading": null,
+    "gone": null,
+    "matched": false,
+    "new": null,
+    "outcome": "failed",
+    "read_at": null,
+    "reason_text": "cannot read none: No such file or directory (os error 2)",
+    "source": "cisa-kev"
+  },
+  "vulnerabilities": {
+    "affected": 1,
+    "affected_by_label": [
+      {
+        "count": 1,
+        "name": "malicious"
+      }
+    ],
+    "affected_packages": 1,
+    "affected_projects": 1,
+    "affected_records": 1,
+    "affected_records_by_label": [
+      {
+        "count": 1,
+        "name": "malicious"
+      }
+    ],
+    "feeds": [
+      {
+        "current": false,
+        "ecosystem": "crates.io",
+        "matched": true,
+        "not_current_why": "it has never been read",
+        "read_at": null,
+        "source": "osv-crates.io"
+      },
+      {
+        "current": false,
+        "ecosystem": "npm",
+        "matched": true,
+        "not_current_why": "its newest record changed 2025-09-12T01:13:34Z, more than 7 days before this check",
+        "read_at": 1794597519,
+        "source": "osv-npm"
+      }
+    ],
+    "informational_records": 0,
+    "matched_this_store": true,
+    "not_affected_known": 0,
+    "not_affected_no_signs": null,
+    "unknown": 1,
+    "unknown_by_reason": [
+      {
+        "count": 1,
+        "name": "feed_not_read"
+      }
+    ],
+    "unknown_packages": 1,
+    "unknown_packages_by_reason": [
+      {
+        "count": 1,
+        "name": "feed_not_read"
+      }
+    ]
+  },
+  "vulnerability_data": {
+    "feeds": [
+      {
+        "asked_this_run": true,
+        "changed_at": null,
+        "checked_at": 1794597519,
+        "ecosystem": "crates.io",
+        "first_reading": null,
+        "malicious_records": null,
+        "matched": true,
+        "outcome": "failed",
+        "read_at": null,
+        "reason_text": "cannot read none: No such file or directory (os error 2)",
+        "records": null,
+        "since_last_reading": null,
+        "source": "osv-crates.io",
+        "withdrawn_records": null
+      },
+      {
+        "asked_this_run": true,
+        "changed_at": 1794597518,
+        "checked_at": 1794597519,
+        "ecosystem": "npm",
+        "first_reading": null,
+        "malicious_records": 1,
+        "matched": true,
+        "outcome": "unchanged",
+        "read_at": 1794597519,
+        "reason_text": null,
+        "records": 1,
+        "since_last_reading": null,
+        "source": "osv-npm",
+        "withdrawn_records": 0
+      }
+    ],
+    "matched": true
+  },
+  "watched": {
+    "changes": [
+      {
+        "at": 1794597519,
+        "change": "changed",
+        "kind": "shell profile",
+        "path_text": ".zshrc",
+        "run_id": "1794597519-131322000"
+      }
+    ],
+    "changes_total": 1,
+    "content_not_read": 0,
+    "files": 3,
+    "first_reading": false,
+    "kinds": [
+      {
+        "coverage": "full",
+        "files": 2,
+        "kind": "autostart item",
+        "presence_only": 0,
+        "presence_only_note": null,
+        "readings": {
+          "full": 1,
+          "none": 0,
+          "partial": 0
+        },
+        "reason_text": null
+      },
+      {
+        "coverage": "full",
+        "files": 0,
+        "kind": "login or logout hook",
+        "presence_only": 0,
+        "presence_only_note": null,
+        "readings": {
+          "full": 1,
+          "none": 0,
+          "partial": 0
+        },
+        "reason_text": "none of these places is on this machine"
+      },
+      {
+        "coverage": "full",
+        "files": 1,
+        "kind": "shell profile",
+        "presence_only": 0,
+        "presence_only_note": null,
+        "readings": {
+          "full": 1,
+          "none": 0,
+          "partial": 0
+        },
+        "reason_text": null
+      },
+      {
+        "coverage": "full",
+        "files": 0,
+        "kind": "ssh access file",
+        "presence_only": 0,
+        "presence_only_note": null,
+        "readings": {
+          "full": 1,
+          "none": 0,
+          "partial": 0
+        },
+        "reason_text": "none of these places is on this machine"
+      },
+      {
+        "coverage": "full",
+        "files": 0,
+        "kind": "authentication module",
+        "presence_only": 0,
+        "presence_only_note": null,
+        "readings": {
+          "full": 1,
+          "none": 0,
+          "partial": 0
+        },
+        "reason_text": "none of these places is on this machine"
+      },
+      {
+        "coverage": "full",
+        "files": 0,
+        "kind": "git hook",
+        "presence_only": 0,
+        "presence_only_note": null,
+        "readings": {
+          "full": 1,
+          "none": 0,
+          "partial": 0
+        },
+        "reason_text": "the checkout has no hooks"
+      }
+    ],
+    "since_last_reading": {
+      "changed": 1,
+      "gone": 0,
+      "new": 0
+    }
+  },
+  "watching": null
+}

@@ -1,3 +1,12 @@
-{ "format": 1, "operation": "status", "ok": false,
-  "errors": [ { "code": "store_unreadable", "message": "the store cannot be read", "example": "immune status --json",
-                "detail_text": "database is locked" } ] }
+{
+  "operation": "status",
+  "ok": false,
+  "errors": [
+    {
+      "code": "store_unreadable",
+      "message": "the store cannot be read",
+      "example": "immune status --json",
+      "detail_text": "database is locked"
+    }
+  ]
+}
