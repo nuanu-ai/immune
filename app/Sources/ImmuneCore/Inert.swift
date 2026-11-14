@@ -68,6 +68,15 @@ public enum Inert {
     return String(head.prefix(keep)) + "…" + tail
   }
 
+  /// Cut at its end to the most characters that fit, its start kept: for a value whose start
+  /// names it and whose end may be anything, so a cut never lands inside what follows the name.
+  public static func end(_ shown: String, fits: (String) -> Bool) -> String {
+    if fits(shown) { return shown }
+    let chars = Array(shown)
+    return String(chars.prefix(largest(chars.count - 1) { fits(String(chars.prefix($0)) + "…") }))
+      + "…"
+  }
+
   /// Cut in the middle to the most characters that fit, both ends kept.
   static func middle(_ shown: String, fits: (String) -> Bool) -> String {
     let chars = Array(shown)
@@ -115,6 +124,18 @@ public enum Inert {
 
   static func code(_ s: Unicode.Scalar) -> String {
     "\\u{" + String(s.value, radix: 16, uppercase: true) + "}"
+  }
+
+  /// A value as drawn (`display`), with a place to break the line after each `/` and `#`, so a
+  /// long path wraps between its components rather than inside one. A zero-width space, which
+  /// has no direction of its own; for a title drawn whole, never for a value a person copies.
+  public static func wrapping(_ displayed: String) -> String {
+    var out = ""
+    for c in displayed {
+      out.append(c)
+      if c == "/" || c == "#" { out.append("\u{200B}") }
+    }
+    return out
   }
 
   /// A value already shown inert, as it is drawn: it starts left to right, and each piece

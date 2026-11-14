@@ -15,10 +15,12 @@ public enum NotifyPermission: Sendable, Equatable {
   case off
 }
 
-/// One notification: fixed words or Immune's title, and at most the place.
+/// One notification: "Needs you now"; under it the kind and what happened, in the app's words;
+/// then the thing itself, inert.
 public struct Note: Sendable, Equatable {
   public let id: String
   public let title: String
+  public var subtitle: String? = nil
   public let body: String?
 }
 
@@ -60,6 +62,11 @@ public final class Announcer {
   /// More new urgent things than this at once make one notification, not many.
   nonisolated public static let burst = 3
   nonisolated public static let offLine = "Notifications are off, so urgent things show only here"
+  /// The same, as the panel's row: what it is, and a word on it.
+  nonisolated public static let offTitle = "Notifications are off"
+  nonisolated public static let offDetail = "Urgent things show only here"
+  /// Every notification's title: the app notifies only what needs the person now.
+  nonisolated public static let title = "Needs you now"
 
   /// System Settings, Notifications, at this app (macOS 13 and later).
   nonisolated public static func settingsURL(bundleId: String) -> URL? {
@@ -132,7 +139,7 @@ public final class Announcer {
     let before = counted[store]
     counted[store] = unlisted
     memory.set(counted, forKey: Self.unlistedKey)
-    var notes = Self.notes(fresh)
+    var notes = Self.notes(fresh, among: items)
     if let before, unlisted > before { notes.append(Self.unlistedNote(unlisted)) }
     if !notes.isEmpty, await notifier.permission() == .allowed {
       notes.forEach(notifier.deliver)
@@ -144,24 +151,45 @@ public final class Announcer {
   /// "3 urgent findings are not in the list": how many, never which, since the list does not
   /// hold them.
   nonisolated static func unlistedNote(_ n: Int) -> Note {
-    let title =
+    let subtitle =
       n == 1 ? "1 urgent finding is not in the list" : "\(n) urgent findings are not in the list"
     return Note(
-      id: "urgent-not-listed", title: title, body: "Open the report to see every finding.")
+      id: "urgent-not-listed", title: title, subtitle: subtitle,
+      body: "Open the report to see every finding.")
   }
 
-  /// One per item, or one for all when more than `burst` are new at once. Only
-  /// Immune's title and the place go in, both inert; nothing else from a source.
-  nonisolated static func notes(_ fresh: [Item]) -> [Note] {
-    if fresh.count > burst {
+  /// One per thing, or one for all when more than `burst` things are new at once. Each says the
+  /// kind and what happened in the app's words, as the panel's row does, and the thing itself,
+  /// inert, cut in the middle; nothing else from a source.
+  ///
+  /// Things are counted as the panel's rows show them (`Panel.entries`): the response layer's
+  /// own finding about a finding of the core that `items` lists is that one thing, told by the
+  /// core finding's kind and thing, and a pair new at once is one note. `fresh` is of `items`.
+  nonisolated public static func notes(_ fresh: [Item], among items: [Item]) -> [Note] {
+    let entries = Panel.entries(
+      items.enumerated().map { Row(id: $0.offset, item: $0.element, now: Date()) })
+    // Each new thing once, by the entry that holds it, with the first new finding's id.
+    var things: [(id: String, row: Row)] = []
+    var told: Set<Int> = []
+    for urgent in fresh {
+      guard let i = items.firstIndex(of: urgent),
+        let e = entries.first(where: { e in e.id == i || e.children.contains { $0.id == i } })
+      else { continue }
+      if told.insert(e.id).inserted { things.append((urgent.id ?? "", e.row)) }
+    }
+    if things.count > burst {
       return [
-        Note(id: "needs-a-look-now", title: "\(fresh.count) things need a look now", body: nil)
+        Note(id: "needs-a-look-now", title: title, subtitle: "\(things.count) things", body: nil)
       ]
     }
-    return fresh.map {
-      Note(
-        id: $0.id ?? "", title: Inert.text($0.title ?? "", limit: 200),
-        body: $0.whereText.map { Inert.text($0, limit: 200) })
+    return things.map { thing in
+      let row = thing.row
+      let said = Entry.said(row).map { "response layer: " + $0 }
+      let subtitle = [row.meta.isEmpty ? nil : row.meta, said].compactMap { $0 }
+        .joined(separator: " · ")
+      return Note(
+        id: thing.id, title: title, subtitle: subtitle.isEmpty ? nil : subtitle,
+        body: Inert.whole(row.object, limit: 200))
     }
   }
 }

@@ -1,25 +1,21 @@
-// The panel under the icon: a status line and a list. It shows exactly what `Panel` holds, in
-// the order of `Panel.lines`: the state and the line under it; the findings in two groups,
-// each a row that starts with the thing itself; the answers given outside the app; what is not
-// seen on this Mac; what is watched; what was not judged on this Mac; the footer. A click on a
-// finding opens it in place (`FindingView`). Every line of text goes through
-// `Text(verbatim:)`, which never interprets markup.
+// The panel under the icon: a header, a list and a footer. It shows exactly what `Panel` holds,
+// in the order of `Panel.lines`: the state and the line under it; the app's own messages; the
+// findings in two groups, each one row that starts with the thing itself; the answers given
+// through the agent; what is not seen on this Mac; what is watched; what was not judged on this
+// Mac; the footer. A click on a finding opens it in place (`FindingView`). Every line of text
+// goes through `Text(verbatim:)`, which never interprets markup.
 //
-// Design: plain native macOS. System fonts from 11 pt up, text from the Mac in monospace,
-// semantic colours and SF Symbols only, one spacing scale (4/8/12/16). Colour is never the only
-// signal: shapes and words carry it.
+// Design: the design sheet's components, plain native macOS. Every measure, text style, colour
+// and symbol comes from `Style.swift`; no view chooses its own. One signal of importance: only
+// what needs the person now is red, and only in the header's glyph; rows carry no colour.
+//
+// The panel never grows past the screen it opens on: given a height, the header and the footer
+// stay whole and the list between them scrolls.
 
 import AppKit
 import Combine
 import ImmuneCore
 import SwiftUI
-
-enum Metrics {
-  static let width: CGFloat = 344
-  static let padding: CGFloat = 16
-  /// The height of a quiet row.
-  static let row: CGFloat = 32
-}
 
 /// A line of text shown exactly as given: no markdown, no links, no localisation.
 struct Plain: View {
@@ -28,188 +24,151 @@ struct Plain: View {
   var body: some View { Text(verbatim: text).fixedSize(horizontal: false, vertical: true) }
 }
 
-/// A value from the Mac on one line in monospace, cut to the width it is given by `Inert.fit`: a
-/// path so its last component stays whole, anything else in its middle. Measured with the font
-/// it is drawn in. The app cuts it, never the text system: a cut made by the text system on a
-/// line of isolated pieces can draw them out of order, and a cut made here leaves the isolation
-/// whole (`Inert.display`).
+/// A value from the Mac on one line in monospace, cut to the width it is given by `Inert`: a
+/// path so its last component stays whole, with `end` at its end, anything else in its middle.
+/// Measured with the font it is drawn in. The app cuts it, never the text system: a cut made by
+/// the text system on a line of isolated pieces can draw them out of order, and a cut made here
+/// leaves the isolation whole (`Inert.display`).
 ///
 /// With `program`, `text` is that program's arguments, and the line is cut by `Evidence.fit`:
 /// the program's last component stays whole and the arguments take what is left.
 struct DataLine: View {
   let text: String
   var path = true
+  var end = false
   var program: String? = nil
-  var size: CGFloat = 12.5
-  var font: NSFont { NSFont.monospacedSystemFont(ofSize: size, weight: .regular) }
+  var style = TextStyle.data
 
   var body: some View {
-    let f = font
+    let f = style.nsFont
+    // As wide as the whole value at most, so what follows it on its line stands right after it.
+    let whole = Inert.display(program.map { $0 + " " + text } ?? text)
+    let wholeWidth = ceil((whole as NSString).size(withAttributes: [.font: f]).width)
+    let rise = (f.ascender + f.descender) / 2
     Color.clear
-      .frame(maxWidth: .infinity, minHeight: ceil(f.ascender - f.descender + f.leading))
+      .frame(maxWidth: wholeWidth, minHeight: style.line, maxHeight: style.line)
       .overlay(alignment: .leading) {
         GeometryReader { g in
           let width = g.size.width
           let fits = { (s: String) in
             (Inert.display(s) as NSString).size(withAttributes: [.font: f]).width <= width
           }
-          Text(
-            verbatim: Inert.display(
-              program.map { Evidence.fit(program: $0, arguments: text, fits: fits) }
-                ?? Inert.fit(text, path: path, fits: fits))
-          )
-          .font(.system(size: size, design: .monospaced))
-          .lineLimit(1).fixedSize()
-          .frame(maxHeight: .infinity, alignment: .leading)
+          Text(verbatim: Inert.display(cut(fits)))
+            .font(style.font).foregroundStyle(style.role.style)
+            .lineLimit(1).fixedSize()
+            .frame(maxHeight: .infinity, alignment: .leading)
         }
       }
+      // The text's own baseline, so a label or "+3 more" beside it stands on the same line: the
+      // text is centred in the line's height.
+      .alignmentGuide(.firstTextBaseline) { d in d.height / 2 + rise }
+      .alignmentGuide(.lastTextBaseline) { d in d.height / 2 + rise }
+  }
+
+  func cut(_ fits: (String) -> Bool) -> String {
+    if let program { return Evidence.fit(program: program, arguments: text, fits: fits) }
+    if end && !path { return Inert.end(text, fits: fits) }
+    return Inert.fit(text, path: path, fits: fits)
   }
 }
 
-/// Text from the Mac or a source: monospace, selectable, shown exactly as given, each piece
-/// isolated so a right-to-left letter cannot reorder it (`Inert.display`).
+/// Text from the Mac or a source, whole: monospace, selectable, shown exactly as given, each
+/// piece isolated so a right-to-left letter cannot reorder it (`Inert.display`).
 struct DataText: View {
   let text: String
-  var size: CGFloat = 11.5
-  var weight: Font.Weight = .regular
+  var style = TextStyle.data
   var body: some View {
-    Text(verbatim: Inert.display(text)).font(
-      .system(size: size, weight: weight, design: .monospaced)
-    )
-    .fixedSize(horizontal: false, vertical: true)
-    .textSelection(.enabled)
+    Text(verbatim: Inert.display(text))
+      .textStyle(style)
+      .fixedSize(horizontal: false, vertical: true)
+      .textSelection(.enabled)
   }
 }
 
-extension Light {
-  var tint: Color {
-    switch self {
-    case .nothingToReport: .green
-    case .watchedInPart, .stale, .cannotRead: Color(nsColor: .systemGray)
-    case .attention: .orange
-    }
+extension Text {
+  /// A piece of a line in a style, to be joined with others: font and colour only; the line's
+  /// height is the whole line's (`textStyle`).
+  func styled(_ s: TextStyle) -> Text {
+    font(s.font).foregroundStyle(s.role.style)
   }
+}
 
+extension PanelState {
+  /// The state in words, for VoiceOver: the glyph's shape and colour say it to the eye.
   var spoken: String {
     switch self {
-    case .nothingToReport: "Calm"
-    case .watchedInPart: "Watched in part"
-    case .attention: "Needs a look"
+    case .calm: "Calm"
+    case .now: "Needs you now"
+    case .look: "To look at"
+    case .part: "Watched in part"
     case .stale: "Old"
-    case .cannotRead: "Unknown"
+    case .cant: "Unknown"
+    case .busy: "Checking"
     }
   }
 }
 
-/// The colour of a row's symbol: red when Immune marked it urgent, orange for high and
-/// critical, otherwise none of its own. Its group and words say the same.
-func markTint(_ row: Row) -> AnyShapeStyle {
-  row.urgent
-    ? AnyShapeStyle(Color.red)
-    : row.strong ? AnyShapeStyle(Color.orange) : AnyShapeStyle(.secondary)
+// MARK: - The header
+
+/// The state glyph: a disc for calm (green), for what needs the person now (red) and for what is
+/// to look at (grey), its mark white; a grey ring for a Mac watched in part and for an old answer;
+/// a dashed ring for can't tell; a turning indicator on a fill while a check runs.
+struct StateGlyph: View {
+  let state: PanelState
+  var filled: Bool { state == .calm || state == .now || state == .look }
+
+  var body: some View {
+    ZStack {
+      switch state {
+      case .calm: Circle().fill(Palette.calm)
+      case .now: Circle().fill(Palette.now)
+      case .look: Circle().fill(Palette.quiet)
+      case .part, .stale: Circle().strokeBorder(Palette.quiet, lineWidth: Metrics.ring)
+      case .cant:
+        Circle().strokeBorder(
+          Palette.quiet, style: StrokeStyle(lineWidth: Metrics.ring, dash: Metrics.ringDash))
+      case .busy: Circle().fill(Palette.circle)
+      }
+      if let mark = Symbols.glyph(state) {
+        Image(systemName: mark).font(SymbolStyle.glyph.font)
+          .foregroundStyle(filled ? Palette.onFill : Palette.quiet)
+      } else {
+        ProgressView().controlSize(.small)
+      }
+    }
+    .frame(width: Metrics.leading, height: Metrics.leading)
+    .accessibilityElement()
+    .accessibilityLabel(state.spoken)
+  }
 }
 
-// MARK: - The state
-
-struct HeadlineView: View {
+struct HeaderView: View {
   let panel: Panel
-  let openSettings: () -> Void
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      HStack(alignment: .center, spacing: 12) {
-        glyph.frame(width: 40, height: 40).accessibilityLabel(panel.light.spoken)
-        VStack(alignment: .leading, spacing: 2) {
-          HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Plain(panel.headline).font(.system(size: 17, weight: .semibold))
-            // While a check runs, something moves, so the panel never looks frozen.
-            if panel.busy {
-              ProgressView().controlSize(.small).alignmentGuide(.firstTextBaseline) {
-                $0[.bottom] - 3
-              }
-            }
-          }
-          if let glance = panel.glance {
-            Text(verbatim: glance)
-              .font(.system(size: 12)).foregroundStyle(.secondary)
-              .lineLimit(2).fixedSize(horizontal: false, vertical: true)
-              .help(panel.checkedAt ?? "")
-          }
+    HStack(alignment: .top, spacing: Metrics.gap) {
+      StateGlyph(state: panel.state).padding(.top, Metrics.glyphTop)
+      VStack(alignment: .leading, spacing: 0) {
+        Plain(panel.headline).textStyle(.title)
+        if let glance = panel.glance {
+          Text(verbatim: glance).textStyle(.caption)
+            .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            .padding(.top, Metrics.lineGap)
+            .help(panel.checkedAt ?? glance)
         }
-        Spacer(minLength: 0)
-      }
-      .accessibilityElement(children: .combine)
-      // Under the state, what it rests on and what the owner must act on.
-      if !panel.help.isEmpty || panel.reason != nil || panel.notWatching != nil
-        || panel.notificationsOff != nil
-      {
-        VStack(alignment: .leading, spacing: 6) {
-          ForEach(Array(panel.help.enumerated()), id: \.offset) { _, line in
-            HelpLine(line: line)
-          }
-          if let reason = panel.reason {
-            Plain(reason).font(.system(size: 11)).foregroundStyle(.secondary)
-              .textSelection(.enabled)
-          }
-          if let line = panel.notWatching {
-            WarningLine(symbol: "pause.circle", text: line)
-          }
-          if let line = panel.notificationsOff {
-            WarningLine(symbol: "bell.slash", text: line) {
-              Button("Open Settings", action: openSettings)
-                .buttonStyle(.link).font(.system(size: 12)).fixedSize()
-            }
-          }
+        // What the owner can do, and what it rests on, under the state.
+        ForEach(Array(panel.help.enumerated()), id: \.offset) { _, line in
+          HelpLine(line: line).padding(.top, Metrics.helpTop)
         }
-        .padding(.leading, 52)
+        if let reason = panel.reason {
+          Plain(reason).textStyle(.caption).textSelection(.enabled)
+            .padding(.top, Metrics.lineGap)
+        }
       }
+      .frame(maxWidth: .infinity, alignment: .leading)
     }
-  }
-
-  /// A filled disc for calm, a finding or can't tell, its mark white; a grey ring for a Mac
-  /// watched in part (with a check) and for an old answer (a clock), quieter than calm and never
-  /// an alarm.
-  @ViewBuilder var glyph: some View {
-    if panel.light == .watchedInPart || panel.light.isStale {
-      Image(systemName: panel.light.panelSymbol)
-        .font(.system(size: 36, weight: .regular)).foregroundStyle(panel.light.tint)
-    } else {
-      Image(systemName: panel.light.panelSymbol)
-        .font(.system(size: 36))
-        .symbolRenderingMode(.palette)
-        .foregroundStyle(.white, panel.urgent ? Color.red : panel.light.tint)
-    }
-  }
-}
-
-/// A line under the state the owner should know about: a symbol, the app's words, and
-/// what to do about it, if anything. Quiet colours: it informs, it is not an alarm.
-struct WarningLine<Action: View>: View {
-  let symbol: String
-  let text: String
-  @ViewBuilder var action: () -> Action
-
-  init(symbol: String, text: String, @ViewBuilder action: @escaping () -> Action) {
-    self.symbol = symbol
-    self.text = text
-    self.action = action
-  }
-
-  var body: some View {
-    HStack(alignment: .firstTextBaseline, spacing: 6) {
-      Image(systemName: symbol).font(.system(size: 12)).foregroundStyle(.secondary)
-        .accessibilityHidden(true)
-      VStack(alignment: .leading, spacing: 2) {
-        Plain(text).font(.system(size: 12)).foregroundStyle(.secondary)
-        action()
-      }
-    }
-  }
-}
-
-extension WarningLine where Action == EmptyView {
-  init(symbol: String, text: String) {
-    self.init(symbol: symbol, text: text) { EmptyView() }
+    .padding(.horizontal, Metrics.inset)
+    .padding(.top, Metrics.headerTop).padding(.bottom, Metrics.headerBottom)
   }
 }
 
@@ -220,278 +179,227 @@ struct HelpLine: View {
     let parts = line.components(separatedBy: Panel.statusCommand)
     let text: Text =
       parts.count == 2
-      ? Text(verbatim: parts[0])
-        + Text(verbatim: Panel.statusCommand).font(.system(size: 12, design: .monospaced))
+      ? Text(verbatim: parts[0]) + Text(verbatim: Panel.statusCommand).styled(.data)
         + Text(verbatim: parts[1])
       : Text(verbatim: line)
-    text.font(.system(size: 13)).fixedSize(horizontal: false, vertical: true)
+    text.textStyle(.body).fixedSize(horizontal: false, vertical: true)
   }
 }
 
 // MARK: - The list
 
-/// A group's header: "NEEDS YOU NOW".
+/// A group's heading, on the edge, in sentence case.
 struct GroupTitle: View {
   let text: String
   var body: some View {
-    Text(verbatim: text.uppercased())
-      .font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
-      .padding(.horizontal, 18).padding(.top, 6).padding(.bottom, 2)
+    Text(verbatim: text)
+      .textStyle(.captionStrong)
+      .lineLimit(1)
+      .padding(.horizontal, Metrics.inset)
+      .padding(.top, Metrics.groupTop).padding(.bottom, Metrics.groupBottom)
+      .frame(maxWidth: .infinity, alignment: .leading)
       .accessibilityAddTraits(.isHeader)
   }
 }
 
-/// The outline of a pill, drawn as a path. `Capsule().strokeBorder` drew a short straight tick
-/// at each end, where its two arcs meet, in every AppKit drawing of the view (at 1x and 2x,
-/// whole and fractional heights, 1 pt and 0.75 pt strokes); a path of the same shape does not.
-struct PillOutline: InsettableShape {
-  var inset: CGFloat = 0
-  func path(in rect: CGRect) -> Path {
-    let r = rect.insetBy(dx: inset, dy: inset)
-    return Path(roundedRect: r, cornerRadius: r.height / 2, style: .circular)
-  }
-  func inset(by amount: CGFloat) -> PillOutline { PillOutline(inset: inset + amount) }
-}
+/// A row of the list: the symbol in its circle in the leading column, the lines from the text
+/// edge to the text's right edge, and the chevron column on the right edge, the chevron centred
+/// on the circle. 44 high with two lines, 60 with three. Its highlight starts 8 in from the side.
+struct RowFrame<Lines: View>: View {
+  let symbol: String
+  var chevron = true
+  var hover = true
+  @ViewBuilder var lines: () -> Lines
 
-/// A word beside a row, in an outline: what the response layer said; Immune's urgent mark is
-/// filled.
-struct BadgeView: View {
-  let badge: Badge
   var body: some View {
-    let colour: Color =
-      switch badge.tone {
-      case .suspicious, .urgent: .red
-      case .harmless: .green
+    let row = HStack(alignment: .top, spacing: Metrics.gap) {
+      RowIcon(symbol: symbol).padding(.top, Metrics.circleTop)
+      VStack(alignment: .leading, spacing: Metrics.lineGap) { lines() }
+        .frame(maxWidth: .infinity, alignment: .leading)
+      Group {
+        if chevron { Chevron() } else { Color.clear.frame(width: Metrics.chevron) }
       }
-    Text(verbatim: badge.word)
-      .font(.system(size: 10.5, weight: .semibold))
-      .foregroundStyle(badge.tone == .urgent ? Color.white : colour)
-      .padding(.horizontal, 6).padding(.vertical, 1)
-      .background(
-        badge.tone == .urgent ? AnyShapeStyle(colour) : AnyShapeStyle(.clear), in: PillOutline()
-      )
-      .overlay(PillOutline().strokeBorder(colour, lineWidth: badge.tone == .urgent ? 0 : 0.75))
-      .fixedSize()
+      .padding(.top, Metrics.chevronTop)
+    }
+    .padding(.horizontal, Metrics.highlightPadding).padding(.vertical, Metrics.rowVertical)
+    .frame(minHeight: Metrics.row, alignment: .top)
+    .contentShape(Rectangle())
+    Group {
+      if hover { row.modifier(Hover()) } else { row }
+    }
+    .padding(.horizontal, Metrics.highlight)
   }
 }
 
-/// One finding: its symbol; the thing itself as data, one line, cut in the middle; its kind and
-/// what happened, and the response layer's word; the time; a chevron. The whole row opens it.
+/// A row's second line: words on the left, cut at their end, and what stands at the right: the
+/// time, or a link.
+struct MetaLine<Right: View>: View {
+  let text: String
+  @ViewBuilder var right: () -> Right
+  var body: some View {
+    HStack(alignment: .firstTextBaseline, spacing: Metrics.gap) {
+      Text(verbatim: text).textStyle(.caption).lineLimit(1).truncationMode(.tail)
+      Spacer(minLength: 0)
+      right()
+    }
+  }
+}
+
+extension MetaLine where Right == EmptyView {
+  init(text: String) { self.init(text: text) { EmptyView() } }
+}
+
+/// The time at a row's right.
+struct Time: View {
+  let when: String?
+  var full: String? = nil
+  var body: some View {
+    if let when {
+      Text(verbatim: when).textStyle(.caption).lineLimit(1).fixedSize().help(full ?? when)
+    }
+  }
+}
+
+/// A link at a row's right, a button of its own on the row.
+struct RowLink: View {
+  let label: String
+  let action: () -> Void
+  var body: some View {
+    Button(action: action) { Text(verbatim: label).textStyle(.link) }
+      .buttonStyle(.plain).fixedSize()
+  }
+}
+
+/// One finding, with what the response layer said of it, as one row: the kind's symbol; the
+/// thing itself as data, one line; its kind and what happened, with the time at the right; the
+/// response layer's word on a third line. No colour: the group says what needs the person now.
+/// The whole row opens it.
 struct FindingRow: View {
-  let row: Row
-  let badges: [Badge]
+  let entry: Entry
   let open: () -> Void
+  var row: Row { entry.row }
 
   var body: some View {
     Button(action: open) {
-      HStack(alignment: .center, spacing: 10) {
-        Image(systemName: row.symbol).font(.system(size: 15)).foregroundStyle(markTint(row))
-          .frame(width: 20).accessibilityHidden(true)
-        VStack(alignment: .leading, spacing: 2) {
-          if let command = row.command {
-            DataLine(text: command.arguments, program: command.program)
-          } else if row.objectIsData {
-            DataLine(text: row.object, path: row.objectIsPath)
-          } else {
-            Text(verbatim: row.object).font(.system(size: 12.5))
-              .lineLimit(1).truncationMode(.middle)
-          }
-          // The name it was started under, when that is not the program that ran: the app's
-          // label, then the value as data.
-          if let startedAs = row.startedAs {
-            HStack(alignment: .center, spacing: 4) {
-              Text(verbatim: "started as").font(.system(size: 11.5)).foregroundStyle(.secondary)
-                .fixedSize()
-              DataLine(text: startedAs, path: Inert.isPath(startedAs), size: 11.5)
-                .foregroundStyle(.secondary)
-            }
-          }
-          // The kind and the response layer's word on one line when they fit, else the word
-          // under the kind: neither is cut.
-          ViewThatFits(in: .horizontal) {
-            HStack(spacing: 6) {
-              meta
-              ForEach(badges, id: \.self) { BadgeView(badge: $0) }
-            }
-            VStack(alignment: .leading, spacing: 2) {
-              meta
-              HStack(spacing: 6) { ForEach(badges, id: \.self) { BadgeView(badge: $0) } }
-            }
-          }
+      RowFrame(symbol: row.symbol) {
+        if let command = row.command {
+          DataLine(text: command.arguments, program: command.program)
+        } else if row.objectIsData {
+          DataLine(text: row.object, path: row.objectIsPath)
+        } else {
+          Text(verbatim: row.object).textStyle(.body).lineLimit(1).truncationMode(.tail)
         }
-        Spacer(minLength: 4)
-        if let when = row.when {
-          Text(verbatim: when).font(.system(size: 11).monospacedDigit())
-            .foregroundStyle(.secondary).lineLimit(1).fixedSize()
-            .help(row.whenFull ?? "")
+        MetaLine(text: row.meta) { Time(when: row.when, full: row.whenFull) }
+        if let words = entry.responseLayer {
+          Text(verbatim: words).textStyle(.caption).lineLimit(1)
         }
-        Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold))
-          .foregroundStyle(.tertiary).accessibilityHidden(true)
       }
-      .padding(.horizontal, 10).padding(.vertical, 6)
-      .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
     .disabled(!row.canOpen)
     .help((row.objectIsData ? Inert.display(row.object) : row.object) + "\n" + row.title)
   }
-
-  var meta: some View {
-    Text(verbatim: row.meta).font(.system(size: 11.5)).foregroundStyle(.secondary)
-      .fixedSize(horizontal: false, vertical: true)
-  }
-}
-
-/// The response layer's own finding, nested under the finding of the core it is about.
-struct NestedRow: View {
-  let row: Row
-  let open: () -> Void
-
-  var body: some View {
-    Button(action: open) {
-      HStack(spacing: 8) {
-        Image(systemName: "exclamationmark.bubble")
-          .font(.system(size: 13)).foregroundStyle(markTint(row)).frame(width: 16)
-          .accessibilityHidden(true)
-        VStack(alignment: .leading, spacing: 2) {
-          Text(verbatim: "The response layer's own finding").font(.system(size: 12))
-          HStack(spacing: 6) {
-            ForEach(Entry.childBadges(row), id: \.self) { BadgeView(badge: $0) }
-          }
-        }
-        Spacer(minLength: 4)
-        if let when = row.when {
-          Text(verbatim: when).font(.system(size: 11).monospacedDigit())
-            .foregroundStyle(.secondary).lineLimit(1).fixedSize()
-        }
-        Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold))
-          .foregroundStyle(.tertiary).accessibilityHidden(true)
-      }
-      .padding(.leading, 40).padding(.trailing, 10).padding(.vertical, 4)
-      .contentShape(Rectangle())
-    }
-    .buttonStyle(.plain)
-    .disabled(!row.canOpen)
-    .help(row.title)
-  }
 }
 
 /// An answer given through the agent or the command line that hides a finding now, or a
-/// statement that set a machine aside: what was said and by whom, the thing as data, the
-/// reason as the person gave it, and Take back.
-struct AnsweredBox: View {
+/// statement that set a machine aside, as a row: the thing as data, what was said, and Take
+/// back at the right. The reason as the person gave it is in the tooltip and in the opened
+/// finding.
+struct AnsweredRowView: View {
   let line: AnsweredLine
   let panel: Panel
   @ObservedObject var model: AppModel
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 4) {
-      HStack(alignment: .firstTextBaseline, spacing: 6) {
-        Image(systemName: "person.badge.clock").font(.system(size: 12))
-          .foregroundStyle(Color.accentColor).accessibilityHidden(true)
-        Plain([line.answer, line.by].compactMap { $0 }.joined(separator: ", "))
-          .font(.system(size: 12))
-        Spacer(minLength: 4)
-        if let id = line.target {
-          if panel.answering == id {
-            Text(verbatim: "Saving…").font(.system(size: 12)).foregroundStyle(.secondary)
-          } else {
-            Button("Take back") {
-              Task {
-                if line.finding != nil {
-                  await model.takeBack(id)
-                } else {
-                  await model.withdrawStatement(id)
-                }
-              }
-            }
-            .buttonStyle(.link).font(.system(size: 12)).fixedSize()
-            .disabled(panel.answering != nil)
-            .help(
-              line.finding != nil
-                ? "Show it again as something that needs a look."
-                : "Check this machine again at the next server check.")
-          }
-        }
-      }
-      Group {
-        if let finding = line.finding {
-          Button {
-            Task { await model.openFinding(finding) }
-          } label: {
-            DataText(text: line.title).multilineTextAlignment(.leading)
-          }
-          .buttonStyle(.plain)
-        } else {
-          DataText(text: line.title)
-        }
-      }
-      .padding(.leading, 18)
-      if let reason = line.reason {
-        DataText(text: reason).foregroundStyle(.secondary).padding(.leading, 18)
+    RowFrame(symbol: Icons.answered, chevron: line.finding != nil, hover: line.finding != nil) {
+      DataLine(text: line.title, path: Inert.isPath(line.title))
+      MetaLine(text: line.answer + (line.finding == nil ? ", " + (line.by ?? "") : "")) {
+        takeBack
       }
       if let id = line.target, let refused = panel.refusals[id] {
-        Plain(refused).font(.system(size: 12)).textSelection(.enabled)
+        Plain(refused).textStyle(.caption).textSelection(.enabled)
       }
     }
-    .padding(8)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(
-      Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 8, style: .continuous)
-        .strokeBorder(Color.accentColor.opacity(0.3), lineWidth: 0.5))
+    .onTapGesture { open() }
+    .accessibilityAddTraits(line.finding != nil ? .isButton : [])
+    .help([line.answer, line.by, line.reason].compactMap { $0 }.joined(separator: "\n"))
+  }
+
+  func open() {
+    guard let finding = line.finding else { return }
+    Task { await model.openFinding(finding) }
+  }
+
+  @ViewBuilder var takeBack: some View {
+    if let id = line.target {
+      if panel.answering == id {
+        Text(verbatim: "Saving…").textStyle(.caption)
+      } else {
+        RowLink(label: "Take back") {
+          Task {
+            if line.finding != nil {
+              await model.takeBack(id)
+            } else {
+              await model.withdrawStatement(id)
+            }
+          }
+        }
+        .disabled(panel.answering != nil)
+        .help(
+          line.finding != nil
+            ? "Show it again as something that needs a look."
+            : "Check this machine again at the next server check.")
+      }
+    }
   }
 }
 
-/// One thing not seen on this Mac that the person can fix: the first thing it is about as data,
-/// Immune's title under it, and "Ask agent", which copies a request about it.
+/// One thing not seen on this Mac that the person can fix: the first thing it is about as data
+/// and how many more, Immune's title under it, and "Ask agent", which copies a request about it.
+/// Without an example: Immune's title, and its kind and since when under it.
 struct NotSeenView: View {
   let row: NotSeenRow
   let open: () -> Void
 
   var body: some View {
-    HStack(alignment: .center, spacing: 10) {
-      Button(action: open) {
-        HStack(spacing: 10) {
-          Image(systemName: "eye.slash").font(.system(size: 13)).foregroundStyle(.secondary)
-            .frame(width: 20).accessibilityHidden(true)
-          VStack(alignment: .leading, spacing: 2) {
-            if let example = row.example {
-              HStack(spacing: 6) {
-                DataLine(text: example, path: Inert.isPath(example))
-                if row.more > 0 {
-                  Text(verbatim: "+\(row.more)").font(.system(size: 12.5, design: .monospaced))
-                    .fixedSize()
-                }
-              }
-              .foregroundStyle(.secondary)
-              Plain(row.title).font(.system(size: 11.5)).foregroundStyle(.secondary)
-            } else {
-              Plain(row.title).font(.system(size: 12.5)).foregroundStyle(.secondary)
-            }
+    RowFrame(symbol: Icons.notSeen) {
+      if let example = row.example {
+        HStack(alignment: .firstTextBaseline, spacing: Metrics.moreGap) {
+          DataLine(
+            text: example, path: row.examplePath, end: true,
+            style: TextStyle.data.role(.secondary))
+          if let more = row.moreText {
+            Text(verbatim: more).textStyle(.caption).fixedSize()
           }
           Spacer(minLength: 0)
         }
-        .contentShape(Rectangle())
+      } else {
+        Text(verbatim: row.kind).textStyle(TextStyle.body.role(.secondary))
+          .lineLimit(1).truncationMode(.tail)
       }
-      .buttonStyle(.plain)
-      if let request = row.request {
-        CopyForAgent(text: request, label: "Ask agent").buttonStyle(.link)
-          .font(.system(size: 12))
+      MetaLine(text: row.second) {
+        if let request = row.request {
+          CopyForAgent(text: request, label: "Ask agent", style: .link)
+        }
       }
     }
-    .padding(.horizontal, 10).padding(.vertical, 5)
+    // The row opens the report's section; "Ask agent" is a button of its own on it.
+    .onTapGesture(perform: open)
+    .accessibilityAddTraits(.isButton)
+    .accessibilityAction(named: "Open in report", open)
+    .help(row.title)
   }
 }
 
-/// Puts a request for the owner's coding agent on the clipboard, only on their click.
+/// Puts a request for the owner's coding agent on the clipboard, only on their click: a link in
+/// a row, or a button of the opened finding's footer.
 struct CopyForAgent: View {
+  enum Look { case link, button, primary }
   let text: String
   var label = "Copy for my agent"
-  var prominent = false
+  var style = Look.button
   @State private var copied = false
+
   var body: some View {
     let button = Button {
       NSPasteboard.general.clearContents()
@@ -499,67 +407,148 @@ struct CopyForAgent: View {
       copied = true
       DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
     } label: {
-      Text(verbatim: copied ? "Copied" : label)
+      if style == .link {
+        Text(verbatim: copied ? "Copied" : label).textStyle(.link)
+      } else {
+        Text(verbatim: copied ? "Copied" : label)
+      }
     }
     .fixedSize()
     .help("Copies a request for your coding agent to read it and tell you what it is.")
-    if prominent { button.buttonStyle(.borderedProminent) } else { button }
+    switch style {
+    case .link: button.buttonStyle(.plain)
+    case .button: button
+    case .primary: button.buttonStyle(.borderedProminent)
+    }
   }
 }
 
-/// What is watched, as Immune says it: all the time and every hour, and program starts. Only
-/// the kinds and their counts: whether each was read in full is not in the status.
-struct WatchedBox: View {
-  let panel: Panel
+/// The dot of program starts: filled when they are seen, a ring when they are not.
+struct Dot: View {
+  let on: Bool
   var body: some View {
-    Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 8, verticalSpacing: 3) {
-      ForEach(panel.watched, id: \.title) { g in
-        GridRow {
-          Text(verbatim: g.title).fontWeight(.semibold)
-          Plain(g.lines.joined(separator: " · "))
-        }
-      }
-      if let starts = panel.programStarts {
-        GridRow {
-          Text(verbatim: "Program starts").fontWeight(.semibold)
-          Plain(starts)
-        }
+    Group {
+      if on {
+        Circle().fill(Palette.quiet)
+      } else {
+        Circle().strokeBorder(Palette.quiet, lineWidth: Metrics.dotLine)
       }
     }
-    .font(.system(size: 11.5)).foregroundStyle(.secondary)
-    .padding(.horizontal, 10).padding(.vertical, 8)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    .frame(width: Metrics.dot, height: Metrics.dot)
   }
 }
 
-/// A quiet line to a section of the report, never styled as a problem.
+/// What is watched, as one row of two lines: how many kinds are seen all the time and how many
+/// are read every hour, and program starts with a dot on the line they are read on. The kinds by
+/// name are in the tooltip and in the report, which a click opens.
+struct CoverageRow: View {
+  let lines: [CoverageLine]
+  let open: () -> Void
+
+  var body: some View {
+    Button(action: open) {
+      RowFrame(symbol: Icons.watched) {
+        Grid(
+          alignment: .leadingFirstTextBaseline, horizontalSpacing: Metrics.gap,
+          verticalSpacing: Metrics.lineGap
+        ) {
+          ForEach(lines, id: \.title) { line in
+            GridRow {
+              Text(verbatim: line.title).textStyle(.caption)
+                .frame(width: Metrics.label, alignment: .leading)
+              value(line).gridColumnAlignment(.leading)
+            }
+          }
+        }
+        .padding(.top, Metrics.coverageTop)
+      }
+    }
+    .buttonStyle(.plain)
+    .help(lines.map(tooltip).joined(separator: "\n"))
+  }
+
+  /// Each kind in Immune's words with its count, and program starts with Immune's word for the
+  /// event level's state when they are not seen.
+  func tooltip(_ line: CoverageLine) -> String {
+    var parts = line.detail
+    if let starts = line.starts {
+      let words = starts.words.map { " (" + $0 + ")" } ?? ""
+      parts.append(starts.text + words)
+    }
+    return line.title + ": " + parts.joined(separator: ", ")
+  }
+
+  @ViewBuilder func value(_ line: CoverageLine) -> some View {
+    if let none = line.none {
+      Text(verbatim: none).textStyle(TextStyle.caption.role(.primary)).lineLimit(1)
+    } else {
+      HStack(alignment: .firstTextBaseline, spacing: 0) {
+        if let kinds = line.kindsText {
+          Text(verbatim: kinds + (line.starts != nil ? " · " : ""))
+            .textStyle(TextStyle.caption.role(.primary))
+        }
+        if let starts = line.starts {
+          Dot(on: starts.on)
+            .alignmentGuide(.firstTextBaseline) { $0[.bottom] + Metrics.dotRise }
+            .padding(.trailing, Metrics.dotGap)
+          Text(verbatim: starts.text).textStyle(TextStyle.caption.role(.primary))
+        }
+      }
+      .lineLimit(1)
+    }
+  }
+}
+
+/// A quiet line to a section of the report: words at the text edge and a chevron, never styled
+/// as a problem.
 struct QuietRow: View {
-  let symbol: String
   let label: String
   var help: String? = nil
   let open: () -> Void
 
   var body: some View {
     Button(action: open) {
-      HStack(spacing: 10) {
-        Image(systemName: symbol).font(.system(size: 13)).foregroundStyle(.secondary)
-          .frame(width: 20).accessibilityHidden(true)
-        Text(verbatim: label).font(.system(size: 13)).lineLimit(1)
+      HStack(spacing: Metrics.gap) {
+        Text(verbatim: label).textStyle(.caption).lineLimit(1).truncationMode(.tail)
         Spacer(minLength: 0)
-        Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold))
-          .foregroundStyle(.tertiary).accessibilityHidden(true)
+        Chevron()
       }
-      .padding(.horizontal, 10)
-      .frame(height: Metrics.row)
+      .padding(.leading, Metrics.textEdge - Metrics.highlight)
+      .padding(.trailing, Metrics.highlightPadding)
+      .frame(height: Metrics.quietRow)
       .contentShape(Rectangle())
+      .modifier(Hover())
+      .padding(.horizontal, Metrics.highlight)
     }
     .buttonStyle(.plain)
     .help(help ?? label)
   }
 }
 
+/// A message of the app's own as a row: its symbol in a circle, what it is, a word on it and,
+/// for notifications that are off, the way to turn them on. Nothing to open.
+struct MessageRowView: View {
+  let message: MessageRow
+  let openSettings: () -> Void
+
+  var body: some View {
+    RowFrame(symbol: message.symbol, chevron: false, hover: false) {
+      Plain(message.title).textStyle(.body)
+      MetaLine(text: message.detail) {
+        if message.kind == .notificationsOff {
+          RowLink(label: "Open Settings", action: openSettings)
+        }
+      }
+    }
+  }
+}
+
 // MARK: - The panel
+
+/// The fixed parts of the panel, for a test to find where they are drawn.
+public enum PanelPart: String, Sendable {
+  case headline, footer
+}
 
 public struct PanelView: View {
   @ObservedObject var model: AppModel
@@ -567,16 +556,38 @@ public struct PanelView: View {
   @ObservedObject var watcher: WatcherBox
   /// Fixed for an off-screen render; nil means now.
   var now: Date?
+  /// The most the panel may be high: the visible height of the screen it opens on, less a
+  /// margin. nil draws it whole, however high (an off-screen render).
+  var maxHeight: CGFloat?
   /// Opens the system's notification settings for this app.
   var openSettings: () -> Void
+  /// Told where the headline and the footer are drawn in the panel, for a test.
+  var probe: (@MainActor (PanelPart, CGRect) -> Void)?
+
+  @State private var headerHeight: CGFloat = 0
+  @State private var footerHeight: CGFloat = 0
+  @State private var middleHeight: CGFloat = 0
+  @State private var openedHeight: CGFloat = 0
+  @State private var openedFooterHeight: CGFloat = 0
+
+  nonisolated static let space = "immune.panel"
+
+  /// The most the panel may be high on a screen whose visible part is this high.
+  public static func maxHeight(visible: CGFloat) -> CGFloat {
+    max(0, visible - Metrics.screenMargin)
+  }
 
   public init(
-    model: AppModel, watcher: WatcherBox, now: Date? = nil, openSettings: @escaping () -> Void = {}
+    model: AppModel, watcher: WatcherBox, now: Date? = nil, maxHeight: CGFloat? = nil,
+    openSettings: @escaping () -> Void = {},
+    probe: (@MainActor (PanelPart, CGRect) -> Void)? = nil
   ) {
     self.model = model
     self.watcher = watcher
     self.now = now
+    self.maxHeight = maxHeight
     self.openSettings = openSettings
+    self.probe = probe
   }
 
   public var body: some View {
@@ -587,105 +598,140 @@ public struct PanelView: View {
       immune: model.immuneCommand)
     Group {
       if let opened = model.opened {
-        FindingView(opened: opened, panel: p, model: model, now: now ?? Date())
+        VStack(alignment: .leading, spacing: 0) {
+          scrolling(height: $openedHeight, room: openedRoom) {
+            FindingView(opened: opened, panel: p, model: model, now: now ?? Date())
+          }
+          FindingFooter(opened: opened, panel: p, model: model, now: now ?? Date())
+            .onGeometryChange(for: CGFloat.self) {
+              $0.size.height
+            } action: {
+              openedFooterHeight = $0
+            }
+        }
       } else {
         list(p)
       }
     }
     .frame(width: Metrics.width)
+    .coordinateSpace(.named(Self.space))
+  }
+
+  /// The room the list has between the header and the footer, or nil when it has no limit.
+  var room: CGFloat? {
+    maxHeight.map { max(0, $0 - headerHeight - footerHeight - 2 * Metrics.separator) }
+  }
+
+  /// The room the opened finding has above its footer.
+  var openedRoom: CGFloat? {
+    maxHeight.map { max(0, $0 - openedFooterHeight) }
   }
 
   @ViewBuilder func list(_ p: Panel) -> some View {
     VStack(alignment: .leading, spacing: 0) {
-      HeadlineView(panel: p, openSettings: openSettings)
-        .padding(.horizontal, Metrics.padding)
-        .padding(.top, Metrics.padding)
-        .padding(.bottom, 10)
-      VStack(alignment: .leading, spacing: 6) {
-        if let first = p.firstDay {
-          HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Image(systemName: "info.circle").foregroundStyle(Color.accentColor)
-              .accessibilityHidden(true)
-            Plain(first)
-          }
-          .font(.system(size: 12))
-          .padding(8)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .background(
-            Color.accentColor.opacity(0.08),
-            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-          )
-          .padding(.horizontal, 10)
+      HeaderView(panel: p)
+        .onGeometryChange(for: CGRect.self) {
+          $0.frame(in: .named(Self.space))
+        } action: {
+          headerHeight = $0.height
+          probe?(.headline, $0)
         }
-        findings(p)
-        if let a = p.answered {
-          VStack(alignment: .leading, spacing: 6) {
-            ForEach(a.lines) { AnsweredBox(line: $0, panel: p, model: model) }
-            if let more = a.moreText {
-              QuietRow(symbol: "person.badge.clock", label: more) {
-                Task { await model.openPage(section: AnsweredRow.section) }
-              }
-            }
-          }
-          .padding(.horizontal, 10)
-        }
-        if !p.notSeen.isEmpty {
-          VStack(alignment: .leading, spacing: 0) {
-            GroupTitle(text: "Not seen on this Mac · you can fix")
-            ForEach(p.notSeen) { n in
-              NotSeenView(row: n) { Task { await model.openPage(section: "you-can-fix") } }
-            }
-          }
-          .padding(.horizontal, 0)
-        }
-        if !p.watched.isEmpty || p.programStarts != nil {
-          WatchedBox(panel: p).padding(.horizontal, Metrics.padding)
-        }
-        if let notJudged = p.notJudged {
-          QuietRow(symbol: notJudged.symbol, label: notJudged.text) {
-            Task { await model.openPage(section: notJudged.section) }
-          }
-          .padding(.horizontal, 6)
-        }
-        if !p.notes.isEmpty {
-          VStack(alignment: .leading, spacing: 4) {
-            ForEach(Array(p.notes.enumerated()), id: \.offset) { _, line in
-              Plain(line).font(.system(size: 12)).foregroundStyle(.secondary)
-                .textSelection(.enabled)
-            }
-          }
-          .padding(.horizontal, Metrics.padding)
-        }
-      }
-      .padding(.bottom, 10)
-      Divider()
+      Separator()
+      scrolling(height: $middleHeight, room: room) { middle(p) }
+      Separator()
       footer(p)
-        .padding(.horizontal, Metrics.padding)
-        .padding(.vertical, 12)
+        .padding(.horizontal, Metrics.inset)
+        .padding(.vertical, Metrics.footerVertical)
+        .onGeometryChange(for: CGRect.self) {
+          $0.frame(in: .named(Self.space))
+        } action: {
+          footerHeight = $0.height
+          probe?(.footer, $0)
+        }
     }
   }
 
-  /// The two groups of findings, each row with what is nested under it, and how many more the
-  /// report lists.
-  @ViewBuilder func findings(_ p: Panel) -> some View {
+  /// Content as high as it is, or, when a room is given, in a scroll view no higher than the
+  /// room and no higher than the content.
+  @ViewBuilder func scrolling<Content: View>(
+    height: Binding<CGFloat>, room: CGFloat?, @ViewBuilder _ content: () -> Content
+  ) -> some View {
+    if let room {
+      ScrollView(.vertical) {
+        content()
+          .onGeometryChange(for: CGFloat.self) {
+            $0.size.height
+          } action: {
+            height.wrappedValue = $0
+          }
+      }
+      .scrollBounceBehavior(.basedOnSize)
+      .frame(height: min(height.wrappedValue, room))
+    } else {
+      content()
+    }
+  }
+
+  @ViewBuilder func middle(_ p: Panel) -> some View {
     VStack(alignment: .leading, spacing: 0) {
-      ForEach(
-        [("Needs you now", p.needsYou), ("To look at", p.toLook)].filter { !$0.1.isEmpty },
-        id: \.0
-      ) { title, group in
-        GroupTitle(text: title)
-        ForEach(group) { e in
-          FindingRow(row: e.row, badges: e.badges) { open(e.row) }
-          ForEach(e.children) { c in NestedRow(row: c) { open(c) } }
+      ForEach(p.messages, id: \.kind) { MessageRowView(message: $0, openSettings: openSettings) }
+      findings(p)
+      if let a = p.answered {
+        GroupTitle(text: a.heading)
+        ForEach(a.lines) { AnsweredRowView(line: $0, panel: p, model: model) }
+        if let more = a.moreText {
+          QuietRow(label: more) { Task { await model.openPage(section: AnsweredRow.section) } }
         }
       }
-      if let more = p.moreText {
-        QuietRow(symbol: "list.bullet", label: more) {
-          Task { await model.openPage() }
+      if !p.notSeen.isEmpty {
+        GroupTitle(text: Panel.notSeenHeading)
+        ForEach(p.notSeen) { n in
+          NotSeenView(row: n) { Task { await model.openPage(section: "you-can-fix") } }
         }
+      }
+      if !p.watched.isEmpty {
+        CoverageRow(lines: p.watched) {
+          Task { await model.openPage(section: "watched-here") }
+        }
+        .padding(.top, standsAlone(p) ? 0 : Metrics.coverageGap)
+      }
+      if let notJudged = p.notJudged {
+        QuietRow(label: notJudged.text) {
+          Task { await model.openPage(section: notJudged.section) }
+        }
+      }
+      if !p.notes.isEmpty {
+        VStack(alignment: .leading, spacing: Metrics.lineGap) {
+          ForEach(Array(p.notes.enumerated()), id: \.offset) { _, line in
+            Plain(line).textStyle(.caption).textSelection(.enabled)
+          }
+        }
+        .padding(.horizontal, Metrics.inset).padding(.top, Metrics.gap)
       }
     }
-    .padding(.horizontal, 6)
+    .padding(.top, Metrics.listTop).padding(.bottom, Metrics.listBottom)
+  }
+
+  /// Nothing stands above what is watched in the list.
+  func standsAlone(_ p: Panel) -> Bool {
+    p.messages.isEmpty && p.needsYou.isEmpty && p.toLook.isEmpty && p.moreText == nil
+      && p.answered == nil && p.notSeen.isEmpty
+  }
+
+  /// The two groups of findings, and how many more the report lists.
+  @ViewBuilder func findings(_ p: Panel) -> some View {
+    ForEach(
+      [("Needs you now", p.needsYou), ("To look at", p.toLook)].filter { !$0.1.isEmpty },
+      id: \.0
+    ) { title, group in
+      GroupTitle(text: title)
+      ForEach(group) { e in
+        FindingRow(entry: e) { open(e.row) }
+      }
+    }
+    if let more = p.moreText {
+      QuietRow(label: more) { Task { await model.openPage() } }
+    }
   }
 
   func open(_ row: Row) {
@@ -694,15 +740,15 @@ public struct PanelView: View {
   }
 
   @ViewBuilder func footer(_ p: Panel) -> some View {
-    HStack(spacing: 8) {
+    HStack(spacing: Metrics.footerGap) {
       Button(p.footer[0]) { Task { await model.openPage() } }
         .disabled(model.pageOpening)
-      Spacer()
+      Spacer(minLength: 0)
       Button {
         Task { await model.runNow() }
       } label: {
-        HStack(spacing: 6) {
-          if !p.canCheck { ProgressView().controlSize(.small) }
+        HStack(spacing: Metrics.gap) {
+          if !p.canCheck { ProgressView().controlSize(.mini) }
           Text(verbatim: p.footer[1])
         }
       }
@@ -710,11 +756,11 @@ public struct PanelView: View {
       Menu {
         Button(p.menu[0]) { NSApp.terminate(nil) }
       } label: {
-        Image(systemName: "ellipsis")
+        Image(systemName: Symbols.menu).font(SymbolStyle.more.font)
       }
       .menuStyle(.borderedButton)
       .menuIndicator(.hidden)
-      .fixedSize()
+      .frame(width: Metrics.more)
       .accessibilityLabel("More")
     }
   }

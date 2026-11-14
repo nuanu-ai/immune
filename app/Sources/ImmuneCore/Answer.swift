@@ -4,21 +4,26 @@
 
 import Foundation
 
-/// The "Expected…" form on one card: a short reason (required) and how long.
+/// The "Expected…" form on one card: a short reason (required) and how long. `with` is the other
+/// finding of the pair the card shows as one thing, answered with it.
 public struct ExpectedForm: Sendable, Equatable {
   public var id: String
   public var reason: String
   public var days: Int
+  public var with: String?
 
-  public init(id: String, reason: String = "", days: Int = Answer.defaultDays) {
+  public init(
+    id: String, reason: String = "", days: Int = Answer.defaultDays, with: String? = nil
+  ) {
     self.id = id
     self.reason = reason
     self.days = days
+    self.with = with
   }
 
   /// The form can be sent: a reason that is not blank, and one of the offered lengths.
   public var isComplete: Bool {
-    Answer.expectedArguments(id: id, reason: reason, days: days) != nil
+    Answer.expectedArguments(id: id, reason: reason, days: days, with: with) != nil
   }
 }
 
@@ -46,10 +51,21 @@ public enum Answer {
     + " what it is and what the options are. Pass --via agent and the reason the owner agreed"
     + " to. The app shows every answer given this way."
 
-  /// `immune finding <id> seen --via app --json`, or nil for an id that is not usable.
-  public static func seenArguments(id: String) -> [String]? {
-    guard isUsable(id: id) else { return nil }
-    return ["finding", id, "seen", "--via", "app", "--json"]
+  /// `immune finding <id> seen [--with <other>] --via app --json`, or nil for an id that is not
+  /// usable. `with` names the other finding of a pair the app shows as one thing: the core answers
+  /// both in one transaction, or neither. Nil when the other id is given and not usable: the app
+  /// never answers half of what it showed.
+  public static func seenArguments(id: String, with other: String? = nil) -> [String]? {
+    guard isUsable(id: id), let pair = pairArguments(id: id, other) else { return nil }
+    return ["finding", id, "seen"] + pair + ["--via", "app", "--json"]
+  }
+
+  /// `--with <other>`, nothing without another, or nil when the other is not an id the app passes
+  /// or is the finding itself.
+  static func pairArguments(id: String, _ other: String?) -> [String]? {
+    guard let other else { return [] }
+    guard isUsable(id: other), other != id else { return nil }
+    return ["--with", other]
   }
 
   /// A machine the app passes to Immune: its full id, `machine:` and a name of letters,
@@ -85,13 +101,15 @@ public enum Answer {
   /// The reason is the value of `--reason`, one argument exactly as typed: Immune takes
   /// the argument after `--reason` as the reason whatever it starts with, so a reason
   /// that starts with `--` stays a reason and never becomes a flag.
-  public static func expectedArguments(id: String, reason: String, days: Int) -> [String]? {
+  public static func expectedArguments(
+    id: String, reason: String, days: Int, with other: String? = nil
+  ) -> [String]? {
     guard isUsable(id: id), Self.days.contains(days),
-      !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+      let pair = pairArguments(id: id, other)
     else { return nil }
-    return [
-      "finding", id, "expected", "--reason", reason, "--days", String(days), "--via", "app",
-      "--json",
+    return ["finding", id, "expected", "--reason", reason, "--days", String(days)] + pair + [
+      "--via", "app", "--json",
     ]
   }
 

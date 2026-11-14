@@ -1,7 +1,7 @@
 {
   "advice": "Do not open or run what is named here; find out how it got there, and treat this Mac as affected until you know.",
   "answer": null,
-  "answered_at": 1794651097,
+  "answered_at": 1794652132,
   "answered_with": null,
   "answers_note": "Answer a finding only after the owner has agreed in this conversation, having been told what it is and what the options are. Pass --via agent and the reason the owner agreed to. The app shows every answer given this way.",
   "evidence": {
@@ -18,12 +18,12 @@
     "state": "open",
     "urgent": true
   },
-  "first_seen_at": 1794651097,
+  "first_seen_at": 1794652131,
   "format": 1,
   "journal_seq": 36,
   "kind": "match of an indicator from the list",
   "kind_title": "Indicator match",
-  "last_seen_at": 1794651097,
+  "last_seen_at": 1794652131,
   "meaning": "The list names files, sites and addresses that the attack is known to use, so a match is rarely chance; it is wrong only when the list itself is wrong.",
   "rests_on": [
     {
@@ -33,8 +33,8 @@
       "old_value_text": "sha256:5a2dd1f378a67a0883bfb4290feefd00d3e30811fb5d31f5bb605411de3f131a",
       "predicate": "has_content",
       "reader": "watched-places",
-      "recorded_at": 1794651097,
-      "run_id": "1794651097-013443000",
+      "recorded_at": 1794652131,
+      "run_id": "1794652131-979416000",
       "seq": 23,
       "subject_text": "file:machine:mac/.zshrc"
     },
@@ -45,13 +45,13 @@
       "old_value_text": null,
       "predicate": "matches_indicator",
       "reader": "indicators",
-      "recorded_at": 1794651097,
-      "run_id": "1794651097-013443000",
+      "recorded_at": 1794652131,
+      "run_id": "1794652131-979416000",
       "seq": 26,
       "subject_text": "file:machine:mac/.zshrc"
     }
   ],
-  "store_id": "5539c26c789b16bbd75d7433bc7bf269",
+  "store_id": "145bdd155390773771be7d4905c7314f",
   "technique_text": null,
   "thing": null,
   "title": "Something on this Mac matches a sign of a known attack from the list you gave.",
