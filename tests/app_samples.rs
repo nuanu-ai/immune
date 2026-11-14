@@ -44,7 +44,10 @@ impl Mac {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("immune-app-samples-{nanos}"));
+        // The clock alone can give two tests of this file the same folder: they start together.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("immune-app-samples-{nanos}-{n}"));
         for dir in ["home", "system", "empty"] {
             std::fs::create_dir_all(root.join(dir)).unwrap();
         }
