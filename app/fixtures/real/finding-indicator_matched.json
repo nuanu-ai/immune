@@ -2,6 +2,7 @@
   "advice": "Do not open or run what is named here; find out how it got there, and treat this Mac as affected until you know.",
   "answer": null,
   "answered_at": 1794597523,
+  "answered_with": null,
   "answers_note": "Answer a finding only after the owner has agreed in this conversation, having been told what it is and what the options are. Pass --via agent and the reason the owner agreed to. The app shows every answer given this way.",
   "evidence": {
     "indicator_matched": {
@@ -19,6 +20,7 @@
   },
   "first_seen_at": 1794597519,
   "format": 1,
+  "journal_seq": 1795,
   "kind": "match of an indicator from the list",
   "last_seen_at": 1794597519,
   "meaning": "The list names files, sites and addresses that the attack is known to use, so a match is rarely chance; it is wrong only when the list itself is wrong.",

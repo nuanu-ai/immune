@@ -2401,21 +2401,22 @@ fn record(
         // adds to its count and its examples and raises nothing new.
         let rule = hits.meta.name.as_str();
         let (finding, raised) = crate::findings::occur(tx, rule, machine, "new", run_id, now)?;
+        // A journal entry naming the rule and how many starts matched it, never what they were,
+        // for every reading that matched it: an answer read before a match joined the finding is
+        // refused by it (`findings::unchanged`). The finding rests on the one that raised it.
+        tx.execute(
+            "INSERT INTO journal (at, run_id, entry, reader, scope, kind, subject, text)
+             VALUES (?1, ?2, 'matched', ?3, ?4, ?5, ?4, ?6)",
+            params![
+                now,
+                run_id,
+                READER,
+                machine,
+                rule,
+                json!({ "rule_id": id, "matches": hits.count }).to_string()
+            ],
+        )?;
         if raised {
-            // What the finding rests on: a journal entry naming the rule and how many starts
-            // matched it, never what they were.
-            tx.execute(
-                "INSERT INTO journal (at, run_id, entry, reader, scope, kind, subject, text)
-                 VALUES (?1, ?2, 'matched', ?3, ?4, ?5, ?4, ?6)",
-                params![
-                    now,
-                    run_id,
-                    READER,
-                    machine,
-                    rule,
-                    json!({ "rule_id": id, "matches": hits.count }).to_string()
-                ],
-            )?;
             tx.execute(
                 "INSERT INTO finding_basis (finding, journal) VALUES (?1, ?2)",
                 params![finding, tx.last_insert_rowid()],

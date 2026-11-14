@@ -1576,6 +1576,10 @@ pub struct Findings {
     /// status` and in every answer about findings.
     #[prost(string, tag = "6")]
     pub answers_note: ::prost::alloc::string::String,
+    /// The journal's latest sequence number in the state of the store this answer was read from,
+    /// as in `Finding`. Since 1.8.0.
+    #[prost(int64, tag = "7")]
+    pub journal_seq: i64,
 }
 /// A finding as a list gives it. `immune finding <id>` gives it whole.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -1661,6 +1665,25 @@ pub struct Finding {
     /// As in `ListedFinding`, with the first verdict and the latest 20 listed.
     #[prost(message, optional, tag = "17")]
     pub verdicts: ::core::option::Option<Verdicts>,
+    /// The other finding of the pair that an answer given with `--with` answered beside this one,
+    /// as that answer left it: its `state` is the one it has now. Absent when the command named no
+    /// other finding, and when it only read. Since 1.8.0.
+    #[prost(message, optional, tag = "18")]
+    pub answered_with: ::core::option::Option<FindingRef>,
+    /// The journal's latest sequence number in the state of the store this answer was read from:
+    /// what the reader has seen. An answer passes it back as `--journal-seq`, and is refused with
+    /// `changed_since_read` when, after it, a finding it answers gained a match of its published
+    /// rule, a newer reading it rests on, a verdict that went to it, raised it or names it, an
+    /// answer given or taken back, its clearing, or the end of an `expected` mark that a check
+    /// recorded; for a rule's finding, the same of the `verdict.suspicious` finding of its rule
+    /// about the same thing that it shows in `verdicts`, one raised since included. A match of the
+    /// finding's own rule does not refuse `expected`, which already quiets every later match of
+    /// the rule; it refuses `seen` and `reopen`. One number covers every finding of the store, so
+    /// it covers both findings of a pair; when they were read in two answers, pass the smaller of
+    /// the two. Required with `--with` and with `--via agent` on `seen` and `expected`. `Findings`
+    /// and `Status` carry it too. Since 1.8.0.
+    #[prost(int64, tag = "19")]
+    pub journal_seq: i64,
 }
 /// The person's answer to a finding.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -2683,6 +2706,11 @@ pub struct Status {
     /// The sections the core could not give, each with why, in its words.
     #[prost(message, repeated, tag = "26")]
     pub not_computed: ::prost::alloc::vec::Vec<NotComputed>,
+    /// The journal's latest sequence number in the state of the store this answer was read from,
+    /// as in `Finding`: an answer to a finding listed here passes it as `--journal-seq`. Absent when
+    /// there is no store. Since 1.8.0.
+    #[prost(int64, optional, tag = "27")]
+    pub journal_seq: ::core::option::Option<i64>,
 }
 /// The store's file.
 #[derive(serde::Serialize, serde::Deserialize)]

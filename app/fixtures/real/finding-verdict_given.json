@@ -1,7 +1,8 @@
 {
-  "advice": "Read its reason and look at what it is about. Mark this finding seen once you have; Immune's own finding about the same thing, if there is one, is answered apart.",
+  "advice": "Read its reason and look at what it is about. Mark this finding seen once you have. Immune's own finding about the same thing, if there is one, keeps an answer of its own; one answer that names both answers both.",
   "answer": null,
   "answered_at": 1794597522,
+  "answered_with": null,
   "answers_note": "Answer a finding only after the owner has agreed in this conversation, having been told what it is and what the options are. Pass --via agent and the reason the owner agreed to. The app shows every answer given this way.",
   "evidence": {
     "verdict_given": {
@@ -20,6 +21,7 @@
   },
   "first_seen_at": 1794597521,
   "format": 1,
+  "journal_seq": 1795,
   "kind": "verdict of the response layer",
   "last_seen_at": 1794597521,
   "meaning": "Another program that runs Immune, the response layer, looked into what a rule found here and judged it suspicious. The rule and the thing are named with this finding; the reason is the response layer's own, quoted.",

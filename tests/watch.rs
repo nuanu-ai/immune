@@ -16,6 +16,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// How long a test waits for a line it expects.
 const WAIT: Duration = Duration::from_secs(30);
+/// Where the event level's log is, under the system root.
+const EVENT_LOG: &str = "Library/Application Support/ai.nuanu.immune/event-level/log";
 
 /// An invented Mac: a home folder, a system root and a store folder, all temporary.
 struct Mac {
@@ -149,6 +151,59 @@ impl Mac {
 
     fn watch(&self) -> Watcher {
         Watcher::start(self.watch_cmd())
+    }
+
+    fn watch_with(&self, args: &[&str]) -> Watcher {
+        let mut cmd = self.watch_cmd();
+        cmd.args(args);
+        Watcher::start(cmd)
+    }
+
+    /// Lays the system root out as the event level's install does: its launch daemon and the
+    /// folder of its log.
+    fn event_level(&self) {
+        const SCRIPTS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/scripts/event-level");
+        std::fs::create_dir_all(self.sys().join(EVENT_LOG)).unwrap();
+        let plist = self
+            .sys()
+            .join("Library/LaunchDaemons/ai.nuanu.immune.eslogger.plist");
+        std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
+        std::fs::copy(
+            Path::new(SCRIPTS).join("ai.nuanu.immune.eslogger.plist"),
+            &plist,
+        )
+        .unwrap();
+        let out = Command::new("/usr/bin/plutil")
+            .args(["-extract", "ProgramArguments", "json", "-o"])
+            .arg(
+                self.sys()
+                    .join("Library/Application Support/ai.nuanu.immune/event-level/collects"),
+            )
+            .arg(&plist)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+    }
+
+    /// Appends to the event level's log a program start that the high rule "Binary Padding -
+    /// MacOS" matches, with invented content.
+    fn exec(&self, seq: u64) {
+        use std::io::Write;
+        let out = Command::new("/bin/date")
+            .args(["-u", "+%Y-%m-%dT%H:%M:%S.000001Z"])
+            .output()
+            .unwrap();
+        let time = String::from_utf8(out.stdout).unwrap().trim().to_string();
+        let line = format!(
+            r#"{{"schema_version":1,"version":10,"seq_num":{seq},"global_seq_num":{seq},"time":"{time}","process":{{"executable":{{"path":"/bin/sh"}}}},"event":{{"exec":{{"args":["dd","if=/dev/zero","bs=1","count=1"],"cwd":{{"path":"/Users/example/dev/site"}},"target":{{"executable":{{"path":"/bin/dd"}},"audit_token":{{"pid":402,"euid":501}},"ppid":401,"signing_id":"com.example.tool","team_id":null,"is_platform_binary":false}}}}}}}}"#
+        ) + "\n";
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.sys().join(EVENT_LOG).join("exec-20261004T00.jsonl"))
+            .unwrap()
+            .write_all(line.as_bytes())
+            .unwrap();
     }
 
     fn status(&self) -> Value {
@@ -2259,24 +2314,40 @@ fn pages_asked_for_are_written_again_when_one_is_gone_or_they_are_an_hour_old() 
 #[test]
 fn after_new_program_starts_a_page_asked_for_writes_again_the_summary_and_the_rules_page_alone() {
     // A click after program starts were read shows them: the pages that count them are
-    // written again, once, and the rest, which cost the most, are not.
+    // written again, once, and the rest, which cost the most, are not. Here the watcher reads
+    // a rule's match that adds to a finding it raised before, as it does every few seconds
+    // while the rule keeps matching. The match that raised the finding wrote every page again.
     let mac = Mac::new("view-events");
+    mac.event_level();
     mac.run();
     let page = |name: &str| mac.root.join("store").join(name);
     let made = page("view/made.json");
+    let w = mac.watch_with(&["--events-every", "1"]).started();
     mac.view_if_stale();
+    std::fs::write(page("view/changes.html"), "as it was").unwrap();
+    mac.exec(1);
+    let found = until_row(&mac, "SELECT id FROM finding WHERE rule LIKE 'sigma:%'");
+    mac.view_if_stale();
+    assert!(
+        std::fs::read_to_string(page("view/changes.html"))
+            .unwrap()
+            .starts_with("<!doctype html>")
+    );
     assert!(
         std::fs::read_to_string(page("view/happens.js"))
             .unwrap()
             .contains("\"view/live.js?\"")
     );
-    let as_made: Value = serde_json::from_str(&std::fs::read_to_string(&made).unwrap()).unwrap();
+    let as_made = std::fs::read_to_string(&made).unwrap();
     for name in ["view.html", "view/rules.html", "view/changes.html"] {
         std::fs::write(page(name), "as it was").unwrap();
     }
-    let mut moved = as_made.clone();
-    moved["events"] = "a reading before the latest".into();
-    std::fs::write(&made, moved.to_string()).unwrap();
+    mac.exec(2);
+    until_row(
+        &mac,
+        "SELECT 'two' WHERE (SELECT COUNT(*) FROM journal WHERE entry = 'matched') = 2",
+    );
+    let as_made: Value = serde_json::from_str(&as_made).unwrap();
     assert!(mac.view_if_stale().starts_with("<!doctype html>"));
     assert!(
         std::fs::read_to_string(page("view/rules.html"))
@@ -2288,13 +2359,31 @@ fn after_new_program_starts_a_page_asked_for_writes_again_the_summary_and_the_ru
         "as it was"
     );
     let after: Value = serde_json::from_str(&std::fs::read_to_string(&made).unwrap()).unwrap();
-    assert_eq!(
-        after, as_made,
-        "the event basis is kept as now, the rest as made"
+    assert_ne!(
+        after["events"], as_made["events"],
+        "the event basis is kept as now"
     );
+    for kept in ["basis", "made_at", "pages"] {
+        assert_eq!(after[kept], as_made[kept], "{kept} is kept as made");
+    }
     // Current again: nothing is written.
     std::fs::write(page("view.html"), "as it was").unwrap();
     assert!(mac.view_if_stale().starts_with("as it was"));
+    // An answer is a change of the journal alone, and writes every page again.
+    let out = mac
+        .immune()
+        .args(["finding", &found[0], "seen", "--store"])
+        .arg(mac.store())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(mac.view_if_stale().starts_with("<!doctype html>"));
+    assert!(
+        std::fs::read_to_string(page("view/changes.html"))
+            .unwrap()
+            .starts_with("<!doctype html>")
+    );
+    assert!(w.stop().success());
 }
 
 fn now() -> i64 {

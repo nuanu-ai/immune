@@ -8,7 +8,7 @@
 //! before it enters the page. Names, versions, reasons and source references are
 //! partly written by an attacker and must never become markup.
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt::Write;
@@ -48,9 +48,19 @@ pub const CURRENT_FOR: i64 = 3600;
 /// are written again (`event_pages`). Cheap: a lookup by key, the latest readings and a lock.
 pub fn basis(conn: &Connection, folder: &std::path::Path) -> Result<String, Box<dyn Error>> {
     use std::hash::{Hash, Hasher};
-    let journal: i64 = conn.query_row("SELECT COALESCE(MAX(seq), 0) FROM journal", [], |r| {
-        r.get(0)
-    })?;
+    // The latest journal entry but a `matched` one, which says a published rule matched in a
+    // reading: what it counts is the event level's and moves `events::basis`, and no page shows
+    // the entry itself. A match that raises or reopens a finding writes the finding's own entry
+    // in the same transaction, which moves this. Walked from the newest, so a run of `matched`
+    // entries is skipped, not the journal scanned.
+    let journal: i64 = conn
+        .query_row(
+            "SELECT seq FROM journal WHERE entry != 'matched' ORDER BY seq DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or(0);
     // A reading's time and id are new at every reading; what it covered is not.
     let mut covered = std::collections::hash_map::DefaultHasher::new();
     for l in latest_coverage(conn)? {

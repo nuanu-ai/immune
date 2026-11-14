@@ -89,7 +89,7 @@ pub fn spelled_otherwise(ids: Vec<String>, example: &'static str) -> Refused {
 
 impl Refused {
     /// The refusal as the contract's error, with the ids it fits whole.
-    fn error(&self) -> v1::Error {
+    pub fn error(&self) -> v1::Error {
         v1::Error {
             ids_text: self.ids.iter().map(|id| whole(id)).collect(),
             ..answer::error(self.code, self.message, self.example, "")

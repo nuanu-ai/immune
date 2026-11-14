@@ -100,16 +100,26 @@ const USAGE: &str = "usage: immune run [--store <path>] [--machine-name <name>] 
        immune finding <id> [--store <path>] [--json | --proto]
            one finding whole: its words, evidence, journal entries and answer
        immune finding <id> expected --reason <text> [--days <n>] [--via app|agent]
-                      [--store <path>] [--json | --proto]
-       immune finding <id> seen [--reason <text>] [--via app|agent] [--store <path>]
+                      [--with <id>] [--journal-seq <n>] [--store <path>]
                       [--json | --proto]
-       immune finding <id> reopen [--via app|agent] [--store <path>] [--json | --proto]
+       immune finding <id> seen [--reason <text>] [--via app|agent] [--with <id>]
+                      [--journal-seq <n>] [--store <path>] [--json | --proto]
+       immune finding <id> reopen [--via app|agent] [--with <id>] [--journal-seq <n>]
+                      [--store <path>] [--json | --proto]
            expected and seen are the owner's answers: they hide the finding from him.
            reopen takes an answer back; each answers with the finding as it left it.
+           --with names the other finding of a pair, a finding of a rule and the
+           response layer's verdict.suspicious finding of that rule about the same
+           thing, and gives it the same answer in one transaction, or refuses both.
+           --journal-seq is the journal_seq of the answer the findings were read in;
+           the answer is refused if anything joined them since. seen and expected
+           with --with or with --via agent need it.
            --via says who gave it; without it, the command
            line. Answer a finding only after the owner has agreed in this conversation,
            having been told what it is and what the options are. Pass --via agent and
            the reason the owner agreed to. The app shows every answer given this way.
+           An agent also passes --journal-seq, the journal_seq of the answer in which
+           the owner was shown the finding.
        immune servers [--store <path>] [--tailscale <path>]
        immune view [--store <path>] [--no-open] [--if-stale]
            writes every page and prints their paths, the summary first; with
@@ -211,6 +221,12 @@ struct FindingArgs {
     id: String,
     act: Option<findings::Act>,
     via: findings::Via,
+    /// The other finding of the pair, named with `--with`, given the same answer in the same
+    /// transaction (`findings::pair`).
+    with: Option<String>,
+    /// The `journal_seq` of the answer the findings were read in, `--journal-seq`: the answer is
+    /// refused when anything joined them after it (`findings::unchanged`).
+    journal_seq: Option<i64>,
 }
 
 enum FindingVerb {
@@ -472,11 +488,16 @@ fn parse_args(
         }
         "finding" => {
             let (mut reason, mut days, mut via, mut words) = (None, None, None, Vec::new());
+            let (mut with, mut seq) = (None, None);
             let parsed = options.read(it, |arg, it| {
                 match arg.as_str() {
                     "--reason" => reason = Some(value(it, &arg)?),
                     "--days" => days = Some(value(it, &arg)?),
                     "--via" => via = Some(via_value(it, &arg)?),
+                    // Each names one thing, so a second is a misuse: the last would win, and
+                    // the first named would be left as it was without a word.
+                    "--with" => once(&mut with, it, &arg)?,
+                    "--journal-seq" => once(&mut seq, it, &arg)?,
                     _ if arg.starts_with("--") => {
                         return Err(format!("unexpected argument: {arg}"));
                     }
@@ -516,11 +537,39 @@ fn parse_args(
                         .to_string(),
                 );
             }
+            // Where an answer must name the read it rests on (`--journal-seq`), so that nothing
+            // that joined since is quieted unseen. Required for an answer to two findings, and
+            // for any answer through an agent, which always reads before it answers and whose
+            // read and answer are a conversation apart. Still optional from the command line and
+            // from the app: the app will pass it, and be required to here, in the change that
+            // redraws it. `reopen` quiets nothing and needs none.
+            let quiets = matches!(verb, Some(FindingVerb::Expected | FindingVerb::Seen));
+            if with.is_some() && quiets && seq.is_none() {
+                return Err(
+                    "an answer with --with needs --journal-seq <n>, the journal_seq of the answer in which both findings were read"
+                        .to_string(),
+                );
+            }
+            if via == Some(findings::Via::Agent) && quiets && seq.is_none() {
+                return Err(
+                    "an answer through an agent needs --journal-seq <n>, the journal_seq of the answer (immune finding <id> --json) in which the owner was shown the finding"
+                        .to_string(),
+                );
+            }
+            let journal_seq = match seq.as_deref() {
+                None => None,
+                Some(s) => Some(
+                    s.parse::<i64>()
+                        .ok()
+                        .filter(|s| *s >= 0)
+                        .ok_or("--journal-seq takes the journal_seq an answer gave, a number")?,
+                ),
+            };
             let act = match (verb, reason, days) {
-                (None, None, None) if via.is_none() => None,
+                (None, None, None) if via.is_none() && with.is_none() && seq.is_none() => None,
                 (None, ..) => {
                     return Err(
-                        "--reason, --days and --via go with an answer: expected, seen or reopen"
+                        "--reason, --days, --via, --with and --journal-seq go with an answer: expected, seen or reopen"
                             .to_string(),
                     );
                 }
@@ -559,6 +608,8 @@ fn parse_args(
                 id: words[0].clone(),
                 act,
                 via: via.unwrap_or(findings::Via::Command),
+                with,
+                journal_seq,
             }))
         }
         "vulnerabilities" | "vulnerability" => {
@@ -662,6 +713,22 @@ fn machine_name() -> String {
 
 fn value(it: &mut impl Iterator<Item = String>, arg: &str) -> Result<String, String> {
     it.next().ok_or(format!("{arg} needs a value"))
+}
+
+/// The value of a flag that may be given once, with a value that is not empty.
+fn once(
+    slot: &mut Option<String>,
+    it: &mut impl Iterator<Item = String>,
+    arg: &str,
+) -> Result<(), String> {
+    let v = value(it, arg)?;
+    if v.is_empty() {
+        return Err(format!("{arg} needs a value that is not empty"));
+    }
+    if slot.replace(v).is_some() {
+        return Err(format!("{arg} is given once"));
+    }
+    Ok(())
 }
 
 /// The value of `--via`: who gives an answer or a statement.
@@ -1226,7 +1293,7 @@ fn finding_cmd(args: &FindingArgs) -> ExitCode {
             "finding",
             &args.store,
             args.form,
-            |conn, now| finding_answer::one(conn, &args.id, now),
+            |conn, now| finding_answer::one(conn, &args.id, None, now),
             text::finding,
         )
     };
@@ -1268,33 +1335,87 @@ fn finding_cmd(args: &FindingArgs) -> ExitCode {
         Ok(held) => held,
         Err(r) => return busy(r),
     };
-    let answered = (|| -> Result<(), Box<dyn Error>> {
+    // Everything that can refuse is decided in the transaction, and the answer printed is read in
+    // it too, before the commit: a command that is refused, by a check or by the read, has
+    // written nothing, and one that wrote cannot be refused afterwards.
+    let answered = (|| -> Result<Result<contract::v1::Finding, known::Refused>, Box<dyn Error>> {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        match act {
-            findings::Act::Answer(a) => {
-                findings::answer(&tx, &args.id, a, args.via, now, &run_id)?;
-            }
-            findings::Act::Reopen => findings::reopen(&tx, &args.id, args.via, now, &run_id)?,
+        // With `--with`, the same answer to the other finding of the pair, in the same
+        // transaction: both are recorded or neither is. Each keeps its own answer, as one given
+        // alone; the shared run id says they were given together.
+        let mut ids = vec![args.id.as_str()];
+        if let Some(with) = &args.with {
+            findings::pair(&tx, &args.id, with, now)?;
+            ids.push(with);
         }
-        tx.commit()?;
-        Ok(())
+        // An answer that names what it was read at is refused when anything joined either
+        // finding since that the answer did not already take in, before it writes anything.
+        if let Some(seq) = args.journal_seq {
+            findings::unchanged(&tx, &ids, seq, act)?;
+        }
+        let act_on = |id: &str| match act {
+            findings::Act::Answer(a) => findings::answer(&tx, id, a, args.via, now, &run_id),
+            findings::Act::Reopen => findings::reopen(&tx, id, args.via, now, &run_id),
+        };
+        act_on(&args.id)?;
+        if let Some(with) = &args.with {
+            act_on(with).map_err(findings::of_with)?;
+        }
+        // The answer names the other finding as the command left it. It is read before the
+        // commit, and a read that refuses commits nothing. No test reaches that branch: the
+        // write and the read take a finding by the same predicate (`findings::shown`), so a
+        // finding the write accepts the read shows. The branch stays so that a later difference
+        // between the two refuses with nothing written, never after a commit.
+        let left = finding_answer::one(&tx, &args.id, args.with.as_deref(), now)?;
+        if left.is_ok() {
+            tx.commit()?;
+        }
+        Ok(left)
     })();
-    if let Err(e) = answered {
-        return match e.downcast_ref::<findings::RefusedError>() {
-            Some(findings::RefusedError(findings::Refused::Unknown)) => unknown(),
-            Some(refused @ findings::RefusedError(findings::Refused::NotAnswered(_))) => refuse(
+    // A refusal about the finding named by `--with` quotes its id, and has the code it would
+    // have about the finding the answer is for.
+    let refusal = |r: findings::Refused| {
+        let message = format!("{r}; nothing was changed");
+        let (about, detail) = match &r {
+            findings::Refused::With(about) => (&**about, args.with.as_deref()),
+            findings::Refused::NotPair => (&r, args.with.as_deref()),
+            findings::Refused::ChangedSinceRead(id) => (&r, Some(id.as_str())),
+            _ => (&r, None),
+        };
+        let (code, example) = match about {
+            findings::Refused::ChangedSinceRead(_) => (
+                "changed_since_read",
+                "immune finding <id> --json, then answer with its journal_seq: immune finding <id> seen --with <other id> --journal-seq <n>",
+            ),
+            findings::Refused::ReadAhead => (
+                "journal_seq_ahead",
+                "immune finding <id> --json gives the journal_seq to answer with",
+            ),
+            findings::Refused::Unknown => (
+                "unknown_finding",
+                "immune findings --all lists every finding with its id; then: immune finding <id> seen",
+            ),
+            findings::Refused::NotPair => (
+                "not_the_pair",
+                "immune finding <id> --json names the response layer's finding about the same rule and thing in verdicts.verdict_finding",
+            ),
+            findings::Refused::NotAnswered(_) => (
                 "finding_not_answered",
-                &format!("{refused}; nothing was changed"),
                 "immune findings --all lists every finding with its state",
-                EXIT_USAGE,
             ),
-            Some(refused) => refuse(
-                "finding_closed",
-                &format!("{refused}; nothing was changed"),
-                "immune findings lists the open findings",
-                EXIT_USAGE,
-            ),
-            None => match e.downcast::<rusqlite::Error>() {
+            _ => ("finding_closed", "immune findings lists the open findings"),
+        };
+        let error = answer::error(code, &message, example, detail.unwrap_or_default());
+        answer::fail("finding", args.form, error, EXIT_USAGE)
+    };
+    drop(conn);
+    drop(lock);
+    match answered {
+        Ok(Ok(m)) => answer::print("finding", args.form, &m, text::finding),
+        Ok(Err(refused)) => answer::fail("finding", args.form, refused.error(), EXIT_USAGE),
+        Err(e) => match e.downcast::<findings::RefusedError>() {
+            Ok(r) => refusal(r.0),
+            Err(e) => match e.downcast::<rusqlite::Error>() {
                 Ok(e) => match verdict::Refusal::from(*e) {
                     r if r.code == "run_in_progress" => busy(r),
                     r => store_failed(&Stop::Store(r.detail)),
@@ -1304,11 +1425,8 @@ fn finding_cmd(args: &FindingArgs) -> ExitCode {
                     None => store_failed(&Stop::Store(e.to_string())),
                 },
             },
-        };
+        },
     }
-    drop(conn);
-    drop(lock);
-    read()
 }
 
 fn view(args: &ViewArgs) -> Result<(), Box<dyn Error>> {

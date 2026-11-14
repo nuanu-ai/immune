@@ -400,6 +400,7 @@ fn a_finding_the_person_answered_says_so_with_who_why_and_until_when_and_reopene
     // it, the reason and how long it holds, in the list and in the finding whole.
     let e = a_task_run_on_opening("answered");
     let id = id_of(&e, "autorun.folder-open");
+    let read = e.finding(&id)["journal_seq"].to_string();
     let out = e.immune(&[
         "finding",
         &id,
@@ -410,6 +411,8 @@ fn a_finding_the_person_answered_says_so_with_who_why_and_until_when_and_reopene
         "7",
         "--via",
         "agent",
+        "--journal-seq",
+        &read,
     ]);
     assert!(out.status.success());
     let whole = e.finding(&id);

@@ -2,6 +2,7 @@
   "advice": "Do not install or run that project again. Ask your agent to look into it; if its packages were installed here, treat the tokens and keys this Mac could reach as exposed.",
   "answer": null,
   "answered_at": 1794597522,
+  "answered_with": null,
   "answers_note": "Answer a finding only after the owner has agreed in this conversation, having been told what it is and what the options are. Pass --via agent and the reason the owner agreed to. The app shows every answer given this way.",
   "evidence": {
     "vulnerable_package": {
@@ -40,6 +41,7 @@
   },
   "first_seen_at": 1794597518,
   "format": 1,
+  "journal_seq": 1795,
   "kind": "lockfile dependency",
   "last_seen_at": 1794597519,
   "meaning": "The package, or this release of it, was reported as carrying harmful code. If the project's packages were installed on this Mac, that code may have run here.",

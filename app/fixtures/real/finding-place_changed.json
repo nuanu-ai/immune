@@ -2,6 +2,7 @@
   "advice": "If you did not, open the file and look at its last lines.",
   "answer": null,
   "answered_at": 1794597524,
+  "answered_with": null,
   "answers_note": "Answer a finding only after the owner has agreed in this conversation, having been told what it is and what the options are. Pass --via agent and the reason the owner agreed to. The app shows every answer given this way.",
   "evidence": {
     "place_changed": {
@@ -20,6 +21,7 @@
   },
   "first_seen_at": 1794597519,
   "format": 1,
+  "journal_seq": 1795,
   "kind": "shell profile",
   "last_seen_at": 1794597519,
   "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",

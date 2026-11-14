@@ -635,6 +635,7 @@
     "seals_carried_forward": 0,
     "seals_verified_this_run": 0
   },
+  "journal_seq": 1795,
   "last_finished_run": {
     "check": {
       "finished_at": 1794597519,
@@ -666,7 +667,7 @@
   "needs_a_look": {
     "items": [
       {
-        "advice": "Read its reason and look at what it is about. Mark this finding seen once you have; Immune's own finding about the same thing, if there is one, is answered apart.",
+        "advice": "Read its reason and look at what it is about. Mark this finding seen once you have. Immune's own finding about the same thing, if there is one, keeps an answer of its own; one answer that names both answers both.",
         "change": "new",
         "evidence": {
           "verdict_given": {

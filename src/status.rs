@@ -930,6 +930,9 @@ pub fn message(
         });
     };
     out.store_id = crate::store::id(conn)?;
+    // Of the same state of the store as what needs a look: the caller reads `state` and this in
+    // one transaction.
+    out.journal_seq = Some(findings::journal_seq(conn)?);
     out.this_mac = Some(this_mac_message(&st.this_mac, now));
     match &st.event_level {
         Some(l) => out.event_level = Some(crate::events::message(l)),

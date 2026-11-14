@@ -835,6 +835,17 @@ pub fn finding(f: &v1::Finding) -> String {
             ),
         );
     }
+    if let Some(w) = &f.answered_with {
+        say(
+            &mut out,
+            &format!(
+                "Given the same answer: {}, rule {}, now {}.",
+                w.id,
+                w.rule.as_deref().unwrap_or_default(),
+                word::<v1::FindingState>(w.state)
+            ),
+        );
+    }
     if let Some(v) = &f.verdicts {
         if let Some(said) = verdicts_said(r.rule.as_deref(), v) {
             say(&mut out, &said);

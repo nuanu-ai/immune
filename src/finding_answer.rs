@@ -37,14 +37,18 @@ pub fn list(conn: &Connection, now: i64) -> rusqlite::Result<v1::Findings> {
             .collect(),
         store_id,
         answers_note: findings::ANSWERS_NOTE.to_string(),
+        // Read in the same transaction as the findings, so it is of the state they show.
+        journal_seq: findings::journal_seq(conn)?,
     })
 }
 
 /// One finding whole; a refusal when the store has no finding with this id that this build
-/// knows the rule of.
+/// knows the rule of. After an answer given to a pair, `with` is the other finding, named as it
+/// stands now.
 pub fn one(
     conn: &Connection,
     id: &str,
+    with: Option<&str>,
     now: i64,
 ) -> rusqlite::Result<Result<v1::Finding, Refused>> {
     let found = all(conn, now)?;
@@ -89,10 +93,11 @@ pub fn of(
         .collect();
     let store_id = store::id(conn)?;
     let items: Vec<Item> = found.iter().filter_map(findings::item).collect();
+    let refs = refs(&items);
     let verdicts = verdict::verdicts(
         verdict::of_finding(conn, id, &f.rule)?,
         store_id.as_deref(),
-        &refs(&items),
+        &refs,
         i.verdicts.as_ref().and_then(|s| s.standing.as_ref()),
     );
     Ok(Some(v1::Finding {
@@ -100,6 +105,8 @@ pub fn of(
         answered_at: now,
         store_id,
         verdicts,
+        answered_with: with.and_then(|w| refs.get(w).cloned()),
+        journal_seq: findings::journal_seq(conn)?,
         finding: Some(known::finding_ref(&i)),
         kind: i.kind.to_string(),
         title: i.words.title.to_string(),

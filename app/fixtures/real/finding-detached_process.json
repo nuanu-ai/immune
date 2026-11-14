@@ -16,6 +16,7 @@
     "via": "agent"
   },
   "answered_at": 1794597523,
+  "answered_with": null,
   "answers_note": "Answer a finding only after the owner has agreed in this conversation, having been told what it is and what the options are. Pass --via agent and the reason the owner agreed to. The app shows every answer given this way.",
   "evidence": {
     "detached_process": {
@@ -34,6 +35,7 @@
   },
   "first_seen_at": 1794597459,
   "format": 1,
+  "journal_seq": 1795,
   "kind": "interpreter running code from its command line, detached",
   "last_seen_at": 1794597459,
   "meaning": "Tools and agents do this for a moment while they work; staying alive on its own, with no terminal or app it belongs to, is how some malware keeps hidden code running.",
