@@ -6,8 +6,11 @@
 // goes through `Text(verbatim:)`, which never interprets markup.
 //
 // Design: the design sheet's components, plain native macOS. Every measure, text style, colour
-// and symbol comes from `Style.swift`; no view chooses its own. One signal of importance: only
-// what needs the person now is red, and only in the header's glyph; rows carry no colour.
+// and symbol comes from `Style.swift`; no view chooses its own. Colour is an accent, the same five
+// roles as the report page's: red only for what needs the person now and for suspicious, orange for
+// what is to look at, green for calm and harmless, blue for what opens, grey for the rest. It is a
+// mark (the glyph, a row's symbol, a group's title, one word), never a filled row, and always
+// stands beside the word that says the same.
 //
 // The panel never grows past the screen it opens on: given a height, the header and the footer
 // stay whole and the list between them scrolls.
@@ -89,7 +92,7 @@ extension Text {
   /// A piece of a line in a style, to be joined with others: font and colour only; the line's
   /// height is the whole line's (`textStyle`).
   func styled(_ s: TextStyle) -> Text {
-    font(s.font).foregroundStyle(s.role.style)
+    font(s.font).foregroundStyle(s.role.ink)
   }
 }
 
@@ -111,27 +114,27 @@ extension PanelState {
 // MARK: - The header
 
 /// The state glyph: a disc for calm (green), for what needs the person now (red) and for what is
-/// to look at (grey), its mark white; a grey ring for a Mac watched in part and for an old answer;
-/// a dashed ring for can't tell; a turning indicator on a fill while a check runs.
+/// to look at (orange), its mark white; an orange ring for a Mac watched in part; a grey ring for
+/// an old answer; a dashed grey ring for can't tell; a turning indicator on a fill while a check
+/// runs.
 struct StateGlyph: View {
   let state: PanelState
   var filled: Bool { state == .calm || state == .now || state == .look }
+  var mark: AnyShapeStyle { state == .part ? Role.look.style : AnyShapeStyle(Palette.quiet) }
 
   var body: some View {
     ZStack {
       switch state {
-      case .calm: Circle().fill(Palette.calm)
-      case .now: Circle().fill(Palette.now)
-      case .look: Circle().fill(Palette.quiet)
-      case .part, .stale: Circle().strokeBorder(Palette.quiet, lineWidth: Metrics.ring)
+      case .calm, .now, .look: Circle().fill(Role.of(state).style)
+      case .part, .stale: Circle().strokeBorder(mark, lineWidth: Metrics.ring)
       case .cant:
         Circle().strokeBorder(
-          Palette.quiet, style: StrokeStyle(lineWidth: Metrics.ring, dash: Metrics.ringDash))
+          mark, style: StrokeStyle(lineWidth: Metrics.ring, dash: Metrics.ringDash))
       case .busy: Circle().fill(Palette.circle)
       }
-      if let mark = Symbols.glyph(state) {
-        Image(systemName: mark).font(SymbolStyle.glyph.font)
-          .foregroundStyle(filled ? Palette.onFill : Palette.quiet)
+      if let symbol = Symbols.glyph(state) {
+        Image(systemName: symbol).font(SymbolStyle.glyph.font)
+          .foregroundStyle(filled ? AnyShapeStyle(Palette.onFill) : mark)
       } else {
         ProgressView().controlSize(.small)
       }
@@ -188,12 +191,13 @@ struct HelpLine: View {
 
 // MARK: - The list
 
-/// A group's heading, on the edge, in sentence case.
+/// A group's heading, on the edge, in sentence case: grey, or in the colour of its rows' mark.
 struct GroupTitle: View {
   let text: String
+  var mark: Role = .secondary
   var body: some View {
     Text(verbatim: text)
-      .textStyle(.captionStrong)
+      .textStyle(TextStyle.captionStrong.role(mark))
       .lineLimit(1)
       .padding(.horizontal, Metrics.inset)
       .padding(.top, Metrics.groupTop).padding(.bottom, Metrics.groupBottom)
@@ -207,13 +211,14 @@ struct GroupTitle: View {
 /// on the circle. 44 high with two lines, 60 with three. Its highlight starts 8 in from the side.
 struct RowFrame<Lines: View>: View {
   let symbol: String
+  var mark: Role = .secondary
   var chevron = true
   var hover = true
   @ViewBuilder var lines: () -> Lines
 
   var body: some View {
     let row = HStack(alignment: .top, spacing: Metrics.gap) {
-      RowIcon(symbol: symbol).padding(.top, Metrics.circleTop)
+      RowIcon(symbol: symbol, mark: mark).padding(.top, Metrics.circleTop)
       VStack(alignment: .leading, spacing: Metrics.lineGap) { lines() }
         .frame(maxWidth: .infinity, alignment: .leading)
       Group {
@@ -272,16 +277,18 @@ struct RowLink: View {
 
 /// One finding, with what the response layer said of it, as one row: the kind's symbol; the
 /// thing itself as data, one line; its kind and what happened, with the time at the right; the
-/// response layer's word on a third line. No colour: the group says what needs the person now.
-/// The whole row opens it.
+/// response layer's word on a third line. The symbol carries its group's mark, red under "Needs
+/// you now" and orange under "To look at", and the response layer's word its own: red for
+/// suspicious, green for harmless. The whole row opens it.
 struct FindingRow: View {
   let entry: Entry
+  var mark: Role = .secondary
   let open: () -> Void
   var row: Row { entry.row }
 
   var body: some View {
     Button(action: open) {
-      RowFrame(symbol: row.symbol) {
+      RowFrame(symbol: row.symbol, mark: mark) {
         if let command = row.command {
           DataLine(text: command.arguments, program: command.program)
         } else if row.objectIsData {
@@ -290,8 +297,10 @@ struct FindingRow: View {
           Text(verbatim: row.object).textStyle(.body).lineLimit(1).truncationMode(.tail)
         }
         MetaLine(text: row.meta) { Time(when: row.when, full: row.whenFull) }
-        if let words = entry.responseLayer {
-          Text(verbatim: words).textStyle(.caption).lineLimit(1)
+        if let said = entry.said {
+          (Text(verbatim: Entry.responseLayerWords)
+            + Text(verbatim: said).styled(TextStyle.caption.role(Role.verdict(said) ?? .secondary)))
+            .textStyle(.caption).lineLimit(1)
         }
       }
     }
@@ -362,7 +371,8 @@ struct NotSeenView: View {
   let open: () -> Void
 
   var body: some View {
-    RowFrame(symbol: Icons.notSeen) {
+    // Orange: something the person can fix, under the heading that says so.
+    RowFrame(symbol: Icons.notSeen, mark: .look) {
       if let example = row.example {
         HStack(alignment: .firstTextBaseline, spacing: Metrics.moreGap) {
           DataLine(
@@ -443,11 +453,14 @@ struct Dot: View {
 /// name are in the tooltip and in the report, which a click opens.
 struct CoverageRow: View {
   let lines: [CoverageLine]
+  /// The symbol's mark: green for a Mac watched in full, orange for one watched in part, as the
+  /// line under the headline says it.
+  var mark: Role = .secondary
   let open: () -> Void
 
   var body: some View {
     Button(action: open) {
-      RowFrame(symbol: Icons.watched) {
+      RowFrame(symbol: Icons.watched, mark: mark) {
         Grid(
           alignment: .leadingFirstTextBaseline, horizontalSpacing: Metrics.gap,
           verticalSpacing: Metrics.lineGap
@@ -690,7 +703,7 @@ public struct PanelView: View {
         }
       }
       if !p.watched.isEmpty {
-        CoverageRow(lines: p.watched) {
+        CoverageRow(lines: p.watched, mark: Role.watched(p)) {
           Task { await model.openPage(section: "watched-here") }
         }
         .padding(.top, standsAlone(p) ? 0 : Metrics.coverageGap)
@@ -721,12 +734,14 @@ public struct PanelView: View {
   /// The two groups of findings, and how many more the report lists.
   @ViewBuilder func findings(_ p: Panel) -> some View {
     ForEach(
-      [("Needs you now", p.needsYou), ("To look at", p.toLook)].filter { !$0.1.isEmpty },
+      [("Needs you now", p.needsYou, Role.now), ("To look at", p.toLook, Role.look)].filter {
+        !$0.1.isEmpty
+      },
       id: \.0
-    ) { title, group in
-      GroupTitle(text: title)
+    ) { title, group, mark in
+      GroupTitle(text: title, mark: mark)
       ForEach(group) { e in
-        FindingRow(entry: e) { open(e.row) }
+        FindingRow(entry: e, mark: mark) { open(e.row) }
       }
     }
     if let more = p.moreText {

@@ -244,6 +244,10 @@ func main() async {
   await panel("14-stale", status: "panel-stale.json")
   await panel("15-stale-while-checking", status: "panel-stale-checking.json")
   await panel("16-collector-silent", status: "panel-silent.json")
+  // A finding answered in the app, opened again: the answer's line and Take back.
+  await panel(
+    "19-open-answered-in-app", status: "panel-calm.json", open: "fbb00986139",
+    answer: "finding-answered-in-app.json")
   // The status of real size the real binary made (`tests/app_samples.rs`): whole, and on a
   // screen whose visible part is 400 pt high, where the list scrolls between the headline and
   // the footer.

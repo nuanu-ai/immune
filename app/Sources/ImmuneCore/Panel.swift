@@ -482,6 +482,9 @@ public struct Panel: Sendable, Equatable {
   /// each with how many kinds the status lists, and program starts with the event level's state.
   /// The full list by kind is the report's.
   public var watched: [CoverageLine] = []
+  /// This Mac's state as the status gives it (`watched`, `watched_in_part`, `not_checked`), for
+  /// the mark of what is watched; nil when the status does not say.
+  public var watchedAs: String?
   /// Answers and statements given outside the app that are in force: always visible.
   public var answered: AnsweredRow?
   /// A check is running: the headline says so with a moving indicator.
@@ -511,8 +514,9 @@ public struct Panel: Sendable, Equatable {
   /// "Notifications are off, …", one quiet line with a button, or nil.
   public var notificationsOff: String?
 
-  /// The state the header's glyph draws: one signal of importance. Red only for what needs the
-  /// person now; green only for calm; everything else grey.
+  /// The state the header's glyph draws, and so its colour (`Role.of` in `Style.swift`): red only
+  /// for what needs the person now; orange for what is to look at and a Mac watched in part; green
+  /// only for calm; everything else grey.
   public var state: PanelState {
     if busy { return .busy }
     switch light {
@@ -676,6 +680,7 @@ public struct Panel: Sendable, Equatable {
     firstDay = Self.firstDay(s, now: now)
     let parts = (mac?.watched ?? []).filter { $0.count != 0 }
     watched = Self.coverage(parts, live: live == true, level: s.eventLevel)
+    watchedAs = mac?.state
     let list = s.notCovered ?? []
     notSeen = list.filter { $0.who == "you" }.compactMap { u in
       guard let id = u.id else { return nil }

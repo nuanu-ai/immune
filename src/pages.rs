@@ -148,14 +148,16 @@ fn unjudged(st: &crate::status::State) -> Vec<&Uncovered> {
 
 /// The state's glyph, one shape for each state, as the panel draws it, so colour is never the
 /// only sign: a disc with an exclamation mark in `--now` when something needs the person now; a
-/// disc with an eye in `--quiet` when there are things to look at and none is urgent; a disc with
-/// a tick in `--calm` for nothing to look at on a Mac watched in full; a ring with a tick for one
-/// watched in part; a ring with a clock for an answer that is old; a dashed ring with a question
-/// mark when it is not known. The three colours are the stylesheet's, defined once.
-const GLYPH_NOW: &str = "<svg class=\"glyph\" viewBox=\"0 0 40 40\" aria-hidden=\"true\"><circle cx=\"20\" cy=\"20\" r=\"20\" style=\"fill:var(--now)\"/><path d=\"M20 10.5v11\" style=\"stroke:var(--on);stroke-width:3.2;stroke-linecap:round\"/><circle cx=\"20\" cy=\"28.5\" r=\"2\" style=\"fill:var(--on)\"/></svg>";
-const GLYPH_LOOK: &str = "<svg class=\"glyph\" viewBox=\"0 0 40 40\" aria-hidden=\"true\"><circle cx=\"20\" cy=\"20\" r=\"20\" style=\"fill:var(--quiet)\"/><path d=\"M9.5 20c2.8-4.6 6.3-6.9 10.5-6.9s7.7 2.3 10.5 6.9c-2.8 4.6-6.3 6.9-10.5 6.9S12.3 24.6 9.5 20z\" style=\"fill:none;stroke:var(--on);stroke-width:2.4;stroke-linejoin:round\"/><circle cx=\"20\" cy=\"20\" r=\"3.2\" style=\"fill:var(--on)\"/></svg>";
-const GLYPH_CALM: &str = "<svg class=\"glyph\" viewBox=\"0 0 40 40\" aria-hidden=\"true\"><circle cx=\"20\" cy=\"20\" r=\"20\" style=\"fill:var(--calm)\"/><path d=\"M12.5 20.5l5 5 10-11\" style=\"fill:none;stroke:var(--on);stroke-width:3.2;stroke-linecap:round;stroke-linejoin:round\"/></svg>";
-const GLYPH_PART: &str = "<svg class=\"glyph\" viewBox=\"0 0 40 40\" aria-hidden=\"true\"><circle cx=\"20\" cy=\"20\" r=\"19.25\" style=\"fill:none;stroke:var(--quiet);stroke-width:1.5\"/><path d=\"M12.5 20.5l5 5 10-11\" style=\"fill:none;stroke:var(--quiet);stroke-width:3;stroke-linecap:round;stroke-linejoin:round\"/></svg>";
+/// disc with an eye in `--look` when there are things to look at and none is urgent; a disc with
+/// a tick in `--calm` for nothing to look at on a Mac watched in full; a ring with a tick in
+/// `--look` for one watched in part; a ring with a clock in `--quiet` for an answer that is old; a
+/// dashed ring with a question mark in `--quiet` when it is not known. The glyph's class names its
+/// state, and the band takes a thin tint of the same colour from it. The colours are the
+/// stylesheet's, defined once.
+const GLYPH_NOW: &str = "<svg class=\"glyph now\" viewBox=\"0 0 40 40\" aria-hidden=\"true\"><circle cx=\"20\" cy=\"20\" r=\"20\" style=\"fill:var(--now)\"/><path d=\"M20 10.5v11\" style=\"stroke:var(--on);stroke-width:3.2;stroke-linecap:round\"/><circle cx=\"20\" cy=\"28.5\" r=\"2\" style=\"fill:var(--on)\"/></svg>";
+const GLYPH_LOOK: &str = "<svg class=\"glyph look\" viewBox=\"0 0 40 40\" aria-hidden=\"true\"><circle cx=\"20\" cy=\"20\" r=\"20\" style=\"fill:var(--look)\"/><path d=\"M9.5 20c2.8-4.6 6.3-6.9 10.5-6.9s7.7 2.3 10.5 6.9c-2.8 4.6-6.3 6.9-10.5 6.9S12.3 24.6 9.5 20z\" style=\"fill:none;stroke:var(--on);stroke-width:2.4;stroke-linejoin:round\"/><circle cx=\"20\" cy=\"20\" r=\"3.2\" style=\"fill:var(--on)\"/></svg>";
+const GLYPH_CALM: &str = "<svg class=\"glyph calm\" viewBox=\"0 0 40 40\" aria-hidden=\"true\"><circle cx=\"20\" cy=\"20\" r=\"20\" style=\"fill:var(--calm)\"/><path d=\"M12.5 20.5l5 5 10-11\" style=\"fill:none;stroke:var(--on);stroke-width:3.2;stroke-linecap:round;stroke-linejoin:round\"/></svg>";
+const GLYPH_PART: &str = "<svg class=\"glyph look\" viewBox=\"0 0 40 40\" aria-hidden=\"true\"><circle cx=\"20\" cy=\"20\" r=\"19.25\" style=\"fill:none;stroke:var(--look);stroke-width:1.5\"/><path d=\"M12.5 20.5l5 5 10-11\" style=\"fill:none;stroke:var(--look);stroke-width:3;stroke-linecap:round;stroke-linejoin:round\"/></svg>";
 const GLYPH_STALE: &str = "<svg class=\"glyph\" viewBox=\"0 0 40 40\" aria-hidden=\"true\"><circle cx=\"20\" cy=\"20\" r=\"19.25\" style=\"fill:none;stroke:var(--quiet);stroke-width:1.5\"/><circle cx=\"20\" cy=\"20\" r=\"10\" style=\"fill:none;stroke:var(--quiet);stroke-width:2.4\"/><path d=\"M20 14v6.5l4 2.5\" style=\"fill:none;stroke:var(--quiet);stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round\"/></svg>";
 const GLYPH_UNKNOWN: &str = "<svg class=\"glyph\" viewBox=\"0 0 40 40\" aria-hidden=\"true\"><circle cx=\"20\" cy=\"20\" r=\"19.25\" style=\"fill:none;stroke:var(--quiet);stroke-width:1.5;stroke-dasharray:4 3\"/><path d=\"M15.8 16a4.3 4.3 0 1 1 6.1 3.9c-1.3.6-1.9 1.5-1.9 2.9v.7\" style=\"fill:none;stroke:var(--quiet);stroke-width:2.6;stroke-linecap:round\"/><circle cx=\"20\" cy=\"28.2\" r=\"1.7\" style=\"fill:var(--quiet)\"/></svg>";
 
@@ -203,7 +205,7 @@ fn state(
     // Why the headline cannot say more, in the program's own words, set beside the name.
     let mut why: Vec<String> = not_computed.iter().map(|n| esc(&n.reason)).collect();
     let (glyph, headline) = match total {
-        // Colour marks only what needs the person now: the glyph is red only for urgent ones.
+        // Red only for urgent ones; orange for things to look at, none urgent.
         Some(n) if n > 0 && urgent > 0 => (GLYPH_NOW, esc(&needs_you(urgent, n))),
         Some(n) if n > 0 => (GLYPH_LOOK, esc(&needs_you(urgent, n))),
         _ if m.state == "not_checked" && m.checked_at.is_none() => {
@@ -557,10 +559,16 @@ fn finding_row(
     });
     writeln!(
         out,
-        "<details class=\"fr{}{}{}\" id=\"{id}\">\n<summary><span class=\"fw\">{}</span><span class=\"fk\">{}{}</span><span class=\"fv\">{}</span><span class=\"fs\">{}</span><span class=\"fch\" aria-hidden=\"true\"></span></summary>\n<div class=\"fx\">",
+        "<details class=\"fr{}{}{}{}\" id=\"{id}\">\n<summary><span class=\"fw\">{}</span><span class=\"fk\">{}{}</span><span class=\"fv\">{}</span><span class=\"fs\">{}</span><span class=\"fch\" aria-hidden=\"true\"></span></summary>\n<div class=\"fx\">",
         if row.open() { " open" } else { "" },
         if row.answered() { " answered" } else { "" },
         if row.urgent() { " urgent" } else { "" },
+        // The mark of the response layer's word, the word's own colour (`.fr.suspicious .fv`).
+        match verdict_word(i) {
+            Some("Suspicious") => " suspicious",
+            Some("Harmless") => " harmless",
+            _ => "",
+        },
         esc(&thing_of(i, whole.as_ref())),
         esc(&kind),
         answer.unwrap_or_default(),
@@ -920,23 +928,43 @@ fn evidence(f: &v1::Finding, facts: &mut Vec<(&str, String)>, voices: &mut Vec<V
     }
 }
 
-/// How a row of what is watched stands: whether it was read, as a filled or a hollow dot of
-/// `--quiet`, and its words, which are safe HTML. Only coverage: findings are not repeated here.
+/// How a row of what is watched stands: its dot's classes and its words, which are safe HTML.
+/// Read in full is a filled dot of `--calm`; read in part, not read or failed a hollow one of
+/// `--look`; none here or a plain count a filled one of `--quiet`; never checked a hollow one of
+/// `--quiet`. Only coverage: findings are not repeated here.
 struct Standing {
-    read: bool,
+    dot: &'static str,
     said: String,
 }
 
 impl Standing {
+    /// Read in full.
     fn read(said: &str) -> Standing {
         Standing {
-            read: true,
+            dot: " calm",
             said: esc(said),
         }
     }
 
+    /// None here, or a count that is neither calm nor a gap.
+    fn none(said: String) -> Standing {
+        Standing { dot: "", said }
+    }
+
+    /// Read in part, not read, or failed.
     fn not(said: String) -> Standing {
-        Standing { read: false, said }
+        Standing {
+            dot: " off look",
+            said,
+        }
+    }
+
+    /// Never checked.
+    fn never(said: &str) -> Standing {
+        Standing {
+            dot: " off",
+            said: esc(said),
+        }
     }
 }
 
@@ -954,13 +982,7 @@ fn watched_row(
     let id = id.map_or(String::new(), |id| format!(" id=\"{id}\""));
     let said: Vec<String> = states
         .iter()
-        .map(|s| {
-            format!(
-                "<span class=\"dot{}\"></span>{}",
-                if s.read { "" } else { " off" },
-                s.said
-            )
-        })
+        .map(|s| format!("<span class=\"dot{}\"></span>{}", s.dot, s.said))
         .collect();
     writeln!(
         out,
@@ -1079,7 +1101,7 @@ fn watched_table(
             let t = crate::vulnerabilities::totals(conn, now)?;
             let open = map.projects_open();
             if !t.matched {
-                states.push(Standing::not("not compared yet".to_string()));
+                states.push(Standing::never("not compared yet"));
             } else if open > 0 {
                 states.push(Standing::not(esc(&format!(
                     "{} not compared",
@@ -1096,17 +1118,14 @@ fn watched_table(
                     .map(|(_, n)| n)
                     .sum();
                 if known > 0 {
-                    states.push(Standing {
-                        read: true,
-                        said: format!(
-                            "<a href=\"{DETAILS}/{VULNERABILITIES}.html\">{}</a>",
-                            esc(&counted(
-                                known as i64,
-                                "known vulnerability",
-                                "known vulnerabilities"
-                            ))
-                        ),
-                    });
+                    states.push(Standing::none(format!(
+                        "<a href=\"{DETAILS}/{VULNERABILITIES}.html\">{}</a>",
+                        esc(&counted(
+                            known as i64,
+                            "known vulnerability",
+                            "known vulnerabilities"
+                        ))
+                    )));
                     // "None used in attacks" rests on the list of them having been read; one
                     // that is used is a finding, in the table of findings.
                     if !any_used(conn)? {
@@ -1123,7 +1142,7 @@ fn watched_table(
         }
         if let Some(gap) = &gap {
             if readings.is_empty() && walk.is_empty() && n.is_none() && states.is_empty() {
-                states.push(Standing::not("not checked yet".to_string()));
+                states.push(Standing::never("not checked yet"));
             } else {
                 states.push(Standing::not(format!(
                     "<span title=\"{}\">not read in full</span>",
@@ -1132,11 +1151,11 @@ fn watched_table(
             }
         }
         if states.is_empty() {
-            states.push(Standing::read(if n.unwrap_or(0) == 0 {
-                "none here"
+            states.push(if n.unwrap_or(0) == 0 {
+                Standing::none("none here".to_string())
             } else {
-                "read in full"
-            }));
+                Standing::read("read in full")
+            });
         }
         let id = matches!(count, Count::Dependencies).then_some("vulnerabilities");
         let href = format!("{DETAILS}/{THIS_MAC}.html#{}", anchor(what));

@@ -1,5 +1,6 @@
-// The menu-bar icon: one SF Symbol per state, a template image so macOS colours it for a
-// light or a dark bar and for the selected state, and the count beside it.
+// The menu-bar icon: one SF Symbol per state, drawn in the state's colour (red, orange or green,
+// as the panel's glyph) or, for an old answer and can't tell, as a template image so macOS colours
+// it for a light or a dark bar; and the count beside it.
 //
 // Size. With no configuration a symbol is drawn at the 13 pt body size: a shield 14 by 15 pt
 // whose strokes are thin beside the system's own extras. The configuration below draws it at
@@ -23,17 +24,36 @@ public enum MenuIcon {
   public static let countFont = NSFont.monospacedDigitSystemFont(
     ofSize: NSFont.menuBarFont(ofSize: 0).pointSize, weight: .medium)
 
-  /// The template image for a state, with its words for VoiceOver: filled only when something
-  /// needs the person now.
+  /// The image for a state, with its words for VoiceOver: filled only when something needs the
+  /// person now. In the state's colour where it has one (`tint`); a template image, which macOS
+  /// colours for the bar, where it has none.
   public static func image(
     _ light: Light, urgent: Bool, words: String,
     configuration: NSImage.SymbolConfiguration = configuration
   ) -> NSImage? {
     let name = Light.menuSymbol(light, urgent: urgent)
+    let tint = tint(light, urgent: urgent)
+    // A filled symbol's mark is its first layer: white on the filled shape, so it stays seen.
+    let palette = { (c: NSColor) in name.hasSuffix(".fill") ? [NSColor.white, c] : [c] }
+    let drawn =
+      tint.map { configuration.applying(.init(paletteColors: palette($0))) } ?? configuration
     let image = NSImage(systemSymbolName: name, accessibilityDescription: words)?
-      .withSymbolConfiguration(configuration)
-    image?.isTemplate = true
+      .withSymbolConfiguration(drawn)
+    image?.isTemplate = tint == nil
     return image
+  }
+
+  /// The icon's colour, the same roles as the panel's glyph and the report's band: red when
+  /// something needs the person now, orange when there are things to look at and none is urgent
+  /// and when the Mac is watched in part, green when nothing is to look at on a Mac watched in
+  /// full; none, so the bar's own colour, when the answer is old or cannot be told.
+  public static func tint(_ light: Light, urgent: Bool) -> NSColor? {
+    switch light {
+    case .attention: urgent ? .systemRed : .systemOrange
+    case .watchedInPart: .systemOrange
+    case .nothingToReport: .systemGreen
+    case .stale, .cannotRead: nil
+    }
   }
 
   /// The count beside the icon: the things the headline counts (`Panel.counts`, a pair as one),

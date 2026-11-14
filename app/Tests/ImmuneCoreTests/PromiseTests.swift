@@ -2309,6 +2309,68 @@ struct Answers {
     #expect(model.answering == nil)
     #expect(immune.callsSoFar.filter { $0.first == "finding" }.count == 1)
   }
+
+  @Test("After a Seen Immune took on an opened finding, the panel shows the list, not the card")
+  func seenClosesTheCard() async {
+    let open = "fbb00986139"
+    let immune = SequenceImmune(
+      status: output("panel-two.json"),
+      answers: [output("finding-fbb00986139.json"), ImmuneOutput(exitCode: 0)])
+    let model = AppModel(immune: immune)
+    await model.refresh()
+    await model.openFinding(open)
+    #expect(model.opened?.id == open)
+    #expect(await model.answerSeen(open))
+    #expect(immune.calls.contains { $0.starts(with: ["finding", open, "seen"]) })
+    #expect(model.opened == nil)
+    #expect(model.refusals.isEmpty)
+  }
+
+  @Test("A refused answer keeps the opened finding's card, with the refusal on it")
+  func refusalKeepsTheCard() async {
+    let open = "fbb00986139"
+    let immune = SequenceImmune(
+      status: output("panel-two.json"),
+      answers: [
+        output("finding-fbb00986139.json"), ImmuneOutput(exitCode: 2, stdout: refusedEnvelope),
+        output("finding-fbb00986139.json"),
+      ])
+    let model = AppModel(immune: immune)
+    await model.refresh()
+    await model.openFinding(open)
+    #expect(await model.answerSeen(open))
+    #expect(model.opened?.id == open)
+    #expect(model.refusals[open] != nil)
+  }
+
+  @Test(
+    "The card of a finding answered in the app has the answer's line and Take back, which reopens it"
+  )
+  func answeredInAppCard() async throws {
+    let open = "fbb00986139"
+    let immune = SequenceImmune(
+      status: output("panel-calm.json"),
+      answers: [
+        output("finding-answered-in-app.json"), ImmuneOutput(exitCode: 0),
+        output("finding-fbb00986139.json"),
+      ])
+    let model = AppModel(immune: immune)
+    await model.refresh()
+    await model.openFinding(open)
+    guard case .read(let f) = model.opened?.reading else {
+      Issue.record("the finding was not read")
+      return
+    }
+    let a = try #require(f.answer)
+    #expect(a.via == "app")
+    // The footer's condition and its line: an answer in force, whoever gave it.
+    #expect(FindingFacts.answerInForce(f))
+    #expect(FindingFacts.answeredLine(a) == "Seen")
+    // Not in the status's list of answers given outside the app, and still taken back.
+    #expect(model.reading.status?.answeredOutsideApp?.items.contains { $0.id == open } != true)
+    #expect(await model.takeBack(open))
+    #expect(immune.calls.contains(["finding", open, "reopen", "--via", "app", "--json"]))
+  }
 }
 
 // MARK: - Answers given outside the app
@@ -3871,24 +3933,25 @@ struct OpenedFinding {
   }
 
   @Test(
-    "An answer given through an agent and in force is a box at the top, in the app's words, that can be taken back"
+    "An answer in force, whoever gave it, is the card's footer, in the app's words, that can be taken back"
   )
   func agentAnswer() async throws {
     let f = try #require(read(finding("finding-f3c1d2e4a51.json")))
-    #expect(FindingFacts.answeredOutside(f))
+    #expect(FindingFacts.answerInForce(f))
     let a = try #require(f.answer)
     #expect(FindingFacts.answer(a).hasPrefix("Expected until "))
     #expect(FindingFacts.answer(a).hasSuffix(", through your agent"))
-    // In the app, or said to be no longer in force: no box. Not said is not "not in force".
+    // Given in the app too; said to be no longer in force: no footer of it. Not said is not
+    // "not in force".
     var mine = f
     mine.answer?.via = "app"
-    #expect(!FindingFacts.answeredOutside(mine))
+    #expect(FindingFacts.answerInForce(mine))
     var over = f
     over.answer?.inForce = false
-    #expect(!FindingFacts.answeredOutside(over))
+    #expect(!FindingFacts.answerInForce(over))
     var unsaid = f
     unsaid.answer?.inForce = nil
-    #expect(FindingFacts.answeredOutside(unsaid))
+    #expect(FindingFacts.answerInForce(unsaid))
     // Take back on the opened finding runs `reopen`, then reads the status again.
     let immune = SequenceImmune(
       status: output("panel-two.json"),
@@ -4942,6 +5005,8 @@ struct AnswerOnTheCard {
     await model.refresh()
     await model.openFinding(id)
     #expect(await model.answerSeen(id))
+    // A saved answer closes the card; Expected is given on the card opened again.
+    await model.openFinding(id)
     model.form = ExpectedForm(id: id, reason: "mine")
     #expect(await model.answerExpected(model.form!))
     model.closeFinding()
@@ -4994,6 +5059,8 @@ struct AnswerOnTheCard {
     await model.refresh()
     await model.openFinding(core)
     #expect(await model.answerSeen(core))
+    // A saved answer closes the card; Expected is given on the card opened again.
+    await model.openFinding(core)
     model.form = ExpectedForm(id: core, reason: "my own build")
     #expect(await model.answerExpected(model.form!))
     #expect(

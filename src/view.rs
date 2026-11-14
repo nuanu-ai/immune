@@ -1963,14 +1963,21 @@ const HEAD: &str = r#"<!doctype html>
 <style>
 /* One stylesheet for every page, with the colours and measures of the design sheet. Its values
    are the custom properties below; a change of design is a change of these values.
-   Three colours say a state, each the macOS system colour, the same as the panel's: --now for
-   what needs the person now, --calm for nothing to look at on a Mac watched in full, --quiet for
-   everything else. No other colour says a state. The accent is for what is clicked. */
+   Five colour roles, each a macOS system colour, the same as the panel's:
+   --now (red): needs the person now; the response layer said suspicious.
+   --look (orange): to look at, not urgent; watched or read in part; could not be read; you can fix.
+   --calm (green): watched, read in full, nothing to look at; the response layer said harmless.
+   --link (blue): what opens something: links, counts that are links, the selected control.
+   --quiet (grey): none here, not applicable, off, never checked.
+   Colour is a mark (a dot, a glyph, one word, a thin tint behind the state band), never a filled
+   row and never body text, and it always stands beside the word that says the same. A dot or a
+   glyph takes the hue itself; a word takes its -ink variant, dark enough to read on the page. */
 :root {
   color-scheme: light dark;
-  --now: #FF3B30; --calm: #28CD41; --quiet: #8E8E93;
+  --now: #FF3B30; --look: #FF9500; --calm: #28CD41; --link: #0066CC; --quiet: #8E8E93;
+  --now-ink: #D70015; --look-ink: #C93400; --calm-ink: #248A3D;
   --bg: #FFFFFF; --fill: #F5F5F7; --t1: #1D1D1F; --t2: #6E6E73; --t3: #AEAEB2; --sep: #E5E5EA;
-  --accent: #0066CC; --grid: #D2D2D7; --bar: var(--t3); --on: #FFFFFF;
+  --grid: #D2D2D7; --bar: var(--link); --on: #FFFFFF;
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", "Helvetica Neue", Helvetica, Arial, sans-serif;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
   /* Type: size / line height. */
@@ -1981,9 +1988,10 @@ const HEAD: &str = r#"<!doctype html>
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --now: #FF453A; --calm: #32D74B; --quiet: #98989D;
+    --now: #FF453A; --look: #FF9F0A; --calm: #32D74B; --link: #2997FF; --quiet: #98989D;
+    --now-ink: #FF6961; --look-ink: #FFB340; --calm-ink: #30DB5B;
     --bg: #1C1C1E; --fill: #2C2C2E; --t1: #F5F5F7; --t2: #98989D; --t3: #636366; --sep: #38383A;
-    --accent: #2997FF; --grid: #48484A;
+    --grid: #48484A;
   }
 }
 * { box-sizing: border-box; }
@@ -1995,9 +2003,9 @@ h2 { font: var(--heading); margin: var(--section) 0 8px; }
 h3 { font: 600 13px/20px var(--font); margin: 16px 0 4px; }
 h4 { font: 600 12px/16px var(--font); margin: 12px 0 4px; }
 p { margin: 8px 0; }
-a { color: var(--accent); text-decoration: none; }
+a { color: var(--link); text-decoration: none; }
 a:hover { text-decoration: underline; }
-a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+a:focus-visible, summary:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; border-radius: 4px; }
 .meta { color: var(--t2); font: var(--caption); margin: 0; overflow-wrap: anywhere; }
 .muted, .sec, .quiet, .t2 { color: var(--t2); }
 .mono, code, .said { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
@@ -2009,11 +2017,24 @@ header { margin-bottom: 8px; }
 
 /* Tables of the pages of details. */
 .scroll { overflow-x: auto; margin: 4px 0; }
+/* A table wider than the page scrolls in its box; its scroll bar stays drawn, so a column past the
+   right edge reads as more to scroll to and not as cut off. */
+.scroll::-webkit-scrollbar { height: 8px; }
+.scroll::-webkit-scrollbar-thumb { background: var(--t3); border-radius: 4px; }
 table { border-collapse: collapse; width: 100%; font: var(--body); }
 th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--sep); vertical-align: top; }
 th { color: var(--t2); font: var(--caption); white-space: nowrap; }
 table.dense th, table.dense td { padding: 4px 8px; }
-td.mono { overflow-wrap: normal; white-space: nowrap; }
+/* One rule for every table: a column of short data is as wide as its content and keeps it on one
+   line; prose takes the rest and wraps, no column of it narrower than 12 characters; a table that
+   cannot fit scrolls in its own box (.scroll), never the page.
+   - A time (td.nowrap, by .nowrap above) never wraps.
+   - Data (td.mono) wraps only between the names of a list, and breaks inside a name only past 36
+     characters, so a long path neither stays on one line nor squeezes the prose beside it.
+   - Words (a plain td) wrap, and a long path or id among them breaks rather than widening the
+     column. */
+td.mono { white-space: normal; overflow-wrap: break-word; max-width: 36ch; }
+td:not(.mono):not(.nowrap) { min-width: 12ch; overflow-wrap: anywhere; }
 tr.bad td { font-weight: 600; }
 tr.removed td:first-child, tr.changed td:first-child { color: var(--t2); }
 
@@ -2065,6 +2086,10 @@ footer.licence { margin-top: 32px; }
 #this-mac { margin-top: 0; display: grid; grid-template-columns: 40px minmax(0, 1fr); column-gap: 16px; align-items: center;
   padding: 20px 24px; background: var(--fill); border-radius: var(--radius); }
 #this-mac .glyph { width: 40px; height: 40px; }
+/* A thin tint of the state's colour behind the band, taken from its glyph; grey stays grey. */
+#this-mac:has(> .glyph.now) { background: color-mix(in srgb, var(--now) 9%, var(--fill)); }
+#this-mac:has(> .glyph.look) { background: color-mix(in srgb, var(--look) 11%, var(--fill)); }
+#this-mac:has(> .glyph.calm) { background: color-mix(in srgb, var(--calm) 10%, var(--fill)); }
 #this-mac h1 { margin: 0; }
 #this-mac .sub { font: var(--caption); color: var(--t2); margin: 4px 0 0; overflow-wrap: anywhere; }
 
@@ -2079,9 +2104,20 @@ footer.licence { margin-top: 32px; }
 .findings:not(:has(#answered:target, #all:target, .fr.answered:not(.open):target, .fr.answered:not(.open) :target)) :is(.fr, .empty, .more, .fg):not(.open) { display: none; }
 .findings:has(#answered:target) :is(.fr, .empty, .more, .fg):not(.answered) { display: none; }
 .fg { font: 600 12px/16px var(--font); color: var(--t2); padding: 16px 12px 8px; margin: 0; }
-.fg.now { color: var(--now); }
-.fh, .fr > summary { display: grid; grid-template-columns: minmax(0, 1fr) 240px 128px 56px 16px; column-gap: 12px; align-items: center;
+.fg.open { color: var(--look-ink); }
+.fg.now { color: var(--now-ink); }
+/* Seen holds a time, or a date and a time: one line, as wide as "2026-11-13 14:37" in its digits. */
+.fh, .fr > summary { display: grid; grid-template-columns: minmax(0, 1fr) 240px 96px 16ch 16px; column-gap: 12px; align-items: center;
   min-height: 40px; padding: 0 12px; border-bottom: 1px solid var(--sep); }
+/* Each row's dot in its group's colour, in the first cell's padding: red needs you now, orange to
+   look at, grey answered. */
+.fr > summary { position: relative; }
+.fr > summary::before { content: ""; position: absolute; left: 2px; top: 50%; width: 6px; height: 6px; margin-top: -3px;
+  border-radius: 50%; background: var(--quiet); }
+.fr.open > summary::before { background: var(--look); }
+.fr.urgent > summary::before { background: var(--now); }
+.fr.suspicious .fv { color: var(--now-ink); }
+.fr.harmless .fv { color: var(--calm-ink); }
 .fh { min-height: 32px; font: var(--caption); color: var(--t2); }
 .fh .fs { text-align: right; }
 .fr { margin: 0; }
@@ -2091,7 +2127,7 @@ footer.licence { margin-top: 32px; }
 .fr[open] > summary { background: var(--fill); border-bottom: 0; border-radius: var(--radius-row) var(--radius-row) 0 0; }
 .fr .fw { font: var(--data); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fr .fk, .fr .fs { color: var(--t2); }
-.fr .fs { text-align: right; font-variant-numeric: tabular-nums; }
+.fr .fs { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .fr .fv .none { color: var(--t3); }
 /* Whose word the cell is: said to a screen reader always, shown where the column has no header. */
 .fr .fv .src { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
@@ -2122,6 +2158,8 @@ dl.facts dd .w { font: 12px/20px var(--font); }
 .empty, .more { padding: 24px 12px; color: var(--t2); margin: 0; border-bottom: 1px solid var(--sep); }
 .more { padding: 12px; }
 #you-can-fix .empty { border-bottom: 0; }
+/* Its count in orange while there is something to fix. */
+#you-can-fix:has(.fixg) .wsh .n { color: var(--look-ink); }
 
 /* What is watched: a row per kind of place, grouped; the state is coverage alone. */
 .wt { overflow-x: auto; }
@@ -2132,8 +2170,12 @@ dl.facts dd .w { font: 12px/20px var(--font); }
 .wr .wl { color: var(--t2); text-align: right; font-variant-numeric: tabular-nums; }
 .wr .wc { color: var(--t2); }
 .wg { font: 600 12px/16px var(--font); color: var(--t2); padding: 16px 12px 8px; margin: 0; }
+/* Green read in full; orange hollow read in part, not read or failed; grey none here; grey hollow
+   never checked. */
 .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--quiet); vertical-align: 1px; margin-right: 4px; }
+.dot.calm { background: var(--calm); }
 .dot.off { background: transparent; box-shadow: inset 0 0 0 1px var(--quiet); }
+.dot.off.look { box-shadow: inset 0 0 0 1.5px var(--look); }
 .nj { display: block; padding: 12px; margin: 0; }
 
 /* As it happens: src/happens.rs. */
@@ -2168,9 +2210,16 @@ dl.facts dd .w { font: 12px/20px var(--font); }
 .tactic { display: grid; grid-template-columns: 168px minmax(0, 1fr); column-gap: 16px; align-items: center; min-height: 20px; }
 .tactic .tn2 { font: var(--caption); color: var(--t2); }
 .sq { display: flex; flex-wrap: wrap; gap: 4px; }
+/* A technique: watched and quiet a thin green tint; matched an orange tint in three steps by its
+   matches (the legend shows the middle one); a finding raised on it orange with a darker edge, red
+   when the finding needs the person now. */
 .m { display: block; flex: none; width: 12px; height: 12px; border-radius: 2px; background: var(--grid); }
-.m.look { background: var(--quiet); }
-.m.hit { background: transparent; box-shadow: inset 0 0 0 1.5px var(--quiet); }
+.m.calm { background: color-mix(in srgb, var(--calm) 22%, var(--bg)); }
+.m.hit { background: color-mix(in srgb, var(--look) 50%, var(--bg)); }
+.m.hit.s1 { background: color-mix(in srgb, var(--look) 28%, var(--bg)); }
+.m.hit.s3 { background: color-mix(in srgb, var(--look) 75%, var(--bg)); }
+.m.look { background: var(--look); box-shadow: inset 0 0 0 1.5px var(--look-ink); }
+.m.look[data-now] { background: var(--now); box-shadow: none; }
 .covers > .meta { margin: 12px 12px 0; }
 
 /* You can fix. */
@@ -2190,6 +2239,7 @@ footer.links { display: flex; flex-wrap: wrap; gap: 8px 24px; margin-top: var(--
   .fr > summary { grid-template-columns: minmax(0, 1fr) auto 16px; row-gap: 0; padding: 8px 12px; }
   .fr > summary .fw { grid-column: 1 / -1; white-space: normal; overflow-wrap: anywhere; }
   .fr > summary .fk { grid-column: 1 / -1; }
+  .fr > summary::before { top: 15px; margin-top: 0; }
   .fr .fv .src { position: static; width: auto; height: auto; overflow: visible; clip-path: none; color: var(--t2); }  .fx, .fx .also { grid-template-columns: minmax(0, 1fr); padding-left: 12px; }
   .wr.wh { display: none; }
   .wr { grid-template-columns: minmax(0, 1fr) auto; row-gap: 0; }
