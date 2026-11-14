@@ -1,9 +1,10 @@
-// The opened finding, inside the popover: an evidence card from `immune finding <id> --json`
-// alone. An answer given outside the app on top, with Take back; the kind and what happened;
-// the thing large, in monospace; a table of facts for its kind; the response layer's verdicts
-// in a box of their own, each reason as data; the meaning in one line; the buttons, the primary
-// one following Immune's `urgent`; what to do, on request; a short history. A failure of the
-// command is the contract's `Failure`, shown as one, never an empty card.
+// The opened finding, inside the popover, from `immune finding <id> --json` alone, as the design
+// sheet draws it: Back and Show in report; the thing as the title, wrapped after its slashes; a
+// line with its kind, what happened and when, led by "Needs you now" in red only when Immune
+// marked it urgent; the facts; "Who said what": the published rule, the response layer, the
+// person's answer and Immune; a short history. One set of answers in a footer that does not
+// scroll (`FindingFooter`). A failure of the command is the contract's `Failure`, shown as one,
+// never an empty card.
 
 import AppKit
 import ImmuneCore
@@ -16,135 +17,266 @@ struct FindingView: View {
   let now: Date
   @State private var adviceOpen = false
 
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      nav
+      switch opened.reading {
+      case .loading:
+        HStack(spacing: Metrics.gap) {
+          ProgressView().controlSize(.small)
+          Text(verbatim: "Reading the finding…").textStyle(TextStyle.body.role(.secondary))
+        }
+        .padding(.horizontal, Metrics.inset).padding(.vertical, Metrics.thingVertical)
+      case .refused(let failure, let exit):
+        FailureBox(failure: failure, exitCode: exit)
+          .padding(.horizontal, Metrics.inset).padding(.vertical, Metrics.thingVertical)
+      case .failed(let reason, let detail):
+        VStack(alignment: .leading, spacing: Metrics.lineGap) {
+          Plain("I can't show this finding: " + reason).textStyle(.body)
+          if let detail {
+            DataText(text: Inert.text(detail), style: TextStyle.data.role(.secondary))
+          }
+        }
+        .padding(.horizontal, Metrics.inset).padding(.vertical, Metrics.thingVertical)
+      case .read(let f):
+        card(f)
+      }
+    }
+  }
+
+  var nav: some View {
+    HStack(spacing: Metrics.gap) {
+      Button {
+        model.closeFinding()
+      } label: {
+        HStack(spacing: Metrics.navGap) {
+          Image(systemName: Symbols.back).font(SymbolStyle.chevron.font)
+          Text(verbatim: "Back")
+        }
+        .textStyle(.navLink)
+      }
+      .buttonStyle(.plain)
+      Spacer(minLength: 0)
+      Button {
+        Task { await model.openPage(at: opened.id) }
+      } label: {
+        Text(verbatim: "Show in report").textStyle(.navLink)
+      }
+      .buttonStyle(.plain)
+      .disabled(model.pageOpening)
+    }
+    .padding(.horizontal, Metrics.inset).padding(.top, Metrics.navTop)
+  }
+
+  @ViewBuilder func card(_ f: Contract.Finding) -> some View {
+    let urgent = FindingFacts.urgent(f)
+    VStack(alignment: .leading, spacing: Metrics.lineGap) {
+      // The thing as data, whole, broken after its slashes when it wraps.
+      Text(verbatim: Inert.wrapping(Inert.display(FindingFacts.object(f))))
+        .textStyle(.titleData)
+        .fixedSize(horizontal: false, vertical: true)
+      let caption = FindingFacts.caption(f, now: now)
+      Group {
+        if urgent {
+          Text(verbatim: "Needs you now").styled(TextStyle.captionStrong.role(.now))
+            + Text(verbatim: caption.isEmpty ? "" : " · " + caption)
+        } else {
+          Text(verbatim: caption)
+        }
+      }
+      .textStyle(.caption)
+      .fixedSize(horizontal: false, vertical: true)
+    }
+    .padding(.horizontal, Metrics.inset).padding(.vertical, Metrics.thingVertical)
+    Separator()
+    let facts = FindingFacts.facts(f)
+    if !facts.isEmpty {
+      Grid(
+        alignment: .leadingFirstTextBaseline, horizontalSpacing: Metrics.gap,
+        verticalSpacing: Metrics.factsRowGap
+      ) {
+        ForEach(Array(facts.enumerated()), id: \.offset) { _, fact in
+          GridRow {
+            Text(verbatim: fact.label).textStyle(.factLabel)
+              .frame(width: Metrics.label, alignment: .leading)
+            Group {
+              if fact.oneLine {
+                DataLine(text: fact.value, path: false).help(fact.value)
+              } else if fact.isData {
+                DataText(text: fact.value)
+              } else {
+                Plain(fact.value).textStyle(.body)
+              }
+            }
+            .gridColumnAlignment(.leading)
+          }
+        }
+      }
+      .padding(.horizontal, Metrics.inset).padding(.top, Metrics.factsTop)
+    }
+    let voices = FindingFacts.voices(f, now: now)
+    if !voices.isEmpty {
+      Text(verbatim: "Who said what").textStyle(.captionStrong)
+        .padding(.horizontal, Metrics.inset).padding(.top, Metrics.voicesHeadingTop)
+        .accessibilityAddTraits(.isHeader)
+      VStack(alignment: .leading, spacing: Metrics.voiceGap) {
+        ForEach(Array(voices.enumerated()), id: \.offset) { _, voice in
+          VoiceView(voice: voice, adviceOpen: $adviceOpen)
+        }
+      }
+      .padding(.horizontal, Metrics.inset).padding(.top, Metrics.voicesTop)
+    }
+    let history = FindingFacts.history(f, now: now)
+    Group {
+      if history.isEmpty {
+        Color.clear.frame(height: Metrics.historyBottom)
+      } else {
+        Plain(history).textStyle(.caption)
+          .padding(.horizontal, Metrics.inset)
+          .padding(.top, Metrics.historyTop).padding(.bottom, Metrics.historyBottom)
+      }
+    }
+  }
+}
+
+/// One voice of "Who said what": who, what they said, what it rests on, their reason quoted,
+/// and for Immune what to do, behind a link.
+struct VoiceView: View {
+  let voice: Voice
+  @Binding var adviceOpen: Bool
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: Metrics.lineGap) {
+      Group {
+        if let data = voice.whoData {
+          Text(verbatim: voice.who + " · ") + Text(verbatim: Inert.display(data))
+        } else {
+          Text(verbatim: voice.who)
+        }
+      }
+      .textStyle(.caption)
+      if !voice.said.isEmpty {
+        if voice.saidIsData {
+          DataText(text: voice.said)
+        } else {
+          Plain(voice.said).textStyle(.body)
+        }
+      }
+      if voice.data != nil || voice.detail != nil {
+        Group {
+          if let data = voice.data, let detail = voice.detail {
+            Text(verbatim: Inert.display(data)) + Text(verbatim: " · " + detail)
+          } else if let data = voice.data {
+            Text(verbatim: Inert.display(data))
+          } else {
+            Text(verbatim: voice.detail ?? "")
+          }
+        }
+        .textStyle(.caption)
+        .fixedSize(horizontal: false, vertical: true)
+      }
+      if let quote = voice.quote {
+        Quote(text: quote).padding(.top, Metrics.quoteTop - Metrics.lineGap)
+      }
+      ForEach(Array(voice.facts.enumerated()), id: \.offset) { _, fact in
+        HStack(alignment: .firstTextBaseline, spacing: Metrics.navGap) {
+          Text(verbatim: fact.label).textStyle(.caption).fixedSize()
+          DataText(text: fact.value, style: TextStyle.caption.role(.secondary))
+        }
+      }
+      if let advice = voice.advice {
+        Button {
+          adviceOpen.toggle()
+        } label: {
+          Text(verbatim: adviceOpen ? "Hide what to do" : "What to do").textStyle(.link)
+        }
+        .buttonStyle(.plain)
+        .padding(.top, Metrics.quoteTop - Metrics.lineGap)
+        if adviceOpen { Plain(advice).textStyle(.body) }
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+}
+
+/// Text a source wrote, set apart: monospace, a rule at its left, never in the app's voice.
+struct Quote: View {
+  let text: String
+  var body: some View {
+    HStack(spacing: Metrics.gap) {
+      Rectangle().fill(.tertiary).frame(width: Metrics.quoteRule)
+      DataText(text: text)
+    }
+    .fixedSize(horizontal: false, vertical: true)
+  }
+}
+
+/// The opened finding's footer, which does not scroll: one set of answers for the one thing on
+/// the screen, the primary one following Immune's `urgent`; the answer given outside the app, with
+/// Take back; Saving…; or the Expected form in its place.
+///
+/// A thing shown as one is sometimes two findings: the core's and the response layer's own about
+/// it. Then each answer is one command for both, the opened finding by its id and the other with
+/// `--with` (`FindingFacts.pair`), and the core answers both or neither.
+struct FindingFooter: View {
+  let opened: OpenedFinding
+  let panel: Panel
+  @ObservedObject var model: AppModel
+  let now: Date
+
   /// The finding as the status lists it: only such a finding takes an answer here.
   var row: Row? { panel.rows.first { $0.item.id == opened.id } }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 0) {
-      HStack(spacing: 6) {
-        Button {
-          model.closeFinding()
-        } label: {
-          Label("Back", systemImage: "chevron.left").labelStyle(.titleAndIcon)
-        }
-        .buttonStyle(.link).font(.system(size: 13))
-        Spacer()
-        Button("Show in report") { Task { await model.openPage(at: opened.id) } }
-          .buttonStyle(.link).font(.system(size: 12))
-          .disabled(model.pageOpening)
+    if case .read(let f) = opened.reading {
+      VStack(alignment: .leading, spacing: 0) {
+        Separator()
+        content(f)
+          .padding(.horizontal, Metrics.inset).padding(.vertical, Metrics.footerVertical)
       }
-      .padding(.horizontal, 12).padding(.top, 10)
-      VStack(alignment: .leading, spacing: 10) {
-        switch opened.reading {
-        case .loading:
-          HStack(spacing: 8) {
-            ProgressView().controlSize(.small)
-            Text(verbatim: "Reading the finding…").foregroundStyle(.secondary)
-          }
-          .font(.system(size: 13))
-        case .refused(let failure, let exit):
-          FailureBox(failure: failure, exitCode: exit)
-        case .failed(let reason, let detail):
-          VStack(alignment: .leading, spacing: 6) {
-            Plain("I can't show this finding: " + reason).font(.system(size: 13, weight: .semibold))
-            if let detail { DataText(text: Inert.text(detail)).foregroundStyle(.secondary) }
-          }
-        case .read(let f):
-          card(f)
-        }
-      }
-      .padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 14)
     }
   }
 
-  @ViewBuilder func card(_ f: Contract.Finding) -> some View {
-    let id = opened.id
-    if FindingFacts.answeredOutside(f), let a = f.answer {
-      VStack(alignment: .leading, spacing: 4) {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-          Image(systemName: "person.badge.clock").foregroundStyle(Color.accentColor)
-            .accessibilityHidden(true)
-          Plain(FindingFacts.answer(a)).font(.system(size: 12, weight: .semibold))
-          Spacer(minLength: 4)
-          if model.answering == id {
-            Text(verbatim: "Saving…").foregroundStyle(.secondary)
-          } else {
-            Button("Take back") { Task { await model.takeBack(id) } }
-              .disabled(model.answering != nil).fixedSize()
-          }
-        }
-        .font(.system(size: 12))
-        if let reason = a.reasonText { Quote(text: Inert.text(reason, limit: 1000)) }
-      }
-      .padding(8)
-      .background(
-        Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-          .strokeBorder(Color.accentColor.opacity(0.3), lineWidth: 0.5))
-    }
-    HStack(spacing: 6) {
-      Image(systemName: Words.symbol(f.kind)).foregroundStyle(.secondary).accessibilityHidden(true)
-      Text(verbatim: Words.kind(f.kind) ?? "Finding")
-      if let change = FindingFacts.change(f) { Chip(text: change) }
-      if case .publishedRule = f.evidence { Chip(text: "published rule") }
-      if let state = f.finding?.state, state != "open" {
-        Chip(text: Inert.text(state, limit: 20).capitalized)
-      }
-    }
-    .font(.system(size: 12)).foregroundStyle(.secondary)
-    DataText(text: FindingFacts.object(f), size: 14, weight: .semibold)
-    if let levels = Levels.words(severity: f.finding?.severity, confidence: f.finding?.confidence) {
-      Text(verbatim: levels).font(.system(size: 12)).foregroundStyle(.secondary)
-    }
-    let facts = FindingFacts.facts(f)
-    if !facts.isEmpty {
-      Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 4) {
-        ForEach(Array(facts.enumerated()), id: \.offset) { _, fact in
-          GridRow {
-            Text(verbatim: fact.label).font(.system(size: 12)).foregroundStyle(.secondary)
-              .gridColumnAlignment(.leading)
-            if fact.isData {
-              DataText(text: fact.value)
-            } else {
-              Plain(fact.value).font(.system(size: 12))
-            }
-          }
-        }
-      }
-    }
-    // Shown unless the response layer is said to have given none: a total not given is not zero.
-    if let v = f.verdicts, v.total != 0 || !v.listed.isEmpty || v.verdictFinding != nil {
-      VerdictsBox(verdicts: v, model: model, panel: panel)
-    }
-    if let meaning = f.meaning {
-      Plain(Inert.text(meaning, limit: 600)).font(.system(size: 12)).foregroundStyle(.secondary)
-        .lineLimit(3).help(meaning)
-    }
-    buttons(f)
-    if let refused = model.refusals[id] {
-      Plain(refused).font(.system(size: 12)).textSelection(.enabled)
-    }
-    if let advice = f.advice {
-      Button(adviceOpen ? "Hide what to do" : "What to do") { adviceOpen.toggle() }
-        .buttonStyle(.link).font(.system(size: 12))
-      if adviceOpen { Plain(Inert.text(advice, limit: 1000)).font(.system(size: 12)) }
-    }
-    let history = FindingFacts.history(f, now: now)
-    if !history.isEmpty {
-      Divider()
-      Plain(history).font(.system(size: 11)).foregroundStyle(.secondary)
-    }
-  }
-
-  /// Seen, Expected… and Ask my agent. The primary one follows Immune's `urgent`: for an urgent
-  /// finding, asking the agent; otherwise Seen. A finding the status does not list takes no
-  /// answer here.
-  @ViewBuilder func buttons(_ f: Contract.Finding) -> some View {
+  @ViewBuilder func content(_ f: Contract.Finding) -> some View {
     let id = opened.id
     let canAnswer = row?.canAnswer == true
-    let urgent = f.finding?.urgent == true
+    let pair = FindingFacts.pair(f, id: id, rows: panel.rows)
+    if canAnswer, model.form?.id == id {
+      // A refused Expected comes back to the form with what was typed, and says why.
+      VStack(alignment: .leading, spacing: Metrics.footerGap) {
+        if let refused = model.refusals[id] {
+          Plain(refused).textStyle(.caption).textSelection(.enabled)
+        }
+        ExpectedFormView(model: model, id: id)
+      }
+    } else if model.answering == id {
+      HStack(spacing: Metrics.gap) {
+        ProgressView().controlSize(.small)
+        Text(verbatim: "Saving…").textStyle(TextStyle.body.role(.secondary))
+      }
+    } else if FindingFacts.answeredOutside(f), let a = f.answer {
+      // One line: the answer, the year only when it is not this one; who gave it in the tooltip.
+      HStack(spacing: Metrics.gap) {
+        Text(verbatim: FindingFacts.answeredLine(a, now: now)).textStyle(.caption)
+          .lineLimit(1).truncationMode(.tail).help(FindingFacts.answeredHelp(a, now: now))
+        Spacer(minLength: 0)
+        Button("Take back") { Task { await model.takeBack(id) } }
+          .disabled(model.answering != nil).fixedSize()
+      }
+    } else {
+      VStack(alignment: .leading, spacing: Metrics.footerGap) {
+        if let refused = model.refusals[id] {
+          Plain(refused).textStyle(.caption).textSelection(.enabled)
+        }
+        answers(f, canAnswer: canAnswer, pair: pair)
+      }
+    }
+  }
+
+  /// Seen, Expected… and Ask my agent, the primary first: for an urgent finding, asking the
+  /// agent; otherwise Seen. A finding the status does not list takes no answer here.
+  @ViewBuilder func answers(_ f: Contract.Finding, canAnswer: Bool, pair: String?) -> some View {
+    let id = opened.id
     let request =
       row?.agentRequest
       ?? AgentRequest.text(
@@ -156,160 +288,25 @@ struct FindingView: View {
           ("severity", f.finding?.severity), ("state", f.finding?.state), ("title", f.title),
           ("where_text", f.whereText),
         ])
-    if canAnswer, model.form?.id == id {
-      ExpectedFormView(model: model, id: id)
-    } else if model.answering == id {
-      HStack(spacing: 6) {
-        ProgressView().controlSize(.small)
-        Text(verbatim: "Saving…").foregroundStyle(.secondary)
-      }
-      .font(.system(size: 13))
-    } else {
-      let actions = FindingFacts.actions(urgent: urgent, canAnswer: canAnswer)
-      HStack(spacing: 6) {
-        ForEach(Array(actions.enumerated()), id: \.offset) { index, action in
-          let primary = index == 0
-          switch action {
-          case .askAgent:
-            CopyForAgent(text: request, label: "Ask my agent", prominent: primary)
-          case .seen:
-            let seen = Button("Seen") { Task { await model.answerSeen(id) } }
-              .help("Mark it seen: it stops asking for a look.")
-            if primary { seen.buttonStyle(.borderedProminent) } else { seen }
-          case .expected:
-            Button("Expected…") { model.form = ExpectedForm(id: id) }
-              .help("Mark it expected for a while, with a short reason.")
-          }
-        }
-      }
-      .disabled(model.answering != nil)
-      .fixedSize()
-    }
-  }
-}
-
-/// What the response layer said: how many verdicts and how many suspicious, each listed verdict
-/// with its kind, its levels and its reason as data, and its own finding with Seen.
-struct VerdictsBox: View {
-  let verdicts: Contract.Verdicts
-  @ObservedObject var model: AppModel
-  let panel: Panel
-  static let shown = 3
-
-  var body: some View {
-    let tone = VerdictTone.of(total: verdicts.total, suspicious: verdicts.suspicious)
-    let colour: Color =
-      switch tone {
-      case .suspicious: .red
-      case .harmless: .green
-      case .unknown: .secondary
-      }
-    VStack(alignment: .leading, spacing: 6) {
-      HStack(spacing: 6) {
-        Image(
-          systemName: tone == .suspicious
-            ? "exclamationmark.bubble" : tone == .harmless ? "checkmark.bubble" : "bubble"
-        )
-        .foregroundStyle(colour).accessibilityHidden(true)
-        Text(verbatim: "Response layer").fontWeight(.semibold)
-        Spacer(minLength: 4)
-        Text(
-          verbatim: (verdicts.total.map { $0 == 1 ? "1 verdict" : "\($0) verdicts" }
-            ?? "verdicts not counted")
-            + ", " + (verdicts.suspicious.map(String.init) ?? "?") + " suspicious"
-        )
-        .foregroundStyle(.secondary)
-      }
-      ForEach(Array(verdicts.listed.suffix(Self.shown).enumerated()), id: \.offset) { _, v in
-        VStack(alignment: .leading, spacing: 3) {
-          HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text(
-              verbatim: v.kind == "suspicious"
-                ? "Suspicious"
-                : v.kind == "harmless"
-                  ? "Harmless" : Inert.text(v.kind ?? "No kind given", limit: 40)
-            )
-            .foregroundStyle(
-              v.kind == "suspicious"
-                ? Color.red : v.kind == "harmless" ? Color.green : Color.secondary
-            )
-            .fontWeight(.medium).fixedSize()
-            // The levels beside the verdict's word, wrapped rather than cut.
-            if let levels = Levels.words(severity: v.severity, confidence: v.confidence) {
-              Text(verbatim: levels).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 4)
-            if let at = v.recordedAt {
-              Text(verbatim: Clock.at(at, now: Date())).foregroundStyle(.secondary).fixedSize()
-            }
-          }
-          if let reason = v.reasonText { Quote(text: Inert.text(reason, limit: 1000)) }
-          if let c = FindingFacts.caseFact(v) {
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-              Text(verbatim: c.label).foregroundStyle(.secondary).fixedSize()
-              DataText(text: c.value, size: 11).foregroundStyle(.secondary)
-            }
-          }
-        }
-      }
-      if verdicts.listed.count > Self.shown {
-        Text(verbatim: "\(verdicts.listed.count - Self.shown) earlier verdicts in report")
-          .foregroundStyle(.secondary)
-      }
-      if let own = verdicts.verdictFinding, let id = own.id {
-        HStack(spacing: 6) {
-          if own.urgent { BadgeView(badge: .urgent) }
-          Text(verbatim: "Raised its own finding").foregroundStyle(.secondary).fixedSize()
-          // Its state as given; none is invented.
-          if let state = own.state {
-            Text(verbatim: Inert.display(Inert.text(state, limit: 20)))
-              .font(.system(size: 11.5, design: .monospaced)).foregroundStyle(.secondary)
-              .fixedSize()
-          } else {
-            Text(verbatim: "state not given").foregroundStyle(.secondary)
-          }
-          Spacer(minLength: 4)
-          Button("Open") { Task { await model.openFinding(id) } }.buttonStyle(.link).fixedSize()
-          if panel.rows.contains(where: { $0.item.id == id && $0.canAnswer }) {
-            Button("Seen") { Task { await model.answerSeen(id) } }
-              .disabled(model.answering != nil).fixedSize()
-          }
+    let actions = FindingFacts.actions(urgent: FindingFacts.urgent(f), canAnswer: canAnswer)
+    HStack(spacing: Metrics.footerGap) {
+      ForEach(Array(actions.enumerated()), id: \.offset) { index, action in
+        let primary = index == 0
+        switch action {
+        case .askAgent:
+          CopyForAgent(text: request, label: "Ask my agent", style: primary ? .primary : .button)
+        case .seen:
+          let seen = Button("Seen") { Task { await model.answerSeen(id, with: pair) } }
+            .help("Mark it seen: it stops asking for a look.")
+          if primary { seen.buttonStyle(.borderedProminent) } else { seen }
+        case .expected:
+          Button("Expected…") { model.form = ExpectedForm(id: id, with: pair) }
+            .help("Mark it expected for a while, with a short reason.")
         }
       }
     }
-    .font(.system(size: 12))
-    .padding(8)
-    .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 8, style: .continuous)
-        .strokeBorder(
-          tone == .unknown ? Color.secondary.opacity(0.4) : colour.opacity(0.5), lineWidth: 0.75))
-  }
-}
-
-/// Text a source wrote, set apart: monospace, a rule at its left, never in the app's voice.
-struct Quote: View {
-  let text: String
-  var body: some View {
-    HStack(spacing: 0) {
-      Rectangle().fill(.tertiary).frame(width: 2)
-      DataText(text: text).padding(.leading, 8)
-    }
-    .fixedSize(horizontal: false, vertical: true)
-  }
-}
-
-/// A small word in an outline: what happened, the tag of the kind, a state. Never a level: a
-/// level is said in words (`Levels`).
-struct Chip: View {
-  let text: String
-  var body: some View {
-    Text(verbatim: text)
-      .font(.system(size: 11)).foregroundStyle(Color.secondary)
-      .padding(.horizontal, 7).padding(.vertical, 1)
-      .overlay(PillOutline().strokeBorder(Color.secondary.opacity(0.5)))
-      .fixedSize()
+    .disabled(model.answering != nil)
+    .fixedSize()
   }
 }
 
@@ -319,30 +316,29 @@ struct FailureBox: View {
   let failure: Contract.Failure
   let exitCode: Int32?
   var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
+    VStack(alignment: .leading, spacing: Metrics.lineGap) {
       Plain(
         "immune finding did not answer"
           + (exitCode.map { " (exit code \($0))" } ?? "") + "."
       )
-      .font(.system(size: 13, weight: .semibold))
+      .textStyle(.body)
       ForEach(Array(failure.errors.enumerated()), id: \.offset) { _, e in
-        VStack(alignment: .leading, spacing: 2) {
-          if let message = e.message { Plain(Inert.text(message, limit: 400)) }
+        VStack(alignment: .leading, spacing: Metrics.lineGap) {
+          if let message = e.message { Plain(Inert.text(message, limit: 400)).textStyle(.body) }
           if let code = e.code {
-            DataText(text: Inert.text(code, limit: 80)).foregroundStyle(.secondary)
+            DataText(text: Inert.text(code, limit: 80), style: TextStyle.data.role(.secondary))
           }
           if let detail = e.detailText { Quote(text: Inert.text(detail, limit: 1000)) }
           if let example = e.example {
-            Plain("Try: " + Inert.text(example, limit: 400)).foregroundStyle(.secondary)
+            Plain("Try: " + Inert.text(example, limit: 400)).textStyle(.caption)
           }
         }
       }
     }
-    .font(.system(size: 12))
   }
 }
 
-/// One required text field for the reason and how long; nothing else.
+/// One required text field for the reason and how long, in place of the footer; nothing else.
 struct ExpectedFormView: View {
   @ObservedObject var model: AppModel
   let id: String
@@ -352,18 +348,17 @@ struct ExpectedFormView: View {
     let days = Binding(
       get: { model.form?.days ?? Answer.defaultDays }, set: { model.form?.days = $0 })
     let complete = model.form?.isComplete == true
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: Metrics.gap) {
       TextField("Why is it expected? (required)", text: reason)
-        .textFieldStyle(.roundedBorder).font(.system(size: 13))
+        .textFieldStyle(.roundedBorder).font(TextStyle.body.font)
+        .frame(height: Metrics.field)
         .onSubmit { send() }
-      HStack(spacing: 8) {
-        Text(verbatim: "For").font(.system(size: 12)).foregroundStyle(.secondary)
+      // "30 days" says itself; the label "For" stays for VoiceOver, as the row has no room for it.
+      HStack(spacing: Metrics.gap) {
         Picker("For", selection: days) {
           ForEach(Answer.days, id: \.self) { n in Text(verbatim: "\(n) days").tag(n) }
         }
-        .pickerStyle(.segmented).labelsHidden().fixedSize()
-      }
-      HStack(spacing: 8) {
+        .pickerStyle(.menu).labelsHidden().fixedSize()
         Spacer(minLength: 0)
         Button("Cancel") { model.form = nil }.fixedSize()
         Button("Mark expected") { send() }

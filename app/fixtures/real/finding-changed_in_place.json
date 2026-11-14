@@ -1,7 +1,7 @@
 {
   "advice": "If you did not edit it yourself, reinstall that package and look for what else changed.",
   "answer": null,
-  "answered_at": 1794651097,
+  "answered_at": 1794652132,
   "answered_with": null,
   "answers_note": "Answer a finding only after the owner has agreed in this conversation, having been told what it is and what the options are. Pass --via agent and the reason the owner agreed to. The app shows every answer given this way.",
   "evidence": {
@@ -18,28 +18,28 @@
     "state": "open",
     "urgent": true
   },
-  "first_seen_at": 1794651097,
+  "first_seen_at": 1794652131,
   "format": 1,
   "journal_seq": 36,
   "kind": "installed package changed in place",
   "kind_title": "Package changed in place",
-  "last_seen_at": 1794651097,
+  "last_seen_at": 1794652131,
   "meaning": "Package managers put in a new version rather than change an installed one, so this is rare; it happens when something adds code to a tool you run.",
   "rests_on": [
     {
       "entry": "changed",
       "kind": "Homebrew kegs",
-      "new_value_text": "stat:cb4ee2e28e226b71dd71f398d73f8a0897eb21c39a726453d233808f1fd310f1",
-      "old_value_text": "stat:e0b5760f8a0ce1319e20f8587507db123836d8051104965b7a31759e22c789e9",
+      "new_value_text": "stat:ef4cc063af786ff049db661f22358d82aac4384971f64f2a9a69cf077bc4521a",
+      "old_value_text": "stat:a0646d6ca0c96f09b54a2d8094b4a92feac7136929c25bc93253cad785ea8551",
       "predicate": "has_digest",
       "reader": "integrity",
-      "recorded_at": 1794651097,
-      "run_id": "1794651097-013443000",
+      "recorded_at": 1794652131,
+      "run_id": "1794652131-979416000",
       "seq": 25,
       "subject_text": "file:machine:mac//opt/homebrew/Cellar/tool/1.0"
     }
   ],
-  "store_id": "5539c26c789b16bbd75d7433bc7bf269",
+  "store_id": "145bdd155390773771be7d4905c7314f",
   "technique_text": "T1554",
   "thing": null,
   "title": "Files of an installed command-line tool or package were changed in place, while its version stayed the same.",
@@ -63,7 +63,7 @@
             "length": 18
           }
         ],
-        "recorded_at": 1794651097,
+        "recorded_at": 1794652132,
         "verdict": {
           "case_text": "case-samples",
           "confidence": "high",
@@ -74,7 +74,7 @@
           "kind": "suspicious",
           "reason_text": "invented: the package was published by an account taken over; it ran tool --password=\\cut{immune:flag-value 18}",
           "severity": "critical",
-          "store_id": "5539c26c789b16bbd75d7433bc7bf269"
+          "store_id": "145bdd155390773771be7d4905c7314f"
         }
       }
     ],

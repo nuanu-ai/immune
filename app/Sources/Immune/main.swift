@@ -23,6 +23,7 @@ final class Delegate: NSObject, NSApplicationDelegate {
   let watcher: Watcher
   private var item: NSStatusItem?
   private let popover = NSPopover()
+  private var panel: NSHostingController<PanelView>?
   private var timers: [Timer] = []
   private var watching: AnyCancellable?
   private var termination: DispatchSourceSignal?
@@ -39,11 +40,10 @@ final class Delegate: NSObject, NSApplicationDelegate {
     item.button?.imagePosition = .imageLeading
     self.item = item
 
-    let panel = NSHostingController(
-      rootView: PanelView(
-        model: model, watcher: WatcherBox(watcher), openSettings: { openNotificationSettings() }))
+    let panel = NSHostingController(rootView: panelView(maxHeight: nil))
     panel.sizingOptions = [.preferredContentSize]
     popover.contentViewController = panel
+    self.panel = panel
     popover.behavior = .transient
 
     // @Published sends the new value before it is stored; paint from the value.
@@ -110,12 +110,25 @@ final class Delegate: NSObject, NSApplicationDelegate {
     guard let button = item?.button else { return }
     let p = Panel.of(reading, now: Date())
     let words = Panel.iconWords(p)
-    // The worst severity shown decides the weight: filled for high or critical.
-    button.image = MenuIcon.image(
-      p.light, worst: p.worst, urgent: p.urgent, words: "\(appName): \(words)")
-    button.attributedTitle = MenuIcon.title(p.light)
+    // Filled only when something needs the person now.
+    button.image = MenuIcon.image(p.light, urgent: p.urgent, words: "\(appName): \(words)")
+    button.attributedTitle = MenuIcon.title(p.light, things: p.counts.total)
     button.toolTip = "\(appName): \(words)"
-    log("state: \(Light.menuSymbol(p.light, worst: p.worst, urgent: p.urgent)) \(words)")
+    log("state: \(Light.menuSymbol(p.light, urgent: p.urgent)) \(words)")
+  }
+
+  private func panelView(maxHeight: CGFloat?) -> PanelView {
+    PanelView(
+      model: model, watcher: WatcherBox(watcher), maxHeight: maxHeight,
+      openSettings: { openNotificationSettings() })
+  }
+
+  /// The most the panel may be high under this button: the visible part of the screen the
+  /// button is on, under the menu bar and above the Dock, less a margin for the popover's arrow.
+  /// The headline and the footer then always fit, and the list between them scrolls.
+  private func maxHeight(for button: NSStatusBarButton) -> CGFloat? {
+    guard let screen = button.window?.screen ?? NSScreen.main else { return nil }
+    return PanelView.maxHeight(visible: screen.visibleFrame.height)
   }
 
   /// Opens the panel, as a click on a notification does.
@@ -132,6 +145,7 @@ final class Delegate: NSObject, NSApplicationDelegate {
     // The owner opened the panel and is looking at it: this reading does not wait. It opens
     // on the list.
     model.closeFinding()
+    panel?.rootView = panelView(maxHeight: maxHeight(for: button))
     Task { await model.refresh(for: .owner) }
     popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
     NSApp.activate()

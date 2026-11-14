@@ -39,6 +39,7 @@ final class SystemNotifier: NSObject, Notifying, UNUserNotificationCenterDelegat
   func deliver(_ note: Note) {
     let content = UNMutableNotificationContent()
     content.title = note.title
+    if let subtitle = note.subtitle { content.subtitle = subtitle }
     if let body = note.body { content.body = body }
     center.add(UNNotificationRequest(identifier: note.id, content: content, trigger: nil))
     log("notified")

@@ -264,21 +264,23 @@ public final class AppModel: ObservableObject {
     }
   }
 
-  /// The owner's "Seen" on a finding: `immune finding <id> seen`, then a refresh.
-  /// Returns false, and runs nothing, for an id the app does not pass or while
-  /// another answer is being saved.
+  /// The owner's "Seen" on a finding: `immune finding <id> seen`, with `--with <other>` for the
+  /// other finding of a pair shown as one thing, then a refresh. Returns false, and runs nothing,
+  /// for an id the app does not pass or while another answer is being saved.
   @discardableResult
-  public func answerSeen(_ id: String) async -> Bool {
-    guard let args = Answer.seenArguments(id: id) else { return false }
+  public func answerSeen(_ id: String, with other: String? = nil) async -> Bool {
+    guard let args = Answer.seenArguments(id: id, with: other) else { return false }
     return await answer(id, args)
   }
 
   /// The owner's "Expected…" on a finding, from the open form: `immune finding <id>
-  /// expected --reason <reason> --days <n>`, then a refresh. Returns false, and runs
-  /// nothing, unless the form is complete.
+  /// expected --reason <reason> --days <n>`, with `--with <other>` for a pair, then a refresh.
+  /// Returns false, and runs nothing, unless the form is complete.
   @discardableResult
   public func answerExpected(_ form: ExpectedForm) async -> Bool {
-    guard let args = Answer.expectedArguments(id: form.id, reason: form.reason, days: form.days)
+    guard
+      let args = Answer.expectedArguments(
+        id: form.id, reason: form.reason, days: form.days, with: form.with)
     else { return false }
     return await answer(form.id, args)
   }

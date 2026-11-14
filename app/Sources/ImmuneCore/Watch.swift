@@ -261,11 +261,13 @@ public final class Watcher: ObservableObject {
     self.clock = clock
   }
 
+  nonisolated public static let notWatchingTitle = "Not watching for changes right now"
+
   /// The quiet line for the panel, or nil while watching or starting.
   public var notWatching: String? {
     switch state {
     case .down(let reason), .failing(let reason):
-      return "Not watching for changes right now: \(reason)."
+      return Self.notWatchingTitle + ": \(reason)."
     case .starting, .watching, .elsewhere:
       return nil
     }
