@@ -1,7 +1,9 @@
 //! The pages a person lands on: the summary, which answers what the app answers; what is
 //! watched on this Mac, kind by kind; and what is beyond it. Every sentence is in plain
-//! words: what something means for the owner, and whether he can do something about it or
-//! it is a limit of this version. The technical pages are reached from one line at the bottom.
+//! words: what something means for the owner, and whether he can do something about it.
+//! What holds on every Mac, the limits of this version, is not on the pages: the documents
+//! and the commands' machine form say it. The other pages are reached from the links at the
+//! bottom of the summary.
 //!
 //! Every link on the summary leads to a section that lists exactly what its label says,
 //! under a heading that says it, first thing on arrival.
@@ -9,7 +11,7 @@
 //! Text from the store goes through `esc`, as on every page of the view.
 
 use crate::contract::v1;
-use crate::covered::{self, Count, NOTHING, Uncovered, YOU};
+use crate::covered::{self, Count, Uncovered, YOU};
 use crate::view::{self, DETAILS, FOOT, Latest, Out, counted, esc, utc, utc_or};
 use crate::{beyond, findings, integrity, servers, watched};
 use rusqlite::{Connection, params};
@@ -41,9 +43,6 @@ const EXAMPLES_SHOWN: usize = 20;
 /// The link back to the summary, on every page of details.
 const BACK: &str = "<nav class=\"meta\"><a href=\"../view.html\">← What needs a look</a></nav>\n";
 
-/// What a watcher cannot see, in plain words: `watch::CANNOT_SEE` told for a person.
-const WATCHER_CANNOT_SEE: &str = "A watcher does not see who made a change, nor a change undone within a second. A link among the watched files that is pointed somewhere else shows within a minute rather than within seconds.";
-
 /// The anchor of a kind of watched thing: its words in lower case, joined by dashes.
 pub fn anchor(what: &str) -> String {
     what.split(|c: char| !c.is_ascii_alphanumeric())
@@ -63,14 +62,6 @@ pub fn capital(s: &str) -> String {
         .next()
         .map(|c| c.to_uppercase().chain(chars).collect())
         .unwrap_or_default()
-}
-
-/// A link to a section of a page of details.
-fn link(page: &str, anchor: &str, text: &str) -> String {
-    format!(
-        "<a href=\"{DETAILS}/{page}.html#{anchor}\">{}</a>",
-        esc(text)
-    )
 }
 
 /// `1,234`.
@@ -110,13 +101,13 @@ fn about(what: &str) -> &'static str {
     }
 }
 
-/// The summary page, a dashboard read from the top: the state as the status words it; four
-/// tiles, one per area, each leading to its details; what needs a look, one card per finding;
-/// what the owner can fix beside the known vulnerabilities; the map of what the program has
-/// collected; what is watched, as numbers; and, closed, the limits of this version, the
-/// answers given and the technical pages. Built from the state and the result
-/// `immune status --json` gives, so the two agree. Everything the page said before is still on
-/// it, the long parts behind `<details>`.
+/// The summary page, a report read from the top: the state in the panel's words, with one line
+/// on what it rests on; the findings as a table, open, answered and all, each row opening in
+/// place to its evidence as `immune finding` gives it; what is watched, area by area, with its
+/// state and when it was last read; "As it happens", every program start checked against
+/// published rules (`happens.rs`); what the person can fix, and what on this Mac was not judged;
+/// and a line of links to the other pages. Built from the state and the result
+/// `immune status --json` gives, so the two agree.
 pub fn summary(
     conn: &Connection,
     st: &crate::status::State,
@@ -126,687 +117,1176 @@ pub fn summary(
     let mut out = view::head("What needs a look").replacen("<body>", "<body class=\"summary\">", 1);
     let latest = view::latest_coverage(conn)?;
     let map = crate::map::read(conn, st, &latest)?;
-    state(conn, &mut out, st, r)?;
-    tiles(&mut out, st, r, &map)?;
-    needs(&mut out, st)?;
-    out.push_str("<div class=\"pair\">\n");
-    you_can_fix(&mut out, st)?;
-    vulnerabilities_summary(conn, st, &mut out, now)?;
-    out.push_str("</div>\n");
-    crate::map::draw(&mut out, &map, YOUR_DEVICES)?;
-    let list = indicator_list(conn)?;
-    // "None on this Mac now" only where every reading that fills its list is full and fresh,
-    // as on the page of this Mac (`unread`); else it is said not to be known.
-    let latest_run = crate::status::latest_finished(conn)?.map(|r| r.started_at);
-    let this = covered::this_machine(conn)?;
-    let (unread_kinds, none): (Vec<&'static str>, Vec<&'static str>) =
-        covered::none_here(conn, &latest, &st.this_mac)?
-            .into_iter()
-            .partition(|what| {
-                covered::watched()
-                    .into_iter()
-                    .find(|w| w.1 == *what)
-                    .is_some_and(|(count, _, _)| {
-                        let walk = walk_gap(count, &latest, this.as_deref());
-                        unread(&readings_of(count, &latest), latest_run, now, &walk).is_some()
-                    })
-            });
-    watched_section(
-        &mut out,
-        &st.this_mac,
-        &none,
-        &unread_kinds,
-        list,
-        st.event_level.as_ref(),
-    )?;
+    let mac = findings::This::of(conn, covered::this_machine(conn)?)?;
+    let fixable: Vec<&Uncovered> = st
+        .not_covered
+        .iter()
+        .filter(|u| u.cause.who == YOU)
+        .collect();
+    // The scope of the answer, said once as a link to where each thing is named.
+    let unjudged = unjudged(st).len();
+    state(conn, &mut out, st, r, now)?;
+    findings_table(conn, &mut out, st, mac.as_ref(), now)?;
+    watched_table(conn, &mut out, st, &map, &latest, &fixable, unjudged, now)?;
     crate::happens::draw(&mut out, st, &r.rules.clone().unwrap_or_default(), now)?;
-    out.push_str("<div class=\"card closed\">\n");
-    limits(conn, &mut out, st)?;
-    answered_section(conn, &mut out, now)?;
-    writeln!(
-        out,
-        "<p class=\"tech\"><a href=\"{DETAILS}/{TECHNICAL}.html\">Technical details</a> <span class=\"muted\">· everything the program keeps, as it keeps it</span></p>\n</div>"
-    )?;
-    writeln!(
-        out,
-        "<footer>\n<p class=\"meta\">This page made {}</p>\n</footer>",
-        utc(now)
-    )?;
+    you_can_fix(&mut out, &fixable)?;
+    let name = crate::store::held_mac(conn)?.map(|(_, name)| name);
+    links(&mut out, name.as_deref(), now)?;
     out.push_str(FOOT);
     Ok(out)
 }
 
-/// The state's glyph: a shape for each state, so colour is never the only sign. A filled circle
-/// with a mark for something to look at, with a tick for nothing to look at on a Mac watched in
-/// full, a quiet ring with a tick for one watched in part, never green, and a dashed ring with a dash when it is
-/// not known or not checked yet.
-const GLYPH_LOOK: &str = "<svg class=\"glyph\" viewBox=\"0 0 64 64\" aria-hidden=\"true\"><circle cx=\"32\" cy=\"32\" r=\"32\" style=\"fill:var(--red)\"/><path d=\"M32 15v23\" style=\"stroke:#fff;stroke-width:6;stroke-linecap:round\"/><circle cx=\"32\" cy=\"48\" r=\"3.8\" style=\"fill:#fff\"/></svg>";
-const GLYPH_CALM: &str = "<svg class=\"glyph\" viewBox=\"0 0 64 64\" aria-hidden=\"true\"><circle cx=\"32\" cy=\"32\" r=\"32\" style=\"fill:var(--green)\"/><path d=\"M19 33l9 9 17-19\" style=\"fill:none;stroke:#fff;stroke-width:6;stroke-linecap:round;stroke-linejoin:round\"/></svg>";
-const GLYPH_PART: &str = "<svg class=\"glyph\" viewBox=\"0 0 64 64\" aria-hidden=\"true\"><circle cx=\"32\" cy=\"32\" r=\"29\" style=\"fill:none;stroke:var(--sec);stroke-width:5\"/><path d=\"M20 33l8.5 8.5 16-18\" style=\"fill:none;stroke:var(--sec);stroke-width:5;stroke-linecap:round;stroke-linejoin:round\"/></svg>";
-const GLYPH_UNKNOWN: &str = "<svg class=\"glyph\" viewBox=\"0 0 64 64\" aria-hidden=\"true\"><circle cx=\"32\" cy=\"32\" r=\"29\" style=\"fill:none;stroke:var(--hollow);stroke-width:4;stroke-dasharray:7 6\"/><path d=\"M21 32h22\" style=\"stroke:var(--hollow);stroke-width:5;stroke-linecap:round\"/></svg>";
+/// What on this Mac was not judged and nothing the person does changes, as the panel counts it.
+/// What holds on every Mac, a limit of this version, is not on the pages; the documents and the
+/// commands' machine form say it.
+fn unjudged(st: &crate::status::State) -> Vec<&Uncovered> {
+    st.not_covered
+        .iter()
+        .filter(|u| u.cause.who != YOU && !u.every_mac)
+        .collect()
+}
 
-/// The state, first: the glyph, the headline as the status words it, and one line on this Mac:
-/// whether it is watched, which machine, the last full check and whether a watcher runs.
-fn state(conn: &Connection, out: &mut String, st: &crate::status::State, r: &v1::Status) -> Out {
-    let total = r.needs_a_look.as_ref().map(|n| n.total as i64);
-    let headline = match total {
-        Some(0) => "Nothing needs a look".to_string(),
-        Some(n) => counted(n, "thing needs a look", "things need a look"),
-        None => "What needs a look is not known yet".to_string(),
-    };
+/// The state's glyph, one shape for each state, as the panel draws it, so colour is never the
+/// only sign: a disc with an exclamation mark in `--now` when something needs the person now; a
+/// disc with an eye in `--quiet` when there are things to look at and none is urgent; a disc with
+/// a tick in `--calm` for nothing to look at on a Mac watched in full; a ring with a tick for one
+/// watched in part; a ring with a clock for an answer that is old; a dashed ring with a question
+/// mark when it is not known. The three colours are the stylesheet's, defined once.
+const GLYPH_NOW: &str = "<svg class=\"glyph\" viewBox=\"0 0 40 40\" aria-hidden=\"true\"><circle cx=\"20\" cy=\"20\" r=\"20\" style=\"fill:var(--now)\"/><path d=\"M20 10.5v11\" style=\"stroke:var(--on);stroke-width:3.2;stroke-linecap:round\"/><circle cx=\"20\" cy=\"28.5\" r=\"2\" style=\"fill:var(--on)\"/></svg>";
+const GLYPH_LOOK: &str = "<svg class=\"glyph\" viewBox=\"0 0 40 40\" aria-hidden=\"true\"><circle cx=\"20\" cy=\"20\" r=\"20\" style=\"fill:var(--quiet)\"/><path d=\"M9.5 20c2.8-4.6 6.3-6.9 10.5-6.9s7.7 2.3 10.5 6.9c-2.8 4.6-6.3 6.9-10.5 6.9S12.3 24.6 9.5 20z\" style=\"fill:none;stroke:var(--on);stroke-width:2.4;stroke-linejoin:round\"/><circle cx=\"20\" cy=\"20\" r=\"3.2\" style=\"fill:var(--on)\"/></svg>";
+const GLYPH_CALM: &str = "<svg class=\"glyph\" viewBox=\"0 0 40 40\" aria-hidden=\"true\"><circle cx=\"20\" cy=\"20\" r=\"20\" style=\"fill:var(--calm)\"/><path d=\"M12.5 20.5l5 5 10-11\" style=\"fill:none;stroke:var(--on);stroke-width:3.2;stroke-linecap:round;stroke-linejoin:round\"/></svg>";
+const GLYPH_PART: &str = "<svg class=\"glyph\" viewBox=\"0 0 40 40\" aria-hidden=\"true\"><circle cx=\"20\" cy=\"20\" r=\"19.25\" style=\"fill:none;stroke:var(--quiet);stroke-width:1.5\"/><path d=\"M12.5 20.5l5 5 10-11\" style=\"fill:none;stroke:var(--quiet);stroke-width:3;stroke-linecap:round;stroke-linejoin:round\"/></svg>";
+const GLYPH_STALE: &str = "<svg class=\"glyph\" viewBox=\"0 0 40 40\" aria-hidden=\"true\"><circle cx=\"20\" cy=\"20\" r=\"19.25\" style=\"fill:none;stroke:var(--quiet);stroke-width:1.5\"/><circle cx=\"20\" cy=\"20\" r=\"10\" style=\"fill:none;stroke:var(--quiet);stroke-width:2.4\"/><path d=\"M20 14v6.5l4 2.5\" style=\"fill:none;stroke:var(--quiet);stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round\"/></svg>";
+const GLYPH_UNKNOWN: &str = "<svg class=\"glyph\" viewBox=\"0 0 40 40\" aria-hidden=\"true\"><circle cx=\"20\" cy=\"20\" r=\"19.25\" style=\"fill:none;stroke:var(--quiet);stroke-width:1.5;stroke-dasharray:4 3\"/><path d=\"M15.8 16a4.3 4.3 0 1 1 6.1 3.9c-1.3.6-1.9 1.5-1.9 2.9v.7\" style=\"fill:none;stroke:var(--quiet);stroke-width:2.6;stroke-linecap:round\"/><circle cx=\"20\" cy=\"28.2\" r=\"1.7\" style=\"fill:var(--quiet)\"/></svg>";
+
+/// "1 needs you now · 2 to look at": the findings Immune marked urgent, and the rest of its
+/// total, in the panel's words (`Panel.headline`).
+fn needs_you(urgent: u64, total: u64) -> String {
+    let rest = total.saturating_sub(urgent);
+    let mut parts = Vec::new();
+    if urgent > 0 {
+        parts.push(if urgent == 1 {
+            "1 needs you now".to_string()
+        } else {
+            format!("{} need you now", grouped(urgent as i64))
+        });
+    }
+    if rest > 0 {
+        parts.push(format!("{} to look at", grouped(rest as i64)));
+    }
+    parts.join(" · ")
+}
+
+/// The state band: the glyph and the headline in the panel's words, then one short line: this
+/// Mac's name as data, why the headline cannot say more when it cannot, how it is watched, the
+/// last full check and when the page was made. A state the page cannot work out is said as not
+/// known, never as calm.
+fn state(
+    conn: &Connection,
+    out: &mut String,
+    st: &crate::status::State,
+    r: &v1::Status,
+    now: i64,
+) -> Out {
     let m = &st.this_mac;
-    let glyph = match (total, m.state) {
-        (Some(n), _) if n > 0 => GLYPH_LOOK,
-        (Some(_), "watched") => GLYPH_CALM,
-        (Some(_), "watched_in_part") => GLYPH_PART,
-        _ => GLYPH_UNKNOWN,
-    };
-    let (said, why) = match m.state {
-        "watched" => ("This Mac is watched", None),
-        "watched_in_part" => (
-            "This Mac is watched in part",
-            Some("Something on it could not be read, and what you can fix says what."),
-        ),
-        _ => (
-            "This Mac has not been checked yet",
-            Some("Its first check has not finished."),
-        ),
+    let not_computed: Vec<&v1::NotComputed> = r
+        .not_computed
+        .iter()
+        .filter(|n| n.section == "needs_a_look")
+        .collect();
+    let needs = r.needs_a_look.as_ref().filter(|_| not_computed.is_empty());
+    // Things as the rows show them, a pair one thing: the band says what the table draws.
+    let shown = shown(&rows_of(st));
+    let total = needs.map(|_| (shown.now + shown.look) as u64);
+    let urgent = shown.now as u64;
+    let fresh = r.this_mac.as_ref().is_some_and(|t| t.fresh);
+    // Why the headline cannot say more, in the program's own words, set beside the name.
+    let mut why: Vec<String> = not_computed.iter().map(|n| esc(&n.reason)).collect();
+    let (glyph, headline) = match total {
+        // Colour marks only what needs the person now: the glyph is red only for urgent ones.
+        Some(n) if n > 0 && urgent > 0 => (GLYPH_NOW, esc(&needs_you(urgent, n))),
+        Some(n) if n > 0 => (GLYPH_LOOK, esc(&needs_you(urgent, n))),
+        _ if m.state == "not_checked" && m.checked_at.is_none() => {
+            (GLYPH_UNKNOWN, "Nothing has been checked yet.".to_string())
+        }
+        None => {
+            if why.is_empty() {
+                why.push("what needs a look is not known yet".to_string());
+            }
+            (GLYPH_UNKNOWN, "I can't tell".to_string())
+        }
+        Some(_) if !fresh => {
+            if let Some(reason) = r.this_mac.as_ref().and_then(|t| t.stale_reason.as_deref()) {
+                why.push(esc(reason));
+            }
+            (
+                GLYPH_STALE,
+                match m.checked_at {
+                    Some(t) => format!("Not checked since {}", view::when(t, now)),
+                    None => "No full check has finished".to_string(),
+                },
+            )
+        }
+        Some(_) => match m.state {
+            "watched" => (GLYPH_CALM, "Nothing needs you".to_string()),
+            "watched_in_part" => (GLYPH_PART, "Nothing needs you".to_string()),
+            _ => {
+                why.push("whether this Mac is watched is not known".to_string());
+                (GLYPH_UNKNOWN, "I can't tell".to_string())
+            }
+        },
     };
     let mut parts: Vec<String> = Vec::new();
     // Its name now, which can differ from the one in its id.
     if let Some((_, name)) = crate::store::held_mac(conn)? {
-        parts.push(esc(&name));
+        parts.push(format!("<span class=\"name\">{}</span>", esc(&name)));
     } else if let Some(id) = covered::this_machine(conn)? {
-        parts.push(esc(id.strip_prefix("machine:").unwrap_or(&id)));
+        parts.push(format!(
+            "<span class=\"name\">{}</span>",
+            esc(id.strip_prefix("machine:").unwrap_or(&id))
+        ));
     }
-    parts.push(match m.checked_at {
-        Some(t) => format!("last full check {}", utc(t)),
-        None => "no full check has finished yet".to_string(),
-    });
-    parts.push(match (m.live, m.live_read_at) {
-        (false, _) if !m.failed.is_empty() => format!(
-            "a watcher runs, but its latest {} failed, so everything is checked every hour until it succeeds again",
+    parts.extend(why);
+    let how = match (m.state, m.live) {
+        ("not_checked", _) => None,
+        (_, false) if !m.failed.is_empty() => Some(format!(
+            "hourly only: the watcher's latest {} failed",
             covered::watcher_failed(m)
-        ),
-        (true, Some(t)) => format!(
-            "watched live: a change in what is watched all the time shows within seconds, last looked {}",
-            utc(t)
-        ),
-        (true, None) => {
-            "watched live: a change in what is watched all the time shows within seconds"
-                .to_string()
-        }
-        (false, Some(t)) => format!(
-            "no watcher is running now, so everything is checked every hour; a watcher last looked {}",
-            utc(t)
-        ),
-        (false, None) => {
-            "no watcher is running now, so everything is checked every hour".to_string()
-        }
+        )),
+        ("watched_in_part", true) => Some("watched in part · live".to_string()),
+        ("watched_in_part", false) => Some("watched in part · hourly only".to_string()),
+        (_, true) => Some("watched live".to_string()),
+        (_, false) => Some("hourly only".to_string()),
+    };
+    parts.extend(how);
+    parts.push(match m.checked_at {
+        Some(t) => format!("last check {}", view::when(t, now)),
+        None => "no full check yet".to_string(),
     });
+    parts.push(format!("page made {}", view::when(now, now)));
+    if r.running {
+        parts.push("a check was running".to_string());
+    }
     writeln!(
         out,
-        "<section id=\"this-mac\">\n{glyph}\n<div>\n<h1>{}</h1>\n<p class=\"sub\"><strong>{said}</strong> · {}</p>",
-        esc(&headline),
+        "<section id=\"this-mac\">\n{glyph}\n<div>\n<h1>{headline}</h1>\n<p class=\"sub\">{}</p>\n</div>\n</section>",
         parts.join(" · ")
     )?;
-    if let Some(why) = why {
-        writeln!(out, "<p class=\"sub\">{why}</p>")?;
+    Ok(())
+}
+
+/// One row of the table of findings: one thing. Its finding, whether that is open, and the
+/// response layer's own finding about the same thing with whether that is open: the two are one
+/// row, and the opened row shows both, each with its own answer.
+struct FindingRow<'a> {
+    item: &'a findings::Item,
+    open: bool,
+    under: Vec<(&'a findings::Item, bool)>,
+}
+
+impl FindingRow<'_> {
+    /// The row is in Open while any finding in it is open, and in Answered while any is
+    /// answered: a verdict never takes a finding out of Open.
+    fn open(&self) -> bool {
+        self.open || self.under.iter().any(|(_, open)| *open)
     }
-    // Why what needs a look is not known yet, in the program's own words.
-    for n in &r.not_computed {
-        if n.section == "needs_a_look" {
-            let why = capital(&n.reason);
-            writeln!(out, "<p class=\"meta\">{}.</p>", esc(&why))?;
+
+    fn answered(&self) -> bool {
+        !self.open || self.under.iter().any(|(_, open)| !*open)
+    }
+
+    /// It needs the person now: an open finding in it, the core's or the response layer's,
+    /// is one Immune marks urgent.
+    fn urgent(&self) -> bool {
+        (self.open && findings::urgent(self.item.severity, self.item.confidence))
+            || self
+                .under
+                .iter()
+                .any(|(c, open)| *open && findings::urgent(c.severity, c.confidence))
+    }
+}
+
+/// The rows, open first in the order of `findings::order`, then the answered, the latest answer
+/// first. A finding of `verdict.suspicious` about a rule and a thing is shown in the row of that
+/// rule's finding about that thing, once, and is not a row of its own; every finding is in
+/// exactly one row.
+fn finding_rows<'a>(
+    open: &'a [findings::Item],
+    answered: &'a [findings::Item],
+) -> Vec<FindingRow<'a>> {
+    let all: Vec<(&findings::Item, bool)> = open
+        .iter()
+        .map(|i| (i, true))
+        .chain(answered.iter().map(|i| (i, false)))
+        .collect();
+    // Each finding of the response layer goes into the row of the first finding of the core it
+    // is one thing with (`findings::one_thing`: the rule its verdicts were about, and the same
+    // thing). One with no such partner is a row of its own. A row takes every partner, so no
+    // finding is ever left out of the rows.
+    let mut nested: BTreeSet<usize> = BTreeSet::new();
+    let mut under: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for (k, (own, _)) in all.iter().enumerate() {
+        if let Some(n) = (0..all.len()).find(|n| findings::one_thing(all[*n].0, own)) {
+            nested.insert(k);
+            under.entry(n).or_default().push(k);
         }
     }
-    out.push_str("</div>\n</section>\n");
-    Ok(())
+    all.iter()
+        .enumerate()
+        .filter(|(n, _)| !nested.contains(n))
+        .map(|(n, (i, open))| FindingRow {
+            item: i,
+            open: *open,
+            under: under
+                .get(&n)
+                .into_iter()
+                .flatten()
+                .map(|k| all[*k])
+                .collect(),
+        })
+        .collect()
 }
 
-/// The icons of the tiles: a laptop, a folder, two servers and a shield.
-const ICON_MAC: &str = "<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><rect x=\"5\" y=\"5\" width=\"14\" height=\"10\" rx=\"1.5\"/><path d=\"M3 19h18\"/></svg>";
-const ICON_PROJECTS: &str = "<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5z\"/></svg>";
-const ICON_SERVERS: &str = "<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><rect x=\"4\" y=\"4\" width=\"16\" height=\"7\" rx=\"1.5\"/><rect x=\"4\" y=\"13\" width=\"16\" height=\"7\" rx=\"1.5\"/><path d=\"M8 7.5h.01M8 16.5h.01\"/></svg>";
-const ICON_THREATS: &str = "<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M12 3l7 3v5.5c0 4.4-3 7.7-7 9.5-4-1.8-7-5.1-7-9.5V6z\"/></svg>";
+/// Every row of the table, from the state's open and answered findings.
+fn rows_of(st: &crate::status::State) -> Vec<FindingRow<'_>> {
+    finding_rows(&st.needs.items, st.answered.as_deref().unwrap_or_default())
+}
 
-/// One tile: its link and accessible name, which begins with the heading of where it leads,
-/// its icon and visible name, a mark of its state, the big number and a short line.
-struct Tile<'a> {
-    id: &'a str,
-    href: String,
-    label: String,
-    icon: &'a str,
-    name: &'a str,
-    /// Findings resting here, drawn red; else a quiet word, never in an alarm colour.
+/// What the band and the tabs count: things, as the rows show them. A finding and the response
+/// layer's own finding about the same thing are one row, so one thing to the person; the store's
+/// totals count them as two. `now` and `look` are the open rows in the two groups; `open`,
+/// `answered` and `all` are the rows under each tab, a row with one finding open and one
+/// answered under both.
+#[derive(Debug, PartialEq)]
+struct Shown {
+    now: usize,
     look: usize,
-    quiet: Option<String>,
-    value: String,
-    line: String,
+    open: usize,
+    answered: usize,
+    all: usize,
 }
 
-fn tile(out: &mut String, t: &Tile) -> Out {
-    let mark = if t.look > 0 {
-        format!(
-            "<span class=\"pill\" id=\"{}-s\">{} to look at</span>",
-            t.id,
-            grouped(t.look as i64)
-        )
-    } else if let Some(q) = &t.quiet {
-        format!("<span class=\"quiet\" id=\"{}-s\">{}</span>", t.id, esc(q))
-    } else {
-        String::new()
-    };
-    let described = if mark.is_empty() {
-        format!("{}-l", t.id)
-    } else {
-        format!("{0}-l {0}-s", t.id)
-    };
-    writeln!(
-        out,
-        "<a class=\"tile{}\" href=\"{}\" aria-label=\"{}\" aria-describedby=\"{described}\">\n<span class=\"th\">{}<span class=\"tn\">{}</span>{mark}</span>\n<span class=\"tv\">{}</span>\n<span class=\"tl\" id=\"{}-l\">{}</span>\n</a>",
-        if t.look > 0 { " look" } else { "" },
-        t.href,
-        esc(&t.label),
-        t.icon,
-        esc(t.name),
-        esc(&t.value),
-        t.id,
-        esc(&t.line)
-    )?;
-    Ok(())
+/// The one count of what the page shows, which the band and the tabs both say.
+fn shown(rows: &[FindingRow]) -> Shown {
+    let now = rows.iter().filter(|r| r.urgent()).count();
+    let open = rows.iter().filter(|r| r.open()).count();
+    Shown {
+        now,
+        look: open - now,
+        open,
+        answered: rows.iter().filter(|r| r.answered()).count(),
+        all: rows.len(),
+    }
 }
 
-/// Four tiles: this Mac, projects, servers, threat data. Every number is one the status or the
-/// map already has.
-fn tiles(
+/// The findings as a table with three tabs, Open, Answered and All, each with its count of
+/// things as the rows show them, the same count as the band's (`shown`). The tabs are links within
+/// the page, and the stylesheet shows the rows of the one in the address (`:target`), Open when
+/// none is; a browser that cannot select by what an element holds shows every row, so nothing
+/// is hidden by a browser's age. The open rows are in two groups, as the panel has them: what
+/// needs the person now, then what is to look at; then the answered. Each row opens in place to
+/// its facts and who said what.
+fn findings_table(
+    conn: &Connection,
     out: &mut String,
     st: &crate::status::State,
-    r: &v1::Status,
-    map: &crate::map::Map,
+    mac: Option<&findings::This>,
+    now: i64,
 ) -> Out {
-    out.push_str("<div class=\"tiles\">\n");
-    let m = &st.this_mac;
-    let things: usize = map.mac.iter().map(|k| k.marks.len()).sum();
-    tile(
-        out,
-        &Tile {
-            id: "t-mac",
-            href: format!("{DETAILS}/{THIS_MAC}.html"),
-            label: format!("What is watched on this Mac: {}", grouped(things as i64)),
-            icon: ICON_MAC,
-            name: "This Mac",
-            look: map.on_mac,
-            quiet: match m.state {
-                "watched_in_part" => Some("watched in part".to_string()),
-                "watched" => None,
-                _ => Some("not checked yet".to_string()),
-            },
-            value: grouped(things as i64),
-            line: "apps, packages and files watched for change".to_string(),
-        },
-    )?;
-    let dependencies = m
-        .watched
-        .iter()
-        .find(|w| w.0 == covered::DEPENDENCIES)
-        .map_or(0, |w| w.1);
-    let open = map.projects_open();
-    tile(
-        out,
-        &Tile {
-            id: "t-projects",
-            href: format!("{DETAILS}/{THIS_MAC}.html#projects"),
-            label: format!("Projects: {}", map.projects.len()),
-            icon: ICON_PROJECTS,
-            name: "Projects",
-            look: map.on_projects,
-            quiet: (open > 0).then(|| format!("{} not compared", grouped(open as i64))),
-            value: grouped(map.projects.len() as i64),
-            line: match dependencies {
-                0 => "no dependencies known".to_string(),
-                n => counted(n, "package they depend on", "packages they depend on"),
-            },
-        },
-    )?;
-    let e = r.estate.clone().unwrap_or_default();
-    let not_checked = map
-        .servers
-        .iter()
-        .filter(|s| s.state == crate::map::State::Open)
-        .count();
-    // A Mac with nothing known beyond it is told about itself and its projects alone.
-    if map.beyond() {
-        tile(
-            out,
-            &Tile {
-                id: "t-servers",
-                href: format!("{DETAILS}/{BEYOND}.html#servers"),
-                label: match e.servers {
-                    0 => "Servers: none known".to_string(),
-                    all => format!("Servers: {all}"),
-                },
-                icon: ICON_SERVERS,
-                name: "Servers",
-                look: map.on_servers,
-                quiet: (not_checked > 0).then(|| format!("{not_checked} not checked")),
-                value: grouped(e.servers as i64),
-                line: match (
-                    e.servers,
-                    e.servers_in_last_check,
-                    e.servers_checked_in_last_check,
-                ) {
-                    (0, _, _) => "none known".to_string(),
-                    (_, 0, _) => "the server check has not been run".to_string(),
-                    (_, all, checked) => {
-                        format!("{checked} of {all} checked at the last server check")
-                    }
-                },
-            },
-        )?;
-    }
-    // The sources of threat data: each feed of known vulnerabilities, and the list of
-    // vulnerabilities attackers are using.
-    let feeds = r
-        .vulnerabilities
-        .as_ref()
-        .map(|v| v.feeds.clone())
-        .unwrap_or_default();
-    let catalogue = r.threats.clone().unwrap_or_default();
-    let total = feeds.len() + 1;
-    let current = feeds.iter().filter(|f| f.current).count()
-        + usize::from(matches!(
-            v1::FeedOutcome::try_from(catalogue.outcome),
-            Ok(v1::FeedOutcome::Read | v1::FeedOutcome::Unchanged)
-        ));
-    let last = feeds
-        .iter()
-        .map(|f| f.read_at)
-        .chain([catalogue.read_at])
-        .flatten()
-        .max()
-        .map(utc);
-    tile(
-        out,
-        &Tile {
-            id: "t-threats",
-            href: format!("{DETAILS}/{THREAT_DATA}.html"),
-            label: format!("{THREAT_DATA_TITLE}: {current} of {total} sources current"),
-            icon: ICON_THREATS,
-            name: THREAT_DATA_TITLE,
-            look: 0,
-            quiet: (current < total).then(|| format!("{} not current", total - current)),
-            value: format!("{current} of {total}"),
-            line: match last {
-                Some(at) => format!("sources current; last read {at}"),
-                None => "sources current; none read yet".to_string(),
-            },
-        },
-    )?;
-    out.push_str("</div>\n");
-    Ok(())
-}
-
-/// What needs a look, one card per finding, urgent first and then the most severe, as
-/// `findings::order` orders them; only when there is any.
-fn needs(out: &mut String, st: &crate::status::State) -> Out {
-    let items = &st.needs.items;
-    if items.is_empty() {
-        return Ok(());
-    }
+    let rows = rows_of(st);
+    let counts = shown(&rows);
+    let found = findings::all(conn, now)?.unwrap_or_default();
     writeln!(
         out,
-        "<section id=\"needs\">\n<div class=\"head\"><h2>Needs a look</h2><span class=\"n\">{}</span></div>\n<div class=\"cards\">",
-        grouped(items.len() as i64)
+        "<section id=\"findings\" class=\"findings\">\n<div class=\"wsh\"><h2>Findings</h2><nav class=\"tabs\" aria-label=\"Findings\"><a id=\"open\" href=\"#open\">Open <span class=\"tn\">{}</span></a><a id=\"answered\" href=\"#answered\">Answered <span class=\"tn\">{}</span></a><a id=\"all\" href=\"#all\">All <span class=\"tn\">{}</span></a></nav></div>",
+        grouped(counts.open as i64),
+        grouped(counts.answered as i64),
+        grouped(counts.all as i64)
     )?;
-    for i in items.iter().take(ITEMS_SHOWN) {
-        view::item(out, i)?;
+    if counts.open == 0 {
+        out.push_str("<p class=\"empty open\">Nothing is open. A change in what is watched shows here when it is found.</p>\n");
     }
-    out.push_str("</div>\n");
-    if items.len() > ITEMS_SHOWN {
+    if counts.answered == 0 {
+        out.push_str("<p class=\"empty answered\">Nothing is marked seen or expected now.</p>\n");
+    }
+    let (now_rows, rest): (Vec<&FindingRow>, Vec<&FindingRow>) =
+        rows.iter().partition(|r| r.urgent());
+    let (look, done): (Vec<&FindingRow>, Vec<&FindingRow>) =
+        rest.into_iter().partition(|r| r.open());
+    // The open rows drawn, the urgent first, and the answered, each cut at `ITEMS_SHOWN`.
+    let open_cut = now_rows.len().min(ITEMS_SHOWN);
+    let look_cut = look.len().min(ITEMS_SHOWN - open_cut);
+    if !rows.is_empty() {
+        out.push_str("<div class=\"fh open answered\" aria-hidden=\"true\"><span>Thing</span><span>What happened</span><span>Response layer</span><span class=\"fs\">Seen</span><span></span></div>\n");
+        for (group, class, rows) in [
+            // The one place on the page in the colour of what needs the person now.
+            ("Needs you now", "open now", &now_rows[..open_cut]),
+            ("To look at", "open", &look[..look_cut]),
+            ("Answered", "answered", &done[..done.len().min(ITEMS_SHOWN)]),
+        ] {
+            if rows.is_empty() {
+                continue;
+            }
+            writeln!(out, "<p class=\"fg {class}\">{group}</p>")?;
+            for row in rows {
+                finding_row(conn, out, &found, row, mac, now)?;
+            }
+        }
+    }
+    if counts.open > ITEMS_SHOWN {
         // Urgent ones come first, so the rest are the mildest unless urgent ones overflow.
-        let urgent = items[ITEMS_SHOWN..]
-            .iter()
-            .filter(|i| findings::urgent(i.severity, i.confidence))
-            .count();
+        let urgent = now_rows.len() - open_cut;
         let which = match urgent {
             0 => "the mildest".to_string(),
             u => format!("{} of them urgent", grouped(u as i64)),
         };
         writeln!(
             out,
-            "<p class=\"meta\">{} more, {which}; <span class=\"mono\">immune findings</span> lists them.</p>",
-            items.len() - ITEMS_SHOWN
+            "<p class=\"meta more open\">{} more, {which}; <span class=\"mono\">immune findings</span> lists them.</p>",
+            grouped((counts.open - ITEMS_SHOWN) as i64)
+        )?;
+    }
+    if done.len() > ITEMS_SHOWN {
+        writeln!(
+            out,
+            "<p class=\"meta more answered\">{} more answered; <span class=\"mono\">immune findings --all</span> lists them.</p>",
+            grouped((done.len() - ITEMS_SHOWN) as i64)
         )?;
     }
     out.push_str("</section>\n");
     Ok(())
 }
 
-/// The arrow at the end of a row that opens.
-const CHEVRON: &str = "<svg class=\"chev\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M9 6l6 6-6 6\"/></svg>";
-
-/// What the owner can fix, as a short list with a number each; each row opens to the thing in
-/// full.
-fn you_can_fix(out: &mut String, st: &crate::status::State) -> Out {
-    let of: Vec<&Uncovered> = st
-        .not_covered
-        .iter()
-        .filter(|u| u.cause.who == YOU)
-        .collect();
-    writeln!(
-        out,
-        "<section id=\"you-can-fix\">\n<div class=\"head\"><h2>You can fix</h2><span class=\"n\">{}</span></div>\n<div class=\"rows\">",
-        counted(of.len() as i64, "thing", "things")
-    )?;
-    if of.is_empty() {
-        out.push_str("<p class=\"muted\">Nothing for you to fix.</p>\n");
+/// The response layer's verdict as one word: suspicious when any of its verdicts is, harmless
+/// when every one is harmless; `None` with no verdict.
+fn verdict_word(i: &findings::Item) -> Option<&'static str> {
+    let v = i.verdicts.as_ref()?;
+    if i.rule == Some(crate::verdict::RULE) || v.suspicious > 0 {
+        Some("Suspicious")
+    } else if v.total > 0 {
+        Some("Harmless")
+    } else {
+        None
     }
-    for u in of {
-        writeln!(
-            out,
-            "<details>\n<summary><span class=\"t\">{}</span><span class=\"n\">{}</span>{CHEVRON}</summary>",
-            esc(&capital(u.cause.kind)),
-            grouped(u.count as i64)
-        )?;
-        uncovered(out, u)?;
-        out.push_str("</details>\n");
-    }
-    out.push_str("</div>\n</section>\n");
-    Ok(())
 }
 
-/// What is watched, in two short lists. How often things are looked at, as plain rows with a
-/// number: within seconds, every hour, running programs, and the list of signs of a known
-/// attack. Then how much of what is known this version reads, the only rows with a bar, each
-/// "N of M". Every kind with the rules about it is behind one `<details>`.
-fn watched_section(
+/// Where a finding's thing is, in a few words: the project for a package of one, this Mac for
+/// what is on it, and another machine by its name.
+fn where_of(i: &findings::Item, mac: Option<&findings::This>) -> String {
+    let checkout = view::component_place(&i.about);
+    if !checkout.is_empty() {
+        return findings::place(checkout, mac);
+    }
+    let rest = ["file:", "checkout:", "container:"]
+        .iter()
+        .find_map(|p| i.about.strip_prefix(p))
+        .unwrap_or(&i.about);
+    let machine = rest.split('/').next().unwrap_or(rest);
+    if !machine.starts_with("machine:") || mac.is_some_and(|m| m.id == machine) {
+        "this Mac".to_string()
+    } else {
+        findings::place(machine, mac)
+    }
+}
+
+/// The thing a finding is about, as data: the package and its releases, the program or file a
+/// rule matched, else where it is. A finding whose thing no name from the Mac says, the item of
+/// places read for the first time, is about what it names in the program's words.
+fn thing_of(i: &findings::Item, f: Option<&v1::Finding>) -> String {
+    if let Some(thing) = &i.thing {
+        return thing.clone();
+    }
+    use v1::evidence::Body;
+    let events: &[v1::Event] = match f.and_then(|f| f.evidence.as_ref()?.body.as_ref()) {
+        Some(Body::VulnerablePackage(p)) => {
+            if let Some(name) = &p.package_text {
+                let releases: Vec<&str> =
+                    p.releases.iter().map(|r| r.version_text.as_str()).collect();
+                return format!("{name} {}", releases.join(", "))
+                    .trim_end()
+                    .to_string();
+            }
+            &[]
+        }
+        Some(Body::PublishedRuleMatched(p)) => &p.events,
+        Some(Body::VerdictGiven(v)) => &v.events,
+        _ => &[],
+    };
+    use v1::event::Body as E;
+    match events.first().and_then(|e| e.body.as_ref()) {
+        Some(E::ProgramStart(s)) => {
+            if let Some(p) = &s.process {
+                return p.executable_text.clone();
+            }
+        }
+        Some(E::FileEvent(e)) => return e.path_text.clone(),
+        None => {}
+    }
+    i.place.clone().unwrap_or_else(|| i.about.clone())
+}
+
+/// One row, one thing: the thing as data, its kind and what happened, the response layer's word
+/// as plain text, and when it was last seen. It opens to the facts and voices of each finding in
+/// it, each with the command that answers it.
+fn finding_row(
+    conn: &Connection,
     out: &mut String,
-    m: &covered::ThisMac,
-    none: &[&'static str],
-    unread: &[&'static str],
-    list: Option<bool>,
-    events: Option<&crate::events::Level>,
+    found: &[findings::Found],
+    row: &FindingRow,
+    mac: Option<&findings::This>,
+    now: i64,
 ) -> Out {
-    writeln!(
-        out,
-        "<section id=\"watched-here\">\n<div class=\"head\"><h2>What is watched, and what you are told about</h2></div>\n<div class=\"cover\">\n<h3>How often things are looked at</h3>"
-    )?;
-    let sum = |how: &str| -> i64 {
-        m.watched
-            .iter()
-            .filter(|w| w.2 == how && w.0 != covered::DEPENDENCIES)
-            .map(|w| w.1)
-            .sum()
+    let i = row.item;
+    let whole = match i.rule {
+        Some(_) => crate::finding_answer::of(conn, found, &i.id, now)?,
+        None => None,
     };
-    let (live, hourly) = (sum("live"), sum("hourly"));
-    // A plain row: what, and a number or, quiet, why there is none. A number of things leads
-    // to where they are listed, named by the heading it opens at.
-    // A row may carry quieter lines under it, each a short sentence, present only when there
-    // is something to say.
-    let row = |out: &mut String,
-               label: &str,
-               value: &str,
-               quiet: bool,
-               to: Option<(String, String)>,
-               notes: &[String]|
-     -> Out {
-        let value = match to {
-            Some((href, name)) => format!(
-                "<a href=\"{}\" aria-label=\"{}\">{}</a>",
-                esc(&href),
-                esc(&name),
-                esc(value)
-            ),
-            None => esc(value),
-        };
-        let notes: String = notes
-            .iter()
-            .map(|n| format!("<span class=\"note\">{}</span>", esc(n)))
-            .collect();
-        writeln!(
-            out,
-            "<div class=\"plain\"><span class=\"lbl\">{}</span><span class=\"{}\">{value}</span>{notes}</div>",
-            esc(label),
-            if quiet { "val" } else { "num" },
-        )?;
-        Ok(())
-    };
-    let plain = |out: &mut String,
-                 label: &str,
-                 value: &str,
-                 quiet: bool,
-                 to: Option<(String, String)>|
-     -> Out { row(out, label, value, quiet, to, &[]) };
-    let this_mac = format!("{DETAILS}/{THIS_MAC}.html");
-    let things = |n: i64, how: &str| {
-        (n > 0).then(|| {
-            (
-                this_mac.clone(),
-                format!("{THIS_MAC_TITLE}: {}, {how}", counted(n, "thing", "things")),
-            )
-        })
-    };
-    if live + hourly == 0 {
-        let said = if m.checked_at.is_some() {
-            "nothing to watch was found at the last check"
-        } else {
-            "nothing has been read yet"
-        };
-        plain(out, "On this Mac", said, true, None)?;
+    let id = if row.open {
+        esc(&i.id)
     } else {
-        let (live_said, to) = if m.live {
-            (
-                counted(live, "thing", "things"),
-                things(live, "watched all the time"),
-            )
-        } else if !m.failed.is_empty() {
-            (
-                format!("the watcher's latest {} failed", covered::watcher_failed(m)),
-                None,
-            )
-        } else {
-            ("no watcher is running now".to_string(), None)
-        };
-        plain(
-            out,
-            "Watched all the time: a change shows within seconds",
-            &live_said,
-            !m.live,
-            to,
-        )?;
-        plain(
-            out,
-            "Checked every hour: a change shows at the next check",
-            &counted(hourly, "thing", "things"),
-            false,
-            things(hourly, "checked every hour"),
-        )?;
-    }
-    match m.watched.iter().find(|w| w.0 == covered::SAMPLED) {
-        // The page keeps no list of them, only the numbers the latest sample saw.
-        Some((_, n, _)) => plain(
-            out,
-            &format!(
-                "Running programs and their connections, looked at every {} seconds",
-                crate::watch::SAMPLE.as_secs()
-            ),
-            &counted(*n, "running now", "running now"),
-            false,
-            Some((
-                format!("{this_mac}#{}", anchor(covered::SAMPLED)),
-                format!("{}: {}", capital(covered::SAMPLED), grouped(*n)),
-            )),
-        )?,
-        None => plain(
-            out,
-            "Running programs and their connections",
-            "looked at only while the app is open",
-            true,
-            None,
-        )?,
-    }
-    // Every program start, as the event level's latest reading left it; quiet unless it
-    // records them.
-    match events {
-        Some(l) => {
-            let said = crate::events::words(l);
-            row(
-                out,
-                "Every program start, with its command line",
-                &said.short(),
-                l.state != crate::events::RUNNING,
-                None,
-                &said.notes,
-            )?
-        }
-        None => plain(
-            out,
-            "Every program start, with its command line",
-            "not looked for yet",
-            true,
-            None,
-        )?,
-    }
-    let said = match list {
-        Some(true) => "a list was read at the last check",
-        Some(false) => "a list was given but could not be read",
-        None => "no list given, so nothing is compared",
+        format!("answered-{}", esc(&i.id))
     };
-    plain(out, "Signs of a known attack", said, true, None)?;
-    out.push_str("<h3>How much of what is known this version reads</h3>\n");
-    for home in [false, true] {
-        let (read, known) = crate::autorun::counts(home);
-        let (label, unit) = if home {
-            (
-                "Places where a developer tool's own settings can make code run by itself",
-                "known places",
-            )
-        } else {
-            ("Ways a project can make code run by itself", "known ways")
-        };
-        writeln!(
-            out,
-            "<div class=\"known\"><span class=\"lbl\">{}</span><span class=\"meter\" aria-hidden=\"true\"><span style=\"width:{}%\"></span></span><span class=\"val\"><span class=\"num\">{read} of {known}</span> {unit}</span></div>",
-            esc(label),
-            read * 100 / known.max(1)
-        )?;
+    // The kind in the words a person reads, the same as the app's (`findings::kind_title`).
+    let mut kind = findings::kind_title(i.kind).to_string();
+    if let Some(change) = &i.change {
+        kind.push_str(" · ");
+        kind.push_str(change);
     }
-    writeln!(
-        out,
-        "</div>\n<details class=\"told\">\n<summary>What you are told about, kind by kind: {} rules</summary>",
-        findings::rules().len()
-    )?;
-    watched_here(out, m, none, unread, list)?;
-    out.push_str("</details>\n</section>\n");
-    Ok(())
-}
-
-/// The limits of this version, closed: each in full, never counted as something to look at,
-/// with what a watcher cannot see.
-fn limits(conn: &Connection, out: &mut String, st: &crate::status::State) -> Out {
-    let of: Vec<&Uncovered> = st
-        .not_covered
-        .iter()
-        .filter(|u| u.cause.who == NOTHING)
-        .collect();
-    writeln!(
-        out,
-        "<section id=\"limits\">\n<details>\n<summary><h2>Limits of this version</h2><span class=\"n\">{}</span>{CHEVRON}</summary>",
-        of.len()
-    )?;
-    if of.is_empty() {
-        out.push_str("<p class=\"muted\">None known.</p>\n");
-    }
-    for u in of {
-        uncovered(out, u)?;
-    }
-    let m = &st.this_mac;
-    if m.live || m.live_read_at.is_some() {
-        // What a watcher cannot see, and what its sample of running programs cannot, in one
-        // paragraph.
-        let mut said = WATCHER_CANNOT_SEE.to_string();
-        if crate::processes::last_sampled(conn)?.is_some() {
-            said.push_str(&format!(
-                " A sample of running programs does not see {}.",
-                listed_or(&crate::processes::PERSON_CANNOT_SEE)
-            ));
-        }
-        writeln!(out, "<p>{}</p>", esc(&said))?;
-    }
-    out.push_str("</details>\n</section>\n");
-    Ok(())
-}
-
-/// Every answer that hides a finding now, whoever gave it, so that none is given silently;
-/// closed, with how many and how many came through the owner's agent.
-fn answered_section(conn: &Connection, out: &mut String, now: i64) -> Out {
-    let answered = findings::answered(conn, now)?.unwrap_or_default();
-    let agent = answered
-        .iter()
-        .filter(|i| {
-            i.answer
-                .as_ref()
-                .is_some_and(|a| a.via == findings::Via::Agent)
-        })
-        .count();
-    let n = if agent > 0 {
-        format!("{} · {agent} through your agent", answered.len())
-    } else {
-        answered.len().to_string()
-    };
-    writeln!(
-        out,
-        "<section id=\"answered\">\n<details>\n<summary><h2>Answered</h2><span class=\"n\">{n}</span>{CHEVRON}</summary>\n<p class=\"muted\">Findings marked seen or expected, by you or through your agent.</p>"
-    )?;
-    if answered.is_empty() {
-        writeln!(
-            out,
-            "<p class=\"muted\">Nothing is marked seen or expected now.</p>"
-        )?;
-    }
-    for i in &answered {
-        let Some(a) = &i.answer else { continue };
-        writeln!(
-            out,
-            "<article class=\"item answered\" id=\"answered-{}\">\n<h3>{}</h3>",
-            esc(&i.id),
-            esc(i.words.title)
-        )?;
-        if let Some(place) = &i.place {
-            writeln!(out, "<p class=\"where mono\">{}</p>", esc(place))?;
-        }
+    let answer = i.answer.as_ref().filter(|_| !row.open).map(|a| {
         let said = match a.until {
-            Some(u) => format!("Expected until {}", utc(u)),
-            None => "Seen".to_string(),
+            Some(u) => format!("expected until {}", view::when(u, now)),
+            None => "seen".to_string(),
+        };
+        format!(
+            "<span class=\"ans\">Answered: {said} {}</span>",
+            esc(view::given_by(a.via))
+        )
+    });
+    writeln!(
+        out,
+        "<details class=\"fr{}{}{}\" id=\"{id}\">\n<summary><span class=\"fw\">{}</span><span class=\"fk\">{}{}</span><span class=\"fv\">{}</span><span class=\"fs\">{}</span><span class=\"fch\" aria-hidden=\"true\"></span></summary>\n<div class=\"fx\">",
+        if row.open() { " open" } else { "" },
+        if row.answered() { " answered" } else { "" },
+        if row.urgent() { " urgent" } else { "" },
+        esc(&thing_of(i, whole.as_ref())),
+        esc(&kind),
+        answer.unwrap_or_default(),
+        verdict_word(i).map_or("<span class=\"none\">—</span>".to_string(), |w| format!(
+            "<span class=\"src\">Response layer: </span>{w}"
+        )),
+        i.last_seen.map_or(String::new(), |t| view::when(t, now)),
+    )?;
+    finding_body(out, i, whole.as_ref(), &where_of(i, mac), now)?;
+    for (c, open) in &row.under {
+        let id = if *open {
+            esc(&c.id)
+        } else {
+            format!("answered-{}", esc(&c.id))
         };
         writeln!(
             out,
-            "<p>{}</p>\n<p class=\"meta\">{}</p>",
-            esc(&said),
-            esc(view::given_by(a.via))
+            "<div class=\"also\" id=\"{id}\">\n<p class=\"wsh2\">The response layer's own finding about it</p>"
         )?;
-        if let Some(reason) = &a.reason {
-            writeln!(
+        let whole = crate::finding_answer::of(conn, found, &c.id, now)?;
+        finding_body(out, c, whole.as_ref(), &where_of(c, mac), now)?;
+        out.push_str("</div>\n");
+    }
+    out.push_str("</div>\n</details>\n");
+    Ok(())
+}
+
+/// What one finding says in an opened row: on the left its facts, where first, then the evidence
+/// as `immune finding <id>` gives it; on the right who said what, each voice named: the rule's
+/// authors, the response layer, the person's answer, Immune's own words, and what to do. Under
+/// them, when it was seen and the command an agent reads it with.
+fn finding_body(
+    out: &mut String,
+    i: &findings::Item,
+    whole: Option<&v1::Finding>,
+    place: &str,
+    now: i64,
+) -> Out {
+    let mut facts: Vec<(&str, String)> = vec![("Where", data(place))];
+    // What the source said, as data beside the sentences.
+    if let Some(value) = &i.value {
+        facts.push((
+            "Source said",
+            format!("<span class=\"said\">{}</span>", esc(value)),
+        ));
+    }
+    let mut voices: Vec<Voice> = Vec::new();
+    if let Some(f) = whole {
+        evidence(f, &mut facts, &mut voices, now);
+    }
+    if let Some(t) = i.technique {
+        facts.push(("ATT&amp;CK", data(t)));
+    }
+    out.push_str("<div>");
+    dl(out, &facts);
+    out.push_str("</div>\n<div><p class=\"wsh2\">Who said what</p><div class=\"voices\">");
+    voices.push(Voice {
+        name: "Immune".to_string(),
+        said: esc(i.words.title),
+        detail: esc(i.words.meaning),
+        quote: None,
+    });
+    voices.push(Voice {
+        name: "What to do".to_string(),
+        said: format!("<span class=\"advice\">{}</span>", esc(i.words.advice)),
+        detail: String::new(),
+        quote: None,
+    });
+    for v in &voices {
+        write!(
+            out,
+            "<div class=\"voice\"><div class=\"vn\">{}</div><div class=\"vs\">{}</div>",
+            v.name, v.said
+        )?;
+        if !v.detail.is_empty() {
+            write!(out, "<div class=\"vd\">{}</div>", v.detail)?;
+        }
+        if let Some(q) = &v.quote {
+            write!(
                 out,
-                "<p class=\"said\">{}</p>",
-                esc(&reason.shown(view::shown))
+                "\n<blockquote class=\"quote\">{}</blockquote>\n",
+                esc(q)
             )?;
         }
-        writeln!(
-            out,
-            "<p class=\"meta mono\">{}</p>\n</article>",
-            esc(&format!("immune finding {} reopen", i.id))
-        )?;
+        out.push_str("</div>");
     }
-    out.push_str("</details>\n</section>\n");
+    out.push_str("</div></div>\n");
+    let seen = match (i.first_seen, i.last_seen) {
+        (Some(f), Some(l)) if f != l => format!(
+            "First seen {} · last seen {}",
+            view::when(f, now),
+            view::when(l, now)
+        ),
+        (_, Some(l)) => format!("Seen {}", view::when(l, now)),
+        _ => String::new(),
+    };
+    let command = match i.rule {
+        None => "immune status --json".to_string(),
+        Some(_) => format!("immune finding {} --json", i.id),
+    };
+    writeln!(
+        out,
+        "<div class=\"fxb\"><span>{seen}</span><span>For your agent<span class=\"mono\">{}</span></span></div>",
+        esc(&command)
+    )?;
     Ok(())
 }
 
-/// What "watched" means, first under the heading of what is watched.
-const WATCHED_MEANS: &str = "Watched means this: the program remembers what each of these things looked like the last time it checked, and tells you when one of them changes in a way listed here. It only tells you. It never blocks, stops or removes anything.";
-/// Where what is told shows, and what also notifies.
-const TOLD_WHERE: &str = "Everything listed here shows in the panel. What is marked 'Sends a notification' also sends one at once.";
+/// One voice of "Who said what": who, what they said and a quieter line, all safe HTML, and a
+/// quote of their own words, escaped when it is written.
+struct Voice {
+    name: String,
+    said: String,
+    detail: String,
+    quote: Option<String>,
+}
+
+/// Text from the Mac as data, in an element of its own.
+fn data(s: &str) -> String {
+    format!("<span class=\"mono\">{}</span>", esc(s))
+}
+
+/// One event a rule matched: for a program start its program, each argument apart, its folder
+/// and the program that started it; for a file event the file, what was done, from where and by
+/// which program. Arguments come cut, as `immune finding` prints them (`matches::event_cut`).
+fn event_facts(e: &v1::Event, now: i64) -> Vec<(&'static str, String)> {
+    use v1::event::Body;
+    let mut facts = Vec::new();
+    match e.body.as_ref() {
+        Some(Body::ProgramStart(s)) => {
+            if let Some(at) = s.happened_at {
+                facts.push(("When", view::when(at, now)));
+            }
+            if let Some(p) = &s.process {
+                facts.push(("Program", data(&p.executable_text)));
+            }
+            if !s.args_text.is_empty() {
+                let args: Vec<String> = s
+                    .args_text
+                    .iter()
+                    .map(|a| format!("<span class=\"arg\">{}</span>", esc(a)))
+                    .collect();
+                facts.push((
+                    "Arguments",
+                    format!("<span class=\"mono\">{}</span>", args.join(" ")),
+                ));
+            }
+            if let Some(wd) = &s.working_directory_text {
+                facts.push(("Folder", data(wd)));
+            }
+            if let Some(p) = &s.instigator {
+                facts.push(("Started by", data(&p.executable_text)));
+            }
+        }
+        Some(Body::FileEvent(f)) => {
+            if let Some(at) = f.happened_at {
+                facts.push(("When", view::when(at, now)));
+            }
+            facts.push(("File", data(&f.path_text)));
+            let action = match v1::FileAction::try_from(f.action) {
+                Ok(v1::FileAction::Create) => "created",
+                Ok(v1::FileAction::Rename) => "renamed",
+                _ => "not known",
+            };
+            facts.push(("Done", action.to_string()));
+            if let Some(from) = &f.source_text {
+                facts.push(("From", data(from)));
+            }
+            if let Some(p) = &f.instigator {
+                facts.push(("By", data(&p.executable_text)));
+            }
+        }
+        None => {}
+    }
+    facts
+}
+
+/// Facts as a list of terms and values; each value is already safe.
+fn dl(out: &mut String, facts: &[(&str, String)]) {
+    if facts.is_empty() {
+        return;
+    }
+    out.push_str("<dl class=\"facts\">");
+    for (k, v) in facts {
+        let _ = write!(out, "<dt>{k}</dt><dd>{v}</dd>");
+    }
+    out.push_str("</dl>\n");
+}
+
+/// A finding's evidence as `immune finding <id>` gives it, from the same message: what it rests
+/// on by its kind as facts, and as voices the rule's authors, the response layer's verdicts with
+/// their reasons quoted, and the person's answer with who gave it and why. Every value from the
+/// Mac is escaped and set apart.
+fn evidence(f: &v1::Finding, facts: &mut Vec<(&str, String)>, voices: &mut Vec<Voice>, now: i64) {
+    use v1::evidence::Body;
+    let word = |s: &str| format!("<span class=\"w\">{}</span>", esc(s));
+    match f.evidence.as_ref().and_then(|e| e.body.as_ref()) {
+        Some(Body::PlaceChanged(p)) => {
+            let change = match v1::Change::try_from(p.change) {
+                Ok(v1::Change::New) => "appeared",
+                Ok(v1::Change::Gone) => "went",
+                Ok(v1::Change::FirstRead) => "read for the first time",
+                Ok(v1::Change::NotRead) => "could not be read",
+                _ => "changed",
+            };
+            facts.push(("What happened", word(change)));
+            if p.presence_only == Some(true) {
+                facts.push((
+                    "Watched",
+                    word(&format!(
+                        "only for presence: {}",
+                        crate::watched::PRESENCE_ONLY
+                    )),
+                ));
+            }
+            if p.change == v1::Change::NotRead as i32 {
+                let latest = f.rests_on.last().map(|b| b.run_id.as_str());
+                let why = f
+                    .rests_on
+                    .iter()
+                    .rev()
+                    .take_while(|b| Some(b.run_id.as_str()) == latest)
+                    .find(|b| b.entry == "not_read")
+                    .and_then(|b| b.new_value_text.as_deref());
+                facts.push(("Why", why.map_or(word("the store gives no reason"), data)));
+            }
+            for b in f.rests_on.iter().filter(|b| b.entry == "place_first_read") {
+                if let Some(place) = &b.subject_text {
+                    facts.push(("First read", data(place)));
+                }
+            }
+        }
+        Some(Body::ChangedInPlace(p)) => {
+            match &p.became_text {
+                Some(value) => facts.push(("It became", data(value))),
+                None => {
+                    if let Some(b) = f.rests_on.iter().rev().find(|b| {
+                        b.entry == "changed" && b.predicate.as_deref() == Some("has_digest")
+                    }) {
+                        facts.push((
+                            "Digest before",
+                            data(b.old_value_text.as_deref().unwrap_or("not known")),
+                        ));
+                        facts.push((
+                            "Digest after",
+                            data(b.new_value_text.as_deref().unwrap_or("not known")),
+                        ));
+                    }
+                }
+            }
+        }
+        Some(Body::IndicatorMatched(p)) => {
+            if let Some(value) = &p.indicators_text {
+                facts.push(("Matched", data(value)));
+            }
+        }
+        Some(Body::DetachedProcess(p)) => {
+            if let Some(pid) = p.pid {
+                facts.push(("Process id", data(&pid.to_string())));
+            }
+            if let Some(start) = p.start_micros {
+                facts.push(("Started", view::when(start.div_euclid(1_000_000), now)));
+            }
+        }
+        Some(Body::VulnerablePackage(p)) => {
+            if let Some(name) = &p.package_text {
+                facts.push(("Package", data(name)));
+            }
+            for r in &p.releases {
+                facts.push(("Version", data(&r.version_text)));
+                facts.push(("Declared at", data(&r.at_text)));
+            }
+            for r in &p.records {
+                facts.push(("Record", data(&r.id_text)));
+                if !r.fixed_text.is_empty() {
+                    facts.push(("Fixed in", data(&r.fixed_text.join(", "))));
+                }
+                voices.push(Voice {
+                    name: esc(&r.source),
+                    said: r.summary_text.as_deref().map_or(String::new(), data),
+                    detail: String::new(),
+                    quote: None,
+                });
+            }
+        }
+        Some(Body::PublishedRuleMatched(p)) => {
+            let rule = p.rule.clone().unwrap_or_default();
+            if let Some(n) = p.matches {
+                facts.push(("Matched", word(&counted(n as i64, "time", "times"))));
+            }
+            for e in &p.events {
+                facts.extend(event_facts(e, now));
+            }
+            voices.push(Voice {
+                name: format!("Published rule · {}", esc(&rule.set)),
+                said: format!("<span class=\"src\">{}</span>", esc(&rule.title_text)),
+                detail: if rule.level == v1::Level::NotStated as i32 {
+                    String::new()
+                } else {
+                    format!(
+                        "its authors rate it {}",
+                        esc(&crate::text::word::<v1::Level>(rule.level))
+                    )
+                },
+                quote: None,
+            });
+        }
+        Some(Body::VerdictGiven(v)) => {
+            facts.push(("About the rule", data(&v.rule)));
+            for e in &v.events {
+                facts.extend(event_facts(e, now));
+            }
+        }
+        None => {}
+    }
+    if let Some(v) = &f.verdicts {
+        for listed in &v.listed {
+            let verdict = listed.verdict.clone().unwrap_or_default();
+            let mut said = capital(&crate::text::word::<v1::VerdictKind>(verdict.kind));
+            if let Some(c) = verdict.confidence {
+                let _ = write!(said, ", how sure: {}", crate::text::word::<v1::Level>(c));
+            }
+            voices.push(Voice {
+                name: "Response layer".to_string(),
+                said: esc(&said),
+                detail: view::when(listed.recorded_at, now),
+                quote: Some(verdict.reason_text.clone()),
+            });
+        }
+    }
+    if let Some(a) = &f.answer {
+        let said = match a.until_at {
+            Some(u) => format!("Expected until {}", view::when(u, now)),
+            None => "Seen".to_string(),
+        };
+        let via = match v1::Via::try_from(a.via) {
+            Ok(v1::Via::App) => findings::Via::App,
+            Ok(v1::Via::Agent) => findings::Via::Agent,
+            Ok(v1::Via::Command) => findings::Via::Command,
+            _ => findings::Via::Unknown,
+        };
+        voices.push(Voice {
+            name: match via {
+                findings::Via::Agent => "Your agent".to_string(),
+                _ => "Your answer".to_string(),
+            },
+            said,
+            detail: format!(
+                "answered {} {}",
+                view::when(a.given_at, now),
+                esc(view::given_by(via))
+            ),
+            quote: a.reason_text.clone(),
+        });
+    }
+}
+
+/// How a row of what is watched stands: whether it was read, as a filled or a hollow dot of
+/// `--quiet`, and its words, which are safe HTML. Only coverage: findings are not repeated here.
+struct Standing {
+    read: bool,
+    said: String,
+}
+
+impl Standing {
+    fn read(said: &str) -> Standing {
+        Standing {
+            read: true,
+            said: esc(said),
+        }
+    }
+
+    fn not(said: String) -> Standing {
+        Standing { read: false, said }
+    }
+}
+
+/// One row of what is watched: the kind of place, how often it is looked at, how many things,
+/// its state and when it was last read. The count leads, where `href` is given, to the things.
+fn watched_row(
+    out: &mut String,
+    id: Option<&str>,
+    (kind, how): (&str, &str),
+    (things, href): (&str, Option<&str>),
+    states: &[Standing],
+    last: Option<i64>,
+    now: i64,
+) -> Out {
+    let id = id.map_or(String::new(), |id| format!(" id=\"{id}\""));
+    let said: Vec<String> = states
+        .iter()
+        .map(|s| {
+            format!(
+                "<span class=\"dot{}\"></span>{}",
+                if s.read { "" } else { " off" },
+                s.said
+            )
+        })
+        .collect();
+    writeln!(
+        out,
+        "<div class=\"wr\"{id}><span>{}</span><span class=\"wh2 t2\">{}</span><span class=\"wn\">{}</span><span class=\"wc\">{}</span><span class=\"wl\">{}</span></div>",
+        esc(kind),
+        esc(how),
+        match href {
+            Some(href) => format!(
+                "<a href=\"{href}\" aria-label=\"{}: {}\">{}</a>",
+                esc(kind),
+                esc(things),
+                esc(things)
+            ),
+            None => esc(things),
+        },
+        said.join(" · "),
+        last.map_or("<span class=\"none\">—</span>".to_string(), |t| {
+            view::when(t, now)
+        })
+    )?;
+    Ok(())
+}
+
+/// Whether any record that affects a project is one attackers are using, counted from the same
+/// tables the findings are raised from.
+fn any_used(conn: &Connection) -> rusqlite::Result<bool> {
+    Ok(crate::vulnerabilities::affecting(conn)?
+        .iter()
+        .any(|a| a.exploited))
+}
+
+/// The latest reading time among some readings.
+fn last_read(readings: &[&Latest]) -> Option<i64> {
+    readings.iter().map(|r| r.at).max()
+}
+
+/// What is watched, as a table by kind of place, grouped as on this Mac, in your projects and
+/// beyond this Mac: how often each is looked at, how many things, whether it was read and when,
+/// from the latest readings in the store, as the page of coverage shows them. "None here" and
+/// "read in full" are said only where every reading that fills the row is full and fresh. Then
+/// one line: how many things on this Mac were not judged, as a link to the page that names each.
+#[allow(clippy::too_many_arguments)]
+fn watched_table(
+    conn: &Connection,
+    out: &mut String,
+    st: &crate::status::State,
+    map: &crate::map::Map,
+    latest: &[Latest],
+    fixable: &[&Uncovered],
+    unjudged: usize,
+    now: i64,
+) -> Out {
+    let m = &st.this_mac;
+    let this = covered::this_machine(conn)?;
+    let mac = findings::This::of(conn, this.clone())?;
+    let latest_run = crate::status::latest_finished(conn)?.map(|r| r.started_at);
+    let fix_link = "<a href=\"#you-can-fix\">you can fix</a>";
+    // An example is the place's name alone (`covered::Example`), so it is matched whole.
+    let can_fix = |place: &str| {
+        fixable
+            .iter()
+            .any(|u| u.examples.iter().any(|e| e.name == place))
+    };
+    writeln!(
+        out,
+        "<section id=\"watched-here\">\n<div class=\"wsh\"><h2>What is watched</h2><span class=\"n\">on this Mac, in your projects and beyond</span></div>\n<div class=\"wt\">\n<div class=\"wr wh\" aria-hidden=\"true\"><span>Kind of place</span><span>How often</span><span class=\"wn\">Things</span><span>State</span><span class=\"wl\">Last read</span></div>"
+    )?;
+    let mut on_mac = String::new();
+    let mut in_projects = String::new();
+    for (count, what, fast) in covered::watched() {
+        let how = if m.live && fast {
+            "within seconds"
+        } else {
+            "every hour"
+        };
+        let readings = readings_of(count, latest);
+        let n = m.watched.iter().find(|w| w.0 == what).map(|w| w.1);
+        let mut walk = walk_gap(count, latest, this.as_deref());
+        if let Count::Dependencies = count {
+            // Known vulnerabilities rest on the data too: a feed not current leaves the
+            // answer short, as on the page of known vulnerabilities (`vulnerability_gap`).
+            walk.extend(old_feeds(conn, now)?);
+        }
+        let gap = unread(&readings, latest_run, now, &walk);
+        let mut states: Vec<Standing> = Vec::new();
+        if let Count::Files(as_) = count {
+            let failed: Vec<String> = conn
+                .prepare(
+                    "SELECT DISTINCT subject FROM assertion
+                     WHERE layer = 'live' AND reader = ?1 AND predicate = 'watched_as'
+                       AND object = ?2 ORDER BY subject",
+                )?
+                .query_map(params![watched::READER, as_], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<String>>>()?
+                .into_iter()
+                .filter(|f| {
+                    latest
+                        .iter()
+                        .any(|r| r.scope == *f && r.completeness != "full")
+                })
+                .map(|f| findings::place(&f, mac.as_ref()))
+                .collect();
+            if !failed.is_empty() {
+                let mut said = format!("{} can't be read", grouped(failed.len() as i64));
+                if failed.iter().any(|f| can_fix(f)) {
+                    let _ = write!(said, " · {fix_link}");
+                }
+                states.push(Standing::not(said));
+            }
+        }
+        let mut things = n.map_or("—".to_string(), grouped);
+        if let Count::Dependencies = count {
+            if let Some(n) = n {
+                things = grouped(n);
+            }
+            let t = crate::vulnerabilities::totals(conn, now)?;
+            let open = map.projects_open();
+            if !t.matched {
+                states.push(Standing::not("not compared yet".to_string()));
+            } else if open > 0 {
+                states.push(Standing::not(esc(&format!(
+                    "{} not compared",
+                    counted(open as i64, "project", "projects")
+                ))));
+            } else if gap.is_none() {
+                states.push(Standing::read("compared at every check"));
+            }
+            if t.matched {
+                let known: usize = t
+                    .records_by_label
+                    .iter()
+                    .filter(|(label, _)| *label != "malicious")
+                    .map(|(_, n)| n)
+                    .sum();
+                if known > 0 {
+                    states.push(Standing {
+                        read: true,
+                        said: format!(
+                            "<a href=\"{DETAILS}/{VULNERABILITIES}.html\">{}</a>",
+                            esc(&counted(
+                                known as i64,
+                                "known vulnerability",
+                                "known vulnerabilities"
+                            ))
+                        ),
+                    });
+                    // "None used in attacks" rests on the list of them having been read; one
+                    // that is used is a finding, in the table of findings.
+                    if !any_used(conn)? {
+                        states.push(match exploited_gap(conn, now)? {
+                            Some(gap) => Standing::not(format!(
+                                "<span title=\"{}\">whether any is used in attacks is not known</span>",
+                                esc(&gap)
+                            )),
+                            None => Standing::read("none is known to be used in attacks"),
+                        });
+                    }
+                }
+            }
+        }
+        if let Some(gap) = &gap {
+            if readings.is_empty() && walk.is_empty() && n.is_none() && states.is_empty() {
+                states.push(Standing::not("not checked yet".to_string()));
+            } else {
+                states.push(Standing::not(format!(
+                    "<span title=\"{}\">not read in full</span>",
+                    esc(gap)
+                )));
+            }
+        }
+        if states.is_empty() {
+            states.push(Standing::read(if n.unwrap_or(0) == 0 {
+                "none here"
+            } else {
+                "read in full"
+            }));
+        }
+        let id = matches!(count, Count::Dependencies).then_some("vulnerabilities");
+        let href = format!("{DETAILS}/{THIS_MAC}.html#{}", anchor(what));
+        let group = if covered::in_projects(count) || matches!(count, Count::Dependencies) {
+            &mut in_projects
+        } else {
+            &mut on_mac
+        };
+        watched_row(
+            group,
+            id,
+            (&capital(what), how),
+            (&things, n.is_some().then_some(href.as_str())),
+            &states,
+            last_read(&readings),
+            now,
+        )?;
+    }
+    for (group, rows) in [("On this Mac", &on_mac), ("In your projects", &in_projects)] {
+        if !rows.is_empty() {
+            writeln!(out, "<p class=\"wg\">{group}</p>\n{rows}")?;
+        }
+    }
+    // Servers, checked only when the person runs the server check. A person with no servers is
+    // not told about servers at all. "Checked" rests on every server's latest visit having read
+    // it in full, whatever findings rest on it; a server not read in full is one that could not
+    // be opened or one the check did not finish on (`servers-not-checked`), counted apart.
+    let not_checked = map.servers.len() - map.servers_checked;
+    let unopened: usize = fixable
+        .iter()
+        .filter(|u| u.cause.id == covered::SERVERS_NOT_OPENED.id)
+        .map(|u| u.count)
+        .sum();
+    if !map.servers.is_empty() || map.on_servers > 0 {
+        let mut states = Vec::new();
+        if unopened > 0 {
+            states.push(Standing::not(format!(
+                "{} could not be opened · {fix_link}",
+                grouped(unopened as i64)
+            )));
+        }
+        if not_checked > unopened {
+            states.push(Standing::not(esc(&format!(
+                "{} not checked",
+                grouped((not_checked - unopened) as i64)
+            ))));
+        }
+        if states.is_empty() {
+            states.push(Standing::read("checked at the last server check"));
+        }
+        let visits: Vec<&Latest> = latest
+            .iter()
+            .filter(|r| r.reader == servers::READER && r.kind == servers::VISIT)
+            .collect();
+        out.push_str("<p class=\"wg\">Beyond this Mac</p>\n");
+        let listed = format!("{DETAILS}/{BEYOND}.html#servers");
+        watched_row(
+            out,
+            None,
+            (
+                "Servers you log in to over SSH",
+                "when you run the server check",
+            ),
+            (&grouped(map.servers.len() as i64), Some(listed.as_str())),
+            &states,
+            last_read(&visits),
+            now,
+        )?;
+    }
+    out.push_str("</div>\n");
+    if unjudged > 0 {
+        let said = if unjudged == 1 {
+            "1 thing on this Mac was not judged".to_string()
+        } else {
+            format!(
+                "{} things on this Mac were not judged",
+                grouped(unjudged as i64)
+            )
+        };
+        writeln!(
+            out,
+            "<p class=\"nj\" id=\"limits\"><a href=\"{DETAILS}/{THIS_MAC}.html#{NOT_JUDGED}\">{said}</a></p>"
+        )?;
+    }
+    out.push_str("</section>\n");
+    Ok(())
+}
+
+/// The anchor of what was not judged on this Mac, on the page of what is watched.
+pub const NOT_JUDGED: &str = "not-judged";
+
+/// What the person can fix, one cause beside another: what it is, every example as data, and
+/// Immune's advice.
+fn you_can_fix(out: &mut String, fixable: &[&Uncovered]) -> Out {
+    writeln!(
+        out,
+        "<section id=\"you-can-fix\">\n<div class=\"wsh\"><h2>You can fix</h2><span class=\"n\">{}</span></div>",
+        esc(&counted(fixable.len() as i64, "thing", "things"))
+    )?;
+    if fixable.is_empty() {
+        out.push_str("<p class=\"empty\">Nothing for you to fix.</p>\n");
+    } else {
+        out.push_str("<div class=\"fixg\">\n");
+        for u in fixable {
+            writeln!(
+                out,
+                "<article class=\"fixc\" id=\"{}\">\n<p class=\"fct\">{}</p>",
+                esc(u.cause.id),
+                esc(&u.title())
+            )?;
+            let apart = u.apart();
+            if !apart.is_empty() {
+                out.push_str("<ul>\n");
+                for (name, reason) in &apart {
+                    writeln!(out, "<li>{}</li>", example(name, *reason))?;
+                }
+                out.push_str("</ul>\n");
+            }
+            writeln!(
+                out,
+                "<p class=\"fad\">{}</p>\n<p class=\"fad\">{}</p>\n</article>",
+                esc(&u.meaning()),
+                esc(u.cause.advice)
+            )?;
+        }
+        out.push_str("</div>\n");
+    }
+    out.push_str("</section>\n");
+    Ok(())
+}
+
+/// The links to the other pages, and when the page was made and on which Mac.
+fn links(out: &mut String, name: Option<&str>, now: i64) -> Out {
+    writeln!(
+        out,
+        "<footer class=\"links\">\n<a href=\"{DETAILS}/{RULES}.html\">{RULES_TITLE}</a>\n<a href=\"{DETAILS}/{TECHNICAL}.html\">Technical details</a>\n</footer>\n<p class=\"wfoot\">Page made at {} by immune view{}</p>",
+        view::when(now, now),
+        name.map_or(String::new(), |n| format!(
+            " on <span class=\"mono\">{}</span>",
+            esc(n)
+        ))
+    )?;
+    Ok(())
+}
+
 /// A kind of thing that is listed as watched and that no rule speaks about.
 const KEPT_AS_LIST: &str = "Kept as a list. Nothing tells you about a change here in this version.";
 /// The mark of a rule whose findings notify at once.
@@ -816,27 +1296,9 @@ const INDICATOR_RULE: &str = "indicator.match";
 /// The rule about places read for the first time, which is about every watched kind.
 const FIRST_READ_RULE: &str = "watched.first-read";
 
-/// Whether a list of indicators was read at the last full check: `Some(true)` read in full,
-/// `Some(false)` given and not read, `None` not given.
-fn indicator_list(conn: &Connection) -> rusqlite::Result<Option<bool>> {
-    let Some(run) = crate::status::latest_finished(conn)? else {
-        return Ok(None);
-    };
-    conn.query_row(
-        "SELECT MAX(completeness = 'full') FROM coverage
-         WHERE run_id = ?1 AND reader = ?2 AND kind = ?3",
-        params![
-            run.id,
-            crate::indicators::READER,
-            crate::indicators::LIST_KIND
-        ],
-        |r| r.get::<_, Option<bool>>(0),
-    )
-}
-
 /// What the owner is told about: each rule's title and what it means, marked where its
-/// findings notify at once; for no rule, that the thing is only kept as a list. The summary
-/// and the page of what is watched say it the same way.
+/// findings notify at once; for no rule, that the thing is only kept as a list. The page of
+/// what is watched says it under each kind.
 fn told(out: &mut String, rules: &[findings::Rule]) -> Out {
     if rules.is_empty() {
         writeln!(out, "<p class=\"muted\">{}</p>", esc(KEPT_AS_LIST))?;
@@ -868,135 +1330,45 @@ fn rule_with(id: &str) -> Vec<findings::Rule> {
         .collect()
 }
 
-/// What a kind of watched thing is shown with: its count, none found where it was looked
-/// for, or running programs when no sample of them was taken.
-enum Shown {
-    Count(i64),
-    None,
-    /// Found none of, by a reading that was not full or not of the latest check: not "none".
-    Unread,
-    NotSampled,
+/// Whether a list of indicators was read at the last full check: `Some(true)` read in full,
+/// `Some(false)` given and not read, `None` not given.
+fn indicator_list(conn: &Connection) -> rusqlite::Result<Option<bool>> {
+    let Some(run) = crate::status::latest_finished(conn)? else {
+        return Ok(None);
+    };
+    conn.query_row(
+        "SELECT MAX(completeness = 'full') FROM coverage
+         WHERE run_id = ?1 AND reader = ?2 AND kind = ?3",
+        params![
+            run.id,
+            crate::indicators::READER,
+            crate::indicators::LIST_KIND
+        ],
+        |r| r.get::<_, Option<bool>>(0),
+    )
 }
 
-/// Running programs when no sample is there.
-const NOT_SAMPLED: &str =
-    "Looked at only while the app is open. It is not open now, or has not looked yet.";
-
-/// What is watched on this Mac, group by group, each kind with what the owner is told about
-/// it, inside the section of what is watched; then the rule about a list of indicators and, last, the rule about every watched file.
-/// A kind the last check looked for and found none of (`none`) is listed too, and so are
-/// running programs when no sample is there: a rule about a thing appearing matters most
-/// when there is none yet.
-fn watched_here(
-    out: &mut String,
-    m: &covered::ThisMac,
-    none: &[&'static str],
-    unread: &[&'static str],
-    list: Option<bool>,
-) -> Out {
-    writeln!(
-        out,
-        "<p>{}</p>\n<p class=\"muted\">{}</p>",
-        esc(WATCHED_MEANS),
-        esc(TOLD_WHERE)
-    )?;
-    if m.watched.is_empty() && none.is_empty() && unread.is_empty() {
-        out.push_str("<p class=\"muted\">Nothing has been read on this Mac yet.</p>\n");
-    }
-    // Every kind to list, in the order of `covered::watched`, with its group.
-    let all = covered::watched();
-    let mut kinds: Vec<(&str, Shown, &str)> = Vec::new();
-    for (_, what, fast) in all.iter().copied() {
-        if let Some((_, n, how)) = m.watched.iter().find(|w| w.0 == what) {
-            kinds.push((what, Shown::Count(*n), how));
-        } else if none.contains(&what) || unread.contains(&what) {
-            let how = if m.live && fast { "live" } else { "hourly" };
-            let shown = if unread.contains(&what) {
-                Shown::Unread
-            } else {
-                Shown::None
-            };
-            kinds.push((what, shown, how));
-        }
-    }
-    // Any other kind the status names, as it names it. Program starts are told in the row
-    // of the event level, and no rule speaks about them yet.
-    for (what, n, how) in &m.watched {
-        if *what != covered::SAMPLED
-            && *what != covered::EVENTS
-            && !all.iter().any(|w| w.1 == *what)
-        {
-            kinds.push((what, Shown::Count(*n), how));
-        }
-    }
-    match m.watched.iter().find(|w| w.0 == covered::SAMPLED) {
-        Some((what, n, how)) => kinds.push((what, Shown::Count(*n), how)),
-        None => kinds.push((covered::SAMPLED, Shown::NotSampled, "sampled")),
-    }
-    for (how, head) in [
-        (
-            "live",
-            "Watched all the time: a change shows within seconds",
-        ),
-        (
-            "hourly",
-            "Checked every hour: a change shows at the next check",
-        ),
-        (
-            "sampled",
-            "Looked at often while a watcher runs: what is running right now",
-        ),
-    ] {
-        let of: Vec<&(&str, Shown, &str)> = kinds.iter().filter(|k| k.2 == how).collect();
-        if of.is_empty() {
-            continue;
-        }
-        writeln!(out, "<h3>{head}</h3>\n<ul class=\"counts\">")?;
-        for (what, shown, _) in of {
-            match shown {
-                Shown::Count(n) => {
-                    let text = format!("{}: {}", capital(what), grouped(*n));
-                    writeln!(out, "<li>{}", link(THIS_MAC, &anchor(what), &text))?;
-                }
-                Shown::None => {
-                    writeln!(out, "<li>{}: none on this Mac now", esc(&capital(what)))?;
-                }
-                Shown::Unread => {
-                    let text = format!("{}: not read in full, so not known", capital(what));
-                    writeln!(out, "<li>{}", link(THIS_MAC, &anchor(what), &text))?;
-                }
-                Shown::NotSampled => writeln!(
-                    out,
-                    "<li>{}<br><span class=\"muted\">{}</span>",
-                    esc(&capital(what)),
-                    esc(NOT_SAMPLED)
-                )?,
-            }
-            told(out, &covered::rules_about(what))?;
-            out.push_str("</li>\n");
-        }
-        out.push_str("</ul>\n");
-    }
-    out.push_str("<h3>A list of signs of a known attack, when you give one</h3>\n");
+/// On the page of what is watched, after the kinds: the rules about no one kind, so that every
+/// rule the owner can be told by is named on that page.
+fn also(conn: &Connection, out: &mut String) -> Result<(), Box<dyn Error>> {
+    out.push_str("<section id=\"also\">\n<h2>Also told</h2>\n<h3>A list of signs of a known attack, when you give one</h3>\n");
     told(out, &rule_with(INDICATOR_RULE))?;
-    let said = match list {
+    let said = match indicator_list(conn)? {
         Some(true) => "A list was read at the last check.",
         Some(false) => "A list was given but could not be read at the last check.",
         None => "No list has been given, so nothing is compared.",
     };
-    writeln!(out, "<p class=\"muted\">{said}</p>")?;
-    out.push_str("<h3>Also</h3>\n");
+    writeln!(
+        out,
+        "<p class=\"muted\">{said}</p>\n<h3>Every watched place</h3>"
+    )?;
     told(out, &rule_with(FIRST_READ_RULE))?;
+    out.push_str("</section>\n");
     Ok(())
 }
 
 /// What the summary says first of known vulnerabilities.
 const VULNERABILITIES_SAY: &str = "These are published weaknesses in packages your projects depend on. They are listed, not alarmed: most matter only under particular conditions. A package known to be malicious, or a vulnerability attackers are using, is shown at the top as something that needs a look.";
-/// What a label says, and what it does not.
-const LABEL_SAYS: &str = "A label, from critical to low, is the one the record itself gives: how bad it would be if the weakness could be used, not whether your project reaches it. A record that gives none has no label.";
-/// At most this many known vulnerabilities are shown on the summary.
-const VULNERABILITIES_SHOWN: usize = 10;
-
 /// A label as a person reads it.
 fn label_words(label: &str) -> &'static str {
     match label {
@@ -1042,175 +1414,6 @@ fn vulnerability_row(
     Ok(())
 }
 
-/// The section of the summary on known vulnerabilities in packages the projects use: what
-/// they are, how many records, how many of them attackers are using or are malicious packages,
-/// how many packages and projects, how many records of each label, the most severe few, and
-/// the page with all of them.
-fn vulnerabilities_summary(
-    conn: &Connection,
-    st: &crate::status::State,
-    out: &mut String,
-    now: i64,
-) -> Out {
-    out.push_str("<section id=\"vulnerabilities\">\n<div class=\"head\"><h2>Known vulnerabilities</h2><span class=\"n\">in packages your projects use</span></div>\n<p class=\"sub\">Weaknesses to fix when you can, not something that happened.</p>\n");
-    let list = crate::vulnerabilities::affecting(conn)?;
-    let t = crate::vulnerabilities::totals(conn, now)?;
-    let all = link(
-        VULNERABILITIES,
-        "by-project",
-        "Known vulnerabilities by project",
-    );
-    let said = format!(
-        "<details>\n<summary>Why these are not alarms</summary>\n<p class=\"muted\">{}</p>\n<p class=\"muted\">{}</p>\n</details>",
-        esc(VULNERABILITIES_SAY),
-        esc(LABEL_SAYS)
-    );
-    if !t.matched {
-        writeln!(
-            out,
-            "<p class=\"muted\">Not compared yet: no check has compared your projects' packages with the known vulnerabilities.</p>\n{said}\n<p>{all}</p>\n</section>"
-        )?;
-        return Ok(());
-    }
-    if list.is_empty() {
-        // How many could not be compared is said beside it, so that none known never reads
-        // as calm when the data was not read.
-        let untold = match t.packages_unknown {
-            0 => String::new(),
-            n => format!(
-                " For {} whether one affects them cannot be told.",
-                crate::view::counted(n as i64, "package", "packages")
-            ),
-        };
-        let gap = vulnerability_gap(conn, now)?;
-        coverage_of_list(
-            out,
-            gap.as_deref(),
-            true,
-            &format!(
-                "None is known in the packages that could be compared.{untold} What could not be compared is under Limits of this version."
-            ),
-        );
-        writeln!(out, "{said}\n<p>{all}</p>\n</section>")?;
-        return Ok(());
-    }
-    // The count first and big, the rest of its sentence beside it.
-    let records = crate::vulnerabilities::records_said(&t);
-    let (number, rest) = records.split_once(' ').unwrap_or((&records, ""));
-    writeln!(
-        out,
-        "<p class=\"big\"><span class=\"num\">{}</span> <span>{}</span></p>",
-        esc(number),
-        esc(rest)
-    )?;
-    // How many of these records attackers are using, and how many are malicious packages,
-    // counted from the same tables the findings of what needs a look are raised from.
-    let mut exploited: BTreeSet<(&str, &str)> = BTreeSet::new();
-    let mut malicious: BTreeSet<(&str, &str)> = BTreeSet::new();
-    for a in &list {
-        let record = (a.source.as_str(), a.advisory.as_str());
-        if a.exploited {
-            exploited.insert(record);
-        }
-        if a.label == "malicious" {
-            malicious.insert(record);
-        }
-    }
-    // "None used in attacks" rests on the list of them having been read.
-    let mut none_used = String::new();
-    let used = match exploited.len() {
-        0 => {
-            coverage_of_list(
-                &mut none_used,
-                exploited_gap(conn, now)?.as_deref(),
-                true,
-                "None is known to be used in attacks.",
-            );
-            String::new()
-        }
-        1 => "1 is on the list of vulnerabilities used in attacks.".to_string(),
-        n => format!("{n} are on the list of vulnerabilities used in attacks."),
-    };
-    out.push_str(&none_used);
-    let bad = match malicious.len() {
-        0 => "None is a malicious package.".to_string(),
-        1 => "1 is a malicious package.".to_string(),
-        n => format!("{n} are malicious packages."),
-    };
-    let to = if exploited.is_empty() && malicious.is_empty() {
-        String::new()
-    } else if st.needs.items.iter().any(|i| {
-        matches!(
-            i.rule,
-            Some(
-                findings::EXPLOITED_VULNERABILITY
-                    | findings::MALICIOUS_PACKAGE
-                    | findings::MALICIOUS_NAME_REMOVED
-            )
-        )
-    }) {
-        format!(
-            " <a href=\"{}#needs\">Needs a look</a> says what to do.",
-            view::SUMMARY
-        )
-    } else {
-        format!(
-            " Their findings are under <a href=\"{}#answered\">Answered</a>.",
-            view::SUMMARY
-        )
-    };
-    let both = [used.as_str(), bad.as_str()]
-        .into_iter()
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
-    writeln!(out, "<p class=\"used\"><strong>{both}</strong>{to}</p>")?;
-    // One bar by label, every record counted once, and the labels with their counts beside it.
-    let whole: usize = t.records_by_label.iter().map(|(_, n)| n).sum();
-    let named: Vec<String> = t
-        .records_by_label
-        .iter()
-        .map(|(label, n)| format!("{} {}", label_words(label), grouped(*n as i64)))
-        .collect();
-    writeln!(
-        out,
-        "<div class=\"bar\" role=\"img\" aria-label=\"{}\">",
-        esc(&named.join(", "))
-    )?;
-    for (label, n) in &t.records_by_label {
-        writeln!(
-            out,
-            "<span class=\"s-{label}\" style=\"width:{}%\"></span>",
-            n * 100 / whole.max(1)
-        )?;
-    }
-    out.push_str("</div>\n<ul class=\"keys\">\n");
-    for (label, n) in &t.records_by_label {
-        writeln!(
-            out,
-            "<li><i class=\"s-{label}\" aria-hidden=\"true\"></i>{}: {}</li>",
-            label_words(label),
-            grouped(*n as i64)
-        )?;
-    }
-    writeln!(out, "</ul>\n{said}")?;
-    writeln!(
-        out,
-        "<details>\n<summary>The {} most severe</summary>\n<div class=\"scroll\"><table class=\"dense\">",
-        list.len().min(VULNERABILITIES_SHOWN)
-    )?;
-    view::thead(out, &["Package", "Project", "Label", "Fixed in", "Record"]);
-    let this = findings::This::of(conn, covered::this_machine(conn)?)?;
-    for a in list.iter().take(VULNERABILITIES_SHOWN) {
-        vulnerability_row(out, a, true, this.as_ref())?;
-    }
-    out.push_str("</tbody></table></div>\n</details>\n");
-    // No number here: the page lists each record once per project it affects, and a number
-    // of those would not be the count a person reads above.
-    writeln!(out, "<p>{all}</p>\n</section>")?;
-    Ok(())
-}
-
 /// Every known vulnerability in packages the projects use, grouped by project.
 pub fn vulnerabilities(conn: &Connection, now: i64) -> Result<String, Box<dyn Error>> {
     let mut out = top(
@@ -1248,12 +1451,17 @@ pub fn vulnerabilities(conn: &Connection, now: i64) -> Result<String, Box<dyn Er
     Ok(out)
 }
 
-/// `a`, `a or b`, `a, b or c`.
-fn listed_or(items: &[&str]) -> String {
-    match items {
-        [] => String::new(),
-        [one] => one.to_string(),
-        [rest @ .., last] => format!("{}, or {last}", rest.join(", ")),
+/// One example of a thing not covered, as safe HTML: its name, and beside it what its source said
+/// of it. What a source said is prose from it: cut, as every such text is where it is printed,
+/// and escaped apart from the name.
+fn example(name: &str, reason: Option<&str>) -> String {
+    match reason {
+        Some(r) => format!(
+            "{}: {}",
+            esc(name),
+            esc(&crate::secrets::text(r, view::shown))
+        ),
+        None => esc(name),
     }
 }
 
@@ -1268,8 +1476,8 @@ fn uncovered(out: &mut String, u: &Uncovered) -> Out {
     let apart = u.apart();
     if !apart.is_empty() {
         out.push_str("<ul class=\"readings mono\">\n");
-        for a in apart.iter().take(EXAMPLES_SHOWN) {
-            writeln!(out, "<li>{}</li>", esc(a))?;
+        for (name, reason) in apart.iter().take(EXAMPLES_SHOWN) {
+            writeln!(out, "<li>{}</li>", example(name, *reason))?;
         }
         if apart.len() > EXAMPLES_SHOWN {
             writeln!(
@@ -1812,19 +2020,24 @@ fn vulnerability_gap(conn: &Connection, now: i64) -> rusqlite::Result<Option<Str
         .iter()
         .filter(|r| r.reader == crate::lockfiles::READER)
         .collect();
-    let old: Vec<String> = crate::vulnerabilities::freshness(conn, now)?
+    let old = old_feeds(conn, now)?;
+    let latest_run = crate::status::latest_finished(conn)?.map(|r| r.started_at);
+    Ok(unread(&lockfiles, latest_run, now, &old))
+}
+
+/// Each feed of vulnerability data that is not current, with why, as `unread` names a gap.
+fn old_feeds(conn: &Connection, now: i64) -> rusqlite::Result<Vec<String>> {
+    Ok(crate::vulnerabilities::freshness(conn, now)?
         .into_iter()
         .filter_map(|f| {
             f.not_current
                 .map(|why| format!("the {} vulnerability data ({why})", f.feed.ecosystem))
         })
-        .collect();
-    let latest_run = crate::status::latest_finished(conn)?.map(|r| r.started_at);
-    Ok(unread(&lockfiles, latest_run, now, &old))
+        .collect())
 }
 
-/// What "none is used in attacks" rests on and did not have: the list of vulnerabilities used
-/// in attacks, read at least once.
+/// What "none used in attacks" lacks while the list of them was never downloaded; `None` once
+/// it was read.
 fn exploited_gap(conn: &Connection, now: i64) -> rusqlite::Result<Option<String>> {
     // A store made before the list was kept has no table of its readings: never read.
     if crate::threats::last_good(conn).unwrap_or(None).is_some() {
@@ -1951,6 +2164,7 @@ pub fn this_mac(
         None => out.push_str("<p class=\"muted\">No sample has been taken yet.</p>\n"),
     }
     out.push_str("</section>\n");
+    also(conn, &mut out)?;
 
     ways(conn, &mut out, this)?;
 
@@ -1994,6 +2208,24 @@ pub fn this_mac(
             out.push_str("</tr>\n");
         }
         out.push_str("</tbody></table></div>\n");
+    }
+    out.push_str("</section>\n");
+    // What on this Mac was not judged, each thing in full, where the summary's line leads.
+    let unjudged = unjudged(st);
+    writeln!(
+        out,
+        "<section id=\"{NOT_JUDGED}\">\n<h2>Not judged on this Mac</h2>\n<p class=\"muted\">{}</p>",
+        esc(&if unjudged.is_empty() {
+            "Nothing beyond what you can fix, which the summary lists.".to_string()
+        } else {
+            format!(
+                "{} on this Mac this version could not judge here, and nothing you do changes.",
+                counted(unjudged.len() as i64, "thing", "things")
+            )
+        })
+    )?;
+    for u in unjudged {
+        uncovered(&mut out, u)?;
     }
     out.push_str("</section>\n");
     out.push_str(FOOT);
@@ -2242,18 +2474,6 @@ fn installed_list(
         .collect();
     list.sort_by_key(|(_, t)| t.name.to_lowercase());
     Ok(list)
-}
-
-/// The installed things of one kind by subject and name, as the page of details names them.
-pub fn installed_names(
-    conn: &Connection,
-    kind: &str,
-    this: Option<&str>,
-) -> rusqlite::Result<Vec<(String, String)>> {
-    Ok(installed_list(conn, kind, this)?
-        .into_iter()
-        .map(|(subject, t)| (subject, t.name))
-        .collect())
 }
 
 /// The installed things of one kind: name first, who signed it where that is known, version
@@ -2519,7 +2739,9 @@ pub fn technical() -> String {
         "Everything the program keeps, as it keeps it: for your agent, or for a closer look.",
     );
     out.push_str("<section id=\"technical\">\n<ul class=\"counts\">\n");
-    // The page of servers is linked from the summary only where there are some.
+    out.push_str(&format!(
+        "<li><a href=\"{THIS_MAC}.html\">{THIS_MAC_TITLE}: every kind of place, its things and its rules</a></li>\n<li><a href=\"{VULNERABILITIES}.html\">Known vulnerabilities in the packages your projects use</a></li>\n"
+    ));
     out.push_str(&format!(
         "<li><a href=\"{BEYOND}.html\">Beyond this Mac: servers, your other devices, other people's devices, and machines you set aside</a></li>\n"
     ));
@@ -2836,51 +3058,26 @@ mod tests {
         }
     }
 
-    /// The section of what is watched for a Mac where every kind is watched, and one kind
-    /// that no rule speaks about.
-    fn everything_watched() -> String {
-        let mut watched: Vec<(&'static str, i64, &'static str)> = covered::watched()
-            .into_iter()
-            .map(|(_, what, _)| (what, 1, "hourly"))
-            .collect();
-        watched.push((covered::SAMPLED, 1, "sampled"));
-        watched.push(("things of a kind no rule knows", 1, "hourly"));
-        let m = covered::ThisMac {
-            watched,
-            ..covered::ThisMac::unchecked(true)
-        };
-        let mut out = String::new();
-        watched_here(&mut out, &m, &[], &[], None).unwrap();
-        out
+    /// The page of what is watched for a store nothing was read into, with a home that does
+    /// not exist; the folder it made goes, also when the test fails.
+    fn this_mac_page() -> String {
+        let dir = crate::common::Scratch::new("told");
+        let conn = crate::store::open(&dir.0.join("store.db")).unwrap();
+        let st = crate::status::state(&conn, &dir.0.join("no-home"), 1_791_000_000).unwrap();
+        this_mac(&conn, &st, 1_791_000_000).unwrap()
     }
 
-    /// The same for a Mac where the last check found none of anything, with no watcher.
-    fn nothing_found() -> String {
-        let none: Vec<&'static str> = covered::watched()
+    /// Each section of a kind of watched thing on the page, by its anchor, up to its end.
+    fn kinds(page: &str) -> Vec<&str> {
+        covered::watched()
             .into_iter()
             .map(|(_, what, _)| what)
-            .collect();
-        let mut out = String::new();
-        watched_here(
-            &mut out,
-            &covered::ThisMac::unchecked(false),
-            &none,
-            &[],
-            None,
-        )
-        .unwrap();
-        out
-    }
-
-    /// Each kind listed, up to where its line ends.
-    fn kinds(page: &str) -> Vec<&str> {
-        let mut parts: Vec<&str> = page.split("\n</li>\n").collect();
-        parts.pop();
-        parts
-            .into_iter()
-            .map(|p| {
-                let start = "<ul class=\"counts\">\n";
-                p.rfind(start).map_or(p, |i| &p[i + start.len()..])
+            .chain([covered::SAMPLED])
+            .map(|what| {
+                let at = page
+                    .find(&format!("<section id=\"{}\">", anchor(what)))
+                    .unwrap_or_else(|| panic!("{what}"));
+                &page[at..at + page[at..].find("</section>").unwrap()]
             })
             .collect()
     }
@@ -2894,15 +3091,14 @@ mod tests {
     }
 
     #[test]
-    fn every_rule_is_on_the_page() {
+    fn every_rule_is_on_the_page_of_what_is_watched() {
         // The owner reads on the page what he is told about. A rule added later and not
-        // placed under a kind, the list of indicators or "Also" would tell him something the
-        // page never says it does.
-        for page in [everything_watched(), nothing_found()] {
-            for r in findings::rules() {
-                assert!(page.contains(&esc(r.words.title)), "{}: {page}", r.id);
-                assert!(page.contains(&esc(r.words.meaning)), "{}: {page}", r.id);
-            }
+        // placed under a kind or under "Also told" would tell him something the page never
+        // says it does.
+        let page = this_mac_page();
+        for r in findings::rules() {
+            assert!(page.contains(&esc(r.words.title)), "{}: {page}", r.id);
+            assert!(page.contains(&esc(r.words.meaning)), "{}: {page}", r.id);
         }
     }
 
@@ -2910,27 +3106,21 @@ mod tests {
     fn the_page_never_calls_a_thing_watched_without_saying_what_is_told_about_it() {
         // False calm: a kind listed as watched that no rule can fire about must say so in
         // words, or "watched" promises a warning that never comes.
-        let page = everything_watched();
-        assert_eq!(kinds(&page).len(), covered::watched().len() + 2, "{page}");
-        let empty = nothing_found();
-        assert_eq!(kinds(&empty).len(), covered::watched().len() + 1, "{empty}");
-        for kind in kinds(&page).into_iter().chain(kinds(&empty)) {
-            assert!(kind.starts_with("<li>"), "{kind}");
+        let page = this_mac_page();
+        for kind in kinds(&page) {
             let said = kind.contains("<ul class=\"rules\">\n<li>") || kind.contains(KEPT_AS_LIST);
             assert!(said, "{kind}");
         }
-        let unknown = &page[page.find("Things of a kind no rule knows").unwrap()..];
-        assert!(
-            unknown[..unknown.find("</li>").unwrap()].contains(KEPT_AS_LIST),
-            "{unknown}"
-        );
+        let mut lone = String::new();
+        told(&mut lone, &[]).unwrap();
+        assert!(lone.contains(KEPT_AS_LIST), "{lone}");
     }
 
     #[test]
     fn a_rule_marked_as_sending_a_notification_is_exactly_an_urgent_one() {
         // The page tells the owner which changes notify at once; the app notifies for what
         // is urgent. The two must not disagree.
-        let page = everything_watched();
+        let page = this_mac_page();
         let lines = rule_lines(&page);
         for r in findings::rules() {
             let line = lines

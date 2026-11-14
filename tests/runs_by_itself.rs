@@ -1248,14 +1248,16 @@ fn every_known_way_is_on_the_page_and_the_limit_says_the_numbers_of_that_table()
     assert_eq!(item(&e.status())["meaning"], partial);
 }
 
-/// The kinds the overview says none of: each "<li>Kind: none on this Mac now".
+/// The kinds the summary's table of what is watched says none of: each row whose state is
+/// "none here".
 fn none_said(view: &str) -> Vec<String> {
-    view.lines()
-        .filter_map(|l| {
-            l.strip_prefix("<li>")?
-                .strip_suffix(": none on this Mac now")
+    view.split("<div class=\"wr\"")
+        .skip(1)
+        .filter_map(|row| {
+            let row = &row[..row.find("</div>")?];
+            let kind = row.split("<span>").nth(1)?.split("</span>").next()?;
+            row.contains("</span>none here").then(|| kind.to_string())
         })
-        .map(str::to_string)
         .collect()
 }
 
@@ -2884,6 +2886,29 @@ fn each_check_with_first_readings_raises_its_own_item_whatever_was_answered_abou
         whole["evidence"]["place_changed"].get("presence_only"),
         Some(&serde_json::Value::Null)
     );
+    // It is about what was read, counted, and the machine is where that is: in the list, in
+    // the finding whole and in what needs a look, each with its kind in a person's words.
+    let listed = &e.contract(&["findings"])["findings"][0];
+    let look = &e.status()["needs_a_look"]["items"][0]["finding"];
+    for f in [listed, &whole, look] {
+        assert_eq!(
+            (&f["thing"], &f["where_text"], &f["kind_title"]),
+            (
+                &"1 project".into(),
+                &"mac".into(),
+                &"Read for the first time".into()
+            ),
+            "{f:#}"
+        );
+    }
+    // The page's row starts with the same thing and names the kind by the same title.
+    let page = e.page("view.html");
+    assert!(
+        page.contains(
+            "<span class=\"fw\">1 project</span><span class=\"fk\">Read for the first time · first read</span>"
+        ),
+        "{page}"
+    );
     let out = Command::new(env!("CARGO_BIN_EXE_immune"))
         .args(["finding", &first, "--store"])
         .arg(e.store())
@@ -2897,6 +2922,19 @@ fn each_check_with_first_readings_raises_its_own_item_whatever_was_answered_abou
         ),
         "{text}"
     );
+    assert!(text.contains("\nAbout: 1 project.\n"), "{text}");
+    // The text's rows say it too, before the title, in the list and in what needs a look.
+    let title = "1 project: Some places on this Mac were read for the first time";
+    for args in [&["findings"][..], &["status"][..]] {
+        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+            .args(args)
+            .arg("--store")
+            .arg(e.store())
+            .output()
+            .unwrap();
+        let text = String::from_utf8(out.stdout).unwrap();
+        assert!(text.contains(title), "{args:?}: {text}");
+    }
     let out = Command::new(env!("CARGO_BIN_EXE_immune"))
         .args([
             "finding",
@@ -2915,6 +2953,13 @@ fn each_check_with_first_readings_raises_its_own_item_whatever_was_answered_abou
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(e.found().is_empty(), "{:?}", e.found());
+    // Answered, its row among the answered names what was read too.
+    let page = e.page("view.html");
+    let answered = &page[page.find("<p class=\"fg answered\">").unwrap()..];
+    assert!(
+        answered.contains("<span class=\"fw\">1 project</span>"),
+        "{answered}"
+    );
     let evil = e.checkout(".cache/evil");
     put(&evil.join(".git/hooks/post-merge"), "#!/bin/sh\n");
     let printed = e.run_in(&e.home().join(".cache"));
@@ -3181,25 +3226,6 @@ fn a_plugin_watched_only_for_whether_it_is_there_is_never_said_to_be_unchanged()
     );
     // A file whose content is compared says it has not changed since it was first seen.
     assert!(row("/etc/pam.d/sudo").contains("not since first seen"));
-    // The summary does not call the plugin watched for change.
-    let out = Command::new(env!("CARGO_BIN_EXE_immune"))
-        .args(["view", "--no-open", "--store"])
-        .arg(e.store())
-        .output()
-        .unwrap();
-    let pages = String::from_utf8(out.stdout).unwrap();
-    let summary: String = pages
-        .lines()
-        .filter(|p| p.ends_with(".html"))
-        .map(|p| std::fs::read_to_string(p).unwrap())
-        .find(|p| p.contains("Example.bundle") && p.contains("no finding rests on it"))
-        .unwrap_or_else(|| panic!("{pages}"));
-    let at = summary.find("Example.bundle").unwrap();
-    let mark = &summary[at..at + summary[at..].find('"').unwrap()];
-    assert!(
-        mark.contains("watched for whether it is there, not for a change inside it"),
-        "{mark}"
-    );
 }
 
 #[test]

@@ -1181,12 +1181,21 @@ fn uncovered_message(u: &crate::covered::Uncovered) -> crate::contract::v1::Unco
         count: n(u.count),
         since_at: u.since,
         value_text: u.value.as_deref().map(whole),
-        examples_text: u.examples().iter().map(|e| whole(e)).collect(),
+        examples_text: u.examples().iter().map(|e| whole(&e.name)).collect(),
         holds_on: if u.every_mac {
             crate::contract::v1::HoldsOn::EveryMac
         } else {
             crate::contract::v1::HoldsOn::ThisMac
         } as i32,
+        // What a source said is prose from it: cut where it is printed, as every such text.
+        examples: u
+            .examples()
+            .iter()
+            .map(|e| crate::contract::v1::UncoveredExample {
+                name_text: whole(&e.name),
+                reason_text: e.reason.as_deref().map(|r| crate::secrets::text(r, whole)),
+            })
+            .collect(),
     }
 }
 
@@ -1378,7 +1387,8 @@ fn coverage_message(p: &Problems) -> crate::contract::v1::CoverageSummary {
                 class: value_of::<v1::ReadingClass>(g.class),
                 reader: g.reader.clone(),
                 kind: g.kind.clone(),
-                reason_text: g.reason.as_deref().map(whole),
+                // A reason is prose from a source: cut where it is printed, as every such text.
+                reason_text: g.reason.as_deref().map(|r| crate::secrets::text(r, whole)),
                 count: n(g.scopes.len()),
                 examples_text: g.scopes.iter().take(EXAMPLES).map(|s| whole(s)).collect(),
             })
@@ -1391,7 +1401,7 @@ fn coverage_message(p: &Problems) -> crate::contract::v1::CoverageSummary {
             .map(|u| v1::Unreached {
                 scope_text: whole(&u.scope),
                 since_at: u.since,
-                reason_text: u.reason.as_deref().map(whole),
+                reason_text: u.reason.as_deref().map(|r| crate::secrets::text(r, whole)),
             })
             .collect(),
         unreached_total: n(p.unreached.len()),
@@ -1443,28 +1453,29 @@ pub(crate) fn rules_now_of(
             ),
         },
     };
-    let not_arriving = watching.map_or(0, |l| l.not_arriving());
-    // While the level runs, a rule evaluated in full watches unless its events are not
-    // collected or it reads what does not arrive; then it is named, with why: the collector
+    // Whether a rule watches now is one predicate, the page's too (`happens::Watching`).
+    let now = crate::happens::Watching::of(level);
+    // While the level runs, a rule evaluated in full that does not watch is named, with why:
+    // its events are not collected, or what it reads does not arrive because the collector
     // does not keep it, keeps it and never filled it, or no line that would carry it was read.
     let unwatched = |l: &crate::sigma::Loaded| -> Option<(&'static str, Vec<&'static str>)> {
         let level = watching?;
-        if l.kind == Some(Kind::File) && !files {
+        if now.watches(l) {
+            None
+        } else if l.kind == Some(Kind::File) && !files {
             Some(("file_events_not_collected", Vec::new()))
-        } else if l.silenced_by(not_arriving) {
-            let missing = l.needs & not_arriving;
+        } else {
+            let missing = l.needs & now.missing;
             Some((
                 level.arrivals.worst(missing).reason()?,
                 crate::events::names(missing),
             ))
-        } else {
-            None
         }
     };
     let watching_of = |kind: Kind| {
         evaluated
             .iter()
-            .filter(|l| l.kind == Some(kind) && watching.is_some() && unwatched(l).is_none())
+            .filter(|l| l.kind == Some(kind) && now.watches(l))
             .count()
     };
     let watching_file_rules = watching_of(Kind::File);

@@ -106,72 +106,6 @@ pub fn rules_about(what: &str) -> Vec<findings::Rule> {
         .collect()
 }
 
-/// The kinds of watched thing, by their words, that the latest readings of this Mac looked
-/// for and found none of, so the page can still say what a change there would tell. A kind
-/// that was not read, or whose reading failed, is not one: what is not covered says why.
-pub fn none_here(
-    conn: &Connection,
-    latest: &[Latest],
-    m: &ThisMac,
-) -> rusqlite::Result<Vec<&'static str>> {
-    let Some(this) = this_machine(conn)? else {
-        return Ok(Vec::new());
-    };
-    let in_checkout = format!("checkout:{this}/");
-    let mut out = Vec::new();
-    for (count, what, _) in watched() {
-        if m.watched.iter().any(|w| w.0 == what) {
-            continue;
-        }
-        let (reader, kinds) = match count {
-            // Projects were looked for on this Mac and no lockfile of them failed.
-            Count::Dependencies => {
-                let looked = latest
-                    .iter()
-                    .any(|r| r.reader == crate::checkouts::READER && r.scope == this);
-                let failed_here = latest
-                    .iter()
-                    .any(|r| r.reader == crate::lockfiles::READER && failed(r));
-                if looked && !failed_here {
-                    out.push(what);
-                }
-                continue;
-            }
-            Count::Files(as_) => {
-                let mut kinds = autorun::kinds_of(as_);
-                kinds.extend(
-                    watched::kinds()
-                        .into_iter()
-                        .filter(|(w, _)| *w == as_)
-                        .map(|(_, kind)| kind.to_string()),
-                );
-                if kinds.is_empty() {
-                    continue;
-                }
-                (watched::READER, kinds)
-            }
-            Count::Installed(kind) => (integrity::READER, vec![kind.to_string()]),
-        };
-        // The reader looked at this Mac at its last reading: for files, any place of its; for
-        // installed things, this very kind.
-        let ran = latest.iter().any(|r| {
-            r.reader == reader
-                && r.scope == this
-                && (matches!(count, Count::Files(_)) || kinds.contains(&r.kind))
-        });
-        let failed_here = latest.iter().any(|r| {
-            r.reader == reader
-                && kinds.contains(&r.kind)
-                && (r.scope == this || r.scope.starts_with(&in_checkout))
-                && failed(r)
-        });
-        if ran && !failed_here {
-            out.push(what);
-        }
-    }
-    Ok(out)
-}
-
 /// How a kind of watched thing is counted: live files of a kind of watched place, or live
 /// installed things of a kind of the integrity reader.
 #[derive(Clone, Copy)]
@@ -458,7 +392,7 @@ pub const TAILNET_NEEDS_YOU: Cause = Cause {
     id: "tailnet-not-connected",
     who: YOU,
     scope: "servers",
-    kind: "tailnet not looked at while Tailscale waits for the owner",
+    kind: "tailnet waits for you in Tailscale",
     title: [
         "Tailscale on this Mac is not connected, so your tailnet was not looked at since {date}.",
         "Tailscale on this Mac is not connected, so your tailnet was not looked at since {date}.",
@@ -589,7 +523,7 @@ pub const THREATS_FIXABLE: Cause = Cause {
     id: "vulnerability-list-not-downloaded-fixable",
     who: YOU,
     scope: "threats",
-    kind: "vulnerability list not downloaded for a cause on this Mac or its network",
+    kind: "vulnerability list blocked here",
     title: [
         "The list of vulnerabilities attackers are using could not be downloaded since {date}, for a cause on this Mac or its network.",
         "The list of vulnerabilities attackers are using could not be downloaded since {date}, for a cause on this Mac or its network.",
@@ -631,7 +565,7 @@ pub const VULNERABILITY_DATA_FIXABLE: Cause = Cause {
     id: "vulnerability-data-not-updated-fixable",
     who: YOU,
     scope: "threats",
-    kind: "list of known vulnerabilities not updated for a cause on this Mac or its network",
+    kind: "known vulnerabilities blocked here",
     title: [
         "The list of known vulnerabilities could not be updated since {date}, for a cause on this Mac or its network.",
         "The list of known vulnerabilities could not be updated since {date}, for a cause on this Mac or its network.",
@@ -793,7 +727,7 @@ pub struct Uncovered {
     /// vulnerabilities, else the latest reading that found it.
     pub since: Option<i64>,
     pub value: Option<String>,
-    pub examples: Vec<String>,
+    pub examples: Vec<Example>,
     /// Why, clause by clause in the program's words, where the words say `{reasons}`.
     pub reasons: Vec<String>,
     /// What it is, each in a few words, where the words say `{what}`: a list that begins
@@ -806,6 +740,24 @@ pub struct Uncovered {
     /// every Mac. Set at the one place that adds those, `LIMITS`, and where a reading found
     /// nothing of its kind here; everything else is of this Mac.
     pub every_mac: bool,
+}
+
+/// One thing a cause is about: its name as the Mac names it, and apart from it what its source
+/// said of it, so that the name stays a name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Example {
+    pub name: String,
+    /// The source's words; `None` when it said nothing, never an empty text.
+    pub reason: Option<String>,
+}
+
+impl Example {
+    fn named(name: impl Into<String>) -> Example {
+        Example {
+            name: name.into(),
+            reason: None,
+        }
+    }
 }
 
 impl Uncovered {
@@ -856,15 +808,20 @@ impl Uncovered {
         }
     }
 
-    /// What is told apart from the words, as data: every example and the value.
-    pub fn apart(&self) -> Vec<&str> {
-        let mut out: Vec<&str> = self.examples.iter().map(String::as_str).collect();
-        out.extend(self.value.as_deref());
+    /// What is told apart from the words, as data: every example with what its source said,
+    /// then the value.
+    pub fn apart(&self) -> Vec<(&str, Option<&str>)> {
+        let mut out: Vec<(&str, Option<&str>)> = self
+            .examples
+            .iter()
+            .map(|e| (e.name.as_str(), e.reason.as_deref()))
+            .collect();
+        out.extend(self.value.as_deref().map(|v| (v, None)));
         out
     }
 
     /// The examples given: the first `EXAMPLES`, or every one for a cause that names each.
-    pub fn examples(&self) -> &[String] {
+    pub fn examples(&self) -> &[Example] {
         let n = if EVERY_EXAMPLE.contains(&self.cause.id) {
             self.examples.len()
         } else {
@@ -919,11 +876,11 @@ fn first_scope<'a>(scopes: impl Iterator<Item = &'a str>, this: Option<&str>) ->
         .unwrap_or("this_mac")
 }
 
-/// `place: reason`, or the place alone.
-fn with_reason(place: String, reason: Option<&str>) -> String {
-    match reason {
-        Some(r) => format!("{place}: {r}"),
-        None => place,
+/// A place, with what its source said of it apart: nothing when it said nothing.
+fn with_reason(place: String, reason: Option<&str>) -> Example {
+    Example {
+        name: place,
+        reason: reason.filter(|r| !r.is_empty()).map(str::to_string),
     }
 }
 
@@ -954,7 +911,10 @@ pub fn not_covered(
     if !unfinished.is_empty() {
         out.push(Uncovered {
             since: last_sweep,
-            examples: unfinished.iter().map(|u| place(&u.scope)).collect(),
+            examples: unfinished
+                .iter()
+                .map(|u| Example::named(place(&u.scope)))
+                .collect(),
             ..Uncovered::new(&SERVERS_NOT_CHECKED, unfinished.len())
         });
     }
@@ -981,7 +941,7 @@ pub fn not_covered(
         if list.is_empty() {
             continue;
         }
-        let mut examples: Vec<String> = Vec::new();
+        let mut examples: Vec<Example> = Vec::new();
         for r in &list {
             let e = with_reason(place(&r.scope), r.reason.as_deref());
             if !examples.contains(&e) {
@@ -1112,7 +1072,7 @@ pub fn not_covered(
         let what: Vec<&'static str> = what.into_iter().map(|i| GUARDED_WHAT[i].1).collect();
         out.push(Uncovered {
             since: at,
-            examples: folders.iter().cloned().collect(),
+            examples: folders.iter().map(Example::named).collect(),
             scope: if what == ["projects"] {
                 GUARDED.scope
             } else {
@@ -1152,7 +1112,7 @@ pub fn not_covered(
                 .filter(|r| r.kind == autorun::OTHERS_KIND)
                 .map(|r| r.at)
                 .max(),
-            examples: names.iter().map(|n| n.to_string()).collect(),
+            examples: names.iter().map(|n| Example::named(*n)).collect(),
             // None of the ways not read is in a project here: what is left is the version's.
             every_mac: names.is_empty(),
             read_whole: walked_whole,
@@ -1169,7 +1129,10 @@ pub fn not_covered(
     if !kinds.is_empty() {
         out.push(Uncovered {
             scope: first_scope(lacks.iter().map(|(s, _, _)| s.as_str()), this),
-            examples: names_first(&kinds),
+            examples: names_first(&kinds)
+                .into_iter()
+                .map(Example::named)
+                .collect(),
             ..Uncovered::new(&NOT_UNDERSTOOD, kinds.len())
         });
     }
@@ -1183,7 +1146,7 @@ pub fn not_covered(
         let names: Vec<String> = names.split(", ").map(str::to_string).collect();
         out.push(Uncovered {
             count: names.len(),
-            examples: names,
+            examples: names.into_iter().map(Example::named).collect(),
             ..Uncovered::new(&OTHER_MANAGERS, 0)
         });
     }
@@ -1205,7 +1168,7 @@ pub fn not_covered(
             .collect();
         out.push(Uncovered {
             since: home_read,
-            examples: names.iter().map(|n| n.to_string()).collect(),
+            examples: names.iter().map(|n| Example::named(*n)).collect(),
             every_mac: names.is_empty(),
             ..Uncovered::new(&HOME_AUTORUN, names.len())
         });
@@ -1507,6 +1470,24 @@ mod tests {
             assert_eq!(not_permitted(Some(&said(errno))), closed, "{}", said(errno));
         }
         assert!(!not_permitted(None));
+    }
+
+    #[test]
+    fn every_cause_a_person_can_fix_has_a_short_name_that_fits_its_row() {
+        // The app shows such a cause as a row whose second line is its short name, about 36
+        // characters wide; the sentence, the meaning and the advice carry the detail.
+        for c in CAUSES.iter().filter(|c| c.who == YOU) {
+            assert!(c.kind.chars().count() <= 36, "{}: {:?}", c.id, c.kind);
+        }
+    }
+
+    #[test]
+    fn an_example_whose_source_said_nothing_has_no_reason_and_never_an_empty_one() {
+        // A reader takes an absent reason as nothing said; an empty one would read as words.
+        let e = with_reason("db-1".to_string(), Some(""));
+        assert_eq!((e.name.as_str(), e.reason), ("db-1", None));
+        let e = with_reason("db-1".to_string(), Some("refused"));
+        assert_eq!(e.reason.as_deref(), Some("refused"));
     }
 
     #[test]

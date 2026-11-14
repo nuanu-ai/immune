@@ -461,40 +461,38 @@ fn a_watchers_reading_shows_in_the_view_as_what_it_is_and_not_as_a_run_that_did_
 }
 
 #[test]
-fn the_view_says_what_a_watcher_cannot_see_and_whether_one_runs_once_one_has_run() {
-    // The owner reading the view must know which changes no watcher would have caught, and
-    // whether one watches now; on a store no watcher ever read, neither is said.
+fn the_view_says_whether_a_watcher_watches_live_once_one_has_run() {
+    // The owner reading the view must know whether a watcher watches now, and which places it
+    // watches within seconds; on a store no watcher ever read, neither is said.
     let mac = Mac::new("view-watching");
     mac.run();
-    let cannot = "A watcher does not see who made a change";
-    assert!(!mac.view().contains(cannot));
+    let summary = |pages: &str| -> String {
+        let at = pages.find("<section id=\"this-mac\">").unwrap();
+        let end = at + pages[at..].find("</main>").unwrap();
+        pages[at..end].to_string()
+    };
+    let before = summary(&mac.view());
+    let fast = "<span class=\"wh2 t2\">within seconds</span>";
+    assert!(
+        before.contains(" · hourly only · ") && !before.contains(fast),
+        "{before}"
+    );
     let mut w = mac.watch().started();
     mac.put(".zshrc", "one\n");
     w.until("read", |v| count(v, "new") == 1);
-    let now = mac.view_if_stale();
-    assert!(now.contains(cannot), "{now}");
+    let now = summary(&mac.view_if_stale());
     assert!(
-        now.contains("watched live: a change in what is watched all the time shows within seconds, last looked 2"),
-        "{now}"
-    );
-    // How many things a running watcher watches leads to where they are listed; once none
-    // runs, there is no such number to follow.
-    let followed = ", watched all the time\">";
-    assert!(
-        now.contains("<span class=\"num\"><a href=\"view/this-mac.html\" aria-label=\"What is watched on this Mac: ")
-            && now.contains(followed),
+        now.contains(" · watched live · ") && now.contains(fast),
         "{now}"
     );
     // A watcher that stopped leaves the journal as it was; the page asked for says so all the
     // same.
     drop(w);
-    let after = mac.view_if_stale();
-    assert!(!after.contains(followed), "{after}");
-    assert!(after.contains(cannot), "{after}");
+    let after = summary(&mac.view_if_stale());
     assert!(
-        after.contains(
-            "no watcher is running now, so everything is checked every hour; a watcher last looked 2"
-        ),
+        after.contains(" · hourly only · ")
+            && !after.contains(" · watched live")
+            && !after.contains(fast),
         "{after}"
     );
 }
@@ -1639,8 +1637,9 @@ fn a_failed_reading_or_sample_is_not_watched_live_with_its_reason_until_the_next
     // The failed reading wrote nothing to the journal: the page asked for says it all the same.
     let page = mac.view_if_stale();
     assert!(
-        page.contains("a watcher runs, but its latest reading of the watched places failed")
-            && page.contains("latest reading of the watched places failed</"),
+        page.contains(
+            " · hourly only: the watcher's latest reading of the watched places failed · "
+        ) && !page.contains(" · watched live"),
         "{page}"
     );
     let text = within(mac.immune().args(["status", "--store"]).arg(mac.store()));
@@ -1899,6 +1898,11 @@ fn a_quiet_mac_needs_no_look_whatever_is_not_covered_and_a_planted_change_does()
             &serde_json::json!(["web-2"])
         )
     );
+    // Its source said nothing of it: no reason, never an empty one.
+    assert_eq!(
+        servers_item["examples"],
+        serde_json::json!([{"name_text": "web-2", "reason_text": null}])
+    );
     // Counted from the sweep itself, not from the run that read its files.
     assert_eq!(servers_item["since_at"], 1_700_000_000);
     assert_eq!(r["this_mac"]["live"], false);
@@ -2107,24 +2111,35 @@ fn a_watched_file_its_permissions_keep_closed_leaves_this_mac_watched_in_part_an
             &"1 file could not be opened because of its permissions.".into()
         )
     );
+    // The name alone, and what the system said of it beside it, in a field of its own.
+    assert_eq!(item["examples_text"], serde_json::json!(["~/.zprofile"]));
     assert_eq!(
-        item["examples_text"],
-        serde_json::json!(["~/.zprofile: Permission denied (os error 13)"])
+        item["examples"],
+        serde_json::json!([{
+            "name_text": "~/.zprofile",
+            "reason_text": "Permission denied (os error 13)"
+        }])
     );
     // The page opens on it, not in green, and lists it under what he can fix.
     let page = mac.view();
     let state = &page[page.find("<section id=\"this-mac\">").unwrap()..];
     let state = &state[..state.find("</section>").unwrap()];
     assert!(
-        state.contains("<strong>This Mac is watched in part</strong>")
-            && !state.contains("--green"),
+        state.contains(" · watched in part · ") && !state.contains("--green"),
         "{state}"
     );
-    let fix = &page[page.find("<section id=\"you-can-fix\">").unwrap()..];
+    let fix = &page[page.find("<section id=\"you-can-fix\"").unwrap()..];
     let fix = &fix[..fix.find("</section>").unwrap()];
     assert!(
         fix.contains("~/.zprofile: Permission denied (os error 13)"),
         "{fix}"
+    );
+    // The row of its kind among what is watched says so and leads there.
+    let watched = &page[page.find("<section id=\"watched-here\"").unwrap()..];
+    let watched = &watched[..watched.find("</section>").unwrap()];
+    assert!(
+        watched.contains("1 can't be read · <a href=\"#you-can-fix\">you can fix</a>"),
+        "{watched}"
     );
 }
 
@@ -2187,14 +2202,14 @@ fn the_watcher_writes_no_page_and_the_page_asked_for_after_a_change_shows_it() {
     let summary = mac.root.join("store/view.html");
     let mut w = mac.watch().started();
     let page = mac.view_if_stale();
-    assert!(page.contains("<h1>Nothing needs a look</h1>"), "{page}");
+    assert!(page.contains("<h1>Nothing needs you</h1>"), "{page}");
     std::fs::write(&summary, "as it was").unwrap();
     assert!(mac.view_if_stale().starts_with("as it was"));
     mac.put(".zprofile", "two\n");
     w.until("read", |v| count(v, "changed") == 1);
     assert_eq!(std::fs::read_to_string(&summary).unwrap(), "as it was");
     let page = mac.view_if_stale();
-    assert!(page.contains("<h1>1 thing needs a look</h1>"), "{page}");
+    assert!(page.contains("<h1>1 to look at</h1>"), "{page}");
     // A watched file that can no longer be opened changes no fact, only what the reading
     // covered: the page asked for says the Mac is watched in part.
     use std::os::unix::fs::PermissionsExt;
@@ -2203,7 +2218,7 @@ fn the_watcher_writes_no_page_and_the_page_asked_for_after_a_change_shows_it() {
     std::fs::rename(&closed, mac.home().join(".zshrc")).unwrap();
     w.until("read", |_| true);
     let page = mac.view_if_stale();
-    assert!(page.contains("This Mac is watched in part"), "{page}");
+    assert!(page.contains(" · watched in part · "), "{page}");
     let _ = std::fs::set_permissions(
         mac.home().join(".zshrc"),
         std::fs::Permissions::from_mode(0o644),
@@ -2375,9 +2390,13 @@ fn a_sample_that_opens_a_finding_says_so_in_one_line_and_a_quiet_sample_says_not
     // The page asked for after the line shows what the sample opened.
     mac.view_if_stale();
     let summary = std::fs::read_to_string(mac.root.join("store/view.html")).unwrap();
+    assert!(summary.contains("<h1>1 needs you now</h1>"), "{summary}");
+    // The colour of what needs the person now marks it: the glyph, and the group it is in.
+    let body = &summary[summary.find("</style>").unwrap()..];
     assert!(
-        summary.contains("<h1>1 thing needs a look</h1>"),
-        "{summary}"
+        body.contains("fill:var(--now)")
+            && body.contains("<p class=\"fg open now\">Needs you now</p>"),
+        "{body}"
     );
     // The pages name the sample among the runs. It reads only programs: it is not a run that
     // left out the server the full run read.
@@ -2412,13 +2431,8 @@ fn a_sample_that_opens_a_finding_says_so_in_one_line_and_a_quiet_sample_says_not
         ),
         ["sampled"]
     );
-    // The page says what a sample cannot see, apart from what is not covered, and names the
-    // sample among the latest runs.
+    // The pages name the sample among the latest runs.
     let page = mac.view();
-    assert!(
-        page.contains("does not see a program that started and ended between two samples"),
-        "{page}"
-    );
     assert!(page.contains("sample of running programs and their connections"));
     // A sample reads only programs: it is not a run that left the other readings out.
     assert!(!page.contains("were not read in this run"), "{page}");
@@ -2456,14 +2470,8 @@ fn a_sample_that_opens_a_finding_says_so_in_one_line_and_a_quiet_sample_says_not
         ],
         "{r:#}"
     );
-    // The summary counts what the latest sample saw, and its section says it in numbers:
-    // no list of running programs is kept.
-    assert!(
-        page.contains(
-            "<a href=\"view/this-mac.html#running-programs-and-their-connections\">Running programs and their connections: 2</a>"
-        ),
-        "{page}"
-    );
+    // The page of what is watched says what the latest sample saw in numbers: no list of
+    // running programs is kept.
     let at = page
         .find("<section id=\"running-programs-and-their-connections\">")
         .unwrap();

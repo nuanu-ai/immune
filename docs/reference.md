@@ -294,6 +294,8 @@ Every message carries `store_id`, the id of the store it was read from. A findin
 
 Each cause in `not_covered` says in `holds_on` where it comes from. `every_mac` is a limit of this version, the same on every Mac, such as a reader it does not have. `this_mac` was raised by a reading on this Mac, such as a failed download, a folder it did not read or software of a package manager it does not read. A cause that holds on every Mac, such as places where something runs by itself that are not read, is `this_mac` when this Mac has something there. `unspecified`, or a value a reader does not know, is read as `this_mac`, so no cause raised here is taken for a limit of the version. The text form follows it: a `nothing` cause that holds on every Mac is told under "Limit of this version", and one of this Mac under "Not judged on this Mac".
 
+Each cause names what it is about in `examples_text`, by name only. `examples` lists the same things in the same order, each with `name_text` and `reason_text`, what its source said about it, such as why a server could not be opened. The secrets the core recognises are cut out of a reason, as in `args_text`, and `reason_text` is absent when the source said nothing. The `reason_text` of `coverage.problems` and `coverage.unreached` is cut the same way. Since 1.8.0.
+
 `this_mac.fresh` says whether the answer rests on a recent check: the latest full check finished within `fresh_for_seconds` (7200) of `answered_at`. When it did not, when its time is ahead of this Mac's clock, or when no full check has finished, `fresh` is false and `stale_reason` says why. A status that is not fresh is never calm, whatever it lists; the app shows it as old, with when the last full check finished. The app also ages a status it holds: one held more than `fresh_for_seconds` after `checked_at` is shown as old in the same way. `this_mac.state` is `watched_in_part` when the collector was refused, from the start or later, failed or fell silent after it ran, and when it runs but lost part of what it was to record over the last day (a gap in its sequence numbers, a restart it cannot account for, log files removed by the cap or left unread), for as long as `rules.judged` is `part`.
 
 ### `immune project`, `immune program` and `immune machine`
@@ -333,7 +335,7 @@ As in every other answer, text from the Mac is only in fields ending in `_text`.
 
 The response layer gives a verdict about a finding, so it reads one whole. Both answers read the same findings as the status and the pages, in the same order: urgent first, then the most severe, then the latest seen, then by id. A finding of a rule this build does not have is left out, as it is everywhere else.
 
-`Findings` lists every finding the store holds, in every state, each as its reference (`finding`: `id`, `rule`, `about_text`, `state`, `severity`, `confidence`, `urgent`) with `kind`, `title`, `where_text`, `first_seen_at`, `last_seen_at`, the person's `answer` and `verdicts`, what the response layer said about it, counted (see [`immune verdict`](#immune-verdict)). `latest_run_at` is absent when no full check has finished. The text says so and lists any findings already recorded. `--all` changes only the text for a person; the message carries every state either way.
+`Findings` lists every finding the store holds, in every state, each as its reference (`finding`: `id`, `rule`, `about_text`, `state`, `severity`, `confidence`, `urgent`) with `kind`, `kind_title`, `title`, `where_text`, `thing`, `first_seen_at`, `last_seen_at`, the person's `answer` and `verdicts`, what the response layer said about it, counted (see [`immune verdict`](#immune-verdict)). `latest_run_at` is absent when no full check has finished. The text says so and lists any findings already recorded. `--all` changes only the text for a person; the message carries every state either way.
 
 `Finding` is one finding whole:
 
@@ -341,8 +343,10 @@ The response layer gives a verdict about a finding, so it reads one whole. Both 
 |---|---|
 | `finding` | its reference, as in the list |
 | `kind`, `title`, `meaning`, `advice` | the core's own words, the same for every finding of its rule |
+| `kind_title` | `kind` as a person reads it, a short title such as `Shell startup file` for `shell profile`, as the pages show it. Match on `kind` |
 | `technique_text` | the ATT&CK technique its rule names, or the first of a published rule's tags; absent when none fits |
 | `where_text` | where the thing is, as a person recognises it |
+| `thing` | what it is about in the core's words, when no name from the Mac says it. Only `watched.first-read` has it: the places its check read for the first time, counted by kind, such as `2 projects and 1 other place`. `where_text` is then the machine |
 | `first_seen_at`, `last_seen_at` | when it was first found and when last |
 | `answer` | the person's answer: `given` (`expected` or `seen`), `via` (`app`, `agent`, `command`, or `unknown` for one given before this was kept), `given_at`, `reason_text` with the secrets Immune recognises cut out, each a mark (see [Secrets](#secrets-in-what-immune-keeps-and-prints)), `until_at` for `expected`, and `in_force`, whether it hides the finding now. Absent when there is none, including after it was taken back |
 | `evidence` | one key, the kind of finding, holding what it rests on beside the journal |
