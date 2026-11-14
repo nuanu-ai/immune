@@ -3951,7 +3951,6 @@ pub fn cannot_see(l: &Level) -> Vec<&'static str> {
 /// reading failed, are text from a source, each in its own field, whole.
 pub fn message(l: &Level) -> crate::contract::v1::EventLevel {
     use crate::contract::{v1, value_of};
-    use crate::known::whole;
     let n = |x: i64| u64::try_from(x).unwrap_or(0);
     let span = |f: fn(&Tally) -> i64| v1::Span {
         since_check: n(f(&l.since_check)),
@@ -3989,9 +3988,9 @@ pub fn message(l: &Level) -> crate::contract::v1::EventLevel {
         message_version: l.version,
         said_by: l.said_by.clone(),
         // Read cut (`level`), as every reader of it reads it.
-        said_text: l.said.as_ref().map(|s| s.shown(whole)),
+        said_text: l.said.as_ref().map(crate::secrets::Text::said),
         // Why the reading failed, which can repeat what the system said: cut, as `said_text`.
-        reason_text: l.reason.as_deref().map(|r| crate::secrets::text(r, whole)),
+        reason_text: l.reason.as_deref().map(crate::secrets::said),
         silent_after_seconds: n(SILENT_AFTER),
         cannot_see: cannot_see(l).into_iter().map(str::to_string).collect(),
         not_kept: names(Arrival::NotKept),
@@ -4033,7 +4032,7 @@ pub fn message(l: &Level) -> crate::contract::v1::EventLevel {
         log_cap_reason_text: l
             .cap
             .as_ref()
-            .and_then(|c| c.as_ref().err().map(|why| crate::secrets::text(why, whole))),
+            .and_then(|c| c.as_ref().err().map(|why| crate::secrets::said(why))),
         no_longer_arriving: l
             .arrivals
             .no_longer()

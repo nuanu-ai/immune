@@ -86,6 +86,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 
 use crate::fsevents::{self, Where};
+use crate::secrets::Text;
 use crate::{autorun, checkouts, status, store, watched};
 
 /// How long the watcher waits after the last event before it reads: a burst of writes, such
@@ -366,12 +367,17 @@ fn starts_line(read: &crate::EventsRead) -> Value {
 }
 
 fn problem(code: &str, detail: &str) -> Value {
+    problem_of(code, Text::source(detail))
+}
+
+/// A problem whose detail is put together from what sources said, each piece cut on its own
+/// (`secrets::Text::then`), and at most `TEXT_CAP` characters with no mark broken.
+fn problem_of(code: &str, detail: Text) -> Value {
     line(
         "problem",
-        // What failed, which can repeat what the system said: cut, as a failure's detail is.
         json!({
             "code": code,
-            "detail_text": status::cut_text(&crate::secrets::Text::source(detail)),
+            "detail_text": detail.said_within(status::TEXT_CAP),
         }),
     )
 }
@@ -1092,7 +1098,14 @@ fn real(path: &Path, homes: &[&Path]) -> Result<Option<PathBuf>, String> {
 }
 
 fn place_problem(place: &Path, why: &str) -> Value {
-    problem("place_not_watched", &format!("{}: {why}", place.display()))
+    // The place is a name, never cut, and why is cut on its own: it never takes the name with
+    // it. Both are written with a source's backslash as `\u{5c}`.
+    problem_of(
+        "place_not_watched",
+        Text::ours(&place.display().to_string())
+            .then(Text::ours(": "))
+            .then(Text::source(why)),
+    )
 }
 
 /// SIGTERM and SIGINT stop the watcher: the handler writes one byte to a pipe, which is all it
@@ -1171,7 +1184,8 @@ pub fn watcher(store: &Path) -> Option<crate::contract::v1::Watcher> {
             .map(|f| v1::WatcherFailure {
                 what: f.what.clone(),
                 at: f.at,
-                detail_text: crate::known::whole(&f.detail),
+                // What the failure said, which can repeat what the system or a tool said.
+                detail_text: crate::secrets::said(&f.detail),
             })
             .collect(),
         cannot_see: CANNOT_SEE.iter().map(|s| s.to_string()).collect(),
@@ -1533,6 +1547,59 @@ mod tests {
             !detail.contains(&token)
                 && detail.contains(&crate::secrets::mark("gitleaks:github-pat", 40)),
             "{detail}"
+        );
+    }
+
+    #[test]
+    fn a_problem_s_detail_keeps_the_place_s_name_breaks_no_mark_and_holds_none_a_source_wrote() {
+        // The place and why are cut each on its own, so why, however long, never takes the name
+        // with it; the cap never breaks a mark; and a mark a source wrote is its text.
+        let place = Path::new("/Users/example/Library/LaunchAgents");
+        let long = "x".repeat(crate::secrets::LINE_CAP + 1);
+        let detail = |v: Value| v["detail_text"].as_str().unwrap().to_string();
+        assert_eq!(
+            detail(place_problem(place, &long)),
+            format!(
+                "{}: {}",
+                place.display(),
+                crate::secrets::mark(crate::secrets::TOO_LONG, long.len())
+            )
+        );
+        let token = format!(
+            "{}{}",
+            ["gh", "p_"].concat(),
+            "Q7mZ2xK9pL4vR8nT3wY6bH1cJ5dF0gS2aE7u"
+        );
+        assert_eq!(
+            detail(problem(
+                "read_failed",
+                &format!("{} ?t={token}", "y".repeat(240))
+            )),
+            format!("{} ?t=…", "y".repeat(240))
+        );
+        assert_eq!(
+            detail(problem("read_failed", "x \\cut{gitleaks:github-pat 40}")),
+            "x \\u{5c}cut{gitleaks:github-pat 40}"
+        );
+        // The name stays when nothing can be cut, and a failure's detail has the same cap.
+        assert_eq!(
+            crate::secrets::without_patterns(|| detail(place_problem(place, "denied"))),
+            format!(
+                "{}: {}",
+                place.display(),
+                crate::secrets::mark(crate::secrets::NO_PATTERNS, 6)
+            )
+        );
+        let failure = status::failure(Some("watch"), "usage", "m", "e", &long);
+        assert_eq!(
+            failure["errors"][0]["detail_text"],
+            crate::secrets::mark(crate::secrets::TOO_LONG, long.len())
+        );
+        let near = format!("{} ?t={token}", "y".repeat(240));
+        let failure = status::failure(Some("watch"), "usage", "m", "e", &near);
+        assert_eq!(
+            failure["errors"][0]["detail_text"],
+            format!("{} ?t=…", "y".repeat(240))
         );
     }
 }

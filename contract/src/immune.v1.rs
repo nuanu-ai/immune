@@ -2911,7 +2911,8 @@ pub struct WatcherFailure {
     pub what: ::prost::alloc::string::String,
     #[prost(int64, tag = "2")]
     pub at: i64,
-    /// What the failure said. Whole.
+    /// What the failure said, with the secrets the core recognises cut out, each a mark as in
+    /// `ProgramStart.args_text`.
     #[prost(string, tag = "3")]
     pub detail_text: ::prost::alloc::string::String,
 }
@@ -3160,8 +3161,9 @@ pub struct Uncovered {
     /// When it is counted from. Absent when not known.
     #[prost(int64, optional, tag = "9")]
     pub since_at: ::core::option::Option<i64>,
-    /// What a source said of it, such as why a download failed, with the secrets the core
-    /// recognises cut out, each a mark as in `ProgramStart.args_text`.
+    /// What sources said of it, such as why a download failed, with the secrets the core
+    /// recognises cut out, each a mark as in `ProgramStart.args_text`. Each source's words are cut
+    /// on their own, so the names put between them, such as a feed's ecosystem, stay whole.
     #[prost(string, optional, tag = "10")]
     pub value_text: ::core::option::Option<::prost::alloc::string::String>,
     /// The things it is about, as the Mac names them: the first three, or every one for

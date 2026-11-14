@@ -821,9 +821,10 @@ pub fn text_string(s: &str) -> String {
     capped(view::shown(s))
 }
 
-/// A text the core cut, as `text` gives one, each mark as it is.
-pub fn cut_text(t: &crate::secrets::Text) -> Value {
-    Value::String(capped(t.shown(view::shown)))
+/// What a source said as a field's value: cut, and at most `TEXT_CAP` characters
+/// (`secrets::said_within`).
+pub fn said_text(s: &str) -> Value {
+    Value::String(crate::secrets::said_within(s, TEXT_CAP))
 }
 
 /// Text already shown, cut to `TEXT_CAP` characters.
@@ -854,7 +855,7 @@ pub fn failure(
             "code": code,
             "message": message,
             "example": example,
-            "detail_text": cut_text(&crate::secrets::Text::source(detail)),
+            "detail_text": said_text(detail),
         }],
     })
 }
@@ -1190,8 +1191,9 @@ fn uncovered_message(u: &crate::covered::Uncovered) -> crate::contract::v1::Unco
         advice: u.cause.advice.to_string(),
         count: n(u.count),
         since_at: u.since,
-        // What a source said of it, such as why a download failed: cut, as every such text.
-        value_text: u.value.as_deref().map(|v| crate::secrets::text(v, whole)),
+        // What sources said of it, such as why a download failed: cut piece by piece where it
+        // was put together (`covered::Uncovered::value`), so the names beside them stay whole.
+        value_text: u.value.clone(),
         examples_text: u.examples().iter().map(|e| whole(&e.name)).collect(),
         holds_on: if u.every_mac {
             crate::contract::v1::HoldsOn::EveryMac
@@ -1204,7 +1206,7 @@ fn uncovered_message(u: &crate::covered::Uncovered) -> crate::contract::v1::Unco
             .iter()
             .map(|e| crate::contract::v1::UncoveredExample {
                 name_text: whole(&e.name),
-                reason_text: e.reason.as_deref().map(|r| crate::secrets::text(r, whole)),
+                reason_text: e.reason.as_deref().map(crate::secrets::said),
             })
             .collect(),
     }
@@ -1258,7 +1260,7 @@ fn watched_message(st: &State, s: &Summary, w: &Watched) -> crate::contract::v1:
                     none: n(none),
                 }),
                 // The readers' reasons, prose from their sources: cut, as every such text.
-                reason_text: reason.as_deref().map(|r| crate::secrets::text(r, whole)),
+                reason_text: reason.as_deref().map(crate::secrets::said),
             }
         })
         .collect();
@@ -1327,7 +1329,7 @@ fn threats_message(c: Option<&Catalogue>) -> crate::contract::v1::Threats {
         }
         Some(Catalogue::Failed { reason, last, at }) => {
             t.outcome = FeedOutcome::Failed as i32;
-            t.reason_text = Some(crate::secrets::text(reason, crate::known::whole));
+            t.reason_text = Some(crate::secrets::said(reason));
             t.entries = last.map(|(_, held)| n(held));
             t.read_at = last.map(|(at, _)| at);
             t.checked_at = Some(*at);
@@ -1358,10 +1360,7 @@ fn feed_message(s: &crate::osv::State, run_id: &str) -> crate::contract::v1::Fee
         None => f.outcome = FeedOutcome::NeverRead as i32,
         Some((_, _, outcome, reason)) if outcome == "failed" => {
             f.outcome = FeedOutcome::Failed as i32;
-            f.reason_text = Some(crate::secrets::text(
-                reason.as_deref().unwrap_or_default(),
-                crate::known::whole,
-            ));
+            f.reason_text = Some(crate::secrets::said(reason.as_deref().unwrap_or_default()));
         }
         Some((_, _, outcome, _)) if outcome == "read" && s.asked_in(run_id) => {
             f.outcome = FeedOutcome::Read as i32;
@@ -1403,7 +1402,7 @@ fn coverage_message(p: &Problems) -> crate::contract::v1::CoverageSummary {
                 reader: g.reader.clone(),
                 kind: g.kind.clone(),
                 // A reason is prose from a source: cut where it is printed, as every such text.
-                reason_text: g.reason.as_deref().map(|r| crate::secrets::text(r, whole)),
+                reason_text: g.reason.as_deref().map(crate::secrets::said),
                 count: n(g.scopes.len()),
                 examples_text: g.scopes.iter().take(EXAMPLES).map(|s| whole(s)).collect(),
             })
@@ -1416,7 +1415,7 @@ fn coverage_message(p: &Problems) -> crate::contract::v1::CoverageSummary {
             .map(|u| v1::Unreached {
                 scope_text: whole(&u.scope),
                 since_at: u.since,
-                reason_text: u.reason.as_deref().map(|r| crate::secrets::text(r, whole)),
+                reason_text: u.reason.as_deref().map(crate::secrets::said),
             })
             .collect(),
         unreached_total: n(p.unreached.len()),

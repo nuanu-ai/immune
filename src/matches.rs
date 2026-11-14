@@ -456,10 +456,7 @@ fn collector(s: &Stretch, arrivals: &Arrivals) -> v1::Collector {
     v1::Collector {
         state: value_of::<v1::CollectorState>(s.state),
         said_by: s.said.as_ref().map(|(by, _)| by.to_string()),
-        said_text: s
-            .said
-            .as_ref()
-            .map(|(_, said)| crate::secrets::text(said, whole)),
+        said_text: s.said.as_ref().map(|(_, said)| crate::secrets::said(said)),
         written_at: s.written,
         file_events_collected: s.collects.is_ok(),
         foreign_files: s.foreign,
