@@ -113,10 +113,36 @@ impl Failure {
 pub fn failure(dir: &Path, name: &str) -> Option<Failure> {
     let path = dir.join(format!("{name}.{}", crate::sweep::FAILED));
     let meta = std::fs::metadata(&path).ok()?;
-    let text = std::fs::read(&path).unwrap_or_default();
-    Some(Failure::parse(
-        &String::from_utf8_lossy(&text),
-        seconds(meta.modified().ok()),
+    let text = ends(&path, meta.len()).unwrap_or_default();
+    Some(Failure::parse(&text, seconds(meta.modified().ok())))
+}
+
+/// How much of a `.failed` file is read: its first line, the time, is in its first
+/// `FAILED_HEAD` bytes, and its last line, the reason, in its last `FAILED_TAIL`.
+const FAILED_HEAD: u64 = 256;
+const FAILED_TAIL: u64 = 4 << 10;
+
+/// The two ends of a `.failed` file. What ssh printed comes from the far side of the network
+/// and may be of any length, so it is bounded here, where it is read: a reason is never longer
+/// than `FAILED_TAIL` bytes.
+fn ends(path: &Path, len: u64) -> std::io::Result<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path)?;
+    let mut head = Vec::new();
+    (&mut file)
+        .take(FAILED_HEAD + FAILED_TAIL)
+        .read_to_end(&mut head)?;
+    if len <= FAILED_HEAD + FAILED_TAIL {
+        return Ok(String::from_utf8_lossy(&head).into_owned());
+    }
+    let mut tail = Vec::new();
+    file.seek(SeekFrom::Start(len - FAILED_TAIL))?;
+    file.take(FAILED_TAIL).read_to_end(&mut tail)?;
+    let head = String::from_utf8_lossy(&head);
+    Ok(format!(
+        "{}\n{}",
+        head.lines().next().unwrap_or_default(),
+        String::from_utf8_lossy(&tail)
     ))
 }
 
@@ -735,5 +761,37 @@ mod tests {
         let cut = Failure::parse("", 1_767_412_800);
         assert_eq!(cut.at, 1_767_412_800);
         assert_eq!(cut.reason, "the visit left no reason");
+    }
+
+    #[test]
+    fn a_failed_visit_s_file_of_any_length_is_read_at_its_two_ends_and_its_reason_is_bounded() {
+        // What ssh printed comes from the far side of the network: a file of megabytes still
+        // gives its time and its last line, and a last line of megabytes gives at most
+        // `FAILED_TAIL` bytes of it.
+        let dir = crate::common::Scratch::new("failed-ends");
+        let filler = "Warning: invented\n".repeat(200_000);
+        let put = |name: &str, text: &str| {
+            std::fs::write(dir.join(format!("{name}.{}", crate::sweep::FAILED)), text).unwrap()
+        };
+        put(
+            "web-1",
+            &format!("1767412800\n{filler}Host key verification failed.\n\n"),
+        );
+        put("db-1", &format!("1767412800\n{}\n", "y".repeat(3_000_000)));
+        put("app-1", "1767412800\nPermission denied (publickey).\n");
+        let web = super::failure(&dir, "web-1").unwrap();
+        assert_eq!(
+            (web.at, web.reason.as_str()),
+            (1_767_412_800, "Host key verification failed.")
+        );
+        let db = super::failure(&dir, "db-1").unwrap();
+        assert_eq!(db.at, 1_767_412_800);
+        assert!(
+            db.reason.len() <= super::FAILED_TAIL as usize && db.reason.starts_with('y'),
+            "{}",
+            db.reason.len()
+        );
+        let app = super::failure(&dir, "app-1").unwrap();
+        assert_eq!(app.reason, "Permission denied (publickey).");
     }
 }

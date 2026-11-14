@@ -177,7 +177,7 @@ fn answer(a: &findings::Answered) -> v1::Answer {
         given: value_of::<v1::AnswerKind>(a.given),
         via: value_of::<v1::Via>(a.via.literal()),
         given_at: a.at,
-        reason_text: a.reason.as_ref().map(|r| r.shown(whole)),
+        reason_text: a.reason.as_ref().map(crate::secrets::Text::said),
         reason_cuts: a
             .reason
             .as_ref()

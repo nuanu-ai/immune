@@ -1606,7 +1606,7 @@ pub fn one(conn: Option<&Connection>, id: &str, now: i64) -> rusqlite::Result<v1
         format: FORMAT,
         answered_at: now,
         // What was asked, cut: it may hold a secret.
-        id_text: crate::secrets::text(id, whole),
+        id_text: crate::secrets::said(id),
         declared_note: DECLARED.to_string(),
         ..Default::default()
     };

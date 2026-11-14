@@ -58,7 +58,7 @@ impl Standing {
             "{} by the owner on {}: {}",
             self.word.said,
             crate::view::utc(self.word.made_at),
-            self.word.reason.shown(crate::view::shown)
+            self.word.reason.said()
         )
     }
 
@@ -395,7 +395,7 @@ pub fn statement(s: &Standing) -> crate::contract::v1::Statement {
         said: s.word.said.clone(),
         via: value_of::<v1::Via>(s.word.via.literal()),
         at: s.word.made_at,
-        reason_text: s.word.reason.shown(whole),
+        reason_text: s.word.reason.said(),
         reason_cuts: crate::answer::reason_cuts(&s.word.reason),
         names_text: s.names.iter().skip(1).map(|n| whole(n)).collect(),
         seen_after: s.seen.as_ref().map(|e| v1::SeenAfter {

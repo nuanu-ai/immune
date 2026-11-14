@@ -291,12 +291,9 @@ pub fn shown(s: &str) -> String {
     out
 }
 
-/// What a source said, such as why a reader could not read a place, as a page or the terminal
-/// shows it: the secrets the core recognises cut out, each a mark (`secrets::text`), and hidden
-/// characters as `shown` writes them. A page escapes it with `esc`, as any other text.
-pub fn said(s: &str) -> String {
-    crate::secrets::text(s, shown)
-}
+/// What a source said, such as why a reader could not read a place, as every output shows it
+/// (`secrets::said`). A page escapes it with `esc`, as any other text.
+pub use crate::secrets::said;
 
 /// UTC seconds as `YYYY-MM-DD HH:MM UTC`.
 pub fn utc(secs: i64) -> String {
@@ -999,7 +996,7 @@ fn machines(conn: &Connection, out: &mut String, latest: &[Latest], now: i64) ->
             td(out, "mono", s.name())?;
             td(out, "", &s.word.said)?;
             td(out, "nowrap", &utc(s.word.made_at))?;
-            td(out, "", &s.word.reason.shown(shown))?;
+            td(out, "", &s.word.reason.said())?;
             td(out, "mono", &s.names[1..].join(", "))?;
             out.push_str("</tr>\n");
         }
@@ -1196,9 +1193,11 @@ fn machine_body<'a>(
             out,
             "<p class=\"alert\">Last read {}; {}</p>",
             utc_or(last, "never"),
+            // As the server said it: the advice about a host key is decided from it, and the
+            // reason is cut where it is shown (`sweep::failed_visit`).
             esc(&crate::sweep::failed_visit(
                 v.at,
-                &said(v.reason.as_deref().unwrap_or_default())
+                v.reason.as_deref().unwrap_or_default()
             ))
         )?;
     }
@@ -1791,10 +1790,12 @@ fn changes(conn: &Connection, out: &mut String) -> Out {
             utc(*at),
             esc(&summary)
         )?;
-        // The run's line holds what its readers' sources said, such as why a server could not
-        // be opened: cut, as the run printed it.
+        // The run's line, as the run printed it: what its readers' sources said in it, such as
+        // why a server could not be opened, was cut piece by piece when the line was put
+        // together (`report` in main.rs), and is never cut again, which could take the core's
+        // words with it.
         if let Some(report) = report {
-            writeln!(out, "<p class=\"muted mono\">{}</p>", esc(&said(report)))?;
+            writeln!(out, "<p class=\"muted mono\">{}</p>", esc(report))?;
         }
         if not_repeated > 0 {
             writeln!(
@@ -2551,9 +2552,12 @@ mod tests {
         )
         .unwrap();
         crate::events::schema(&tx).unwrap();
+        // What the collector printed, as the store keeps it: a source's backslash as `\u{5c}`.
+        let collector = "the log said \\u{5c}n";
         tx.execute(
-            "INSERT INTO event_level (id, read_at, state, reason) VALUES (1, ?1, ?2, ?3)",
-            rusqlite::params![at, crate::events::FAILED, said],
+            "INSERT INTO event_level (id, read_at, state, reason, said_by, said)
+             VALUES (1, ?1, ?2, ?3, 'scripts', ?4)",
+            rusqlite::params![at, crate::events::FAILING, said, collector],
         )
         .unwrap();
         tx.execute(
@@ -2561,8 +2565,13 @@ mod tests {
             [&said],
         )
         .unwrap();
-        // The run's line, as a run writes it: its readers' reasons inside its own words.
-        let line = format!("1 reader. db-1 was never read; the latest visit failed: {said}.");
+        // The run's line, as a run writes it: its readers' reasons, each cut, inside its own
+        // words.
+        let line = format!(
+            "1 reader. db-1 was never read; {}",
+            crate::sweep::failed_visit(at, &said)
+        );
+        assert!(line.contains(&mark) && !line.contains(&token), "{line}");
         journal_note(&tx, at, &run_id, "report", &line).unwrap();
         journal_note(&tx, at + 1, &run_id, "run_finished", "").unwrap();
         tx.commit().unwrap();
@@ -2611,7 +2620,11 @@ mod tests {
             "event_level.log_cap_reason_text",
             level.log_cap_reason_text.as_deref(),
         );
-        let download = m.not_covered.iter().find(|u| u.value_text.is_some());
+        let download = m.not_covered.iter().find(|u| {
+            u.value_text
+                .as_deref()
+                .is_some_and(|v| v.contains("a tool answered"))
+        });
         cut(
             "not_covered.value_text",
             download.and_then(|u| u.value_text.as_deref()),
@@ -2642,9 +2655,11 @@ mod tests {
                 .map(|(_, html)| html.clone())
                 .unwrap_or_else(|| panic!("{name}"))
         };
+        // The page shows the line as the run printed it, never cut again.
         assert!(
             page(&format!("{}/changes.html", super::DETAILS)).contains(&format!(
-                "<p class=\"muted mono\">1 reader. db-1 was never read; the latest visit failed: a tool answered: fetch https://example.invalid/?t={mark} refused.</p>"
+                "<p class=\"muted mono\">{}</p>",
+                super::esc(&line)
             )),
             "{}",
             page(&format!("{}/changes.html", super::DETAILS))
@@ -2654,8 +2669,26 @@ mod tests {
             "<span title=\"Not read in full, so this list may not be whole: {PROFILE_KIND} (a tool answered: fetch https://example.invalid/?t={mark} refused; never read in full).\">not read in full</span>"
         );
         assert!(summary.contains(&hint), "{summary}");
+        // What not covered says a source said, as the status gives it: cut once, where it was
+        // put together.
+        let value = download.and_then(|u| u.value_text.clone()).unwrap();
+        assert!(
+            pages
+                .iter()
+                .any(|(_, html)| html.contains(&super::esc(&value))),
+            "{value}"
+        );
+        // A mark the core made is never written again as a source's, and what the collector
+        // printed keeps its own backslash written as a source's.
+        assert!(
+            m.not_covered
+                .iter()
+                .any(|u| u.value_text.as_deref() == Some("the log said \\u{5c}n")),
+            "{m:#?}"
+        );
         for (name, html) in &pages {
             assert!(!html.contains(&token), "{name}");
+            assert!(!html.contains("\\u{5c}cut{gitleaks"), "{name}");
         }
     }
 }

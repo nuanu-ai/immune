@@ -1476,15 +1476,15 @@ fn example(name: &str, reason: Option<&str>) -> String {
 }
 
 /// What is told apart from a thing's words, as safe HTML: every example with what its source
-/// said, then the value, which is what a source said of it, such as why a download failed, and
-/// so is cut as every such text.
+/// said, then the value, what sources said of it, such as why a download failed, cut where it
+/// was put together (`covered::Uncovered::value`).
 fn apart(u: &Uncovered) -> Vec<String> {
     let mut out: Vec<String> = u
         .examples
         .iter()
         .map(|e| example(&e.name, e.reason.as_deref()))
         .collect();
-    out.extend(u.value.as_deref().map(|v| esc(&view::said(v))));
+    out.extend(u.value.as_deref().map(esc));
     out
 }
 
@@ -2739,7 +2739,7 @@ pub fn beyond(conn: &Connection, latest: &[Latest], now: i64) -> Result<String, 
             view::td(&mut out, "mono", s.name())?;
             view::td(&mut out, "", &s.word.said)?;
             view::td(&mut out, "nowrap", &utc(s.word.made_at))?;
-            view::td(&mut out, "", &s.word.reason.shown(view::shown))?;
+            view::td(&mut out, "", &s.word.reason.said())?;
             view::td(&mut out, "", view::given_by(s.word.via))?;
             out.push_str("</tr>\n");
         }

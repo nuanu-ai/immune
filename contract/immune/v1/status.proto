@@ -218,7 +218,8 @@ message WatcherFailure {
   // What failed, the core's word: `read`, `sample` or `events`.
   string what = 1;
   int64 at = 2;
-  // What the failure said. Whole.
+  // What the failure said, with the secrets the core recognises cut out, each a mark as in
+  // `ProgramStart.args_text`.
   string detail_text = 3;
 }
 
@@ -390,8 +391,9 @@ message Uncovered {
   uint64 count = 8;
   // When it is counted from. Absent when not known.
   optional int64 since_at = 9;
-  // What a source said of it, such as why a download failed, with the secrets the core
-  // recognises cut out, each a mark as in `ProgramStart.args_text`.
+  // What sources said of it, such as why a download failed, with the secrets the core
+  // recognises cut out, each a mark as in `ProgramStart.args_text`. Each source's words are cut
+  // on their own, so the names put between them, such as a feed's ecosystem, stay whole.
   optional string value_text = 10;
   // The things it is about, as the Mac names them: the first three, or every one for
   // `package-managers-not-read`. Names alone: what a source said of each is in `examples`.

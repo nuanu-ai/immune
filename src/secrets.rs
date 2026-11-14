@@ -50,6 +50,14 @@
 //! kept raw: every argument is withheld whole. A line longer than `LINE_CAP` is withheld whole
 //! too, with a mark of its own.
 //!
+//! Text from a source reaches output one way, `said` (or `Text::said`), on every surface: the
+//! contract, the text for a person, the pages and `immune watch`. It cuts the text and writes a
+//! source's backslash `\u{5c}`, so no source can write a mark, and a cap on length is taken
+//! after the cut and never breaks a mark. It is cut where it is put beside the core's words,
+//! piece by piece (`Text::then`): a line the core composed is never cut as a whole, so what one
+//! source said cannot take the core's words with it, and a text withheld whole is one mark in
+//! its own place. Decisions are made from the text as the source said it.
+//!
 //! The core never validates a secret: nothing here sends anything anywhere.
 
 use aho_corasick::AhoCorasick;
@@ -185,6 +193,51 @@ impl Text {
         show(&self.0, &esc)
     }
 
+    /// The core's own words or a name, such as a path, to be put beside a source's text
+    /// (`then`): never cut, and shown as `said` shows any text, a backslash as `\u{5c}`.
+    pub fn ours(s: &str) -> Text {
+        Text(text_pieces(s))
+    }
+
+    /// This text, then `next`, each piece as it was cut.
+    pub fn then(mut self, next: Text) -> Text {
+        self.0.extend(next.0);
+        self
+    }
+
+    /// The text as every output shows it, the contract, the text for a person, the pages and
+    /// `immune watch` alike: each mark bare, and in a source's text a backslash and every hidden
+    /// character written `\u{…}`, so no text from a source can read as a mark.
+    pub fn said(&self) -> String {
+        self.said_within(usize::MAX)
+    }
+
+    /// `said`, at most `cap` characters: past it, what fits and `…`. A mark and a character
+    /// written `\u{…}` are whole or left out, never broken.
+    pub fn said_within(&self, cap: usize) -> String {
+        let (mut whole, mut count) = (String::new(), 0);
+        units(&self.0, |u| {
+            whole.push_str(u);
+            count += u.chars().count();
+            true
+        });
+        if count <= cap {
+            return whole;
+        }
+        let (mut out, mut room) = (String::new(), cap.saturating_sub(1));
+        units(&self.0, |u| {
+            let n = u.chars().count();
+            let fits = n <= room;
+            if fits {
+                out.push_str(u);
+                room -= n;
+            }
+            fits
+        });
+        out.push('…');
+        out
+    }
+
     /// What was cut out of it, each piece by its kind and length, so a caller knows what was
     /// kept of what it gave.
     pub fn cuts(&self) -> Vec<(&str, usize)> {
@@ -203,9 +256,14 @@ fn cut_one(set: Option<&Set>, text: Vec<Piece>) -> Vec<Piece> {
     cut_with(set, vec![text]).pop().unwrap_or_default()
 }
 
-/// One text from a source, cut and shown: each piece of text through `esc`.
-pub fn text(s: &str, esc: impl Fn(&str) -> String) -> String {
-    Text::source(s).shown(esc)
+/// What a source said, as every output shows it: the one way such text reaches output.
+pub fn said(s: &str) -> String {
+    Text::source(s).said()
+}
+
+/// `said`, at most `cap` characters (`Text::said_within`).
+pub fn said_within(s: &str, cap: usize) -> String {
+    Text::source(s).said_within(cap)
 }
 
 /// The kinds of text the store keeps that may hold a secret: the arguments of evidence, the last
@@ -459,6 +517,34 @@ fn show(pieces: &[Piece], esc: &impl Fn(&str) -> String) -> String {
         .collect()
 }
 
+/// The text as `Text::said` writes it, unit by unit, to `take` until it says stop: a mark, or
+/// one character of a source's text, a backslash or a hidden one as `\u{…}`.
+fn units(pieces: &[Piece], mut take: impl FnMut(&str) -> bool) {
+    let mut unit = String::new();
+    for p in pieces {
+        match p {
+            Piece::Text(t) | Piece::Quoted(t) => {
+                for c in t.chars() {
+                    unit.clear();
+                    if c == '\\' || crate::icu::hidden(c) {
+                        unit.extend(c.escape_unicode());
+                    } else {
+                        unit.push(c);
+                    }
+                    if !take(&unit) {
+                        return;
+                    }
+                }
+            }
+            Piece::Cut { kind, length } => {
+                if !take(&mark(kind, *length)) {
+                    return;
+                }
+            }
+        }
+    }
+}
+
 fn text_pieces(s: &str) -> Vec<Piece> {
     if s.is_empty() {
         Vec::new()
@@ -496,29 +582,31 @@ fn parse(s: &str) -> Vec<Piece> {
 }
 
 /// Each well-formed mark in `s`, bare: where it begins and ends, its kind and its length. A kind
-/// holds only what a set's name and a pattern's id hold, and a length only digits.
+/// holds only what a set's name and a pattern's id hold, and a length only digits. Linear in the
+/// length of `s`: reading a mark stops at the first byte a mark cannot hold, and the backslash
+/// that begins the next one is such a byte.
 fn marks(s: &str) -> Vec<(usize, usize, String, usize)> {
+    let bytes = s.as_bytes();
+    let run = |from: usize, ok: fn(u8) -> bool| {
+        from + bytes[from..].iter().take_while(|b| ok(**b)).count()
+    };
     let mut out = Vec::new();
     let mut from = 0;
     while let Some(at) = s[from..].find("\\cut{").map(|i| from + i) {
         let after = at + 5;
-        let parsed = s[after..].split_once('}').and_then(|(inside, _)| {
-            let (kind, length) = inside.split_once(' ')?;
-            let kind_ok = !kind.is_empty()
-                && kind
-                    .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b":._-".contains(&b));
-            // Digits alone: `parse` would also take a sign.
-            let n = length
-                .bytes()
-                .all(|b| b.is_ascii_digit())
-                .then(|| length.parse::<usize>().ok())
-                .flatten()?;
-            kind_ok.then(|| (kind.to_string(), n, after + inside.len() + 1))
+        let kind_end = run(after, |b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || b":._-".contains(&b)
         });
+        let digits = kind_end + 1;
+        let length_end = run(digits.min(s.len()), |b| b.is_ascii_digit());
+        let parsed = (kind_end > after
+            && bytes.get(kind_end) == Some(&b' ')
+            && bytes.get(length_end) == Some(&b'}'))
+        .then(|| s[digits..length_end].parse::<usize>().ok())
+        .flatten();
         // A mark holds no other, so the search goes on after its start either way.
-        if let Some((kind, length, end)) = parsed {
-            out.push((at, end, kind, length));
+        if let Some(length) = parsed {
+            out.push((at, length_end + 1, s[after..kind_end].to_string(), length));
         }
         from = after;
     }
@@ -562,6 +650,20 @@ fn cut_exempting(set: Option<&Set>, args: Vec<Vec<Piece>>, exempt: bool) -> Vec<
     let Some(set) = set else {
         return whole(&args, NO_PATTERNS);
     };
+    // The length of the line the patterns would read, known before anything reads it: reading
+    // the exemptions keeps every byte where it is. Over the cap nothing is read at all.
+    let length: usize = args
+        .iter()
+        .flatten()
+        .map(|p| match p {
+            Piece::Text(t) | Piece::Quoted(t) => t.len(),
+            Piece::Cut { kind, length } => mark(kind, *length).len(),
+        })
+        .sum::<usize>()
+        + args.len().saturating_sub(1);
+    if length > LINE_CAP {
+        return whole(&args, TOO_LONG);
+    }
     let args: Vec<Vec<Piece>> = args
         .into_iter()
         .map(|pieces| {
@@ -608,9 +710,6 @@ fn cut_exempting(set: Option<&Set>, args: Vec<Vec<Piece>>, exempt: bool) -> Vec<
             }
         }
         bounds.push((start, line.len()));
-    }
-    if line.len() > LINE_CAP {
-        return whole(&args, TOO_LONG);
     }
     let words = Words::new(&line, &bounds, &marks);
     // An exemption, a mark or a kind in a list of cuts, covers only its own bytes: the patterns
@@ -785,11 +884,30 @@ pub struct Set {
 
 static SET: OnceLock<Result<Set, String>> = OnceLock::new();
 
+#[cfg(test)]
+thread_local! {
+    /// Set by `tests::without_patterns`: on this thread the set is taken as not loaded.
+    static WITHHELD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// The set, loaded once per process; `Err` with the reason when it did not load whole.
 pub fn set() -> Result<&'static Set, &'static str> {
+    #[cfg(test)]
+    if WITHHELD.with(std::cell::Cell::get) {
+        return Err("withheld by a test");
+    }
     SET.get_or_init(|| load(GITLEAKS, SUMS, COMMAND_LINE))
         .as_ref()
         .map_err(String::as_str)
+}
+
+/// Runs `f` on this thread as if the set had not loaded.
+#[cfg(test)]
+pub fn without_patterns<T>(f: impl FnOnce() -> T) -> T {
+    WITHHELD.with(|w| w.set(true));
+    let out = f();
+    WITHHELD.with(|w| w.set(false));
+    out
 }
 
 fn load(gitleaks: &str, sums: &str, command_line: &str) -> Result<Set, String> {
@@ -1537,6 +1655,11 @@ fn ceil(t: &str, mut i: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One text from a source, cut and shown: each piece of text through `esc`.
+    fn text(s: &str, esc: impl Fn(&str) -> String) -> String {
+        Text::source(s).shown(esc)
+    }
 
     // Every secret here is invented. Token-shaped ones are made when the test runs, a prefix and
     // a body in the shape gitleaks's own generator gives (`utils.GenerateSampleSecret`), so no
@@ -3439,5 +3562,125 @@ mod tests {
         // Two characters of two bytes each: one kind, counted twice over four bytes, as Go's
         // `len` counts.
         assert_eq!(entropy("éé"), 0.5);
+    }
+
+    /// An invented token of a kind the patterns cut, put together so none stands in the file.
+    fn github_token() -> String {
+        format!("{}{}", ["gh", "p_"].concat(), body(ALNUM, 36, 7))
+    }
+
+    #[test]
+    fn the_cutter_s_work_is_bounded_megabytes_of_opened_marks_finish_well_under_a_second() {
+        // A source's text made of the opening of a mark, again and again, with a space inside and
+        // one brace at the end: reading the marks in it once cost the square of its length, 11 s
+        // for 2.4 MB, and it was read before the cap was checked.
+        let s = format!("{}}}", "\\cut{ ".repeat(400_000));
+        let at = std::time::Instant::now();
+        assert!(marks(&s).is_empty());
+        assert_eq!(said(&s), mark(TOO_LONG, s.chars().count()));
+        // Read back as the store keeps a text: the marks in it are looked for first.
+        assert_eq!(
+            Text(cut_one(set().ok(), parse(&s))).said(),
+            mark(TOO_LONG, s.len())
+        );
+        let took = at.elapsed();
+        assert!(took < std::time::Duration::from_millis(500), "{took:?}");
+        // Marks are still read where they are whole, the last one too.
+        let kept = format!(
+            "a\\cut{{{TOO_LONG} 3}}b\\cut{{x 12}}\\cut{{x}}\\cut{{ 3}}\\cut{{x+5}}\\cut{{x }}\\cut{{x 1\\cut{{xy"
+        );
+        assert_eq!(
+            marks(&kept),
+            [
+                (1, 24, TOO_LONG.to_string(), 3),
+                (25, 35, "x".to_string(), 12)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_source_cannot_write_text_that_reads_as_a_mark_of_the_core_s() {
+        // What a source said is shown with its backslash written `\u{5c}` on every surface, so a
+        // mark it writes is never the same text as one the core made.
+        let token = github_token();
+        let real = said(&format!("visit failed: ?t={token} refused"));
+        let forged = said("visit failed: ?t=\\cut{gitleaks:github-pat 40} refused");
+        assert_eq!(
+            real,
+            "visit failed: ?t=\\cut{gitleaks:github-pat 40} refused"
+        );
+        assert_eq!(
+            forged,
+            "visit failed: ?t=\\u{5c}cut{gitleaks:github-pat 40} refused"
+        );
+        // A text the store keeps reads its own marks back as the core's, and a source's as text.
+        let kept = Text::source(&format!("?t={token} \\cut{{gitleaks:github-pat 40}}")).store();
+        assert_eq!(
+            Text(cut_one(set().ok(), parse(&kept))).said(),
+            "?t=\\cut{gitleaks:github-pat 40} \\u{5c}cut{gitleaks:github-pat 40}"
+        );
+    }
+
+    #[test]
+    fn a_cap_applied_after_cutting_never_breaks_a_mark_or_a_character_written_escaped() {
+        let token = github_token();
+        let near = format!("{} ?t={token}", "y".repeat(240));
+        assert_eq!(said_within(&near, 256), format!("{} ?t=…", "y".repeat(240)));
+        let slash = format!("{}\\bbb", "a".repeat(250));
+        assert_eq!(said_within(&slash, 256), format!("{}…", "a".repeat(250)));
+        // Within the cap nothing is taken away, up to the cap itself.
+        assert_eq!(said_within("a\\b", 256), "a\\u{5c}b");
+        assert_eq!(said_within(&"a".repeat(256), 256), "a".repeat(256));
+    }
+
+    #[test]
+    fn a_source_s_text_withheld_whole_is_one_mark_in_its_own_place_and_the_core_s_words_stay() {
+        // Too long to be read, or read while the patterns did not load: the mark stands for that
+        // text alone, and what the core put around it is kept.
+        let long = "x".repeat(LINE_CAP + 1);
+        let line = |source: &str| {
+            Text::ours("db-1: ")
+                .then(Text::source(source))
+                .then(Text::ours(". 2 need a look."))
+                .said()
+        };
+        assert_eq!(
+            line(&long),
+            format!("db-1: {}. 2 need a look.", mark(TOO_LONG, LINE_CAP + 1))
+        );
+        assert_eq!(
+            without_patterns(|| line("refused")),
+            format!("db-1: {}. 2 need a look.", mark(NO_PATTERNS, 7))
+        );
+        assert!(set().is_ok(), "only within the test's closure");
+        // The cap counts the line as the patterns would read it: the spaces between arguments
+        // and every mark already in it.
+        let half = "x".repeat(LINE_CAP / 2);
+        assert_eq!(
+            Args::raw(&[half.clone(), half.clone()]).cuts()[0].kind,
+            TOO_LONG
+        );
+        let kept = format!("{}{}", "x".repeat(LINE_CAP - 8), mark(TOO_LONG, 3));
+        assert_eq!(
+            Text(cut_one(set().ok(), parse(&kept))).cuts(),
+            [(TOO_LONG, LINE_CAP - 8), (TOO_LONG, 3)]
+        );
+    }
+
+    #[test]
+    fn on_plain_text_what_is_shown_is_byte_for_byte_what_was_shown_before() {
+        // With no secret and no backslash, every surface shows what it showed before the one way
+        // in: hidden characters as the terminal shows them, and at most 256 characters with `…`.
+        let hidden = "a\u{202E}b\u{200B}c";
+        let long = format!("{hidden} {}", "word ".repeat(80));
+        for s in ["", "Permission denied (publickey).", hidden, long.as_str()] {
+            assert_eq!(said(s), crate::view::shown(s), "{s}");
+            assert_eq!(
+                said_within(s, crate::status::TEXT_CAP),
+                crate::status::capped(crate::view::shown(s)),
+                "{s}"
+            );
+            assert_eq!(said(s), crate::known::whole(s), "{s}");
+        }
     }
 }

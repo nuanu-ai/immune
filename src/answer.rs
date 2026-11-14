@@ -155,7 +155,7 @@ pub fn fail(op: &str, form: Form, mut error: v1::Error, exit: u8) -> ExitCode {
     error.detail_text = error
         .detail_text
         .as_deref()
-        .map(|s| crate::secrets::Text::source(&crate::contract::unescape(s)).shown(known::whole));
+        .map(|s| crate::secrets::said(&crate::contract::unescape(s)));
     let failure = v1::Failure {
         operation: op.to_string(),
         ok: false,
