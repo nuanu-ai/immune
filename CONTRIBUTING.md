@@ -11,7 +11,7 @@ The rules a change has to keep (dependencies, where our own code ends, nothing t
 ./build     # the release program and the menu-bar app, in target/app
 ```
 
-`./check` runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test`, then `swift format lint --strict` over the app's sources, and the app's tests through `app/test`. Every commit has to pass it.
+`./check` runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test`, then `swift format lint --strict` over the app's sources, and the app's tests through `app/test`. Every commit has to pass it. A part can be run by name: `./check lint`, `./check tests`, `./check app`, or one half of the test binaries with `./check tests 1/2` or `./check tests 2/2`. The check on GitHub runs `lint app` and the two halves side by side.
 
 To try a debug build of the program on its own, run `cargo build` and call `./target/debug/immune` with `--store <path>`, so that it does not touch the store the app uses. Tests run the real binary over a temporary home folder and a temporary system root (`--system-root`), so nothing real is read; `tests/event_level.rs` is a good example to start from.
 

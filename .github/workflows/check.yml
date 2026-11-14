@@ -1,5 +1,11 @@
 # Every change reaches main through a pull request that passed ./check here.
 #
+# ./check runs in three parts side by side, each a part of ./check called by name: `lint app`
+# and the two halves of the test binaries, `tests 1/2` and `tests 2/2`. Run one after another
+# they took about ten minutes on this runner; the slowest part takes about four and a half.
+# Runner minutes cost a public repository nothing. The job named `check`, which the branch
+# protection of main requires, succeeds only when every part did.
+#
 # A security tool's workflow is itself a target. So: pull_request, never pull_request_target,
 # so a pull request from a fork runs its own code with a read-only token and no secret; no
 # secret is used; the token may only read the repository; the one action is pinned by commit;
@@ -21,7 +27,13 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  check:
+  part:
+    name: ${{ matrix.part }}
+    strategy:
+      # Every part reports its own result, so one failure does not hide another.
+      fail-fast: false
+      matrix:
+        part: [lint app, tests 1/2, tests 2/2]
     # Apple Silicon (M1, 3 cores, 7 GB), macOS 26. A label that names its version, so the
     # macOS under the check changes only in a commit here.
     runs-on: macos-26
@@ -31,6 +43,7 @@ jobs:
       # same Swift as the Command Line Tools 26.6 a contributor installs. Chosen without sudo:
       # xcode-select -p, swift and xcrun all follow DEVELOPER_DIR.
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      PART: ${{ matrix.part }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -52,5 +65,21 @@ jobs:
           cargo clippy --version
           cargo fmt --version
 
-      - name: ./check
-        run: ./check
+      - name: ./check ${{ matrix.part }}
+        # The part's words are separate arguments of ./check.
+        run: ./check $PART
+
+  # The status check the branch protection of main requires. It runs even when a part failed
+  # or was cancelled, and then fails: a skipped required check would count as passed.
+  check:
+    needs: part
+    if: always()
+    runs-on: macos-26
+    timeout-minutes: 5
+    steps:
+      - name: Every part passed
+        env:
+          RESULT: ${{ needs.part.result }}
+        run: |
+          echo "parts: $RESULT"
+          [ "$RESULT" = success ]

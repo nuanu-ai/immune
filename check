@@ -1,12 +1,47 @@
 #!/bin/sh
-# All checks, in order: formatting, linter, tests.
+# All checks, in order: formatting, linter, tests, then the app.
+#
+# With no argument it runs every part. A part can be asked for by name, and several in one
+# call: `lint` (formatting and linter), `tests` (all of cargo test), `tests N/M` (share N of M
+# of the test binaries, as scripts/test-half.sh splits them) and `app` (the app's lint and
+# tests). The check on GitHub runs the parts side by side, so it runs what this file runs.
 set -e
 cd "$(dirname "$0")"
 . ./scripts/rust-path.sh
 . ./scripts/prerequisites.sh
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test
+
+lint() {
+  cargo fmt --check
+  cargo clippy --all-targets -- -D warnings
+}
+
 # The menu-bar app: Swift on Apple's Command Line Tools.
-swift format lint --strict -r app/Package.swift app/Sources app/Tests
-app/test
+app() {
+  swift format lint --strict -r app/Package.swift app/Sources app/Tests
+  app/test
+}
+
+[ $# -gt 0 ] || set -- lint tests app
+while [ $# -gt 0 ]; do
+  case "$1" in
+    lint) lint ;;
+    app) app ;;
+    tests)
+      case "${2-}" in
+        */*)
+          targets=$(scripts/test-half.sh "$2")
+          shift
+          # One target name per word: test files are named as Rust identifiers.
+          # shellcheck disable=SC2086
+          cargo test $targets
+          ;;
+        *) cargo test ;;
+      esac
+      ;;
+    *)
+      echo "usage: $0 [lint] [tests [N/M]] [app]; with no argument, all of them" >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
