@@ -507,8 +507,8 @@ fn a_match_carries_the_responsible_process_the_process_group_and_the_users_and_g
     );
     assert_eq!(s.process_group_id, Some(400));
     assert!(
-        text.ends_with(
-            " · as user 501, real user 502, group 20, real group 21 · process group 400 · responsible pid 300 version 9200 · before the exec as user 503, real user 504, group 22, real group 23"
+        text.contains(
+            " · as user 501, real user 502, group 20, real group 21 · process group 400 · responsible pid 300 version 9200 · before the exec as user 503, real user 504, group 22, real group 23 started "
         ),
         "{text}"
     );
@@ -586,7 +586,8 @@ fn a_line_of_an_earlier_collector_gives_no_responsible_process_process_group_or_
     );
     assert_eq!([i.real_user_id, i.group_id, i.real_group_id], [None; 3]);
     assert_eq!((s.responsible, s.process_group_id), (None, None));
-    assert!(text.ends_with(r#""count=1" · as user 501"#), "{text}");
+    assert!(text.contains(" · as user 501 started "), "{text}");
+    assert!(text.ends_with(r#""count=1""#), "{text}");
 }
 
 /// The time now as eslogger writes it, a microsecond past the second.

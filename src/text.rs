@@ -313,7 +313,9 @@ fn event(e: Option<&v1::Event>, detailed: bool) -> String {
             let at = instant(s.happened_at, s.happened_nanos);
             let args = args.join(" ");
             if !detailed {
-                return format!("{at} started {exe} {args}{}", who(s));
+                // The arguments stay last: text after them would read as part of the last one
+                // to whoever quotes the line.
+                return format!("{at}{} started {exe} {args}", who(s));
             }
             let process = s.process.as_ref();
             let pid = process
