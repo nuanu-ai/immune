@@ -8,6 +8,7 @@ The rules for anyone who changes this code, a person or an AI coding agent. Read
 - An agent talks to the person it works with in the language they write in.
 - Prose for a reader is plain: no sales words, no dramatic closers, sentence-case headings. Every fact, number and name stays exact. Code, commands, paths and field names are written as they are.
 - Keep documents short. Add a file only when there is something to put in it.
+- The README holds what Immune is, the idea, the first run, what it does not judge and where to read on. Detail lives in `docs/` and is not repeated in the README.
 
 ## How we build
 

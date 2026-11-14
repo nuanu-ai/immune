@@ -15,6 +15,24 @@ Readers → Store → Rules and matchers → Findings → Store → Commands →
 
 The store is the one seam between the parts. What a reader saw, what a rule found and what a person answered are all rows in it, and the commands, the app and the pages read nothing else. No other layer or interface sits between the parts. That keeps any one of them replaceable: a collector, for example, can be swapped for another that writes the same facts.
 
+The same flow, with what feeds each part:
+
+```mermaid
+flowchart TD
+    collector["Collector, optional, as root<br/>eslogger, jq, rotatelogs"] --> log[("Log of program starts and file events<br/>one day, a 2 GiB cap and one 128 MiB file")]
+    mac["Files and tools on this Mac<br/>launchd, shells, SSH, git, apps, lockfiles"] --> readers
+    feeds["Public data over HTTPS<br/>CISA KEV, OSV"] --> readers
+    log --> readers["Readers<br/>facts with their source, and coverage"]
+    readers --> store[("Store, SQLite<br/>facts, coverage, journal")]
+    store --> rules["Rules and matchers<br/>Immune's own, SigmaHQ, Elastic, OSV"]
+    rules --> findings["Findings<br/>how bad, how sure, ATT&CK, evidence"]
+    findings --> store
+    store --> commands["immune commands<br/>JSON"]
+    commands --> app["Menu-bar app"]
+    commands --> agent["Your AI agent"]
+    commands --> page["HTML pages"]
+```
+
 ## When things run
 
 A full check, `immune run`, runs every reader once and then every rule. While the app is open it runs one every hour. `immune watch`, which the app keeps running as its child, does the faster work:
@@ -214,6 +232,12 @@ Verdicts are not signed, as answers are not. Anyone who can run `immune verdict`
 
 A watcher whose latest reading or sample failed does not count as watching live until the next success, and the failure is served with what failed, when and what it said.
 
+## The app
+
+The app lives in the menu bar. On first launch it asks once for permission to send notifications, and the first check takes about a minute.
+
+The panel under the icon answers whether this Mac is OK. Its headline counts the findings that need the person now and the ones to look at. Each finding is a row that starts with the thing itself, a file's path or a program with its arguments, and a click opens its evidence, the response layer's verdicts and the person's answer. An answer given through an agent or on the command line stays in the panel with Take back. What Immune cannot see on this Mac and the person can fix is a group of its own below the findings. Open report opens a page in the browser with everything Immune knows, including known vulnerabilities and rule matches, which the panel leaves out.
+
 ## Text from a source is data
 
 Files on the Mac, feeds and indicator lists may be written by an attacker, sometimes for an agent to read. Immune takes facts out of them and nothing else:
@@ -227,6 +251,10 @@ Files on the Mac, feeds and indicator lists may be written by an attacker, somet
 ## No model
 
 No model runs in collection, detection or the app, so the same input gives the same findings. An agent may investigate a finding through the commands and explain it to the person, but it cannot change a finding, and an answer it gives is recorded as the agent's. The response layer may use a model; its verdict is recorded beside a finding and can only add to what the person is shown.
+
+## The network and servers
+
+Nothing about the Mac leaves it. Immune takes no command from the network and never connects to the user's servers: it reads a server only from what a sweep script the user runs leaves behind (see [reference.md](reference.md#about-servers)). Its only requests are for public threat data, the same for every user ([threats.md](threats.md#what-is-asked-of-the-network)).
 
 ## What comes from the industry and what is Immune's own
 

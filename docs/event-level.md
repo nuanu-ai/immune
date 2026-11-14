@@ -27,6 +27,8 @@ The installer copies the scripts into `/Library/Application Support/ai.nuanu.imm
 
 The installer is idempotent. Run again, it stops what it started, puts every file back and starts it again, keeping the logs. It makes the folders and the pipe and sets who may read the log before it stops the collector that runs. If a step fails after that, it says what it left: the collector stopped, or partly started, so that nothing is recorded until the installer runs again and succeeds. Immune goes on showing the level as running for up to 15 minutes after the last line was written, and then says it is silent. It ends with one line: `RESULT: RUNNING`, `RESULT: RUNNING IN PART` (program starts are recorded, and no file event came in the ten seconds it waited), `RESULT: REFUSED` (Full Disk Access is missing) or `RESULT: INSTALLED, NOT RECORDING YET`.
 
+After `RESULT: RUNNING IN PART`, `immune status` says whether file events are collected once `immune run` has read the log. After `RESULT: REFUSED`, allowing Full Disk Access is enough: the collector starts by itself within seconds. `RESULT: INSTALLED, NOT RECORDING YET` means that nothing was written in ten seconds and `eslogger` printed no refusal; `immune status` gives the level's state after `immune run`.
+
 ## What is recorded, and what never is
 
 The filter keeps a list of fields, not a list of what to remove, so a field Apple adds is not written.
@@ -188,6 +190,15 @@ What a match does:
 - Matches of lower rules, and of rules with no level stated, are a quiet count. They never change the headline, the count of findings or the icon. The store keeps nothing else of them; `immune matches` reads them from the log, with their events, for the response layer.
 
 `immune rules --over-log` evaluates the rules over the log on disk without the store and prints per rule its level and count, never a command line. `immune matches` evaluates the log with the same code and prints every match with the event it matched, its arguments whole except for the secrets cut out of them, and for a high match the finding the core's own reading put it in. The caller keeps its place in the log, which holds per file what the core's reading keeps for itself (see [reference.md](reference.md#immune-matches)).
+
+The section on program starts of the page `immune view` writes shows the starts in the last day, the rules watching, the rule that matched this week, and which ATT&CK techniques for macOS the shipped rules cover, by tactic. The picture is drawn by the program from an invented Mac.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="img/rules-dark.png">
+    <img src="img/rules-light.png" width="700" alt="The section of the page on program starts: starts in the last day, rules watching, the rule that matched this week, and which ATT&CK techniques for macOS the shipped rules cover, by tactic">
+  </picture>
+</p>
 
 ## What published rules need that the level does not give
 

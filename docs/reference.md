@@ -2,6 +2,33 @@
 
 What Immune reads on a Mac, where it looks, what it records and when; the vocabulary of facts; the commands and the contract; and the files it keeps. [how-it-works.md](how-it-works.md) explains the terms used here.
 
+## What is watched
+
+| What | How | When |
+|---|---|---|
+| Places where persistence lives: launch agents and daemons, login and logout hooks, zsh and bash startup files, `~/.ssh/config`, `authorized_keys` and `rc`, the system's SSH configuration, PAM policies and modules, authorization plugins, git hooks in every project | A checksum of each file, never its content; for login hooks, a checksum of the hook alone | Within seconds while the app is open, otherwise at the hourly check |
+| Software changed in place: app bundles, Homebrew kegs, global npm packages, code that apps keep under Application Support | The app's code signature, verified by macOS; for the rest, a digest of file paths and change times | Hourly |
+| Files that make a tool run code by itself: install scripts in `package.json`, editor tasks that run when a folder opens, editor and dev container settings, coding agents' settings, hooks and MCP server lists, editor extensions | The part of the file that runs code, as a checksum. 13 of the 41 known ways in a project and 7 of the 11 known places in the home folder are read | Within seconds for most, hourly for the rest |
+| Dependencies in `package-lock.json`, `pnpm-lock.yaml` and `Cargo.lock` | Matched against OSV's data for npm and crates.io and against CISA's catalogue | Hourly |
+| The user's running programs and their internet connections | Read without administrator rights. An interpreter given code on its command line and left running without a terminal is a finding | Every 30 seconds while the app is open |
+| Every program start and every file created or renamed, with the collector | Checked against 198 published rules for macOS: the 75 of SigmaHQ, and 66 of Elastic's detection rules and 57 of its behaviour rules translated into Sigma. 175 are evaluated in full and 23 in part | About every 10 seconds while the app is open, and at every check |
+| Indicators from an incident report that the user gives as `indicators.json`: SHA-256 hashes, domains, IPv4 addresses, URLs | Matched against watched files, lockfiles, editor tasks and connections | At every check |
+
+## What this version does not see
+
+`immune status` lists what is not covered, one item per cause, and says who can act on each (see [how-it-works.md](how-it-works.md#coverage)). Today the limits of this version include:
+
+- A connection at the moment it is made, and the name behind an address. Immune samples connections every 30 seconds and sees addresses only; `eslogger` has no network event.
+- A file modified in place or removed. The collector records files created and renamed only.
+- `fork` and `exit`: a process that forks without starting a new program, and when a process ends.
+- One of SigmaHQ's rules, 12 of Elastic's translated detection rules and 10 of its translated behaviour rules have an alternative that needs a field `eslogger` does not give, or that the translation could not carry, so they are evaluated only in part. Of Elastic's other 119 detection rules for macOS, none is evaluated: 30 correlate a sequence of events, 40 are written in KQL or ES|QL, and 49 need events or fields the collector does not record or could not be translated exactly. Of its other 221 behaviour rules, none is evaluated: 109 correlate a sequence of events, and 112 need events or fields the collector does not record or could not be translated exactly. `immune rules` names each with its reason.
+- Without the collector: the moment a program starts, its command line, who started it, and which program created a file. The published rules then do not watch.
+- Vulnerabilities in installed apps, Homebrew packages, what servers run, and projects in other languages. Lockfiles Immune has no reader for, such as `requirements.txt`, `uv.lock` or `go.sum`, are named in the report.
+- Software installed by any package manager other than Homebrew and npm. Immune names a few when it finds them at their installers' default places (MacPorts, Nix, pkgsrc, Fink, conda, and npm under nvm), reads nothing they installed, and does not find the rest. Homebrew and Tailscale installed outside their default places are not found either. One that an earlier check read and this one does not find is reported as not found now, and what was known from it is kept.
+- Folders macOS asks permission for: Desktop, Documents, Downloads, iCloud Drive, other cloud storage, other apps' containers and anything under `/Volumes`. Immune never enters them, so macOS never shows a permission dialog because of it. The report names those it met on the way, and the projects page says which folders the search for projects does not enter. A new project kept there is not found; one found there before stays listed as it was.
+- Which program changed a watched file in place.
+- Stopping anything. Immune reports, and it never blocks, suspends or kills a program.
+
 ## When readers run
 
 | Name | Trigger |
@@ -181,6 +208,50 @@ Every command except `immune servers`, `immune view` and `immune watch` answers 
 | `immune watch [--sample-every <s>] [--events-every <s>] [--alive-every <s>]` | Runs until stopped, printing one JSON line per event: `watching`, `read`, `sample`, `program_starts`, `alive`, `problem` |
 
 In every answer, `title`, `meaning` and `advice` are Immune's fixed words. Anything taken from the machine or a feed is only in a field whose name ends in `_text`.
+
+A trimmed answer of `immune status --json` from an invented Mac:
+
+```json
+{
+  "format": 1,
+  "this_mac": {
+    "state": "watched",
+    "fresh": true,
+    "stale_reason": null
+  },
+  "needs_a_look": {
+    "items": [
+      {
+        "finding": {
+          "finding": {
+            "id": "f89b204373f",
+            "rule": "watched.autostart",
+            "severity": "medium",
+            "confidence": "low",
+            "urgent": false
+          },
+          "title": "A program set to start by itself on this Mac was added, changed or removed.",
+          "where_text": "~/Library/LaunchAgents/com.example.updater.plist"
+        },
+        "technique_text": "T1543"
+      }
+    ],
+    "total": 1,
+    "urgent_total": 0
+  },
+  "not_covered": [
+    {
+      "id": "vulnerabilities-not-compared",
+      "who": "nothing",
+      "holds_on": "every_mac",
+      "title": "Known vulnerabilities are not yet compared with your installed software, your servers or projects of other kinds."
+    }
+  ],
+  "cannot_judge": [
+    "no vulnerability is matched against installed software, servers' packages or ecosystems other than npm and crates.io yet"
+  ]
+}
+```
 
 ## The contract
 
@@ -424,3 +495,9 @@ Everything lives in `~/Library/Application Support/ai.nuanu.immune/` unless `--s
 The store keeps every reading of the 20 runs the changes page lists and of the latest finished run. Of older ones it keeps the first and the last of each run of unchanged readings ([how-it-works.md](how-it-works.md#coverage)). A watcher's reading of the places one change touched keeps its raw copy as `watched-places-touched.txt`, apart from the copy of a reading of every place.
 
 The collector keeps its own files under `/Library/Application Support/ai.nuanu.immune/event-level`. The app keeps its notification settings under the defaults domain `ai.nuanu.immune`.
+
+## Updating and removing
+
+To update, run `git pull`, quit the app from the ⋯ menu of its panel, run `./build` and open the app again. `./build` refuses to run while the app is open.
+
+To remove Immune, quit it, delete `Immune.app` and its data folder, `~/Library/Application Support/ai.nuanu.immune`, and run `defaults delete ai.nuanu.immune` to clear what it remembers about notifications. If the collector is installed, `sudo /bin/sh scripts/event-level/uninstall` removes it with its logs (see [event-level.md](event-level.md)).

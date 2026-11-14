@@ -4,6 +4,19 @@ A threat is knowledge from outside: a vulnerability, or an indicator from an inc
 
 Built: CISA's catalogue of exploited vulnerabilities, fetched whole at every check; OSV's vulnerability data for npm and crates.io, matched against the projects' lockfiles with four answers; a list of indicators matched against part of what Immune reads. Planned: matching installed software, Homebrew, servers' packages and other ecosystems, and the four answers for indicators. Until then the status says that no vulnerability is matched against those, so whether one affects them is unknown, and lists it among the limits of this version.
 
+## Where rules and data come from
+
+| Source | What Immune takes | Licence | How it arrives |
+|---|---|---|---|
+| [SigmaHQ](https://github.com/SigmaHQ/sigma) | Every rule for macOS, 75 in all (70 over process starts, 5 over file events), byte for byte as published at commit `d7c9da1` | Detection Rule License 1.1, see [`rules/sigma/NOTICE`](../rules/sigma/NOTICE) | Compiled into the program |
+| [Elastic detection rules](https://github.com/elastic/detection-rules) | 66 of its 185 detection rules for macOS (60 over process starts, 6 over file events) at commit `032ac5e`, each translated into Sigma by a program, not edited by hand, and checked against Elasticsearch's documented meaning on invented events; the other 119 are listed with the reason | Elastic License 2.0, see [`rules/elastic/NOTICE`](../rules/elastic/NOTICE) | Compiled into the program |
+| [Elastic protections artifacts](https://github.com/elastic/protections-artifacts) | 57 of its 278 behaviour rules for macOS (54 over process starts, 3 over file events) at commit `a87715d`, translated and checked the same way; they state no level, and the action each takes upstream, stopping a process, is not taken; the other 221 are listed with the reason | Elastic License 2.0, see [`rules/elastic-behaviour/NOTICE`](../rules/elastic-behaviour/NOTICE) | Compiled into the program |
+| [MITRE ATT&CK](https://attack.mitre.org) | The techniques for macOS and the 13 tactics of Enterprise ATT&CK, from release 20.1 | MITRE's ATT&CK licence, see [`rules/attack/NOTICE`](../rules/attack/NOTICE) | Compiled into the program |
+| [OSV](https://osv.dev) | Vulnerability and malicious package records for npm and crates.io, from sources such as the GitHub Advisory Database, RustSec and OpenSSF Malicious Packages | Each record keeps its source's licence; Immune names the source beside every record it shows | Downloaded: crates.io at every check, npm once a day |
+| [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) | The catalogue of vulnerabilities known to be exploited | CC0 | Downloaded at every check |
+
+Test data copied from other projects carries its own notice beside it, in `tests/osv/NOTICE` and `tests/semver/NOTICE`.
+
 ## What is asked of the network
 
 These are the only requests Immune makes. What is asked never depends on what is on the Mac: the requests are fixed, or computed from public data only, so every user sends the same ones and nothing about their Mac leaks. Matching happens on the Mac.
