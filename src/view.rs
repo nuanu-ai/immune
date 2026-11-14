@@ -291,6 +291,13 @@ pub fn shown(s: &str) -> String {
     out
 }
 
+/// What a source said, such as why a reader could not read a place, as a page or the terminal
+/// shows it: the secrets the core recognises cut out, each a mark (`secrets::text`), and hidden
+/// characters as `shown` writes them. A page escapes it with `esc`, as any other text.
+pub fn said(s: &str) -> String {
+    crate::secrets::text(s, shown)
+}
+
 /// UTC seconds as `YYYY-MM-DD HH:MM UTC`.
 pub fn utc(secs: i64) -> String {
     let (date, rest) = civil(secs);
@@ -636,9 +643,10 @@ fn coverage(conn: &Connection, out: &mut String, rows: &[Latest], now: i64) -> O
         td(
             out,
             "",
-            r.reason
-                .as_deref()
-                .unwrap_or(if full { "" } else { "no reason given" }),
+            &r.reason.as_deref().map_or_else(
+                || (if full { "" } else { "no reason given" }).to_string(),
+                said,
+            ),
         )?;
         td(out, "nowrap", &utc_age(r.at, now))?;
         let last = if full {
@@ -1190,7 +1198,7 @@ fn machine_body<'a>(
             utc_or(last, "never"),
             esc(&crate::sweep::failed_visit(
                 v.at,
-                v.reason.as_deref().unwrap_or_default()
+                &said(v.reason.as_deref().unwrap_or_default())
             ))
         )?;
     }
@@ -1202,7 +1210,7 @@ fn machine_body<'a>(
             write!(out, "<li>{} ", esc(&r.kind))?;
             badge(out, &r.completeness, r.reason.as_deref())?;
             if let Some(reason) = &r.reason {
-                write!(out, " {}", esc(reason))?;
+                write!(out, " {}", esc(&said(reason)))?;
             }
             writeln!(
                 out,
@@ -1261,7 +1269,7 @@ fn machine_body<'a>(
                     out,
                     "<p class=\"alert\">{}: {}</p>",
                     esc(&r.kind),
-                    esc(reason)
+                    esc(&said(reason))
                 )?;
             }
         }
@@ -1380,7 +1388,7 @@ fn watched(conn: &Connection, out: &mut String, latest: &[Latest], now: i64) -> 
             write!(out, "<li><span class=\"mono\">{}</span> ", esc(&r.scope))?;
             badge(out, &r.completeness, r.reason.as_deref())?;
             if let Some(reason) = &r.reason {
-                write!(out, " {}", esc(reason))?;
+                write!(out, " {}", esc(&said(reason)))?;
             }
             writeln!(
                 out,
@@ -1439,7 +1447,7 @@ fn watched(conn: &Connection, out: &mut String, latest: &[Latest], now: i64) -> 
             if let Some(n) = now_known.get(id) {
                 badge(out, &n.completeness, None)?;
                 if let Some(reason) = &n.reason {
-                    write!(out, " {}", esc(reason))?;
+                    write!(out, " {}", esc(&said(reason)))?;
                 }
             }
             out.push_str("</td></tr>\n");
@@ -1568,7 +1576,9 @@ pub fn catalogue(conn: &Connection, out: &mut String, now: i64) -> Out {
         writeln!(
             out,
             "<p class=\"quiet\">Not current. The latest reading of the catalogue failed: {}. What is new since {} is unknown.</p>",
-            esc(reason.as_deref().unwrap_or("no reason given")),
+            esc(&reason
+                .as_deref()
+                .map_or("no reason given".to_string(), said)),
             good.as_ref().map_or("then".to_string(), |g| utc(g.2))
         )?;
     }
@@ -1781,8 +1791,10 @@ fn changes(conn: &Connection, out: &mut String) -> Out {
             utc(*at),
             esc(&summary)
         )?;
+        // The run's line holds what its readers' sources said, such as why a server could not
+        // be opened: cut, as the run printed it.
         if let Some(report) = report {
-            writeln!(out, "<p class=\"muted mono\">{}</p>", esc(report))?;
+            writeln!(out, "<p class=\"muted mono\">{}</p>", esc(&said(report)))?;
         }
         if not_repeated > 0 {
             writeln!(
@@ -1804,7 +1816,9 @@ fn changes(conn: &Connection, out: &mut String) -> Out {
                 writeln!(
                     out,
                     " {}</li>",
-                    esc(reason.as_deref().unwrap_or("no reason given"))
+                    esc(&reason
+                        .as_deref()
+                        .map_or("no reason given".to_string(), said))
                 )?;
             }
             out.push_str("</ul>\n");
@@ -2432,5 +2446,216 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(folded.removed, 16);
         assert_eq!(after, before);
+    }
+
+    #[test]
+    fn a_secret_in_what_a_reader_s_source_said_reaches_no_page_and_no_form_of_the_status_and_is_marked_cut()
+     {
+        // A reader's reason is its source's words, which can hold a token: a tool that echoes a
+        // URL, a server that repeats a command. Wherever it is printed (the run's line on the
+        // page of changes, why a kind of watched place was not read in full in each form of the
+        // status, and the hint of "not read in full" on the summary) it is cut, marked as every
+        // cut is, and the token is in no byte of any page or answer.
+        use crate::store::{Cause, Gap, Reading, journal_note, put_coverage, put_entity};
+        use crate::watched::{AUTOSTART_KIND, PROFILE, PROFILE_KIND, READER};
+        use prost::Message;
+        let scratch = crate::common::Scratch::new("view-reason-cut");
+        let dir = scratch.0.clone();
+        let store = dir.join("store.db");
+        let mut conn = crate::store::open(&store).unwrap();
+        // Invented, of a kind the patterns know, and put together so none stands in the file.
+        let token = format!(
+            "{}{}",
+            ["gh", "p_"].concat(),
+            "Q7mZ2xK9pL4vR8nT3wY6bH1cJ5dF0gS2aE7u"
+        );
+        let mark = crate::secrets::mark("gitleaks:github-pat", 40);
+        let said = format!("a tool answered: fetch https://example.invalid/?t={token} refused");
+        let (mac, server) = ("machine:mac", "machine:db-1");
+        let at = 1_900_000_000;
+        let run_id = format!("{at}-000000000");
+        journal_note(&conn, at, &run_id, "run_started", "").unwrap();
+        let tx = conn.transaction().unwrap();
+        put_entity(&tx, mac).unwrap();
+        put_entity(&tx, server).unwrap();
+        let r = |reader, scope, kind| Reading {
+            reader,
+            scope,
+            kind,
+            run_id: &run_id,
+            at,
+            observed_at: at,
+        };
+        let failed = Gap::of(Cause::Failed);
+        put_coverage(
+            &tx,
+            &r(READER, mac, PROFILE_KIND),
+            "none",
+            Some(&said),
+            &failed,
+        )
+        .unwrap();
+        put_coverage(
+            &tx,
+            &r(READER, mac, AUTOSTART_KIND),
+            "full",
+            None,
+            &Gap::default(),
+        )
+        .unwrap();
+        let visit = r(crate::servers::READER, server, crate::servers::VISIT);
+        put_coverage(&tx, &visit, "none", Some(&said), &failed).unwrap();
+        // A watched file whose content was not read, and a project on this Mac whose lockfiles
+        // were not read, each with the same words.
+        let (file, checkout) = ("file:machine:mac/.zshrc", "checkout:machine:mac/dev/site");
+        put_entity(&tx, file).unwrap();
+        put_entity(&tx, checkout).unwrap();
+        for (subject, predicate, object, reader, scope, kind) in [
+            (file, "watched_as", PROFILE, READER, mac, PROFILE_KIND),
+            (
+                checkout,
+                "located_on",
+                mac,
+                crate::checkouts::READER,
+                mac,
+                crate::checkouts::KIND,
+            ),
+        ] {
+            tx.execute(
+                "INSERT INTO assertion (layer, subject, predicate, object, reader, scope, kind,
+                                        source_ref, basis, observed_at, run_id)
+                 VALUES ('live', ?1, ?2, ?3, ?4, ?5, ?6, 'invented:1', 'observed', ?7, ?8)",
+                rusqlite::params![subject, predicate, object, reader, scope, kind, at, run_id],
+            )
+            .unwrap();
+        }
+        let content = r(READER, file, crate::watched::CONTENT);
+        put_coverage(&tx, &content, "none", Some(&said), &failed).unwrap();
+        let lockfiles = r(crate::lockfiles::READER, checkout, crate::lockfiles::KIND);
+        put_coverage(&tx, &lockfiles, "none", Some(&said), &failed).unwrap();
+        // The other places the store keeps a source's words: a reading of installed software,
+        // downloads of the catalogue and of a feed that failed, and a reading of the event level
+        // that failed, with why the cap of its log could not be read.
+        let installed = r(crate::integrity::READER, mac, crate::integrity::BUNDLES);
+        put_coverage(&tx, &installed, "none", Some(&said), &failed).unwrap();
+        let download = crate::threats::Reading {
+            outcome: "failed",
+            reason: Some(said.clone()),
+            ..Default::default()
+        };
+        crate::threats::put_reading(&tx, &run_id, at, &download).unwrap();
+        tx.execute(
+            "INSERT INTO feed_reading (source, run_id, at, outcome, reason)
+             VALUES (?1, ?2, ?3, 'failed', ?4)",
+            rusqlite::params![crate::osv::FEEDS[0].source, run_id, at, said],
+        )
+        .unwrap();
+        crate::events::schema(&tx).unwrap();
+        tx.execute(
+            "INSERT INTO event_level (id, read_at, state, reason) VALUES (1, ?1, ?2, ?3)",
+            rusqlite::params![at, crate::events::FAILED, said],
+        )
+        .unwrap();
+        tx.execute(
+            "INSERT INTO event_cap (id, bytes, why) VALUES (1, NULL, ?1)",
+            [&said],
+        )
+        .unwrap();
+        // The run's line, as a run writes it: its readers' reasons inside its own words.
+        let line = format!("1 reader. db-1 was never read; the latest visit failed: {said}.");
+        journal_note(&tx, at, &run_id, "report", &line).unwrap();
+        journal_note(&tx, at + 1, &run_id, "run_finished", "").unwrap();
+        tx.commit().unwrap();
+
+        let now = at + 60;
+        let st = crate::status::state(&conn, &dir, now).unwrap();
+        let m = crate::status::message(Some(&conn), Some(&st), false, &store, now).unwrap();
+        let kind = m
+            .watched
+            .as_ref()
+            .and_then(|w| w.kinds.iter().find(|k| k.kind == PROFILE))
+            .unwrap_or_else(|| panic!("{m:#?}"));
+        let reason = kind.reason_text.as_deref().unwrap_or_default();
+        assert!(
+            reason.contains(&mark)
+                && reason.starts_with("a tool answered: ")
+                && !reason.contains(&token),
+            "{reason}"
+        );
+        // Every other field the status gives such words in holds them, cut.
+        let cut = |field: &str, said: Option<&str>| {
+            let said = said.unwrap_or_else(|| panic!("{field} is absent: {m:#?}"));
+            assert!(
+                said.contains(&mark) && !said.contains(&token),
+                "{field}: {said}"
+            );
+        };
+        let threats = m.threats.as_ref().unwrap();
+        cut("threats.reason_text", threats.reason_text.as_deref());
+        let feeds = &m.vulnerability_data.as_ref().unwrap().feeds;
+        let feed = feeds
+            .iter()
+            .find(|f| f.source == crate::osv::FEEDS[0].source);
+        cut(
+            "vulnerability_data.feeds.reason_text",
+            feed.and_then(|f| f.reason_text.as_deref()),
+        );
+        let installed = &m.integrity.as_ref().unwrap().readings;
+        cut(
+            "integrity.readings.reason_text",
+            installed.first().and_then(|r| r.reason_text.as_deref()),
+        );
+        let level = m.event_level.as_ref().unwrap();
+        cut("event_level.reason_text", level.reason_text.as_deref());
+        cut(
+            "event_level.log_cap_reason_text",
+            level.log_cap_reason_text.as_deref(),
+        );
+        let download = m.not_covered.iter().find(|u| u.value_text.is_some());
+        cut(
+            "not_covered.value_text",
+            download.and_then(|u| u.value_text.as_deref()),
+        );
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(
+            json.contains(&serde_json::to_string(&mark).unwrap().replace('"', "")),
+            "{json}"
+        );
+        let proto = m.encode_to_vec();
+        let text = crate::text::status(&m);
+        for (form, bytes) in [
+            ("json", json.as_bytes()),
+            ("proto", &proto),
+            ("text", text.as_bytes()),
+        ] {
+            assert!(
+                !bytes.windows(token.len()).any(|w| w == token.as_bytes()),
+                "{form}"
+            );
+        }
+
+        let pages = super::pages(&conn, &st, &m, "store.db", now).unwrap();
+        let page = |name: &str| {
+            pages
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, html)| html.clone())
+                .unwrap_or_else(|| panic!("{name}"))
+        };
+        assert!(
+            page(&format!("{}/changes.html", super::DETAILS)).contains(&format!(
+                "<p class=\"muted mono\">1 reader. db-1 was never read; the latest visit failed: a tool answered: fetch https://example.invalid/?t={mark} refused.</p>"
+            )),
+            "{}",
+            page(&format!("{}/changes.html", super::DETAILS))
+        );
+        let summary = page(super::SUMMARY);
+        let hint = format!(
+            "<span title=\"Not read in full, so this list may not be whole: {PROFILE_KIND} (a tool answered: fetch https://example.invalid/?t={mark} refused; never read in full).\">not read in full</span>"
+        );
+        assert!(summary.contains(&hint), "{summary}");
+        for (name, html) in &pages {
+            assert!(!html.contains(&token), "{name}");
+        }
     }
 }

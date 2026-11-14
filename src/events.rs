@@ -3906,7 +3906,8 @@ pub fn message(l: &Level) -> crate::contract::v1::EventLevel {
         said_by: l.said_by.clone(),
         // Read cut (`level`), as every reader of it reads it.
         said_text: l.said.as_ref().map(|s| s.shown(whole)),
-        reason_text: l.reason.as_deref().map(whole),
+        // Why the reading failed, which can repeat what the system said: cut, as `said_text`.
+        reason_text: l.reason.as_deref().map(|r| crate::secrets::text(r, whole)),
         silent_after_seconds: n(SILENT_AFTER),
         cannot_see: cannot_see(l).into_iter().map(str::to_string).collect(),
         not_kept: names(Arrival::NotKept),
@@ -3948,7 +3949,7 @@ pub fn message(l: &Level) -> crate::contract::v1::EventLevel {
         log_cap_reason_text: l
             .cap
             .as_ref()
-            .and_then(|c| c.as_ref().err().map(|why| whole(why))),
+            .and_then(|c| c.as_ref().err().map(|why| crate::secrets::text(why, whole))),
         no_longer_arriving: l
             .arrivals
             .no_longer()

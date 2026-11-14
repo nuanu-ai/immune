@@ -368,7 +368,11 @@ fn starts_line(read: &crate::EventsRead) -> Value {
 fn problem(code: &str, detail: &str) -> Value {
     line(
         "problem",
-        json!({ "code": code, "detail_text": status::text(detail) }),
+        // What failed, which can repeat what the system said: cut, as a failure's detail is.
+        json!({
+            "code": code,
+            "detail_text": status::cut_text(&crate::secrets::Text::source(detail)),
+        }),
     )
 }
 
@@ -1509,5 +1513,26 @@ mod tests {
             Some(base.join("link"))
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_problem_the_watcher_prints_holds_no_secret_what_failed_said_and_marks_the_cut() {
+        // What failed can repeat what the system or a tool said: a token in it is cut, marked as
+        // in a failure's detail.
+        let token = format!(
+            "{}{}",
+            ["gh", "p_"].concat(),
+            "Q7mZ2xK9pL4vR8nT3wY6bH1cJ5dF0gS2aE7u"
+        );
+        let line = problem(
+            "events_failed",
+            &format!("the log said ?t={token} and stopped"),
+        );
+        let detail = line["detail_text"].as_str().unwrap();
+        assert!(
+            !detail.contains(&token)
+                && detail.contains(&crate::secrets::mark("gitleaks:github-pat", 40)),
+            "{detail}"
+        );
     }
 }

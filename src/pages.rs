@@ -1266,11 +1266,11 @@ fn you_can_fix(out: &mut String, fixable: &[&Uncovered]) -> Out {
                 esc(u.cause.id),
                 esc(&u.title())
             )?;
-            let apart = u.apart();
+            let apart = apart(u);
             if !apart.is_empty() {
                 out.push_str("<ul>\n");
-                for (name, reason) in &apart {
-                    writeln!(out, "<li>{}</li>", example(name, *reason))?;
+                for item in &apart {
+                    writeln!(out, "<li>{item}</li>")?;
                 }
                 out.push_str("</ul>\n");
             }
@@ -1470,13 +1470,22 @@ pub fn vulnerabilities(conn: &Connection, now: i64) -> Result<String, Box<dyn Er
 /// and escaped apart from the name.
 fn example(name: &str, reason: Option<&str>) -> String {
     match reason {
-        Some(r) => format!(
-            "{}: {}",
-            esc(name),
-            esc(&crate::secrets::text(r, view::shown))
-        ),
+        Some(r) => format!("{}: {}", esc(name), esc(&view::said(r))),
         None => esc(name),
     }
+}
+
+/// What is told apart from a thing's words, as safe HTML: every example with what its source
+/// said, then the value, which is what a source said of it, such as why a download failed, and
+/// so is cut as every such text.
+fn apart(u: &Uncovered) -> Vec<String> {
+    let mut out: Vec<String> = u
+        .examples
+        .iter()
+        .map(|e| example(&e.name, e.reason.as_deref()))
+        .collect();
+    out.extend(u.value.as_deref().map(|v| esc(&view::said(v))));
+    out
 }
 
 /// One thing not covered, in full: its title, where, what it means and what to do.
@@ -1487,11 +1496,11 @@ fn uncovered(out: &mut String, u: &Uncovered) -> Out {
         esc(u.cause.id),
         esc(&u.title())
     )?;
-    let apart = u.apart();
+    let apart = apart(u);
     if !apart.is_empty() {
         out.push_str("<ul class=\"readings mono\">\n");
-        for (name, reason) in apart.iter().take(EXAMPLES_SHOWN) {
-            writeln!(out, "<li>{}</li>", example(name, *reason))?;
+        for item in apart.iter().take(EXAMPLES_SHOWN) {
+            writeln!(out, "<li>{item}</li>")?;
         }
         if apart.len() > EXAMPLES_SHOWN {
             writeln!(
@@ -1955,7 +1964,8 @@ fn unread(
         .map(|r| {
             let why = match (r.completeness.as_str(), r.reason.as_deref()) {
                 ("full", _) => "not read at the latest check".to_string(),
-                (_, Some(reason)) => reason.to_string(),
+                // What the reader's source said: cut, as every such text where it is printed.
+                (_, Some(reason)) => view::said(reason),
                 (_, None) => "not read in full".to_string(),
             };
             let last = r.last_full.map_or("never read in full".to_string(), |at| {
@@ -2612,7 +2622,7 @@ pub fn beyond(conn: &Connection, latest: &[Latest], now: i64) -> Result<String, 
                 }
                 Some(v) => format!(
                     "could not be opened: {}",
-                    v.reason.as_deref().unwrap_or_default()
+                    view::said(v.reason.as_deref().unwrap_or_default())
                 ),
             };
             let last = mine.iter().filter_map(|v| v.last_full).max();

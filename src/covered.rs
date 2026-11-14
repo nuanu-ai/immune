@@ -825,18 +825,6 @@ impl Uncovered {
         }
     }
 
-    /// What is told apart from the words, as data: every example with what its source said,
-    /// then the value.
-    pub fn apart(&self) -> Vec<(&str, Option<&str>)> {
-        let mut out: Vec<(&str, Option<&str>)> = self
-            .examples
-            .iter()
-            .map(|e| (e.name.as_str(), e.reason.as_deref()))
-            .collect();
-        out.extend(self.value.as_deref().map(|v| (v, None)));
-        out
-    }
-
     /// The examples given: the first `EXAMPLES`, or every one for a cause that names each.
     pub fn examples(&self) -> &[Example] {
         let n = if EVERY_EXAMPLE.contains(&self.cause.id) {

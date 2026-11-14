@@ -117,11 +117,14 @@ impl ContentNow {
         self.completeness == "full"
     }
 
-    /// What a row says in place of when it last changed, when its content was not read.
+    /// What a row says in place of when it last changed, when its content was not read. The
+    /// reason is what the reader's source said: cut, as every such text where it is printed.
     pub fn not_read(&self) -> String {
         format!(
             "{NOT_READ_NOW}: {}",
-            self.reason.as_deref().unwrap_or(CONTENT_NOT_READ)
+            self.reason
+                .as_deref()
+                .map_or(CONTENT_NOT_READ.to_string(), crate::view::said)
         )
     }
 }

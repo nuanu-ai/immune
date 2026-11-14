@@ -2986,7 +2986,8 @@ pub struct EventLevel {
     pub said_by: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag = "14")]
     pub said_text: ::core::option::Option<::prost::alloc::string::String>,
-    /// Why the core's reading failed. Whole.
+    /// Why the core's reading failed, with the secrets the core recognises cut out, each a mark as in
+    /// `ProgramStart.args_text`.
     #[prost(string, optional, tag = "15")]
     pub reason_text: ::core::option::Option<::prost::alloc::string::String>,
     /// After how many seconds without a line the level is `silent`.
@@ -3023,7 +3024,7 @@ pub struct EventLevel {
     #[prost(message, optional, tag = "25")]
     pub in_words: ::core::option::Option<EventLevelWords>,
     /// The cap of the log in bytes, as the installed tidy job is given it; or why it could not be
-    /// read. Both absent until a reading found the collector installed.
+    /// read, cut as `reason_text` is. Both absent until a reading found the collector installed.
     #[prost(uint64, optional, tag = "26")]
     pub log_cap_bytes: ::core::option::Option<u64>,
     #[prost(string, optional, tag = "27")]
@@ -3132,7 +3133,8 @@ pub struct Uncovered {
     /// When it is counted from. Absent when not known.
     #[prost(int64, optional, tag = "9")]
     pub since_at: ::core::option::Option<i64>,
-    /// What a source said of it. Whole.
+    /// What a source said of it, such as why a download failed, with the secrets the core
+    /// recognises cut out, each a mark as in `ProgramStart.args_text`.
     #[prost(string, optional, tag = "10")]
     pub value_text: ::core::option::Option<::prost::alloc::string::String>,
     /// The things it is about, as the Mac names them: the first three, or every one for
@@ -3329,7 +3331,8 @@ pub struct WatchedKind {
     /// Its latest readings by completeness.
     #[prost(message, optional, tag = "6")]
     pub readings: ::core::option::Option<CompletenessCounts>,
-    /// Why they were not full, each reason once; on one full reading, its note. Whole.
+    /// Why they were not full, each reason once; on one full reading, its note. Cut as
+    /// `ReadingGroup.reason_text` is.
     #[prost(string, optional, tag = "7")]
     pub reason_text: ::core::option::Option<::prost::alloc::string::String>,
 }
@@ -3396,7 +3399,7 @@ pub struct Threats {
     pub read_at: ::core::option::Option<i64>,
     #[prost(int64, optional, tag = "8")]
     pub checked_at: ::core::option::Option<i64>,
-    /// Why the latest reading failed. Whole.
+    /// Why the latest reading failed, cut as `ReadingGroup.reason_text` is.
     #[prost(string, optional, tag = "9")]
     pub reason_text: ::core::option::Option<::prost::alloc::string::String>,
     /// Whether its entries are matched against what the store knows: not yet.
@@ -3448,7 +3451,7 @@ pub struct FeedState {
         deserialize_with = "crate::enum_from_name::<FeedOutcome, _>"
     )]
     pub outcome: i32,
-    /// Why its latest reading failed. Whole.
+    /// Why its latest reading failed, cut as `ReadingGroup.reason_text` is.
     #[prost(string, optional, tag = "12")]
     pub reason_text: ::core::option::Option<::prost::alloc::string::String>,
     /// For a reading of this check that read an archive: whether it was the first, and what it
@@ -3515,6 +3518,7 @@ pub struct IntegrityReading {
         deserialize_with = "crate::enum_from_name::<Completeness, _>"
     )]
     pub completeness: i32,
+    /// Why it was not full, cut as `ReadingGroup.reason_text` is.
     #[prost(string, optional, tag = "3")]
     pub reason_text: ::core::option::Option<::prost::alloc::string::String>,
 }

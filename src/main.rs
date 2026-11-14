@@ -1220,11 +1220,7 @@ fn run_cmd(args: &Args) -> ExitCode {
     match run(args) {
         Ok(_) if args.form != answer::Form::Text => status_cmd("run", &args.store, args.form),
         Ok((line, watched)) => {
-            say(&line);
-            if !watched.is_empty() {
-                say("Watched places:");
-                print_table(&["Change", "Kind", "Path", "Why"], &watched);
-            }
+            print!("{}", run_said(&line, &watched));
             ExitCode::SUCCESS
         }
         Err(e) => match e.downcast_ref::<Stop>() {
@@ -1245,6 +1241,28 @@ fn run_cmd(args: &Args) -> ExitCode {
             ),
         },
     }
+}
+
+/// What `immune run` prints for a person: its line, then the watched places it found changed or
+/// could not read. The line and a row's why hold what the readers' sources said, such as why a
+/// server could not be opened or a file read: cut, as every such text.
+fn run_said(line: &str, watched: &Rows) -> String {
+    let mut out = format!("{}\n", view::shown(&said(line)));
+    if !watched.is_empty() {
+        let rows: Rows = watched
+            .iter()
+            .map(|row| {
+                let mut row = row.clone();
+                if let Some(why) = row.get_mut(3) {
+                    *why = said(why);
+                }
+                row
+            })
+            .collect();
+        out.push_str("Watched places:\n");
+        out.push_str(&text::table(&["Change", "Kind", "Path", "Why"], &rows));
+    }
+    out
 }
 
 /// Prints one line. Text from a source never reaches the terminal raw: it could reorder or
@@ -5196,5 +5214,32 @@ mod tests {
         }
         assert_eq!(count(&conn), 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn what_a_run_prints_for_a_person_holds_no_secret_a_reader_s_source_said_and_marks_the_cut() {
+        // The run's line and the why of a watched place quote what a reader's source said, such
+        // as why a server could not be opened: a token in it is cut, marked as every cut is.
+        let token = format!(
+            "{}{}",
+            ["gh", "p_"].concat(),
+            "Q7mZ2xK9pL4vR8nT3wY6bH1cJ5dF0gS2aE7u"
+        );
+        let said = format!("a tool answered: fetch https://example.invalid/?t={token} refused");
+        let line = format!("1 reader. db-1 was never read; the latest visit failed: {said}.");
+        let rows: Rows = vec![vec![
+            "not read".to_string(),
+            "shell profile".to_string(),
+            "/Users/example/.zshrc".to_string(),
+            said.clone(),
+        ]];
+        let printed = run_said(&line, &rows);
+        let mark = secrets::mark("gitleaks:github-pat", 40);
+        assert!(!printed.contains(&token), "{printed}");
+        assert_eq!(printed.matches(&mark).count(), 2, "{printed}");
+        assert!(
+            printed.starts_with("1 reader. db-1 was never read;"),
+            "{printed}"
+        );
     }
 }

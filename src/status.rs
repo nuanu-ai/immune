@@ -1190,7 +1190,8 @@ fn uncovered_message(u: &crate::covered::Uncovered) -> crate::contract::v1::Unco
         advice: u.cause.advice.to_string(),
         count: n(u.count),
         since_at: u.since,
-        value_text: u.value.as_deref().map(whole),
+        // What a source said of it, such as why a download failed: cut, as every such text.
+        value_text: u.value.as_deref().map(|v| crate::secrets::text(v, whole)),
         examples_text: u.examples().iter().map(|e| whole(&e.name)).collect(),
         holds_on: if u.every_mac {
             crate::contract::v1::HoldsOn::EveryMac
@@ -1256,7 +1257,8 @@ fn watched_message(st: &State, s: &Summary, w: &Watched) -> crate::contract::v1:
                     partial: n(partial),
                     none: n(none),
                 }),
-                reason_text: reason.as_deref().map(whole),
+                // The readers' reasons, prose from their sources: cut, as every such text.
+                reason_text: reason.as_deref().map(|r| crate::secrets::text(r, whole)),
             }
         })
         .collect();
@@ -1325,7 +1327,7 @@ fn threats_message(c: Option<&Catalogue>) -> crate::contract::v1::Threats {
         }
         Some(Catalogue::Failed { reason, last, at }) => {
             t.outcome = FeedOutcome::Failed as i32;
-            t.reason_text = Some(crate::known::whole(reason));
+            t.reason_text = Some(crate::secrets::text(reason, crate::known::whole));
             t.entries = last.map(|(_, held)| n(held));
             t.read_at = last.map(|(at, _)| at);
             t.checked_at = Some(*at);
@@ -1356,7 +1358,10 @@ fn feed_message(s: &crate::osv::State, run_id: &str) -> crate::contract::v1::Fee
         None => f.outcome = FeedOutcome::NeverRead as i32,
         Some((_, _, outcome, reason)) if outcome == "failed" => {
             f.outcome = FeedOutcome::Failed as i32;
-            f.reason_text = Some(crate::known::whole(reason.as_deref().unwrap_or_default()));
+            f.reason_text = Some(crate::secrets::text(
+                reason.as_deref().unwrap_or_default(),
+                crate::known::whole,
+            ));
         }
         Some((_, _, outcome, _)) if outcome == "read" && s.asked_in(run_id) => {
             f.outcome = FeedOutcome::Read as i32;
