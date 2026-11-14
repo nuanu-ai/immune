@@ -670,6 +670,16 @@ pub fn hold(
                      WHERE id = ?1",
                     params![id, at, run_id, ended],
                 )?;
+                // What it rests on now and did not before, such as a newer reading of the data,
+                // joins it, so that an answer read before is refused (`unchanged`).
+                for seq in basis {
+                    tx.execute(
+                        "INSERT INTO finding_basis (finding, journal) SELECT ?1, ?2
+                         WHERE NOT EXISTS (SELECT 1 FROM finding_basis
+                                           WHERE finding = ?1 AND journal = ?2)",
+                        params![id, seq],
+                    )?;
+                }
                 if ended {
                     journal(
                         tx,
@@ -1198,14 +1208,157 @@ pub enum Refused {
     Closed(String),
     /// There is no answer to take back: the finding is in this state.
     NotAnswered(String),
+    /// The finding named with `--with` is not the other finding of the pair (`pair`).
+    NotPair,
+    /// A refusal about the finding named with `--with`, not the one the answer is for.
+    With(Box<Refused>),
+    /// Something joined this finding, by its id, after the read the answer names (`unchanged`).
+    ChangedSinceRead(String),
+    /// The answer names a read further on in the journal than the store has come: it was not
+    /// read from this store.
+    ReadAhead,
+}
+
+fn refused(r: Refused) -> Box<dyn std::error::Error> {
+    Box::new(RefusedError(r))
+}
+
+/// The finding with this id, if it is one every answer shows. A finding of a rule this build does
+/// not have is left out of every read (`item`), so a write takes it for one the store does not
+/// hold: the write and the read agree on what "the store has this finding" means.
+fn shown(f: &Found, id: &str) -> bool {
+    f.id == id && item(f).is_some()
+}
+
+/// Checks that `with` is the other finding of `id`'s pair before one answer is given to both:
+/// one of them is the finding of a rule, the other the response layer's `verdict.suspicious`
+/// finding of that rule (`verdict.suspicious:<rule>` in the store), and both are about the same
+/// thing. The pair is checked by rule and thing, not by occurrence: each answer then refuses a
+/// finding it cannot answer. Both must be findings every answer shows. Nothing is written here.
+pub fn pair(
+    tx: &Transaction,
+    id: &str,
+    with: &str,
+    at: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let all = all(tx, at)?.unwrap_or_default();
+    let Some(a) = all.iter().find(|f| shown(f, id)) else {
+        return Err(refused(Refused::Unknown));
+    };
+    let Some(b) = all.iter().find(|f| shown(f, with)) else {
+        return Err(refused(Refused::With(Box::new(Refused::Unknown))));
+    };
+    // Both are shown, so both are items; the pair is what the page folds into one row.
+    let (Some(a), Some(b)) = (item(a), item(b)) else {
+        return Err(refused(Refused::Unknown));
+    };
+    if !(one_thing(&a, &b) || one_thing(&b, &a)) {
+        return Err(refused(Refused::NotPair));
+    }
+    Ok(())
+}
+
+/// The journal's latest sequence number: what a read of the store has seen. An answer that names
+/// it is refused when anything joined its findings after it (`unchanged`).
+pub fn journal_seq(conn: &Connection) -> rusqlite::Result<i64> {
+    conn.query_row("SELECT COALESCE(MAX(seq), 0) FROM journal", [], |r| {
+        r.get(0)
+    })
+}
+
+/// Refuses `act`, read at the journal's entry `seq`, when anything joined one of `ids` after
+/// it, or the response layer's finding that one of them shows, naming the first finding that
+/// changed. What joins a finding, after `seq`:
+/// - a journal entry it rests on (`finding_basis`): a newer reading of what it was found on, a
+///   verdict that went to it, a verdict that raised it;
+/// - a reading in which its published rule matched (`matched`, one per reading, of which the
+///   finding rests on the first alone; it is found by the rule alone, so a match about anything
+///   else would refuse more, never less);
+/// - a `verdict` row that went to it;
+/// - a journal entry about it: an answer given or taken back, its clearing, the end of an
+///   `expected` mark once a check records it (never by the clock alone, which journals nothing),
+///   or a verdict that names it (the verdict's journal entry has the finding it names as its
+///   subject).
+///
+/// A rule's finding shows its pair's other finding inside its own message
+/// (`verdicts.verdict_finding`), so the response layer's `verdict.suspicious` findings of its
+/// rule about the same thing (`one_thing`, as `pair` and the page pair them) are covered as if
+/// named, one
+/// raised after `seq` included. Nothing else is checked: a newer occurrence of the same rule does
+/// not refuse taking back an older one's answer, which quiets nothing. Each of these is written
+/// in the transaction that makes the change, and the journal's numbers only grow
+/// (`AUTOINCREMENT`, and nothing is deleted from it), so what the store learned after the read
+/// always has a greater number. This goes by when the store learned of a thing, never by when it
+/// happened. A `seq` the journal has not reached was not read from this store, and is refused.
+///
+/// One exemption, by what the answer says. `seen` says the person looked at what is there, so
+/// anything that joined since refuses it. `expected` says more of this is expected, and quiets
+/// every later match of the rule until the mark ends: a match of the finding's own rule that
+/// joined between the read and the answer is no different from one a second after it, and does
+/// not refuse it. Everything else still does, a verdict first of all: it is another party's
+/// statement about the thing, not more of the same. `reopen` is checked as `seen` is.
+pub fn unchanged(
+    tx: &Transaction,
+    ids: &[&str],
+    seq: i64,
+    act: &Act,
+    at: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if seq > journal_seq(tx)? {
+        return Err(refused(Refused::ReadAhead));
+    }
+    let matches_join = !matches!(act, Act::Answer(Answer::Expected { .. }));
+    let items: Vec<Item> = all(tx, at)?
+        .unwrap_or_default()
+        .iter()
+        .filter_map(item)
+        .collect();
+    // Each named finding, then the response layer's findings it shows.
+    let mut checked: Vec<&str> = Vec::new();
+    for id in ids {
+        checked.push(id);
+        if let Some(named) = items.iter().find(|i| i.id == *id) {
+            checked.extend(
+                items
+                    .iter()
+                    .filter(|own| one_thing(named, own))
+                    .map(|own| own.id.as_str()),
+            );
+        }
+    }
+    for id in checked {
+        let later: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM finding_basis WHERE finding = ?1 AND journal > ?2)
+                 OR EXISTS (SELECT 1 FROM journal WHERE seq > ?2 AND subject = ?1)
+                 OR EXISTS (SELECT 1 FROM verdict WHERE finding = ?1 AND journal > ?2)
+                 OR (?3 AND EXISTS (SELECT 1 FROM journal j JOIN finding f ON f.id = ?1
+                                     WHERE j.seq > ?2 AND j.entry = 'matched'
+                                       AND j.kind = f.rule))",
+            params![id, seq, matches_join],
+            |r| r.get(0),
+        )?;
+        if later {
+            return Err(refused(Refused::ChangedSinceRead(id.to_string())));
+        }
+    }
+    Ok(())
+}
+
+/// The same failure, about the finding named with `--with`: a refusal says so, anything else is
+/// as it was.
+pub fn of_with(e: Box<dyn std::error::Error>) -> Box<dyn std::error::Error> {
+    match e.downcast::<RefusedError>() {
+        Ok(r) => Box::new(RefusedError(Refused::With(Box::new(r.0)))),
+        Err(e) => e,
+    }
 }
 
 fn found(tx: &Transaction, id: &str, at: i64) -> Result<Found, Box<dyn std::error::Error>> {
     all(tx, at)?
         .unwrap_or_default()
         .into_iter()
-        .find(|f| f.id == id)
-        .ok_or_else(|| Box::new(RefusedError(Refused::Unknown)) as Box<dyn std::error::Error>)
+        .find(|f| shown(f, id))
+        .ok_or_else(|| refused(Refused::Unknown))
 }
 
 /// Takes the owner's answer, kept and journaled with how it was given.
@@ -1328,9 +1481,9 @@ pub fn answered(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Item
 #[derive(Debug)]
 pub struct RefusedError(pub Refused);
 
-impl std::fmt::Display for RefusedError {
+impl std::fmt::Display for Refused {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match &self.0 {
+        match self {
             Refused::Unknown => write!(f, "the store has no finding with this id"),
             Refused::Closed(state) => write!(
                 f,
@@ -1342,7 +1495,26 @@ impl std::fmt::Display for RefusedError {
                     "the finding is {state}, so there is no answer to take back"
                 )
             }
+            Refused::NotPair => write!(
+                f,
+                "the finding named by --with is not the other finding of the pair: the response layer's verdict.suspicious finding of the same rule about the same thing, or the finding of that rule"
+            ),
+            Refused::With(r) => write!(f, "about the finding named by --with: {r}"),
+            Refused::ChangedSinceRead(_) => write!(
+                f,
+                "something joined the finding after the read the answer names: read it again, show the person what is new, and answer with the new journal_seq"
+            ),
+            Refused::ReadAhead => write!(
+                f,
+                "the answer names a journal_seq this store's journal has not reached, so it was not read from this store"
+            ),
         }
+    }
+}
+
+impl std::fmt::Display for RefusedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        self.0.fmt(f)
     }
 }
 
@@ -1380,7 +1552,8 @@ pub struct Item {
 /// The two findings are one thing to the person: `own` is the response layer's
 /// `verdict.suspicious` finding about the rule of `core`'s finding and about the same thing.
 /// Nothing else pairs two findings: findings of two rules about the same machine are two things,
-/// and a verdict finding with no partner is a thing of its own. The page and the answer pair by
+/// and a verdict finding with no partner is a thing of its own. The page, the answer (`pair` for
+/// `--with`) and the read guard (`unchanged`, which covers the partner a finding shows) pair by
 /// this alone.
 pub fn one_thing(core: &Item, own: &Item) -> bool {
     own.subject.as_deref().is_some_and(|s| core.rule == Some(s)) && own.about == core.about

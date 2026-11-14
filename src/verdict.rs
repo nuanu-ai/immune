@@ -62,7 +62,7 @@ pub const KIND: &str = "verdict of the response layer";
 pub const WORDS: Words = Words {
     title: "The response layer judged something on this Mac suspicious.",
     meaning: "Another program that runs Immune, the response layer, looked into what a rule found here and judged it suspicious. The rule and the thing are named with this finding; the reason is the response layer's own, quoted.",
-    advice: "Read its reason and look at what it is about. Mark this finding seen once you have; Immune's own finding about the same thing, if there is one, is answered apart.",
+    advice: "Read its reason and look at what it is about. Mark this finding seen once you have. Immune's own finding about the same thing, if there is one, keeps an answer of its own; one answer that names both answers both.",
 };
 
 /// Created on every open, so a store of the current format takes it without a rebuild.

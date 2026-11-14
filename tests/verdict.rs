@@ -934,6 +934,7 @@ fn on_the_page_a_finding_and_the_response_layer_s_own_are_one_row_counted_as_one
     assert_eq!(page.matches(&format!(" id=\"{own}\"")).count(), 1, "{page}");
     // The person answers the core's finding through an agent: the response layer's stays open,
     // and so does the row, which is under Answered too.
+    let seq = read(&mac);
     assert!(
         mac.answer(
             &padding,
@@ -942,7 +943,9 @@ fn on_the_page_a_finding_and_the_response_layer_s_own_are_one_row_counted_as_one
                 "--via",
                 "agent",
                 "--reason",
-                "invented: the person agreed"
+                "invented: the person agreed",
+                "--journal-seq",
+                &seq
             ]
         )
         .status
@@ -2362,7 +2365,11 @@ fn a_store_not_yet_cleaned_prints_no_secret_from_any_kind_of_kept_text() {
     ));
     let own = mac.verdict_findings().pop().unwrap();
     let placeholder = ["--reason", "invented: placeholder", "--via", "agent"];
-    let out = mac.answer(&own, &[&["seen"][..], &placeholder].concat());
+    let seq = read(&mac);
+    let out = mac.answer(
+        &own,
+        &[&["seen", "--journal-seq", &seq][..], &placeholder].concat(),
+    );
     assert_eq!(out.status.code(), Some(0));
     let out = mac
         .command(&[&["owner", "mac", "retired"][..], &placeholder].concat())
@@ -2483,6 +2490,7 @@ fn an_answer_or_a_statement_whose_reason_holds_a_secret_is_taken_with_its_reason
     let id = mac.latest(MALICIOUS).unwrap();
     let token = format!("{}{}", ["gh", "p_"].concat(), invented(21, 36));
     let pw = ["Hunter", "2xQ9z"].concat();
+    let seq = read(&mac);
     let out = mac.answer(
         &id,
         &[
@@ -2491,6 +2499,8 @@ fn an_answer_or_a_statement_whose_reason_holds_a_secret_is_taken_with_its_reason
             &format!("invented: the run used {token} and --password {pw}"),
             "--via",
             "agent",
+            "--journal-seq",
+            &seq,
         ],
     );
     assert_eq!(out.status.code(), Some(0));
@@ -2840,4 +2850,1153 @@ fn looks(status: &serde_json::Value) -> serde_json::Value {
             serde_json::Value::Object(flat)
         })
         .collect()
+}
+
+// ---- One answer for a rule's finding and the response layer's finding of that rule. ----
+
+/// A Mac with a pair: the core's finding of `PADDING` on this Mac, and the response layer's
+/// finding of the same rule and thing, urgent. Beside them, about the same thing, a finding of
+/// another rule (the response layer's about a match of `SW_VERS`) and an earlier occurrence of
+/// the response layer's finding, which the person saw. Gives the Mac, the core's finding, the
+/// response layer's finding of its pair, the other rule's finding and the earlier occurrence.
+fn paired(tag: &str) -> (Mac, String, String, String, String) {
+    let mac = Mac::new(tag);
+    mac.append(&dd(1));
+    let at = mac.append(&sw_vers(2));
+    mac.run();
+    let (core, verdict, other, earlier) = {
+        let store = mac.store_id();
+        let core = mac.latest(PADDING).unwrap();
+        let raise = |case: &str| {
+            let v = levels(
+                about_finding(&store, &core, "suspicious", case),
+                ("high", "high"),
+            );
+            let r = mac.send(&v);
+            assert_eq!(r["recorded"]["raised"], true, "{r:#}");
+            r["recorded"]["finding"]["id"].as_str().unwrap().to_string()
+        };
+        let earlier = raise("case-1");
+        assert!(mac.answer(&earlier, &["seen"]).status.success());
+        let verdict = raise("case-2");
+        let v = levels(
+            about_match(&store, &mac.position(at), SW_VERS, "suspicious"),
+            ("high", "high"),
+        );
+        let other = mac.send(&v)["recorded"]["finding"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        (core, verdict, other, earlier)
+    };
+    assert_eq!(
+        mac.finding(&core)["verdicts"]["verdict_finding"]["id"],
+        verdict.as_str()
+    );
+    (mac, core, verdict, other, earlier)
+}
+
+/// What a read gives to answer with: the `journal_seq` of `immune findings`, as a flag's value.
+fn read(mac: &Mac) -> String {
+    mac.findings()["journal_seq"].as_i64().unwrap().to_string()
+}
+
+/// Every table of the store, each as its rows, sorted.
+type Whole = std::collections::BTreeMap<String, Vec<String>>;
+
+fn whole(mac: &Mac) -> Whole {
+    let db = rusqlite::Connection::open(mac.store()).unwrap();
+    let tables: Vec<String> = db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    tables
+        .into_iter()
+        .map(|t| {
+            let mut stmt = db.prepare(&format!("SELECT * FROM \"{t}\"")).unwrap();
+            let n = stmt.column_count();
+            let mut rows: Vec<String> = stmt
+                .query_map([], |r| {
+                    Ok((0..n)
+                        .map(|i| match r.get_ref(i).unwrap() {
+                            rusqlite::types::ValueRef::Text(t) => {
+                                String::from_utf8_lossy(t).into_owned()
+                            }
+                            other => format!("{other:?}"),
+                        })
+                        .collect::<Vec<_>>()
+                        .join("|"))
+                })
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            rows.sort();
+            (t, rows)
+        })
+        .collect()
+}
+
+/// The ids, sorted.
+fn ids(of: &[&str]) -> Vec<String> {
+    let mut v: Vec<String> = of.iter().map(|s| s.to_string()).collect();
+    v.sort();
+    v
+}
+
+/// The store changed since `before` by an answer to exactly the findings `answered`: their rows
+/// of `finding`, and one journal entry about each, all with one run id. Nothing else changed.
+fn only_answered(mac: &Mac, before: &Whole, answered: &[&str]) {
+    let after = whole(mac);
+    assert_eq!(
+        after.keys().collect::<Vec<_>>(),
+        before.keys().collect::<Vec<_>>()
+    );
+    for (table, rows) in &after {
+        match table.as_str() {
+            "finding" => {
+                // Rows are sorted, and each begins with its id.
+                let first = |r: &String| r.split('|').next().unwrap().to_string();
+                let gone: Vec<String> = before[table]
+                    .iter()
+                    .filter(|r| !rows.contains(r))
+                    .map(first)
+                    .collect();
+                let came: Vec<String> = rows
+                    .iter()
+                    .filter(|r| !before[table].contains(r))
+                    .map(first)
+                    .collect();
+                let named = ids(answered);
+                assert_eq!((&gone, &came), (&named, &named), "finding");
+            }
+            "journal" => {
+                assert!(
+                    before[table].iter().all(|r| rows.contains(r)),
+                    "the journal only grows"
+                );
+                assert_eq!(rows.len(), before[table].len() + answered.len(), "journal");
+            }
+            // The journal's counter moves with it.
+            "sqlite_sequence" => {}
+            _ => assert_eq!(rows, &before[table], "{table}"),
+        }
+    }
+    // The new journal entries: one about each finding answered, under one run id.
+    let db = rusqlite::Connection::open(mac.store()).unwrap();
+    let entries: Vec<(String, String)> = db
+        .prepare("SELECT subject, run_id FROM journal ORDER BY seq DESC LIMIT ?1")
+        .unwrap()
+        .query_map([answered.len() as i64], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let mut subjects: Vec<String> = entries.iter().map(|e| e.0.clone()).collect();
+    subjects.sort();
+    assert_eq!(subjects, ids(answered));
+    assert!(entries.iter().all(|e| e.1 == entries[0].1), "{entries:?}");
+}
+
+/// An answer that must be given: its JSON.
+fn given(mac: &Mac, id: &str, answer: &[&str]) -> Value {
+    let out = mac.answer(id, answer);
+    assert!(
+        out.status.success(),
+        "{answer:?}: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).unwrap()
+}
+
+/// An answer that must be refused with this code and exit code 2, in the core's words and quoting
+/// `detail` or nothing, with the store's bytes as they were.
+fn refused_answer(mac: &Mac, id: &str, answer: &[&str], code: &str, detail: Option<&str>) {
+    let bytes = std::fs::read(mac.store()).unwrap();
+    let out = mac.answer(id, answer);
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(out.status.code(), Some(2), "{answer:?}: {v:#}");
+    let error = &v["errors"][0];
+    assert_eq!(error["code"], code, "{answer:?}: {v:#}");
+    assert_eq!(error["detail_text"].as_str(), detail, "{answer:?}: {v:#}");
+    // The message says why in words of its own, and that nothing was changed.
+    let message = error["message"].as_str().unwrap();
+    let why = message
+        .strip_suffix("; nothing was changed")
+        .unwrap_or_default();
+    assert!(why.split(' ').count() > 5, "{answer:?}: {v:#}");
+    assert!(v.get("format").is_none(), "{v:#}");
+    assert!(
+        std::fs::read(mac.store()).unwrap() == bytes,
+        "{answer:?}: the store changed"
+    );
+}
+
+#[test]
+fn one_answer_seen_with_the_other_finding_named_closes_exactly_those_two() {
+    let (mac, core, verdict, other, _) = paired("pair-seen");
+    let before = whole(&mac);
+    let seq = read(&mac);
+    let answer = given(
+        &mac,
+        &core,
+        &[
+            "seen",
+            "--with",
+            &verdict,
+            "--reason",
+            "invented: I ran it",
+            "--journal-seq",
+            &seq,
+        ],
+    );
+    // The answer is the finding as it left it, and names the other as the answer left it.
+    assert_eq!(answer["finding"]["id"], core.as_str());
+    assert_eq!(answer["finding"]["state"], "seen");
+    assert_eq!(answer["answer"]["given"], "seen");
+    assert_eq!(answer["answered_with"]["id"], verdict.as_str());
+    assert_eq!(answer["answered_with"]["rule"], VERDICT_RULE);
+    assert_eq!(answer["answered_with"]["state"], "seen");
+    // Exactly the two named changed, in the whole store: not the other rule's finding about the
+    // same thing, not the earlier occurrence.
+    only_answered(&mac, &before, &[&core, &verdict]);
+    // Each keeps an ordinary answer of its own, the same on both.
+    let a = mac.finding(&core)["answer"].clone();
+    assert_eq!(mac.finding(&verdict)["answer"], a);
+    assert_eq!(
+        (&a["given"], &a["via"], &a["reason_text"], &a["in_force"]),
+        (
+            &json!("seen"),
+            &json!("command"),
+            &json!("invented: I ran it"),
+            &json!(true)
+        )
+    );
+    // Without --with, an answer reaches the one finding it names, and names no other.
+    let before = whole(&mac);
+    let lone = given(&mac, &other, &["seen"]);
+    assert!(lone["answered_with"].is_null(), "{lone:#}");
+    only_answered(&mac, &before, &[&other]);
+}
+
+#[test]
+fn one_answer_expected_from_the_response_layer_s_finding_marks_both_until_the_same_day() {
+    let (mac, core, verdict, other, _) = paired("pair-expected");
+    let before = whole(&mac);
+    let seq = read(&mac);
+    // For a person, the text says what else was answered.
+    let out = mac
+        .command(&[
+            "finding",
+            &verdict,
+            "expected",
+            "--reason",
+            "invented: a build step",
+        ])
+        .args(["--days", "7", "--with", &core, "--journal-seq", &seq])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        text.contains(&format!(
+            "Given the same answer: {core}, rule {PADDING}, now expected."
+        )),
+        "{text}"
+    );
+    only_answered(&mac, &before, &[&core, &verdict]);
+    let a = mac.finding(&core)["answer"].clone();
+    assert_eq!(mac.finding(&verdict)["answer"], a);
+    assert_eq!(a["given"], "expected");
+    assert_eq!(a["reason_text"], "invented: a build step");
+    let until = a["until_at"].as_i64().unwrap();
+    assert!((until - now() - 7 * 86_400).abs() <= 2, "{a:#}");
+    assert!(mac.shown(&other).is_some());
+    // Marked again, in JSON: the answer names the other as it left it.
+    let seq = read(&mac);
+    let again = given(
+        &mac,
+        &verdict,
+        &[
+            "expected",
+            "--reason",
+            "invented: still",
+            "--with",
+            &core,
+            "--journal-seq",
+            &seq,
+        ],
+    );
+    assert_eq!(again["answered_with"]["id"], core.as_str());
+    assert_eq!(again["answered_with"]["state"], "expected");
+}
+
+#[test]
+fn an_answer_whose_other_finding_is_not_its_pair_is_refused_and_the_store_is_as_it_was() {
+    let (mac, core, verdict, other, earlier) = paired("pair-refused");
+    // The response layer's finding of the same rule about another thing.
+    let elsewhere = {
+        let ids = insert_findings(&mac, PADDING, "e", 1);
+        let v = about_finding(&mac.store_id(), &ids[0], "suspicious", "case-9");
+        let r = mac.send(&levels(v, ("high", "high")));
+        r["recorded"]["finding"]["id"].as_str().unwrap().to_string()
+    };
+    let seq = read(&mac);
+    let seen_with = |with: &str| -> Vec<String> {
+        ["seen", "--with", with, "--journal-seq", &seq]
+            .map(str::to_string)
+            .to_vec()
+    };
+    let refuse = |id: &str, args: &[String], code: &str, detail: Option<&str>| {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        refused_answer(&mac, id, &args, code, detail);
+    };
+    for (id, with) in [
+        // Another rule about the same thing.
+        (&core, &other),
+        (&other, &core),
+        // The same rule about another thing.
+        (&core, &elsewhere),
+        // The same finding twice.
+        (&core, &core),
+        (&verdict, &verdict),
+    ] {
+        refuse(id, &seen_with(with), "not_the_pair", Some(with.as_str()));
+    }
+    refuse(
+        &core,
+        &seen_with("f0000000000"),
+        "unknown_finding",
+        Some("f0000000000"),
+    );
+    // The finding the answer is for is checked first, as without --with.
+    refuse("f0000000000", &seen_with(&verdict), "unknown_finding", None);
+    // An earlier occurrence the person saw has nothing left to answer.
+    refuse(
+        &core,
+        &seen_with(&earlier),
+        "finding_closed",
+        Some(earlier.as_str()),
+    );
+    // A journal_seq the store has not reached, even by one entry, was not read from it.
+    let ahead = (read(&mac).parse::<i64>().unwrap() + 1).to_string();
+    refused_answer(
+        &mac,
+        &core,
+        &["seen", "--with", &verdict, "--journal-seq", &ahead],
+        "journal_seq_ahead",
+        None,
+    );
+    // The other has no answer to take back.
+    given(&mac, &core, &["seen"]);
+    refused_answer(
+        &mac,
+        &core,
+        &["reopen", "--with", &verdict],
+        "finding_not_answered",
+        Some(verdict.as_str()),
+    );
+}
+
+#[test]
+fn with_with_an_answer_names_what_it_read_and_each_flag_once() {
+    let (mac, core, verdict, _, _) = paired("pair-usage");
+    let seq = read(&mac);
+    let bytes = std::fs::read(mac.store()).unwrap();
+    for args in [
+        // --with goes with an answer.
+        vec!["--with", verdict.as_str()],
+        // An answer with --with names the read it rests on.
+        vec!["seen", "--with", &verdict],
+        vec!["expected", "--reason", "invented", "--with", &verdict],
+        // Each is given once, and not empty.
+        vec![
+            "seen",
+            "--with",
+            &verdict,
+            "--with",
+            &verdict,
+            "--journal-seq",
+            &seq,
+        ],
+        vec!["seen", "--with", "", "--journal-seq", &seq],
+        vec![
+            "seen",
+            "--with",
+            &verdict,
+            "--journal-seq",
+            &seq,
+            "--journal-seq",
+            &seq,
+        ],
+        vec!["seen", "--with", &verdict, "--journal-seq", "-1"],
+        vec!["seen", "--with", &verdict, "--journal-seq", "latest"],
+        vec!["--journal-seq", &seq],
+    ] {
+        let out = mac.answer(&core, &args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(v["errors"][0]["code"], "usage", "{args:?}");
+    }
+    assert!(std::fs::read(mac.store()).unwrap() == bytes);
+}
+
+#[test]
+fn who_gave_an_answer_or_a_statement_is_said_once() {
+    // A second --via would win silently: an agent's answer recorded as the app's, which needs
+    // no read. It is misuse, and nothing is recorded.
+    let (mac, core, _, _, _) = paired("via-once");
+    let bytes = std::fs::read(mac.store()).unwrap();
+    for (first, second) in [("agent", "app"), ("app", "agent"), ("app", "app")] {
+        let out = mac.answer(
+            &core,
+            &[
+                "seen",
+                "--via",
+                first,
+                "--reason",
+                "invented: they agreed",
+                "--via",
+                second,
+            ],
+        );
+        assert_eq!(out.status.code(), Some(2), "{first} {second}");
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(v["errors"][0]["code"], "usage", "{v:#}");
+        assert_eq!(
+            v["errors"][0]["detail_text"], "--via is given once",
+            "{v:#}"
+        );
+        let out = mac
+            .command(&[
+                "owner", "mac", "retired", "--reason", "invented", "--via", first, "--via", second,
+                "--json",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "owner {first} {second}");
+    }
+    assert!(std::fs::read(mac.store()).unwrap() == bytes);
+}
+
+#[test]
+fn an_answer_to_a_finding_of_a_rule_this_build_does_not_have_is_refused_and_records_nothing() {
+    let (mac, core, verdict, _, _) = paired("pair-dropped");
+    // A finding of the core whose rule a later build no longer ships: no answer shows it.
+    rusqlite::Connection::open(mac.store())
+        .unwrap()
+        .execute(
+            "INSERT INTO finding (id, rule, about, occurrence, state, first_seen_at,
+                                  first_seen_run, last_seen_at, last_seen_run)
+             SELECT 'fdropped0000', 'sigma:00000000-0000-4000-8000-000000000000', about, 1,
+                    'open', 1, 'r', 1, 'r'
+             FROM finding WHERE id = ?1",
+            [&core],
+        )
+        .unwrap();
+    let seq = read(&mac);
+    // Named first, with the response layer's finding beside it, and alone.
+    refused_answer(
+        &mac,
+        "fdropped0000",
+        &["seen", "--with", &verdict, "--journal-seq", &seq],
+        "unknown_finding",
+        None,
+    );
+    refused_answer(&mac, "fdropped0000", &["seen"], "unknown_finding", None);
+    refused_answer(
+        &mac,
+        "fdropped0000",
+        &["expected", "--reason", "invented"],
+        "unknown_finding",
+        None,
+    );
+    // Named by --with.
+    refused_answer(
+        &mac,
+        &verdict,
+        &["seen", "--with", "fdropped0000", "--journal-seq", &seq],
+        "unknown_finding",
+        Some("fdropped0000"),
+    );
+    // The response layer's finding still needs a look.
+    assert_eq!(mac.shown(&verdict).unwrap()["urgent"], true);
+}
+
+#[test]
+fn when_the_second_answer_is_refused_the_first_is_not_kept() {
+    let (mac, core, verdict, _, _) = paired("pair-both-or-neither");
+    // The response layer's finding is seen: the core's finding is answered in the transaction,
+    // then the answer to the other is refused, and neither is kept.
+    given(&mac, &verdict, &["seen"]);
+    let seq = read(&mac);
+    refused_answer(
+        &mac,
+        &core,
+        &["seen", "--with", &verdict, "--journal-seq", &seq],
+        "finding_closed",
+        Some(verdict.as_str()),
+    );
+    assert_eq!(mac.finding(&core)["finding"]["state"], "open");
+    assert!(mac.finding(&core)["answer"].is_null());
+    // The other way round: the response layer's finding is answered first, then the core's is
+    // refused.
+    given(&mac, &verdict, &["reopen"]);
+    given(&mac, &core, &["seen"]);
+    let seq = read(&mac);
+    refused_answer(
+        &mac,
+        &verdict,
+        &["seen", "--with", &core, "--journal-seq", &seq],
+        "finding_closed",
+        Some(core.as_str()),
+    );
+    assert_eq!(mac.finding(&verdict)["finding"]["state"], "open");
+    assert!(mac.finding(&verdict)["answer"].is_null());
+}
+
+#[test]
+fn a_verdict_that_joins_after_the_read_refuses_the_answer_and_both_stay_as_they_were() {
+    let (mac, core, verdict, _, _) = paired("pair-verdict-joins");
+    let shown = mac.finding(&verdict);
+    let seq = shown["journal_seq"].as_i64().unwrap().to_string();
+    // A graver verdict joins the response layer's finding after the read. It is about the match
+    // at the log's first line, so it names no finding of the core.
+    let v = levels(
+        about_match(&mac.store_id(), &mac.position(0), PADDING, "suspicious"),
+        ("critical", "high"),
+    );
+    assert_eq!(mac.send(&v)["recorded"]["finding"]["id"], verdict.as_str());
+    for (id, with) in [(&core, &verdict), (&verdict, &core)] {
+        refused_answer(
+            &mac,
+            id,
+            &["seen", "--with", with, "--journal-seq", &seq],
+            "changed_since_read",
+            Some(verdict.as_str()),
+        );
+        // A verdict is another party's statement, not more of the same: it refuses `expected`
+        // too.
+        refused_answer(
+            &mac,
+            id,
+            &[
+                "expected",
+                "--reason",
+                "invented: ours",
+                "--with",
+                with,
+                "--journal-seq",
+                &seq,
+            ],
+            "changed_since_read",
+            Some(verdict.as_str()),
+        );
+    }
+    assert_eq!(mac.shown(&verdict).unwrap()["severity"], "critical");
+    assert!(mac.shown(&core).is_some());
+    // A verdict that names the core's finding joins it too, a harmless one as well: what the
+    // person is shown about it changed.
+    let seq = read(&mac);
+    mac.send(&about_finding(&mac.store_id(), &core, "harmless", "case-8"));
+    for (id, with) in [(&core, &verdict), (&verdict, &core)] {
+        refused_answer(
+            &mac,
+            id,
+            &["seen", "--with", with, "--journal-seq", &seq],
+            "changed_since_read",
+            Some(core.as_str()),
+        );
+    }
+    // Read again, the answer goes through: the read's own last entry was the verdict, which it
+    // showed.
+    let seq = mac.finding(&core)["journal_seq"]
+        .as_i64()
+        .unwrap()
+        .to_string();
+    given(
+        &mac,
+        &core,
+        &["seen", "--with", &verdict, "--journal-seq", &seq],
+    );
+}
+
+#[test]
+fn a_match_that_joins_the_core_s_finding_after_the_read_refuses_seen() {
+    let (mac, core, verdict, _, _) = paired("pair-match-joins");
+    let seq = read(&mac);
+    // The same rule matches again, and the match joins the core's finding.
+    mac.append(&dd(3));
+    mac.run();
+    assert_eq!(mac.latest(PADDING).unwrap(), core);
+    for (id, with) in [(&core, &verdict), (&verdict, &core)] {
+        refused_answer(
+            &mac,
+            id,
+            &["seen", "--with", with, "--journal-seq", &seq],
+            "changed_since_read",
+            Some(core.as_str()),
+        );
+    }
+    assert!(mac.shown(&core).is_some() && mac.shown(&verdict).is_some());
+    // The reading's entry for the match is what joined it: a read just before it is refused,
+    // and one that saw it answers.
+    let matched: i64 = rusqlite::Connection::open(mac.store())
+        .unwrap()
+        .query_row(
+            "SELECT MAX(seq) FROM journal WHERE entry = 'matched'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    refused_answer(
+        &mac,
+        &core,
+        &[
+            "seen",
+            "--with",
+            &verdict,
+            "--journal-seq",
+            &(matched - 1).to_string(),
+        ],
+        "changed_since_read",
+        Some(core.as_str()),
+    );
+    given(
+        &mac,
+        &core,
+        &[
+            "seen",
+            "--with",
+            &verdict,
+            "--journal-seq",
+            &matched.to_string(),
+        ],
+    );
+}
+
+#[test]
+fn a_match_of_its_own_rule_that_joins_after_the_read_does_not_refuse_expected_and_refuses_reopen() {
+    // `expected` already quiets every later match of the rule: one that joins between the read
+    // and the answer is more of what the answer expects. Alone, and with the pair.
+    let mac = Mac::new("match-expected");
+    mac.append(&dd(1));
+    mac.run();
+    let core = mac.latest(PADDING).unwrap();
+    let seq = read(&mac);
+    mac.append(&dd(2));
+    mac.run();
+    assert_eq!(mac.latest(PADDING).unwrap(), core);
+    refused_answer(
+        &mac,
+        &core,
+        &["seen", "--journal-seq", &seq],
+        "changed_since_read",
+        Some(core.as_str()),
+    );
+    let answer = given(
+        &mac,
+        &core,
+        &[
+            "expected",
+            "--reason",
+            "invented: ours",
+            "--journal-seq",
+            &seq,
+        ],
+    );
+    assert_eq!(answer["finding"]["state"], "expected");
+    // Taking the answer back is checked as `seen` is: a match since the read refuses it.
+    let seq = read(&mac);
+    mac.append(&dd(3));
+    mac.run();
+    assert_eq!(mac.latest(PADDING).unwrap(), core);
+    refused_answer(
+        &mac,
+        &core,
+        &["reopen", "--journal-seq", &seq],
+        "changed_since_read",
+        Some(core.as_str()),
+    );
+
+    let (mac, core, verdict, _, _) = paired("pair-match-expected");
+    let seq = read(&mac);
+    mac.append(&dd(3));
+    mac.run();
+    assert_eq!(mac.latest(PADDING).unwrap(), core);
+    for (id, with) in [(&core, &verdict), (&verdict, &core)] {
+        refused_answer(
+            &mac,
+            id,
+            &["seen", "--with", with, "--journal-seq", &seq],
+            "changed_since_read",
+            Some(core.as_str()),
+        );
+    }
+    let answer = given(
+        &mac,
+        &verdict,
+        &[
+            "expected",
+            "--reason",
+            "invented: ours",
+            "--with",
+            &core,
+            "--journal-seq",
+            &seq,
+        ],
+    );
+    assert_eq!(answer["finding"]["state"], "expected");
+    assert_eq!(answer["answered_with"]["id"], core.as_str());
+    assert_eq!(answer["answered_with"]["state"], "expected");
+}
+
+#[test]
+fn a_read_that_nothing_joined_since_answers_even_after_a_quiet_check() {
+    let (mac, core, verdict, _, _) = paired("pair-quiet");
+    let seq = read(&mac);
+    mac.run();
+    given(
+        &mac,
+        &core,
+        &["seen", "--with", &verdict, "--journal-seq", &seq],
+    );
+    assert_eq!(mac.finding(&verdict)["finding"]["state"], "seen");
+}
+
+#[test]
+fn without_with_an_answer_needs_no_read_and_honours_one_given() {
+    let (mac, core, verdict, _, _) = paired("pair-single");
+    let seq = read(&mac);
+    let v = levels(
+        about_finding(&mac.store_id(), &core, "suspicious", "case-later"),
+        ("high", "high"),
+    );
+    mac.send(&v);
+    // Named, a read older than what joined refuses it.
+    refused_answer(
+        &mac,
+        &verdict,
+        &["seen", "--journal-seq", &seq],
+        "changed_since_read",
+        Some(verdict.as_str()),
+    );
+    // Without one, the answer is given as before.
+    let before = whole(&mac);
+    given(&mac, &verdict, &["seen"]);
+    only_answered(&mac, &before, &[&verdict]);
+}
+
+#[test]
+fn an_answer_through_an_agent_names_the_read_it_rests_on_and_is_refused_when_it_is_old() {
+    // An agent always reads before it answers, a conversation apart: its answer to one finding
+    // is tied to that read as one to a pair is.
+    let (mac, core, verdict, _, _) = paired("agent-read");
+    let agent = ["--via", "agent", "--reason", "invented: they agreed"];
+    for answer in ["seen", "expected"] {
+        let bytes = std::fs::read(mac.store()).unwrap();
+        let out = mac.answer(&verdict, &[&[answer][..], &agent].concat());
+        assert_eq!(out.status.code(), Some(2), "{answer}");
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(v["errors"][0]["code"], "usage", "{v:#}");
+        // Where the value comes from, said where a usage error says why.
+        let why = v["errors"][0]["detail_text"].as_str().unwrap();
+        assert!(
+            why.contains("an answer through an agent needs --journal-seq <n>")
+                && why.contains("immune finding <id> --json"),
+            "{why}"
+        );
+        assert!(std::fs::read(mac.store()).unwrap() == bytes);
+    }
+    // Taking an answer back needs none.
+    let seq = read(&mac);
+    let v = levels(
+        about_finding(&mac.store_id(), &core, "suspicious", "case-later"),
+        ("high", "high"),
+    );
+    mac.send(&v);
+    refused_answer(
+        &mac,
+        &verdict,
+        &[&["seen", "--journal-seq", &seq][..], &agent].concat(),
+        "changed_since_read",
+        Some(verdict.as_str()),
+    );
+    let seq = read(&mac);
+    given(
+        &mac,
+        &verdict,
+        &[&["seen", "--journal-seq", &seq][..], &agent].concat(),
+    );
+    given(&mac, &verdict, &["reopen", "--via", "agent"]);
+}
+
+#[test]
+fn a_verdict_that_raises_the_response_layer_s_finding_shown_with_the_core_s_refuses_an_answer_to_it()
+ {
+    // The core's finding shows the response layer's finding of its rule about the same thing in
+    // its own message. A verdict about a match goes to that finding and leaves no trace on the
+    // core's, yet changes what the person was shown: it refuses an answer read before.
+    let (mac, core, verdict, _, _) = paired("partner-graver");
+    let shown = mac.finding(&core);
+    assert_eq!(shown["verdicts"]["verdict_finding"]["severity"], "high");
+    let seq = shown["journal_seq"].as_i64().unwrap().to_string();
+    let v = levels(
+        about_match(&mac.store_id(), &mac.position(0), PADDING, "suspicious"),
+        ("critical", "high"),
+    );
+    assert_eq!(mac.send(&v)["recorded"]["finding"]["id"], verdict.as_str());
+    for answer in [
+        &["seen", "--journal-seq", &seq][..],
+        &[
+            "expected",
+            "--reason",
+            "invented: ours",
+            "--journal-seq",
+            &seq,
+        ][..],
+    ] {
+        refused_answer(
+            &mac,
+            &core,
+            answer,
+            "changed_since_read",
+            Some(verdict.as_str()),
+        );
+    }
+    let seq = read(&mac);
+    given(&mac, &core, &["seen", "--journal-seq", &seq]);
+
+    // Read with no such finding, then one raised by a verdict about a match: the same.
+    let mac = Mac::new("partner-raised");
+    mac.append(&dd(1));
+    mac.run();
+    let core = mac.latest(PADDING).unwrap();
+    let shown = mac.finding(&core);
+    assert!(shown["verdicts"]["verdict_finding"].is_null(), "{shown:#}");
+    let seq = shown["journal_seq"].as_i64().unwrap().to_string();
+    let v = levels(
+        about_match(&mac.store_id(), &mac.position(0), PADDING, "suspicious"),
+        ("high", "high"),
+    );
+    let raised = mac.send(&v)["recorded"]["finding"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        mac.finding(&core)["verdicts"]["verdict_finding"]["id"],
+        raised.as_str()
+    );
+    refused_answer(
+        &mac,
+        &core,
+        &["seen", "--journal-seq", &seq],
+        "changed_since_read",
+        Some(raised.as_str()),
+    );
+    // A response layer's finding of another rule about the same thing is not shown with it.
+    let at = mac.append(&sw_vers(2));
+    mac.run();
+    let seq = read(&mac);
+    mac.send(&levels(
+        about_match(&mac.store_id(), &mac.position(at), SW_VERS, "suspicious"),
+        ("high", "high"),
+    ));
+    given(&mac, &core, &["seen", "--journal-seq", &seq]);
+}
+
+#[test]
+fn a_quiet_check_that_finds_a_lockfile_finding_again_on_the_same_data_adds_nothing_it_rests_on() {
+    let mac = Mac::new("lockfile-quiet");
+    mac.package(true);
+    mac.run();
+    let id = mac.latest(MALICIOUS).unwrap();
+    let rests = || mac.finding(&id)["rests_on"].as_array().unwrap().len();
+    let before = rests();
+    let seq = read(&mac);
+    mac.run();
+    assert_eq!(mac.latest(MALICIOUS).unwrap(), id);
+    assert_eq!(rests(), before);
+    given(&mac, &id, &["seen", "--journal-seq", &seq]);
+}
+
+#[test]
+fn a_lockfile_finding_found_again_on_newer_data_refuses_an_answer_read_before() {
+    let mac = Mac::new("lockfile-joins");
+    mac.package(true);
+    mac.run();
+    let id = mac.latest(MALICIOUS).unwrap();
+    let seq = read(&mac);
+    // The records are due again, as time would make them, and were modified since; the next
+    // check reads them and finds the same package: what the finding rests on is newer than the
+    // read.
+    common::next_second();
+    mac.records();
+    rusqlite::Connection::open(mac.store())
+        .unwrap()
+        .execute("UPDATE feed_reading SET at = at - 30 * 86400", [])
+        .unwrap();
+    mac.run();
+    assert_eq!(mac.latest(MALICIOUS).unwrap(), id);
+    refused_answer(
+        &mac,
+        &id,
+        &["seen", "--journal-seq", &seq],
+        "changed_since_read",
+        Some(id.as_str()),
+    );
+    // The newer reading it now rests on is what joined it: a read just before that entry is
+    // refused, and one that saw it answers.
+    let newest: i64 = rusqlite::Connection::open(mac.store())
+        .unwrap()
+        .query_row(
+            "SELECT MAX(journal) FROM finding_basis WHERE finding = ?1",
+            [&id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    refused_answer(
+        &mac,
+        &id,
+        &["seen", "--journal-seq", &(newest - 1).to_string()],
+        "changed_since_read",
+        Some(id.as_str()),
+    );
+    given(&mac, &id, &["seen", "--journal-seq", &newest.to_string()]);
+}
+
+#[test]
+fn an_answer_given_to_a_finding_since_the_read_is_a_change_too() {
+    let (mac, core, verdict, _, _) = paired("pair-answered-since");
+    let seq = read(&mac);
+    given(&mac, &verdict, &["expected", "--reason", "invented"]);
+    refused_answer(
+        &mac,
+        &core,
+        &["seen", "--with", &verdict, "--journal-seq", &seq],
+        "changed_since_read",
+        Some(verdict.as_str()),
+    );
+}
+
+#[test]
+fn after_one_answer_seen_the_next_suspicious_verdict_raises_the_response_layer_s_finding_again() {
+    let (mac, core, verdict, _, _) = paired("pair-next-seen");
+    let seq = read(&mac);
+    given(
+        &mac,
+        &core,
+        &["seen", "--with", &verdict, "--journal-seq", &seq],
+    );
+    assert!(mac.shown(&verdict).is_none());
+    let v = levels(
+        about_finding(&mac.store_id(), &core, "suspicious", "case-again"),
+        ("high", "high"),
+    );
+    let r = mac.send(&v);
+    assert_eq!(r["recorded"]["raised"], true);
+    let next = r["recorded"]["finding"]["id"].as_str().unwrap();
+    assert_ne!(next, verdict.as_str());
+    let shown = mac.shown(next).unwrap();
+    assert_eq!(
+        (&shown["state"], &shown["urgent"]),
+        (&json!("open"), &json!(true))
+    );
+    // The core's finding stays as the person left it.
+    assert_eq!(mac.finding(&core)["finding"]["state"], "seen");
+    assert!(mac.shown(&core).is_none());
+    // A read made just after the verdict raised it, whose last entry is about it, answers it.
+    let next = next.to_string();
+    let seq = read(&mac);
+    given(&mac, &next, &["seen", "--journal-seq", &seq]);
+}
+
+#[test]
+fn a_read_at_the_entry_that_last_joined_a_finding_answers_it_and_one_before_it_does_not() {
+    // A read that saw an entry saw what it records: the check refuses what came after, from the
+    // very next entry on.
+    let mac = Mac::new("read-boundary");
+    mac.append(&dd(1));
+    mac.run();
+    let core = mac.latest(PADDING).unwrap();
+    let matched: i64 = rusqlite::Connection::open(mac.store())
+        .unwrap()
+        .query_row(
+            "SELECT MAX(journal) FROM finding_basis WHERE finding = ?1",
+            [&core],
+            |r| r.get(0),
+        )
+        .unwrap();
+    refused_answer(
+        &mac,
+        &core,
+        &["seen", "--journal-seq", &(matched - 1).to_string()],
+        "changed_since_read",
+        Some(&core),
+    );
+    given(
+        &mac,
+        &core,
+        &["seen", "--journal-seq", &matched.to_string()],
+    );
+}
+
+#[test]
+fn after_one_answer_expected_the_response_layer_s_finding_stays_expected_until_the_mark_ends() {
+    let (mac, core, verdict, _, _) = paired("pair-next-expected");
+    let seq = read(&mac);
+    given(
+        &mac,
+        &core,
+        &[
+            "expected",
+            "--reason",
+            "invented",
+            "--with",
+            &verdict,
+            "--journal-seq",
+            &seq,
+        ],
+    );
+    let store = mac.store_id();
+    let send = |case: &str| {
+        let v = levels(
+            about_finding(&store, &core, "suspicious", case),
+            ("high", "high"),
+        );
+        mac.send(&v)["recorded"].clone()
+    };
+    let r = send("case-during");
+    assert_eq!(
+        (&r["raised"], &r["finding"]["id"], &r["finding"]["state"]),
+        (&json!(false), &json!(verdict), &json!("expected"))
+    );
+    assert!(mac.shown(&verdict).is_none());
+    mac.end_marks();
+    let r = send("case-after");
+    assert_eq!(r["finding"]["id"], verdict.as_str());
+    let shown = mac.shown(&verdict).unwrap();
+    assert_eq!(
+        (&shown["state"], &shown["urgent"]),
+        (&json!("open"), &json!(true))
+    );
+}
+
+/// What needs a look, by id, with the two counts.
+fn counted(s: &Value) -> (Vec<String>, u64, u64) {
+    let ids = looks(s)
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["id"].as_str().unwrap().to_string())
+        .collect();
+    let n = |k: &str| s["needs_a_look"][k].as_u64().unwrap();
+    (ids, n("total"), n("urgent_total"))
+}
+
+#[test]
+fn what_the_status_counts_drops_exactly_the_two_findings_answered() {
+    let (mac, core, verdict, other, _) = paired("pair-status");
+    let before = mac.status();
+    let urgent = |id: &str| u64::from(mac.shown(id).unwrap()["urgent"] == true);
+    let dropped = urgent(&core) + urgent(&verdict);
+    assert_eq!(urgent(&verdict), 1);
+    // The status carries what it was read at, and an answer can name it.
+    let seq = before["journal_seq"].as_i64().unwrap().to_string();
+    given(
+        &mac,
+        &verdict,
+        &["seen", "--with", &core, "--journal-seq", &seq],
+    );
+    let (ids_before, total, urgent_total) = counted(&before);
+    let (ids_after, total_after, urgent_after) = counted(&mac.status());
+    assert_eq!(total_after, total - 2);
+    assert_eq!(urgent_after, urgent_total - dropped);
+    let kept: Vec<String> = ids_before
+        .into_iter()
+        .filter(|i| *i != core && *i != verdict)
+        .collect();
+    assert_eq!(ids_after, kept);
+    assert!(kept.contains(&other));
+}
+
+#[test]
+fn one_answer_through_an_agent_records_the_agent_and_its_reason_on_both() {
+    let (mac, core, verdict, _, _) = paired("pair-agent");
+    let seq = read(&mac);
+    // An agent answers only with the reason the person agreed to, with --with as without.
+    let out = mac.answer(
+        &core,
+        &[
+            "seen",
+            "--via",
+            "agent",
+            "--with",
+            &verdict,
+            "--journal-seq",
+            &seq,
+        ],
+    );
+    assert_eq!(out.status.code(), Some(2));
+    assert!(mac.finding(&core)["answer"].is_null());
+    let reason = "invented: the person agreed it was their build";
+    given(
+        &mac,
+        &core,
+        &[
+            "seen",
+            "--via",
+            "agent",
+            "--reason",
+            reason,
+            "--with",
+            &verdict,
+            "--journal-seq",
+            &seq,
+        ],
+    );
+    for id in [&core, &verdict] {
+        let a = mac.finding(id)["answer"].clone();
+        assert_eq!(
+            (&a["via"], &a["reason_text"]),
+            (&json!("agent"), &json!(reason)),
+            "{id}"
+        );
+    }
+    let outside: Vec<Value> = mac.status()["answered_outside_app"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["finding"]["id"].clone())
+        .collect();
+    assert!(outside.contains(&json!(core)) && outside.contains(&json!(verdict)));
+}
+
+#[test]
+fn taking_back_one_answer_given_to_both_takes_back_only_what_is_named() {
+    let (mac, core, verdict, _, _) = paired("pair-take-back");
+    let first = counted(&mac.status());
+    let seq = read(&mac);
+    given(
+        &mac,
+        &core,
+        &["seen", "--with", &verdict, "--journal-seq", &seq],
+    );
+    // Without --with, only the finding named is open again.
+    let before = whole(&mac);
+    given(&mac, &core, &["reopen"]);
+    only_answered(&mac, &before, &[&core]);
+    assert_eq!(mac.finding(&verdict)["finding"]["state"], "seen");
+    // With --with, both, in one answer that names the other as it left it. Taking an answer
+    // back quiets nothing, so it needs no read.
+    given(&mac, &core, &["seen"]);
+    let before = whole(&mac);
+    let back = given(&mac, &verdict, &["reopen", "--with", &core]);
+    only_answered(&mac, &before, &[&core, &verdict]);
+    assert_eq!(back["finding"]["state"], "open");
+    assert_eq!(back["answered_with"]["state"], "open");
+    // What the status counts is what it was before any answer.
+    assert_eq!(counted(&mac.status()), first);
 }

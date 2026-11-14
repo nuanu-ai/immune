@@ -18,7 +18,13 @@
 // match of the same rule and thing go to the same finding; its rule, as the store keeps it, is
 // `verdict.suspicious:<that rule>`. Open, it stays open as more come; marked expected, it stays so
 // until the mark ends; marked seen, the next `suspicious` verdict raises its next occurrence. The
-// core never clears it: only the person closes it. Its severity and confidence are the highest any
+// core never clears it: only the person closes it. The person may answer it and the core's
+// finding of the same rule and thing with one command that names both, `immune finding <id>
+// seen|expected --with <other id> --journal-seq <n>`, and take both answers back with
+// `reopen --with`. The command
+// records the person's answer on each of the two in one transaction, as two ordinary answers. No
+// verdict writes anything into the core's finding by it, and the core still never closes this
+// finding by itself. Its severity and confidence are the highest any
 // verdict of its occurrence gave, so they only go up, and it is urgent by the ordinary rule. For a
 // verdict about a match, the finding keeps the event at that line, as a rule's finding keeps
 // events.

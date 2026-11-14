@@ -42,6 +42,9 @@ message Findings {
   // When an agent may answer a finding, in the core's words: the same in the usage, in `immune
   // status` and in every answer about findings.
   string answers_note = 6;
+  // The journal's latest sequence number in the state of the store this answer was read from,
+  // as in `Finding`. Since 1.9.0.
+  int64 journal_seq = 7;
 }
 
 // A finding as a list gives it. `immune finding <id>` gives it whole.
@@ -114,6 +117,23 @@ message Finding {
   optional string thing = 18;
   // As in `ListedFinding`. Since 1.8.0.
   string kind_title = 19;
+  // The other finding of the pair that an answer given with `--with` answered beside this one,
+  // as that answer left it: its `state` is the one it has now. Absent when the command named no
+  // other finding, and when it only read. Since 1.9.0.
+  FindingRef answered_with = 20;
+  // The journal's latest sequence number in the state of the store this answer was read from:
+  // what the reader has seen. An answer passes it back as `--journal-seq`, and is refused with
+  // `changed_since_read` when, after it, a finding it answers gained a match of its published
+  // rule, a newer reading it rests on, a verdict that went to it, raised it or names it, an
+  // answer given or taken back, its clearing, or the end of an `expected` mark that a check
+  // recorded; for a rule's finding, the same of the `verdict.suspicious` finding of its rule
+  // about the same thing that it shows in `verdicts`, one raised since included. A match of the
+  // finding's own rule does not refuse `expected`, which already quiets every later match of
+  // the rule; it refuses `seen` and `reopen`. One number covers every finding of the store, so
+  // it covers both findings of a pair; when they were read in two answers, pass the smaller of
+  // the two. Required with `--with` and with `--via agent` on `seen` and `expected`. `Findings`
+  // and `Status` carry it too. Since 1.9.0.
+  int64 journal_seq = 21;
 }
 
 // The person's answer to a finding.

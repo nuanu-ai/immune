@@ -94,6 +94,10 @@ message Status {
   StatementsOutsideApp statements_outside_app = 25;
   // The sections the core could not give, each with why, in its words.
   repeated NotComputed not_computed = 26;
+  // The journal's latest sequence number in the state of the store this answer was read from,
+  // as in `Finding`: an answer to a finding listed here passes it as `--journal-seq`. Absent when
+  // there is no store. Since 1.9.0.
+  optional int64 journal_seq = 27;
 }
 
 // The store's file.

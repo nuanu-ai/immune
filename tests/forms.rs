@@ -1001,7 +1001,9 @@ fn words_taken_from_the_mac_never_enter_a_field_that_is_not_text_nor_a_sentence(
         nowhere,
     ]);
     sampled(&e);
-    let detached = e.json(&["findings"])["findings"]
+    let read = e.json(&["findings"]);
+    let seq = read["journal_seq"].to_string();
+    let detached = read["findings"]
         .as_array()
         .unwrap()
         .iter()
@@ -1014,7 +1016,15 @@ fn words_taken_from_the_mac_never_enter_a_field_that_is_not_text_nor_a_sentence(
         .map(|f| f["finding"]["id"].as_str().unwrap().to_string())
         .unwrap();
     let answered = e.json(&[
-        "finding", &detached, "expected", "--reason", &reason, "--via", "agent",
+        "finding",
+        &detached,
+        "expected",
+        "--reason",
+        &reason,
+        "--via",
+        "agent",
+        "--journal-seq",
+        &seq,
     ]);
 
     let status = e.json(&["status"]);

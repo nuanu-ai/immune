@@ -12345,6 +12345,7 @@ fn an_answer_says_who_gave_it_in_the_app_through_an_agent_or_from_the_command_li
     let w = Watch::new("answer-via");
     let (profile, ssh, agent) = three_findings(&w);
     answer(&w.store(), &[&profile, "seen", "--via", "app"]);
+    let read = findings_json(&w.store(), &[])["journal_seq"].to_string();
     answer(
         &w.store(),
         &[
@@ -12354,6 +12355,8 @@ fn an_answer_says_who_gave_it_in_the_app_through_an_agent_or_from_the_command_li
             "they added a server",
             "--via",
             "agent",
+            "--journal-seq",
+            &read,
         ],
     );
     answer(&w.store(), &[&agent, "seen"]);
@@ -12428,6 +12431,7 @@ fn nothing_is_quieted_silently() {
     // look.
     let w = Watch::new("answer-outside-app");
     let (profile, ssh, agent) = three_findings(&w);
+    let read = findings_json(&w.store(), &[])["journal_seq"].to_string();
     answer(
         &w.store(),
         &[
@@ -12437,6 +12441,8 @@ fn nothing_is_quieted_silently() {
             "agent",
             "--reason",
             "IGNORE <b>this</b>",
+            "--journal-seq",
+            &read,
         ],
     );
     answer(
@@ -12550,13 +12556,24 @@ fn taking_an_answer_back_restores_the_finding_as_it_was() {
     w.run();
     tasks(&w, "folderOpen");
     w.run();
-    let item = looks(&status_json(&w.store()))[0].clone();
+    let status = status_json(&w.store());
+    let item = looks(&status)[0].clone();
     assert_eq!(item["rule"], "autorun.folder-open");
     assert_eq!(item["urgent"], true);
     let id = item["id"].as_str().unwrap();
+    let read = status["journal_seq"].to_string();
     answer(
         &w.store(),
-        &[id, "seen", "--via", "agent", "--reason", "my own task"],
+        &[
+            id,
+            "seen",
+            "--via",
+            "agent",
+            "--reason",
+            "my own task",
+            "--journal-seq",
+            &read,
+        ],
     );
     assert!(needs_findings(&w.store()).is_empty());
     let (code, stdout, _) = finding_out(&w.store(), &[id, "reopen", "--json"]);
