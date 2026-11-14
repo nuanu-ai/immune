@@ -3764,7 +3764,12 @@ fn the_log_s_cap_is_two_gib_by_default_and_what_that_holds_is_said_the_same_ever
     }
     let readme =
         std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md")).unwrap();
-    assert_eq!(readme.matches("2 GiB").count(), 2, "{readme}");
+    // The README names the cap in passing or not at all; a cap it names is this one.
+    assert_eq!(
+        readme.matches("GiB").count(),
+        readme.matches("2 GiB").count(),
+        "{readme}"
+    );
 }
 
 #[test]

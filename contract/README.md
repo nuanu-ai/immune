@@ -8,6 +8,10 @@ Depend on it by a git path at a commit: `immune-contract = { git = "https://gith
 
 Read binary output with `immune_contract::prost::Message`, as `v1::Known::decode(stdout.as_slice())`, and JSON output with any serde parser, as `serde_json::from_slice::<v1::Known>(&stdout)`.
 
+## Who reads it
+
+[Artificial Immunity](https://immunity.bot) is a closed product from Nuanu AI Lab built on top of Immune. It decides what to do about a finding: triage with a model, response, handing work to an agent. It runs the `immune` binary unchanged and shares no code with it except these types. Immune does not stream every event out. Immune works on its own and does not need Artificial Immunity.
+
 ## What the contract covers
 
 The messages of the contract are the answers of `immune matches`, `immune findings`, `immune finding`, `immune project`, `immune program`, `immune machine`, `immune status`, `immune rules`, `immune vulnerabilities`, `immune owner` and `immune sample`, the `Verdict` a program sends to `immune verdict` and the `VerdictRecorded` it gets back, and `Failure`.
