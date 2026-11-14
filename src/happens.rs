@@ -148,6 +148,35 @@ fn parent(t: &str) -> &str {
     t.split('.').next().unwrap_or(t)
 }
 
+/// Matches this week by technique, as parents: for each, the matches of the rules that name it,
+/// a rule counted once however many of its sub-techniques it names.
+fn matches_by_technique<'a>(
+    rules: &'a Rules,
+    week: &BTreeMap<String, i64>,
+) -> BTreeMap<&'a str, i64> {
+    let mut out: BTreeMap<&str, i64> = BTreeMap::new();
+    for meta in rules.rules.iter().filter_map(|l| l.meta.as_ref()) {
+        let n = week.get(&meta.id).copied().unwrap_or(0);
+        if n > 0 {
+            let named: BTreeSet<&str> = meta.techniques.iter().map(|t| parent(t)).collect();
+            for t in named {
+                *out.entry(t).or_default() += n;
+            }
+        }
+    }
+    out
+}
+
+/// The step of a technique's tint by its matches this week, three at most: one, two to nine,
+/// ten or more. The number itself is in the square's title.
+fn step(n: i64) -> &'static str {
+    match n {
+        ..=1 => "s1",
+        2..=9 => "s2",
+        _ => "s3",
+    }
+}
+
 /// The techniques the rules name, as parents, for the rules `which` picks.
 fn named(rules: &Rules, which: impl Fn(&sigma::Loaded) -> bool) -> BTreeSet<&str> {
     rules
@@ -689,15 +718,26 @@ fn cover(out: &mut String, st: &crate::status::State, level: Option<&Level>) -> 
     let attack = attack();
     let empty = BTreeMap::new();
     let week = level.map_or(&empty, |l| &l.matches_last_week);
-    let raised: BTreeSet<&str> = st
-        .needs
-        .items
-        .iter()
-        .filter_map(|i| {
-            let rule = Rules::shipped().by_name(&i.rule)?;
-            Some(rule.meta.as_ref()?.id.as_str())
-        })
-        .collect();
+    let raised_by = |urgent_only: bool| -> BTreeSet<&str> {
+        st.needs
+            .items
+            .iter()
+            .filter(|i| !urgent_only || i.urgent())
+            .filter_map(|i| {
+                let rule = Rules::shipped().by_name(&i.rule)?;
+                Some(rule.meta.as_ref()?.id.as_str())
+            })
+            .collect()
+    };
+    let raised = raised_by(false);
+    // The techniques of a finding that needs the person now: their squares are red, the rest of
+    // the findings' orange, as the findings table groups them.
+    let urgent_ids = raised_by(true);
+    let urgent = named(Rules::shipped(), |l| {
+        l.meta
+            .as_ref()
+            .is_some_and(|m| urgent_ids.contains(m.id.as_str()))
+    });
     let grid: Vec<(&Tactic, Vec<(&str, Square)>)> =
         grid(attack, Rules::shipped(), Watching::of(level), week, &raised)
             .into_iter()
@@ -711,6 +751,11 @@ fn cover(out: &mut String, st: &crate::status::State, level: Option<&Level>) -> 
             .filter(|(_, squares)| !squares.is_empty())
             .collect();
     out.push_str("<div class=\"covers\">\n<div class=\"wsh3\"><h3>What the rules watch</h3><ul class=\"legend\">");
+    if !urgent.is_empty() {
+        out.push_str(
+            "<li><span class=\"m look\" data-now aria-hidden=\"true\"></span>Needs you now</li>",
+        );
+    }
     for s in [Square::Finding, Square::Matched, Square::Quiet] {
         write!(
             out,
@@ -720,6 +765,7 @@ fn cover(out: &mut String, st: &crate::status::State, level: Option<&Level>) -> 
         )?;
     }
     out.push_str("</ul></div>\n<div class=\"tactics\">\n");
+    let counts = matches_by_technique(Rules::shipped(), week);
     if grid.is_empty() {
         out.push_str("<p class=\"meta\">No rule watching now names a technique.</p>\n");
     }
@@ -731,13 +777,32 @@ fn cover(out: &mut String, st: &crate::status::State, level: Option<&Level>) -> 
         )?;
         for (tech, s) in squares {
             let name = attack.names.get(*tech).map_or("", String::as_str);
+            // A match's tint is stronger with more matches, and its title says how many.
+            let (class, said) = match s {
+                Square::Matched => {
+                    let n = counts.get(tech).copied().unwrap_or(0);
+                    (
+                        format!("{} {}", s.class(), step(n)),
+                        format!(
+                            "{}, {} {}",
+                            s.said(),
+                            n,
+                            if n == 1 { "match" } else { "matches" }
+                        ),
+                    )
+                }
+                _ => (s.class().to_string(), s.said().to_string()),
+            };
+            let now = if *s == Square::Finding && urgent.contains(tech) {
+                " data-now"
+            } else {
+                ""
+            };
             write!(
                 out,
-                "<span class=\"m {}\" title=\"{} {}: {}\"></span>",
-                s.class(),
+                "<span class=\"m {class}\" title=\"{} {}: {said}\"{now}></span>",
                 esc(tech),
                 esc(name),
-                s.said()
             )?;
         }
         out.push_str("</span></div>\n");
@@ -949,6 +1014,24 @@ detection:
             !full.is_empty() && full.iter().all(|s| *s == Square::Quiet),
             "{full:?}"
         );
+    }
+
+    #[test]
+    fn a_match_is_tinted_in_three_steps_by_the_matches_of_the_rules_that_name_its_technique() {
+        // The tint says how much matched, and the square's title says the number; each rule's
+        // matches count once for a technique, whichever of its sub-techniques it names.
+        assert_eq!(
+            [step(1), step(2), step(9), step(10), step(5000)],
+            ["s1", "s2", "s2", "s3", "s3"]
+        );
+        let rules = Rules::load(&[("in-part.yml", IN_PART), ("in-full.yml", IN_FULL)]);
+        let week = BTreeMap::from([
+            ("11111111-1111-4111-8111-111111111111".to_string(), 3),
+            ("22222222-2222-4222-8222-222222222222".to_string(), 8),
+        ]);
+        let counts = matches_by_technique(&rules, &week);
+        assert_eq!(counts, BTreeMap::from([("T1021", 11)]));
+        assert!(matches_by_technique(&rules, &BTreeMap::new()).is_empty());
     }
 
     #[test]

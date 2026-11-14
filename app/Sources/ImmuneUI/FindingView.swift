@@ -158,6 +158,12 @@ struct VoiceView: View {
       if !voice.said.isEmpty {
         if voice.saidIsData {
           DataText(text: voice.said)
+        } else if let mark = Role.verdict(voice.tone) {
+          // The verdict's word in its mark, red or green; how sure after it in the text's colour.
+          let word = String(voice.said.prefix { $0 != "," })
+          (Text(verbatim: word).styled(TextStyle.body.role(mark))
+            + Text(verbatim: String(voice.said.dropFirst(word.count))))
+            .textStyle(.body).fixedSize(horizontal: false, vertical: true)
         } else {
           Plain(voice.said).textStyle(.body)
         }
@@ -212,8 +218,9 @@ struct Quote: View {
 }
 
 /// The opened finding's footer, which does not scroll: one set of answers for the one thing on
-/// the screen, the primary one following Immune's `urgent`; the answer given outside the app, with
-/// Take back; Saving…; or the Expected form in its place.
+/// the screen, the primary one following Immune's `urgent`; an answer in force, whoever gave it,
+/// with Take back; Saving…; or the Expected form in its place. "Ask my agent" stands alone only on
+/// a card with nothing to answer: a finding the status does not list and that has no answer.
 ///
 /// A thing shown as one is sometimes two findings: the core's and the response layer's own about
 /// it. Then each answer is one command for both, the opened finding by its id and the other with
@@ -253,9 +260,9 @@ struct FindingFooter: View {
         ProgressView().controlSize(.small)
         Text(verbatim: "Saving…").textStyle(TextStyle.body.role(.secondary))
       }
-    } else if FindingFacts.answeredOutside(f), let a = f.answer {
-      // One line: the answer, the year only when it is not this one; who gave it in the tooltip.
-      // A take back Immune refused says why above it.
+    } else if FindingFacts.answerInForce(f), let a = f.answer {
+      // An answer in force, whoever gave it. One line: the answer, the year only when it is not
+      // this one; who gave it in the tooltip. A take back Immune refused says why above it.
       VStack(alignment: .leading, spacing: Metrics.footerGap) {
         if let refused = model.refusals[id] {
           Plain(refused).textStyle(.caption).textSelection(.enabled)

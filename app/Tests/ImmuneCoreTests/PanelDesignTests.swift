@@ -256,26 +256,46 @@ struct PanelDesign {
   }
 
   @Test(
-    "Three state colours only, and one signal of importance: the header's glyph is red only when something needs the person now, green only when calm, grey in every other state"
+    "Five colour roles, the report page's: the glyph and the menu-bar icon are red only when something needs the person now, orange for things to look at and for a Mac watched in part, green only when calm, grey when old or unknown; red only for needs you now and suspicious"
   )
-  func oneSignalOfImportance() throws {
+  @MainActor func fiveColourRoles() throws {
+    func icon(_ p: Panel) -> NSColor? { MenuIcon.tint(p.light, urgent: p.urgent) }
     let calm = panel(output("panel-calm.json"))
-    #expect(calm.state == .calm)
+    #expect(calm.state == .calm && Role.of(calm.state) == .calm)
+    #expect(icon(calm) == .systemGreen)
+    #expect(Role.watched(calm) == .calm)
     let urgent = panel(output("panel-two.json"))
-    #expect(urgent.urgent && urgent.state == .now)
+    #expect(urgent.urgent && urgent.state == .now && Role.of(urgent.state) == .now)
+    #expect(icon(urgent) == .systemRed)
     let part = panel(output("panel-in-part.json"))
-    #expect(part.state == .part)
-    #expect(panel(output("panel-stale.json")).state == .stale)
-    #expect(panel(output("panel-cant-tell.json")).state == .cant)
-    // A finding of a high level, not urgent: to look at, grey.
+    #expect(part.state == .part && Role.of(part.state) == .look)
+    #expect(icon(part) == .systemOrange)
+    #expect(Role.watched(part) == .look)
+    let stale = panel(output("panel-stale.json"))
+    #expect(stale.state == .stale && Role.of(stale.state) == .secondary && icon(stale) == nil)
+    // Green never stands beside an answer that is old.
+    #expect(Role.watched(stale) == .secondary)
+    let cant = panel(output("panel-cant-tell.json"))
+    #expect(cant.state == .cant && Role.of(cant.state) == .secondary && icon(cant) == nil)
+    // A finding of a high level, not urgent: to look at, orange.
     let look = panel(looking([lookItem(severity: "critical", urgent: false)]))
-    #expect(look.state == .look)
+    #expect(look.state == .look && Role.of(look.state) == .look)
+    #expect(icon(look) == .systemOrange)
     #expect(Light.menuSymbol(look.light, urgent: look.urgent) == "exclamationmark.triangle")
     let now = panel(looking([lookItem(severity: "low", urgent: true)]))
     #expect(now.state == .now)
     #expect(Light.menuSymbol(now.light, urgent: now.urgent) == "exclamationmark.triangle.fill")
     var busy = calm
     busy.busy = true
-    #expect(busy.state == .busy)
+    #expect(busy.state == .busy && Role.of(busy.state) == .secondary)
+    // An icon in a colour is not a template; one with none is, so the bar colours it.
+    #expect(MenuIcon.image(calm.light, urgent: false, words: "x")?.isTemplate == false)
+    #expect(MenuIcon.image(stale.light, urgent: false, words: "x")?.isTemplate == true)
+    // The response layer's word: red for suspicious, green for harmless, nothing else coloured.
+    #expect(Role.verdict("suspicious") == .now && Role.verdict("harmless") == .calm)
+    #expect(Role.verdict("odd") == nil && Role.verdict(nil as String?) == nil)
+    #expect(Role.verdict(VerdictTone.suspicious) == .now)
+    #expect(Role.verdict(VerdictTone.harmless) == .calm)
+    #expect(Role.verdict(VerdictTone.unknown) == nil)
   }
 }

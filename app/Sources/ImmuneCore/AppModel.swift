@@ -266,7 +266,7 @@ public final class AppModel: ObservableObject {
 
   /// The owner's "Seen" on a finding: `immune finding <id> seen`, with `--with <other>` for the
   /// other finding of a pair shown as one thing and `--journal-seq` of the message the card was
-  /// drawn from, then a refresh. Returns false, and runs nothing, for an id the app does not pass,
+  /// drawn from, then a refresh. Once Immune takes it, the finding's card closes. Returns false, and runs nothing, for an id the app does not pass,
   /// while another answer is being saved, or when the pair the panel folded is not the one the
   /// message names.
   @discardableResult
@@ -286,24 +286,24 @@ public final class AppModel: ObservableObject {
     }
   }
 
-  /// The owner's "Take back" on an answer given outside the app: `immune finding <id>
-  /// reopen --via app` with `--journal-seq` of the message it was pressed on, and `--with
-  /// <other>` when that message says the answer was given to the pair (`answered_with`), then a
-  /// refresh. Returns false, and runs nothing, for an answer the panel does not list or while
-  /// another answer is being saved.
+  /// The owner's "Take back" on an answer: `immune finding <id> reopen --via app` with
+  /// `--journal-seq` of the message it was pressed on, and `--with <other>` when that message says
+  /// the answer was given to the pair (`answered_with`), then a refresh. Returns false, and runs
+  /// nothing, for an answer neither the panel's list of answers given outside the app nor the
+  /// opened finding shows, or while another answer is being saved.
   @discardableResult
   public func takeBack(_ id: String) async -> Bool {
     let listed = reading.status?.answeredOutsideApp?.items ?? []
-    // The status lists the latest few; the opened finding says of itself whether an answer
-    // given outside the app hides it now.
-    var openedOutside = false
+    // The status lists the latest few answers given outside the app; the opened finding says of
+    // itself whether an answer, whoever gave it, hides it now.
+    var openedAnswered = false
     if let o = opened, o.id == id, case .read(let f) = o.reading {
-      openedOutside = FindingFacts.answeredOutside(f)
+      openedAnswered = FindingFacts.answerInForce(f)
     }
     let shown = shown(id)
     guard
       let args = Answer.reopenArguments(id: id, with: shown.answeredWith, journalSeq: shown.seq),
-      openedOutside || listed.contains(where: { $0.id == id })
+      openedAnswered || listed.contains(where: { $0.id == id })
     else { return false }
     return await save(id, args)
   }
@@ -361,11 +361,13 @@ public final class AppModel: ObservableObject {
       return false
     }
     guard let args = arguments(with, shown.seq) else { return false }
-    return await save(id, args)
+    return await save(id, args, closes: true)
   }
 
-  /// Runs one change to a finding and reads the status again; one at a time.
-  private func save(_ id: String, _ args: [String]) async -> Bool {
+  /// Runs one change to a finding and reads the status again; one at a time. With `closes`, a
+  /// change Immune took closes the card of that finding, back to the list, which no longer has its
+  /// row; a refusal keeps the card open with the refusal on it.
+  private func save(_ id: String, _ args: [String], closes: Bool = false) async -> Bool {
     guard answering == nil else { return false }
     answering = id
     refusals[id] = nil
@@ -373,6 +375,7 @@ public final class AppModel: ObservableObject {
     // Saved only when Immune finished by itself with 0: a timed-out Immune may still exit 0.
     if out.exitCode == 0, !out.timedOut {
       if form?.id == id { form = nil }
+      if closes, opened?.id == id { closeFinding() }
     } else {
       refusals[id] = Answer.refusal(out)
     }

@@ -63,6 +63,8 @@ public struct Voice: Sendable, Equatable {
   public var facts: [Fact] = []
   /// What to do, in Immune's words, behind a link.
   public var advice: String? = nil
+  /// For the response layer: the verdict its first word says, for that word's mark.
+  public var tone: VerdictTone? = nil
 }
 
 /// How the response layer's verdicts read in a word: suspicious when a verdict said so,
@@ -311,7 +313,8 @@ public enum FindingFacts {
       }
       return Voice(
         who: "Response layer", said: "Suspicious",
-        detail: (["its own finding stands"] + (latest.map { [$0] } ?? [])).joined(separator: " · "))
+        detail: (["its own finding stands"] + (latest.map { [$0] } ?? [])).joined(separator: " · "),
+        tone: .suspicious)
     }
     let earlier = max(0, v.listed.count - 1)
     let more =
@@ -323,11 +326,12 @@ public enum FindingFacts {
       return Voice(
         who: "Response layer", said: word + sure, detail: more,
         quote: last.reasonText.map { Inert.text($0, limit: 1000) },
-        facts: caseFact(last).map { [$0] } ?? [])
+        facts: caseFact(last).map { [$0] } ?? [],
+        tone: last.kind == "suspicious" ? .suspicious : last.kind == "harmless" ? .harmless : nil)
     }
     switch VerdictTone.of(total: v.total, suspicious: v.suspicious) {
-    case .suspicious: return Voice(who: "Response layer", said: "Suspicious")
-    case .harmless: return Voice(who: "Response layer", said: "Harmless")
+    case .suspicious: return Voice(who: "Response layer", said: "Suspicious", tone: .suspicious)
+    case .harmless: return Voice(who: "Response layer", said: "Harmless", tone: .harmless)
     case .unknown: return nil
     }
   }
@@ -346,11 +350,12 @@ public enum FindingFacts {
     return urgent ? [.askAgent] + answers : answers + [.askAgent]
   }
 
-  /// The answer is one the person did not give in the app and may hide the finding now: a box at
-  /// the top, with Take back. Whether it is in force not being said is not "not in force".
-  public static func answeredOutside(_ f: Contract.Finding) -> Bool {
+  /// The finding has an answer that may hide it now, whoever gave it (in the app, through an
+  /// agent, from the command line): its card's footer is the answer's line and Take back. Whether
+  /// it is in force not being said is not "not in force".
+  public static func answerInForce(_ f: Contract.Finding) -> Bool {
     guard let a = f.answer else { return false }
-    return a.inForce != false && a.via != "app"
+    return a.inForce != false
   }
 
   /// A short history from what the message holds: when it was found, the journal entries it

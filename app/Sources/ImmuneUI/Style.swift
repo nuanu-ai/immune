@@ -105,29 +105,111 @@ enum Metrics {
   static let field: CGFloat = 22
 }
 
-/// A colour role. Three state colours only: red for what needs the person now, green for calm,
-/// grey for everything quiet. Accent is for controls and links; text has three levels.
+/// A colour role. Five hues, the same as the report page's tokens, from the macOS system colours:
+/// `now` (red) for what needs the person now and a verdict of suspicious; `look` (orange) for what
+/// is to look at and not urgent, a Mac watched in part, what could not be read and what the person
+/// can fix; `calm` (green) for a Mac watched in full with nothing to look at and a verdict of
+/// harmless; `accent` (blue) for what opens something; and grey for everything quiet. A colour is
+/// a mark beside the word that says the same, never a filled row and never body text. Text has
+/// three levels of grey.
 enum Role {
-  case primary, secondary, tertiary, accent, now
+  case primary, secondary, tertiary, accent, now, look, calm
 
   var style: AnyShapeStyle {
     switch self {
     case .primary: AnyShapeStyle(.primary)
     case .secondary: AnyShapeStyle(.secondary)
     case .tertiary: AnyShapeStyle(.tertiary)
-    case .accent: AnyShapeStyle(Color.accentColor)
+    case .accent: AnyShapeStyle(Palette.link)
     case .now: AnyShapeStyle(Palette.now)
+    case .look: AnyShapeStyle(Palette.look)
+    case .calm: AnyShapeStyle(Palette.calm)
+    }
+  }
+
+  /// The role as the colour of a word: a state's hue in its ink, dark enough to read on the
+  /// popover in light (`Palette.ink`); the other roles as they are.
+  var ink: AnyShapeStyle {
+    switch self {
+    case .now: AnyShapeStyle(Palette.nowInk)
+    case .look: AnyShapeStyle(Palette.lookInk)
+    case .calm: AnyShapeStyle(Palette.calmInk)
+    default: style
+    }
+  }
+
+  /// The mark of a state the header's glyph draws: red, orange or green, grey for the rest.
+  static func of(_ state: PanelState) -> Role {
+    switch state {
+    case .now: .now
+    case .look, .part: .look
+    case .calm: .calm
+    case .stale, .cant, .busy: .secondary
+    }
+  }
+
+  /// The mark of what is watched, from this Mac's state as the status gives it: green for
+  /// `watched`, orange for `watched_in_part`, grey for anything else and whenever the answer is
+  /// old or cannot be told, so green never stands beside an answer that is not fresh.
+  static func watched(_ p: Panel) -> Role {
+    switch p.light {
+    case .stale, .cannotRead: return .secondary
+    default: break
+    }
+    switch p.watchedAs {
+    case "watched": return .calm
+    case "watched_in_part": return .look
+    default: return .secondary
+    }
+  }
+
+  /// The mark of the response layer's word as the core's message gives it: red for suspicious,
+  /// green for harmless, nil for any other word, which keeps the colour of the text around it.
+  static func verdict(_ said: String?) -> Role? {
+    switch said?.lowercased() {
+    case "suspicious": .now
+    case "harmless": .calm
+    default: nil
+    }
+  }
+
+  /// The same mark for a verdict the opened finding's voice names.
+  static func verdict(_ tone: VerdictTone?) -> Role? {
+    switch tone {
+    case .suspicious: .now
+    case .harmless: .calm
+    case .unknown, nil: nil
     }
   }
 }
 
 enum Palette {
-  /// Needs you now.
+  /// Needs you now; suspicious.
   static let now = Color(nsColor: .systemRed)
-  /// Calm.
+  /// To look at, not urgent; watched in part; could not be read; you can fix.
+  static let look = Color(nsColor: .systemOrange)
+  /// Watched in full with nothing to look at; harmless.
   static let calm = Color(nsColor: .systemGreen)
-  /// Everything quiet: to look at, watched in part, old, can't tell.
+  /// What opens something: links, and the selected control.
+  static let link = Color(nsColor: .systemBlue)
+  /// Everything quiet: old, can't tell, none here, off.
   static let quiet = Color(nsColor: .systemGray)
+  /// The three state hues as words: in light, the darker variants of the system's own colours
+  /// for higher contrast, so a word reads on the popover; in dark, the hues themselves. A glyph
+  /// or a symbol takes the hue itself.
+  static let nowInk = ink(light: (0xD7, 0x00, 0x15), dark: .systemRed)
+  static let lookInk = ink(light: (0xC9, 0x34, 0x00), dark: .systemOrange)
+  static let calmInk = ink(light: (0x24, 0x8A, 0x3D), dark: .systemGreen)
+
+  static func ink(light: (Int, Int, Int), dark: NSColor) -> Color {
+    let light = NSColor(
+      srgbRed: CGFloat(light.0) / 255, green: CGFloat(light.1) / 255,
+      blue: CGFloat(light.2) / 255, alpha: 1)
+    return Color(
+      nsColor: NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+      })
+  }
   /// The mark on a filled glyph.
   static let onFill = Color.white
   /// The circle under a row's symbol and the fill of the busy glyph.
@@ -198,7 +280,7 @@ extension View {
   /// above and below a line and between lines.
   func textStyle(_ s: TextStyle) -> some View {
     let extra = max(0, s.line - s.natural)
-    return font(s.font).foregroundStyle(s.role.style).lineSpacing(extra)
+    return font(s.font).foregroundStyle(s.role.ink).lineSpacing(extra)
       .padding(.vertical, extra / 2)
   }
 }
@@ -241,13 +323,14 @@ enum Symbols {
   }
 }
 
-/// A symbol in its circle in the leading column.
+/// A symbol in its circle in the leading column: grey, or in the colour of its group's mark.
 struct RowIcon: View {
   let symbol: String
+  var mark: Role = .secondary
   var body: some View {
     Image(systemName: symbol)
       .font(SymbolStyle.row.font)
-      .foregroundStyle(.secondary)
+      .foregroundStyle(mark.style)
       .frame(width: Metrics.leading, height: Metrics.leading)
       .background(Palette.circle, in: Circle())
       .accessibilityHidden(true)
