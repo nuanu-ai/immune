@@ -168,6 +168,8 @@ A run that died leaves `run_started` without `run_finished`.
 
 A finding is one thing a rule or a matcher found, about one entity, with its evidence. How bad it would be (`severity`) and how sure Immune is (`confidence`) are two separate values, named with OCSF's levels: `informational`, `low`, `medium`, `high`, `critical`. A finding is urgent when its severity is high or critical and its confidence medium or high. Only then does the app send a notification; it decides nothing else.
 
+A finding stays in the store after a later version drops the rule that raised it, for example when a published rule leaves the shipped set. Such a finding is still counted, listed, shown and answered like any other. Its kind is `finding of a rule not in this version`, and its words say that the rule is not in this version, so Immune can say no more than what it kept: where the thing is, when it was seen, its state, its answer and the journal entries it rests on. The store keeps no levels without the rule, so its severity and confidence are absent and it is not urgent. It is ordered as the most severe after the urgent findings.
+
 Each of Immune's own rules is plain code with an id, the ATT&CK technique where one fits, both levels, whether it finds an event or a state, and fixed words for a person: `title`, `meaning` and `advice`. Text from the machine or a feed is never put into those words. It goes in fields whose names end in `_text`, so an agent reading the output can treat it as data. Each rule has two samples in the tests: one it must fire on and one it must stay silent on.
 
 | Rule | Fires on | Technique | Severity, confidence |

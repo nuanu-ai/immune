@@ -264,7 +264,7 @@ fn an_enum_word_the_crate_does_not_know_reads_as_unspecified_and_the_rest_is_rea
     let r = f.finding.unwrap();
     assert_eq!(
         (r.id.as_str(), r.state, r.severity, r.confidence),
-        ("f1", 0, 0, Some(0))
+        ("f1", 0, Some(0), Some(0))
     );
     let a = f.answer.unwrap();
     assert_eq!((a.given, a.via), (0, 0));

@@ -36,8 +36,9 @@ message Findings {
   // what the watcher found between runs can be here, and an empty list says nothing.
   optional int64 latest_run_at = 4;
   // Every finding, urgent ones first (severity high or critical with confidence medium or high),
-  // then the most severe, then the latest seen, then by id. A finding of a rule this build does
-  // not have is left out.
+  // then the most severe, a finding whose severity is not known taken as the most severe, then
+  // the latest seen, then by id. Every finding the store holds is here, one of a rule this build
+  // does not have included (`ListedFinding.kind`).
   repeated ListedFinding findings = 5;
   // When an agent may answer a finding, in the core's words: the same in the usage, in `immune
   // status` and in every answer about findings.
@@ -50,7 +51,10 @@ message Findings {
 // A finding as a list gives it. `immune finding <id>` gives it whole.
 message ListedFinding {
   FindingRef finding = 1;
-  // What the rule is about, in the core's words, such as `shell profile`.
+  // What the rule is about, in the core's words, such as `shell profile`. For a finding of a
+  // rule this build does not have, `finding of a rule not in this version`: its words say only
+  // that, `finding.rule` is the rule as the store keeps it, its levels are absent, and it is
+  // answered like any other finding.
   string kind = 2;
   // What happened, in the core's words: the same for every finding of its rule.
   string title = 3;

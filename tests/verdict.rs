@@ -3281,48 +3281,178 @@ fn who_gave_an_answer_or_a_statement_is_said_once() {
     assert!(std::fs::read(mac.store()).unwrap() == bytes);
 }
 
+/// A rule no build of Immune ships: what a store is left with when a later build drops a rule.
+const GONE: &str = "sigma:00000000-0000-4000-8000-000000000000";
+
 #[test]
-fn an_answer_to_a_finding_of_a_rule_this_build_does_not_have_is_refused_and_records_nothing() {
+fn a_pair_whose_core_finding_is_of_a_rule_this_build_does_not_have_is_one_row_and_one_answer() {
     let (mac, core, verdict, _, _) = paired("pair-dropped");
-    // A finding of the core whose rule a later build no longer ships: no answer shows it.
-    rusqlite::Connection::open(mac.store())
-        .unwrap()
-        .execute(
-            "INSERT INTO finding (id, rule, about, occurrence, state, first_seen_at,
-                                  first_seen_run, last_seen_at, last_seen_run)
-             SELECT 'fdropped0000', 'sigma:00000000-0000-4000-8000-000000000000', about, 1,
-                    'open', 1, 'r', 1, 'r'
-             FROM finding WHERE id = ?1",
-            [&core],
-        )
+    // A later build no longer ships the rule: the core's finding and the response layer's
+    // finding about it name a rule the build does not have.
+    let db = rusqlite::Connection::open(mac.store()).unwrap();
+    db.execute("UPDATE finding SET rule = ?1 WHERE id = ?2", [GONE, &core])
         .unwrap();
+    db.execute(
+        "UPDATE finding SET rule = ?1 WHERE id = ?2",
+        [&format!("{VERDICT_RULE}:{GONE}"), &verdict],
+    )
+    .unwrap();
+    // Still one thing on the page: the response layer's finding inside the core's row.
+    let page = mac.page();
+    assert!(
+        drawn_rows(&page).contains(&vec![core.clone(), verdict.clone()]),
+        "{page}"
+    );
+    // One answer closes both, and one takes both back.
     let seq = read(&mac);
-    // Named first, with the response layer's finding beside it, and alone.
-    refused_answer(
+    let answer = given(
         &mac,
-        "fdropped0000",
+        &core,
         &["seen", "--with", &verdict, "--journal-seq", &seq],
-        "unknown_finding",
-        None,
     );
-    refused_answer(&mac, "fdropped0000", &["seen"], "unknown_finding", None);
-    refused_answer(
+    assert_eq!(
+        (
+            &answer["finding"]["state"],
+            &answer["answered_with"]["state"]
+        ),
+        (&json!("seen"), &json!("seen")),
+        "{answer:#}"
+    );
+    let seq = read(&mac);
+    let back = given(
         &mac,
-        "fdropped0000",
-        &["expected", "--reason", "invented"],
-        "unknown_finding",
-        None,
+        &core,
+        &["reopen", "--with", &verdict, "--journal-seq", &seq],
     );
-    // Named by --with.
-    refused_answer(
-        &mac,
-        &verdict,
-        &["seen", "--with", "fdropped0000", "--journal-seq", &seq],
-        "unknown_finding",
-        Some("fdropped0000"),
+    assert_eq!(
+        (&back["finding"]["state"], &back["answered_with"]["state"]),
+        (&json!("open"), &json!("open")),
+        "{back:#}"
     );
-    // The response layer's finding still needs a look.
-    assert_eq!(mac.shown(&verdict).unwrap()["urgent"], true);
+}
+
+/// What the status says needs a look: how many, how many urgent, and the item of `id`.
+fn needs(mac: &Mac, id: &str) -> (Value, Value, Option<Value>) {
+    let status = mac.status();
+    (
+        status["needs_a_look"]["total"].clone(),
+        status["needs_a_look"]["urgent_total"].clone(),
+        mac.shown(id),
+    )
+}
+
+#[test]
+fn an_open_finding_of_a_rule_this_build_does_not_have_is_counted_shown_read_and_answered_and_never_calm()
+ {
+    let mac = Mac::new("kept");
+    mac.run();
+    assert_eq!(needs(&mac, "fkept0000001").0, 0, "nothing else is open");
+    // What a store is left with when a later build drops a rule: an open finding about this Mac,
+    // resting on a journal entry, of a rule the build does not have.
+    let db = rusqlite::Connection::open(mac.store()).unwrap();
+    let t = now() - 100;
+    db.execute(
+        "INSERT INTO finding (id, rule, about, occurrence, state, first_seen_at,
+                              first_seen_run, last_seen_at, last_seen_run)
+         VALUES ('fkept0000001', ?1, 'machine:mac', 1, 'open', ?2, 'r', ?2, 'r')",
+        rusqlite::params![GONE, t],
+    )
+    .unwrap();
+    let basis: i64 = db
+        .query_row("SELECT MAX(seq) FROM journal", [], |r| r.get(0))
+        .unwrap();
+    db.execute(
+        "INSERT INTO finding_basis (finding, journal) VALUES ('fkept0000001', ?1)",
+        [basis],
+    )
+    .unwrap();
+    let id = "fkept0000001";
+    // Counted and shown in the status, in Immune's own words, with its levels not known and so
+    // not urgent.
+    let (total, urgent, item) = needs(&mac, id);
+    let item = item.expect("shown in what needs a look");
+    assert_eq!((total, urgent), (json!(1), json!(0)));
+    assert_eq!(
+        (
+            &item["kind"],
+            &item["kind_title"],
+            &item["rule"],
+            &item["severity"],
+            &item["confidence"],
+            &item["urgent"],
+            &item["state"],
+        ),
+        (
+            &json!("finding of a rule not in this version"),
+            &json!("Rule not in this version"),
+            &json!(GONE),
+            &Value::Null,
+            &Value::Null,
+            &json!(false),
+            &json!("open"),
+        ),
+        "{item:#}"
+    );
+    // A row on the page: the band and the tabs count it, and the page is not calm.
+    let page = mac.page();
+    let (said, drawn) = said_and_drawn(&mac, &page);
+    assert_eq!((said, drawn), ([0, 1, 1, 0, 1], [0, 1, 1, 0, 1]), "{page}");
+    assert!(!page.contains("Nothing needs you"), "{page}");
+    assert!(
+        page.contains(&format!("<span class=\"mono\">{GONE}</span>")),
+        "{page}"
+    );
+    // Listed, and read whole with the journal entry it rests on.
+    assert!(
+        mac.findings()["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["finding"]["id"] == id)
+    );
+    let whole = mac.finding(id);
+    assert_eq!(
+        (
+            &whole["finding"]["severity"],
+            &whole["rests_on"][0]["seq"],
+            &whole["kind"]
+        ),
+        (&Value::Null, &json!(basis), &item["kind"]),
+        "{whole:#}"
+    );
+    // The text for a person says its severity is not known, never a level.
+    for args in [&["finding", id][..], &["machine", "mac"][..]] {
+        let text = mac.command(args).output().unwrap();
+        let text = String::from_utf8_lossy(&text.stdout);
+        assert!(text.contains("severity not known"), "{args:?}: {text}");
+    }
+    // Seen: it is in Answered and needs no look; taken back: it is open again.
+    let seq = read(&mac);
+    let seen = given(&mac, id, &["seen", "--journal-seq", &seq]);
+    assert_eq!(seen["finding"]["state"], "seen", "{seen:#}");
+    assert_eq!(needs(&mac, id).0, 0);
+    let page = mac.page();
+    assert_eq!(said_and_drawn(&mac, &page).0, [0, 0, 0, 1, 1], "{page}");
+    let back = given(&mac, id, &["reopen", "--journal-seq", &read(&mac)]);
+    assert_eq!(back["finding"]["state"], "open", "{back:#}");
+    assert_eq!(needs(&mac, id).0, 1);
+    // Marked expected, its mark ended after it was found again: open, counted and answered.
+    db.execute(
+        "UPDATE finding SET state = 'expected', answered_at = ?1, until_at = ?2,
+                            last_seen_at = ?3, reason = 'invented', via = 'command'
+         WHERE id = ?4",
+        rusqlite::params![t - 50, now() - 1, t, id],
+    )
+    .unwrap();
+    let (total, _, item) = needs(&mac, id);
+    assert_eq!(
+        (total, item.map(|i| i["state"].clone())),
+        (json!(1), Some(json!("open")))
+    );
+    let page = mac.page();
+    assert_eq!(said_and_drawn(&mac, &page).0, [0, 1, 1, 0, 1], "{page}");
+    let seen = given(&mac, id, &["seen", "--journal-seq", &read(&mac)]);
+    assert_eq!(seen["finding"]["state"], "seen", "{seen:#}");
 }
 
 #[test]

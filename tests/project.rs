@@ -927,7 +927,7 @@ fn an_enum_word_this_build_does_not_know_reads_as_unspecified() {
     let c = &k.coverage[0];
     assert_eq!((c.completeness, c.cause), (0, Some(0)));
     let f = &k.findings[0];
-    assert_eq!((f.state, f.severity, f.confidence), (0, 0, Some(0)));
+    assert_eq!((f.state, f.severity, f.confidence), (0, Some(0), Some(0)));
 }
 
 /// What was asked is in the answer: which question, and for a project no other ids, so a reader

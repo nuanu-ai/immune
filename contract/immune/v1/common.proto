@@ -73,11 +73,15 @@ message FindingRef {
   // and so not in `parts`.
   string about_text = 3;
   FindingState state = 4;
-  // How bad it would be.
-  Level severity = 5;
-  // How sure the core is. Absent when the rule gives no confidence.
+  // How bad it would be. Absent when the core cannot say: for a finding of a rule this build
+  // does not have, since the store keeps no level without the rule. A reader that does not know
+  // it can be absent reads it as `UNSPECIFIED`, the highest severity.
+  optional Level severity = 5;
+  // How sure the core is. Absent when the rule gives no confidence, and when `severity` is
+  // absent.
   optional Level confidence = 6;
   // High or critical severity with medium or high confidence: what the app notifies about.
+  // False when `severity` is absent.
   bool urgent = 7;
 }
 

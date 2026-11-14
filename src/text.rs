@@ -32,6 +32,11 @@ pub fn word<E: TryFrom<i32> + serde::Serialize>(value: i32) -> String {
         .unwrap_or_else(|| "unspecified".to_string())
 }
 
+/// A finding's severity as a word; said as not known when it is absent, never as a level.
+fn severity(s: Option<i32>) -> String {
+    s.map_or_else(|| "not known".to_string(), word::<v1::Level>)
+}
+
 /// `n one` or `n many`, with thousands grouped.
 fn count(n: u64, one: &str, many: &str) -> String {
     crate::things(i64::try_from(n).unwrap_or(i64::MAX), one, many)
@@ -98,7 +103,8 @@ fn finding_ref(f: &v1::FindingRef) -> String {
         "{}  {}  {}{}  {}{}  about {}",
         f.id,
         word::<v1::FindingState>(f.state),
-        word::<v1::Level>(f.severity),
+        f.severity
+            .map_or_else(|| "severity not known".to_string(), word::<v1::Level>),
         f.confidence
             .map(|c| format!(" (confidence {})", word::<v1::Level>(c)))
             .unwrap_or_default(),
@@ -797,7 +803,7 @@ pub fn finding(f: &v1::Finding) -> String {
     say(&mut out, &f.advice);
     let mut facts = vec![
         format!("rule {}", r.rule.as_deref().unwrap_or_default()),
-        format!("severity {}", word::<v1::Level>(r.severity)),
+        format!("severity {}", severity(r.severity)),
     ];
     if let Some(c) = r.confidence {
         facts.push(format!("confidence {}", word::<v1::Level>(c)));
@@ -1524,7 +1530,7 @@ fn finding_level(r: Option<&v1::FindingRef>) -> String {
     r.map_or_else(String::new, |r| {
         format!(
             "{}{}",
-            word::<v1::Level>(r.severity),
+            severity(r.severity),
             if r.urgent { ", urgent" } else { "" }
         )
     })
@@ -2354,7 +2360,7 @@ mod tests {
             finding: Some(v1::ListedFinding {
                 finding: Some(v1::FindingRef {
                     id: format!("id-{i:04}"),
-                    severity: v1::Level::High as i32,
+                    severity: Some(v1::Level::High as i32),
                     urgent,
                     ..Default::default()
                 }),

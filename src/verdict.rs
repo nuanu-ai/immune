@@ -871,7 +871,7 @@ fn check(
             let known = findings::all(conn, now)?
                 .unwrap_or_default()
                 .iter()
-                .any(|f| f.id == *id && findings::item(f).is_some());
+                .any(|f| f.id == *id);
             if !known {
                 return Err(refused(
                     "unknown_finding",
@@ -985,8 +985,7 @@ fn answer(
             .unwrap_or_default()
             .iter()
             .find(|x| &x.id == f)
-            .and_then(findings::item)
-            .map(|i| known::finding_ref(&i)),
+            .map(|f| known::finding_ref(&findings::item(f))),
         None => None,
     };
     Ok(v1::VerdictRecorded {

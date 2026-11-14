@@ -604,7 +604,7 @@ fn finding_refs(
     let mut items: Vec<findings::Item> = found
         .iter()
         .filter(|f| about(&f.about))
-        .filter_map(findings::item)
+        .map(findings::item)
         .collect();
     findings::order(&mut items);
     Ok(items.iter().map(finding_ref).collect())
@@ -614,11 +614,11 @@ fn finding_refs(
 pub fn finding_ref(i: &findings::Item) -> v1::FindingRef {
     v1::FindingRef {
         id: i.id.clone(),
-        rule: i.rule.map(str::to_string),
+        rule: Some(i.rule.clone()),
         about_text: whole(&i.about),
         state: value_of::<v1::FindingState>(&i.state),
-        severity: value_of::<v1::Level>(i.severity),
+        severity: i.severity.map(value_of::<v1::Level>),
         confidence: i.confidence.map(value_of::<v1::Level>),
-        urgent: findings::urgent(i.severity, i.confidence),
+        urgent: i.urgent(),
     }
 }

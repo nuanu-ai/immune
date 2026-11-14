@@ -595,7 +595,7 @@ fn matched(out: &mut String, st: &crate::status::State, level: Option<&Level>) -
     let empty = BTreeMap::new();
     let week = level.map_or(&empty, |l| &l.matches_last_week);
     let finding_of = |m: &sigma::Meta| -> Option<(&str, bool)> {
-        let of = |i: &&Item| i.rule == Some(m.name.as_str());
+        let of = |i: &&Item| i.rule == m.name;
         if let Some(i) = st.needs.items.iter().find(of) {
             return Some((i.id.as_str(), true));
         }
@@ -694,7 +694,7 @@ fn cover(out: &mut String, st: &crate::status::State, level: Option<&Level>) -> 
         .items
         .iter()
         .filter_map(|i| {
-            let rule = Rules::shipped().by_name(i.rule?)?;
+            let rule = Rules::shipped().by_name(&i.rule)?;
             Some(rule.meta.as_ref()?.id.as_str())
         })
         .collect();

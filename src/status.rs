@@ -1049,7 +1049,7 @@ pub fn message(
     }
     // Every finding, so that a finding named from another (a verdict's) is given by reference.
     let found = findings::all(conn, now)?.unwrap_or_default();
-    let items: Vec<findings::Item> = found.iter().filter_map(findings::item).collect();
+    let items: Vec<findings::Item> = found.iter().map(findings::item).collect();
     let refs = crate::finding_answer::refs(&items);
     let store_id = out.store_id.clone();
     if st.needs.findings_unknown {
@@ -1059,7 +1059,6 @@ pub fn message(
         );
     } else {
         let all = &st.needs.items;
-        let is_urgent = |i: &findings::Item| findings::urgent(i.severity, i.confidence);
         // The cut is taken per source, in the one order, urgent first: up to `NEEDS_SHOWN` of
         // the core's findings and up to as many of the response layer's, so that neither source
         // can push the other's findings out of the list. Within a source the order puts urgent
@@ -1068,7 +1067,7 @@ pub fn message(
         let mut taken = [0; 2];
         let mut kept: Vec<&findings::Item> = Vec::new();
         for i in all {
-            let source = usize::from(i.rule == Some(crate::verdict::RULE));
+            let source = usize::from(i.rule == crate::verdict::RULE);
             taken[source] += 1;
             if taken[source] <= NEEDS_SHOWN {
                 kept.push(i);
@@ -1083,11 +1082,7 @@ pub fn message(
                 advice: i.words.advice.to_string(),
                 value_text: i.value.as_deref().map(whole),
                 technique_text: i.technique.map(whole),
-                change: i
-                    .change
-                    .as_deref()
-                    .filter(|_| i.rule.is_some())
-                    .map(crate::finding_answer::change_of),
+                change: i.change.as_deref().map(crate::finding_answer::change_of),
                 evidence: match f {
                     Some(f) => crate::finding_answer::evidence(conn, f)?
                         .map(|body| v1::Evidence { body: Some(body) }),
@@ -1098,7 +1093,7 @@ pub fn message(
         out.needs_a_look = Some(v1::NeedsALook {
             items: shown,
             total: n(all.len()),
-            urgent_total: n(all.iter().filter(|i| is_urgent(i)).count()),
+            urgent_total: n(all.iter().filter(|i| i.urgent()).count()),
         });
     }
     match &st.answered {
