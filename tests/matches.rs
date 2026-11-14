@@ -1088,7 +1088,7 @@ fn a_line_read_with_no_finding_says_so_and_a_store_without_the_record_fails_and_
         failure["errors"][0]["detail_text"]
             .as_str()
             .unwrap()
-            .contains("lacks a table or column of its format, so it is damaged"),
+            .contains("is damaged: it lacks the table"),
         "{failure}"
     );
     assert_eq!(failure.get("matches"), None);

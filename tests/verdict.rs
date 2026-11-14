@@ -2465,91 +2465,293 @@ fn a_store_of_another_format_is_refused_by_every_command_and_left_unchanged() {
     // is refused by every command and by the app's status, with what to do, and is not changed:
     // not a byte of it, and no journal or write-ahead file is left beside it. None of the
     // refusals reads as an answer with nothing in it.
-    let mac = Mac::new("format");
-    let at = mac.append(&sw_vers(1));
-    mac.run();
-    let store = mac.store_id();
-    mac.send(&about_match(
-        &store,
-        &mac.position(at),
-        SW_VERS,
-        "suspicious",
-    ));
-    let id = mac.verdict_findings().pop().unwrap();
-    let verdict = about_finding(&store, &id, "harmless", "case-1").to_string();
-    let format = |version: &str| {
-        rusqlite::Connection::open(mac.store())
-            .unwrap()
-            .execute(
-                "UPDATE meta SET value = ?1 WHERE key = 'format_version'",
-                [version],
+    let r = Refusable::new("format");
+    for (version, said, what_to_do) in [
+        ("5", "is from an older format (5)", START_OVER),
+        ("4", "is from an older format (4)", START_OVER),
+        (
+            "7",
+            "is from a newer format (7)",
+            "Use the version of Immune that made it",
+        ),
+        (
+            "six",
+            "names a format this version does not know",
+            START_OVER,
+        ),
+    ] {
+        r.damage(&format!(
+            "UPDATE meta SET value = '{version}' WHERE key = 'format_version'"
+        ));
+        r.refused_by_every_command(&[said, what_to_do]);
+    }
+}
+
+#[test]
+fn a_store_that_lacks_a_table_a_column_or_its_id_or_holds_one_too_many_is_refused_by_every_command_and_left_unchanged()
+ {
+    // A store of this format holds exactly the schema this build makes, and its id. One that
+    // does not was changed by something other than Immune: every command, reading or writing,
+    // refuses it as damaged before anything else, and none makes again, empty, what was lost.
+    // The reviewer's probe: with the table of findings dropped, a run used to make it again and
+    // the findings in the store were gone for good.
+    let r = Refusable::new("damaged");
+    for damage in [
+        "DROP TABLE finding",
+        "DROP TABLE threat",
+        "ALTER TABLE threat DROP COLUMN vendor",
+        "ALTER TABLE finding ADD COLUMN extra TEXT",
+        "CREATE TABLE extra (a TEXT)",
+        "DROP INDEX journal_run",
+        "DROP INDEX journal_run; CREATE INDEX journal_run ON journal (run_id)",
+        // The same columns, without the reference a row of it must keep.
+        "ALTER TABLE coverage_lack RENAME TO old;
+         CREATE TABLE coverage_lack (coverage INTEGER NOT NULL, what TEXT NOT NULL, name TEXT);
+         DROP TABLE old;
+         CREATE INDEX coverage_lack_of ON coverage_lack (coverage);",
+        // A trigger of the format's name that no longer keeps the journal from shrinking.
+        "DROP TRIGGER journal_no_delete;
+         CREATE TRIGGER journal_no_delete BEFORE DELETE ON journal BEGIN SELECT 1; END;",
+        "DELETE FROM meta WHERE key = 'store_id'",
+    ] {
+        r.damage(damage);
+        r.refused_by_every_command(&["is damaged", START_OVER]);
+    }
+    // Nothing a refusal did took a finding out: the store as it was still holds both.
+    r.restore();
+    assert_eq!(r.findings(), 2);
+}
+
+#[test]
+fn a_store_without_any_one_table_of_its_schema_is_refused_by_a_reader_and_by_a_writer() {
+    // Driven by the schema itself, as a store made from empty holds it, so a table added later is
+    // covered: whichever table is missing, `immune status` and `immune run` refuse the store and
+    // leave it as it was.
+    let r = Refusable::new("each-table");
+    let tables: Vec<String> = {
+        let db = rusqlite::Connection::open(r.mac.store()).unwrap();
+        let mut stmt = db
+            .prepare(
+                "SELECT name FROM sqlite_master
+                 WHERE type = 'table' AND substr(name, 1, 7) != 'sqlite_' ORDER BY name",
             )
             .unwrap();
+        stmt.query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
     };
-    let root = mac.root();
+    assert!(tables.len() > 40, "{tables:?}");
+    for table in &tables {
+        r.damage(&format!("DROP TABLE {table}"));
+        // Without `meta` the store names no format; without any other table it is damaged.
+        let said = if table == "meta" {
+            "names no format"
+        } else {
+            "is damaged"
+        };
+        r.refused_by(
+            &[vec!["status", "--json"], vec!["run"]],
+            &[said, START_OVER],
+        );
+    }
+}
+
+#[test]
+fn a_writer_refuses_a_store_without_its_id_before_it_writes_and_never_reports_failure_after_a_commit()
+ {
+    // A run or a sample on a store without its id once committed everything and then failed,
+    // saying nothing was changed. The check comes before the first write.
+    let r = Refusable::new("no-id");
+    let sample = r.mac.0.join("sample.json");
+    std::fs::write(
+        &sample,
+        json!({"at": now(), "processes": [], "connections": [], "other_users": [],
+               "unreadable": 0, "ended": 0, "sockets_unreadable": 0})
+        .to_string(),
+    )
+    .unwrap();
+    let sample = sample.to_str().unwrap();
+    r.damage("DELETE FROM meta WHERE key = 'store_id'");
+    r.refused_by(
+        &[
+            vec!["run", "--json"],
+            vec!["sample", "--sample-input", sample],
+        ],
+        &["is damaged: it has no id", START_OVER],
+    );
+}
+
+#[test]
+fn a_command_that_only_reads_changes_not_a_byte_of_a_store_of_its_format() {
+    // Opening to read applies nothing: not the vocabulary, not a table, not a journal.
+    let r = Refusable::new("read-only");
+    let root = r.mac.root();
     let root = root.to_str().unwrap();
-    let missing = mac.0.join("missing");
-    let missing = missing.to_str().unwrap();
-    for (version, said) in [
-        ("5", "is from an older format (5)"),
-        ("4", "is from an older format (4)"),
-        ("7", "is from a newer format (7)"),
+    for args in [
+        vec!["status", "--json"],
+        vec!["status"],
+        vec!["findings", "--json"],
+        vec!["finding", r.id.as_str(), "--json"],
+        vec!["project", "~/dev/shop", "--json"],
+        vec!["program", "sw_vers", "--json"],
+        vec!["machine", "mac", "--json"],
+        vec!["matches", "--json", "--system-root", root],
+        vec!["rules", "--json"],
+        vec!["vulnerabilities", "--json"],
+        vec!["owner", "--json"],
+        vec!["verdict", "--json"],
     ] {
-        format(version);
+        let out = r.mac.command(&args).stdin(Stdio::null()).output().unwrap();
+        if args[0] != "verdict" {
+            assert!(
+                out.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        assert_eq!(std::fs::read(r.mac.store()).unwrap(), r.before, "{args:?}");
+        r.nothing_beside(&format!("{args:?}"));
+    }
+}
+
+/// What every refusal of a store ends with, older and damaged alike.
+const START_OVER: &str = "Nothing was changed. Move the old store aside or pass another --store; \
+                          the next run starts a store from the beginning.";
+
+/// A store with a finding of the response layer open and a finding the person saw, kept as it
+/// was so that each damage starts from it.
+struct Refusable {
+    mac: Mac,
+    id: String,
+    verdict: String,
+    before: Vec<u8>,
+}
+
+impl Refusable {
+    fn new(tag: &str) -> Refusable {
+        let mac = Mac::new(tag);
+        mac.package(true);
+        let at = mac.append(&sw_vers(1));
+        mac.run();
+        let store = mac.store_id();
+        mac.send(&about_match(
+            &store,
+            &mac.position(at),
+            SW_VERS,
+            "suspicious",
+        ));
+        let seen = mac.latest(MALICIOUS).unwrap();
+        assert!(mac.answer(&seen, &["seen"]).status.success());
+        let id = mac.verdict_findings().pop().unwrap();
+        let verdict = about_finding(&store, &id, "harmless", "case-1").to_string();
         let before = std::fs::read(mac.store()).unwrap();
-        for args in [
-            vec!["status", "--json"],
-            vec!["status"],
-            vec!["findings", "--json"],
-            vec!["finding", id.as_str(), "--json"],
-            vec!["project", "~/dev/shop", "--json"],
-            vec!["program", "sw_vers", "--json"],
-            vec!["machine", "mac", "--json"],
-            vec!["matches", "--json", "--system-root", root],
-            vec!["rules", "--json"],
-            vec!["vulnerabilities", "--json"],
-            vec!["owner", "--json"],
-            vec!["owner", "mac", "retired", "--reason", "invented"],
-            vec!["servers", "--tailscale", missing],
-            vec!["view", "--no-open"],
-            vec!["verdict", "--json"],
-            vec!["run"],
-        ] {
-            let mut cmd = if args == ["run"] {
-                mac.run_cmd()
+        let r = Refusable {
+            mac,
+            id,
+            verdict,
+            before,
+        };
+        assert_eq!(r.findings(), 2);
+        r
+    }
+
+    /// Puts the store back as it was, then damages it with `sql`.
+    fn damage(&self, sql: &str) {
+        self.restore();
+        rusqlite::Connection::open(self.mac.store())
+            .unwrap()
+            .execute_batch(&format!("PRAGMA foreign_keys = OFF; {sql}"))
+            .unwrap();
+    }
+
+    fn restore(&self) {
+        std::fs::write(self.mac.store(), &self.before).unwrap();
+    }
+
+    /// The findings the store holds: the one of the response layer and the one seen.
+    fn findings(&self) -> i64 {
+        rusqlite::Connection::open(self.mac.store())
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM finding WHERE state = 'open' AND rule LIKE 'verdict.%'
+                 OR state = 'seen'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    fn nothing_beside(&self, what: &str) {
+        for beside in ["store.db-journal", "store.db-wal", "store.db-shm"] {
+            assert!(
+                !self.mac.0.join("store").join(beside).exists(),
+                "{what}: {beside}"
+            );
+        }
+    }
+
+    /// Every command, reading or writing, refuses the store as it is now, saying each of `said`,
+    /// and leaves it byte for byte as it was, with nothing beside it.
+    fn refused_by_every_command(&self, said: &[&str]) {
+        let root = self.mac.root();
+        let root = root.to_str().unwrap();
+        let missing = self.mac.0.join("missing");
+        let missing = missing.to_str().unwrap();
+        self.refused_by(
+            &[
+                vec!["status", "--json"],
+                vec!["status"],
+                vec!["findings", "--json"],
+                vec!["finding", self.id.as_str(), "--json"],
+                vec!["finding", self.id.as_str(), "seen", "--json"],
+                vec!["project", "~/dev/shop", "--json"],
+                vec!["program", "sw_vers", "--json"],
+                vec!["machine", "mac", "--json"],
+                vec!["matches", "--json", "--system-root", root],
+                vec!["rules", "--json"],
+                vec!["vulnerabilities", "--json"],
+                vec!["owner", "--json"],
+                vec!["owner", "mac", "retired", "--reason", "invented"],
+                vec!["servers", "--tailscale", missing],
+                vec!["view", "--no-open"],
+                vec!["verdict", "--json"],
+                vec!["run"],
+                vec!["run", "--json"],
+            ],
+            said,
+        );
+    }
+
+    fn refused_by(&self, commands: &[Vec<&str>], said: &[&str]) {
+        let before = std::fs::read(self.mac.store()).unwrap();
+        for args in commands {
+            let mut cmd = if args[0] == "run" {
+                let mut c = self.mac.run_cmd();
+                c.args(&args[1..]);
+                c
             } else {
-                mac.command(&args)
+                self.mac.command(args)
             };
             cmd.stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
             let mut child = cmd.spawn().unwrap();
             // A command that does not read standard input may have exited already.
-            let _ = child.stdin.take().unwrap().write_all(verdict.as_bytes());
+            let _ = child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(self.verdict.as_bytes());
             let out = child.wait_with_output().unwrap();
-            assert_ne!(out.status.code(), Some(0), "{version} {args:?}");
+            assert_ne!(out.status.code(), Some(0), "{args:?}");
             let all = String::from_utf8_lossy(&out.stdout).to_string()
                 + &String::from_utf8_lossy(&out.stderr);
-            assert!(all.contains(said), "{version} {args:?}: {all}");
-            if version != "7" {
-                assert!(
-                    all.contains(
-                        "Nothing was changed. Move the old store aside or pass another --store."
-                    ),
-                    "{version} {args:?}: {all}"
-                );
+            for s in said {
+                assert!(all.contains(s), "{args:?}: {all}");
             }
-            assert_eq!(
-                std::fs::read(mac.store()).unwrap(),
-                before,
-                "{version} {args:?}"
-            );
-            for beside in ["store.db-journal", "store.db-wal", "store.db-shm"] {
-                assert!(
-                    !mac.0.join("store").join(beside).exists(),
-                    "{version} {args:?}: {beside}"
-                );
-            }
+            assert_eq!(std::fs::read(self.mac.store()).unwrap(), before, "{args:?}");
+            self.nothing_beside(&format!("{args:?}"));
         }
     }
 }

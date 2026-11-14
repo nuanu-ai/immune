@@ -255,7 +255,7 @@ pub fn given_by(via: crate::findings::Via) -> &'static str {
         crate::findings::Via::App => "in the app",
         crate::findings::Via::Agent => "through your agent",
         crate::findings::Via::Command => "from the command line",
-        crate::findings::Via::Unknown => "given before this version recorded who",
+        crate::findings::Via::Unknown => "how it came is not recorded",
     }
 }
 
@@ -2599,7 +2599,6 @@ mod tests {
             rusqlite::params![crate::osv::FEEDS[0].source, run_id, at, said],
         )
         .unwrap();
-        crate::events::schema(&tx).unwrap();
         // What the collector printed, as the store keeps it: a source's backslash as `\u{5c}`.
         let collector = "the log said \\u{5c}n";
         tx.execute(

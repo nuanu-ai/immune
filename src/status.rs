@@ -298,25 +298,13 @@ struct Baselines {
     /// For each reading of a reader in `BASELINED`, the run whose reading of it first read
     /// something. The two readers' kinds differ, so scope and kind name one reading.
     first: HashMap<(String, String), String>,
-    /// The last journal entry written before units were recorded (`baseline.rs`). After it a
-    /// reading of the watched places says in each entry whether it was a first reading, and
-    /// `first` no longer speaks for it.
-    units_since: Option<i64>,
 }
 
-/// The baselines of the journal: before units were recorded, a reading's events are the
-/// baseline when it was the first of its scope and kind to read something.
+/// The baselines of the journal: a reading's events are the baseline when it was the first of
+/// its scope and kind to read something.
 fn baselines(conn: &Connection) -> rusqlite::Result<Baselines> {
-    let units_since = conn
-        .query_row(
-            "SELECT CAST(value AS INTEGER) FROM meta WHERE key = ?1",
-            [crate::baseline::UNITS_SINCE],
-            |r| r.get(0),
-        )
-        .optional()?;
     Ok(Baselines {
         first: first_readings(conn)?,
-        units_since,
     })
 }
 
@@ -388,12 +376,11 @@ fn journaled(
         |r| {
             let reader: Option<String> = r.get(3)?;
             let kind: Option<String> = r.get(5)?;
-            let seq: i64 = r.get(10)?;
             // A difference a reading journaled as a first reading is not a change; before
             // readings said so, the first reading of each scope and kind was the baseline.
             let marked = r.get::<_, Option<bool>>(11)?.unwrap_or(false);
-            let judged = reader.as_deref() == Some(watched::READER)
-                && base.units_since.is_some_and(|since| seq > since);
+            // A reading of the watched places says in each entry whether it was a first reading.
+            let judged = reader.as_deref() == Some(watched::READER);
             let mut e = Journaled {
                 at: r.get(0)?,
                 run_id: r.get(1)?,

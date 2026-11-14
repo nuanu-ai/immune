@@ -16,9 +16,9 @@ use crate::{autorun, indicators, integrity, sha256, watched};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 
-/// Created on every open, so a store of the current format takes it without a rebuild.
+/// Part of the store's schema (`store::schema`).
 pub const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS finding (
+CREATE TABLE finding (
     id             TEXT PRIMARY KEY,
     rule           TEXT NOT NULL,
     about          TEXT NOT NULL REFERENCES entity (id),
@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS finding (
     UNIQUE (rule, about, occurrence)
 );
 -- What a finding rests on: journal entries by their sequence number.
-CREATE TABLE IF NOT EXISTS finding_basis (
+CREATE TABLE finding_basis (
     finding TEXT NOT NULL REFERENCES finding (id),
     journal INTEGER NOT NULL
 );

@@ -881,7 +881,7 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             // What a failure repeats of what it was given is cut.
-            eprintln!("immune: {}", secrets::said(&store::damaged(&e.to_string())));
+            eprintln!("immune: {}", secrets::said(&e.to_string()));
             ExitCode::FAILURE
         }
     }
@@ -1367,7 +1367,10 @@ fn finding_cmd(args: &FindingArgs) -> ExitCode {
     let run_id = format!("owner-{now}-{nanos:09}");
     // It writes as `immune verdict` does: under the run lock, with the write lock from the
     // start of its transaction, and a store another writer holds is asked again.
-    let busy = |r: verdict::Refusal| refuse(r.code, r.message, "immune finding <id> seen", r.exit);
+    let busy = |r: verdict::Refusal| {
+        let error = answer::error(r.code, r.message, "immune finding <id> seen", &r.detail);
+        answer::fail("finding", args.form, error, r.exit)
+    };
     let (lock, mut conn) = match verdict::writing(&args.store) {
         Ok(held) => held,
         Err(r) => return busy(r),
@@ -3582,15 +3585,8 @@ impl Visited {
 fn kept(
     tx: &rusqlite::Transaction,
     r: &Reading,
-    checkouts: &Visited,
     keep: impl Fn(Option<&Unit>) -> bool,
 ) -> rusqlite::Result<Vec<Statement>> {
-    let prefix = format!("file:{}/", r.scope);
-    let machine_prefix = r
-        .scope
-        .split_once('/')
-        .map(|(machine, _)| machine.strip_prefix("checkout:").unwrap_or(machine))
-        .map(|machine| format!("file:{machine}/"));
     let mut kept = Vec::new();
     let mut stmt = tx.prepare(
         "SELECT a.subject, a.predicate, a.object, a.source_ref, u.path, u.part FROM assertion a
@@ -3614,25 +3610,12 @@ fn kept(
             "located_on" => "located_on",
             _ => continue,
         };
-        let unit = if let Some(path) = path {
-            Some(Unit {
-                path,
-                part: part.unwrap_or_default(),
-            })
-        } else {
-            subject
-                .strip_prefix(&prefix)
-                .or_else(|| {
-                    machine_prefix
-                        .as_deref()
-                        .and_then(|m| subject.strip_prefix(m))
-                })
-                .and_then(|p| {
-                    baseline::legacy_unit(r.kind, p, |rel| {
-                        checkouts.held.contains(rel) || checkouts.looked.contains(rel)
-                    })
-                })
-        };
+        // Every entry a reading of this format holds was recorded with its unit, in the
+        // transaction that made it, and a unit's row is never taken out.
+        let unit = path.map(|path| Unit {
+            path,
+            part: part.unwrap_or_default(),
+        });
         if keep(unit.as_ref()) {
             kept.push(Statement {
                 subject,
@@ -3809,7 +3792,7 @@ fn read_watched(
                         checkouts.iter().map(|c| (c.path.as_path(), c.rel.as_str())),
                         &args.home,
                     ),
-                    kept(run.tx, &reading, &visited, |unit| match unit {
+                    kept(run.tx, &reading, |unit| match unit {
                         Some(unit) => visited.unvisited(&unit.path),
                         None => !visited.held.is_subset(&visited.looked),
                     })?,
@@ -3940,7 +3923,7 @@ fn read_watched(
         // so that the rest of the reading is compared whole: what is gone from a unit read in
         // full is gone, whatever failed elsewhere. A part of a file that could not be read,
         // its neighbours read, keeps only its own. Hooks kept elsewhere keep all of theirs.
-        statements.extend(kept(tx, &reading, &visited, |unit| {
+        statements.extend(kept(tx, &reading, |unit| {
             p.elsewhere.is_some() || !p.look.retracts(unit)
         })?);
         baseline::remember_units(tx, &reading, &units)?;

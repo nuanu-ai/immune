@@ -180,7 +180,7 @@ enum Via {
   VIA_AGENT = 2;
   // On the command line, naming neither.
   VIA_COMMAND = 3;
-  // Given before the store kept how answers came.
+  // How the answer came is not recorded.
   VIA_UNKNOWN = 4;
 }
 

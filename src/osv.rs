@@ -25,10 +25,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
 /// The tables of the vulnerability data. Advisories are not facts: like threats they live in
-/// their own tables and never touch assertions. Created on every open. Text in them is the
+/// their own tables and never touch assertions. Part of the store's schema (`store::schema`). Text in them is the
 /// feed's own and is partly written by an attacker.
 pub const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS advisory (
+CREATE TABLE advisory (
     source        TEXT NOT NULL,     -- the feed, such as 'osv-npm'
     id            TEXT NOT NULL,
     modified      TEXT NOT NULL,     -- as the record gives it
@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS advisory (
     CHECK ((gone_at IS NULL) = (gone_run IS NULL))
 );
 -- What an advisory affects, one row per affected package of the feed's own ecosystem.
-CREATE TABLE IF NOT EXISTS advisory_affects (
+CREATE TABLE advisory_affects (
     source        TEXT NOT NULL,
     advisory      TEXT NOT NULL,
     ecosystem     TEXT NOT NULL,     -- as the record gives it
@@ -60,16 +60,16 @@ CREATE TABLE IF NOT EXISTS advisory_affects (
     informational TEXT,              -- RustSec's kind of informational advisory
     FOREIGN KEY (source, advisory) REFERENCES advisory (source, id)
 );
-CREATE INDEX IF NOT EXISTS advisory_affects_name ON advisory_affects (ecosystem, normalized);
-CREATE INDEX IF NOT EXISTS advisory_affects_advisory ON advisory_affects (source, advisory);
+CREATE INDEX advisory_affects_name ON advisory_affects (ecosystem, normalized);
+CREATE INDEX advisory_affects_advisory ON advisory_affects (source, advisory);
 -- What the status, the view and every run ask of the records held now: how many there are of
 -- each kind (`held`), the newest change (`freshness`) and how many are informational. Each was
 -- a read of the whole table, about 235,000 rows and 40 MB for npm, several times per
 -- `immune status`. Each index holds what its question reads, so it is answered from the index
 -- alone: `advisory_held` by a pass over its entries for one feed, the other two by a look-up.
-CREATE INDEX IF NOT EXISTS advisory_held ON advisory (source, gone_at, kind, withdrawn);
-CREATE INDEX IF NOT EXISTS advisory_newest ON advisory (source, gone_at, modified);
-CREATE INDEX IF NOT EXISTS advisory_informational ON advisory (kind, withdrawn, gone_at);
+CREATE INDEX advisory_held ON advisory (source, gone_at, kind, withdrawn);
+CREATE INDEX advisory_newest ON advisory (source, gone_at, modified);
+CREATE INDEX advisory_informational ON advisory (kind, withdrawn, gone_at);
 ";
 
 /// One feed of vulnerability data.

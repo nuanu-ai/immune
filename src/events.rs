@@ -262,9 +262,9 @@ pub const CANNOT_SEE: [&str; 6] = [
 pub const FILES_NOT_SEEN: &str =
     "files created and renamed: the collector installed here does not record them";
 
-/// Created at the first reading, in its transaction.
+/// The level's tables, part of the store's schema (`store::schema`). Empty until the first reading.
 pub const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS event_level (
+CREATE TABLE event_level (
     id        INTEGER PRIMARY KEY CHECK (id = 1),
     read_at   INTEGER NOT NULL,  -- the latest reading, UTC seconds
     state     TEXT NOT NULL,     -- not_installed, running, refused, failing, silent, failed
@@ -277,13 +277,13 @@ CREATE TABLE IF NOT EXISTS event_level (
     counted   INTEGER            -- notes of deletions up to this time are counted
 );
 -- Where each log file was read up to: every byte before `offset` is whole lines already read.
-CREATE TABLE IF NOT EXISTS event_file (
+CREATE TABLE event_file (
     name   TEXT PRIMARY KEY,
     inode  INTEGER NOT NULL,
     offset INTEGER NOT NULL
 );
 -- What one reading of a log read, kept for two days.
-CREATE TABLE IF NOT EXISTS event_count (
+CREATE TABLE event_count (
     at           INTEGER NOT NULL,
     starts       INTEGER NOT NULL,  -- program starts read
     lost         INTEGER NOT NULL,  -- program starts missing from the numbering
@@ -295,21 +295,21 @@ CREATE TABLE IF NOT EXISTS event_count (
 );
 -- How many program starts matched each published rule, by the hour of the reading that read
 -- them, kept a week. A rule's id and a number: nothing of the start.
-CREATE TABLE IF NOT EXISTS rule_match (
+CREATE TABLE rule_match (
     hour    INTEGER NOT NULL,  -- the reading's time, UTC seconds divided by 3600
     rule    TEXT NOT NULL,     -- the rule's id
     matches INTEGER NOT NULL,
     PRIMARY KEY (hour, rule)
 );
 -- How many program starts a finding from a published rule counts since it was raised.
-CREATE TABLE IF NOT EXISTS rule_finding (
+CREATE TABLE rule_finding (
     finding TEXT PRIMARY KEY REFERENCES finding (id),
     matches INTEGER NOT NULL
 );
 -- The latest program starts a finding from a published rule rests on, at most five per
 -- finding. The one place arguments enter the store; the environment never does. Field
 -- names are the Elastic Common Schema's.
-CREATE TABLE IF NOT EXISTS rule_evidence (
+CREATE TABLE rule_evidence (
     finding           TEXT NOT NULL REFERENCES finding (id),
     read_at           INTEGER NOT NULL,
     timestamp         TEXT NOT NULL,
@@ -326,7 +326,7 @@ CREATE TABLE IF NOT EXISTS rule_evidence (
 );
 -- File events: whether the collector installed here is established to record them, why not,
 -- and the latest sequence number of each kind read, NULL before any.
-CREATE TABLE IF NOT EXISTS event_files (
+CREATE TABLE event_files (
     id          INTEGER PRIMARY KEY CHECK (id = 1),
     collected   INTEGER NOT NULL,
     why         TEXT,              -- why they are not counted as collected, the program's words
@@ -338,7 +338,7 @@ CREATE TABLE IF NOT EXISTS event_files (
 -- by its name, its set and its id; and the finding. Only rules marked high or critical raise
 -- one. A row of a log file the reading no longer finds is removed, so a row lives as long as its
 -- line.
-CREATE TABLE IF NOT EXISTS rule_line (
+CREATE TABLE rule_line (
     file    TEXT NOT NULL,
     inode   INTEGER NOT NULL,
     offset  INTEGER NOT NULL,
@@ -347,7 +347,7 @@ CREATE TABLE IF NOT EXISTS rule_line (
     PRIMARY KEY (file, inode, offset, rule)
 ) WITHOUT ROWID;
 -- What one reading read of file events, kept for two days beside event_count.
-CREATE TABLE IF NOT EXISTS event_file_count (
+CREATE TABLE event_file_count (
     at           INTEGER NOT NULL,
     files        INTEGER NOT NULL,  -- file events read
     lost         INTEGER NOT NULL,  -- file events missing from the numbering
@@ -356,7 +356,7 @@ CREATE TABLE IF NOT EXISTS event_file_count (
 );
 -- The latest file events a finding from a published rule rests on, at most five per finding:
 -- the file and the program, nothing more.
-CREATE TABLE IF NOT EXISTS rule_file_evidence (
+CREATE TABLE rule_file_evidence (
     finding    TEXT NOT NULL REFERENCES finding (id),
     read_at    INTEGER NOT NULL,
     timestamp  TEXT NOT NULL,
@@ -367,7 +367,7 @@ CREATE TABLE IF NOT EXISTS rule_file_evidence (
 );
 -- What the lines read say of each of `KEEPS`, by kind of event (`MARKS`): a row once a line of
 -- the kind was read, none before.
-CREATE TABLE IF NOT EXISTS event_arrival (
+CREATE TABLE event_arrival (
     kind   TEXT NOT NULL,     -- program_start or file_event
     keep   TEXT NOT NULL,     -- identity, script or signature
     kept   INTEGER NOT NULL,  -- whether the latest line of the kind holds its key
@@ -378,13 +378,13 @@ CREATE TABLE IF NOT EXISTS event_arrival (
     PRIMARY KEY (kind, keep)
 );
 -- The filter's markers read whose number in eslogger's numbering no gap has taken in yet.
-CREATE TABLE IF NOT EXISTS event_marks (
+CREATE TABLE event_marks (
     id      INTEGER PRIMARY KEY CHECK (id = 1),
     pending INTEGER NOT NULL
 );
 -- The cap of the log, as the latest reading of an installed collector found it in the tidy
 -- job's launch daemon: its bytes, or why it could not be read.
-CREATE TABLE IF NOT EXISTS event_cap (
+CREATE TABLE event_cap (
     id    INTEGER PRIMARY KEY CHECK (id = 1),
     bytes INTEGER,  -- NULL when it could not be read
     why   TEXT      -- the program's words, NULL when it was read
@@ -2172,9 +2172,6 @@ pub struct Outcome {
 /// The level's state as the latest reading left it, without reading anything else; `None`
 /// before any reading.
 pub fn state(conn: &Connection) -> rusqlite::Result<Option<String>> {
-    if !has(conn, "event_level")? {
-        return Ok(None);
-    }
     conn.query_row("SELECT state FROM event_level WHERE id = 1", [], |r| {
         r.get(0)
     })
@@ -2187,9 +2184,6 @@ pub fn state(conn: &Connection) -> rusqlite::Result<Option<String>> {
 /// second, do not move it: the pages say their count as made, and the live file says it now.
 /// Readings that took nothing leave it as it was.
 pub fn basis(conn: &Connection) -> rusqlite::Result<String> {
-    if !has(conn, "event_level")? {
-        return Ok(String::new());
-    }
     // What the collector said, read cut as every reader reads it: this goes into a page's file.
     let level = conn
         .query_row(
@@ -2230,12 +2224,6 @@ fn collected(conn: &Connection) -> rusqlite::Result<(bool, Option<String>)> {
         .unwrap_or((false, None)))
 }
 
-/// Makes the level's tables in `tx` where they are missing: at every reading, and before a
-/// verdict keeps the event it is about (`verdict.rs`).
-pub fn schema(tx: &Transaction) -> rusqlite::Result<()> {
-    tx.execute_batch(SCHEMA)
-}
-
 /// One reading of the event level under `root`, at `now`, recorded in `tx`: the state, the
 /// counts, where each file was read up to, and coverage of this machine, one row in place of
 /// the one before, as samples keep theirs.
@@ -2246,7 +2234,6 @@ pub fn read(
     root: &Path,
     now: i64,
 ) -> rusqlite::Result<Outcome> {
-    schema(tx)?;
     let left = left(tx)?;
     let found = look(root, &left, now, Rules::shipped());
     let mut opened = 0;
@@ -2554,16 +2541,6 @@ pub fn keep(
         )?;
     }
     Ok(())
-}
-
-/// Whether the store has a table: one this build creates at the first reading may be missing
-/// from a store read before it.
-fn has(conn: &Connection, table: &str) -> rusqlite::Result<bool> {
-    conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-        [table],
-        |r| r.get(0),
-    )
 }
 
 /// What a finding from a published rule carries beside its words, each in its own field: the
@@ -3240,9 +3217,6 @@ pub fn went_to(conn: &Connection, at: &LineAt, rule: &str) -> rusqlite::Result<O
 /// Where the core's own reading has read each log file up to, by name: the file's inode and the
 /// offset before which every byte is read. Empty before any reading.
 pub fn read_up_to(conn: &Connection) -> rusqlite::Result<BTreeMap<String, (u64, u64)>> {
-    if !has(conn, "event_file")? {
-        return Ok(BTreeMap::new());
-    }
     conn.prepare("SELECT name, inode, offset FROM event_file")?
         .query_map([], |r| {
             Ok((
@@ -3256,9 +3230,6 @@ pub fn read_up_to(conn: &Connection) -> rusqlite::Result<BTreeMap<String, (u64, 
 /// The level's state as the latest reading left it, with when that reading was made: what
 /// `immune status` serves. `None` before any reading.
 pub fn state_read(conn: &Connection) -> rusqlite::Result<Option<(String, i64)>> {
-    if !has(conn, "event_level")? {
-        return Ok(None);
-    }
     conn.query_row(
         "SELECT state, read_at FROM event_level WHERE id = 1",
         [],
@@ -3462,9 +3433,6 @@ fn put_arrivals(tx: &Transaction, arrivals: &Arrivals) -> rusqlite::Result<()> {
 /// running as the user can rewrite, and what it says never makes calm.
 pub fn arrivals(conn: &Connection) -> rusqlite::Result<Arrivals> {
     let mut arrivals = Arrivals::default();
-    if !has(conn, "event_arrival")? {
-        return Ok(arrivals);
-    }
     let mut stmt = conn.prepare(
         "SELECT kind, keep, kept, filled, stopped, quiet, quiet_from FROM event_arrival",
     )?;
@@ -3664,9 +3632,6 @@ fn series(conn: &Connection, now: i64, step: i64, n: usize, from: i64) -> rusqli
 
 /// The level, or `None` before any reading of it.
 pub fn level(conn: &Connection, now: i64) -> rusqlite::Result<Option<Level>> {
-    if !has(conn, "event_level")? {
-        return Ok(None);
-    }
     let row = conn
         .query_row(
             "SELECT state, read_at, written, said_by, said, reason, version
@@ -6042,10 +6007,7 @@ mod tests {
             std::env::temp_dir().join(format!("immune-events-forged-{}", std::process::id())),
         );
         std::fs::create_dir_all(&dir).unwrap();
-        let mut conn = crate::store::open(&dir.join("store.db")).unwrap();
-        let tx = conn.transaction().unwrap();
-        schema(&tx).unwrap();
-        tx.commit().unwrap();
+        let conn = crate::store::open(&dir.join("store.db")).unwrap();
         conn.execute_batch(
             "INSERT INTO event_arrival VALUES ('program_start', 'script', 1, 5, NULL, 1000, 6);
              INSERT INTO event_arrival VALUES ('program_start', 'identity', 1, 5, NULL, 9, 6);

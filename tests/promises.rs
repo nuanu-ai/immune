@@ -3193,34 +3193,6 @@ fn the_servers_row_says_checked_only_when_every_server_was_read_in_full_whatever
     );
 }
 
-#[test]
-fn a_store_seeded_before_relation_to_owner_was_used_takes_it_without_a_rebuild() {
-    // The vocabulary is data: the owner's store keeps its journal when a reserved word comes
-    // into use.
-    let h = Home::new("relation-seed", None, None);
-    let tailscale = fake(&h.dir.0.join("bin").join("tailscale"), TAILNET_SHARED);
-    h.run(&h.dir.0.join("absent"), &tailscale);
-    let conn = Connection::open(h.store()).unwrap();
-    conn.execute_batch(
-        "DELETE FROM assertion WHERE predicate = 'relation_to_owner';
-         UPDATE predicate SET object_kind = NULL, status = 'reserved'
-             WHERE name = 'relation_to_owner';",
-    )
-    .unwrap();
-    drop(conn);
-
-    h.run(&h.dir.0.join("absent"), &tailscale);
-
-    assert_eq!(rows(&h.store(), RELATION).len(), 5);
-    assert_eq!(
-        rows(
-            &h.store(),
-            "SELECT object_kind, status FROM predicate WHERE name = 'relation_to_owner'"
-        ),
-        ["literal|used"]
-    );
-}
-
 /// A sweep file of a server that says only this about itself.
 fn with_own(names: &str, addresses: &str) -> String {
     format!("##names\n{names}\n##addresses\n{addresses}\n{WEB_1}")
@@ -5777,10 +5749,7 @@ fn no_machine_is_set_aside_silently() {
             .all(|s| s["via"] == "unknown"),
         "{listed}"
     );
-    assert!(
-        section(&view(&h.store()), "retired")
-            .contains("<td>given before this version recorded who</td>")
-    );
+    assert!(section(&view(&h.store()), "retired").contains("<td>how it came is not recorded</td>"));
 }
 
 #[test]
@@ -8396,18 +8365,20 @@ fn a_checkout_that_is_gone_takes_its_hooks_with_it() {
 
 #[test]
 fn the_first_reading_of_watched_places_counts_nothing_as_new() {
-    // On a store made before this reader, the owner's whole setup is not news.
+    // On a store this reader never read, as when a later version adds it, the owner's whole
+    // setup is not news.
     let w = Watch::new("watched-first");
     let app = checkout(w.home(), "dev/app");
     w.run();
-    // A store from before watched places: other readers ran, this one never did.
+    // Other readers ran, this one never did.
     Connection::open(w.store())
         .unwrap()
         .execute_batch(
             "DELETE FROM coverage WHERE reader = 'watched-places';
              DELETE FROM assertion WHERE reader = 'watched-places';
-             DROP TABLE unit_read;
-             DELETE FROM meta WHERE key = 'units_since';",
+             DELETE FROM unit_read WHERE reader = 'watched-places';
+             DELETE FROM part_read WHERE reader = 'watched-places';
+             DELETE FROM watched_unit;",
         )
         .unwrap();
     put(&app, ".git/hooks/pre-commit", "#!/bin/sh\n");
@@ -9527,8 +9498,8 @@ fn writer_child() {
     conn.execute_batch(&format!(
         "BEGIN;
          UPDATE meta SET value = '{UNCOMMITTED}' WHERE key = 'store_id';
-         CREATE TABLE ballast (b BLOB);
-         INSERT INTO ballast VALUES (zeroblob(8000000));"
+         INSERT INTO raw_input (reader, input, path, run_id)
+             VALUES ('ballast', 'ballast', zeroblob(8000000), 'ballast');"
     ))
     .unwrap();
     let mut out = std::io::stdout();
@@ -9854,15 +9825,10 @@ fn a_status_whose_last_check_is_old_is_not_fresh_says_why_and_is_never_calm() {
         "{r:#}"
     );
     assert_eq!(r["this_mac"]["fresh_for_seconds"], 7200);
-    {
-        let conn = Connection::open(w.store()).unwrap();
-        conn.execute_batch(
-            "DROP TRIGGER journal_no_update;
-             UPDATE journal SET at = at - 3 * 3600
-              WHERE entry IN ('run_started', 'run_finished');",
-        )
-        .unwrap();
-    }
+    rewrite_journal(
+        &w.store(),
+        "UPDATE journal SET at = at - 3 * 3600 WHERE entry IN ('run_started', 'run_finished')",
+    );
     let r = status_json(&w.store());
     assert_eq!(r["this_mac"]["fresh"], false, "{r:#}");
     let why = r["this_mac"]["stale_reason"].as_str().unwrap();
@@ -9876,14 +9842,11 @@ fn a_status_whose_last_check_is_old_is_not_fresh_says_why_and_is_never_calm() {
         "{text}"
     );
     // A check dated ahead of this Mac's clock has no age, and is not fresh either.
-    {
-        let conn = Connection::open(w.store()).unwrap();
-        conn.execute_batch(
-            "UPDATE journal SET at = at + 3 * 3600 + 86400
-              WHERE entry IN ('run_started', 'run_finished');",
-        )
-        .unwrap();
-    }
+    rewrite_journal(
+        &w.store(),
+        "UPDATE journal SET at = at + 3 * 3600 + 86400
+         WHERE entry IN ('run_started', 'run_finished')",
+    );
     let r = status_json(&w.store());
     assert_eq!(r["this_mac"]["fresh"], false, "{r:#}");
     let why = r["this_mac"]["stale_reason"].as_str().unwrap();
@@ -10080,17 +10043,38 @@ fn unknown_is_never_given_as_zero_or_full() {
         .arg(fresh.0.join("absent"))
         .arg("--servers-input")
         .arg(fresh.0.join("absent")));
-    Connection::open(fresh.store())
-        .unwrap()
-        .execute_batch(
-            "DROP TRIGGER journal_no_delete;
-             DELETE FROM journal WHERE entry IN ('run_finished', 'report');",
-        )
-        .unwrap();
+    rewrite_journal(
+        &fresh.store(),
+        "DELETE FROM journal WHERE entry IN ('run_finished', 'report')",
+    );
     let r = status_json(&fresh.store());
     assert!(r["last_run"]["finished_at"].is_null(), "{r}");
     for section in ["last_finished_run", "estate", "watched", "threats"] {
         assert!(r[section].is_null(), "{section}");
+    }
+}
+
+/// Changes the journal, which only grows, as time or a crash would: its two triggers are taken
+/// out for the change and put back exactly as they were, so the store keeps the schema of its
+/// format.
+fn rewrite_journal(store: &Path, sql: &str) {
+    let conn = Connection::open(store).unwrap();
+    let triggers: Vec<(String, String)> = conn
+        .prepare(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'journal'",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(triggers.len(), 2, "{triggers:?}");
+    for (name, _) in &triggers {
+        conn.execute_batch(&format!("DROP TRIGGER {name}")).unwrap();
+    }
+    conn.execute_batch(sql).unwrap();
+    for (_, made) in &triggers {
+        conn.execute_batch(made).unwrap();
     }
 }
 
@@ -12381,16 +12365,10 @@ fn an_answer_whose_giver_this_build_does_not_know_is_not_shown_as_given_outside_
         .unwrap();
     assert_eq!(f["answer"]["via"], "unknown");
     let (_, text, _) = finding_out(&w.store(), &[&profile]);
-    assert!(
-        text.contains(" given before this version recorded who."),
-        "{text}"
-    );
+    assert!(text.contains(" how it came is not recorded."), "{text}");
     let page = view(&w.store());
     let row = answered_row(&page, &profile);
-    assert!(
-        row.contains(" given before this version recorded who</span>"),
-        "{row}"
-    );
+    assert!(row.contains(" how it came is not recorded</span>"), "{row}");
     // A run leaves the word as it is, and the answer stays unknown.
     w.run();
     assert_eq!(outside_app(&w.store()), (0, vec![]));

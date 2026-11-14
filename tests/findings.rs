@@ -636,7 +636,7 @@ fn a_store_without_the_table_of_findings_fails_as_damaged_rather_than_reading_as
         v["errors"][0]["detail_text"]
             .as_str()
             .unwrap()
-            .contains("lacks a table or column of its format, so it is damaged"),
+            .contains("is damaged: it lacks the table"),
         "{v}"
     );
 }

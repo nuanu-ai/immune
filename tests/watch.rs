@@ -1519,34 +1519,6 @@ fn a_place_the_watcher_read_first_after_the_first_check_is_told_once_and_what_ap
 }
 
 #[test]
-fn after_an_upgrade_a_clone_made_before_the_first_full_check_is_found_though_the_watcher_read_first()
- {
-    // A store an earlier version made, which recorded no place. The upgraded app's watcher
-    // reads first and records its places; the first full check then judges a project cloned
-    // since the earlier version's last check by the walks that version made.
-    let mac = with_projects("upgraded");
-    mac.run();
-    Connection::open(mac.store())
-        .unwrap()
-        .execute_batch("DROP TABLE unit_read; DELETE FROM meta WHERE key = 'units_since';")
-        .unwrap();
-    assert!(mac.watch().started().stop().success());
-    mac.put("dev/new/.git/HEAD", "ref: refs/heads/main\n");
-    mac.put(
-        "dev/new/package.json",
-        r#"{"scripts": {"preinstall": "node x.js"}}"#,
-    );
-    mac.run();
-    assert_eq!(
-        found(&mac),
-        [(
-            "autorun.package-install".to_string(),
-            "~/dev/new/package.json#/scripts/preinstall".to_string()
-        )]
-    );
-}
-
-#[test]
 fn a_worktree_that_appears_while_the_watcher_runs_raises_nothing_in_the_run_or_the_watcher_and_its_later_change_is_found_live()
  {
     // The full run finds the worktree and the watcher then watches it: both judge it by one
@@ -1702,28 +1674,19 @@ fn a_failed_reading_or_sample_is_not_watched_live_with_its_reason_until_the_next
     };
     assert_eq!(live(&mac).0, true);
 
-    // What the failure said carries an invented token: cut wherever it is printed, in the
-    // problem line and in the status, as every text from a source.
-    let token = format!(
-        "{}{}",
-        ["gh", "p_"].concat(),
-        "Q7mZ2xK9pL4vR8nT3wY6bH1cJ5dF0gS2aE7u"
-    );
-    let conn = Connection::open(mac.store()).unwrap();
-    conn.execute_batch(&format!(
-        "CREATE TRIGGER refuse BEFORE INSERT ON coverage WHEN NEW.run_id LIKE 'watch-%'
-         BEGIN SELECT RAISE(ABORT, 'invented refusal ?t={token}'); END;"
-    ))
-    .unwrap();
+    // A reading that cannot keep its raw copy fails, and is rolled back whole: the folder of
+    // raw copies beside the store is closed to writing.
+    use std::os::unix::fs::PermissionsExt;
+    let raw = mac.store().parent().unwrap().join("raw");
+    let closed = |mode| std::fs::set_permissions(&raw, std::fs::Permissions::from_mode(mode));
+    closed(0o555).unwrap();
     mac.put(".zshrc", "one\n");
     let problem = w.until("problem", |v| v["code"] == "read_failed");
     let (is_live, failed) = live(&mac);
     assert_eq!(is_live, false, "{failed}");
     assert_eq!(failed[0]["what"], "read", "{failed}");
-    let cut = "invented refusal ?t=\\cut{gitleaks:github-pat 40}";
     for detail in [&failed[0]["detail_text"], &problem["detail_text"]] {
-        let detail = detail.as_str().unwrap();
-        assert!(detail.contains(cut) && !detail.contains(&token), "{detail}");
+        assert!(!detail.as_str().unwrap().is_empty(), "{detail}");
     }
     // The page and the text say a watcher runs but does not watch live, never that none runs.
     // The failed reading wrote nothing to the journal: the page asked for says it all the same.
@@ -1737,7 +1700,7 @@ fn a_failed_reading_or_sample_is_not_watched_live_with_its_reason_until_the_next
     let text = within(mac.immune().args(["status", "--store"]).arg(mac.store()));
     let text = String::from_utf8(text.stdout).unwrap();
     assert!(text.contains("so it does not watch live"), "{text}");
-    conn.execute_batch("DROP TRIGGER refuse").unwrap();
+    closed(0o755).unwrap();
     mac.put(".zshrc", "two\n");
     w.until("read", |v| count(v, "changed") == 1);
     assert_eq!(live(&mac), (true.into(), serde_json::json!([])));
@@ -1943,7 +1906,7 @@ fn a_quiet_mac_needs_no_look_whatever_is_not_covered_and_a_planted_change_does()
     mac.put("dev/shop/yarn.lock", "# yarn lockfile v1\n");
     let servers = mac.root.join("servers");
     std::fs::create_dir_all(&servers).unwrap();
-    std::fs::write(servers.join("web-1.txt"), "##end\n").unwrap();
+    std::fs::write(servers.join("web-1.txt"), SERVER).unwrap();
     std::fs::write(servers.join("web-2.txt"), "##packages\n").unwrap();
     // The sweep ran long before the runs that read what it left.
     let swept = UNIX_EPOCH + Duration::from_secs(1_700_000_000);

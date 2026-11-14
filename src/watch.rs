@@ -119,22 +119,19 @@ pub const CANNOT_SEE: [&str; 3] = [
     "a symbolic link among the watched places pointed elsewhere, within seconds: FSEvents watches where a link leads, so the new target is seen at the watcher's next look at what to watch, within a minute",
 ];
 
-/// The watcher's state in the store: one row, made by its first reading, in the reading's
-/// transaction. The store's format does not change for it. When the watcher started is not
-/// here but in its lock file, which it writes as it takes the lock, so that nothing is
-/// written to the store outside the run lock.
-const TABLE: &str = "
-CREATE TABLE IF NOT EXISTS watcher (
+/// The watcher's tables, part of the store's schema (`store::schema`).
+pub const SCHEMA: &str = "
+-- The watcher's state: one row, written by its first reading, in the reading's transaction.
+-- When the watcher started is not here but in its lock file, which it writes as it takes the
+-- lock, so that nothing is written to the store outside the run lock.
+CREATE TABLE watcher (
     id        INTEGER PRIMARY KEY CHECK (id = 1),
     last_read INTEGER NOT NULL   -- when a watcher last read every watched place, UTC seconds
 );
-";
-
-/// What failed in a watcher and has not succeeded since: one row per kind, made by its first
-/// failure, under the run lock, as `watcher` is. A row older than the watcher that holds the
-/// lock now is a past watcher's and is not read.
-const FAILED_TABLE: &str = "
-CREATE TABLE IF NOT EXISTS watcher_failed (
+-- What failed in a watcher and has not succeeded since: one row per kind, written by its first
+-- failure, under the run lock, as `watcher` is. A row older than the watcher that holds the
+-- lock now is a past watcher's and is not read.
+CREATE TABLE watcher_failed (
     what   TEXT PRIMARY KEY,  -- `read`, `sample`, `resubscribe` or `events`
     at     INTEGER NOT NULL,  -- when it failed, UTC seconds
     detail TEXT NOT NULL      -- what the failure said
@@ -248,6 +245,10 @@ pub fn watch(args: &WatchArgs) -> ExitCode {
         ));
         ExitCode::from(crate::EXIT_STORE)
     };
+    // A store it cannot read is refused before anything is made beside it.
+    if let Err(e) = readable(&args.store) {
+        return unreadable(&e);
+    }
     if let Err(e) = std::fs::create_dir_all(&folder) {
         return unreadable(&e);
     }
@@ -275,9 +276,6 @@ pub fn watch(args: &WatchArgs) -> ExitCode {
         }
         Err(e) => return unreadable(&e),
     };
-    if let Err(e) = readable(&args.store) {
-        return unreadable(&e);
-    }
     let mut w = Watcher {
         args,
         folder,
@@ -381,14 +379,6 @@ fn readable(path: &Path) -> Result<(), Box<dyn Error>> {
         store::open_read_only(path)?;
     }
     Ok(())
-}
-
-fn has_table(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
-    conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-        [name],
-        |r| r.get(0),
-    )
 }
 
 struct Watcher<'a> {
@@ -770,7 +760,6 @@ impl Watcher<'_> {
 /// the run lock.
 fn mark(store: &Path, what: &str, failed: Option<&str>) -> Result<(), Box<dyn Error>> {
     let conn = store::open(store)?;
-    conn.execute_batch(FAILED_TABLE)?;
     match failed {
         Some(detail) => conn.execute(
             "INSERT INTO watcher_failed (what, at, detail) VALUES (?1, ?2, ?3)
@@ -810,7 +799,6 @@ fn read_held(
     let (rows, opened) = crate::watch_places(&mut run, &reader_args(args), &found, only)?;
     // What needs a look after it, counted by the code `immune status --json` counts it with.
     let needs = status::needs(&tx, at)?.items.len();
-    tx.execute_batch(TABLE)?;
     // The row says when every place was last read: only a reading of every place moves it.
     if only.is_none() {
         tx.execute(
@@ -1221,9 +1209,6 @@ pub fn failures(conn: &Connection, folder: &Path) -> rusqlite::Result<Vec<Failur
     let Some(since) = started(folder) else {
         return Ok(Vec::new());
     };
-    if !has_table(conn, "watcher_failed")? {
-        return Ok(Vec::new());
-    }
     conn.prepare("SELECT what, at, detail FROM watcher_failed WHERE at >= ?1 ORDER BY what")?
         .query_map([since], |r| {
             Ok(Failure {
@@ -1238,9 +1223,6 @@ pub fn failures(conn: &Connection, folder: &Path) -> rusqlite::Result<Vec<Failur
 /// When a watcher last read every watched place of this store, whichever watcher it was;
 /// `None` when none ever did.
 pub fn last_read(conn: &Connection) -> rusqlite::Result<Option<i64>> {
-    if !has_table(conn, "watcher")? {
-        return Ok(None);
-    }
     conn.query_row("SELECT last_read FROM watcher WHERE id = 1", [], |r| {
         r.get(0)
     })

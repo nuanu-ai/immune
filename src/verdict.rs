@@ -65,9 +65,9 @@ pub const WORDS: Words = Words {
     advice: "Read its reason and look at what it is about. Mark this finding seen once you have. Immune's own finding about the same thing, if there is one, keeps an answer of its own; one answer that names both answers both.",
 };
 
-/// Created on every open, so a store of the current format takes it without a rebuild.
+/// Part of the store's schema (`store::schema`).
 pub const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS verdict (
+CREATE TABLE verdict (
     id         INTEGER PRIMARY KEY,
     at         INTEGER NOT NULL,
     journal    INTEGER NOT NULL,  -- its entry in the journal, `verdict`
@@ -83,9 +83,9 @@ CREATE TABLE IF NOT EXISTS verdict (
     case_ref   TEXT NOT NULL,     -- text from the response layer
     CHECK ((named IS NULL) = (position IS NOT NULL AND rule IS NOT NULL))
 );
-CREATE INDEX IF NOT EXISTS verdict_named ON verdict (named);
-CREATE INDEX IF NOT EXISTS verdict_finding ON verdict (finding);
-CREATE INDEX IF NOT EXISTS verdict_match ON verdict (position, rule);
+CREATE INDEX verdict_named ON verdict (named);
+CREATE INDEX verdict_finding ON verdict (finding);
+CREATE INDEX verdict_match ON verdict (position, rule);
 ";
 
 /// What the response layer concluded.
@@ -405,7 +405,7 @@ fn store_unreadable(detail: impl Into<String>) -> Refusal {
     Refusal {
         code: "store_unreadable",
         message: "the store cannot be read or written; nothing was recorded",
-        detail: Stop::Store(crate::store::damaged(&detail.into())).to_string(),
+        detail: Stop::Store(detail.into()).to_string(),
         exit: crate::EXIT_STORE,
     }
 }
@@ -799,7 +799,6 @@ fn take(args: &VerdictArgs) -> Result<v1::VerdictRecorded, Refusal> {
                 )?;
             }
             if let Some(e) = event {
-                events::schema(&tx)?;
                 events::keep(&tx, &finding, now, 1, &VecDeque::from([e]))?;
             }
             (Some(finding), raised)

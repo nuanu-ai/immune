@@ -2042,7 +2042,7 @@ pub enum Via {
     /// On the command line, naming neither.
     #[serde(rename = "command")]
     Command = 3,
-    /// Given before the store kept how answers came.
+    /// How the answer came is not recorded.
     #[serde(rename = "unknown")]
     Unknown = 4,
 }

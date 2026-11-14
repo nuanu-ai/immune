@@ -25,11 +25,11 @@ use serde_json::{Value, json};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-/// The tables of the answers. Created on every open.
+/// The tables of the answers, part of the store's schema (`store::schema`).
 pub const SCHEMA: &str = "
 -- One answer per advisory, checkout and package the checkout's lockfiles hold, as the latest
 -- run gave it.
-CREATE TABLE IF NOT EXISTS vulnerability_answer (
+CREATE TABLE vulnerability_answer (
     checkout   TEXT NOT NULL,      -- the checkout's entity id
     ecosystem  TEXT NOT NULL,
     package    TEXT NOT NULL,      -- the package's name in the registry
@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS vulnerability_answer (
     PRIMARY KEY (checkout, ecosystem, package, source, advisory)
 );
 -- An answer that changed or went, with when it stopped holding.
-CREATE TABLE IF NOT EXISTS vulnerability_answer_past (
+CREATE TABLE vulnerability_answer_past (
     checkout   TEXT NOT NULL,
     ecosystem  TEXT NOT NULL,
     package    TEXT NOT NULL,
@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS vulnerability_answer_past (
 );
 -- One row per checkout and matched ecosystem: whether the conditions for 'does not affect me,
 -- known for certain' hold there, so the answer for any advisory is derived on demand.
-CREATE TABLE IF NOT EXISTS vulnerability_place (
+CREATE TABLE vulnerability_place (
     checkout        TEXT NOT NULL,
     ecosystem       TEXT NOT NULL,
     lockfiles       TEXT NOT NULL CHECK (lockfiles IN ('full', 'partial', 'not_read')),
@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS vulnerability_place (
     PRIMARY KEY (checkout, ecosystem)
 );
 -- The catalogue's exploited CVEs that records of the data are linked to through aliases.
-CREATE TABLE IF NOT EXISTS vulnerability_linked (
+CREATE TABLE vulnerability_linked (
     cve       TEXT NOT NULL,
     source    TEXT NOT NULL,
     advisory  TEXT NOT NULL,

@@ -63,7 +63,7 @@ const SECTIONS: [&str; 5] = [
     "docker_access",
 ];
 /// What every reading of a file from an earlier probe says.
-const OLDER_PROBE: &str =
+pub const OLDER_PROBE: &str =
     "the file came from an earlier probe, which this version does not read; run the probe again";
 /// dpkg's list with each package's status and source.
 const DPKG: &str = "dpkg_with_source";

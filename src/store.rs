@@ -105,9 +105,8 @@ CREATE TABLE raw_input (
 );
 ";
 
-/// What the journal records. The list only grows: a store whose journal was made with a
-/// shorter list is made again with this one when it is opened, so a new kind of entry is a
-/// new word here and nothing else.
+/// What the journal records. The list is part of the format: a new kind of entry is a new word
+/// here and a new format.
 const JOURNAL_ENTRIES: [&str; 24] = [
     "run_started",
     "added",
@@ -179,10 +178,9 @@ CREATE TRIGGER journal_no_delete BEFORE DELETE ON journal
 }
 
 /// The owner's word: what the owner said about an entity, next to the facts and never an
-/// edit of them. A withdrawn statement is kept with the time it was withdrawn. Created on
-/// every open, so a store of the current format takes it without a rebuild.
+/// edit of them. A withdrawn statement is kept with the time it was withdrawn.
 const OWNER: &str = "
-CREATE TABLE IF NOT EXISTS owner_statement (
+CREATE TABLE owner_statement (
     id           INTEGER PRIMARY KEY,
     entity       TEXT NOT NULL REFERENCES entity (id),
     said         TEXT NOT NULL CHECK (said IN ('retired', 'not mine')),
@@ -194,10 +192,9 @@ CREATE TABLE IF NOT EXISTS owner_statement (
 ";
 
 /// The threat list and its readings, see docs/threats.md. Threats are not facts: they live
-/// in their own tables and never touch assertions. Created on every open, like the owner's
-/// word. Text in `threat` is the catalogue's own and is partly written by an attacker.
+/// in their own tables and never touch assertions. Text in `threat` is the catalogue's own and is partly written by an attacker.
 const THREATS: &str = "
-CREATE TABLE IF NOT EXISTS threat (
+CREATE TABLE threat (
     source        TEXT NOT NULL,     -- which list, such as 'cisa-kev'
     id            TEXT NOT NULL,     -- the CVE id
     vendor        TEXT NOT NULL,
@@ -211,7 +208,7 @@ CREATE TABLE IF NOT EXISTS threat (
     PRIMARY KEY (source, id),
     CHECK ((gone_at IS NULL) = (gone_run IS NULL))
 );
-CREATE TABLE IF NOT EXISTS feed_reading (
+CREATE TABLE feed_reading (
     id       INTEGER PRIMARY KEY,
     source   TEXT NOT NULL,
     run_id   TEXT NOT NULL,
@@ -226,8 +223,9 @@ CREATE TABLE IF NOT EXISTS feed_reading (
 );
 ";
 
-/// The vocabulary seed. It is data, not format: it is applied on every open, so a store of
-/// the current format learns a new row without being rebuilt, and a row is never removed.
+/// The vocabulary seed. It is data, not format: it is applied on every open that may write, so
+/// a store of the current format learns a new row without being rebuilt, and a row is never
+/// removed.
 const VOCABULARY: &str = "
 INSERT OR IGNORE INTO entity_type (name, status) VALUES
     ('machine', 'used'), ('container', 'used'), ('checkout', 'used'), ('component', 'used'),
@@ -244,9 +242,6 @@ INSERT OR IGNORE INTO predicate (name, object_kind, status) VALUES
     ('runs_kernel_package', 'literal', 'used'), ('watched_as', 'literal', 'used'),
     ('has_content', 'literal', 'used'), ('links_to', 'literal', 'used'),
     ('copy_of', NULL, 'reserved'), ('reachable_from', NULL, 'reserved');
--- A reserved row comes into use: a store seeded before keeps the row and learns its use.
-UPDATE predicate SET object_kind = 'literal', status = 'used'
-    WHERE name = 'relation_to_owner' AND status = 'reserved';
 INSERT OR IGNORE INTO basis_kind (name, strength) VALUES
     ('observed', 1), ('declared', 2), ('mentioned', 3);
 INSERT OR IGNORE INTO coverage_kind (name) VALUES
@@ -284,8 +279,7 @@ INSERT OR IGNORE INTO coverage_kind (name) VALUES
 INSERT OR IGNORE INTO coverage_kind (name) VALUES ('folders macOS asks permission for');
 ";
 
-/// Indexes what `immune status` and the view read by, made on every open so that a store of the
-/// current format takes them. Without them the status of a store of tens of thousands of
+/// Indexes what `immune status` and the view read by. Without them the status of a store of tens of thousands of
 /// things took seconds: each finding looked up its subject and its basis by a full scan, and
 /// each latest reading looked for its last full one the same way.
 ///
@@ -302,23 +296,22 @@ INSERT OR IGNORE INTO coverage_kind (name) VALUES ('folders macOS asks permissio
 /// the third; `coverage_lack_of` finds what a latest reading names as not read. Without them `immune status` took 8 ms after ten watcher readings and 325 ms after
 /// ten thousand, and `immune view` 9 ms and 589 ms.
 const INDEXES: &str = "
-CREATE INDEX IF NOT EXISTS coverage_reading ON coverage (reader, scope, kind);
-CREATE INDEX IF NOT EXISTS coverage_latest_of_kind ON coverage (reader, kind);
-CREATE INDEX IF NOT EXISTS coverage_full ON coverage (reader, scope, kind, completeness, observed_at);
-CREATE INDEX IF NOT EXISTS coverage_run ON coverage (run_id);
-CREATE INDEX IF NOT EXISTS coverage_lack_of ON coverage_lack (coverage);
-CREATE INDEX IF NOT EXISTS assertion_subject ON assertion (subject, predicate);
-CREATE INDEX IF NOT EXISTS finding_basis_finding ON finding_basis (finding);
+CREATE INDEX coverage_reading ON coverage (reader, scope, kind);
+CREATE INDEX coverage_latest_of_kind ON coverage (reader, kind);
+CREATE INDEX coverage_full ON coverage (reader, scope, kind, completeness, observed_at);
+CREATE INDEX coverage_run ON coverage (run_id);
+CREATE INDEX coverage_lack_of ON coverage_lack (coverage);
+CREATE INDEX assertion_subject ON assertion (subject, predicate);
+CREATE INDEX finding_basis_finding ON finding_basis (finding);
 ";
 
 /// The journal by run: what one run found, how it started and ended, what a reading of a feed
 /// or the catalogue changed. Every run, watcher reading and sample adds to the journal and
 /// nothing is ever removed from it, so without this each of those questions went through
 /// the whole journal: the page of threats asked it once for each of the catalogue's 1,450
-/// entries, 2.5 s of a full `immune view` on a journal of 40,000 entries. Made after the journal
-/// is widened, which makes the table again.
+/// entries, 2.5 s of a full `immune view` on a journal of 40,000 entries.
 const JOURNAL_INDEXES: &str = "
-CREATE INDEX IF NOT EXISTS journal_run ON journal (run_id, entry);
+CREATE INDEX journal_run ON journal (run_id, entry);
 ";
 
 /// The start of a query that names two tables: `reading (reader, scope, kind)`, one row for
@@ -451,8 +444,35 @@ pub struct Event {
 
 type Res<T> = Result<T, Box<dyn std::error::Error>>;
 
-/// Opens the store, creating it in an empty file. A store of another format is refused
-/// and left as it is: old stores are not converted.
+/// Every statement that makes a store of this format: every table, index, view and trigger of
+/// every part of the program. It is the one place the schema is made from: a new store is made
+/// from it, in one transaction, and every open compares a store with what it makes (`check`).
+/// No other code creates, alters or drops a table of the store.
+fn schema() -> String {
+    [
+        SCHEMA,
+        &journal_sql(),
+        OWNER,
+        THREATS,
+        crate::osv::SCHEMA,
+        crate::vulnerabilities::SCHEMA,
+        crate::findings::SCHEMA,
+        crate::agent_folders::SCHEMA,
+        crate::verdict::SCHEMA,
+        crate::events::SCHEMA,
+        crate::processes::SCHEMA,
+        crate::baseline::SCHEMA,
+        crate::watch::SCHEMA,
+        INDEXES,
+        JOURNAL_INDEXES,
+    ]
+    .join("\n")
+}
+
+/// Opens the store, making it in an empty file. A store of another format, or one that does
+/// not hold exactly the schema of this format and its id, is refused before anything is
+/// written and is left as it is: old stores are not converted and a damaged one is not
+/// repaired.
 ///
 /// A run writes in one transaction that lasts the whole run. Readers such as `immune status`
 /// must be able to read the last committed state all that time, so the run never takes the
@@ -467,11 +487,10 @@ pub fn open(path: &Path) -> Res<Connection> {
     let mut conn = Connection::open(path)?;
     conn.pragma_update(None, "cache_spill", false)?;
     conn.pragma_update(None, "foreign_keys", true)?;
-    let tables: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_master", [], |r| r.get(0))?;
-    if tables == 0 {
+    let objects: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_master", [], |r| r.get(0))?;
+    if objects == 0 {
         let tx = conn.transaction()?;
-        tx.execute_batch(SCHEMA)?;
-        tx.execute_batch(&journal_sql())?;
+        tx.execute_batch(&schema())?;
         tx.execute(
             "INSERT INTO meta (key, value) VALUES ('format_version', ?1)",
             [FORMAT_VERSION],
@@ -479,52 +498,12 @@ pub fn open(path: &Path) -> Res<Connection> {
         give_id(&tx)?;
         tx.commit()?;
     }
-    check_format(&conn, path)?;
+    check(&conn, path)?;
     conn.execute_batch(VOCABULARY)?;
+    conn.execute_batch(crate::processes::KINDS)?;
     crate::autorun::add_kinds(&conn)?;
     crate::watched::add_kinds(&conn)?;
-    conn.execute_batch(OWNER)?;
-    conn.execute_batch(THREATS)?;
-    conn.execute_batch(crate::osv::SCHEMA)?;
-    conn.execute_batch(crate::vulnerabilities::SCHEMA)?;
-    conn.execute_batch(crate::findings::SCHEMA)?;
-    conn.execute_batch(crate::agent_folders::SCHEMA)?;
-    conn.execute_batch(crate::verdict::SCHEMA)?;
-    conn.execute_batch(INDEXES)?;
-    widen_journal(&mut conn)?;
-    conn.execute_batch(JOURNAL_INDEXES)?;
-    crate::baseline::open(&mut conn)?;
     Ok(conn)
-}
-
-/// A journal made with a shorter list of entries refuses the new ones. It is made again with
-/// the whole list, row for row and with the same sequence, in one transaction: the store
-/// keeps its history and its format.
-fn widen_journal(conn: &mut Connection) -> Res<()> {
-    let sql: String = conn.query_row(
-        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'journal'",
-        [],
-        |r| r.get(0),
-    )?;
-    if JOURNAL_ENTRIES
-        .iter()
-        .all(|e| sql.contains(&format!("'{e}'")))
-    {
-        return Ok(());
-    }
-    let tx = conn.transaction()?;
-    tx.execute_batch(
-        "ALTER TABLE journal RENAME TO journal_before_widening;
-         DROP TRIGGER journal_no_update;
-         DROP TRIGGER journal_no_delete;",
-    )?;
-    tx.execute_batch(&journal_sql())?;
-    tx.execute_batch(
-        "INSERT INTO journal SELECT * FROM journal_before_widening;
-         DROP TABLE journal_before_widening;",
-    )?;
-    tx.commit()?;
-    Ok(())
 }
 
 /// The store's own id, as every message of the contract carries it (`store_id`): a finding's id
@@ -584,7 +563,7 @@ pub fn open_read_only(path: &Path) -> Res<Connection> {
 
 fn read_only(path: &Path) -> Res<Connection> {
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    check_format(&conn, path)?;
+    check(&conn, path)?;
     Ok(conn)
 }
 
@@ -624,9 +603,20 @@ fn writable(folder: &Path) -> bool {
     unsafe { libc::access(c.as_ptr(), libc::W_OK) == 0 }
 }
 
-fn check_format(conn: &Connection, path: &Path) -> Res<()> {
+/// What every refusal of a store ends with: what was done to it and what to do.
+const START_OVER: &str = "Nothing was changed. Move the old store aside or pass another --store; \
+                          the next run starts a store from the beginning.";
+
+/// Checks a store before anything else is done with it: its format, then that it holds exactly
+/// the schema of this format, then its id. A store that fails is refused with what to do and is
+/// not touched. So no answer ever rests on a table that is not there, and no writer makes again,
+/// empty, a table that was lost with what it held.
+fn check(conn: &Connection, path: &Path) -> Res<()> {
+    let at = path.display();
+    // Read whatever the store is: a table `meta` without the columns `key` and `value` names no
+    // format. Any other failure, such as a journal to roll back first, is returned as it is.
     let has_meta: bool = conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta')",
+        "SELECT COUNT(*) = 2 FROM pragma_table_info('meta') WHERE name IN ('key', 'value')",
         [],
         |r| r.get(0),
     )?;
@@ -640,42 +630,159 @@ fn check_format(conn: &Connection, path: &Path) -> Res<()> {
         None
     };
     let Some(version) = version else {
-        return Err(format!("{} is not a store of this tool", path.display()).into());
+        return Err(
+            format!("{at} is not a store of this tool: it names no format. {START_OVER}").into(),
+        );
     };
-    let (Ok(found), Ok(ours)) = (version.parse::<u32>(), FORMAT_VERSION.parse::<u32>()) else {
-        return Err(format!("store format {version} is not supported").into());
+    let ours: u32 = FORMAT_VERSION.parse()?;
+    let Ok(found) = version.parse::<u32>() else {
+        return Err(format!(
+            "the store at {at} names a format this version does not know ({version:?}). {START_OVER}"
+        )
+        .into());
     };
     if found < ours {
         return Err(format!(
-            "the store at {} is from an older format ({found}); this version uses format {ours} \
-             and does not convert old stores. Nothing was changed. Move the old store aside \
-             or pass another --store.",
-            path.display()
+            "the store at {at} is from an older format ({found}); this version uses format {ours} \
+             and does not convert old stores. {START_OVER}"
         )
         .into());
     }
     if found > ours {
         return Err(format!(
-            "the store at {} is from a newer format ({found}) than this version knows ({ours})",
-            path.display()
+            "the store at {at} is from a newer format ({found}) than this version knows ({ours}). \
+             Nothing was changed. Use the version of Immune that made it, or pass another --store."
         )
         .into());
+    }
+    if let Some(why) = differs(expected(), &shape(conn)?) {
+        return Err(damaged(path, &why).into());
+    }
+    let has_id: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM meta WHERE key = 'store_id' AND value != '')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !has_id {
+        return Err(damaged(path, "it has no id").into());
     }
     Ok(())
 }
 
-/// What a failure to read a store of this format says. Such a store holds every table and
-/// column this build reads, so one that lacks one was changed by something other than a build
-/// of this format: SQLite's own words say which, and the person is told what it means.
-pub fn damaged(e: &str) -> String {
-    if e.contains("no such column") || e.contains("no such table") {
-        format!(
-            "the store lacks a table or column of its format, so it is damaged ({e}). Nothing \
-             was changed. Move it aside or pass another --store."
-        )
-    } else {
-        e.to_string()
+fn damaged(path: &Path, why: &str) -> String {
+    format!(
+        "the store at {} is damaged: {why}. A store of format {FORMAT_VERSION} holds exactly the \
+         tables this version makes, so something other than Immune changed it. {START_OVER}",
+        path.display()
+    )
+}
+
+/// What a store of this format holds, made once in each process from `schema` in a store in
+/// memory, so that the check and the making of a store can never disagree.
+fn expected() -> &'static Shape {
+    static SHAPE: std::sync::OnceLock<Shape> = std::sync::OnceLock::new();
+    SHAPE.get_or_init(|| {
+        let conn = Connection::open_in_memory().expect("SQLite opens a store in memory");
+        conn.execute_batch(&schema())
+            .expect("the schema of this format makes a store");
+        shape(&conn).expect("SQLite describes a store it made")
+    })
+}
+
+/// A store's schema as the check compares it, by object (`table journal`, `index journal_run`):
+/// for a table, each column with its declared type, whether it may be null, its default, its
+/// place in the primary key and whether it is hidden, and each foreign key; for an index, its
+/// table, its columns in order with their direction and collation, and whether it is unique;
+/// for a view or a trigger, its table and its whole text, since either can change what a write
+/// does. SQLite's own tables, named `sqlite_`, are left out. CHECK constraints are not compared:
+/// SQLite gives them only inside a table's text, which holds its comments too, and a change to
+/// them is a change of format all the same, which raises `FORMAT_VERSION`.
+type Shape = std::collections::BTreeMap<String, String>;
+
+fn shape(conn: &Connection) -> rusqlite::Result<Shape> {
+    let objects: Vec<(String, String, String, Option<String>)> = conn
+        .prepare(
+            "SELECT type, name, tbl_name, sql FROM sqlite_master
+             WHERE substr(name, 1, 7) != 'sqlite_' ORDER BY type, name",
+        )?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let list = |sql: &str, args: &[&str]| -> rusqlite::Result<String> {
+        let mut stmt = conn.prepare(sql)?;
+        let n = stmt.column_count();
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(args), |r| {
+                (0..n)
+                    .map(|i| {
+                        Ok(match r.get_ref(i)? {
+                            rusqlite::types::ValueRef::Null => "null".to_string(),
+                            rusqlite::types::ValueRef::Integer(v) => v.to_string(),
+                            rusqlite::types::ValueRef::Real(v) => v.to_string(),
+                            rusqlite::types::ValueRef::Text(t)
+                            | rusqlite::types::ValueRef::Blob(t) => {
+                                format!("{:?}", String::from_utf8_lossy(t))
+                            }
+                        })
+                    })
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map(|v| v.join(" "))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows.join(", "))
+    };
+    let mut out = Shape::new();
+    for (kind, name, table, sql) in objects {
+        let detail = match kind.as_str() {
+            "table" => format!(
+                "columns {}; keys {}",
+                list(
+                    "SELECT name, type, \"notnull\", dflt_value, pk, hidden
+                     FROM pragma_table_xinfo(?1) ORDER BY cid",
+                    &[&name]
+                )?,
+                list(
+                    "SELECT \"from\", \"table\", \"to\" FROM pragma_foreign_key_list(?1)
+                     ORDER BY id, seq",
+                    &[&name]
+                )?
+            ),
+            "index" => format!(
+                "on {table} ({}) unique {}",
+                list(
+                    "SELECT name, desc, coll FROM pragma_index_xinfo(?1) WHERE key = 1
+                     ORDER BY seqno",
+                    &[&name]
+                )?,
+                list(
+                    "SELECT \"unique\" FROM pragma_index_list(?1) WHERE name = ?2",
+                    &[&table, &name]
+                )?
+            ),
+            _ => format!("on {table}: {}", sql.unwrap_or_default()),
+        };
+        out.insert(format!("{kind} {name}"), detail);
     }
+    Ok(out)
+}
+
+/// The first way a store's schema is not the one this format makes, in words; `None` when it
+/// is the same.
+fn differs(want: &Shape, got: &Shape) -> Option<String> {
+    // A missing table is said before what went with it.
+    let mut objects: Vec<(&String, &String)> = want.iter().collect();
+    objects.sort_by_key(|(object, _)| !object.starts_with("table "));
+    for (object, detail) in objects {
+        match got.get(object) {
+            None => return Some(format!("it lacks the {object}")),
+            Some(d) if d != detail => {
+                return Some(format!("its {object} is not as this format makes it"));
+            }
+            Some(_) => {}
+        }
+    }
+    got.keys()
+        .find(|object| !want.contains_key(*object))
+        .map(|object| format!("it holds a {object} this format does not"))
 }
 
 /// How long a run waits for the run lock before it says another run is in progress. A

@@ -52,8 +52,8 @@ pub const SESSIONS: &str = ".claude/projects";
 /// The note of a full reading when there are no sessions to read.
 pub const NOT_HERE: &str = "no Claude Code sessions on this machine";
 
-/// Created on every open of the store: a store made before it starts with no positions, so
-/// its first reading is from the first byte of every file.
+/// Part of the store's schema (`store::schema`). A new store has no positions, so its first
+/// reading is from the first byte of every file.
 pub const SCHEMA: &str = "
 -- Where each agent session file was read up to, see agent_folders.rs. Every byte before
 -- `position` is whole lines already read; `digest` is the SHA-256 of those bytes; `folders`
@@ -61,7 +61,7 @@ pub const SCHEMA: &str = "
 -- working folder that are not JSON. The inode and change time are the file's at that
 -- reading; `settled` is 0 when the file had changed too shortly before for an unchanged
 -- change time to stand for it.
-CREATE TABLE IF NOT EXISTS session_file (
+CREATE TABLE session_file (
     path     BLOB PRIMARY KEY,
     inode    INTEGER NOT NULL,
     ctime_ns INTEGER NOT NULL,

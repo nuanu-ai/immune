@@ -105,7 +105,7 @@ pub fn matches_cmd(args: &MatchesArgs) -> ExitCode {
         Err(Failure::Store(why)) => (
             "store_unreadable",
             "the store cannot be read, so what became of a match cannot be told; nothing was evaluated",
-            crate::store::damaged(&why),
+            why,
             crate::EXIT_STORE,
         ),
         Err(Failure::Log(why)) => (
@@ -497,8 +497,8 @@ fn named(arrivals: &Arrivals, state: Arrival) -> Vec<String> {
 /// named whatever the store says. Both `None` when no collector is installed.
 ///
 /// What this list says rests on the lines read: the store can only add to it. A reading older
-/// than the lines, after a downgrade with the app closed, or a store an earlier build left, never
-/// makes a stretch whose lines lack a field look judged.
+/// than the lines, as after a downgrade with the app closed, never makes a stretch whose lines
+/// lack a field look judged.
 fn unevaluated(
     rules: &Rules,
     collects: &Result<(), String>,
