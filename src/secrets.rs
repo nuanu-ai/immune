@@ -2690,7 +2690,10 @@ mod tests {
     fn a_line_packed_with_matches_is_cut_well_within_a_second() {
         // gitleaks's generic rule checks its 1,445 stopwords for every match; as one automaton
         // a line of the cap packed with matches costs milliseconds in a release build. The
-        // bound is wide, for a debug build on a loaded machine.
+        // clock is the only measure here, so the bound is far above what is measured: 35 ms in
+        // a debug build on an idle Mac, over 100 times under four seconds, where a loaded
+        // machine stretches a time a few times over. A cost per match that grew with the matches
+        // in the line, about 3,400 here, would be far over it.
         let mut line = String::new();
         while line.len() < LINE_CAP - 64 {
             line.push_str(&format!("token={}\n", ["aB3dE5", "gH7jK9"].concat()));

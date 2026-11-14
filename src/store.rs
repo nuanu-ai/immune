@@ -1448,6 +1448,61 @@ pub fn journal_threat(
     Ok(())
 }
 
+/// For tests: the work SQLite does, counted in steps of its virtual machine, so that a promise
+/// that some work does not grow is pinned without the clock. The clock on a loaded machine runs
+/// a reading several times longer for nothing; the steps of a statement are the same on every
+/// machine for the same store, and a statement that looks through every row takes a step for
+/// each.
+///
+/// Nothing in the code needs to change for it. Every connection opened on this thread while
+/// `counted` runs gets SQLite's progress handler, called at every step (an interval of one),
+/// through an automatic extension, which SQLite runs at every open. A connection opened on
+/// another thread, or outside `counted`, is left as it was, so tests running side by side do
+/// not count each other's work.
+#[cfg(test)]
+pub mod steps {
+    use rusqlite::ffi;
+    use std::cell::Cell;
+    use std::ffi::{c_char, c_int, c_void};
+
+    thread_local! {
+        static COUNTING: Cell<bool> = const { Cell::new(false) };
+        static STEPS: Cell<u64> = const { Cell::new(0) };
+    }
+
+    unsafe extern "C" fn step(_: *mut c_void) -> c_int {
+        STEPS.with(|s| s.set(s.get() + 1));
+        0
+    }
+
+    unsafe extern "C" fn opened(
+        db: *mut ffi::sqlite3,
+        _: *mut *mut c_char,
+        _: *const ffi::sqlite3_api_routines,
+    ) -> c_int {
+        if COUNTING.with(Cell::get) {
+            // SAFETY: `db` is the connection SQLite is opening, valid for this call.
+            unsafe { ffi::sqlite3_progress_handler(db, 1, Some(step), std::ptr::null_mut()) };
+        }
+        ffi::SQLITE_OK
+    }
+
+    /// What `f` returns, and the steps SQLite took for it on the connections it opened.
+    pub fn counted<T>(f: impl FnOnce() -> T) -> (T, u64) {
+        static REGISTERED: std::sync::Once = std::sync::Once::new();
+        REGISTERED.call_once(|| {
+            // SAFETY: `opened` has the signature SQLite calls an automatic extension with.
+            let rc = unsafe { ffi::sqlite3_auto_extension(Some(opened)) };
+            assert_eq!(rc, ffi::SQLITE_OK);
+        });
+        STEPS.with(|s| s.set(0));
+        COUNTING.with(|c| c.set(true));
+        let out = f();
+        COUNTING.with(|c| c.set(false));
+        (out, STEPS.with(Cell::get))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

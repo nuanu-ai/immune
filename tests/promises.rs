@@ -9765,11 +9765,18 @@ fn status_answers_while_a_run_is_in_progress_and_never_makes_it_fail() {
     let w = Watch::new("json-during-run");
     let brew = put(w.home(), "many.json", &many_formulae(6000, "1.0"));
     // A run kept in progress, its transaction open: the tailscale command, which the run asks
-    // inside the run lock after Homebrew's packages are written, answers after 5 s. (The
-    // downloads are asked for before the lock and cannot keep a run in progress.)
+    // inside the run lock after Homebrew's packages are written, says it was asked and answers
+    // only when the test lets it, after every status below has answered, or after a minute.
+    // (The downloads are asked for before the lock and cannot keep a run in progress.)
+    let gate = w.home().join("gate");
+    std::fs::create_dir_all(&gate).unwrap();
     let slow = script(
         &w.home().join("slow-tailscale"),
-        "sleep 5\necho 'not running' >&2\nexit 1",
+        &format!(
+            "touch '{g}/waiting'\ni=0\nwhile [ ! -f '{g}/go' ] && [ $i -lt 600 ]; do sleep 0.1; i=$((i+1)); done\n\
+             echo 'not running' >&2\nexit 1",
+            g = gate.display()
+        ),
     );
     let run = |curl: &Path| {
         let mut cmd = immune_run_curl(w.home(), &w.store(), curl);
@@ -9803,7 +9810,12 @@ fn status_answers_while_a_run_is_in_progress_and_never_makes_it_fail() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let mut waited = 0;
+    while !gate.join("waiting").exists() {
+        assert!(waited < 600, "the run never asked for tailscale");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        waited += 1;
+    }
     let second_human = run(&quick)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -9814,22 +9826,15 @@ fn status_answers_while_a_run_is_in_progress_and_never_makes_it_fail() {
     let readers: Vec<_> = (0..3)
         .map(|_| {
             let store = w.store();
-            std::thread::spawn(move || {
-                let mut seen = Vec::new();
-                for _ in 0..8 {
-                    let start = std::time::Instant::now();
-                    let r = status_json(&store);
-                    seen.push((start.elapsed(), r));
-                }
-                seen
-            })
+            std::thread::spawn(move || (0..8).map(|_| status_json(&store)).collect::<Vec<_>>())
         })
         .collect();
-    let seen: Vec<_> = readers
-        .into_iter()
-        .flat_map(|t| t.join().unwrap())
-        .collect();
+    // The run is let go and waited for before a status that failed fails the test, so that it
+    // is not left waiting for a folder that is gone.
+    let joined: Vec<_> = readers.into_iter().map(|t| t.join()).collect();
+    std::fs::write(gate.join("go"), "").unwrap();
     let out = child.wait_with_output().unwrap();
+    let seen: Vec<_> = joined.into_iter().flat_map(|r| r.unwrap()).collect();
     assert!(
         out.status.success(),
         "{}",
@@ -9843,21 +9848,16 @@ fn status_answers_while_a_run_is_in_progress_and_never_makes_it_fail() {
     assert_eq!(said["errors"][0]["code"], "run_in_progress");
     assert_eq!(second_said.status.code(), Some(4));
     assert!(String::from_utf8_lossy(&second_said.stderr).contains("another run is in progress"));
-    let in_progress = seen
-        .iter()
-        .filter(|(_, r)| r["running"] == true && r["last_run"]["finished_at"].is_null())
-        .count();
-    assert!(in_progress > 0, "no status saw the run in progress");
-    for (took, r) in &seen {
-        assert!(
-            took.as_millis() < 2500,
-            "a status waited {took:?} for the run"
-        );
-        if r["running"] == true && r["last_run"]["finished_at"].is_null() {
-            // The numbers are those of the last finished run, and say so.
-            assert_eq!(r["last_finished_run"]["check"]["id"], finished);
-            assert_eq!(r["estate"]["components"], 6000);
-        }
+    // Every status answered while the run was held in progress, so none waited for it to end,
+    // with no clock: one that had waited for the run's write would have given up after SQLite's
+    // busy timeout and failed, as one that had waited for the run lock would have seen the run
+    // finished. Each answered with the last finished state, and says so.
+    assert_eq!(seen.len(), 24);
+    for r in &seen {
+        assert_eq!(r["running"], true, "{r}");
+        assert!(r["last_run"]["finished_at"].is_null(), "{r}");
+        assert_eq!(r["last_finished_run"]["check"]["id"], finished);
+        assert_eq!(r["estate"]["components"], 6000);
     }
     let after = status_json(&w.store());
     assert_eq!(after["running"], false);
