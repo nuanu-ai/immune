@@ -1443,28 +1443,29 @@ pub(crate) fn rules_now_of(
             ),
         },
     };
-    let not_arriving = watching.map_or(0, |l| l.not_arriving());
-    // While the level runs, a rule evaluated in full watches unless its events are not
-    // collected or it reads what does not arrive; then it is named, with why: the collector
+    // Whether a rule watches now is one predicate, the page's too (`happens::Watching`).
+    let now = crate::happens::Watching::of(level);
+    // While the level runs, a rule evaluated in full that does not watch is named, with why:
+    // its events are not collected, or what it reads does not arrive because the collector
     // does not keep it, keeps it and never filled it, or no line that would carry it was read.
     let unwatched = |l: &crate::sigma::Loaded| -> Option<(&'static str, Vec<&'static str>)> {
         let level = watching?;
-        if l.kind == Some(Kind::File) && !files {
+        if now.watches(l) {
+            None
+        } else if l.kind == Some(Kind::File) && !files {
             Some(("file_events_not_collected", Vec::new()))
-        } else if l.silenced_by(not_arriving) {
-            let missing = l.needs & not_arriving;
+        } else {
+            let missing = l.needs & now.missing;
             Some((
                 level.arrivals.worst(missing).reason()?,
                 crate::events::names(missing),
             ))
-        } else {
-            None
         }
     };
     let watching_of = |kind: Kind| {
         evaluated
             .iter()
-            .filter(|l| l.kind == Some(kind) && watching.is_some() && unwatched(l).is_none())
+            .filter(|l| l.kind == Some(kind) && now.watches(l))
             .count()
     };
     let watching_file_rules = watching_of(Kind::File);

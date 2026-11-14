@@ -48,17 +48,29 @@ pub fn one(
     now: i64,
 ) -> rusqlite::Result<Result<v1::Finding, Refused>> {
     let found = all(conn, now)?;
+    Ok(of(conn, &found, id, now)?.ok_or(Refused {
+        code: "unknown_finding",
+        message: "the store has no finding with this id",
+        example: "immune findings --all lists every finding with its id; with --json, every one in every state",
+        ids: Vec::new(),
+    }))
+}
+
+/// One finding whole, as `one` gives it, out of every finding already read: the page of what
+/// needs a look shows each finding's evidence by this same path. `None` when `found` has no
+/// finding with this id that this build knows the rule of.
+pub fn of(
+    conn: &Connection,
+    found: &[Found],
+    id: &str,
+    now: i64,
+) -> rusqlite::Result<Option<v1::Finding>> {
     let Some((f, i)) = found
         .iter()
         .find(|f| f.id == id)
         .and_then(|f| findings::item(f).map(|i| (f, i)))
     else {
-        return Ok(Err(Refused {
-            code: "unknown_finding",
-            message: "the store has no finding with this id",
-            example: "immune findings --all lists every finding with its id; with --json, every one in every state",
-            ids: Vec::new(),
-        }));
+        return Ok(None);
     };
     let rests_on = findings::basis(conn, id)?
         .into_iter()
@@ -83,7 +95,7 @@ pub fn one(
         &refs(&items),
         i.verdicts.as_ref().and_then(|s| s.standing.as_ref()),
     );
-    Ok(Ok(v1::Finding {
+    Ok(Some(v1::Finding {
         format: FORMAT,
         answered_at: now,
         store_id,

@@ -889,6 +889,304 @@ fn a_suspicious_verdict_raises_one_finding_of_its_rule_and_thing_that_only_the_p
     assert!(about.starts_with("Binary Padding - MacOS, by "), "{about}");
 }
 
+#[test]
+fn on_the_page_a_finding_and_the_response_layer_s_own_are_one_row_counted_as_one_and_a_verdict_never_takes_either_out_of_open()
+ {
+    let mac = Mac::new("page-pair");
+    mac.append(&dd(1));
+    mac.run();
+    let store = mac.store_id();
+    let padding = mac.latest(PADDING).unwrap();
+    let raised = mac.send(&about_finding(&store, &padding, "suspicious", "case-1"));
+    let own = raised["recorded"]["finding"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // The store counts the pair as two findings; the tabs count things as the rows show
+    // them, the pair as one.
+    let total = mac.status()["needs_a_look"]["total"].as_u64().unwrap();
+    assert!(total >= 2);
+    let page = mac.page();
+    assert!(
+        page.contains(&format!(
+            "<a id=\"open\" href=\"#open\">Open <span class=\"tn\">{}</span></a>",
+            total - 1
+        )),
+        "{page}"
+    );
+    // One row: the core's finding, with the response layer's inside it, each with its own
+    // command for an agent.
+    let row = |page: &str, id: &str| -> String {
+        let at = page
+            .find(&format!(" id=\"{id}\">"))
+            .unwrap_or_else(|| panic!("{id}: {page}"));
+        let start = page[..at].rfind("<details").unwrap();
+        page[start..start + page[start..].find("</details>").unwrap()].to_string()
+    };
+    let both = row(&page, &padding);
+    assert!(
+        both.contains(&format!("<div class=\"also\" id=\"{own}\">"))
+            && both.contains(&format!("immune finding {padding} --json"))
+            && both.contains(&format!("immune finding {own} --json"))
+            && !both.contains("Your agent"),
+        "{both}"
+    );
+    assert_eq!(page.matches(&format!(" id=\"{own}\"")).count(), 1, "{page}");
+    // The person answers the core's finding through an agent: the response layer's stays open,
+    // and so does the row, which is under Answered too.
+    assert!(
+        mac.answer(
+            &padding,
+            &[
+                "seen",
+                "--via",
+                "agent",
+                "--reason",
+                "invented: the person agreed"
+            ]
+        )
+        .status
+        .success()
+    );
+    let page = mac.page();
+    let both = row(&page, &format!("answered-{padding}"));
+    let tag = &both[..both.find('>').unwrap()];
+    assert!(tag.contains(" open") && tag.contains(" answered"), "{tag}");
+    // The answer stands beside the core's finding only, saying it came through an agent.
+    let also = &both[both
+        .find(&format!("<div class=\"also\" id=\"{own}\">"))
+        .unwrap()..];
+    assert!(
+        both[..both.len() - also.len()].contains("<div class=\"vn\">Your agent</div>")
+            && !also.contains("Your agent")
+            && also.contains(&format!("immune finding {own} --json")),
+        "{both}"
+    );
+    assert!(
+        page.contains(&format!(
+            "<a id=\"open\" href=\"#open\">Open <span class=\"tn\">{}</span></a><a id=\"answered\" href=\"#answered\">Answered <span class=\"tn\">1</span></a>",
+            total - 1
+        )),
+        "{page}"
+    );
+}
+
+/// The findings whose answer hides them now, by id, as `immune findings --all` lists them.
+fn answered_ids(mac: &Mac) -> std::collections::BTreeSet<String> {
+    mac.json(&["findings", "--all"])["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|f| f["answer"]["in_force"] == true)
+        .map(|f| f["finding"]["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// The findings in each row the page draws, by id: the row's own, then any inside it.
+fn drawn_rows(page: &str) -> Vec<Vec<String>> {
+    let id_of = |s: &str| -> String {
+        let id = &s[..s.find('"').unwrap()];
+        id.strip_prefix("answered-").unwrap_or(id).to_string()
+    };
+    page.split("<details class=\"")
+        .skip(1)
+        .filter(|r| {
+            r[..r.find('"').unwrap()]
+                .split_whitespace()
+                .any(|c| c == "fr")
+        })
+        .map(|r| {
+            let r = &r[..r.find("</details>").unwrap()];
+            let own = &r[r.find(" id=\"").unwrap() + 5..];
+            std::iter::once(id_of(own))
+                .chain(r.split("<div class=\"also\" id=\"").skip(1).map(&id_of))
+                .collect()
+        })
+        .collect()
+}
+
+/// What the page says it holds and what it draws, each read on its own. Said: the band's
+/// numbers (what needs the person now, what is to look at) and the three tabs, as written.
+/// Drawn: the rows, each by the findings in it, weighed by what `immune status` says needs a
+/// look and is urgent, and what `immune findings --all` says is answered; not by the classes
+/// the page gives its rows. Every finding open or answered is drawn, in exactly one row.
+fn said_and_drawn(mac: &Mac, page: &str) -> ([usize; 5], [usize; 5]) {
+    let between = |from: &str, to: &str| -> String {
+        let at = page.find(from).unwrap_or_else(|| panic!("no {from}")) + from.len();
+        page[at..at + page[at..].find(to).unwrap()].to_string()
+    };
+    let number = |s: &str| -> usize { s.replace(',', "").parse().unwrap() };
+    let headline = between("<h1>", "</h1>");
+    let band = |words: &[&str]| -> usize {
+        headline
+            .split(" · ")
+            .find_map(|part| {
+                words
+                    .iter()
+                    .find_map(|w| part.strip_suffix(w))
+                    .map(|n| number(n.trim()))
+            })
+            .unwrap_or(0)
+    };
+    let tab = |name: &str| number(&between(&format!("{name} <span class=\"tn\">"), "</span>"));
+    let said = [
+        band(&[" needs you now", " need you now"]),
+        band(&[" to look at"]),
+        tab("Open"),
+        tab("Answered"),
+        tab("All"),
+    ];
+    let needs: std::collections::BTreeMap<String, bool> = looks(&mac.status())
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| (i["id"].as_str().unwrap().to_string(), i["urgent"] == true))
+        .collect();
+    let answered = answered_ids(mac);
+    let rows = drawn_rows(page);
+    let mut every: Vec<&String> = rows.iter().flatten().collect();
+    every.sort();
+    let mut expected: Vec<&String> = needs.keys().chain(answered.iter()).collect();
+    expected.sort();
+    assert_eq!(every, expected, "every finding drawn once: {page}");
+    let count = |f: &dyn Fn(&String) -> bool| rows.iter().filter(|r| r.iter().any(f)).count();
+    let now = count(&|id| needs.get(id) == Some(&true));
+    let open = count(&|id| needs.contains_key(id));
+    let drawn = [
+        now,
+        open - now,
+        open,
+        count(&|id| answered.contains(id)),
+        rows.len(),
+    ];
+    (said, drawn)
+}
+
+#[test]
+fn on_every_state_the_band_and_each_tab_count_the_rows_drawn_a_pair_as_one_thing() {
+    // The person sees things: a finding and the response layer's own finding about the same
+    // thing are one row, so the band and the tabs count them as one, in every state the
+    // answers leave. It is never calm while a finding stands, and a verdict never takes a
+    // finding out of Open.
+    let mac = Mac::new("page-counts");
+    mac.append(&dd(1));
+    mac.run();
+    let check = |when: &str| -> [usize; 5] {
+        let page = mac.page();
+        let (said, drawn) = said_and_drawn(&mac, &page);
+        assert_eq!(said, drawn, "{when}: {page}");
+        drawn
+    };
+    let before = check("before any verdict");
+    assert!(before[2] >= 1, "{before:?}");
+    let store = mac.store_id();
+    let padding = mac.latest(PADDING).unwrap();
+    // Suspicious at levels that make the response layer's finding urgent.
+    let mut verdict = about_finding(&store, &padding, "suspicious", "case-1");
+    verdict["severity"] = json!("critical");
+    verdict["confidence"] = json!("high");
+    let raised = mac.send(&verdict);
+    let own = raised["recorded"]["finding"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // The verdict's own finding joins the row of the finding it is about: no row is added, and
+    // the row needs the person now.
+    let pair = check("a pair, both open");
+    assert_eq!(pair[2], before[2], "{pair:?} {before:?}");
+    assert_eq!(pair[0], before[0] + 1, "{pair:?} {before:?}");
+    assert!(mac.answer(&padding, &["seen"]).status.success());
+    // The core's finding answered, the response layer's open: the row stays in Open and is in
+    // Answered too.
+    let half = check("the core's finding answered");
+    assert_eq!((half[2], half[3]), (pair[2], 1), "{half:?}");
+    assert!(mac.answer(&own, &["seen"]).status.success());
+    let both = check("both answered");
+    assert_eq!((both[2], both[3]), (pair[2] - 1, 1), "{both:?}");
+    // The response layer judges the same finding suspicious again: its new finding, the next
+    // occurrence of the one answered before, joins the core's row, which is open again.
+    let again = mac.send(&about_finding(&store, &padding, "suspicious", "case-3"));
+    let again = again["recorded"]["finding"]["id"].as_str().unwrap();
+    let more = check("a second finding of the response layer about the same thing");
+    assert_eq!((more[2], more[4]), (both[2] + 1, both[4]), "{more:?}");
+    let page = mac.page();
+    assert!(
+        drawn_rows(&page).contains(&vec![padding.clone(), again.to_string()]),
+        "{page}"
+    );
+    // A pair where both findings need the person now is one thing that does: the store counts
+    // two urgent findings, the band one.
+    let sealed = insert_findings(&mac, "integrity.app-seal", "s", 1);
+    let mut verdict = about_finding(&store, &sealed[0], "suspicious", "case-2");
+    verdict["severity"] = json!("critical");
+    verdict["confidence"] = json!("high");
+    let own = mac.send(&verdict)["recorded"]["finding"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(mac.status()["needs_a_look"]["urgent_total"], 2);
+    let urgent = check("a pair, both urgent");
+    assert_eq!(urgent[0], both[0] + 1, "{urgent:?}");
+    // The response layer's finding answered while the core's stays open: the row stays where
+    // it was, in Open and needing the person now, and is under Answered too.
+    assert!(mac.answer(&own, &["seen"]).status.success());
+    let half = check("the core's finding open, the response layer's answered");
+    assert_eq!(
+        (half[0], half[2], half[3]),
+        (urgent[0], urgent[2], urgent[3] + 1),
+        "{half:?}"
+    );
+    let page = mac.page();
+    let row = drawn_rows(&page)
+        .into_iter()
+        .find(|r| r[0] == sealed[0])
+        .unwrap();
+    assert_eq!(row, [sealed[0].clone(), own], "{page}");
+}
+
+#[test]
+fn a_verdict_about_one_rule_is_never_folded_into_another_rule_s_finding_about_the_same_machine() {
+    // A published rule's finding is about the machine, as is the response layer's finding
+    // about a match of another rule. They are two things: the urgent one must not sit inside a
+    // row about another program whose word is "Harmless", nor be counted away.
+    let mac = Mac::new("page-two-rules");
+    mac.append(&dd(1));
+    let at = mac.append(&sw_vers(2));
+    mac.run();
+    let store = mac.store_id();
+    let padding = mac.latest(PADDING).unwrap();
+    mac.send(&about_finding(&store, &padding, "harmless", "case-1"));
+    let mut verdict = about_match(&store, &mac.position(at), SW_VERS, "suspicious");
+    verdict["severity"] = json!("critical");
+    verdict["confidence"] = json!("high");
+    let own = mac.send(&verdict)["recorded"]["finding"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let status = mac.status();
+    let total = status["needs_a_look"]["total"].as_u64().unwrap() as usize;
+    let urgent = status["needs_a_look"]["urgent_total"].as_u64().unwrap() as usize;
+    assert!(mac.shown(&own).unwrap()["urgent"] == true);
+    let page = mac.page();
+    let (said, drawn) = said_and_drawn(&mac, &page);
+    assert_eq!(said, drawn, "{page}");
+    // No true pair here, so the band says the status's totals as they are.
+    assert_eq!((said[0], said[1]), (urgent, total - urgent), "{page}");
+    let rows = drawn_rows(&page);
+    assert!(rows.contains(&vec![own.clone()]), "{rows:?}");
+    assert!(rows.contains(&vec![padding.clone()]), "{rows:?}");
+    // The word is the response layer's, and the cell says so wherever its column has no
+    // header: on a phone and to a screen reader.
+    assert!(
+        page.contains(
+            "<span class=\"fv\"><span class=\"src\">Response layer: </span>Harmless</span>"
+        ) && page.contains(
+            "<span class=\"fv\"><span class=\"src\">Response layer: </span>Suspicious</span>"
+        ),
+        "{page}"
+    );
+}
+
 /// Findings of the core inserted as a check would leave them: `n` of `rule`, each about an
 /// invented application, open.
 fn insert_findings(mac: &Mac, rule: &str, tag: &str, n: usize) -> Vec<String> {
@@ -2513,11 +2811,11 @@ fn the_sender_s_text_never_leaves_its_quotation_and_is_never_cut() {
         long.as_str()
     );
     let page = mac2.page();
-    assert!(page.contains(&format!("<blockquote class=\"sent\">{long}</blockquote>")));
+    assert!(page.contains(&format!("<blockquote class=\"quote\">{long}</blockquote>")));
     assert!(
         !page
             .lines()
-            .any(|l| l.contains("class=\"verdict\"") && l.contains("keys out"))
+            .any(|l| !l.contains("<blockquote") && l.contains("keys out"))
     );
 }
 

@@ -1338,6 +1338,18 @@ pub struct Item {
     pub answer: Option<Answered>,
     /// What it carries of the response layer's verdicts.
     pub verdicts: Option<crate::verdict::Summary>,
+    /// For a finding of `verdict.suspicious`, the rule its verdicts were about, as the store
+    /// keeps it after `verdict::PREFIX`; `None` for every other finding.
+    pub subject: Option<String>,
+}
+
+/// The two findings are one thing to the person: `own` is the response layer's
+/// `verdict.suspicious` finding about the rule of `core`'s finding and about the same thing.
+/// Nothing else pairs two findings: findings of two rules about the same machine are two things,
+/// and a verdict finding with no partner is a thing of its own. The page and the answer pair by
+/// this alone.
+pub fn one_thing(core: &Item, own: &Item) -> bool {
+    own.subject.as_deref().is_some_and(|s| core.rule == Some(s)) && own.about == core.about
 }
 
 /// The answer a finding has.
@@ -1515,6 +1527,7 @@ fn published_item(f: &Found, l: &'static crate::sigma::Loaded) -> Option<Item> {
         about: f.about.clone(),
         answer: answered_of(f),
         verdicts: f.verdicts.clone(),
+        subject: None,
     })
 }
 
@@ -1569,6 +1582,7 @@ fn verdict_item(f: &Found, subject: &str) -> Option<Item> {
         about: f.about.clone(),
         answer: answered_of(f),
         verdicts: f.verdicts.clone(),
+        subject: Some(subject.to_string()),
     })
 }
 
@@ -1598,6 +1612,7 @@ pub fn item(f: &Found) -> Option<Item> {
         about: f.about.clone(),
         answer: answered_of(f),
         verdicts: f.verdicts.clone(),
+        subject: None,
     })
 }
 
@@ -1800,6 +1815,52 @@ mod tests {
         );
         let padding = super::item(&found("sigma:95361ce5-c891-4b0a-87ca-e24607884a96")).unwrap();
         assert_eq!(padding.severity, "high");
+    }
+
+    #[test]
+    fn a_verdict_finding_is_one_thing_only_with_the_finding_of_its_own_rule_about_the_same_thing() {
+        // The page and the answer fold the response layer's finding into a finding of the core
+        // only when it is about that rule and that thing: a verdict about one rule folded into
+        // another rule's finding would hide it behind words about something else.
+        let found = |rule: &str, about: &str| super::Found {
+            id: format!("{rule} {about}"),
+            rule: rule.into(),
+            about: about.into(),
+            state: "open".into(),
+            change: None,
+            first_seen: (1, "1".into()),
+            last_seen: (1, "1".into()),
+            answered_at: None,
+            reason: None,
+            until: None,
+            via: None,
+            superseded: false,
+            in_force: false,
+            place: "invented".into(),
+            became: None,
+            detail: None,
+            verdicts: Some(crate::verdict::Summary {
+                levels: Some((3, 2)),
+                ..Default::default()
+            }),
+        };
+        let item = |rule: &str, about: &str| super::item(&found(rule, about)).unwrap();
+        let padding = "sigma:95361ce5-c891-4b0a-87ca-e24607884a96";
+        let core = item(padding, "machine:a");
+        let own = |rule: &str, about: &str| item(&format!("verdict.suspicious:{rule}"), about);
+        assert!(super::one_thing(&core, &own(padding, "machine:a")));
+        // Another rule about the same machine, the same rule about another thing, and two
+        // findings of the core are never one thing.
+        assert!(!super::one_thing(
+            &core,
+            &own("watched.shell-profile", "machine:a")
+        ));
+        assert!(!super::one_thing(&core, &own(padding, "machine:b")));
+        assert!(!super::one_thing(
+            &core,
+            &item("watched.shell-profile", "machine:a")
+        ));
+        assert!(!super::one_thing(&own(padding, "machine:a"), &core));
     }
 
     #[test]

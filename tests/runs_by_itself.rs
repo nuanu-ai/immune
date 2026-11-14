@@ -1248,14 +1248,16 @@ fn every_known_way_is_on_the_page_and_the_limit_says_the_numbers_of_that_table()
     assert_eq!(item(&e.status())["meaning"], partial);
 }
 
-/// The kinds the overview says none of: each "<li>Kind: none on this Mac now".
+/// The kinds the summary's table of what is watched says none of: each row whose state is
+/// "none here".
 fn none_said(view: &str) -> Vec<String> {
-    view.lines()
-        .filter_map(|l| {
-            l.strip_prefix("<li>")?
-                .strip_suffix(": none on this Mac now")
+    view.split("<div class=\"wr\"")
+        .skip(1)
+        .filter_map(|row| {
+            let row = &row[..row.find("</div>")?];
+            let kind = row.split("<span>").nth(1)?.split("</span>").next()?;
+            row.contains("</span>none here").then(|| kind.to_string())
         })
-        .map(str::to_string)
         .collect()
 }
 
@@ -3181,25 +3183,6 @@ fn a_plugin_watched_only_for_whether_it_is_there_is_never_said_to_be_unchanged()
     );
     // A file whose content is compared says it has not changed since it was first seen.
     assert!(row("/etc/pam.d/sudo").contains("not since first seen"));
-    // The summary does not call the plugin watched for change.
-    let out = Command::new(env!("CARGO_BIN_EXE_immune"))
-        .args(["view", "--no-open", "--store"])
-        .arg(e.store())
-        .output()
-        .unwrap();
-    let pages = String::from_utf8(out.stdout).unwrap();
-    let summary: String = pages
-        .lines()
-        .filter(|p| p.ends_with(".html"))
-        .map(|p| std::fs::read_to_string(p).unwrap())
-        .find(|p| p.contains("Example.bundle") && p.contains("no finding rests on it"))
-        .unwrap_or_else(|| panic!("{pages}"));
-    let at = summary.find("Example.bundle").unwrap();
-    let mark = &summary[at..at + summary[at..].find('"').unwrap()];
-    assert!(
-        mark.contains("watched for whether it is there, not for a change inside it"),
-        "{mark}"
-    );
 }
 
 #[test]

@@ -1329,17 +1329,6 @@ pub fn totals(conn: &Connection, now: i64) -> rusqlite::Result<Totals> {
     Ok(t)
 }
 
-/// "473 known vulnerabilities in 116 packages, across 9 projects.": what a person calls them.
-pub fn records_said(t: &Totals) -> String {
-    let n = |n: usize, one: &str, many: &str| crate::view::counted(n as i64, one, many);
-    format!(
-        "{} in {}, across {}.",
-        n(t.records, "known vulnerability", "known vulnerabilities"),
-        n(t.packages, "package", "packages"),
-        n(t.projects, "project", "projects"),
-    )
-}
-
 /// What one reason of "don't know" says of packages, for one and for many.
 pub fn reason_words(code: &str) -> (&'static str, &'static str) {
     match code {
@@ -1894,24 +1883,6 @@ mod tests {
 
     fn v(s: &str) -> Version {
         version(s).unwrap_or_else(|| panic!("{s}"))
-    }
-
-    #[test]
-    fn the_line_a_person_reads_says_one_as_one() {
-        let t = |records, packages, projects| Totals {
-            records,
-            packages,
-            projects,
-            ..Totals::default()
-        };
-        assert_eq!(
-            records_said(&t(1, 1, 1)),
-            "1 known vulnerability in 1 package, across 1 project."
-        );
-        assert_eq!(
-            records_said(&t(1473, 116, 9)),
-            "1,473 known vulnerabilities in 116 packages, across 9 projects."
-        );
     }
 
     /// node-semver's fixture rows, `[a, b, opt]`, as data. `opt` is loose when it is `true`

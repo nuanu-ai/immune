@@ -1,25 +1,20 @@
-//! The map on the summary: one mark per thing the program has collected, grouped as a person
-//! knows them (projects on this Mac, what is watched on this Mac, servers, and devices on the
-//! private network), each a link to where that thing is described. No script: a mark's name
-//! and state are in its `title`, which is also its accessible name.
+//! What the program has collected beyond this Mac's own watched places, grouped as a person
+//! knows them (projects on this Mac, servers, and devices on the private network), each thing
+//! with its state: what the summary's table of what is watched counts for projects and servers.
 //!
-//! No false calm, the project's first invariant: a mark never says more than the program
-//! knows. The calm mark is drawn only where the program judged the thing, from the same data
-//! its answers come from; everything else is drawn hollow. What calm claims differs by group
-//! and the legend says so: for a project, its dependencies were compared with known
-//! vulnerabilities and none affects it; for something on this Mac, it is watched for change
-//! and no finding rests on it; for a server, it was read in full at the last server check.
+//! No false calm, the project's first invariant: a thing is never counted as judged beyond what
+//! the program knows. A project is calm only where its dependencies were compared with known
+//! vulnerabilities and none affects it; a server only where it was read in full at the last
+//! server check; everything else is open.
 
-use crate::covered::{self, Count};
-use crate::pages::{self, BEYOND, THIS_MAC, VULNERABILITIES};
-use crate::view::{DETAILS, Latest, Out, esc};
-use crate::{autorun, beyond, integrity, servers, watched};
-use rusqlite::{Connection, params};
+use crate::covered;
+use crate::view::Latest;
+use crate::{beyond, servers};
+use rusqlite::Connection;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::error::Error;
-use std::fmt::Write;
 
-/// The state of one mark.
+/// The state of one thing.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum State {
     /// An open finding rests on it.
@@ -34,61 +29,27 @@ pub enum State {
     Theirs,
 }
 
-impl State {
-    pub fn class(self) -> &'static str {
-        match self {
-            State::Look => "look",
-            State::Vulnerable => "vuln",
-            State::Calm => "calm",
-            State::Open => "open",
-            State::Theirs => "theirs",
-        }
-    }
-}
-
-/// One thing on the map: its name as a person recognises it, its state in words, and the
-/// section it leads to with that section's heading, which begins its title.
+/// One thing: its name as a person recognises it, and its state.
 pub struct Mark {
     pub name: String,
     pub state: State,
-    pub said: &'static str,
-    href: String,
-    heading: String,
-}
-
-impl Mark {
-    fn title(&self) -> String {
-        format!("{}: {} · {}", self.heading, self.name, self.said)
-    }
-}
-
-/// The things of one kind watched on this Mac.
-pub struct Kind {
-    pub what: &'static str,
-    pub marks: Vec<Mark>,
 }
 
 #[derive(Default)]
 pub struct Map {
-    /// Projects were looked for on this Mac.
-    pub projects_looked: bool,
-    /// A full check of this Mac has finished.
-    pub checked: bool,
     pub projects: Vec<Mark>,
-    pub mac: Vec<Kind>,
     pub servers: Vec<Mark>,
     pub own: Vec<Mark>,
     pub others: Vec<Mark>,
-    /// Machines the owner set aside while nothing contradicts it.
-    pub set_aside: i64,
-    /// Open findings by where they rest.
-    pub on_mac: usize,
-    pub on_projects: usize,
+    /// Open findings resting on a server.
     pub on_servers: usize,
+    /// Servers whose latest visit read them in full, whatever findings rest on them: a server
+    /// marked `Look` may not have been checked at all.
+    pub servers_checked: usize,
 }
 
 impl Map {
-    /// Projects whose mark is hollow: their dependencies were not all compared.
+    /// Projects whose dependencies were not all compared.
     pub fn projects_open(&self) -> usize {
         self.projects
             .iter()
@@ -96,12 +57,6 @@ impl Map {
             .count()
     }
 }
-
-/// What a project's mark says when it is calm, and when it is hollow.
-const PROJECT_CALM: &str = "dependencies compared with known vulnerabilities, none affects it";
-const PROJECT_NO_PACKAGES: &str = "no dependencies this version can compare";
-const PROJECT_NOT_ALL: &str = "not all of its dependencies could be compared";
-const LOOK: &str = "needs a look";
 
 /// Where an open finding rests, by the entity it is about.
 enum Area {
@@ -241,165 +196,61 @@ pub fn checkouts(conn: &Connection, this: &str) -> rusqlite::Result<Vec<String>>
     .collect()
 }
 
-/// Everything on the map, from the store and the open findings of the status.
+/// Projects, servers and devices, from the store and the open findings of the status.
 pub fn read(
     conn: &Connection,
     st: &crate::status::State,
     latest: &[Latest],
 ) -> Result<Map, Box<dyn Error>> {
-    let checked = st.this_mac.checked_at.is_some();
     let Some(this) = covered::this_machine(conn)? else {
-        return Ok(Map {
-            checked,
-            ..Map::default()
-        });
+        return Ok(Map::default());
     };
     let mac = crate::findings::This::of(conn, Some(this.clone()))?;
-    let mut map = Map {
-        checked,
-        projects_looked: latest
-            .iter()
-            .any(|r| r.reader == crate::checkouts::READER && r.scope == this),
-        ..Map::default()
-    };
+    let mut map = Map::default();
     let checkouts = checkouts(conn, &this)?;
     let split = beyond::split(conn, &this)?;
 
     // Where each open finding rests.
     let mut look_projects: HashSet<usize> = HashSet::new();
     let mut look_servers: HashSet<usize> = HashSet::new();
-    let mut look_mac: HashSet<&str> = HashSet::new();
     for i in &st.needs.items {
         match area(&i.about, &checkouts, &split.servers) {
             Area::Project(p) => {
                 look_projects.insert(p);
-                map.on_projects += 1;
             }
             Area::Server(s) => {
                 look_servers.insert(s);
                 map.on_servers += 1;
             }
-            Area::Mac => {
-                look_mac.insert(&i.about);
-                map.on_mac += 1;
-            }
+            Area::Mac => {}
         }
     }
 
-    // Projects.
+    // Projects: calm only where `judged` says so.
     let judged = judged(conn, latest, &checkouts)?;
     let affected: HashSet<String> = crate::vulnerabilities::affecting(conn)?
         .into_iter()
         .map(|a| a.checkout)
         .collect();
-    let projects_page = format!("{DETAILS}/{THIS_MAC}.html#projects");
     for (i, c) in checkouts.iter().enumerate() {
-        let (n, calm) = judged.get(c).copied().unwrap_or_default();
-        let name = crate::findings::place(c, mac.as_ref());
-        let mark = if look_projects.contains(&i) {
-            looked(name)
+        let (_, calm) = judged.get(c).copied().unwrap_or_default();
+        let state = if look_projects.contains(&i) {
+            State::Look
         } else if affected.contains(c) {
-            Mark {
-                name,
-                state: State::Vulnerable,
-                said: "known vulnerabilities in its dependencies",
-                href: format!("{DETAILS}/{VULNERABILITIES}.html#by-project"),
-                heading: "Known vulnerabilities by project".to_string(),
-            }
+            State::Vulnerable
+        } else if calm {
+            State::Calm
         } else {
-            let (state, said) = match (calm, n) {
-                (true, _) => (State::Calm, PROJECT_CALM),
-                (false, 0) => (State::Open, PROJECT_NO_PACKAGES),
-                (false, _) => (State::Open, PROJECT_NOT_ALL),
-            };
-            Mark {
-                name,
-                state,
-                said,
-                href: projects_page.clone(),
-                heading: "Projects".to_string(),
-            }
+            State::Open
         };
-        map.projects.push(mark);
+        map.projects.push(Mark {
+            name: crate::findings::place(c, mac.as_ref()),
+            state,
+        });
     }
     order(&mut map.projects);
 
-    // What is watched on this Mac, kind by kind, except what is inside a project.
-    let presence = watched::presence_only(conn)?;
-    for (count, what, _) in covered::watched() {
-        let href = format!("{DETAILS}/{THIS_MAC}.html#{}", pages::anchor(what));
-        let heading = pages::capital(what);
-        let mut marks = Vec::new();
-        match count {
-            Count::Files(as_) => {
-                let mut kinds = autorun::kinds_of(as_);
-                kinds.extend(
-                    watched::kinds()
-                        .into_iter()
-                        .filter(|(w, _)| *w == as_)
-                        .map(|(_, kind)| kind.to_string()),
-                );
-                let kind_failed = latest.iter().any(|r| {
-                    r.reader == watched::READER
-                        && r.scope == this
-                        && kinds.contains(&r.kind)
-                        && r.completeness != "full"
-                });
-                let files: Vec<String> = conn
-                    .prepare(
-                        "SELECT DISTINCT subject FROM assertion
-                         WHERE layer = 'live' AND reader = ?1 AND predicate = 'watched_as'
-                           AND object = ?2 ORDER BY subject",
-                    )?
-                    .query_map(params![watched::READER, as_], |r| r.get(0))?
-                    .collect::<rusqlite::Result<_>>()?;
-                for f in files {
-                    if project_of(&f, &checkouts).is_some() {
-                        continue;
-                    }
-                    let failed = kind_failed
-                        || latest
-                            .iter()
-                            .any(|r| r.scope == f && r.completeness != "full");
-                    let mut mark = on_mac(
-                        crate::findings::place(&f, mac.as_ref()),
-                        look_mac.contains(f.as_str()),
-                        failed,
-                        &href,
-                        &heading,
-                    );
-                    if mark.said == WATCHED_CALM && presence.contains(&f) {
-                        mark.said = PRESENCE_CALM;
-                    }
-                    marks.push(mark);
-                }
-            }
-            Count::Installed(kind) => {
-                let failed = latest.iter().any(|r| {
-                    r.reader == integrity::READER
-                        && r.scope == this
-                        && r.kind == kind
-                        && r.completeness != "full"
-                });
-                for (subject, name) in pages::installed_names(conn, kind, Some(&this))? {
-                    marks.push(on_mac(
-                        name,
-                        look_mac.contains(subject.as_str()),
-                        failed,
-                        &href,
-                        &heading,
-                    ));
-                }
-            }
-            Count::Dependencies => continue,
-        }
-        if !marks.is_empty() {
-            order(&mut marks);
-            map.mac.push(Kind { what, marks });
-        }
-    }
-
-    // Servers, the owner's other devices and other people's devices.
+    // Servers: calm only where read in full at the last server check.
     let visits: Vec<&Latest> = latest
         .iter()
         .filter(|r| r.reader == servers::READER && r.kind == servers::VISIT)
@@ -414,31 +265,20 @@ pub fn read(
             .unwrap_or_default()
     };
     for (i, group) in split.servers.iter().enumerate() {
-        let name = label(group);
-        if look_servers.contains(&i) {
-            map.servers.push(looked(name));
-            continue;
-        }
         let last = visits
             .iter()
             .filter(|v| group.contains(&v.scope))
             .max_by_key(|v| v.at);
-        let (state, said) = match last {
-            Some(v) if v.completeness == "full" => {
-                (State::Calm, "read in full at the last server check")
-            }
-            Some(v) if v.reason.as_deref() == Some(servers::NOT_COMPLETE) => {
-                (State::Open, "did not finish at the last server check")
-            }
-            Some(_) => (State::Open, "could not be opened at the last server check"),
-            None => (State::Open, "not part of the last server check"),
+        let full = last.is_some_and(|v| v.completeness == "full");
+        map.servers_checked += usize::from(full);
+        let state = match last {
+            _ if look_servers.contains(&i) => State::Look,
+            _ if full => State::Calm,
+            _ => State::Open,
         };
         map.servers.push(Mark {
-            name,
+            name: label(group),
             state,
-            said,
-            href: format!("{DETAILS}/{BEYOND}.html#servers"),
-            heading: "Servers".to_string(),
         });
     }
     order(&mut map.servers);
@@ -446,322 +286,18 @@ pub fn read(
         map.own.push(Mark {
             name: label(group),
             state: State::Open,
-            said: "not checked: this version looks at this Mac and at servers",
-            href: format!("{DETAILS}/{BEYOND}.html#your-devices"),
-            heading: "Your other devices".to_string(),
         });
     }
     for group in &split.other_devices {
         map.others.push(Mark {
             name: label(group),
             state: State::Theirs,
-            said: "not yours to check",
-            href: format!("{DETAILS}/{BEYOND}.html#other-devices"),
-            heading: "Other devices".to_string(),
         });
     }
-    for list in [&mut map.own, &mut map.others] {
-        list.sort_by(|a, b| a.name.cmp(&b.name));
-    }
-    map.set_aside = crate::owner::standing(conn)?
-        .iter()
-        .filter(|s| s.seen.is_none())
-        .count() as i64;
     Ok(map)
-}
-
-/// A thing an open finding rests on: it leads to what needs a look.
-fn looked(name: String) -> Mark {
-    Mark {
-        name,
-        state: State::Look,
-        said: LOOK,
-        href: format!("{}#needs", crate::view::SUMMARY),
-        heading: "Needs a look".to_string(),
-    }
-}
-
-/// What a mark of a thing on this Mac whose content is compared says when calm.
-const WATCHED_CALM: &str = "watched for change, no finding rests on it";
-/// The same for a thing watched only for whether it is there, such as a plugin's folder: a
-/// change inside it is not seen, so it is not said to be watched for change.
-const PRESENCE_CALM: &str =
-    "watched for whether it is there, not for a change inside it; no finding rests on it";
-
-/// A thing watched on this Mac: calm only while its reading is full.
-fn on_mac(name: String, look: bool, failed: bool, href: &str, heading: &str) -> Mark {
-    if look {
-        return looked(name);
-    }
-    let (state, said) = if failed {
-        (State::Open, "not fully read at the last check")
-    } else {
-        (State::Calm, WATCHED_CALM)
-    };
-    Mark {
-        name,
-        state,
-        said,
-        href: href.to_string(),
-        heading: heading.to_string(),
-    }
 }
 
 /// What needs a look first, then the rest by name.
 fn order(marks: &mut [Mark]) {
     marks.sort_by(|a, b| a.state.cmp(&b.state).then_with(|| a.name.cmp(&b.name)));
-}
-
-/// A legend mark and its words.
-const LEGEND: [(&str, &str); 5] = [
-    ("look", "Needs a look"),
-    ("vuln", "Known vulnerabilities"),
-    ("calm", "Checked, nothing found"),
-    ("open", "Not checked"),
-    ("theirs", "Not yours to check"),
-];
-
-/// What the calm mark claims, group by group.
-const CALM_MEANS: &str = "Checked, nothing found says only what was checked: for a project, that its dependencies were compared with known vulnerabilities and none affects it; for something on this Mac, that it is watched for change and no finding rests on it; for a server, that it was read in full at the last server check. Each mark is one thing; point at it to see its name, and follow it to where it is described.";
-
-/// How large marks are drawn: large while a group fits about four rows of its width, then
-/// smaller, then smallest. Marks wrap; none is left out.
-#[derive(Clone, Copy)]
-enum Size {
-    /// Projects take the whole width of the card: about forty large marks a row.
-    Wide,
-    /// Servers and devices take a column: about nineteen a row.
-    Column,
-    /// What is watched on this Mac: small from the start.
-    Small,
-}
-
-/// Marks drawn as links.
-fn marks(out: &mut String, list: &[Mark], round: bool, size: Size) -> Out {
-    let n = list.len();
-    let class = match size {
-        Size::Wide if n <= 160 => "",
-        Size::Column if n <= 76 => "",
-        _ if n <= 300 => " small",
-        _ => " tiny",
-    };
-    writeln!(
-        out,
-        "<div class=\"marks{class}{}\">",
-        if round { " round" } else { "" }
-    )?;
-    for m in list {
-        writeln!(
-            out,
-            "<a class=\"m {}\" href=\"{}\" title=\"{}\"></a>",
-            m.state.class(),
-            esc(&m.href),
-            esc(&m.title())
-        )?;
-    }
-    out.push_str("</div>\n");
-    Ok(())
-}
-
-impl Map {
-    /// Whether anything beyond this Mac is known: a server, or a device of either kind.
-    pub fn beyond(&self) -> bool {
-        !(self.servers.is_empty() && self.own.is_empty() && self.others.is_empty())
-    }
-}
-
-/// How many things a group or a kind has, as a link to where they are listed, named by the
-/// heading it opens at. None leads nowhere, so it stays a plain number.
-fn count(n: usize, href: &str, label: &str) -> String {
-    if n == 0 {
-        return "<span class=\"n\">0</span>".to_string();
-    }
-    format!(
-        "<a class=\"n\" href=\"{}\" aria-label=\"{}: {n}\">{n}</a>",
-        esc(href),
-        esc(label)
-    )
-}
-
-/// A group's heading: its name, how many marks it has, leading to where they are listed, and
-/// how many of them are in each state, in words, counted from the very marks that are drawn
-/// under it.
-fn heading<'a>(
-    out: &mut String,
-    name: &str,
-    to: (&str, &str),
-    marks: impl Iterator<Item = &'a Mark> + Clone,
-) -> Out {
-    let n = marks.clone().count();
-    let mut parts: Vec<String> = Vec::new();
-    for state in [
-        State::Look,
-        State::Vulnerable,
-        State::Calm,
-        State::Open,
-        State::Theirs,
-    ] {
-        let k = marks.clone().filter(|m| m.state == state).count();
-        if k == 0 {
-            continue;
-        }
-        let words = match state {
-            State::Look if k == 1 => "needs a look",
-            State::Look => "need a look",
-            State::Vulnerable => "with known vulnerabilities",
-            State::Calm => "checked, nothing found",
-            State::Open => "not checked",
-            State::Theirs => "not yours to check",
-        };
-        parts.push(format!(" · {k} {words}"));
-    }
-    writeln!(
-        out,
-        "<h3>{name} {}<span class=\"split\">{}</span></h3>",
-        count(n, to.0, to.1),
-        parts.concat()
-    )?;
-    Ok(())
-}
-
-/// The map, as a card of its own: the legend, then each group with its count and its marks;
-/// what the marks and the groups mean is closed at the bottom. A Mac with nothing known beyond
-/// it has no group for servers.
-pub fn draw(out: &mut String, map: &Map, own_devices_said: &str) -> Out {
-    out.push_str("<section id=\"map\">\n<div class=\"head\"><h2>What you have</h2></div>\n<ul class=\"legend\">\n");
-    for (class, words) in LEGEND {
-        writeln!(
-            out,
-            "<li><span class=\"m {class}\" aria-hidden=\"true\"></span>{words}</li>"
-        )?;
-    }
-    out.push_str("</ul>\n<div class=\"groups\">\n");
-
-    // Projects, the main thing, across the whole width.
-    out.push_str("<div class=\"group wide\">\n");
-    let projects = format!("{DETAILS}/{THIS_MAC}.html#projects");
-    heading(
-        out,
-        "Projects",
-        (&projects, "Projects"),
-        map.projects.iter(),
-    )?;
-    if map.projects.is_empty() {
-        let said = if map.projects_looked {
-            "None found on this Mac."
-        } else {
-            "Not looked for yet: this Mac has not been checked."
-        };
-        writeln!(out, "<p class=\"note\">{said}</p>")?;
-    } else {
-        marks(out, &map.projects, false, Size::Wide)?;
-    }
-    out.push_str("</div>\n");
-
-    // This Mac.
-    out.push_str("<div class=\"group\">\n");
-    let this_mac = format!("{DETAILS}/{THIS_MAC}.html");
-    heading(
-        out,
-        "This Mac",
-        (&this_mac, pages::THIS_MAC_TITLE),
-        map.mac.iter().flat_map(|k| k.marks.iter()),
-    )?;
-    if map.mac.is_empty() {
-        out.push_str(if map.checked {
-            "<p class=\"note\">Nothing to watch was found on this Mac at the last check.</p>\n"
-        } else {
-            "<p class=\"note\">Nothing has been read on this Mac yet.</p>\n"
-        });
-    }
-    for k in &map.mac {
-        let what = pages::capital(k.what);
-        writeln!(
-            out,
-            "<h4>{} {}</h4>",
-            esc(&what),
-            count(
-                k.marks.len(),
-                &format!("{this_mac}#{}", pages::anchor(k.what)),
-                &what
-            )
-        )?;
-        marks(out, &k.marks, false, Size::Small)?;
-    }
-    out.push_str("</div>\n");
-
-    // Servers and devices, only where any is known.
-    if map.beyond() {
-        out.push_str("<div class=\"group\">\n");
-        let beyond = format!("{DETAILS}/{BEYOND}.html");
-        heading(
-            out,
-            "Servers",
-            (&format!("{beyond}#servers"), "Servers"),
-            map.servers.iter(),
-        )?;
-        if map.servers.is_empty() {
-            out.push_str("<p class=\"note\">None known.</p>\n");
-        } else {
-            marks(out, &map.servers, true, Size::Column)?;
-        }
-        if !map.own.is_empty() {
-            writeln!(
-                out,
-                "<h4>Your other devices {}</h4>",
-                count(
-                    map.own.len(),
-                    &format!("{beyond}#your-devices"),
-                    "Your other devices"
-                )
-            )?;
-            marks(out, &map.own, false, Size::Column)?;
-        }
-        if !map.others.is_empty() {
-            writeln!(
-                out,
-                "<h4>Other people's devices {}</h4>",
-                count(
-                    map.others.len(),
-                    &format!("{beyond}#other-devices"),
-                    "Other devices"
-                )
-            )?;
-            marks(out, &map.others, false, Size::Column)?;
-        }
-        out.push_str("</div>\n");
-    }
-    if map.set_aside > 0 {
-        writeln!(
-            out,
-            "<p class=\"note\"><a href=\"{DETAILS}/{BEYOND}.html#retired\">Retired or not yours: {}</a></p>",
-            map.set_aside
-        )?;
-    }
-    out.push_str("</div>\n");
-
-    // What the marks and the groups mean, closed.
-    writeln!(
-        out,
-        "<details class=\"means\">\n<summary>What the marks mean</summary>\n<p>{}</p>\n<p><strong>Projects</strong>: folders of code kept with git. Their git hooks are watched, and the files that say what they depend on are read at every check.</p>",
-        esc(CALM_MEANS)
-    )?;
-    if map.beyond() {
-        out.push_str("<p><strong>Servers</strong>: machines you log in to over SSH, and those your private network shows as yours. They are checked only when you run the server check; this program never connects to them by itself.</p>\n");
-    }
-    if !map.own.is_empty() {
-        writeln!(
-            out,
-            "<p><strong>Your other devices</strong>: {}</p>",
-            esc(own_devices_said)
-        )?;
-    }
-    if !map.others.is_empty() {
-        out.push_str("<p><strong>Other people's devices</strong>: computers and phones seen in your private network, such as a colleague's laptop. They are not yours to check, and this program does not read them.</p>\n");
-    }
-    if map.set_aside > 0 {
-        out.push_str("<p><strong>Retired or not yours</strong>: machines you said are retired or not yours; they are not checked.</p>\n");
-    }
-    out.push_str("</details>\n</section>\n");
-    Ok(())
 }
