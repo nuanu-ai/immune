@@ -27,7 +27,7 @@ pub struct FindingRef {
     pub state: i32,
     /// How bad it would be. Absent when the core cannot say: for a finding of a rule this build
     /// does not have, since the store keeps no level without the rule. A reader that does not know
-    /// it can be absent reads it as `UNSPECIFIED`, the highest severity.
+    /// it can be absent reads it as `UNSPECIFIED`, the highest severity. Optional since 1.11.0.
     #[prost(enumeration = "Level", optional, tag = "5")]
     #[serde(
         serialize_with = "crate::optional_enum_name::<Level, _>",
@@ -1706,8 +1706,8 @@ pub struct Finding {
     /// finding's own rule does not refuse `expected`, which already quiets every later match of
     /// the rule; it refuses `seen` and `reopen`. One number covers every finding of the store, so
     /// it covers both findings of a pair; when they were read in two answers, pass the smaller of
-    /// the two. Required with `--with` and with `--via agent` on `seen` and `expected`. `Findings`
-    /// and `Status` carry it too. Since 1.9.0.
+    /// the two. Required with `--with` and, on `seen` and `expected`, with `--via agent` and
+    /// `--via app`. `Findings` and `Status` carry it too. Since 1.9.0.
     #[prost(int64, tag = "21")]
     pub journal_seq: i64,
 }
