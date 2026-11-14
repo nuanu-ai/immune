@@ -3634,6 +3634,51 @@ fn an_answer_through_an_agent_names_the_read_it_rests_on_and_is_refused_when_it_
 }
 
 #[test]
+fn an_answer_from_the_app_names_the_read_it_rests_on_and_without_one_records_nothing() {
+    // The app answers on a card drawn from a read: its answer to one finding is tied to that read
+    // as an agent's is, so nothing that joined since the card was drawn is quieted unseen.
+    let (mac, core, verdict, _, _) = paired("app-read");
+    for answer in [
+        &["seen"][..],
+        &["expected", "--reason", "invented: my own build"][..],
+    ] {
+        let bytes = std::fs::read(mac.store()).unwrap();
+        let out = mac.answer(&verdict, &[answer, &["--via", "app"][..]].concat());
+        assert_eq!(out.status.code(), Some(2), "{answer:?}");
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(v["errors"][0]["code"], "usage", "{v:#}");
+        let why = v["errors"][0]["detail_text"].as_str().unwrap();
+        assert!(
+            why.contains("an answer from the app needs --journal-seq <n>"),
+            "{why}"
+        );
+        assert!(std::fs::read(mac.store()).unwrap() == bytes);
+    }
+    // With the read named, an old one refuses and a fresh one is taken.
+    let seq = read(&mac);
+    let v = levels(
+        about_finding(&mac.store_id(), &core, "suspicious", "case-later"),
+        ("high", "high"),
+    );
+    mac.send(&v);
+    refused_answer(
+        &mac,
+        &verdict,
+        &["seen", "--journal-seq", &seq, "--via", "app"],
+        "changed_since_read",
+        Some(verdict.as_str()),
+    );
+    let seq = read(&mac);
+    given(
+        &mac,
+        &verdict,
+        &["seen", "--journal-seq", &seq, "--via", "app"],
+    );
+    // Taking an answer back needs none.
+    given(&mac, &verdict, &["reopen", "--via", "app"]);
+}
+
+#[test]
 fn a_verdict_that_raises_the_response_layer_s_finding_shown_with_the_core_s_refuses_an_answer_to_it()
  {
     // The core's finding shows the response layer's finding of its rule about the same thing in

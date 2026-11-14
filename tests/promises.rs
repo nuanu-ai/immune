@@ -12344,7 +12344,11 @@ fn an_answer_says_who_gave_it_in_the_app_through_an_agent_or_from_the_command_li
     // names nothing came from the command line.
     let w = Watch::new("answer-via");
     let (profile, ssh, agent) = three_findings(&w);
-    answer(&w.store(), &[&profile, "seen", "--via", "app"]);
+    let read = findings_json(&w.store(), &[])["journal_seq"].to_string();
+    answer(
+        &w.store(),
+        &[&profile, "seen", "--via", "app", "--journal-seq", &read],
+    );
     let read = findings_json(&w.store(), &[])["journal_seq"].to_string();
     answer(
         &w.store(),
@@ -12449,7 +12453,11 @@ fn nothing_is_quieted_silently() {
         &w.store(),
         &[&agent, "expected", "--reason", "a helper I installed"],
     );
-    answer(&w.store(), &[&profile, "seen", "--via", "app"]);
+    let read = findings_json(&w.store(), &[])["journal_seq"].to_string();
+    answer(
+        &w.store(),
+        &[&profile, "seen", "--via", "app", "--journal-seq", &read],
+    );
     let (total, items) = outside_app(&w.store());
     assert_eq!(total, 2);
     let mut items = items;
@@ -12516,7 +12524,11 @@ fn an_answer_from_before_who_gave_it_was_kept_is_not_shown_as_given_outside_the_
     // say plainly that who gave it is not known.
     let w = Watch::new("answer-before-via");
     let (profile, ..) = three_findings(&w);
-    answer(&w.store(), &[&profile, "seen", "--via", "app"]);
+    let read = findings_json(&w.store(), &[])["journal_seq"].to_string();
+    answer(
+        &w.store(),
+        &[&profile, "seen", "--via", "app", "--journal-seq", &read],
+    );
     // The store as an older version left it: no column for who gave an answer.
     Connection::open(w.store())
         .unwrap()

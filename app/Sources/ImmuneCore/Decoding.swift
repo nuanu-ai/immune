@@ -64,6 +64,10 @@ public struct Status: Sendable, Equatable {
   /// The event level: every program start on this Mac. Nil from an immune binary that has none, or
   /// before it was first looked for.
   public var eventLevel: EventLevel?
+  /// The journal's latest sequence number in the store this status was read from: an answer
+  /// given on what it shows passes it back as `--journal-seq`. Nil from an Immune that does not
+  /// give it.
+  public var journalSeq: Int? = nil
   /// Where the answer was not the shape this app reads: a field or a list entry present with
   /// another type, by its path ("result.needs_a_look[0]"). Not empty means the app cannot tell.
   public var misfits: [String] = []
@@ -279,6 +283,12 @@ public struct Item: Sendable, Equatable {
   /// Immune decided this needs the owner now, from how bad and how sure. Missing, or
   /// not a boolean, is false: the app never decides it.
   public var urgent = false
+  /// `kind` as a person reads it, in Immune's words (`kind_title`); nil from an Immune that does
+  /// not give it.
+  public var kindTitle: String? = nil
+  /// What it is about, in Immune's words, for a finding whose thing no name from the Mac says
+  /// (`thing`); nil for every other finding.
+  public var thing: String? = nil
 }
 
 public struct Store: Sendable, Equatable {
@@ -628,7 +638,8 @@ public enum Decoding {
           inPart: $0["in_part"].count, notEvaluated: $0["not_evaluated"].count,
           watching: $0["watching"].bool, matchesLastDay: $0["matches_last_day"].count)
       },
-      eventLevel: r["event_level"].object.map(eventLevel))
+      eventLevel: r["event_level"].object.map(eventLevel),
+      journalSeq: r["journal_seq"].int64)
   }
 
   static func checkMark(_ c: J) -> LastRun {
@@ -721,7 +732,8 @@ public enum Decoding {
           total: $0["total"].count, suspicious: $0["suspicious"].count,
           finding: $0["verdict_finding"]["id"].string)
       },
-      urgent: ref["urgent"].bool ?? false)
+      urgent: ref["urgent"].bool ?? false, kindTitle: listed["kind_title"].string,
+      thing: listed["thing"].string)
   }
 
   static func finishedRun(_ f: J) -> FinishedRun {

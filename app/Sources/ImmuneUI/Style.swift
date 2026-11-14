@@ -204,7 +204,7 @@ extension View {
 }
 
 /// A symbol and the one size and weight of its role. The symbols of the kinds of thing are in
-/// `Words.kinds`, drawn in the row role.
+/// `Icons.kinds`, drawn in the row role.
 struct SymbolStyle {
   var size: CGFloat
   var weight: Font.Weight
@@ -221,7 +221,7 @@ struct SymbolStyle {
 }
 
 /// The symbols of the controls and of the state glyph. The icon table's symbols for things are
-/// in `ImmuneCore`, where the plain text of the panel names them too: a kind's in `Words.kinds`,
+/// in `ImmuneCore`, where the plain text of the panel names them too: a kind's in `Icons.kinds`,
 /// the rest in `Icons`.
 enum Symbols {
   static let chevron = "chevron.right"

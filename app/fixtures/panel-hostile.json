@@ -271,7 +271,8 @@
           "first_seen_at": 1794569820,
           "last_seen_at": 1794569820,
           "answer": null,
-          "verdicts": null
+          "verdicts": null,
+          "kind_title": "Startup item"
         },
         "meaning": "Meaning from the program.",
         "advice": "Advice from the program.",
@@ -297,7 +298,8 @@
           "first_seen_at": 1794569412,
           "last_seen_at": 1794569412,
           "answer": null,
-          "verdicts": null
+          "verdicts": null,
+          "kind_title": "Program start"
         },
         "meaning": "Meaning from the program.",
         "advice": "Advice from the program.",
@@ -352,7 +354,8 @@
           "first_seen_at": 1794569760,
           "last_seen_at": 1794569760,
           "answer": null,
-          "verdicts": null
+          "verdicts": null,
+          "kind_title": "Startup item"
         },
         "meaning": "Meaning from the program.",
         "advice": "Advice from the program.",
@@ -378,7 +381,8 @@
           "first_seen_at": 1794569700,
           "last_seen_at": 1794569700,
           "answer": null,
-          "verdicts": null
+          "verdicts": null,
+          "kind_title": "Program start"
         },
         "meaning": "Meaning from the program.",
         "advice": "Advice from the program.",
@@ -440,7 +444,8 @@
           "first_seen_at": 1794569640,
           "last_seen_at": 1794569640,
           "answer": null,
-          "verdicts": null
+          "verdicts": null,
+          "kind_title": "Shell startup file"
         },
         "meaning": "Meaning from the program.",
         "advice": "Advice from the program.",
@@ -466,7 +471,8 @@
           "first_seen_at": 1794569580,
           "last_seen_at": 1794569580,
           "answer": null,
-          "verdicts": null
+          "verdicts": null,
+          "kind_title": "Git hook"
         },
         "meaning": "Meaning from the program.",
         "advice": "Advice from the program.",

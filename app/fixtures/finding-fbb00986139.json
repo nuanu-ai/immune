@@ -64,5 +64,6 @@
    "change": "changed",
    "presence_only": false
   }
- }
+ },
+ "kind_title": "Shell startup file"
 }
