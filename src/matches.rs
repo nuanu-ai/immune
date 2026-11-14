@@ -281,7 +281,7 @@ fn finding_refs(conn: &Connection, now: i64) -> rusqlite::Result<BTreeMap<String
     };
     Ok(found
         .iter()
-        .filter_map(findings::item)
+        .map(findings::item)
         .map(|i| (i.id.clone(), known::finding_ref(&i)))
         .collect())
 }

@@ -23,7 +23,7 @@ const FORMAT: u32 = 1;
 /// Every finding the store holds, in every state, the most severe first.
 pub fn list(conn: &Connection, now: i64) -> rusqlite::Result<v1::Findings> {
     let found = all(conn, now)?;
-    let mut items: Vec<Item> = found.iter().filter_map(findings::item).collect();
+    let mut items: Vec<Item> = found.iter().map(findings::item).collect();
     findings::order(&mut items);
     let store_id = store::id(conn)?;
     let refs = refs(&items);
@@ -42,9 +42,8 @@ pub fn list(conn: &Connection, now: i64) -> rusqlite::Result<v1::Findings> {
     })
 }
 
-/// One finding whole; a refusal when the store has no finding with this id that this build
-/// knows the rule of. After an answer given to a pair, `with` is the other finding, named as it
-/// stands now.
+/// One finding whole; a refusal when the store has no finding with this id. After an answer
+/// given to a pair, `with` is the other finding, named as it stands now.
 pub fn one(
     conn: &Connection,
     id: &str,
@@ -54,7 +53,7 @@ pub fn one(
     let found = all(conn, now)?;
     let mut one = of(conn, &found, id, now)?;
     if let (Some(f), Some(with)) = (one.as_mut(), with) {
-        let items: Vec<Item> = found.iter().filter_map(findings::item).collect();
+        let items: Vec<Item> = found.iter().map(findings::item).collect();
         f.answered_with = refs(&items).get(with).cloned();
     }
     Ok(one.ok_or(Refused {
@@ -67,20 +66,17 @@ pub fn one(
 
 /// One finding whole, as `one` gives it, out of every finding already read: the page of what
 /// needs a look shows each finding's evidence by this same path. `None` when `found` has no
-/// finding with this id that this build knows the rule of.
+/// finding with this id.
 pub fn of(
     conn: &Connection,
     found: &[Found],
     id: &str,
     now: i64,
 ) -> rusqlite::Result<Option<v1::Finding>> {
-    let Some((f, i)) = found
-        .iter()
-        .find(|f| f.id == id)
-        .and_then(|f| findings::item(f).map(|i| (f, i)))
-    else {
+    let Some(f) = found.iter().find(|f| f.id == id) else {
         return Ok(None);
     };
+    let i = findings::item(f);
     let rests_on = findings::basis(conn, id)?
         .into_iter()
         .map(|b| v1::JournalEntry {
@@ -97,7 +93,7 @@ pub fn of(
         })
         .collect();
     let store_id = store::id(conn)?;
-    let items: Vec<Item> = found.iter().filter_map(findings::item).collect();
+    let items: Vec<Item> = found.iter().map(findings::item).collect();
     let refs = refs(&items);
     let verdicts = verdict::verdicts(
         verdict::of_finding(conn, id, &f.rule)?,

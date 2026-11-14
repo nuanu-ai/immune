@@ -25,14 +25,17 @@ pub struct FindingRef {
         deserialize_with = "crate::enum_from_name::<FindingState, _>"
     )]
     pub state: i32,
-    /// How bad it would be.
-    #[prost(enumeration = "Level", tag = "5")]
+    /// How bad it would be. Absent when the core cannot say: for a finding of a rule this build
+    /// does not have, since the store keeps no level without the rule. A reader that does not know
+    /// it can be absent reads it as `UNSPECIFIED`, the highest severity. Optional since 1.11.0.
+    #[prost(enumeration = "Level", optional, tag = "5")]
     #[serde(
-        serialize_with = "crate::enum_name::<Level, _>",
-        deserialize_with = "crate::enum_from_name::<Level, _>"
+        serialize_with = "crate::optional_enum_name::<Level, _>",
+        deserialize_with = "crate::optional_enum_from_name::<Level, _>"
     )]
-    pub severity: i32,
-    /// How sure the core is. Absent when the rule gives no confidence.
+    pub severity: ::core::option::Option<i32>,
+    /// How sure the core is. Absent when the rule gives no confidence, and when `severity` is
+    /// absent.
     #[prost(enumeration = "Level", optional, tag = "6")]
     #[serde(
         serialize_with = "crate::optional_enum_name::<Level, _>",
@@ -40,6 +43,7 @@ pub struct FindingRef {
     )]
     pub confidence: ::core::option::Option<i32>,
     /// High or critical severity with medium or high confidence: what the app notifies about.
+    /// False when `severity` is absent.
     #[prost(bool, tag = "7")]
     pub urgent: bool,
 }
@@ -1568,8 +1572,9 @@ pub struct Findings {
     #[prost(int64, optional, tag = "4")]
     pub latest_run_at: ::core::option::Option<i64>,
     /// Every finding, urgent ones first (severity high or critical with confidence medium or high),
-    /// then the most severe, then the latest seen, then by id. A finding of a rule this build does
-    /// not have is left out.
+    /// then the most severe, a finding whose severity is not known taken as the most severe, then
+    /// the latest seen, then by id. Every finding the store holds is here, one of a rule this build
+    /// does not have included (`ListedFinding.kind`).
     #[prost(message, repeated, tag = "5")]
     pub findings: ::prost::alloc::vec::Vec<ListedFinding>,
     /// When an agent may answer a finding, in the core's words: the same in the usage, in `immune
@@ -1588,7 +1593,10 @@ pub struct Findings {
 pub struct ListedFinding {
     #[prost(message, optional, tag = "1")]
     pub finding: ::core::option::Option<FindingRef>,
-    /// What the rule is about, in the core's words, such as `shell profile`.
+    /// What the rule is about, in the core's words, such as `shell profile`. For a finding of a
+    /// rule this build does not have, `finding of a rule not in this version`: its words say only
+    /// that, `finding.rule` is the rule as the store keeps it, its levels are absent, and it is
+    /// answered like any other finding.
     #[prost(string, tag = "2")]
     pub kind: ::prost::alloc::string::String,
     /// What happened, in the core's words: the same for every finding of its rule.
@@ -1698,8 +1706,8 @@ pub struct Finding {
     /// finding's own rule does not refuse `expected`, which already quiets every later match of
     /// the rule; it refuses `seen` and `reopen`. One number covers every finding of the store, so
     /// it covers both findings of a pair; when they were read in two answers, pass the smaller of
-    /// the two. Required with `--with` and with `--via agent` on `seen` and `expected`. `Findings`
-    /// and `Status` carry it too. Since 1.9.0.
+    /// the two. Required with `--with` and, on `seen` and `expected`, with `--via agent` and
+    /// `--via app`. `Findings` and `Status` carry it too. Since 1.9.0.
     #[prost(int64, tag = "21")]
     pub journal_seq: i64,
 }

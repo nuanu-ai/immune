@@ -1223,11 +1223,13 @@ fn refused(r: Refused) -> Box<dyn std::error::Error> {
     Box::new(RefusedError(r))
 }
 
-/// The finding with this id, if it is one every answer shows. A finding of a rule this build does
-/// not have is left out of every read (`item`), so a write takes it for one the store does not
-/// hold: the write and the read agree on what "the store has this finding" means.
+/// The finding with this id, if it is one every answer shows: every finding the store holds is.
+/// One of a rule this build does not have, or that this build raises no finding with, is shown
+/// in Immune's own words (`kept_item`) rather than left out, so it is counted, listed, read and
+/// answered like any other. The write and the read agree on what "the store has this finding"
+/// means, and no case is left that the store holds and the reads do not show.
 fn shown(f: &Found, id: &str) -> bool {
-    f.id == id && item(f).is_some()
+    f.id == id
 }
 
 /// Checks that `with` is the other finding of `id`'s pair before one answer is given to both:
@@ -1248,10 +1250,8 @@ pub fn pair(
     let Some(b) = all.iter().find(|f| shown(f, with)) else {
         return Err(refused(Refused::With(Box::new(Refused::Unknown))));
     };
-    // Both are shown, so both are items; the pair is what the page folds into one row.
-    let (Some(a), Some(b)) = (item(a), item(b)) else {
-        return Err(refused(Refused::Unknown));
-    };
+    // The pair is what the page folds into one row.
+    let (a, b) = (item(a), item(b));
     if !(one_thing(&a, &b) || one_thing(&b, &a)) {
         return Err(refused(Refused::NotPair));
     }
@@ -1308,11 +1308,7 @@ pub fn unchanged(
         return Err(refused(Refused::ReadAhead));
     }
     let matches_join = !matches!(act, Act::Answer(Answer::Expected { .. }));
-    let items: Vec<Item> = all(tx, at)?
-        .unwrap_or_default()
-        .iter()
-        .filter_map(item)
-        .collect();
+    let items: Vec<Item> = all(tx, at)?.unwrap_or_default().iter().map(item).collect();
     // Each named finding, then the response layer's findings it shows.
     let mut checked: Vec<&str> = Vec::new();
     for id in ids {
@@ -1466,11 +1462,7 @@ pub fn answered(conn: &Connection, now: i64) -> rusqlite::Result<Option<Vec<Item
     let Some(found) = all(conn, now)? else {
         return Ok(None);
     };
-    let mut items: Vec<Item> = found
-        .iter()
-        .filter(|f| f.in_force)
-        .filter_map(item)
-        .collect();
+    let mut items: Vec<Item> = found.iter().filter(|f| f.in_force).map(item).collect();
     items.sort_by(|a, b| {
         let at = |i: &Item| i.answer.as_ref().map(|a| a.at);
         at(b).cmp(&at(a)).then_with(|| a.id.cmp(&b.id))
@@ -1524,9 +1516,12 @@ impl std::error::Error for RefusedError {}
 pub struct Item {
     pub id: String,
     pub kind: &'static str,
-    pub rule: Option<&'static str>,
+    /// The rule that raised it, as every answer names it; for a finding of a rule this build
+    /// does not have, as the store keeps it.
+    pub rule: String,
     pub technique: Option<&'static str>,
-    pub severity: &'static str,
+    /// `None` when it is not known: the store keeps no level of a finding without its rule.
+    pub severity: Option<&'static str>,
     pub confidence: Option<&'static str>,
     pub state: String,
     pub change: Option<String>,
@@ -1554,9 +1549,19 @@ pub struct Item {
 /// Nothing else pairs two findings: findings of two rules about the same machine are two things,
 /// and a verdict finding with no partner is a thing of its own. The page, the answer (`pair` for
 /// `--with`) and the read guard (`unchanged`, which covers the partner a finding shows) pair by
-/// this alone.
+/// this alone. `core` is never itself a finding of the response layer: one whose stored subject
+/// is the verdict rule would otherwise pair with itself and be folded out of sight.
 pub fn one_thing(core: &Item, own: &Item) -> bool {
-    own.subject.as_deref().is_some_and(|s| core.rule == Some(s)) && own.about == core.about
+    core.subject.is_none()
+        && own.subject.as_deref() == Some(core.rule.as_str())
+        && own.about == core.about
+}
+
+impl Item {
+    /// Whether it is urgent (`urgent`); never when its levels are not known.
+    pub fn urgent(&self) -> bool {
+        self.severity.is_some_and(|s| urgent(s, self.confidence))
+    }
 }
 
 /// The answer a finding has.
@@ -1661,7 +1666,7 @@ pub const PUBLISHED_FILE_KIND: &str = "file event matched by a published rule";
 /// case, the one name for it in the app, the pages and the text. `kind` stays the stable name,
 /// stored and matched; the title is only shown. A test walks every kind the program can raise
 /// (`kinds`) and fails for one this table lacks.
-const KIND_TITLES: [(&str, &str); 23] = [
+const KIND_TITLES: [(&str, &str); 24] = [
     (watched::AUTOSTART, "Startup item"),
     (watched::LOGIN_HOOK, "Login hook"),
     (watched::PROFILE, "Shell startup file"),
@@ -1691,6 +1696,7 @@ const KIND_TITLES: [(&str, &str); 23] = [
     (PUBLISHED_KIND, "Program start"),
     (PUBLISHED_FILE_KIND, "File created or renamed"),
     (crate::verdict::KIND, "Response layer"),
+    (KEPT_KIND, "Rule not in this version"),
 ];
 
 /// A kind's title for a person, from `KIND_TITLES`; the kind as stored for one the table lacks.
@@ -1702,11 +1708,17 @@ pub fn kind_title(kind: &str) -> &str {
 }
 
 /// Every kind of thing a finding of this build can be about: its own rules', a published rule's
-/// for each kind of event, and the response layer's.
+/// for each kind of event, the response layer's, and a finding of a rule this build does not
+/// have.
 #[cfg(test)]
 fn kinds() -> Vec<&'static str> {
     let mut out: Vec<&'static str> = rules().iter().map(|r| r.kind).collect();
-    out.extend([PUBLISHED_KIND, PUBLISHED_FILE_KIND, crate::verdict::KIND]);
+    out.extend([
+        PUBLISHED_KIND,
+        PUBLISHED_FILE_KIND,
+        crate::verdict::KIND,
+        KEPT_KIND,
+    ]);
     out.sort_unstable();
     out.dedup();
     out
@@ -1760,8 +1772,8 @@ pub fn published_words(source: &crate::sigma::Source) -> (Words, Words) {
 /// A finding of a published rule as an item: how bad is the rule's level, how sure follows its
 /// status (`sigma::Status::confidence`), and its first ATT&CK technique stands as the item's;
 /// every technique, the authors and the evidence are in `detail`. `None` for a rule whose set
-/// states no level: this build raises no finding of one, and an item is never given an empty
-/// severity.
+/// states no level: this build raises no finding of one, and such a finding is shown as one of a
+/// rule this build does not have (`kept_item`), never with an empty severity.
 fn published_item(f: &Found, l: &'static crate::sigma::Loaded) -> Option<Item> {
     let m = l.meta.as_ref()?;
     let severity = m.level_name()?;
@@ -1773,9 +1785,9 @@ fn published_item(f: &Found, l: &'static crate::sigma::Loaded) -> Option<Item> {
     Some(Item {
         id: f.id.clone(),
         kind,
-        rule: Some(m.name.as_str()),
+        rule: m.name.clone(),
         technique: m.techniques.first().map(String::as_str),
-        severity,
+        severity: Some(severity),
         confidence: Some(m.status.confidence()),
         state: f.state.clone(),
         change: f.change.clone(),
@@ -1815,9 +1827,9 @@ fn answered_of(f: &Found) -> Option<Answered> {
 }
 
 /// A finding of the response layer's `verdict.suspicious` about the rule `subject`: its levels
-/// are the highest its verdicts gave, and what it is about, the subject rule's title, stands
-/// beside its words.
-fn verdict_item(f: &Found, subject: &str) -> Option<Item> {
+/// are the highest its verdicts gave, not known when the store holds none of its verdicts, and
+/// what it is about, the subject rule's title, stands beside its words.
+fn verdict_item(f: &Found, subject: &str) -> Item {
     // The subject rule's title whether or not the rule has a level: a verdict about a match of
     // a rule whose set states none is the response layer's judgement of it, and is shown. A
     // rule this build no longer has is named as the verdict named it: the response layer's
@@ -1827,14 +1839,14 @@ fn verdict_item(f: &Found, subject: &str) -> Option<Item> {
         None => rule(subject).map(|r| r.words.title.to_string()),
     }
     .unwrap_or_else(|| subject.to_string());
-    let (s, c) = f.verdicts.as_ref()?.levels?;
-    Some(Item {
+    let levels = f.verdicts.as_ref().and_then(|v| v.levels);
+    Item {
         id: f.id.clone(),
         kind: crate::verdict::KIND,
-        rule: Some(crate::verdict::RULE),
+        rule: crate::verdict::RULE.to_string(),
         technique: None,
-        severity: SEVERITIES[s],
-        confidence: Some(CONFIDENCES[c]),
+        severity: levels.map(|(s, _)| SEVERITIES[s]),
+        confidence: levels.map(|(_, c)| CONFIDENCES[c]),
         state: f.state.clone(),
         change: f.change.clone(),
         first_seen: Some(f.first_seen.0),
@@ -1847,24 +1859,65 @@ fn verdict_item(f: &Found, subject: &str) -> Option<Item> {
         answer: answered_of(f),
         verdicts: f.verdicts.clone(),
         subject: Some(subject.to_string()),
-    })
+    }
 }
 
-/// A finding as an item; `None` for a rule this build does not have or does not raise.
-pub fn item(f: &Found) -> Option<Item> {
-    if let Some(l) = published(&f.rule) {
-        return published_item(f, l);
+/// What a finding of a rule this build does not have is about, as the item's `kind`.
+pub const KEPT_KIND: &str = "finding of a rule not in this version";
+
+/// Immune's words for such a finding: nothing a rule would say, since the rule is not here.
+const KEPT_WORDS: Words = Words {
+    title: "This finding was raised by a rule that is not in this version of Immune.",
+    meaning: "The rule that raised it is not among those that raise findings in this version, so Immune can say no more about it than what it kept, and the finding stays until you answer it.",
+    advice: "Look at where it is and at what it rests on; once you know what it was, mark it seen or expected.",
+};
+
+/// A finding of a rule this build does not have, or that this build raises no finding with: a
+/// published rule that left the shipped set, a rule renamed. The store keeps where it is, its
+/// times, its state, its answer and the journal entries it rests on, and no level, so its levels
+/// are not known and it is not urgent. Its rule is named as the store keeps it. Without this, it
+/// would be left out of every read while it stays open in the store, and the status would be
+/// calm over it.
+fn kept_item(f: &Found) -> Item {
+    Item {
+        id: f.id.clone(),
+        kind: KEPT_KIND,
+        rule: f.rule.clone(),
+        technique: None,
+        severity: None,
+        confidence: None,
+        state: f.state.clone(),
+        change: f.change.clone(),
+        first_seen: Some(f.first_seen.0),
+        last_seen: Some(f.last_seen.0),
+        words: KEPT_WORDS,
+        value: f.became.clone(),
+        place: Some(f.place.clone()),
+        thing: f.thing.clone(),
+        about: f.about.clone(),
+        answer: answered_of(f),
+        verdicts: f.verdicts.clone(),
+        subject: None,
+    }
+}
+
+/// A finding as an item, whatever its rule: one this build does not have is a `kept_item`.
+pub fn item(f: &Found) -> Item {
+    if let Some(i) = published(&f.rule).and_then(|l| published_item(f, l)) {
+        return i;
     }
     if let Some(subject) = f.rule.strip_prefix(crate::verdict::PREFIX) {
         return verdict_item(f, subject);
     }
-    let r = rule(&f.rule)?;
-    Some(Item {
+    let Some(r) = rule(&f.rule) else {
+        return kept_item(f);
+    };
+    Item {
         id: f.id.clone(),
         kind: r.kind,
-        rule: Some(r.id),
+        rule: r.id.to_string(),
         technique: r.technique,
-        severity: r.severity,
+        severity: Some(r.severity),
         confidence: Some(r.confidence),
         state: f.state.clone(),
         change: f.change.clone(),
@@ -1878,7 +1931,7 @@ pub fn item(f: &Found) -> Option<Item> {
         answer: answered_of(f),
         verdicts: f.verdicts.clone(),
         subject: None,
-    })
+    }
 }
 
 /// Everything that needs a look now, newest first.
@@ -1897,7 +1950,7 @@ pub fn needs(conn: &Connection, now: i64) -> rusqlite::Result<Needs> {
         .unwrap_or_default()
         .iter()
         .filter(|f| f.state == "open")
-        .filter_map(item)
+        .map(item)
         .collect();
     order(&mut items);
     Ok(Needs {
@@ -1909,12 +1962,17 @@ pub fn needs(conn: &Connection, now: i64) -> rusqlite::Result<Needs> {
 /// The order of everything that needs a look, and of findings: urgent first, then the most
 /// severe, then the newest, then by id. Every list that is cut is cut in this order, so a cut
 /// never drops an urgent finding while it keeps one that is not, and a severe finding is never
-/// under a mild one.
+/// under a mild one. A severity that is not known may be any, so it ranks as the most severe, as
+/// the contract reads an unspecified one.
 pub fn order(items: &mut [Item]) {
-    let rank = |i: &Item| SEVERITIES.iter().position(|s| *s == i.severity);
+    let rank = |i: &Item| {
+        i.severity.map_or(Some(SEVERITIES.len()), |s| {
+            SEVERITIES.iter().position(|x| *x == s)
+        })
+    };
     items.sort_by(|a, b| {
-        urgent(b.severity, b.confidence)
-            .cmp(&urgent(a.severity, a.confidence))
+        b.urgent()
+            .cmp(&a.urgent())
             .then_with(|| rank(b).cmp(&rank(a)))
             .then_with(|| b.last_seen.cmp(&a.last_seen))
             .then_with(|| a.id.cmp(&b.id))
@@ -2050,9 +2108,11 @@ mod tests {
     }
 
     #[test]
-    fn a_finding_of_a_rule_that_states_no_level_is_no_item_and_no_item_has_an_empty_severity() {
+    fn a_finding_of_a_rule_that_states_no_level_is_shown_with_its_levels_not_known_and_never_empty()
+    {
         // This build raises no finding of a rule whose set states no level; one in the store is
-        // not shown as an item with a blank severity, which a reader could not weigh.
+        // shown as a finding of a rule not in this version, its levels not known, never with a
+        // blank severity a reader could not weigh, and never left out.
         let found = |rule: &str| super::Found {
             id: "f-1".into(),
             rule: rule.into(),
@@ -2073,14 +2133,63 @@ mod tests {
             detail: None,
             verdicts: None,
         };
-        assert!(
-            super::item(&found(
-                "elastic-behaviour:2ed9c6bf-025e-4edf-a9ec-1493d0bb4f81"
-            ))
-            .is_none()
+        let silent = super::item(&found(
+            "elastic-behaviour:2ed9c6bf-025e-4edf-a9ec-1493d0bb4f81",
+        ));
+        assert_eq!(
+            (
+                silent.kind,
+                silent.severity,
+                silent.confidence,
+                silent.urgent()
+            ),
+            (super::KEPT_KIND, None, None, false)
         );
-        let padding = super::item(&found("sigma:95361ce5-c891-4b0a-87ca-e24607884a96")).unwrap();
-        assert_eq!(padding.severity, "high");
+        assert_eq!(
+            silent.rule,
+            "elastic-behaviour:2ed9c6bf-025e-4edf-a9ec-1493d0bb4f81"
+        );
+        let padding = super::item(&found("sigma:95361ce5-c891-4b0a-87ca-e24607884a96"));
+        assert_eq!(padding.severity, Some("high"));
+    }
+
+    #[test]
+    fn a_finding_whose_levels_are_not_known_is_never_urgent_and_is_cut_after_urgent_ones_but_before_any_level()
+     {
+        // A list cut in this order keeps the urgent findings first; a finding whose severity is
+        // not known may be of any, so no finding of a known level is kept over it.
+        let found = |id: &str, rule: &str| super::Found {
+            id: id.into(),
+            rule: rule.into(),
+            about: "machine:a".into(),
+            state: "open".into(),
+            change: None,
+            first_seen: (1, "1".into()),
+            last_seen: (1, "1".into()),
+            answered_at: None,
+            reason: None,
+            until: None,
+            via: None,
+            superseded: false,
+            in_force: false,
+            place: "invented".into(),
+            became: None,
+            thing: None,
+            detail: None,
+            verdicts: None,
+        };
+        let mut items = vec![
+            super::item(&found("a-high-unsure", "lockfiles.malicious-name-removed")),
+            super::item(&found(
+                "b-kept",
+                "sigma:00000000-0000-4000-8000-000000000000",
+            )),
+            super::item(&found("c-urgent", "indicator.match")),
+        ];
+        assert!(!items[1].urgent());
+        super::order(&mut items);
+        let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["c-urgent", "b-kept", "a-high-unsure"]);
     }
 
     #[test]
@@ -2111,7 +2220,7 @@ mod tests {
                 ..Default::default()
             }),
         };
-        let item = |rule: &str, about: &str| super::item(&found(rule, about)).unwrap();
+        let item = |rule: &str, about: &str| super::item(&found(rule, about));
         let padding = "sigma:95361ce5-c891-4b0a-87ca-e24607884a96";
         let core = item(padding, "machine:a");
         let own = |rule: &str, about: &str| item(&format!("verdict.suspicious:{rule}"), about);
@@ -2128,6 +2237,11 @@ mod tests {
             &item("watched.shell-profile", "machine:a")
         ));
         assert!(!super::one_thing(&own(padding, "machine:a"), &core));
+        // A finding of the response layer is never the core's side: one whose subject is the
+        // verdict rule pairs neither with itself nor with another like it.
+        let nested = own("verdict.suspicious", "machine:a");
+        assert!(!super::one_thing(&nested, &nested));
+        assert!(!super::one_thing(&own(padding, "machine:a"), &nested));
     }
 
     #[test]

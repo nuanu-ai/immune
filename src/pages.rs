@@ -298,11 +298,7 @@ impl FindingRow<'_> {
     /// It needs the person now: an open finding in it, the core's or the response layer's,
     /// is one Immune marks urgent.
     fn urgent(&self) -> bool {
-        (self.open && findings::urgent(self.item.severity, self.item.confidence))
-            || self
-                .under
-                .iter()
-                .any(|(c, open)| *open && findings::urgent(c.severity, c.confidence))
+        (self.open && self.item.urgent()) || self.under.iter().any(|(c, open)| *open && c.urgent())
     }
 }
 
@@ -461,7 +457,7 @@ fn findings_table(
 /// when every one is harmless; `None` with no verdict.
 fn verdict_word(i: &findings::Item) -> Option<&'static str> {
     let v = i.verdicts.as_ref()?;
-    if i.rule == Some(crate::verdict::RULE) || v.suspicious > 0 {
+    if i.rule == crate::verdict::RULE || v.suspicious > 0 {
         Some("Suspicious")
     } else if v.total > 0 {
         Some("Harmless")
@@ -537,10 +533,7 @@ fn finding_row(
     now: i64,
 ) -> Out {
     let i = row.item;
-    let whole = match i.rule {
-        Some(_) => crate::finding_answer::of(conn, found, &i.id, now)?,
-        None => None,
-    };
+    let whole = crate::finding_answer::of(conn, found, &i.id, now)?;
     let id = if row.open {
         esc(&i.id)
     } else {
@@ -607,6 +600,11 @@ fn finding_body(
     now: i64,
 ) -> Out {
     let mut facts: Vec<(&str, String)> = vec![("Where", data(place))];
+    // A finding of a rule this build does not have names the rule as the store keeps it: the
+    // one thing beside where it is that says what found it.
+    if i.kind == findings::KEPT_KIND {
+        facts.push(("Rule", data(&i.rule)));
+    }
     // What the source said, as data beside the sentences.
     if let Some(value) = &i.value {
         facts.push((
@@ -664,10 +662,7 @@ fn finding_body(
         (_, Some(l)) => format!("Seen {}", view::when(l, now)),
         _ => String::new(),
     };
-    let command = match i.rule {
-        None => "immune status --json".to_string(),
-        Some(_) => format!("immune finding {} --json", i.id),
-    };
+    let command = format!("immune finding {} --json", i.id);
     writeln!(
         out,
         "<div class=\"fxb\"><span>{seen}</span><span>For your agent<span class=\"mono\">{}</span></span></div>",
