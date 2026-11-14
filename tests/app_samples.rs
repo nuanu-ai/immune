@@ -579,9 +579,18 @@ fn the_panel_has_a_status_of_real_size_to_be_drawn_from() {
     // the first three (`EXAMPLES`), each the server's name alone in `examples_text` and, beside
     // it in `examples`, what the source said; the first is long.
     let said = [
-        ("staging-db", "ssh exited with 255 (kex_exchange_identification: read: Connection reset by peer; the server closed the connection before the key exchange)"),
-        ("build-box", "ssh: connect to host build-box port 22: Operation timed out"),
-        ("backup-01", "ssh: Could not resolve hostname backup-01: nodename nor servname provided, or not known"),
+        (
+            "staging-db",
+            "ssh exited with 255 (kex_exchange_identification: read: Connection reset by peer; the server closed the connection before the key exchange)",
+        ),
+        (
+            "build-box",
+            "ssh: connect to host build-box port 22: Operation timed out",
+        ),
+        (
+            "backup-01",
+            "ssh: Could not resolve hostname backup-01: nodename nor servname provided, or not known",
+        ),
     ];
     let names: Vec<&str> = said.iter().map(|(name, _)| *name).collect();
     let examples: Vec<Value> = said
