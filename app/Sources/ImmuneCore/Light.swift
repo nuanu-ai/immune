@@ -111,17 +111,20 @@ public enum Light: Sendable, Equatable {
     }
     // Calm only when Immune says this Mac is watched, wholly or in part; not checked,
     // or anything else, is not calm. What it does not cover never raises the icon.
-    switch mac.state {
-    case "watched": return .nothingToReport
-    case "watched_in_part": return .watchedInPart
-    default: return .cannotRead("Whether this Mac is watched is not reported.")
-    }
+    return mac.state.flatMap { macStates[$0] }
+      ?? .cannotRead("Whether this Mac is watched is not reported.")
   }
 
-  /// The menu-bar symbol: filled when the worst thing shown is high or critical, or
-  /// when Immune marked something urgent.
-  public static func menuSymbol(_ light: Light, worst: String?, urgent: Bool = false) -> String {
-    if case .attention = light, urgent || Severity.isStrong(worst) { return light.symbol + ".fill" }
+  /// The light for each value of `ThisMacState` (status.proto). A test walks the schema against
+  /// it, so a state the core adds is decided on here; until then it is not calm.
+  static let macStates: [String: Light] = [
+    "watched": .nothingToReport, "watched_in_part": .watchedInPart,
+    "not_checked": .cannotRead("Nothing of this Mac has been read yet."),
+  ]
+
+  /// The menu-bar symbol: filled only when Immune marked something urgent, whatever the levels.
+  public static func menuSymbol(_ light: Light, urgent: Bool = false) -> String {
+    if case .attention = light, urgent { return light.symbol + ".fill" }
     return light.symbol
   }
 
@@ -138,19 +141,6 @@ public enum Light: Sendable, Equatable {
     }
   }
 
-  /// The large round symbol for the panel's headline, a different shape in each state: a
-  /// filled disc with a check, a ring with a check, an exclamation mark, a clock, a question
-  /// mark.
-  public var panelSymbol: String {
-    switch self {
-    case .nothingToReport: "checkmark.circle.fill"
-    case .watchedInPart: "checkmark.circle"
-    case .attention: "exclamationmark.circle.fill"
-    case .stale: "clock"
-    case .cannotRead: "questionmark.circle.fill"
-    }
-  }
-
   /// Whether this is an old answer, whatever its time.
   public var isStale: Bool { if case .stale = self { true } else { false } }
 
@@ -160,13 +150,14 @@ public enum Light: Sendable, Equatable {
     case .nothingToReport, .watchedInPart: "Nothing needs you"
     case .attention(let n): n == 1 ? "1 to look at" : "\(n) to look at"
     case .stale(let since): Light.staleWords(since)
-    case .cannotRead: "I can't tell."
+    case .cannotRead: "I can't tell"
     }
   }
 
-  /// "Not checked since Nov 13, 2026 at 9:41 AM": an old answer, and since when.
-  public static func staleWords(_ since: Date?) -> String {
-    since.map { "Not checked since " + Clock.full($0) } ?? "No full check has finished"
+  /// "Not checked since 9:41": an old answer, and since when, as short as `now` allows.
+  public static func staleWords(_ since: Date?, now: Date? = nil) -> String {
+    since.map { d in "Not checked since " + (now.map { Clock.at(d, now: $0) } ?? Clock.full(d)) }
+      ?? "No full check has finished"
   }
 }
 

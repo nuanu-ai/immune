@@ -90,9 +90,13 @@ public struct Row: Sendable, Equatable, Identifiable {
   }
 
   /// The kind and what happened, in the app's words: "Shell startup file · changed".
+  /// What happened is left out when the kind already says it: a place read for the first time
+  /// reads "Read for the first time", once.
   public var meta: String {
-    [Words.kind(item.kind), item.change.map(Words.change)].compactMap { $0 }
-      .joined(separator: " · ")
+    let kind = Words.kind(item.kind)
+    let change = item.change.map(Words.change)
+    let parts = change?.lowercased() == kind?.lowercased() ? [kind] : [kind, change]
+    return parts.compactMap { $0 }.joined(separator: " · ")
   }
 
   /// A finding of the response layer's own rule.
@@ -247,20 +251,35 @@ public enum Evidence {
 /// The app's words for Immune's kinds of finding and for what happened. A kind the app has no
 /// words for is Immune's own word, with a capital letter.
 public enum Words {
+  /// Each kind of thing Immune names: the app's words and the symbol of the design sheet's icon
+  /// table. A kind with no entry is any other file or application, drawn as `otherSymbol`.
   static let kinds: [String: (String, String)] = [
     "autostart item": ("Startup item", "power"),
-    "login or logout hook": ("Login hook", "person.crop.circle"),
+    "login or logout hook": ("Login hook", "person"),
     "shell profile": ("Shell startup file", "terminal"),
     "ssh access file": ("SSH file", "key"),
     "authentication module": ("Authentication module", "lock"),
     "git hook": ("Git hook", "arrow.triangle.branch"),
-    "places read for the first time": ("Read for the first time", "doc.text.magnifyingglass"),
+    "setting or command an editor runs in a project": (
+      "Editor task that runs when a project is opened", "gearshape"
+    ),
+    "script run when a project's packages are installed": (
+      "Install script in a project", "gearshape"
+    ),
+    "program or tool a project tells a coding agent to run": (
+      "Agent tool in a project", "gearshape"
+    ),
+    "program or tool a coding agent is set to run": ("Agent tool", "gearshape"),
+    "editor extension": ("Editor extension", "puzzlepiece.extension"),
+    "places read for the first time": ("Read for the first time", "doc.text"),
     "lockfile dependency": ("Package in a project", "shippingbox"),
-    "program start matched by a published rule": ("Program start", "play.circle"),
+    "program start matched by a published rule": ("Program start", "play"),
     "file event matched by a published rule": ("File created or renamed", "doc.badge.plus"),
-    "verdict of the response layer": ("Response layer", "exclamationmark.bubble"),
+    "verdict of the response layer": ("Response layer: suspicious", "bubble.left"),
     "match of an indicator from the list": ("Indicator match", "scope"),
   ]
+  /// An application or any other file.
+  public static let otherSymbol = "doc"
 
   public static func kind(_ kind: String?) -> String? {
     guard let kind, !kind.isEmpty else { return nil }
@@ -270,7 +289,52 @@ public enum Words {
   }
 
   public static func symbol(_ kind: String?) -> String {
-    kind.flatMap { kinds[$0]?.1 } ?? "exclamationmark.circle"
+    kind.flatMap { kinds[$0]?.1 } ?? otherSymbol
+  }
+
+  // The app's words for the values of the contract's enums, keyed by the value as the JSON
+  // prints it (`common.proto`: lower case, without the enum's prefix). Each table has a word for
+  // every value of its enum, and a test walks the `.proto` files to keep it so: a value the core
+  // adds and the app has no word for fails there, instead of reaching the person as a raw word.
+
+  /// `Change` (findings.proto).
+  public static let changes: [String: String] = [
+    "new": "new", "changed": "changed", "gone": "removed",
+    "first_read": "read for the first time", "not_read": "can't be read now",
+  ]
+  /// `AnswerKind` (findings.proto); "Expected" is followed by its day.
+  public static let answers: [String: String] = ["seen": "Seen", "expected": "Expected"]
+  /// `Via` (findings.proto): who gave an answer.
+  public static let vias: [String: String] = [
+    "app": "in the app", "agent": "through your agent", "command": "from the command line",
+    "unknown": "by someone not recorded",
+  ]
+  /// `VerdictKind` (verdict.proto).
+  public static let verdicts: [String: String] = [
+    "suspicious": "Suspicious", "harmless": "Harmless",
+  ]
+  /// `Level` (common.proto): how bad, and how sure.
+  public static let levels: [String: String] = [
+    "informational": "informational", "low": "low", "medium": "medium", "high": "high",
+    "critical": "critical", "not_stated": "not stated",
+  ]
+  /// `FindingState` (common.proto).
+  public static let findingStates: [String: String] = [
+    "open": "Open", "expected": "Expected", "seen": "Seen", "cleared": "Cleared",
+  ]
+  /// `FileAction` (event.proto).
+  public static let fileActions: [String: String] = ["create": "created", "rename": "renamed"]
+  /// `CollectorState` (matches.proto): whether the event level records program starts now. Only
+  /// `running` does; every other state, and one this app does not know, is not seen.
+  public static let collectorOn: [String: Bool] = [
+    "not_installed": false, "running": true, "refused": false, "failing": false,
+    "silent": false, "failed": false,
+  ]
+
+  /// A value of an enum through its table; a value the table does not hold, which the core may
+  /// add within version 1, is shown as it is, inert.
+  public static func word(_ value: String, _ table: [String: String]) -> String {
+    table[value] ?? Inert.text(value, limit: 40).replacingOccurrences(of: "_", with: " ")
   }
 
   /// An answer or a statement whose word this app does not know: never shown as one it knows.
@@ -278,37 +342,34 @@ public enum Words {
 
   /// The person's answer in the app's words: Seen, or Expected until a day; any other word is
   /// one this app does not know, and is said so.
-  public static func answer(_ given: String?, until: Date?) -> String {
-    switch given {
-    case "seen": "Seen"
-    case "expected": "Expected until " + (until.map { Clock.day($0) } ?? "a day not given")
-    default: unknownAnswer
-    }
+  public static func answer(_ given: String?, until: Date?, now: Date? = nil) -> String {
+    guard let given, let word = answers[given] else { return unknownAnswer }
+    return given == "expected"
+      ? word + " until " + (until.map { Clock.day($0, now: now) } ?? "a day not given") : word
   }
 
-  /// `change`: new, changed, gone, first read, not read; another word is shown as it is.
-  public static func change(_ change: String) -> String {
-    switch change {
-    case "gone": "removed"
-    case "first read": "read for the first time"
-    case "not read": "can't be read now"
-    default: Inert.text(change, limit: 40)
-    }
+  /// `change` in the app's words.
+  public static func change(_ change: String) -> String { word(change, changes) }
+
+  /// Who gave an answer, in the app's words.
+  public static func via(_ via: String?) -> String {
+    via.flatMap { vias[$0] } ?? vias["unknown"] ?? ""
   }
 }
 
-/// A word beside a row: what the response layer said, or Immune's urgent mark.
-public struct Badge: Sendable, Equatable, Hashable {
-  public enum Tone: Sendable, Equatable, Hashable { case suspicious, harmless, urgent }
-  public let word: String
-  public let tone: Tone
-
-  public static let suspicious = Badge(word: "Suspicious", tone: .suspicious)
-  public static let harmless = Badge(word: "Harmless", tone: .harmless)
-  public static let urgent = Badge(word: "Urgent", tone: .urgent)
+/// The symbols of the design sheet's icon table that are not a kind's (those are in
+/// `Words.kinds`).
+public enum Icons {
+  public static let notSeen = "eye.slash"
+  public static let answered = "person.badge.clock"
+  public static let watched = "binoculars"
+  public static let firstDay = "flag"
+  public static let notificationsOff = "bell.slash"
+  public static let notWatching = "pause"
 }
 
-/// One row of the list and the response layer's own findings nested under it.
+/// One row of the list and the response layer's own findings nested under it: one thing, one
+/// row.
 public struct Entry: Sendable, Equatable, Identifiable {
   public let row: Row
   /// Findings of `verdict.suspicious` that the row's verdict names, one level down.
@@ -318,27 +379,30 @@ public struct Entry: Sendable, Equatable, Identifiable {
   /// It needs the person now when Immune marked it, or a finding nested under it, urgent.
   public var urgent: Bool { row.urgent || children.contains { $0.urgent } }
 
-  /// The words beside the row. The response layer's own finding is suspicious. A finding of the
-  /// core is suspicious when a verdict said so and its finding is not nested under it, and
-  /// harmless when any verdict said so. A verdict never closes the row or moves it.
-  public var badges: [Badge] { Self.badges(row, nested: !children.isEmpty) }
+  /// What the response layer said of the row's finding, in a word, or nil. A finding of the core
+  /// is suspicious when a verdict said so, its own finding about it being one row with it, and
+  /// harmless when every verdict counted said so. A verdict never closes the row or moves it. The
+  /// response layer's own finding says it in its kind's words.
+  public var said: String? { Self.said(row) }
 
-  static func badges(_ row: Row, nested: Bool) -> [Badge] {
-    if row.isVerdictFinding { return [.suspicious] }
-    guard let v = row.item.verdict else { return [] }
-    var out: [Badge] = []
-    if let suspicious = v.suspicious, suspicious > 0, !nested { out.append(.suspicious) }
+  static func said(_ row: Row) -> String? {
+    guard !row.isVerdictFinding, let v = row.item.verdict else { return nil }
+    if let suspicious = v.suspicious, suspicious > 0 { return "suspicious" }
     // Harmless is a good word: it needs both counts it rests on, never a missing one as 0.
-    if let total = v.total, let suspicious = v.suspicious, total > suspicious {
-      out.append(.harmless)
-    }
-    return out
+    if let total = v.total, let suspicious = v.suspicious, total > suspicious { return "harmless" }
+    return nil
   }
 
-  /// A nested row's words: what it is, and Immune's urgent mark.
-  public static func childBadges(_ row: Row) -> [Badge] {
-    [Badge.suspicious] + (row.urgent ? [.urgent] : [])
-  }
+  /// The row's third line, the response layer's word, plain: "Response layer: suspicious".
+  public var responseLayer: String? { said.map { Self.responseLayerWords + $0 } }
+  public static let responseLayerWords = "Response layer: "
+}
+
+/// How many things need the person now and how many are to look at, a pair counted once.
+public struct Things: Sendable, Equatable {
+  public let urgent: Int
+  public let rest: Int
+  public var total: Int { urgent + rest }
 }
 
 /// One thing not seen on this Mac that the person can fix: Immune's title, and the first thing
@@ -352,6 +416,24 @@ public struct NotSeenRow: Sendable, Equatable, Identifiable {
   public let more: Int
   /// The request "Ask agent" copies: this one item, by its id.
   public let request: String?
+  /// Immune's own `kind`, its first letter capitalised, inert: the row's second line under an
+  /// example, and its first line without one. Immune's title is kept for the tooltip.
+  public var kind = ""
+  /// "Since 10:40 AM", under the kind when there is no example; nil when Immune gives no time.
+  public var since: String? = nil
+
+  /// The row's second line: the kind under an example, since when under the kind, or nothing.
+  public var second: String { example != nil ? kind : since ?? "" }
+
+  /// "+3 more", or nil.
+  public var moreText: String? { more > 0 ? "+" + Number.grouped(more) + " more" : nil }
+
+  /// How the example is cut to one line: a path alone keeps its last component whole; anything
+  /// else, such as a name followed by what a source said of it, is cut at its end, so its start
+  /// stays and the cut never falls inside what follows.
+  public var examplePath: Bool {
+    example.map { Inert.isPath($0) && !$0.contains(": ") } ?? false
+  }
 }
 
 public struct Panel: Sendable, Equatable {
@@ -365,7 +447,8 @@ public struct Panel: Sendable, Equatable {
   public var settled: String?
   /// How many urgent entries the six-row limit leaves out.
   public var hiddenUrgent = 0
-  /// The line under the headline: "This Mac · watched live · checked 12 minutes ago".
+  /// The line under the headline: "Watched live · checked 12 min ago", or why the panel can't
+  /// tell or is old.
   public var glance: String?
   /// The absolute time of the last check, for a tooltip on `glance`.
   public var checkedAt: String?
@@ -380,16 +463,17 @@ public struct Panel: Sendable, Equatable {
   public var toLook: [Entry] = []
   /// The line for the first day: the starting point, when it was taken.
   public var firstDay: String?
+  public static let firstDayDetail = "Only changes after it are reported"
   /// What is not seen on this Mac that the person can fix, one row each.
   public var notSeen: [NotSeenRow] = []
   /// "2 things on this Mac were not judged", one line, only when Immune names something of this
   /// Mac it could not judge and the person cannot fix; nil otherwise. The limits that hold on
   /// every Mac are not shown here.
   public var notJudged: GapRow?
-  /// What is watched, as Immune says it: all the time and every hour, each kind with its count.
-  public var watched: [WatchedGroup] = []
-  /// Program starts, in Immune's words for the event level's state, or nil.
-  public var programStarts: String?
+  /// What is watched, in two short lines: what is seen all the time and what is read every hour,
+  /// each with how many kinds the status lists, and program starts with the event level's state.
+  /// The full list by kind is the report's.
+  public var watched: [CoverageLine] = []
   /// Answers and statements given outside the app that are in force: always visible.
   public var answered: AnsweredRow?
   /// A check is running: the headline says so with a moving indicator.
@@ -405,10 +489,13 @@ public struct Panel: Sendable, Equatable {
   public var refusals: [String: String] = [:]
   public var footer: [String] { ["Open report", canCheck ? "Check now" : "Checking…"] }
   /// What the "⋯" menu holds.
-  public var menu: [String] { ["Quit"] }
+  public var menu: [String] { ["Quit Immune"] }
 
   /// How many things need a look, as Immune counted them (it lists at most 50 per source).
   public var total = 0
+  /// The things as the rows show them, a pair as one: what the headline, the icon's count and
+  /// the "N more" line say.
+  public var counts = Things(urgent: 0, rest: 0)
   /// The worst severity among the items served; the menu-bar icon follows it.
   public var worst: String?
   /// Immune marked something served urgent; the menu-bar icon takes its strongest form.
@@ -416,10 +503,49 @@ public struct Panel: Sendable, Equatable {
   /// "Notifications are off, …", one quiet line with a button, or nil.
   public var notificationsOff: String?
 
+  /// The state the header's glyph draws: one signal of importance. Red only for what needs the
+  /// person now; green only for calm; everything else grey.
+  public var state: PanelState {
+    if busy { return .busy }
+    switch light {
+    case .nothingToReport: return .calm
+    case .watchedInPart: return .part
+    case .attention: return urgent ? .now : .look
+    case .stale: return .stale
+    case .cannotRead: return .cant
+    }
+  }
+
+  /// The rows of the app's own messages at the top of the list: the first day, notifications
+  /// that are off, a watcher that is not watching.
+  public var messages: [MessageRow] {
+    var out: [MessageRow] = []
+    if let notWatching {
+      let prefix = Watcher.notWatchingTitle + ": "
+      let why =
+        notWatching.hasPrefix(prefix)
+        ? String(notWatching.dropFirst(prefix.count)) : notWatching
+      let trimmed = why.hasSuffix(".") ? String(why.dropLast()) : why
+      out.append(
+        MessageRow(
+          kind: .notWatching, title: Watcher.notWatchingTitle,
+          detail: trimmed.prefix(1).uppercased() + trimmed.dropFirst()))
+    }
+    if notificationsOff != nil {
+      out.append(
+        MessageRow(
+          kind: .notificationsOff, title: Announcer.offTitle, detail: Announcer.offDetail))
+    }
+    if let firstDay {
+      out.append(MessageRow(kind: .firstDay, title: firstDay, detail: Self.firstDayDetail))
+    }
+    return out
+  }
+
   /// Every row shown, nested ones included.
   public var shownRows: [Row] { (needsYou + toLook).flatMap { [$0.row] + $0.children } }
-  /// What Immune counted and the list does not show: "N more in report".
-  public var more: Int { max(0, total - shownRows.count) }
+  /// The things counted and not shown: "N more in report".
+  public var more: Int { max(0, counts.total - needsYou.count - toLook.count) }
 
   public static func of(
     _ reading: Reading, now: Date, checking: Bool = false, notes: [String] = [],
@@ -435,7 +561,8 @@ public struct Panel: Sendable, Equatable {
     case .notYetRead:
       p.headline = "Looking at the last check…"
     case .failed(let reason, let detail, let plain):
-      p.headline = "I can't tell: " + plain + "."
+      p.headline = cantTell
+      p.glance = plain.prefix(1).uppercased() + plain.dropFirst()
       p.help = [helpLine]
       p.reason = reason + (detail.map { " immune said: " + Inert.text($0) } ?? "")
     case .read(let s, let errors):
@@ -448,8 +575,8 @@ public struct Panel: Sendable, Equatable {
     return p
   }
 
-  static let helpLine =
-    "Press Check now, or run \(statusCommand) in a terminal to see what is wrong."
+  static let helpLine = "Press Check now, or run \(statusCommand) in a terminal."
+  static let cantTell = "I can't tell"
 
   /// A span of seconds in whole hours where it is one, else in minutes: "2 hours".
   static func hours(_ seconds: Int) -> String {
@@ -468,7 +595,7 @@ public struct Panel: Sendable, Equatable {
   ) {
     // What the status lists is always shown, whatever the headline above it says: the
     // findings, their urgency and worst level, and the answers given outside the app.
-    answered = AnsweredRow.of(s.answeredOutsideApp, s.statementsOutsideApp)
+    answered = AnsweredRow.of(s.answeredOutsideApp, s.statementsOutsideApp, now: now)
     let items = s.needsALook ?? []
     rows = items.enumerated().map { Row(id: $0.offset, item: $0.element, now: now, immune: immune) }
     // Immune's total; never fewer than it lists. A total not given is not 0: the list is the
@@ -481,9 +608,10 @@ public struct Panel: Sendable, Equatable {
     let urgentTotal = max(s.needsALookUrgent ?? listedUrgent, listedUrgent)
     urgent = urgentTotal > 0
     let entries = Self.entries(rows)
+    counts = Self.counts(entries, urgent: urgentTotal, total: total)
     needsYou = Array(entries.filter(\.urgent).prefix(Self.rowsShown))
     toLook = Array(entries.filter { !$0.urgent }.prefix(Self.rowsShown - needsYou.count))
-    hiddenUrgent = entries.filter(\.urgent).count - needsYou.count
+    hiddenUrgent = counts.urgent - needsYou.count
 
     // The status is the judge of what may be said above them. "Nothing has been checked yet"
     // is for a status that lists nothing and has not computed what needs a look and has no run
@@ -510,23 +638,24 @@ public struct Panel: Sendable, Equatable {
       inPart: mac?.state == "watched_in_part", live: live, lastCheck: lastCheck, now: now)
 
     if case .cannotRead(let r) = light {
-      headline = "I can't tell: the program's answer is incomplete."
+      headline = Self.cantTell
+      glance = "The program's answer is incomplete"
       settled = headline
       help = [Self.helpLine]
       reason = r
       return
     }
     if total > 0 {
-      headline = Self.headline(urgent: urgentTotal, listed: listedUrgent, total: total)
+      headline = Self.headline(counts, listed: entries.filter(\.urgent).count)
     }
-    // Old is said with why, in Immune's words; a check under way still takes the headline.
-    if case .stale = light {
-      // Immune's reason, or, for an answer that grew old while the app held it, the same fact.
-      reason =
-        s.thisMac?.staleReason.map { "Immune says: " + Inert.text($0, limit: 200) + "." }
-        ?? s.thisMac?.freshFor.map {
-          "The latest full check finished more than \(Self.hours($0)) ago, and none has finished since."
-        }
+    // Old is said with why: how old, under the headline, when Immune says how long an answer
+    // holds, and Immune's own words in small type; a check under way still takes the headline.
+    if case .stale(let since) = light {
+      headline = Light.staleWords(since, now: now)
+      if let freshFor = s.thisMac?.freshFor {
+        glance = "The last full check is more than \(Self.hours(freshFor)) old"
+      }
+      reason = s.thisMac?.staleReason.map { "Immune says: " + Inert.text($0, limit: 200) + "." }
       if !checking { help = ["Press Check now to look at this Mac again."] }
     }
     settled = headline
@@ -538,20 +667,20 @@ public struct Panel: Sendable, Equatable {
 
     firstDay = Self.firstDay(s, now: now)
     let parts = (mac?.watched ?? []).filter { $0.count != 0 }
-    watched = Self.groups(parts, live: live == true)
-    programStarts = s.eventLevel.flatMap { e in
-      (e.stateWords ?? e.state).map { Inert.text($0, limit: 80) }
-    }
+    watched = Self.coverage(parts, live: live == true, level: s.eventLevel)
     let list = s.notCovered ?? []
     notSeen = list.filter { $0.who == "you" }.compactMap { u in
       guard let id = u.id else { return nil }
       let examples = u.examplesText ?? []
       let count = max(u.count ?? 0, examples.count)
+      let title = Inert.text(u.title ?? Words.kind(u.kind) ?? id, limit: 300)
+      let kind = u.kind.map { Inert.text($0, limit: 120) }.flatMap { $0.isEmpty ? nil : $0 }
       return NotSeenRow(
-        id: id, title: Inert.text(u.title ?? Words.kind(u.kind) ?? id, limit: 300),
-        example: examples.first.map { Inert.whole($0) },
+        id: id, title: title, example: examples.first.map { Inert.whole($0) },
         more: examples.isEmpty ? 0 : max(0, count - 1),
-        request: Answer.isUsable(id: id) ? Self.fixRequest(ids: [id], immune: immune) : nil)
+        request: Answer.isUsable(id: id) ? Self.fixRequest(ids: [id], immune: immune) : nil,
+        kind: kind.map { $0.prefix(1).uppercased() + $0.dropFirst() } ?? title,
+        since: u.since.map { "Since " + Clock.at($0, now: now) })
     }
     // The scope of the answer: what was not judged here and nothing the person does changes.
     // A cause not said to hold on every Mac is of this Mac and counted.
@@ -585,17 +714,36 @@ public struct Panel: Sendable, Equatable {
     return "\(more) more in report" + urgentWords
   }
 
-  /// "1 needs you now · 2 to look at": the findings Immune marked urgent, and the rest of its
-  /// total. When fewer urgent ones are listed than Immune counts, it says how many are not.
-  static func headline(urgent: Int, listed: Int, total: Int) -> String {
-    let rest = max(0, total - urgent)
+  /// "1 needs you now · 2 to look at": the things that need the person now, and the rest, as the
+  /// rows count them. When fewer urgent things are listed than counted, it says how many are not.
+  static func headline(_ c: Things, listed: Int) -> String {
     var parts: [String] = []
-    if urgent > 0 {
-      let unlisted = urgent > listed ? ", \(urgent - listed) not listed" : ""
-      parts.append((urgent == 1 ? "1 needs you now" : "\(urgent) need you now") + unlisted)
+    if c.urgent > 0 {
+      let unlisted = c.urgent > listed ? ", \(c.urgent - listed) not listed" : ""
+      parts.append((c.urgent == 1 ? "1 needs you now" : "\(c.urgent) need you now") + unlisted)
     }
-    if rest > 0 { parts.append("\(rest) to look at") }
+    if c.rest > 0 { parts.append("\(c.rest) to look at") }
     return parts.joined(separator: " · ")
+  }
+
+  /// How many things there are, as the rows show them: Immune's totals less the findings folded
+  /// into a pair among the listed ones, since a pair is one thing to the person. Only the pairs
+  /// the list holds are folded; never fewer than the entries listed under each heading. The
+  /// headline, the icon's count and a notification's "N things" all take these numbers.
+  /// `urgent` and `total` are Immune's counts, each never fewer than the list holds.
+  public static func counts(_ entries: [Entry], urgent: Int, total: Int) -> Things {
+    var foldedUrgent = 0
+    var foldedRest = 0
+    for e in entries {
+      let items = [e.row] + e.children
+      let u = items.filter(\.urgent).count
+      foldedUrgent += e.urgent ? u - 1 : 0
+      foldedRest += (items.count - u) - (e.urgent ? 0 : 1)
+    }
+    // An urgent count above the list's can leave fewer for the rest than the list shows.
+    let listedRest = entries.filter { !$0.urgent }.count
+    return Things(
+      urgent: urgent - foldedUrgent, rest: max(total - urgent - foldedRest, listedRest))
   }
 
   /// The rows as entries: a finding of `verdict.suspicious` that a finding of the core names in
@@ -625,18 +773,19 @@ public struct Panel: Sendable, Equatable {
     }
   }
 
-  /// The line under the headline: this Mac, how it is watched exactly as Immune says, and
-  /// when the last full check was.
+  /// The line under the headline: how this Mac is watched exactly as Immune says, and when the
+  /// last full check was: "Watched in part · live · checked 4 min ago".
   static func glance(inPart: Bool, live: Bool?, lastCheck: Date?, now: Date) -> String {
-    var parts = ["This Mac"]
+    var parts: [String] = []
     if inPart { parts.append("watched in part") }
     switch live {
     case true?: parts.append(inPart ? "live" : "watched live")
-    case false?: parts.append("hourly only")
+    case false?: parts.append(inPart ? "every hour" : "watched every hour")
     case nil: break
     }
-    parts.append(lastCheck.map { "checked " + Clock.ago($0, now: now) } ?? "no full check yet")
-    return parts.joined(separator: " · ")
+    parts.append(lastCheck.map { "checked " + Clock.since($0, now: now) } ?? "no full check yet")
+    let line = parts.joined(separator: " · ")
+    return line.prefix(1).uppercased() + line.dropFirst()
   }
 
   /// The first day: the store's first full check, or a first reading of the watched places,
@@ -650,7 +799,6 @@ public struct Panel: Sendable, Equatable {
         ? "today at " + Clock.at(d, now: now) : "on " + Clock.full(d)
     }
     return "Starting point taken" + (when.map { " " + $0 } ?? "")
-      + ". Only changes to the watched places after it are reported."
   }
 
   /// A short task for the owner's coding agent about what they can fix: the immune binary this app
@@ -681,75 +829,128 @@ public struct Panel: Sendable, Equatable {
     p.how == "live" || p.how == "sampled" || p.how == "events"
   }
 
-  /// What is watched in two groups: seen all the time (live, sampled, or program starts)
-  /// and checked every hour. Without a live watcher everything is in the hourly group.
-  static func groups(_ parts: [WatchedPart], live: Bool) -> [WatchedGroup] {
-    // Immune's own words as they are: no capitals added, so "npm" stays "npm".
-    func line(_ p: WatchedPart) -> String {
-      Inert.text(p.what ?? "", limit: 80) + " " + (p.count.map(String.init) ?? "?")
+  /// What is watched, in two lines: seen all the time (live or sampled, while a watcher runs)
+  /// and read every hour. Without a live watcher everything is on the hourly line, and the first
+  /// line says that nothing is seen all the time. Program starts are not a kind of place: they
+  /// stand on the line they are read on, with the event level's state, and the kind the status
+  /// lists for them (`how` is `events`) is not counted.
+  static func coverage(_ parts: [WatchedPart], live: Bool, level: EventLevel?) -> [CoverageLine] {
+    let kinds = parts.filter { $0.how != "events" }
+    let always = live ? kinds.filter(allTheTime) : []
+    let hourly = kinds.filter { p in !always.contains(p) }
+    let starts = level.map { e in
+      let on = e.state.flatMap { Words.collectorOn[$0] } ?? false
+      // Not on: Immune's words for the state, for the tooltip.
+      return Starts(
+        on: on, words: on ? nil : (e.stateWords ?? e.state).map { Inert.text($0, limit: 40) })
     }
-    let always = live ? parts.filter(allTheTime) : []
-    let hourly = parts.filter { p in !always.contains(p) }
+    guard !kinds.isEmpty || starts != nil else { return [] }
+    // Immune's own words as they are, for the tooltip: no capitals added, so "npm" stays "npm".
+    func detail(_ list: [WatchedPart]) -> [String] {
+      list.map {
+        Inert.text($0.what ?? "", limit: 80) + " " + ($0.count.map(Number.grouped) ?? "?")
+      }
+    }
     return [
-      WatchedGroup(title: "All the time", lines: always.map(line)),
-      WatchedGroup(title: "Every hour", lines: hourly.map(line)),
-    ].filter { !$0.lines.isEmpty }
+      CoverageLine(
+        live: true, kinds: always.count, starts: live ? starts : nil, detail: detail(always),
+        watcher: live),
+      CoverageLine(
+        live: false, kinds: hourly.count, starts: live ? nil : starts, detail: detail(hourly)),
+    ]
   }
 
   /// The panel as plain text, line by line, in the order the panel shows it.
   public var lines: [String] {
-    var out = ["[\(light.panelSymbol)] " + headline + (busy ? " (spinning)" : "")]
+    var out = ["[\(state)] " + headline + (busy ? " (spinning)" : "")]
     if let glance { out.append("    " + glance) }
     out += help.map { "    " + $0 }
     if let reason { out.append("    (small) " + reason) }
-    if let notWatching { out.append("    " + notWatching) }
-    if let notificationsOff { out.append("    " + notificationsOff + "  [ Open Settings ]") }
-    if let firstDay { out.append("(i) " + firstDay) }
-    func row(_ r: Row, _ badges: [Badge], indent: String) -> [String] {
-      let words = badges.map { "[" + $0.word + "]" }.joined(separator: " ")
-      return [indent + "<" + r.symbol + "> " + r.object + "  " + (r.when ?? "") + "  ›"]
-        + (r.startedAs.map { [indent + "    started as {" + $0 + "}"] } ?? [])
-        + [indent + "    " + ([r.meta] + (words.isEmpty ? [] : [words])).joined(separator: " ")]
+    out.append("----")
+    for m in messages {
+      out.append("<" + m.symbol + "> " + m.title)
+      out.append(
+        "    " + m.detail + (m.kind == .notificationsOff ? "  [ Open Settings ]" : ""))
     }
-    for (title, group) in [("NEEDS YOU NOW", needsYou), ("TO LOOK AT", toLook)] where !group.isEmpty
+    // One row for a finding and what the response layer said of it, in no colour: the group says
+    // what needs the person now.
+    for (title, group) in [("Needs you now", needsYou), ("To look at", toLook)] where !group.isEmpty
     {
       out.append(title)
       for e in group {
-        out += row(e.row, e.badges, indent: "")
-        for c in e.children { out += row(c, Entry.childBadges(c), indent: "      ↳ ") }
+        let r = e.row
+        out.append("<" + r.symbol + "> " + r.object + "  ›")
+        out.append("    " + r.meta + "  " + (r.when ?? ""))
+        if let words = e.responseLayer { out.append("    " + words) }
       }
     }
-    if let moreText { out.append(moreText) }
+    if let moreText { out.append("  " + moreText + "  ›") }
     if let a = answered {
+      out.append(a.heading)
       for l in a.lines {
-        out.append("(agent) " + ([l.answer, l.by].compactMap { $0 }.joined(separator: ", ")))
-        out.append("    " + l.title)
-        if let reason = l.reason { out.append("    “" + reason + "”") }
+        out.append("<" + Icons.answered + "> " + l.title + (l.finding != nil ? "  ›" : ""))
+        out.append(
+          "    " + l.answer + "  "
+            + (l.target.map { answering == $0 ? "Saving…" : "[ Take back ]" } ?? ""))
         if let id = l.target, let refused = refusals[id] { out.append("    " + refused) }
-        if let id = l.target {
-          out.append("    " + (answering == id ? "Saving…" : "[ Take back ]"))
-        }
       }
-      if let more = a.moreText { out.append(more) }
+      if let more = a.moreText { out.append("  " + more + "  ›") }
     }
     if !notSeen.isEmpty {
-      out.append("NOT SEEN ON THIS MAC · YOU CAN FIX")
+      out.append(Self.notSeenHeading)
       for n in notSeen {
         out.append(
-          (n.example ?? n.title) + (n.more > 0 ? " +\(n.more)" : "")
-            + (n.request != nil ? "  [ Ask agent ]" : ""))
-        if n.example != nil { out.append("    " + n.title) }
+          "<" + Icons.notSeen + "> " + (n.example ?? n.kind) + (n.moreText.map { " " + $0 } ?? "")
+            + "  ›")
+        out.append("    " + n.second + (n.request != nil ? "  [ Ask agent ]" : ""))
       }
     }
-    if !watched.isEmpty || programStarts != nil {
-      for g in watched { out.append("{" + g.title + "} " + g.lines.joined(separator: " · ")) }
-      if let programStarts { out.append("{Program starts} " + programStarts) }
+    if !watched.isEmpty {
+      out.append(
+        "<" + Icons.watched + "> "
+          + watched.map { $0.title + ": " + $0.text }.joined(separator: " / ") + "  ›")
     }
-    if let notJudged { out.append("○ " + notJudged.text + "  › #" + notJudged.section) }
+    if let notJudged { out.append("  " + notJudged.text + "  › #" + notJudged.section) }
     out += notes
     out.append("----")
     out.append(footer.map { "[ \($0) ]" }.joined(separator: "  ") + "  [ ⋯ " + menu[0] + " ]")
     return out
+  }
+
+  public static let notSeenHeading = "Not seen · you can fix"
+}
+
+/// The state the header's glyph draws.
+public enum PanelState: String, Sendable, Equatable {
+  /// Nothing needs the person, and this Mac is watched whole.
+  case calm
+  /// Something needs the person now.
+  case now
+  /// Something to look at, nothing needs the person now.
+  case look
+  /// Nothing needs the person, and this Mac is watched in part.
+  case part
+  /// What Immune knows is old.
+  case stale
+  /// The panel can't tell.
+  case cant
+  /// A check is running.
+  case busy
+}
+
+/// A message of the app's own, as a row at the top of the list: what it is and a word on it.
+public struct MessageRow: Sendable, Equatable {
+  public enum Kind: String, Sendable, Equatable { case firstDay, notificationsOff, notWatching }
+  public let kind: Kind
+  public let title: String
+  public let detail: String
+
+  public var symbol: String {
+    switch kind {
+    case .firstDay: Icons.firstDay
+    case .notificationsOff: Icons.notificationsOff
+    case .notWatching: Icons.notWatching
+    }
   }
 }
 
@@ -761,6 +962,12 @@ public struct AnsweredRow: Sendable, Equatable {
   public static let listed = 3
   /// The whole sentence: "2 answers given through your agent".
   public let text: String
+  /// The group's heading: "Answered through your agent", or "Answered outside the app" when not
+  /// every one came that way.
+  public var heading: String {
+    text.hasSuffix("through your agent")
+      ? "Answered through your agent" : "Answered outside the app"
+  }
   /// Immune's totals together.
   public let count: Int
   public let lines: [AnsweredLine]
@@ -774,7 +981,7 @@ public struct AnsweredRow: Sendable, Equatable {
   /// The row for Immune's two lists, answers to findings and statements that set a machine
   /// aside, or nil when both are empty. The count is Immune's totals, and never less than
   /// what they list. The latest are listed first.
-  static func of(_ a: AnsweredOutside?, _ w: StatementsOutside?) -> AnsweredRow? {
+  static func of(_ a: AnsweredOutside?, _ w: StatementsOutside?, now: Date? = nil) -> AnsweredRow? {
     let answers = a?.items ?? []
     let statements = w?.items ?? []
     let total =
@@ -787,7 +994,7 @@ public struct AnsweredRow: Sendable, Equatable {
       ($0.element.0 ?? .distantPast, -$0.offset) > ($1.element.0 ?? .distantPast, -$1.offset)
     }
     let lines = latest.prefix(listed).enumerated().map {
-      AnsweredLine(key: $0.offset, $0.element.element.1)
+      AnsweredLine(key: $0.offset, $0.element.element.1, now: now)
     }
     // "Through your agent" only when everything counted is listed and came that way.
     let vias = answers.map(\.via) + statements.map(\.via)
@@ -822,7 +1029,7 @@ public struct AnsweredLine: Sendable, Equatable, Identifiable {
   /// The reason as the person wrote it, inert.
   public let reason: String?
 
-  init(key: Int, _ kind: Kind) {
+  init(key: Int, _ kind: Kind, now: Date? = nil) {
     self.key = key
     let via: String?
     switch kind {
@@ -830,7 +1037,7 @@ public struct AnsweredLine: Sendable, Equatable, Identifiable {
       finding = Answer.isUsable(id: item.id) ? item.id : nil
       machine = nil
       title = Inert.whole(item.whereText ?? item.title ?? "")
-      answer = Words.answer(item.answer, until: item.until)
+      answer = Words.answer(item.answer, until: item.until, now: now)
       via = item.via
       reason = item.reasonText.map { Inert.text($0, limit: 240) }
     case .statement(let item):
@@ -846,12 +1053,7 @@ public struct AnsweredLine: Sendable, Equatable, Identifiable {
       via = item.via
       reason = item.reasonText.map { Inert.text($0, limit: 240) }
     }
-    by =
-      switch via {
-      case "agent": "through your agent"
-      case "command": "from the command line"
-      default: nil
-      }
+    by = Words.via(via)
   }
 
   /// What "Take back" names: the finding or the machine.
@@ -866,10 +1068,42 @@ public enum Number {
   }
 }
 
-/// A group of what is watched: its header and one line per kind.
-public struct WatchedGroup: Sendable, Equatable {
-  public let title: String
-  public let lines: [String]
+/// One line of what is watched: seen all the time or read every hour, how many kinds the status
+/// lists for it, and program starts when they are read on this line. `detail` is each kind in
+/// Immune's words with its count, for a tooltip.
+public struct CoverageLine: Sendable, Equatable {
+  public let live: Bool
+  public let kinds: Int
+  public let starts: Starts?
+  public let detail: [String]
+  /// For the line of what is seen all the time: whether a watcher runs at all.
+  public var watcher = true
+
+  public var title: String { live ? "All the time" : "Every hour" }
+  /// "10 kinds", or nil when there are none.
+  public var kindsText: String? {
+    kinds == 0 ? nil : kinds == 1 ? "1 kind" : Number.grouped(kinds) + " kinds"
+  }
+  /// What the line says without a dot when nothing is on it.
+  public var none: String? {
+    if live && !watcher { return "none: the watcher is not running" }
+    return kindsText == nil && starts == nil ? "none" : nil
+  }
+  /// The line as text: "11 kinds · ●program starts", with a filled dot for program starts that
+  /// are seen and a ring for those that are not.
+  public var text: String {
+    if let none { return none }
+    return [kindsText, starts.map { ($0.on ? "●" : "○") + $0.text }].compactMap { $0 }
+      .joined(separator: " · ")
+  }
+}
+
+/// Program starts on a line of what is watched: whether the event level records them now, and
+/// Immune's words for its state when it does not, for the tooltip.
+public struct Starts: Sendable, Equatable {
+  public let on: Bool
+  public let words: String?
+  public var text: String { on ? "program starts" : "no program starts" }
 }
 
 /// One quiet line leading to a section of the report: its words and the section.
@@ -897,6 +1131,19 @@ public enum Clock {
     return f.localizedString(for: d, relativeTo: now)
   }
 
+  /// "12 min ago", short, for the line under the headline: minutes, then hours, then days; a
+  /// time in the future is a date.
+  public static func since(_ d: Date, now: Date, calendar: Calendar = .current) -> String {
+    guard d <= now else { return "on " + full(d, calendar: calendar) }
+    let minutes = Int(now.timeIntervalSince(d) / 60)
+    if minutes < 1 { return "just now" }
+    if minutes < 60 { return "\(minutes) min ago" }
+    let hours = minutes / 60
+    if hours < 24 { return hours == 1 ? "1 hour ago" : "\(hours) hours ago" }
+    let days = hours / 24
+    return days == 1 ? "1 day ago" : "\(days) days ago"
+  }
+
   /// A short absolute time: the time alone today, the day alone this year, the
   /// full date otherwise or when it lies in the future. In English, as every word of the
   /// app is, in the time zone and calendar of `calendar`, the Mac's.
@@ -915,9 +1162,13 @@ public enum Clock {
     d.formatted(style(calendar, date: .abbreviated, time: .shortened))
   }
 
-  /// The day alone, for an end such as "Expected until".
-  public static func day(_ d: Date, calendar: Calendar = .current) -> String {
-    d.formatted(style(calendar, date: .abbreviated, time: .omitted))
+  /// The day alone, for an end such as "Expected until": with its year only when that is not the
+  /// year of `now`, or when `now` is not given.
+  public static func day(_ d: Date, now: Date? = nil, calendar: Calendar = .current) -> String {
+    if let now, calendar.isDate(d, equalTo: now, toGranularity: .year) {
+      return d.formatted(style(calendar).month(.abbreviated).day())
+    }
+    return d.formatted(style(calendar, date: .abbreviated, time: .omitted))
   }
 
   /// The Mac's calendar, with its time zone, speaking English.

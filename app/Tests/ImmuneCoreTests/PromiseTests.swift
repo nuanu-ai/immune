@@ -290,16 +290,17 @@ struct FalseCalm {
     let checked = try #require(s.thisMac?.checkedAt)
     #expect(light(old) == .stale(since: checked))
     let p = panel(old)
-    #expect(p.headline == "Not checked since " + Clock.full(checked))
+    let held = heldAt(Interpret.reading(from: old))
+    #expect(p.headline == "Not checked since " + Clock.at(checked, now: held))
     #expect(!p.headline.contains("incomplete") && p.headline != "Nothing needs you")
-    #expect(p.reason?.contains("more than 2 hours") == true)
+    #expect(p.glance == "The last full check is more than 2 hours old")
     #expect(p.help == ["Press Check now to look at this Mac again."])
     // A check under way: it says so, and the old answer stays its settled words.
     root["running"] = true
     let going = panel(
       ImmuneOutput(exitCode: 0, stdout: (try? JSONSerialization.data(withJSONObject: root))!))
     #expect(going.headline == "Checking this Mac…")
-    #expect(going.settled == "Not checked since " + Clock.full(checked))
+    #expect(going.settled == "Not checked since " + Clock.at(checked, now: held))
     #expect(!going.help.contains { $0.contains("Check now") })
     // Freshness not said is an answer that is not whole; a finding is still the headline,
     // whatever the age.
@@ -325,15 +326,14 @@ struct FalseCalm {
     let past = edge.addingTimeInterval(1)
     #expect(Light.of(r, now: past) == .stale(since: checked))
     let old = Panel.of(r, now: past)
-    #expect(old.headline == "Not checked since " + Clock.full(checked))
-    #expect(
-      old.reason
-        == "The latest full check finished more than 2 hours ago, and none has finished since.")
+    #expect(old.headline == "Not checked since " + Clock.at(checked, now: past))
+    #expect(old.glance == "The last full check is more than 2 hours old")
+    #expect(old.reason == nil)
     #expect(old.help == ["Press Check now to look at this Mac again."])
     // A check under way takes the headline; the old answer stays its settled words.
     let going = Panel.of(r, now: past, checking: true)
     #expect(going.headline == "Checking this Mac…")
-    #expect(going.settled == "Not checked since " + Clock.full(checked))
+    #expect(going.settled == "Not checked since " + Clock.at(checked, now: past))
     // A status that does not say how long it is fresh for is taken at its word.
     let unsaid = Interpret.reading(from: quiet(removing: ["this_mac", "fresh_for_seconds"]))
     #expect(Light.of(unsaid, now: past.addingTimeInterval(86_400)) == calm)
@@ -350,7 +350,8 @@ struct FalseCalm {
   )
   func urgentBeyondTheList() {
     let cut = panel(edited("status.json", removing: ["needs_a_look", "urgent_total"], setting: 3))
-    #expect(cut.headline == "3 need you now, 2 not listed")
+    // Immune counts 3 of its 3 urgent; the 2 it lists that are not stay in the headline as rows.
+    #expect(cut.headline == "3 need you now, 2 not listed · 2 to look at")
     #expect(cut.urgent)
     // Urgent ones none of them listed still make the icon urgent.
     let unlisted = panel(
@@ -382,7 +383,7 @@ struct FalseCalm {
     #expect(scoped.light == .nothingToReport)
     #expect(scoped.headline == "Nothing needs you")
     #expect(scoped.notJudged?.text == "2 things on this Mac were not judged")
-    #expect(scoped.lines.contains { $0.hasPrefix("○ 2 things on this Mac were not judged") })
+    #expect(scoped.lines.contains { $0.hasPrefix("  2 things on this Mac were not judged") })
     // Only the limits that hold on every Mac: calm, and no line.
     let whole = panel(output("panel-calm-all-judged.json"))
     #expect(whole.light == .nothingToReport)
@@ -405,7 +406,8 @@ struct FalseCalm {
     let l = light(output("not-computed.json"))
     #expect(isCannotRead(l))
     let p = panel(output("not-computed.json"))
-    #expect(p.headline == "I can't tell: the program's answer is incomplete.")
+    #expect(p.headline == "I can't tell")
+    #expect(p.glance == "The program's answer is incomplete")
     #expect(p.reason?.contains("no run of this build has looked") == true)
     #expect(p.rows.isEmpty)
     // Even with an empty list and a total of 0 beside it.
@@ -462,12 +464,11 @@ struct FalseCalm {
     #expect(panel(output("no-store.json")).headline == "Nothing has been checked yet.")
     // Not computed, but a run exists: the app does not know, and says so.
     #expect(
-      panel(output("not-computed.json")).headline
-        == "I can't tell: the program's answer is incomplete.")
+      panel(output("not-computed.json")).headline == "I can't tell")
     // Nor is it "checking for the first time" when a check runs after a finished one.
     #expect(
       panel(edited("not-computed.json", removing: ["running"], setting: true)).headline
-        == "I can't tell: the program's answer is incomplete.")
+        == "I can't tell")
     // A store and no run, not computed: nothing checked yet.
     var root =
       (try? JSONSerialization.jsonObject(with: fixture("watcher-only.json"))) as? [String: Any]
@@ -492,7 +493,7 @@ struct FalseCalm {
     root = r
     let stopped = ImmuneOutput(
       exitCode: 0, stdout: (try? JSONSerialization.data(withJSONObject: root))!)
-    #expect(panel(stopped).headline == "I can't tell: the program's answer is incomplete.")
+    #expect(panel(stopped).headline == "I can't tell")
     // Served, with no run: never "nothing checked".
     #expect(panel(output("watcher-only.json")).headline != "Nothing has been checked yet.")
   }
@@ -511,8 +512,7 @@ struct FalseCalm {
       Light.nothingToReport, .watchedInPart, .attention(2), .stale(since: nil), .cannotRead("x"),
     ]
     #expect(Set(states.map(\.symbol)).count == 5)
-    #expect(Set(states.map(\.panelSymbol)).count == 5)
-    #expect(Set(states.map { Light.menuSymbol($0, worst: nil, urgent: false) }).count == 5)
+    #expect(Set(states.map { Light.menuSymbol($0, urgent: false) }).count == 5)
   }
 
   @Test(
@@ -523,18 +523,17 @@ struct FalseCalm {
       "quiet.json", removing: ["this_mac", "state"], setting: "watched_in_part")
     let p = panel(o)
     #expect(p.light == .watchedInPart)
-    #expect(p.light.panelSymbol != Light.nothingToReport.panelSymbol)
+    #expect(p.state == .part)
     #expect(p.light.symbol != Light.nothingToReport.symbol)
     #expect(
-      Light.menuSymbol(p.light, worst: nil, urgent: false)
-        != Light.menuSymbol(.nothingToReport, worst: nil, urgent: false))
+      Light.menuSymbol(p.light, urgent: false) != Light.menuSymbol(.nothingToReport, urgent: false))
     // Quiet: no count, never the alarm's shape, and the headline is the calm one.
     #expect(p.total == 0)
     #expect(p.rows.isEmpty)
     #expect(p.light.symbol != Light.attention(1).symbol)
     #expect(p.headline == "Nothing needs you")
     #expect(Panel.iconWords(p) == "Nothing needs you · watched in part")
-    #expect(p.glance?.hasPrefix("This Mac · watched in part · ") == true)
+    #expect(p.glance?.hasPrefix("Watched in part · ") == true)
   }
 }
 
@@ -620,6 +619,119 @@ func startFinding(
   return item
 }
 
+/// Every status the app's fixtures hold, the sheet's and the real-size one among them.
+let everyStatusFixture =
+  allFixtures + [
+    "panel-hostile.json", "panel-silent.json", "panel-stale.json", "panel-stale-checking.json",
+    "panel-cant-tell.json", "in-progress.json", "live-off.json", "quiet-limits.json",
+    "watched-in-part.json", "sheet-calm.json", "sheet-two.json", "sheet-real.json",
+    "sheet-overflow.json", "real/status.json", "real/status-real-size.json",
+  ]
+
+@Suite("The headline counts things as the rows show them")
+struct HeadlineIsTheRows {
+  /// The numbers the headline says: what needs the person now and what is to look at.
+  static func said(_ headline: String) -> (urgent: Int, rest: Int) {
+    func number(before words: [String]) -> Int {
+      for part in headline.components(separatedBy: " · ") {
+        for w in words where part.contains(w) {
+          return Int(part.prefix { $0.isNumber }) ?? -1
+        }
+      }
+      return 0
+    }
+    return (number(before: [" needs you now", " need you now"]), number(before: [" to look at"]))
+  }
+
+  @Test(
+    "The headline's numbers equal the rows under each heading on every fixture, a pair counted once, and a status with findings never reads 'Nothing needs you'",
+    arguments: everyStatusFixture)
+  func onEveryFixture(name: String) throws {
+    let p = panel(output(name))
+    guard p.total > 0 else { return }
+    let headline = p.settled ?? p.headline
+    #expect(headline != "Nothing needs you", "\(name)")
+    #expect(p.counts.total > 0, "\(name)")
+    #expect(p.needsYou.count + p.toLook.count + p.more == p.counts.total, "\(name)")
+    guard case .attention = p.light else { return }
+    let said = Self.said(headline)
+    #expect(said.urgent == p.counts.urgent && said.rest == p.counts.rest, "\(name): \(headline)")
+    if p.rows.count == p.total, p.more == 0 {
+      // The whole list is shown: the numbers are the rows.
+      #expect(said.urgent == p.needsYou.count, "\(name): \(headline)")
+      #expect(said.rest == p.toLook.count, "\(name): \(headline)")
+    } else {
+      #expect(said.urgent >= p.needsYou.count && said.rest >= p.toLook.count, "\(name)")
+    }
+  }
+
+  @Test(
+    "The sheet's cases read as their rows: a pair is one thing to look at or to act on, and the menu-bar icon counts the same things"
+  )
+  func onTheSheet() throws {
+    let two = panel(output("sheet-two.json"))
+    #expect(two.headline == "1 needs you now · 1 to look at")
+    #expect(two.needsYou.count == 1 && two.toLook.count == 1)
+    let overflow = panel(output("sheet-overflow.json"))
+    #expect(overflow.headline == "2 need you now · 7 to look at")
+    #expect(overflow.moreText == "3 more in report")
+    let main = try String(
+      contentsOf: fixtures.deletingLastPathComponent().appendingPathComponent(
+        "Sources/Immune/main.swift"), encoding: .utf8)
+    #expect(main.contains("MenuIcon.title(p.light, things: p.counts.total)"))
+  }
+
+  @Test(
+    "Only the pairs the list holds are folded, whichever of the two is urgent, and never fewer than the rows shown"
+  )
+  func foldsWhatIsListed() {
+    func pair(_ i: Int, verdictUrgent: Bool, coreUrgent: Bool) -> [[String: Any]] {
+      var core = startFinding(
+        id: "fc\(i)", verdict: ["total": 1, "suspicious": 1, "finding": "fv\(i)"])
+      core["urgent"] = coreUrgent
+      return [verdictFinding(id: "fv\(i)", urgent: verdictUrgent), core]
+    }
+    func shown(_ items: [[String: Any]], total: Int? = nil, urgent: Int? = nil) -> Panel {
+      var o = looking(items, total: total)
+      if let urgent {
+        var root = (try? JSONSerialization.jsonObject(with: o.stdout)) as? [String: Any] ?? [:]
+        var look = root["needs_a_look"] as? [String: Any] ?? [:]
+        look["urgent_total"] = urgent
+        root["needs_a_look"] = look
+        o.stdout = (try? JSONSerialization.data(withJSONObject: root)) ?? Data()
+      }
+      return panel(o)
+    }
+    func counts(_ items: [[String: Any]], total: Int? = nil, urgent: Int? = nil) -> Things {
+      shown(items, total: total, urgent: urgent).counts
+    }
+    let plain = lookItem(id: "f1")
+    #expect(
+      counts(pair(1, verdictUrgent: true, coreUrgent: true) + [plain]) == Things(urgent: 1, rest: 1)
+    )
+    #expect(counts(pair(1, verdictUrgent: true, coreUrgent: false)) == Things(urgent: 1, rest: 0))
+    #expect(counts(pair(1, verdictUrgent: false, coreUrgent: false)) == Things(urgent: 0, rest: 1))
+    // Immune counts 10, 4 of them urgent, and lists one pair: only that pair is folded.
+    #expect(
+      counts(pair(1, verdictUrgent: true, coreUrgent: true), total: 10, urgent: 4)
+        == Things(urgent: 3, rest: 6))
+    // An urgent count that leaves less for the rest than the list shows: the rows stand.
+    let rest = [lookItem(id: "f2"), lookItem(id: "f3")]
+    #expect(
+      counts([lookItem(id: "f1", urgent: true)] + rest, total: 3, urgent: 3)
+        == Things(urgent: 3, rest: 2))
+    // What is not listed is said in things: 3 urgent things, 1 of them listed.
+    let cut = shown(pair(1, verdictUrgent: true, coreUrgent: true), total: 10, urgent: 4)
+    #expect(cut.headline == "3 need you now, 2 not listed · 6 to look at")
+    #expect(cut.moreText == "8 more in report, 2 of them need you now")
+    // A pair below the six rows is one thing more, not two.
+    let seven = (1...7).map { lookItem(id: "f\($0)") }
+    let below = shown(seven + pair(9, verdictUrgent: false, coreUrgent: false))
+    #expect(below.counts == Things(urgent: 0, rest: 8))
+    #expect(below.moreText == "2 more in report")
+  }
+}
+
 @Suite("The panel answers: is my Mac OK, and what needs me now")
 struct PanelPromises {
   @Test("The headline, the icon's count and the rows agree", arguments: allFixtures)
@@ -628,11 +740,9 @@ struct PanelPromises {
     switch p.light {
     case .attention(let n):
       #expect(p.total == n)
-      #expect(p.shownRows.count + p.more == n)
+      #expect(p.needsYou.count + p.toLook.count + p.more == p.counts.total)
       #expect(
-        p.headline
-          == Panel.headline(
-            urgent: p.rows.filter(\.urgent).count, listed: p.rows.filter(\.urgent).count, total: n)
+        p.headline == Panel.headline(p.counts, listed: p.counts.urgent)
           || p.headline == "Checking this Mac…")
       #expect(!p.headline.contains("changed"))
     case .nothingToReport, .watchedInPart:
@@ -681,9 +791,9 @@ struct PanelPromises {
         "Git hook", "Check failed", "A kind no app knows", "Shell startup file",
       ])
     // A kind no app knows still gets its row, with Immune's word and a plain picture.
-    #expect(p.rows[2].symbol == "exclamationmark.circle")
-    #expect(p.lines.contains("NEEDS YOU NOW"))
-    #expect(p.lines.contains("TO LOOK AT"))
+    #expect(p.rows[2].symbol == "doc")
+    #expect(p.lines.contains("Needs you now"))
+    #expect(p.lines.contains("To look at"))
   }
 
   @Test(
@@ -697,9 +807,13 @@ struct PanelPromises {
     #expect(meta("new") == "Startup item · new")
     #expect(meta("changed") == "Startup item · changed")
     #expect(meta("gone") == "Startup item · removed")
-    #expect(meta("first read") == "Startup item · read for the first time")
-    #expect(meta("not read") == "Startup item · can't be read now")
+    #expect(meta("first_read") == "Startup item · read for the first time")
+    #expect(meta("not_read") == "Startup item · can't be read now")
     #expect(meta("odd\u{202E}") == "Startup item · odd\\u{202E}")
+    // What happened is said once when the kind already says it.
+    var first = lookItem(kind: "places read for the first time")
+    first["change"] = "first_read"
+    #expect(panel(looking([first])).rows[0].meta == "Read for the first time")
   }
 
   @Test(
@@ -744,23 +858,24 @@ struct PanelPromises {
     #expect(rows.map(\.quiet) == [true, false, false, false, false])
   }
 
-  @Test("The icon follows the worst severity served, wherever it stands in the list")
+  @Test(
+    "The worst severity served is known wherever it stands in the list, and never fills the icon: only what needs the person now does"
+  )
   func worstSeverity() {
     let low = looking([lookItem(severity: "low"), lookItem(id: "f2", severity: "medium")])
     #expect(panel(low).worst == "medium")
-    #expect(
-      Light.menuSymbol(panel(low).light, worst: panel(low).worst) == "exclamationmark.triangle")
+    #expect(Light.menuSymbol(panel(low).light) == "exclamationmark.triangle")
     let late = looking([
       lookItem(severity: "low"), lookItem(id: "f2", severity: "critical"),
       lookItem(id: "f3", severity: "medium"),
     ])
     #expect(panel(late).worst == "critical")
     #expect(
-      Light.menuSymbol(panel(late).light, worst: "critical") == "exclamationmark.triangle.fill")
-    #expect(Light.menuSymbol(panel(late).light, worst: "high") == "exclamationmark.triangle.fill")
-    #expect(Light.menuSymbol(.nothingToReport, worst: "critical") == "checkmark.shield")
-    #expect(Light.menuSymbol(.watchedInPart, worst: "critical") == "shield.lefthalf.filled")
-    #expect(Light.menuSymbol(.cannotRead("x"), worst: "high") == "questionmark.circle")
+      Light.menuSymbol(panel(late).light, urgent: panel(late).urgent) == "exclamationmark.triangle")
+    #expect(Light.menuSymbol(panel(late).light, urgent: true) == "exclamationmark.triangle.fill")
+    #expect(Light.menuSymbol(.nothingToReport, urgent: true) == "checkmark.shield")
+    #expect(Light.menuSymbol(.watchedInPart, urgent: true) == "shield.lefthalf.filled")
+    #expect(Light.menuSymbol(.cannotRead("x"), urgent: true) == "questionmark.circle")
     #expect(Severity.worst([]) == nil)
     // A level this app does not know is not ranked, and never breaks the panel.
     let unknown = looking([lookItem(severity: "severe"), lookItem(id: "f2", severity: "low")])
@@ -773,7 +888,7 @@ struct PanelPromises {
     let p = panel(output("many.json"))
     #expect(p.shownRows.count == 6)
     #expect(p.more == 51)
-    #expect(p.lines.contains("51 more in report"))
+    #expect(p.lines.contains("  51 more in report  ›"))
     let seven = panel(looking((1...7).map { lookItem(id: "f\($0)", urgent: $0 == 7) }))
     #expect(seven.needsYou.map(\.row.item.id) == ["f7"])
     #expect(seven.toLook.map(\.row.item.id) == ["f1", "f2", "f3", "f4", "f5"])
@@ -805,17 +920,21 @@ struct PanelPromises {
     #expect(p.toLook.map(\.row.item.id) == ["f3"])
     #expect(p.shownRows.map(\.item.id) == ["f95f8472164", "fae2fbeab0d", "f3"])
     #expect(p.more == 0)
-    // The core finding is not marked suspicious twice: its nested finding says it.
-    #expect(p.needsYou[0].badges.isEmpty)
-    #expect(Entry.childBadges(p.needsYou[0].children[0]) == [.suspicious, .urgent])
-    #expect(p.lines.contains { $0.hasPrefix("      ↳ ") })
+    // The pair is one row: the core finding says what the response layer said, once, in plain
+    // words, and carries the mark of what needs the person now; no second row of its own.
+    #expect(p.needsYou[0].said == "suspicious")
+    #expect(p.needsYou[0].urgent)
+    #expect(p.needsYou[0].responseLayer == "Response layer: suspicious")
+    #expect(!p.lines.contains { $0.contains("↳") })
+    #expect(p.lines.filter { $0 == "    Response layer: suspicious" }.count == 1)
     // Nothing is closed or lowered: the core finding keeps its severity and stays a row.
     #expect(p.needsYou[0].row.item.severity == "high")
     #expect(p.needsYou[0].row.canAnswer)
     // A verdict finding no core finding names stays a row of its own, marked suspicious.
     let alone = panel(looking([verdictFinding(id: "fae2fbeab0d")]))
     #expect(alone.needsYou.map(\.row.item.id) == ["fae2fbeab0d"])
-    #expect(alone.needsYou[0].badges == [.suspicious])
+    #expect(alone.needsYou[0].said == nil)
+    #expect(alone.needsYou[0].row.meta == "Response layer: suspicious")
     // A name that is not a verdict finding is never nested: both stay rows.
     var wrong = verdict
     wrong["finding"] = "f3"
@@ -828,19 +947,19 @@ struct PanelPromises {
     "A verdict is a word on the row: suspicious or harmless, and the row stays where Immune served it"
   )
   func verdictWords() {
-    func badges(_ v: [String: Any]) -> [Badge] {
-      panel(looking([startFinding(id: "f1", verdict: v)])).toLook[0].badges
+    func said(_ v: [String: Any]) -> String? {
+      panel(looking([startFinding(id: "f1", verdict: v)])).toLook[0].said
     }
-    #expect(badges(["total": 1, "suspicious": 0]) == [.harmless])
-    #expect(badges(["total": 1, "suspicious": 1]) == [.suspicious])
-    #expect(badges(["total": 3, "suspicious": 1]) == [.suspicious, .harmless])
-    #expect(badges([:]).isEmpty)
+    #expect(said(["total": 1, "suspicious": 0]) == "harmless")
+    #expect(said(["total": 1, "suspicious": 1]) == "suspicious")
+    #expect(said(["total": 3, "suspicious": 1]) == "suspicious")
+    #expect(said([:]) == nil)
     let harmless = panel(
       looking([startFinding(id: "f1", verdict: ["total": 1, "suspicious": 0]), lookItem(id: "f2")]))
     #expect(harmless.total == 2)
     #expect(harmless.toLook.map(\.row.item.id) == ["f1", "f2"])
     #expect(harmless.toLook[0].row.canAnswer)
-    #expect(harmless.lines.contains { $0.hasSuffix(" [Harmless]") })
+    #expect(harmless.lines.contains("    Response layer: harmless"))
   }
 
   @Test(
@@ -905,7 +1024,7 @@ struct PanelPromises {
     #expect(p.total == 0)
     #expect(p.light == .nothingToReport)
     #expect(p.headline == "Nothing needs you")
-    #expect(Light.menuSymbol(p.light, worst: p.worst, urgent: p.urgent) == "checkmark.shield")
+    #expect(Light.menuSymbol(p.light, urgent: p.urgent) == "checkmark.shield")
     #expect(!p.lines.contains { $0.contains("vulnerab") || $0.contains("rule") })
   }
 
@@ -941,32 +1060,31 @@ struct PanelPromises {
   func glance() {
     let now = Date()
     let at = now.addingTimeInterval(-300)
-    let ago = Clock.ago(at, now: now)
     #expect(
       Panel.glance(inPart: false, live: true, lastCheck: at, now: now)
-        == "This Mac · watched live · checked \(ago)")
+        == "Watched live · checked 5 min ago")
     #expect(
       Panel.glance(inPart: true, live: true, lastCheck: at, now: now)
-        == "This Mac · watched in part · live · checked \(ago)")
+        == "Watched in part · live · checked 5 min ago")
     #expect(
       Panel.glance(inPart: false, live: false, lastCheck: at, now: now)
-        == "This Mac · hourly only · checked \(ago)")
+        == "Watched every hour · checked 5 min ago")
     #expect(
-      Panel.glance(inPart: false, live: nil, lastCheck: nil, now: now)
-        == "This Mac · no full check yet")
-    #expect(panel(output("live-off.json")).glance?.contains(" · hourly only · ") == true)
-    #expect(panel(quiet()).glance?.contains(" · watched live · ") == true)
+      Panel.glance(inPart: true, live: false, lastCheck: at, now: now)
+        == "Watched in part · every hour · checked 5 min ago")
+    #expect(Panel.glance(inPart: false, live: nil, lastCheck: nil, now: now) == "No full check yet")
+    #expect(panel(output("live-off.json")).glance?.hasPrefix("Watched every hour · ") == true)
+    #expect(panel(quiet()).glance?.hasPrefix("Watched live · ") == true)
     // The last full check is this_mac.checked_at, and the last finished run without it.
     let mac = quiet(
       removing: ["this_mac", "checked_at"],
       setting: Int(now.addingTimeInterval(-120).timeIntervalSince1970))
     #expect(
-      panel(mac, now: now).glance?.hasSuffix(Clock.ago(now.addingTimeInterval(-120), now: now))
-        == true)
+      panel(mac, now: now).glance?.hasSuffix("checked 2 min ago") == true)
     let noMac = edited("status.json", removing: ["this_mac"])
     let finished = Interpret.reading(from: noMac).status?.lastFinishedRun?.finishedAt
     #expect(finished != nil)
-    #expect(panel(noMac, now: now).glance == "This Mac · checked " + Clock.ago(finished!, now: now))
+    #expect(panel(noMac, now: now).glance == "Checked " + Clock.since(finished!, now: now))
   }
 
   @Test(
@@ -975,6 +1093,8 @@ struct PanelPromises {
   func firstDay() {
     let first = panel(output("panel-first-day.json"))
     #expect(first.firstDay?.hasPrefix("Starting point taken ") == true)
+    #expect(first.messages.map(\.kind) == [.firstDay])
+    #expect(first.messages.first?.detail == "Only changes after it are reported")
     #expect(first.light == .nothingToReport)
     #expect(panel(output("panel-calm.json")).firstDay == nil)
     // quiet.json is a first run whose reading is the first: either one says so.
@@ -1012,36 +1132,39 @@ struct PanelPromises {
     #expect(!panel(output("no-store.json")).busy)
   }
 
-  @Test("What is watched is in two groups, all the time and every hour, each kind with its count")
+  @Test(
+    "What is watched is two short lines, live and hourly, each counting the kinds the status lists; the kinds by name are only a tooltip"
+  )
   func whatIsWatched() {
     let p = panel(quiet())
+    #expect(p.watched.map(\.title) == ["All the time", "Every hour"])
+    #expect(p.watched.map(\.kinds) == [5, 3])
+    #expect(p.watched.map(\.text) == ["5 kinds", "3 kinds"])
+    // The kinds by name, in Immune's words, counts grouped: for the tooltip, not the lines.
     #expect(
-      p.watched == [
-        WatchedGroup(
-          title: "All the time",
-          lines: [
-            "startup items 14", "shell startup files 3", "SSH files 4",
-            "git hooks in projects 31", "running programs and their connections 87",
-          ]),
-        WatchedGroup(
-          title: "Every hour",
-          lines: ["applications 214", "Homebrew packages 96", "npm packages 640"]),
-      ])
-    // Without a live watcher, one group: every hour.
+      p.watched[1].detail == ["applications 214", "Homebrew packages 96", "npm packages 640"])
+    #expect(!p.lines.contains { $0.contains("npm packages") })
+    // Without a live watcher, nothing is seen all the time, and it says so.
     let off = panel(output("live-off.json"))
-    #expect(off.watched.map(\.title) == ["Every hour"])
-    #expect(off.watched.first?.lines.count == 7)
-    // Sampled kinds, and program starts the event level records, are seen all the time
-    // while a watcher runs; without one, every hour. A kind with nothing in it is left out.
+    #expect(off.watched.map(\.title) == ["All the time", "Every hour"])
+    #expect(off.watched.first?.text == "none: the watcher is not running")
+    #expect(off.watched.last?.kinds == 7)
+    // Sampled kinds are seen all the time while a watcher runs; without one, every hour. Program
+    // starts are not a kind: the kind the status lists for them is not counted. A kind with
+    // nothing in it is left out, and a count is grouped.
     let parts = [
       WatchedPart(what: "running programs", count: 12, how: "sampled"),
-      WatchedPart(what: "program starts", count: 4_810, how: "events"),
+      WatchedPart(what: "program starts", count: 4_810_337, how: "events"),
+      WatchedPart(what: "npm packages", count: 18_204, how: "hourly"),
     ]
-    #expect(
-      Panel.groups(parts, live: true) == [
-        WatchedGroup(title: "All the time", lines: ["running programs 12", "program starts 4810"])
-      ])
-    #expect(Panel.groups(parts, live: false).map(\.title) == ["Every hour"])
+    let live = Panel.coverage(parts, live: true, level: nil)
+    #expect(live.map(\.kinds) == [1, 1])
+    #expect(live[1].detail == ["npm packages 18,204"])
+    // A watcher that runs and sees no kind all the time says none, plainly.
+    let hourlyOnly = Panel.coverage([parts[2]], live: true, level: nil)
+    #expect(hourlyOnly.map(\.text) == ["none", "1 kind"])
+    #expect(Panel.coverage(parts, live: false, level: nil).map(\.kinds) == [0, 2])
+    #expect(Panel.coverage([], live: true, level: nil).isEmpty)
     let mixed = quiet(
       removing: ["this_mac", "watched"],
       setting: [
@@ -1049,22 +1172,21 @@ struct PanelPromises {
         ["what": "SSH files", "count": 2, "how": "live"],
         ["what": "odd\u{202E}kind", "count": 1, "how": "hourly"],
       ])
-    #expect(
-      panel(mixed).watched == [
-        WatchedGroup(title: "All the time", lines: ["SSH files 2"]),
-        WatchedGroup(title: "Every hour", lines: ["odd\\u{202E}kind 1"]),
-      ])
+    #expect(panel(mixed).watched.map(\.kinds) == [1, 1])
+    #expect(panel(mixed).watched[1].detail == ["odd\\u{202E}kind 1"])
+    #expect(panel(mixed).watched.last?.text == "1 kind")
   }
 
   @Test("When the program cannot be read, the panel says what the owner can do")
   func cannotRead() {
     let p = panel(output("failure.json", exit: 3))
-    #expect(p.headline == "I can't tell: the program cannot read its records.")
+    #expect(p.headline == "I can't tell")
+    #expect(p.glance == "The program cannot read its records")
     #expect(p.help.contains { $0.contains("run immune status in a terminal") })
     #expect(p.reason?.contains("database is locked") == true)
     #expect(p.footer == ["Open report", "Check now"])
     let incomplete = panel(quiet(removing: ["needs_a_look", "items"]))
-    #expect(incomplete.headline.hasPrefix("I can't tell:"))
+    #expect(incomplete.headline == "I can't tell")
     #expect(incomplete.help.contains { $0.contains("run immune status in a terminal") })
   }
 
@@ -1092,7 +1214,7 @@ struct PanelPromises {
     #expect(mine.headline == "Checking this Mac…")
     #expect(panel(quiet()).canCheck)
     #expect(panel(quiet()).footer == ["Open report", "Check now"])
-    #expect(panel(quiet()).menu == ["Quit"])
+    #expect(panel(quiet()).menu == ["Quit Immune"])
   }
 
   @Test("A card's time is short and its full date is at hand: the time today, the day this year")
@@ -1161,6 +1283,8 @@ struct PanelPromises {
       calendar.locale = Locale(identifier: region)
       #expect(
         Clock.ago(now.addingTimeInterval(-720), now: now, calendar: calendar) == "12 minutes ago")
+      #expect(
+        Clock.since(now.addingTimeInterval(-720), now: now, calendar: calendar) == "12 min ago")
     }
   }
 
@@ -1228,12 +1352,11 @@ struct PanelPromises {
       .nothingToReport, .watchedInPart, .attention(1), .stale(since: nil), .cannotRead("x"),
     ]
     var names = Words.kinds.values.map(\.1) + [Words.symbol("unknown")]
-    names += states.flatMap {
-      [$0.symbol, $0.panelSymbol, Light.menuSymbol($0, worst: "critical")]
-    }
-    names += ["bell.slash", "info.circle", "list.bullet", "pause.circle", "person.badge.clock"]
-    names += ["chevron.left", "chevron.right", "ellipsis", "eye.slash"]
-    names += ["exclamationmark.bubble", "checkmark.bubble"]
+    names += states.flatMap { [$0.symbol, Light.menuSymbol($0, urgent: true)] }
+    names += [Icons.notSeen, Icons.answered, Icons.watched, Icons.firstDay]
+    names += [Icons.notificationsOff, Icons.notWatching]
+    names += ["chevron.left", "chevron.right", "ellipsis"]
+    names += ["checkmark", "exclamationmark", "eye", "clock", "questionmark"]
     for name in names {
       #expect(NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil, "\(name)")
     }
@@ -1681,14 +1804,27 @@ struct RunNow {
   }
 }
 
+/// Folders a test made in the temporary folder, removed with it.
+final class MadeFolders: @unchecked Sendable {
+  private let lock = NSLock()
+  private var urls: [URL] = []
+  func add(_ url: URL) { lock.withLock { urls.append(url) } }
+  deinit { for url in urls { try? FileManager.default.removeItem(at: url) } }
+}
+
 @Suite("The report: the program's page, as the store is now")
 @MainActor
 struct Page {
+  /// The folders this test made, removed when the test ends, whether it passed or failed:
+  /// Swift Testing makes a new `Page` for each test and lets it go after.
+  let made = MadeFolders()
+
   /// A page file Immune "wrote", and the output of `immune view --no-open --if-stale` naming it.
   func written() throws -> (URL, ImmuneOutput) {
     let dir = FileManager.default.temporaryDirectory
       .appendingPathComponent("immune-page-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    made.add(dir)
     let page = dir.appendingPathComponent("view.html")
     try Data("<html></html>".utf8).write(to: page)
     let out = ImmuneOutput(
@@ -1990,6 +2126,44 @@ struct Answers {
   }
 
   @Test(
+    "One thing shown as a pair takes one answer: Seen and Expected are one command each, the opened finding by its id and the other with --with; an other that is not an id the app passes, or is the finding itself, runs nothing"
+  )
+  func pairIsOneCommand() async {
+    let other = "fae2fbeab0d"
+    #expect(
+      Answer.seenArguments(id: id, with: other) == [
+        "finding", id, "seen", "--with", other, "--via", "app", "--json",
+      ])
+    #expect(
+      Answer.expectedArguments(id: id, reason: "mine", days: 7, with: other) == [
+        "finding", id, "expected", "--reason", "mine", "--days", "7", "--with", other, "--via",
+        "app", "--json",
+      ])
+    for bad in ["-x", "", "a b", id] {
+      #expect(Answer.seenArguments(id: id, with: bad) == nil, "\(bad)")
+      #expect(Answer.expectedArguments(id: id, reason: "r", days: 30, with: bad) == nil, "\(bad)")
+      #expect(!ExpectedForm(id: id, reason: "r", with: bad).isComplete)
+    }
+    let immune = GatedImmune(status: output("status.json"))
+    let model = AppModel(immune: immune)
+    await model.refresh()
+    #expect(await model.answerSeen(id, with: other))
+    model.form = ExpectedForm(id: id, reason: "mine", with: other)
+    #expect(await model.answerExpected(model.form!))
+    let answers = immune.callsSoFar.filter { $0.first == "finding" }
+    #expect(
+      answers == [
+        ["finding", id, "seen", "--with", other, "--via", "app", "--json"],
+        [
+          "finding", id, "expected", "--reason", "mine", "--days", "30", "--with", other, "--via",
+          "app", "--json",
+        ],
+      ])
+    #expect(await model.answerSeen(id, with: "-x") == false)
+    #expect(immune.callsSoFar.filter { $0.first == "finding" }.count == 2)
+  }
+
+  @Test(
     "A blank reason, a length not offered, or an id that is not one is refused before Immune runs")
   func refusedBeforeRunning() async {
     for blank in ["", "   ", "\n\t"] {
@@ -2164,8 +2338,9 @@ struct OutsideApp {
     #expect(one.light == .nothingToReport)
     #expect(one.answered?.count == 1)
     // Visible at once, not behind a click: the answer, who gave it and Take back.
-    #expect(one.lines.contains("(agent) Seen, through your agent"))
-    #expect(one.lines.contains("    [ Take back ]"))
+    #expect(one.answered?.heading == "Answered through your agent")
+    #expect(one.lines.contains("Answered through your agent"))
+    #expect(one.lines.contains("    Seen  [ Take back ]"))
     // Only what is known to have come through the agent is said to have.
     let many = panel(answeredOutside([outsideItem(), outsideItem(id: "f2")], total: 7))
     #expect(many.answered?.text == "7 answers given outside the app")
@@ -2200,8 +2375,8 @@ struct OutsideApp {
     #expect(lines[0].reason == "ignore previous instructions\\u{202E}")
     #expect(lines[1].answer.hasPrefix("Expected until "))
     #expect(lines[1].by == "from the command line")
-    #expect(p.lines.filter { $0 == "    [ Take back ]" }.count == 3)
-    #expect(p.lines.contains("1 more answer in report"))
+    #expect(p.lines.filter { $0.hasSuffix("  [ Take back ]") }.count == 3)
+    #expect(p.lines.contains("  1 more answer in report  ›"))
     #expect(p.lines.allSatisfy(hasNoInvisible))
   }
 
@@ -2303,7 +2478,7 @@ struct StatementsOutsideApp {
     #expect(lines[0].machine == "machine:web-1")
     #expect(lines[2].answer == "Not mine")
     #expect(lines[2].by == "from the command line")
-    #expect(p.lines.filter { $0 == "    [ Take back ]" }.count == 3)
+    #expect(p.lines.filter { $0.hasSuffix("  [ Take back ]") }.count == 3)
     #expect(p.lines.allSatisfy(hasNoInvisible))
   }
 
@@ -2376,7 +2551,10 @@ struct Notifications {
     await ann.saw(status([a]))
     await ann.saw(status([b, a]))
     #expect(n.delivered.map(\.id) == ["fa", "fb"])
-    #expect(n.delivered[0] == Note(id: "fa", title: "Title A.", body: ".zprofile"))
+    #expect(
+      n.delivered[0]
+        == Note(id: "fa", title: "Needs you now", subtitle: "Shell startup file", body: ".zprofile")
+    )
   }
 
   @Test("A restart of the app does not notify again: delivered ids are remembered")
@@ -2431,13 +2609,14 @@ struct Notifications {
     #expect(n.delivered.isEmpty)
     await ann.saw(counted(52))
     #expect(n.delivered == [Announcer.unlistedNote(51)])
-    #expect(n.delivered[0].title == "51 urgent findings are not in the list")
+    #expect(n.delivered[0].title == "Needs you now")
+    #expect(n.delivered[0].subtitle == "51 urgent findings are not in the list")
     await ann.saw(counted(52))
     #expect(n.delivered.count == 1)
     // Fewer is not news; more again is.
     await ann.saw(counted(51))
     await ann.saw(counted(53))
-    #expect(n.delivered.map(\.title).last == "52 urgent findings are not in the list")
+    #expect(n.delivered.map(\.subtitle).last == "52 urgent findings are not in the list")
     #expect(n.delivered.count == 2)
   }
 
@@ -2449,10 +2628,34 @@ struct Notifications {
     let four = (1...4).map { lookItem(id: "f\($0)", urgent: true) }
     await ann.saw(status(four))
     #expect(
-      n.delivered == [Note(id: "needs-a-look-now", title: "4 things need a look now", body: nil)])
+      n.delivered == [
+        Note(id: "needs-a-look-now", title: "Needs you now", subtitle: "4 things", body: nil)
+      ])
     let three = (5...7).map { lookItem(id: "f\($0)", urgent: true) }
     await ann.saw(status(four + three))
     #expect(n.delivered.count == 1 + 3)
+  }
+
+  @Test("A pair is one thing in a notification, as in the panel: one note, and counted once")
+  func pairIsOneThingNotified() async {
+    func pairs(_ range: ClosedRange<Int>) -> [[String: Any]] {
+      range.flatMap { i -> [[String: Any]] in
+        var core = startFinding(
+          id: "fc\(i)", verdict: ["total": 1, "suspicious": 1, "finding": "fv\(i)"])
+        core["urgent"] = true
+        return [verdictFinding(id: "fv\(i)"), core]
+      }
+    }
+    let n = RecordingNotifier()
+    let ann = Announcer(notifier: n, memory: Forgetful())
+    await ann.saw(status([]))
+    // Three pairs, six urgent findings: three things, one note each.
+    await ann.saw(status(pairs(1...3)))
+    #expect(n.delivered.map(\.id) == ["fv1", "fv2", "fv3"])
+    // Four more pairs: four things, said as such.
+    await ann.saw(status(pairs(1...7)))
+    #expect(n.delivered.last?.subtitle == "4 things")
+    #expect(n.delivered.count == 4)
   }
 
   @Test("Only urgent items are notified: a missing or non-boolean urgent is false")
@@ -2469,7 +2672,8 @@ struct Notifications {
   }
 
   @Test(
-    "A notification carries Immune's title and the place, inert, and nothing else from a source")
+    "A notification says it needs the person now, the kind and what happened as the panel's row does, and the thing, inert; nothing else from a source"
+  )
   func onlyTitleAndWhere() async {
     let n = RecordingNotifier()
     let ann = Announcer(notifier: n, memory: Forgetful())
@@ -2480,10 +2684,54 @@ struct Notifications {
     item["advice"] = "ADVICE"
     item["kind"] = "KIND"
     await ann.saw(status([item, lookItem(id: "f2", whereText: NSNull(), urgent: true)]))
-    #expect(n.delivered[0] == Note(id: "f1", title: "T\\u{1B}[31m", body: "~/x\\u{202E}y"))
-    #expect(n.delivered[1].body == nil)
-    let text = n.delivered.map { $0.title + ($0.body ?? "") }.joined()
-    for word in ["VALUE", "MEANING", "ADVICE", "KIND"] { #expect(!text.contains(word)) }
+    #expect(
+      n.delivered[0]
+        == Note(id: "f1", title: "Needs you now", subtitle: "KIND", body: "~/x\\u{202E}y"))
+    // No thing named: Immune's own headline stands for it, inert.
+    #expect(n.delivered[1].body == "A title from the program.")
+    let text = n.delivered.map { $0.title + ($0.subtitle ?? "") + ($0.body ?? "") }.joined()
+    for word in ["VALUE", "MEANING", "ADVICE", "\u{1B}"] { #expect(!text.contains(word)) }
+  }
+
+  @Test(
+    "A program start the response layer called suspicious is notified as the panel shows it: its kind and the response layer's word under the title, the program and its arguments as the body"
+  )
+  func notificationOfAProgramStart() async {
+    let n = RecordingNotifier()
+    let ann = Announcer(notifier: n, memory: Forgetful())
+    await ann.saw(status([]))
+    var start = startFinding(id: "f1", verdict: ["total": 1, "suspicious": 1])
+    start["urgent"] = true
+    start["change"] = nil
+    await ann.saw(status([start]))
+    #expect(
+      n.delivered == [
+        Note(
+          id: "f1", title: "Needs you now", subtitle: "Program start · response layer: suspicious",
+          body: "/bin/dd if=/dev/zero bs=1 count=1")
+      ])
+    // The response layer's own finding, urgent, about a program start the status lists: told as
+    // that one thing, by the urgent finding's id.
+    let pair = [
+      verdictFinding(id: "fae2fbeab0d"),
+      startFinding(id: "f2", verdict: ["total": 1, "suspicious": 1, "finding": "fae2fbeab0d"]),
+    ]
+    await ann.saw(status(pair))
+    #expect(
+      n.delivered.last
+        == Note(
+          id: "fae2fbeab0d", title: "Needs you now",
+          subtitle: "Program start · new · response layer: suspicious",
+          body: "/bin/dd if=/dev/zero bs=1 count=1"))
+    // Only the response layer's own finding is told as the thing it is about: a finding of the
+    // core that another names is told as itself.
+    let named = [
+      lookItem(id: "f3", urgent: true),
+      startFinding(id: "f4", verdict: ["total": 1, "suspicious": 1, "finding": "f3"]),
+    ]
+    await ann.saw(status(named))
+    #expect(n.delivered.last?.id == "f3")
+    #expect(n.delivered.last?.subtitle == "Shell startup file")
   }
 
   @Test("While notifications are off nothing is delivered, and turning them on brings no backlog")
@@ -2543,8 +2791,8 @@ struct Notifications {
     #expect(model.notificationsOff)
     let p = Panel.of(model.reading, now: Date(), notificationsOff: model.notificationsOff)
     #expect(
-      p.lines.contains(
-        "    Notifications are off, so urgent things show only here  [ Open Settings ]"))
+      p.lines.contains("    Urgent things show only here  [ Open Settings ]"))
+    #expect(p.messages.map(\.title) == ["Notifications are off"])
     n.state = .allowed
     await model.refresh()
     #expect(!model.notificationsOff)
@@ -2600,14 +2848,10 @@ struct Notifications {
   func urgentIcon() {
     let p = panel(looking([lookItem(severity: "low", urgent: true)]))
     #expect(p.urgent)
-    #expect(
-      Light.menuSymbol(p.light, worst: p.worst, urgent: p.urgent) == "exclamationmark.triangle.fill"
-    )
+    #expect(Light.menuSymbol(p.light, urgent: p.urgent) == "exclamationmark.triangle.fill")
     let calm = panel(looking([lookItem(severity: "low")]))
     #expect(!calm.urgent)
-    #expect(
-      Light.menuSymbol(calm.light, worst: calm.worst, urgent: calm.urgent)
-        == "exclamationmark.triangle")
+    #expect(Light.menuSymbol(calm.light, urgent: calm.urgent) == "exclamationmark.triangle")
   }
 
   @Test("Only the running app can ask the system: tests and the library never touch it")
@@ -2825,11 +3069,14 @@ struct Watching {
     #expect(h.watcher.notWatching == "Not watching for changes right now: \(read).")
     // The panel says it, and claims no live watching, though the status says live.
     let p = Panel.of(
-      Interpret.reading(from: quiet()), now: Date(), notWatching: h.watcher.notWatching)
+      Interpret.reading(from: quiet()), now: quietAnswered(), notWatching: h.watcher.notWatching)
     #expect(p.notWatching == h.watcher.notWatching)
-    #expect(p.glance?.contains(" · hourly only · ") == true)
+    #expect(p.glance?.hasPrefix("Watched every hour · ") == true)
     #expect(p.glance?.contains("live") == false)
-    #expect(p.watched.allSatisfy { $0.title == "Every hour" })
+    #expect(p.watched.first?.text == "none: the watcher is not running")
+    #expect(p.messages.first?.title == "Not watching for changes right now")
+    #expect(p.messages.first?.detail.hasPrefix("A reading of the watched places failed") == true)
+    #expect(p.messages.first?.detail.hasSuffix("readonly database\\n<b>)") == true)
 
     h.launcher.say(problem("sample_failed", "no sample"))
     let sample = "a sample of running programs failed (no sample)"
@@ -2921,7 +3168,8 @@ struct Watching {
     model.took(other)
     #expect(model.reading.status?.eventLevel?.notes == nil)
     #expect(immune.callsSoFar.filter { $0.first == "status" }.count == 1)
-    #expect(Panel.of(model.reading, now: Date()).programStarts == "on")
+    #expect(
+      Panel.of(model.reading, now: Date()).watched.first?.starts == Starts(on: true, words: nil))
   }
 
   @Test("A read line refreshes the status at once")
@@ -3398,7 +3646,7 @@ struct PublishedRules {
       #expect(p.light == none.light && p.light == .nothingToReport)
       #expect(p.headline == none.headline)
       #expect(p.urgent == false && p.worst == nil)
-      #expect(Light.menuSymbol(p.light, worst: p.worst, urgent: p.urgent) == "checkmark.shield")
+      #expect(Light.menuSymbol(p.light, urgent: p.urgent) == "checkmark.shield")
       #expect(p.lines == none.lines)
     }
   }
@@ -3410,27 +3658,41 @@ struct ProgramStarts {
     panel(quiet(removing: ["event_level"], setting: level))
   }
 
-  @Test("The event level's state is said in Immune's words, inert, and never raises the icon")
+  @Test(
+    "Program starts stand on the line they are read on: a filled dot when the event level records them, a ring and Immune's words, inert, when not; never a count, never an alarm"
+  )
   func stateInImmunesWords() {
     let on = with([
-      "state": "running", "program_starts": ["last_day": 4812],
+      "state": "running", "program_starts": ["last_day": 4_812_337],
       "in_words": ["state": "on", "notes": []],
     ])
-    #expect(on.programStarts == "on")
-    #expect(on.lines.contains("{Program starts} on"))
+    #expect(on.watched.first?.starts == Starts(on: true, words: nil))
+    #expect(on.watched.first?.text == "5 kinds · ●program starts")
+    #expect(!on.lines.contains { $0.contains("4812337") || $0.contains("4,812,337") })
     let note = "Program starts are not seen until it is installed."
     let off = with([
       "state": "not_installed", "program_starts": ["last_day": 0],
       "in_words": ["state": "not installed", "notes": [note]],
     ])
-    #expect(off.programStarts == "not installed")
+    #expect(off.watched.first?.starts == Starts(on: false, words: "not installed"))
+    #expect(off.watched.first?.text == "5 kinds · ○no program starts")
     #expect(off.light == .nothingToReport && off.total == 0)
     // An earlier Immune, or a level never looked for: nothing said.
-    #expect(with(nil).programStarts == nil)
-    // Without its words, the state as Immune names it; text from Immune is inert.
-    #expect(with(["state": "refused"]).programStarts == "refused")
+    #expect(with(nil).watched.allSatisfy { $0.starts == nil })
+    // Without its words, the state as Immune names it; text from Immune is inert. Only
+    // `running` is on: a state this app does not know is not.
+    #expect(with(["state": "refused"]).watched.first?.starts == Starts(on: false, words: "refused"))
     let odd = with(["state": "refused", "in_words": ["state": "refused\u{202E} by macOS"]])
-    #expect(odd.programStarts == "refused\\u{202E} by macOS")
+    #expect(odd.watched.first?.starts?.words == "refused\\u{202E} by macOS")
+    #expect(with(["state": "something new"]).watched.first?.starts?.on == false)
+    // Without a live watcher they stand on the hourly line.
+    let hourly = panel(
+      edited(
+        "live-off.json", removing: ["event_level"],
+        setting: ["state": "running", "in_words": ["state": "on"]]))
+    #expect(hourly.watched.last?.text == "7 kinds · ●program starts")
+    #expect(hourly.watched.first?.starts == nil)
+    #expect(hourly.watched.map(\.title) == ["All the time", "Every hour"])
   }
 }
 
@@ -3527,9 +3789,6 @@ struct OpenedFinding {
         Fact(label: "Started by", value: "/bin/sh"),
         Fact(label: "In folder", value: "/Users/example/dev/agent-tools"),
         Fact(label: "Signed", value: "com.apple.dd"),
-        Fact(label: "Rule", value: "Binary Padding - MacOS"),
-        Fact(label: "Rule set", value: "SigmaHQ"),
-        Fact(label: "Technique", value: "attack.t1027.001"),
       ])
     // The response layer's verdict, its reason as data, and its own finding.
     #expect(f.verdicts?.total == 1 && f.verdicts?.suspicious == 1)
@@ -3541,7 +3800,9 @@ struct OpenedFinding {
     #expect(f.finding?.state == "open" && f.finding?.severity == "high")
   }
 
-  @Test("A watched place shows its content before and after, and a short history, oldest first")
+  @Test(
+    "A watched place shows its content before and after, and a short history, oldest first, whose line breaks only after a '·'"
+  )
   func placeAndHistory() throws {
     let f = try #require(read(finding("finding-fbb00986139.json")))
     #expect(FindingFacts.object(f) == "~/.zshrc")
@@ -3549,9 +3810,12 @@ struct OpenedFinding {
     #expect(FindingFacts.facts(f).map(\.label) == ["Before", "After"])
     let now = Date(timeIntervalSince1970: 1_794_570_060)
     let history = FindingFacts.history(f, now: now)
-    #expect(history.hasPrefix("found "))
-    #expect(history.contains("verdict harmless"))
-    #expect(history.components(separatedBy: " · ").count <= 6)
+    let items = history.components(separatedBy: FindingFacts.historyBreak)
+    #expect(items.first?.hasPrefix("Found\u{A0}") == true)
+    #expect(items.contains { $0.hasPrefix("Verdict\u{A0}") || $0.hasPrefix("verdict\u{A0}") })
+    #expect(items.count > 1 && items.count <= 6)
+    // The only breakable spaces are those after a "·".
+    #expect(history.filter { $0 == " " }.count == items.count - 1)
   }
 
   @Test(
@@ -3741,7 +4005,7 @@ struct ListedIsShown {
     #expect(p.needsYou.count == 3)
     #expect(p.urgent)
     #expect(p.total == 3)
-    #expect(p.lines.contains("NEEDS YOU NOW"))
+    #expect(p.lines.contains("Needs you now"))
   }
 
   @Test(
@@ -3813,14 +4077,14 @@ struct ListedIsShown {
     "A verdict is harmless only when both its counts are given and none is suspicious; a count not given is not 0"
   )
   func harmlessNeedsBothCounts() {
-    func badges(_ verdict: [String: Any]) -> [Badge] {
-      panel(looking([startFinding(id: "f1", verdict: verdict)])).toLook.first?.badges ?? []
+    func said(_ verdict: [String: Any]) -> String? {
+      panel(looking([startFinding(id: "f1", verdict: verdict)])).toLook.first?.said
     }
-    #expect(!badges(["total": 1]).contains(.harmless))
-    #expect(!badges(["suspicious": 0]).contains(.harmless))
-    #expect(badges(["total": 1, "suspicious": 0]).contains(.harmless))
-    #expect(badges(["total": 2, "suspicious": 1]).contains(.suspicious))
-    #expect(!badges(["total": 2]).contains(.suspicious))
+    #expect(said(["total": 1]) == nil)
+    #expect(said(["suspicious": 0]) == nil)
+    #expect(said(["total": 1, "suspicious": 0]) == "harmless")
+    #expect(said(["total": 2, "suspicious": 1]) == "suspicious")
+    #expect(said(["total": 2]) == nil)
     // The opened finding's box: green only on both counts, red on any suspicious one.
     #expect(VerdictTone.of(total: 1, suspicious: nil) == .unknown)
     #expect(VerdictTone.of(total: nil, suspicious: 0) == .unknown)
@@ -3834,7 +4098,7 @@ struct ListedIsShown {
     let p = panel(looking((1...8).map { lookItem(id: "f\($0)", urgent: true) }))
     #expect(p.shownRows.count == Panel.rowsShown)
     #expect(p.moreText == "2 more in report, 2 of them need you now")
-    #expect(p.lines.contains("2 more in report, 2 of them need you now"))
+    #expect(p.lines.contains("  2 more in report, 2 of them need you now  ›"))
     let one = panel(looking((1...7).map { lookItem(id: "f\($0)", urgent: true) }))
     #expect(one.moreText == "1 more in report, 1 of them needs you now")
     // Not urgent, or beyond the list: only how many.
@@ -4082,11 +4346,91 @@ struct LabelApartFromValue {
       ])
   }
 
-  @Test("The rule, its set and its techniques are each a value of their own")
+  @Test(
+    "The published rule is a voice of its own: its title and set as data, its techniques as data, how its authors rate it in the app's words"
+  )
   func ruleApart() throws {
     let f = try #require(read(finding("finding-f95f8472164.json")))
-    let labels = FindingFacts.facts(f).map(\.label)
-    #expect(labels.suffix(3) == ["Rule", "Rule set", "Technique"])
+    #expect(!FindingFacts.facts(f).map(\.label).contains("Rule"))
+    let rule = try #require(FindingFacts.voices(f).first)
+    #expect(rule.who == "Published rule" && rule.whoData == "SigmaHQ")
+    #expect(rule.said == "Binary Padding - MacOS" && rule.saidIsData)
+    #expect(rule.data == "attack.t1027.001")
+    #expect(rule.detail == "its authors rate it high")
+  }
+
+  @Test(
+    "Who said what: the response layer's word and how sure it is, its reason quoted, never how bad; Immune's sentence with what to do behind it; the person's answer with its reason"
+  )
+  func voices() throws {
+    let dd = try #require(read(finding("finding-f95f8472164.json")))
+    let voices = FindingFacts.voices(dd)
+    #expect(voices.map(\.who) == ["Published rule", "Response layer", "Immune"])
+    let layer = voices[1]
+    #expect(layer.said == "Suspicious, how sure: medium")
+    #expect(layer.quote?.hasPrefix("dd was started by a script") == true)
+    #expect(layer.facts == [Fact(label: "Case", value: "case-2041")])
+    #expect(!layer.said.contains("how bad") && !layer.said.contains("high"))
+    #expect(voices[2].said.hasPrefix("Coding agents and build tools"))
+    #expect(voices[2].advice?.hasPrefix("Look at the program") == true)
+    let agent = try #require(read(finding("finding-f3c1d2e4a51.json")))
+    let person = try #require(FindingFacts.voices(agent).first { $0.who == "Your agent" })
+    #expect(person.said.hasPrefix("Expected until "))
+    #expect(person.quote?.hasPrefix("The owner said the updater") == true)
+    // An answer said not to be in force is no voice.
+    var lapsed = agent
+    lapsed.answer?.inForce = false
+    #expect(!FindingFacts.voices(lapsed).contains { $0.who == "Your agent" })
+    // The footer's one line is the answer; who gave it is its tooltip, and the voice above.
+    // This year's day has no year.
+    let now = Date(timeIntervalSince1970: 1_794_570_060)
+    let answer = try #require(agent.answer)
+    #expect(FindingFacts.answeredLine(answer, now: now) == "Expected until Dec 13")
+    #expect(FindingFacts.answeredHelp(answer, now: now) == "Your agent: expected until Dec 13")
+    #expect(FindingFacts.answeredLine(answer).hasSuffix(", 2026"))
+    #expect(
+      FindingFacts.voices(agent, now: now).first { $0.who == "Your agent" }?.said
+        == "Expected until Dec 13")
+  }
+
+  @Test(
+    "The thing on the screen is one: the core's finding and the response layer's own finding about it are a pair by the ids immune gives, either way round, and urgent when either is"
+  )
+  func pairByGivenIds() throws {
+    let dd = try #require(read(finding("finding-f95f8472164.json")))
+    #expect(dd.finding?.urgent == false)
+    #expect(FindingFacts.urgent(dd))
+    #expect(FindingFacts.pair(dd, id: "f95f8472164", rows: []) == "fae2fbeab0d")
+    // The response layer's finding opened: its pair is the core finding the status lists with it.
+    let p = panel(output("panel-start.json"))
+    var alone = dd
+    alone.verdicts = nil
+    #expect(FindingFacts.pair(alone, id: "fae2fbeab0d", rows: p.rows) == "f95f8472164")
+    // A finding alone has no pair, and never names itself.
+    #expect(FindingFacts.pair(alone, id: "f95f8472164", rows: p.rows) == nil)
+    var selfNamed = dd
+    selfNamed.verdicts?.verdictFinding?.id = "f95f8472164"
+    #expect(FindingFacts.pair(selfNamed, id: "f95f8472164", rows: []) == nil)
+    // Only a finding of the core pairs with the response layer's: another of its own findings
+    // that names it does not.
+    var other = verdictFinding(id: "fv1")
+    other["verdict"] = ["total": 1, "suspicious": 1, "finding": "fae2fbeab0d"]
+    let verdictRows = panel(looking([other])).rows
+    #expect(verdictRows.first?.isVerdictFinding == true)
+    #expect(FindingFacts.pair(alone, id: "fae2fbeab0d", rows: verdictRows) == nil)
+    #expect(!FindingFacts.urgent(alone))
+    let zsh = try #require(read(finding("finding-fbb00986139.json")))
+    #expect(FindingFacts.pair(zsh, id: "fbb00986139", rows: p.rows) == nil)
+    // What happened is said once when the kind already says it, as on the row.
+    var first = zsh
+    first.kind = "places read for the first time"
+    first.evidence = .placeChanged(change: "first_read", presenceOnly: nil)
+    first.lastSeenAt = nil
+    first.firstSeenAt = nil
+    #expect(FindingFacts.caption(first, now: Date()) == "Read for the first time")
+    #expect(
+      FindingFacts.caption(zsh, now: Date(timeIntervalSince1970: 1_794_570_060)).hasPrefix(
+        "Shell startup file · changed · "))
   }
 
   @Test("An answer whose word the app does not know is said so, never shown as an answer it knows")

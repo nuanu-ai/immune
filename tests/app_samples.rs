@@ -223,10 +223,10 @@ fn shape(v: &Value, at: &str, out: &mut BTreeMap<String, &'static str>) {
     out.insert(at.to_string(), t);
 }
 
-#[test]
-fn the_app_reads_real_answers_of_every_kind_of_evidence_with_values_of_real_size() {
-    let mac = Mac::new();
-    // The first check: the baseline.
+/// The invented Mac before its first check: a shell profile, a project with a lockfile, a keg,
+/// the archive of npm records with a malicious package's record, and the event level installed
+/// with one program start in its log. Returns the log's path, from the Mac's folder.
+fn prepare(mac: &Mac) -> String {
     mac.put("home/.zshrc", "export INVENTED=1\n");
     mac.put("home/dev/shop/.git/HEAD", "ref: refs/heads/main\n");
     mac.put(
@@ -280,6 +280,40 @@ fn the_app_reads_real_answers_of_every_kind_of_evidence_with_values_of_real_size
     assert!(extracted.success());
     let log = format!("system/{LOG}/exec-20261004T00.jsonl");
     mac.put(&log, &padding(1));
+    log
+}
+
+/// The answers, written to `OUT` when asked, and otherwise checked against what is committed
+/// there: each must still have the shape it has now.
+fn committed(answers: &BTreeMap<String, Value>) {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(OUT);
+    if std::env::var_os("IMMUNE_WRITE_APP_SAMPLES").is_some() {
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, v) in answers {
+            let text = serde_json::to_string_pretty(v).unwrap() + "\n";
+            std::fs::write(dir.join(name), text).unwrap();
+        }
+    }
+    for (name, v) in answers {
+        let committed: Value = serde_json::from_slice(
+            &std::fs::read(dir.join(name)).unwrap_or_else(|_| panic!("{name} is not committed")),
+        )
+        .unwrap();
+        let (mut now, mut then) = (BTreeMap::new(), BTreeMap::new());
+        shape(v, "", &mut now);
+        shape(&committed, "", &mut then);
+        assert_eq!(
+            now, then,
+            "{name}: the committed sample no longer has this shape; write them again"
+        );
+    }
+}
+
+#[test]
+fn the_app_reads_real_answers_of_every_kind_of_evidence_with_values_of_real_size() {
+    let mac = Mac::new();
+    // The first check: the baseline.
+    let log = prepare(&mac);
     mac.run();
 
     // What happens after it: a shell profile changed into one an indicator names, code appended
@@ -412,26 +446,148 @@ fn the_app_reads_real_answers_of_every_kind_of_evidence_with_values_of_real_size
     let micros = &answers["finding-detached_process.json"]["evidence"]["detached_process"];
     assert!(micros["start_micros"].as_i64().unwrap() > 1_000_000_000_000_000);
     answers.insert("status.json".to_string(), mac.plain(&status));
+    committed(&answers);
+}
 
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(OUT);
-    if std::env::var_os("IMMUNE_WRITE_APP_SAMPLES").is_some() {
-        std::fs::create_dir_all(&dir).unwrap();
-        for (name, v) in &answers {
-            let text = serde_json::to_string_pretty(v).unwrap() + "\n";
-            std::fs::write(dir.join(name), text).unwrap();
-        }
+/// A file's permissions, as `chmod` sets them.
+fn mode(mac: &Mac, rel: &str, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(mac.0.join(rel), std::fs::Permissions::from_mode(mode)).unwrap();
+}
+
+/// What a person's Mac shows the panel after some weeks: every kind of place Immune watches,
+/// counts of up to seven digits, two findings, one of them a place read for the first time, two
+/// causes the person can fix with four things each, one of them long, and causes of this Mac
+/// nothing can fix. The real binary makes what an invented store can show: the findings, the
+/// files their permissions keep closed, the causes nothing can fix. What a store this small
+/// cannot reach is put in after, each part said below, in the core's own words.
+#[test]
+fn the_panel_has_a_status_of_real_size_to_be_drawn_from() {
+    let mac = Mac::new();
+    let log = prepare(&mac);
+    // Watched files their permissions keep closed, one of them with a long name; and the SSH
+    // file closed at the first check only, which the second then reads for the first time.
+    let closed = [
+        "home/.zprofile",
+        "home/.bash_profile",
+        "home/.ssh/authorized_keys",
+        "home/Library/LaunchAgents/com.example.an-invented-updater-with-a-long-name-that-runs-at-every-login-and-checks-for-new-versions.plist",
+    ];
+    for rel in closed {
+        mac.put(rel, "invented\n");
+        mode(&mac, rel, 0o000);
     }
-    for (name, v) in &answers {
-        let committed: Value = serde_json::from_slice(
-            &std::fs::read(dir.join(name)).unwrap_or_else(|_| panic!("{name} is not committed")),
-        )
-        .unwrap();
-        let (mut now, mut then) = (BTreeMap::new(), BTreeMap::new());
-        shape(v, "", &mut now);
-        shape(&committed, "", &mut then);
-        assert_eq!(
-            now, then,
-            "{name}: the committed sample no longer has this shape; write them again"
+    mac.put("home/.ssh/config", "Host build-box\n  User example\n");
+    mode(&mac, "home/.ssh/config", 0o000);
+    mac.run();
+    mode(&mac, "home/.ssh/config", 0o644);
+    mac.put("home/.zshrc", "export INVENTED=2\n");
+    mac.append(&log, &padding(2));
+    mac.run();
+    let mut status = mac.plain(&mac.json(&["status"]));
+    // Open again what is kept closed, so the folder can be removed.
+    for rel in closed {
+        mode(&mac, rel, 0o644);
+    }
+
+    // What the binary made: a place read for the first time among what needs a look, and the
+    // closed files as one cause the person can fix, with four of them.
+    let items = status["needs_a_look"]["items"].as_array().unwrap().clone();
+    let first_read = items
+        .iter()
+        .find(|i| i["change"] == "first_read")
+        .unwrap_or_else(|| panic!("no place read for the first time: {items:#?}"))
+        .clone();
+    let changed = items
+        .iter()
+        .find(|i| i["change"] == "changed")
+        .unwrap_or_else(|| panic!("no change: {items:#?}"))
+        .clone();
+    let not_covered = status["not_covered"].as_array().unwrap().clone();
+    let permitted = not_covered
+        .iter()
+        .find(|u| u["id"] == "not-permitted")
+        .unwrap_or_else(|| panic!("no closed files: {not_covered:#?}"));
+    assert!(
+        permitted["examples_text"].as_array().unwrap().len() >= 3,
+        "{permitted:#}"
+    );
+
+    // Two findings: the place read for the first time and the change.
+    let urgent = [&first_read, &changed]
+        .iter()
+        .filter(|i| i["finding"]["finding"]["urgent"] == true)
+        .count();
+    status["needs_a_look"] =
+        json!({"items": [changed, first_read], "total": 2, "urgent_total": urgent});
+    // Every kind of place Immune watches, with a watcher running, in the core's words (the table
+    // in `src/covered.rs` and the rows of `src/autorun.rs`), each found in the binary; counts of
+    // real size, up to seven digits, invented.
+    let kinds: [(&str, u64, &str); 16] = [
+        ("startup items", 14, "live"),
+        ("login and logout hooks", 1, "live"),
+        ("shell startup files", 6, "live"),
+        ("SSH files", 4, "live"),
+        ("login and password modules", 23, "live"),
+        ("git hooks in projects", 412, "live"),
+        (
+            "programs and tools a project tells your coding agent to run",
+            31,
+            "live",
+        ),
+        (
+            "programs and tools your coding agents are set to run",
+            9,
+            "live",
+        ),
+        (
+            "programs and commands a project sets an editor to run",
+            58,
+            "live",
+        ),
+        ("running programs and their connections", 612, "sampled"),
+        ("program starts", 4_812_337, "events"),
+        ("applications", 214, "hourly"),
+        ("Homebrew packages", 1_396, "hourly"),
+        ("npm packages", 18_204, "hourly"),
+        ("app code kept outside the app", 57, "hourly"),
+        ("packages your projects depend on", 104_918, "hourly"),
+    ];
+    let binary = std::fs::read(env!("CARGO_BIN_EXE_immune")).unwrap();
+    for (what, _, _) in kinds {
+        assert!(
+            binary.windows(what.len()).any(|w| w == what.as_bytes()),
+            "the binary does not name {what:?}"
         );
     }
+    status["this_mac"]["live"] = json!(true);
+    status["this_mac"]["watched"] = kinds
+        .iter()
+        .map(|(what, count, how)| json!({"what": what, "count": count, "how": how}))
+        .collect();
+    status["event_level"]["program_starts"]["last_day"] = json!(4_812_337);
+    // Four servers that could not be opened, as the core words the cause and gives its examples:
+    // the first three (`EXAMPLES`), each the server's name and then what the source said
+    // (`with_reason` in `src/covered.rs`); the first is long.
+    let reasons = [
+        "staging-db: ssh exited with 255 (kex_exchange_identification: read: Connection reset by peer; the server closed the connection before the key exchange)",
+        "build-box: ssh: connect to host build-box port 22: Operation timed out",
+        "backup-01: ssh: Could not resolve hostname backup-01: nodename nor servname provided, or not known",
+    ];
+    let servers = json!({
+        "id": "servers-not-opened", "who": "you", "scope": "servers",
+        "kind": "servers that could not be opened",
+        "title": "4 servers could not be opened at the last server check.",
+        "meaning": "A server that refuses or does not answer cannot be checked; the reason is listed with each one.",
+        "advice": "If you still use them, check that you can log in to them yourself and run the server check again. If one is no longer yours, mark it as retired.",
+        "count": 4, "since_at": status["answered_at"], "value_text": null,
+        "examples_text": reasons, "holds_on": "this_mac",
+    });
+    let mut causes = vec![servers];
+    causes.extend(not_covered);
+    status["not_covered"] = json!(causes);
+    committed(&BTreeMap::from([(
+        "status-real-size.json".to_string(),
+        status,
+    )]));
 }

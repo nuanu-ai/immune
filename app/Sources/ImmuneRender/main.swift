@@ -61,16 +61,23 @@ func write(_ data: Data?, _ folder: String, _ name: String) {
 // MARK: - The panel
 
 @MainActor
-func panel(_ name: String, status: String, open: String? = nil, answer: String? = nil) async {
+func panel(
+  _ name: String, status: String, open: String? = nil, answer: String? = nil,
+  screen: CGFloat? = nil, at moment: Date? = nil
+) async {
   let model = AppModel(immune: FixtureImmune(folder: fixtures, status: status, finding: answer))
   model.immuneCommand = ImmuneCommand(path: "/Applications/Immune.app/Contents/MacOS/immune")
   await model.refresh()
   if let open { await model.openFinding(open) }
+  // A status the real binary made carries its own time: drawn a few minutes after it.
+  let when = moment ?? now
   for (look, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
-    let view = PanelView(model: model, watcher: WatcherBox(nil), now: now)
+    let view = PanelView(
+      model: model, watcher: WatcherBox(nil), now: when,
+      maxHeight: screen.map { PanelView.maxHeight(visible: $0) })
     write(await Snapshot.png(view, appearance: appearance), "panel", "\(name)-\(look).png")
   }
-  let text = Panel.of(model.reading, now: now, immune: model.immuneCommand).lines
+  let text = Panel.of(model.reading, now: when, immune: model.immuneCommand).lines
   try? (text.joined(separator: "\n") + "\n").write(
     to: output.appendingPathComponent("panel/\(name).txt"), atomically: true, encoding: .utf8)
 }
@@ -125,17 +132,15 @@ func bar(
 
 @MainActor
 func icons() {
-  let states: [(String, Light, String?, Bool)] = [
-    ("calm", .nothingToReport, nil, false),
-    ("watched-in-part", .watchedInPart, nil, false),
-    ("one-finding", .attention(1), "medium", false),
-    ("urgent-with-count", .attention(3), "high", true),
-    ("cant-tell", .cannotRead("not read"), nil, false),
-  ]
-  let candidates: [(String, NSImage.SymbolConfiguration?)] = [
-    ("before", nil),
-    ("15pt-medium", MenuIcon.configuration),
-    ("16pt-regular", NSImage.SymbolConfiguration(pointSize: 16, weight: .regular, scale: .medium)),
+  // The sheet's six: calm, watched in part, to look at, needs you now (the only filled one), old,
+  // can't tell. A high level no longer fills the triangle: only `urgent` does.
+  let states: [(String, Light, Bool)] = [
+    ("calm", .nothingToReport, false),
+    ("watched-in-part", .watchedInPart, false),
+    ("to-look-at-high", .attention(2), false),
+    ("needs-you-now", .attention(3), true),
+    ("stale", .stale(since: nil), false),
+    ("cant-tell", .cannotRead("not read"), false),
   ]
   for (look, dark) in [("light", false), ("dark", true)] {
     guard let appearance = NSAppearance(named: dark ? .darkAqua : .aqua) else { continue }
@@ -144,40 +149,15 @@ func icons() {
     sheet.alignment = .leading
     sheet.spacing = 6
     sheet.edgeInsets = NSEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
-    for (cname, config) in candidates {
-      let head = NSTextField(labelWithString: cname)
-      head.font = NSFont.boldSystemFont(ofSize: 11)
-      sheet.addArrangedSubview(head)
-      for (sname, light, worst, urgent) in states {
-        var image: NSImage?
-        if let config {
-          image = MenuIcon.image(
-            light, worst: worst, urgent: urgent, words: sname, configuration: config)
-        } else {
-          image = NSImage(
-            systemSymbolName: Light.menuSymbol(light, worst: worst, urgent: urgent),
-            accessibilityDescription: sname)
-          image?.isTemplate = true
-        }
-        let title =
-          config == nil
-          ? NSAttributedString(string: MenuIcon.count(light).map { " " + $0 } ?? "")
-          : MenuIcon.title(light)
-        let b = bar(image, title: title, label: sname, dark: dark)
-        b.appearance = appearance
-        sheet.addArrangedSubview(b)
-        if cname == "15pt-medium" {
-          write(Snapshot.png(b, appearance: appearance), "icons", "\(sname)-\(look).png")
-        }
-      }
+    for (sname, light, urgent) in states {
+      let image = MenuIcon.image(light, urgent: urgent, words: sname)
+      var things = 0
+      if case .attention(let n) = light { things = n }
+      let b = bar(image, title: MenuIcon.title(light, things: things), label: sname, dark: dark)
+      b.appearance = appearance
+      sheet.addArrangedSubview(b)
+      write(Snapshot.png(b, appearance: appearance), "icons", "\(sname)-\(look).png")
     }
-    // The other shape considered for a Mac watched in part: a ring with a check, as in the panel.
-    let ring = NSImage(systemSymbolName: "checkmark.circle", accessibilityDescription: nil)?
-      .withSymbolConfiguration(MenuIcon.configuration)
-    ring?.isTemplate = true
-    let alt = bar(ring, title: NSAttributedString(), label: "in part, other shape", dark: dark)
-    alt.appearance = appearance
-    sheet.addArrangedSubview(alt)
     sheet.appearance = appearance
     sheet.wantsLayer = true
     appearance.performAsCurrentDrawingAppearance {
@@ -189,10 +169,47 @@ func icons() {
   }
 }
 
+/// The notifications of the sheet's cases, as text: the system draws them, the app gives only
+/// their words.
+@MainActor
+func notes() {
+  func status(_ name: String) -> Status? {
+    (try? Data(contentsOf: fixtures.appendingPathComponent(name)))
+      .flatMap { Interpret.reading(from: ImmuneOutput(exitCode: 0, stdout: $0)).status }
+  }
+  var out: [String] = []
+  for name in ["sheet-real.json", "sheet-two.json", "sheet-overflow.json"] {
+    let all = status(name)?.needsALook ?? []
+    let items = all.filter(\.urgent)
+    out.append("== " + name)
+    // Each new urgent thing, then every finding new at once, counted as the rows show them.
+    for n in Announcer.notes(items, among: all) + Announcer.notes(all, among: all) {
+      out += [n.title, "  " + (n.subtitle ?? "-"), "  " + (n.body ?? "-")]
+    }
+  }
+  let dir = output.appendingPathComponent("notifications")
+  try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+  try? (out.joined(separator: "\n") + "\n").write(
+    to: dir.appendingPathComponent("notes.txt"), atomically: true, encoding: .utf8)
+  print("notifications/notes.txt")
+}
+
 @MainActor
 func main() async {
   _ = NSApplication.shared
   icons()
+  notes()
+  // The design sheet's screens, from fixtures with its invented data.
+  await panel("s1-calm", status: "sheet-calm.json")
+  await panel("s2-two", status: "sheet-two.json")
+  await panel("s3-real", status: "sheet-real.json")
+  await panel("s4-overflow-700", status: "sheet-overflow.json", screen: 700)
+  await panel("s4b-overflow-whole", status: "sheet-overflow.json")
+  await panel("s5-silent", status: "panel-silent.json")
+  await panel("s6-first-day", status: "panel-first-day.json")
+  await panel("s7-open-dd", status: "sheet-two.json", open: "f95f8472164")
+  await panel("s8-open-zsh", status: "sheet-real.json", open: "fbb00986139")
+  await panel("s9-open-agent", status: "sheet-overflow.json", open: "f3c1d2e4a51")
   await panel("1-calm", status: "panel-calm.json")
   await panel("1b-calm-all-judged", status: "panel-calm-all-judged.json")
   await panel("2-two-findings", status: "panel-two.json")
@@ -211,6 +228,18 @@ func main() async {
   await panel("13-open-hostile-program-start", status: "panel-hostile.json", open: "fa5b0f00c1d")
   await panel("14-stale", status: "panel-stale.json")
   await panel("15-stale-while-checking", status: "panel-stale-checking.json")
+  await panel("16-collector-silent", status: "panel-silent.json")
+  // The status of real size the real binary made (`tests/app_samples.rs`): whole, and on a
+  // screen whose visible part is 400 pt high, where the list scrolls between the headline and
+  // the footer.
+  let real = (try? Data(contentsOf: fixtures.appendingPathComponent("real/status-real-size.json")))
+    .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+  let made = (real?["answered_at"] as? NSNumber).map {
+    Date(timeIntervalSince1970: $0.doubleValue + 240)
+  }
+  await panel("17-real-size", status: "real/status-real-size.json", at: made)
+  await panel(
+    "18-real-size-small-screen", status: "real/status-real-size.json", screen: 400, at: made)
   exit(0)
 }
 

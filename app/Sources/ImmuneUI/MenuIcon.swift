@@ -23,27 +23,29 @@ public enum MenuIcon {
   public static let countFont = NSFont.monospacedDigitSystemFont(
     ofSize: NSFont.menuBarFont(ofSize: 0).pointSize, weight: .medium)
 
-  /// The template image for a state, with its words for VoiceOver.
+  /// The template image for a state, with its words for VoiceOver: filled only when something
+  /// needs the person now.
   public static func image(
-    _ light: Light, worst: String?, urgent: Bool, words: String,
+    _ light: Light, urgent: Bool, words: String,
     configuration: NSImage.SymbolConfiguration = configuration
   ) -> NSImage? {
-    let name = Light.menuSymbol(light, worst: worst, urgent: urgent)
+    let name = Light.menuSymbol(light, urgent: urgent)
     let image = NSImage(systemSymbolName: name, accessibilityDescription: words)?
       .withSymbolConfiguration(configuration)
     image?.isTemplate = true
     return image
   }
 
-  /// The count beside the icon: Immune's total of findings, and nothing in any other state.
-  public static func count(_ light: Light) -> String? {
-    if case .attention(let n) = light { return Number.grouped(n) }
+  /// The count beside the icon: the things the headline counts (`Panel.counts`, a pair as one),
+  /// and nothing in any other state.
+  public static func count(_ light: Light, things: Int) -> String? {
+    if case .attention = light { return Number.grouped(things) }
     return nil
   }
 
   /// The status button's title: a thin space and the count, or empty.
-  public static func title(_ light: Light) -> NSAttributedString {
-    guard let n = count(light) else { return NSAttributedString(string: "") }
+  public static func title(_ light: Light, things: Int) -> NSAttributedString {
+    guard let n = count(light, things: things) else { return NSAttributedString(string: "") }
     return NSAttributedString(string: " " + n, attributes: [.font: countFont])
   }
 }
