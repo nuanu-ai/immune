@@ -208,7 +208,8 @@ fn invalidate_split_units(tx: &Transaction) -> rusqlite::Result<()> {
     Ok(())
 }
 
-fn past_checkouts(conn: &Connection) -> rusqlite::Result<BTreeSet<String>> {
+/// Every checkout a walk or an agent's sessions ever found, as `<machine>/<path>`.
+pub fn past_checkouts(conn: &Connection) -> rusqlite::Result<BTreeSet<String>> {
     conn.prepare(
         "SELECT DISTINCT substr(subject, 10) FROM assertion
          WHERE predicate = 'located_on' AND layer != 'draft'
@@ -349,13 +350,13 @@ fn read_whole(scope: &str, kind: &str) -> Vec<String> {
             .map(|rel| vec![format!("{rel}/.git/hooks")])
             .unwrap_or_default();
     }
-    let places: Vec<String> = watched::PLACES
-        .iter()
-        .filter(|p| p.kind == kind)
-        .filter_map(|p| match p.base {
-            watched::Base::Home => Some(p.path.to_string()),
-            watched::Base::System => Some(format!("/{}", p.path)),
-            watched::Base::Checkout => None,
+    let places: Vec<String> = autorun::places()
+        .filter(|(_, k)| k.1 == kind)
+        .flat_map(|(p, _)| p.paths.iter().map(move |path| (p.scope, path)))
+        .filter_map(|(scope, path)| match scope {
+            autorun::Scope::Home => Some(path.to_string()),
+            autorun::Scope::System => Some(format!("/{path}")),
+            _ => None,
         })
         .collect();
     if !places.is_empty() {
@@ -435,14 +436,26 @@ impl std::fmt::Display for Unit {
 /// Recover a legacy assertion's physical source only where the owning reader could have
 /// produced it. A literal path and a selected pointer can contain the same characters.
 pub fn legacy_unit(kind: &str, name: &str, checkout: impl Fn(&str) -> bool) -> Option<Unit> {
+    let mut candidates = candidates(kind, name, checkout);
+    (candidates.len() == 1)
+        .then(|| candidates.pop_first())
+        .flatten()
+}
+
+/// Every unit a row of this build of `kind` could name `name`, its public name: none when no
+/// row reads such a thing any more.
+pub fn candidates(kind: &str, name: &str, checkout: impl Fn(&str) -> bool) -> BTreeSet<Unit> {
     let mut candidates = BTreeSet::new();
-    for p in watched::PLACES.iter().filter(|p| p.kind == kind) {
-        let file = match p.base {
-            watched::Base::Home => p.path.to_string(),
-            watched::Base::System => format!("/{}", p.path),
-            watched::Base::Checkout => {
+    for (p, path) in autorun::places()
+        .filter(|(_, k)| k.1 == kind)
+        .flat_map(|(p, _)| p.paths.iter().map(move |path| (p, *path)))
+    {
+        let file = match p.scope {
+            autorun::Scope::Home => path.to_string(),
+            autorun::Scope::System => format!("/{path}"),
+            _ => {
                 if parent(name)
-                    .strip_suffix(&format!("/{}", p.path))
+                    .strip_suffix(&format!("/{path}"))
                     .is_some_and(&checkout)
                 {
                     candidates.insert(Unit::whole(name));
@@ -450,8 +463,8 @@ pub fn legacy_unit(kind: &str, name: &str, checkout: impl Fn(&str) -> bool) -> O
                 continue;
             }
         };
-        match p.counts {
-            watched::Counts::Keys(keys) => {
+        match p.part {
+            autorun::Part::Keys(keys) => {
                 for key in keys {
                     let unit = Unit::part(&file, format!("/{key}"));
                     if name == unit.to_string() {
@@ -459,18 +472,17 @@ pub fn legacy_unit(kind: &str, name: &str, checkout: impl Fn(&str) -> bool) -> O
                     }
                 }
             }
-            watched::Counts::Whole
-                if (p.folder && parent(name) == file) || (!p.folder && name == file) =>
-            {
+            autorun::Part::Entries if parent(name) == file => {
+                candidates.insert(Unit::whole(name));
+            }
+            autorun::Part::File if name == file => {
                 candidates.insert(Unit::whole(name));
             }
             _ => {}
         }
     }
     autorun::legacy_units(kind, name, &checkout, &mut candidates);
-    (candidates.len() == 1)
-        .then(|| candidates.pop_first())
-        .flatten()
+    candidates
 }
 
 /// The folder that holds a unit: `.` for one directly in the home folder, `/` for one directly
@@ -502,14 +514,14 @@ pub fn lists_parent(kind: &str, unit: &str) -> bool {
         return true;
     }
     let folder = parent(unit);
-    let watched_folder = watched::PLACES.iter().any(|p| {
-        p.kind == kind
-            && p.folder
-            && match p.base {
-                watched::Base::Home => p.path == folder,
-                watched::Base::System => folder.strip_prefix('/') == Some(p.path),
-                watched::Base::Checkout => false,
-            }
+    let watched_folder = autorun::places().any(|(p, k)| {
+        k.1 == kind
+            && p.part == autorun::Part::Entries
+            && p.paths.iter().any(|path| match p.scope {
+                autorun::Scope::Home => *path == folder,
+                autorun::Scope::System => folder.strip_prefix('/') == Some(*path),
+                _ => false,
+            })
     });
     watched_folder
         || autorun::POINTS.iter().any(|p| {

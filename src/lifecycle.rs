@@ -175,6 +175,34 @@ pub fn retire(tx: &Transaction, r: &Reading, why: &str) -> rusqlite::Result<(usi
     Ok((closed, scopes.len()))
 }
 
+/// How many facts were set aside as no longer read, each with a journal entry `retired`, since
+/// the check before `run_id`: by that check, and by every watcher's reading in between, which
+/// prints no line a person reads. Of `reader` alone, or of every reader. The window is the
+/// journal after the last `report` entry before the check started, up to the check's own last
+/// entry, so it is the same while the check runs and after it. Facts are counted one by one,
+/// as `retire` counts them.
+pub fn set_aside(
+    conn: &rusqlite::Connection,
+    run_id: &str,
+    reader: Option<&str>,
+) -> rusqlite::Result<u64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM assertion a
+         JOIN (SELECT DISTINCT run_id, reader, scope, kind, subject, predicate FROM journal
+               WHERE entry = 'retired' AND (?2 IS NULL OR reader = ?2)
+                 AND seq > COALESCE((SELECT seq FROM journal
+                                     WHERE entry = 'report'
+                                       AND seq < (SELECT MIN(seq) FROM journal WHERE run_id = ?1)
+                                     ORDER BY seq DESC LIMIT 1), 0)
+                 AND seq <= (SELECT MAX(seq) FROM journal WHERE run_id = ?1)) j
+           ON a.subject = j.subject AND a.predicate = j.predicate AND a.reader = j.reader
+          AND a.scope = j.scope AND a.kind = j.kind AND a.retracted_by = j.run_id",
+        params![run_id, reader],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|n| n as u64)
+}
+
 /// Retracts everything read inside an entity once nothing says where it is any more, and
 /// so on down: a file located in a checkout that is gone takes its own readings along.
 fn retract_inside(tx: &Transaction, r: &Reading, entity: &str) -> rusqlite::Result<()> {

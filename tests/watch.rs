@@ -1206,6 +1206,35 @@ fn the_first_check_of_a_mac_finds_nothing_in_what_was_there_whoever_writes_first
 }
 
 #[test]
+fn a_file_the_watcher_met_before_the_first_check_with_a_part_it_could_not_read_is_told_once_there()
+{
+    // The watcher met the login window's preferences before the first check, its login hook
+    // nested too deep to be read. The file was there, so the check that reads the hook reads
+    // it for the first time and tells it once; it is not the silent baseline.
+    let mac = Mac::new("met-with-a-part");
+    let plist = |hook: &str| {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>LoginHook</key>{hook}<key>LogoutHook</key><string>/opt/example/out.sh</string></dict></plist>
+"#
+        )
+    };
+    let deep = (0..40).fold(
+        "<string>/opt/example/hook.sh</string>".to_string(),
+        |d, _| format!("<array>{d}</array>"),
+    );
+    let at = "Library/Preferences/com.apple.loginwindow.plist";
+    mac.put(at, &plist(&deep));
+    let w = mac.watch().started();
+    assert!(w.stop().success());
+    mac.put(at, &plist("<string>/opt/example/hook.sh</string>"));
+    mac.app_run();
+    let rules: Vec<String> = found(&mac).into_iter().map(|f| f.0).collect();
+    assert_eq!(rules, ["watched.first-read"]);
+}
+
+#[test]
 fn after_a_first_check_the_watcher_read_first_what_arrives_later_is_still_found() {
     // The baseline is the Mac at its first check, not "nothing is ever found in a project":
     // a hook planted later in a project the store holds, and a project that arrives later
@@ -3082,4 +3111,115 @@ fn looks(status: &serde_json::Value) -> serde_json::Value {
             serde_json::Value::Object(flat)
         })
         .collect()
+}
+
+#[test]
+fn once_the_owed_reading_of_every_place_is_made_the_next_looks_read_nothing() {
+    // The cost a reading of some places is for: after one, a single reading of every place at
+    // the next look, and then none while nothing changes. A watcher that stayed owing would
+    // read every place at every look, for ever.
+    let mac = Mac::new("owed-once");
+    let file = mac.put(".zshrc", "one\n");
+    let mut w = looking(&mac);
+    std::fs::write(&file, "two\n").unwrap();
+    w.next("read");
+    // The owed reading, at the next look.
+    w.next("alive");
+    w.next("read");
+    let before = w.lines("read").len();
+    for _ in 0..3 {
+        w.next("alive");
+    }
+    let after = w.lines("read").len();
+    let seen = w.seen.clone();
+    assert!(w.stop().success());
+    assert_eq!(after, before, "looks kept reading every place: {seen:?}");
+}
+
+#[test]
+fn what_a_watcher_set_aside_as_no_longer_read_before_a_run_is_said_once_by_that_run() {
+    // On a store of an earlier build, the watcher's first reading of every place closes what no
+    // row of this build names. A watcher's lines are not where a person is told, so the next
+    // run's line says how many facts were set aside, and so does the status of that check, in
+    // its message and its text; the run after says nothing more.
+    let mac = Mac::new("set-aside");
+    mac.put(".zshrc", "export A=1\n");
+    mac.run();
+    // A shell profile an earlier build read and this one has no row for, as it left it: its
+    // facts, one of them with two values, and two it had retracted before, not set aside now.
+    let earlier = |subject: &str| {
+        let db = Connection::open(mac.store()).unwrap();
+        db.execute(
+            "INSERT INTO entity (id, type) VALUES (?1, 'file')",
+            [subject],
+        )
+        .unwrap();
+        let copy = |layer: &str, retracted_by: Option<&str>, predicate: &str, object: &str| {
+            db.execute(
+                "INSERT INTO assertion (layer, subject, predicate, object, reader, scope, kind,
+                                        source_ref, basis, observed_at, run_id, retracted_by,
+                                        retracted_at)
+                 SELECT ?2, ?1, predicate, COALESCE(?5, object), reader, scope, kind, source_ref,
+                        basis, observed_at, run_id, ?3, IIF(?3 IS NULL, NULL, observed_at)
+                 FROM assertion WHERE layer = 'live' AND subject = 'file:machine:mac/.zshrc'
+                   AND kind = 'shell profiles of zsh and bash' AND predicate LIKE ?4",
+                rusqlite::params![
+                    subject,
+                    layer,
+                    retracted_by,
+                    predicate,
+                    (!object.is_empty()).then_some(object)
+                ],
+            )
+            .unwrap()
+        };
+        assert_eq!(copy("live", None, "%", ""), 2);
+        assert_eq!(copy("live", None, "watched_as", "an earlier value"), 1);
+        assert_eq!(copy("retracted", Some("an-earlier-run"), "%", ""), 2);
+    };
+    let said = || {
+        let out = mac.run_cmd().output().unwrap();
+        assert!(out.status.success());
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let status_text = || {
+        let out = mac
+            .immune()
+            .args(["status", "--store"])
+            .arg(mac.store())
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let set_aside = || mac.status()["last_finished_run"]["set_aside"].clone();
+    let note = "No longer read by this version: what no row of its table of autorun points \
+                names, 3 facts set aside and not counted as removed.";
+    for subject in ["file:machine:mac/.zfoo", "file:machine:mac/.zbar"] {
+        earlier(subject);
+        let before = set_aside();
+        assert!(mac.watch().started().stop().success());
+        // The watcher closed them, so the run finds nothing left to close itself; the check
+        // before still counts only what was set aside up to it.
+        let closed_by = mac.rows(&format!(
+            "SELECT run_id FROM journal WHERE entry = 'retired' AND subject = '{subject}'"
+        ));
+        assert_eq!(closed_by.len(), 3, "{closed_by:?}");
+        assert!(
+            closed_by.iter().all(|r| r.starts_with("watch-")),
+            "{closed_by:?}"
+        );
+        assert_eq!(set_aside(), before);
+        let line = said();
+        assert!(line.contains(note), "{line}");
+        assert_eq!(set_aside(), 3);
+        let text = status_text();
+        assert!(
+            text.contains("3 facts set aside as no longer read by this version"),
+            "{text}"
+        );
+    }
+    let again = said();
+    assert!(!again.contains("No longer read by this version"), "{again}");
+    assert_eq!(set_aside(), 0);
+    assert!(!status_text().contains("set aside as no longer read"));
 }

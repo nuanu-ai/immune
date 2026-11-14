@@ -199,6 +199,9 @@ pub struct Summary {
     pub totals: Totals,
     pub servers: ServerCounts,
     pub since: Since,
+    /// Facts set aside as no longer read since the run before, by this run or by a watcher in
+    /// between (`lifecycle::set_aside`): never counted in `since`.
+    pub set_aside: u64,
     /// `None`: watched places were never read.
     pub watched: Option<Watched>,
     /// `None`: the catalogue was never read.
@@ -273,6 +276,7 @@ pub fn summary(conn: &Connection, run: RunMark, home: &Path) -> Res<Summary> {
         totals: store::totals(conn, &run.id)?,
         servers: crate::server_counts(conn, &machine, &skip)?,
         since: since(conn, &run.id, &base)?,
+        set_aside: crate::lifecycle::set_aside(conn, &run.id, None)?,
         watched: watched_summary(conn, &run.id, &changes)?,
         catalogue: catalogue(conn)?,
         no_reader_for: no_reader_for(conn)?,
@@ -968,6 +972,7 @@ pub fn message(
                 } else {
                     unknown(t).into_iter().map(str::to_string).collect()
                 },
+                set_aside: s.set_aside,
             });
             let sv = &s.servers;
             out.estate = Some(v1::Estate {

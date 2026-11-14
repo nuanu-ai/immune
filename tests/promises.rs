@@ -1627,6 +1627,10 @@ fn a_kind_no_longer_read_is_set_aside_once_and_never_told_as_read_in_full_or_rem
         ),
         "{said}"
     );
+    // Said once, as what it is: not again as an autorun point no row names. The status of the
+    // check counts every fact set aside, whatever reader wrote it.
+    assert!(!said.contains("what no row of its table"), "{said}");
+    assert_eq!(status_json(&store)["last_finished_run"]["set_aside"], 2);
     let pages = view(&store);
     assert!(!section(&pages, "gone").contains("wordpress"), "{pages}");
     assert!(!pages.contains("wordpress-core"), "{pages}");

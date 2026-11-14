@@ -2,7 +2,8 @@
 //! rarely change for a good reason. It keeps a checksum of each file there, so the lifecycle
 //! turns a difference between two runs into an event. Content is never kept or printed. Of a
 //! preferences file only a few keys count, and each is an entry of its own with the checksum
-//! of its value (`Counts::Keys`).
+//! of its value (`Part::Keys`). The places are rows of the table of autorun points
+//! (`autorun::POINTS`), and what is read is recorded through `look.rs`.
 //!
 //! Two kinds of reading. One per kind of place and scope says which entries are there: a
 //! file `watched_as` its kind and `located_on` the machine, or on the checkout for git hooks.
@@ -14,9 +15,11 @@
 //! Nothing that is not a regular file is ever read, and nothing is opened in a way that can
 //! block: a named pipe, a socket or a device is recorded as present with what it is.
 
+use crate::autorun::{Kind, Part, Point, Scope, places};
 use crate::baseline::Unit;
+use crate::look::{Absent, Look};
 use std::fs::{FileType, Metadata, OpenOptions};
-use std::io::{ErrorKind, Read};
+use std::io::Read;
 use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
@@ -32,8 +35,6 @@ pub const RAW: &str = "watched-places.txt";
 pub const RAW_SOME: &str = "watched-places-touched.txt";
 /// A file larger than this is not read.
 pub const CAP: u64 = 8 * 1024 * 1024;
-/// The note of a full reading when none of its places is on this machine.
-pub const NOT_HERE: &str = "none of these places is on this machine";
 /// The note of a full reading of a checkout's hooks when it has none.
 pub const NO_HOOKS: &str = "the checkout has no hooks";
 /// Why the hooks of a checkout whose `.git` is a file were not read.
@@ -41,43 +42,6 @@ pub const GIT_FILE: &str = ".git is a file, as in a worktree or a submodule: the
 /// What this build has no reader for among watched places, in its own words.
 pub const HOOKS_ELSEWHERE: &str = "git hooks of a checkout whose .git is a file";
 pub const OVER_CAP: &str = "watched file over the size cap";
-
-/// What a place is resolved against.
-#[derive(Clone, Copy, PartialEq)]
-pub enum Base {
-    /// The home folder.
-    Home,
-    /// The root of the system, `/` unless a test gives another.
-    System,
-    /// Each checkout this run holds.
-    Checkout,
-}
-
-/// One place: a file, or a folder whose every entry is watched.
-pub struct Place {
-    /// The kind of place, the literal of `watched_as`.
-    pub watched_as: &'static str,
-    /// The coverage kind of the reading of this kind of place.
-    pub kind: &'static str,
-    pub base: Base,
-    pub path: &'static str,
-    pub folder: bool,
-    /// What of a file counts.
-    pub counts: Counts,
-}
-
-/// What of a watched file counts.
-#[derive(Clone, Copy, PartialEq)]
-pub enum Counts {
-    /// The whole file, by its checksum.
-    Whole,
-    /// The values at these top-level keys of a property list, each an entry of its own named
-    /// `<file>#/<key>`, by the checksum of the value's exact encoding (`plist.rs`): for a
-    /// preferences file whose other settings change for their own reasons. A key that is not
-    /// there is no entry; a file that is not a property list is a place that failed, and a key
-    /// whose value cannot be read is a part that failed, named `<file>#/<key>`.
-    Keys(&'static [&'static str]),
-}
 
 pub const AUTOSTART: &str = "autostart item";
 pub const LOGIN_HOOK: &str = "login or logout hook";
@@ -91,109 +55,17 @@ pub const PROFILE_KIND: &str = "shell profiles of zsh and bash";
 pub const SSH_KIND: &str = "ssh access files";
 pub const AUTH_KIND: &str = "PAM policies and modules, and authorization plugins";
 pub const HOOK_KIND: &str = "hooks in the checkout's .git folder";
-/// The keys of the login window's preferences that name a script it runs as root at every
-/// login and logout (Apple, "Customizing Login and Logout"; KnockKnock's `LogInOutHooks`).
-const HOOK_KEYS: &[&str] = &["LoginHook", "LogoutHook"];
 /// Entries of a hooks folder that git itself never runs.
 const SAMPLE: &str = ".sample";
 
-/// A kind of place: the literal of `watched_as` and the coverage kind of its reading.
-type Kind = (&'static str, &'static str);
-const AUTOSTARTS: Kind = (AUTOSTART, AUTOSTART_KIND);
-const LOGIN_HOOKS: Kind = (LOGIN_HOOK, LOGIN_HOOK_KIND);
-const PROFILES: Kind = (PROFILE, PROFILE_KIND);
-const SSH_FILES: Kind = (SSH, SSH_KIND);
-const AUTHS: Kind = (AUTH, AUTH_KIND);
-const HOOKS: Kind = (HOOK, HOOK_KIND);
-
-const fn place(kind: Kind, base: Base, path: &'static str, folder: bool) -> Place {
-    Place {
-        watched_as: kind.0,
-        kind: kind.1,
-        base,
-        path,
-        folder,
-        counts: Counts::Whole,
-    }
-}
-
-/// A property list of which only the values at `keys` count.
-const fn keys(kind: Kind, base: Base, path: &'static str, keys: &'static [&'static str]) -> Place {
-    Place {
-        counts: Counts::Keys(keys),
-        ..place(kind, base, path, false)
-    }
-}
-
-/// Every watched place. Adding a place is one row. Each holds on every Mac; none is a
-/// private key or known hosts. The order is the order of the view and the report.
-///
-/// The list is laid next to the categories Objective-See's KnockKnock enumerates and MITRE
-/// ATT&CK's persistence techniques for macOS. It keeps what a program running as the user can
-/// read without a permission dialog, what current macOS still acts on, and what has a normal
-/// state. A place added later is read for the first time on a store that already exists:
-/// what it holds is told once, never raised by its kind's rule (`baseline.rs`).
-pub const PLACES: [Place; 36] = [
-    place(AUTOSTARTS, Base::Home, "Library/LaunchAgents", true),
-    place(AUTOSTARTS, Base::System, "Library/LaunchAgents", true),
-    place(AUTOSTARTS, Base::System, "Library/LaunchDaemons", true),
-    // Root's own preferences, where `sudo defaults write` puts a hook, only root can read.
-    keys(
-        LOGIN_HOOKS,
-        Base::System,
-        "Library/Preferences/com.apple.loginwindow.plist",
-        HOOK_KEYS,
-    ),
-    keys(
-        LOGIN_HOOKS,
-        Base::Home,
-        "Library/Preferences/com.apple.loginwindow.plist",
-        HOOK_KEYS,
-    ),
-    place(PROFILES, Base::System, "etc/zshenv", false),
-    place(PROFILES, Base::System, "etc/zprofile", false),
-    place(PROFILES, Base::System, "etc/zshrc", false),
-    place(PROFILES, Base::System, "etc/zlogin", false),
-    place(PROFILES, Base::System, "etc/zlogout", false),
-    place(PROFILES, Base::System, "etc/profile", false),
-    place(PROFILES, Base::System, "etc/bashrc", false),
-    place(PROFILES, Base::Home, ".zshenv", false),
-    place(PROFILES, Base::Home, ".zprofile", false),
-    place(PROFILES, Base::Home, ".zshrc", false),
-    place(PROFILES, Base::Home, ".zlogin", false),
-    place(PROFILES, Base::Home, ".zlogout", false),
-    place(PROFILES, Base::Home, ".bash_profile", false),
-    place(PROFILES, Base::Home, ".bash_login", false),
-    place(PROFILES, Base::Home, ".profile", false),
-    place(PROFILES, Base::Home, ".bashrc", false),
-    place(PROFILES, Base::Home, ".bash_logout", false),
-    place(SSH_FILES, Base::Home, ".ssh/config", false),
-    place(SSH_FILES, Base::Home, ".ssh/authorized_keys", false),
-    place(SSH_FILES, Base::Home, ".ssh/rc", false),
-    place(SSH_FILES, Base::System, "etc/ssh/ssh_config", false),
-    place(SSH_FILES, Base::System, "etc/ssh/sshd_config", false),
-    place(SSH_FILES, Base::System, "etc/ssh/ssh_config.d", true),
-    place(SSH_FILES, Base::System, "etc/ssh/sshd_config.d", true),
-    // OpenPAM as Apple builds it looks for a service's policy in these, in this order, after
-    // one a device management profile installs and before `/usr/share/pam.d` (pam.conf(5);
-    // `openpam_configure.c`). A module named without a path is looked for in `/usr/lib/pam`,
-    // then in `/usr/local/lib/pam`. Only an update of macOS changes what is in `/usr/share`
-    // and `/usr/lib`.
-    place(AUTHS, Base::System, "etc/pam.d", true),
-    place(AUTHS, Base::System, "etc/pam.conf", false),
-    place(AUTHS, Base::System, "usr/local/etc/pam.d", true),
-    place(AUTHS, Base::System, "usr/local/etc/pam.conf", false),
-    place(AUTHS, Base::System, "usr/local/lib/pam", true),
-    // Each plugin is a bundle: its arrival and departure are seen, a change inside it is not.
-    // Which plugins run is said by the authorization database, which is not read.
-    place(
-        AUTHS,
-        Base::System,
-        "Library/Security/SecurityAgentPlugins",
-        true,
-    ),
-    place(HOOKS, Base::Checkout, ".git/hooks", true),
-];
+/// The kinds of place, each the literal of `watched_as` and the coverage kind of its reading.
+/// The places themselves are rows of the table of autorun points (`autorun::POINTS`).
+pub const AUTOSTARTS: Kind = (AUTOSTART, AUTOSTART_KIND);
+pub const LOGIN_HOOKS: Kind = (LOGIN_HOOK, LOGIN_HOOK_KIND);
+pub const PROFILES: Kind = (PROFILE, PROFILE_KIND);
+pub const SSH_FILES: Kind = (SSH, SSH_KIND);
+pub const AUTHS: Kind = (AUTH, AUTH_KIND);
+pub const HOOKS: Kind = (HOOK, HOOK_KIND);
 
 /// Registers the coverage kinds of the places, on every open: a store of the current format
 /// takes a kind added since without a rebuild.
@@ -210,9 +82,9 @@ pub fn add_kinds(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
 /// The kinds of place in the order of the table, each once.
 pub fn kinds() -> Vec<(&'static str, &'static str)> {
     let mut out: Vec<(&str, &str)> = Vec::new();
-    for p in &PLACES {
-        if !out.iter().any(|(w, _)| *w == p.watched_as) {
-            out.push((p.watched_as, p.kind));
+    for (_, kind) in places() {
+        if !out.iter().any(|(w, _)| *w == kind.0) {
+            out.push(kind);
         }
     }
     out
@@ -413,87 +285,6 @@ pub struct Entry {
     pub link: Option<String>,
 }
 
-/// What looking at the places of one kind in one scope found.
-#[derive(Default)]
-pub struct Look {
-    pub entries: Vec<Entry>,
-    /// Places that are there and could not be looked at, with the reason.
-    pub failed: Vec<(Unit, String)>,
-    /// Places that are there and were looked at.
-    pub present: usize,
-    /// Places not looked into because they lead into a folder macOS asks permission for,
-    /// each with why: whether they hold anything is not known.
-    pub unreached: Vec<(Unit, String)>,
-    /// Every such folder met, a link's target among them, for the reader's coverage.
-    pub guarded: Vec<PathBuf>,
-    /// The units read in full, by their paths as ids name them: a file looked at, found or
-    /// absent, and a folder listed or found absent (`baseline.rs`).
-    pub read: Vec<Unit>,
-    /// The units found present, read or not.
-    pub seen: Vec<Unit>,
-}
-
-impl Look {
-    /// The completeness of the reading of which entries are there, and its reason or note.
-    pub fn completeness(&self) -> (&'static str, Option<String>) {
-        if self.failed.is_empty() && self.unreached.is_empty() {
-            let note = (self.present == 0).then(|| NOT_HERE.to_string());
-            return ("full", note);
-        }
-        let mut reasons = Vec::new();
-        if !self.failed.is_empty() {
-            let failed: Vec<String> = self
-                .failed
-                .iter()
-                .map(|(path, why)| format!("{path} ({why})"))
-                .collect();
-            reasons.push(format!("could not be read: {}", failed.join("; ")));
-        }
-        if !self.unreached.is_empty() {
-            let unreached: Vec<String> = self
-                .unreached
-                .iter()
-                .map(|(path, why)| format!("{path}: {why}"))
-                .collect();
-            reasons.push(format!(
-                "{}{}",
-                crate::guarded::NOT_LOOKED_INTO,
-                unreached.join("; ")
-            ));
-        }
-        let reason = Some(reasons.join("; "));
-        if self.present == 0 {
-            ("none", reason)
-        } else {
-            ("partial", reason)
-        }
-    }
-
-    /// Why a reading that is not full is not: it failed, or what it did not look into is
-    /// only what macOS asks permission for, which the owner did not give.
-    pub fn cause(&self) -> Cause {
-        if self.failed.is_empty() && !self.unreached.is_empty() {
-            Cause::NotGiven
-        } else {
-            Cause::Failed
-        }
-    }
-
-    /// A place that leads into a guarded folder: not looked into, and said.
-    pub fn not_into(&mut self, shown: Unit, folder: PathBuf, home: &Path) {
-        self.unreached
-            .push((shown, crate::guarded::leads_into(&folder, home)));
-        self.met(folder);
-    }
-
-    /// A guarded folder met, for the reader's coverage.
-    pub fn met(&mut self, folder: PathBuf) {
-        if !self.guarded.contains(&folder) {
-            self.guarded.push(folder);
-        }
-    }
-}
-
 /// Where a place is on disk, and its path as ids name it.
 pub struct Roots<'a> {
     pub home: &'a Path,
@@ -515,13 +306,15 @@ pub fn look_machine(roots: &Roots, kind: &str) -> Look {
         homes: [homes[0].as_path(), homes[1].as_path()],
         home: roots.home,
     };
-    for p in PLACES.iter().filter(|p| p.kind == kind) {
-        let (base, shown) = match p.base {
-            Base::Home => (roots.home, p.path.to_string()),
-            Base::System => (roots.system, format!("/{}", p.path)),
-            Base::Checkout => continue,
-        };
-        look_place(&mut look, p, base, &shown, &at);
+    for (p, k) in places().filter(|(_, k)| k.1 == kind) {
+        for path in p.paths {
+            let (base, shown) = match p.scope {
+                Scope::Home => (roots.home, path.to_string()),
+                Scope::System => (roots.system, format!("/{path}")),
+                _ => continue,
+            };
+            look_place(&mut look, p, k, path, base, &shown, &at);
+        }
     }
     look
 }
@@ -531,6 +324,13 @@ pub enum Hooks {
     Looked(Look),
     /// `.git` is a file: the hooks are elsewhere.
     GitFile,
+}
+
+/// The places of each checkout: its hooks.
+fn in_checkout() -> impl Iterator<Item = (&'static Point, Kind, &'static str)> {
+    places()
+        .filter(|(p, _)| p.scope == Scope::Checkout)
+        .flat_map(|(p, k)| p.paths.iter().map(move |path| (p, k, *path)))
 }
 
 /// Looks at the hooks folder of one checkout. `rel` is the checkout's path as ids name it.
@@ -545,12 +345,8 @@ pub fn look_checkout(checkout: &Path, rel: &str, home: &Path) -> Hooks {
     let dotgit = match crate::guarded::followed(&checkout.join(".git"), &at.homes) {
         Ok(dotgit) => dotgit,
         Err(folder) => {
-            for p in PLACES.iter().filter(|p| p.base == Base::Checkout) {
-                look.not_into(
-                    Unit::whole(format!("{rel}/{}", p.path)),
-                    folder.clone(),
-                    home,
-                );
+            for (_, _, path) in in_checkout() {
+                look.not_into(Unit::whole(format!("{rel}/{path}")), folder.clone(), home);
             }
             return Hooks::Looked(look);
         }
@@ -559,8 +355,9 @@ pub fn look_checkout(checkout: &Path, rel: &str, home: &Path) -> Hooks {
     match std::fs::metadata(dotgit) {
         Ok(m) if !m.is_dir() => Hooks::GitFile,
         _ => {
-            for p in PLACES.iter().filter(|p| p.base == Base::Checkout) {
-                look_place(&mut look, p, checkout, &format!("{rel}/{}", p.path), &at);
+            for (p, k, path) in in_checkout() {
+                let shown = format!("{rel}/{path}");
+                look_place(&mut look, p, k, path, checkout, &shown, &at);
             }
             Hooks::Looked(look)
         }
@@ -574,10 +371,27 @@ struct Where<'a> {
     home: &'a Path,
 }
 
-/// Looks at one place under `base`. Its folder is reached one part at a time and a link on
-/// the way is made real, so that nothing in a folder macOS asks permission for is looked at.
-fn look_place(look: &mut Look, p: &Place, base: &Path, shown: &str, at: &Where) {
-    let rel = Path::new(p.path);
+/// The keys of a row whose parts count, `None` for a row read whole.
+fn keys_of(p: &Point) -> Option<&'static [&'static str]> {
+    match p.part {
+        Part::Keys(keys) => Some(keys),
+        _ => None,
+    }
+}
+
+/// Looks at one place, `path` of row `p`, under `base`. Its folder is reached one part at a
+/// time and a link on the way is made real, so that nothing in a folder macOS asks permission
+/// for is looked at.
+fn look_place(
+    look: &mut Look,
+    p: &Point,
+    kind: Kind,
+    path: &str,
+    base: &Path,
+    shown: &str,
+    at: &Where,
+) {
+    let rel = Path::new(path);
     let (Some(folder), Some(name)) = (rel.parent(), rel.file_name()) else {
         return;
     };
@@ -585,15 +399,16 @@ fn look_place(look: &mut Look, p: &Place, base: &Path, shown: &str, at: &Where) 
         Ok(folder) => folder.join(name),
         Err(guarded) => return look.not_into(Unit::whole(shown), guarded, at.home),
     };
-    if !p.folder {
-        let examined = examine(&path, look, at, p.counts);
+    let keys = keys_of(p);
+    if p.part != Part::Entries {
+        let examined = examine(&path, look, at, keys);
         match examined {
             // A single file not there was read in full: it holds nothing.
-            Examined::Absent => look.read.push(Unit::whole(shown)),
+            Examined::Absent(absent) => look.absent(Unit::whole(shown), absent),
             Examined::Present(..) | Examined::Parts(..) => look.present += 1,
             _ => {}
         }
-        return take(look, p, shown.to_string(), examined, at);
+        return take(look, kind, keys, shown.to_string(), examined, at);
     }
     let path = match crate::guarded::followed(&path, &at.homes) {
         Ok(path) => path,
@@ -607,21 +422,24 @@ fn look_place(look: &mut Look, p: &Place, base: &Path, shown: &str, at: &Where) 
     });
     let names = match listing {
         Ok(names) => names,
-        // A folder that is not there was listed in full: it holds nothing.
-        Err(e) if absent(&e) => return look.read.push(Unit::whole(shown)),
-        Err(e) => return look.failed.push((Unit::whole(shown), e.to_string())),
+        Err(e) => {
+            // A folder that is not there was listed in full: it holds nothing.
+            return match Absent::of(&e) {
+                Some(absent) => look.absent(Unit::whole(shown), absent),
+                None => look.not_looked_at(Unit::whole(shown), e.to_string()),
+            };
+        }
     };
     look.present += 1;
-    look.read.push(Unit::whole(shown));
-    look.seen.push(Unit::whole(shown));
+    look.read(Unit::whole(shown));
     for name in names {
         let text = name.to_string_lossy();
-        if p.base == Base::Checkout && text.ends_with(SAMPLE) {
+        if p.scope == Scope::Checkout && text.ends_with(SAMPLE) {
             continue;
         }
         let entry = format!("{shown}/{text}");
-        let examined = examine(&path.join(&name), look, at, p.counts);
-        take(look, p, entry, examined, at);
+        let examined = examine(&path.join(&name), look, at, keys);
+        take(look, kind, keys, entry, examined, at);
     }
 }
 
@@ -631,59 +449,55 @@ fn look_place(look: &mut Look, p: &Place, base: &Path, shown: &str, at: &Where) 
 /// is read in full only when every part there was read. A part that could not be read is
 /// named as it is, so that what was known of it is kept and only of it; the file is then seen
 /// and not read, and losing sight of it is judged as for any unit.
-fn take(look: &mut Look, p: &Place, shown: String, examined: Examined, at: &Where) {
+fn take(
+    look: &mut Look,
+    kind: Kind,
+    keys: Option<&'static [&'static str]>,
+    shown: String,
+    examined: Examined,
+    at: &Where,
+) {
     let shown = Unit::whole(shown);
     let entry = |unit: Unit, content: Content, link: Option<String>| Entry {
         unit,
-        watched_as: p.watched_as,
+        watched_as: kind.0,
         content,
         link,
     };
     match examined {
-        Examined::Absent => {}
-        Examined::Unknown(why) | Examined::Unread(why) => {
-            look.seen.push(shown.clone());
-            look.failed.push((shown, why));
-        }
-        Examined::Unreached(guarded) => {
-            look.seen.push(shown.clone());
-            look.not_into(shown, guarded, at.home);
-        }
+        // Listed and gone before it was looked at: the listing read in full holds it.
+        Examined::Absent(_) => {}
+        Examined::Unknown(why) | Examined::Unread(why) => look.unread(shown, why),
+        Examined::Unreached(guarded) => look.there_not_into(shown, guarded, at.home),
         Examined::Present(content, link) => {
-            look.read.push(shown.clone());
-            look.seen.push(shown.clone());
+            look.read(shown.clone());
             look.entries.push(entry(shown, content, link));
         }
         Examined::Parts(parts, failed, link) => {
             if failed.is_empty() {
-                look.read.push(shown.clone());
-            } else if let Counts::Keys(keys) = p.counts {
+                look.read(shown.clone());
+            } else {
                 // A key read or known absent can lose coverage again, even if another key failed.
-                for key in keys {
+                for key in keys.unwrap_or_default() {
                     if !failed.iter().any(|(unread, _)| unread == key) {
-                        look.read.push(Unit::part(&shown.path, format!("/{key}")));
+                        look.read_part(&shown, format!("/{key}"));
                     }
                 }
+                look.there(shown.clone());
             }
-            look.seen.push(shown.clone());
             for (key, content) in parts {
                 let unit = Unit::part(&shown.path, format!("/{key}"));
                 look.entries.push(entry(unit, content, link.clone()));
             }
             for (key, why) in failed {
-                look.failed
-                    .push((Unit::part(&shown.path, format!("/{key}")), why.to_string()));
+                look.not_looked_at(Unit::part(&shown.path, format!("/{key}")), why.to_string());
             }
         }
     }
 }
 
-fn absent(e: &std::io::Error) -> bool {
-    e.kind() == ErrorKind::NotFound
-}
-
 enum Examined {
-    Absent,
+    Absent(Absent),
     /// Whether it is there is not known, with the reason.
     Unknown(String),
     /// A file whose parts count, there and not read, with the reason.
@@ -704,7 +518,12 @@ enum Examined {
 /// What is at a path, whose folder was reached. A symbolic link is followed to its final
 /// target for the content, unless that target is in a folder macOS asks permission for:
 /// then the link is there and what it leads to was not looked into.
-fn examine(path: &Path, look: &mut Look, at: &Where, counts: Counts) -> Examined {
+fn examine(
+    path: &Path,
+    look: &mut Look,
+    at: &Where,
+    keys: Option<&'static [&'static str]>,
+) -> Examined {
     let own = std::fs::symlink_metadata(path).and_then(|m| {
         if !m.file_type().is_symlink() {
             return Ok((m, None));
@@ -713,14 +532,18 @@ fn examine(path: &Path, look: &mut Look, at: &Where, counts: Counts) -> Examined
         Ok((m, Some(target.to_string_lossy().into_owned())))
     });
     let link = match own {
-        Ok((m, None)) => return counted(path, &m, counts, None),
+        Ok((m, None)) => return counted(path, &m, keys, None),
         Ok((_, Some(link))) => link,
-        Err(e) if absent(&e) => return Examined::Absent,
-        Err(e) => return Examined::Unknown(e.to_string()),
+        Err(e) => {
+            return match Absent::of(&e) {
+                Some(absent) => Examined::Absent(absent),
+                None => Examined::Unknown(e.to_string()),
+            };
+        }
     };
     let target = match crate::guarded::followed(path, &at.homes) {
         Ok(target) => target,
-        Err(guarded) if counts != Counts::Whole => return Examined::Unreached(guarded),
+        Err(guarded) if keys.is_some() => return Examined::Unreached(guarded),
         Err(guarded) => {
             let why = format!(
                 "{}{}",
@@ -732,13 +555,13 @@ fn examine(path: &Path, look: &mut Look, at: &Where, counts: Counts) -> Examined
         }
     };
     match std::fs::metadata(&target) {
-        Ok(meta) => counted(&target, &meta, counts, Some(link)),
+        Ok(meta) => counted(&target, &meta, keys, Some(link)),
         // A link to nothing holds no part: what reads the file reads nothing there.
-        Err(e) if absent(&e) && counts != Counts::Whole => {
+        Err(e) if Absent::of(&e).is_some() && keys.is_some() => {
             Examined::Parts(Vec::new(), Vec::new(), Some(link))
         }
-        Err(e) if absent(&e) => Examined::Present(Content::Dangling, Some(link)),
-        Err(e) if counts != Counts::Whole => Examined::Unread(reason(&e)),
+        Err(e) if Absent::of(&e).is_some() => Examined::Present(Content::Dangling, Some(link)),
+        Err(e) if keys.is_some() => Examined::Unread(reason(&e)),
         Err(e) => Examined::Present(Content::Unread(Cause::Failed, reason(&e)), Some(link)),
     }
 }
@@ -746,8 +569,13 @@ fn examine(path: &Path, look: &mut Look, at: &Where, counts: Counts) -> Examined
 /// What a file reached holds, as `counts` takes it. Of a file whose parts count, anything but
 /// a property list that was read is a place that failed: an entry of the whole file beside
 /// its parts would make a reading that cannot see them say they are gone.
-fn counted(path: &Path, meta: &Metadata, counts: Counts, link: Option<String>) -> Examined {
-    let Counts::Keys(keys) = counts else {
+fn counted(
+    path: &Path,
+    meta: &Metadata,
+    keys: Option<&'static [&'static str]>,
+    link: Option<String>,
+) -> Examined {
+    let Some(keys) = keys else {
         return Examined::Present(content(path, meta), link);
     };
     let bytes = match bytes(path, meta) {

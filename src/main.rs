@@ -34,6 +34,7 @@ mod known;
 mod known_hosts;
 mod lifecycle;
 mod lockfiles;
+mod look;
 mod machine;
 mod managers;
 mod map;
@@ -2377,6 +2378,16 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
         read_lockfiles(&mut run, args, &found)?;
     }
     let (watched, mut opened) = watch_places(&mut run, args, &found, None)?;
+    // What was set aside as no longer read, by this run or by a watcher since the last run's
+    // line, is said once, here: a watcher's own line is not where a person is told.
+    let set_aside = lifecycle::set_aside(run.tx, run.run_id, Some(watched::READER))?;
+    if set_aside > 0 {
+        run.notes.push(format!(
+            "No longer read by this version: what no row of its table of autorun points \
+             names, {} set aside and not counted as removed.",
+            things(set_aside as i64, "fact", "facts")
+        ));
+    }
     read_other_autoruns(&mut run, &args.home, &found)?;
     let mut changed = read_integrity(&mut run, args)?;
     changed.extend(read_indicators(&mut run, args, &found)?);
@@ -3413,7 +3424,7 @@ struct Placed {
     scope: String,
     watched_as: &'static str,
     kind: String,
-    look: watched::Look,
+    look: look::Look,
     /// Why the checkout's hooks were not looked at where they were: its `.git` is a file, or
     /// the checkout itself is no longer a folder there.
     elsewhere: Option<String>,
@@ -3606,6 +3617,24 @@ fn read_watched(
         system: &args.system_root,
     };
     let rels: Vec<String> = checkouts.iter().map(|c| c.rel.clone()).collect();
+    // What an earlier run read and this build has no row for is closed as retired before any
+    // reading compares with it: not shown as watched, never told as removed, and said once in
+    // the run's line (`run`), the watcher's included. Only a reading of every place does it: a
+    // build's rows change between runs, never between two looks of a watcher, which would pay
+    // for it at every change.
+    if only.is_none() {
+        look::retire_unread(
+            run.tx,
+            &Reading {
+                reader: watched::READER,
+                scope: &machine,
+                kind: "",
+                run_id: &run_id,
+                at: run.at,
+                observed_at: run.at,
+            },
+        )?;
+    }
     let mut placed = Vec::new();
     for (watched_as, kind) in watched::kinds() {
         if kind == watched::HOOK_KIND || !wanted(&machine, kind) {
@@ -3628,10 +3657,7 @@ fn read_watched(
             continue;
         }
         let (look, elsewhere) = match watched::look_checkout(&c.path, &c.rel, &args.home) {
-            watched::Hooks::GitFile => (
-                watched::Look::default(),
-                Some(watched::GIT_FILE.to_string()),
-            ),
+            watched::Hooks::GitFile => (look::Look::default(), Some(watched::GIT_FILE.to_string())),
             watched::Hooks::Looked(look) => (look, None),
         };
         // Every checkout is read, those with no hooks too: the first hook planted in a
@@ -3660,7 +3686,7 @@ fn read_watched(
             scope,
             watched_as: watched::HOOK,
             kind: watched::HOOK_KIND.to_string(),
-            look: watched::Look::default(),
+            look: look::Look::default(),
             elsewhere: Some(why),
             coverage: None,
             kept: Vec::new(),
@@ -3792,7 +3818,7 @@ fn read_watched(
             }
             let folder = baseline::parent(&unit.path);
             if p.look
-                .read
+                .read_units()
                 .iter()
                 .any(|r| r.part.is_empty() && r.path == folder)
             {
@@ -3826,24 +3852,12 @@ fn read_watched(
             object: s.object.clone(),
             source_ref: s.source_ref.clone(),
         }));
-        // A unit that could not be read, or was not looked into, keeps what was known of it,
+        // What the reading may not retract keeps what was known of it (`look::Look::retracts`),
         // so that the rest of the reading is compared whole: what is gone from a unit read in
         // full is gone, whatever failed elsewhere. A part of a file that could not be read,
         // its neighbours read, keeps only its own. Hooks kept elsewhere keep all of theirs.
-        let unread: Vec<&Unit> = p
-            .look
-            .failed
-            .iter()
-            .chain(&p.look.unreached)
-            .map(|(unit, _)| unit)
-            .collect();
         statements.extend(kept(tx, &reading, &visited, |unit| {
-            p.elsewhere.is_some()
-                || if let Some(unit) = unit {
-                    unread.iter().any(|failed| failed.hides(unit))
-                } else {
-                    !unread.is_empty()
-                }
+            p.elsewhere.is_some() || !p.look.retracts(unit)
         })?);
         baseline::remember_units(tx, &reading, &units)?;
         let (completeness, reason) = if let Some(why) = &p.elsewhere {
@@ -3962,13 +3976,7 @@ fn read_watched(
                 vec![(unit.clone(), why.clone())]
             }
             (Some(_), _) => Vec::new(),
-            (None, _) => p
-                .look
-                .failed
-                .iter()
-                .chain(&p.look.unreached)
-                .cloned()
-                .collect(),
+            (None, _) => p.look.not_read().cloned().collect(),
         };
         // A part of a file that could not be read is judged as itself, so that losing sight
         // of the whole file later is a change of its own.
@@ -3988,7 +3996,7 @@ fn read_watched(
                 Verdict::Baseline => {}
             }
         }
-        for (path, why) in &p.look.failed {
+        for (path, why) in p.look.failed() {
             rows.push(vec![
                 "not read".to_string(),
                 p.watched_as.to_string(),
@@ -3996,7 +4004,7 @@ fn read_watched(
                 why.clone(),
             ]);
         }
-        for (path, why) in &p.look.unreached {
+        for (path, why) in p.look.unreached() {
             rows.push(vec![
                 "not read".to_string(),
                 p.watched_as.to_string(),
@@ -4117,8 +4125,8 @@ fn read_watched(
             &p.kind,
             &run_id,
             run.at,
-            &p.look.read,
-            &p.look.seen,
+            p.look.read_units(),
+            p.look.seen_units(),
         )?;
     }
     // One line per place read for the first time, and one journal entry for each, which the
@@ -4161,8 +4169,8 @@ fn read_watched(
     }
     if placed.iter().any(|p| {
         !p.look.entries.is_empty()
-            || !p.look.failed.is_empty()
-            || !p.look.unreached.is_empty()
+            || !p.look.failed().is_empty()
+            || !p.look.unreached().is_empty()
             || p.elsewhere.is_some()
     }) {
         run.readers += 1;
