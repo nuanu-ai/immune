@@ -265,29 +265,32 @@ public final class AppModel: ObservableObject {
   }
 
   /// The owner's "Seen" on a finding: `immune finding <id> seen`, with `--with <other>` for the
-  /// other finding of a pair shown as one thing, then a refresh. Returns false, and runs nothing,
-  /// for an id the app does not pass or while another answer is being saved.
+  /// other finding of a pair shown as one thing and `--journal-seq` of the message the card was
+  /// drawn from, then a refresh. Returns false, and runs nothing, for an id the app does not pass,
+  /// while another answer is being saved, or when the pair the panel folded is not the one the
+  /// message names.
   @discardableResult
-  public func answerSeen(_ id: String, with other: String? = nil) async -> Bool {
-    guard let args = Answer.seenArguments(id: id, with: other) else { return false }
-    return await answer(id, args)
+  public func answerSeen(_ id: String) async -> Bool {
+    await answer(id) { Answer.seenArguments(id: id, with: $0, journalSeq: $1) }
   }
 
   /// The owner's "Expected…" on a finding, from the open form: `immune finding <id>
-  /// expected --reason <reason> --days <n>`, with `--with <other>` for a pair, then a refresh.
-  /// Returns false, and runs nothing, unless the form is complete.
+  /// expected --reason <reason> --days <n>`, sent as Seen is, then a refresh. Returns false, and
+  /// runs nothing, unless the form is complete.
   @discardableResult
   public func answerExpected(_ form: ExpectedForm) async -> Bool {
-    guard
-      let args = Answer.expectedArguments(
-        id: form.id, reason: form.reason, days: form.days, with: form.with)
-    else { return false }
-    return await answer(form.id, args)
+    guard form.isComplete else { return false }
+    return await answer(form.id) {
+      Answer.expectedArguments(
+        id: form.id, reason: form.reason, days: form.days, with: $0, journalSeq: $1)
+    }
   }
 
   /// The owner's "Take back" on an answer given outside the app: `immune finding <id>
-  /// reopen --via app`, then a refresh. Returns false, and runs nothing, for an answer
-  /// the panel does not list or while another answer is being saved.
+  /// reopen --via app` with `--journal-seq` of the message it was pressed on, and `--with
+  /// <other>` when that message says the answer was given to the pair (`answered_with`), then a
+  /// refresh. Returns false, and runs nothing, for an answer the panel does not list or while
+  /// another answer is being saved.
   @discardableResult
   public func takeBack(_ id: String) async -> Bool {
     let listed = reading.status?.answeredOutsideApp?.items ?? []
@@ -297,10 +300,25 @@ public final class AppModel: ObservableObject {
     if let o = opened, o.id == id, case .read(let f) = o.reading {
       openedOutside = FindingFacts.answeredOutside(f)
     }
-    guard let args = Answer.reopenArguments(id: id),
+    let shown = shown(id)
+    guard
+      let args = Answer.reopenArguments(id: id, with: shown.answeredWith, journalSeq: shown.seq),
       openedOutside || listed.contains(where: { $0.id == id })
     else { return false }
     return await save(id, args)
+  }
+
+  /// What the card an answer to `id` was pressed on was drawn from: the opened finding's message
+  /// while that finding is open and read, otherwise the status the panel shows. Its
+  /// `journal_seq`, the response layer's finding it names about this one, and the other finding
+  /// an answer it printed was given with.
+  private func shown(_ id: String) -> (seq: Int?, names: String?, answeredWith: String?) {
+    if let o = opened, o.id == id, case .read(let f) = o.reading {
+      return (f.journalSeq, f.verdicts?.verdictFinding?.id, f.answeredWith?.id)
+    }
+    let status = reading.status
+    let item = status?.needsALook?.first { $0.id == id && $0.type == "finding" }
+    return (status?.journalSeq, item?.verdict?.finding, nil)
   }
 
   /// The owner's "Take back" on a statement given outside the app: `immune owner <machine>
@@ -315,16 +333,34 @@ public final class AppModel: ObservableObject {
     return await save(machine, args)
   }
 
-  private func answer(_ id: String, _ args: [String]) async -> Bool {
+  /// An answer to the row with this id: its arguments made with the other finding of the pair, if
+  /// any, and the `journal_seq` of the message the card was drawn from.
+  private func answer(_ id: String, _ arguments: (String?, Int?) -> [String]?) async -> Bool {
+    guard Answer.isUsable(id: id) else { return false }
     // Only a finding the panel shows takes an answer; a health item never does.
-    let shown = reading.status?.needsALook ?? []
-    guard shown.contains(where: { $0.id == id && $0.type == "finding" }) else {
+    let items = reading.status?.needsALook ?? []
+    guard items.contains(where: { $0.id == id && $0.type == "finding" }) else {
       // A press that cannot act says so, on the card it was pressed on.
       refusals[id] =
         "Not saved: the status read last does not list this finding among those that need a"
         + " look, so it takes no answer here."
       return false
     }
+    let shown = shown(id)
+    // The other finding goes with the answer only when the row the panel folded and the message
+    // the card was drawn from name the same one; otherwise nothing is sent.
+    let rows = items.enumerated().map { Row(id: $0.offset, item: $0.element, now: clock()) }
+    let with: String?
+    switch Answer.pairing(id: id, names: shown.names, rows: rows) {
+    case .alone: with = nil
+    case .with(let other): with = other
+    case .disagree:
+      guard answering == nil else { return false }
+      refusals[id] = Answer.disagree
+      await refresh(for: .owner)
+      return false
+    }
+    guard let args = arguments(with, shown.seq) else { return false }
     return await save(id, args)
   }
 

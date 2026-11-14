@@ -217,7 +217,7 @@ struct Quote: View {
 ///
 /// A thing shown as one is sometimes two findings: the core's and the response layer's own about
 /// it. Then each answer is one command for both, the opened finding by its id and the other with
-/// `--with` (`FindingFacts.pair`), and the core answers both or neither.
+/// `--with` (`Answer.pairing`), and the core answers both or neither.
 struct FindingFooter: View {
   let opened: OpenedFinding
   let panel: Panel
@@ -240,7 +240,6 @@ struct FindingFooter: View {
   @ViewBuilder func content(_ f: Contract.Finding) -> some View {
     let id = opened.id
     let canAnswer = row?.canAnswer == true
-    let pair = FindingFacts.pair(f, id: id, rows: panel.rows)
     if canAnswer, model.form?.id == id {
       // A refused Expected comes back to the form with what was typed, and says why.
       VStack(alignment: .leading, spacing: Metrics.footerGap) {
@@ -256,26 +255,32 @@ struct FindingFooter: View {
       }
     } else if FindingFacts.answeredOutside(f), let a = f.answer {
       // One line: the answer, the year only when it is not this one; who gave it in the tooltip.
-      HStack(spacing: Metrics.gap) {
-        Text(verbatim: FindingFacts.answeredLine(a, now: now)).textStyle(.caption)
-          .lineLimit(1).truncationMode(.tail).help(FindingFacts.answeredHelp(a, now: now))
-        Spacer(minLength: 0)
-        Button("Take back") { Task { await model.takeBack(id) } }
-          .disabled(model.answering != nil).fixedSize()
+      // A take back Immune refused says why above it.
+      VStack(alignment: .leading, spacing: Metrics.footerGap) {
+        if let refused = model.refusals[id] {
+          Plain(refused).textStyle(.caption).textSelection(.enabled)
+        }
+        HStack(spacing: Metrics.gap) {
+          Text(verbatim: FindingFacts.answeredLine(a, now: now)).textStyle(.caption)
+            .lineLimit(1).truncationMode(.tail).help(FindingFacts.answeredHelp(a, now: now))
+          Spacer(minLength: 0)
+          Button("Take back") { Task { await model.takeBack(id) } }
+            .disabled(model.answering != nil).fixedSize()
+        }
       }
     } else {
       VStack(alignment: .leading, spacing: Metrics.footerGap) {
         if let refused = model.refusals[id] {
           Plain(refused).textStyle(.caption).textSelection(.enabled)
         }
-        answers(f, canAnswer: canAnswer, pair: pair)
+        answers(f, canAnswer: canAnswer)
       }
     }
   }
 
   /// Seen, Expected… and Ask my agent, the primary first: for an urgent finding, asking the
   /// agent; otherwise Seen. A finding the status does not list takes no answer here.
-  @ViewBuilder func answers(_ f: Contract.Finding, canAnswer: Bool, pair: String?) -> some View {
+  @ViewBuilder func answers(_ f: Contract.Finding, canAnswer: Bool) -> some View {
     let id = opened.id
     let request =
       row?.agentRequest
@@ -296,11 +301,11 @@ struct FindingFooter: View {
         case .askAgent:
           CopyForAgent(text: request, label: "Ask my agent", style: primary ? .primary : .button)
         case .seen:
-          let seen = Button("Seen") { Task { await model.answerSeen(id, with: pair) } }
+          let seen = Button("Seen") { Task { await model.answerSeen(id) } }
             .help("Mark it seen: it stops asking for a look.")
           if primary { seen.buttonStyle(.borderedProminent) } else { seen }
         case .expected:
-          Button("Expected…") { model.form = ExpectedForm(id: id, with: pair) }
+          Button("Expected…") { model.form = ExpectedForm(id: id) }
             .help("Mark it expected for a while, with a short reason.")
         }
       }

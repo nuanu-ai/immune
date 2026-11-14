@@ -348,7 +348,8 @@
           "first_seen_at": 1794569820,
           "last_seen_at": 1794569820,
           "answer": null,
-          "verdicts": null
+          "verdicts": null,
+          "kind_title": "Package in a project"
         },
         "meaning": "Meaning from the program.",
         "advice": "Advice from the program.",
@@ -379,7 +380,8 @@
             "suspicious": 0,
             "listed": [],
             "verdict_finding": null
-          }
+          },
+          "kind_title": "Shell startup file"
         },
         "meaning": "Meaning from the program.",
         "advice": "Advice from the program.",

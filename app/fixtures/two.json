@@ -235,7 +235,8 @@
           "first_seen_at": 1794304820,
           "last_seen_at": 1794304820,
           "answer": null,
-          "verdicts": null
+          "verdicts": null,
+          "kind_title": "Shell startup file"
         },
         "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
         "advice": "If you did not, open the file and look at its last lines.",

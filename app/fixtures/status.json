@@ -308,7 +308,8 @@
           "first_seen_at": 1794304821,
           "last_seen_at": 1794304821,
           "answer": null,
-          "verdicts": null
+          "verdicts": null,
+          "kind_title": "SSH file"
         },
         "meaning": "This is normal when you just added a key, a server or a setting.",
         "advice": "If you did not, look at the file now, before you next connect anywhere.",
@@ -334,7 +335,8 @@
           "first_seen_at": 1794304820,
           "last_seen_at": 1794304820,
           "answer": null,
-          "verdicts": null
+          "verdicts": null,
+          "kind_title": "Shell startup file"
         },
         "meaning": "This is normal when you or an installer just edited it; many tools add a line there.",
         "advice": "If you did not, open the file and look at its last lines.",
@@ -360,7 +362,8 @@
           "first_seen_at": 1794304819,
           "last_seen_at": 1794304819,
           "answer": null,
-          "verdicts": null
+          "verdicts": null,
+          "kind_title": "Startup item"
         },
         "meaning": "This is normal right after you install, update or remove an app that works in the background.",
         "advice": "If you did not just do that, look at the file named here and find out which app it belongs to.",

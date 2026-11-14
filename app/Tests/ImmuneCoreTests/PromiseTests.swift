@@ -141,6 +141,8 @@ func toLook(_ i: [String: Any]) -> [String: Any] {
     "where_text": i["where_text"] ?? null, "first_seen_at": epoch(i["first_seen"]),
     "last_seen_at": epoch(i["last_seen"]),
   ]
+  if let title = i["kind_title"] { listed["kind_title"] = title }
+  if let thing = i["thing"] { listed["thing"] = thing }
   if let v = i["verdict"] as? [String: Any] {
     // A count the test does not give is not given: never 0. A verdict quoted with no counts
     // is the one suspicious verdict.
@@ -201,12 +203,13 @@ func toLook(_ i: [String: Any]) -> [String: Any] {
   return out
 }
 
-/// One thing that needs a look, as Immune serves it; invented.
+/// One thing that needs a look, as Immune serves it; invented. `kindTitle` is Immune's title for
+/// the kind; the default kind has the core's own, any other kind none unless given.
 func lookItem(
   id: String = "f0a1b2c3d4e", type: String = "finding", kind: String = "shell profile",
   severity: String = "medium", whereText: Any = ".zprofile", valueText: Any = NSNull(),
   title: String = "A title from the program.", urgent: Any? = nil,
-  lastSeen: String = "2026-11-10T09:00:00Z"
+  lastSeen: String = "2026-11-10T09:00:00Z", kindTitle: String? = nil
 ) -> [String: Any] {
   var item: [String: Any] = [
     "id": id, "type": type, "kind": kind, "severity": severity,
@@ -216,6 +219,9 @@ func lookItem(
     "value_text": valueText, "where_text": whereText,
   ]
   if let urgent { item["urgent"] = urgent }
+  if let title = kindTitle ?? (kind == "shell profile" ? "Shell startup file" : nil) {
+    item["kind_title"] = title
+  }
   return item
 }
 
@@ -585,7 +591,7 @@ func verdictFinding(id: String, urgent: Bool = true) -> [String: Any] {
   var item = lookItem(
     id: id, kind: "verdict of the response layer", severity: "high",
     whereText: "match m-0001", title: "The response layer judged a match suspicious",
-    urgent: urgent)
+    urgent: urgent, kindTitle: "Response layer")
   item["rule"] = "verdict.suspicious"
   item["verdict"] = [
     "said": "The response layer judged this suspicious.", "reason_text": "an invented reason",
@@ -601,7 +607,8 @@ func startFinding(
 ) -> [String: Any] {
   var item = lookItem(
     id: id, kind: "program start matched by a published rule", severity: "high",
-    whereText: "Binary Padding - MacOS", title: "A published rule matched a program start")
+    whereText: "Binary Padding - MacOS", title: "A published rule matched a program start",
+    kindTitle: "Program start")
   item["rule"] = "sigma.example"
   item["change"] = "new"
   item["published_rule"] = [
@@ -825,10 +832,12 @@ struct PanelPromises {
     #expect(Panel.iconWords(panel(quiet())) == "Nothing needs you")
   }
 
-  @Test("Rows come in the order Immune serves them, urgent ones first, each with the app's words")
+  @Test(
+    "Rows come in the order Immune serves them, urgent ones first, each with Immune's title for its kind, or the kind's own name where Immune gives no title"
+  )
   func servedOrderAndWords() {
     let items = [
-      lookItem(id: "f1", kind: "git hook", severity: "low", title: "First."),
+      lookItem(id: "f1", kind: "git hook", severity: "low", title: "First.", kindTitle: "Git hook"),
       lookItem(id: "h2", kind: "check failed", severity: "high", title: "Second."),
       lookItem(id: "f3", kind: "a kind no app knows", severity: "medium", title: "Third."),
       lookItem(id: "f4", kind: "shell profile", title: "Fourth.", urgent: true),
@@ -839,9 +848,9 @@ struct PanelPromises {
     #expect(p.toLook.map(\.row.item.id) == ["f1", "h2", "f3"])
     #expect(
       p.rows.map(\.meta) == [
-        "Git hook", "Check failed", "A kind no app knows", "Shell startup file",
+        "Git hook", "check failed", "a kind no app knows", "Shell startup file",
       ])
-    // A kind no app knows still gets its row, with Immune's word and a plain picture.
+    // A kind with no title still gets its row, with Immune's word as it is and a plain picture.
     #expect(p.rows[2].symbol == "doc")
     #expect(p.lines.contains("Needs you now"))
     #expect(p.lines.contains("To look at"))
@@ -851,7 +860,7 @@ struct PanelPromises {
     "Under the thing, what happened is said in the app's words: removed, read for the first time")
   func changeWords() {
     func meta(_ change: String) -> String {
-      var item = lookItem(kind: "autostart item")
+      var item = lookItem(kind: "autostart item", kindTitle: "Startup item")
       item["change"] = change
       return panel(looking([item])).rows[0].meta
     }
@@ -862,7 +871,8 @@ struct PanelPromises {
     #expect(meta("not_read") == "Startup item · can't be read now")
     #expect(meta("odd\u{202E}") == "Startup item · odd\\u{202E}")
     // What happened is said once when the kind already says it.
-    var first = lookItem(kind: "places read for the first time")
+    var first = lookItem(
+      kind: "places read for the first time", kindTitle: "Read for the first time")
     first["change"] = "first_read"
     #expect(panel(looking([first])).rows[0].meta == "Read for the first time")
   }
@@ -985,7 +995,7 @@ struct PanelPromises {
     let alone = panel(looking([verdictFinding(id: "fae2fbeab0d")]))
     #expect(alone.needsYou.map(\.row.item.id) == ["fae2fbeab0d"])
     #expect(alone.needsYou[0].said == nil)
-    #expect(alone.needsYou[0].row.meta == "Response layer: suspicious")
+    #expect(alone.needsYou[0].row.meta == "Response layer")
     // A name that is not a verdict finding is never nested: both stay rows.
     var wrong = verdict
     wrong["finding"] = "f3"
@@ -1402,7 +1412,7 @@ struct PanelPromises {
     let states: [Light] = [
       .nothingToReport, .watchedInPart, .attention(1), .stale(since: nil), .cannotRead("x"),
     ]
-    var names = Words.kinds.values.map(\.1) + [Words.symbol("unknown")]
+    var names = Array(Icons.kinds.values) + [Icons.kind("unknown")]
     names += states.flatMap { [$0.symbol, Light.menuSymbol($0, urgent: true)] }
     names += [Icons.notSeen, Icons.answered, Icons.watched, Icons.firstDay]
     names += [Icons.notificationsOff, Icons.notWatching]
@@ -2177,41 +2187,30 @@ struct Answers {
   }
 
   @Test(
-    "One thing shown as a pair takes one answer: Seen and Expected are one command each, the opened finding by its id and the other with --with; an other that is not an id the app passes, or is the finding itself, runs nothing"
+    "One thing shown as a pair takes one answer: Seen, Expected and Take back are one command each, the finding by its id, the other with --with and the read with --journal-seq; an other that is not an id the app passes, or is the finding itself, makes no command"
   )
-  func pairIsOneCommand() async {
+  func pairIsOneCommand() {
     let other = "fae2fbeab0d"
     #expect(
-      Answer.seenArguments(id: id, with: other) == [
-        "finding", id, "seen", "--with", other, "--via", "app", "--json",
+      Answer.seenArguments(id: id, with: other, journalSeq: 38) == [
+        "finding", id, "seen", "--with", other, "--journal-seq", "38", "--via", "app", "--json",
       ])
     #expect(
-      Answer.expectedArguments(id: id, reason: "mine", days: 7, with: other) == [
-        "finding", id, "expected", "--reason", "mine", "--days", "7", "--with", other, "--via",
-        "app", "--json",
+      Answer.expectedArguments(id: id, reason: "mine", days: 7, with: other, journalSeq: 0) == [
+        "finding", id, "expected", "--reason", "mine", "--days", "7", "--with", other,
+        "--journal-seq", "0", "--via", "app", "--json",
       ])
+    #expect(
+      Answer.reopenArguments(id: id, with: other, journalSeq: 38) == [
+        "finding", id, "reopen", "--with", other, "--journal-seq", "38", "--via", "app", "--json",
+      ])
+    // A number Immune cannot have given is not passed on.
+    #expect(Answer.seenArguments(id: id, journalSeq: -1) == Answer.seenArguments(id: id))
     for bad in ["-x", "", "a b", id] {
       #expect(Answer.seenArguments(id: id, with: bad) == nil, "\(bad)")
       #expect(Answer.expectedArguments(id: id, reason: "r", days: 30, with: bad) == nil, "\(bad)")
-      #expect(!ExpectedForm(id: id, reason: "r", with: bad).isComplete)
+      #expect(Answer.reopenArguments(id: id, with: bad) == nil, "\(bad)")
     }
-    let immune = GatedImmune(status: output("status.json"))
-    let model = AppModel(immune: immune)
-    await model.refresh()
-    #expect(await model.answerSeen(id, with: other))
-    model.form = ExpectedForm(id: id, reason: "mine", with: other)
-    #expect(await model.answerExpected(model.form!))
-    let answers = immune.callsSoFar.filter { $0.first == "finding" }
-    #expect(
-      answers == [
-        ["finding", id, "seen", "--with", other, "--via", "app", "--json"],
-        [
-          "finding", id, "expected", "--reason", "mine", "--days", "30", "--with", other, "--via",
-          "app", "--json",
-        ],
-      ])
-    #expect(await model.answerSeen(id, with: "-x") == false)
-    #expect(immune.callsSoFar.filter { $0.first == "finding" }.count == 2)
   }
 
   @Test(
@@ -2734,7 +2733,8 @@ struct Notifications {
       id: "f1", whereText: "~/x\u{202E}y", valueText: "VALUE", title: "T\u{1B}[31m", urgent: true)
     item["meaning"] = "MEANING"
     item["advice"] = "ADVICE"
-    item["kind"] = "KIND"
+    item["kind"] = nil
+    item["kind_title"] = "KIND"
     await ann.saw(status([item, lookItem(id: "f2", whereText: NSNull(), urgent: true)]))
     #expect(
       n.delivered[0]
@@ -4446,36 +4446,20 @@ struct LabelApartFromValue {
   }
 
   @Test(
-    "The thing on the screen is one: the core's finding and the response layer's own finding about it are a pair by the ids immune gives, either way round, and urgent when either is"
+    "The thing on the screen is one: urgent when the core's finding or the response layer's own finding about it is"
   )
-  func pairByGivenIds() throws {
+  func pairIsUrgentWhenEitherIs() throws {
     let dd = try #require(read(finding("finding-f95f8472164.json")))
     #expect(dd.finding?.urgent == false)
     #expect(FindingFacts.urgent(dd))
-    #expect(FindingFacts.pair(dd, id: "f95f8472164", rows: []) == "fae2fbeab0d")
-    // The response layer's finding opened: its pair is the core finding the status lists with it.
-    let p = panel(output("panel-start.json"))
     var alone = dd
     alone.verdicts = nil
-    #expect(FindingFacts.pair(alone, id: "fae2fbeab0d", rows: p.rows) == "f95f8472164")
-    // A finding alone has no pair, and never names itself.
-    #expect(FindingFacts.pair(alone, id: "f95f8472164", rows: p.rows) == nil)
-    var selfNamed = dd
-    selfNamed.verdicts?.verdictFinding?.id = "f95f8472164"
-    #expect(FindingFacts.pair(selfNamed, id: "f95f8472164", rows: []) == nil)
-    // Only a finding of the core pairs with the response layer's: another of its own findings
-    // that names it does not.
-    var other = verdictFinding(id: "fv1")
-    other["verdict"] = ["total": 1, "suspicious": 1, "finding": "fae2fbeab0d"]
-    let verdictRows = panel(looking([other])).rows
-    #expect(verdictRows.first?.isVerdictFinding == true)
-    #expect(FindingFacts.pair(alone, id: "fae2fbeab0d", rows: verdictRows) == nil)
     #expect(!FindingFacts.urgent(alone))
     let zsh = try #require(read(finding("finding-fbb00986139.json")))
-    #expect(FindingFacts.pair(zsh, id: "fbb00986139", rows: p.rows) == nil)
     // What happened is said once when the kind already says it, as on the row.
     var first = zsh
     first.kind = "places read for the first time"
+    first.kindTitle = "Read for the first time"
     first.evidence = .placeChanged(change: "first_read", presenceOnly: nil)
     first.lastSeenAt = nil
     first.firstSeenAt = nil
@@ -4868,5 +4852,308 @@ extension RealAnswers {
       }
       #expect(isCannotRead(light(odd)), "\(length)")
     }
+  }
+}
+
+// MARK: - An answer on the card: the read it rests on, and the pair the panel folded
+
+/// Immune's output with these keys set at the top of its message, as a newer Immune gives them.
+func setting(_ o: ImmuneOutput, _ values: [String: Any]) -> ImmuneOutput {
+  var root = (try? JSONSerialization.jsonObject(with: o.stdout)) as? [String: Any] ?? [:]
+  for (key, value) in values { root[key] = value }
+  var out = o
+  out.stdout = (try? JSONSerialization.data(withJSONObject: root)) ?? Data()
+  return out
+}
+
+/// Plays Immune for answers: the status, each finding's message by its id, and one output for
+/// every command that answers. Records every call.
+final class PairImmune: ImmuneRunning, @unchecked Sendable {
+  static let verbs: Set<String> = ["seen", "expected", "reopen"]
+  private let lock = NSLock()
+  private var made: [[String]] = []
+  let status: ImmuneOutput
+  let reads: [String: ImmuneOutput]
+  let answer: ImmuneOutput
+
+  init(
+    status: ImmuneOutput, reads: [String: ImmuneOutput],
+    answer: ImmuneOutput = ImmuneOutput(exitCode: 0)
+  ) {
+    self.status = status
+    self.reads = reads
+    self.answer = answer
+  }
+
+  var calls: [[String]] { lock.withLock { made } }
+  /// The commands that answer, in the order they ran.
+  var answers: [[String]] {
+    calls.filter { $0.first == "finding" && $0.count > 2 && Self.verbs.contains($0[2]) }
+  }
+
+  func run(_ arguments: [String], timeout: TimeInterval) async -> ImmuneOutput {
+    lock.withLock {
+      made.append(arguments)
+      guard arguments.first == "finding", arguments.count > 1 else { return status }
+      if arguments.count > 2, Self.verbs.contains(arguments[2]) { return answer }
+      return reads[arguments[1]] ?? ImmuneOutput(exitCode: 2)
+    }
+  }
+}
+
+@Suite("An answer is tied to the card it was given on: the read it rests on, and the pair it shows")
+@MainActor
+struct AnswerOnTheCard {
+  let core = "f95f8472164"
+  let other = "fae2fbeab0d"
+
+  /// The pair's status, read at 40, and the core finding's message, read at 38 unless given.
+  func pairImmune(
+    finding: ImmuneOutput? = nil, answer: ImmuneOutput = ImmuneOutput(exitCode: 0)
+  ) -> PairImmune {
+    PairImmune(
+      status: setting(output("panel-start.json"), ["journal_seq": 40]),
+      reads: [core: finding ?? setting(output("finding-f95f8472164.json"), ["journal_seq": 38])],
+      answer: answer)
+  }
+
+  /// The core finding's message, read at 38, with its `verdicts.verdict_finding` changed.
+  func naming(_ verdictFinding: Any) -> ImmuneOutput {
+    var root =
+      (try? JSONSerialization.jsonObject(with: fixture("finding-f95f8472164.json")))
+      as? [String: Any] ?? [:]
+    var verdicts = root["verdicts"] as? [String: Any] ?? [:]
+    verdicts["verdict_finding"] = verdictFinding
+    root["verdicts"] = verdicts
+    root["journal_seq"] = 38
+    return ImmuneOutput(
+      exitCode: 0, stdout: (try? JSONSerialization.data(withJSONObject: root)) ?? Data())
+  }
+
+  @Test(
+    "Seen and Expected on a finding alone carry the journal_seq of the message the card was drawn from: the opened finding's, else the status's; from an Immune that gives none, none is sent"
+  )
+  func singleCarriesTheRead() async {
+    let id = "fbb00986139"
+    let immune = PairImmune(
+      status: setting(looking([lookItem(id: id)]), ["journal_seq": 40]),
+      reads: [id: setting(output("finding-fbb00986139.json"), ["journal_seq": 38])])
+    let model = AppModel(immune: immune)
+    await model.refresh()
+    await model.openFinding(id)
+    #expect(await model.answerSeen(id))
+    model.form = ExpectedForm(id: id, reason: "mine")
+    #expect(await model.answerExpected(model.form!))
+    model.closeFinding()
+    #expect(await model.answerSeen(id))
+    #expect(
+      immune.answers == [
+        ["finding", id, "seen", "--journal-seq", "38", "--via", "app", "--json"],
+        [
+          "finding", id, "expected", "--reason", "mine", "--days", "30", "--journal-seq", "38",
+          "--via", "app", "--json",
+        ],
+        ["finding", id, "seen", "--journal-seq", "40", "--via", "app", "--json"],
+      ])
+    let older = PairImmune(
+      status: looking([lookItem(id: id)]), reads: [id: output("finding-fbb00986139.json")])
+    let m = AppModel(immune: older)
+    await m.refresh()
+    await m.openFinding(id)
+    #expect(await m.answerSeen(id))
+    #expect(older.answers == [["finding", id, "seen", "--via", "app", "--json"]])
+  }
+
+  @Test(
+    "Take back of a finding alone carries the journal_seq of the message it was pressed on: the opened finding's, else the status's"
+  )
+  func takeBackCarriesTheRead() async {
+    let id = "f3c1d2e4a51"
+    let immune = PairImmune(
+      status: setting(answeredOutside([outsideItem(id: id)]), ["journal_seq": 40]),
+      reads: [id: setting(output("finding-f3c1d2e4a51.json"), ["journal_seq": 38])])
+    let model = AppModel(immune: immune)
+    await model.refresh()
+    await model.openFinding(id)
+    #expect(await model.takeBack(id))
+    model.closeFinding()
+    #expect(await model.takeBack(id))
+    #expect(
+      immune.answers == [
+        ["finding", id, "reopen", "--journal-seq", "38", "--via", "app", "--json"],
+        ["finding", id, "reopen", "--journal-seq", "40", "--via", "app", "--json"],
+      ])
+  }
+
+  @Test(
+    "A pair the panel folded and the opened finding names takes one answer: Seen and Expected name the other with --with, beside the journal_seq of the opened finding"
+  )
+  func pairIsOneAnswer() async {
+    let immune = pairImmune()
+    let model = AppModel(immune: immune)
+    await model.refresh()
+    await model.openFinding(core)
+    #expect(await model.answerSeen(core))
+    model.form = ExpectedForm(id: core, reason: "my own build")
+    #expect(await model.answerExpected(model.form!))
+    #expect(
+      immune.answers == [
+        [
+          "finding", core, "seen", "--with", other, "--journal-seq", "38", "--via", "app",
+          "--json",
+        ],
+        [
+          "finding", core, "expected", "--reason", "my own build", "--days", "30", "--with", other,
+          "--journal-seq", "38", "--via", "app", "--json",
+        ],
+      ])
+  }
+
+  @Test(
+    "Take back of an answer the opened finding says was given to the pair (answered_with) takes both back with --with; of one given alone, only the finding"
+  )
+  func takeBackOfAPair() async {
+    let answer: [String: Any] = [
+      "given": "seen", "via": "agent", "given_at": 1_794_569_900,
+      "reason_text": "The owner agreed.", "until_at": NSNull(), "in_force": true,
+    ]
+    let pair: [String: Any] = [
+      "id": other, "rule": "verdict.suspicious", "about_text": "machine:example-mac",
+      "state": "seen", "severity": "high", "confidence": "medium", "urgent": true,
+    ]
+    let cases: [(Any, [String])] = [(pair, ["--with", other]), (NSNull(), [])]
+    for (answeredWith, with) in cases {
+      let message = setting(
+        output("finding-f95f8472164.json"),
+        ["journal_seq": 38, "answer": answer, "answered_with": answeredWith])
+      let immune = pairImmune(finding: message)
+      let model = AppModel(immune: immune)
+      await model.refresh()
+      await model.openFinding(core)
+      #expect(await model.takeBack(core))
+      #expect(
+        immune.answers == [
+          ["finding", core, "reopen"] + with + ["--journal-seq", "38", "--via", "app", "--json"]
+        ])
+    }
+  }
+
+  @Test(
+    "--with names only what the panel folded: the other finding goes only when it is the child folded under the row and the one the opened message names, and no other finding of the core names it"
+  )
+  func withNamesOnlyWhatWasFolded() {
+    let rows = panel(output("panel-start.json")).rows
+    #expect(Answer.pairing(id: core, names: other, rows: rows) == .with(other))
+    // The message names another, or none, while the panel folded one.
+    #expect(Answer.pairing(id: core, names: "fother000000", rows: rows) == .disagree)
+    #expect(Answer.pairing(id: core, names: nil, rows: rows) == .disagree)
+    // The finding folded under the row is not a row of its own.
+    #expect(Answer.pairing(id: other, names: nil, rows: rows) == .disagree)
+    // A row alone is answered alone, also when the message names a finding that is not in the
+    // list at all, as one answered already: the person sees this one alone.
+    let lone = panel(looking([lookItem(id: "f1")])).rows
+    #expect(Answer.pairing(id: "f1", names: nil, rows: lone) == .alone)
+    #expect(Answer.pairing(id: "f1", names: other, rows: lone) == .alone)
+    // Two findings of the core name one finding of the response layer: neither sends it.
+    let names: [String: Any] = ["total": 1, "suspicious": 1, "finding": "fv1"]
+    let two = panel(
+      looking([
+        verdictFinding(id: "fv1"), startFinding(id: "fa", verdict: names),
+        startFinding(id: "fb", verdict: names),
+      ])
+    ).rows
+    #expect(Answer.pairing(id: "fa", names: "fv1", rows: two) == .disagree)
+    #expect(Answer.pairing(id: "fb", names: "fv1", rows: two) == .disagree)
+    // Never the finding itself, and never an id the app does not pass.
+    let same = panel(looking([verdictFinding(id: "fv1"), startFinding(id: "fv1", verdict: names)]))
+    #expect(Answer.pairing(id: "fv1", names: "fv1", rows: same.rows) == .disagree)
+    let dash: [String: Any] = ["total": 1, "suspicious": 1, "finding": "-x"]
+    let bad = panel(looking([verdictFinding(id: "-x"), startFinding(id: "fc", verdict: dash)]))
+    #expect(bad.needsYou.first?.children.count == 1)
+    #expect(Answer.pairing(id: "fc", names: "-x", rows: bad.rows) == .disagree)
+  }
+
+  @Test(
+    "When the fold and the opened finding disagree, no answer is sent, the card says so where a refusal is shown, and both are read again"
+  )
+  func disagreementSendsNothing() async {
+    for named in [["id": "fother000000"] as Any, NSNull()] {
+      let immune = pairImmune(finding: naming(named))
+      let model = AppModel(immune: immune)
+      await model.refresh()
+      await model.openFinding(core)
+      #expect(await model.answerSeen(core) == false)
+      model.form = ExpectedForm(id: core, reason: "mine")
+      #expect(await model.answerExpected(model.form!) == false)
+      #expect(immune.answers.isEmpty)
+      #expect(model.refusals[core] == Answer.disagree)
+      #expect(model.form == ExpectedForm(id: core, reason: "mine"))
+      let last = Array(immune.calls.suffix(2))
+      #expect(last == [["status", "--json"], ["finding", core, "--json"]])
+    }
+  }
+
+  @Test(
+    "A refusal changed_since_read is said in Immune's words where a refusal is shown: the finding changed since it was shown and nothing was saved; the status and the finding are read again, and nothing is tried again"
+  )
+  func changedSinceRead() async {
+    let refused = Data(
+      (#"{"operation":"finding","ok":false,"errors":[{"code":"changed_since_read","#
+        + #""message":"fae2fbeab0d changed after the read; nothing was changed","#
+        + #""example":"immune finding <id> --json","detail_text":"fae2fbeab0d"}]}"#).utf8)
+    let immune = pairImmune(answer: ImmuneOutput(exitCode: 2, stdout: refused))
+    let model = AppModel(immune: immune)
+    await model.refresh()
+    await model.openFinding(core)
+    model.form = ExpectedForm(id: core, reason: "mine")
+    #expect(await model.answerExpected(model.form!))
+    #expect(model.refusals[core] == Answer.changedSinceRead)
+    // Nothing is shown as answered: the form keeps what was typed, the row is still there.
+    #expect(model.form == ExpectedForm(id: core, reason: "mine"))
+    #expect(model.answering == nil)
+    #expect(immune.answers.count == 1)
+    let after = immune.calls.drop { !($0.count > 2 && $0[2] == "expected") }.dropFirst()
+    #expect(Array(after) == [["status", "--json"], ["finding", core, "--json"]])
+    let p = Panel.of(model.reading, now: Date(), refusals: model.refusals)
+    #expect(p.needsYou.first?.row.item.id == core)
+  }
+
+  @Test(
+    "A row's kind and thing are Immune's words, kind_title and thing, in the list and in the opened finding; without a title the kind's own name shows as Immune gave it, never an empty line"
+  )
+  func rowWordsFromTheCore() throws {
+    var first = lookItem(
+      id: "f1", kind: "places read for the first time", whereText: "example-mac",
+      kindTitle: "Read for the first time")
+    first["change"] = "first_read"
+    first["thing"] = "2 projects and 1 other place"
+    let row = panel(looking([first])).rows[0]
+    #expect(row.object == "2 projects and 1 other place")
+    #expect(!row.objectIsData && !row.objectIsPath)
+    #expect(row.meta == "Read for the first time")
+    // An older Immune gives neither: the kind's own name, inert, and the place as data.
+    var older = lookItem(
+      id: "f2", kind: "autostart item", whereText: "~/Library/LaunchAgents/a.plist")
+    older["change"] = "new"
+    let o = panel(looking([older])).rows[0]
+    #expect(o.meta == "autostart item · new")
+    #expect(o.object == "~/Library/LaunchAgents/a.plist" && o.objectIsData)
+    // No kind at all: the rule names it, never an empty line.
+    var bare = lookItem(id: "f3")
+    bare["kind"] = nil
+    bare["kind_title"] = nil
+    bare["rule"] = "watched.example"
+    #expect(panel(looking([bare])).rows[0].meta == "watched.example")
+    // Immune's title is shown inert.
+    let hostile = panel(looking([lookItem(id: "f4", kindTitle: "Startup\u{202E} item")])).rows[0]
+    #expect(hostile.meta == "Startup\\u{202E} item")
+    // The opened finding: its caption and its thing.
+    var zsh = try #require(read(finding("finding-fbb00986139.json")))
+    let now = Date(timeIntervalSince1970: 1_794_570_060)
+    #expect(FindingFacts.caption(zsh, now: now).hasPrefix("Shell startup file · changed · "))
+    zsh.kindTitle = nil
+    #expect(FindingFacts.caption(zsh, now: now).hasPrefix("shell profile · changed · "))
+    zsh.thing = "1 place"
+    #expect(FindingFacts.object(zsh) == "1 place")
   }
 }
