@@ -9413,6 +9413,239 @@ fn status_reads_a_store_in_a_folder_it_cannot_write_and_writes_nothing_anywhere(
     assert_eq!(snapshot(w.home()), before);
 }
 
+/// Set in the child a test starts as a writer of the store: the store's path.
+const WRITER: &str = "IMMUNE_TEST_WRITER_STORE";
+
+/// What the writer writes as the store's id, uncommitted until the test says `commit`.
+const UNCOMMITTED: &str = "written-by-a-writer-not-committed";
+
+/// A writer of the store in a process of its own, as a run or a watcher is. It is this test
+/// binary started again for the one test that starts it, with `WRITER` set: that test calls
+/// `writer_child` first, which in the child does the writer's part and never returns. The
+/// test binary is used rather than macOS's `sqlite3`, because the child says on a line of its
+/// own, flushed, that it has written, and because it writes through the SQLite built into
+/// Immune. No command of `immune` is added for it. Killed and waited for when dropped.
+struct Writer {
+    child: std::process::Child,
+    lines: std::io::Lines<std::io::BufReader<std::process::ChildStdout>>,
+}
+
+impl Writer {
+    /// Starts the writer for the test `test` and returns once it has written inside its
+    /// transaction: `UNCOMMITTED` as the store's id, and enough beside it that SQLite has spilled
+    /// pages into the store's file.
+    fn start(test: &str, store: &Path) -> Writer {
+        use std::io::BufRead;
+        use std::process::Stdio;
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([test, "--exact", "--nocapture", "--test-threads=1"])
+            .env(WRITER, store)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let lines = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
+        let mut w = Writer { child, lines };
+        w.until("written");
+        w
+    }
+
+    fn until(&mut self, said: &str) {
+        let found = self.lines.by_ref().map_while(Result::ok).any(|l| l == said);
+        assert!(found, "the writer ended before it said {said}");
+    }
+
+    /// Kills the writer with SIGKILL inside its transaction, and waits for it.
+    fn kill(mut self) {
+        self.child.kill().unwrap();
+        self.child.wait().unwrap();
+    }
+
+    fn commit(&mut self) {
+        use std::io::Write;
+        writeln!(self.child.stdin.as_mut().unwrap(), "commit").unwrap();
+        self.until("committed");
+    }
+}
+
+impl Drop for Writer {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// The writer's part, in the child `Writer::start` started; nothing in the test itself.
+fn writer_child() {
+    use std::io::Write;
+    let Some(store) = std::env::var_os(WRITER) else {
+        return;
+    };
+    let conn = Connection::open(store).unwrap();
+    conn.execute_batch(&format!(
+        "BEGIN;
+         UPDATE meta SET value = '{UNCOMMITTED}' WHERE key = 'store_id';
+         CREATE TABLE ballast (b BLOB);
+         INSERT INTO ballast VALUES (zeroblob(8000000));"
+    ))
+    .unwrap();
+    let mut out = std::io::stdout();
+    writeln!(out, "\nwritten").unwrap();
+    out.flush().unwrap();
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line).unwrap();
+    if line.trim() == "commit" {
+        conn.execute_batch("COMMIT").unwrap();
+        writeln!(out, "\ncommitted").unwrap();
+        out.flush().unwrap();
+    }
+    std::process::exit(0);
+}
+
+/// The journal beside a store.
+fn journal(store: &Path) -> PathBuf {
+    store.with_file_name("store.db-journal")
+}
+
+#[test]
+fn a_read_only_command_answers_after_a_writer_was_killed_inside_a_transaction_with_only_what_was_committed()
+ {
+    // A watcher or a run killed in the middle of a write, by a crash or a forced restart,
+    // leaves its journal hot. The next status must answer with what was committed before.
+    writer_child();
+    let w = Watch::new("hot-killed");
+    w.run();
+    let store = w.store();
+    let committed = status_json(&store);
+    let writer = Writer::start(
+        "a_read_only_command_answers_after_a_writer_was_killed_inside_a_transaction_with_only_what_was_committed",
+        &store,
+    );
+    writer.kill();
+    // What the writer had not committed is in the store's file, and the journal is hot: a
+    // connection opened read-only is refused.
+    let file = std::fs::read(&store).unwrap();
+    assert!(
+        file.windows(UNCOMMITTED.len())
+            .any(|b| b == UNCOMMITTED.as_bytes())
+    );
+    let refused = Connection::open_with_flags(&store, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM meta", [], |r| r.get::<_, i64>(0))
+        .unwrap_err();
+    assert_eq!(
+        refused.sqlite_error().map(|e| e.extended_code),
+        Some(rusqlite::ffi::SQLITE_READONLY_ROLLBACK)
+    );
+
+    // Named as `--store store.db` from its own folder: a path with no folder in it.
+    let out = immune_cmd(w.home())
+        .args(["status", "--json", "--store", "store.db"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let after: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(after["store_id"], committed["store_id"]);
+    assert_eq!(after["last_run"], committed["last_run"]);
+    assert!(!journal(&store).exists());
+    assert_eq!(
+        rows(
+            &store,
+            "SELECT name FROM sqlite_master WHERE name = 'ballast'"
+        ),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn a_read_only_command_in_a_folder_it_cannot_write_fails_on_a_hot_journal_and_changes_nothing() {
+    // The journal cannot be deleted where the folder cannot be written, so nothing is rolled
+    // back: the command fails as it did before, and the store and its journal stay as they are.
+    writer_child();
+    let w = Watch::new("hot-read-only");
+    w.run();
+    let store = w.store();
+    Writer::start(
+        "a_read_only_command_in_a_folder_it_cannot_write_fails_on_a_hot_journal_and_changes_nothing",
+        &store,
+    )
+    .kill();
+    let file = std::fs::read(&store).unwrap();
+    let kept = std::fs::read(journal(&store)).unwrap();
+    // Only the folder: its files can still be written, so only the folder stops the rollback.
+    // The test's folder is opened again when it is removed.
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(w.home(), std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    let (code, stdout, stderr) = status_out(&store, &["--json"]);
+    assert_eq!(code, Some(3), "{stderr}");
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["errors"][0]["code"], "store_unreadable");
+    assert!(
+        v["errors"][0]["detail_text"]
+            .as_str()
+            .unwrap()
+            .contains("attempt to write a readonly database"),
+        "{v}"
+    );
+    assert!(std::fs::read(&store).unwrap() == file, "the store changed");
+    assert!(
+        std::fs::read(journal(&store)).unwrap() == kept,
+        "the journal changed"
+    );
+}
+
+#[test]
+fn a_read_only_command_beside_a_live_writer_waits_out_the_busy_timeout_and_rolls_nothing_back() {
+    // A journal whose writer is alive is not hot. A reader waits out the busy timeout of five
+    // seconds and gives up; one that the writer's commit reaches within it answers with what
+    // the writer committed. Only the least it waits is pinned: SQLite counts the timeout in the
+    // sleeps it asks for, and on a loaded machine they run long. That busy is not taken for a
+    // hot journal is pinned in `store`, where no clock is read.
+    writer_child();
+    let w = Watch::new("hot-live");
+    w.run();
+    let store = w.store();
+    let mut writer = Writer::start(
+        "a_read_only_command_beside_a_live_writer_waits_out_the_busy_timeout_and_rolls_nothing_back",
+        &store,
+    );
+    let started = std::time::Instant::now();
+    let (code, stdout, stderr) = status_out(&store, &["--json"]);
+    let waited = started.elapsed().as_secs_f64();
+    assert!(waited >= 5.0, "waited {waited} s");
+    assert_eq!(code, Some(3), "{stderr}");
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["errors"][0]["code"], "store_unreadable");
+
+    let status = immune_cmd(w.home())
+        .args(["status", "--json", "--store"])
+        .arg(&store)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Waited for and killed if the test fails before it ends.
+    struct Reaped(Option<std::process::Child>);
+    impl Drop for Reaped {
+        fn drop(&mut self) {
+            if let Some(c) = self.0.as_mut() {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
+        }
+    }
+    let mut status = Reaped(Some(status));
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    let running = status.0.as_mut().unwrap().try_wait().unwrap();
+    assert!(running.is_none(), "status did not wait: {running:?}");
+    writer.commit();
+    let out = status.0.take().unwrap().wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["store_id"], UNCOMMITTED);
+}
+
 /// The brew answer with `n` invented formulae at one version: a run that changes them all
 /// writes more than SQLite's page cache holds.
 fn many_formulae(n: usize, version: &str) -> String {

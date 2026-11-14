@@ -585,11 +585,69 @@ fn give_id(conn: &Connection) -> Res<()> {
     Ok(())
 }
 
-/// Opens an existing store so that nothing can be written to it. Creates nothing.
+/// Opens an existing store so that nothing can be written to it. Creates nothing. Every
+/// command that only reads the store opens it here.
+///
+/// A writer killed inside its transaction, a run or a watcher stopped by a crash or a forced
+/// restart, leaves its rollback journal hot, and a connection opened read-only cannot roll it
+/// back: SQLite refuses every read with `SQLITE_READONLY_ROLLBACK` until something opens the
+/// store to write. On that one refusal the store is opened for writing, without creating it,
+/// and read once, which makes SQLite roll the journal back under its exclusive lock; then it is
+/// opened read-only again, once. Rolling back restores the last committed state: nothing the
+/// store held as committed changes, and what the killed writer had not committed was never
+/// part of it. A journal is hot only while no live process holds the store's lock, so a writer
+/// that is alive is never rolled back: beside one, a reader waits out the busy timeout as
+/// before. Where the store's folder cannot be written, SQLite could restore the store's file
+/// and then fail to delete the journal, so nothing is tried; a store file that cannot be
+/// written is opened read-only by SQLite itself, which refuses the rollback the same way. In
+/// both the first refusal is returned as SQLite gave it.
 pub fn open_read_only(path: &Path) -> Res<Connection> {
+    match read_only(path) {
+        Err(e) if hot_journal(e.as_ref()) && roll_back(path) => read_only(path),
+        opened => opened,
+    }
+}
+
+fn read_only(path: &Path) -> Res<Connection> {
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     check_format(&conn, path)?;
     Ok(conn)
+}
+
+/// Whether a read was refused because a journal left by a writer that is gone waits to be
+/// rolled back. Told by SQLite's extended code, never by its words.
+fn hot_journal(e: &(dyn std::error::Error + 'static)) -> bool {
+    e.downcast_ref::<rusqlite::Error>()
+        .and_then(rusqlite::Error::sqlite_error)
+        .is_some_and(|e| e.extended_code == rusqlite::ffi::SQLITE_READONLY_ROLLBACK)
+}
+
+/// Lets SQLite roll a hot journal back through a connection that may write, opened without
+/// `SQLITE_OPEN_CREATE` so that a store that is not there is not made. Whether the read went
+/// through, and with it the rollback.
+fn roll_back(path: &Path) -> bool {
+    let folder = path.parent().filter(|p| !p.as_os_str().is_empty());
+    if !writable(folder.unwrap_or(Path::new("."))) {
+        return false;
+    }
+    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)
+        .and_then(|c| {
+            c.query_row("SELECT COUNT(*) FROM sqlite_master", [], |r| {
+                r.get::<_, i64>(0)
+            })
+        })
+        .is_ok()
+}
+
+/// Whether this process may write in the folder, by access(2), as SQLite will need to delete
+/// the journal there.
+fn writable(folder: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c) = std::ffi::CString::new(folder.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: `c` is a NUL-terminated path that outlives the call; access(2) only reads it.
+    unsafe { libc::access(c.as_ptr(), libc::W_OK) == 0 }
 }
 
 fn check_format(conn: &Connection, path: &Path) -> Res<()> {
@@ -2095,5 +2153,66 @@ mod tests {
         tidy(&k.conn);
         assert!(size() * 3 < before, "{} then {before}", size());
         assert_eq!(k.rows(), 40 * (RUNS_KEPT + 2));
+    }
+
+    // --- Opening to read after a writer was killed. ---
+
+    /// A store and the hot journal a writer killed inside its transaction leaves beside it: the
+    /// store's file and its journal copied while a writer holds its transaction, with enough
+    /// written that SQLite has spilled pages into the file. The copy holds no lock, as a killed
+    /// process holds none. Returns the copy and the store's committed id.
+    fn hot(dir: &Path) -> (std::path::PathBuf, String) {
+        let live = dir.join("live.db");
+        let committed = id(&open(&live).unwrap()).unwrap().unwrap();
+        let writer = Connection::open(&live).unwrap();
+        writer
+            .execute_batch(
+                "BEGIN;
+                 UPDATE meta SET value = 'uncommitted' WHERE key = 'store_id';
+                 CREATE TABLE ballast (b BLOB);
+                 INSERT INTO ballast VALUES (zeroblob(8000000));",
+            )
+            .unwrap();
+        let path = dir.join("store.db");
+        std::fs::copy(&live, &path).unwrap();
+        std::fs::copy(dir.join("live.db-journal"), dir.join("store.db-journal")).unwrap();
+        (path, committed)
+    }
+
+    #[test]
+    fn a_store_opened_to_read_after_its_journal_was_rolled_back_holds_what_was_committed_and_cannot_be_written()
+     {
+        let dir = crate::common::Scratch::new("hot-unit");
+        let (path, committed) = hot(&dir);
+        let conn = open_read_only(&path).unwrap();
+        assert_eq!(id(&conn).unwrap(), Some(committed));
+        assert!(!dir.join("store.db-journal").exists());
+        assert!(conn.execute_batch("CREATE TABLE t (a)").is_err());
+    }
+
+    #[test]
+    fn a_rollback_makes_no_store_where_there_is_none() {
+        let dir = crate::common::Scratch::new("hot-none");
+        let missing = dir.join("store.db");
+        assert!(!roll_back(&missing));
+        assert!(!missing.exists());
+    }
+
+    #[test]
+    fn only_the_refusal_of_a_hot_journal_opens_the_store_to_write() {
+        // Beside a writer that is alive SQLite answers busy, and a store of another format is
+        // refused by Immune: neither is a journal to roll back.
+        let refused = |code| -> Box<dyn std::error::Error> {
+            rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None).into()
+        };
+        assert!(hot_journal(
+            refused(rusqlite::ffi::SQLITE_READONLY_ROLLBACK).as_ref()
+        ));
+        assert!(!hot_journal(
+            refused(rusqlite::ffi::SQLITE_READONLY).as_ref()
+        ));
+        assert!(!hot_journal(refused(rusqlite::ffi::SQLITE_BUSY).as_ref()));
+        let other: Box<dyn std::error::Error> = "not a store of this tool".into();
+        assert!(!hot_journal(other.as_ref()));
     }
 }
