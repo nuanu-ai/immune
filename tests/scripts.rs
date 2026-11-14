@@ -130,6 +130,43 @@ fn the_tree_names_one_supported_macos_and_both_check_and_build_ask_for_it() {
 }
 
 #[test]
+fn the_two_halves_of_the_tests_hold_every_test_binary_exactly_once() {
+    // The check on GitHub runs `./check tests 1/2` and `./check tests 2/2` side by side in
+    // place of `cargo test`: a binary in neither half would never run there.
+    let half = |share: &str| {
+        let out = Command::new(Path::new(ROOT).join("scripts/test-half.sh"))
+            .arg(share)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let mut seen: Vec<String> = format!("{}{}", half("1/2"), half("2/2"))
+        .lines()
+        .map(str::to_string)
+        .collect();
+    seen.sort();
+
+    let mut expected: Vec<String> = std::fs::read_dir(Path::new(ROOT).join("tests"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
+        .map(|path| format!("--test {}", path.file_stem().unwrap().to_str().unwrap()))
+        .chain(["--bins".to_string()])
+        .collect();
+    expected.sort();
+    assert_eq!(seen, expected);
+
+    // Unit tests of a library and its doc tests are not in either half.
+    assert!(!Path::new(ROOT).join("src/lib.rs").exists());
+    assert!(!read("Cargo.toml").contains("[lib]"));
+}
+
+#[test]
 fn the_build_takes_the_binary_from_where_cargo_says_it_built_it() {
     // A target folder set in CARGO_TARGET_DIR or in a cargo configuration is not target/:
     // the path is taken from cargo's own messages, here a real build of this package.
