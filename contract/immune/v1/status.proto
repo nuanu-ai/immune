@@ -295,7 +295,8 @@ message EventLevel {
   // What made it `refused` or `failing`: who printed it, `eslogger` or `scripts`, and the line.
   optional string said_by = 13;
   optional string said_text = 14;
-  // Why the core's reading failed. Whole.
+  // Why the core's reading failed, with the secrets the core recognises cut out, each a mark as in
+  // `ProgramStart.args_text`.
   optional string reason_text = 15;
   // After how many seconds without a line the level is `silent`.
   uint64 silent_after_seconds = 16;
@@ -321,7 +322,7 @@ message EventLevel {
   // The level for a person, in the core's words, which every surface takes.
   EventLevelWords in_words = 25;
   // The cap of the log in bytes, as the installed tidy job is given it; or why it could not be
-  // read. Both absent until a reading found the collector installed.
+  // read, cut as `reason_text` is. Both absent until a reading found the collector installed.
   optional uint64 log_cap_bytes = 26;
   optional string log_cap_reason_text = 27;
   // Lines gave it values and then stopped, each with the time of the first of the lines in a row
@@ -389,7 +390,8 @@ message Uncovered {
   uint64 count = 8;
   // When it is counted from. Absent when not known.
   optional int64 since_at = 9;
-  // What a source said of it. Whole.
+  // What a source said of it, such as why a download failed, with the secrets the core
+  // recognises cut out, each a mark as in `ProgramStart.args_text`.
   optional string value_text = 10;
   // The things it is about, as the Mac names them: the first three, or every one for
   // `package-managers-not-read`. Names alone: what a source said of each is in `examples`.
@@ -517,7 +519,8 @@ message WatchedKind {
   optional Completeness coverage = 5;
   // Its latest readings by completeness.
   CompletenessCounts readings = 6;
-  // Why they were not full, each reason once; on one full reading, its note. Whole.
+  // Why they were not full, each reason once; on one full reading, its note. Cut as
+  // `ReadingGroup.reason_text` is.
   optional string reason_text = 7;
 }
 
@@ -553,7 +556,7 @@ message Threats {
   // When it was last read whole, and when it was last asked for.
   optional int64 read_at = 7;
   optional int64 checked_at = 8;
-  // Why the latest reading failed. Whole.
+  // Why the latest reading failed, cut as `ReadingGroup.reason_text` is.
   optional string reason_text = 9;
   // Whether its entries are matched against what the store knows: not yet.
   bool matched = 10;
@@ -592,7 +595,7 @@ message FeedState {
   optional uint64 withdrawn_records = 9;
   bool matched = 10;
   FeedOutcome outcome = 11;
-  // Why its latest reading failed. Whole.
+  // Why its latest reading failed, cut as `ReadingGroup.reason_text` is.
   optional string reason_text = 12;
   // For a reading of this check that read an archive: whether it was the first, and what it
   // changed.
@@ -628,6 +631,7 @@ message Integrity {
 message IntegrityReading {
   string kind = 1;
   Completeness completeness = 2;
+  // Why it was not full, cut as `ReadingGroup.reason_text` is.
   optional string reason_text = 3;
 }
 
