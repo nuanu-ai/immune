@@ -1181,12 +1181,21 @@ fn uncovered_message(u: &crate::covered::Uncovered) -> crate::contract::v1::Unco
         count: n(u.count),
         since_at: u.since,
         value_text: u.value.as_deref().map(whole),
-        examples_text: u.examples().iter().map(|e| whole(e)).collect(),
+        examples_text: u.examples().iter().map(|e| whole(&e.name)).collect(),
         holds_on: if u.every_mac {
             crate::contract::v1::HoldsOn::EveryMac
         } else {
             crate::contract::v1::HoldsOn::ThisMac
         } as i32,
+        // What a source said is prose from it: cut where it is printed, as every such text.
+        examples: u
+            .examples()
+            .iter()
+            .map(|e| crate::contract::v1::UncoveredExample {
+                name_text: whole(&e.name),
+                reason_text: e.reason.as_deref().map(|r| crate::secrets::text(r, whole)),
+            })
+            .collect(),
     }
 }
 
@@ -1378,7 +1387,8 @@ fn coverage_message(p: &Problems) -> crate::contract::v1::CoverageSummary {
                 class: value_of::<v1::ReadingClass>(g.class),
                 reader: g.reader.clone(),
                 kind: g.kind.clone(),
-                reason_text: g.reason.as_deref().map(whole),
+                // A reason is prose from a source: cut where it is printed, as every such text.
+                reason_text: g.reason.as_deref().map(|r| crate::secrets::text(r, whole)),
                 count: n(g.scopes.len()),
                 examples_text: g.scopes.iter().take(EXAMPLES).map(|s| whole(s)).collect(),
             })
@@ -1391,7 +1401,7 @@ fn coverage_message(p: &Problems) -> crate::contract::v1::CoverageSummary {
             .map(|u| v1::Unreached {
                 scope_text: whole(&u.scope),
                 since_at: u.since,
-                reason_text: u.reason.as_deref().map(whole),
+                reason_text: u.reason.as_deref().map(|r| crate::secrets::text(r, whole)),
             })
             .collect(),
         unreached_total: n(p.unreached.len()),

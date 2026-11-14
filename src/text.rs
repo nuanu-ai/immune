@@ -240,6 +240,15 @@ pub fn known(k: &v1::Known) -> String {
     out
 }
 
+/// What a finding is, in a row: what it is about, in the core's words, where it says, then its
+/// title.
+fn what(title: &str, thing: Option<&str>) -> String {
+    match thing {
+        Some(t) => format!("{t}: {title}"),
+        None => title.to_string(),
+    }
+}
+
 /// A quoted value, or the core's word when the message does not give one.
 fn quoted_or_unknown(s: Option<&str>) -> String {
     s.map(quoted).unwrap_or_else(|| "unknown".to_string())
@@ -525,7 +534,7 @@ pub fn findings(f: &v1::Findings, all: bool) -> String {
                 word::<v1::FindingState>(r.state),
                 finding_level(Some(&r)),
                 view::utc(l.last_seen_at),
-                l.title.clone(),
+                what(&l.title, l.thing.as_deref()),
                 quoted(&l.where_text),
             ]
         })
@@ -851,6 +860,9 @@ pub fn finding(f: &v1::Finding) -> String {
         for listed in &v.listed {
             say(&mut out, &verdict_line(listed));
         }
+    }
+    if let Some(thing) = &f.thing {
+        say(&mut out, &format!("About: {thing}."));
     }
     say(&mut out, &format!("Where: {}.", quoted(&f.where_text)));
     if let Some(body) = body {
@@ -1299,7 +1311,7 @@ pub fn status(s: &v1::Status) -> String {
                     vec![
                         view::utc(l.last_seen_at),
                         finding_level(l.finding.as_ref()),
-                        l.title.clone(),
+                        what(&l.title, l.thing.as_deref()),
                         quoted(&l.where_text),
                         l.finding.as_ref().map(|r| r.id.clone()).unwrap_or_default(),
                     ]
@@ -1343,13 +1355,20 @@ pub fn status(s: &v1::Status) -> String {
             .iter()
             .filter(|u| u.who == who && on_every_mac.is_none_or(|e| every_mac(u) == e))
         {
-            // Told apart from the words, as data: the examples and the value a source gave. The
-            // words never hold a name taken from the Mac.
+            // Told apart from the words, as data: the examples, each with what its source said
+            // of it, and the value a source gave. The words never hold a name taken from the Mac.
             let shown: Vec<String> = u
                 .examples_text
                 .iter()
-                .chain(u.value_text.as_ref())
-                .map(|e| quoted(e))
+                .enumerate()
+                .map(|(i, name)| {
+                    let reason = u.examples.get(i).and_then(|e| e.reason_text.as_deref());
+                    match reason {
+                        Some(r) => format!("{}: {}", quoted(name), quoted(r)),
+                        None => quoted(name),
+                    }
+                })
+                .chain(u.value_text.as_deref().map(quoted))
                 .collect();
             let also = if shown.is_empty() {
                 String::new()
