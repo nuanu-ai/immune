@@ -415,6 +415,180 @@ fn a_match_hands_over_who_the_process_was_as_the_collector_keeps_it() {
     assert_eq!(m["collector"]["not_kept"], json!([]));
 }
 
+/// An eslogger process with its audit token as an object with distinct ids, so that no id can
+/// stand in for another: the effective user and group, the real user and group.
+fn owned(path: &str, pid: u64, version: u64, ids: [u64; 4]) -> Value {
+    let [euid, egid, ruid, rgid] = ids;
+    json!({
+        "executable": {"path": path, "path_truncated": false},
+        "audit_token": {"auid": 501, "euid": euid, "egid": egid, "ruid": ruid, "rgid": rgid,
+            "pid": pid, "asid": 100001, "pidversion": version},
+        "ppid": 401, "original_ppid": 401, "group_id": 400, "session_id": 400,
+        "signing_id": "com.example.tool", "team_id": null, "is_platform_binary": false,
+        "codesigning_flags": 570522385, "start_time": "2026-10-04T00:00:01.900000Z",
+        "parent_audit_token": [501, 501, 20, 501, 20, 401, 100001, 9300],
+        "responsible_audit_token": [501, 501, 20, 501, 20, 300, 100001, 9200],
+    })
+}
+
+/// The one match's event of `immune matches` over `dir`, in each of its three forms: the JSON
+/// message, the binary message, and the line of the text that names the match.
+fn match_forms(dir: &Dir) -> (Value, v1::Event, String) {
+    let m = dir.matches(&[]);
+    assert_eq!(m["matches"].as_array().unwrap().len(), 1, "{m:#}");
+    let binary = v1::Matches::decode(dir.matches_binary(&[]).as_slice()).unwrap();
+    let out = dir.matches_output(&[]);
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    let position = m["matches"][0]["position"].as_str().unwrap();
+    let line = text.lines().find(|l| l.contains(position)).unwrap();
+    (
+        m["matches"][0]["event"].clone(),
+        binary.matches[0].event.clone().unwrap(),
+        line.to_string(),
+    )
+}
+
+#[test]
+fn a_match_carries_the_responsible_process_the_process_group_and_the_users_and_groups_as_the_line_gives_them()
+ {
+    // The response layer puts matches together by the process they belong to. A program start
+    // carries the process macOS holds responsible for it, its process group, and the real user
+    // and the groups of the program started and of the process before the `exec`, as the
+    // collector keeps them, in every form of the answer.
+    let dir = Dir::new("ids");
+    dir.install();
+    dir.run();
+    let exec = json!({
+        "schema_version": 1, "version": 10, "seq_num": 1, "global_seq_num": 1, "time": T0,
+        "process": owned("/bin/sh", 402, 9401, [503, 22, 504, 23]),
+        "event": {"exec": {
+            "env": ["INVENTED=1"], "args": DD, "cwd": {"path": CWD}, "script": null,
+            "target": owned("/bin/dd", 402, 9402, [501, 20, 502, 21]),
+        }},
+    });
+    dir.append(H00, &filtered(&[exec]));
+    let (json, binary, text) = match_forms(&dir);
+    let start = &json["program_start"];
+    let ids = |p: &Value| {
+        [
+            &p["user_id"],
+            &p["real_user_id"],
+            &p["group_id"],
+            &p["real_group_id"],
+        ]
+        .map(Value::clone)
+    };
+    assert_eq!(ids(&start["process"]), [501, 502, 20, 21].map(|n| json!(n)));
+    assert_eq!(
+        ids(&start["instigator"]),
+        [503, 504, 22, 23].map(|n| json!(n))
+    );
+    assert_eq!(
+        start["responsible"],
+        json!({"pid": 300, "pid_version": 9200})
+    );
+    assert_eq!(start["process_group_id"], 400);
+    let Some(v1::event::Body::ProgramStart(s)) = binary.body else {
+        panic!("{binary:?}");
+    };
+    let of = |p: Option<v1::Process>| {
+        let p = p.unwrap();
+        [p.user_id, p.real_user_id, p.group_id, p.real_group_id]
+    };
+    assert_eq!(of(s.process), [501, 502, 20, 21].map(Some));
+    assert_eq!(of(s.instigator), [503, 504, 22, 23].map(Some));
+    assert_eq!(
+        s.responsible,
+        Some(v1::Identity {
+            pid: Some(300),
+            pid_version: Some(9200)
+        })
+    );
+    assert_eq!(s.process_group_id, Some(400));
+    assert!(
+        text.ends_with(
+            " · as user 501, real user 502, group 20, real group 21 · process group 400 · responsible pid 300 version 9200 · before the exec as user 503, real user 504, group 22, real group 23"
+        ),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_file_event_s_acting_process_carries_its_users_and_groups() {
+    // The process that created or renamed a file carries the users and groups of its audit
+    // token too, in every form of the answer.
+    let dir = Dir::new("file-ids");
+    dir.install();
+    dir.run();
+    let create = json!({
+        "schema_version": 1, "version": 10, "seq_num": 1, "global_seq_num": 1, "time": T0,
+        "process": owned("/usr/local/bin/node", 500, 9500, [501, 20, 502, 21]),
+        "event": {"create": {"destination_type": 0, "destination": {"existing_file": {"path": "/private/tmp/6202033", "path_truncated": false}}}},
+    });
+    dir.append(H00, &filtered(&[create]));
+    let (json, binary, text) = match_forms(&dir);
+    let p = &json["file_event"]["instigator"];
+    assert_eq!(
+        [
+            &p["user_id"],
+            &p["real_user_id"],
+            &p["group_id"],
+            &p["real_group_id"]
+        ],
+        [&json!(501), &json!(502), &json!(20), &json!(21)]
+    );
+    let Some(v1::event::Body::FileEvent(f)) = binary.body else {
+        panic!("{binary:?}");
+    };
+    let p = f.instigator.unwrap();
+    assert_eq!(
+        [p.user_id, p.real_user_id, p.group_id, p.real_group_id],
+        [501, 502, 20, 21].map(Some)
+    );
+    assert!(
+        text.ends_with(
+            r#" by "/usr/local/bin/node" as user 501, real user 502, group 20, real group 21"#
+        ),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_line_of_an_earlier_collector_gives_no_responsible_process_process_group_or_real_ids_in_any_form()
+ {
+    // No guess. A collector installed before these were kept gives none of them: each is
+    // absent in JSON and in binary, and the text does not say it. The effective user id, which
+    // every collector keeps, is still given.
+    let dir = Dir::new("ids-earlier");
+    dir.install();
+    dir.run();
+    dir.append(H00, &dd(1));
+    let (json, binary, text) = match_forms(&dir);
+    let start = &json["program_start"];
+    for p in ["process", "instigator"] {
+        for id in ["real_user_id", "group_id", "real_group_id"] {
+            assert_eq!(start[p][id], Value::Null, "{p} {id}: {start:#}");
+        }
+    }
+    assert_eq!(
+        (&start["responsible"], &start["process_group_id"]),
+        (&Value::Null, &Value::Null)
+    );
+    assert_eq!(start["process"]["user_id"], 501);
+    let Some(v1::event::Body::ProgramStart(s)) = binary.body else {
+        panic!("{binary:?}");
+    };
+    let (p, i) = (s.process.unwrap(), s.instigator.unwrap());
+    assert_eq!(
+        [p.real_user_id, p.group_id, p.real_group_id, i.user_id],
+        [None; 4]
+    );
+    assert_eq!([i.real_user_id, i.group_id, i.real_group_id], [None; 3]);
+    assert_eq!((s.responsible, s.process_group_id), (None, None));
+    assert!(text.ends_with(r#""count=1" · as user 501"#), "{text}");
+}
+
 /// The time now as eslogger writes it, a microsecond past the second.
 fn now_time() -> String {
     let out = Command::new("/bin/date")
@@ -580,6 +754,9 @@ fn a_match_says_which_finding_it_went_to_as_the_core_recorded_it_with_the_person
                     "started_at": null,
                     "started_nanos": null,
                     "codesigning_flags": null,
+                    "real_user_id": null,
+                    "group_id": null,
+                    "real_group_id": null,
                 },
                 "instigator": {
                     "executable_text": "/bin/zsh",
@@ -592,12 +769,17 @@ fn a_match_says_which_finding_it_went_to_as_the_core_recorded_it_with_the_person
                     "started_at": null,
                     "started_nanos": null,
                     "codesigning_flags": null,
+                    "real_user_id": null,
+                    "group_id": null,
+                    "real_group_id": null,
                 },
                 "parent_pid": 401,
                 "args_text": ["sw_vers", "-productVersion"],
                 "working_directory_text": CWD,
                 "parent": null,
                 "script_text": null,
+                "responsible": null,
+                "process_group_id": null,
                 "cuts": [],
             },
         })

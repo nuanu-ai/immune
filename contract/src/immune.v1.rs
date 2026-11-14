@@ -287,7 +287,7 @@ pub mod event {
 /// A process, as far as the collector keeps it. Only `executable_text` is always there; the rest
 /// is absent where the event does not give it. A pid is reused once the process ends; with its
 /// `pid_version` and when it started, `started_at`, it names one process. A collector installed
-/// before it kept these gives neither.
+/// before it kept these gives neither, and gives none of the user and group ids but `user_id`.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -320,6 +320,16 @@ pub struct Process {
     /// Its code-signing flags, eslogger's `codesigning_flags`, as the kernel's `CS_*` bits.
     #[prost(uint32, optional, tag = "10")]
     pub codesigning_flags: ::core::option::Option<u32>,
+    /// Its real user id, `ruid` in its audit token. Since 1.12.0.
+    #[prost(int64, optional, tag = "11")]
+    pub real_user_id: ::core::option::Option<i64>,
+    /// Its effective group id, `egid` in its audit token. This is the group of its user, not its
+    /// process group, which `ProgramStart.process_group_id` gives. Since 1.12.0.
+    #[prost(int64, optional, tag = "12")]
+    pub group_id: ::core::option::Option<i64>,
+    /// Its real group id, `rgid` in its audit token. Since 1.12.0.
+    #[prost(int64, optional, tag = "13")]
+    pub real_group_id: ::core::option::Option<i64>,
 }
 /// Who a process is, without its program: the pid and the pid's version of an audit token.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -344,12 +354,13 @@ pub struct ProgramStart {
     pub happened_at: ::core::option::Option<i64>,
     #[prost(uint32, optional, tag = "2")]
     pub happened_nanos: ::core::option::Option<u32>,
-    /// The process with the program started, `event.exec.target`: its executable, pid, user id,
-    /// signature, pid version, start time and code-signing flags.
+    /// The process with the program started, `event.exec.target`: its executable, pid, user and
+    /// group ids, signature, pid version, start time and code-signing flags.
     #[prost(message, optional, tag = "3")]
     pub process: ::core::option::Option<Process>,
     /// The same process before this `exec`, `process` in eslogger's message: its program,
-    /// `process.executable.path`, and its pid, pid version, start time and code-signing flags.
+    /// `process.executable.path`, and its pid, user and group ids, pid version, start time and
+    /// code-signing flags.
     /// After a fork or `posix_spawn` that program is the parent's; after an `exec` without a fork
     /// it is a wrapper that replaced itself, such as `nohup` or `env`. Absent when the log does not
     /// give its program.
@@ -381,6 +392,15 @@ pub struct ProgramStart {
     /// the working directory are not searched.
     #[prost(message, repeated, tag = "10")]
     pub cuts: ::prost::alloc::vec::Vec<Cut>,
+    /// The process macOS holds responsible for the program started,
+    /// `event.exec.target.responsible_audit_token`, such as the app that launched a helper: its pid
+    /// and pid version. Absent when the log does not give its pid. Since 1.12.0.
+    #[prost(message, optional, tag = "11")]
+    pub responsible: ::core::option::Option<Identity>,
+    /// The process group of the program started, `event.exec.target.group_id`: the pid of the
+    /// group's leader. Since 1.12.0.
+    #[prost(int64, optional, tag = "12")]
+    pub process_group_id: ::core::option::Option<i64>,
 }
 /// A piece of an argument cut out because it holds a secret, or an argument withheld whole.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -428,7 +448,8 @@ pub struct FileEvent {
     #[prost(string, optional, tag = "5")]
     pub source_text: ::core::option::Option<::prost::alloc::string::String>,
     /// The process that did it, `process` in eslogger's message: its program,
-    /// `process.executable.path`, its pid, pid version and start time, and its `signing_id`.
+    /// `process.executable.path`, its pid, user and group ids, pid version and start time, and its
+    /// `signing_id`.
     #[prost(message, optional, tag = "6")]
     pub instigator: ::core::option::Option<Process>,
 }

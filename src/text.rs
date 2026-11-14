@@ -264,6 +264,45 @@ fn executable(p: Option<&v1::Process>) -> String {
     quoted_or_unknown(p.map(|p| p.executable_text.as_str()))
 }
 
+/// The user and group ids of a process, those the message gives, in a few words.
+fn ids(p: Option<&v1::Process>) -> Option<String> {
+    let p = p?;
+    let said: Vec<String> = [
+        ("user", p.user_id),
+        ("real user", p.real_user_id),
+        ("group", p.group_id),
+        ("real group", p.real_group_id),
+    ]
+    .into_iter()
+    .filter_map(|(word, id)| id.map(|id| format!("{word} {id}")))
+    .collect();
+    (!said.is_empty()).then(|| said.join(", "))
+}
+
+/// What a program start says of who its processes are beyond the program, each part only when
+/// the message gives it: the users and groups of the process started, its process group, the
+/// process responsible for it, and the users and groups of the process before the `exec`.
+fn who(s: &v1::ProgramStart) -> String {
+    let mut out = String::new();
+    if let Some(ids) = ids(s.process.as_ref()) {
+        let _ = write!(out, " · as {ids}");
+    }
+    if let Some(group) = s.process_group_id {
+        let _ = write!(out, " · process group {group}");
+    }
+    if let Some(r) = &s.responsible {
+        let said: Vec<String> = [("pid", r.pid), ("version", r.pid_version)]
+            .into_iter()
+            .filter_map(|(word, n)| n.map(|n| format!(" {word} {n}")))
+            .collect();
+        let _ = write!(out, " · responsible{}", said.concat());
+    }
+    if let Some(ids) = ids(s.instigator.as_ref()) {
+        let _ = write!(out, " · before the exec as {ids}");
+    }
+    out
+}
+
 /// An event in one line. A finding shows the circumstances of a start as well.
 fn event(e: Option<&v1::Event>, detailed: bool) -> String {
     use v1::event::Body;
@@ -274,7 +313,7 @@ fn event(e: Option<&v1::Event>, detailed: bool) -> String {
             let at = instant(s.happened_at, s.happened_nanos);
             let args = args.join(" ");
             if !detailed {
-                return format!("{at} started {exe} {args}");
+                return format!("{at} started {exe} {args}{}", who(s));
             }
             let process = s.process.as_ref();
             let pid = process
@@ -283,7 +322,10 @@ fn event(e: Option<&v1::Event>, detailed: bool) -> String {
             let signed = quoted_or_unknown(process.and_then(|p| p.signing_id_text.as_deref()));
             let by = executable(s.instigator.as_ref());
             let cwd = quoted_or_unknown(s.working_directory_text.as_deref());
-            format!("{at} {exe}: {args} · started by {by} · in {cwd} · pid {pid} · signed {signed}")
+            format!(
+                "{at} {exe}: {args} · started by {by} · in {cwd} · pid {pid} · signed {signed}{}",
+                who(s)
+            )
         }
         Some(Body::FileEvent(f)) => {
             let how = match v1::FileAction::try_from(f.action) {
@@ -296,8 +338,9 @@ fn event(e: Option<&v1::Event>, detailed: bool) -> String {
                 }
                 _ => "unknown file action".to_string(),
             };
+            let ids = ids(f.instigator.as_ref()).map_or(String::new(), |ids| format!(" as {ids}"));
             format!(
-                "{} {}: {how} by {}",
+                "{} {}: {how} by {}{ids}",
                 instant(f.happened_at, f.happened_nanos),
                 quoted(&f.path_text),
                 executable(f.instigator.as_ref())
