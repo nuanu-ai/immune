@@ -6223,6 +6223,82 @@ fn a_failed_visit_is_reported_with_when_and_why_next_to_the_earlier_reading_whic
 }
 
 #[test]
+fn what_a_server_said_takes_no_word_of_the_core_s_with_it_and_no_secret_or_mark_of_it_reaches_any_output()
+ {
+    // Each reason is cut on its own where it is put beside the core's words. One that leaves a
+    // quote open after `password:` and writes a mark of its own comes first, and the next
+    // server's failure and the advice about its host key are still said whole after it, in the
+    // run's line, on the pages, in `immune servers` and in the status. The token the second one
+    // carries reaches none of them, and the mark the first one wrote never reads as the core's.
+    let h = Home::new("visit-pieces", Some(SSH_CONFIG_TWO_ALIASES), None);
+    let servers = h.sweep();
+    let token = format!(
+        "{}{}",
+        ["gh", "p_"].concat(),
+        "Q7mZ2xK9pL4vR8nT3wY6bH1cJ5dF0gS2aE7u"
+    );
+    let failed_at = 1_767_412_800; // 2026-01-03 04:00:00 UTC
+    put(
+        &servers,
+        "db-1.failed",
+        &format!("{failed_at}\nit's down \\cut{{gitleaks:github-pat 40}}, password: x\n"),
+    );
+    put(
+        &servers,
+        "web-new.failed",
+        &format!("{failed_at}\nHost key verification failed for ?t={token}.\n"),
+    );
+    let report = h.run(&servers, &h.none());
+    let (forged, mark) = (
+        "\\u{5c}cut{gitleaks:github-pat 40}",
+        "\\cut{gitleaks:github-pat 40}",
+    );
+    let advice = "Connect to this server once by hand and check its host key: the sweep never accepts a key for you.";
+    let web = format!(
+        "web-new was never read; the latest visit failed 2026-01-03 04:00 UTC: Host key verification failed for ?t={mark}. {advice}"
+    );
+    assert!(
+        report.contains(&format!(
+            "db-1 was never read; the latest visit failed 2026-01-03 04:00 UTC: it's down {forged}, password:"
+        )) && report.contains(&web)
+            && report.matches(mark).count() == 1,
+        "{report}"
+    );
+
+    let printed = h.servers();
+    assert!(
+        server_row(&printed, "web-new").contains(&format!("?t={mark}. {advice}"))
+            && server_row(&printed, "db-1").contains(&format!("it's down {forged}, password:")),
+        "{printed}"
+    );
+    let page = view(&h.store());
+    // The run's line on the page of changes, as the run printed it.
+    assert!(page.contains(&web), "{page}");
+    // The advice is decided from what the server said, and the reason is cut once.
+    assert!(
+        machine_block(&page, "web-new").contains(&format!("?t={mark}. {advice}")),
+        "{page}"
+    );
+    assert!(
+        machine_block(&page, "db-1").contains(&format!("it&#39;s down {forged}, password:")),
+        "{page}"
+    );
+    let status = ok(immune_cmd(&h.home)
+        .args(["status", "--json", "--store"])
+        .arg(h.store()));
+    assert!(status.contains("Host key verification failed for ?t=\\\\cut{gitleaks:github-pat 40}"));
+    for (name, out) in [
+        ("run", &report),
+        ("servers", &printed),
+        ("view", &page),
+        ("status", &status),
+    ] {
+        assert!(!out.contains(&token), "{name}: {out}");
+        assert!(!out.contains(&format!("it's down {mark}")), "{name}: {out}");
+    }
+}
+
+#[test]
 fn a_host_key_that_could_not_be_verified_is_left_to_the_owner_to_check_by_hand() {
     // The sweep never accepts a key on the owner's behalf: ssh runs in batch mode, and the
     // owner is told to connect once by hand and check the key, never to turn the check off.

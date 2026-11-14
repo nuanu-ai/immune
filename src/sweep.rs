@@ -168,12 +168,14 @@ exit 0
 /// never accepts a key on the owner's behalf, and never suggests turning the check off.
 const HOST_KEY: &str = "Connect to this server once by hand and check its host key: the sweep never accepts a key for you.";
 
-/// A failed visit as the owner reads it: when, why, and what to do about a host key.
+/// A failed visit as the owner reads it: when, why, and what to do about a host key. `reason` is
+/// what the server's ssh said, as it said it: the advice is decided from that, and only what is
+/// shown of it is cut (`secrets::said`), so a reason cut or withheld whole still brings it.
 pub fn failed_visit(at: i64, reason: &str) -> String {
     let mut out = format!(
         "the latest visit failed {}: {}.",
         crate::view::utc(at),
-        reason.trim_end_matches('.')
+        crate::secrets::said(reason.trim_end_matches('.'))
     );
     if reason
         .to_ascii_lowercase()
@@ -203,4 +205,45 @@ pub fn write(dir: &Path, machines: &[Vec<String>]) -> std::io::Result<()> {
 /// A path as one word for the shell.
 pub fn quoted(path: &Path) -> String {
     format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HOST_KEY, failed_visit};
+    use crate::secrets::{LINE_CAP, NO_PATTERNS, TOO_LONG, mark, without_patterns};
+
+    #[test]
+    fn the_advice_about_a_host_key_is_shown_whatever_was_cut_of_the_reason() {
+        // The advice is decided from what ssh said; only what is shown of it is cut. A reason
+        // withheld whole, too long or with no patterns loaded, still brings the advice, and so
+        // does one with a secret cut out of it.
+        let at = 1_767_412_800; // 2026-01-03 04:00:00 UTC
+        let said = "Host key verification failed";
+        let long = format!("{said} {}", "x".repeat(LINE_CAP));
+        let token = format!(
+            "{}{}",
+            ["gh", "p_"].concat(),
+            "Q7mZ2xK9pL4vR8nT3wY6bH1cJ5dF0gS2aE7u"
+        );
+        let failed = "the latest visit failed 2026-01-03 04:00 UTC:";
+        assert_eq!(
+            failed_visit(at, &long),
+            format!("{failed} {}. {HOST_KEY}", mark(TOO_LONG, long.len()))
+        );
+        assert_eq!(
+            without_patterns(|| failed_visit(at, &format!("{said}."))),
+            format!("{failed} {}. {HOST_KEY}", mark(NO_PATTERNS, said.len()))
+        );
+        assert_eq!(
+            failed_visit(at, &format!("{said} for ?t={token}")),
+            format!(
+                "{failed} {said} for ?t={}. {HOST_KEY}",
+                mark("gitleaks:github-pat", 40)
+            )
+        );
+        assert_eq!(
+            failed_visit(at, "Permission denied (publickey)."),
+            format!("{failed} Permission denied (publickey).")
+        );
+    }
 }

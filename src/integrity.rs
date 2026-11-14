@@ -1169,9 +1169,7 @@ pub fn message(s: &Summary) -> crate::contract::v1::Integrity {
                 kind: kind.clone(),
                 completeness: value_of::<v1::Completeness>(completeness),
                 // A reader's reason, prose from its source: cut, as every such text.
-                reason_text: reason
-                    .as_deref()
-                    .map(|r| crate::secrets::text(r, crate::known::whole)),
+                reason_text: reason.as_deref().map(crate::secrets::said),
             })
             .collect(),
     }

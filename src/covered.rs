@@ -743,6 +743,9 @@ pub struct Uncovered {
     /// failed visit for servers that could not be opened, the last download of the list of
     /// vulnerabilities, else the latest reading that found it.
     pub since: Option<i64>,
+    /// What sources said of it, such as why a download failed, as every output shows it: put
+    /// together from pieces each cut on its own (`secrets::said`), so what one source said never
+    /// takes the names beside it with it. Shown as it is, never cut again.
     pub value: Option<String>,
     pub examples: Vec<Example>,
     /// Why, clause by clause in the program's words, where the words say `{reasons}`.
@@ -984,7 +987,7 @@ pub fn not_covered(
                 value: l
                     .said
                     .as_ref()
-                    .map(|s| s.shown(str::to_string))
+                    .map(crate::secrets::Text::said)
                     .filter(|s| !s.is_empty()),
                 ..Uncovered::new(cause, 1)
             });
@@ -1185,7 +1188,7 @@ pub fn not_covered(
         let why = crate::threats::why(reason);
         out.push(Uncovered {
             since: last.map(|(at, _)| at),
-            value: Some(reason.clone()),
+            value: Some(crate::secrets::said(reason)),
             reasons: vec![why.said.to_string()],
             ..Uncovered::new(
                 if why.yours {
@@ -1214,7 +1217,7 @@ pub fn not_covered(
                     let why = crate::threats::why(&reason);
                     yours |= why.yours;
                     reasons.push(format!("{ecosystem}: {}", why.said));
-                    failures.push(format!("{ecosystem}: {reason}"));
+                    failures.push(format!("{ecosystem}: {}", crate::secrets::said(&reason)));
                 }
                 None => reasons.push(format!("{ecosystem}: {not_current}")),
             }

@@ -1702,24 +1702,29 @@ fn a_failed_reading_or_sample_is_not_watched_live_with_its_reason_until_the_next
     };
     assert_eq!(live(&mac).0, true);
 
+    // What the failure said carries an invented token: cut wherever it is printed, in the
+    // problem line and in the status, as every text from a source.
+    let token = format!(
+        "{}{}",
+        ["gh", "p_"].concat(),
+        "Q7mZ2xK9pL4vR8nT3wY6bH1cJ5dF0gS2aE7u"
+    );
     let conn = Connection::open(mac.store()).unwrap();
-    conn.execute_batch(
+    conn.execute_batch(&format!(
         "CREATE TRIGGER refuse BEFORE INSERT ON coverage WHEN NEW.run_id LIKE 'watch-%'
-         BEGIN SELECT RAISE(ABORT, 'invented refusal'); END;",
-    )
+         BEGIN SELECT RAISE(ABORT, 'invented refusal ?t={token}'); END;"
+    ))
     .unwrap();
     mac.put(".zshrc", "one\n");
-    w.until("problem", |v| v["code"] == "read_failed");
+    let problem = w.until("problem", |v| v["code"] == "read_failed");
     let (is_live, failed) = live(&mac);
     assert_eq!(is_live, false, "{failed}");
     assert_eq!(failed[0]["what"], "read", "{failed}");
-    assert!(
-        failed[0]["detail_text"]
-            .as_str()
-            .unwrap()
-            .contains("invented refusal"),
-        "{failed}"
-    );
+    let cut = "invented refusal ?t=\\cut{gitleaks:github-pat 40}";
+    for detail in [&failed[0]["detail_text"], &problem["detail_text"]] {
+        let detail = detail.as_str().unwrap();
+        assert!(detail.contains(cut) && !detail.contains(&token), "{detail}");
+    }
     // The page and the text say a watcher runs but does not watch live, never that none runs.
     // The failed reading wrote nothing to the journal: the page asked for says it all the same.
     let page = mac.view_if_stale();
