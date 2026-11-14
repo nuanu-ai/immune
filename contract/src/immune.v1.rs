@@ -300,7 +300,9 @@ pub struct Process {
     pub pid: ::core::option::Option<i64>,
     #[prost(int64, optional, tag = "3")]
     pub user_id: ::core::option::Option<i64>,
-    /// Who signed its program: `signing_id`, `team_id` and `is_platform_binary`.
+    /// Who signed its program: `signing_id`, `team_id` and `is_platform_binary`. Before 1.13.0
+    /// only the program started had all three, and the process behind a file event only its
+    /// `signing_id`.
     #[prost(string, optional, tag = "4")]
     pub signing_id_text: ::core::option::Option<::prost::alloc::string::String>,
     #[prost(string, optional, tag = "5")]
@@ -317,7 +319,9 @@ pub struct Process {
     pub started_at: ::core::option::Option<i64>,
     #[prost(uint32, optional, tag = "9")]
     pub started_nanos: ::core::option::Option<u32>,
-    /// Its code-signing flags, eslogger's `codesigning_flags`, as the kernel's `CS_*` bits.
+    /// Its code-signing flags, eslogger's `codesigning_flags`, as the kernel's `CS_*` bits. Absent
+    /// when the log does not give them as a whole number that fits in 32 bits. For the process
+    /// behind a file event since 1.13.0.
     #[prost(uint32, optional, tag = "10")]
     pub codesigning_flags: ::core::option::Option<u32>,
     /// Its real user id, `ruid` in its audit token. Since 1.12.0.
@@ -359,8 +363,9 @@ pub struct ProgramStart {
     #[prost(message, optional, tag = "3")]
     pub process: ::core::option::Option<Process>,
     /// The same process before this `exec`, `process` in eslogger's message: its program,
-    /// `process.executable.path`, and its pid, user and group ids, pid version, start time and
-    /// code-signing flags.
+    /// `process.executable.path`, and its pid, user and group ids, pid version, start time, signer
+    /// and code-signing flags. Its signer, `signing_id_text`, `team_id_text` and
+    /// `platform_binary`, since 1.13.0.
     /// After a fork or `posix_spawn` that program is the parent's; after an `exec` without a fork
     /// it is a wrapper that replaced itself, such as `nohup` or `env`. Absent when the log does not
     /// give its program.
@@ -448,8 +453,9 @@ pub struct FileEvent {
     #[prost(string, optional, tag = "5")]
     pub source_text: ::core::option::Option<::prost::alloc::string::String>,
     /// The process that did it, `process` in eslogger's message: its program,
-    /// `process.executable.path`, its pid, user and group ids, pid version and start time, and its
-    /// `signing_id`.
+    /// `process.executable.path`, its pid, user and group ids, pid version and start time, its
+    /// signer and its code-signing flags. `team_id_text`, `platform_binary` and
+    /// `codesigning_flags` since 1.13.0.
     #[prost(message, optional, tag = "6")]
     pub instigator: ::core::option::Option<Process>,
 }

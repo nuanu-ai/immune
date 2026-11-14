@@ -2953,6 +2953,12 @@ mod tests {
         let mut s = start("/usr/bin/Curl", &["curl", "-K", "a b"], "/bin/zsh");
         s.working_directory = Some("/Users/example".into());
         s.user_id = Some(0);
+        // The signer of the process before the `exec` is handed to the response layer, never to
+        // a rule.
+        s.who.instigator_signing_id = Some("com.example.zsh".into());
+        s.who.instigator_team_id = Some("EXAMPLE123".into());
+        s.who.instigator_platform_binary = Some(true);
+        s.who.instigator_codesigning_flags = Some(570522385);
         let want: BTreeMap<String, Option<String>> = [
             ("event.type", "start"),
             ("event.action", "exec"),
@@ -3010,10 +3016,13 @@ mod tests {
         assert_eq!(count("\"process.args_count|lt\": 3"), 0);
         assert_eq!(count("\"process.args_count\": 3"), 1);
         // A file created, and one renamed; the signing id of the program that did it only
-        // where the line gives it.
+        // where the line gives it. The rest of its signer is given to no rule.
         let created = given(
             Subject::File(&FileEvent {
                 signing_id: Some("com.example.Java".into()),
+                team_id: Some("EXAMPLE123".into()),
+                platform_binary: Some(false),
+                codesigning_flags: Some(570522385),
                 ..file("/usr/bin/Java", "/opt/a/B.Class", None)
             }),
             Kind::File,

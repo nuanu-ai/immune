@@ -554,12 +554,187 @@ fn a_file_event_s_acting_process_carries_its_users_and_groups() {
     );
 }
 
+/// An eslogger process signed as `signer` says: its signing id, team id, platform flag and
+/// code-signing flags.
+fn signed(mut process: Value, signer: [Value; 4]) -> Value {
+    for (key, value) in [
+        "signing_id",
+        "team_id",
+        "is_platform_binary",
+        "codesigning_flags",
+    ]
+    .into_iter()
+    .zip(signer)
+    {
+        process[key] = value;
+    }
+    process
+}
+
+/// The signer of a process as the contract gives it, in JSON; `signer_of_binary` in binary.
+fn signer_of(p: &Value) -> [Value; 4] {
+    [
+        "signing_id_text",
+        "team_id_text",
+        "platform_binary",
+        "codesigning_flags",
+    ]
+    .map(|k| p[k].clone())
+}
+
+fn signer_of_binary(p: &v1::Process) -> (Option<&str>, Option<&str>, Option<bool>, Option<u32>) {
+    (
+        p.signing_id_text.as_deref(),
+        p.team_id_text.as_deref(),
+        p.platform_binary,
+        p.codesigning_flags,
+    )
+}
+
 #[test]
-fn a_line_of_an_earlier_collector_gives_no_responsible_process_process_group_or_real_ids_in_any_form()
+fn a_match_hands_over_the_signer_of_the_process_that_acted_as_the_line_gives_it() {
+    // The response layer judges a match by who signed the process behind it. A program start
+    // carries the signer of the process before the `exec` beside that of the program started,
+    // each its own, and a file event the signer of the process that did it, in JSON and in
+    // binary. Here from whole messages through the filter itself.
+    let dir = Dir::new("signer");
+    dir.install();
+    dir.run();
+    let target = json!(["com.example.dd", "TARGET1234", true, 570522304]);
+    let before = json!(["com.example.tool", "EXAMPLE123", false, 570522385]);
+    let signer = |v: &Value| -> [Value; 4] { v.as_array().unwrap().clone().try_into().unwrap() };
+    let exec = json!({
+        "schema_version": 1, "version": 10, "seq_num": 1, "global_seq_num": 1, "time": T0,
+        "process": signed(owned("/bin/sh", 402, 9401, [501, 20, 501, 20]), signer(&before)),
+        "event": {"exec": {
+            "env": ["INVENTED=1"], "args": DD, "cwd": {"path": CWD}, "script": null,
+            "target": signed(owned("/bin/dd", 402, 9402, [501, 20, 501, 20]), signer(&target)),
+        }},
+    });
+    let create = json!({
+        "schema_version": 1, "version": 10, "seq_num": 1, "global_seq_num": 2, "time": T0,
+        "process": signed(owned("/usr/local/bin/node", 500, 9500, [501, 20, 501, 20]),
+            signer(&before)),
+        "event": {"create": {"destination_type": 0, "destination": {"existing_file": {"path": "/private/tmp/6202033", "path_truncated": false}}}},
+    });
+    dir.append(H00, &filtered(&[exec, create]));
+    let m = dir.matches(&[]);
+    assert_eq!(rules_of(&m), [PADDING, AXIOS]);
+    let start = &m["matches"][0]["event"]["program_start"];
+    assert_eq!(signer_of(&start["process"]), signer(&target));
+    assert_eq!(signer_of(&start["instigator"]), signer(&before));
+    let file = &m["matches"][1]["event"]["file_event"]["instigator"];
+    assert_eq!(signer_of(file), signer(&before));
+    let binary = v1::Matches::decode(dir.matches_binary(&[]).as_slice()).unwrap();
+    let body = |i: usize| binary.matches[i].event.clone().unwrap().body.unwrap();
+    let v1::event::Body::ProgramStart(s) = body(0) else {
+        panic!("{binary:?}");
+    };
+    let v1::event::Body::FileEvent(f) = body(1) else {
+        panic!("{binary:?}");
+    };
+    let given = (
+        Some("com.example.tool"),
+        Some("EXAMPLE123"),
+        Some(false),
+        Some(570522385),
+    );
+    assert_eq!(signer_of_binary(s.instigator.as_ref().unwrap()), given);
+    assert_eq!(signer_of_binary(f.instigator.as_ref().unwrap()), given);
+    assert_eq!(
+        signer_of_binary(s.process.as_ref().unwrap()),
+        (
+            Some("com.example.dd"),
+            Some("TARGET1234"),
+            Some(true),
+            Some(570522304)
+        )
+    );
+}
+
+#[test]
+fn a_signer_value_of_the_wrong_shape_is_absent_and_the_line_is_still_read_judged_and_handed_over() {
+    // No false calm. A line the filter did not shape, or a value it let through that the reader
+    // cannot hold, leaves only that value absent: a number where a text belongs, a text where
+    // true or false belongs, flags that are negative, fractional, past 32 bits or an object.
+    // Every line is still read, every rule still judges it, and every match is handed over.
+    let dir = Dir::new("signer-odd");
+    dir.install();
+    dir.run();
+    let odd = |flags: &str| {
+        format!(
+            r#""signing_id":7,"team_id":{{"id":"EXAMPLE123"}},"is_platform_binary":"false","codesigning_flags":{flags}"#
+        )
+    };
+    let flags = ["-1", "2.5", "4294967296", r#"{"bits":1}"#];
+    let mut lines = String::new();
+    for (i, f) in flags.iter().enumerate() {
+        let seq = i as u64 + 1;
+        lines += &dd(seq).replace(
+            r#""process":{"executable":{"path":"/bin/sh"}}"#,
+            &format!(
+                r#""process":{{"executable":{{"path":"/bin/sh"}},{}}}"#,
+                odd(f)
+            ),
+        );
+        lines += &file_event(seq, "create", "/usr/local/bin/node", "/private/tmp/6202033").replace(
+            r#""process":{"executable":{"path":"/usr/local/bin/node"}}"#,
+            &format!(
+                r#""process":{{"executable":{{"path":"/usr/local/bin/node"}},"signing_id":"com.example.tool",{}}}"#,
+                odd(f).replace(r#""signing_id":7,"#, "")
+            ),
+        );
+    }
+    dir.append(H00, &lines);
+    let m = dir.matches(&[]);
+    assert_eq!(rules_of(&m), [PADDING, AXIOS].repeat(flags.len()), "{m:#}");
+    let stretch = &m["stretch"];
+    assert_eq!(
+        (
+            &stretch["program_starts"],
+            &stretch["file_events"],
+            &stretch["unreadable_lines"],
+            &stretch["unreadable_file_events"]
+        ),
+        (&json!(4), &json!(4), &json!(0), &json!(0)),
+        "{stretch:#}"
+    );
+    let null = [Value::Null, Value::Null, Value::Null, Value::Null];
+    for (i, found) in m["matches"].as_array().unwrap().iter().enumerate() {
+        let event = &found["event"];
+        let p = match i % 2 {
+            0 => &event["program_start"]["instigator"],
+            _ => &event["file_event"]["instigator"],
+        };
+        let want = match i % 2 {
+            0 => null.clone(),
+            _ => [
+                json!("com.example.tool"),
+                Value::Null,
+                Value::Null,
+                Value::Null,
+            ],
+        };
+        assert_eq!(signer_of(p), want, "{event:#}");
+    }
+    let binary = v1::Matches::decode(dir.matches_binary(&[]).as_slice()).unwrap();
+    assert_eq!(binary.matches.len(), 2 * flags.len());
+    for found in &binary.matches {
+        let p = match found.event.clone().unwrap().body.unwrap() {
+            v1::event::Body::ProgramStart(s) => s.instigator.unwrap(),
+            v1::event::Body::FileEvent(f) => f.instigator.unwrap(),
+        };
+        let (_, team, platform, flags) = signer_of_binary(&p);
+        assert_eq!((team, platform, flags), (None, None, None), "{p:?}");
+    }
+}
+
+#[test]
+fn a_line_of_an_earlier_collector_gives_no_responsible_process_process_group_real_ids_or_signer_of_the_process_that_acted_in_any_form()
  {
     // No guess. A collector installed before these were kept gives none of them: each is
     // absent in JSON and in binary, and the text does not say it. The effective user id, which
-    // every collector keeps, is still given.
+    // every collector keeps, is still given, and so is the signer of the program started.
     let dir = Dir::new("ids-earlier");
     dir.install();
     dir.run();
@@ -586,8 +761,35 @@ fn a_line_of_an_earlier_collector_gives_no_responsible_process_process_group_or_
     );
     assert_eq!([i.real_user_id, i.group_id, i.real_group_id], [None; 3]);
     assert_eq!((s.responsible, s.process_group_id), (None, None));
+    assert_eq!(
+        signer_of(&start["instigator"]),
+        [(); 4].map(|_| Value::Null)
+    );
+    assert_eq!(signer_of_binary(&i), (None, None, None, None));
+    assert_eq!(
+        signer_of_binary(&p),
+        (Some("com.example.tool"), None, Some(false), None)
+    );
     assert!(text.contains(" · as user 501 started "), "{text}");
     assert!(text.ends_with(r#""count=1""#), "{text}");
+    // A file event of an earlier collector: the rule still matches, and no signer is given.
+    let dir = Dir::new("signer-earlier");
+    dir.install();
+    dir.run();
+    dir.append(
+        H00,
+        &file_event(1, "create", "/usr/local/bin/node", "/private/tmp/6202033"),
+    );
+    let (json, binary, _) = match_forms(&dir);
+    let instigator = &json["file_event"]["instigator"];
+    assert_eq!(signer_of(instigator), [(); 4].map(|_| Value::Null));
+    let Some(v1::event::Body::FileEvent(f)) = binary.body else {
+        panic!("{binary:?}");
+    };
+    assert_eq!(
+        signer_of_binary(f.instigator.as_ref().unwrap()),
+        (None, None, None, None)
+    );
 }
 
 /// The time now as eslogger writes it, a microsecond past the second.
