@@ -174,6 +174,8 @@ Reserved: `copy_of`, `reachable_from`.
 
 Every command except `immune servers`, `immune view` and `immune watch` answers with one message of the contract, and fails with the message `Failure` (see [the contract](#the-contract)). `immune servers` and `immune view` print text for a person, and `immune watch` prints its own JSON lines. `--store <path>` points any command at another store.
 
+A command that only reads the store opens it read-only and creates nothing next to it. When a check or a watcher was killed in the middle of a write, the first such command rolls that unfinished write back, as SQLite does for any writer, so the store holds what was last committed, and then reads. Where it cannot write in the store's folder it leaves the store as it is and fails with exit 3 until a check or a watcher opens the store.
+
 | Exit | Means |
 |---|---|
 | 0 | answered |
