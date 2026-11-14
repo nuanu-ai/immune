@@ -38,11 +38,11 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-/// Created when a sample is first recorded. One row per process the rule is tracking: an
+/// Part of the store's schema (`store::schema`). One row per process the rule is tracking: an
 /// interpreter given code on its command line whose parent was gone or was launchd when a
 /// sample saw it.
 pub const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS tracked_process (
+CREATE TABLE tracked_process (
     pid            INTEGER NOT NULL,  -- process.pid
     start          INTEGER NOT NULL,  -- process.start, microseconds since the epoch
     executable     TEXT NOT NULL,     -- process.executable
@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS tracked_process (
 );
 -- A connection of a process to an address on the indicator list, once per process and
 -- indicator, so that a connection that stays raises its finding once.
-CREATE TABLE IF NOT EXISTS matched_connection (
+CREATE TABLE matched_connection (
     pid           INTEGER NOT NULL,
     start         INTEGER NOT NULL,
     indicator     TEXT NOT NULL,     -- the STIX comparison it matched
@@ -69,12 +69,16 @@ CREATE TABLE IF NOT EXISTS matched_connection (
     PRIMARY KEY (pid, start, indicator)
 );
 -- The latest sample, for the status: when, and how many processes and connections it read.
-CREATE TABLE IF NOT EXISTS last_sample (
+CREATE TABLE last_sample (
     id          INTEGER PRIMARY KEY CHECK (id = 1),
     at          INTEGER NOT NULL,
     processes   INTEGER NOT NULL,
     connections INTEGER NOT NULL
 );
+";
+
+/// The coverage kinds of a sample, vocabulary applied on every open that may write.
+pub const KINDS: &str = "
 INSERT OR IGNORE INTO coverage_kind (name) VALUES
     ('running programs of this user, sampled'),
     ('internet connections of this user''s programs, sampled');
@@ -452,7 +456,6 @@ pub fn take(
 ) -> Result<Report, Box<dyn std::error::Error>> {
     let sample = derive(reading);
     let took_ms = took.elapsed().as_millis();
-    tx.execute_batch(SCHEMA)?;
     let at = sample.at;
     let (mut tracked_new, mut tracked_again, mut seen) = (0, 0, Vec::new());
     // An executable inside a folder macOS asks permission for is not looked at to learn who
@@ -773,14 +776,6 @@ pub fn last_sampled(conn: &rusqlite::Connection) -> rusqlite::Result<Option<i64>
 
 /// When the latest sample was taken, and how many programs and connections it read.
 pub fn last_sample(conn: &rusqlite::Connection) -> rusqlite::Result<Option<(i64, i64, i64)>> {
-    let exists: bool = conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'last_sample')",
-        [],
-        |r| r.get(0),
-    )?;
-    if !exists {
-        return Ok(None);
-    }
     conn.query_row(
         "SELECT at, processes, connections FROM last_sample WHERE id = 1",
         [],

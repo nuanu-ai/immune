@@ -21,7 +21,7 @@ pub struct Word {
     /// Cut, as `secrets::Kept::OwnerReason` keeps it.
     pub reason: crate::secrets::Text,
     pub made_at: i64,
-    /// How it was given; `Unknown` for one made before this was kept.
+    /// How it was given; `Unknown` for a value this build does not know.
     pub via: Via,
 }
 
@@ -58,7 +58,7 @@ impl Standing {
             "{} by the owner on {}: {}",
             self.word.said,
             crate::view::utc(self.word.made_at),
-            self.word.reason.shown(crate::view::shown)
+            self.word.reason.said()
         )
     }
 
@@ -74,49 +74,18 @@ pub fn bare(id: &str) -> &str {
     id.strip_prefix("machine:").unwrap_or(id)
 }
 
-/// How a statement was given, kept with it. A table made before this was kept takes the
-/// column on open; a statement made before has none and is read as `unknown`.
-pub fn add_via(conn: &Connection) -> rusqlite::Result<()> {
-    if !has_via(conn)? {
-        conn.execute_batch("ALTER TABLE owner_statement ADD COLUMN via TEXT")?;
-    }
-    Ok(())
-}
-
-fn has_via(conn: &Connection) -> rusqlite::Result<bool> {
-    conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('owner_statement') WHERE name = 'via')",
-        [],
-        |r| r.get(0),
-    )
-}
-
-fn has_table(conn: &Connection) -> rusqlite::Result<bool> {
-    conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'owner_statement')",
-        [],
-        |r| r.get(0),
-    )
-}
-
-/// The statements that stand. A store made before the owner's word has none.
+/// The statements that stand.
 pub fn standing(conn: &Connection) -> rusqlite::Result<Vec<Standing>> {
-    if !has_table(conn)? {
-        return Ok(Vec::new());
-    }
-    // A store opened only for reading since this build keeps no `via` yet.
-    let via = if has_via(conn)? { "via" } else { "NULL" };
-    let form = crate::secrets::form(conn)?;
     let words: Vec<Word> = conn
-        .prepare(&format!(
-            "SELECT entity, said, reason, made_at, {via} FROM owner_statement
-             WHERE withdrawn_at IS NULL"
-        ))?
+        .prepare(
+            "SELECT entity, said, reason, made_at, via FROM owner_statement
+             WHERE withdrawn_at IS NULL",
+        )?
         .query_map([], |r| {
             Ok(Word {
                 entity: r.get(0)?,
                 said: r.get(1)?,
-                reason: crate::secrets::Kept::OwnerReason.read(form, &r.get::<_, String>(2)?),
+                reason: crate::secrets::Kept::OwnerReason.read(&r.get::<_, String>(2)?),
                 made_at: r.get(3)?,
                 via: Via::stored(r.get::<_, Option<String>>(4)?.as_deref()),
             })
@@ -312,7 +281,8 @@ fn withdraw_in(
 
 /// Makes a statement about the entity. One that stood about the same machine is withdrawn
 /// in the same transaction: a machine has one standing statement. The reason is taken whatever
-/// it holds and kept cut (`secrets::Kept::OwnerReason`, `OwnerEntry`); returned with how many
+/// it holds and kept cut, in its row and its journal entry (`secrets::Kept::OwnerReason`);
+/// returned with how many
 /// statements it replaced, as it is kept.
 #[allow(clippy::too_many_arguments)]
 pub fn say(
@@ -374,9 +344,6 @@ pub fn withdraw(
 
 /// How many statements were withdrawn and are kept.
 pub fn withdrawn(conn: &Connection) -> rusqlite::Result<i64> {
-    if !has_table(conn)? {
-        return Ok(0);
-    }
     conn.query_row(
         "SELECT COUNT(*) FROM owner_statement WHERE withdrawn_at IS NOT NULL",
         [],
@@ -395,7 +362,7 @@ pub fn statement(s: &Standing) -> crate::contract::v1::Statement {
         said: s.word.said.clone(),
         via: value_of::<v1::Via>(s.word.via.literal()),
         at: s.word.made_at,
-        reason_text: s.word.reason.shown(whole),
+        reason_text: s.word.reason.said(),
         reason_cuts: crate::answer::reason_cuts(&s.word.reason),
         names_text: s.names.iter().skip(1).map(|n| whole(n)).collect(),
         seen_after: s.seen.as_ref().map(|e| v1::SeenAfter {

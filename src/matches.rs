@@ -23,7 +23,7 @@
 
 use crate::contract::{v1, value_of};
 use crate::events::{
-    self, Arrival, Arrivals, Evidence, Hit, Lacked, LineAt, Place, Queue, Stretch, WentTo,
+    self, Arrival, Arrivals, Evidence, Hit, Lacked, LineAt, Place, Queue, Stretch,
 };
 use crate::secrets::Args;
 use crate::sigma::{Kind, Meta, Placement, Reason, Rules};
@@ -41,7 +41,7 @@ const FORMAT: u32 = 1;
 /// small too.
 pub const LIMIT: usize = 1000;
 
-const AFTER: &str = "--after takes the place an answer of immune matches printed in continue_after, whole and as printed";
+const AFTER: &str = "--after takes the place an answer of immune matches printed in continue_after, whole and as printed; for a place this version cannot read, such as one an earlier version printed, run immune matches without --after to start from the oldest line kept";
 
 /// Why rules for file events judge nothing while the collector is not installed.
 const NOT_INSTALLED: &str = "the event level is not installed";
@@ -158,7 +158,7 @@ fn read_with(rules: &Rules, args: &MatchesArgs, now: i64) -> Result<v1::Matches,
         format: FORMAT,
         answered_at: now,
         after: after.map(|(text, _)| text.clone()),
-        store_id: store::id(&tx).map_err(|e| unreadable(&e))?,
+        store_id: Some(store::id(&tx).map_err(|e| unreadable(&e))?),
         ..Default::default()
     };
     let status_state = |c: &mut v1::Collector| {
@@ -259,7 +259,7 @@ fn raised(
         return Ok((v1::Raised::NotReadYet, Vec::new()));
     }
     Ok(match events::went_to(conn, at, &meta.name)? {
-        WentTo::Finding(id) => {
+        Some(id) => {
             // Every finding of a shipped rule is among them; the id alone stands for one that
             // is not.
             let finding = held.findings.get(&id).cloned();
@@ -269,16 +269,13 @@ fn raised(
             });
             (v1::Raised::Finding, vec![finding])
         }
-        WentTo::None => (v1::Raised::NoFinding, Vec::new()),
-        WentTo::Unrecorded => (v1::Raised::Unrecorded, Vec::new()),
+        None => (v1::Raised::NoFinding, Vec::new()),
     })
 }
 
 /// Every finding in the store, by id, as `immune project` and the others name one.
 fn finding_refs(conn: &Connection, now: i64) -> rusqlite::Result<BTreeMap<String, v1::FindingRef>> {
-    let Some(found) = findings::all(conn, now)? else {
-        return Ok(BTreeMap::new());
-    };
+    let found = findings::all(conn, now)?;
     Ok(found
         .iter()
         .map(findings::item)
@@ -456,10 +453,7 @@ fn collector(s: &Stretch, arrivals: &Arrivals) -> v1::Collector {
     v1::Collector {
         state: value_of::<v1::CollectorState>(s.state),
         said_by: s.said.as_ref().map(|(by, _)| by.to_string()),
-        said_text: s
-            .said
-            .as_ref()
-            .map(|(_, said)| crate::secrets::text(said, whole)),
+        said_text: s.said.as_ref().map(|(_, said)| crate::secrets::said(said)),
         written_at: s.written,
         file_events_collected: s.collects.is_ok(),
         foreign_files: s.foreign,
@@ -503,8 +497,8 @@ fn named(arrivals: &Arrivals, state: Arrival) -> Vec<String> {
 /// named whatever the store says. Both `None` when no collector is installed.
 ///
 /// What this list says rests on the lines read: the store can only add to it. A reading older
-/// than the lines, after a downgrade with the app closed, or a store an earlier build left, never
-/// makes a stretch whose lines lack a field look judged.
+/// than the lines, as after a downgrade with the app closed, never makes a stretch whose lines
+/// lack a field look judged.
 fn unevaluated(
     rules: &Rules,
     collects: &Result<(), String>,
@@ -594,7 +588,7 @@ mod tests {
 
     /// A reading of the log under `root` by the core, as `immune run` makes one, into `store`.
     fn core_reads(store: &std::path::Path, root: &std::path::Path) {
-        let mut conn = crate::store::open(store).unwrap();
+        let mut conn = crate::store::open_or_make(store).unwrap();
         let tx = conn.transaction().unwrap();
         crate::store::put_entity(&tx, "machine:mac").unwrap();
         events::read(&tx, "events-1", "machine:mac", root, 1_791_090_000).unwrap();
@@ -864,43 +858,6 @@ mod tests {
     }
 
     #[test]
-    fn a_store_an_earlier_build_left_tells_what_it_said_arrived_as_not_yet_known() {
-        // The build before this one told a field arriving for ever after one value. Its row,
-        // the script kept and filled, is not taken for arriving: the answer says not yet known
-        // and names the rule that reads it, and is never quiet.
-        let rules = crate::sigma::testing::process_kept();
-        let (dir, root) = installed_root("old-store");
-        log_file(
-            &root,
-            "exec-20261004T00.jsonl",
-            &(git(1, "old") + &git(2, "old")),
-            100,
-        );
-        let store = dir.join("store.db");
-        let conn = crate::store::open(&store).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE event_arrival (kind TEXT NOT NULL, keep TEXT NOT NULL,
-                 kept INTEGER NOT NULL, filled INTEGER, PRIMARY KEY (kind, keep));
-             INSERT INTO event_arrival VALUES ('program_start', 'script', 1, 5);",
-        )
-        .unwrap();
-        drop(conn);
-        let a = ask(&rules, &store, &root, None);
-        let c = a.collector.as_ref().unwrap();
-        assert!(c.arriving.is_empty(), "{:?}", c.arriving);
-        assert!(c.not_yet_known.contains(&"script".to_string()));
-        assert!(!quiet(&a));
-        assert_eq!(
-            named(&a),
-            [(
-                v1::UnevaluatedReason::NotCollected as i32,
-                Some(NOT_YET_KNOWN)
-            )]
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
     fn a_group_filled_on_some_lines_by_nature_is_judged_by_the_core_s_latest_reading_alone() {
         // The limit as it stands, pinned so that a change that closes it has a test to turn
         // round. One start without a script cannot tell no script by nature from a field the
@@ -1076,7 +1033,7 @@ mod tests {
         let log = root.join(events::LOG).join("exec-20261004T00.jsonl");
         // A program start as an earlier collector wrote it: no script, no start time.
         std::fs::write(&log, start(1, "")).unwrap();
-        drop(crate::store::open(&dir.join("store.db")).unwrap());
+        drop(crate::store::open_or_make(&dir.join("store.db")).unwrap());
         let core = || core_reads(&dir.join("store.db"), &root);
         let args = MatchesArgs {
             store: dir.join("store.db"),

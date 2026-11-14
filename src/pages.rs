@@ -12,7 +12,7 @@
 
 use crate::contract::v1;
 use crate::covered::{self, Count, Uncovered, YOU};
-use crate::view::{self, DETAILS, FOOT, Latest, Out, counted, esc, utc, utc_or};
+use crate::view::{self, DETAILS, FOOT, Latest, Out, counted, esc, esc_said, utc, utc_or};
 use crate::{beyond, findings, integrity, servers, watched};
 use rusqlite::{Connection, params};
 use std::collections::{BTreeMap, BTreeSet};
@@ -351,7 +351,7 @@ fn finding_rows<'a>(
 
 /// Every row of the table, from the state's open and answered findings.
 fn rows_of(st: &crate::status::State) -> Vec<FindingRow<'_>> {
-    finding_rows(&st.needs.items, st.answered.as_deref().unwrap_or_default())
+    finding_rows(&st.needs.items, &st.answered)
 }
 
 /// What the band and the tabs count: things, as the rows show them. A finding and the response
@@ -397,7 +397,7 @@ fn findings_table(
 ) -> Out {
     let rows = rows_of(st);
     let counts = shown(&rows);
-    let found = findings::all(conn, now)?.unwrap_or_default();
+    let found = findings::all(conn, now)?;
     writeln!(
         out,
         "<section id=\"findings\" class=\"findings\">\n<div class=\"wsh\"><h2>Findings</h2><nav class=\"tabs\" aria-label=\"Findings\"><a id=\"open\" href=\"#open\">Open <span class=\"tn\">{}</span></a><a id=\"answered\" href=\"#answered\">Answered <span class=\"tn\">{}</span></a><a id=\"all\" href=\"#all\">All <span class=\"tn\">{}</span></a></nav></div>",
@@ -659,7 +659,7 @@ fn finding_body(
             write!(
                 out,
                 "\n<blockquote class=\"quote\">{}</blockquote>\n",
-                esc(q)
+                esc_said(q)
             )?;
         }
         out.push_str("</div>");
@@ -715,7 +715,7 @@ fn event_facts(e: &v1::Event, now: i64) -> Vec<(&'static str, String)> {
                 let args: Vec<String> = s
                     .args_text
                     .iter()
-                    .map(|a| format!("<span class=\"arg\">{}</span>", esc(a)))
+                    .map(|a| format!("<span class=\"arg\">{}</span>", esc_said(a)))
                     .collect();
                 facts.push((
                     "Arguments",
@@ -1136,7 +1136,7 @@ fn watched_table(
                         states.push(match exploited_gap(conn, now)? {
                             Some(gap) => Standing::not(format!(
                                 "<span title=\"{}\">whether any is used in attacks is not known</span>",
-                                esc(&gap)
+                                esc_said(&gap)
                             )),
                             None => Standing::read("none is known to be used in attacks"),
                         });
@@ -1150,7 +1150,7 @@ fn watched_table(
             } else {
                 states.push(Standing::not(format!(
                     "<span title=\"{}\">not read in full</span>",
-                    esc(gap)
+                    esc_said(gap)
                 )));
             }
         }
@@ -1474,21 +1474,21 @@ pub fn vulnerabilities(conn: &Connection, now: i64) -> Result<String, Box<dyn Er
 /// and escaped apart from the name.
 fn example(name: &str, reason: Option<&str>) -> String {
     match reason {
-        Some(r) => format!("{}: {}", esc(name), esc(&view::said(r))),
+        Some(r) => format!("{}: {}", esc(name), esc_said(&view::said(r))),
         None => esc(name),
     }
 }
 
 /// What is told apart from a thing's words, as safe HTML: every example with what its source
-/// said, then the value, which is what a source said of it, such as why a download failed, and
-/// so is cut as every such text.
+/// said, then the value, what sources said of it, such as why a download failed, cut where it
+/// was put together (`covered::Uncovered::value`).
 fn apart(u: &Uncovered) -> Vec<String> {
     let mut out: Vec<String> = u
         .examples
         .iter()
         .map(|e| example(&e.name, e.reason.as_deref()))
         .collect();
-    out.extend(u.value.as_deref().map(|v| esc(&view::said(v))));
+    out.extend(u.value.as_deref().map(esc_said));
     out
 }
 
@@ -2076,9 +2076,10 @@ fn exploited_gap(conn: &Connection, now: i64) -> rusqlite::Result<Option<String>
 /// there only when it is (`unread`).
 fn coverage_of_list(out: &mut String, unread: Option<&str>, empty: bool, absent: &str) {
     match unread {
+        // What `unread` says, which holds what sources said, cut.
         Some(said) => {
             out.push_str("<p class=\"muted\">");
-            out.push_str(&esc(said));
+            out.push_str(&esc_said(said));
             out.push_str("</p>\n");
         }
         None if empty => {
@@ -2419,7 +2420,7 @@ fn files(
         } else {
             ("nowrap", "not since first seen".to_string())
         };
-        view::td(out, class, &last)?;
+        view::td_said(out, class, &last)?;
         out.push_str("</tr>\n");
     }
     out.push_str("</tbody></table></div>\n");
@@ -2646,7 +2647,7 @@ pub fn beyond(conn: &Connection, latest: &[Latest], now: i64) -> Result<String, 
         for [label, state, last, others] in rows {
             out.push_str("<tr>");
             view::td(&mut out, "mono", &label)?;
-            view::td(&mut out, "", &state)?;
+            view::td_said(&mut out, "", &state)?;
             view::td(&mut out, "nowrap", &last)?;
             view::td(&mut out, "mono", &others)?;
             out.push_str("</tr>\n");
@@ -2743,7 +2744,7 @@ pub fn beyond(conn: &Connection, latest: &[Latest], now: i64) -> Result<String, 
             view::td(&mut out, "mono", s.name())?;
             view::td(&mut out, "", &s.word.said)?;
             view::td(&mut out, "nowrap", &utc(s.word.made_at))?;
-            view::td(&mut out, "", &s.word.reason.shown(view::shown))?;
+            view::td_said(&mut out, "", &s.word.reason.said())?;
             view::td(&mut out, "", view::given_by(s.word.via))?;
             out.push_str("</tr>\n");
         }
@@ -3089,7 +3090,7 @@ mod tests {
             std::env::temp_dir().join(format!("immune-ways-{}", std::process::id())),
         );
         std::fs::create_dir_all(&dir).unwrap();
-        let conn = crate::store::open(&dir.join("store.db")).unwrap();
+        let conn = crate::store::open_or_make(&dir.join("store.db")).unwrap();
         let mut page = String::new();
         ways(&conn, &mut page, None).unwrap();
         let registered: Vec<String> = conn
@@ -3166,7 +3167,7 @@ mod tests {
     /// not exist; the folder it made goes, also when the test fails.
     fn this_mac_page() -> String {
         let dir = crate::common::Scratch::new("told");
-        let conn = crate::store::open(&dir.0.join("store.db")).unwrap();
+        let conn = crate::store::open_or_make(&dir.0.join("store.db")).unwrap();
         let st = crate::status::state(&conn, &dir.0.join("no-home"), 1_791_000_000).unwrap();
         this_mac(&conn, &st, 1_791_000_000).unwrap()
     }

@@ -1452,9 +1452,10 @@ fn anywhere(v: &Value, key: &str, holds: &str) -> bool {
     }
 }
 
-/// The source paths and selectors that could have produced a legacy name. Check every
-/// candidate: a checkout path or a selected key can itself contain a literal hash.
-pub fn legacy_units(
+/// The units a row with a pattern, a folder or a selector could have read under `name`, the public
+/// name of a fact, for `baseline::candidates`. Every candidate is checked: a checkout path or a
+/// selected key can itself contain a literal hash.
+pub fn pattern_units(
     kind: &str,
     name: &str,
     checkout: impl Fn(&str) -> bool,

@@ -186,6 +186,11 @@ fn failed(r: &Latest) -> bool {
         && status::class(&r.completeness, r.reason.as_deref(), r.cause.as_deref()) == Some("failed")
 }
 
+/// A reading of a server file an earlier probe printed, which only the person can make again.
+fn earlier_probe(r: &Latest) -> bool {
+    r.reader == servers::READER && r.reason.as_deref() == Some(servers::OLDER_PROBE)
+}
+
 /// Is this Mac watched, and how: from the latest readings, `live` and when a watcher last
 /// read. `not_checked` before any reading of this Mac; `watched_in_part` when a reading of its
 /// own places failed, that is, they are there and could not be read; else `watched`.
@@ -327,7 +332,7 @@ pub const SERVERS_NOT_CHECKED: Cause = Cause {
         "{n} of your servers was not checked last time.",
         "{n} of your servers were not checked last time.",
     ],
-    meaning: "Servers are checked only when you run the server check yourself. The last one did not finish on these, so changes on them go unseen for now.",
+    meaning: "Servers are checked only when you run the server check yourself. The last one did not finish on these, or left a file an earlier version of the check wrote, so changes on them go unseen for now.",
     meaning_none: None,
     advice: "Run the server check again when it suits you.",
 };
@@ -743,6 +748,9 @@ pub struct Uncovered {
     /// failed visit for servers that could not be opened, the last download of the list of
     /// vulnerabilities, else the latest reading that found it.
     pub since: Option<i64>,
+    /// What sources said of it, such as why a download failed, as every output shows it: put
+    /// together from pieces each cut on its own (`secrets::said`), so what one source said never
+    /// takes the names beside it with it. Shown as it is, never cut again.
     pub value: Option<String>,
     pub examples: Vec<Example>,
     /// Why, clause by clause in the program's words, where the words say `{reasons}`.
@@ -913,14 +921,22 @@ pub fn not_covered(
         .unreached
         .iter()
         .partition(|u| u.reason.as_deref() == Some(servers::NOT_COMPLETE));
-    if !unfinished.is_empty() {
+    // A server whose file an earlier probe printed is not checked either: running the server
+    // check again is what reads it.
+    let mut not_checked: Vec<&str> = unfinished.iter().map(|u| u.scope.as_str()).collect();
+    for r in latest.iter().filter(|r| earlier_probe(r)) {
+        if !not_checked.contains(&r.scope.as_str()) {
+            not_checked.push(&r.scope);
+        }
+    }
+    if !not_checked.is_empty() {
         out.push(Uncovered {
             since: last_sweep,
-            examples: unfinished
+            examples: not_checked
                 .iter()
-                .map(|u| Example::named(place(&u.scope)))
+                .map(|s| Example::named(place(s)))
                 .collect(),
-            ..Uncovered::new(&SERVERS_NOT_CHECKED, unfinished.len())
+            ..Uncovered::new(&SERVERS_NOT_CHECKED, not_checked.len())
         });
     }
     if !unopened.is_empty() {
@@ -939,7 +955,7 @@ pub fn not_covered(
     let away: BTreeSet<&str> = p.unreached.iter().map(|u| u.scope.as_str()).collect();
     let (closed, other): (Vec<&Latest>, Vec<&Latest>) = latest
         .iter()
-        .filter(|r| failed(r))
+        .filter(|r| failed(r) && !earlier_probe(r))
         .filter(|r| !(r.reader == servers::READER && away.contains(r.scope.as_str())))
         .partition(|r| not_permitted(r.reason.as_deref()));
     for (cause, list) in [(&NOT_PERMITTED, closed), (&READING_FAILED, other)] {
@@ -984,7 +1000,7 @@ pub fn not_covered(
                 value: l
                     .said
                     .as_ref()
-                    .map(|s| s.shown(str::to_string))
+                    .map(crate::secrets::Text::said)
                     .filter(|s| !s.is_empty()),
                 ..Uncovered::new(cause, 1)
             });
@@ -1185,7 +1201,7 @@ pub fn not_covered(
         let why = crate::threats::why(reason);
         out.push(Uncovered {
             since: last.map(|(at, _)| at),
-            value: Some(reason.clone()),
+            value: Some(crate::secrets::said(reason)),
             reasons: vec![why.said.to_string()],
             ..Uncovered::new(
                 if why.yours {
@@ -1214,7 +1230,7 @@ pub fn not_covered(
                     let why = crate::threats::why(&reason);
                     yours |= why.yours;
                     reasons.push(format!("{ecosystem}: {}", why.said));
-                    failures.push(format!("{ecosystem}: {reason}"));
+                    failures.push(format!("{ecosystem}: {}", crate::secrets::said(&reason)));
                 }
                 None => reasons.push(format!("{ecosystem}: {not_current}")),
             }
@@ -1418,14 +1434,6 @@ fn plain_lack(what: &str, name: Option<&str>) -> String {
 /// What the latest readings found this version has no reader for: the scope it was found in,
 /// what it is and its name.
 fn lacks(conn: &Connection) -> rusqlite::Result<Vec<(String, String, Option<String>)>> {
-    let has_table: bool = conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'coverage_lack')",
-        [],
-        |r| r.get(0),
-    )?;
-    if !has_table {
-        return Ok(Vec::new());
-    }
     conn.prepare(&format!(
         "{}
          SELECT DISTINCT c.scope, l.what, l.name

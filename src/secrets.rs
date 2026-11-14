@@ -42,13 +42,21 @@
 //! `\u{5c}`, so a bare one begins a mark no source can forge, and every printed event also lists
 //! its cuts. In the store a source's backslash is written the same way, so a mark read back is
 //! always the core's own; text from a source (`Text::source`) never yields one. `Kept` lists
-//! every kind of kept text that may hold a secret, and both the one-time cleaning of a store and
-//! every reader of such text go by it.
+//! the kinds of kept text that may hold a secret and are read back as text, and every reader of
+//! such text goes by it.
 //!
 //! If the set does not load whole (its sum differs, a key this build does not read, a pattern
 //! that does not compile, a self-test on planted fakes that is not cut), nothing is printed or
 //! kept raw: every argument is withheld whole. A line longer than `LINE_CAP` is withheld whole
 //! too, with a mark of its own.
+//!
+//! Text from a source reaches output one way, `said` (or `Text::said`), on every surface: the
+//! contract, the text for a person, the pages and `immune watch`. It cuts the text and writes a
+//! source's backslash `\u{5c}`, so no source can write a mark, and a cap on length is taken
+//! after the cut and never breaks a mark. It is cut where it is put beside the core's words,
+//! piece by piece (`Text::then`): a line the core composed is never cut as a whole, so what one
+//! source said cannot take the core's words with it, and a text withheld whole is one mark in
+//! its own place. Decisions are made from the text as the source said it.
 //!
 //! The core never validates a secret: nothing here sends anything anywhere.
 
@@ -106,14 +114,6 @@ pub fn mark(kind: &str, length: usize) -> String {
     format!("\\cut{{{kind} {length}}}")
 }
 
-/// How stored arguments are written: as the source gave them, by a build before this one, or
-/// cut, with a source's backslash written `\u{5c}` and marks bare.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Form {
-    Raw,
-    Cut,
-}
-
 /// An event's arguments, cut.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Args(pub Vec<Vec<Piece>>);
@@ -126,10 +126,10 @@ impl Args {
 
     /// Arguments as the store holds them, cut again: a set newer than the one that cut them
     /// applies to what is shown.
-    pub fn stored(args: &[String], form: Form) -> Args {
+    pub fn stored(args: &[String]) -> Args {
         Args(cut_with(
             set().ok(),
-            args.iter().map(|a| pieces(a, form)).collect(),
+            args.iter().map(|a| parse(a)).collect(),
         ))
     }
 
@@ -185,6 +185,54 @@ impl Text {
         show(&self.0, &esc)
     }
 
+    /// The core's own words or a name, such as a path, to be put beside a source's text
+    /// (`then`): never cut, and shown as `said` shows any text, a backslash as `\u{5c}`.
+    pub fn ours(s: &str) -> Text {
+        Text(text_pieces(s))
+    }
+
+    /// This text, then `next`, each piece as it was cut.
+    pub fn then(mut self, next: Text) -> Text {
+        self.0.extend(next.0);
+        self
+    }
+
+    /// The text as every output shows it, the contract, the text for a person, the pages and
+    /// `immune watch` alike: each mark bare, and in a source's text a backslash and every hidden
+    /// character written `\u{…}`, so no text from a source can read as a mark.
+    pub fn said(&self) -> String {
+        self.said_within(usize::MAX)
+    }
+
+    /// `said`, at most `cap` characters: past it, what fits and `…`. A mark and a character
+    /// written `\u{…}` are whole or left out, never broken.
+    pub fn said_within(&self, cap: usize) -> String {
+        let (mut whole, mut count) = (String::new(), 0);
+        units(&self.0, |u| {
+            whole.push_str(u);
+            count += u.chars().count();
+            true
+        });
+        if count <= cap {
+            return whole;
+        }
+        let (mut out, mut room) = (String::new(), cap.saturating_sub(1));
+        units(&self.0, |u| {
+            let n = u.chars().count();
+            let fits = n <= room;
+            if fits {
+                out.push_str(u);
+                room -= n;
+            }
+            fits
+        });
+        // No room even for `…` when the cap is nothing.
+        if cap > 0 {
+            out.push('…');
+        }
+        out
+    }
+
     /// What was cut out of it, each piece by its kind and length, so a caller knows what was
     /// kept of what it gave.
     pub fn cuts(&self) -> Vec<(&str, usize)> {
@@ -203,107 +251,35 @@ fn cut_one(set: Option<&Set>, text: Vec<Piece>) -> Vec<Piece> {
     cut_with(set, vec![text]).pop().unwrap_or_default()
 }
 
-/// One text from a source, cut and shown: each piece of text through `esc`.
-pub fn text(s: &str, esc: impl Fn(&str) -> String) -> String {
-    Text::source(s).shown(esc)
+/// What a source said, as every output shows it: the one way such text reaches output.
+pub fn said(s: &str) -> String {
+    Text::source(s).said()
 }
 
-/// The kinds of text the store keeps that may hold a secret: the arguments of evidence, the last
-/// line the collector printed, a verdict's reason and case, the reason of a person's answer to
-/// a finding and of a statement about a machine, each in its row and, where it has one, in its
-/// journal entry. This one list is what the cleaning rewrites (`clean_with`, by
-/// `Kept::rewrite`), and each kind's readers read it through `Kept::read` or `Args::stored`, cut
-/// again. The tests go through the list with a `match`, so a kind added here does not build until
-/// it is cleaned, read and tested.
+/// `said`, at most `cap` characters (`Text::said_within`).
+pub fn said_within(s: &str, cap: usize) -> String {
+    Text::source(s).said_within(cap)
+}
+
+/// The kinds of text the store keeps, beside the arguments of evidence (`Args::stored`), that
+/// may hold a secret and are read back as text: the last line the collector printed, a verdict's
+/// reason and case, and the reason of a person's answer to a finding and of a statement about a
+/// machine. Each is kept cut, in the store's form, and its readers read it through `Kept::read`,
+/// cut again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kept {
-    Arguments,
     Said,
     Reason,
     Case,
-    VerdictEntry,
     AnswerReason,
-    AnswerEntry,
     OwnerReason,
-    OwnerEntry,
 }
 
 impl Kept {
-    pub const ALL: [Kept; 9] = [
-        Kept::Arguments,
-        Kept::Said,
-        Kept::Reason,
-        Kept::Case,
-        Kept::VerdictEntry,
-        Kept::AnswerReason,
-        Kept::AnswerEntry,
-        Kept::OwnerReason,
-        Kept::OwnerEntry,
-    ];
-
-    /// The table and the column that keep it, and which of its rows: the journal keeps every
-    /// kind of entry, and only these are rewritten.
-    fn place(self) -> (&'static str, &'static str, &'static str) {
-        match self {
-            Kept::Arguments => ("rule_evidence", "args", ""),
-            Kept::Said => ("event_level", "said", ""),
-            Kept::Reason => ("verdict", "reason", ""),
-            Kept::Case => ("verdict", "case_ref", ""),
-            Kept::VerdictEntry => ("journal", "text", " WHERE entry = 'verdict'"),
-            Kept::AnswerReason => ("finding", "reason", ""),
-            Kept::AnswerEntry => (
-                "journal",
-                "text",
-                " WHERE entry IN ('finding_expected', 'finding_seen')",
-            ),
-            Kept::OwnerReason => ("owner_statement", "reason", ""),
-            Kept::OwnerEntry => ("journal", "text", " WHERE entry = 'owner_said'"),
-        }
-    }
-
-    /// The fields of a journal entry kept as JSON that hold this kind's text; none for a text
-    /// kept as it is.
-    fn fields(self) -> &'static [&'static str] {
-        match self {
-            Kept::VerdictEntry => &VERDICT_ENTRY_TEXT,
-            Kept::AnswerEntry => &["reason"],
-            _ => &[],
-        }
-    }
-
     /// One text of this kind as the store keeps it, read cut: marks are read only in the store's
-    /// own form, and a set newer than the one that kept it applies. The arguments of evidence are
-    /// read whole by `Args::stored`.
-    pub fn read(self, form: Form, s: &str) -> Text {
-        Text(cut_one(set().ok(), pieces(s, form)))
-    }
-
-    /// One value of this kind as an earlier build kept it, as the store keeps it now.
-    fn rewrite(self, set: &Set, s: &str) -> String {
-        let source = |s: &str| show(&cut_one(Some(set), text_pieces(s)), &store_escape);
-        match self {
-            Kept::Arguments => {
-                let args: Vec<String> = serde_json::from_str(s).unwrap_or_default();
-                serde_json::json!(raw_in(Some(set), &args).store()).to_string()
-            }
-            Kept::VerdictEntry | Kept::AnswerEntry => {
-                let Ok(mut v) = serde_json::from_str::<Value>(s) else {
-                    return s.to_string();
-                };
-                for key in self.fields() {
-                    if let Some(t) = v[*key].as_str() {
-                        v[*key] = Value::String(source(t));
-                    }
-                }
-                v.to_string()
-            }
-            Kept::Said
-            | Kept::Reason
-            | Kept::Case
-            | Kept::AnswerReason
-            | Kept::OwnerReason
-            | Kept::OwnerEntry => source(s),
-        }
+    /// own form, and a set newer than the one that kept it applies.
+    pub fn read(self, s: &str) -> Text {
+        Text(cut_one(set().ok(), parse(s)))
     }
 }
 
@@ -325,126 +301,6 @@ fn holds_in(set: Result<&Set, &str>, s: &str) -> Result<bool, &'static str> {
         .any(|p| matches!(p, Piece::Cut { .. })))
 }
 
-/// How the store's kept texts are written: cut, in the store's form, in a store of the current
-/// format, else as a build before this one kept them, in a store of format 4 not yet cleaned
-/// (`store::UNCLEANED_FORMAT`). The format is what says it, so a build from before this one,
-/// which refuses the newer format, never writes raw text into a cleaned store. A store opened
-/// only to read is never cleaned, and what it prints is cut all the same.
-pub fn form(conn: &rusqlite::Connection) -> rusqlite::Result<Form> {
-    let version: String = conn.query_row(
-        "SELECT value FROM meta WHERE key = 'format_version'",
-        [],
-        |r| r.get(0),
-    )?;
-    Ok(if version == crate::store::UNCLEANED_FORMAT {
-        Form::Raw
-    } else {
-        Form::Cut
-    })
-}
-
-/// Cuts what a build before this one kept, once: every kind of `Kept`. Overwritten content is
-/// zeroed (`secure_delete`), the file is then rebuilt (`VACUUM`), and with the rollback journal
-/// deleted on commit no old byte is left in the store's files. The pages made from the store are
-/// removed; the next `immune view` makes them again. Backups and snapshots made before, and the
-/// collector's log, are not reached. With a set that did not load nothing is rewritten, and
-/// printing withholds every text.
-pub fn clean(
-    conn: &mut rusqlite::Connection,
-    folder: &std::path::Path,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // Asked first, so a store already clean never waits for the set to load.
-    if form(conn)? == Form::Cut {
-        return Ok(());
-    }
-    clean_with(set().ok(), conn, folder)
-}
-
-fn clean_with(
-    set: Option<&Set>,
-    conn: &mut rusqlite::Connection,
-    folder: &std::path::Path,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use rusqlite::OptionalExtension;
-    let Some(set) = set else {
-        return Ok(());
-    };
-    conn.pragma_update(None, "secure_delete", true)?;
-    let tx = conn.transaction()?;
-    for kind in Kept::ALL {
-        let (table, column, only) = kind.place();
-        let exists: bool = tx.query_row(
-            "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-            [table],
-            |r| r.get(0),
-        )?;
-        if !exists {
-            continue;
-        }
-        let rows: Vec<(i64, Option<String>)> = tx
-            .prepare(&format!("SELECT rowid, {column} FROM {table}{only}"))?
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<rusqlite::Result<_>>()?;
-        let changed: Vec<(i64, String)> = rows
-            .into_iter()
-            .filter_map(|(id, text)| {
-                let text = text?;
-                let new = kind.rewrite(set, &text);
-                (new != text).then_some((id, new))
-            })
-            .collect();
-        if changed.is_empty() {
-            continue;
-        }
-        // The journal is append-only; its guard is lifted for these entries alone and put back
-        // as it was, in the same transaction.
-        let guard: Option<String> = tx
-            .query_row(
-                "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ?1
-                 AND name = ?2",
-                [table, "journal_no_update"],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if guard.is_some() {
-            tx.execute_batch("DROP TRIGGER journal_no_update")?;
-        }
-        for (id, new) in changed {
-            tx.execute(
-                &format!("UPDATE {table} SET {column} = ?1 WHERE rowid = ?2"),
-                rusqlite::params![new, id],
-            )?;
-        }
-        if let Some(guard) = guard {
-            tx.execute_batch(&guard)?;
-        }
-    }
-    tx.execute(
-        "UPDATE meta SET value = ?1 WHERE key = 'format_version'",
-        [crate::store::FORMAT_VERSION],
-    )?;
-    tx.commit()?;
-    // Rebuilds the file without its free pages. secure_delete has already zeroed what the
-    // updates freed, so a store another process holds at this moment is left as it is.
-    let _ = conn.execute_batch("VACUUM");
-    for page in [
-        folder.join(crate::view::SUMMARY),
-        folder.join(crate::view::DETAILS),
-    ] {
-        let gone = if page.is_dir() {
-            std::fs::remove_dir_all(&page)
-        } else {
-            std::fs::remove_file(&page)
-        };
-        if let Err(e) = gone
-            && e.kind() != std::io::ErrorKind::NotFound
-        {
-            return Err(format!("{}: {e}", page.display()).into());
-        }
-    }
-    Ok(())
-}
-
 fn store_escape(s: &str) -> String {
     crate::contract::escape(s, |_| false)
 }
@@ -459,20 +315,39 @@ fn show(pieces: &[Piece], esc: &impl Fn(&str) -> String) -> String {
         .collect()
 }
 
+/// The text as `Text::said` writes it, unit by unit, to `take` until it says stop: a mark, or
+/// one character of a source's text, a backslash or a hidden one as `\u{…}`.
+fn units(pieces: &[Piece], mut take: impl FnMut(&str) -> bool) {
+    let mut unit = String::new();
+    for p in pieces {
+        match p {
+            Piece::Text(t) | Piece::Quoted(t) => {
+                for c in t.chars() {
+                    unit.clear();
+                    if c == '\\' || crate::icu::hidden(c) {
+                        unit.extend(c.escape_unicode());
+                    } else {
+                        unit.push(c);
+                    }
+                    if !take(&unit) {
+                        return;
+                    }
+                }
+            }
+            Piece::Cut { kind, length } => {
+                if !take(&mark(kind, *length)) {
+                    return;
+                }
+            }
+        }
+    }
+}
+
 fn text_pieces(s: &str) -> Vec<Piece> {
     if s.is_empty() {
         Vec::new()
     } else {
         vec![Piece::Text(s.to_string())]
-    }
-}
-
-/// The pieces of a kept text: as a source wrote it, from a build before this one, or in the
-/// store's form, where a source's backslash is `\u{5c}`, so every mark in it is the core's.
-fn pieces(s: &str, form: Form) -> Vec<Piece> {
-    match form {
-        Form::Raw => text_pieces(s),
-        Form::Cut => parse(s),
     }
 }
 
@@ -496,29 +371,31 @@ fn parse(s: &str) -> Vec<Piece> {
 }
 
 /// Each well-formed mark in `s`, bare: where it begins and ends, its kind and its length. A kind
-/// holds only what a set's name and a pattern's id hold, and a length only digits.
+/// holds only what a set's name and a pattern's id hold, and a length only digits. Linear in the
+/// length of `s`: reading a mark stops at the first byte a mark cannot hold, and the backslash
+/// that begins the next one is such a byte.
 fn marks(s: &str) -> Vec<(usize, usize, String, usize)> {
+    let bytes = s.as_bytes();
+    let run = |from: usize, ok: fn(u8) -> bool| {
+        from + bytes[from..].iter().take_while(|b| ok(**b)).count()
+    };
     let mut out = Vec::new();
     let mut from = 0;
     while let Some(at) = s[from..].find("\\cut{").map(|i| from + i) {
         let after = at + 5;
-        let parsed = s[after..].split_once('}').and_then(|(inside, _)| {
-            let (kind, length) = inside.split_once(' ')?;
-            let kind_ok = !kind.is_empty()
-                && kind
-                    .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b":._-".contains(&b));
-            // Digits alone: `parse` would also take a sign.
-            let n = length
-                .bytes()
-                .all(|b| b.is_ascii_digit())
-                .then(|| length.parse::<usize>().ok())
-                .flatten()?;
-            kind_ok.then(|| (kind.to_string(), n, after + inside.len() + 1))
+        let kind_end = run(after, |b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || b":._-".contains(&b)
         });
+        let digits = kind_end + 1;
+        let length_end = run(digits.min(s.len()), |b| b.is_ascii_digit());
+        let parsed = (kind_end > after
+            && bytes.get(kind_end) == Some(&b' ')
+            && bytes.get(length_end) == Some(&b'}'))
+        .then(|| s[digits..length_end].parse::<usize>().ok())
+        .flatten();
         // A mark holds no other, so the search goes on after its start either way.
-        if let Some((kind, length, end)) = parsed {
-            out.push((at, end, kind, length));
+        if let Some(length) = parsed {
+            out.push((at, length_end + 1, s[after..kind_end].to_string(), length));
         }
         from = after;
     }
@@ -562,6 +439,20 @@ fn cut_exempting(set: Option<&Set>, args: Vec<Vec<Piece>>, exempt: bool) -> Vec<
     let Some(set) = set else {
         return whole(&args, NO_PATTERNS);
     };
+    // The length of the line the patterns would read, known before anything reads it: reading
+    // the exemptions keeps every byte where it is. Over the cap nothing is read at all.
+    let length: usize = args
+        .iter()
+        .flatten()
+        .map(|p| match p {
+            Piece::Text(t) | Piece::Quoted(t) => t.len(),
+            Piece::Cut { kind, length } => mark(kind, *length).len(),
+        })
+        .sum::<usize>()
+        + args.len().saturating_sub(1);
+    if length > LINE_CAP {
+        return whole(&args, TOO_LONG);
+    }
     let args: Vec<Vec<Piece>> = args
         .into_iter()
         .map(|pieces| {
@@ -608,9 +499,6 @@ fn cut_exempting(set: Option<&Set>, args: Vec<Vec<Piece>>, exempt: bool) -> Vec<
             }
         }
         bounds.push((start, line.len()));
-    }
-    if line.len() > LINE_CAP {
-        return whole(&args, TOO_LONG);
     }
     let words = Words::new(&line, &bounds, &marks);
     // An exemption, a mark or a kind in a list of cuts, covers only its own bytes: the patterns
@@ -785,11 +673,30 @@ pub struct Set {
 
 static SET: OnceLock<Result<Set, String>> = OnceLock::new();
 
+#[cfg(test)]
+thread_local! {
+    /// Set by `tests::without_patterns`: on this thread the set is taken as not loaded.
+    static WITHHELD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// The set, loaded once per process; `Err` with the reason when it did not load whole.
 pub fn set() -> Result<&'static Set, &'static str> {
+    #[cfg(test)]
+    if WITHHELD.with(std::cell::Cell::get) {
+        return Err("withheld by a test");
+    }
     SET.get_or_init(|| load(GITLEAKS, SUMS, COMMAND_LINE))
         .as_ref()
         .map_err(String::as_str)
+}
+
+/// Runs `f` on this thread as if the set had not loaded.
+#[cfg(test)]
+pub fn without_patterns<T>(f: impl FnOnce() -> T) -> T {
+    WITHHELD.with(|w| w.set(true));
+    let out = f();
+    WITHHELD.with(|w| w.set(false));
+    out
 }
 
 fn load(gitleaks: &str, sums: &str, command_line: &str) -> Result<Set, String> {
@@ -1538,6 +1445,11 @@ fn ceil(t: &str, mut i: usize) -> usize {
 mod tests {
     use super::*;
 
+    /// One text from a source, cut and shown: each piece of text through `esc`.
+    fn text(s: &str, esc: impl Fn(&str) -> String) -> String {
+        Text::source(s).shown(esc)
+    }
+
     // Every secret here is invented. Token-shaped ones are made when the test runs, a prefix and
     // a body in the shape gitleaks's own generator gives (`utils.GenerateSampleSecret`), so no
     // literal in the source looks like a real token.
@@ -1969,7 +1881,7 @@ mod tests {
             &token,
         ]);
         let kept = Args::raw(&args);
-        let back = Args::stored(&kept.store(), Form::Cut);
+        let back = Args::stored(&kept.store());
         assert_eq!(back, kept);
         assert_eq!(kinds(&back), ["gitleaks:github-pat"]);
         assert_eq!(&plain(&back)[..3], &args[..3]);
@@ -1977,17 +1889,13 @@ mod tests {
 
     #[test]
     fn a_row_kept_before_a_secret_was_recognised_is_cut_when_it_is_shown() {
-        // Rows of an older build hold arguments as the log gave them; rows of an older set hold
-        // what it did not know. Both are cut when they are read.
+        // Rows kept under an older set hold what it did not know: it is cut when it is read.
         let token = format!("{}{}", ["gh", "p_"].concat(), body(ALNUM, 36, 25));
         let args = strings(&["tool", &token]);
-        for form in [Form::Raw, Form::Cut] {
-            assert_eq!(kinds(&Args::stored(&args, form)), ["gitleaks:github-pat"]);
-        }
-        // A backslash an older build kept as it was is a backslash, not an escape.
+        assert_eq!(kinds(&Args::stored(&args)), ["gitleaks:github-pat"]);
         assert_eq!(
-            plain(&Args::stored(&strings(&["a\\u{41}"]), Form::Raw)),
-            ["a\\u{41}"]
+            Kept::Said.read(&format!("said {token}")).cuts(),
+            [("gitleaks:github-pat", 40)]
         );
     }
 
@@ -2008,11 +1916,11 @@ mod tests {
                 &m,
                 &format!("API_KEY={m}"),
             ]);
-            let a = Args::stored(&stored, Form::Cut);
+            let a = Args::stored(&stored);
             assert_eq!(a.cuts().len(), 4, "{kind}: {:?}", a.cuts());
             assert_eq!(a.store(), stored, "{kind}");
             let said = format!("said --password {m}");
-            assert_eq!(Kept::Said.read(Form::Cut, &said).store(), said);
+            assert_eq!(Kept::Said.read(&said).store(), said);
         }
     }
 
@@ -2561,132 +2469,6 @@ mod tests {
     }
 
     #[test]
-    fn every_kind_of_kept_text_is_read_cut_before_the_cleaning_and_kept_in_the_store_s_form_after()
-    {
-        // The one list, `Kept::ALL`: each kind, as an earlier build kept it, holding a token and a
-        // mark-shaped text a source wrote, is read cut while the store is not yet clean, and the
-        // cleaning leaves it in the store's form, read back the same.
-        let token = format!("{}{}", ["gh", "p_"].concat(), body(ALNUM, 36, 30));
-        let source = format!("err \\cut{{a 1}} {token}");
-        let c = rusqlite::Connection::open_in_memory().unwrap();
-        c.execute_batch(
-            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
-             INSERT INTO meta VALUES ('format_version', '4');
-             CREATE TABLE journal (seq INTEGER PRIMARY KEY, entry TEXT, text TEXT);
-             CREATE TRIGGER journal_no_update BEFORE UPDATE ON journal
-                 BEGIN SELECT RAISE(ABORT, 'append-only'); END;
-             CREATE TABLE rule_evidence (args TEXT);
-             CREATE TABLE event_level (id INTEGER PRIMARY KEY, said TEXT);
-             CREATE TABLE verdict (id INTEGER PRIMARY KEY, reason TEXT, case_ref TEXT);
-             CREATE TABLE finding (id INTEGER PRIMARY KEY, reason TEXT);
-             CREATE TABLE owner_statement (id INTEGER PRIMARY KEY, reason TEXT);",
-        )
-        .unwrap();
-        // A kept value read as its readers read it, in the store's store form.
-        let read = |kind: Kept, form: Form, kept: &str| -> String {
-            match kind {
-                Kept::Arguments => {
-                    let args: Vec<String> = serde_json::from_str(kept).unwrap();
-                    Args::stored(&args, form).store().join(" ")
-                }
-                Kept::VerdictEntry | Kept::AnswerEntry => {
-                    let v: Value = serde_json::from_str(kept).unwrap();
-                    kind.fields()
-                        .iter()
-                        .map(|k| kind.read(form, v[*k].as_str().unwrap()).store())
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                }
-                _ => kind.read(form, kept).store(),
-            }
-        };
-        let mut kept = Vec::new();
-        for kind in Kept::ALL {
-            let (sql, raw) = match kind {
-                Kept::Arguments => (
-                    "INSERT INTO rule_evidence (args) VALUES (?1)",
-                    serde_json::json!(["tool", source]).to_string(),
-                ),
-                Kept::Said => (
-                    "INSERT INTO event_level (id, said) VALUES (1, ?1)",
-                    source.clone(),
-                ),
-                Kept::Reason => (
-                    "INSERT INTO verdict (reason, case_ref) VALUES (?1, 'c')",
-                    source.clone(),
-                ),
-                Kept::Case => (
-                    "INSERT INTO verdict (reason, case_ref) VALUES ('r', ?1)",
-                    source.clone(),
-                ),
-                Kept::VerdictEntry => (
-                    "INSERT INTO journal (entry, text) VALUES ('verdict', ?1)",
-                    serde_json::json!({ "reason": source, "case": source }).to_string(),
-                ),
-                Kept::AnswerReason => ("INSERT INTO finding (reason) VALUES (?1)", source.clone()),
-                Kept::AnswerEntry => (
-                    "INSERT INTO journal (entry, text) VALUES ('finding_expected', ?1)",
-                    serde_json::json!({ "via": "agent", "reason": source }).to_string(),
-                ),
-                Kept::OwnerReason => (
-                    "INSERT INTO owner_statement (reason) VALUES (?1)",
-                    source.clone(),
-                ),
-                Kept::OwnerEntry => (
-                    "INSERT INTO journal (entry, text) VALUES ('owner_said', ?1)",
-                    source.clone(),
-                ),
-            };
-            c.execute(sql, [&raw]).unwrap();
-            let shown = read(kind, Form::Raw, &raw);
-            assert!(!shown.contains(&token), "{kind:?}: {shown}");
-            // The mark-shaped text a source wrote stays text: escaped, never a bare mark.
-            assert!(shown.contains("\\u{5c}cut{a 1}"), "{kind:?}: {shown}");
-            kept.push((kind, c.last_insert_rowid(), shown));
-        }
-        // The journal is append-only: an entry of another kind is never rewritten, plain or with
-        // fields of the same names as one the list holds.
-        let others = [
-            (
-                "report",
-                serde_json::json!({ "reason": source, "case": source }).to_string(),
-            ),
-            ("not_read", source.clone()),
-        ];
-        let mut other_rows = Vec::new();
-        for (entry, text) in &others {
-            c.execute(
-                "INSERT INTO journal (entry, text) VALUES (?1, ?2)",
-                [*entry, text.as_str()],
-            )
-            .unwrap();
-            other_rows.push((c.last_insert_rowid(), text.clone()));
-        }
-        let mut c = c;
-        clean(&mut c, &std::env::temp_dir().join("immune-no-folder-kept")).unwrap();
-        for (row, text) in other_rows {
-            let after: String = c
-                .query_row("SELECT text FROM journal WHERE rowid = ?1", [row], |r| {
-                    r.get(0)
-                })
-                .unwrap();
-            assert_eq!(after, text);
-        }
-        for (kind, row, before) in kept {
-            let (table, column, _) = kind.place();
-            let after: String = c
-                .query_row(
-                    &format!("SELECT {column} FROM {table} WHERE rowid = ?1"),
-                    [row],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert!(!after.contains(&token), "{kind:?}: {after}");
-            assert_eq!(read(kind, Form::Cut, &after), before, "{kind:?}");
-        }
-    }
-
-    #[test]
     fn a_line_packed_with_matches_is_cut_well_within_a_second() {
         // gitleaks's generic rule checks its 1,445 stopwords for every match; as one automaton
         // a line of the cap packed with matches costs milliseconds in a release build. The
@@ -2754,9 +2536,7 @@ mod tests {
                     assert_eq!(t.shown(str::to_string), s);
                     let kept = t.store();
                     assert_eq!(kept, s.replace('\\', "\\u{5c}"));
-                    for kind in Kept::ALL {
-                        assert_eq!(kind.read(Form::Cut, &kept).store(), kept, "{s}");
-                    }
+                    assert_eq!(Kept::Said.read(&kept).store(), kept, "{s}");
                 }
                 let fv = "\\cut{immune:flag-value 11}";
                 for (s, cut) in [
@@ -3394,43 +3174,6 @@ mod tests {
     }
 
     #[test]
-    fn a_store_is_cleaned_once_and_never_by_a_build_whose_set_did_not_load() {
-        let db = || {
-            let c = rusqlite::Connection::open_in_memory().unwrap();
-            c.execute_batch(
-                "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
-                 INSERT INTO meta VALUES ('format_version', '4');
-                 CREATE TABLE journal (seq INTEGER PRIMARY KEY, entry TEXT, text TEXT);
-                 CREATE TABLE rule_evidence (args TEXT);
-                 INSERT INTO rule_evidence VALUES ('[\"tool\",\"--password\",\"FakePw13\"]');",
-            )
-            .unwrap();
-            c
-        };
-        let args = |c: &rusqlite::Connection| -> String {
-            c.query_row("SELECT args FROM rule_evidence", [], |r| r.get(0))
-                .unwrap()
-        };
-        let nowhere = std::env::temp_dir().join(format!("immune-no-folder-{}", std::process::id()));
-        let mut c = db();
-        clean_with(None, &mut c, &nowhere).unwrap();
-        assert_eq!(form(&c).unwrap(), Form::Raw);
-        assert!(args(&c).contains("FakePw13"));
-        clean(&mut c, &nowhere).unwrap();
-        assert_eq!(form(&c).unwrap(), Form::Cut);
-        let cut = args(&c);
-        assert_eq!(
-            cut,
-            "[\"tool\",\"--password\",\"\\\\cut{immune:flag-value 8}\"]"
-        );
-        // Once: what a store keeps cut is not read as raw again.
-        c.execute("UPDATE rule_evidence SET args = '[\"a\\\\u{5c}b\"]'", [])
-            .unwrap();
-        clean(&mut c, &nowhere).unwrap();
-        assert_eq!(args(&c), "[\"a\\\\u{5c}b\"]");
-    }
-
-    #[test]
     fn entropy_is_gitleaks_s_counted_by_character_over_the_length_in_bytes() {
         assert_eq!(entropy(""), 0.0);
         assert_eq!(entropy("aaaa"), 0.0);
@@ -3439,5 +3182,127 @@ mod tests {
         // Two characters of two bytes each: one kind, counted twice over four bytes, as Go's
         // `len` counts.
         assert_eq!(entropy("éé"), 0.5);
+    }
+
+    /// An invented token of a kind the patterns cut, put together so none stands in the file.
+    fn github_token() -> String {
+        format!("{}{}", ["gh", "p_"].concat(), body(ALNUM, 36, 7))
+    }
+
+    #[test]
+    fn the_cutter_s_work_is_bounded_megabytes_of_opened_marks_finish_well_under_a_second() {
+        // A source's text made of the opening of a mark, again and again, with a space inside and
+        // one brace at the end: reading the marks in it once cost the square of its length, 11 s
+        // for 2.4 MB, and it was read before the cap was checked.
+        let s = format!("{}}}", "\\cut{ ".repeat(400_000));
+        let at = std::time::Instant::now();
+        assert!(marks(&s).is_empty());
+        assert_eq!(said(&s), mark(TOO_LONG, s.chars().count()));
+        // Read back as the store keeps a text: the marks in it are looked for first.
+        assert_eq!(
+            Text(cut_one(set().ok(), parse(&s))).said(),
+            mark(TOO_LONG, s.len())
+        );
+        let took = at.elapsed();
+        assert!(took < std::time::Duration::from_millis(500), "{took:?}");
+        // Marks are still read where they are whole, the last one too.
+        let kept = format!(
+            "a\\cut{{{TOO_LONG} 3}}b\\cut{{x 12}}\\cut{{x}}\\cut{{ 3}}\\cut{{x+5}}\\cut{{x }}\\cut{{x 1\\cut{{xy"
+        );
+        assert_eq!(
+            marks(&kept),
+            [
+                (1, 24, TOO_LONG.to_string(), 3),
+                (25, 35, "x".to_string(), 12)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_source_cannot_write_text_that_reads_as_a_mark_of_the_core_s() {
+        // What a source said is shown with its backslash written `\u{5c}` on every surface, so a
+        // mark it writes is never the same text as one the core made.
+        let token = github_token();
+        let real = said(&format!("visit failed: ?t={token} refused"));
+        let forged = said("visit failed: ?t=\\cut{gitleaks:github-pat 40} refused");
+        assert_eq!(
+            real,
+            "visit failed: ?t=\\cut{gitleaks:github-pat 40} refused"
+        );
+        assert_eq!(
+            forged,
+            "visit failed: ?t=\\u{5c}cut{gitleaks:github-pat 40} refused"
+        );
+        // A text the store keeps reads its own marks back as the core's, and a source's as text.
+        let kept = Text::source(&format!("?t={token} \\cut{{gitleaks:github-pat 40}}")).store();
+        assert_eq!(
+            Text(cut_one(set().ok(), parse(&kept))).said(),
+            "?t=\\cut{gitleaks:github-pat 40} \\u{5c}cut{gitleaks:github-pat 40}"
+        );
+    }
+
+    #[test]
+    fn a_cap_applied_after_cutting_never_breaks_a_mark_or_a_character_written_escaped() {
+        let token = github_token();
+        let near = format!("{} ?t={token}", "y".repeat(240));
+        assert_eq!(said_within(&near, 256), format!("{} ?t=…", "y".repeat(240)));
+        let slash = format!("{}\\bbb", "a".repeat(250));
+        assert_eq!(said_within(&slash, 256), format!("{}…", "a".repeat(250)));
+        // Within the cap nothing is taken away, up to the cap itself.
+        assert_eq!(said_within("a\\b", 256), "a\\u{5c}b");
+        assert_eq!(said_within(&"a".repeat(256), 256), "a".repeat(256));
+        // A cap of nothing leaves nothing, not even `…`.
+        assert_eq!(said_within("a", 0), "");
+    }
+
+    #[test]
+    fn a_source_s_text_withheld_whole_is_one_mark_in_its_own_place_and_the_core_s_words_stay() {
+        // Too long to be read, or read while the patterns did not load: the mark stands for that
+        // text alone, and what the core put around it is kept.
+        let long = "x".repeat(LINE_CAP + 1);
+        let line = |source: &str| {
+            Text::ours("db-1: ")
+                .then(Text::source(source))
+                .then(Text::ours(". 2 need a look."))
+                .said()
+        };
+        assert_eq!(
+            line(&long),
+            format!("db-1: {}. 2 need a look.", mark(TOO_LONG, LINE_CAP + 1))
+        );
+        assert_eq!(
+            without_patterns(|| line("refused")),
+            format!("db-1: {}. 2 need a look.", mark(NO_PATTERNS, 7))
+        );
+        assert!(set().is_ok(), "only within the test's closure");
+        // The cap counts the line as the patterns would read it: the spaces between arguments
+        // and every mark already in it.
+        let half = "x".repeat(LINE_CAP / 2);
+        assert_eq!(
+            Args::raw(&[half.clone(), half.clone()]).cuts()[0].kind,
+            TOO_LONG
+        );
+        let kept = format!("{}{}", "x".repeat(LINE_CAP - 8), mark(TOO_LONG, 3));
+        assert_eq!(
+            Text(cut_one(set().ok(), parse(&kept))).cuts(),
+            [(TOO_LONG, LINE_CAP - 8), (TOO_LONG, 3)]
+        );
+    }
+
+    #[test]
+    fn on_plain_text_what_is_shown_is_byte_for_byte_what_was_shown_before() {
+        // With no secret and no backslash, every surface shows what it showed before the one way
+        // in: hidden characters as the terminal shows them, and at most 256 characters with `…`.
+        let hidden = "a\u{202E}b\u{200B}c";
+        let long = format!("{hidden} {}", "word ".repeat(80));
+        for s in ["", "Permission denied (publickey).", hidden, long.as_str()] {
+            assert_eq!(said(s), crate::view::shown(s), "{s}");
+            assert_eq!(
+                said_within(s, crate::status::TEXT_CAP),
+                crate::status::capped(crate::view::shown(s)),
+                "{s}"
+            );
+            assert_eq!(said(s), crate::known::whole(s), "{s}");
+        }
     }
 }

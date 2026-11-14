@@ -39,8 +39,8 @@ pub const RETIRED: [(&str, &str); 1] = [(
     "wordpress core version",
     "the probe no longer reads WordPress's version file inside a container; a container's WORDPRESS_VERSION variable is read with its other version variables",
 )];
-/// The names and addresses the server gives itself. A file from a probe that did not print
-/// them has no such reading and links to nothing.
+/// The names and addresses the server gives itself. A file without them has no such
+/// reading and links to nothing.
 pub const IDENTITY: &str = "own names and addresses";
 
 /// Interfaces of container networks and virtual bridges, by the prefixes Docker, libvirt,
@@ -52,11 +52,21 @@ const BRIDGES: [&str; 11] = [
 ];
 
 pub const NOT_COMPLETE: &str = "the sweep of this server did not complete";
-/// What a file from a probe that did not yet read a kind says about it.
-const OLDER_PROBE: &str = "the file came from an older probe, which did not read this";
-/// dpkg's list with each package's status and source, and the list an older probe printed.
+/// The sections of what is installed that `scripts/probe.sh` prints on every server, whatever
+/// is installed there. A complete file that lacks one came from an earlier probe, which printed
+/// another shape, and this build does not read it.
+const SECTIONS: [&str; 5] = [
+    "os_release",
+    "kernel_package",
+    "package_managers",
+    DPKG,
+    "docker_access",
+];
+/// What every reading of a file from an earlier probe says.
+pub const OLDER_PROBE: &str =
+    "the file came from an earlier probe, which this version does not read; run the probe again";
+/// dpkg's list with each package's status and source.
 const DPKG: &str = "dpkg_with_source";
-const DPKG_OLD: &str = "dpkg";
 const NO_RIGHTS: &str = "no rights to list containers";
 const CONTENTS_PARTIAL: &str = "only version variables are read";
 /// What the probe prints when docker refused, and when there is no docker.
@@ -113,11 +123,62 @@ impl Failure {
 pub fn failure(dir: &Path, name: &str) -> Option<Failure> {
     let path = dir.join(format!("{name}.{}", crate::sweep::FAILED));
     let meta = std::fs::metadata(&path).ok()?;
-    let text = std::fs::read(&path).unwrap_or_default();
-    Some(Failure::parse(
-        &String::from_utf8_lossy(&text),
-        seconds(meta.modified().ok()),
+    let text = ends(&path, meta.len()).unwrap_or_default();
+    Some(Failure::parse(&text, seconds(meta.modified().ok())))
+}
+
+/// How much of a `.failed` file is read. One of up to `FAILED_WHOLE` bytes is read whole. Of a
+/// longer one, the time is the first line within its first `FAILED_WHOLE` bytes, and the reason
+/// the last line within the last `FAILED_TAIL` bytes before the blank space at its end, of which
+/// at most `FAILED_BLANK` bytes are passed over.
+const FAILED_WHOLE: u64 = 4352;
+const FAILED_TAIL: u64 = 4 << 10;
+const FAILED_BLANK: u64 = 1 << 20;
+
+/// The two ends of a `.failed` file. What ssh printed comes from the far side of the network
+/// and may be of any length, so it is bounded here, where it is read: a reason is never longer
+/// than `FAILED_TAIL` bytes.
+fn ends(path: &Path, len: u64) -> std::io::Result<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path)?;
+    let mut head = Vec::new();
+    (&mut file).take(FAILED_WHOLE).read_to_end(&mut head)?;
+    if len <= FAILED_WHOLE {
+        return Ok(String::from_utf8_lossy(&head).into_owned());
+    }
+    let end = text_end(&mut file, len)?;
+    if end <= FAILED_WHOLE {
+        head.truncate(end as usize);
+        return Ok(String::from_utf8_lossy(&head).into_owned());
+    }
+    let mut tail = Vec::new();
+    file.seek(SeekFrom::Start(end - FAILED_TAIL))?;
+    file.take(FAILED_TAIL).read_to_end(&mut tail)?;
+    let head = String::from_utf8_lossy(&head);
+    Ok(format!(
+        "{}\n{}",
+        head.lines().next().unwrap_or_default(),
+        String::from_utf8_lossy(&tail)
     ))
+}
+
+/// Where the text of a file of `len` bytes ends: before the blank space at its end, of which at
+/// most `FAILED_BLANK` bytes are passed over, read backwards a block at a time.
+fn text_end(file: &mut std::fs::File, len: u64) -> std::io::Result<u64> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut block = [0u8; 4096];
+    let mut end = len;
+    while end > 0 && len - end < FAILED_BLANK {
+        let from = end.saturating_sub(block.len() as u64);
+        let n = (end - from) as usize;
+        file.seek(SeekFrom::Start(from))?;
+        file.read_exact(&mut block[..n])?;
+        match block[..n].iter().rposition(|b| !b.is_ascii_whitespace()) {
+            Some(i) => return Ok(from + i as u64 + 1),
+            None => end = from,
+        }
+    }
+    Ok(end)
 }
 
 fn seconds(t: Option<std::time::SystemTime>) -> i64 {
@@ -227,11 +288,15 @@ pub fn taken_at(text: &str) -> Option<i64> {
 }
 
 /// The readings of one server file. `raw_file` is the saved copy, relative to the store's
-/// folder. A file that does not reach `##end` is a read that did not happen.
+/// folder. A file that does not reach `##end` is a read that did not happen, and so is one that
+/// lacks a section every probe of this version prints (`SECTIONS`).
 pub fn readings(machine: &str, text: &str, raw_file: &str) -> Vec<Outcome> {
     let s = sections(text);
     if !s.contains_key("end") {
         return nothing_read(machine, NOT_COMPLETE);
+    }
+    if !SECTIONS.iter().all(|k| s.contains_key(k)) {
+        return nothing_read(machine, OLDER_PROBE);
     }
     let at = |n: usize| format!("{raw_file}:{n}");
     let say = |out: &mut Vec<Statement>, subject: &str, predicate, object: &str, n| {
@@ -283,16 +348,16 @@ pub fn readings(machine: &str, text: &str, raw_file: &str) -> Vec<Outcome> {
     // System packages, with the system itself, the sources they were built from and the
     // package that owns the running kernel. These three are read only through dpkg.
     let dpkg = debs(&s);
-    let managers = s.get("package_managers").map(|rows| {
-        rows.iter()
-            .map(|(_, l)| l.trim())
-            .filter(|l| !l.is_empty())
-            .collect::<Vec<_>>()
-    });
-    let unread = managers.as_deref().map_or(Vec::new(), |m| {
-        m.iter().copied().filter(|m| *m != "dpkg").collect()
-    });
-    let no_reader = managers.as_deref().is_some_and(|m| !m.contains(&"dpkg"));
+    let managers: Vec<&str> = s
+        .get("package_managers")
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .map(|(_, l)| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect();
+    let unread: Vec<&str> = managers.iter().copied().filter(|m| *m != "dpkg").collect();
+    let no_reader = !managers.contains(&"dpkg");
     // Package managers there that this build has no reader for.
     let lacks: Vec<Lack> = unread
         .iter()
@@ -317,11 +382,6 @@ pub fn readings(machine: &str, text: &str, raw_file: &str) -> Vec<Outcome> {
                 "the program has no reader for the package manager this server uses: {}",
                 unread.join(", ")
             ),
-        ))
-    } else if !s.contains_key(DPKG) && !s.contains_key(DPKG_OLD) {
-        Some((
-            Gap::of(Cause::NotGiven),
-            "the sweep has no package list".to_string(),
         ))
     } else if dpkg.is_empty() {
         // An empty list is a missing dpkg, not a server with nothing installed.
@@ -376,50 +436,37 @@ pub fn readings(machine: &str, text: &str, raw_file: &str) -> Vec<Outcome> {
         };
         out.push(reading(machine, PACKAGES, partial.clone(), gap, st));
 
-        if s.contains_key(DPKG) {
-            let mut st = Vec::new();
-            for d in &dpkg {
-                if let Some((source, version)) = d.source {
-                    let component = format!("component:{machine}/deb/{}", d.name);
-                    say(
-                        &mut st,
-                        &component,
-                        "built_from",
-                        &format!("{source} {version}"),
-                        d.n,
-                    );
-                }
+        let mut st = Vec::new();
+        for d in &dpkg {
+            if let Some((source, version)) = d.source {
+                let component = format!("component:{machine}/deb/{}", d.name);
+                say(
+                    &mut st,
+                    &component,
+                    "built_from",
+                    &format!("{source} {version}"),
+                    d.n,
+                );
             }
-            let missing = dpkg.iter().filter(|d| d.source.is_none()).count();
-            // Packages of a manager without a reader are worse than packages dpkg gives no
-            // source for, and only the worse is said.
-            let (reason, gap) = match (&partial, missing) {
-                (Some(p), _) => (Some(p.clone()), no_reader),
-                (None, 0) => (None, Gap::default()),
-                (None, _) => (
-                    Some(format!("{missing} of the packages give no source")),
-                    Gap::of(Cause::NotGiven),
-                ),
-            };
-            out.push(reading(machine, SOURCES, reason, gap, st));
-        } else {
-            out.push(not_read(machine, SOURCES, Cause::NotGiven, OLDER_PROBE));
         }
+        let missing = dpkg.iter().filter(|d| d.source.is_none()).count();
+        // Packages of a manager without a reader are worse than packages dpkg gives no
+        // source for, and only the worse is said.
+        let (reason, gap) = match (&partial, missing) {
+            (Some(p), _) => (Some(p.clone()), no_reader),
+            (None, 0) => (None, Gap::default()),
+            (None, _) => (
+                Some(format!("{missing} of the packages give no source")),
+                Gap::of(Cause::NotGiven),
+            ),
+        };
+        out.push(reading(machine, SOURCES, reason, gap, st));
 
-        if s.contains_key("kernel_package") {
-            let mut st = Vec::new();
-            for (n, package) in kernel_packages(&s) {
-                say(&mut st, machine, "runs_kernel_package", package, n);
-            }
-            out.push(full(machine, KERNEL_PACKAGE, st));
-        } else {
-            out.push(not_read(
-                machine,
-                KERNEL_PACKAGE,
-                Cause::NotGiven,
-                OLDER_PROBE,
-            ));
+        let mut st = Vec::new();
+        for (n, package) in kernel_packages(&s) {
+            say(&mut st, machine, "runs_kernel_package", package, n);
         }
+        out.push(full(machine, KERNEL_PACKAGE, st));
     }
 
     // Containers. Docker that is not installed has nothing to list: that is a full read.
@@ -510,27 +557,14 @@ struct Deb<'a> {
     n: usize,
     name: &'a str,
     version: &'a str,
-    /// The source package and version, `None` in a file from an older probe or when dpkg
-    /// did not give them.
+    /// The source package and version, `None` when dpkg did not give them.
     source: Option<(&'a str, &'a str)>,
 }
 
 /// The packages whose files are on the server. dpkg also lists a package that was removed
 /// and not purged, with only its configuration files left, and one it knows as not
-/// installed; neither is a component. An older probe printed only names and versions of
-/// whatever dpkg listed.
+/// installed; neither is a component.
 fn debs<'a>(s: &Sections<'a>) -> Vec<Deb<'a>> {
-    if !s.contains_key(DPKG) {
-        return pairs(s, DPKG_OLD)
-            .into_iter()
-            .map(|(n, name, version)| Deb {
-                n,
-                name,
-                version,
-                source: None,
-            })
-            .collect();
-    }
     let rows = s.get(DPKG).map(Vec::as_slice).unwrap_or_default();
     rows.iter()
         .filter_map(|(n, line)| {
@@ -585,9 +619,6 @@ fn kernel_packages<'a>(s: &Sections<'a>) -> Vec<(usize, &'a str)> {
 /// quote, as with text after the closing quote, or holding a blank, which an unquoted shell
 /// value cannot, was not read the way the shell reads it: it is taken as not given.
 fn release(machine: &str, s: &Sections, raw_file: &str) -> Outcome {
-    if !s.contains_key("os_release") {
-        return not_read(machine, RELEASE, Cause::NotGiven, OLDER_PROBE);
-    }
     let fields = pairs(s, "os_release");
     let plain = |v: &str| !v.contains(['"', '\'']) && !v.contains(char::is_whitespace);
     let field = |key: &str| {
@@ -735,5 +766,55 @@ mod tests {
         let cut = Failure::parse("", 1_767_412_800);
         assert_eq!(cut.at, 1_767_412_800);
         assert_eq!(cut.reason, "the visit left no reason");
+    }
+
+    #[test]
+    fn a_failed_visit_s_file_of_any_length_is_read_at_its_two_ends_and_its_reason_is_bounded() {
+        // What ssh printed comes from the far side of the network: a file of megabytes still
+        // gives its time and its last line, and a last line of megabytes gives at most
+        // `FAILED_TAIL` bytes of it.
+        let dir = crate::common::Scratch::new("failed-ends");
+        let filler = "Warning: invented\n".repeat(200_000);
+        let put = |name: &str, text: &str| {
+            std::fs::write(dir.join(format!("{name}.{}", crate::sweep::FAILED)), text).unwrap()
+        };
+        put(
+            "web-1",
+            &format!("1767412800\n{filler}Host key verification failed.\n\n"),
+        );
+        put("db-1", &format!("1767412800\n{}\n", "y".repeat(3_000_000)));
+        put("app-1", "1767412800\nPermission denied (publickey).\n");
+        let web = super::failure(&dir, "web-1").unwrap();
+        assert_eq!(
+            (web.at, web.reason.as_str()),
+            (1_767_412_800, "Host key verification failed.")
+        );
+        let db = super::failure(&dir, "db-1").unwrap();
+        assert_eq!(db.at, 1_767_412_800);
+        assert!(
+            db.reason.len() <= super::FAILED_TAIL as usize && db.reason.starts_with('y'),
+            "{}",
+            db.reason.len()
+        );
+        let app = super::failure(&dir, "app-1").unwrap();
+        assert_eq!(app.reason, "Permission denied (publickey).");
+        // Blank space after the reason, lines of it or spaces on its line, is passed over, so
+        // the reason and the advice it brings are still read.
+        let phrase = "Host key verification failed.";
+        put(
+            "web-2",
+            &format!("1767412800\n{filler}{phrase}\n{}", "\n".repeat(10_000)),
+        );
+        put(
+            "web-3",
+            &format!("1767412800\n{phrase}{}\n", " ".repeat(10_000)),
+        );
+        put(
+            "web-4",
+            &format!("1767412800\n{phrase}{}", " \n".repeat(3_000)),
+        );
+        for name in ["web-2", "web-3", "web-4"] {
+            assert_eq!(super::failure(&dir, name).unwrap().reason, phrase, "{name}");
+        }
     }
 }

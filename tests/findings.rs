@@ -141,16 +141,6 @@ impl Estate {
             .unwrap_or_else(|| panic!("no {rule} in {:#}", self.status()))
             .clone()
     }
-
-    /// The id the store keeps for itself, as SQLite reads it.
-    fn kept_id(&self) -> Option<String> {
-        rusqlite::Connection::open(self.store())
-            .unwrap()
-            .query_row("SELECT value FROM meta WHERE key = 'store_id'", [], |r| {
-                r.get(0)
-            })
-            .ok()
-    }
 }
 
 impl Drop for Estate {
@@ -631,10 +621,10 @@ fn a_failure_never_parses_as_an_answer() {
 }
 
 #[test]
-fn a_store_without_the_table_of_findings_fails_as_older_rather_than_reading_as_none() {
-    // False calm: an empty list from a store no run of this build has looked for findings in
-    // would read as "nothing found".
-    let e = a_task_run_on_opening("older");
+fn a_store_without_the_table_of_findings_fails_as_damaged_rather_than_reading_as_none() {
+    // False calm: an empty list from a store that lacks the table of findings would read as
+    // "nothing found". A store of this format always has it, so one without it is damaged.
+    let e = a_task_run_on_opening("damaged");
     rusqlite::Connection::open(e.store())
         .unwrap()
         .execute_batch("DROP TABLE finding_basis; DROP TABLE rule_line; DROP TABLE rule_finding; DROP TABLE rule_evidence; DROP TABLE rule_file_evidence; DROP TABLE finding;")
@@ -646,7 +636,7 @@ fn a_store_without_the_table_of_findings_fails_as_older_rather_than_reading_as_n
         v["errors"][0]["detail_text"]
             .as_str()
             .unwrap()
-            .contains("written by an older build of Immune; `immune run` brings it up to date"),
+            .contains("is damaged: it lacks the table"),
         "{v}"
     );
 }
@@ -696,23 +686,6 @@ fn every_message_of_one_store_carries_its_id_another_store_has_another_and_a_run
         id_of(&other, "autorun.folder-open"),
         id_of(&e, "autorun.folder-open")
     );
-}
-
-#[test]
-fn a_store_an_older_build_made_gets_its_id_at_the_next_run_and_a_command_that_only_reads_makes_none()
- {
-    let e = a_task_run_on_opening("store-id-older");
-    rusqlite::Connection::open(e.store())
-        .unwrap()
-        .execute("DELETE FROM meta WHERE key = 'store_id'", [])
-        .unwrap();
-    assert!(store_ids(&e).iter().all(Value::is_null));
-    let out = e.immune(&["status", "--json"]);
-    assert!(out.status.success());
-    assert_eq!(e.kept_id(), None);
-    e.run();
-    let made = e.kept_id().unwrap();
-    assert!(store_ids(&e).iter().all(|i| *i == json!(made)));
 }
 
 #[test]

@@ -67,8 +67,7 @@ message Known {
   // in that run. Absent when no run has finished.
   optional int64 latest_run_at = 12;
   // The store this answer was read from, as in every answer (`common.proto`): random, made once
-  // when the store was made. Absent for a store an older build made that no command has written
-  // to since: until one does, nothing tells it apart from another store.
+  // when the store was made.
   optional string store_id = 13;
 }
 

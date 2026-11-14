@@ -300,14 +300,6 @@ impl Estate {
         out
     }
 
-    /// Leaves the store as a build from before units were recorded left it.
-    fn made_before_units(&self) {
-        Connection::open(self.store())
-            .unwrap()
-            .execute_batch("DROP TABLE unit_read; DELETE FROM meta WHERE key = 'units_since';")
-            .unwrap();
-    }
-
     /// How many differences the journal marks as found where nobody could have known, after
     /// the journal entry `after`.
     fn silent_after(&self, after: i64) -> i64 {
@@ -993,52 +985,6 @@ fn a_reading_that_read_nothing_is_still_the_baseline_of_the_places_it_found_empt
         ]
     );
     assert!(report.contains(", 1 new, 0 changed, 0 gone"), "{report}");
-}
-
-#[test]
-fn on_a_store_from_before_units_were_recorded_what_appeared_since_its_last_reading_is_found() {
-    // The first open by this build fills the units from what the store holds: what appeared
-    // since the older build's last reading is found, in every kind it reads, a clone made
-    // meanwhile included.
-    let e = Estate::new("from-before");
-    let shop = e.checkout("dev/shop");
-    package(&shop, "\"postinstall\": \"node setup.js\"");
-    put(&e.home().join(".zshrc"), "export A=1\n");
-    e.run();
-    e.made_before_units();
-    put(
-        &e.home()
-            .join("Library/LaunchAgents/com.invented.sync.plist"),
-        "<plist/>\n",
-    );
-    put(&e.home().join(".zlogin"), "export B=1\n");
-    put(&shop.join(".git/hooks/pre-push"), "#!/bin/sh\n");
-    package(
-        &shop,
-        "\"postinstall\": \"node setup.js\", \"preinstall\": \"node x.js\"",
-    );
-    let new = e.checkout("dev/new");
-    package(&new, "\"preinstall\": \"node x.js\"");
-    e.run();
-    assert_eq!(
-        e.found(),
-        [
-            pair(
-                "autorun.package-install",
-                "~/dev/new/package.json#/scripts/preinstall"
-            ),
-            pair(
-                "autorun.package-install",
-                "~/dev/shop/package.json#/scripts/preinstall"
-            ),
-            pair(
-                "watched.autostart",
-                "~/Library/LaunchAgents/com.invented.sync.plist"
-            ),
-            pair("watched.git-hook", "~/dev/shop/.git/hooks/pre-push"),
-            pair("watched.shell-profile", "~/.zlogin"),
-        ]
-    );
 }
 
 #[test]
@@ -2379,38 +2325,6 @@ fn a_folder_that_could_not_be_listed_on_the_first_day_is_told_once_when_it_can_b
     e.run();
     assert_eq!(e.found(), [pair(FIRST_READ, "mac")]);
     assert_eq!(e.told(), ["checkout:machine:mac/archive/old (1)"]);
-}
-
-#[test]
-fn on_a_store_from_before_what_was_added_since_its_last_reading_is_found_whatever_run_comes_first()
-{
-    // An older build read a project in ~/Documents only through runs pointed there. Whichever
-    // run of this build comes first, the app's run of the home folder, which does not look
-    // into it, or a run pointed there, an install script added since is found.
-    for pointed_first in [false, true] {
-        let e = Estate::new("seam");
-        let app = e.checkout("Documents/code/app");
-        package(&app, "\"postinstall\": \"node setup.js\"");
-        e.run_in(&e.home().join("Documents"));
-        e.run();
-        e.made_before_units();
-        package(
-            &app,
-            "\"postinstall\": \"node setup.js\", \"preinstall\": \"node x.js\"",
-        );
-        if !pointed_first {
-            e.run();
-        }
-        e.run_in(&e.home().join("Documents"));
-        assert_eq!(
-            e.found(),
-            [pair(
-                "autorun.package-install",
-                "~/Documents/code/app/package.json#/scripts/preinstall"
-            )],
-            "pointed first: {pointed_first}"
-        );
-    }
 }
 
 /// The page of changes, as `immune view` writes it.
@@ -3811,117 +3725,6 @@ fn a_hash_in_a_checkout_or_selected_key_is_kept_as_part_of_its_own_name() {
     );
     e.run();
     assert_eq!(e.found(), [pair("autorun.agent-start", place)]);
-}
-
-/// Remove the extra tables an older version did not have.
-fn before_typed_units(e: &Estate) -> Connection {
-    let db = Connection::open(e.store()).unwrap();
-    db.execute_batch(
-        "DROP TABLE part_read;
-         DROP TABLE part_unread;
-         DROP TABLE watched_unit;
-         DELETE FROM meta WHERE key = 'typed_units';",
-    )
-    .unwrap();
-    db
-}
-
-#[test]
-fn an_old_store_keeps_finding_ids_and_answers_and_rejudges_ambiguous_hash_paths() {
-    let e = Estate::new("legacy-hash-unit");
-    let ordinary = e.checkout("dev/ordinary");
-    let hash = e.checkout("dev/demo#/child");
-    let pending = e.checkout("dev/pending");
-    e.run();
-    package(&ordinary, r#""prepare":"invented-one""#);
-    package(&hash, r#""prepare":"invented-two""#);
-    e.run();
-    e.seen();
-    package(&pending, r#""prepare":"invented-three""#);
-    e.run();
-    let id = e.contract(&["findings"])["findings"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|f| f["finding"]["state"] == "open")
-        .unwrap()["finding"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let answered = Command::new(env!("CARGO_BIN_EXE_immune"))
-        .args([
-            "finding",
-            &id,
-            "expected",
-            "--reason",
-            "a fixture",
-            "--days",
-            "7",
-            "--store",
-        ])
-        .arg(e.store())
-        .output()
-        .unwrap();
-    assert!(answered.status.success());
-    put(&ordinary.join(".git/hooks/pre-push"), "#!/bin/sh\n");
-    e.run();
-    let findings = e.contract(&["findings"])["findings"].clone();
-    let ordinary_rows = e.rows(
-        "SELECT CAST(rowid AS TEXT), unit FROM unit_read
-        WHERE unit = 'dev/ordinary/package.json' ORDER BY rowid",
-    );
-    let db = before_typed_units(&e);
-    // The old fallback saw the physical path only as far as the first hash.
-    db.execute(
-        "UPDATE unit_read SET unit = 'dev/demo' WHERE unit = 'dev/demo#/child/package.json'",
-        [],
-    )
-    .unwrap();
-    drop(db);
-    let hook = hash.join("package.json");
-    {
-        let _closed = Closed::new(&[(&hook, 0o644)]);
-        e.run();
-        assert_eq!(e.told(), ["checkout:machine:mac/dev/demo#/child (1)"]);
-        assert!(!e.found().contains(&pair(
-            "autorun.package-install",
-            "~/dev/demo#/child/package.json"
-        )));
-    }
-    let current = e.contract(&["findings"])["findings"].clone();
-    let old = current
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|f| f["finding"]["rule"] != FIRST_READ)
-        .cloned()
-        .collect::<Vec<_>>();
-    assert_eq!(old, *findings.as_array().unwrap());
-    e.seen();
-    e.run();
-    assert_eq!(
-        e.rows(
-            "SELECT CAST(rowid AS TEXT), unit FROM unit_read
-           WHERE unit = 'dev/ordinary/package.json' ORDER BY rowid"
-        ),
-        ordinary_rows
-    );
-    assert!(
-        e.rows("SELECT unit FROM unit_read WHERE unit = 'dev/demo' AND reader = 'watched-places'")
-            .is_empty()
-    );
-    assert!(e.found().is_empty(), "{:?}", e.found());
-    {
-        let _closed = Closed::new(&[(&hook, 0o644)]);
-        e.run();
-        assert_eq!(
-            e.found(),
-            [pair(
-                "autorun.package-install",
-                "~/dev/demo#/child/package.json"
-            )]
-        );
-    }
 }
 
 #[test]

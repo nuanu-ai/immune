@@ -869,7 +869,7 @@ fn main() -> ExitCode {
                     &e,
                 ));
             }
-            eprintln!("immune: {}\n{USAGE}", secrets::text(&e, view::shown));
+            eprintln!("immune: {}\n{USAGE}", secrets::said(&e));
             return ExitCode::from(EXIT_USAGE);
         }
     };
@@ -896,15 +896,11 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("immune: {}", said(&e.to_string()));
+            // What a failure repeats of what it was given is cut.
+            eprintln!("immune: {}", secrets::said(&e.to_string()));
             ExitCode::FAILURE
         }
     }
-}
-
-/// What a failure says, for a person: what it repeats of what it was given is cut.
-fn said(s: &str) -> String {
-    secrets::text(s, view::shown)
 }
 
 // ---- `immune sample`: one sample of this user's processes and connections, see
@@ -930,6 +926,8 @@ fn sample(args: &SampleArgs) -> Result<processes::Report, Box<dyn Error>> {
     let home = home(&args.store);
     store_folder(&home)?;
     let _lock = store::lock_run(&home)?.ok_or(Stop::RunInProgress)?;
+    // `immune sample` makes the store where there is none; a watcher's sample only opens it.
+    drop(store::open_or_make(&args.store).map_err(|e| Stop::Store(e.to_string()))?);
     let (report, _) = sample_held(
         &args.store,
         args.input.as_deref(),
@@ -982,7 +980,7 @@ fn sample_cmd(args: &SampleArgs) -> ExitCode {
             m.answered_at = now_secs();
             m.store_id = store::open_read_only(&args.store)
                 .ok()
-                .and_then(|c| store::id(&c).ok().flatten());
+                .and_then(|c| store::id(&c).ok());
             answer::print("sample", args.form, &m, text::sample)
         }
         Err(e) => {
@@ -1073,7 +1071,7 @@ fn rules_cmd(args: &RulesArgs) -> ExitCode {
         let conn = store::open_read_only(&args.store).map_err(|e| Stop::Store(e.to_string()))?;
         Ok((
             events::level(&conn, now).map_err(unreadable)?,
-            store::id(&conn).map_err(unreadable)?,
+            Some(store::id(&conn).map_err(unreadable)?),
         ))
     })();
     let (level, store_id) = match read {
@@ -1260,17 +1258,19 @@ fn run_cmd(args: &Args) -> ExitCode {
 }
 
 /// What `immune run` prints for a person: its line, then the watched places it found changed or
-/// could not read. The line and a row's why hold what the readers' sources said, such as why a
-/// server could not be opened or a file read: cut, as every such text.
+/// could not read. What the readers' sources said in the line and in a row's why, such as why a
+/// server could not be opened or a file read, was cut where each was put together (`report`,
+/// `read_watched`); nothing is cut here, so a source's text never takes the core's words with it.
 fn run_said(line: &str, watched: &Rows) -> String {
-    let mut out = format!("{}\n", view::shown(&said(line)));
+    let mut out = format!("{}\n", view::shown(line));
     if !watched.is_empty() {
+        // The path is a name: shown here, the one place this table writes one.
         let rows: Rows = watched
             .iter()
             .map(|row| {
                 let mut row = row.clone();
-                if let Some(why) = row.get_mut(3) {
-                    *why = said(why);
+                if let Some(path) = row.get_mut(2) {
+                    *path = known::whole(path);
                 }
                 row
             })
@@ -1385,7 +1385,10 @@ fn finding_cmd(args: &FindingArgs) -> ExitCode {
     let run_id = format!("owner-{now}-{nanos:09}");
     // It writes as `immune verdict` does: under the run lock, with the write lock from the
     // start of its transaction, and a store another writer holds is asked again.
-    let busy = |r: verdict::Refusal| refuse(r.code, r.message, "immune finding <id> seen", r.exit);
+    let busy = |r: verdict::Refusal| {
+        let error = answer::error(r.code, r.message, "immune finding <id> seen", &r.detail);
+        answer::fail("finding", args.form, error, r.exit)
+    };
     let (lock, mut conn) = match verdict::writing(&args.store) {
         Ok(held) => held,
         Err(r) => return busy(r),
@@ -1719,13 +1722,11 @@ fn survey(args: &ServersArgs) -> Result<Survey, Box<dyn Error>> {
     for (reader, kind, basis, found) in &traces {
         match found {
             traces::Found::Absent(note) => said.push(format!("{kind}: nothing to read, {note}")),
-            traces::Found::Failed(reason) => {
-                said.push(format!("{kind}: could not be read, {reason}"));
-            }
+            traces::Found::Failed(reason) => said.push(trace_failed(kind, reason)),
             traces::Found::Off(why) => said.push(format!("{kind}: not read, {why}")),
             traces::Found::Guarded(folder) => said.push(format!(
                 "{kind}: not read, it leads into {}, which macOS asks permission for",
-                guarded::shown(folder, &args.home)
+                known::whole(&guarded::shown(folder, &args.home))
             )),
             traces::Found::Read(seen) => {
                 let n = seen.hosts.len() as i64;
@@ -1761,7 +1762,7 @@ fn survey(args: &ServersArgs) -> Result<Survey, Box<dyn Error>> {
                     }
                 }
                 if let Some(partial) = &seen.partial {
-                    line.push_str(&format!(", {partial}"));
+                    line.push_str(&format!(", {}", secrets::said(partial)));
                 }
                 if seen.third_party > 0 {
                     line.push_str(&format!(", {} left out as code hosting", seen.third_party));
@@ -1794,7 +1795,10 @@ fn survey(args: &ServersArgs) -> Result<Survey, Box<dyn Error>> {
     // addresses it gives itself: the same machines `immune run` knows from these files.
     if dir.is_dir() {
         match servers::inputs(&dir) {
-            Err(e) => said.push(format!("{SWEEP_FILE}s: could not be read, {e}")),
+            Err(e) => said.push(format!(
+                "{SWEEP_FILE}s: could not be read, {}",
+                secrets::said(&e)
+            )),
             Ok(inputs) => {
                 said.push(format!(
                     "{SWEEP_FILE}s: {}",
@@ -1865,18 +1869,18 @@ fn survey(args: &ServersArgs) -> Result<Survey, Box<dyn Error>> {
             format!(
                 "not offered: {}; seen alive after it: {}",
                 w.summary(),
-                w.contradiction().unwrap_or_default()
+                known::whole(&w.contradiction().unwrap_or_default())
             )
         } else if let Some(first) = offered.first() {
             let rest: Vec<String> = with_alias
                 .iter()
                 .filter(|a| *a != first)
                 .map(|a| match sweep::not_offered(a, &skip) {
-                    Some(why) => format!("{a} ({why})"),
-                    None => a.to_string(),
+                    Some(why) => format!("{} ({why})", known::whole(a)),
+                    None => known::whole(a),
                 })
                 .collect();
-            let mut sweep = format!("visits {first}");
+            let mut sweep = format!("visits {}", known::whole(first));
             if !rest.is_empty() {
                 sweep.push_str(&format!("; same machine, not visited: {}", rest.join(", ")));
             }
@@ -1981,12 +1985,14 @@ fn servers_cmd(args: &ServersArgs) -> Result<(), Box<dyn Error>> {
         let cells: Vec<Vec<String>> = rows
             .iter()
             .map(|r| {
+                // The sweep and the last file are put together with names and cut reasons
+                // already shown (`survey`, `last_file`); a name alone is shown here.
                 vec![
-                    r.name.clone(),
+                    known::whole(&r.name),
                     r.traces.join(", "),
                     r.sweep.clone(),
                     r.file.clone(),
-                    r.others.join(", "),
+                    known::whole(&r.others.join(", ")),
                 ]
             })
             .collect();
@@ -2030,13 +2036,13 @@ fn servers_cmd(args: &ServersArgs) -> Result<(), Box<dyn Error>> {
         "Your other devices on the tailnet, not counted as servers: {}",
         things(s.own.len() as i64, "device", "devices")
     ));
-    print_table(&["Device", "System", "Also known as"], &s.own);
+    print_table(&["Device", "System", "Also known as"], &names(&s.own));
     println!();
     say(&format!(
         "Other users' devices on the tailnet, not counted as servers: {}",
         things(s.theirs.len() as i64, "device", "devices")
     ));
-    print_table(&["Device", "Also known as"], &s.theirs);
+    print_table(&["Device", "Also known as"], &names(&s.theirs));
     println!();
 
     sweep::write(&s.dir, &s.machines)?;
@@ -2095,13 +2101,21 @@ fn word_rows(words: &[&owner::Standing]) -> Vec<Vec<String>> {
         .iter()
         .map(|w| {
             vec![
-                w.name().to_string(),
+                known::whole(w.name()),
                 w.word.said.clone(),
                 view::utc(w.word.made_at),
-                w.word.reason.shown(view::shown),
-                w.names[1..].join(", "),
+                w.word.reason.said(),
+                known::whole(&w.names[1..].join(", ")),
             ]
         })
+        .collect()
+}
+
+/// Rows of names alone, as every surface shows a name: a backslash written `\u{5c}`, so none
+/// reads as a mark (`known::whole`).
+fn names(rows: &[Vec<String>]) -> Vec<Vec<String>> {
+    rows.iter()
+        .map(|row| row.iter().map(|cell| known::whole(cell)).collect())
         .collect()
 }
 
@@ -2166,7 +2180,7 @@ fn owner_cmd(args: &OwnerArgs) -> ExitCode {
             Ok((
                 owner::standing(&conn)?,
                 owner::withdrawn(&conn)?,
-                store::id(&conn)?,
+                Some(store::id(&conn)?),
             ))
         });
         let (standing, withdrawn, store_id) = match listed {
@@ -2219,7 +2233,7 @@ fn owner_cmd(args: &OwnerArgs) -> ExitCode {
     let mut m = v1::StatementMade {
         format: 1,
         answered_at: at,
-        store_id: store::id(&conn).ok().flatten(),
+        store_id: store::id(&conn).ok(),
         machine_text: known::whole(owner::bare(&entity)),
         names_text: machine
             .iter()
@@ -2239,7 +2253,7 @@ fn owner_cmd(args: &OwnerArgs) -> ExitCode {
             m.done = Some(v1::statement_made::Done::Said(v1::Said {
                 said: said.to_string(),
                 at,
-                reason_text: reason.shown(known::whole),
+                reason_text: reason.said(),
                 reason_cuts: answer::reason_cuts(&reason),
                 replaced: replaced as u64,
             }));
@@ -2277,11 +2291,8 @@ fn owner_cmd(args: &OwnerArgs) -> ExitCode {
         },
         Err(e) => v1::SweepWritten {
             servers: None,
-            // What the failure said is cut, as every failure's detail is.
-            problem_text: Some(secrets::text(
-                &format!("the owner's word was kept, but {e}"),
-                known::whole,
-            )),
+            // What the failure said was cut where it was put together (`rewrite_sweep`).
+            problem_text: Some(format!("the owner's word was kept, but {e}")),
         },
     });
     // The word is kept either way; a sweep script that could not be written again is a failure
@@ -2297,7 +2308,9 @@ fn owner_cmd(args: &OwnerArgs) -> ExitCode {
 
 /// Writes the sweep script again after the owner's word changed, the way `immune servers`
 /// writes it, so that no script on disk visits a machine the owner set aside. A script that
-/// cannot be written again is removed. Returns how many servers it visits.
+/// cannot be written again is removed. Returns how many servers it visits. A failure's words
+/// are shown as they are: what the failure repeats is cut in them, and the path written as the
+/// contract writes a name.
 fn rewrite_sweep(args: &ServersArgs) -> Result<usize, Box<dyn Error>> {
     let written = survey(args).and_then(|s| {
         sweep::write(&s.dir, &s.machines)?;
@@ -2307,11 +2320,18 @@ fn rewrite_sweep(args: &ServersArgs) -> Result<usize, Box<dyn Error>> {
         let script = home(&args.store).join("sweep").join("sweep.sh");
         let _ = std::fs::remove_file(&script);
         let left = if script.exists() {
-            format!("delete {} before you run it", script.display())
+            format!(
+                "delete {} before you run it",
+                known::whole(&script.display().to_string())
+            )
         } else {
             "no sweep script is left; run `immune servers`".to_string()
         };
-        format!("the sweep script could not be written again ({e}); {left}").into()
+        format!(
+            "the sweep script could not be written again ({}); {left}",
+            secrets::said(&e.to_string())
+        )
+        .into()
     })
 }
 
@@ -2388,7 +2408,7 @@ fn run(args: &Args) -> Result<(String, Rows), Box<dyn Error>> {
     // Held until the run returns: a second run stops here and writes nothing. A watcher's
     // reading, `immune watch`, is waited out.
     let _lock = store::lock_run_past_watcher(&home)?.ok_or(Stop::RunInProgress)?;
-    let mut conn = store::open(&args.store).map_err(|e| Stop::Store(e.to_string()))?;
+    let mut conn = store::open_or_make(&args.store).map_err(|e| Stop::Store(e.to_string()))?;
     store::journal_note(&conn, at, &run_id, "run_started", "")?;
 
     let tx = conn.transaction()?;
@@ -2640,8 +2660,7 @@ fn read_brew(run: &mut Run, args: &Args) -> Result<(), Box<dyn Error>> {
             run.readers += 1;
             let gap = Gap::of(Cause::Failed);
             run.apply(&reading, brew::BASIS, "none", Some(&reason), &gap, &[])?;
-            run.notes
-                .push(format!("Homebrew could not be read: {reason}."));
+            run.notes.push(not_read_note("Homebrew", &reason));
         }
     }
     // Homebrew is looked for only at its two places, which no folder macOS asks permission
@@ -2677,8 +2696,13 @@ fn tool_not_found(
     let reason = format!("{name}{}{}", tools::READ_BEFORE, places.join(", "));
     let gap = Gap::of(Cause::NotGiven);
     run.apply(reading, basis, "none", Some(&reason), &gap, &[])?;
+    // The places are names of places, never cut: written as the contract writes a name, so no
+    // backslash in one reads as a mark in the run's line (`known::whole`).
+    let shown: Vec<String> = places.iter().map(|p| known::whole(p)).collect();
     run.notes.push(format!(
-        "{reason}; what was read from it is kept, not counted as removed."
+        "{name}{}{}; what was read from it is kept, not counted as removed.",
+        tools::READ_BEFORE,
+        shown.join(", ")
     ));
     Ok(true)
 }
@@ -2714,7 +2738,10 @@ fn read_servers(run: &mut Run, dir: Option<&Path>) -> Result<(), Box<dyn Error>>
     let default = run.home.join("sweep");
     let Some(dir) = dir.or(Some(&default)).filter(|d| d.is_dir()) else {
         run.notes.push(match dir {
-            Some(dir) => format!("No server files: {} is not a folder.", dir.display()),
+            Some(dir) => format!(
+                "No server files: {} is not a folder.",
+                known::whole(&dir.display().to_string())
+            ),
             None => "No server sweep has been run.".to_string(),
         });
         return Ok(());
@@ -2781,18 +2808,55 @@ fn read_servers(run: &mut Run, dir: Option<&Path>) -> Result<(), Box<dyn Error>>
         }
         if let Some(f) = failed {
             let last = store::last_read(run.tx, servers::READER, &machine)?;
-            run.notes.push(format!(
-                "{} {}; {}",
-                input.name,
-                last.map_or("was never read".to_string(), |t| format!(
-                    "was last read {}",
-                    view::utc(t)
-                )),
-                sweep::failed_visit(f.at, &f.reason)
-            ));
+            run.notes.push(visit_note(&input.name, last, f));
         }
     }
     Ok(())
+}
+
+/// What the run's line says of a server whose latest visit failed. The reason is cut on its own
+/// (`sweep::failed_visit`): the line is put together from cut pieces and never cut whole, which
+/// could take the core's words with it. The name is a name, never cut, and written as the
+/// contract writes one, so no backslash in it reads as a mark (`known::whole`).
+fn visit_note(name: &str, last: Option<i64>, f: &servers::Failure) -> String {
+    format!(
+        "{} {}; {}",
+        known::whole(name),
+        last.map_or("was never read".to_string(), |t| format!(
+            "was last read {}",
+            view::utc(t)
+        )),
+        sweep::failed_visit(f.at, &f.reason)
+    )
+}
+
+/// What `immune servers` says of a trace that could not be read: the reason cut on its own.
+fn trace_failed(kind: &str, reason: &str) -> String {
+    format!("{kind}: could not be read, {}", secrets::said(reason))
+}
+
+/// What the run's line says of a source that could not be read: the reason cut on its own.
+fn not_read_note(what: &str, reason: &str) -> String {
+    format!("{what} could not be read: {}.", secrets::said(reason))
+}
+
+/// A row under the run's line for a watched place not read: why is what the reader's source
+/// said, cut here, where it is put beside the core's words (`prefix`); the run prints the rows
+/// as they are (`run_said`).
+fn not_read_row(watched_as: &str, path: &str, prefix: &str, why: &str) -> Vec<String> {
+    vec![
+        "not read".to_string(),
+        watched_as.to_string(),
+        path.to_string(),
+        format!("{prefix}{}", secrets::said(why)),
+    ]
+}
+
+/// What the run's line says of folders that could not be listed: their names, never cut, each
+/// written as the contract writes a name (`known::whole`).
+fn unlisted_note(folders: &[String]) -> String {
+    let shown: Vec<String> = folders.iter().map(|f| known::whole(f)).collect();
+    format!("Folders that could not be listed: {}.", shown.join(", "))
 }
 
 /// Which checkouts are on this machine. `None` when the root is not a folder: then
@@ -2807,8 +2871,10 @@ fn read_checkouts(
         &args.home,
     );
     if !root.is_dir() {
-        run.notes
-            .push(format!("No checkouts: {} is not a folder.", root.display()));
+        run.notes.push(format!(
+            "No checkouts: {} is not a folder.",
+            known::whole(&root.display().to_string())
+        ));
         return Ok(None);
     }
     run.readers += 1;
@@ -2853,8 +2919,8 @@ fn read_checkouts(
     not_looked_into(run, checkouts::READER, &walk.guarded, home)?;
     let unlisted = (!walk.unlisted.is_empty())
         .then(|| format!("could not be listed: {}", walk.unlisted.join(", ")));
-    if let Some(unlisted) = &unlisted {
-        run.notes.push(format!("Folders that {unlisted}."));
+    if unlisted.is_some() {
+        run.notes.push(unlisted_note(&walk.unlisted));
     }
     let given = args
         .checkouts_root
@@ -2959,8 +3025,7 @@ fn read_agent_folders(
                 &gap,
                 &[],
             )?;
-            run.notes
-                .push(format!("Agent sessions could not be read: {reason}."));
+            run.notes.push(not_read_note("Agent sessions", &reason));
             return Ok(Vec::new());
         }
         agent_folders::Found::Absent => None,
@@ -3257,7 +3322,7 @@ fn read_traces(run: &mut Run, args: &Args) -> Result<(), Box<dyn Error>> {
                 let gap = Gap::of(Cause::Failed);
                 run.apply(&reading, basis, "none", Some(&reason), &gap, &[])?;
                 run.notes
-                    .push(format!("The {kind} could not be read: {reason}."));
+                    .push(not_read_note(&format!("The {kind}"), &reason));
             }
             // Switched off by the owner: nothing was asked of it, what was known from it stays
             // as it was, and the source does not give it now. Said once, in what is not
@@ -3538,15 +3603,8 @@ impl Visited {
 fn kept(
     tx: &rusqlite::Transaction,
     r: &Reading,
-    checkouts: &Visited,
     keep: impl Fn(Option<&Unit>) -> bool,
 ) -> rusqlite::Result<Vec<Statement>> {
-    let prefix = format!("file:{}/", r.scope);
-    let machine_prefix = r
-        .scope
-        .split_once('/')
-        .map(|(machine, _)| machine.strip_prefix("checkout:").unwrap_or(machine))
-        .map(|machine| format!("file:{machine}/"));
     let mut kept = Vec::new();
     let mut stmt = tx.prepare(
         "SELECT a.subject, a.predicate, a.object, a.source_ref, u.path, u.part FROM assertion a
@@ -3570,25 +3628,12 @@ fn kept(
             "located_on" => "located_on",
             _ => continue,
         };
-        let unit = if let Some(path) = path {
-            Some(Unit {
-                path,
-                part: part.unwrap_or_default(),
-            })
-        } else {
-            subject
-                .strip_prefix(&prefix)
-                .or_else(|| {
-                    machine_prefix
-                        .as_deref()
-                        .and_then(|m| subject.strip_prefix(m))
-                })
-                .and_then(|p| {
-                    baseline::legacy_unit(r.kind, p, |rel| {
-                        checkouts.held.contains(rel) || checkouts.looked.contains(rel)
-                    })
-                })
-        };
+        // Every entry a reading of this format holds was recorded with its unit, in the
+        // transaction that made it, and a unit's row is never taken out.
+        let unit = path.map(|path| Unit {
+            path,
+            part: part.unwrap_or_default(),
+        });
         if keep(unit.as_ref()) {
             kept.push(Statement {
                 subject,
@@ -3765,7 +3810,7 @@ fn read_watched(
                         checkouts.iter().map(|c| (c.path.as_path(), c.rel.as_str())),
                         &args.home,
                     ),
-                    kept(run.tx, &reading, &visited, |unit| match unit {
+                    kept(run.tx, &reading, |unit| match unit {
                         Some(unit) => visited.unvisited(&unit.path),
                         None => !visited.held.is_subset(&visited.looked),
                     })?,
@@ -3896,7 +3941,7 @@ fn read_watched(
         // so that the rest of the reading is compared whole: what is gone from a unit read in
         // full is gone, whatever failed elsewhere. A part of a file that could not be read,
         // its neighbours read, keeps only its own. Hooks kept elsewhere keep all of theirs.
-        statements.extend(kept(tx, &reading, &visited, |unit| {
+        statements.extend(kept(tx, &reading, |unit| {
             p.elsewhere.is_some() || !p.look.retracts(unit)
         })?);
         baseline::remember_units(tx, &reading, &units)?;
@@ -3963,7 +4008,7 @@ fn read_watched(
                             worktrees::journal(
                                 run.tx, &reading, &e.subject, content, &ids.0, &ids.1,
                             )?;
-                            format!("the same as in {checkout}")
+                            format!("the same as in {}", known::whole(checkout))
                         }
                         None => {
                             observe("new", p.watched_as, &e.subject);
@@ -4037,20 +4082,15 @@ fn read_watched(
             }
         }
         for (path, why) in p.look.failed() {
-            rows.push(vec![
-                "not read".to_string(),
-                p.watched_as.to_string(),
-                path.to_string(),
-                why.clone(),
-            ]);
+            rows.push(not_read_row(p.watched_as, &path.to_string(), "", why));
         }
         for (path, why) in p.look.unreached() {
-            rows.push(vec![
-                "not read".to_string(),
-                p.watched_as.to_string(),
-                path.to_string(),
-                format!("{}{why}", guarded::NOT_LOOKED_INTO),
-            ]);
+            rows.push(not_read_row(
+                p.watched_as,
+                &path.to_string(),
+                guarded::NOT_LOOKED_INTO,
+                why,
+            ));
         }
 
         for (e, line) in p.look.entries.iter().zip(mine) {
@@ -4151,12 +4191,7 @@ fn read_watched(
                 observe(findings::NOT_READ, e.watched_as, &id);
             }
             if let Some(why) = reason {
-                rows.push(vec![
-                    "not read".to_string(),
-                    e.watched_as.to_string(),
-                    e.unit.to_string(),
-                    why.to_string(),
-                ]);
+                rows.push(not_read_row(e.watched_as, &e.unit.to_string(), "", why));
             }
         }
         baseline::record(
@@ -4868,7 +4903,8 @@ fn feed_clause(s: &osv::State, run_id: &str) -> String {
     let since = view::utc_or(s.changed_at.or(s.good_at), "an unknown time");
     match outcome.as_str() {
         "failed" => {
-            let reason = reason.as_deref().unwrap_or_default();
+            // What the download said: cut on its own, as every source's text in the run's line.
+            let reason = secrets::said(reason.as_deref().unwrap_or_default());
             match s.good_at {
                 Some(at) => format!(
                     "{ecosystem} not read: {reason}; the {held}, read {}, stay in force",
@@ -4946,19 +4982,22 @@ fn catalogue_sentence(c: Option<&status::Catalogue>, compared: &[&str]) -> Strin
             "CISA catalogue: {}, unchanged, 0 new since the last reading; {judged}.",
             held(*total)
         ),
+        // What the download said: cut on its own, as every source's text in the run's line.
         Catalogue::Failed {
             reason,
             last: Some((at, total)),
             ..
         } => format!(
-            "CISA catalogue not read: {reason}; what is new is unknown, and the {} it held at its last reading, {}, are {judged}.",
+            "CISA catalogue not read: {}; what is new is unknown, and the {} it held at its last reading, {}, are {judged}.",
+            secrets::said(reason),
             held(*total),
             view::utc(*at)
         ),
         Catalogue::Failed {
             reason, last: None, ..
         } => format!(
-            "CISA catalogue not read: {reason}; the program knows no exploited vulnerability yet, so whether any affects this estate is unknown."
+            "CISA catalogue not read: {}; the program knows no exploited vulnerability yet, so whether any affects this estate is unknown.",
+            secrets::said(reason)
         ),
     }
 }
@@ -4983,6 +5022,9 @@ fn needs_sentence(total: usize, opened: usize) -> String {
     )
 }
 
+/// The run's line: the core's words and the notes, each put together from the core's words and
+/// pieces of what sources said cut on their own (`secrets::said`). It is kept and printed as it
+/// is and never cut whole, which could take the core's words with it.
 fn report(readers: usize, notes: &[String], s: &status::Summary, needs: &str) -> String {
     let mut line = format!(
         "{}, {} {needs}",
@@ -5041,7 +5083,7 @@ fn summary_sentences(s: &status::Summary) -> String {
     if !servers.seen.is_empty() {
         line.push_str(&format!(
             " Seen alive after the owner's word: {}.",
-            servers.seen.join(", ")
+            known::whole(&servers.seen.join(", "))
         ));
     }
     let mut gaps = Vec::new();
@@ -5208,7 +5250,7 @@ mod tests {
             conn.query_row("SELECT COUNT(*) FROM session_file", [], |r| r.get(0))
                 .unwrap()
         };
-        let mut conn = store::open(&store_path).unwrap();
+        let mut conn = store::open_or_make(&store_path).unwrap();
         {
             let tx = conn.transaction().unwrap();
             store::put_entity(&tx, "machine:mac").unwrap();
@@ -5233,29 +5275,180 @@ mod tests {
     }
 
     #[test]
-    fn what_a_run_prints_for_a_person_holds_no_secret_a_reader_s_source_said_and_marks_the_cut() {
-        // The run's line and the why of a watched place quote what a reader's source said, such
-        // as why a server could not be opened: a token in it is cut, marked as every cut is.
+    fn no_reason_a_source_gave_takes_a_word_of_the_core_s_from_the_run_s_line() {
+        // A reason that leaves a quote open after `password:`, one over the cap the patterns read
+        // and one cut while the patterns did not load each become a mark in their own place:
+        // the counts, what needs a look, the name of every other server that failed, the advice
+        // about a host key and the folders that could not be listed all stay, and the run prints
+        // its line as it keeps it.
+        let scratch = common::Scratch::new("run-line-pieces");
+        let conn = store::open_or_make(&scratch.0.join("store.db")).unwrap();
+        let mark = status::RunMark {
+            id: "1767412800-000000000".to_string(),
+            started_at: 1_767_412_800,
+            finished_at: None,
+        };
+        let summary = status::summary(&conn, mark, &scratch.0).unwrap();
+        let failed = |reason: String| servers::Failure {
+            at: 1_767_412_800, // 2026-01-03 04:00:00 UTC
+            reason,
+        };
+        let long = format!("refused {}", "x".repeat(secrets::LINE_CAP));
+        let host_key = "Host key verification failed.".to_string();
+        let notes = [
+            visit_note("db-1", None, &failed("it's down, password: x".to_string())),
+            visit_note("db-2", None, &failed(long.clone())),
+            secrets::without_patterns(|| visit_note("db-3", None, &failed(host_key.clone()))),
+            visit_note("db-4", Some(1_767_323_045), &failed(host_key.clone())),
+            not_read_note("Homebrew", "it's down, password: x"),
+            unlisted_note(&[
+                "/Users/example/a".to_string(),
+                "/Users/example/b\\c".to_string(),
+            ]),
+        ];
+        let needs = needs_sentence(2, 1);
+        let line = report(1, &notes, &summary, &needs);
+        let advice = "Connect to this server once by hand and check its host key: the sweep never accepts a key for you.";
+        let failed_at = "the latest visit failed 2026-01-03 04:00 UTC:";
+        for words in [
+            "1 reader, 0 checkouts, 0 components. No servers known. ".to_string(),
+            format!(" {needs} db-1 "),
+            format!("db-1 was never read; {failed_at} it's down, password:"),
+            format!(
+                "db-2 was never read; {failed_at} {}. db-3 ",
+                secrets::mark(secrets::TOO_LONG, long.chars().count())
+            ),
+            format!(
+                "db-3 was never read; {failed_at} {}. {advice} db-4 ",
+                secrets::mark(secrets::NO_PATTERNS, 28)
+            ),
+            format!(
+                "db-4 was last read 2026-01-02 03:04 UTC; {failed_at} Host key verification failed. {advice} Homebrew"
+            ),
+            format!(
+                "Homebrew could not be read: it's down, password:{}. Folders",
+                secrets::mark(secrets::FLAG_VALUE, 2)
+            ),
+            // Names are never cut, and a backslash in one is written as a source's.
+            "Folders that could not be listed: /Users/example/a, /Users/example/b\\u{5c}c."
+                .to_string(),
+        ] {
+            assert!(line.contains(&words), "{words}\n{line}");
+        }
+        assert!(needs.contains("2 things need a look"), "{needs}");
+        assert_eq!(run_said(&line, &Vec::new()), format!("{line}\n"));
+        assert_eq!(
+            trace_failed("ssh known hosts", "it's down, password: x"),
+            format!(
+                "ssh known hosts: could not be read, it's down, password:{}",
+                secrets::mark(secrets::FLAG_VALUE, 2)
+            )
+        );
+        let named = visit_note("db\\5", None, &failed(host_key.clone()));
+        assert!(named.starts_with("db\\u{5c}5 was never read; "), "{named}");
+    }
+
+    #[test]
+    fn the_rows_under_the_run_s_line_are_printed_as_they_were_put_together() {
+        // A row's why is cut where it is put beside the core's words (`read_watched`); printing
+        // cuts nothing again, so a mark the core made stays its own and a source's backslash
+        // stays written as a source's.
         let token = format!(
             "{}{}",
             ["gh", "p_"].concat(),
             "Q7mZ2xK9pL4vR8nT3wY6bH1cJ5dF0gS2aE7u"
         );
-        let said = format!("a tool answered: fetch https://example.invalid/?t={token} refused");
-        let line = format!("1 reader. db-1 was never read; the latest visit failed: {said}.");
-        let rows: Rows = vec![vec![
-            "not read".to_string(),
-            "shell profile".to_string(),
-            "/Users/example/.zshrc".to_string(),
-            said.clone(),
-        ]];
-        let printed = run_said(&line, &rows);
-        let mark = secrets::mark("gitleaks:github-pat", 40);
-        assert!(!printed.contains(&token), "{printed}");
-        assert_eq!(printed.matches(&mark).count(), 2, "{printed}");
+        let row = not_read_row(
+            "shell profile",
+            "/Users/example/.zshrc",
+            guarded::NOT_LOOKED_INTO,
+            &format!("?t={token} a\\cut{{x 1}}"),
+        );
+        let why = format!(
+            "{}?t={} a\\u{{5c}}cut{{x 1}}",
+            guarded::NOT_LOOKED_INTO,
+            secrets::mark("gitleaks:github-pat", 40)
+        );
+        assert_eq!(row[3], why);
+        let printed = run_said("1 reader.", &vec![row]);
         assert!(
-            printed.starts_with("1 reader. db-1 was never read;"),
+            printed.starts_with("1 reader.\nWatched places:\n") && printed.contains(&why),
             "{printed}"
+        );
+    }
+
+    #[test]
+    fn what_a_download_said_is_cut_in_the_run_s_line_and_the_core_s_words_around_it_stay() {
+        // The catalogue's and a feed's reason is what curl or a parser said: a token in a URL is
+        // cut, a mark it wrote stays its text, a password's value is cut, and the sentence
+        // around each is the core's, whole.
+        let token = format!(
+            "{}{}",
+            ["gh", "p_"].concat(),
+            "Q7mZ2xK9pL4vR8nT3wY6bH1cJ5dF0gS2aE7u"
+        );
+        let reason =
+            format!("curl: (22) https://example.invalid/?t={token} \\cut{{x 1}} password: x");
+        let cut = format!(
+            "curl: (22) https://example.invalid/?t={} \\u{{5c}}cut{{x 1}} password:{}",
+            secrets::mark("gitleaks:github-pat", 40),
+            secrets::mark(secrets::FLAG_VALUE, 2)
+        );
+        let catalogue = status::Catalogue::Failed {
+            reason: reason.clone(),
+            last: None,
+            at: 1_767_412_800,
+        };
+        assert_eq!(
+            catalogue_sentence(Some(&catalogue), &[]),
+            format!(
+                "CISA catalogue not read: {cut}; the program knows no exploited vulnerability yet, so whether any affects this estate is unknown."
+            )
+        );
+        let feed = osv::State {
+            feed: &osv::FEEDS[0],
+            latest: Some((
+                "run".to_string(),
+                1_767_412_800,
+                "failed".to_string(),
+                Some(reason),
+            )),
+            good_at: None,
+            changed_at: None,
+            records: 0,
+            malicious: 0,
+            withdrawn: 0,
+            counts: None,
+        };
+        assert_eq!(
+            feed_clause(&feed, "run"),
+            format!(
+                "{} not read: {cut}; nothing of it is known yet",
+                osv::FEEDS[0].ecosystem
+            )
+        );
+    }
+
+    #[test]
+    fn a_name_never_reads_as_a_mark_in_what_the_run_and_the_server_list_print() {
+        // A name is never cut, and its backslash is written as a source's: the path of a watched
+        // place under the run's line, and a server's names in `immune servers`.
+        let forged = "/Users/example/\\cut{gitleaks:github-pat 40}";
+        let shown = "/Users/example/\\u{5c}cut{gitleaks:github-pat 40}";
+        let rows: Rows = vec![vec![
+            "new".to_string(),
+            "shell profile".to_string(),
+            forged.to_string(),
+            String::new(),
+        ]];
+        let printed = run_said("1 reader.", &rows);
+        assert!(
+            printed.contains(shown) && !printed.contains("/\\cut{"),
+            "{printed}"
+        );
+        assert_eq!(
+            names(&[vec![forged.to_string(), "linux".to_string()]]),
+            [[shown.to_string(), "linux".to_string()]]
         );
     }
 }
