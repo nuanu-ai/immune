@@ -52,7 +52,12 @@ pub fn one(
     now: i64,
 ) -> rusqlite::Result<Result<v1::Finding, Refused>> {
     let found = all(conn, now)?;
-    Ok(of(conn, &found, id, now)?.ok_or(Refused {
+    let mut one = of(conn, &found, id, now)?;
+    if let (Some(f), Some(with)) = (one.as_mut(), with) {
+        let items: Vec<Item> = found.iter().filter_map(findings::item).collect();
+        f.answered_with = refs(&items).get(with).cloned();
+    }
+    Ok(one.ok_or(Refused {
         code: "unknown_finding",
         message: "the store has no finding with this id",
         example: "immune findings --all lists every finding with its id; with --json, every one in every state",
@@ -105,7 +110,8 @@ pub fn of(
         answered_at: now,
         store_id,
         verdicts,
-        answered_with: with.and_then(|w| refs.get(w).cloned()),
+        // Named by `one` after an answer given to a pair; a read names none.
+        answered_with: None,
         journal_seq: findings::journal_seq(conn)?,
         finding: Some(known::finding_ref(&i)),
         kind: i.kind.to_string(),
