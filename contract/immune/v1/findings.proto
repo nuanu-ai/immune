@@ -135,8 +135,8 @@ message Finding {
   // finding's own rule does not refuse `expected`, which already quiets every later match of
   // the rule; it refuses `seen` and `reopen`. One number covers every finding of the store, so
   // it covers both findings of a pair; when they were read in two answers, pass the smaller of
-  // the two. Required with `--with` and with `--via agent` on `seen` and `expected`. `Findings`
-  // and `Status` carry it too. Since 1.9.0.
+  // the two. Required with `--with` and, on `seen` and `expected`, with `--via agent` and
+  // `--via app`. `Findings` and `Status` carry it too. Since 1.9.0.
   int64 journal_seq = 21;
 }
 

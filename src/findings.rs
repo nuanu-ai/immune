@@ -1549,9 +1549,12 @@ pub struct Item {
 /// Nothing else pairs two findings: findings of two rules about the same machine are two things,
 /// and a verdict finding with no partner is a thing of its own. The page, the answer (`pair` for
 /// `--with`) and the read guard (`unchanged`, which covers the partner a finding shows) pair by
-/// this alone.
+/// this alone. `core` is never itself a finding of the response layer: one whose stored subject
+/// is the verdict rule would otherwise pair with itself and be folded out of sight.
 pub fn one_thing(core: &Item, own: &Item) -> bool {
-    own.subject.as_deref() == Some(core.rule.as_str()) && own.about == core.about
+    core.subject.is_none()
+        && own.subject.as_deref() == Some(core.rule.as_str())
+        && own.about == core.about
 }
 
 impl Item {
@@ -2234,6 +2237,11 @@ mod tests {
             &item("watched.shell-profile", "machine:a")
         ));
         assert!(!super::one_thing(&own(padding, "machine:a"), &core));
+        // A finding of the response layer is never the core's side: one whose subject is the
+        // verdict rule pairs neither with itself nor with another like it.
+        let nested = own("verdict.suspicious", "machine:a");
+        assert!(!super::one_thing(&nested, &nested));
+        assert!(!super::one_thing(&own(padding, "machine:a"), &nested));
     }
 
     #[test]
