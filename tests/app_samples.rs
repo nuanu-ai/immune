@@ -576,13 +576,18 @@ fn the_panel_has_a_status_of_real_size_to_be_drawn_from() {
         .collect();
     status["event_level"]["program_starts"]["last_day"] = json!(4_812_337);
     // Four servers that could not be opened, as the core words the cause and gives its examples:
-    // the first three (`EXAMPLES`), each the server's name and then what the source said
-    // (`with_reason` in `src/covered.rs`); the first is long.
-    let reasons = [
-        "staging-db: ssh exited with 255 (kex_exchange_identification: read: Connection reset by peer; the server closed the connection before the key exchange)",
-        "build-box: ssh: connect to host build-box port 22: Operation timed out",
-        "backup-01: ssh: Could not resolve hostname backup-01: nodename nor servname provided, or not known",
+    // the first three (`EXAMPLES`), each the server's name alone in `examples_text` and, beside
+    // it in `examples`, what the source said; the first is long.
+    let said = [
+        ("staging-db", "ssh exited with 255 (kex_exchange_identification: read: Connection reset by peer; the server closed the connection before the key exchange)"),
+        ("build-box", "ssh: connect to host build-box port 22: Operation timed out"),
+        ("backup-01", "ssh: Could not resolve hostname backup-01: nodename nor servname provided, or not known"),
     ];
+    let names: Vec<&str> = said.iter().map(|(name, _)| *name).collect();
+    let examples: Vec<Value> = said
+        .iter()
+        .map(|(name, reason)| json!({"name_text": name, "reason_text": reason}))
+        .collect();
     let servers = json!({
         "id": "servers-not-opened", "who": "you", "scope": "servers",
         "kind": "servers that could not be opened",
@@ -590,7 +595,7 @@ fn the_panel_has_a_status_of_real_size_to_be_drawn_from() {
         "meaning": "A server that refuses or does not answer cannot be checked; the reason is listed with each one.",
         "advice": "If you still use them, check that you can log in to them yourself and run the server check again. If one is no longer yours, mark it as retired.",
         "count": 4, "since_at": status["answered_at"], "value_text": null,
-        "examples_text": reasons, "holds_on": "this_mac",
+        "examples_text": names, "examples": examples, "holds_on": "this_mac",
     });
     let mut causes = vec![servers];
     causes.extend(not_covered);

@@ -150,12 +150,13 @@ struct PanelOnScreen {
     let p = panel(output("real/status-real-size.json"))
     let servers = try #require(p.notSeen.first { $0.id == "servers-not-opened" })
     let example = try #require(servers.example)
-    #expect(example.hasPrefix("staging-db: "))
+    // The core gives the name alone; what the source said is beside it, not in the row.
+    #expect(example == "staging-db")
     #expect(!servers.examplePath)
     #expect(servers.more == 3)
     // Cut at its end: the start stays, and the cut ends the line.
     let fits = { (s: String) in s.count <= 24 }
-    let cut = Inert.end(example, fits: fits)
+    let cut = Inert.end("staging-db: ssh exited with 255 (kex_exchange_identification)", fits: fits)
     #expect(cut == "staging-db: ssh exited …")
     #expect(Inert.end("short", fits: fits) == "short")
     #expect(Inert.end(example, fits: { _ in false }) == "…")

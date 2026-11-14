@@ -1,7 +1,7 @@
 {
   "advice": "Do not install or run that project again. Ask your agent to look into it; if its packages were installed here, treat the tokens and keys this Mac could reach as exposed.",
   "answer": null,
-  "answered_at": 1794651097,
+  "answered_at": 1794652132,
   "answered_with": null,
   "answers_note": "Answer a finding only after the owner has agreed in this conversation, having been told what it is and what the options are. Pass --via agent and the reason the owner agreed to. The app shows every answer given this way.",
   "evidence": {
@@ -39,12 +39,12 @@
     "state": "open",
     "urgent": true
   },
-  "first_seen_at": 1794651096,
+  "first_seen_at": 1794652131,
   "format": 1,
   "journal_seq": 36,
   "kind": "lockfile dependency",
   "kind_title": "Package in a project",
-  "last_seen_at": 1794651097,
+  "last_seen_at": 1794652131,
   "meaning": "The package, or this release of it, was reported as carrying harmful code. If the project's packages were installed on this Mac, that code may have run here.",
   "rests_on": [
     {
@@ -54,8 +54,8 @@
       "old_value_text": null,
       "predicate": "has_version",
       "reader": "lockfiles",
-      "recorded_at": 1794651096,
-      "run_id": "1794651096-868936000",
+      "recorded_at": 1794652131,
+      "run_id": "1794652131-849950000",
       "seq": 3,
       "subject_text": "component:checkout:machine:mac/dev/shop/npm/ansi-regex"
     },
@@ -66,13 +66,13 @@
       "old_value_text": null,
       "predicate": null,
       "reader": "osv-npm",
-      "recorded_at": 1794651096,
-      "run_id": "1794651096-868936000",
+      "recorded_at": 1794652131,
+      "run_id": "1794652131-849950000",
       "seq": 18,
       "subject_text": null
     }
   ],
-  "store_id": "5539c26c789b16bbd75d7433bc7bf269",
+  "store_id": "145bdd155390773771be7d4905c7314f",
   "technique_text": "T1195.001",
   "thing": null,
   "title": "A project on this Mac depends on a package that is known to be malicious.",
