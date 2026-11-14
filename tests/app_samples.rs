@@ -387,8 +387,17 @@ fn the_app_reads_real_answers_of_every_kind_of_evidence_with_values_of_real_size
         "invented: my own tool, started as tool --password={}",
         password()
     );
+    let seq = mac.json(&["finding", &detached])["journal_seq"].to_string();
     mac.json(&[
-        "finding", &detached, "expected", "--reason", &reason, "--via", "agent",
+        "finding",
+        &detached,
+        "expected",
+        "--reason",
+        &reason,
+        "--via",
+        "agent",
+        "--journal-seq",
+        &seq,
     ]);
 
     // The answers: the status, and each finding whole, one of each kind of evidence.

@@ -202,6 +202,8 @@ A finding stays open until someone answers it.
 - `immune finding <id> expected --reason <text>` hides it for 30 days, or `--days` from 1 to 3650. If it was found again in the meantime, it opens again when that time ends.
 - `immune finding <id> seen` closes it. The next time it is found is a new finding.
 - `immune finding <id> reopen` takes an answer back.
+- `--with <id>` gives the same answer, or takes it back, on the other finding of a pair: the core's finding of a rule and the response layer's finding of that rule about the same thing (see [Verdicts](#verdicts)). The caller names both, both answers are recorded or neither is, and each finding keeps an ordinary answer of its own.
+- `--journal-seq <n>` ties an answer to what the caller read, as HTTP's `If-Match` does: the answer is refused when a match, a verdict or a new reading joined the finding, or the response layer's finding it shows, after the read whose `journal_seq` it names. A match of the finding's own rule does not refuse `expected`, which already quiets every later match. It is required on `seen` and `expected` given with `--with` or through an agent.
 
 An answer records who gave it: `--via app`, `--via agent`, or the command line when neither is given. Answers in force that were not given in the app are listed in the status as `answered_outside_app`, and the app shows them and can take each back. An AI agent may give an answer only after the person has agreed in the conversation, having been told what the finding is and what the options are, and it passes `--via agent` with the reason they agreed to. So an answer is never silent. Answers are not signed. A program running as the user can rewrite the store directly, so the record covers every answer given through Immune and cannot catch one written around it. Verdicts are not signed either, which is why they never write into the core's findings (see [Verdicts](#verdicts)).
 
@@ -273,6 +275,7 @@ Where the industry has a proven name, format or rule set, Immune takes it. Its o
 | Vulnerability data | OSV's schema, its ecosystem names and its `IsVulnerable` algorithm; CISA KEV |
 | Indicators | STIX 2.1 object paths |
 | An answer that hides a finding until an end date, with a reason | the industry's practice for alert exceptions |
+| An answer refused when what it was read from changed since | HTTP's conditional requests (`If-Match`, RFC 9110) and optimistic concurrency control. Immune's own part is the value: the journal's sequence number at the read, compared with the entries tied to each finding |
 | Content judged by its checksum against what is already in force | file integrity monitoring baselines (Tripwire, OSSEC), allow-listing by hash (Santa, AppLocker), "first seen" state in detection rules |
 | Which places of persistence are watched | the categories Objective-See's KnockKnock enumerates and MITRE ATT&CK's persistence techniques for macOS. Immune keeps the places current macOS still acts on, that a program running as the user can read without a permission dialog, and that have a normal state to compare with. The rest are named as limits |
 | Collector | Apple's `eslogger`, `jq` and `rotatelogs` |

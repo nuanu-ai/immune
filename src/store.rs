@@ -125,7 +125,8 @@ const JOURNAL_ENTRIES: [&str; 24] = [
     "sampled",
     // One reading of a vulnerability data feed with its counts, see `osv.rs`.
     "advisories_read",
-    // A published rule's match that a finding rests on: the rule and a count, see `events.rs`.
+    // A reading in which a published rule matched: the rule and a count, see `events.rs`. The
+    // finding rests on the one that raised it.
     "matched",
     // A place new in a worktree that is the same as in another checkout of its repository,
     // and so raised no finding, see `worktrees.rs`.
