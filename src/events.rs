@@ -3986,8 +3986,6 @@ pub fn in_words(said: &Said) -> Value {
 /// "the collector".
 pub struct Said {
     pub state: &'static str,
-    /// Program starts read in the last day, while the level records them.
-    pub last_day: Option<i64>,
     pub notes: Vec<String>,
     /// The same caveats, one for each note while the level records program starts, each with
     /// a stable name and a few words: for a row that has room for a mark and not a sentence.
@@ -3999,21 +3997,6 @@ pub struct Said {
 pub struct Caveat {
     pub kind: &'static str,
     pub short: String,
-}
-
-impl Said {
-    /// The state with its count, for a row whose label already says what is counted:
-    /// "on, 49,842 in the last day".
-    pub fn short(&self) -> String {
-        match self.last_day {
-            Some(n) => format!(
-                "{}, {} in the last day",
-                self.state,
-                crate::view::counted(n, "", "").trim_end()
-            ),
-            None => self.state.to_string(),
-        }
-    }
 }
 
 /// How many times, as a person says it: once, twice, then a number.
@@ -4060,7 +4043,6 @@ fn state_words(l: &Level) -> Said {
     let counted = crate::view::counted;
     let not_seen = |state: &'static str, why: String| Said {
         state,
-        last_day: None,
         notes: vec![why],
         caveats: Vec::new(),
     };
@@ -4144,7 +4126,6 @@ fn state_words(l: &Level) -> Said {
             }
             Said {
                 state: "on",
-                last_day: Some(d.starts),
                 notes,
                 caveats,
             }
@@ -5270,7 +5251,7 @@ mod tests {
             cap: None,
         };
         let said = words(&l);
-        assert_eq!(said.short(), "on, 49,842 in the last day");
+        assert_eq!(said.state, "on");
         assert_eq!(
             said.notes,
             ["The collector restarted twice; program starts in those moments were not seen."]
@@ -5287,7 +5268,8 @@ mod tests {
         l.last_day = Tally::default();
         assert!(words(&l).notes.is_empty());
         l.state = NOT_INSTALLED.to_string();
-        assert_eq!(words(&l).short(), "not installed");
+        let off = words(&l);
+        assert_eq!(off.state, "not installed");
     }
 
     #[test]

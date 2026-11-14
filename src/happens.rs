@@ -1,9 +1,12 @@
 //! The summary's section "As it happens": every program start on this Mac, checked against the
-//! published rules. Three numbers first, each drawn: program starts in the last day with a bar
-//! for each hour, what was lost, and how many rules watch. Then the rules that matched this week,
-//! the most severe first, and a grid of ATT&CK techniques for macOS, one square each, grouped by
-//! tactic in the matrix's order, saying which the rules cover and what they found. Drawn in Rust
-//! as inline SVG and plain elements, as `src/map.rs` draws the map.
+//! published rules. Three numbers first: program starts in the last day with a bar for each
+//! hour, how many rules watch here now, and the matches of this week; a line of what was lost,
+//! only when something was. Then the rules that matched this week, the most severe first, and
+//! a grid of ATT&CK techniques for macOS, a row for each tactic in the matrix's order: one grey
+//! square for each technique a rule watching now covers, told apart by its fill as a finding,
+//! a match this week or watched. A technique no rule watches is not drawn: what the version
+//! does not cover holds on every Mac and is kept in the documents and the commands' machine
+//! form, not on the pages. Drawn in Rust as inline SVG and plain elements.
 //!
 //! Alive while open. A running watcher writes `view/live.js` after every reading of program
 //! starts (`live`): numbers, rule ids of shipped rules and fixed words, nothing from an event,
@@ -14,11 +17,11 @@
 //! section is complete as made, and says when it was made.
 //!
 //! No false calm, the project's first invariant. Nothing is drawn as watching unless the event
-//! level's latest state is `running`: while it is not, the section says so first, and the rules
-//! and the grid show what would be watched, a technique with a rule drawn hollow, never calm. A
-//! technique is covered only by a rule evaluated in full; one named only by rules evaluated in
-//! part or not at all is "no rule yet". "None lost" is said only when coverage over the day is
-//! full. Red is for an open finding alone.
+//! level's latest state is `running`: while it is not, one named line says so in place of the
+//! numbers, the rules and the grid. A technique is drawn as watched only for a rule evaluated
+//! in full that watches now; one named only by rules evaluated in part or not at all is not
+//! drawn unless one of them matched. "0 lost" is said only when coverage over the day is full.
+//! No square is in a state colour.
 //!
 //! The list of techniques is MITRE's, `rules/attack/macos.json` with its NOTICE, compiled in.
 //! Which techniques a rule covers is the rule's own `attack.t…` tags (`src/sigma.rs`), a
@@ -27,7 +30,7 @@
 
 use crate::events::{self, Level};
 use crate::findings::Item;
-use crate::sigma::{self, Placement, Reason, Rules};
+use crate::sigma::{self, Placement, Rules};
 use crate::view::{DETAILS, Out, esc};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -108,8 +111,6 @@ pub enum Square {
     Quiet,
     /// A rule evaluated in full covers it, but the level does not run: nothing watches it now.
     Would,
-    /// No rule evaluated in full covers it.
-    NoRule,
 }
 
 impl Square {
@@ -119,7 +120,6 @@ impl Square {
             Square::Matched => "hit",
             Square::Quiet => "calm",
             Square::Would => "would",
-            Square::NoRule => "open",
         }
     }
 
@@ -129,7 +129,16 @@ impl Square {
             Square::Matched => "a rule for it matched this week",
             Square::Quiet => "watched, quiet",
             Square::Would => "has a rule, not watching now",
-            Square::NoRule => "no rule yet",
+        }
+    }
+
+    /// What the legend calls it, as the panel's words.
+    fn legend(self) -> &'static str {
+        match self {
+            Square::Finding => "A finding",
+            Square::Matched => "A match this week",
+            Square::Quiet => "Watched",
+            Square::Would => "Not watching now",
         }
     }
 }
@@ -152,11 +161,14 @@ fn named(rules: &Rules, which: impl Fn(&sigma::Loaded) -> bool) -> BTreeSet<&str
 
 /// Which events the level records now, and so which rules evaluated in full watch: those for
 /// program starts while it runs, those for file events while it runs and its collector
-/// records them.
+/// records them, and of those only the ones that read nothing which does not arrive. The one
+/// predicate of a rule watching now: the status counts and names by it too.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Watching {
     pub starts: bool,
     pub files: bool,
+    /// What of `events::KEEPS` does not arrive while the level runs.
+    pub missing: events::Keeps,
 }
 
 impl Watching {
@@ -164,25 +176,30 @@ impl Watching {
     pub const NONE: Watching = Watching {
         starts: false,
         files: false,
+        missing: 0,
     };
     #[cfg(test)]
     pub const ALL: Watching = Watching {
         starts: true,
         files: true,
+        missing: 0,
     };
 
     /// As the level's latest reading left it.
     pub fn of(level: Option<&Level>) -> Watching {
-        let starts = level.is_some_and(|l| l.state == events::RUNNING);
+        let running = level.filter(|l| l.state == events::RUNNING);
         Watching {
-            starts,
-            files: level.is_some_and(Level::files_watched),
+            starts: running.is_some(),
+            files: running.is_some_and(Level::files_watched),
+            missing: running.map_or(0, Level::not_arriving),
         }
     }
 
-    /// Whether this rule watches now: evaluated in full, about events the level records.
+    /// Whether this rule watches now: evaluated in full, about events the level records, and
+    /// reading nothing that does not arrive.
     pub fn watches(self, l: &sigma::Loaded) -> bool {
         l.placement == Placement::Evaluated
+            && !l.silenced_by(self.missing)
             && match l.kind {
                 Some(sigma::Kind::Process) => self.starts,
                 Some(sigma::Kind::File) => self.files,
@@ -191,7 +208,10 @@ impl Watching {
     }
 }
 
-/// Every tactic with its techniques, each in its state, the most telling first and then by id.
+/// Every tactic with the techniques a rule evaluated in full covers, or a rule matched or raised
+/// a finding for, each in its state, the most telling first and then by id. Any other technique
+/// is not drawn, and a tactic with none is left out: the grid shows the rules taken and what
+/// they found, not what is not covered.
 /// `watching`: which events the level records now. `week`: matches by rule id this week.
 /// `raised`: the ids of rules with an open finding. `rules`: the rules shipped.
 pub fn grid<'a>(
@@ -217,14 +237,15 @@ pub fn grid<'a>(
             let mut squares: Vec<(&str, Square)> = t
                 .techniques
                 .iter()
+                .map(String::as_str)
+                .filter(|tech| {
+                    watched.contains(tech) || matched.contains(tech) || found.contains(tech)
+                })
                 .map(|tech| {
-                    let tech = tech.as_str();
                     let square = if found.contains(tech) {
                         Square::Finding
                     } else if matched.contains(tech) {
                         Square::Matched
-                    } else if !watched.contains(tech) {
-                        Square::NoRule
                     } else if now.contains(tech) {
                         Square::Quiet
                     } else {
@@ -236,6 +257,7 @@ pub fn grid<'a>(
             squares.sort_by_key(|(tech, square)| (*square, *tech));
             (t, squares)
         })
+        .filter(|(_, squares)| !squares.is_empty())
         .collect()
 }
 
@@ -287,7 +309,8 @@ fn matched_ids(level: Option<&Level>) -> Vec<&'static str> {
         .unwrap_or_default()
 }
 
-/// The section, from the state and the status's part `rules`, made at `now`.
+/// The section, from the state and the status's part `rules`, made at `now`. While the level
+/// does not run, one line says so, named, in place of the numbers and the grid.
 pub fn draw(
     out: &mut String,
     st: &crate::status::State,
@@ -298,13 +321,12 @@ pub fn draw(
     let running = level.is_some_and(|l| l.state == events::RUNNING);
     writeln!(
         out,
-        "<section id=\"{ANCHOR}\" data-state=\"{}\" data-matched=\"{}\">\n<div class=\"head\"><h2>{TITLE}</h2><span class=\"n\">every program start, checked against published rules</span><span class=\"n live\" data-live=\"said\">as made, {}</span></div>\n<p class=\"first\" data-live=\"moved\" hidden></p>",
+        "<section id=\"{ANCHOR}\" data-state=\"{}\" data-matched=\"{}\">\n<div class=\"wsh\"><h2>{TITLE}</h2><span class=\"n\">every program start, checked against published rules</span><span class=\"live\" data-live=\"said\">as made, {}</span></div>\n<p class=\"first\" data-live=\"moved\" hidden></p>",
         known(level),
         esc(&matched_ids(level).join(" ")),
-        crate::view::utc(now)
+        crate::view::when(now, now)
     )?;
-    // Not running: said first, before anything is drawn.
-    if !running {
+    let Some(l) = level.filter(|_| running) else {
         let (state, notes) = match level {
             Some(l) => {
                 let said = events::words(l);
@@ -317,27 +339,34 @@ pub fn draw(
         };
         writeln!(
             out,
-            "<p class=\"first\"><strong>Program starts: {}.</strong> {} No rule is watching now; below is what the rules would watch once program starts are seen.</p>",
+            "<p class=\"first\"><strong>Program starts: {}.</strong> {} No rule is watching now.</p>\n<p class=\"first\"><a href=\"{DETAILS}/{}.html\">Published rules, each with what it looks for</a></p>\n{SCRIPT_TAG}\n</section>",
             esc(state),
-            esc(&notes)
+            esc(&notes),
+            crate::pages::RULES,
         )?;
-    }
+        return Ok(());
+    };
     out.push_str("<div class=\"stats\">\n");
-    // While the level does not run, its state is the line above; nothing is counted here.
-    if let Some(l) = level.filter(|_| running) {
-        stat(
-            out,
-            ("Program starts in the last day", "last_day"),
-            &num(l.last_day.starts),
-            &bars(&l.starts_by_hour),
-            &["by hour, last 24 hours".to_string()],
-        )?;
-        lost(out, l)?;
-    }
+    stat(
+        out,
+        ("Program starts in the last day", "last_day"),
+        &num(l.last_day.starts),
+        &bars(&l.starts_by_hour),
+        &["by hour, last 24 hours".to_string()],
+    )?;
     watching(out, r, level)?;
+    let week: i64 = l.matches_last_week.values().sum();
+    stat(
+        out,
+        ("Matches this week", "week"),
+        &num(week),
+        "",
+        &["only a rule rated high raises a finding; the rest are counted".to_string()],
+    )?;
     out.push_str("</div>\n");
+    lost(out, l)?;
     matched(out, st, level)?;
-    cover(out, st, level, running)?;
+    cover(out, st, level)?;
     out.push_str(SCRIPT_TAG);
     out.push_str("\n</section>\n");
     Ok(())
@@ -369,7 +398,7 @@ fn stat(
     Ok(())
 }
 
-/// What was lost over the last day as the big number says it. "0" only when nothing was lost,
+/// What was lost over the last day as the number says it. "0" only when nothing was lost,
 /// unreadable or deleted before it was read; a restart of the collector is a loss of unknown
 /// size, said as "some" or as "at least".
 fn lost_shown(d: &events::Tally) -> String {
@@ -384,14 +413,26 @@ fn lost_shown(d: &events::Tally) -> String {
     }
 }
 
-/// What was lost over the last day, with the reader's own caveats under it.
+/// What was lost over the last day, in one line with the reader's own caveats, shown only when
+/// something was; the script shows it when a loss comes later. What the collector does not
+/// keep is said in a line of its own even when nothing was lost.
 fn lost(out: &mut String, l: &Level) -> Out {
-    let notes = if l.last_day.whole() {
-        vec!["program starts the system could not hand over".to_string()]
-    } else {
-        events::words(l).notes
-    };
-    stat(out, ("Lost", "lost"), &lost_shown(&l.last_day), "", &notes)
+    let whole = l.last_day.whole();
+    let mut notes = events::words(l).notes.join(" ");
+    if whole {
+        if !notes.is_empty() {
+            writeln!(out, "<p class=\"first note\">{}</p>", esc(&notes))?;
+        }
+        notes.clear();
+    }
+    writeln!(
+        out,
+        "<p class=\"first\" data-live=\"lostline\"{}>Program starts lost in the last day: <span data-live=\"lost\">{}</span>. <span data-live=\"lost-note\">{}</span></p>",
+        if whole { " hidden" } else { "" },
+        esc(&lost_shown(&l.last_day)),
+        esc(&notes)
+    )?;
+    Ok(())
 }
 
 /// What a running watcher writes to `LIVE_FILE` after a reading of program starts, at `now`:
@@ -436,115 +477,51 @@ pub fn write_live(folder: &std::path::Path, l: Option<&Level>, now: i64) -> std:
     std::fs::rename(&part, &path)
 }
 
-/// How many rules watch, of how many shipped, with what the rest need.
+/// How many rules watch on this Mac now, and why some taken here do not: the collector here
+/// records no file events. Drawn only while the level runs. How much of the published sets is
+/// evaluated at all holds on every Mac and is not said on the pages; the page of rules lists
+/// each rule with what it needs, and the status gives the counts.
 fn watching(out: &mut String, r: &crate::contract::v1::RulesNow, level: Option<&Level>) -> Out {
     let running = level.is_some_and(|l| l.state == events::RUNNING);
     let rules = Rules::shipped();
-    let (evaluated, in_part, not_evaluated) = rules.groups();
-    let shipped = rules.rules.len();
     let now = Watching::of(level);
-    let watching = evaluated.iter().filter(|l| now.watches(l)).count();
-    let mut rest: Vec<String> = Vec::new();
-    if !running {
-        rest.push(format!(
-            "{} would watch once program starts are seen",
-            evaluated.len()
-        ));
-    } else if !now.files {
+    // The status's own count, made by the one predicate (`Watching::watches`).
+    let watching = r.watching_rules.unwrap_or(0);
+    let mut notes: Vec<String> =
+        vec!["published rules, each checking every program start".to_string()];
+    if running && !now.files {
         // Named on the rules page and in the status; here, how many and why, quietly.
         let files = rules.evaluated(sigma::Kind::File);
-        rest.push(format!(
+        notes.push(format!(
             "{files} for files created or renamed do not watch: the collector here records program starts only"
         ));
     }
-    if !in_part.is_empty() {
-        rest.push(format!(
-            "{} {} checked in part and not counted",
-            in_part.len(),
-            if in_part.len() == 1 { "is" } else { "are" }
-        ));
-    }
-    // What the rest need, by kind: what a rule needs, said for one and for several.
-    let mut needs: BTreeMap<(&str, &str), usize> = BTreeMap::new();
-    for l in not_evaluated {
-        if let Placement::NotEvaluated(reason) = &l.placement {
-            *needs.entry(not_evaluated_said(reason)).or_default() += 1;
-        }
-    }
-    for ((one, many), n) in needs {
-        rest.push(format!("{n} {}", if n == 1 { one } else { many }));
-    }
-    let mut notes = vec![rest.join("; ")];
     if let Some(note) = r.judged_note.as_deref().filter(|_| running) {
         notes.push(note.to_string());
     }
-    let mut meter = format!(
-        "<span class=\"meter\" aria-hidden=\"true\"><span style=\"width:{}%\"></span></span>",
-        watching * 100 / shipped.max(1)
-    );
     // File events, many a second, are said once, quietly, here, where the rules that read
     // them are counted; never as a number beside program starts.
+    let mut files = String::new();
     if let Some(l) = level.filter(|_| now.files) {
         write!(
-            meter,
+            files,
             "<span class=\"ss\" data-live=\"files\">{}</span>",
             esc(&files_said(l.files.last_day.files))
         )?;
     }
+    // The number, its caption and the rest of its notes, then the file events last.
+    let mut drawn = String::new();
     stat(
-        out,
-        ("Rules watching", "watching"),
-        &format!("{watching} of {shipped}"),
-        &meter,
+        &mut drawn,
+        ("Rules watching now", "watching"),
+        &num(watching as i64),
+        "",
         &notes,
-    )
-}
-
-/// Why a rule is not evaluated, as the summary says it, for one rule and for several. Every
-/// reason has its own words, so a rule that could not be read is never counted with rules that
-/// were read and not taken, and a reason added later must be given words here.
-fn not_evaluated_said(reason: &Reason) -> (&'static str, &'static str) {
-    match reason {
-        // Which kinds is said on the rules page; here, only that they are not collected.
-        Reason::NeedsEvents(_) => (
-            "needs a kind of event not collected",
-            "need kinds of event not collected",
-        ),
-        Reason::NeedsFields(_) => (
-            "needs details a program start does not give",
-            "need details a program start does not give",
-        ),
-        Reason::KeywordSearch => ("searches whole messages", "search whole messages"),
-        Reason::NotParsed(_) => ("could not be read", "could not be read"),
-        Reason::Sequence => (
-            "is a sequence of events, not translated",
-            "are sequences of events, not translated",
-        ),
-        Reason::NotEql => (
-            "is not in EQL, not translated",
-            "are not in EQL, not translated",
-        ),
-        Reason::BackslashInWildcard | Reason::SpansKinds => (
-            "could not be translated exactly",
-            "could not be translated exactly",
-        ),
-        Reason::NeverTrue => (
-            "could never be true over the events here",
-            "could never be true over the events here",
-        ),
-        Reason::Regex => (
-            "needs a regular expression in EQL's syntax, not translated",
-            "need regular expressions in EQL's syntax, not translated",
-        ),
-        Reason::Unsupported => (
-            "uses a function of EQL's that is not translated",
-            "use functions of EQL's that are not translated",
-        ),
-        Reason::Function => (
-            "compares one field with another",
-            "compare one field with another",
-        ),
-    }
+    )?;
+    let end = drawn.len() - "</div>\n".len();
+    drawn.insert_str(end, &files);
+    out.push_str(&drawn);
+    Ok(())
 }
 
 /// The file events of the last day, as the section says them.
@@ -556,10 +533,11 @@ fn files_said(n: i64) -> String {
 }
 
 /// Program starts by hour as bars, the last hour on the right, each with its hours and count in
-/// its title. An hour with none is drawn as a faint line, never as a bar of the colour.
+/// its title, in the third colour of text. An hour with none is drawn as a line of the
+/// separator's colour, never as a bar.
 fn bars(h: &events::Series) -> String {
-    const W: f64 = 220.0;
-    const H: f64 = 40.0;
+    const W: f64 = 240.0;
+    const H: f64 = 32.0;
     const GAP: f64 = 2.0;
     let n = h.counts.len().max(1);
     let bw = (W - GAP * (n as f64 - 1.0)) / n as f64;
@@ -572,9 +550,9 @@ fn bars(h: &events::Series) -> String {
     for (i, c) in h.counts.iter().enumerate() {
         let end = h.ends_at - (n - 1 - i) as i64 * 3600;
         let (bh, fill) = if *c > 0 {
-            ((*c as f64 / top * H).max(1.5), "var(--blue)")
+            ((*c as f64 / top * H).max(1.5), "var(--bar)")
         } else {
-            (1.5, "var(--faint)")
+            (1.5, "var(--sep)")
         };
         let _ = write!(
             svg,
@@ -590,24 +568,21 @@ fn bars(h: &events::Series) -> String {
     svg
 }
 
-/// One rule's row: its title as data in an element of its own, its level, a bar for its count
-/// against the `most` any rule counted, the count, and its finding, linked, or "Counted".
-fn rule_row(out: &mut String, row: &Row, most: i64) -> Out {
-    // A rule with no level stated is drawn as one below high, and says it states none.
-    let level = row.meta.level_name().unwrap_or("none");
+/// One rule's row: its title as data in an element of its own, the level its authors give it,
+/// the count, and its finding, linked, or "Counted".
+fn rule_row(out: &mut String, row: &Row) -> Out {
     let state = match row.finding {
-        Some((id, true)) => format!("<a class=\"look\" href=\"#{}\">Finding</a>", esc(id)),
+        Some((id, true)) => format!("<a href=\"#{}\">Finding</a>", esc(id)),
         Some((id, false)) => format!("<a href=\"#answered-{}\">Finding, answered</a>", esc(id)),
         None if row.meta.raises() => "Finding".to_string(),
         None => "Counted".to_string(),
     };
     writeln!(
         out,
-        "<div class=\"rr\" data-rule=\"{}\"><span class=\"rt\"><span class=\"src\">{}</span></span><span class=\"rl\"><span class=\"lv lv-{level}\">{}</span></span><span class=\"rb\" aria-hidden=\"true\"><span style=\"width:{}%\"></span></span><span class=\"rc\">{}</span><span class=\"rs\">{state}</span></div>",
+        "<div class=\"rr\" data-rule=\"{}\"><span class=\"rt\"><span class=\"src\">{}</span></span><span class=\"rl\">{}</span><span class=\"rc\">{}</span><span class=\"rs\">{state}</span></div>",
         esc(&row.meta.id),
         esc(&row.meta.label()),
-        esc(&crate::pages::capital(sigma::level_said(row.meta.level))),
-        (row.count * 100 / most.max(1)).max(1),
+        esc(sigma::level_said(row.meta.level)),
         num(row.count),
     )?;
     Ok(())
@@ -641,14 +616,13 @@ fn matched(out: &mut String, st: &crate::status::State, level: Option<&Level>) -
             })
         })
         .collect();
-    out.push_str("<div class=\"matched\">\n<div class=\"sh\"><h3>Rules that matched this week</h3><span class=\"n\">only a rule marked high raises a finding; the rest are counted</span></div>\n");
+    out.push_str("<div class=\"matched\">\n<div class=\"rr rh\"><span>Rule that matched this week</span><span>Its authors rate it</span><span class=\"rc\">Matches</span><span>Became</span></div>\n");
     matched_rows(out, &mut rows)?;
     writeln!(
         out,
-        "<p class=\"all\">{}<a href=\"{DETAILS}/{}.html\">Published rules, each with what it looks for</a> · all {}</p>\n</div>",
+        "<p class=\"all\">{}<a href=\"{DETAILS}/{}.html\">Published rules, each with what it looks for</a></p>\n</div>",
         shown_said(&rows),
         crate::pages::RULES,
-        rules.rules.len()
     )?;
     Ok(())
 }
@@ -669,9 +643,8 @@ fn matched_rows(out: &mut String, rows: &mut [Row]) -> Out {
     if rows.is_empty() {
         out.push_str("<p class=\"none\" data-live=\"none\">No rule matched this week.</p>\n");
     }
-    let most = rows.iter().map(|r| r.count).max().unwrap_or(1).max(1);
     for row in ranked.iter().take(ROWS_SHOWN) {
-        rule_row(out, row, most)?;
+        rule_row(out, row)?;
     }
     if !unranked.is_empty() {
         writeln!(
@@ -681,7 +654,7 @@ fn matched_rows(out: &mut String, rows: &mut [Row]) -> Out {
             crate::view::counted(unranked.len() as i64, "rule", "rules")
         )?;
         for row in unranked.iter().take(ROWS_SHOWN) {
-            rule_row(out, row, most)?;
+            rule_row(out, row)?;
         }
     }
     out.push_str("<p class=\"all\" data-live=\"more\" hidden></p>\n");
@@ -708,9 +681,11 @@ fn shown_said(rows: &[Row]) -> String {
     shown
 }
 
-/// The grid of techniques: a legend, each tactic with its squares and "N of M", and what the
-/// squares are, with MITRE's notice.
-fn cover(out: &mut String, st: &crate::status::State, level: Option<&Level>, running: bool) -> Out {
+/// The grid of techniques, drawn only while the level runs: a legend, a row for each tactic
+/// with a square for each technique watched now or that a rule matched or raised a finding
+/// for, and what the squares are, with MITRE's notice. A technique whose rules do not watch
+/// now (rules for file events where the collector records none) is not drawn.
+fn cover(out: &mut String, st: &crate::status::State, level: Option<&Level>) -> Out {
     let attack = attack();
     let empty = BTreeMap::new();
     let week = level.map_or(&empty, |l| &l.matches_last_week);
@@ -723,32 +698,35 @@ fn cover(out: &mut String, st: &crate::status::State, level: Option<&Level>, run
             Some(rule.meta.as_ref()?.id.as_str())
         })
         .collect();
-    let grid = grid(attack, Rules::shipped(), Watching::of(level), week, &raised);
-    out.push_str("<div class=\"covers\">\n<div class=\"sh\"><h3>What the rules cover</h3><ul class=\"legend\">");
-    let legend = [
-        Square::Finding,
-        Square::Matched,
-        if running {
-            Square::Quiet
-        } else {
-            Square::Would
-        },
-        Square::NoRule,
-    ];
-    for s in legend {
+    let grid: Vec<(&Tactic, Vec<(&str, Square)>)> =
+        grid(attack, Rules::shipped(), Watching::of(level), week, &raised)
+            .into_iter()
+            .map(|(t, squares)| {
+                let watched: Vec<(&str, Square)> = squares
+                    .into_iter()
+                    .filter(|(_, s)| *s != Square::Would)
+                    .collect();
+                (t, watched)
+            })
+            .filter(|(_, squares)| !squares.is_empty())
+            .collect();
+    out.push_str("<div class=\"covers\">\n<div class=\"wsh3\"><h3>What the rules watch</h3><ul class=\"legend\">");
+    for s in [Square::Finding, Square::Matched, Square::Quiet] {
         write!(
             out,
             "<li><span class=\"m {}\" aria-hidden=\"true\"></span>{}</li>",
             s.class(),
-            esc(&crate::pages::capital(s.said()))
+            s.legend()
         )?;
     }
     out.push_str("</ul></div>\n<div class=\"tactics\">\n");
+    if grid.is_empty() {
+        out.push_str("<p class=\"meta\">No rule watching now names a technique.</p>\n");
+    }
     for (tactic, squares) in &grid {
-        let covered = squares.iter().filter(|(_, s)| *s != Square::NoRule).count();
         write!(
             out,
-            "<div class=\"tactic\"><h4>{}</h4><div class=\"sq\">",
+            "<div class=\"tactic\"><span class=\"tn2\">{}</span><span class=\"sq\">",
             esc(&tactic.name)
         )?;
         for (tech, s) in squares {
@@ -762,17 +740,13 @@ fn cover(out: &mut String, st: &crate::status::State, level: Option<&Level>, run
                 s.said()
             )?;
         }
-        writeln!(
-            out,
-            "</div><span class=\"nm\">{covered} of {}</span></div>",
-            squares.len()
-        )?;
+        out.push_str("</span></div>\n");
     }
     out.push_str("</div>\n");
     let listed: BTreeSet<&str> = attack.names.keys().map(String::as_str).collect();
     let all = named(Rules::shipped(), |_| true);
     let outside: Vec<&str> = all.difference(&listed).copied().collect();
-    let mut said = "Each square is one ATT&CK technique for macOS, grouped by what an attacker is trying to do. A technique only rules checked in part or not at all name counts as no rule yet.".to_string();
+    let mut said = "Each square is one ATT&CK technique for macOS that a published rule watches now, grouped by what an attacker is trying to do.".to_string();
     if !outside.is_empty() {
         said.push_str(&format!(
             " Named by the rules but not listed by ATT&CK for macOS: {}.",
@@ -805,12 +779,12 @@ mod tests {
     }
 
     #[test]
-    fn each_tactic_says_how_many_of_its_techniques_a_rule_checked_in_full_covers_as_the_rules_and_mitre_say()
+    fn the_squares_drawn_are_exactly_the_techniques_a_rule_checked_in_full_covers_as_the_rules_and_mitre_say()
      {
-        // "N of M" is a claim of coverage. It is counted here again from the raw sources: the
-        // `attack.t…` tags in the text of each rule evaluated in full, and MITRE's file as it
-        // is, so a technique counted for a rule that is not checked, or one missing from its
-        // tactic, shows.
+        // A square is a claim that a rule watches the technique. It is counted here again from
+        // the raw sources: the `attack.t…` tags in the text of each rule evaluated in full, and
+        // MITRE's file as it is, so a technique drawn for a rule that is not checked, one
+        // missing from its tactic, or a tactic drawn empty, shows.
         let data: Value = serde_json::from_str(ATTACK).unwrap();
         let rules = Rules::shipped();
         let mut tagged: BTreeSet<String> = BTreeSet::new();
@@ -830,21 +804,33 @@ mod tests {
         }
         let a = attack();
         let grid = grid(a, rules, Watching::ALL, &BTreeMap::new(), &BTreeSet::new());
-        let tactics = data["tactics"].as_array().unwrap();
-        assert_eq!(grid.len(), tactics.len());
-        for ((tactic, squares), raw) in grid.iter().zip(tactics) {
-            let all: Vec<&str> = raw["techniques"]
+        let mut drawn = grid.iter();
+        for raw in data["tactics"].as_array().unwrap() {
+            let covered: BTreeSet<&str> = raw["techniques"]
                 .as_array()
                 .unwrap()
                 .iter()
                 .map(|t| t.as_str().unwrap())
+                .filter(|t| tagged.contains(*t))
                 .collect();
+            // A tactic with no technique a rule covers is not drawn at all; the rest keep the
+            // matrix's order.
+            if covered.is_empty() {
+                assert!(
+                    grid.iter()
+                        .all(|(t, _)| t.name != raw["name"].as_str().unwrap()),
+                    "{}",
+                    raw["name"]
+                );
+                continue;
+            }
+            let (tactic, squares) = drawn.next().unwrap();
             assert_eq!(tactic.name, raw["name"].as_str().unwrap());
-            assert_eq!(squares.len(), all.len(), "{}", tactic.name);
-            let covered = all.iter().filter(|t| tagged.contains(**t)).count();
-            let drawn = squares.iter().filter(|(_, s)| *s == Square::Quiet).count();
-            assert_eq!(drawn, covered, "{}", tactic.name);
+            let shown: BTreeSet<&str> = squares.iter().map(|(t, _)| *t).collect();
+            assert_eq!(shown, covered, "{}", tactic.name);
+            assert!(squares.iter().all(|(_, s)| *s == Square::Quiet));
         }
+        assert!(drawn.next().is_none());
         // MITRE's file as made: the matrix's order, and a name for every technique drawn.
         assert_eq!(a.release, "v20.1");
         assert_eq!(a.names.len(), 154);
@@ -870,7 +856,6 @@ mod tests {
         assert_eq!(counts(&on, Square::Would), 0);
         assert!(counts(&on, Square::Quiet) > 0);
         assert_eq!(counts(&off, Square::Would), counts(&on, Square::Quiet));
-        assert_eq!(counts(&off, Square::NoRule), counts(&on, Square::NoRule));
     }
 
     #[test]
@@ -936,26 +921,34 @@ detection:
 ";
 
     #[test]
-    fn a_technique_only_a_rule_checked_in_part_names_is_no_rule_yet() {
+    fn a_technique_only_a_rule_checked_in_part_names_is_not_drawn() {
         // A rule evaluated in part never matches some of what it looks for here; drawing its
         // technique as watched would claim coverage the program does not have.
         let a = attack();
-        let state = |files: &[(&'static str, &'static str)]| -> Vec<Square> {
+        let state = |files: &[(&'static str, &'static str)], week: &BTreeMap<String, i64>| {
             let rules = Rules::load(files);
-            grid(a, &rules, Watching::ALL, &BTreeMap::new(), &BTreeSet::new())
+            grid(a, &rules, Watching::ALL, week, &BTreeSet::new())
                 .into_iter()
                 .flat_map(|(_, s)| s)
                 .filter(|(t, _)| *t == "T1021")
                 .map(|(_, s)| s)
-                .collect()
+                .collect::<Vec<Square>>()
         };
-        let part = state(&[("in-part.yml", IN_PART)]);
+        let none = BTreeMap::new();
+        let part = state(&[("in-part.yml", IN_PART)], &none);
+        assert!(part.is_empty(), "{part:?}");
+        // What it matched on this Mac is drawn, as a match.
+        let matched = BTreeMap::from([("11111111-1111-4111-8111-111111111111".to_string(), 1)]);
+        let hit = state(&[("in-part.yml", IN_PART)], &matched);
         assert!(
-            !part.is_empty() && part.iter().all(|s| *s == Square::NoRule),
-            "{part:?}"
+            !hit.is_empty() && hit.iter().all(|s| *s == Square::Matched),
+            "{hit:?}"
         );
-        let full = state(&[("in-part.yml", IN_PART), ("in-full.yml", IN_FULL)]);
-        assert!(full.iter().all(|s| *s == Square::Quiet), "{full:?}");
+        let full = state(&[("in-part.yml", IN_PART), ("in-full.yml", IN_FULL)], &none);
+        assert!(
+            !full.is_empty() && full.iter().all(|s| *s == Square::Quiet),
+            "{full:?}"
+        );
     }
 
     #[test]
@@ -979,7 +972,7 @@ detection:
             count: 1_234,
             finding: None,
         };
-        rule_row(&mut out, &row, 2_468).unwrap();
+        rule_row(&mut out, &row).unwrap();
         assert!(
             out.contains(
                 "<span class=\"rt\"><span class=\"src\">&lt;b&gt;Padding&lt;/b&gt; &amp; &quot;co&quot; (SigmaHQ&#39;s rule set)</span></span>"
@@ -988,56 +981,9 @@ detection:
         );
         assert!(!out.contains("<b>"), "{out}");
         assert!(
-            out.contains("width:50%")
-                && out.contains("<span class=\"rc\">1,234</span><span class=\"rs\">Counted</span>"),
+            out.contains("<span class=\"rc\">1,234</span><span class=\"rs\">Counted</span>"),
             "{out}"
         );
-    }
-
-    #[test]
-    fn the_rules_not_evaluated_are_counted_by_their_own_reason_and_none_as_unreadable() {
-        // A rule that was read and not taken is never counted as one that could not be read:
-        // each reason has its own words, so a real failure to read stands apart.
-        let mut out = String::new();
-        watching(&mut out, &Default::default(), None).unwrap();
-        let note = "175 would watch once program starts are seen; 23 are checked in part and not counted; \
-                    1 compares one field with another; 4 could never be true over the events here; \
-                    4 could not be translated exactly; 139 are sequences of events, not translated; \
-                    40 are not in EQL, not translated; 65 need kinds of event not collected; \
-                    1 needs a regular expression in EQL's syntax, not translated; \
-                    84 need details a program start does not give; \
-                    2 use functions of EQL's that are not translated";
-        assert!(out.contains(&esc(note)), "{out}");
-        assert!(!out.contains("could not be read"), "{out}");
-    }
-
-    #[test]
-    fn only_a_rule_that_could_not_be_read_is_said_to_be_unreadable_for_any_count() {
-        // The note above shows one form of each reason, for today's counts; the other form is
-        // shown when a count changes, so every reason is held here in both.
-        let unreadable = not_evaluated_said(&Reason::NotParsed(String::new()));
-        assert_eq!(unreadable, ("could not be read", "could not be read"));
-        for reason in [
-            Reason::NeedsEvents(String::new()),
-            Reason::NeedsFields(Vec::new()),
-            Reason::KeywordSearch,
-            Reason::Sequence,
-            Reason::NotEql,
-            Reason::BackslashInWildcard,
-            Reason::SpansKinds,
-            Reason::NeverTrue,
-            Reason::Regex,
-            Reason::Unsupported,
-            Reason::Function,
-        ] {
-            let (one, many) = not_evaluated_said(&reason);
-            for said in [one, many] {
-                assert!(
-                    !said.is_empty() && !said.contains(unreadable.0),
-                    "{reason:?}: {said}"
-                );
-            }
-        }
     }
 
     #[test]
@@ -1122,10 +1068,10 @@ detection:
             count: 3,
             finding: None,
         };
-        rule_row(&mut out, &row, 3).unwrap();
+        rule_row(&mut out, &row).unwrap();
         assert!(
             out.contains("<span class=\"src\">Invented (Elastic&#39;s behaviour rules)</span>")
-                && out.contains("<span class=\"lv lv-none\">No level stated</span>")
+                && out.contains("<span class=\"rl\">no level stated</span>")
                 && out.contains("<span class=\"rs\">Counted</span>"),
             "{out}"
         );
@@ -1153,15 +1099,89 @@ detection:
     }
 
     #[test]
+    fn rules_watching_now_counts_as_the_status_does_leaving_out_a_rule_that_reads_what_does_not_arrive()
+     {
+        // "Rules watching now" is calm about each rule it counts. A rule that reads a field the
+        // collector here does not keep watches nothing; the status leaves it out of its count,
+        // and the page says the status's number.
+        use crate::events::{Arrival, Arrivals};
+        use crate::sigma::ELASTIC;
+        // An invented rule taken in full about files written by a program it names by its
+        // signature, which an earlier collector does not keep.
+        let rules = Rules::load_as(
+            &ELASTIC,
+            &[(
+                "signed.yml",
+                Box::leak(
+                    format!(
+                        "title: Invented signed\nid: 00000000-0000-4000-8000-000000000001\nstatus: test\n\
+                         level: high\nlogsource: {{\"product\": \"macos\", \"category\": \"file_event\"}}\n\
+                         detection:\n  s1: {{\"process.code_signature.signing_id|cased\": [\"com.example\"]}}\n  condition: s1\n{}",
+                        crate::sigma::testing::record_of(&ELASTIC, "\"high\"", "")
+                    )
+                    .into_boxed_str(),
+                ),
+            )],
+        );
+        let on = Arrival::Kept(Some(1));
+        let counted = |arrivals: Arrivals| -> (usize, Option<u64>) {
+            let l = Level {
+                arrivals,
+                files: crate::events::Files {
+                    collected: true,
+                    ..Default::default()
+                },
+                ..level(Tally::default())
+            };
+            let (evaluated, _, _) = rules.groups();
+            let page = evaluated
+                .iter()
+                .filter(|x| Watching::of(Some(&l)).watches(x))
+                .count();
+            (
+                page,
+                crate::status::rules_now_of(&rules, Some(&l)).watching_rules,
+            )
+        };
+        assert_eq!(counted(Arrivals::from([on; 5])), (1, Some(1)));
+        assert_eq!(
+            counted(Arrivals::from([
+                on,
+                on,
+                Arrival::NotKept,
+                on,
+                Arrival::NotKept
+            ])),
+            (0, Some(0))
+        );
+        // The page says the status's number.
+        let l = level(Tally::default());
+        let r = crate::status::rules_now(Some(&l));
+        let mut out = String::new();
+        watching(&mut out, &r, Some(&l)).unwrap();
+        assert!(
+            out.contains(&format!(
+                "<span class=\"sv\" data-live=\"watching\">{}</span>",
+                num(r.watching_rules.unwrap() as i64)
+            )),
+            "{out}"
+        );
+    }
+
+    #[test]
     fn lost_reads_zero_only_when_every_start_of_the_day_was_read() {
         // "0 lost" is calm. A restart of the collector, a line that could not be read or an
-        // hour deleted before it was read lose starts nobody counted: never zero.
+        // hour deleted before it was read lose starts nobody counted: never zero, and the line
+        // that says it is shown.
         let big = |t: Tally| {
             let mut out = String::new();
             lost(&mut out, &level(t)).unwrap();
-            let tag = "<span class=\"sv\" data-live=\"lost\">";
+            let hidden = out.contains("<p class=\"first\" data-live=\"lostline\" hidden>");
+            let tag = "<span data-live=\"lost\">";
             let at = out.find(tag).unwrap() + tag.len();
-            out[at..at + out[at..].find('<').unwrap()].to_string()
+            let said = out[at..at + out[at..].find('<').unwrap()].to_string();
+            assert_eq!(hidden, said == "0", "{out}");
+            said
         };
         assert_eq!(big(Tally::default()), "0");
         let restart = Tally {
@@ -1188,9 +1208,10 @@ detection:
     }
 
     #[test]
-    fn the_bars_add_up_to_the_day_and_an_empty_hour_is_never_drawn_in_the_colour() {
+    fn the_bars_add_up_to_the_day_and_an_empty_hour_is_never_drawn_as_a_bar() {
         // The bars stand beside the count of the day: each says its hours and its count, and
-        // an hour with no start is a faint line, not a short bar that reads as some.
+        // an hour with no start is a line of the separator's colour, not a short bar that
+        // reads as some.
         let mut counts = vec![0; events::HOURS];
         counts[0] = 1_500;
         counts[23] = 3;
@@ -1200,8 +1221,8 @@ detection:
             counts,
         });
         assert_eq!(svg.matches("<rect").count(), events::HOURS);
-        assert_eq!(svg.matches("var(--blue)").count(), 2);
-        assert_eq!(svg.matches("var(--faint)").count(), events::HOURS - 2);
+        assert_eq!(svg.matches("var(--bar)").count(), 2);
+        assert_eq!(svg.matches("var(--sep)").count(), events::HOURS - 2);
         assert!(svg.contains("UTC: 1,500 program starts</title>"), "{svg}");
         assert!(svg.contains("UTC: 3 program starts</title>"), "{svg}");
         assert!(svg.contains("most in one hour: 1,500"), "{svg}");
@@ -1294,6 +1315,9 @@ print(JSON.stringify(out));
         assert_eq!(fresh["last_day"]["text"], "154,358", "{fresh}");
         assert_eq!(fresh["lost"]["text"], "some", "{fresh}");
         assert_eq!(fresh["lost-note"]["text"], "2 restarts", "{fresh}");
+        // A loss that comes after the page was made shows the line that says it.
+        assert_eq!(fresh["lostline"]["hidden"], false, "{fresh}");
+        assert_eq!(fresh["week"]["text"], "0", "{fresh}");
         assert_eq!(fresh["moved"]["hidden"], true, "{fresh}");
         let old = page_after(events::RUNNING, Some(running_live()), 61);
         assert_eq!(old["said"]["text"], "not updating: no watcher is running");

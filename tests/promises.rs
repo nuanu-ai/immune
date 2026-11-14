@@ -8,6 +8,7 @@ mod common;
 
 use rusqlite::Connection;
 use rusqlite::types::ValueRef;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -290,6 +291,31 @@ fn section<'a>(page: &'a str, id: &str) -> &'a str {
         .unwrap_or_else(|| panic!("no section {id}"));
     let end = start + page[start..].find("</section>").unwrap();
     &page[start..end]
+}
+
+/// What could not be judged on this Mac: the section of the page of what is watched that the
+/// summary's one line links to.
+fn limits(pages: &[(PathBuf, String)]) -> &str {
+    section(page_named(pages, "this-mac.html"), "not-judged")
+}
+
+/// One page `immune view` wrote, by its file name.
+fn page_named<'a>(pages: &'a [(PathBuf, String)], name: &str) -> &'a str {
+    &pages
+        .iter()
+        .find(|(p, _)| p.file_name().is_some_and(|n| n == name))
+        .unwrap_or_else(|| panic!("no page {name}"))
+        .1
+}
+
+/// The row of the table of findings that lists this answered finding, opened whole.
+fn answered_row<'a>(page: &'a str, id: &str) -> &'a str {
+    let findings = section(page, "findings");
+    let start = findings
+        .find(&format!(" id=\"answered-{id}\""))
+        .unwrap_or_else(|| panic!("{id} not listed as answered: {findings}"));
+    let end = start + findings[start..].find("</details>").unwrap();
+    &findings[start..end]
 }
 
 /// Every row as its columns joined with `|`.
@@ -3050,7 +3076,7 @@ fn the_owners_phones_and_laptops_that_nothing_else_names_are_their_other_devices
         "{printed}"
     );
 
-    // The page beyond this Mac: three sections, and the summary counts all three.
+    // The page beyond this Mac: three sections.
     let page = view(&h.store());
     let mine = section(&page, "your-devices");
     assert!(
@@ -3074,24 +3100,95 @@ fn the_owners_phones_and_laptops_that_nothing_else_names_are_their_other_devices
         listed_servers.contains("1 of them is known only from your private network, which does not say what system it runs, so it is counted as a server."),
         "{listed_servers}"
     );
-    assert!(page.contains(" aria-label=\"Servers: 4\""), "{page}");
-    let map = section(&page, "map");
+    // The summary counts the servers, never the devices among them, and the count leads to
+    // the servers on the page beyond this Mac, where the devices are listed too.
+    let watched = section(&page, "watched-here");
     assert!(
-        map.contains("<h4>Your other devices <a class=\"n\" href=\"view/beyond.html#your-devices\" aria-label=\"Your other devices: 2\">2</a></h4>")
-            && map.contains("title=\"Your other devices: pocket · not checked")
-            && map.contains("title=\"Your other devices: travel-laptop · not checked"),
-        "{map}"
+        watched.contains("<div class=\"wr\"><span>Servers you log in to over SSH</span><span class=\"wh2 t2\">when you run the server check</span><span class=\"wn\"><a href=\"view/beyond.html#servers\" aria-label=\"Servers you log in to over SSH: 4\">4</a></span>"),
+        "{watched}"
     );
-    // Each count of the map leads to the list of what it counts.
     let (links, _) = links_arrive(&view_pages(&h.store()));
-    let labels: Vec<&str> = links.iter().map(|(_, t)| t.as_str()).collect();
-    for (said, times) in [("Servers: 4", 2), ("Your other devices: 2", 1)] {
-        assert_eq!(
-            labels.iter().filter(|l| **l == said).count(),
-            times,
-            "{said}: {labels:?}"
-        );
-    }
+    assert!(
+        links.contains(&(
+            "view/beyond.html#servers".to_string(),
+            "Servers you log in to over SSH: 4".to_string()
+        )),
+        "{links:?}"
+    );
+}
+
+/// The servers row of the summary, from its name to its last-read time.
+fn servers_row(store: &Path) -> String {
+    let page = view(store);
+    let watched = section(&page, "watched-here");
+    let row = &watched[watched
+        .find("<span>Servers you log in to over SSH</span>")
+        .unwrap_or_else(|| panic!("{watched}"))..];
+    row[..row.find("</div>").unwrap()].to_string()
+}
+
+#[test]
+fn the_servers_row_says_checked_only_when_every_server_was_read_in_full_whatever_rests_on_it() {
+    // "Checked at the last server check" is calm about every server. A server whose sweep did
+    // not finish, or that could not be opened, was not checked, and a finding resting on it
+    // does not make it checked.
+    let dir = Dir::new("servers-row");
+    let store = dir.store();
+    let brew = dir.input("brew.txt", SAMPLE);
+    let servers = dir.0.join("servers");
+    let absent = dir.0.join("absent");
+    put(&servers, "web-1.txt", WEB_1);
+    put(&servers, "db-1.txt", WEB_1);
+    immune_all(&store, &brew, &servers, &absent);
+    let row = servers_row(&store);
+    assert!(
+        row.contains("checked at the last server check") && !row.contains("not checked"),
+        "{row}"
+    );
+
+    // The sweep of db-1 did not finish.
+    put(&servers, "db-1.txt", &cut(WEB_1));
+    immune_all(&store, &brew, &servers, &absent);
+    let unfinished = servers_row(&store);
+    assert!(
+        unfinished.contains("1 not checked")
+            && !unfinished.contains("checked at the last server check")
+            && !unfinished.contains("could not be opened"),
+        "{unfinished}"
+    );
+
+    // A finding rests on db-1 now: it is still not checked.
+    let conn = rusqlite::Connection::open(&store).unwrap();
+    conn.execute(
+        "INSERT INTO finding (id, rule, about, occurrence, state, first_seen_at, first_seen_run,
+                              last_seen_at, last_seen_run)
+         VALUES ('fdb1', 'watched.shell-profile', 'machine:db-1', 1, 'open', 1, 'r', 1, 'r')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    assert!(
+        status_json(&store)["needs_a_look"]["total"]
+            .as_u64()
+            .unwrap()
+            >= 1
+    );
+    assert_eq!(servers_row(&store), unfinished);
+
+    // A third server could not be opened: told apart from the one not checked.
+    put(
+        &servers,
+        "app-1.failed",
+        &format!("{}\nPermission denied (publickey).\n", now() - 60),
+    );
+    immune_all(&store, &brew, &servers, &absent);
+    let row = servers_row(&store);
+    assert!(
+        row.contains("1 could not be opened")
+            && row.contains("1 not checked")
+            && !row.contains("checked at the last server check"),
+        "{row}"
+    );
 }
 
 #[test]
@@ -4520,7 +4617,7 @@ fn no_list_on_any_page_says_nothing_is_there_when_what_fills_it_was_not_read_in_
     );
     let pages = view(&store);
     assert!(pages.contains("None found here."), "{pages}");
-    assert!(pages.contains("none on this Mac now"), "{pages}");
+    assert!(pages.contains("</span>none here"), "{pages}");
     Connection::open(&store)
         .unwrap()
         .execute(
@@ -4538,9 +4635,11 @@ fn no_list_on_any_page_says_nothing_is_there_when_what_fills_it_was_not_read_in_
         "None seen",
         "None known.",
         "None is known.",
-        "none on this Mac now",
+        "</span>none here",
+        "</span>read in full",
+        "</span>compared at every check",
         "None is known in the packages",
-        "None is known to be used in attacks",
+        "none is known to be used in attacks",
     ] {
         assert!(!pages.contains(absence), "{absence}: {pages}");
     }
@@ -6597,7 +6696,7 @@ fn a_new_catalogue_entry_is_reported_as_new_exactly_once() {
     assert_agrees(&second, &f.store());
     let page = view(&f.store());
     // With the catalogue read and nothing else to look at, the summary says so.
-    assert!(page.contains("<h1>Nothing needs a look</h1>"), "{page}");
+    assert!(page.contains("<h1>Nothing needs you</h1>"), "{page}");
     let third = f.run(&kev(&kev_plus_one()));
 
     assert!(
@@ -10214,10 +10313,10 @@ fn a_lockfile_of_a_kind_without_a_reader_is_named_as_such_by_status_and_the_repo
             && printed.contains("lockfile kind  \"yarn.lock\"  2\n"),
         "{printed}"
     );
-    let page = &view_pages(&store)[0].1;
+    let pages = view_pages(&store);
+    let page = limits(&pages);
     assert!(
-        section(page, "limits")
-            .contains("<h3>Some files and packages are not understood by this version yet.</h3>"),
+        page.contains("<h3>Some files and packages are not understood by this version yet.</h3>"),
         "{page}"
     );
     // Its examples are listed as data under its title, and never put into its sentences.
@@ -11870,13 +11969,15 @@ fn neither_a_baseline_nor_the_first_run_of_this_build_on_an_older_store_raises_a
     let (_, printed, _) = status_out(&w.store(), &[]);
     assert!(printed.contains("Needs a look: not known yet"), "{printed}");
     let page = &view_pages(&w.store())[0].1;
+    // The headline says it cannot tell, and the line under it says why.
+    let band = section(page, "this-mac");
     assert!(
-        page.contains("<h1>What needs a look is not known yet</h1>"),
-        "{page}"
+        band.contains("<h1>I can't tell</h1>")
+            && band.contains(
+                " · no run of this build has looked for findings yet; the next run does · "
+            ),
+        "{band}"
     );
-    assert!(page.contains(
-        "<p class=\"meta\">No run of this build has looked for findings yet; the next run does.</p>"
-    ));
     let report = w.run();
     assert!(report.contains(" Nothing needs a look."), "{report}");
     assert!(needs_findings(&w.store()).is_empty());
@@ -12262,20 +12363,17 @@ fn nothing_is_quieted_silently() {
     assert_eq!(item["answer"]["until_at"], serde_json::Value::Null);
     assert!(item["title"].as_str().unwrap().starts_with("An SSH file"));
     // The page lists every answer in force, whoever gave it.
-    let answered = view(&w.store());
-    let answered = section(&answered, "answered");
+    let page = view(&w.store());
     for (id, by) in [
         (&profile, "in the app"),
         (&ssh, "through your agent"),
         (&agent, "from the command line"),
     ] {
-        let at = answered
-            .find(&format!("id=\"answered-{id}\""))
-            .unwrap_or_else(|| panic!("{id} not listed: {answered}"));
-        let article = &answered[at..at + answered[at..].find("</article>").unwrap()];
+        let row = answered_row(&page, id);
         assert!(
-            article.contains(&format!("<p class=\"meta\">{by}</p>")),
-            "{article}"
+            row.contains("<span class=\"ans\">Answered: ")
+                && row.contains(&format!(" {by}</span>")),
+            "{row}"
         );
     }
 
@@ -12321,10 +12419,10 @@ fn an_answer_from_before_who_gave_it_was_kept_is_not_shown_as_given_outside_the_
         "{text}"
     );
     let page = view(&w.store());
-    let answered = section(&page, "answered");
+    let row = answered_row(&page, &profile);
     assert!(
-        answered.contains("<p class=\"meta\">given before this version recorded who</p>"),
-        "{answered}"
+        row.contains(" given before this version recorded who</span>"),
+        "{row}"
     );
     // Opened by this version, the store takes the column and the answer stays unknown.
     assert_eq!(outside_app(&w.store()), (0, vec![]));
@@ -12434,6 +12532,47 @@ fn view_pages(store: &Path) -> Vec<(PathBuf, String)> {
 }
 
 #[test]
+fn the_summary_shows_times_in_the_macs_time_zone_with_the_time_in_utc_as_its_tooltip() {
+    let w = Watch::new("view-time-zone");
+    w.run();
+    // The last check as the summary shows it in a zone: its machine form, its tooltip and the
+    // time shown.
+    let shown = |zone: &str| -> (String, String, String) {
+        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+            .env("TZ", zone)
+            .args(["view", "--no-open", "--store"])
+            .arg(w.store())
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let path = String::from_utf8(out.stdout).unwrap();
+        let page = std::fs::read_to_string(path.lines().next().unwrap()).unwrap();
+        let lead = "last check <time datetime=\"";
+        let state = section(&page, "this-mac");
+        let rest = &state[state.find(lead).unwrap_or_else(|| panic!("{state}")) + lead.len()..];
+        let title = &rest[rest.find("title=\"").unwrap() + 7..];
+        (
+            rest[..rest.find('"').unwrap()].to_string(),
+            title[..title.find('"').unwrap()].to_string(),
+            rest[rest.find('>').unwrap() + 1..rest.find("</time>").unwrap()].to_string(),
+        )
+    };
+    let (iso, title, utc) = shown("UTC");
+    let hm = &iso[11..16];
+    assert!(utc.ends_with(hm), "{utc} {iso}");
+    assert!(title.ends_with(&format!("{hm} UTC")), "{title}");
+    // Kathmandu is 5 hours 45 minutes ahead of UTC, all year.
+    let (_, title_there, there) = shown("Asia/Kathmandu");
+    let minutes =
+        (hm[..2].parse::<u32>().unwrap() * 60 + hm[3..].parse::<u32>().unwrap() + 345) % 1440;
+    assert!(
+        there.ends_with(&format!("{:02}:{:02}", minutes / 60, minutes % 60)),
+        "{there} {iso}"
+    );
+    assert_eq!(title_there, title);
+}
+
+#[test]
 fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_from_a_source() {
     // Details opens this page: it must say the same number as the app and the agent read,
     // each thing with its three sentences, and a file named to inject markup stays text.
@@ -12450,36 +12589,38 @@ fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_f
     let pages = view_pages(&w.store());
     let (path, page) = &pages[0];
     assert_eq!(path.file_name().unwrap(), "view.html");
-    assert!(page.contains("<h1>1 thing needs a look</h1>"), "{page}");
+    assert!(page.contains("<h1>1 to look at</h1>"), "{page}");
     assert_eq!(r["needs_a_look"]["total"], 1);
-    // It opens with whether this Mac is watched, with the watcher and the last full check
-    // right there; then what needs a look; then what the owner can fix and the known
-    // vulnerabilities; then the map of what there is; then what is watched, in plain words;
-    // then, closed, the limits of this version and the answers, each in full.
+    // Something to look at is never in the colour of what needs the person now.
+    let body = &page[page.find("</style>").unwrap()..];
+    assert!(
+        !body.contains("var(--now)") && !body.contains("fg open now"),
+        "{body}"
+    );
+    // It opens with whether this Mac is watched: its name as data, how it is watched and the last
+    // full check right there; then the findings, open and answered; then what is watched; then
+    // what happens as it happens; then what the owner can fix, with what could not be judged on
+    // this Mac closed under it.
     let this_mac = section(page, "this-mac");
     assert!(
-        this_mac.contains("<strong>This Mac is watched</strong>")
-            && this_mac.contains("no watcher is running now, so everything is checked every hour")
-            && this_mac.contains("last full check 2"),
+        this_mac.contains("<span class=\"name\">mac</span>")
+            && this_mac.contains(" · hourly only · ")
+            && this_mac.contains("last check <time datetime=\"2"),
         "{this_mac}"
     );
     assert!(
         section(page, "watched-here").contains(
-            "<h3>Checked every hour: a change shows at the next check</h3>\n<ul class=\"counts\">\n<li><a href=\"view/this-mac.html#startup-items\">Startup items: 1</a>\n<ul class=\"rules\">"
+            "<div class=\"wr\"><span>Startup items</span><span class=\"wh2 t2\">every hour</span><span class=\"wn\"><a href=\"view/this-mac.html#startup-items\" aria-label=\"Startup items: 1\">1</a></span>"
         ),
         "{page}"
     );
     let at = |id: &str| page.find(&format!("<section id=\"{id}\"")).unwrap();
     let order = [
         "this-mac",
-        "needs",
-        "you-can-fix",
-        "vulnerabilities",
-        "map",
+        "findings",
         "watched-here",
         "as-it-happens",
-        "limits",
-        "answered",
+        "you-can-fix",
     ];
     assert!(order.windows(2).all(|w| at(w[0]) < at(w[1])), "{page}");
     // The one thing the owner can do here is turn the event level on.
@@ -12491,12 +12632,26 @@ fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_f
         .map(|u| u["id"].as_str().unwrap())
         .collect();
     assert_eq!(yours, ["program-starts-not-seen"]);
+    // Each cause raised on this Mac is in full where it belongs: what the owner can fix on the
+    // summary, the rest on the page the summary's one line links to; a limit of this version,
+    // true of every Mac, is left out of both.
+    let fix = section(page, "you-can-fix");
+    let not_judged = limits(&pages);
     for u in r["not_covered"].as_array().unwrap() {
         let id = u["id"].as_str().unwrap();
-        let start = page
-            .find(&format!("<article class=\"item\" id=\"{id}\">"))
-            .unwrap_or_else(|| panic!("{id}"));
-        let article = &page[start..start + page[start..].find("</article>").unwrap()];
+        let (held, tag) = if u["who"] == "you" {
+            (fix, format!("<article class=\"fixc\" id=\"{id}\">"))
+        } else {
+            (not_judged, format!("<article class=\"item\" id=\"{id}\">"))
+        };
+        if u["holds_on"] == "every_mac" {
+            for (_, html) in &pages {
+                assert!(!html.contains(&format!(" id=\"{id}\"")), "{id}");
+            }
+            continue;
+        }
+        let start = held.find(&tag).unwrap_or_else(|| panic!("{id}: {held}"));
+        let article = &held[start..start + held[start..].find("</article>").unwrap()];
         for part in ["title", "meaning", "advice"] {
             // As the page writes it: an ampersand and an apostrophe are escaped.
             let written = u[part]
@@ -12506,17 +12661,24 @@ fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_f
                 .replace('\'', "&#39;");
             assert!(article.contains(&written), "{part}: {article}");
         }
-        let held = if u["who"] == "you" {
-            "you-can-fix"
-        } else {
-            "limits"
-        };
-        assert!(section(page, held).contains(article), "{id}");
     }
     assert!(
-        section(page, "limits").contains(
+        not_judged.contains(
             "<h3>The list of vulnerabilities attackers are using could not be downloaded since the first check.</h3>"
         ),
+        "{not_judged}"
+    );
+    // The summary links to it, counting what it names.
+    let unjudged = r["not_covered"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|u| u["who"] != "you" && u["holds_on"] != "every_mac")
+        .count();
+    assert!(
+        section(page, "watched-here").contains(&format!(
+            "<a href=\"view/this-mac.html#not-judged\">{unjudged} things on this Mac were not judged</a>"
+        )),
         "{page}"
     );
     for item in looks(&r).as_array().unwrap() {
@@ -12524,15 +12686,12 @@ fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_f
         let start = page
             .find(&format!("id=\"{id}\""))
             .unwrap_or_else(|| panic!("{id}"));
-        let article = &page[start..start + page[start..].find("</article>").unwrap()];
+        let row = &page[start..start + page[start..].find("</details>").unwrap()];
         for part in ["title", "meaning", "advice"] {
-            assert!(
-                article.contains(item[part].as_str().unwrap()),
-                "{part}: {article}"
-            );
+            assert!(row.contains(item[part].as_str().unwrap()), "{part}: {row}");
         }
         let command = format!("immune finding {id}");
-        assert!(article.contains(&command), "{article}");
+        assert!(row.contains(&command), "{row}");
     }
     assert!(
         page.contains("~/Library/LaunchAgents/&lt;img src=x onerror=alert(1)&gt;\\u{202e}.plist")
@@ -12541,30 +12700,26 @@ fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_f
         assert!(!html.contains("<img") && !html.contains('\u{202e}'));
         assert!(!html.contains("http://") && !html.contains("https://"));
     }
-    // What cannot be judged here is a limit of this version, in plain words, and nothing is
-    // answered yet.
+    // The limits of this version are not on the page, and nothing is answered yet.
     assert!(
-        section(page, "limits").contains(
-            "<h3>Known vulnerabilities are not yet compared with your installed software, your servers or projects of other kinds.</h3>"
-        ),
+        !page.contains("Known vulnerabilities are not yet compared with your installed software"),
         "{page}"
     );
     assert!(!page.contains("cannot be judged"), "{page}");
-
     assert!(
-        section(page, "answered")
-            .contains("<p class=\"muted\">Nothing is marked seen or expected now.</p>")
+        section(page, "findings")
+            .contains("<p class=\"empty answered\">Nothing is marked seen or expected now.</p>")
     );
     // What the source said is beside the sentences, and a thing seen twice says since when.
     for item in looks(&r).as_array().unwrap() {
         if let Some(said) = item["value_text"].as_str() {
             assert!(
-                page.contains(&format!("<p class=\"said\">{said}</p>")),
+                page.contains(&format!("<span class=\"said\">{said}</span>")),
                 "{said}"
             );
         }
     }
-    assert!(page.contains("<p class=\"meta\">seen "));
+    assert!(page.contains("<span>Seen <time datetime=\""), "{page}");
     common::next_second();
     put(
         w.home(),
@@ -12573,7 +12728,7 @@ fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_f
     );
     w.run();
     let pages = view_pages(&w.store());
-    assert!(pages[0].1.contains("<p class=\"meta\">first seen "));
+    assert!(pages[0].1.contains("<span>First seen <time datetime=\""));
     // The startup item's own row says when it last changed.
     let this_mac = &pages
         .iter()
@@ -12586,25 +12741,30 @@ fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_f
         "{items}"
     );
 
-    // An answered finding is listed under its answer, with who gave it and why, the
-    // reason as data.
+    // An answered finding is listed under Answered, with who gave it and why, the reason as
+    // data.
     let finding = looks(&r)[0]["id"].as_str().unwrap().to_string();
     answer(
         &w.store(),
         &[&finding, "expected", "--reason", "my <b>own</b> agent"],
     );
     let page = &view_pages(&w.store())[0].1;
-    assert!(page.contains("<h1>Nothing needs a look</h1>"));
-    let answered = section(page, "answered");
-    assert!(answered.contains("<h2>Answered</h2>"), "{answered}");
-    assert!(answered.contains("<p>Expected until "), "{answered}");
+    assert!(page.contains("<h1>Nothing needs you</h1>"));
     assert!(
-        answered.contains("<p class=\"meta\">from the command line</p>"),
-        "{answered}"
+        page.contains(
+            "<a id=\"answered\" href=\"#answered\">Answered <span class=\"tn\">1</span></a>"
+        ),
+        "{page}"
+    );
+    let row = answered_row(page, &finding);
+    assert!(
+        row.contains("<span class=\"ans\">Answered: expected until ")
+            && row.contains(" from the command line</span>"),
+        "{row}"
     );
     assert!(
-        answered.contains("<p class=\"said\">my &lt;b&gt;own&lt;/b&gt; agent</p>"),
-        "{answered}"
+        row.contains("<blockquote class=\"quote\">my &lt;b&gt;own&lt;/b&gt; agent</blockquote>"),
+        "{row}"
     );
 }
 
@@ -12638,14 +12798,23 @@ fn links(html: &str) -> Vec<(String, String)> {
 }
 
 /// Follows every link on the summary and checks that it shows what its label says first thing
-/// on arrival: the heading it opens at begins its name, and a count is the number of things
-/// listed there. Returns the links and the pages reached.
+/// on arrival: a link within the summary lands on what it names, and a link to a page of details
+/// opens at a heading that begins its name or that it begins, a count before the name aside, and
+/// a count after it is the number of things listed there. Returns the links and the pages
+/// reached.
 fn links_arrive(pages: &[(PathBuf, String)]) -> (Vec<(String, String)>, Vec<PathBuf>) {
     let (main, page) = &pages[0];
     let folder = main.parent().unwrap();
     let summary = links(page);
     let mut reached: Vec<PathBuf> = Vec::new();
     for (href, text) in &summary {
+        if let Some(anchor) = href.strip_prefix('#') {
+            assert!(
+                page.contains(&format!(" id=\"{anchor}\"")),
+                "{text} leads to no {anchor}"
+            );
+            continue;
+        }
         let (file, anchor) = href.split_once('#').unwrap_or((href, ""));
         let target = folder.join(file);
         let html = &pages
@@ -12670,7 +12839,22 @@ fn links_arrive(pages: &[(PathBuf, String)]) -> (Vec<(String, String)>, Vec<Path
         let start = from.find(open).unwrap() + open.len();
         let heading = &from[start..start + from[start..].find(close).unwrap()];
         let (label, count) = text.split_once(": ").unwrap_or((text, ""));
-        assert!(label.starts_with(heading), "{text} leads to {heading}");
+        let named = label
+            .trim_start_matches(|c: char| c.is_ascii_digit() || c == ',' || c == ' ')
+            .to_lowercase();
+        let heading_lower = heading.to_lowercase();
+        // Every word of the heading is in the name, or every word of the name in the heading.
+        let words = |s: &str| -> BTreeSet<String> {
+            s.split(|c: char| !c.is_alphanumeric())
+                .filter(|w| !w.is_empty())
+                .map(str::to_string)
+                .collect()
+        };
+        let (n, h) = (words(&named), words(&heading_lower));
+        assert!(
+            !h.is_empty() && (h.is_subset(&n) || n.is_subset(&h)),
+            "{text} leads to {heading}"
+        );
         // A count is the number of things the section lists, or, where no list is kept, the
         // number it says; none is a section with no list.
         if let (Ok(n), false) = (count.parse::<usize>(), anchor.is_empty()) {
@@ -12687,9 +12871,9 @@ fn links_arrive(pages: &[(PathBuf, String)]) -> (Vec<(String, String)>, Vec<Path
 
 #[test]
 fn each_link_on_the_summary_shows_what_its_label_says_first_thing_on_arrival() {
-    // Every count on the summary is a link, and each leads to a section headed with what its
-    // label names, listing exactly as many things as the label counts. The app opens the summary
-    // at what he can fix and at the limits of this version, by their anchors.
+    // Every link on the summary leads to what its label names, and a count to a section listing
+    // exactly as many things as the label counts. The app opens the summary at what he can fix
+    // and at what could not be judged, by their anchors.
     let w = Watch::new("view-links");
     put(w.home(), ".zshrc", "export A=1\n");
     put(
@@ -12715,10 +12899,7 @@ fn each_link_on_the_summary_shows_what_its_label_says_first_thing_on_arrival() {
     let (main, page) = &pages[0];
     let folder = main.parent().unwrap();
     for anchor in ["you-can-fix", "limits"] {
-        assert!(
-            page.contains(&format!("<section id=\"{anchor}\">")),
-            "{anchor}"
-        );
+        assert!(page.contains(&format!(" id=\"{anchor}\"")), "{anchor}");
     }
     // What a person lands on first is in his words, not the program's. What a source said,
     // listed apart under its item, is data. The rules' own words are a person's words where
@@ -12742,22 +12923,17 @@ fn each_link_on_the_summary_shows_what_its_label_says_first_thing_on_arrival() {
     }
     let (summary, mut reached) = links_arrive(&pages);
     let labels: Vec<&str> = summary.iter().map(|(_, t)| t.as_str()).collect();
-    // A count of things leads to the things wherever it stands: a kind's count both in what
-    // you are told about and on the map, the projects' both on their tile and on the map, and
-    // how many things are checked every hour.
+    // A count of things leads to the things: a kind's count in what is watched, and each page
+    // of details from the links at the foot.
     for (said, times) in [
-        ("Startup items: 1", 2),
-        ("Shell startup files: 1", 2),
-        ("Applications: 1", 2),
-        ("Homebrew packages: 1", 2),
-        ("npm packages: 1", 2),
-        ("Projects: 1", 2),
-        (
-            "What is watched on this Mac: 5 things, checked every hour",
-            1,
-        ),
+        ("Startup items: 1", 1),
+        ("Shell startup files: 1", 1),
+        ("Applications: 1", 1),
+        ("Homebrew packages: 1", 1),
+        ("npm packages: 1", 1),
         ("Technical details", 1),
         ("Published rules, each with what it looks for", 1),
+        ("Published rules", 1),
     ] {
         assert_eq!(
             labels.iter().filter(|l| **l == said).count(),
@@ -12765,27 +12941,11 @@ fn each_link_on_the_summary_shows_what_its_label_says_first_thing_on_arrival() {
             "{said}: {labels:?}"
         );
     }
-    // The tile of threat data leads to every source it counts, one section each, and a source
-    // never read says so and is never said to be compared.
-    let (href, said) = summary
-        .iter()
-        .find(|(_, t)| t.starts_with("Threat data: "))
-        .unwrap();
-    let total: usize = said
-        .split(" of ")
-        .nth(1)
-        .unwrap()
-        .split(' ')
-        .next()
-        .unwrap()
-        .parse()
-        .unwrap();
-    let sources = &pages
-        .iter()
-        .find(|(p, _)| *p == folder.join(href))
-        .unwrap()
-        .1;
-    assert_eq!(sources.matches("<section id=").count(), total, "{sources}");
+    // The page of threat data has every source, one section each; a source never read says so
+    // and is never said to be compared.
+    let sources = page_named(&pages, "threats.html");
+    let total = sources.matches("<section id=").count();
+    assert!(total > 1, "{sources}");
     assert!(
         sources.contains("<p class=\"quiet\">Never read in full, so which vulnerabilities attackers use is not known here.</p>")
             && !sources.contains("<summary>The list:")
@@ -12797,9 +12957,8 @@ fn each_link_on_the_summary_shows_what_its_label_says_first_thing_on_arrival() {
         "{sources}"
     );
     // A founder with no servers and no private network is told about his projects alone: no
-    // tile and no group of the map speaks of servers or devices.
-    let areas =
-        &page[page.find("<main>").unwrap()..page.find("<section id=\"watched-here\">").unwrap()];
+    // row of what is watched and no link speaks of servers or devices.
+    let areas = &page[page.find("<main>").unwrap()..];
     assert!(
         !areas.contains("Servers") && !areas.contains("devices"),
         "{areas}"
@@ -12964,7 +13123,7 @@ fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_wh
     let summary = section(&pages[0].1, "as-it-happens");
     assert!(
         summary
-            .contains("<span class=\"st\">Rules watching</span><span class=\"sv\" data-live=\"watching\">162 of 538</span>"),
+            .contains("<span class=\"st\">Rules watching now</span><span class=\"sv\" data-live=\"watching\">162</span>"),
         "{summary}"
     );
     assert!(!summary.contains("data-live=\"files\""), "{summary}");
@@ -12999,20 +13158,26 @@ fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_wh
         "{page}"
     );
 
-    // The summary's row for program starts: the state and the count at a glance, and a
-    // restart of the collector as a quieter line under it, only when there is one.
-    let row = |page: &str| -> String {
-        let told = section(page, "watched-here");
-        let at = told
-            .find("Every program start, with its command line")
-            .unwrap();
-        told[at..at + told[at..].find("</div>").unwrap()].to_string()
-    };
-    assert_eq!(
-        row(&pages[0].1),
-        // Installed before file events, the collector keeps none of what a later one keeps,
-        // and the row says that it needs to be installed again.
-        "Every program start, with its command line</span><span class=\"num\">on, 1 in the last day</span><span class=\"note\">The collector installed here is an earlier one and does not keep who each process is, the script a program start runs and code-signing details; installing the event level again adds them.</span>"
+    // The summary's section on program starts: the count at a glance, what the collector does
+    // not keep in a line beside it, and a restart of the collector said as a loss, only when
+    // there is one.
+    let first = section(&pages[0].1, "as-it-happens").to_string();
+    // Installed before file events, the collector keeps none of what a later one keeps, and
+    // the section says that it needs to be installed again.
+    let earlier =
+        "<p class=\"first note\">The collector installed here is an earlier one and does not keep ";
+    assert!(
+        first.contains("data-live=\"last_day\">1</span>")
+            && first.contains(earlier)
+            && first.contains("<p class=\"first\" data-live=\"lostline\" hidden>")
+            && !first.contains("restart"),
+        "{first}"
+    );
+    // The grid draws only what watches now: the rules for file events, which do not, draw no
+    // square, and the rest are drawn as watched.
+    assert!(
+        first.contains("class=\"m calm\"") && !first.contains("class=\"m would\""),
+        "{first}"
     );
     let again = dd.replace("\"dd\",\"if=/dev/zero\"", "\"dd\",\"if=a\"");
     put(
@@ -13022,9 +13187,12 @@ fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_wh
         &format!("{dd}\n{again}\n"),
     );
     w.run();
-    assert_eq!(
-        row(&view_pages(&w.store())[0].1),
-        "Every program start, with its command line</span><span class=\"num\">on, 2 in the last day</span><span class=\"note\">The collector restarted once; program starts in that moment were not seen.</span><span class=\"note\">The collector installed here is an earlier one and does not keep who each process is, the script a program start runs and code-signing details; installing the event level again adds them.</span>"
+    let second = section(&view_pages(&w.store())[0].1, "as-it-happens").to_string();
+    assert!(
+        second.contains("data-live=\"last_day\">2</span>")
+            && second.contains("<p class=\"first\" data-live=\"lostline\">Program starts lost in the last day: <span data-live=\"lost\">some</span>. <span data-live=\"lost-note\">The collector restarted once; ")
+            && second.contains("The collector installed here is an earlier one"),
+        "{second}"
     );
 
     // Installed again, the collector records file events and says so: every rule checked in
@@ -13061,7 +13229,7 @@ fn every_published_rule_is_listed_once_in_its_place_and_none_is_said_to_watch_wh
     assert!(!page.contains(unwatched), "{page}");
     let summary = section(&pages[0].1, "as-it-happens");
     assert!(
-        summary.contains("data-live=\"watching\">175 of 538</span>")
+        summary.contains("data-live=\"watching\">175</span>")
             && summary.contains(
                 "<span class=\"ss\" data-live=\"files\">1 file event checked in the last day</span>"
             ),
@@ -13078,17 +13246,18 @@ fn as_it_happens_draws_the_day_the_status_counts_and_a_published_rule_finding_wh
     // running, and once it runs the finding's row leads to its card.
     let w = Watch::new("as-it-happens");
     w.run();
+    // Not running: one named line in place of the numbers, the rules and the grid.
     let quiet = section(&view_pages(&w.store())[0].1, "as-it-happens").to_string();
+    assert!(!quiet.contains("class=\"m "), "{quiet}");
     assert!(
-        !quiet.contains("class=\"m calm\"") && quiet.contains("class=\"m would\""),
+        !quiet.contains("Program starts in the last day")
+            && !quiet.contains("data-live=\"watching\"")
+            && !quiet.contains("data-rule="),
         "{quiet}"
     );
-    assert!(!quiet.contains("Program starts in the last day"), "{quiet}");
     assert!(
         quiet.contains("<p class=\"first\"><strong>Program starts: not installed.</strong>")
-            && quiet.contains(
-                "<span class=\"st\">Rules watching</span><span class=\"sv\" data-live=\"watching\">0 of 538</span>"
-            ),
+            && quiet.contains(" No rule is watching now.</p>"),
         "{quiet}"
     );
     put(
@@ -13167,7 +13336,8 @@ fn as_it_happens_draws_the_day_the_status_counts_and_a_published_rule_finding_wh
     let s = section(page, "as-it-happens");
     assert!(
         s.contains("<span class=\"st\">Program starts in the last day</span><span class=\"sv\" data-live=\"last_day\">4</span><svg")
-            && s.contains("<span class=\"st\">Lost</span><span class=\"sv\" data-live=\"lost\">0</span>"),
+            && s.contains("<p class=\"first\" data-live=\"lostline\" hidden>Program starts lost in the last day: <span data-live=\"lost\">0</span>.")
+            && s.contains("<span class=\"st\">Matches this week</span><span class=\"sv\" data-live=\"week\">3</span>"),
         "{s}"
     );
     // Most severe first: the finding's row leads to its card on the same page.
@@ -13176,7 +13346,7 @@ fn as_it_happens_draws_the_day_the_status_counts_and_a_published_rule_finding_wh
     assert_eq!(rows.len(), 2, "{s}");
     assert!(
         rows[0].contains("Binary Padding - MacOS")
-            && rows[0].contains(&format!("<a class=\"look\" href=\"#{id}\">Finding</a>"))
+            && rows[0].contains(&format!("<a href=\"#{id}\">Finding</a>"))
             && page.contains(&format!("id=\"{id}\">")),
         "{s}"
     );
@@ -13195,41 +13365,47 @@ fn as_it_happens_draws_the_day_the_status_counts_and_a_published_rule_finding_wh
 }
 
 #[test]
-fn on_a_mac_where_nothing_was_found_and_no_watcher_ran_every_rule_is_on_the_summary() {
-    // The summary says what the owner is told about. A rule about a thing appearing matters
-    // most when there is none yet: a kind the last check looked for and found none of is
-    // still listed with its rules, and running programs with theirs while no sample is there.
+fn on_a_mac_where_nothing_was_found_and_no_watcher_ran_every_rule_is_on_the_page_of_what_is_watched()
+ {
+    // The pages say what the owner is told about. A rule about a thing appearing matters most
+    // when there is none yet: a kind the last check looked for and found none of is still on
+    // the page of what is watched with its rules, and running programs with theirs while no
+    // sample is there; the summary says "none here" of it.
     let w = Watch::new("view-rules-empty");
     w.run();
     let pages = view_pages(&w.store());
-    let told = section(&pages[0].1, "watched-here");
+    let this_mac = page_named(&pages, "this-mac.html");
     let rules = catalogue(&w.store());
     let rules = rules["rules"].as_array().unwrap();
     assert_eq!(rules.len(), 22);
     for r in rules {
         let title = r["title"].as_str().unwrap().replace('\'', "&#39;");
-        assert!(told.contains(&title), "{}: {told}", r["id"]);
+        assert!(this_mac.contains(&title), "{}: {this_mac}", r["id"]);
     }
+    let told = section(&pages[0].1, "watched-here");
     assert!(
-        told.contains("<li>Editor tasks that run when a project is opened: none on this Mac now\n"),
+        told.contains(
+            "<div class=\"wr\"><span>Editor tasks that run when a project is opened</span>"
+        ) && told[told.find("Editor tasks that run").unwrap()..]
+            .split("</div>")
+            .next()
+            .unwrap()
+            .contains("</span>none here"),
         "{told}"
     );
+    let running = section(this_mac, "running-programs-and-their-connections");
     assert!(
-        told.contains("<li>Running programs and their connections<br><span class=\"muted\">Looked at only while the app is open. It is not open now, or has not looked yet.</span>"),
-        "{told}"
+        running.contains("<ul class=\"rules\">")
+            && running.contains("No sample has been taken yet."),
+        "{running}"
     );
     // The page of what is watched says the same, with no empty table.
-    let this_mac = &pages
-        .iter()
-        .find(|(p, _)| p.ends_with("view/this-mac.html"))
-        .unwrap()
-        .1;
     let tasks = section(this_mac, "editor-tasks-that-run-when-a-project-is-opened");
     assert!(
         tasks.contains("<ul class=\"rules\">") && !tasks.contains("<table"),
         "{tasks}"
     );
-    // False calm: a place that could not be read is never "none on this Mac now".
+    // False calm: a place that could not be read is never "none here".
     let agents = w.home().join("Library/LaunchAgents");
     std::fs::create_dir_all(&agents).unwrap();
     chmod(&agents, 0o000);
@@ -13237,9 +13413,12 @@ fn on_a_mac_where_nothing_was_found_and_no_watcher_ran_every_rule_is_on_the_summ
     let pages = view_pages(&w.store());
     chmod(&agents, 0o755);
     let told = section(&pages[0].1, "watched-here");
-    assert!(!told.contains("Startup items: none"), "{told}");
+    let startup = told[told.find("<span>Startup items</span>").unwrap()..]
+        .split("</div>")
+        .next()
+        .unwrap();
+    assert!(!startup.contains("</span>none here"), "{startup}");
 }
-
 #[test]
 fn a_section_of_the_summary_can_be_opened_from_outside_as_a_file() {
     // The app's rows "You can fix" and "Limits of this version" opened the summary at its
@@ -13344,10 +13523,15 @@ fn the_summary_page_stays_small_on_a_large_store() {
         .unwrap();
     assert!(components >= 20_000);
     assert!(
-        page.contains("<p class=\"meta\">20 more, the mildest;"),
+        page.contains("<p class=\"meta more open\">20 more, the mildest;"),
         "{page}"
     );
-    assert_eq!(section(page, "needs").matches("<article ").count(), 100);
+    assert_eq!(
+        section(page, "findings")
+            .matches("<details class=\"fr")
+            .count(),
+        100
+    );
 }
 
 /// What `needs_a_look` lists, each `LookFinding` read as one object: the finding's reference,

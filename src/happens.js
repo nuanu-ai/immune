@@ -3,14 +3,15 @@
 // A running watcher writes view/live.js after every reading of program starts: one object of
 // numbers, rule ids and fixed words, never text from an event or a rule. This loads it again
 // every ten seconds, as a script because a browser refuses to fetch a local file, and redraws
-// the section's numbers in place: the day's count and its bars, what was lost, the file events
-// checked, and each rule's count, found by its id; every title stays as the page wrote it. Without the file, or with
+// the section's numbers in place: the day's count and its bars, the week's matches, what was
+// lost (its line shown only while something was), the file events checked, and each rule's
+// count, found by its id; every title stays as the page wrote it. Without the file, or with
 // scripting off, the section is the page as it was made, and says when.
 (function () {
   "use strict";
   var EVERY = 10000; // milliseconds between loads
   var STALE = 60; // seconds without a new file before the page says it is not updating
-  var H = 40; // the height of the bars, as the page drew them
+  var H = 32; // the height of the bars, as the page drew them
   var sec = document.getElementById("as-it-happens");
   if (!sec) return;
   var latest = null;
@@ -52,7 +53,7 @@
       var bh = c > 0 ? Math.max(1.5, (c / top) * H) : 1.5;
       rects[i].setAttribute("y", (H - bh).toFixed(1));
       rects[i].setAttribute("height", bh.toFixed(1));
-      rects[i].style.fill = c > 0 ? "var(--blue)" : "var(--faint)";
+      rects[i].style.fill = c > 0 ? "var(--bar)" : "var(--sep)";
       var end = h.ends_at_seconds - (n - 1 - i) * h.step;
       var t = rects[i].querySelector("title");
       if (t)
@@ -67,9 +68,10 @@
   }
 
   function rules(week) {
-    var most = 1;
     var id;
-    for (id in week) most = Math.max(most, week[id]);
+    var sum = 0;
+    for (id in week) sum += week[id];
+    set("week", num(sum));
     var made = (sec.getAttribute("data-matched") || "").split(" ");
     var known = {};
     for (var k = 0; k < made.length; k++) known[made[k]] = true;
@@ -77,9 +79,7 @@
     for (var i = 0; i < rows.length; i++) {
       var n = week[rows[i].getAttribute("data-rule")] || 0;
       var count = rows[i].querySelector(".rc");
-      var bar = rows[i].querySelector(".rb span");
       if (count) count.textContent = num(n);
-      if (bar) bar.style.width = Math.max(1, Math.floor((n * 100) / most)) + "%";
     }
     var more = 0;
     for (id in week) if (week[id] > 0 && !known[id]) more++;
@@ -118,11 +118,13 @@
         return c.short;
       });
       for (var i = 0; i < notes.length; i++) {
-        notes[i].textContent =
-          i === 0 ? shorts.join(" · ") || "program starts the system could not hand over" : "";
+        notes[i].textContent = i === 0 ? shorts.join(" · ") : "";
         notes[i].hidden = i > 0;
       }
     }
+    // The line of what was lost shows only while something was.
+    var lostline = one("lostline");
+    if (lostline) lostline.hidden = live.lost === "0";
     var files = live.file_events_last_day;
     if (typeof files === "number")
       set(

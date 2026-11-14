@@ -24,7 +24,7 @@ pub fn quoted(s: &str) -> String {
 
 /// An enum's value as the JSON names it, the store's own word: `unspecified` for a value this
 /// build does not know.
-fn word<E: TryFrom<i32> + serde::Serialize>(value: i32) -> String {
+pub fn word<E: TryFrom<i32> + serde::Serialize>(value: i32) -> String {
     E::try_from(value)
         .ok()
         .and_then(|e| serde_json::to_value(e).ok())

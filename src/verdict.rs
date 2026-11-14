@@ -302,23 +302,6 @@ pub fn attach(conn: &Connection, found: &mut [Found]) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// The core's words for what a one-line form of a finding carries of the verdicts.
-pub fn said(s: &Summary) -> String {
-    let plural = |n: u32, one: &str| format!("{n} {one}{}", if n == 1 { "" } else { "s" });
-    match &s.opening {
-        Some(_) if s.total > 1 => format!(
-            "The response layer judged this suspicious, and sent {} since.",
-            plural(s.total - 1, "more verdict")
-        ),
-        Some(_) => "The response layer judged this suspicious.".to_string(),
-        None => format!(
-            "{} from the response layer, {} suspicious.",
-            plural(s.total, "verdict"),
-            s.suspicious
-        ),
-    }
-}
-
 /// A verdict as the contract gives it, with its finding by reference.
 pub fn recorded(
     r: &Recorded,

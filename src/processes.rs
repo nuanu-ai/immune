@@ -89,12 +89,6 @@ pub const CONNECTIONS_KIND: &str = "internet connections of this user's programs
 pub const RUN_PREFIX: &str = "sample-";
 /// How long a process, or its matched connection, is kept after the last sample that saw it.
 pub const KEEP: i64 = 24 * 60 * 60;
-/// What a sample cannot see, for a person, as the view says it under what a watcher cannot see.
-pub const PERSON_CANNOT_SEE: [&str; 3] = [
-    "a program that started and ended between two samples",
-    "other users' programs",
-    "who a connection's address belongs to: it has an address, not a name",
-];
 
 /// The one literal derived from a command line.
 pub const INLINE_CODE: &str = "interpreter given code on its command line";
