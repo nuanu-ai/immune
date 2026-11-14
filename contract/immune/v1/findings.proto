@@ -64,6 +64,16 @@ message ListedFinding {
   // finding, the verdicts of this occurrence, with the one that raised it. Absent when there are
   // none.
   Verdicts verdicts = 8;
+  // What it is about, in the core's words, for a finding whose thing no name from the Mac says:
+  // for `watched.first-read`, the places that check read for the first time, counted by kind,
+  // such as `2 projects and 1 other place`; `where_text` is then the machine they are on.
+  // Absent for every other finding: its thing is named by `where_text` and its evidence. Since
+  // 1.8.0.
+  optional string thing = 9;
+  // `kind` as a person reads it: a short title in sentence case, such as `Shell startup file`
+  // for `shell profile`, the same wherever the core shows the kind. `kind` is the stable name to
+  // match on. A kind this build has no title for is given as `kind`. Since 1.8.0.
+  string kind_title = 10;
 }
 
 // The answer to `immune finding <id>`: one finding whole.
@@ -100,6 +110,10 @@ message Finding {
   string answers_note = 16;
   // As in `ListedFinding`, with the first verdict and the latest 20 listed.
   Verdicts verdicts = 17;
+  // As in `ListedFinding`. Since 1.8.0.
+  optional string thing = 18;
+  // As in `ListedFinding`. Since 1.8.0.
+  string kind_title = 19;
 }
 
 // The person's answer to a finding.

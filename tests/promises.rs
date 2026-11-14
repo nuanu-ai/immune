@@ -10044,11 +10044,11 @@ fn unknown_is_never_given_as_zero_or_full() {
         )
     );
     assert_eq!(failed[0]["scope"], "this_mac");
-    let example = failed[0]["examples_text"][0].as_str().unwrap();
-    assert!(
-        example.starts_with("mac: ") && example.contains("no-brew-answer"),
-        "{example}"
-    );
+    // The machine by its name alone, and what the source said beside it.
+    assert_eq!(failed[0]["examples_text"], serde_json::json!(["mac"]));
+    assert_eq!(failed[0]["examples"][0]["name_text"], "mac");
+    let said = failed[0]["examples"][0]["reason_text"].as_str().unwrap();
+    assert!(said.contains("no-brew-answer"), "{said}");
     assert_eq!(r["this_mac"]["state"], "watched_in_part");
 
     assert_eq!(class_of("lockfiles").as_deref(), Some("no_reader"), "{c:#}");
@@ -12029,7 +12029,7 @@ fn a_server_that_cannot_be_opened_is_one_thing_the_owner_can_fix_with_its_reason
     let (_, printed, _) = status_out(&h.store(), &[]);
     assert!(
         printed.contains(
-            "\nYou can fix: 1 server could not be opened at the last server check. (\"db-1: Permission denied (publickey).\")\n"
+            "\nYou can fix: 1 server could not be opened at the last server check. (\"db-1\": \"Permission denied (publickey).\")\n"
         ),
         "{printed}"
     );
@@ -12078,8 +12078,12 @@ fn a_server_that_cannot_be_opened_is_one_thing_the_owner_can_fix_with_its_reason
             &"you".into(),
             &"servers".into(),
             &1.into(),
-            &serde_json::json!(["db-1: Permission denied (publickey)."]),
+            &serde_json::json!(["db-1"]),
         )
+    );
+    assert_eq!(
+        item["examples"],
+        serde_json::json!([{"name_text": "db-1", "reason_text": "Permission denied (publickey)."}])
     );
     // Counted from the first visit that failed.
     assert_eq!(item["since_at"], 1767412800);
@@ -12098,6 +12102,114 @@ fn a_server_that_cannot_be_opened_is_one_thing_the_owner_can_fix_with_its_reason
     h.run(&servers, &h.none());
     let r = status_json(&h.store());
     assert!(uncovered(&r, "servers-not-opened").is_empty(), "{r:#}");
+}
+
+#[test]
+fn a_name_and_what_its_source_said_stay_apart_as_data_and_a_secret_in_what_it_said_is_cut() {
+    // A cause's example is the thing's name alone: a name holding a colon and a space, markup or
+    // a control character is never read as a name and a reason, and what the source said,
+    // which an attacker can shape, is beside it in its own field, cut, in every form.
+    let h = Home::new("health-apart", Some(SSH_CONFIG_TWO_ALIASES), None);
+    let servers = h.sweep();
+    let name = "odd: <img src=x>\u{7}";
+    let password = "Sd7fQ2pLx9Wm3Rt8";
+    put(
+        &servers,
+        &format!("{name}.failed"),
+        &format!("1767412800\n<i>refused</i>\u{1b} tool --password {password} done\n"),
+    );
+    // A second, so that each reason is seen to stay with its own name.
+    put(&servers, "db-1.failed", "1767412800\nConnection refused\n");
+    h.run(&servers, &h.none());
+    let r = status_json(&h.store());
+    let item = r["not_covered"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["id"] == "servers-not-opened")
+        .unwrap_or_else(|| panic!("{r:#}"))
+        .clone();
+    let shown_name = "odd: <img src=x>\\u{7}";
+    let shown_reason = "<i>refused</i>\\u{1b} tool --password \\cut{immune:flag-value 16} done";
+    assert_eq!(
+        item["examples_text"],
+        serde_json::json!(["db-1", shown_name]),
+        "{item:#}"
+    );
+    assert_eq!(
+        item["examples"],
+        serde_json::json!([
+            {"name_text": "db-1", "reason_text": "Connection refused"},
+            {"name_text": shown_name, "reason_text": shown_reason}
+        ]),
+        "{item:#}"
+    );
+    // As text, each in its own quotation, the reason next to its name.
+    let (_, printed, _) = status_out(&h.store(), &[]);
+    assert!(
+        printed.contains(&format!(
+            "You can fix: 2 servers could not be opened at the last server check. (\"db-1\": \"Connection refused\"; \"{shown_name}\": \"{shown_reason}\")\n"
+        )),
+        "{printed}"
+    );
+    // On the page, escaped, the reason next to its name and cut.
+    let page = view(&h.store());
+    assert!(
+        page.contains(
+            "<li>odd: &lt;img src=x&gt;\\u{7}: &lt;i&gt;refused&lt;/i&gt;\\u{1b} tool --password \\cut{immune:flag-value 16} done</li>"
+        ),
+        "{page}"
+    );
+    for out in [serde_json::to_string(&item).unwrap(), printed] {
+        assert!(!out.contains(password), "{out}");
+    }
+    let you_can_fix = section(&page, "you-can-fix");
+    assert!(!you_can_fix.contains(password), "{you_can_fix}");
+}
+
+#[test]
+fn a_secret_in_why_a_reading_failed_is_cut_wherever_the_status_gives_the_reason() {
+    // A reader's reason can repeat what its source holds, here a path with a token in it: the
+    // status gives it cut in the cause's example and in the coverage it counts, in every form.
+    let w = Watch::new("reason-cut");
+    std::fs::create_dir_all(w.home()).unwrap();
+    let token = "ghp_Q7mZ2xK9pL4vR8nT3wY6bH1cJ5dF0gS2aE7u";
+    let fail_brew = w.home().join(token).join("brew-answer");
+    let mut cmd = w.cmd();
+    ok(cmd.arg("--brew-input").arg(&fail_brew));
+    let r = status_json(&w.store());
+    let failed = r["not_covered"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["id"] == "could-not-read")
+        .unwrap_or_else(|| panic!("{r:#}"))
+        .clone();
+    let brew = r["coverage"]["problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["reader"] == "brew")
+        .unwrap_or_else(|| panic!("{r:#}"))
+        .clone();
+    for said in [&failed["examples"][0]["reason_text"], &brew["reason_text"]] {
+        let said = said.as_str().unwrap();
+        assert!(
+            said.contains("\\cut{gitleaks:github-pat 40}") && !said.contains(token),
+            "{said}"
+        );
+    }
+    let (_, printed, _) = status_out(&w.store(), &[]);
+    assert!(!printed.contains(token), "{printed}");
+    // The page says it among what was not judged on this Mac, next to the name, cut.
+    let page = view(&w.store());
+    let not_judged = section(&page, "not-judged");
+    assert!(
+        not_judged.contains("<li>mac: cannot read ")
+            && not_judged.contains("\\cut{gitleaks:github-pat 40}")
+            && !not_judged.contains(token),
+        "{not_judged}"
+    );
 }
 
 #[test]

@@ -2886,6 +2886,29 @@ fn each_check_with_first_readings_raises_its_own_item_whatever_was_answered_abou
         whole["evidence"]["place_changed"].get("presence_only"),
         Some(&serde_json::Value::Null)
     );
+    // It is about what was read, counted, and the machine is where that is: in the list, in
+    // the finding whole and in what needs a look, each with its kind in a person's words.
+    let listed = &e.contract(&["findings"])["findings"][0];
+    let look = &e.status()["needs_a_look"]["items"][0]["finding"];
+    for f in [listed, &whole, look] {
+        assert_eq!(
+            (&f["thing"], &f["where_text"], &f["kind_title"]),
+            (
+                &"1 project".into(),
+                &"mac".into(),
+                &"Read for the first time".into()
+            ),
+            "{f:#}"
+        );
+    }
+    // The page's row starts with the same thing and names the kind by the same title.
+    let page = e.page("view.html");
+    assert!(
+        page.contains(
+            "<span class=\"fw\">1 project</span><span class=\"fk\">Read for the first time · first read</span>"
+        ),
+        "{page}"
+    );
     let out = Command::new(env!("CARGO_BIN_EXE_immune"))
         .args(["finding", &first, "--store"])
         .arg(e.store())
@@ -2899,6 +2922,19 @@ fn each_check_with_first_readings_raises_its_own_item_whatever_was_answered_abou
         ),
         "{text}"
     );
+    assert!(text.contains("\nAbout: 1 project.\n"), "{text}");
+    // The text's rows say it too, before the title, in the list and in what needs a look.
+    let title = "1 project: Some places on this Mac were read for the first time";
+    for args in [&["findings"][..], &["status"][..]] {
+        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+            .args(args)
+            .arg("--store")
+            .arg(e.store())
+            .output()
+            .unwrap();
+        let text = String::from_utf8(out.stdout).unwrap();
+        assert!(text.contains(title), "{args:?}: {text}");
+    }
     let out = Command::new(env!("CARGO_BIN_EXE_immune"))
         .args([
             "finding",
@@ -2917,6 +2953,13 @@ fn each_check_with_first_readings_raises_its_own_item_whatever_was_answered_abou
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(e.found().is_empty(), "{:?}", e.found());
+    // Answered, its row among the answered names what was read too.
+    let page = e.page("view.html");
+    let answered = &page[page.find("<p class=\"fg answered\">").unwrap()..];
+    assert!(
+        answered.contains("<span class=\"fw\">1 project</span>"),
+        "{answered}"
+    );
     let evil = e.checkout(".cache/evil");
     put(&evil.join(".git/hooks/post-merge"), "#!/bin/sh\n");
     let printed = e.run_in(&e.home().join(".cache"));

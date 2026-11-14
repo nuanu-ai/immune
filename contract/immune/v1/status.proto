@@ -388,11 +388,25 @@ message Uncovered {
   // What a source said of it. Whole.
   optional string value_text = 10;
   // The things it is about, as the Mac names them: the first three, or every one for
-  // `package-managers-not-read`. Whole.
+  // `package-managers-not-read`. Names alone: what a source said of each is in `examples`.
+  // Whole.
   repeated string examples_text = 11;
   // Where it holds: on every Mac, a limit of this version that no reading here raised, or on
   // this Mac, raised by something read here.
   HoldsOn holds_on = 12;
+  // The same things, one for each name of `examples_text` and in its order, each with what its
+  // source said of it. Since 1.8.0.
+  repeated UncoveredExample examples = 13;
+}
+
+// One thing a cause of what is not covered is about.
+message UncoveredExample {
+  // Its name, as in `examples_text`. Whole.
+  string name_text = 1;
+  // What its source said of it, such as why it could not be opened or read, with the secrets the
+  // core recognises cut out, each a mark as in `ProgramStart.args_text`. Absent when the source
+  // said nothing.
+  optional string reason_text = 2;
 }
 
 // Where a cause of what is not covered holds. `UNSPECIFIED`, or a value the reader does not know,
@@ -660,6 +674,8 @@ message ReadingGroup {
   ReadingClass class = 1;
   string reader = 2;
   string kind = 3;
+  // Why, as the reader wrote it, with the secrets the core recognises cut out, each a mark as in
+  // `ProgramStart.args_text`.
   optional string reason_text = 4;
   uint64 count = 5;
   // At most three of their scopes. Whole.
@@ -670,6 +686,7 @@ message Unreached {
   string scope_text = 1;
   // When its visits began to fail.
   int64 since_at = 2;
+  // Why its latest visit failed, cut as `ReadingGroup.reason_text` is.
   optional string reason_text = 3;
 }
 
