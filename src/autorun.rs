@@ -800,17 +800,22 @@ pub fn places() -> impl Iterator<Item = (&'static Point, Kind)> {
 }
 
 /// The version of macOS this Mac runs, by its major number, as `sw_vers` gives it; or not
-/// known, which is never a version a row was checked on. No command says it yet; the tests pin
-/// what it answers.
-#[allow(dead_code)]
+/// known, which is never a version a row was checked on. The status says how many rows were
+/// not checked on it (`not_checked_said`).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum MacOs {
     Major(u32),
     NotKnown,
 }
 
-#[allow(dead_code)]
 impl MacOs {
+    /// This Mac's, asked of the system's own tool once for as long as the program runs: the
+    /// version changes only with an update, which restarts the Mac.
+    pub fn this_mac() -> MacOs {
+        static ASKED: std::sync::OnceLock<MacOs> = std::sync::OnceLock::new();
+        *ASKED.get_or_init(MacOs::running)
+    }
+
     /// The major version in what `sw_vers -productVersion` prints: `15.1.1`, `26.0`, `14`.
     pub fn of(said: &str) -> MacOs {
         let major = said.trim().split('.').next().unwrap_or_default();
@@ -837,9 +842,35 @@ impl MacOs {
 
 /// The rows whose behaviour no record says was checked on this version of macOS. On a version
 /// that is not known, every row.
-#[allow(dead_code)]
 pub fn not_checked_on(macos: MacOs) -> Vec<&'static Point> {
     not_checked_in(&POINTS, macos)
+}
+
+/// What the status says of the rows not checked on this version of macOS, one sentence of
+/// `cannot_judge` with their count; `None` when every row was checked on it.
+pub fn not_checked_said(macos: MacOs) -> Option<String> {
+    said_of(&POINTS, macos)
+}
+
+/// What a moved place does, said after the count in the status and in the item for a person.
+pub const MOVED: &str = "a place Apple moved or dropped in this version may be read where it no longer is, or not read where it now is";
+
+fn said_of(points: &[Point], macos: MacOs) -> Option<String> {
+    let n = not_checked_in(points, macos).len();
+    let total = points.len();
+    match macos {
+        _ if n == 0 => None,
+        MacOs::Major(v) if n == total => Some(format!(
+            "none of the {total} places where code can be set to run by itself was checked on macOS {v}, the version this Mac runs: {MOVED}"
+        )),
+        MacOs::Major(v) => Some(format!(
+            "{n} of the {total} places where code can be set to run by itself {} not checked on macOS {v}, the version this Mac runs: {MOVED}",
+            if n == 1 { "was" } else { "were" }
+        )),
+        MacOs::NotKnown => Some(format!(
+            "the version of macOS this Mac runs is not known, so all {total} places where code can be set to run by itself count as not checked on it: {MOVED}"
+        )),
+    }
 }
 
 fn not_checked_in(points: &[Point], macos: MacOs) -> Vec<&Point> {
@@ -1696,6 +1727,52 @@ mod tests {
         assert_eq!(not(MacOs::NotKnown).len(), 3);
         // No row of this table has a record of being checked on any version.
         assert_eq!(not_checked_on(MacOs::Major(26)).len(), POINTS.len());
+    }
+
+    #[test]
+    fn the_status_counts_the_rows_not_checked_on_this_macos_and_says_so_when_the_version_is_not_known()
+     {
+        let on = |checked_on: Checked| Point {
+            checked_on,
+            ..row(
+                &["a.json"],
+                Present,
+                StartAgent,
+                "a tool",
+                Never,
+                (EVENT, "high", "low"),
+                "",
+            )
+        };
+        let rows = [on(&[15, 26]), on(NOT_CHECKED), on(&[14])];
+        assert_eq!(
+            said_of(&rows, MacOs::Major(26)).unwrap(),
+            format!(
+                "2 of the 3 places where code can be set to run by itself were not checked on macOS 26, the version this Mac runs: {MOVED}"
+            )
+        );
+        assert_eq!(
+            said_of(&rows[..2], MacOs::Major(15)).unwrap(),
+            format!(
+                "1 of the 2 places where code can be set to run by itself was not checked on macOS 15, the version this Mac runs: {MOVED}"
+            )
+        );
+        assert_eq!(
+            said_of(&rows[1..], MacOs::Major(26)).unwrap(),
+            format!(
+                "none of the 2 places where code can be set to run by itself was checked on macOS 26, the version this Mac runs: {MOVED}"
+            )
+        );
+        // A version not known counts every row, and says the version is not known.
+        assert_eq!(
+            said_of(&rows, MacOs::NotKnown).unwrap(),
+            format!(
+                "the version of macOS this Mac runs is not known, so all 3 places where code can be set to run by itself count as not checked on it: {MOVED}"
+            )
+        );
+        // Every row checked on the running version: nothing is said.
+        assert_eq!(said_of(&rows[..1], MacOs::Major(26)), None);
+        assert!(said_of(&rows[..1], MacOs::NotKnown).is_some());
     }
 
     #[test]

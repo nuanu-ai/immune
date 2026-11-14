@@ -3288,6 +3288,24 @@ fn byhost_and_managed_preferences_are_named_as_not_read() {
         meaning.contains("ByHost preferences") && meaning.contains("Managed Preferences"),
         "{meaning}"
     );
+    // The places not checked on the macOS this Mac runs: one count, said to an agent in
+    // `cannot_judge` and to a person as an item. None of them is checked on any version yet.
+    let moved = cannot
+        .iter()
+        .find(|s| s.contains("places where code can be set to run by itself"))
+        .unwrap_or_else(|| panic!("{cannot:?}"));
+    let item = status["not_covered"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["id"] == "autorun-not-checked-on-this-macos")
+        .unwrap_or_else(|| panic!("{status:#}"));
+    let n = item["count"].as_u64().unwrap();
+    assert!(
+        moved.starts_with(&format!("none of the {n} places"))
+            || moved.contains(&format!("all {n} places")),
+        "{moved}"
+    );
 }
 
 /// An invented binary property list of the login window's preferences: `LoginHook` is a chain

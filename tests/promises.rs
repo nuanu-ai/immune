@@ -9193,8 +9193,10 @@ fn status_json(store: &Path) -> serde_json::Value {
 }
 
 /// The causes that hold on every Mac: the limits of this version, which no reading of this Mac
-/// raises (`covered::LIMITS`).
-const EVERY_MAC: [&str; 3] = [
+/// raises (`covered::LIMITS`), and the places not checked on this macOS while none is checked on
+/// any version.
+const EVERY_MAC: [&str; 4] = [
+    "autorun-not-checked-on-this-macos",
     "persistence-not-read",
     "vulnerabilities-not-compared",
     "package-managers-elsewhere-not-found",
@@ -10640,8 +10642,9 @@ fn lists_are_capped_with_their_totals_and_names_and_times_are_stable() {
     let (_, stdout, _) = status_out(&w.store(), &["--json"]);
     // An agent reads the status whole, so it stays bounded whatever the store holds. The bound
     // is the capped lists plus the fixed sections, with room: it was 64 KiB until the event
-    // level and the published rules got sections of their own.
-    assert!(stdout.len() < 80 * 1024, "{} bytes", stdout.len());
+    // level and the published rules got sections of their own, and 80 KiB until the places not
+    // checked on this macOS were told.
+    assert!(stdout.len() < 96 * 1024, "{} bytes", stdout.len());
     let r = &serde_json::from_str::<serde_json::Value>(&stdout).unwrap();
     // The rules that matched: the ten that matched most, with the total of rules and of
     // matches.

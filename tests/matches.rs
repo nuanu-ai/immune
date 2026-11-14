@@ -1992,9 +1992,12 @@ fn immune_rules_lists_both_sets_and_names_every_rule_not_taken_with_its_reason()
     // behaviour rule could raise by itself, and says why it raises none.
     assert_eq!(
         said["rule"],
-        "sigma:<the rule's id> or elastic:<the rule's id>"
+        "sigma:<the rule's id> or elastic:<the rule's id> or immune:<the rule's id>"
     );
-    assert_eq!(said["raised_by_sets"], json!(["sigma", "elastic"]));
+    assert_eq!(
+        said["raised_by_sets"],
+        json!(["sigma", "elastic", "immune"])
+    );
     assert_eq!(
         said["sets_that_raise_nothing"],
         json!([{

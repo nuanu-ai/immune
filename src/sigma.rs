@@ -525,8 +525,36 @@ pub static ELASTIC_BEHAVIOUR: Source = Source {
     states_levels: false,
 };
 
+/// Immune's own rules: each file's path under `rules/immune` and its text. A rule is written
+/// here only where no published rule exists, so the list may be empty; each file has two
+/// samples beside it, an event it must match and one it must not, which a test holds it to
+/// (`docs/rules.md`). A test holds this list to the folder.
+pub const IMMUNE_SHIPPED: &[(&str, &str)] = shipped![
+    "rules/immune";
+];
+
+/// Immune's own rules over the event log, in Sigma, read as SigmaHQ's are and under its
+/// taxonomy. They live in this repository and arrive with a new version of the program: no
+/// commit of another repository is recorded, and nothing updates them from outside.
+pub static IMMUNE: Source = Source {
+    name: "immune",
+    publisher: "Immune",
+    set: "Immune's own rules",
+    url: "https://github.com/nuanu-ai/immune",
+    commit: "",
+    commit_date: None,
+    licence: "MIT",
+    licence_name: "MIT License",
+    folder: "rules/immune",
+    files: IMMUNE_SHIPPED,
+    schema: &SIGMA_TAXONOMY,
+    translation: None,
+    not_taken: None,
+    states_levels: true,
+};
+
 /// Every set shipped, in the order their rules are listed and asked.
-pub static SOURCES: [&Source; 3] = [&SIGMAHQ, &ELASTIC, &ELASTIC_BEHAVIOUR];
+pub static SOURCES: [&Source; 4] = [&SIGMAHQ, &ELASTIC, &ELASTIC_BEHAVIOUR, &IMMUNE];
 
 /// Where each field of a schema stands among the values of an event: a program start's
 /// fields first, then a file event's, each followed by its folded companions where the schema
@@ -1374,6 +1402,7 @@ impl Rules {
                 let (n, not_taken) =
                     mine.fold((0, 0), |(n, t), l| (n + 1, t + usize::from(l.detail.is_some())));
                 let at = match s.commit_date {
+                    _ if s.commit.is_empty() => "with this version".to_string(),
                     Some(date) => format!("at {} of {date}", &s.commit[..12]),
                     None => format!("at {}", &s.commit[..12]),
                 };
@@ -2538,11 +2567,12 @@ mod tests {
     /// them, `rules/elastic/` and `rules/elastic-behaviour/` as the translator wrote them), and
     /// the manifest names every file and no other. A translated set's list of the upstream rules
     /// it did not take, `not-taken.tsv`, is recorded with its files. A set without a manifest
-    /// fails here.
+    /// fails here. Immune's own rules are written in this repository, not taken from another,
+    /// and have none: git records them.
     #[test]
     fn every_shipped_rule_is_the_file_its_set_s_manifest_records() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        for source in SOURCES {
+        for source in SOURCES.iter().filter(|s| !std::ptr::eq(**s, &IMMUNE)) {
             let manifest = std::fs::read_to_string(root.join(source.folder).join("SHA256SUMS"))
                 .unwrap_or_else(|e| panic!("{}: {e}", source.name));
             let recorded: BTreeMap<&str, &str> = manifest
@@ -5090,6 +5120,201 @@ mod tests {
         assert_eq!(
             wildcards.layouts[0].texts.as_ref().map(|t| t.count),
             Some(0)
+        );
+    }
+
+    /// What keeps the rules of Immune's own among `files`, a folder's files by their names,
+    /// from being shipped, one line each; none when every one may be. Each `<name>.yml` is read
+    /// as a rule of `IMMUNE` through the loader every set goes through, and has two samples
+    /// beside it, lines the collector writes: `<name>.fires.jsonl`, each line of which it must
+    /// match, and `<name>.silent.jsonl`, each line of which, of its kind, it must not. A rule
+    /// must be evaluated in full on the fields the collector gives: one the evaluator cannot
+    /// judge would be shipped as "not evaluated". A file that is none of these, or the
+    /// folder's `README.md`, is refused too.
+    fn own_rules_refused(files: &BTreeMap<String, String>) -> Vec<String> {
+        let mut refused = Vec::new();
+        let leak = |s: &str| -> &'static str { Box::leak(s.to_string().into_boxed_str()) };
+        for name in files.keys() {
+            let of_a_rule = [".fires.jsonl", ".silent.jsonl"].iter().any(|end| {
+                name.strip_suffix(end)
+                    .is_some_and(|base| files.contains_key(&format!("{base}.yml")))
+            });
+            if !(name.ends_with(".yml") || of_a_rule || name == "README.md") {
+                refused.push(format!(
+                    "{name}: neither a rule, a rule's sample nor README.md"
+                ));
+            }
+        }
+        for file in files.keys().filter(|f| f.ends_with(".yml")) {
+            let base = file.trim_end_matches(".yml");
+            let loaded = Rules::load_as(&IMMUNE, &[(leak(file), leak(&files[file]))]);
+            let l = &loaded.rules[0];
+            let (Some(meta), Some(kind)) = (l.meta.as_ref(), l.kind) else {
+                refused.push(format!(
+                    "{file}: not read as a rule of events: {:?}",
+                    l.placement
+                ));
+                continue;
+            };
+            if l.placement != Placement::Evaluated {
+                refused.push(format!("{file}: not evaluated in full: {:?}", l.placement));
+                continue;
+            }
+            for (end, must_match) in [(".fires.jsonl", true), (".silent.jsonl", false)] {
+                let sample = format!("{base}{end}");
+                let Some(text) = files.get(&sample) else {
+                    refused.push(format!("{file}: no sample {sample}"));
+                    continue;
+                };
+                let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+                if lines.is_empty() {
+                    refused.push(format!("{sample}: no line"));
+                }
+                for line in lines {
+                    let matched = match crate::events::line(line.as_bytes()) {
+                        Ok(crate::events::Line::Exec { start, .. }) if kind == Kind::Process => {
+                            loaded.evaluate(&*start)
+                        }
+                        Ok(crate::events::Line::File {
+                            event: Some(event), ..
+                        }) if kind == Kind::File => loaded.evaluate(&*event),
+                        other => {
+                            refused.push(format!(
+                                "{sample}: not a line of {} as the collector writes it: {other:?}",
+                                kind.category()
+                            ));
+                            continue;
+                        }
+                    };
+                    let did = matched.iter().any(|m| m.meta.name == meta.name);
+                    if did != must_match {
+                        let said = if must_match {
+                            "does not match"
+                        } else {
+                            "matches"
+                        };
+                        refused.push(format!("{sample}: {} {said} {line}", meta.name));
+                    }
+                }
+            }
+        }
+        refused
+    }
+
+    /// The files of a folder of the repository by their names, as `own_rules_refused` takes
+    /// them.
+    fn folder(rel: &str) -> BTreeMap<String, String> {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
+        std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("{rel}: {e}"))
+            .map(|e| {
+                let path = e.unwrap().path();
+                let name = path.file_name().unwrap().to_str().unwrap().to_string();
+                (name, std::fs::read_to_string(&path).unwrap())
+            })
+            .collect()
+    }
+
+    /// A rule of Immune's own is shipped only with an event it must match and one of its kind
+    /// it must not, as lines the collector writes, and only when it is evaluated in full: the
+    /// folder `rules/immune/` is held to that, and so is the invented rule in
+    /// `tests/immune-rules/`, which proves the check and is never shipped. A rule there is read
+    /// by the one loader, named `immune:<id>`, and one of level high raises a finding as a
+    /// published rule of that level does.
+    #[test]
+    fn a_rule_of_immune_s_own_is_shipped_only_evaluated_in_full_and_with_two_samples_that_behave() {
+        let shipped = folder(IMMUNE.folder);
+        assert!(shipped.contains_key("README.md"));
+        assert_eq!(own_rules_refused(&shipped), Vec::<String>::new());
+        let fixture = folder("tests/immune-rules");
+        assert_eq!(own_rules_refused(&fixture), Vec::<String>::new());
+
+        const RULE: &str = "invented_tool_x_flag.yml";
+        const FIRES: &str = "invented_tool_x_flag.fires.jsonl";
+        const SILENT: &str = "invented_tool_x_flag.silent.jsonl";
+        let leak = |s: &str| -> &'static str { Box::leak(s.to_string().into_boxed_str()) };
+        let rules = Rules::load_as(&IMMUNE, &[(RULE, leak(&fixture[RULE]))]);
+        let meta = rules.rules[0].meta.as_ref().unwrap();
+        assert_eq!(meta.name, format!("immune:{}", meta.id));
+        assert_eq!((meta.level, meta.raises()), (Some(Level::High), true));
+        // Listed with its set, which records no commit: it came with this version.
+        let listed = "1 from Immune's own rules with this version, all shipped";
+        assert!(
+            rules.sources_said().contains(listed),
+            "{}",
+            rules.sources_said()
+        );
+        let text = crate::text::rules(&rules.message(None));
+        assert!(text.contains(listed), "{text}");
+
+        // What the check refuses, each made from the fixture by one change.
+        let with = |name: &str, text: Option<&str>| {
+            let mut files = fixture.clone();
+            match text {
+                Some(t) => files.insert(name.to_string(), t.to_string()),
+                None => files.remove(name),
+            };
+            own_rules_refused(&files)
+        };
+        let one = |refused: Vec<String>, said: &str| {
+            assert!(
+                refused.len() == 1 && refused[0].contains(said),
+                "{said}: {refused:?}"
+            );
+        };
+        one(
+            with(SILENT, None),
+            "no sample invented_tool_x_flag.silent.jsonl",
+        );
+        one(
+            with(FIRES, None),
+            "no sample invented_tool_x_flag.fires.jsonl",
+        );
+        one(with(FIRES, Some(&fixture[SILENT])), "does not match");
+        one(with(SILENT, Some(&fixture[FIRES])), "matches");
+        one(with(FIRES, Some("\n")), "no line");
+        one(
+            with(SILENT, Some("{\"invented\": true}\n")),
+            "not a line of process_creation",
+        );
+        // A field the collector does not give: the rule would judge nothing.
+        let needs = fixture[RULE].replace("CommandLine|contains", "CurrentDirectory|contains");
+        one(with(RULE, Some(&needs)), "not evaluated in full");
+        // A rule of Immune's own states its level, as a rule of any set that states levels.
+        let no_level: String = fixture[RULE]
+            .lines()
+            .filter(|l| !l.starts_with("level:"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        one(with(RULE, Some(&no_level)), "not read as a rule of events");
+        one(with("notes.txt", Some("x")), "notes.txt: neither");
+    }
+
+    /// `docs/rules.md` names the fields a rule of Immune's own is given, a program start's and
+    /// a file event's, each in its section, and exactly those its set's schema gives.
+    #[test]
+    fn the_page_for_a_rule_s_author_names_exactly_the_fields_the_collector_gives_one() {
+        let page = include_str!("../docs/rules.md");
+        let named = |heading: &str| -> Vec<String> {
+            let at = page
+                .find(heading)
+                .unwrap_or_else(|| panic!("no section {heading}"));
+            page[at + heading.len()..]
+                .lines()
+                .skip(1)
+                .take_while(|l| !l.starts_with('#'))
+                .filter_map(|l| l.strip_prefix("| `"))
+                .map(|l| l[..l.find('`').unwrap()].to_string())
+                .collect()
+        };
+        let given = |names: Vec<&str>| names.into_iter().map(str::to_string).collect::<Vec<_>>();
+        assert_eq!(
+            named("### A program start"),
+            given(IMMUNE.schema.process.iter().map(|(n, _)| *n).collect())
+        );
+        assert_eq!(
+            named("### A file created or renamed"),
+            given(IMMUNE.schema.file.iter().map(|(n, _)| *n).collect())
         );
     }
 }
