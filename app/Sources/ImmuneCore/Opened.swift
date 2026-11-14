@@ -297,7 +297,19 @@ public enum FindingFacts {
 
   /// The response layer's voice: its latest verdict in a word and how sure it is, its reason
   /// quoted and its case; or, with none listed, the counts in a word. No level of how bad.
+  ///
+  /// While the response layer's own finding about this one stands (`verdict_finding`), a verdict
+  /// called it suspicious, perhaps one about a match: the voice says suspicious, whatever the
+  /// latest verdict about this finding says, and names that latest word apart.
   static func responseLayer(_ v: Contract.Verdicts) -> Voice? {
+    if v.verdictFinding != nil, v.listed.last?.kind != "suspicious" {
+      let latest = v.listed.last?.kind.map {
+        "latest verdict here: " + Words.word($0, Words.verdicts).lowercased()
+      }
+      return Voice(
+        who: "Response layer", said: "Suspicious",
+        detail: (["its own finding stands"] + (latest.map { [$0] } ?? [])).joined(separator: " · "))
+    }
     let earlier = max(0, v.listed.count - 1)
     let more =
       earlier == 0

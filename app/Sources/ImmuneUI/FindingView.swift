@@ -242,7 +242,13 @@ struct FindingFooter: View {
     let canAnswer = row?.canAnswer == true
     let pair = FindingFacts.pair(f, id: id, rows: panel.rows)
     if canAnswer, model.form?.id == id {
-      ExpectedFormView(model: model, id: id)
+      // A refused Expected comes back to the form with what was typed, and says why.
+      VStack(alignment: .leading, spacing: Metrics.footerGap) {
+        if let refused = model.refusals[id] {
+          Plain(refused).textStyle(.caption).textSelection(.enabled)
+        }
+        ExpectedFormView(model: model, id: id)
+      }
     } else if model.answering == id {
       HStack(spacing: Metrics.gap) {
         ProgressView().controlSize(.small)
@@ -347,8 +353,8 @@ struct ExpectedFormView: View {
         .textFieldStyle(.roundedBorder).font(TextStyle.body.font)
         .frame(height: Metrics.field)
         .onSubmit { send() }
+      // "30 days" says itself; the label "For" stays for VoiceOver, as the row has no room for it.
       HStack(spacing: Metrics.gap) {
-        Text(verbatim: "For").textStyle(.caption)
         Picker("For", selection: days) {
           ForEach(Answer.days, id: \.self) { n in Text(verbatim: "\(n) days").tag(n) }
         }

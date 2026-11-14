@@ -383,10 +383,15 @@ public struct Entry: Sendable, Equatable, Identifiable {
   /// is suspicious when a verdict said so, its own finding about it being one row with it, and
   /// harmless when every verdict counted said so. A verdict never closes the row or moves it. The
   /// response layer's own finding says it in its kind's words.
+  ///
+  /// While that own finding stands (`verdict.finding`, the one folded under the row when listed),
+  /// the row is suspicious even when every verdict about this finding said harmless: the one
+  /// that raised it may have been about a match.
   public var said: String? { Self.said(row) }
 
   static func said(_ row: Row) -> String? {
     guard !row.isVerdictFinding, let v = row.item.verdict else { return nil }
+    if v.finding != nil { return "suspicious" }
     if let suspicious = v.suspicious, suspicious > 0 { return "suspicious" }
     // Harmless is a good word: it needs both counts it rests on, never a missing one as 0.
     if let total = v.total, let suspicious = v.suspicious, total > suspicious { return "harmless" }

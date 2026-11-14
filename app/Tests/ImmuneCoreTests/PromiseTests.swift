@@ -628,6 +628,57 @@ let everyStatusFixture =
     "sheet-overflow.json", "real/status.json", "real/status-real-size.json",
   ]
 
+@Suite("False calm in words: a thing with a suspicious finding standing never reads harmless")
+@MainActor
+struct NeverHarmlessOverSuspicious {
+  /// The core's finding with one harmless verdict, whose own `verdict.suspicious` finding, urgent,
+  /// stands beside it: raised from a verdict about a match.
+  static let state: [[String: Any]] = {
+    var core = startFinding(
+      id: "fc1", verdict: ["total": 1, "suspicious": 0, "finding": "fv1"])
+    core["change"] = nil
+    return [verdictFinding(id: "fv1", urgent: true), core]
+  }()
+
+  @Test(
+    "A row, its notification and the opened finding say suspicious while the response layer's own finding about it stands, even when every verdict about the finding itself said harmless"
+  )
+  func suspiciousWhileItsFindingStands() async throws {
+    let p = panel(looking(Self.state))
+    let row = try #require(p.needsYou.first)
+    #expect(p.needsYou.count == 1 && p.toLook.isEmpty)
+    #expect(row.responseLayer == "Response layer: suspicious")
+    #expect(!p.lines.joined().contains("harmless"))
+
+    let n = RecordingNotifier()
+    let ann = Announcer(notifier: n, memory: Forgetful())
+    await ann.saw(status([]))
+    await ann.saw(status(Self.state))
+    #expect(n.delivered.map(\.subtitle) == ["Program start · response layer: suspicious"])
+
+    // Opened: the latest verdict about the finding is harmless, its own finding stands.
+    var opened = try #require(read(finding("finding-f95f8472164.json")))
+    #expect(opened.verdicts?.verdictFinding != nil)
+    opened.verdicts?.suspicious = 0
+    for i in opened.verdicts?.listed.indices ?? 0..<0 {
+      opened.verdicts?.listed[i].kind = "harmless"
+    }
+    let layer = try #require(FindingFacts.voices(opened).first { $0.who == "Response layer" })
+    #expect(layer.said == "Suspicious")
+    #expect(layer.detail == "its own finding stands · latest verdict here: harmless")
+    #expect(layer.quote == nil)
+    // With no verdict listed, the counts alone do not make it harmless either.
+    opened.verdicts?.listed = []
+    #expect(FindingFacts.voices(opened).first { $0.who == "Response layer" }?.said == "Suspicious")
+    #expect(
+      FindingFacts.voices(opened).first { $0.who == "Response layer" }?.detail
+        == "its own finding stands")
+    // Without its own finding, the harmless word stands as given.
+    opened.verdicts?.verdictFinding = nil
+    #expect(FindingFacts.voices(opened).first { $0.who == "Response layer" }?.said == "Harmless")
+  }
+}
+
 @Suite("The headline counts things as the rows show them")
 struct HeadlineIsTheRows {
   /// The numbers the headline says: what needs the person now and what is to look at.
@@ -2203,7 +2254,8 @@ struct Answers {
     let said =
       "Not saved. The program said: this finding is already closed; nothing was changed\\u{202E}"
     #expect(model.refusals[id] == said)
-    #expect(model.form?.id == id)  // the form stays open with what was typed
+    // The form stays open with what was typed, beside the refusal, which the footer draws above it.
+    #expect(model.form == ExpectedForm(id: id, reason: "r"))
     #expect(model.light == before)
     #expect(immune.callsSoFar.last?.first == "status")
     #expect(hasNoInvisible(said))

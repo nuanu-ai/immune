@@ -18,10 +18,15 @@ struct FixtureImmune: ImmuneRunning {
   let status: String
   /// The finding every `immune finding <id>` answers with, whatever the id: a mismatched answer.
   var finding: String?
+  /// What Immune says, invented, when it refuses an answer; nil when it takes every answer.
+  var refusal: String? = nil
 
   func run(_ arguments: [String], timeout: TimeInterval) async -> ImmuneOutput {
     func file(_ name: String) -> Data? {
       try? Data(contentsOf: folder.appendingPathComponent(name))
+    }
+    if let refusal, arguments.first == "finding", arguments.contains("expected") {
+      return ImmuneOutput(exitCode: 2, stderr: Data(refusal.utf8))
     }
     switch arguments.first {
     case "status": return ImmuneOutput(exitCode: 0, stdout: file(status) ?? Data())
@@ -63,12 +68,19 @@ func write(_ data: Data?, _ folder: String, _ name: String) {
 @MainActor
 func panel(
   _ name: String, status: String, open: String? = nil, answer: String? = nil,
-  screen: CGFloat? = nil, at moment: Date? = nil
+  screen: CGFloat? = nil, at moment: Date? = nil, refused expected: String? = nil
 ) async {
-  let model = AppModel(immune: FixtureImmune(folder: fixtures, status: status, finding: answer))
+  let refusal = expected.map { _ in "immune: the store is being written by another command" }
+  let model = AppModel(
+    immune: FixtureImmune(folder: fixtures, status: status, finding: answer, refusal: refusal))
   model.immuneCommand = ImmuneCommand(path: "/Applications/Immune.app/Contents/MacOS/immune")
   await model.refresh()
   if let open { await model.openFinding(open) }
+  // An Expected… Immune refused: the form stays open with the reason typed.
+  if let open, let expected {
+    model.form = ExpectedForm(id: open, reason: expected)
+    _ = await model.answerExpected(ExpectedForm(id: open, reason: expected))
+  }
   // A status the real binary made carries its own time: drawn a few minutes after it.
   let when = moment ?? now
   for (look, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
@@ -220,6 +232,9 @@ func main() async {
   await panel("7-open-shell-file-harmless", status: "panel-two.json", open: "fbb00986139")
   await panel("8-open-agent-answer", status: "panel-two.json", open: "f3c1d2e4a51")
   await panel("9-open-failure", status: "panel-two.json", open: "f0000000000")
+  await panel(
+    "9b-open-expected-refused", status: "sheet-real.json", open: "fbb00986139",
+    refused: "The installer of the shell tool added this line")
   await panel(
     "10-open-mismatched-answer", status: "panel-two.json", open: "f3c1d2e4a51",
     answer: "finding-fbb00986139.json")
