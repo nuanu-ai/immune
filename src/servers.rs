@@ -117,10 +117,13 @@ pub fn failure(dir: &Path, name: &str) -> Option<Failure> {
     Some(Failure::parse(&text, seconds(meta.modified().ok())))
 }
 
-/// How much of a `.failed` file is read: its first line, the time, is in its first
-/// `FAILED_HEAD` bytes, and its last line, the reason, in its last `FAILED_TAIL`.
-const FAILED_HEAD: u64 = 256;
+/// How much of a `.failed` file is read. One of up to `FAILED_WHOLE` bytes is read whole. Of a
+/// longer one, the time is the first line within its first `FAILED_WHOLE` bytes, and the reason
+/// the last line within the last `FAILED_TAIL` bytes before the blank space at its end, of which
+/// at most `FAILED_BLANK` bytes are passed over.
+const FAILED_WHOLE: u64 = 4352;
 const FAILED_TAIL: u64 = 4 << 10;
+const FAILED_BLANK: u64 = 1 << 20;
 
 /// The two ends of a `.failed` file. What ssh printed comes from the far side of the network
 /// and may be of any length, so it is bounded here, where it is read: a reason is never longer
@@ -129,14 +132,17 @@ fn ends(path: &Path, len: u64) -> std::io::Result<String> {
     use std::io::{Read, Seek, SeekFrom};
     let mut file = std::fs::File::open(path)?;
     let mut head = Vec::new();
-    (&mut file)
-        .take(FAILED_HEAD + FAILED_TAIL)
-        .read_to_end(&mut head)?;
-    if len <= FAILED_HEAD + FAILED_TAIL {
+    (&mut file).take(FAILED_WHOLE).read_to_end(&mut head)?;
+    if len <= FAILED_WHOLE {
+        return Ok(String::from_utf8_lossy(&head).into_owned());
+    }
+    let end = text_end(&mut file, len)?;
+    if end <= FAILED_WHOLE {
+        head.truncate(end as usize);
         return Ok(String::from_utf8_lossy(&head).into_owned());
     }
     let mut tail = Vec::new();
-    file.seek(SeekFrom::Start(len - FAILED_TAIL))?;
+    file.seek(SeekFrom::Start(end - FAILED_TAIL))?;
     file.take(FAILED_TAIL).read_to_end(&mut tail)?;
     let head = String::from_utf8_lossy(&head);
     Ok(format!(
@@ -144,6 +150,25 @@ fn ends(path: &Path, len: u64) -> std::io::Result<String> {
         head.lines().next().unwrap_or_default(),
         String::from_utf8_lossy(&tail)
     ))
+}
+
+/// Where the text of a file of `len` bytes ends: before the blank space at its end, of which at
+/// most `FAILED_BLANK` bytes are passed over, read backwards a block at a time.
+fn text_end(file: &mut std::fs::File, len: u64) -> std::io::Result<u64> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut block = [0u8; 4096];
+    let mut end = len;
+    while end > 0 && len - end < FAILED_BLANK {
+        let from = end.saturating_sub(block.len() as u64);
+        let n = (end - from) as usize;
+        file.seek(SeekFrom::Start(from))?;
+        file.read_exact(&mut block[..n])?;
+        match block[..n].iter().rposition(|b| !b.is_ascii_whitespace()) {
+            Some(i) => return Ok(from + i as u64 + 1),
+            None => end = from,
+        }
+    }
+    Ok(end)
 }
 
 fn seconds(t: Option<std::time::SystemTime>) -> i64 {
@@ -793,5 +818,23 @@ mod tests {
         );
         let app = super::failure(&dir, "app-1").unwrap();
         assert_eq!(app.reason, "Permission denied (publickey).");
+        // Blank space after the reason, lines of it or spaces on its line, is passed over, so
+        // the reason and the advice it brings are still read.
+        let phrase = "Host key verification failed.";
+        put(
+            "web-2",
+            &format!("1767412800\n{filler}{phrase}\n{}", "\n".repeat(10_000)),
+        );
+        put(
+            "web-3",
+            &format!("1767412800\n{phrase}{}\n", " ".repeat(10_000)),
+        );
+        put(
+            "web-4",
+            &format!("1767412800\n{phrase}{}", " \n".repeat(3_000)),
+        );
+        for name in ["web-2", "web-3", "web-4"] {
+            assert_eq!(super::failure(&dir, name).unwrap().reason, phrase, "{name}");
+        }
     }
 }

@@ -1246,8 +1246,19 @@ fn run_cmd(args: &Args) -> ExitCode {
 fn run_said(line: &str, watched: &Rows) -> String {
     let mut out = format!("{}\n", view::shown(line));
     if !watched.is_empty() {
+        // The path is a name: shown here, the one place this table writes one.
+        let rows: Rows = watched
+            .iter()
+            .map(|row| {
+                let mut row = row.clone();
+                if let Some(path) = row.get_mut(2) {
+                    *path = known::whole(path);
+                }
+                row
+            })
+            .collect();
         out.push_str("Watched places:\n");
-        out.push_str(&text::table(&["Change", "Kind", "Path", "Why"], watched));
+        out.push_str(&text::table(&["Change", "Kind", "Path", "Why"], &rows));
     }
     out
 }
@@ -1694,7 +1705,7 @@ fn survey(args: &ServersArgs) -> Result<Survey, Box<dyn Error>> {
             traces::Found::Off(why) => said.push(format!("{kind}: not read, {why}")),
             traces::Found::Guarded(folder) => said.push(format!(
                 "{kind}: not read, it leads into {}, which macOS asks permission for",
-                guarded::shown(folder, &args.home)
+                known::whole(&guarded::shown(folder, &args.home))
             )),
             traces::Found::Read(seen) => {
                 let n = seen.hosts.len() as i64;
@@ -1763,7 +1774,10 @@ fn survey(args: &ServersArgs) -> Result<Survey, Box<dyn Error>> {
     // addresses it gives itself: the same machines `immune run` knows from these files.
     if dir.is_dir() {
         match servers::inputs(&dir) {
-            Err(e) => said.push(format!("{SWEEP_FILE}s: could not be read, {e}")),
+            Err(e) => said.push(format!(
+                "{SWEEP_FILE}s: could not be read, {}",
+                secrets::said(&e)
+            )),
             Ok(inputs) => {
                 said.push(format!(
                     "{SWEEP_FILE}s: {}",
@@ -1834,18 +1848,18 @@ fn survey(args: &ServersArgs) -> Result<Survey, Box<dyn Error>> {
             format!(
                 "not offered: {}; seen alive after it: {}",
                 w.summary(),
-                w.contradiction().unwrap_or_default()
+                known::whole(&w.contradiction().unwrap_or_default())
             )
         } else if let Some(first) = offered.first() {
             let rest: Vec<String> = with_alias
                 .iter()
                 .filter(|a| *a != first)
                 .map(|a| match sweep::not_offered(a, &skip) {
-                    Some(why) => format!("{a} ({why})"),
-                    None => a.to_string(),
+                    Some(why) => format!("{} ({why})", known::whole(a)),
+                    None => known::whole(a),
                 })
                 .collect();
-            let mut sweep = format!("visits {first}");
+            let mut sweep = format!("visits {}", known::whole(first));
             if !rest.is_empty() {
                 sweep.push_str(&format!("; same machine, not visited: {}", rest.join(", ")));
             }
@@ -1950,12 +1964,14 @@ fn servers_cmd(args: &ServersArgs) -> Result<(), Box<dyn Error>> {
         let cells: Vec<Vec<String>> = rows
             .iter()
             .map(|r| {
+                // The sweep and the last file are put together with names and cut reasons
+                // already shown (`survey`, `last_file`); a name alone is shown here.
                 vec![
-                    r.name.clone(),
+                    known::whole(&r.name),
                     r.traces.join(", "),
                     r.sweep.clone(),
                     r.file.clone(),
-                    r.others.join(", "),
+                    known::whole(&r.others.join(", ")),
                 ]
             })
             .collect();
@@ -1999,13 +2015,13 @@ fn servers_cmd(args: &ServersArgs) -> Result<(), Box<dyn Error>> {
         "Your other devices on the tailnet, not counted as servers: {}",
         things(s.own.len() as i64, "device", "devices")
     ));
-    print_table(&["Device", "System", "Also known as"], &s.own);
+    print_table(&["Device", "System", "Also known as"], &names(&s.own));
     println!();
     say(&format!(
         "Other users' devices on the tailnet, not counted as servers: {}",
         things(s.theirs.len() as i64, "device", "devices")
     ));
-    print_table(&["Device", "Also known as"], &s.theirs);
+    print_table(&["Device", "Also known as"], &names(&s.theirs));
     println!();
 
     sweep::write(&s.dir, &s.machines)?;
@@ -2064,13 +2080,21 @@ fn word_rows(words: &[&owner::Standing]) -> Vec<Vec<String>> {
         .iter()
         .map(|w| {
             vec![
-                w.name().to_string(),
+                known::whole(w.name()),
                 w.word.said.clone(),
                 view::utc(w.word.made_at),
                 w.word.reason.said(),
-                w.names[1..].join(", "),
+                known::whole(&w.names[1..].join(", ")),
             ]
         })
+        .collect()
+}
+
+/// Rows of names alone, as every surface shows a name: a backslash written `\u{5c}`, so none
+/// reads as a mark (`known::whole`).
+fn names(rows: &[Vec<String>]) -> Vec<Vec<String>> {
+    rows.iter()
+        .map(|row| row.iter().map(|cell| known::whole(cell)).collect())
         .collect()
 }
 
@@ -3983,7 +4007,7 @@ fn read_watched(
                             worktrees::journal(
                                 run.tx, &reading, &e.subject, content, &ids.0, &ids.1,
                             )?;
-                            format!("the same as in {checkout}")
+                            format!("the same as in {}", known::whole(checkout))
                         }
                         None => {
                             observe("new", p.watched_as, &e.subject);
@@ -4878,7 +4902,8 @@ fn feed_clause(s: &osv::State, run_id: &str) -> String {
     let since = view::utc_or(s.changed_at.or(s.good_at), "an unknown time");
     match outcome.as_str() {
         "failed" => {
-            let reason = reason.as_deref().unwrap_or_default();
+            // What the download said: cut on its own, as every source's text in the run's line.
+            let reason = secrets::said(reason.as_deref().unwrap_or_default());
             match s.good_at {
                 Some(at) => format!(
                     "{ecosystem} not read: {reason}; the {held}, read {}, stay in force",
@@ -4956,19 +4981,22 @@ fn catalogue_sentence(c: Option<&status::Catalogue>, compared: &[&str]) -> Strin
             "CISA catalogue: {}, unchanged, 0 new since the last reading; {judged}.",
             held(*total)
         ),
+        // What the download said: cut on its own, as every source's text in the run's line.
         Catalogue::Failed {
             reason,
             last: Some((at, total)),
             ..
         } => format!(
-            "CISA catalogue not read: {reason}; what is new is unknown, and the {} it held at its last reading, {}, are {judged}.",
+            "CISA catalogue not read: {}; what is new is unknown, and the {} it held at its last reading, {}, are {judged}.",
+            secrets::said(reason),
             held(*total),
             view::utc(*at)
         ),
         Catalogue::Failed {
             reason, last: None, ..
         } => format!(
-            "CISA catalogue not read: {reason}; the program knows no exploited vulnerability yet, so whether any affects this estate is unknown."
+            "CISA catalogue not read: {}; the program knows no exploited vulnerability yet, so whether any affects this estate is unknown.",
+            secrets::said(reason)
         ),
     }
 }
@@ -5054,7 +5082,7 @@ fn summary_sentences(s: &status::Summary) -> String {
     if !servers.seen.is_empty() {
         line.push_str(&format!(
             " Seen alive after the owner's word: {}.",
-            servers.seen.join(", ")
+            known::whole(&servers.seen.join(", "))
         ));
     }
     let mut gaps = Vec::new();
@@ -5345,6 +5373,81 @@ mod tests {
         assert!(
             printed.starts_with("1 reader.\nWatched places:\n") && printed.contains(&why),
             "{printed}"
+        );
+    }
+
+    #[test]
+    fn what_a_download_said_is_cut_in_the_run_s_line_and_the_core_s_words_around_it_stay() {
+        // The catalogue's and a feed's reason is what curl or a parser said: a token in a URL is
+        // cut, a mark it wrote stays its text, a password's value is cut, and the sentence
+        // around each is the core's, whole.
+        let token = format!(
+            "{}{}",
+            ["gh", "p_"].concat(),
+            "Q7mZ2xK9pL4vR8nT3wY6bH1cJ5dF0gS2aE7u"
+        );
+        let reason =
+            format!("curl: (22) https://example.invalid/?t={token} \\cut{{x 1}} password: x");
+        let cut = format!(
+            "curl: (22) https://example.invalid/?t={} \\u{{5c}}cut{{x 1}} password:{}",
+            secrets::mark("gitleaks:github-pat", 40),
+            secrets::mark(secrets::FLAG_VALUE, 2)
+        );
+        let catalogue = status::Catalogue::Failed {
+            reason: reason.clone(),
+            last: None,
+            at: 1_767_412_800,
+        };
+        assert_eq!(
+            catalogue_sentence(Some(&catalogue), &[]),
+            format!(
+                "CISA catalogue not read: {cut}; the program knows no exploited vulnerability yet, so whether any affects this estate is unknown."
+            )
+        );
+        let feed = osv::State {
+            feed: &osv::FEEDS[0],
+            latest: Some((
+                "run".to_string(),
+                1_767_412_800,
+                "failed".to_string(),
+                Some(reason),
+            )),
+            good_at: None,
+            changed_at: None,
+            records: 0,
+            malicious: 0,
+            withdrawn: 0,
+            counts: None,
+        };
+        assert_eq!(
+            feed_clause(&feed, "run"),
+            format!(
+                "{} not read: {cut}; nothing of it is known yet",
+                osv::FEEDS[0].ecosystem
+            )
+        );
+    }
+
+    #[test]
+    fn a_name_never_reads_as_a_mark_in_what_the_run_and_the_server_list_print() {
+        // A name is never cut, and its backslash is written as a source's: the path of a watched
+        // place under the run's line, and a server's names in `immune servers`.
+        let forged = "/Users/example/\\cut{gitleaks:github-pat 40}";
+        let shown = "/Users/example/\\u{5c}cut{gitleaks:github-pat 40}";
+        let rows: Rows = vec![vec![
+            "new".to_string(),
+            "shell profile".to_string(),
+            forged.to_string(),
+            String::new(),
+        ]];
+        let printed = run_said("1 reader.", &rows);
+        assert!(
+            printed.contains(shown) && !printed.contains("/\\cut{"),
+            "{printed}"
+        );
+        assert_eq!(
+            names(&[vec![forged.to_string(), "linux".to_string()]]),
+            [[shown.to_string(), "linux".to_string()]]
         );
     }
 }

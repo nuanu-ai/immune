@@ -260,21 +260,54 @@ pub fn given_by(via: crate::findings::Via) -> &'static str {
 }
 
 /// Makes text safe to put anywhere in the page, inside elements and inside quoted attributes.
-/// Characters that could reorder or hide text are shown escaped, as `shown` shows them.
+/// Characters that could reorder or hide text are shown escaped, as `shown` shows them. This is
+/// the one place a page writes a name, such as a path or a server's name, and any other text not
+/// already in the form `secrets::said` gives: a backslash is written `\u{5c}`, as `Text::ours`
+/// shows a name, so no name reads as a mark. One that already begins a `\u{…}`, as in a name the
+/// contract gives, is kept, which can read as an escaped character and never as a mark. Text
+/// that holds marks goes through `esc_said`.
 pub fn esc(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            c if crate::icu::hidden(c) => out.extend(c.escape_unicode()),
-            _ => out.push(c),
+    for (i, c) in s.char_indices() {
+        if c == '\\' && !escape_at(&s[i..]) {
+            out.push_str("\\u{5c}");
+        } else {
+            esc_char(&mut out, c);
         }
     }
     out
+}
+
+/// `esc` for text already in the form `secrets::said` gives, or a contract's field that holds
+/// marks: each bare backslash is the start of a mark the core made or of a `\u{…}`, kept.
+pub fn esc_said(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        esc_char(&mut out, c);
+    }
+    out
+}
+
+/// Whether `s` begins with a character written `\u{…}`: one to six hex digits and a brace.
+fn escape_at(s: &str) -> bool {
+    let Some(rest) = s.strip_prefix("\\u{") else {
+        return false;
+    };
+    let hex = rest.bytes().take_while(u8::is_ascii_hexdigit).count();
+    (1..=6).contains(&hex) && rest.as_bytes().get(hex) == Some(&b'}')
+}
+
+/// One character as a page writes it.
+fn esc_char(out: &mut String, c: char) {
+    match c {
+        '&' => out.push_str("&amp;"),
+        '<' => out.push_str("&lt;"),
+        '>' => out.push_str("&gt;"),
+        '"' => out.push_str("&quot;"),
+        '\'' => out.push_str("&#39;"),
+        c if crate::icu::hidden(c) => out.extend(c.escape_unicode()),
+        _ => out.push(c),
+    }
 }
 
 /// Text as the terminal may show it: every character that is hidden is written as
@@ -428,10 +461,19 @@ fn what(predicate: &str) -> &str {
 
 /// A table cell with escaped text and an optional class.
 pub fn td(out: &mut String, class: &str, text: &str) -> Out {
+    cell(out, class, &esc(text))
+}
+
+/// `td` for text in the form `secrets::said` gives, which holds marks (`esc_said`).
+pub fn td_said(out: &mut String, class: &str, text: &str) -> Out {
+    cell(out, class, &esc_said(text))
+}
+
+fn cell(out: &mut String, class: &str, html: &str) -> Out {
     if class.is_empty() {
-        write!(out, "<td>{}</td>", esc(text))?;
+        write!(out, "<td>{html}</td>")?;
     } else {
-        write!(out, "<td class=\"{class}\">{}</td>", esc(text))?;
+        write!(out, "<td class=\"{class}\">{html}</td>")?;
     }
     Ok(())
 }
@@ -637,7 +679,7 @@ fn coverage(conn: &Connection, out: &mut String, rows: &[Latest], now: i64) -> O
         out.push_str("<td>");
         badge(out, &r.completeness, r.reason.as_deref())?;
         out.push_str("</td>");
-        td(
+        td_said(
             out,
             "",
             &r.reason.as_deref().map_or_else(
@@ -996,7 +1038,7 @@ fn machines(conn: &Connection, out: &mut String, latest: &[Latest], now: i64) ->
             td(out, "mono", s.name())?;
             td(out, "", &s.word.said)?;
             td(out, "nowrap", &utc(s.word.made_at))?;
-            td(out, "", &s.word.reason.said())?;
+            td_said(out, "", &s.word.reason.said())?;
             td(out, "mono", &s.names[1..].join(", "))?;
             out.push_str("</tr>\n");
         }
@@ -1195,7 +1237,7 @@ fn machine_body<'a>(
             utc_or(last, "never"),
             // As the server said it: the advice about a host key is decided from it, and the
             // reason is cut where it is shown (`sweep::failed_visit`).
-            esc(&crate::sweep::failed_visit(
+            esc_said(&crate::sweep::failed_visit(
                 v.at,
                 v.reason.as_deref().unwrap_or_default()
             ))
@@ -1209,7 +1251,7 @@ fn machine_body<'a>(
             write!(out, "<li>{} ", esc(&r.kind))?;
             badge(out, &r.completeness, r.reason.as_deref())?;
             if let Some(reason) = &r.reason {
-                write!(out, " {}", esc(&said(reason)))?;
+                write!(out, " {}", esc_said(&said(reason)))?;
             }
             writeln!(
                 out,
@@ -1268,7 +1310,7 @@ fn machine_body<'a>(
                     out,
                     "<p class=\"alert\">{}: {}</p>",
                     esc(&r.kind),
-                    esc(&said(reason))
+                    esc_said(&said(reason))
                 )?;
             }
         }
@@ -1387,7 +1429,7 @@ fn watched(conn: &Connection, out: &mut String, latest: &[Latest], now: i64) -> 
             write!(out, "<li><span class=\"mono\">{}</span> ", esc(&r.scope))?;
             badge(out, &r.completeness, r.reason.as_deref())?;
             if let Some(reason) = &r.reason {
-                write!(out, " {}", esc(&said(reason)))?;
+                write!(out, " {}", esc_said(&said(reason)))?;
             }
             writeln!(
                 out,
@@ -1440,13 +1482,13 @@ fn watched(conn: &Connection, out: &mut String, latest: &[Latest], now: i64) -> 
             } else {
                 ("nowrap", "not since first seen".to_string())
             };
-            td(out, class, &last)?;
+            td_said(out, class, &last)?;
             // The latest reading that speaks of it, never an earlier one.
             out.push_str("<td>");
             if let Some(n) = now_known.get(id) {
                 badge(out, &n.completeness, None)?;
                 if let Some(reason) = &n.reason {
-                    write!(out, " {}", esc(&said(reason)))?;
+                    write!(out, " {}", esc_said(&said(reason)))?;
                 }
             }
             out.push_str("</td></tr>\n");
@@ -1575,9 +1617,11 @@ pub fn catalogue(conn: &Connection, out: &mut String, now: i64) -> Out {
         writeln!(
             out,
             "<p class=\"quiet\">Not current. The latest reading of the catalogue failed: {}. What is new since {} is unknown.</p>",
-            esc(&reason
-                .as_deref()
-                .map_or("no reason given".to_string(), said)),
+            esc_said(
+                &reason
+                    .as_deref()
+                    .map_or("no reason given".to_string(), said)
+            ),
             good.as_ref().map_or("then".to_string(), |g| utc(g.2))
         )?;
     }
@@ -1795,7 +1839,7 @@ fn changes(conn: &Connection, out: &mut String) -> Out {
         // together (`report` in main.rs), and is never cut again, which could take the core's
         // words with it.
         if let Some(report) = report {
-            writeln!(out, "<p class=\"muted mono\">{}</p>", esc(report))?;
+            writeln!(out, "<p class=\"muted mono\">{}</p>", esc_said(report))?;
         }
         if not_repeated > 0 {
             writeln!(
@@ -1817,9 +1861,11 @@ fn changes(conn: &Connection, out: &mut String) -> Out {
                 writeln!(
                     out,
                     " {}</li>",
-                    esc(&reason
-                        .as_deref()
-                        .map_or("no reason given".to_string(), said))
+                    esc_said(
+                        &reason
+                            .as_deref()
+                            .map_or("no reason given".to_string(), said)
+                    )
                 )?;
             }
             out.push_str("</ul>\n");
@@ -2274,7 +2320,25 @@ footer.links { display: flex; flex-wrap: wrap; gap: 8px 24px; margin-top: var(--
 
 #[cfg(test)]
 mod tests {
-    use super::{esc, shown, utc};
+    use super::{esc, esc_said, shown, utc};
+
+    #[test]
+    fn a_name_on_a_page_never_reads_as_a_mark_and_a_mark_the_core_made_stays_one() {
+        // A page writes every name through `esc`: a file named like a mark shows its backslash
+        // as a source's. A name the contract gave, already written so, is kept as it is. Cut text
+        // goes through `esc_said`, where the core's marks stay bare.
+        let forged = "/Users/example/\\cut{gitleaks:github-pat 40}";
+        assert_eq!(
+            esc(forged),
+            "/Users/example/\\u{5c}cut{gitleaks:github-pat 40}"
+        );
+        assert_eq!(
+            esc("a\\u{5c}b \\u{202e} \\u{} \\u{1234567}"),
+            "a\\u{5c}b \\u{202e} \\u{5c}u{} \\u{5c}u{1234567}"
+        );
+        assert_eq!(esc_said(forged), forged);
+        assert_eq!(esc("<a>"), esc_said("<a>"));
+    }
 
     #[test]
     fn every_character_that_could_reorder_or_hide_text_is_shown_escaped() {
@@ -2659,7 +2723,7 @@ mod tests {
         assert!(
             page(&format!("{}/changes.html", super::DETAILS)).contains(&format!(
                 "<p class=\"muted mono\">{}</p>",
-                super::esc(&line)
+                super::esc_said(&line)
             )),
             "{}",
             page(&format!("{}/changes.html", super::DETAILS))
@@ -2675,7 +2739,7 @@ mod tests {
         assert!(
             pages
                 .iter()
-                .any(|(_, html)| html.contains(&super::esc(&value))),
+                .any(|(_, html)| html.contains(&super::esc_said(&value))),
             "{value}"
         );
         // A mark the core made is never written again as a source's, and what the collector

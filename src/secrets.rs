@@ -234,7 +234,10 @@ impl Text {
             }
             fits
         });
-        out.push('…');
+        // No room even for `…` when the cap is nothing.
+        if cap > 0 {
+            out.push('…');
+        }
         out
     }
 
@@ -3631,6 +3634,8 @@ mod tests {
         // Within the cap nothing is taken away, up to the cap itself.
         assert_eq!(said_within("a\\b", 256), "a\\u{5c}b");
         assert_eq!(said_within(&"a".repeat(256), 256), "a".repeat(256));
+        // A cap of nothing leaves nothing, not even `…`.
+        assert_eq!(said_within("a", 0), "");
     }
 
     #[test]
