@@ -5070,9 +5070,12 @@ mod tests {
         // The watcher reads at every sample, every thirty seconds, and a full run reads what
         // accumulated since the last one, under the lock, each start evaluated against every
         // published rule. A busy Mac starts about 100 programs a second, so a sample adds
-        // about 3,000 lines. The bound is ten times that pace in a debug build and fifty times
-        // in a release one: loose, so that a Mac busy with other builds does not fail it, and
-        // it catches a reader that became quadratic or reads a line twice. One start in ten
+        // about 3,000 lines. What is pinned is that the cost of a line does not grow with the
+        // lines read: a reader that became quadratic would be thousands of times slower on
+        // these 5,000 lines. The clock is the only measure here, so the bound is far below
+        // what is measured: 100 lines a second in a debug build, against about 14,000 on an
+        // idle Mac, 140 times under it, where a shared runner or a Mac busy with other builds
+        // stretches a time a few times over (four times, seen). One start in ten
         // matches a high rule, so a finding's evidence is taken too, and one in ten a medium
         // rule. Measured and printed with `--nocapture`, with the share of the time the rules
         // take, measured over the same starts apart from the reading.
@@ -5148,11 +5151,7 @@ mod tests {
             text.len() as u64 / n,
             rules.groups().0.len() + rules.groups().1.len()
         );
-        let bound = if cfg!(debug_assertions) {
-            1_000.0
-        } else {
-            5_000.0
-        };
+        let bound = if cfg!(debug_assertions) { 100.0 } else { 500.0 };
         assert!(rate > bound, "{rate:.0} lines a second");
     }
 
@@ -5160,8 +5159,9 @@ mod tests {
     fn a_busy_mac_s_file_events_are_read_many_times_faster_than_they_happen() {
         // A Mac under agents' builds creates and renames about 200 files a second, measured on
         // a developer's Mac, so the watcher's reading every ten seconds takes about 2,000.
-        // The bound is ten times that pace in a debug build and fifty in a release one, as for
-        // program starts. One file event in ten matches a high rule for file events, so its
+        // As for program starts, the bound is far below what is measured: 200 file events a
+        // second in a debug build, against about 27,000 on an idle Mac, 135 times under it.
+        // One file event in ten matches a high rule for file events, so its
         // finding's evidence is taken, and only the latest few are kept. Each file event is
         // asked only of the rules for file events.
         let dir = crate::common::Scratch::at(
@@ -5218,9 +5218,9 @@ mod tests {
             text.len() as u64 / n
         );
         let bound = if cfg!(debug_assertions) {
-            2_000.0
+            200.0
         } else {
-            10_000.0
+            1_000.0
         };
         assert!(rate > bound, "{rate:.0} file events a second");
     }

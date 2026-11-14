@@ -1240,15 +1240,21 @@ pub fn last_read(conn: &Connection) -> rusqlite::Result<Option<i64>> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_watchers_reading_after_ten_thousand_readings_is_as_quick_as_the_first() {
-        // The watcher reads at every change for as long as the Mac runs, and every reading
-        // adds to the history of what was looked through. A reading that grew with that
-        // history would after months take longer than the quiet second it waits, and hold
-        // the store from a full run and from the owner's status for as long.
-        let dir = crate::common::Scratch::at(
-            std::env::temp_dir().join(format!("immune-watch-flat-{}", std::process::id())),
-        );
+    // A store that has watched for months. The watcher reads at every change for as long as
+    // the Mac runs, every reading adds to the history of what was looked through, and the app
+    // asks for the status after each. What reads the store must not do more work as that history
+    // grows. The work is counted in SQLite's steps (`store::steps`), not timed: a time on a
+    // loaded machine grows for nothing, while a statement that looks through the history takes
+    // a step for each of its rows, and the history added here is a reading's rows ten thousand
+    // times over. Less than one more step for each reading added says that nothing looked
+    // through them.
+
+    /// The readings of the watcher added for a Mac open for months.
+    const READINGS: u64 = 10_000;
+
+    /// A Mac with a few projects, after its first full run and its watcher's first reading,
+    /// with what a reading takes: the watcher's arguments and the store's folder.
+    fn watched_for_a_while(dir: &Path) -> (WatchArgs, PathBuf) {
         let (home, sys) = (dir.join("home"), dir.join("sys"));
         let put = |p: PathBuf, s: &str| {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -1274,6 +1280,13 @@ mod tests {
                 r#"{"tasks": [{"label": "dev", "runOptions": {"runOn": "folderOpen"}}]}"#,
             );
         }
+        // A working folder whose hooks git keeps elsewhere, which a reading names as not read.
+        put(
+            home.join("dev/shop-fix/.git"),
+            "gitdir: ../shop/.git/worktrees/shop-fix\n",
+        );
+        // A server the owner's check has read.
+        put(dir.join("servers/web-1.txt"), "##end\n");
         put(dir.join("brew.json"), r#"{"formulae": [], "casks": []}"#);
         let (store, absent) = (dir.join("store/store.db"), dir.join("absent"));
         crate::run(&crate::Args {
@@ -1281,7 +1294,7 @@ mod tests {
             machine: "mac".into(),
             brew: None,
             brew_input: Some(dir.join("brew.json")),
-            servers_input: Some(absent.clone()),
+            servers_input: Some(dir.join("servers")),
             home: home.clone(),
             checkouts_root: Some(home.clone()),
             sessions_root: Some(absent.clone()),
@@ -1305,21 +1318,15 @@ mod tests {
             alive_every: ALIVE,
         };
         let folder = crate::home(&store);
-        // The quickest of a few, so that a busy moment of the Mac is not taken for the cost.
-        let quickest = || {
-            (0..5)
-                .map(|_| {
-                    let t = Instant::now();
-                    read_held(&w, &folder, None).unwrap();
-                    t.elapsed()
-                })
-                .min()
-                .unwrap()
-        };
-        let first = quickest();
-        // The history ten thousand readings of the watcher leave, made in one statement: the
-        // latest reading's rows again, each time under a run id of its own.
-        let conn = Connection::open(&store).unwrap();
+        read_held(&w, &folder, None).unwrap();
+        (w, folder)
+    }
+
+    /// The history `READINGS` readings of the watcher leave, made in two statements: the rows
+    /// of its latest reading again, each time under a run id of its own, with what each names
+    /// as not read.
+    fn add_watcher_history(store: &Path) {
+        let conn = Connection::open(store).unwrap();
         let run: String = conn
             .query_row(
                 "SELECT run_id FROM coverage WHERE run_id LIKE 'watch-%' ORDER BY id DESC LIMIT 1",
@@ -1327,22 +1334,80 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        conn.execute(
-            "WITH RECURSIVE n (i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 10000)
-             INSERT INTO coverage (reader, run_id, observed_at, scope, kind, completeness,
-                                   reason, cause)
-             SELECT reader, run_id || '-' || i, observed_at, scope, kind, completeness, reason,
-                    cause
-             FROM n, coverage WHERE run_id = ?1",
-            [&run],
-        )
-        .unwrap();
-        drop(conn);
-        let later = quickest();
-        let _ = std::fs::remove_dir_all(&dir);
+        let rows = conn
+            .execute(
+                "WITH RECURSIVE n (i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+                 INSERT INTO coverage (reader, run_id, observed_at, scope, kind, completeness,
+                                       reason, cause)
+                 SELECT reader, run_id || '-' || i, observed_at, scope, kind, completeness,
+                        reason, cause
+                 FROM n, coverage WHERE run_id = ?2",
+                params![READINGS as i64, run],
+            )
+            .unwrap();
+        assert!(rows as u64 >= READINGS, "{rows}");
+        let lacks = conn
+            .execute(
+                "INSERT INTO coverage_lack (coverage, what, name)
+                 SELECT copy.id, l.what, l.name
+                 FROM coverage c JOIN coverage_lack l ON l.coverage = c.id
+                 JOIN coverage copy ON copy.run_id >= ?1 || '-' AND copy.run_id < ?1 || '.'
+                  AND copy.reader = c.reader AND copy.scope = c.scope AND copy.kind = c.kind
+                 WHERE c.run_id = ?1",
+                [&run],
+            )
+            .unwrap();
+        assert!(lacks as u64 >= READINGS, "{lacks}");
+    }
+
+    /// The steps SQLite takes for `work` on a Mac watched for a while, on its first day and
+    /// after `READINGS` readings of its watcher.
+    fn first_day_and_later<T>(tag: &str, work: impl Fn(&WatchArgs, &Path) -> T) -> (u64, u64) {
+        let dir = crate::common::Scratch::new(tag);
+        let (w, folder) = watched_for_a_while(&dir);
+        let (_, first) = store::steps::counted(|| work(&w, &folder));
+        add_watcher_history(&w.store);
+        let (_, later) = store::steps::counted(|| work(&w, &folder));
+        assert!(first > 0, "nothing was counted");
+        (first, later)
+    }
+
+    #[test]
+    fn a_watchers_reading_after_ten_thousand_readings_does_no_more_work_than_the_first() {
+        // A reading that grew with the history would after months take longer than the quiet
+        // second it waits, and hold the store from a full run and from the status as long.
+        let (first, later) = first_day_and_later("watch-flat", |w, folder| {
+            read_held(w, folder, None).unwrap()
+        });
         assert!(
-            later < first * 3 + Duration::from_millis(5),
-            "the first reading took {first:?}, one after ten thousand {later:?}"
+            later < first + READINGS,
+            "a reading took {first} steps, one after {READINGS} readings {later}"
+        );
+    }
+
+    #[test]
+    fn the_status_after_ten_thousand_readings_does_no_more_work_than_on_the_first_day() {
+        // The app asks for the status after every reading of its watcher and every sample. One
+        // that grew with what the watcher has read would, after months of an open app, make the
+        // panel slow and hold the store while the next reading waits.
+        let (first, later) = first_day_and_later("status-flat", |w, _| {
+            crate::status_answer(&w.store, 1_800_000_000).unwrap()
+        });
+        assert!(
+            later < first + READINGS,
+            "the status took {first} steps on the first day, {later} after {READINGS} readings"
+        );
+    }
+
+    #[test]
+    fn the_view_after_ten_thousand_readings_is_made_with_no_more_work_than_on_the_first_day() {
+        // The owner's pages are written when asked for after a change; they must not take
+        // longer the longer the app has been open.
+        let (first, later) =
+            first_day_and_later("view-flat", |w, _| crate::write_view(&w.store).unwrap());
+        assert!(
+            later < first + READINGS,
+            "the view took {first} steps on the first day, {later} after {READINGS} readings"
         );
     }
 

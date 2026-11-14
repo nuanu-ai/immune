@@ -481,12 +481,12 @@ mod tests {
     fn a_small_value_that_refers_to_one_array_many_times_is_named_too_large_and_its_neighbour_is_read()
      {
         // 8^12 leaves in under 200 bytes: walked as a tree it would never end. The walk stops
-        // at its budget, says so for that key, and the key beside it is read.
+        // at its budget, says so for that key, and the key beside it is read. The budget is
+        // counted in values, not in time: a walk without it does not end, and how many values
+        // it allows is pinned by the 11,111 below.
         let file = shared(8, 12);
         assert!(file.len() < 256, "{}", file.len());
-        let started = std::time::Instant::now();
         let read = values(&file, &["LoginHook", "LogoutHook"]).unwrap();
-        assert!(started.elapsed() < std::time::Duration::from_secs(2));
         assert_eq!(read[0], ("LoginHook", Err(TOO_LARGE)));
         assert_eq!(read[1].0, "LogoutHook");
         assert!(read[1].1.is_ok());

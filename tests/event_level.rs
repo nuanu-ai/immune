@@ -2178,17 +2178,21 @@ fn the_watcher_says_new_starts_and_a_new_state_in_numbers_and_fixed_words_and_no
             "{before:?}"
         );
     }
-    // Read at the interval asked for, a second here, not at the default's ten.
+    // Read at the interval asked for, a second here, not at the default's ten. Counted in the
+    // watcher's own seconds, its alive lines, asked for every second too, not on the clock: on
+    // a loaded machine both stretch alike. The line is taken by the first or the second reading
+    // after it is written, so at most two alive lines come before it; three are let pass. At
+    // the default's ten seconds about six would: the reading of the two starts above, then
+    // three alive lines waited for, then the rest of its ten seconds.
     dir.append(
         "exec-20261004T00.jsonl",
         &format!("{}\n", full(3, &["ls"], token(404))),
     );
-    let appended = std::time::Instant::now();
-    next(&|v| v["event"] == "program_starts" && v["starts"] == 1);
+    let (_, before) = next(&|v| v["event"] == "program_starts" && v["starts"] == 1);
+    let alive = before.iter().filter(|b| b["event"] == "alive").count();
     assert!(
-        appended.elapsed() < Duration::from_secs(6),
-        "{:?}",
-        appended.elapsed()
+        alive <= 3,
+        "{alive} alive lines before it was read: {before:?}"
     );
     dir.uninstall();
     let (line, before) = next(&|v| v["event"] == "program_starts");

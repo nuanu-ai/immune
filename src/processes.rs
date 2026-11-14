@@ -1498,10 +1498,11 @@ mod tests {
         }
         let mut child = cmd.spawn().unwrap();
         // `/bin/sh` is a stub that starts the shell it is set to be: while it does, its
-        // arguments cannot be read.
+        // arguments cannot be read. Asked again until it has started, with a deadline loose
+        // enough for a loaded machine: it only ends a wait that would otherwise not end.
         let given = strings(&["/bin/sh", "-c", "sleep 30; :"]);
         let mut r = read_system(1);
-        for _ in 0..100 {
+        for _ in 0..500 {
             let kid = r.processes.iter().find(|p| p.pid == child.id() as i32);
             if kid.and_then(|k| k.args.as_ref()) == Some(&given) {
                 break;
@@ -1605,10 +1606,11 @@ mod tests {
         }
         let out = cmd.output().unwrap();
         let pid: i32 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap();
-        // The shell left behind may not have started its own program yet.
+        // The shell left behind may not have started its own program yet; asked again, with
+        // the same loose deadline as above.
         let started = strings(&["/bin/sh", "-c", "sleep 30; :"]);
         let mut reading = read_system(1);
-        for _ in 0..100 {
+        for _ in 0..500 {
             let p = reading.processes.iter().find(|p| p.pid == pid).unwrap();
             if p.args.as_ref() == Some(&started) {
                 break;
