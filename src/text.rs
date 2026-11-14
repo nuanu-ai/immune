@@ -1666,6 +1666,8 @@ pub fn rules(m: &v1::Rules) -> String {
         .map(|s| {
             let t = s.totals.unwrap_or_default();
             let at = match &s.commit_date {
+                // Immune's own rules record no commit: they arrive with the program.
+                _ if s.commit.is_empty() => "with this version".to_string(),
                 Some(date) => format!("at {} of {date}", s.commit.get(..12).unwrap_or(&s.commit)),
                 None => format!("at {}", s.commit.get(..12).unwrap_or(&s.commit)),
             };

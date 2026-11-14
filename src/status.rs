@@ -890,7 +890,14 @@ pub fn message(
         format: CONTRACT_FORMAT,
         answered_at: now,
         running,
-        cannot_judge: CANNOT_JUDGE.iter().map(|s| s.to_string()).collect(),
+        // The fixed limits, then the autorun points not checked on the macOS this Mac runs.
+        cannot_judge: CANNOT_JUDGE
+            .iter()
+            .map(|s| s.to_string())
+            .chain(crate::autorun::not_checked_said(
+                crate::autorun::MacOs::this_mac(),
+            ))
+            .collect(),
         rules: Some(rules_now(state.and_then(|s| s.event_level.as_ref()))),
         watching: crate::watch::watcher(path),
         answers_note: findings::ANSWERS_NOTE.to_string(),

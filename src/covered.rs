@@ -673,8 +673,24 @@ pub const PERSISTENCE_NOT_READ: Cause = Cause {
     advice: "Nothing to do. This is a limit of this version.",
 };
 
+/// The autorun points not checked on the macOS this Mac runs: the item for a person of the
+/// sentence `autorun::not_checked_said` adds to `cannot_judge`.
+pub const NOT_CHECKED_ON_MACOS: Cause = Cause {
+    id: "autorun-not-checked-on-this-macos",
+    who: NOTHING,
+    scope: "this_mac",
+    kind: "places where code can be set to run by itself not checked on this version of macOS",
+    title: [
+        "{n} place where code can be set to run by itself was not checked on this version of macOS.",
+        "{n} places where code can be set to run by itself were not checked on this version of macOS.",
+    ],
+    meaning: "{reasons}. Apple moves and drops such places between versions, so one moved or dropped in this version may be read where it no longer is, or not read where it now is.",
+    meaning_none: None,
+    advice: "Nothing to do. This is a limit of this version.",
+};
+
 /// Every cause, in the order items are listed: what the owner can fix first.
-pub const CAUSES: [&Cause; 25] = [
+pub const CAUSES: [&Cause; 26] = [
     &SERVERS_NOT_CHECKED,
     &SERVERS_NOT_OPENED,
     &NOT_PERMITTED,
@@ -698,6 +714,7 @@ pub const CAUSES: [&Cause; 25] = [
     &VULNERABILITY_DATA_OLD,
     &VULNERABILITY_DATA_FIXABLE,
     &VULNERABILITIES_UNKNOWN,
+    &NOT_CHECKED_ON_MACOS,
     // The limits of this version, `LIMITS`, last.
     &PERSISTENCE_NOT_READ,
     &NOT_COMPARED,
@@ -1242,12 +1259,32 @@ pub fn not_covered(
             ..Uncovered::new(&VULNERABILITIES_UNKNOWN, t.packages_unknown)
         });
     }
+    // The autorun points not checked on the macOS this Mac runs, as `cannot_judge` says it.
+    out.extend(not_checked_on_macos(autorun::MacOs::this_mac()));
     // One for each sentence of `CANNOT_JUDGE`: a test pins the pairing.
     out.extend(LIMITS.iter().map(|(_, cause)| Uncovered {
         every_mac: true,
         ..Uncovered::new(cause, 1)
     }));
     Ok(out)
+}
+
+/// The item of `NOT_CHECKED_ON_MACOS` on this version, whenever `cannot_judge` names its
+/// sentence: the same rows counted.
+fn not_checked_on_macos(macos: autorun::MacOs) -> Option<Uncovered> {
+    autorun::not_checked_said(macos)?;
+    let reason = match macos {
+        autorun::MacOs::Major(v) => format!("This Mac runs macOS {v}, and no record says these were checked on it"),
+        autorun::MacOs::NotKnown => "The version of macOS this Mac runs could not be read, so every place counts as not checked on it".to_string(),
+    };
+    Some(Uncovered {
+        reasons: vec![reason],
+        // While no row is checked on any version this holds on every Mac, as the limits of
+        // this version do, and a person is not shown it as something about this Mac. Once a
+        // row names a version, it depends on the macOS this Mac runs.
+        every_mac: autorun::POINTS.iter().all(|p| p.checked_on.is_empty()),
+        ..Uncovered::new(&NOT_CHECKED_ON_MACOS, autorun::not_checked_on(macos).len())
+    })
 }
 
 /// Names of files first, `yarn.lock`, then what is said in words, so that a sentence that
@@ -1519,5 +1556,38 @@ mod tests {
                 .iter()
                 .all(|(_, c)| CAUSES.iter().any(|known| known.id == c.id))
         );
+    }
+
+    #[test]
+    fn the_places_not_checked_on_this_macos_are_told_to_an_agent_and_to_a_person_with_one_count() {
+        // The status names the sentence of the Mac it runs on, with or without a store.
+        let path = std::path::Path::new("/nonexistent/store.db");
+        let m = status::message(None, None, false, path, 0).unwrap();
+        let said = autorun::not_checked_said(autorun::MacOs::this_mac()).unwrap();
+        assert_eq!(m.cannot_judge.last(), Some(&said));
+        // The person's item counts the same rows, and says why in either case.
+        for (macos, reason) in [
+            (autorun::MacOs::Major(26), "This Mac runs macOS 26"),
+            (autorun::MacOs::NotKnown, "could not be read"),
+        ] {
+            let item = not_checked_on_macos(macos).unwrap();
+            let n = autorun::not_checked_on(macos).len();
+            assert_eq!(item.count, n);
+            assert!(
+                autorun::not_checked_said(macos)
+                    .unwrap()
+                    .contains(&n.to_string())
+            );
+            assert!(
+                item.title().starts_with(&format!("{n} places")),
+                "{}",
+                item.title()
+            );
+            assert!(item.meaning().contains(reason), "{}", item.meaning());
+            // No row is checked on any version yet, so it holds on every Mac and a person is
+            // not shown it as something about this one.
+            assert!(autorun::POINTS.iter().all(|p| p.checked_on.is_empty()));
+            assert!(item.every_mac);
+        }
     }
 }

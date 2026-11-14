@@ -75,6 +75,7 @@ Not built yet:
 - [Reference](docs/reference.md): what is watched and read, the limits of this version, every command and the contract, the files Immune keeps, updating and removing.
 - [Threats](docs/threats.md): vulnerability data and indicators, how they are matched and answered, the network requests, and where rules and data come from.
 - [The collector](docs/event-level.md): installing it, what it records, its log, and the published rules it lets Immune evaluate.
+- [Writing a rule](docs/rules.md): when Immune has a Sigma rule of its own, where it goes, its two samples and the fields it can read.
 - [Attack simulations](docs/atomic.md): how much of Atomic Red Team's tests for macOS Immune notices, run by run.
 - [The contract](contract/README.md): the Rust types a program that runs Immune reads and writes.
 
