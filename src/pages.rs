@@ -2789,7 +2789,7 @@ mod tests {
     #[test]
     fn a_fresh_report_is_calm_only_while_live_readings_are_working() {
         let dir = crate::common::Scratch::new("report-live");
-        let conn = crate::store::open(&dir.join("store.db")).unwrap();
+        let conn = crate::store::open_or_make(&dir.join("store.db")).unwrap();
         let now = 1_000_001;
         let mut st = crate::status::state(&conn, &dir, now).unwrap();
         st.this_mac.state = "watched";
