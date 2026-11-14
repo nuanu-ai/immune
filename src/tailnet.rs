@@ -484,9 +484,10 @@ mod tests {
                               "TailscaleIPs": ["100.64.0.7"], "OS": "linux" } } }"#;
 
     /// A folder of its own for one test.
-    fn folder(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("immune-tailnet-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn folder(tag: &str) -> crate::common::Scratch {
+        let dir = crate::common::Scratch::at(
+            std::env::temp_dir().join(format!("immune-tailnet-{tag}-{}", std::process::id())),
+        );
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }

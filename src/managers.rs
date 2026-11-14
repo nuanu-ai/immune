@@ -128,9 +128,9 @@ mod tests {
     fn a_managers_place_that_is_a_link_into_a_folder_macos_asks_permission_for_is_not_entered() {
         // A run the app starts must not make macOS ask the owner for his Documents because a
         // manager's place is a link there. The folder is named as not looked into.
-        let root =
-            std::env::temp_dir().join(format!("immune-managers-guarded-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = crate::common::Scratch::at(
+            std::env::temp_dir().join(format!("immune-managers-guarded-{}", std::process::id())),
+        );
         let home = root.join("Users/invented");
         std::fs::create_dir_all(home.join("Documents/macports/bin")).unwrap();
         std::fs::write(home.join("Documents/macports/bin/port"), "").unwrap();

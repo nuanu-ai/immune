@@ -441,13 +441,13 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    fn temp(tag: &str) -> std::path::PathBuf {
+    fn temp(tag: &str) -> crate::common::Scratch {
         let dir =
             std::env::temp_dir().join(format!("immune-fsevents-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        crate::common::remove(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         // FSEvents names real paths; the temporary folder is behind a symbolic link.
-        std::fs::canonicalize(&dir).unwrap()
+        crate::common::Scratch(std::fs::canonicalize(&dir).unwrap())
     }
 
     fn start(paths: &[&Path]) -> (Stream, Refused, mpsc::Receiver<Batch>) {

@@ -2759,8 +2759,9 @@ mod tests {
         // itself takes it from the table: a row read here that one of them missed would be
         // read and never told, or told and never watched live.
         use crate::autorun::{self, POINTS};
-        let dir = std::env::temp_dir().join(format!("immune-ways-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::common::Scratch::at(
+            std::env::temp_dir().join(format!("immune-ways-{}", std::process::id())),
+        );
         std::fs::create_dir_all(&dir).unwrap();
         let conn = crate::store::open(&dir.join("store.db")).unwrap();
         let mut page = String::new();

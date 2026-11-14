@@ -851,6 +851,7 @@ mod tests {
         // Between looking at a regular file and opening it, it may become a named pipe, which
         // a plain open waits on for a writer forever.
         let dir = std::env::temp_dir().join(format!("immune-watched-swap-{}", std::process::id()));
+        let _removed = crate::common::Scratch::at(dir.clone());
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("profile");
         std::fs::write(&path, "regular\n").unwrap();

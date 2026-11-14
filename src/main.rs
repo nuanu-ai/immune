@@ -66,6 +66,12 @@ mod watch;
 mod watched;
 mod worktrees;
 
+/// The tests' own folders under the temporary folder, removed when a test ends; shared with
+/// the integration tests.
+#[cfg(test)]
+#[path = "../tests/common/mod.rs"]
+mod common;
+
 use baseline::{Unit, Verdict};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::error::Error;
@@ -4991,6 +4997,7 @@ mod tests {
             "immune-session-commit-{}-{nanos}",
             std::process::id()
         ));
+        let _removed = crate::common::Scratch::at(dir.clone());
         let sessions = dir.join("sessions");
         std::fs::create_dir_all(sessions.join("-invented-project")).unwrap();
         std::fs::write(

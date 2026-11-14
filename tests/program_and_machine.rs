@@ -4,6 +4,8 @@
 //! home folder, an invented system root and invented server files, so no test reads anything of
 //! the Mac it runs on or asks the network.
 
+mod common;
+
 use immune_contract::v1;
 use prost::Message;
 use serde_json::Value;
@@ -182,7 +184,7 @@ impl Estate {
 
 impl Drop for Estate {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        common::remove(&self.0);
     }
 }
 

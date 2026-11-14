@@ -22,6 +22,8 @@
 //! reading made of invented processes through the same code a reading of the system takes,
 //! so that no test leaves a program running or reads the real ones.
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -209,7 +211,7 @@ impl Estate {
 
 impl Drop for Estate {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        common::remove(&self.0);
     }
 }
 

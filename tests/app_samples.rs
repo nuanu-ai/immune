@@ -9,6 +9,8 @@
 //! the shape they have now; to write them again: `IMMUNE_WRITE_APP_SAMPLES=1 cargo test --test
 //! app_samples`.
 
+mod common;
+
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -149,7 +151,7 @@ impl Mac {
 
 impl Drop for Mac {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        common::remove(&self.0);
     }
 }
 

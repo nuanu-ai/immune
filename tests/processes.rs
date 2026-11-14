@@ -3,6 +3,8 @@
 //! the reading of the system itself is tested in `src/processes.rs` on the test process and a
 //! child it starts. No test reads the real processes of this Mac.
 
+mod common;
+
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::process::{Command, Output};
@@ -29,7 +31,7 @@ impl Dir {
 
 impl Drop for Dir {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        common::remove(&self.0);
     }
 }
 

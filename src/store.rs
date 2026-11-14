@@ -1542,7 +1542,7 @@ mod tests {
 
     impl Drop for Kept {
         fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.dir);
+            crate::common::remove(&self.dir);
         }
     }
 

@@ -2448,6 +2448,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
+        let _removed = crate::common::Scratch::at(dir.clone());
         std::fs::create_dir_all(&dir).unwrap();
         let mut conn = crate::store::open(&dir.join("store.db")).unwrap();
         let mac = "machine:mac";

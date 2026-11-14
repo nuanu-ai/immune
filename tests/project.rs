@@ -7,6 +7,8 @@
 #[allow(dead_code, unused_imports)]
 mod contract;
 
+mod common;
+
 use immune_contract::v1;
 use prost::Message;
 use serde_json::Value;
@@ -130,7 +132,7 @@ impl Home {
 
 impl Drop for Home {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        common::remove(&self.0);
     }
 }
 

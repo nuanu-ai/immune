@@ -4,6 +4,8 @@
 //! generous timeout. Where a test must show that something did not happen, it makes one more
 //! change and waits for that, or, where it cannot, sleeps a fixed time and says why so long.
 
+mod common;
+
 use rusqlite::Connection;
 use serde_json::Value;
 use std::io::{BufRead, BufReader};
@@ -156,7 +158,14 @@ impl Mac {
             .arg(self.store())
             .output()
             .unwrap();
-        assert!(out.status.success());
+        // What it said, so that a failure on a loaded machine can be told from a defect.
+        assert!(
+            out.status.success(),
+            "status ended with {:?}: {}{}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
         serde_json::from_slice(&out.stdout).unwrap()
     }
 
@@ -208,7 +217,7 @@ impl Mac {
 
 impl Drop for Mac {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
+        common::remove(&self.root);
     }
 }
 
@@ -806,10 +815,9 @@ fn status_says_watching_only_while_a_live_watcher_holds_the_store() {
     mac.run();
     assert!(mac.status()["watching"].is_null());
     assert!(mac.watch().started().stop().success());
-    // The next watcher starts a second later or more, so its start is after the last
-    // reading of the one before; until it reads, it has read nothing. The store keeps whole
-    // seconds, so 1.1 s is the least wait that puts the two in different seconds.
-    std::thread::sleep(Duration::from_millis(1100));
+    // The next watcher starts in a later second, so its start is after the last reading of
+    // the one before; until it reads, it has read nothing. The store keeps whole seconds.
+    common::next_second();
     // The run lock is held, as by a full run, so the start's reading waits for it.
     let folder = std::fs::File::open(mac.root.join("store")).unwrap();
     folder.lock().unwrap();
@@ -1539,7 +1547,7 @@ fn a_reading_that_failed_is_a_problem_line_and_the_watcher_reads_again_later() {
     let last_read = "SELECT CAST(last_read AS TEXT) FROM watcher";
     let read_every_place = mac.rows(last_read);
     // So that a reading after it cannot have the same time to the second.
-    std::thread::sleep(Duration::from_millis(1100));
+    common::next_second();
     let mode = |m| std::fs::set_permissions(mac.store(), std::fs::Permissions::from_mode(m));
     mode(0o444).unwrap();
     mac.put(".zshrc", "one\n");
@@ -2679,7 +2687,7 @@ fn a_change_in_one_watched_place_reads_again_only_its_reading_and_every_other_ke
     let last_read = "SELECT CAST(last_read AS TEXT) FROM watcher";
     let read_every_place = mac.rows(last_read);
     // So that a reading after it cannot have the same time to the second.
-    std::thread::sleep(Duration::from_millis(1100));
+    common::next_second();
     mac.put(".zshrc", "export A=2\n");
     w.until("read", |v| count(v, "changed") == 1);
     let after = latest_watched(&mac);
@@ -2778,7 +2786,7 @@ fn a_watcher_started_again_reads_every_place_at_its_first_reading_however_small_
     let last_read = "SELECT CAST(last_read AS TEXT) FROM watcher";
     let read_every_place = mac.rows(last_read);
     // So that a reading after it cannot have the same time to the second.
-    std::thread::sleep(Duration::from_millis(1100));
+    common::next_second();
     let mut w = mac.watch();
     w.next("watching");
     // After the history kept while it was stopped, which says nothing changed: as measured in

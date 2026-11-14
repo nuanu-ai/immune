@@ -3,6 +3,8 @@
 //! one, with log lines as the collector's filter writes them and invented content. Nothing here
 //! reads the real log or the real store.
 
+mod common;
+
 use immune_contract::v1;
 use prost::Message;
 use serde_json::{Value, json};
@@ -254,7 +256,7 @@ impl Dir {
 
 impl Drop for Dir {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        common::remove(&self.0);
     }
 }
 
@@ -1201,12 +1203,12 @@ fn a_log_an_earlier_collector_began_and_a_later_one_went_on_is_read_in_the_order
     // nothing; one deleted before it was read is counted, once.
     dir.run();
     // Notes are counted by the second after the reading before.
-    std::thread::sleep(Duration::from_millis(1100));
+    common::next_second();
     dir.tidy_away(H00);
     dir.tidy_away(n1);
     dir.append(n3, &git(7));
     dir.tidy_away(n3);
-    std::thread::sleep(Duration::from_millis(1100));
+    common::next_second();
     dir.run();
     let l = &dir.report(&["status"])["event_level"];
     assert_eq!(

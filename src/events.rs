@@ -4218,8 +4218,9 @@ mod tests {
         // A reading that failed is not kept: the next one runs plutil again, even on a file
         // that looks the same.
         use std::io::Write;
-        let dir = std::env::temp_dir().join(format!("immune-events-cap-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::common::Scratch::at(
+            std::env::temp_dir().join(format!("immune-events-cap-{}", std::process::id())),
+        );
         let plist = dir.join(TIDY_PLIST);
         std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
         let shipped = include_str!("../scripts/event-level/ai.nuanu.immune.event-tidy.plist");
@@ -4961,8 +4962,9 @@ mod tests {
     #[test]
     fn counts_older_than_two_days_are_deleted_so_the_store_does_not_grow_with_the_readings() {
         // The watcher reads at every sample for as long as the Mac runs.
-        let dir = std::env::temp_dir().join(format!("immune-events-keep-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::common::Scratch::at(
+            std::env::temp_dir().join(format!("immune-events-keep-{}", std::process::id())),
+        );
         std::fs::create_dir_all(dir.join("root").join(LOG)).unwrap();
         let plist = dir.join("root").join(PLIST);
         std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
@@ -4993,8 +4995,9 @@ mod tests {
     fn the_pages_basis_moves_with_a_start_read_or_a_new_state_and_not_with_a_reading_alone() {
         // A click after new program starts writes the pages that count them again; a reading
         // every ten seconds that took nothing writes nothing, or every click would.
-        let dir = std::env::temp_dir().join(format!("immune-events-basis-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::common::Scratch::at(
+            std::env::temp_dir().join(format!("immune-events-basis-{}", std::process::id())),
+        );
         let log = dir.join("root").join(LOG);
         std::fs::create_dir_all(&log).unwrap();
         let plist = dir.join("root").join(PLIST);
@@ -5034,8 +5037,9 @@ mod tests {
         // The owner tunes the rules on a week of counts; the status serves the last day. Both
         // are kept by the hour of the reading, so the hour that holds the start of the span
         // counts whole, and an hour older than the week is deleted.
-        let dir = std::env::temp_dir().join(format!("immune-events-hours-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::common::Scratch::at(
+            std::env::temp_dir().join(format!("immune-events-hours-{}", std::process::id())),
+        );
         std::fs::create_dir_all(dir.join("root").join(LOG)).unwrap();
         let plist = dir.join("root").join(PLIST);
         std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
@@ -5090,8 +5094,9 @@ mod tests {
         // matches a high rule, so a finding's evidence is taken too, and one in ten a medium
         // rule. Measured and printed with `--nocapture`, with the share of the time the rules
         // take, measured over the same starts apart from the reading.
-        let dir = std::env::temp_dir().join(format!("immune-events-speed-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::common::Scratch::at(
+            std::env::temp_dir().join(format!("immune-events-speed-{}", std::process::id())),
+        );
         std::fs::create_dir_all(dir.join(LOG)).unwrap();
         let plist = dir.join(PLIST);
         std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
@@ -5177,8 +5182,9 @@ mod tests {
         // program starts. One file event in ten matches a high rule for file events, so its
         // finding's evidence is taken, and only the latest few are kept. Each file event is
         // asked only of the rules for file events.
-        let dir = std::env::temp_dir().join(format!("immune-events-files-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::common::Scratch::at(
+            std::env::temp_dir().join(format!("immune-events-files-{}", std::process::id())),
+        );
         std::fs::create_dir_all(dir.join(LOG)).unwrap();
         let plist = dir.join(PLIST);
         std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
@@ -5681,9 +5687,10 @@ mod tests {
     }
 
     /// A system root of its own for a test, with the collector installed and its log empty.
-    fn installed(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("immune-events-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn installed(tag: &str) -> crate::common::Scratch {
+        let dir = crate::common::Scratch::at(
+            std::env::temp_dir().join(format!("immune-events-{tag}-{}", std::process::id())),
+        );
         std::fs::create_dir_all(dir.join(LOG)).unwrap();
         let plist = dir.join(PLIST);
         std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
@@ -5810,8 +5817,9 @@ mod tests {
         };
         let run = most(SCRIPT);
         write_at(&root, name, &starts(1, run / 2), now - 2);
-        let dir = std::env::temp_dir().join(format!("immune-events-run-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::common::Scratch::at(
+            std::env::temp_dir().join(format!("immune-events-run-{}", std::process::id())),
+        );
         std::fs::create_dir_all(&dir).unwrap();
         let mut conn = crate::store::open(&dir.join("store.db")).unwrap();
         conn.execute_batch(
@@ -5877,8 +5885,9 @@ mod tests {
         // field kept and never filled is so, and one not kept is not kept; a field that build
         // told arriving is not yet known, since it told one arriving for ever after one value,
         // and stays so once this build's first reading has added the columns.
-        let dir = std::env::temp_dir().join(format!("immune-events-old-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::common::Scratch::at(
+            std::env::temp_dir().join(format!("immune-events-old-{}", std::process::id())),
+        );
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("store.db");
         let mut conn = crate::store::open(&path).unwrap();
@@ -6022,8 +6031,9 @@ mod tests {
         };
         let a = Arrival::Kept(Some(1)).after(&mut quiet, u64::MAX, true, false, 9);
         assert_eq!(a, Arrival::NoLonger(7));
-        let dir = std::env::temp_dir().join(format!("immune-events-forged-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::common::Scratch::at(
+            std::env::temp_dir().join(format!("immune-events-forged-{}", std::process::id())),
+        );
         std::fs::create_dir_all(&dir).unwrap();
         let mut conn = crate::store::open(&dir.join("store.db")).unwrap();
         let tx = conn.transaction().unwrap();

@@ -1246,8 +1246,9 @@ mod tests {
         // adds to the history of what was looked through. A reading that grew with that
         // history would after months take longer than the quiet second it waits, and hold
         // the store from a full run and from the owner's status for as long.
-        let dir = std::env::temp_dir().join(format!("immune-watch-flat-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = crate::common::Scratch::at(
+            std::env::temp_dir().join(format!("immune-watch-flat-{}", std::process::id())),
+        );
         let (home, sys) = (dir.join("home"), dir.join("sys"));
         let put = |p: PathBuf, s: &str| {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -1424,6 +1425,7 @@ mod tests {
     #[test]
     fn a_place_is_named_by_the_real_path_of_its_folder_even_before_it_exists() {
         let dir = std::env::temp_dir().join(format!("immune-watch-real-{}", std::process::id()));
+        let _removed = crate::common::Scratch::at(dir.clone());
         std::fs::create_dir_all(dir.join("real")).unwrap();
         let _ = std::fs::remove_file(dir.join("link"));
         std::os::unix::fs::symlink(dir.join("real"), dir.join("link")).unwrap();

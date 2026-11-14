@@ -76,3 +76,23 @@ serde = { version = "1.0.229", features = ["derive"] }
 prost-build = "0.14.4"
 protox = "0.10.0"
 prost-types = "0.14.4"
+
+# The integration tests start the debug binary thousands of times, and each start of a command
+# that cuts secrets or reads the rules compiles gitleaks's patterns or parses the shipped rules
+# in dependency code (regex, serde_norway, sigma-rust). Unoptimized, a start of `immune status`
+# took 153 ms, of which loading the rules was 136 ms, and compiling the patterns another 136 ms
+# for the commands that cut. Dependencies are therefore compiled optimized in the dev and test
+# profiles (bundled SQLite with them), and without debug information, which no test reads; the
+# crate itself is not. Measured on a developer's Mac, cold, four compiler jobs and four test
+# threads: `immune status` 153 ms to 45 ms; compiling the dependencies 17 s longer; the tests
+# 437 s to 196 s; a cold `./check` 562 s to 328 s. The crate itself at opt-level 1 saved about
+# 12 s of tests and cost 35 s of compiling, so it is not used.
+[profile.dev.package."*"]
+opt-level = 3
+debug = false
+
+# The tests' own build carries line tables only: a failing test still says where, and the
+# binaries and their links are smaller: target/ 2.4 GB to 2.1 GB after a cold `./check` (2.6 GB
+# before either change). `cargo build` keeps full debug information.
+[profile.test]
+debug = "line-tables-only"

@@ -4,6 +4,8 @@
 //! `tailscale status --json`. Every sample is invented, and the home folder is always a
 //! temporary one: no test reads the real ssh files or asks the real tailscale.
 
+mod common;
+
 use rusqlite::Connection;
 use rusqlite::types::ValueRef;
 use std::path::{Path, PathBuf};
@@ -88,7 +90,7 @@ impl Dir {
 
 impl Drop for Dir {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        common::remove(&self.0);
     }
 }
 
@@ -11184,7 +11186,7 @@ fn a_change_in_a_watched_place_stays_open_through_quiet_runs_and_is_the_number_t
         ),
         "{first}"
     );
-    std::thread::sleep(std::time::Duration::from_millis(1100));
+    common::next_second();
     let quiet = [w.run(), w.run()];
     for line in &quiet {
         assert!(
@@ -11290,10 +11292,10 @@ fn a_change_in_a_watched_place_stays_open_through_quiet_runs_and_is_the_number_t
     put(w.home(), ".ssh/rc", "true\n");
     put(w.home(), ".zshrc", "export EDITOR=vi\n");
     w.run();
-    std::thread::sleep(std::time::Duration::from_millis(1100));
+    common::next_second();
     put(w.home(), ".ssh/rc", "true\n\n");
     w.run();
-    std::thread::sleep(std::time::Duration::from_millis(1100));
+    common::next_second();
     put(w.home(), ".zshrc", "export EDITOR=nano\n");
     w.run();
     let order: Vec<String> = looks(&status_json(&w.store()))
@@ -11421,7 +11423,7 @@ fn the_same_file_changing_again_is_one_open_finding_seen_later() {
     w.run();
     put(w.home(), ".zshrc", "export A=2\n");
     w.run();
-    std::thread::sleep(std::time::Duration::from_millis(1100));
+    common::next_second();
     put(w.home(), ".zshrc", "export A=3\n");
     let report = w.run();
     // The threat list, not downloaded in tests, is not covered and not a thing to look at.
@@ -11566,7 +11568,7 @@ fn expected_hides_a_finding_until_its_end_and_only_a_change_after_the_mark_opens
     );
 
     // Changed again while the mark stands: still hidden.
-    std::thread::sleep(std::time::Duration::from_millis(1100));
+    common::next_second();
     put(w.home(), ".zshrc", "export A=3\n");
     w.run();
     assert!(needs_findings(&w.store()).is_empty());
@@ -12330,7 +12332,7 @@ fn the_summary_page_says_what_status_says_with_each_item_in_full_and_no_markup_f
         }
     }
     assert!(page.contains("<p class=\"meta\">seen "));
-    std::thread::sleep(std::time::Duration::from_millis(1100));
+    common::next_second();
     put(
         w.home(),
         &format!("Library/LaunchAgents/{name}"),

@@ -1460,6 +1460,7 @@ mod tests {
     #[test]
     fn a_signer_is_looked_up_once_per_file_and_again_when_the_file_is_replaced() {
         let dir = std::env::temp_dir().join(format!("immune-signers-{}", std::process::id()));
+        let _removed = crate::common::Scratch::at(dir.clone());
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("tool");
         std::fs::write(&file, "one").unwrap();
