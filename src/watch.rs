@@ -503,10 +503,11 @@ fn read_lock(text: &str) -> Option<(i64, LockState)> {
     };
     let state = match lines[2..] {
         [READY] => LockState::Ready,
-        [third, said] => match unrecorded(third) {
+        // An error that said nothing leaves no fourth line.
+        [third, ref said @ ..] if said.len() <= 1 => match unrecorded(third) {
             Some(at) => LockState::Unrecorded {
                 at,
-                said: said.to_string(),
+                said: said.first().copied().unwrap_or_default().to_string(),
             },
             None => LockState::Starting,
         },
@@ -533,6 +534,9 @@ struct Heartbeat<'a> {
 
 impl<'a> Heartbeat<'a> {
     fn start(lock: &'a std::fs::File, since: i64, timeout: Duration) -> std::io::Result<Self> {
+        // What the watcher before this one left is not this one's word: its `ready` under a
+        // new start time would read as this watcher's. An empty file is no watcher.
+        lock.set_len(0)?;
         let (tx, rx) = mpsc::channel();
         std::thread::Builder::new().spawn(move || {
             if stalled(rx, timeout) {
@@ -1563,6 +1567,21 @@ mod tests {
     }
 
     #[test]
+    fn a_new_watcher_is_not_ready_on_the_word_of_the_one_before_it() {
+        // The watcher before it left `ready` in the file; start times are of one length, so a
+        // new one written over the first two lines would keep that third line.
+        let (dir, lock) = held("watch-lock-inherited");
+        put_lock(&lock, "1800000000\nheartbeat\nready");
+        assert!(watching_live(&dir));
+        let mut heartbeat =
+            Heartbeat::start(&lock, 1_800_000_001, Duration::from_secs(3600)).unwrap();
+        assert!(responsive(&dir).is_none());
+        heartbeat.write().unwrap();
+        assert_eq!(responsive(&dir), Some((1_800_000_001, LockState::Starting)));
+        drop(heartbeat);
+    }
+
+    #[test]
     fn a_lock_read_mid_rewrite_is_never_ready() {
         // The start of the new content over the rest of the old, or a part of the new.
         for text in [
@@ -1580,6 +1599,10 @@ mod tests {
             LockState::Unrecorded {
                 at: 18,
                 said: "the disk is full".into(),
+            },
+            LockState::Unrecorded {
+                at: 18,
+                said: String::new(),
             },
         ] {
             assert_eq!(read_lock(&lock_text(17, &state)), Some((17, state)));
@@ -1627,9 +1650,11 @@ mod tests {
         // A file it cannot rewrite would go on saying `ready`: the watcher stops instead, and
         // its lock goes with it.
         let (dir, lock) = held("watch-lock-unwritable");
-        put_lock(&lock, "17\nheartbeat\nready");
         let read_only = std::fs::File::open(dir.join(store::WATCH_LOCK)).unwrap();
-        let mut heartbeat = Heartbeat::start(&read_only, 17, Duration::from_secs(3600)).unwrap();
+        let mut heartbeat = Heartbeat::start(&lock, 17, Duration::from_secs(3600)).unwrap();
+        heartbeat.read().unwrap();
+        assert!(watching_live(&dir));
+        heartbeat.lock = &read_only;
         heartbeat.progress().unwrap();
         heartbeat.unrecorded(READ, "attempt to write a readonly database");
         // At every turn after it, not at the next one alone.
