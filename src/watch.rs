@@ -59,8 +59,10 @@
 //!
 //! Failures. A reading, a sample or a look at what to watch that failed is a `problem` line,
 //! and is recorded in the `watcher_failed` table with what it said, under the run lock, where
-//! the store can hold it; the next success of the same kind clears it. While one stands,
-//! `immune status` does not say this Mac is watched live. A look at what to watch that succeeds
+//! the store can hold it; the next success of the same kind clears it. A failure the store did
+//! not take is said in the watcher's lock file instead, and reads as a failure of the kind
+//! `store`. While one stands, `immune status` does not say this Mac is watched live. A look at
+//! what to watch that succeeds
 //! after one that failed prints `watching` again and reads the watched places at once.
 //!
 //! While it waits for the run lock, which a full run holds for as long as it runs, it says it
@@ -72,10 +74,11 @@
 //! with exit 0, when stdout is closed or its parent process is gone. `--standalone` keeps it
 //! running after its parent exits and permits launchd to supervise it directly.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::io::{Read, Write};
 use std::os::fd::FromRawFd;
+use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
@@ -98,10 +101,13 @@ const MOST_WAIT: Duration = Duration::from_secs(5);
 const LATENCY: f64 = 0.2;
 /// How often the watcher says it is alive, and looks again at which checkouts the store holds.
 const ALIVE: Duration = Duration::from_secs(60);
-/// How long a supervised watcher may go without making progress on its loop.
+/// How long a watcher may go without making progress on its loop.
 const STALLED: Duration = Duration::from_secs(180);
 const HEARTBEAT: &str = "heartbeat";
 const READY: &str = "ready";
+const UNRECORDED: &str = "unrecorded";
+/// How much of what the store's error said the lock file keeps, in characters.
+const UNRECORDED_CAP: usize = 300;
 /// How long after a reading that failed it is tried again, unless an event comes first.
 const RETRY: Duration = Duration::from_secs(30);
 /// How often the watcher looks whether the process that started it is still there.
@@ -151,6 +157,9 @@ pub const SAMPLED: &str = "sample";
 pub const RESUBSCRIBE: &str = "resubscribe";
 pub const EVENTS: &str = "events";
 pub const FULL_CHECK: &str = "full_check";
+/// A failure of another kind that the store did not take: it is not in `watcher_failed` but in
+/// the watcher's lock file, with what the store's error said.
+pub const STORE: &str = "store";
 
 /// A kind of failure in words, for a person.
 pub fn failed_words(what: &str) -> &'static str {
@@ -159,6 +168,7 @@ pub fn failed_words(what: &str) -> &'static str {
         SAMPLED => "sample of running programs",
         EVENTS => "reading of program starts",
         FULL_CHECK => "full check",
+        STORE => "write to the store",
         _ => "look at what to watch",
     }
 }
@@ -272,21 +282,7 @@ pub fn watch(args: &WatchArgs) -> ExitCode {
     }
     let started = crate::now_secs();
     let watch_lock = match store::lock_watch(&folder) {
-        Ok(Some(mut lock)) => {
-            // The lock file says since when this watcher holds it; status reads it there.
-            let mark = if args.background {
-                format!("{started}\n{HEARTBEAT}")
-            } else {
-                started.to_string()
-            };
-            let marked = lock
-                .set_len(0)
-                .and_then(|()| lock.write_all(mark.as_bytes()));
-            if let Err(e) = marked {
-                return unreadable(&e);
-            }
-            lock
-        }
+        Ok(Some(lock)) => lock,
         Ok(None) => {
             crate::print_json(&status::failure(
                 Some("watch"),
@@ -299,18 +295,15 @@ pub fn watch(args: &WatchArgs) -> ExitCode {
         }
         Err(e) => return unreadable(&e),
     };
-    let heartbeat = if args.background {
-        match Heartbeat::start(&watch_lock, STALLED) {
-            Ok(heartbeat) => Some(heartbeat),
-            Err(e) => {
-                return failed(&format!(
-                    "the background watcher could not be supervised: {e}"
-                ));
-            }
-        }
-    } else {
-        None
+    // Every watcher, however started, says in its lock file since when it holds it and that it
+    // is alive, and stops when it stalls; status reads the file.
+    let mut heartbeat = match Heartbeat::start(&watch_lock, started, STALLED) {
+        Ok(heartbeat) => heartbeat,
+        Err(e) => return failed(&format!("the watcher could not be supervised: {e}")),
     };
+    if let Err(e) = heartbeat.write() {
+        return unreadable(&e);
+    }
     // The watcher makes the store where there is none, at its start only: a store that goes or
     // is emptied while it runs is a problem it reports, never one it makes again.
     if let Err(e) = store::make_if_absent(&args.store) {
@@ -467,35 +460,130 @@ struct Watcher<'a> {
     checks: Option<crate::background::Checks>,
     /// Applied under the next run lock, so a failed full check is visible in status too.
     check_result: Option<Result<(), String>>,
-    heartbeat: Option<Heartbeat<'a>>,
+    heartbeat: Heartbeat<'a>,
 }
 
+/// What a watcher's lock file says of it: it has not completed its first reading, it has and
+/// every failure since is in the store, or a failure is not in the store, with when the store
+/// refused it and what the store's error said.
+#[derive(Debug, PartialEq)]
+enum LockState {
+    Starting,
+    Ready,
+    Unrecorded { at: i64, said: String },
+}
+
+/// The lock file's whole content: the start time, `heartbeat`, and the state on a third line,
+/// absent while starting, with what the store said on a fourth for `unrecorded`.
+fn lock_text(since: i64, state: &LockState) -> String {
+    match state {
+        LockState::Starting => format!("{since}\n{HEARTBEAT}"),
+        LockState::Ready => format!("{since}\n{HEARTBEAT}\n{READY}"),
+        LockState::Unrecorded { at, said } => {
+            format!("{since}\n{HEARTBEAT}\n{UNRECORDED} {at}\n{said}")
+        }
+    }
+}
+
+/// Reads a lock file's content back. `None` unless it is a heartbeat lock: the start time on
+/// the first line and `heartbeat` on the second. A file met while the watcher rewrites it can
+/// hold the start of the new content over the rest of the old: only a whole `ready` line with
+/// nothing after it is ready, and anything else on the third line is read as starting.
+fn read_lock(text: &str) -> Option<(i64, LockState)> {
+    let lines: Vec<&str> = text.lines().collect();
+    let since = lines.first()?.parse().ok()?;
+    if lines.get(1) != Some(&HEARTBEAT) {
+        return None;
+    }
+    let unrecorded = |line: &str| -> Option<i64> {
+        line.strip_prefix(UNRECORDED)?
+            .strip_prefix(' ')?
+            .parse()
+            .ok()
+    };
+    let state = match lines[2..] {
+        [READY] => LockState::Ready,
+        [third, said] => match unrecorded(third) {
+            Some(at) => LockState::Unrecorded {
+                at,
+                said: said.to_string(),
+            },
+            None => LockState::Starting,
+        },
+        _ => LockState::Starting,
+    };
+    Some((since, state))
+}
+
+/// The watcher's lock file and the thread that stops a watcher that stalls. It owns the file's
+/// whole content and rewrites it as one piece.
 struct Heartbeat<'a> {
     lock: &'a std::fs::File,
+    since: i64,
     tx: Sender<()>,
     next: Instant,
-    ready: bool,
+    /// Whether a first reading has completed.
+    read: bool,
+    /// The kinds whose latest failure the store did not take, each with when and what the
+    /// store's error said.
+    unrecorded: BTreeMap<&'static str, (i64, String)>,
+    /// Why a rewrite failed; the watcher stops at its next turn.
+    broken: Option<String>,
 }
 
 impl<'a> Heartbeat<'a> {
-    fn start(lock: &'a std::fs::File, timeout: Duration) -> std::io::Result<Self> {
+    fn start(lock: &'a std::fs::File, since: i64, timeout: Duration) -> std::io::Result<Self> {
         let (tx, rx) = mpsc::channel();
         std::thread::Builder::new().spawn(move || {
             if stalled(rx, timeout) {
-                // A stall can hold the run lock. Exiting releases it and launchd restarts us.
+                // A stall can hold the run lock. Exiting releases it, and a supervisor starts
+                // the watcher again.
                 // SAFETY: _exit does not wait for user-space locks held by a stalled thread.
                 unsafe { libc::_exit(1) };
             }
         })?;
         Ok(Self {
             lock,
+            since,
             tx,
             next: Instant::now(),
-            ready: false,
+            read: false,
+            unrecorded: BTreeMap::new(),
+            broken: None,
         })
     }
 
+    /// What the file should say now: a failure the store did not take withdraws `ready`.
+    fn state(&self) -> LockState {
+        match self.unrecorded.values().max_by_key(|(at, _)| *at) {
+            Some((at, said)) => LockState::Unrecorded {
+                at: *at,
+                said: said.clone(),
+            },
+            None if self.read => LockState::Ready,
+            None => LockState::Starting,
+        }
+    }
+
+    /// Rewrites the file: one write at its start, then its length. A reader meeting it between
+    /// the two sees the new start over the old rest, which `read_lock` never reads as ready.
+    fn write(&mut self) -> std::io::Result<()> {
+        let text = lock_text(self.since, &self.state());
+        let wrote = self
+            .lock
+            .write_all_at(text.as_bytes(), 0)
+            .and_then(|()| self.lock.set_len(text.len() as u64));
+        if let Err(e) = &wrote {
+            self.broken = Some(e.to_string());
+        }
+        wrote
+    }
+
     fn progress(&mut self) -> std::io::Result<()> {
+        // It stays broken: a turn that takes this as a stop asked for must meet it again.
+        if let Some(why) = &self.broken {
+            return Err(std::io::Error::other(why.clone()));
+        }
         if Instant::now() >= self.next {
             self.lock.set_modified(SystemTime::now())?;
             self.tx.send(()).map_err(std::io::Error::other)?;
@@ -504,12 +592,28 @@ impl<'a> Heartbeat<'a> {
         Ok(())
     }
 
+    /// A first reading has completed.
     fn read(&mut self) -> std::io::Result<()> {
-        if !self.ready {
-            self.lock.write_all(format!("\n{READY}").as_bytes())?;
-            self.ready = true;
+        self.read = true;
+        self.write()
+    }
+
+    /// The store did not take a failure of `what`; `why` is what its error said.
+    fn unrecorded(&mut self, what: &'static str, why: &str) {
+        let said: String = why
+            .chars()
+            .map(|c| if matches!(c, '\n' | '\r') { ' ' } else { c })
+            .take(UNRECORDED_CAP)
+            .collect();
+        self.unrecorded.insert(what, (crate::now_secs(), said));
+        let _ = self.write();
+    }
+
+    /// A failure of `what` is in the store, or `what` succeeded.
+    fn recorded(&mut self, what: &'static str) {
+        if self.unrecorded.remove(what).is_some() {
+            let _ = self.write();
         }
-        Ok(())
     }
 }
 
@@ -629,9 +733,7 @@ impl Watcher<'_> {
             if let Some(d) = due.take_if(|d| d.at <= now) {
                 match self.read(&d.changed) {
                     Ok(Some(counts)) => {
-                        if let Some(heartbeat) = &mut self.heartbeat
-                            && let Err(why) = heartbeat.read()
-                        {
+                        if let Err(why) = self.heartbeat.read() {
                             emit(&problem("heartbeat_failed", &why.to_string()));
                             return;
                         }
@@ -711,10 +813,17 @@ impl Watcher<'_> {
                 // A look that failed counts as not watching what it would have watched: it is
                 // recorded until a look succeeds.
                 let recovered = self.standing.contains(RESUBSCRIBE);
-                if (again.is_err() || recovered)
-                    && let Ok(Some(_lock)) = self.lock()
-                {
-                    self.mark_held(RESUBSCRIBE, again.as_ref().err().cloned());
+                if again.is_err() || recovered {
+                    match self.lock() {
+                        Ok(Some(_lock)) => {
+                            self.mark_held(RESUBSCRIBE, again.as_ref().err().cloned());
+                        }
+                        Ok(None) => {}
+                        // A failed look that cannot be recorded; a look that succeeded has
+                        // nothing left unrecorded, whatever the store still holds.
+                        Err(e) if again.is_err() => self.unrecorded(RESUBSCRIBE, &e),
+                        Err(_) => self.heartbeat.recorded(RESUBSCRIBE),
+                    }
                 }
                 match again {
                     Ok(found) => {
@@ -780,7 +889,7 @@ impl Watcher<'_> {
     /// reading, the baseline counting as nothing new.
     fn read(&mut self, changed: &Where) -> Result<Option<Value>, Box<dyn Error>> {
         let only = to_read(&self.targets, changed, self.read_everything);
-        let Some(_lock) = self.lock()? else {
+        let Some(_lock) = self.lock_for(READ)? else {
             return Ok(None);
         };
         let read = read_held(self.args, &self.folder, only.as_ref());
@@ -822,10 +931,18 @@ impl Watcher<'_> {
         }
     }
 
+    /// The run lock for a reading of the kind `what`. When it cannot be taken, the failure
+    /// cannot be recorded either, and the lock file says so.
+    fn lock_for(&mut self, what: &'static str) -> std::io::Result<Option<std::fs::File>> {
+        let lock = self.lock();
+        if let Err(e) = &lock {
+            self.unrecorded(what, e);
+        }
+        lock
+    }
+
     fn progress(&mut self) -> bool {
-        if let Some(heartbeat) = &mut self.heartbeat
-            && let Err(why) = heartbeat.progress()
-        {
+        if let Err(why) = self.heartbeat.progress() {
             emit(&problem("heartbeat_failed", &why.to_string()));
             return false;
         }
@@ -845,7 +962,7 @@ impl Watcher<'_> {
     /// One sample under the run lock: how many findings it opened and how many things need a
     /// look after it. `None` when the watcher was stopped while it waited for the lock.
     fn sample(&mut self) -> Result<Option<(usize, usize)>, Box<dyn Error>> {
-        let Some(_lock) = self.lock()? else {
+        let Some(_lock) = self.lock_for(SAMPLED)? else {
             return Ok(None);
         };
         let sampled = crate::sample_held(
@@ -862,7 +979,7 @@ impl Watcher<'_> {
     /// "As it happens" written beside the pages for a page that is open (`happens::live`).
     /// `None` when the watcher was stopped while it waited for the lock.
     fn events(&mut self) -> Result<Option<crate::EventsRead>, Box<dyn Error>> {
-        let Some(_lock) = self.lock()? else {
+        let Some(_lock) = self.lock_for(EVENTS)? else {
             return Ok(None);
         };
         let read = crate::read_events_held(&self.args.store, &self.args.system_root);
@@ -879,19 +996,31 @@ impl Watcher<'_> {
     }
 
     /// Under the run lock the caller holds: records that `what` failed, with what the failure
-    /// said, or that it succeeded, which clears a failure recorded before. Where the store
-    /// cannot hold it, the `problem` line alone says it.
+    /// said, or that it succeeded, which clears a failure recorded before. A failure the store
+    /// does not take is said in the lock file until the kind succeeds or its failure is
+    /// recorded.
     fn mark_held(&mut self, what: &'static str, failed: Option<String>) {
         match failed {
             Some(detail) => {
                 self.standing.insert(what);
-                let _ = mark(&self.args.store, what, Some(&detail));
+                match mark(&self.args.store, what, Some(&detail)) {
+                    Ok(()) => self.heartbeat.recorded(what),
+                    Err(e) => self.heartbeat.unrecorded(what, &e.to_string()),
+                }
             }
-            None if self.standing.contains(what) && mark(&self.args.store, what, None).is_ok() => {
-                self.standing.remove(what);
+            None => {
+                self.heartbeat.recorded(what);
+                if self.standing.contains(what) && mark(&self.args.store, what, None).is_ok() {
+                    self.standing.remove(what);
+                }
             }
-            None => {}
         }
+    }
+
+    /// A failure of `what` that cannot be recorded: the run lock could not be taken.
+    fn unrecorded(&mut self, what: &'static str, why: &std::io::Error) {
+        self.standing.insert(what);
+        self.heartbeat.unrecorded(what, &why.to_string());
     }
 
     /// The `watching` line: how many places are watched, and what the watcher cannot see.
@@ -1317,42 +1446,44 @@ pub fn watcher(store: &Path) -> Option<crate::contract::v1::Watcher> {
 /// What the pages of the view rest on about the watcher: when the one that holds the store
 /// started, and what has failed in it and not succeeded since; `none` while none holds it.
 pub fn basis(conn: &Connection, folder: &Path) -> rusqlite::Result<String> {
-    let Some((since, ready)) = responsive(folder) else {
+    let Some((since, state)) = responsive(folder) else {
         return Ok("none".into());
+    };
+    let state = match state {
+        LockState::Starting => "starting",
+        LockState::Ready => "ready",
+        LockState::Unrecorded { .. } => "unrecorded",
     };
     let failed: Vec<String> = failures(conn, folder)?
         .into_iter()
         .map(|f| f.what)
         .collect();
-    Ok(format!("{since} {ready} {}", failed.join(",")))
+    Ok(format!("{since} {state} {}", failed.join(",")))
 }
 
-/// When a responsive watcher took the lock. Earlier and parent-bound watchers have only a
-/// start time. A background watcher must have touched the lock within the last three minutes.
-fn responsive(folder: &Path) -> Option<(i64, bool)> {
+/// When the watcher that holds the lock took it, and what its lock file says of it. `None`
+/// while no watcher holds the lock, when the file is not a heartbeat lock (`read_lock`), and
+/// when the watcher has not touched it within `STALLED`.
+fn responsive(folder: &Path) -> Option<(i64, LockState)> {
     if !store::watch_in_progress(folder).unwrap_or(false) {
         return None;
     }
     let path = folder.join(store::WATCH_LOCK);
-    let mark = std::fs::read_to_string(&path).ok()?;
-    let mut lines = mark.lines();
-    let since = lines.next()?.parse().ok()?;
-    if lines.next() == Some(HEARTBEAT) {
-        let modified = std::fs::metadata(path).ok()?.modified().ok()?;
-        if modified.elapsed().ok()? >= STALLED {
-            return None;
-        }
-        return Some((since, lines.next() == Some(READY)));
+    let text = std::fs::read(&path).ok()?;
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    if modified.elapsed().ok()? >= STALLED {
+        return None;
     }
-    Some((since, true))
+    read_lock(&String::from_utf8_lossy(&text))
 }
 
 pub fn watching_live(folder: &Path) -> bool {
-    responsive(folder).is_some_and(|(_, ready)| ready)
+    responsive(folder).is_some_and(|(_, state)| state == LockState::Ready)
 }
 
 /// A failure of the watcher that stands: what failed (`READ`, `SAMPLED`, `RESUBSCRIBE`,
-/// `EVENTS`), when, and what the failure said.
+/// `EVENTS`, `FULL_CHECK`, or `STORE` for one the store did not take), when, and what the
+/// failure said.
 pub struct Failure {
     pub what: String,
     pub at: i64,
@@ -1361,12 +1492,14 @@ pub struct Failure {
 
 /// What has failed in the watcher that holds its lock on this store now and not succeeded
 /// since. Empty while no watcher runs; a failure recorded before this one started is a past
-/// watcher's and is left out.
+/// watcher's and is left out. A failure the store did not take, which the lock file says, is
+/// one of the kind `STORE`.
 pub fn failures(conn: &Connection, folder: &Path) -> rusqlite::Result<Vec<Failure>> {
-    let Some((since, _)) = responsive(folder) else {
+    let Some((since, state)) = responsive(folder) else {
         return Ok(Vec::new());
     };
-    conn.prepare("SELECT what, at, detail FROM watcher_failed WHERE at >= ?1 ORDER BY what")?
+    let mut failed = conn
+        .prepare("SELECT what, at, detail FROM watcher_failed WHERE at >= ?1 ORDER BY what")?
         .query_map([since], |r| {
             Ok(Failure {
                 what: r.get(0)?,
@@ -1374,7 +1507,16 @@ pub fn failures(conn: &Connection, folder: &Path) -> rusqlite::Result<Vec<Failur
                 detail: r.get(2)?,
             })
         })?
-        .collect()
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if let LockState::Unrecorded { at, said } = state {
+        failed.push(Failure {
+            what: STORE.into(),
+            at,
+            detail: said,
+        });
+        failed.sort_by(|a, b| a.what.cmp(&b.what));
+    }
+    Ok(failed)
 }
 
 /// When a watcher last read every watched place of this store, whichever watcher it was;
@@ -1389,6 +1531,144 @@ pub fn last_read(conn: &Connection) -> rusqlite::Result<Option<i64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A folder whose watcher's lock is held by the returned handle, as a watcher holds it.
+    fn held(tag: &str) -> (crate::common::Scratch, std::fs::File) {
+        let dir = crate::common::Scratch::new(tag);
+        let lock = store::lock_watch(&dir).unwrap().unwrap();
+        (dir, lock)
+    }
+
+    fn put_lock(lock: &std::fs::File, text: &str) {
+        lock.write_all_at(text.as_bytes(), 0).unwrap();
+        lock.set_len(text.len() as u64).unwrap();
+    }
+
+    #[test]
+    fn a_held_lock_without_a_heartbeat_line_or_with_a_damaged_one_is_not_a_watcher() {
+        let (dir, lock) = held("watch-lock-damaged");
+        for text in [
+            "1800000000",
+            "1800000000\n",
+            "1800000000\nheartbeet\nready",
+            "18OO000000\nheartbeat\nready",
+            "",
+        ] {
+            put_lock(&lock, text);
+            assert!(responsive(&dir).is_none(), "{text:?}");
+            assert!(!watching_live(&dir), "{text:?}");
+        }
+        put_lock(&lock, "1800000000\nheartbeat\nready");
+        assert!(watching_live(&dir));
+    }
+
+    #[test]
+    fn a_lock_read_mid_rewrite_is_never_ready() {
+        // The start of the new content over the rest of the old, or a part of the new.
+        for text in [
+            "17\nheartbeat\nreadycorded 18\nthe disk is full",
+            "17\nheartbeat\nready\nthe disk is full",
+            "17\nheartbeat\nrea",
+            "17\nheartbeat\nunrec",
+        ] {
+            let (_, state) = read_lock(text).unwrap();
+            assert_ne!(state, LockState::Ready, "{text:?}");
+        }
+        for state in [
+            LockState::Starting,
+            LockState::Ready,
+            LockState::Unrecorded {
+                at: 18,
+                said: "the disk is full".into(),
+            },
+        ] {
+            assert_eq!(read_lock(&lock_text(17, &state)), Some((17, state)));
+        }
+    }
+
+    #[test]
+    fn a_failure_the_store_did_not_take_withdraws_ready_until_the_kind_succeeds_or_is_recorded() {
+        let (dir, lock) = held("watch-lock-unrecorded");
+        let mut heartbeat = Heartbeat::start(&lock, 17, Duration::from_secs(3600)).unwrap();
+        let said = || read_lock(&std::fs::read_to_string(dir.join(store::WATCH_LOCK)).unwrap());
+        heartbeat.write().unwrap();
+        assert_eq!(said(), Some((17, LockState::Starting)));
+        heartbeat.read().unwrap();
+        assert_eq!(said(), Some((17, LockState::Ready)));
+        // What the store said is one line, and at most `UNRECORDED_CAP` characters.
+        let long = format!("disk\nfull\r{}", "é".repeat(400));
+        heartbeat.unrecorded(READ, &long);
+        heartbeat.unrecorded(SAMPLED, "read-only");
+        let Some((17, LockState::Unrecorded { said: first, .. })) = said() else {
+            panic!("{:?}", said());
+        };
+        assert!(
+            first == "read-only" || first.starts_with("disk full é"),
+            "{first}"
+        );
+        heartbeat.recorded(SAMPLED);
+        let Some((17, LockState::Unrecorded { said: left, .. })) = said() else {
+            panic!("{:?}", said());
+        };
+        assert!(left.starts_with("disk full é"), "{left}");
+        assert_eq!(left.chars().count(), UNRECORDED_CAP);
+        // Ready comes back only when every kind left, and the old, longer content is gone.
+        heartbeat.recorded(READ);
+        assert_eq!(said(), Some((17, LockState::Ready)));
+        assert_eq!(
+            std::fs::read_to_string(dir.join(store::WATCH_LOCK)).unwrap(),
+            "17\nheartbeat\nready"
+        );
+        drop(heartbeat);
+    }
+
+    #[test]
+    fn a_watcher_whose_lock_file_cannot_say_an_unrecorded_failure_stops() {
+        // A file it cannot rewrite would go on saying `ready`: the watcher stops instead, and
+        // its lock goes with it.
+        let (dir, lock) = held("watch-lock-unwritable");
+        put_lock(&lock, "17\nheartbeat\nready");
+        let read_only = std::fs::File::open(dir.join(store::WATCH_LOCK)).unwrap();
+        let mut heartbeat = Heartbeat::start(&read_only, 17, Duration::from_secs(3600)).unwrap();
+        heartbeat.progress().unwrap();
+        heartbeat.unrecorded(READ, "attempt to write a readonly database");
+        // At every turn after it, not at the next one alone.
+        assert!(heartbeat.progress().is_err());
+        assert!(heartbeat.progress().is_err());
+        drop(heartbeat);
+    }
+
+    #[test]
+    fn a_failure_the_lock_file_says_is_a_store_failure_of_the_watcher_and_not_live() {
+        let (dir, lock) = held("watch-lock-store-failure");
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute(
+            "INSERT INTO watcher_failed (what, at, detail) VALUES ('events', 18, 'refused')",
+            [],
+        )
+        .unwrap();
+        put_lock(
+            &lock,
+            "17\nheartbeat\nunrecorded 19\nattempt to write a readonly database",
+        );
+        assert!(!watching_live(&dir));
+        let failed = failures(&conn, &dir).unwrap();
+        let failed: Vec<_> = failed
+            .iter()
+            .map(|f| (f.what.as_str(), f.at, f.detail.as_str()))
+            .collect();
+        assert_eq!(
+            failed,
+            [
+                (EVENTS, 18, "refused"),
+                (STORE, 19, "attempt to write a readonly database")
+            ]
+        );
+        put_lock(&lock, "17\nheartbeat\nready");
+        assert!(watching_live(&dir));
+        assert_eq!(failures(&conn, &dir).unwrap().len(), 1);
+    }
 
     #[test]
     fn a_background_stall_is_distinct_from_a_regular_shutdown_even_after_progress() {

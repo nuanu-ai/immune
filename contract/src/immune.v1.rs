@@ -2896,7 +2896,8 @@ pub struct Watcher {
 #[serde(default)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct WatcherFailure {
-    /// What failed, the core's word: `read`, `sample`, `resubscribe`, `events` or `full_check`.
+    /// What failed, the core's word: `read`, `sample`, `resubscribe`, `events`, `full_check`, or
+    /// `store` for a failure the store did not take.
     #[prost(string, tag = "1")]
     pub what: ::prost::alloc::string::String,
     #[prost(int64, tag = "2")]

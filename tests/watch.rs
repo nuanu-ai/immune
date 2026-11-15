@@ -2035,6 +2035,113 @@ fn a_background_watcher_reports_live_only_after_its_first_read_and_while_its_hea
 }
 
 #[test]
+fn a_watcher_started_without_background_writes_the_heartbeat_so_a_stalled_one_is_not_live() {
+    let mac = Mac::new("plain-heartbeat");
+    mac.run();
+    let mut watcher = mac
+        .watch_with(&[
+            "--sample-every",
+            "3600",
+            "--events-every",
+            "3600",
+            "--alive-every",
+            "1",
+        ])
+        .started();
+    // Past this line it writes nothing to the store, so stopped it holds no write lock.
+    watcher.next("alive");
+    assert_eq!(mac.status()["this_mac"]["live"], true);
+    watcher.signal(libc::SIGSTOP);
+    let lock = std::fs::File::options()
+        .write(true)
+        .open(mac.root.join("store/watch.lock"))
+        .unwrap();
+    lock.set_modified(SystemTime::now() - Duration::from_secs(181))
+        .unwrap();
+    let status = mac.status();
+    assert!(status["watching"].is_null(), "{status}");
+    assert_eq!(status["this_mac"]["live"], false, "{status}");
+    watcher.signal(libc::SIGCONT);
+    assert_eq!(watcher.stop().code(), Some(0));
+}
+
+/// Gives a file its mode back when dropped, so that a test that fails leaves it removable.
+struct Mode(PathBuf, u32);
+
+impl Drop for Mode {
+    fn drop(&mut self) {
+        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(self.1));
+    }
+}
+
+#[test]
+fn a_failure_the_store_did_not_take_is_not_calm_and_live_comes_back_when_the_reading_succeeds() {
+    let mac = Mac::new("unrecorded");
+    mac.run();
+    // Samples and readings of program starts only at start, so that the store refuses only
+    // the readings this test asks for.
+    let mut w = mac
+        .watch_with(&[
+            "--sample-every",
+            "3600",
+            "--events-every",
+            "3600",
+            "--alive-every",
+            "1",
+        ])
+        .started();
+    // The sample and the reading of program starts made at start are done before this line.
+    w.next("alive");
+    assert_eq!(mac.status()["this_mac"]["live"], true);
+    let store = mac.store();
+    let mode = std::fs::metadata(&store).unwrap().permissions().mode();
+    let restore = Mode(store.clone(), mode);
+    std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o444)).unwrap();
+    mac.put(".zshrc", "one\n");
+    w.until("problem", |v| v["code"] == "read_failed");
+
+    let status = mac.status();
+    assert_eq!(status["this_mac"]["live"], false, "{status}");
+    let failed = status["watching"]["failed"].as_array().unwrap();
+    assert!(
+        failed
+            .iter()
+            .any(|f| f["what"] == "store" && !f["detail_text"].as_str().unwrap().is_empty()),
+        "{status}"
+    );
+    let out = mac
+        .immune()
+        .args(["status", "--store"])
+        .arg(&store)
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("write to the store failed, so it does not watch live")
+            && !text.contains("a watcher runs now;"),
+        "{text}"
+    );
+    let pages = mac.view();
+    assert!(
+        pages.contains("write to the store failed") && !pages.contains(" · watched live · "),
+        "the page says calm"
+    );
+
+    drop(restore);
+    mac.put(".zshrc", "two\n");
+    w.next("read");
+    let status = mac.status();
+    assert_eq!(status["this_mac"]["live"], true, "{status}");
+    assert!(
+        status["watching"]["failed"]
+            .as_array()
+            .is_none_or(|f| f.is_empty()),
+        "{status}"
+    );
+    assert_eq!(w.stop().code(), Some(0));
+}
+
+#[test]
 fn a_scheduled_check_requires_its_own_live_parent_and_an_open_lifetime_pipe() {
     let mac = Mac::new("background-guards");
     let ours = std::process::id().to_string();

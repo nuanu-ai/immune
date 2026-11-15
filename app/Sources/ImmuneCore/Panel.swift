@@ -575,6 +575,7 @@ public struct Panel: Sendable, Equatable {
           case "resubscribe": "Refresh of watched places"
           case "events": "Reading of program starts"
           case "full_check": "Full check"
+          case "store": "Write to the store"
           default: Inert.text(failure.what ?? "Reading", limit: 80)
           }
         return what + " failed"
