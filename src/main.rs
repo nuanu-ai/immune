@@ -172,7 +172,9 @@ const USAGE: &str = "usage: immune run [--store <path>] [--machine-name <name>] 
                     program starts are read every 10 seconds by default;
                     --standalone continues after its parent exits;
                     --background also runs a full check at start and every hour
-                 exits 5 when another watcher has the store";
+                 exits 5 when another watcher has the store
+       immune --help | -h | help
+           prints this usage on stdout and exits 0";
 
 enum Cmd {
     Run(Box<Args>),
@@ -803,6 +805,14 @@ fn print_json(v: &serde_json::Value) {
 
 fn main() -> ExitCode {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
+    // Asked for alone, the usage is the answer: on stdout, with exit 0. The installer reads it
+    // to tell that this core can run in the background.
+    if let [only] = args.as_slice()
+        && matches!(only.as_str(), "--help" | "-h" | "help")
+    {
+        println!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
     if args.first().is_some_and(|arg| arg == background::CHECK_ARG) {
         let [_, parent, op, ..] = args.as_slice() else {
             return ExitCode::from(EXIT_USAGE);

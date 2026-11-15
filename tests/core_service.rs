@@ -220,6 +220,31 @@ fn one_login_job_runs_the_external_core_and_removal_keeps_the_store_and_collecto
 }
 
 #[test]
+fn the_installer_accepts_the_core_this_repository_builds() {
+    let login = Login::new("core-service-real-core");
+    let core = Path::new(env!("CARGO_BIN_EXE_immune"));
+    succeeds(login.install(core));
+    assert_eq!(
+        plist(&login.scratch.join("loaded"))["ProgramArguments"][0],
+        json!(core)
+    );
+}
+
+#[test]
+fn the_core_s_help_is_the_usage_on_stdout_with_exit_0() {
+    for arg in ["--help", "-h", "help"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_immune"))
+            .arg(arg)
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&out.stdout);
+        assert_eq!(out.status.code(), Some(0), "{arg}");
+        assert!(said.contains("--background"), "{arg}: {said}");
+        assert!(out.stderr.is_empty(), "{arg}");
+    }
+}
+
+#[test]
 fn install_refusals_leave_the_current_job_and_its_plist_in_place() {
     let login = Login::new("core-service-refusals");
     succeeds(login.install(&login.core));

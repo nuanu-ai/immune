@@ -212,6 +212,7 @@ A command that only reads the store opens it read-only and creates nothing next 
 | `immune view [--no-open] [--if-stale]` | Writes the HTML pages and opens the summary; with `--if-stale`, only when something they show changed or they are an hour old |
 | `immune sample [--json \| --proto]` | One sample of processes and connections, as `Sample` |
 | `immune watch [--sample-every <s>] [--events-every <s>] [--alive-every <s>] [--standalone \| --background]` | Runs until stopped and prints one JSON line per event (`watching`, `read`, `sample`, `program_starts`, `alive`, `problem`). `--standalone` continues after its parent exits. `--background` also schedules full checks. |
+| `immune --help` | Prints the usage on stdout and exits 0; `-h` and `help` do the same |
 
 In every answer, `title`, `meaning` and `advice` are Immune's fixed words. Anything taken from the machine or a feed is only in a field whose name ends in `_text`.
 
