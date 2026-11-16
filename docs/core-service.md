@@ -12,9 +12,18 @@ core=$(./build)
 "$core" status
 ```
 
-Run `install` as the user being watched, without `sudo`. It copies the binary it was run from to `~/Library/Application Support/ai.nuanu.immune/bin/immune`, the store's folder, and registers that copy with launchd as `~/Library/LaunchAgents/ai.nuanu.immune.watch.plist`. The job runs `immune watch --background` from the copy, so a rebuild, a switch of branch or a removed checkout does not change the running core. Installing the launch agent can appear as a new watched item in a store that already has a baseline of LaunchAgents.
+Run `install` as the user being watched, without `sudo`. It copies the binary it was run from to `~/Library/Application Support/ai.nuanu.immune/bin/immune`, the store's folder, and registers that copy with launchd as `~/Library/LaunchAgents/ai.nuanu.immune.watch.plist`. The home folder here is the account's own, read from the user database, and `$HOME` is not used: launchd loads the `LaunchAgents` of that home at login. The job runs `immune watch --background` from the copy, so a rebuild, a switch of branch or a removed checkout does not change the running core. Installing the launch agent can appear as a new watched item in a store that already has a baseline of LaunchAgents.
 
-Before it changes anything, `install` refuses when it runs as root, when `HOME` is not an absolute path, when launchd has no login session for the user, when a symbolic link stands at the property list, at `bin` or at `bin/immune`, and when the property list there belongs to another job. It then prepares the new property list and the new copy under temporary names, stops the running job, waits until launchd no longer has it, and renames both into place. The installed file is never written in place, since the running job has it open. If the job does not stop, the property list and the installed copy are kept as they were. If a later step fails, the answer says that the job may be stopped, and running `install` again recovers it. The store is kept either way. `install` says the job is loaded only after `launchctl print` has found it.
+Only one `install` or `uninstall` runs at a time; a second one fails with `busy` and changes nothing. Before it changes anything, `install` refuses when it runs as root, when the account has no home folder with an absolute path, when launchd has no login session for the user, when a symbolic link stands at the property list, at `bin` or at `bin/immune`, and when the property list there belongs to another job.
+
+`install` then prepares the new property list and the new copy under temporary names and renames them into place, the property list first, while the old job keeps running. A running job keeps the binary it opened and the configuration launchd loaded, so this does not disturb it, and the installed file is never written in place. Only then does `install` stop the old job, wait until launchd no longer has it, and load the new one. Each failure says what it left:
+
+- The property list cannot be put in place: nothing was changed, and the old job still runs.
+- The copy cannot be put in place: the old job still runs and the new core is not installed. Run `install` again.
+- The old job does not stop within 30 seconds: the new files are in place and launchd still has the old job, which runs the new core when it next starts, and at the next login in any case. Run `install` again.
+- Loading the new job fails: the job may be stopped. The new core is in place and loads at the next login, and running `install` again recovers it.
+
+The store is kept in every case. `install` says the job is loaded only after `launchctl print` has found it.
 
 The answer is the contract's `Service` message: the job's label, the paths of the installed core and of the property list, and whether the job is installed, loaded and replaced something. Add `--json` or `--proto` for an agent or a program.
 
@@ -31,7 +40,7 @@ core=$(./build)
 "$core" install
 ```
 
-The new copy replaces the old one by rename, and the job restarts on it. Running `install` from the installed copy itself registers the job again and leaves the copy as it is.
+The new copy replaces the old one by rename, and the job is restarted on it. Running `install` from the installed copy itself registers the job again and leaves the copy as it is.
 
 The optional app is built against the installed copy's path, `app/build "$HOME/Library/Application Support/ai.nuanu.immune/bin/immune"`, so an update of the core does not need a new build of the app.
 

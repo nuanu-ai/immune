@@ -2301,7 +2301,7 @@ pub fn service(m: &v1::Service) -> String {
         say(
             &mut out,
             &format!(
-                "The login job {} is stopped and removed, with its property list and the installed core.",
+                "The login job {} is not loaded, and no property list or installed core of it is left.",
                 m.label
             ),
         );

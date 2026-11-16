@@ -174,15 +174,18 @@ const USAGE: &str = "usage: immune run [--store <path>] [--machine-name <name>] 
                     --standalone continues after its parent exits;
                     --background also runs a full check at start and every hour
                  exits 5 when another watcher has the store
-       immune install [--launchctl <path>] [--json | --proto]
+       immune install [--launchctl <path> --home <dir>] [--json | --proto]
            copies this binary to
            ~/Library/Application Support/ai.nuanu.immune/bin/immune and registers that
            copy as this user's login job ai.nuanu.immune.watch, which runs
            watch --background; run it again from a new build to update. Answers with
            the message Service. Run it as the user being watched, without sudo
-       immune uninstall [--launchctl <path>] [--json | --proto]
+       immune uninstall [--launchctl <path> --home <dir>] [--json | --proto]
            stops the login job and removes it with the installed copy; keeps the
-           store and the event collector. Answers with the message Service
+           store and the event collector. Answers with the message Service.
+           Both act in the account's own home folder, never $HOME, one at a time.
+           --launchctl and --home are for tests and are given together or not at
+           all: another launchctl, and another home folder
        immune --help | -h | help
            prints this usage on stdout and exits 0";
 
