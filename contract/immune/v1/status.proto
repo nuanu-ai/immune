@@ -98,6 +98,17 @@ message Status {
   // as in `Finding`: an answer to a finding listed here passes it as `--journal-seq`. Absent when
   // there is no store. Since 1.9.0.
   optional int64 journal_seq = 27;
+  // Whether the core's login job, the one `immune on` writes, has its property list in this
+  // account's `~/Library/LaunchAgents`, read from the file's presence alone: launchd is not asked,
+  // so with no watcher on the store it reads as installed and not running. Absent when this store
+  // is not the one the job watches, the default one, and when the place cannot be read.
+  // Since 1.19.0.
+  optional bool login_job_installed = 28;
+  // When the latest watcher of this store left by itself because the file it was started from had
+  // been replaced, as an update replaces it: launchd starts the job again from the new file.
+  // Absent while a watcher holds the store, when the latest one left for another reason, and
+  // once a few minutes have passed without a new one. Since 1.19.0.
+  optional int64 watcher_restarting_since_at = 29;
 }
 
 // The store's file.

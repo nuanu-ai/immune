@@ -679,7 +679,7 @@ pub const NO_STORE_REASON: &str = "there is no store yet; `immune run` makes it"
 /// headline or the cause, and what makes one. A span in backticks is a command.
 pub const NO_STORE: &str = "there is no store here yet";
 pub const NO_STORE_FIX: &str =
-    "`immune run` makes one, or `immune install`, which also keeps it checked.";
+    "`immune run` makes one, or `immune on`, which also keeps it checked.";
 
 /// What every command tells a person about a store another build made, in one wording.
 pub const OTHER_FORMAT: &str = "this store was made by another build of Immune";

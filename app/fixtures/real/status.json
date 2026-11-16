@@ -672,6 +672,7 @@
     "id": "1794814079-953581000",
     "started_at": 1794814079
   },
+  "login_job_installed": null,
   "needs_a_look": {
     "by_rule": [
       {
@@ -1638,5 +1639,6 @@
       "new": 0
     }
   },
+  "watcher_restarting_since_at": null,
   "watching": null
 }

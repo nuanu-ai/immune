@@ -73,6 +73,16 @@
 //! rest on moved since they were made (`view::basis`). The watcher stops,
 //! with exit 0, when stdout is closed or its parent process is gone. `--standalone` keeps it
 //! running after its parent exits and permits launchd to supervise it directly.
+//!
+//! A new core. The watcher the login job runs, `--background`, looks at every turn of
+//! `--alive-every` whether the path it was started from still holds the file it started from, by
+//! device and inode. When an update put another file there, the watcher leaves by itself
+//! with exit 0, between readings and never inside a write transaction: it says why on stderr and
+//! in its lock file, and launchd, which keeps the job alive, starts it again from the new file.
+//! The status reads that line once the lock is free and says the watcher is restarting on a new
+//! core, for `RESTARTING_FOR` at most. A file removed with nothing in its place leaves the
+//! watcher running: nothing could start again. A watcher started without `--background` is left
+//! running on the file it opened.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -106,6 +116,13 @@ const STALLED: Duration = Duration::from_secs(180);
 const HEARTBEAT: &str = "heartbeat";
 const READY: &str = "ready";
 const UNRECORDED: &str = "unrecorded";
+/// The lock file's third line, with the time after it, of a watcher that left because the file it
+/// was started from was replaced.
+const CORE_REPLACED: &str = "core-replaced";
+/// How long after a watcher left for a new core the status says it is restarting, in seconds.
+/// launchd starts a job that ran longer than its `ThrottleInterval`, 30 seconds, again at once, and
+/// one that ran shorter once the 30 seconds are over; past this, no watcher came back.
+const RESTARTING_FOR: i64 = 120;
 /// How much of what the store's error said the lock file keeps, in characters.
 const UNRECORDED_CAP: usize = 300;
 /// How long after a reading that failed it is tried again, unless an event comes first.
@@ -257,6 +274,9 @@ pub fn watch(args: &WatchArgs) -> ExitCode {
     if parent == 1 && !args.standalone {
         return ExitCode::SUCCESS;
     }
+    // The file the job's watcher was started from, taken as early as the parent, so that a file
+    // replaced after this is seen as replaced.
+    let core = args.background.then(Core::started_from).flatten();
     // Next, so that a stop asked for at any moment after this is a clean one.
     let (tx, rx) = mpsc::channel();
     if let Err(e) = on_signals(tx.clone()) {
@@ -340,6 +360,8 @@ pub fn watch(args: &WatchArgs) -> ExitCode {
         checks,
         check_result: None,
         heartbeat,
+        core,
+        left: false,
     };
     // The stream is started here, and the reading of every place only in `run`, after it: a
     // change made in between is seen by that reading or brings an event.
@@ -461,6 +483,43 @@ struct Watcher<'a> {
     /// Applied under the next run lock, so a failed full check is visible in status too.
     check_result: Option<Result<(), String>>,
     heartbeat: Heartbeat<'a>,
+    /// The file the job's watcher was started from; `None` for any other watcher, and when it
+    /// could not be looked at.
+    core: Option<Core>,
+    /// Whether the watcher is leaving because that file was replaced.
+    left: bool,
+}
+
+/// The file a watcher was started from: its path, its device and inode then, and when it is
+/// looked at next.
+struct Core {
+    path: PathBuf,
+    identity: (u64, u64),
+    next: Instant,
+}
+
+impl Core {
+    fn started_from() -> Option<Core> {
+        let path = std::env::current_exe().ok()?;
+        let identity = identity(&std::fs::metadata(&path).ok()?);
+        Some(Core {
+            path,
+            identity,
+            next: Instant::now(),
+        })
+    }
+}
+
+fn identity(m: &std::fs::Metadata) -> (u64, u64) {
+    use std::os::unix::fs::MetadataExt;
+    (m.dev(), m.ino())
+}
+
+/// Whether the path a watcher was started from holds another file than the one it started from,
+/// given what `stat` says of the path now. Nothing there, or a path that cannot be looked at, is
+/// not a new core: launchd would have nothing to start again.
+fn replaced(started: (u64, u64), now: std::io::Result<std::fs::Metadata>) -> bool {
+    now.is_ok_and(|m| identity(&m) != started)
 }
 
 /// What a watcher's lock file says of it: it has not completed its first reading, it has and
@@ -594,6 +653,15 @@ impl<'a> Heartbeat<'a> {
             self.next = Instant::now() + ALIVE;
         }
         Ok(())
+    }
+
+    /// The watcher leaves at `at` because the file it was started from was replaced: the last
+    /// thing written to the file, which the status reads once the lock is free.
+    fn left_for_new_core(&mut self, at: i64) -> std::io::Result<()> {
+        let text = format!("{}\n{HEARTBEAT}\n{CORE_REPLACED} {at}", self.since);
+        self.lock
+            .write_all_at(text.as_bytes(), 0)
+            .and_then(|()| self.lock.set_len(text.len() as u64))
     }
 
     /// A first reading has completed.
@@ -946,6 +1014,9 @@ impl Watcher<'_> {
     }
 
     fn progress(&mut self) -> bool {
+        if self.core_replaced() {
+            return false;
+        }
         if let Err(why) = self.heartbeat.progress() {
             emit(&problem("heartbeat_failed", &why.to_string()));
             return false;
@@ -959,6 +1030,34 @@ impl Watcher<'_> {
                 return false;
             }
             self.check_result = Some(result);
+        }
+        true
+    }
+
+    /// Whether the file the job's watcher was started from was replaced, looked at every
+    /// `--alive-every`. Once it was, the watcher says so on stderr and in its lock file, and every
+    /// later turn and every wait for the run lock ends, so the watcher leaves between readings.
+    fn core_replaced(&mut self) -> bool {
+        if self.left {
+            return true;
+        }
+        let Some(core) = &mut self.core else {
+            return false;
+        };
+        if Instant::now() < core.next {
+            return false;
+        }
+        core.next = Instant::now() + self.args.alive_every;
+        if !replaced(core.identity, std::fs::metadata(&core.path)) {
+            return false;
+        }
+        self.left = true;
+        eprintln!(
+            "immune watch: the core this watcher was started from was replaced: {}; it leaves, and launchd starts it again from the new file",
+            core.path.display()
+        );
+        if let Err(e) = self.heartbeat.left_for_new_core(crate::now_secs()) {
+            eprintln!("immune watch: its lock file could not say so: {e}");
         }
         true
     }
@@ -1485,6 +1584,118 @@ pub fn watching_live(folder: &Path) -> bool {
     responsive(folder).is_some_and(|(_, state)| state == LockState::Ready)
 }
 
+/// Whether a watcher that is ready watches live with these failures standing: a failed reading
+/// of program starts or full check does not stop it, any other failure does.
+pub fn live_with(failed: &[Failure]) -> bool {
+    failed
+        .iter()
+        .all(|f| matches!(f.what.as_str(), EVENTS | FULL_CHECK))
+}
+
+/// What the status says of the watcher on a store, as `seen` tells it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Seen {
+    /// A watcher watches the store live.
+    Live,
+    /// A watcher holds the store and has not completed its first reading.
+    Starting,
+    /// A watcher holds the store and these kinds of what it does failed.
+    Failing(Vec<String>),
+    /// The latest watcher left for a new core, within `RESTARTING_FOR`, and none holds the store.
+    Restarting,
+    /// No watcher holds the store.
+    Absent,
+}
+
+/// A watcher that has not completed its first reading, in the status's words.
+pub const STARTING_WORDS: &str = "a watcher runs and has not completed its first reading";
+/// A watcher that left for a new core, in the status's words.
+pub const RESTARTING_WORDS: &str = "the watcher is restarting on a new core";
+
+/// A watcher whose latest attempts of these kinds failed, in the status's words.
+pub fn failing_words(failed: &[&str]) -> String {
+    format!(
+        "a watcher runs, but its latest {} failed, so it does not watch live",
+        failed.join(" and ")
+    )
+}
+
+impl Seen {
+    /// Whether a watcher is there and working: it holds the store and its heartbeat is fresh
+    /// (`responsive`), whether or not its first check is done or something failed since.
+    pub fn started(&self) -> bool {
+        matches!(self, Seen::Live | Seen::Starting | Seen::Failing(_))
+    }
+
+    /// What the status says of it, in the core's words.
+    pub fn words(&self) -> String {
+        match self {
+            Seen::Live => "live".to_string(),
+            Seen::Starting => STARTING_WORDS.to_string(),
+            Seen::Failing(failed) => {
+                let words: Vec<&str> = failed.iter().map(|f| failed_words(f)).collect();
+                failing_words(&words)
+            }
+            Seen::Restarting => RESTARTING_WORDS.to_string(),
+            Seen::Absent => "no watcher runs on the store now".to_string(),
+        }
+    }
+}
+
+/// What the status would say now of the watcher on `store`, by the liveness it uses
+/// (`ThisMac.live`). `None` when that cannot be told: the store's folder or, for a watcher that is
+/// ready, the store cannot be read.
+pub fn seen(store: &Path) -> Option<Seen> {
+    let folder = crate::home(store);
+    if !store::watch_in_progress(&folder).ok()? {
+        return Some(match restarting_since(&folder, crate::now_secs()) {
+            Some(_) => Seen::Restarting,
+            None => Seen::Absent,
+        });
+    }
+    // A watcher that stalled, or whose lock file is not a heartbeat lock, is no watcher.
+    let Some((_, state)) = responsive(&folder) else {
+        return Some(Seen::Absent);
+    };
+    if state == LockState::Starting {
+        return Some(Seen::Starting);
+    }
+    // Ready, or a failure the store did not take, which `failures` gives as one of `STORE`.
+    let conn = store::open_read_only(store).ok()?;
+    let failed = failures(&conn, &folder).ok()?;
+    Some(if live_with(&failed) {
+        Seen::Live
+    } else {
+        Seen::Failing(failed.into_iter().map(|f| f.what).collect())
+    })
+}
+
+/// When the latest watcher of the store in `folder` left because the file it was started from
+/// was replaced, while no watcher holds the store and for `RESTARTING_FOR` after it left, at
+/// `now`.
+pub fn restarting_since(folder: &Path, now: i64) -> Option<i64> {
+    if store::watch_in_progress(folder).ok()? {
+        return None;
+    }
+    let text = std::fs::read(folder.join(store::WATCH_LOCK)).ok()?;
+    let at = left_at(&String::from_utf8_lossy(&text))?;
+    ((now - at).abs() <= RESTARTING_FOR).then_some(at)
+}
+
+/// When a lock file says its watcher left for a new core: the start time, `heartbeat`, and the
+/// line `core-replaced <at>`, with nothing after it.
+fn left_at(text: &str) -> Option<i64> {
+    let lines: Vec<&str> = text.lines().collect();
+    let [since, HEARTBEAT, left] = lines[..] else {
+        return None;
+    };
+    since.parse::<i64>().ok()?;
+    left.strip_prefix(CORE_REPLACED)?
+        .strip_prefix(' ')?
+        .parse()
+        .ok()
+}
+
 /// A failure of the watcher that stands: what failed (`READ`, `SAMPLED`, `RESUBSCRIBE`,
 /// `EVENTS`, `FULL_CHECK`, or `STORE` for one the store did not take), when, and what the
 /// failure said.
@@ -1546,6 +1757,102 @@ mod tests {
     fn put_lock(lock: &std::fs::File, text: &str) {
         lock.write_all_at(text.as_bytes(), 0).unwrap();
         lock.set_len(text.len() as u64).unwrap();
+    }
+
+    /// The job's watcher leaves when the path it was started from holds another file, as after
+    /// an update that renamed a new core into place; nothing there, or a path it cannot look
+    /// at, does not make it leave.
+    #[test]
+    fn a_watcher_s_file_is_replaced_only_when_its_path_holds_another_file() {
+        let dir = crate::common::Scratch::new("watch-core-replaced");
+        let core = dir.join("immune");
+        std::fs::write(&core, "invented core").unwrap();
+        let started = identity(&std::fs::metadata(&core).unwrap());
+        assert!(!replaced(started, std::fs::metadata(&core)));
+        let new = dir.join("immune.new");
+        std::fs::write(&new, "invented new core").unwrap();
+        std::fs::rename(&new, &core).unwrap();
+        assert!(replaced(started, std::fs::metadata(&core)));
+        std::fs::remove_file(&core).unwrap();
+        assert!(!replaced(started, std::fs::metadata(&core)));
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert!(!replaced(started, Err(denied)));
+    }
+
+    /// The status says a watcher is restarting on a new core only from the line a watcher that
+    /// left for one wrote, while no watcher holds the store, and not for long.
+    #[test]
+    fn a_watcher_that_left_for_a_new_core_is_restarting_only_while_none_holds_the_store() {
+        let dir = crate::common::Scratch::new("watch-restarting");
+        let path = dir.join(store::WATCH_LOCK);
+        let left = 1_800_000_100;
+        std::fs::write(
+            &path,
+            format!("1800000000\nheartbeat\ncore-replaced {left}"),
+        )
+        .unwrap();
+        assert_eq!(restarting_since(&dir, left + 5), Some(left));
+        assert_eq!(restarting_since(&dir, left + RESTARTING_FOR), Some(left));
+        assert_eq!(restarting_since(&dir, left + RESTARTING_FOR + 1), None);
+        // A time far ahead of the clock is not a watcher that left a moment ago.
+        assert_eq!(restarting_since(&dir, left - RESTARTING_FOR - 1), None);
+        let held = store::lock_watch(&dir).unwrap().unwrap();
+        assert_eq!(restarting_since(&dir, left + 5), None);
+        drop(held);
+        for text in [
+            "1800000000\nheartbeat\nready",
+            "1800000000\nheartbeat\ncore-replaced 1800000100\nmore",
+            "1800000000\nheartbeat\ncore-replaced",
+            "1800000000\nheartbeat\ncore-replaced1800000100",
+            "18OO000000\nheartbeat\ncore-replaced 1800000100",
+            "1800000000\nheartbeet\ncore-replaced 1800000100",
+        ] {
+            std::fs::write(&path, text).unwrap();
+            assert_eq!(restarting_since(&dir, left + 5), None, "{text:?}");
+        }
+    }
+
+    /// Install takes what `seen` says for whether Immune is watching: live only for a watcher
+    /// that is ready on a store with nothing failed but program starts or a full check, and
+    /// unknown, never no, when the store cannot be read.
+    #[test]
+    fn a_watcher_is_seen_live_only_when_ready_with_nothing_failed_and_unknown_is_none() {
+        let (dir, lock) = held("watch-seen");
+        let store_path = dir.join("store.db");
+        let since = crate::now_secs() - 10;
+        put_lock(&lock, &format!("{since}\nheartbeat"));
+        assert_eq!(seen(&store_path), Some(Seen::Starting));
+        put_lock(&lock, &format!("{since}\nheartbeat\nready"));
+        assert_eq!(seen(&store_path), None);
+        store::open_or_make(&store_path).unwrap();
+        assert_eq!(seen(&store_path), Some(Seen::Live));
+        mark(&store_path, EVENTS, Some("invented")).unwrap();
+        assert_eq!(seen(&store_path), Some(Seen::Live));
+        mark(&store_path, READ, Some("invented")).unwrap();
+        assert_eq!(
+            seen(&store_path),
+            Some(Seen::Failing(vec![EVENTS.into(), READ.into()]))
+        );
+        mark(&store_path, READ, None).unwrap();
+        put_lock(
+            &lock,
+            &format!("{since}\nheartbeat\nunrecorded {since}\ninvented"),
+        );
+        assert_eq!(
+            seen(&store_path),
+            Some(Seen::Failing(vec![EVENTS.into(), STORE.into()]))
+        );
+        // A lock held with no heartbeat in it is no watcher.
+        put_lock(&lock, "damaged");
+        assert_eq!(seen(&store_path), Some(Seen::Absent));
+        // One that left for a new core a moment ago is restarting, until the time is over.
+        let left = format!("{since}\nheartbeat\ncore-replaced {}", crate::now_secs());
+        put_lock(&lock, &left);
+        drop(lock);
+        assert_eq!(seen(&store_path), Some(Seen::Restarting));
+        let path = dir.join(store::WATCH_LOCK);
+        std::fs::write(&path, format!("{since}\nheartbeat\nready")).unwrap();
+        assert_eq!(seen(&store_path), Some(Seen::Absent));
     }
 
     #[test]

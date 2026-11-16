@@ -2585,7 +2585,7 @@ mod tests {
         let text = vulnerabilities(&v1::Vulnerabilities::default(), &Screen::pipe());
         assert_eq!(
             text,
-            "There is no store here yet.\nimmune run makes one, or immune install, which also keeps it checked.\n"
+            "There is no store here yet.\nimmune run makes one, or immune on, which also keeps it checked.\n"
         );
     }
 

@@ -709,13 +709,7 @@ pub fn state(conn: &Connection, home: &Path, now: i64) -> Res<State> {
     // watch did not fail. A failed reading of the event level stands for program starts
     // alone, which are then not claimed as seen.
     let failed = crate::watch::failures(conn, home)?;
-    let live = crate::watch::watching_live(home)
-        && failed.iter().all(|f| {
-            matches!(
-                f.what.as_str(),
-                crate::watch::EVENTS | crate::watch::FULL_CHECK
-            )
-        });
+    let live = crate::watch::watching_live(home) && crate::watch::live_with(&failed);
     let events_failed = failed.iter().find(|f| f.what == crate::watch::EVENTS);
     let full_check_failed = failed.iter().any(|f| f.what == crate::watch::FULL_CHECK);
     let mut this_mac = crate::covered::this_mac(conn, &coverage, live)?;
@@ -857,6 +851,25 @@ fn n<T: TryInto<u64>>(x: T) -> u64 {
     x.try_into().unwrap_or(0)
 }
 
+/// Whether the login job's property list is in this account's `~/Library/LaunchAgents`, for the
+/// store the job watches, the default one: read from the file's presence alone, never by asking
+/// launchd. `None` for any other store, and when the place cannot be read or holds something
+/// other than a file.
+fn login_job_installed(store: &Path) -> Option<bool> {
+    if crate::default_store().ok()? != store {
+        return None;
+    }
+    let plist = crate::user_home()
+        .ok()?
+        .join("Library/LaunchAgents")
+        .join(format!("{}.plist", crate::service::LABEL));
+    match std::fs::symlink_metadata(plist) {
+        Ok(m) => m.is_file().then_some(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
+        Err(_) => None,
+    }
+}
+
 /// The contract's `Status`: what `immune status` answers, and `immune run` once its check
 /// finished. `found` is every finding at `now`, read in the same transaction as `state`; `conn`
 /// is that transaction. Without a store, `conn` and `state` are `None`. A section that cannot be
@@ -886,6 +899,8 @@ pub fn message(
         rules: Some(rules_now(state.and_then(|s| s.event_level.as_ref()))),
         watching: crate::watch::watcher(path),
         answers_note: findings::ANSWERS_NOTE.to_string(),
+        login_job_installed: login_job_installed(path),
+        watcher_restarting_since_at: crate::watch::restarting_since(&crate::home(path), now),
         ..Default::default()
     };
     out.store = Some(v1::StoreFile {
