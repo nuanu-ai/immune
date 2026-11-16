@@ -1848,7 +1848,7 @@ fn verdict_item(f: &Found, subject: &str) -> Item {
         change: f.change.clone(),
         first_seen: Some(f.first_seen.0),
         last_seen: Some(f.last_seen.0),
-        words: crate::verdict::WORDS,
+        words: crate::verdict::words(f.verdicts.as_ref()),
         value: Some(value),
         place: Some(f.place.clone()),
         thing: None,
@@ -2334,7 +2334,13 @@ mod tests {
         let set = &crate::sigma::SOURCES[0];
         let (starts, files) = super::published_words(set);
         let mut all: Vec<super::Words> = super::rules().iter().map(|r| r.words).collect();
-        all.extend([starts, files, crate::verdict::WORDS, super::KEPT_WORDS]);
+        all.extend([
+            starts,
+            files,
+            crate::verdict::WORDS,
+            crate::verdict::WORDS_EVENT_GONE,
+            super::KEPT_WORDS,
+        ]);
         let mut seen = std::collections::BTreeSet::new();
         for w in &all {
             let short = w.short;

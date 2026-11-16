@@ -48,6 +48,7 @@
   "verdicts": {
     "listed": [
       {
+        "event_gone": false,
         "finding": {
           "about_text": "file:machine:mac//opt/homebrew/Cellar/tool/1.0",
           "confidence": "high",
@@ -76,7 +77,8 @@
           "kind": "suspicious",
           "reason_text": "invented: the package was published by an account taken over; it ran tool --password=\\cut{immune:flag-value 18}",
           "severity": "critical",
-          "store_id": "f45b16e12ac9e1611c06a8d8b343d817"
+          "store_id": "f45b16e12ac9e1611c06a8d8b343d817",
+          "verdict_id": null
         }
       }
     ],

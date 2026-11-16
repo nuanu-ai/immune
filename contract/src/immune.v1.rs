@@ -537,6 +537,14 @@ pub struct Verdict {
         deserialize_with = "crate::optional_enum_from_name::<Level, _>"
     )]
     pub confidence: ::core::option::Option<i32>,
+    /// An id the response layer makes for this one verdict, so that sending it again after a
+    /// failure is told from a new decision. Make one nobody can guess, such as a UUID. Optional. It
+    /// is a token, not text: 1 to 200 characters of printable ASCII, `!` to `~`, with no backslash,
+    /// as the IETF draft of the `Idempotency-Key` header takes one; any other is refused with
+    /// `verdict_id_not_a_token`. It needs no escaping, so it is kept, shown and compared exactly as
+    /// sent. A key: one that holds a secret is refused with `holds_secret`. Since 1.17.0.
+    #[prost(string, optional, tag = "10")]
+    pub verdict_id: ::core::option::Option<::prost::alloc::string::String>,
     /// What it is about: a match or a finding. Required.
     #[prost(oneof = "verdict::About", tags = "3, 4")]
     #[serde(flatten)]
@@ -603,6 +611,11 @@ pub struct RecordedVerdict {
     /// each piece; `argument` is 0, the reason being one text. Empty when nothing was cut.
     #[prost(message, repeated, tag = "5")]
     pub reason_cuts: ::prost::alloc::vec::Vec<Cut>,
+    /// A verdict about a match whose line was no longer in the log when the verdict came: the core
+    /// did not read the event again and did not check that the rule matched it, and its finding
+    /// keeps no event of it. Only a `suspicious` verdict is recorded so. Since 1.17.0.
+    #[prost(bool, tag = "6")]
+    pub event_gone: bool,
 }
 /// The verdicts about a finding or a match, as an answer gives them.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -643,8 +656,11 @@ pub struct VerdictRecorded {
     /// The verdict as recorded. When the same verdict was recorded before, the one recorded then.
     #[prost(message, optional, tag = "4")]
     pub recorded: ::core::option::Option<RecordedVerdict>,
-    /// The same message, equal in what it names, its kind, its reason, its case and both levels, was
-    /// recorded before and its finding is still open, or it is `harmless`; nothing was recorded now.
+    /// The same verdict was recorded before and nothing was recorded now: one with the same
+    /// `verdict_id`, equal in everything else, whatever became of its finding since; or, with no
+    /// id, the same message, equal in what it names, its kind, its reason, its case and both
+    /// levels, whose finding is still open or which is `harmless`. `recorded` is that verdict, with
+    /// its own `recorded_at` and its finding as it stands now.
     #[prost(bool, tag = "5")]
     pub already_recorded: bool,
 }

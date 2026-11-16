@@ -1125,6 +1125,10 @@ fn by_rule(all: &[findings::Item]) -> Vec<crate::contract::v1::RuleCount> {
     };
     struct Group<'a> {
         first: &'a findings::Item,
+        /// The short title the group is shown by: its findings' own, or, when they differ, the
+        /// rule's general one. Only the response layer's findings carry two sets of words under
+        /// one rule (`verdict::words`), and a count of both must not say what holds for one.
+        short: &'static str,
         worst: Option<&'static str>,
         count: usize,
         urgent: usize,
@@ -1133,6 +1137,9 @@ fn by_rule(all: &[findings::Item]) -> Vec<crate::contract::v1::RuleCount> {
     for i in all {
         match groups.iter_mut().find(|g| g.first.rule == i.rule) {
             Some(g) => {
+                if i.words.short != g.short {
+                    g.short = crate::verdict::WORDS.short;
+                }
                 if rank(i.severity) > rank(g.worst) {
                     g.worst = i.severity;
                 }
@@ -1141,6 +1148,7 @@ fn by_rule(all: &[findings::Item]) -> Vec<crate::contract::v1::RuleCount> {
             }
             None => groups.push(Group {
                 first: i,
+                short: i.words.short,
                 worst: i.severity,
                 count: 1,
                 urgent: usize::from(i.urgent()),
@@ -1158,7 +1166,7 @@ fn by_rule(all: &[findings::Item]) -> Vec<crate::contract::v1::RuleCount> {
         .iter()
         .map(|g| v1::RuleCount {
             rule: g.first.rule.clone(),
-            short_title: g.first.words.short.to_string(),
+            short_title: g.short.to_string(),
             rule_title_text: crate::finding_answer::rule_title(&g.first.rule),
             severity: g.worst.map(value_of::<v1::Level>),
             count: n(g.count),
