@@ -22,6 +22,15 @@
 //! belongs to `gui/<uid>`, and launchd loads that user's `LaunchAgents` at login, so files found
 //! through another home would not be the job's.
 //!
+//! The journal of the job's store says when Immune was turned on and off, with the time alone.
+//! `turned_on` is written by the job's own watcher, which is what knows Immune is on (`note_on`,
+//! from `watch.rs`): `on` writes nothing, so a first run with no store, an `on` killed during its
+//! wait and a load that failed leave the words true. `off` writes `turned_off` once the job is
+//! stopped and its property list gone, only into a store of this build's format that is there,
+//! under the run lock, and never fails for it: the answer says why it was not recorded
+//! (`not_recorded`). What turned Immune off otherwise, a program of the account that ran
+//! `launchctl` or removed the property list, leaves no entry, and `immune status` says so.
+//!
 //! These commands act, so their order is the point. `on`:
 //! - every refusal comes first, with nothing changed; one of the two commands runs at a time;
 //! - then the property list and the copy are staged under temporary names beside their places;
@@ -647,6 +656,49 @@ fn answered_at() -> i64 {
         .as_secs() as i64
 }
 
+/// The run of every `turned_on` and `turned_off`: one id, so that the latest entry of each kind is
+/// one look-up of the journal's index by run (`status`).
+pub const JOURNAL_RUN: &str = "service";
+
+/// The job's watcher's word that Immune is on, in the transaction of its reading: `turned_on`,
+/// unless it is already the latest of the two in the journal's order. So it is written once for
+/// each turning on, whatever reading or restart of the watcher comes first.
+pub fn note_on(tx: &rusqlite::Transaction, at: i64) -> rusqlite::Result<usize> {
+    tx.execute(
+        "INSERT INTO journal (at, run_id, entry, text) SELECT ?1, ?2, 'turned_on', ''
+         WHERE (SELECT entry FROM journal WHERE run_id = ?2
+                AND entry IN ('turned_on', 'turned_off') ORDER BY seq DESC LIMIT 1)
+               IS NOT 'turned_on'",
+        rusqlite::params![at, JOURNAL_RUN],
+    )
+}
+
+/// Writes `turned_off` with the time alone into the job's store, under the run lock as every
+/// writer beside the watcher takes it. A store that is not there, or is not one of this build's
+/// format, is left as it is (`store::open` makes nothing and refuses before it writes). Why it was
+/// not written, or `None` when it was.
+fn record_off(places: &Places) -> Option<v1::NotRecorded> {
+    use v1::NotRecorded::*;
+    if !places.store.exists() {
+        return Some(NoStore);
+    }
+    let _lock = match crate::store::lock_run(&crate::home(&places.store)) {
+        Ok(Some(lock)) => lock,
+        Ok(None) => return Some(Busy),
+        Err(_) => return Some(StoreRefused),
+    };
+    let written = crate::store::open(&places.store).and_then(|conn| {
+        Ok(crate::store::journal_note(
+            &conn,
+            answered_at(),
+            JOURNAL_RUN,
+            "turned_off",
+            "",
+        )?)
+    });
+    written.err().map(|_| StoreRefused)
+}
+
 /// What the command left, for the answer.
 struct Left {
     installed: bool,
@@ -658,6 +710,7 @@ struct Left {
     /// What the status said of the store's watcher after the job was loaded; `None` when it could
     /// not be told, and after `off`.
     seen: Option<crate::watch::Seen>,
+    not_recorded: Option<v1::NotRecorded>,
 }
 
 fn answer(places: &Places, left: Left) -> v1::Service {
@@ -679,6 +732,7 @@ fn answer(places: &Places, left: Left) -> v1::Service {
             .as_ref()
             .filter(|seen| **seen != Seen::Live)
             .map(Seen::words),
+        not_recorded: left.not_recorded.map(|n| n as i32),
     }
 }
 
@@ -839,6 +893,7 @@ fn on(
             program: runs,
             in_place: Some(in_place),
             seen,
+            not_recorded: None,
         },
     ))
 }
@@ -876,6 +931,8 @@ fn off(
     // The copy in `bin` is always `on`'s own, whatever the job ran; `bin` goes only when
     // nothing else is in it.
     remove_copy(&places).map_err(|(path, e)| removed(path, e))?;
+    let turned_off = loaded_before || plist_there;
+    let not_recorded = turned_off.then(|| record_off(&places)).flatten();
     Ok(answer(
         &places,
         Left {
@@ -885,6 +942,7 @@ fn off(
             program: in_place.map_or_else(|| places.program.clone(), Path::to_path_buf),
             in_place: Some(in_place.is_some()),
             seen: None,
+            not_recorded,
         },
     ))
 }

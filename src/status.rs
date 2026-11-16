@@ -944,6 +944,25 @@ pub fn message(
     // Of the same state of the store as what needs a look: the caller reads `state` and this in
     // one transaction.
     out.journal_seq = Some(findings::journal_seq(conn)?);
+    let latest = |entry: &str| {
+        conn.query_row(
+            "SELECT at FROM journal WHERE run_id = ?1 AND entry = ?2 ORDER BY seq DESC LIMIT 1",
+            [crate::service::JOURNAL_RUN, entry],
+            |r| r.get(0),
+        )
+        .optional()
+    };
+    out.turned_on_at = latest("turned_on")?;
+    out.turned_off_at = latest("turned_off")?;
+    // Which came last by the journal's order: a clock set back between the two changes nothing.
+    out.turned_on_latest = conn
+        .query_row(
+            "SELECT entry = 'turned_on' FROM journal WHERE run_id = ?1
+             AND entry IN ('turned_on', 'turned_off') ORDER BY seq DESC LIMIT 1",
+            [crate::service::JOURNAL_RUN],
+            |r| r.get(0),
+        )
+        .optional()?;
     out.this_mac = Some(this_mac_message(&st.this_mac, now));
     match &st.event_level {
         Some(l) => out.event_level = Some(crate::events::message(l)),

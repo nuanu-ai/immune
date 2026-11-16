@@ -362,7 +362,7 @@ fn mode(path: &Path) -> u32 {
 fn one_login_job_runs_the_installed_copy_and_removal_keeps_the_store_and_collector() {
     let login = Login::new("core-service-lifecycle");
     let store = login.store.join("store.db");
-    let store_before = fs::read(&store).unwrap();
+    let store_before = held(&store);
     let collector = login
         .scratch
         .join("system/Library/LaunchDaemons/ai.nuanu.immune.event-filter.plist");
@@ -413,7 +413,7 @@ fn one_login_job_runs_the_installed_copy_and_removal_keeps_the_store_and_collect
         (nothing.installed, nothing.loaded, nothing.replaced),
         (false, false, false)
     );
-    assert_eq!(fs::read(&store).unwrap(), store_before);
+    assert_eq!(held(&store), store_before);
     assert_eq!(
         fs::read_to_string(&collector).unwrap(),
         "invented collector"
@@ -869,7 +869,7 @@ fn on_and_off_run_from_the_installed_copy_itself() {
 fn off_removes_only_the_job_its_plist_and_the_copy() {
     let login = Login::new("core-service-only-its-own");
     fs::create_dir_all(login.store.join("pages")).unwrap();
-    let store = fs::read(login.store.join("store.db")).unwrap();
+    let store = held(&login.store.join("store.db"));
     fs::write(login.store.join("pages/index.html"), "invented page").unwrap();
     service(&login.run("on", &[]));
     let before = names(&login.store);
@@ -881,7 +881,7 @@ fn off_removes_only_the_job_its_plist_and_the_copy() {
     assert_eq!(names(&login.bin), ["notes.txt"]);
     assert_eq!(names(&login.agents), ["com.example.other.plist"]);
     assert_eq!(names(&login.store), before);
-    assert_eq!(fs::read(login.store.join("store.db")).unwrap(), store);
+    assert_eq!(held(&login.store.join("store.db")), store);
     assert_eq!(
         fs::read_to_string(login.store.join("pages/index.html")).unwrap(),
         "invented page"
@@ -1111,8 +1111,12 @@ fn the_status_tells_a_job_installed_and_not_running_from_one_not_installed() {
     service(&login.run("off", &[]));
     let (installed, text) = said(&login);
     assert_eq!(installed, json!(false));
+    // Turned off by its own command, said with its time.
+    let v: Value = serde_json::from_slice(&login.status(&["--json"]).stdout).unwrap();
+    let at = v["turned_off_at"].as_i64().unwrap();
+    let when = format!("Immune is off: turned off {} with immune off", utc(at));
     assert!(
-        text.contains("not installed: no watcher runs now") && !text.contains("not running"),
+        text.contains(&when) && !text.contains("not running") && !text.contains("did not"),
         "{text}"
     );
     // Something other than a file at the property list's place is neither.
@@ -1130,4 +1134,220 @@ fn the_status_tells_a_job_installed_and_not_running_from_one_not_installed() {
     let out = login.status(&["--json", "--store", other.to_str().unwrap()]);
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert!(v["login_job_installed"].is_null(), "{v}");
+}
+
+/// UTC seconds as the text for a person writes them in a pipe.
+fn utc(at: i64) -> String {
+    let out = Command::new("/bin/date")
+        .args(["-u", "-r", &at.to_string(), "+%Y-%m-%d %H:%M UTC"])
+        .output()
+        .unwrap();
+    String::from_utf8(out.stdout)
+        .unwrap()
+        .trim_end()
+        .to_string()
+}
+
+/// The entries `on` and `off` wrote in the store's journal, in order, each with every column but
+/// its time and sequence.
+fn turned(login: &Login) -> Vec<Vec<Option<String>>> {
+    let conn = rusqlite::Connection::open(login.store.join("store.db")).unwrap();
+    let mut rows = conn
+        .prepare(
+            "SELECT entry, run_id, reader, scope, kind, subject, predicate, old_value, new_value,
+                    text FROM journal WHERE entry IN ('turned_on', 'turned_off') ORDER BY seq",
+        )
+        .unwrap();
+    rows.query_map([], |r| (0..10).map(|i| r.get(i)).collect())
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// What a store holds that `on` and `off` never change: its `meta` and every journal entry but
+/// their own.
+fn held(store: &Path) -> Vec<String> {
+    let conn = rusqlite::Connection::open(store).unwrap();
+    let mut rows = conn
+        .prepare(
+            "SELECT key || '=' || value FROM meta
+             UNION ALL SELECT seq || ' ' || entry FROM journal
+                       WHERE entry NOT IN ('turned_on', 'turned_off')",
+        )
+        .unwrap();
+    rows.query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// A `turned_on` or `turned_off` as it is written: the time alone, with no path, no argument and
+/// no text from outside the program.
+fn entry(e: &str) -> Vec<Option<String>> {
+    let mut row = vec![Some(e.to_string()), Some("service".to_string())];
+    row.extend([None, None, None, None, None, None, None]);
+    row.push(Some(String::new()));
+    row
+}
+
+#[test]
+fn off_that_stopped_a_job_leaves_one_turned_off_entry_and_one_that_found_nothing_none() {
+    let login = Login::new("core-service-journal");
+    // `on` writes nothing, so another handle holding the run lock changes nothing it says.
+    let held = fs::File::open(&login.store).unwrap();
+    held.try_lock().unwrap();
+    assert_eq!(service(&login.run("on", &[])).not_recorded, None);
+    assert_eq!(turned(&login), Vec::<Vec<Option<String>>>::new());
+    // A check that holds the store: `off` still succeeds, and says it was not recorded and why.
+    let m = service(&login.run("off", &[]));
+    assert_eq!(m.not_recorded, Some(v1::NotRecorded::Busy as i32));
+    drop(held);
+    // A job launchd has with its property list gone is turned off all the same.
+    service(&login.run("on", &[]));
+    fs::remove_file(&login.plist).unwrap();
+    for _ in 0..2 {
+        assert_eq!(service(&login.run("off", &[])).not_recorded, None);
+    }
+    assert_eq!(turned(&login), [entry("turned_off")]);
+    // A store's folder that cannot be opened.
+    service(&login.run("on", &[]));
+    fs::set_permissions(&login.store, fs::Permissions::from_mode(0o300)).unwrap();
+    let m = service(&login.run("off", &[]));
+    fs::set_permissions(&login.store, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(m.not_recorded, Some(v1::NotRecorded::StoreRefused as i32));
+    assert_eq!(turned(&login).len(), 1);
+}
+
+#[test]
+fn off_succeeds_and_says_not_recorded_with_no_store_or_one_of_another_format_and_leaves_it() {
+    let login = Login::without_watcher("core-service-unrecorded");
+    fs::create_dir_all(&login.agents).unwrap();
+    foreign_plist(&login.plist, LABEL);
+    let m = service(&login.run("off", &[]));
+    assert_eq!(m.not_recorded, Some(v1::NotRecorded::NoStore as i32));
+    assert!(!login.plist.exists() && !login.store.exists());
+
+    fs::create_dir_all(&login.store).unwrap();
+    let older = rusqlite::Connection::open(login.store.join("store.db")).unwrap();
+    older
+        .execute_batch(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO meta VALUES ('format_version', '7');",
+        )
+        .unwrap();
+    drop(older);
+    let before = fs::read(login.store.join("store.db")).unwrap();
+    foreign_plist(&login.plist, LABEL);
+    let out = login.immune(Path::new(CORE), &["off"], &[]);
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(out.status.success() && !login.plist.exists(), "{text}");
+    assert!(
+        text.contains("The store does not record that this turned Immune off: the store was made by another build of Immune or cannot be written."),
+        "{text}"
+    );
+    assert_eq!(fs::read(login.store.join("store.db")).unwrap(), before);
+    assert_eq!(names(&login.store), ["store.db"]);
+}
+
+/// A watcher on this login's store until its first reading, then stopped: the job's, with
+/// `--background` as the job runs it, or one started by hand. The full check the job's starts finds
+/// the downloads' lock held, as in the tests of the background watcher in `tests/watch.rs`, and
+/// leaves the store and the network alone.
+fn first_reading(login: &Login, background: bool) {
+    use std::io::BufRead;
+    let feeds = login.store.join("feeds");
+    fs::create_dir_all(&feeds).unwrap();
+    let fetch = fs::File::options()
+        .create(true)
+        .append(true)
+        .open(feeds.join("fetch.lock"))
+        .unwrap();
+    fetch.lock().unwrap();
+    let sample = login.scratch.join("sample.json");
+    fs::write(&sample, r#"{"at": 1800000000, "processes": []}"#).unwrap();
+    let mut watcher = Command::new(CORE)
+        .args(["watch", "--store"])
+        .arg(login.store.join("store.db"))
+        .arg("--system-root")
+        .arg(login.scratch.join("system"))
+        .arg("--sample-input")
+        .arg(&sample)
+        .args(["--sample-every", "3600", "--events-every", "3600"])
+        .args(background.then_some("--background"))
+        .current_dir(&*login.scratch)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", &login.home)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let lines = std::io::BufReader::new(watcher.stdout.take().unwrap()).lines();
+    let read = lines
+        .map(Result::unwrap)
+        .any(|l| l.contains(r#""event":"read""#));
+    // SAFETY: a signal to the watcher this test started, which has not been reaped.
+    unsafe { libc::kill(watcher.id() as i32, libc::SIGTERM) };
+    watcher.wait().unwrap();
+    assert!(read, "the watcher left before its first reading");
+}
+
+#[test]
+fn after_off_then_on_the_job_s_watcher_says_on_once_and_a_job_gone_after_is_not_by_immune_off() {
+    let mut login = Login::new("core-service-gone");
+    for verb in ["on", "off", "on"] {
+        service(&login.run(verb, &[]));
+    }
+    login.watcher = None;
+    // A run or a watcher by hand says nothing of it.
+    login.make_store();
+    first_reading(&login, false);
+    assert_eq!(turned(&login), [entry("turned_off")]);
+    // The job's watcher says it at its first reading, and at a later start not again.
+    for _ in 0..2 {
+        first_reading(&login, true);
+        assert_eq!(turned(&login), [entry("turned_off"), entry("turned_on")]);
+    }
+    // A program of the account removes the property list; the watcher is gone with the job.
+    fs::remove_file(&login.plist).unwrap();
+    let v: Value = serde_json::from_slice(&login.status(&["--json"]).stdout).unwrap();
+    let on = v["turned_on_at"].as_i64().unwrap();
+    assert_eq!(
+        (&v["turned_on_latest"], &v["login_job_installed"]),
+        (&json!(true), &json!(false))
+    );
+    let text = String::from_utf8(login.status(&[]).stdout).unwrap();
+    let gone = format!(
+        "Immune is off, and immune off did not turn it off. It was turned on {}; its job is gone. Turn it on with: immune on",
+        utc(on)
+    );
+    assert!(
+        text.contains(&gone) && !text.contains("✓ Nothing needs a look"),
+        "{text}"
+    );
+    // Of several, the latest is given.
+    let conn = rusqlite::Connection::open(login.store.join("store.db")).unwrap();
+    conn.execute(
+        "INSERT INTO journal (at, run_id, entry, text) VALUES (?1, 'service', 'turned_on', '')",
+        [on + 3600],
+    )
+    .unwrap();
+    let v: Value = serde_json::from_slice(&login.status(&["--json"]).stdout).unwrap();
+    assert_eq!(v["turned_on_at"], json!(on + 3600));
+    assert_eq!(v["turned_on_latest"], json!(true));
+    // Which came last is the journal's order: a turning off written after it, at a time the clock
+    // set back gave, is the latest.
+    conn.execute(
+        "INSERT INTO journal (at, run_id, entry, text) VALUES (?1, 'service', 'turned_off', '')",
+        [on - 3600],
+    )
+    .unwrap();
+    let v: Value = serde_json::from_slice(&login.status(&["--json"]).stdout).unwrap();
+    assert_eq!(v["turned_on_latest"], json!(false));
+    let text = String::from_utf8(login.status(&[]).stdout).unwrap();
+    assert!(
+        text.contains(&format!("turned off {} with immune off", utc(on - 3600))),
+        "{text}"
+    );
 }
