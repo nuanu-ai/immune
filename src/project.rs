@@ -2,13 +2,18 @@
 //! contract's `Known` message. The answer is built by `known::known_of`; what is particular to a
 //! project is only how the question names it and which readings find projects (`FOUND_BY`).
 //!
-//! A path is turned into the checkout's id by the rule the readers name checkouts by. A path
-//! inside a project the store knows, such as the working folder of a program that ran there,
-//! answers for that project, the nearest one that holds it. A path that names no project as
-//! written may lead to one through a symbolic link: it is followed with `guarded::real`, which
-//! never looks inside a folder macOS asks permission for. The project's folder is never looked
-//! into. A path the store knows only under another case is refused with the ids it knows, since
-//! the Mac's volumes usually ignore case and the answer could be about the same folder.
+//! An answer is about a project the store holds, never about a path inside one. A path, or the
+//! id of a file or a checkout of this Mac, is first put into one form (`known::place_asked`) and
+//! turned into the checkout's id by the rule the readers name checkouts by. A path inside a
+//! project the store knows, such as the working folder of a program that ran there, answers for
+//! that project, the nearest one that holds it, with a reading made by rule that a single path
+//! inside is not judged on its own. A path that names no project as written may lead to one
+//! through a symbolic link: it is followed with `guarded::real`, which never looks inside a
+//! folder macOS asks permission for. The project's folder is never looked into. A path the store
+//! knows only under another case or Unicode form answers for the project it knows, with a reading
+//! made by rule that says so, since the Mac's volumes usually ignore both. A path under
+//! no project is `unknown` with a reading made by rule that no reading opened it; a folder that
+//! holds projects says how many.
 //!
 //! A project in a folder macOS asks permission for carries the reading that says the folder was
 //! not looked into, whatever was read in it before.
@@ -28,10 +33,15 @@ const FOUND_BY: [(&str, &str); 2] = [
     (crate::agent_folders::READER, crate::agent_folders::KIND),
 ];
 
-/// Why an answer about a path that no reading in `FOUND_BY` looks at is not "looked, and not
-/// there": the walk keeps to the home folder, and the reading of agent working folders finds a
-/// project only where an agent worked.
-const UNREAD: &str = "no reading that finds projects looks at this place: the walk of the home folder does not reach it, and agent working folders name only where an agent worked";
+/// Why an answer about a path under no project the store holds is not "looked, and not there".
+const NOT_OPENED: &str =
+    "no reading opened this place for this answer: no project the store knows is at it or holds it";
+
+/// Why a path strictly inside a project is answered for the project.
+const INSIDE: &str = "a single path inside a project is not judged on its own: the answer is about the project that holds it";
+
+/// Why a folder macOS asks permission for, reached through a link, is not looked into.
+const GUARDED: &str = "the path leads through a link into a folder macOS asks permission for, which is not looked into";
 
 /// What `immune project` takes as a project.
 const WHAT: &str = "immune project takes a path on this Mac, absolute or beginning with ~/, or an id as the store names it: a project's, beginning with checkout:, or a file's, beginning with file:";
@@ -93,11 +103,12 @@ pub fn project_cmd(args: &ProjectArgs) -> ExitCode {
                 let q = question(&args.asked, None, None, None, None, &[]);
                 return known::known_of(conn, &q, &args.home, now).map(Ok);
             };
-            // A path of this Mac, as an id of a checkout or a file names one.
+            // A path of this Mac, as an id of a checkout or a file names one, in one form.
             let path = |id: &str| {
-                known::place_of(id)
-                    .filter(|(machine, _)| *machine == this)
-                    .map(|(_, rel)| rel.to_string())
+                let file = id
+                    .strip_prefix("checkout:")
+                    .map(|rest| format!("file:{rest}"));
+                known::place_asked(file.as_deref().unwrap_or(id), Some(&this), &args.home)
             };
             let what = match &args.what {
                 What::Path(rel) => What::Path(rel.clone()),
@@ -111,29 +122,48 @@ pub fn project_cmd(args: &ProjectArgs) -> ExitCode {
                     (None, None) => return Ok(Err(not_an_id(id))),
                 },
             };
-            // The project's id, the place asked about, and why no reading looks there.
+            // The project's id, the place asked about, and why that place is not judged on its
+            // own, when it is not.
             let (id, place, unread) = match &what {
                 What::Id(id) => (Some(id.clone()), None, None),
                 What::Path(rel) => match holding(conn, &this, rel)? {
-                    Some(id) => (Some(id), None, None),
+                    Some(id) => {
+                        let inside = known::place_of(&id).is_some_and(|(_, f)| f != rel);
+                        (
+                            Some(id),
+                            Some(rel.clone()),
+                            known::not_judged(false, inside.then_some(INSIDE)),
+                        )
+                    }
                     None => match through_link(conn, &this, rel, &args.home)? {
-                        Some(Found::At(id)) => (Some(id), None, None),
-                        Some(Found::Guarded(folder)) => (None, Some(folder), Some(UNREAD)),
-                        None => {
-                            let spelled = otherwise(conn, &this, rel)?;
-                            if !spelled.is_empty() {
-                                return Ok(Err(known::spelled_otherwise(
-                                    spelled,
-                                    "ask for one of them by its id, as in: immune project <id> --json",
-                                )));
-                            }
-                            let unread = (!checkouts::reaches(rel)).then_some(UNREAD);
-                            (
-                                Some(format!("checkout:{this}/{rel}")),
-                                Some(rel.clone()),
-                                unread,
-                            )
+                        Some(Found::At(id)) => {
+                            (Some(id), Some(rel.clone()), Some(INSIDE.to_string()))
                         }
+                        Some(Found::Guarded(folder)) => {
+                            (None, Some(folder), Some(GUARDED.to_string()))
+                        }
+                        None => match otherwise(conn, &this, rel)? {
+                            Some((id, folder)) => {
+                                let inside = !known::same_place(&folder, rel);
+                                (
+                                    Some(id),
+                                    Some(rel.clone()),
+                                    known::not_judged(true, inside.then_some(INSIDE)),
+                                )
+                            }
+                            None => {
+                                let inside = inside(conn, &this, rel)?;
+                                let unread = if inside > 0 {
+                                    format!(
+                                        "this folder is not a project the store knows, and it holds {}: ask about one of them by its id or its path",
+                                        crate::things(inside as i64, "project", "projects")
+                                    )
+                                } else {
+                                    NOT_OPENED.to_string()
+                                };
+                                (None, Some(rel.clone()), Some(unread))
+                            }
+                        },
                     },
                 },
             };
@@ -143,7 +173,7 @@ pub fn project_cmd(args: &ProjectArgs) -> ExitCode {
                 id.as_deref(),
                 Some(&this),
                 place.as_deref(),
-                unread,
+                unread.as_deref(),
                 &inside,
             );
             known::known_of(conn, &q, &args.home, now).map(Ok)
@@ -158,7 +188,7 @@ fn question<'a>(
     id: Option<&'a str>,
     machine: Option<&'a str>,
     place: Option<&'a str>,
-    unread: Option<&'static str>,
+    unread: Option<&'a str>,
     inside: &'a [(&'a str, String)],
 ) -> Question<'a> {
     Question {
@@ -241,24 +271,42 @@ fn through_link(
     Ok(None)
 }
 
-/// The projects the store knows whose folder is the path `rel`, or holds it, when the two are
-/// compared without regard to case. The disk is not asked whether they are the same folder.
-fn otherwise(conn: &Connection, this: &str, rel: &str) -> rusqlite::Result<Vec<String>> {
+/// The folders of the projects the store knows on this Mac, held or gone, by id.
+fn projects(conn: &Connection, this: &str) -> rusqlite::Result<Vec<(String, String)>> {
     let prefix = format!("checkout:{this}/");
-    let wanted = rel.to_lowercase();
-    let mut ids: Vec<String> = conn
-        .prepare("SELECT id FROM entity WHERE type = ?1")?
+    let ids: Vec<String> = conn
+        .prepare("SELECT id FROM entity WHERE type = ?1 ORDER BY id")?
         .query_map([checkouts::TYPE], |r| r.get::<_, String>(0))?
-        .filter_map(|id| match id {
-            Ok(id) => id
-                .strip_prefix(&prefix)
-                .is_some_and(|folder| known::within(&wanted, &folder.to_lowercase()))
-                .then_some(Ok(id)),
-            Err(e) => Some(Err(e)),
-        })
         .collect::<rusqlite::Result<_>>()?;
-    ids.sort();
-    Ok(ids)
+    Ok(ids
+        .into_iter()
+        .filter_map(|id| {
+            let folder = id.strip_prefix(&prefix)?.to_string();
+            Some((id, folder))
+        })
+        .collect())
+}
+
+/// The nearest project the store knows whose folder is the path `rel`, or holds it, when the two
+/// are compared by the key a Mac's volumes compare names by (`known::same_place`), with its
+/// folder. The disk is not asked whether they are the same folder.
+fn otherwise(
+    conn: &Connection,
+    this: &str,
+    rel: &str,
+) -> rusqlite::Result<Option<(String, String)>> {
+    Ok(projects(conn, this)?
+        .into_iter()
+        .filter(|(_, folder)| known::same_place(rel, folder))
+        .max_by_key(|(_, folder)| folder.len()))
+}
+
+/// How many projects the store knows lie strictly inside the folder `rel`.
+fn inside(conn: &Connection, this: &str, rel: &str) -> rusqlite::Result<usize> {
+    Ok(projects(conn, this)?
+        .iter()
+        .filter(|(_, folder)| folder != rel && known::within(folder, rel))
+        .count())
 }
 
 fn not_a_project(id: &str) -> Refused {

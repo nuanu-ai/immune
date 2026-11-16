@@ -53,6 +53,7 @@ mod servers;
 mod service;
 mod sha256;
 mod sigma;
+mod spelling;
 mod ssh_config;
 mod status;
 mod store;

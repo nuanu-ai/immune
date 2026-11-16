@@ -122,7 +122,12 @@ pub fn known(k: &v1::Known) -> String {
     let presence = match v1::Presence::try_from(k.presence) {
         Ok(v1::Presence::Held) => "is held: the store has facts in force about it",
         Ok(v1::Presence::Gone) => "is gone: it was there, and what was read of it is retracted",
-        Ok(v1::Presence::Unknown) => "is unknown: the store has never heard of it",
+        Ok(v1::Presence::Unknown) if k.thing.is_some() => {
+            "is unknown: the store knows it and cannot tell whether it is there now, since a reading of it was not full"
+        }
+        Ok(v1::Presence::Unknown) => {
+            "is unknown: the store holds nothing by this name or at this place"
+        }
         _ => "is of a presence this build does not know, so read it as not known",
     };
     let question = word::<v1::Question>(k.question);
@@ -2074,7 +2079,12 @@ pub fn vulnerabilities(m: &v1::Vulnerabilities) -> String {
         say(
             &mut out,
             &format!(
-                "The lockfiles of one ecosystem were not all read in these projects, {} in all, so what they declare is not all known:",
+                "Not every lockfile was read in {}, so what they declare is not all known; a row for each project and ecosystem, {} in all:",
+                count(
+                    m.totals.as_ref().map_or(0, |t| t.projects_not_read),
+                    "project",
+                    "projects"
+                ),
                 grouped(u.total)
             ),
         );

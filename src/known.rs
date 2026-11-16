@@ -56,10 +56,10 @@ pub struct Question<'a> {
     /// The path asked about, as ids name paths, when the question was a path on this Mac: a
     /// folder macOS asks permission for that holds it speaks for the answer.
     pub place: Option<&'a str>,
-    /// When the question was a path that no reading in `found_by` looks at: why, in the core's
-    /// words. The answer carries a reading made by rule with it. Such a path names nothing the
-    /// store knows, since what the store knows was found by those readings.
-    pub unread: Option<&'static str>,
+    /// When the question was a path that is not judged on its own, such as one inside a thing or
+    /// one under no thing the store holds: why, in the core's words. The answer carries a reading
+    /// made by rule with it, of completeness `none`.
+    pub unread: Option<&'a str>,
     /// This Mac: its latest readings in `found_by` speak for the thing, known or not.
     pub machine: Option<&'a str>,
     /// The readings, as reader and kind, that find things of its kind on this Mac.
@@ -83,15 +83,18 @@ pub struct Refused {
     pub ids: Vec<String>,
 }
 
-/// A path that names nothing the store knows as written, and something it knows when the two are
-/// compared without regard to case. On a volume that ignores case, as a Mac's do by default, it
-/// may be the same place; answering `unknown` would say that nothing is known of it.
-pub fn spelled_otherwise(ids: Vec<String>, example: &'static str) -> Refused {
-    Refused {
-        code: "spelled_otherwise",
-        message: "the path names nothing the store knows as written, and these when case is ignored; nothing was answered",
-        example,
-        ids,
+/// Why a path that names a thing the store holds only when case and Unicode form are ignored is
+/// answered for that thing: on a volume that ignores both, as a Mac's do by default, it is the
+/// same place, and answering `unknown` would leave out what is known of it.
+const SPELLED: &str = "the path is spelled otherwise than the store holds it, in case or Unicode form: on a volume that ignores both, as a Mac's do by default, it is the same place, and the answer is about what the store holds there; on one that does not, it may be another place";
+
+/// Why a path asked about is not judged on its own, if it is not: found only when spelled
+/// otherwise (`same_place`), and `inside`, the words for a path strictly inside a thing.
+pub fn not_judged(spelled: bool, inside: Option<&str>) -> Option<String> {
+    match (spelled, inside) {
+        (true, Some(inside)) => Some(format!("{SPELLED}; {inside}")),
+        (true, None) => Some(SPELLED.to_string()),
+        (false, inside) => inside.map(str::to_string),
     }
 }
 
@@ -122,14 +125,32 @@ pub fn words(
 }
 
 /// A path as ids name it on this Mac: relative to the home folder when it is inside it, the full
-/// path otherwise. `None` when `asked` is neither absolute nor begins with `~/`. A path is made
-/// plain by its words alone: `..` is resolved without looking at the disk, and no link is
-/// followed.
+/// path otherwise. `None` when `asked` is neither absolute nor begins with `~/`. See `place_asked`.
 pub fn path_of(asked: &str, home: &Path) -> Option<String> {
-    let path = match asked.strip_prefix("~/") {
-        Some(rest) => home.join(rest),
-        None if asked.starts_with('/') => PathBuf::from(asked),
-        None => return None,
+    place_asked(asked, None, home)
+}
+
+/// What a caller gives as a place on this Mac, `this`, in the one form ids name paths in: a path,
+/// absolute or beginning with `~/`, or the id of a file of this Mac, which names its path after
+/// the machine (`immune project` gives a checkout's id as a file's). `..`, `.`, doubled and trailing slashes are resolved by the words
+/// alone, in an id as in a path: nothing on the disk is looked at and no link is followed. Every
+/// command that takes a path or such an id puts it through here, so two spellings of one place
+/// are one question. Case and Unicode form are kept: they are compared only by `same_place`.
+/// `None` for anything else.
+pub fn place_asked(asked: &str, this: Option<&str>, home: &Path) -> Option<String> {
+    let in_id = this.and_then(|machine| {
+        asked
+            .strip_prefix("file:")?
+            .strip_prefix(machine)?
+            .strip_prefix('/')
+    });
+    let path = match (asked.strip_prefix("~/"), in_id) {
+        (Some(rest), _) => home.join(rest),
+        (None, _) if asked.starts_with('/') => PathBuf::from(asked),
+        // An id names a path inside the home folder relative to it.
+        (None, Some(rest)) if rest.starts_with('/') => PathBuf::from(rest),
+        (None, Some(rest)) => home.join(rest),
+        (None, None) => return None,
     };
     let mut plain = PathBuf::new();
     for part in path.components() {
@@ -239,6 +260,7 @@ pub fn known_of(
     // readings speak. Findings are those about these, and about anything ever inside the thing.
     let mut subjects: BTreeMap<String, String> = BTreeMap::new();
     let mut own_ids: BTreeSet<String> = BTreeSet::new();
+    let mut owners: BTreeSet<ReadingKey> = BTreeSet::new();
     if let Some((id, ty)) = &thing {
         let mut own: Parts = Parts::new();
         own.insert(id.to_string(), ty.clone());
@@ -246,28 +268,17 @@ pub fn known_of(
             own.extend(type_of(conn, other)?.map(|ty| (other.clone(), ty)));
         }
         let mut all = Parts::new();
-        let mut held = false;
+        let mut with_parts = false;
         for own_id in own.keys() {
             let (inside, in_folder) = parts(conn, own_id, q.folder)?;
-            // Held while something read of it is in force: a fact about it, or a part `part_of`
-            // or `located_on` it. A machine may have no fact of its own and still hold everything
-            // on it.
-            held = held
-                || !inside.is_empty()
-                || conn.query_row(
-                    "SELECT EXISTS (SELECT 1 FROM assertion WHERE layer = 'live' AND subject = ?1)",
-                    [own_id],
-                    |r| r.get(0),
-                )?;
+            with_parts = with_parts || !inside.is_empty();
             all.extend(inside);
             all.extend(in_folder);
         }
         own_ids.extend(own.keys().cloned());
-        known.presence = if held {
-            v1::Presence::Held
-        } else {
-            v1::Presence::Gone
-        } as i32;
+        let (presence, readings) = presence(conn, own.keys(), with_parts)?;
+        known.presence = presence as i32;
+        owners = readings;
         known.thing = Some(entity(id, ty));
         known.same_as = own
             .iter()
@@ -289,15 +300,16 @@ pub fn known_of(
         .into_iter()
         .filter(|r| {
             let this = Some(r.scope.as_str()) == q.machine;
-            let key = (r.reader.as_str(), r.kind.as_str());
+            let key = (r.reader.clone(), r.scope.clone(), r.kind.clone());
             subjects.contains_key(&r.scope)
-                || read_by.contains(&(r.reader.clone(), r.scope.clone(), r.kind.clone()))
+                || read_by.contains(&key)
+                || owners.contains(&key)
                 || (this
-                    && (q.found_by.contains(&key)
+                    && (q.found_by.contains(&(r.reader.as_str(), r.kind.as_str()))
                         || (thing.is_some()
                             && q.inside
                                 .iter()
-                                .any(|(reader, kind)| (*reader, kind.as_str()) == key))
+                                .any(|(reader, kind)| *reader == r.reader && *kind == r.kind))
                         || guarded.as_deref().is_some_and(|f| not_looked_into(r, f))))
         })
         .map(|r| coverage(conn, r))
@@ -312,20 +324,81 @@ pub fn known_of(
         );
     }
     // A finding is the thing's when what it is about, or anything a reading ever tied it to, at
-    // any depth, is the thing under one of its ids or a part of it, lies in its folder, or is
-    // named by its id as inside it. Each way can only add: the store's links are its own word, and
-    // the names add what no reading tied. A finding about a part that is gone stays the thing's,
-    // as it stays open until it is answered.
+    // any depth, is the thing under one of its ids or a part of it, lies in its folder or at or
+    // inside the place asked, or is named by its id as inside it. Places are compared by the key
+    // a Mac's volumes compare names by, so no spelling of a place leaves out a finding about it.
+    // Each way can only add: the store's links are its own word, and the names add what no
+    // reading tied. A finding about a part that is gone stays the thing's, as it stays open until
+    // it is answered.
     let links = links(conn)?;
+    let at_place = |at: &str, machine: &str, rel: &str| {
+        place_of(at).is_some_and(|(m, path)| m == machine && same_place(path, rel))
+    };
     let theirs = |at: &str| {
         subjects.contains_key(at)
             || own_ids.iter().any(|own| named_in(at, own))
-            || q.folder.is_some_and(|(machine, rel)| {
-                place_of(at).is_some_and(|(m, path)| m == machine && within(path, rel))
-            })
+            || q.folder
+                .is_some_and(|(machine, rel)| at_place(at, machine, rel))
+            || q.place
+                .zip(q.machine)
+                .is_some_and(|(rel, machine)| at_place(at, machine, rel))
     };
     known.findings = finding_refs(conn, now, |about| held_by(about, &links, &theirs))?;
     Ok(known)
+}
+
+/// A reading, as reader, scope and kind.
+type ReadingKey = (String, String, String);
+
+/// Whether the thing whose units are `units` is held, gone or unknown, and the readings that own
+/// those units. Presence is told here alone, for every question.
+///
+/// A thing is the sum of its units: it is held while any unit is held, by a fact in force about
+/// it or, when `with_parts`, by a part in force. A reading that wrote about a unit, in force or
+/// retracted, owns it, and its latest reading speaks for it. `gone` needs every such latest
+/// reading full: after a partial reading, what it did not read again is kept as it was, so a
+/// unit no longer held may only not have been read. Then the thing is `unknown`. A held thing
+/// whose owning reading was partial is held, and that reading comes with the answer, so it reads
+/// as not read now. A thing the store has no entity of is `unknown`.
+fn presence<'a>(
+    conn: &Connection,
+    units: impl Iterator<Item = &'a String>,
+    with_parts: bool,
+) -> rusqlite::Result<(v1::Presence, BTreeSet<ReadingKey>)> {
+    let mut held = with_parts;
+    let mut owners: BTreeSet<ReadingKey> = BTreeSet::new();
+    let mut live = conn
+        .prepare("SELECT EXISTS (SELECT 1 FROM assertion WHERE layer = 'live' AND subject = ?1)")?;
+    let mut owning = conn.prepare(
+        "SELECT DISTINCT reader, scope, kind FROM assertion
+         WHERE subject = ?1 AND layer IN ('live', 'retracted')",
+    )?;
+    for unit in units {
+        held = held || live.query_row([unit], |r| r.get::<_, bool>(0))?;
+        for row in owning.query_map([unit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))? {
+            owners.insert(row?);
+        }
+    }
+    if held {
+        return Ok((v1::Presence::Held, owners));
+    }
+    let mut latest = conn.prepare(
+        "SELECT completeness FROM coverage WHERE reader = ?1 AND scope = ?2 AND kind = ?3
+         ORDER BY id DESC LIMIT 1",
+    )?;
+    let mut all_full = !owners.is_empty();
+    for (reader, scope, kind) in &owners {
+        let completeness: Option<String> = latest
+            .query_row([reader, scope, kind], |r| r.get(0))
+            .optional()?;
+        all_full = all_full && completeness.as_deref() == Some("full");
+    }
+    let presence = if all_full {
+        v1::Presence::Gone
+    } else {
+        v1::Presence::Unknown
+    };
+    Ok((presence, owners))
 }
 
 /// What each entity was ever `part_of` or `located_on`, in force or retracted, by its id.
@@ -485,6 +558,13 @@ fn parts(
         None => Parts::new(),
     };
     Ok((inside, in_folder))
+}
+
+/// Whether the path `rel` is the folder `folder` or inside it when both are compared by the key a
+/// Mac's volumes compare names by (`spelling::key`): to find what a caller meant, and to tell
+/// that it is spelled otherwise.
+pub fn same_place(rel: &str, folder: &str) -> bool {
+    within(&crate::spelling::key(rel), &crate::spelling::key(folder))
 }
 
 /// The machine and the path an id of a checkout or a file names.

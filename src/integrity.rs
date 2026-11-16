@@ -520,30 +520,6 @@ struct Found {
 /// Where bundles are looked for, as ids name paths: the system's folder, and the home folder's.
 const BUNDLE_PLACES: [&str; 2] = ["/Applications", "Applications"];
 
-/// Whether the readings of this file that find programs look at the path `rel`, as ids name
-/// paths: inside a bundle they find (a folder named `*.app` directly in a place of bundles or one
-/// folder down), or under a Cellar or a global `node_modules` of one of Homebrew's prefixes. A
-/// folder of code under `~/Library/Application Support` is read only when it is named after an
-/// application, so whether a path there was read is told from the store (`program::find`), never
-/// from where it is.
-pub fn reads(rel: &str) -> bool {
-    let bundle = BUNDLE_PLACES.iter().any(|place| {
-        rel.strip_prefix(place)
-            .and_then(|rest| rest.strip_prefix('/'))
-            .is_some_and(|rest| {
-                let mut names = rest.split('/');
-                let app = |n: Option<&str>| n.is_some_and(|n| n.ends_with(".app"));
-                app(names.next()) || app(names.next())
-            })
-    });
-    bundle
-        || PREFIXES.iter().any(|p| {
-            [CELLAR, NODE_MODULES]
-                .iter()
-                .any(|under| crate::known::within(rel, &format!("/{p}/{under}")))
-        })
-}
-
 /// Where applications keep code outside their bundles, under the home folder.
 const APP_SUPPORT_PLACE: &str = "Library/Application Support";
 
@@ -560,29 +536,13 @@ pub fn app_names(subject: &str, shown: &str) -> [String; 2] {
 /// The name of the application a folder of code kept outside a bundle is matched by, lowercased,
 /// from the folder's path as ids name it (`app_support`); `None` for any other path.
 pub fn app_support_name(rel: &str) -> Option<String> {
-    app_support_folder(rel).map(|(name, _)| name.to_lowercase())
-}
-
-/// The folder of `~/Library/Application Support` the path `rel` is in, as ids name paths, and
-/// the rest of the path inside it; `None` for a path that is not inside a folder there.
-pub fn app_support_folder(rel: &str) -> Option<(&str, &str)> {
     let inside = rel.strip_prefix(APP_SUPPORT_PLACE)?.strip_prefix('/')?;
-    Some(inside.split_once('/').unwrap_or((inside, "")))
-}
-
-/// Whether the path `rel` is `~/Library/Application Support` or inside it, as ids name paths.
-pub fn in_app_support(rel: &str) -> bool {
-    crate::known::within(rel, APP_SUPPORT_PLACE)
-}
-
-/// Whether a code walk passes over the path `rest` inside a folder it walks: a folder on the way
-/// whose name holds `cache` or is one of `NOT_CODE`, as `walk_code` skips them. A file named so
-/// counts too, which only makes the answer about it more careful.
-pub fn not_walked(rest: &str) -> bool {
-    rest.split('/').any(|n| {
-        let text = n.to_lowercase();
-        text.contains("cache") || NOT_CODE.contains(&text.as_str())
-    })
+    Some(
+        inside
+            .split_once('/')
+            .map_or(inside, |(name, _)| name)
+            .to_lowercase(),
+    )
 }
 
 /// The formula a keg is of, from the keg's path as ids name it: `<name>` of

@@ -8,18 +8,22 @@
 //! code an application keeps in `~/Library/Application Support` is not a program: it is a part of
 //! its application.
 //!
-//! What was asked becomes the program's entity from the store alone, and no path is looked at:
-//! - A path, absolute or beginning with `~/`, leads to the program whose folder holds it. A
-//!   program's folder is where the store says it is installed (`installed_at`), or the path of a
-//!   program the store names by its path, as it names a keg (a `file`). So a bundle, a keg and a
-//!   file inside either lead to their program. Where no program is now, a program that was
-//!   installed there and moved, or one copy of it that went, is the program.
-//! - A path at or inside a folder of code the store holds in force, or that folder's id, leads to
-//!   the application it belongs to. Any other path in `~/Library/Application Support` is a place
-//!   no reading opened: the reading of applications' code opens there only the folders named
-//!   after an installed application that Apple did not sign. It is answered `unknown` with a
-//!   reading made by rule that says so, never as looked at. So is a place inside a folder of code
-//!   that its reading passes over, such as a cache, though it leads to the application.
+//! What was asked becomes the program's entity from the store alone, and no path is looked at.
+//! An answer is about a unit the store holds, never about a path inside one:
+//! - A path, absolute or beginning with `~/`, or a `file:` id, is first put into one form
+//!   (`known::place_asked`). It leads to the program whose unit holds it: a program's folder is
+//!   where the store says it is installed (`installed_at`), or the path of a program the store
+//!   names by its path, as it names a keg (a `file`), and a folder of code an application keeps
+//!   in `~/Library/Application Support` leads to that application. Where no program is now, a
+//!   program that was installed there and moved, or one copy of it that went, is the program.
+//! - A path strictly inside a unit answers for the unit, with a reading made by rule that says a
+//!   single path inside is not judged on its own: the readings compare a unit as a whole and do
+//!   not keep which paths inside it they compared.
+//! - A path under no unit is `unknown` with a reading made by rule that no reading opened it. A
+//!   folder that holds units without being one, such as a Cellar, is `unknown` too, and says how
+//!   many units lie inside.
+//! - A path that fits a unit only when case and Unicode form are ignored (`known::same_place`)
+//!   answers for that unit, with a reading made by rule that says so.
 //! - A program's id is that program. A `file:` id of this Mac that is not a program is the path
 //!   it names; any other id the store holds is not a program, and is refused.
 //! - Anything else is a name, matched against the last part of a program's id,
@@ -36,9 +40,7 @@
 //! formulas of one short name.
 //!
 //! A question that fits more than one program is refused, with their ids: the message holds one
-//! thing, and choosing one would hide the others. So is a path that fits programs only when case
-//! is ignored. A path that no reading of programs looks at, answered `unknown`, carries a reading
-//! made by rule that says so (`integrity::reads`).
+//! thing, and choosing one would hide the others.
 
 use crate::contract::{self, v1};
 use crate::known::{self, Question, Refused};
@@ -88,17 +90,11 @@ pub fn parse(
     })
 }
 
-/// Why an answer about a path that no reading in `FOUND_BY` looks at is not "looked, and not
-/// there": the readings of installed programs read their own places, and the reading of
-/// Homebrew asks Homebrew by name.
-const UNREAD: &str = "no reading that finds programs looks at this place: they read the applications folders, Homebrew's kegs and the global npm packages, and ask Homebrew by name";
+/// Why a path under no program the store holds is not "looked, and not there".
+const NOT_OPENED: &str = "no reading opened this place for this answer: no program the store knows is installed at it or holds it";
 
-/// Why a path in `~/Library/Application Support` outside every folder of code read now is not
-/// "looked, and not there".
-const NOT_OPENED: &str = "Immune opens in ~/Library/Application Support only the folders named after an installed application that Apple did not sign, so it has not looked into this one";
-
-/// Why a place inside a folder of code that its reading passes over is not read.
-const NOT_WALKED: &str = "Immune does not compare caches, web storage, crash reports and logs inside an application's folder of code, so this place in it was not looked at";
+/// Why a path strictly inside a program is answered for the program.
+const INSIDE: &str = "a single path inside a program is not judged on its own: the answer is about the program that holds it, which the readings compare as a whole without keeping which paths inside they compared";
 
 /// Answers `immune program`.
 pub fn program_cmd(args: &ProgramArgs) -> ExitCode {
@@ -148,23 +144,12 @@ pub fn program_cmd(args: &ProgramArgs) -> ExitCode {
                 also: &also,
                 folder: None,
                 place,
-                unread: found.unread,
+                unread: found.unread.as_deref(),
                 machine: this.as_deref(),
                 found_by: &found_by,
                 inside: &[],
             };
             let mut known = known::known_of(conn, &q, &args.home, now)?;
-            // A program is held while a reading of programs holds it: a folder of code it shares
-            // with another application still installed holds that one, not this.
-            if known.presence == v1::Presence::Held as i32 {
-                let mut held = false;
-                for one in id.iter().chain(&also) {
-                    held = held || held_as_program(conn, one)?;
-                }
-                if !held {
-                    known.presence = v1::Presence::Gone as i32;
-                }
-            }
             // A program the store never heard of may be one a package manager this version does
             // not read installed: the answer says so, whatever the table of managers found.
             if let (true, Some(machine)) = (
@@ -192,12 +177,12 @@ const OTHER_MANAGERS_KIND: &str = "software of package managers this version doe
 const OTHER_MANAGERS_LIMIT: &str = crate::status::OTHER_MANAGERS;
 
 /// The programs a question names, the path it asked about, as ids name paths, when it was one,
-/// and why no reading looked at that path, when none did.
+/// and why that path is not judged on its own, when it is not.
 #[derive(Default)]
 struct Found {
     ids: Vec<String>,
     place: Option<String>,
-    unread: Option<&'static str>,
+    unread: Option<String>,
 }
 
 /// The programs `asked` names on this Mac, `this`, or the refusal of an id that is not one or
@@ -215,63 +200,8 @@ fn find(
             ..Found::default()
         }));
     }
-    let file = asked
-        .strip_prefix("file:")
-        .and_then(|rest| rest.strip_prefix(this))
-        .and_then(|rest| rest.strip_prefix('/'));
-    if let Some(rel) = file
-        .map(str::to_string)
-        .or_else(|| known::path_of(asked, home))
-    {
-        // A folder of code read now, and a place in it, are its application's; a place in it
-        // the reading passes over is not read.
-        let folders = code_folders(conn, this)?;
-        let live = folders
-            .iter()
-            .filter(|(_, live)| **live)
-            .find_map(|(id, _)| {
-                known::place_of(id)
-                    .filter(|(_, f)| known::within(&rel, f))
-                    .map(|(_, f)| (id, f))
-            });
-        if let Some((folder, path)) = live {
-            let ids: Vec<String> = programs
-                .keys()
-                .filter(|a| belongs(&programs, this, a, folder))
-                .cloned()
-                .collect();
-            if !ids.is_empty() {
-                let rest = rel[path.len()..].trim_start_matches('/');
-                return Ok(Ok(Found {
-                    ids,
-                    unread: integrity::not_walked(rest).then_some(NOT_WALKED),
-                    place: Some(rel),
-                }));
-            }
-        }
-        if integrity::in_app_support(&rel) {
-            return Ok(Ok(Found {
-                ids: Vec::new(),
-                place: Some(rel),
-                unread: Some(NOT_OPENED),
-            }));
-        }
-        let ids = at(&programs, |f| known::within(&rel, f));
-        if ids.is_empty() {
-            let wanted = rel.to_lowercase();
-            let spelled = at(&programs, |f| known::within(&wanted, &f.to_lowercase()));
-            if !spelled.is_empty() {
-                return Ok(Err(known::spelled_otherwise(
-                    spelled,
-                    "ask for one of them by its id, as in: immune program <id> --json",
-                )));
-            }
-        }
-        return Ok(Ok(Found {
-            ids,
-            unread: (!integrity::reads(&rel)).then_some(UNREAD),
-            place: Some(rel),
-        }));
+    if let Some(rel) = known::place_asked(asked, Some(this), home) {
+        return at_place(conn, this, &programs, rel);
     }
     if known::exists(conn, asked)? {
         return Ok(Err(not_a_program(asked)));
@@ -375,19 +305,111 @@ fn own_keg(programs: &BTreeMap<String, Program>, this: &str, formula: &str, keg:
             .any(|f| short(f).as_deref() == Some(name) && gave(f))
 }
 
-/// Whether a reading that finds programs holds `id` now: an assertion in force about it by one
-/// of `FOUND_BY`.
-fn held_as_program(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
-    let mut q = conn.prepare(
-        "SELECT EXISTS (SELECT 1 FROM assertion
-                        WHERE layer = 'live' AND subject = ?1 AND reader = ?2 AND kind = ?3)",
-    )?;
-    for (reader, kind) in FOUND_BY {
-        if q.query_row([id, reader, kind], |r| r.get::<_, bool>(0))? {
-            return Ok(true);
+/// The units of programs on this Mac, each a folder as ids name paths with the programs it
+/// answers for: a program where it is installed or where its id names it, and a folder of code
+/// for the applications it belongs to. `now` takes folders where they are now; otherwise where
+/// programs were installed and are no longer.
+fn units(
+    conn: &Connection,
+    this: &str,
+    programs: &BTreeMap<String, Program>,
+    now: bool,
+) -> rusqlite::Result<Vec<(String, Vec<String>)>> {
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    for (id, p) in programs {
+        let folders: Vec<&str> = if now {
+            p.folders(id)
+        } else {
+            p.was_at.iter().map(String::as_str).collect()
+        };
+        out.extend(
+            folders
+                .into_iter()
+                .map(|f| (f.to_string(), vec![id.clone()])),
+        );
+    }
+    // A folder of code is a unit while its reading holds it: one it no longer holds may only no
+    // longer be opened, since the reading opens a folder only while its application is there.
+    if now {
+        for (folder, _) in code_folders(conn, this)?
+            .into_iter()
+            .filter(|(_, live)| *live)
+        {
+            let Some((_, path)) = known::place_of(&folder) else {
+                continue;
+            };
+            let mut apps: Vec<String> = programs
+                .keys()
+                .filter(|a| belongs(programs, this, a, &folder))
+                .cloned()
+                .collect();
+            if apps.is_empty() {
+                apps.push(folder.clone());
+            }
+            out.push((path.to_string(), apps));
         }
     }
-    Ok(false)
+    Ok(out)
+}
+
+/// The answer to a place `rel` on this Mac, in the form ids name paths in: the programs whose
+/// unit is the place or holds it, where one is now, else where one was. A place strictly inside
+/// a unit is not judged on its own; a place that fits units only when case and Unicode form are
+/// ignored is refused; a folder holding units says how many; any other place was not opened.
+fn at_place(
+    conn: &Connection,
+    this: &str,
+    programs: &BTreeMap<String, Program>,
+    rel: String,
+) -> rusqlite::Result<Result<Found, Refused>> {
+    let now = units(conn, this, programs, true)?;
+    let was = units(conn, this, programs, false)?;
+    let holding = |fits: &dyn Fn(&str) -> bool| -> Vec<&(String, Vec<String>)> {
+        let here: Vec<_> = now.iter().filter(|(f, _)| fits(f)).collect();
+        if here.is_empty() {
+            was.iter().filter(|(f, _)| fits(f)).collect()
+        } else {
+            here
+        }
+    };
+    // As written first; only then as a Mac's volumes compare names, which is said.
+    let mut spelled = false;
+    let mut held = holding(&|f| known::within(&rel, f));
+    if held.is_empty() {
+        held = holding(&|f| known::same_place(&rel, f));
+        spelled = !held.is_empty();
+    }
+    if !held.is_empty() {
+        let mut ids: Vec<String> = held.iter().flat_map(|(_, ids)| ids.clone()).collect();
+        ids.sort();
+        ids.dedup();
+        let inside = held.iter().any(|(f, _)| *f != rel);
+        return Ok(Ok(Found {
+            ids,
+            unread: known::not_judged(spelled, inside.then_some(INSIDE)),
+            place: Some(rel),
+        }));
+    }
+    let inside = now
+        .iter()
+        .chain(&was)
+        .filter(|(f, _)| f != &rel && known::within(f, &rel))
+        .map(|(f, _)| f)
+        .collect::<BTreeSet<_>>()
+        .len();
+    let unread = if inside > 0 {
+        format!(
+            "this folder is not a program the store knows, and it holds {}: ask about one of them by its id or its path",
+            crate::things(inside as i64, "program", "programs")
+        )
+    } else {
+        NOT_OPENED.to_string()
+    };
+    Ok(Ok(Found {
+        ids: Vec::new(),
+        place: Some(rel),
+        unread: Some(unread),
+    }))
 }
 
 /// The folders of code applications keep in `~/Library/Application Support` that the reading of
@@ -458,25 +480,6 @@ fn programs(conn: &Connection, this: &str) -> rusqlite::Result<BTreeMap<String, 
         }
     }
     Ok(out)
-}
-
-/// The programs whose folder `holds` the path asked about: where one is now, else where one was.
-/// A program that moved, or one of two copies of it that went, is still the program at the
-/// folder it left, unless another program is there now.
-fn at(programs: &BTreeMap<String, Program>, holds: impl Fn(&str) -> bool) -> Vec<String> {
-    let now: Vec<String> = programs
-        .iter()
-        .filter(|(id, p)| p.folders(id).into_iter().any(&holds))
-        .map(|(id, _)| id.clone())
-        .collect();
-    if !now.is_empty() {
-        return now;
-    }
-    programs
-        .iter()
-        .filter(|(_, p)| p.was_at.iter().any(|f| holds(f)))
-        .map(|(id, _)| id.clone())
-        .collect()
 }
 
 fn several(ids: Vec<String>) -> Refused {

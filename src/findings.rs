@@ -1089,26 +1089,50 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Vec<Found>> {
     })
 }
 
-/// Marks each `verdict.suspicious` finding `unread_only` when the finding named by the verdict
-/// that raised it is: what it is about is then said in that finding's own words, a place that
-/// could not be read, and a verdict about a change that was seen keeps the rule's words, whatever
-/// happened to the place since (`verdict_item`). A verdict about a match judged an event, never
-/// a place that could not be read.
+/// Marks each `verdict.suspicious` finding `unread_only` when the finding its verdicts judged is:
+/// what it is about is then said in that finding's own words, a place that could not be read,
+/// and a verdict about a change that was seen keeps the rule's words, whatever happened to the
+/// place since (`verdict_item`). A verdict may name a verdict finding, which itself judged
+/// another: the chain is followed to its end, the first finding that is not a verdict finding,
+/// each id looked at once. A verdict about a match judged an event, never a place that could not
+/// be read.
 fn judged_as_read(found: &mut [Found]) {
-    let unread: std::collections::HashSet<String> = found
+    // Each finding as it was read: whether it is a verdict finding, the finding its opening
+    // verdict named, and whether it is of a place that could not be read.
+    let by_id: std::collections::HashMap<String, (bool, Option<String>, bool)> = found
         .iter()
-        .filter(|g| g.unread_only)
-        .map(|g| g.id.clone())
-        .collect();
-    for f in found.iter_mut() {
-        if f.rule.starts_with(crate::verdict::PREFIX) {
-            f.unread_only = f
+        .map(|g| {
+            let named = g
                 .verdicts
                 .as_ref()
                 .and_then(|v| v.opening.as_ref())
-                .and_then(|o| o.named.as_ref())
-                .is_some_and(|named| unread.contains(named));
+                .and_then(|o| o.named.clone());
+            (
+                g.id.clone(),
+                (
+                    g.rule.starts_with(crate::verdict::PREFIX),
+                    named,
+                    g.unread_only,
+                ),
+            )
+        })
+        .collect();
+    for f in found.iter_mut() {
+        if !f.rule.starts_with(crate::verdict::PREFIX) {
+            continue;
         }
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut at = by_id.get(&f.id).and_then(|(_, named, _)| named.as_deref());
+        f.unread_only = loop {
+            let Some(id) = at.filter(|id| seen.insert(id)) else {
+                break false;
+            };
+            match by_id.get(id) {
+                Some((true, named, _)) => at = named.as_deref(),
+                Some((false, _, unread)) => break *unread,
+                None => break false,
+            }
+        };
     }
 }
 
@@ -2351,6 +2375,42 @@ mod tests {
         ];
         super::judged_as_read(&mut all);
         assert_eq!(value(&all[2]), not_read);
+        // A verdict about a closed verdict finding takes the words of the first finding down
+        // the chain that is not a verdict finding, however long the chain.
+        for (unread, words) in [(true, not_read), (false, changed)] {
+            let mut all = vec![
+                found("f1", rule, unread),
+                super::Found {
+                    id: "v1".into(),
+                    state: "closed".into(),
+                    ..verdict("f1")
+                },
+                super::Found {
+                    id: "v2".into(),
+                    ..verdict("v1")
+                },
+                super::Found {
+                    id: "v3".into(),
+                    ..verdict("v2")
+                },
+            ];
+            super::judged_as_read(&mut all);
+            assert_eq!(value(&all[2]), words, "{unread}");
+            assert_eq!(value(&all[3]), words, "{unread}");
+        }
+        // A chain that runs in a circle ends, with the rule's words.
+        let mut all = vec![
+            super::Found {
+                id: "v1".into(),
+                ..verdict("v2")
+            },
+            super::Found {
+                id: "v2".into(),
+                ..verdict("v1")
+            },
+        ];
+        super::judged_as_read(&mut all);
+        assert_eq!(value(&all[0]), changed);
     }
 
     #[test]

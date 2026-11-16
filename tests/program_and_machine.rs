@@ -279,6 +279,7 @@ fn unknown_known_and_read_in_full_and_known_but_not_read_are_three_different_pro
         finders,
         [
             ("brew", BREW),
+            ("immune", PLACES),
             ("immune", LIMIT),
             ("integrity", KEGS),
             ("integrity", BUNDLES),
@@ -321,7 +322,8 @@ fn unknown_known_and_read_in_full_and_known_but_not_read_are_three_different_pro
 
 /// A program is one thing however it is asked for: its bundle, a file inside the bundle, its
 /// bundle identifier and its id give the same answer; a keg and a file inside it give the keg;
-/// a global package's folder gives the package. No path is looked at on disk.
+/// a global package's folder gives the package. A path strictly inside adds only the reading
+/// made by rule that it is not judged on its own. No path is looked at on disk.
 #[test]
 fn a_bundle_a_file_inside_it_its_identifier_and_its_id_are_the_same_program() {
     let e = Estate::new("program-same");
@@ -341,10 +343,11 @@ fn a_bundle_a_file_inside_it_its_identifier_and_its_id_are_the_same_program() {
     ] {
         let same = e.program(what);
         assert_eq!(
-            (&same.thing, &same.facts, &same.coverage),
+            (&same.thing, &same.facts, &store_read(&same)),
             (&by_bundle.thing, &by_bundle.facts, &by_bundle.coverage),
             "{what}"
         );
+        assert_eq!(not_judged(&same), what.contains("/Contents/"), "{what}");
     }
     // Nothing on disk is asked: the bundle can be gone and the store still answers for it.
     std::fs::remove_dir_all(e.0.join("system/Applications/Tiny.app")).unwrap();
@@ -479,9 +482,9 @@ fn every_id_and_path_of_a_program_answers_for_that_program_with_its_findings() {
         ids.sort();
         let mut findings: Vec<String> = k.findings.iter().map(|f| f.id.clone()).collect();
         findings.sort();
-        let read = readings(k)
+        let read = store_read(k)
             .iter()
-            .map(|(reader, kind, _, _)| format!("{reader} {kind}"))
+            .map(|c| format!("{} {}", c.reader, c.kind))
             .collect();
         (ids, findings, read)
     };
@@ -508,7 +511,9 @@ fn every_id_and_path_of_a_program_answers_for_that_program_with_its_findings() {
             let k = e.program(what);
             assert_eq!(k.presence(), v1::Presence::Held, "{what}");
             assert_eq!(of(&k), first, "{what}");
-            assert!(unread(&k).is_none(), "{what}");
+            let inside = what.ends_with("/bin/tool") || what.ends_with(".js");
+            assert_eq!(not_judged(&k), inside, "{what}");
+            assert!(unread(&k).is_none() || inside, "{what}");
         }
     }
 }
@@ -519,15 +524,37 @@ fn not_opened(k: &v1::Known) -> bool {
         c.completeness() == v1::Completeness::None
             && c.reason_text
                 .as_deref()
-                .is_some_and(|r| r.contains("has not looked into this one"))
+                .is_some_and(|r| r.starts_with("no reading opened this place"))
     })
+}
+
+/// The reading made by rule that a path strictly inside a program is not judged on its own.
+fn not_judged(k: &v1::Known) -> bool {
+    unread(k).is_some_and(|c| {
+        c.completeness() == v1::Completeness::None
+            && c.reason_text.as_deref().is_some_and(|r| {
+                r.contains("a single path inside a program is not judged on its own")
+            })
+    })
+}
+
+/// The kind of the reading made by rule for a place asked about that is not judged on its own.
+const PLACES: &str = "places the readings that find programs look in";
+
+/// The readings of an answer the store holds, without the one made by rule for the place asked.
+fn store_read(k: &v1::Known) -> Vec<v1::Coverage> {
+    k.coverage
+        .iter()
+        .filter(|c| !(c.reader == "immune" && c.kind == PLACES))
+        .cloned()
+        .collect()
 }
 
 /// A place in `~/Library/Application Support` that no reader opened is never answered as read:
 /// a folder no application matched, a file in it, a helper application kept there, the folder
 /// the core is installed in, and `Application Support` itself are each `unknown` with a reading
-/// that is not full and says why. A place inside a folder of code that its reading passes over,
-/// a cache, answers for the application and is said not to be looked at.
+/// that is not full and says why. A place inside a folder of code, a cache its reading passes
+/// over, answers for the application and is said not to be judged on its own.
 #[test]
 fn a_folder_under_application_support_no_reader_opened_is_never_answered_as_read() {
     let e = Estate::new("program-not-opened");
@@ -558,27 +585,35 @@ fn a_folder_under_application_support_no_reader_opened_is_never_answered_as_read
         "~/Library/Application Support/Evil",
         "~/Library/Application Support/Tools/Helper.app",
         "~/Library/Application Support/ai.nuanu.immune/bin/immune",
-        "~/Library/Application Support",
         "file:machine:mac/Library/Application Support/Evil",
+        // `..` in an id is resolved before the id is matched: this is not Editor's.
+        "file:machine:mac/Library/Application Support/Editor/../Evil/payload.js",
     ] {
         let k = e.program(what);
         assert_eq!(k.presence(), v1::Presence::Unknown, "{what}");
+        assert_eq!(k.thing, None, "{what}");
         assert!(not_opened(&k), "{what}: {:?}", k.coverage);
         assert!(!all_full(&k), "{what}");
     }
+    // A folder that holds a folder of code without being one says how many it holds.
+    let holder = e.program("~/Library/Application Support");
+    assert_eq!(holder.presence(), v1::Presence::Unknown);
+    assert!(
+        unread(&holder).is_some_and(|c| c
+            .reason_text
+            .as_deref()
+            .is_some_and(|r| r.contains("it holds 1 program"))),
+        "{:?}",
+        holder.coverage
+    );
+    assert!(!all_full(&holder));
     let cache = e.program("~/Library/Application Support/Editor/Cache/chunk.js");
     assert_eq!(
         thing(&cache),
         "component:machine:mac/macos-app/org.example.editor"
     );
-    assert!(
-        unread(&cache).is_some_and(|c| c.completeness() == v1::Completeness::None
-            && c.reason_text
-                .as_deref()
-                .is_some_and(|r| r.contains("caches"))),
-        "{:?}",
-        cache.coverage
-    );
+    assert!(not_judged(&cache), "{:?}", cache.coverage);
+    assert!(!all_full(&cache));
 }
 
 /// The folder of code of an application that was removed, still on disk and changing, is not
@@ -612,8 +647,9 @@ fn the_code_folder_of_a_removed_application_still_on_disk_is_not_gone() {
 }
 
 /// Two applications whose bundles share a folder name, and so match one folder of code, are two
-/// programs: neither is in the other's answer, a finding about one is not the other's, and the
-/// one removed is gone though the other still holds the folder. A formula of a tap and the core
+/// programs: neither is in the other's answer and a finding about one is not the other's. The
+/// one removed is not gone while the folder that matches it is held: the store does not keep
+/// which application the reading matched it to, and a program is held while any unit is. A formula of a tap and the core
 /// formula of the same short name are two programs too: a keg is its own formula's, and one whose
 /// version Homebrew gave for no formula of its name stays tied to that name.
 #[test]
@@ -653,11 +689,12 @@ fn a_program_is_tied_to_its_own_parts_and_never_through_them_to_another_program(
         |k: &v1::Known| -> Vec<String> { k.same_as.iter().map(|s| s.id_text.clone()).collect() };
     assert_eq!(ids(&e.program(one)), [folder]);
     assert_eq!(ids(&e.program(other)), [folder]);
-    // The other removed: gone, while the first still holds the folder.
+    // The other removed: held by the folder, which may be its, and still not in the first's answer.
     std::fs::remove_dir_all(e.0.join("home/Applications/Editor.app")).unwrap();
     e.run();
-    assert_eq!(e.program(other).presence(), v1::Presence::Gone);
+    assert_eq!(e.program(other).presence(), v1::Presence::Held);
     assert_eq!(e.program(one).presence(), v1::Presence::Held);
+    assert_eq!(ids(&e.program(one)), [folder]);
     // The keg of version 1.0 is the core formula's, not the tap's.
     let core = e.program("component:machine:mac/brew/tool");
     assert_eq!(ids(&core), [KEG]);
@@ -1270,11 +1307,11 @@ fn refused(e: &Estate, question: &str, what: &str) -> Value {
     v["errors"][0].clone()
 }
 
-/// The promise against false calm for a program in a place no reading looks at: a tool in
-/// `/usr/local/bin`, an application in `/Users/Shared`, in `~/Downloads` or two folders down in
-/// `/Applications` answers `unknown` with a reading made by rule that is not full, and in
-/// `~/Downloads` with the reading that says the folder was not looked into. A path a reading
-/// looks at has no such reading.
+/// The promise against false calm for a path under no program the store holds: a tool in
+/// `/usr/local/bin`, an application in `/Users/Shared`, in `~/Downloads`, two folders down in
+/// `/Applications`, or one a reading would look at, answers `unknown` with a reading made by rule
+/// that is not full, since the store does not keep where the readings looked; in `~/Downloads`
+/// also with the reading that says the folder was not looked into.
 #[test]
 fn a_program_path_no_reading_looks_at_is_never_unknown_with_every_reading_full() {
     let e = Estate::new("program-unread");
@@ -1287,6 +1324,11 @@ fn a_program_path_no_reading_looks_at_is_never_unknown_with_every_reading_full()
         "~/Downloads/Tool.app",
         "/Applications/Suite/Extra/Tool.app",
         "/ApplicationsExtra/Tool.app",
+        "/Applications/Ghost.app",
+        "/Applications/Suite/Ghost.app/Contents/MacOS/Ghost",
+        "~/Applications/Ghost.app",
+        "/opt/homebrew/Cellar/ghost/1.0",
+        "/usr/local/lib/node_modules/ghost",
     ] {
         let k = e.program(asked);
         assert_eq!(k.presence(), v1::Presence::Unknown, "{asked}");
@@ -1315,23 +1357,6 @@ fn a_program_path_no_reading_looks_at_is_never_unknown_with_every_reading_full()
         c.kind == "folders macOS asks permission for"
             && c.reason_text.as_deref() == Some("not looked into: ~/Downloads")
     }));
-    for asked in [
-        "/Applications/Ghost.app",
-        "/Applications/Suite/Ghost.app/Contents/MacOS/Ghost",
-        "~/Applications/Ghost.app",
-        "/opt/homebrew/Cellar/ghost/1.0",
-        "/usr/local/lib/node_modules/ghost",
-    ] {
-        let k = e.program(asked);
-        // Every reading full but the standing limit that an answer `unknown` carries.
-        assert!(unread(&k).is_none(), "{asked}");
-        assert!(
-            k.coverage
-                .iter()
-                .all(|c| c.kind == LIMIT || c.completeness() == v1::Completeness::Full),
-            "{asked}"
-        );
-    }
 }
 
 /// A program that moved away is still the program at the folder it left: one of two copies of
@@ -1380,16 +1405,25 @@ fn an_id_with_a_hidden_character_asks_back_the_same_program_and_machine() {
     assert_eq!(e.machine(Some(thing(&machine))).thing, machine.thing);
 }
 
-/// A program path the store knows only under another case is refused with the ids it knows,
-/// never answered `unknown`: on a volume that ignores case it may be the same application.
+/// A program path the store knows only under another case answers for the program it knows,
+/// with a reading made by rule that says it is spelled otherwise, never `unknown`: on a volume
+/// that ignores case it is the same application.
 #[test]
-fn a_program_path_spelled_with_another_case_is_refused_not_unknown() {
+fn a_program_path_spelled_with_another_case_answers_for_the_program_and_says_so() {
     let e = Estate::new("program-case");
     e.app("Tiny.app", "org.example.tiny", "2.0");
     e.run();
-    let error = refused(&e, "program", "/applications/tiny.app/Contents");
-    assert_eq!(error["code"], "spelled_otherwise");
-    assert_eq!(error["ids_text"], serde_json::json!([TINY]));
+    let k = e.program("/applications/tiny.app/Contents");
+    assert_eq!(thing(&k), TINY);
+    assert!(
+        unread(&k).is_some_and(|c| c
+            .reason_text
+            .as_deref()
+            .is_some_and(|r| r.starts_with("the path is spelled otherwise"))),
+        "{:?}",
+        k.coverage
+    );
+    assert!(!all_full(&k));
 }
 
 /// An id the store holds that is not a machine is refused, not answered as a machine never heard
@@ -1541,4 +1575,221 @@ fn a_program_not_known_carries_the_limit_that_other_package_managers_are_not_rea
         .find(|c| c.kind == MANAGERS)
         .unwrap();
     assert_eq!(managers.completeness(), v1::Completeness::Full);
+}
+
+/// The finding ids of an answer, in order.
+fn finding_ids(k: &v1::Known) -> Vec<String> {
+    let mut ids: Vec<String> = k.findings.iter().map(|f| f.id.clone()).collect();
+    ids.sort();
+    ids
+}
+
+/// An application whose name is not plain ASCII, its folder of code changed in place so that a
+/// finding is about it, and a project of the same name with a finding of its own.
+fn spelled_estate(tag: &str) -> Estate {
+    let e = Estate::new(tag);
+    e.app("Caf\u{e9}.app", "org.example.cafe", "1.0");
+    e.put(
+        "home/Library/Application Support/Caf\u{e9}/main.js",
+        "start();\n",
+    );
+    e.checkout("dev/Caf\u{e9}");
+    e.run();
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(e.0.join("home/Library/Application Support/Caf\u{e9}/main.js"))
+        .unwrap();
+    f.write_all(b"steal();\n").unwrap();
+    e.put("home/dev/Caf\u{e9}/.git/hooks/pre-commit", "#!/bin/sh\n");
+    e.run();
+    e
+}
+
+/// The promise that an answer is about a unit the store holds however the place is spelled:
+/// `..`, `.`, a doubled or a trailing slash, another case and another Unicode form, in a path and
+/// in an id, give every command that takes a path or an id the same thing with the same findings.
+/// A spelling the store does not hold as written says so with a reading that is not full.
+#[test]
+fn every_command_that_takes_a_path_answers_for_one_unit_however_the_place_is_spelled() {
+    let e = spelled_estate("spelled-everywhere");
+    let cafe = "Caf\u{e9}";
+    let nfd = "Cafe\u{301}";
+    for (question, base, id_form) in [
+        (
+            "program",
+            format!("~/Library/Application Support/{cafe}"),
+            format!("file:machine:mac/Library/Application Support/x/../{cafe}/"),
+        ),
+        (
+            "project",
+            format!("~/dev/{cafe}"),
+            format!("checkout:machine:mac/dev/x/../{cafe}/"),
+        ),
+    ] {
+        let first = e.known(question, Some(&base));
+        let unit = first.thing.clone().unwrap();
+        assert_eq!(first.findings.len(), 1, "{question}: {:?}", first.findings);
+        let (up, last) = base.rsplit_once('/').unwrap();
+        let written = [
+            format!("{up}/x/../{last}"),
+            format!("{up}/./{last}"),
+            format!("{up}//{last}"),
+            format!("{base}/"),
+            format!("{base}//"),
+            id_form,
+        ];
+        let otherwise = [
+            format!("~/{}", base.trim_start_matches("~/").to_uppercase()),
+            base.replace(cafe, nfd),
+        ];
+        let spellings = written
+            .iter()
+            .map(|w| (w, false))
+            .chain(otherwise.iter().map(|w| (w, true)));
+        for (what, spelled) in spellings {
+            let k = e.known(question, Some(what));
+            assert_eq!(k.thing.as_ref(), Some(&unit), "{question} {what:?}");
+            assert_eq!(k.presence(), first.presence(), "{question} {what:?}");
+            assert_eq!(finding_ids(&k), finding_ids(&first), "{question} {what:?}");
+            let said = k.coverage.iter().any(|c| {
+                c.reader == "immune"
+                    && c.reason_text
+                        .as_deref()
+                        .is_some_and(|r| r.starts_with("the path is spelled otherwise"))
+            });
+            assert_eq!(said, spelled, "{question} {what:?}");
+        }
+    }
+}
+
+/// The promise that findings are gathered before anything else: an answer never holds fewer
+/// findings than the store has about the path asked, its unit and what lies inside it. A file in
+/// a folder of code spelled in another case answers for its application with the finding; a
+/// folder that holds that folder of code, or a project, answers `unknown` with the finding.
+#[test]
+fn an_answer_never_holds_fewer_findings_than_the_store_has_about_the_place_asked() {
+    let e = spelled_estate("findings-first");
+    let app = "component:machine:mac/macos-app/org.example.cafe";
+    let by_app = e.program(app);
+    assert_eq!(by_app.findings.len(), 1, "{:?}", by_app.findings);
+    let inside = e.program("~/Library/Application Support/caf\u{c9}/main.js");
+    assert_eq!(thing(&inside), app);
+    assert_eq!(finding_ids(&inside), finding_ids(&by_app));
+    assert!(!all_full(&inside));
+    // Both reasons are said: spelled otherwise, and a single path inside.
+    let reason = unread(&inside)
+        .and_then(|c| c.reason_text.clone())
+        .unwrap_or_default();
+    assert!(
+        reason.starts_with("the path is spelled otherwise")
+            && reason.contains("a single path inside a program is not judged on its own"),
+        "{reason}"
+    );
+    let holder = e.program("~/Library/Application Support");
+    assert_eq!(holder.presence(), v1::Presence::Unknown);
+    assert_eq!(finding_ids(&holder), finding_ids(&by_app));
+    let projects = e.known("project", Some("~/dev"));
+    assert_eq!(projects.presence(), v1::Presence::Unknown);
+    let project = e.known("project", Some("~/dev/Caf\u{e9}"));
+    assert_eq!(project.findings.len(), 1, "{:?}", project.findings);
+    assert_eq!(finding_ids(&projects), finding_ids(&project));
+}
+
+/// The promise of a file inside a program: one its reading does not compare, a settings file or
+/// compiled Python in a folder of code, is never answered with every reading full. It answers for
+/// the program with a reading made by rule that a single path inside is not judged on its own.
+#[test]
+fn a_file_inside_a_program_is_never_answered_with_every_reading_full() {
+    let e = Estate::new("program-file-inside");
+    e.app("Editor.app", "org.example.editor", "3.0");
+    e.put(
+        "home/Library/Application Support/Editor/main.js",
+        "start();\n",
+    );
+    e.put(
+        "home/Library/Application Support/Editor/settings.json",
+        "{}\n",
+    );
+    e.put(
+        "home/Library/Application Support/Editor/lib/__pycache__/mod.cpython-312.pyc",
+        "invented\n",
+    );
+    e.run();
+    let whole = e.program("~/Library/Application Support/Editor");
+    assert!(all_full(&whole), "{:?}", whole.coverage);
+    for what in [
+        "~/Library/Application Support/Editor/settings.json",
+        "~/Library/Application Support/Editor/lib/__pycache__/mod.cpython-312.pyc",
+    ] {
+        let k = e.program(what);
+        assert_eq!(
+            thing(&k),
+            "component:machine:mac/macos-app/org.example.editor",
+            "{what}"
+        );
+        assert_eq!(k.presence(), v1::Presence::Held, "{what}");
+        assert!(not_judged(&k), "{what}: {:?}", k.coverage);
+        assert!(!all_full(&k), "{what}");
+    }
+}
+
+/// The promise of presence, told in one place for every command: a program is held while any of
+/// its units is, and `gone` needs the latest reading of every reading that owns one of its units
+/// to be full. An application removed while the reading of applications' code was partial, its
+/// folder of code kept as it was, is held and comes with that partial reading; once that reading
+/// is full again, the application is gone.
+#[test]
+fn a_program_is_gone_only_when_every_reading_that_owns_one_of_its_units_was_full() {
+    use std::os::unix::fs::PermissionsExt;
+    let e = Estate::new("program-presence");
+    e.app("Editor.app", "org.example.editor", "3.0");
+    e.app("Other.app", "org.example.other", "1.0");
+    e.put(
+        "home/Library/Application Support/Editor/main.js",
+        "start();\n",
+    );
+    e.put(
+        "home/Library/Application Support/Other/main.js",
+        "start();\n",
+    );
+    e.run();
+    std::fs::remove_dir_all(e.0.join("system/Applications/Editor.app")).unwrap();
+    // Another folder of code cannot be read: the reading of applications' code is partial.
+    let shut = e.home().join("Library/Application Support/Other");
+    std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o000)).unwrap();
+    e.run();
+    std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let editor = "component:machine:mac/macos-app/org.example.editor";
+    let code = "code kept by applications not signed by Apple under ~/Library/Application Support";
+    for what in [
+        editor,
+        "/Applications/Editor.app",
+        "~/Library/Application Support/Editor",
+    ] {
+        let k = e.program(what);
+        assert_eq!(k.presence(), v1::Presence::Held, "{what}");
+        assert!(
+            k.coverage
+                .iter()
+                .any(|c| c.kind == code && c.completeness() == v1::Completeness::Partial),
+            "{what}: {:?}",
+            k.coverage
+        );
+    }
+    e.run();
+    assert_eq!(e.program(editor).presence(), v1::Presence::Gone);
+    // Gone, and then a reading that owns its folder of code is partial again: it cannot be told.
+    std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o000)).unwrap();
+    e.run();
+    std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let k = e.program(editor);
+    assert_eq!(k.presence(), v1::Presence::Unknown);
+    assert!(
+        k.coverage
+            .iter()
+            .any(|c| c.kind == code && c.completeness() == v1::Completeness::Partial),
+        "{:?}",
+        k.coverage
+    );
 }

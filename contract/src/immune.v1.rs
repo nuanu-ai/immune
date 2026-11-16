@@ -701,15 +701,16 @@ pub struct Known {
     /// When the answer was made.
     #[prost(int64, tag = "3")]
     pub answered_at: i64,
-    /// Whether the store knows the thing at all.
+    /// Whether the thing is there, by what the store holds of each of its ids (`Presence`).
     #[prost(enumeration = "Presence", tag = "4")]
     #[serde(
         serialize_with = "crate::enum_name::<Presence, _>",
         deserialize_with = "crate::enum_from_name::<Presence, _>"
     )]
     pub presence: i32,
-    /// The thing asked for. Absent when the presence is `unknown`. A path names the project or the
-    /// program that holds it, the nearest one; an id names the thing with that id.
+    /// The thing asked for. Absent when the store holds nothing by that name or at that place. A
+    /// path names the project or the program that holds it, the nearest one; an id names the thing
+    /// with that id.
     /// A thing the store knows under several ids is one thing: a machine under ids linked by
     /// `same_as`, a program under the ids of a formula and its kegs, or of an application and its
     /// code kept outside the bundle. Its parts, facts, coverage and findings are those of every one
@@ -736,9 +737,11 @@ pub struct Known {
     ///    `sweep visit`, completeness `none`;
     /// - a machine the owner set aside as retired or not theirs: `servers`, `sweep of a machine set
     ///    aside by the owner`, completeness `none`, the reason naming what the owner said and the day;
-    /// - a path that no reading looking for things of its kind looks at, answered `unknown`:
-    ///    `immune`, `places the readings that find projects look in` (or programs), completeness
-    ///    `none`;
+    /// - a path that is not judged on its own: `immune`, `places the readings that find projects
+    ///    look in` (or programs), completeness `none`, the reason saying why: the path lies under no
+    ///    thing of its kind the store holds, or is a folder that holds some and says how many, and
+    ///    is answered `unknown`; or it lies strictly inside one, or names one only in another case
+    ///    or Unicode form, and is answered for that one;
     /// - a program the store never heard of (`immune program`, presence `unknown`): `immune`,
     ///    `software of package managers this version does not look for`, completeness `none`, cause
     ///    `no_reader`, the reason naming what this version does not read or find.
@@ -924,13 +927,17 @@ impl Question {
 pub enum Presence {
     #[serde(rename = "unspecified")]
     Unspecified = 0,
-    /// The store has never heard of it. Which readings could have found it is in `coverage`.
+    /// The store has never heard of it, or cannot tell: none of its ids is held, and the latest
+    /// reading of one that wrote about them was not full, so what it did not read again may still
+    /// be there. Which readings could have found it is in `coverage`.
     #[serde(rename = "unknown")]
     Unknown = 1,
-    /// The store holds facts in force about it.
+    /// The store holds facts in force about one of its ids, or about something on it. A reading
+    /// that holds it and was not full is in `coverage`.
     #[serde(rename = "held")]
     Held = 2,
-    /// It was known and no longer is: what was read of it is retracted.
+    /// It was known and no longer is: what was read of every one of its ids is retracted, and the
+    /// latest reading of each reading that wrote about them was full.
     #[serde(rename = "gone")]
     Gone = 3,
 }
@@ -2347,9 +2354,12 @@ pub struct UnreadPlace {
     pub project_text: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub ecosystem: ::prost::alloc::string::String,
-    /// `partial`, some of them read; `not_read`; or `no_reader`, lockfiles of a kind this version
-    /// has no reader for, such as `go.sum`, in an ecosystem no data is matched for, so the project
-    /// was compared with nothing there.
+    /// `partial`, some of them read; `not_read`; `no_reader`, lockfiles of a kind this version has
+    /// no reader for, such as `go.sum`, in an ecosystem no data is matched for, so the project was
+    /// compared with nothing there; or `none_found`, no lockfile this version knows of was found in
+    /// the project, with the ecosystem `any`. A project with any such place is never answered
+    /// "does not affect" for any record, since the store does not keep every ecosystem a record
+    /// names.
     #[prost(string, tag = "3")]
     pub lockfiles: ::prost::alloc::string::String,
     /// Why, as the reading of lockfiles gave it, or for `no_reader` the kinds by name. Whole.

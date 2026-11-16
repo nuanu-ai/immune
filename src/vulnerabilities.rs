@@ -1268,19 +1268,7 @@ pub fn totals(conn: &Connection, now: i64) -> rusqlite::Result<Totals> {
         .into_iter()
         .map(|((c, e, p), r)| (c, e, p, REASONS.get(r).copied().unwrap_or_default()))
         .collect();
-    t.unread_places = conn
-        .prepare(
-            "SELECT checkout, ecosystem, lockfiles, lockfiles_why FROM vulnerability_place
-             WHERE lockfiles != 'full' ORDER BY checkout, ecosystem",
-        )?
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
-        .collect::<rusqlite::Result<_>>()?;
-    t.unread_places.extend(
-        no_reader_places(conn)?
-            .into_iter()
-            .map(|(c, e, names)| (c, e, NO_READER.to_string(), Some(no_reader_said(&names)))),
-    );
-    t.unread_places.sort();
+    t.unread_places = unread_places(conn)?;
     t.informational = conn.query_row(
         "SELECT COUNT(*) FROM advisory
          WHERE kind = 'informational' AND withdrawn IS NULL AND gone_at IS NULL",
@@ -1480,6 +1468,78 @@ pub type UnreadPlace = (String, String, String, Option<String>);
 
 /// How the lockfiles of a place were read when this version has no reader for their kind.
 pub const NO_READER: &str = "no_reader";
+/// How the lockfiles of a project were read when none this version knows was found in it.
+pub const NONE_FOUND: &str = "none_found";
+
+/// The places whose lockfiles were not all read, in order: what cannot be told about every
+/// project, built here alone, so the list, the totals and the answer for one record, held or
+/// not, say the same. A place is a project's lockfiles of one ecosystem, read in part or not in
+/// the latest check (`vulnerability_place`), of a kind this version has no reader for
+/// (`no_reader_places`), or a project in which no lockfile was found at all, which no other
+/// table holds: what it declares is not known, so it is never "not affected".
+pub fn unread_places(conn: &Connection) -> rusqlite::Result<Vec<UnreadPlace>> {
+    let mut out: Vec<UnreadPlace> = conn
+        .prepare(
+            "SELECT checkout, ecosystem, lockfiles, lockfiles_why FROM vulnerability_place
+             WHERE lockfiles != 'full' ORDER BY checkout, ecosystem",
+        )?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    out.extend(
+        no_reader_places(conn)?
+            .into_iter()
+            .map(|(c, e, names)| (c, e, NO_READER.to_string(), Some(no_reader_said(&names)))),
+    );
+    let none_found: Vec<String> = conn
+        .prepare(
+            "SELECT e.id FROM entity e
+             WHERE e.type = ?1 AND e.id NOT IN (SELECT id FROM gone_entity)
+               AND EXISTS (SELECT 1 FROM assertion a WHERE a.layer = 'live' AND a.subject = e.id)
+               AND NOT EXISTS (SELECT 1 FROM coverage c WHERE c.reader = ?2 AND c.scope = e.id)
+             ORDER BY e.id",
+        )?
+        .query_map([crate::checkouts::TYPE, crate::lockfiles::READER], |r| {
+            r.get(0)
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    out.extend(none_found.into_iter().map(|c| {
+        (
+            c,
+            ANY_ECOSYSTEM.to_string(),
+            NONE_FOUND.to_string(),
+            Some(NONE_FOUND_SAID.to_string()),
+        )
+    }));
+    out.sort();
+    Ok(out)
+}
+
+/// The ecosystem of a place that stands for every ecosystem of a project.
+const ANY_ECOSYSTEM: &str = "any";
+/// Why a project with no lockfile is not compared.
+const NONE_FOUND_SAID: &str = "no lockfile this version knows of was found in it";
+
+/// Each project with a place whose lockfiles were not all read, with why, every place said.
+fn untold(places: &[UnreadPlace]) -> BTreeMap<String, String> {
+    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (checkout, ecosystem, lockfiles, why) in places {
+        out.entry(checkout.clone()).or_default().push(match why {
+            Some(why) => format!("{ecosystem} lockfiles {lockfiles}: {why}"),
+            None => format!("{ecosystem} lockfiles {lockfiles}"),
+        });
+    }
+    out.into_iter()
+        .map(|(c, said)| {
+            (
+                c,
+                format!(
+                    "not every lockfile of the project was read ({})",
+                    said.join("; ")
+                ),
+            )
+        })
+        .collect()
+}
 
 /// The places whose lockfiles are of a kind this version has no reader for, in an ecosystem no
 /// data is matched for, as checkout, ecosystem and the kinds by name, from each checkout's
@@ -1721,6 +1781,49 @@ pub fn one(conn: Option<&Connection>, id: &str, now: i64) -> rusqlite::Result<v1
             .and_then(|f| stale.get(f.source))
     };
     let answer = |word: &str| crate::contract::value_of::<v1::PackageAnswer>(word);
+    // What cannot be told about every project (`unread_places`). The store does not keep the
+    // other ecosystems a record names, so a project with any place not wholly read cannot be
+    // told for any record: none of its answers is "not affected".
+    let unread = unread_places(conn)?;
+    let untold = untold(&unread);
+    let untell = |checkout: &str, a: &mut v1::PlaceAnswer| {
+        let Some(why) = untold.get(checkout) else {
+            return;
+        };
+        if a.answer == Some(answer("not_affected")) {
+            a.answer = Some(answer("unknown"));
+            a.reason = Some(PLACE_NOT_READ.to_string());
+            a.detail_text = Some(whole(why));
+            a.certainty = None;
+            a.openvex = None;
+        }
+        for p in a
+            .packages
+            .iter_mut()
+            .filter(|p| p.answer == answer("not_affected"))
+        {
+            p.answer = answer("unknown");
+            p.reason = Some(PLACE_NOT_READ.to_string());
+            p.detail_text = whole(why);
+            p.certainty = None;
+            p.openvex = None;
+        }
+    };
+    // A place no row of `vulnerability_place` holds: lockfiles of a kind with no reader, or none.
+    let unrowed = |places: &mut Vec<v1::PlaceAnswer>, ecosystem: Option<&str>| {
+        for (checkout, eco, lockfiles, why) in &unread {
+            if lockfiles == NO_READER || lockfiles == NONE_FOUND {
+                places.push(v1::PlaceAnswer {
+                    project_text: place_of(checkout),
+                    ecosystem: ecosystem.map_or(eco.clone(), str::to_string),
+                    answer: Some(answer("unknown")),
+                    reason: Some(PLACE_NOT_READ.to_string()),
+                    detail_text: untold.get(checkout).or(why.as_ref()).map(|w| whole(w)),
+                    ..Default::default()
+                });
+            }
+        }
+    };
     // A place's answer for a record that names none of its packages, from the conditions of
     // the place: "not affected" only when its lockfiles were all read and the data is
     // current, at the check and now, with this certainty.
@@ -1753,19 +1856,15 @@ pub fn one(conn: Option<&Connection>, id: &str, now: i64) -> rusqlite::Result<v1
     if records.is_empty() {
         if in_catalogue {
             out.data = Some(v1::RecordData::NoRecord as i32);
-            out.answers = places.iter().map(|p| derived(p, "no_signs")).collect();
-            // A project with lockfiles of a kind no reader reads was compared with nothing
-            // there: it cannot be told for it, whatever its other lockfiles say.
-            for (checkout, ecosystem, names) in no_reader_places(conn)? {
-                out.answers.push(v1::PlaceAnswer {
-                    project_text: place_of(&checkout),
-                    ecosystem,
-                    answer: Some(answer("unknown")),
-                    reason: Some(PLACE_NOT_READ.to_string()),
-                    detail_text: Some(whole(&no_reader_said(&names))),
-                    ..Default::default()
-                });
-            }
+            out.answers = places
+                .iter()
+                .map(|p| {
+                    let mut a = derived(p, "no_signs");
+                    untell(&p.0, &mut a);
+                    a
+                })
+                .collect();
+            unrowed(&mut out.answers, None);
             out.answers.sort_by(|a, b| {
                 (&a.project_text, &a.ecosystem).cmp(&(&b.project_text, &b.ecosystem))
             });
@@ -1811,7 +1910,10 @@ pub fn one(conn: Option<&Connection>, id: &str, now: i64) -> rusqlite::Result<v1
             continue;
         }
         let mine: Vec<&Place> = places.iter().filter(|p| p.1 == eco).collect();
-        if mine.is_empty() {
+        let mut more: Vec<v1::PlaceAnswer> = Vec::new();
+        unrowed(&mut more, Some(eco));
+        more.retain(|a| !mine.iter().any(|p| place_of(&p.0) == a.project_text));
+        if mine.is_empty() && more.is_empty() {
             // No answer in any place is not "affects none": nothing was compared.
             v.said = Some(format!(
                 "The store knows no project whose {eco} lockfiles it compared with this record, so whether it affects one cannot be told."
@@ -1888,7 +1990,7 @@ pub fn one(conn: Option<&Connection>, id: &str, now: i64) -> rusqlite::Result<v1
             stored.entry(checkout).or_default().push(p);
         }
         for p in mine {
-            v.answers.push(match stored.remove(&p.0) {
+            let mut a = match stored.remove(&p.0) {
                 Some(packages) => v1::PlaceAnswer {
                     project_text: place_of(&p.0),
                     ecosystem: p.1.clone(),
@@ -1903,8 +2005,17 @@ pub fn one(conn: Option<&Connection>, id: &str, now: i64) -> rusqlite::Result<v1
                     }
                     a
                 }
-            });
+            };
+            untell(&p.0, &mut a);
+            v.answers.push(a);
         }
+        // A project with no place of this ecosystem, whose lockfiles are of a kind with no reader
+        // or were not found, cannot be told for this record either: once, in the order of the rest.
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        more.retain(|a| seen.insert(a.project_text.clone()));
+        v.answers.extend(more);
+        v.answers
+            .sort_by(|a, b| a.project_text.cmp(&b.project_text));
         out.records.push(v);
     }
     Ok(out)
