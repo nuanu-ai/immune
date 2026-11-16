@@ -11,7 +11,7 @@ This page is for whoever makes Immune's installer package. A person who installs
 | `/usr/local/bin/immune` | the core, a real file, not a link |
 | `/Applications/Immune.app` | the optional menu-bar app, which runs the core at `/usr/local/bin/immune` |
 
-The package runs no script, before or after it places the files, and starts nothing. Each person who wants their account watched runs `immune install` once. Installer's last page says that Immune is installed and does not watch the Mac yet, and to open Immune from Applications or run `immune install` to start it. A package that ends with "installed" while nothing watches would be false calm.
+The package runs no script, before or after it places the files, and starts nothing. Each person who wants their account watched runs `immune install` once. Installer's last page says that Immune is installed and does not watch the Mac yet, and to run `immune install` to start it. The app does not start the core yet. A package that ends with "installed" while nothing watches would be false calm.
 
 The package installs only on Apple Silicon with the macOS that `app/Info.plist` names in `LSMinimumSystemVersion`, today 15.0. These are requirements of its distribution file, so an Intel Mac or an older macOS is refused before anything is placed, and Installer does not offer to install Rosetta to read the package.
 
