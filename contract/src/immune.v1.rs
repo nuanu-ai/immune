@@ -2318,6 +2318,41 @@ pub struct Vulnerabilities {
     /// `totals.unknown_packages` counts. Absent when `totals` is. Since 1.16.0.
     #[prost(message, optional, tag = "9")]
     pub unknown: ::core::option::Option<UnknownPackages>,
+    /// The projects whose lockfiles of an ecosystem were not all read, the ones
+    /// `totals.places_not_read` counts, whether or not a package was read in them. Absent when
+    /// `totals` is. Since 1.16.0.
+    #[prost(message, optional, tag = "10")]
+    pub unread: ::core::option::Option<UnreadPlaces>,
+}
+/// The places, a project's lockfiles of one ecosystem, that were not all read: what they declare
+/// is not all known, so no answer about them is "does not affect".
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UnreadPlaces {
+    /// One per project and ecosystem, at most 200, by project.
+    #[prost(message, repeated, tag = "1")]
+    pub items: ::prost::alloc::vec::Vec<UnreadPlace>,
+    /// How many there are.
+    #[prost(uint64, tag = "2")]
+    pub total: u64,
+}
+/// A project's lockfiles of one ecosystem that were not all read.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UnreadPlace {
+    /// The project, as a person recognises it, and the ecosystem. Whole.
+    #[prost(string, tag = "1")]
+    pub project_text: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub ecosystem: ::prost::alloc::string::String,
+    /// `partial`, some of them read, or `not_read`.
+    #[prost(string, tag = "3")]
+    pub lockfiles: ::prost::alloc::string::String,
+    /// Why, as the reading of lockfiles gave it. Whole.
+    #[prost(string, optional, tag = "4")]
+    pub why_text: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// The packages of projects for which it cannot be told whether a record affects them.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -2407,6 +2442,12 @@ pub struct VulnerabilityTotals {
     /// answer.
     #[prost(uint64, tag = "15")]
     pub informational_records: u64,
+    /// Places, a project's lockfiles of one ecosystem, that were not all read, and the projects
+    /// they are in. Since 1.16.0.
+    #[prost(uint64, tag = "16")]
+    pub places_not_read: u64,
+    #[prost(uint64, tag = "17")]
+    pub projects_not_read: u64,
 }
 /// Whether a feed's data is current now.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -2490,7 +2531,7 @@ pub struct Vulnerability {
     pub data: ::core::option::Option<i32>,
     /// When it holds none, what that means, in the core's words. It is never calmer than any of
     /// the `answers`: when one cannot be told, it says for how many projects and why before it says
-    /// which it does not affect.
+    /// which it does not affect, and with no answer at all it says that it cannot be told.
     #[prost(string, optional, tag = "7")]
     pub said: ::core::option::Option<::prost::alloc::string::String>,
     /// When it holds none and the catalogue holds the id, the answer in each place from the
@@ -2526,8 +2567,9 @@ pub struct RecordAnswers {
     pub kind: ::prost::alloc::string::String,
     #[prost(string, optional, tag = "7")]
     pub summary_text: ::core::option::Option<::prost::alloc::string::String>,
-    /// Whether it is answered: a withdrawn record, one that left the data, and an informational one
-    /// are not, and `said` says why in the core's words.
+    /// Whether it is answered: a withdrawn record, one that left the data, an informational one,
+    /// and one the store knows no project to compare with are not, and `said` says why in the
+    /// core's words.
     #[prost(bool, tag = "8")]
     pub answered: bool,
     #[prost(string, optional, tag = "9")]

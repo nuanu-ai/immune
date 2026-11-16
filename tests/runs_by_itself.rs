@@ -2534,6 +2534,49 @@ fn a_place_that_could_not_be_read_is_never_told_as_a_change_that_was_seen() {
         assert!(meaning.contains("cannot read it now"), "{meaning}");
         assert_eq!(severity, rule_severity, "{rule}");
     }
+    // A suspicious verdict about such a finding names it in the same words.
+    let listed = e.contract(&["findings"]);
+    let profile = listed["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["finding"]["rule"] == "watched.shell-profile")
+        .unwrap()
+        .clone();
+    let verdict = serde_json::json!({
+        "format": 1,
+        "store_id": listed["store_id"],
+        "finding": { "id": profile["finding"]["id"] },
+        "kind": "suspicious",
+        "severity": "low",
+        "confidence": "low",
+        "reason_text": "invented: a reason",
+        "case_text": "case-1",
+    });
+    let mut child = Command::new(env!("CARGO_BIN_EXE_immune"))
+        .args(["verdict", "--json", "--store"])
+        .arg(e.store())
+        .arg("--system-root")
+        .arg(e.0.join("system"))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        use std::io::Write;
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(verdict.to_string().as_bytes()).unwrap();
+    }
+    assert!(child.wait_with_output().unwrap().status.success());
+    let status = e.contract(&["status"]);
+    let judged = status["needs_a_look"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["finding"]["finding"]["rule"] == "verdict.suspicious")
+        .unwrap_or_else(|| panic!("{status:#}"))
+        .clone();
+    assert_eq!(judged["value_text"], profile["title"], "{judged:#}");
     // A change seen first, then the place lost sight of, in one open finding.
     e.seen();
     put(&zshrc, "export A=2\n");

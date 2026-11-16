@@ -226,6 +226,8 @@ fn has_fact(k: &v1::Known, subject: &str, predicate: &str) -> bool {
 const BUNDLES: &str = "application bundles in /Applications and ~/Applications";
 const KEGS: &str = "Homebrew kegs";
 const NPM: &str = "global npm packages";
+const APP_CODE: &str =
+    "code kept by applications not signed by Apple under ~/Library/Application Support";
 const BREW: &str = "brew packages";
 const MANAGERS: &str = "software of package managers this version does not read";
 const TINY: &str = "component:machine:mac/macos-app/org.example.tiny";
@@ -282,6 +284,7 @@ fn unknown_known_and_read_in_full_and_known_but_not_read_are_three_different_pro
             ("immune", LIMIT),
             ("integrity", KEGS),
             ("integrity", BUNDLES),
+            ("integrity", APP_CODE),
             ("integrity", NPM),
             ("integrity", MANAGERS)
         ]
@@ -443,6 +446,77 @@ fn a_finding_about_any_id_of_a_program_is_in_the_answer_however_the_program_is_n
         thing(&e.program("loose")),
         "file:machine:mac//opt/homebrew/Cellar/loose/2.0"
     );
+}
+
+/// Every id an answer gives for a program, and every path inside what the store holds of it, asks
+/// back the same program with the same findings and the same readings: none of them is a program
+/// the store never heard of, and none is a place no reading looks at. Nor is a path in a folder
+/// the reading of applications' code looks in, where it found nothing.
+#[test]
+fn every_id_and_path_of_a_program_answers_for_that_program_with_its_findings() {
+    let e = Estate::new("program-every-id");
+    e.formula("tool", "1.0");
+    e.app("Editor.app", "org.example.editor", "3.0");
+    e.put(
+        "home/Library/Application Support/Editor/main.js",
+        "start();\n",
+    );
+    e.run();
+    for rel in [
+        "system/opt/homebrew/Cellar/tool/1.0/bin/tool",
+        "home/Library/Application Support/Editor/main.js",
+    ] {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(e.0.join(rel))
+            .unwrap();
+        f.write_all(b"steal();\n").unwrap();
+    }
+    e.run();
+    // The program as one answer gives it: its ids, its findings and its readings.
+    type Of = (Vec<String>, Vec<String>, Vec<String>);
+    let of = |k: &v1::Known| -> Of {
+        let mut ids: Vec<String> = k.same_as.iter().map(|s| s.id_text.clone()).collect();
+        ids.push(thing(k).to_string());
+        ids.sort();
+        let mut findings: Vec<String> = k.findings.iter().map(|f| f.id.clone()).collect();
+        findings.sort();
+        let read = readings(k)
+            .iter()
+            .map(|(reader, kind, _, _)| format!("{reader} {kind}"))
+            .collect();
+        (ids, findings, read)
+    };
+    for (name, paths) in [
+        (
+            "tool",
+            [
+                "/opt/homebrew/Cellar/tool/1.0",
+                "/opt/homebrew/Cellar/tool/1.0/bin/tool",
+            ],
+        ),
+        (
+            "org.example.editor",
+            [
+                "~/Library/Application Support/Editor",
+                "~/Library/Application Support/Editor/main.js",
+            ],
+        ),
+    ] {
+        let first = of(&e.program(name));
+        assert_eq!(first.0.len(), 2, "{name}: {first:?}");
+        assert_eq!(first.1.len(), 1, "{name}");
+        for what in first.0.iter().map(String::as_str).chain(paths) {
+            let k = e.program(what);
+            assert_eq!(k.presence(), v1::Presence::Held, "{what}");
+            assert_eq!(of(&k), first, "{what}");
+            assert!(unread(&k).is_none(), "{what}");
+        }
+    }
+    let nothing = e.program("~/Library/Application Support/Nothing/main.js");
+    assert_eq!(nothing.presence(), v1::Presence::Unknown);
+    assert!(unread(&nothing).is_none(), "{nothing:?}");
 }
 
 /// A name that fits more than one program is not answered for one of them: the command fails as

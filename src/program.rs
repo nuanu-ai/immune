@@ -3,14 +3,15 @@
 //! particular to a program is how the question names it and which readings find programs.
 //!
 //! A program is a thing a reading of installed programs wrote about (`FOUND_BY`): an application
-//! bundle, a Homebrew formula or cask, a Homebrew keg, a global npm package. Which entities are
-//! programs is taken from those readings' assertions, so no product is named here.
+//! bundle, the folder of code an application keeps outside it, a Homebrew formula or cask, a
+//! Homebrew keg, a global npm package. Which entities are programs is taken from those readings'
+//! assertions, so no product is named here.
 //!
 //! What was asked becomes the program's entity from the store alone, and no path is looked at:
 //! - A path, absolute or beginning with `~/`, leads to the program whose folder holds it. A
 //!   program's folder is where the store says it is installed (`installed_at`), or the path of a
-//!   program the store names by its path, as it names a keg (a `file`). So a bundle, a file
-//!   inside it, a keg and a file inside it each lead to their program. Where no program is now,
+//!   program the store names by its path, as it names a keg or a folder of code (a `file`). So a
+//!   bundle, a keg, a folder of code and a file inside any of them each lead to their program. Where no program is now,
 //!   a program that was installed there and moved, or one copy of it that went, is the program.
 //! - A program's id is that program. A `file:` id of this Mac that is not a program is the path
 //!   it names; any other id the store holds is not a program, and is refused.
@@ -38,12 +39,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-/// The readings that find programs on a Mac, as reader and kind. Their latest reading of this
-/// Mac speaks for every program the store never heard of. The last finds none: it says which
-/// package managers no reader reads, so a program one of them installed is never answered as
-/// absent on the others alone.
-const FOUND_BY: [(&str, &str); 5] = [
+/// The readings that find programs on a Mac, or a part of one under an id of its own, as reader
+/// and kind. Their latest reading of this Mac speaks for every program the store never heard of.
+/// The last finds none: it says which package managers no reader reads, so a program one of them
+/// installed is never answered as absent on the others alone.
+const FOUND_BY: [(&str, &str); 6] = [
     (integrity::READER, integrity::BUNDLES),
+    (integrity::READER, integrity::APP_SUPPORT),
     (integrity::READER, integrity::KEGS),
     (integrity::READER, integrity::NPM),
     (brew::READER, brew::KIND),
@@ -81,7 +83,7 @@ pub fn parse(
 /// Why an answer about a path that no reading in `FOUND_BY` looks at is not "looked, and not
 /// there": the readings of installed programs read their own places, and the reading of
 /// Homebrew asks Homebrew by name.
-const UNREAD: &str = "no reading that finds programs looks at this place: they read the applications folders, Homebrew's kegs and the global npm packages, and ask Homebrew by name";
+const UNREAD: &str = "no reading that finds programs looks at this place: they read the applications folders, the code applications keep in ~/Library/Application Support, Homebrew's kegs and the global npm packages, and ask Homebrew by name";
 
 /// Answers `immune program`.
 pub fn program_cmd(args: &ProgramArgs) -> ExitCode {
@@ -243,7 +245,7 @@ fn kin(conn: &Connection, this: &str, id: &str) -> rusqlite::Result<BTreeSet<Str
     let formula = format!("component:{this}/brew/");
     let app = format!("component:{this}/macos-app/");
     let files = format!("file:{this}/");
-    // The names each id is matched by: every program, and every folder of applications' code.
+    // The names each id is matched by, for every program, folders of applications' code among them.
     let mut names: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (pid, p) in &programs {
         let of = names.entry(pid.clone()).or_default();
@@ -260,27 +262,9 @@ fn kin(conn: &Connection, this: &str, id: &str) -> rusqlite::Result<BTreeSet<Str
                         .map(|n| format!("application {n}")),
                 );
             }
-        } else if let Some(n) = pid.strip_prefix(&files).and_then(integrity::keg_formula) {
-            of.push(format!("formula {n}"));
-        }
-    }
-    let mut q = conn.prepare(
-        "SELECT DISTINCT subject FROM assertion
-         WHERE layer IN ('live', 'retracted') AND reader = ?1 AND scope = ?2 AND kind = ?3",
-    )?;
-    let kept = q.query_map([integrity::READER, this, integrity::APP_SUPPORT], |r| {
-        r.get::<_, String>(0)
-    })?;
-    for folder in kept {
-        let folder = folder?;
-        if let Some(n) = folder
-            .strip_prefix(&files)
-            .and_then(integrity::app_support_name)
-        {
-            names
-                .entry(folder)
-                .or_default()
-                .push(format!("application {n}"));
+        } else if let Some(rel) = pid.strip_prefix(&files) {
+            of.extend(integrity::keg_formula(rel).map(|n| format!("formula {n}")));
+            of.extend(integrity::app_support_name(rel).map(|n| format!("application {n}")));
         }
     }
     let mut one: BTreeSet<String> = BTreeSet::from([id.to_string()]);

@@ -42,6 +42,30 @@ message Vulnerabilities {
   // The packages for which it cannot be told whether a record affects them, the ones
   // `totals.unknown_packages` counts. Absent when `totals` is. Since 1.16.0.
   UnknownPackages unknown = 9;
+  // The projects whose lockfiles of an ecosystem were not all read, the ones
+  // `totals.places_not_read` counts, whether or not a package was read in them. Absent when
+  // `totals` is. Since 1.16.0.
+  UnreadPlaces unread = 10;
+}
+
+// The places, a project's lockfiles of one ecosystem, that were not all read: what they declare
+// is not all known, so no answer about them is "does not affect".
+message UnreadPlaces {
+  // One per project and ecosystem, at most 200, by project.
+  repeated UnreadPlace items = 1;
+  // How many there are.
+  uint64 total = 2;
+}
+
+// A project's lockfiles of one ecosystem that were not all read.
+message UnreadPlace {
+  // The project, as a person recognises it, and the ecosystem. Whole.
+  string project_text = 1;
+  string ecosystem = 2;
+  // `partial`, some of them read, or `not_read`.
+  string lockfiles = 3;
+  // Why, as the reading of lockfiles gave it. Whole.
+  optional string why_text = 4;
 }
 
 // The packages of projects for which it cannot be told whether a record affects them.
@@ -100,6 +124,10 @@ message VulnerabilityTotals {
   // Informational advisories held, such as an unmaintained crate, which this version does not
   // answer.
   uint64 informational_records = 15;
+  // Places, a project's lockfiles of one ecosystem, that were not all read, and the projects
+  // they are in. Since 1.16.0.
+  uint64 places_not_read = 16;
+  uint64 projects_not_read = 17;
 }
 
 // Whether a feed's data is current now.
@@ -154,7 +182,7 @@ message Vulnerability {
   optional RecordData data = 6;
   // When it holds none, what that means, in the core's words. It is never calmer than any of
   // the `answers`: when one cannot be told, it says for how many projects and why before it says
-  // which it does not affect.
+  // which it does not affect, and with no answer at all it says that it cannot be told.
   optional string said = 7;
   // When it holds none and the catalogue holds the id, the answer in each place from the
   // conditions of the place.
@@ -187,8 +215,9 @@ message RecordAnswers {
   string modified_text = 5;
   string kind = 6;
   optional string summary_text = 7;
-  // Whether it is answered: a withdrawn record, one that left the data, and an informational one
-  // are not, and `said` says why in the core's words.
+  // Whether it is answered: a withdrawn record, one that left the data, an informational one,
+  // and one the store knows no project to compare with are not, and `said` says why in the
+  // core's words.
   bool answered = 8;
   optional string said = 9;
   repeated PlaceAnswer answers = 10;

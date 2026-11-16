@@ -522,7 +522,9 @@ const BUNDLE_PLACES: [&str; 2] = ["/Applications", "Applications"];
 
 /// Whether the readings of this file that find programs look at the path `rel`, as ids name
 /// paths: inside a bundle they find (a folder named `*.app` directly in a place of bundles or one
-/// folder down), or under a Cellar or a global `node_modules` of one of Homebrew's prefixes.
+/// folder down), under the home folder's `Library/Application Support`, where the code an
+/// application keeps outside its bundle is looked for, or under a Cellar or a global
+/// `node_modules` of one of Homebrew's prefixes.
 pub fn reads(rel: &str) -> bool {
     let bundle = BUNDLE_PLACES.iter().any(|place| {
         rel.strip_prefix(place)
@@ -534,6 +536,7 @@ pub fn reads(rel: &str) -> bool {
             })
     });
     bundle
+        || crate::known::within(rel, APP_SUPPORT_PLACE)
         || PREFIXES.iter().any(|p| {
             [CELLAR, NODE_MODULES]
                 .iter()

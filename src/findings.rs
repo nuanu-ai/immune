@@ -961,7 +961,8 @@ pub struct Found {
     /// What it carries of the response layer's verdicts (`verdict::attach`).
     pub verdicts: Option<crate::verdict::Summary>,
     /// Its latest occurrence is a place that could not be read, and nothing it rests on is a
-    /// change that was seen: its words say so (`not_read_words`).
+    /// change that was seen: its words say so (`not_read_words`). For a `verdict.suspicious`
+    /// finding, whether that holds of the finding it judges (`judged_as_read`).
     pub unread_only: bool,
 }
 
@@ -1083,8 +1084,25 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Vec<Found>> {
     .collect::<rusqlite::Result<Vec<Found>>>()
     .and_then(|mut found| {
         crate::verdict::attach(conn, &mut found)?;
+        judged_as_read(&mut found);
         Ok(found)
     })
+}
+
+/// Marks each `verdict.suspicious` finding `unread_only` when the latest finding of the rule it
+/// judges, about the same thing, is: what it is about is then said in that finding's own words,
+/// a place that could not be read, never the rule's words of a change (`verdict_item`).
+fn judged_as_read(found: &mut [Found]) {
+    let unread: std::collections::HashSet<(String, String)> = found
+        .iter()
+        .filter(|g| g.unread_only && !g.superseded)
+        .map(|g| (g.rule.clone(), g.about.clone()))
+        .collect();
+    for f in found.iter_mut() {
+        if let Some(subject) = f.rule.strip_prefix(crate::verdict::PREFIX) {
+            f.unread_only = unread.contains(&(subject.to_string(), f.about.clone()));
+        }
+    }
 }
 
 /// One journal entry a finding rests on.
@@ -1809,7 +1827,16 @@ fn verdict_item(f: &Found, subject: &str) -> Item {
     // finding is the person's to close, and never goes when a build drops the rule.
     let value = match published(subject) {
         Some(l) => l.meta.as_ref().map(published_value),
-        None => rule(subject).map(|r| r.words.title.to_string()),
+        // What the judged finding says, the not-read words when it is of a place that could
+        // not be read (`judged_as_read`).
+        None => rule(subject).map(|r| {
+            if f.unread_only {
+                not_read_words(r.kind).title
+            } else {
+                r.words.title
+            }
+            .to_string()
+        }),
     }
     .unwrap_or_else(|| subject.to_string());
     let levels = f.verdicts.as_ref().and_then(|v| v.levels);
@@ -2240,6 +2267,52 @@ mod tests {
         let nested = own("verdict.suspicious", "machine:a");
         assert!(!super::one_thing(&nested, &nested));
         assert!(!super::one_thing(&own(padding, "machine:a"), &nested));
+    }
+
+    #[test]
+    fn a_verdict_about_a_place_that_could_not_be_read_never_says_it_was_changed() {
+        // A suspicious verdict about a finding of a watched place that could not be read names
+        // what it judges in that finding's own words; one about a change that was seen keeps
+        // the rule's, though an earlier occurrence was of a place not read.
+        let found = |rule: &str, about: &str, unread_only: bool| super::Found {
+            id: format!("{rule} {about}"),
+            rule: rule.into(),
+            about: about.into(),
+            state: "open".into(),
+            change: Some(if unread_only { "not read" } else { "changed" }.into()),
+            first_seen: (1, "1".into()),
+            last_seen: (1, "1".into()),
+            answered_at: None,
+            reason: None,
+            until: None,
+            via: None,
+            superseded: false,
+            in_force: false,
+            place: "invented".into(),
+            became: None,
+            thing: None,
+            detail: None,
+            verdicts: None,
+            unread_only,
+        };
+        let rule = "watched.authentication";
+        let judged = format!("verdict.suspicious:{rule}");
+        let earlier = super::Found {
+            superseded: true,
+            ..found(rule, "file:machine:a//etc/sudoers", true)
+        };
+        let mut all = vec![
+            found(rule, "file:machine:a//etc/pam.d", true),
+            found(&judged, "file:machine:a//etc/pam.d", false),
+            earlier,
+            found(rule, "file:machine:a//etc/sudoers", false),
+            found(&judged, "file:machine:a//etc/sudoers", false),
+        ];
+        super::judged_as_read(&mut all);
+        let kind = super::rule(rule).unwrap().kind;
+        let value = |f: &super::Found| super::item(f).value.unwrap();
+        assert_eq!(value(&all[1]), super::not_read_words(kind).title);
+        assert_eq!(value(&all[4]), super::rule(rule).unwrap().words.title);
     }
 
     #[test]
