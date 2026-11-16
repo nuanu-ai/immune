@@ -430,8 +430,9 @@ fn a_finding_about_any_id_of_a_program_is_in_the_answer_however_the_program_is_n
         assert_eq!(rules(&k), ["integrity.app-code-outside"], "{what}");
         assert_eq!(others(&k), [folder], "{what}");
     }
-    // The application removed: the finding about its code stays in its answer.
+    // The application removed with its folder: the finding about its code stays in its answer.
     std::fs::remove_dir_all(e.0.join("system/Applications/Editor.app")).unwrap();
+    std::fs::remove_dir_all(e.home().join("Library/Application Support/Editor")).unwrap();
     e.run();
     let gone = e.program("org.example.editor");
     assert_eq!(gone.presence(), v1::Presence::Gone);
@@ -616,12 +617,112 @@ fn a_folder_under_application_support_no_reader_opened_is_never_answered_as_read
     assert!(!all_full(&cache));
 }
 
-/// The folder of code of an application that was removed, still on disk and changing, is not
-/// `gone`: the reading stopped looking into it when the application went, so it is a place no
-/// reader opens now.
+const EDITOR: &str = "component:machine:mac/macos-app/org.example.editor";
+const EDITOR_FOLDER: &str = "file:machine:mac/Library/Application Support/Editor";
+const CODE: &str =
+    "code kept by applications not signed by Apple under ~/Library/Application Support";
+/// Every way to ask for the application Editor: its id, its name, its folder of code by path and
+/// by id, and a file inside that folder.
+const EDITOR_ASKED: [&str; 5] = [
+    EDITOR,
+    "org.example.editor",
+    "~/Library/Application Support/Editor",
+    EDITOR_FOLDER,
+    "~/Library/Application Support/Editor/main.js",
+];
+
+/// The reading of applications' code in an answer.
+fn code_reading(k: &v1::Known) -> &v1::Coverage {
+    k.coverage
+        .iter()
+        .find(|c| c.kind == CODE)
+        .unwrap_or_else(|| panic!("{:?}", k.coverage))
+}
+
+/// Appends a line to a file of the estate.
+fn append(e: &Estate, rel: &str, line: &str) {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(e.0.join(rel))
+        .unwrap();
+    f.write_all(line.as_bytes()).unwrap();
+}
+
+/// The promise against false calm, for an application that went while the folder of code it kept
+/// outside its bundle stayed: the application is never answered `gone` while that folder is on
+/// disk, and a change to the code in it is never invisible. Its bundle is removed, or moved out of
+/// the places bundles are looked for, in the same run as a file in the folder is changed; the
+/// reading keeps opening the folder, raises the finding of code changed outside a bundle, and says
+/// in its note that the folder is compared though no application read now matches it. Asked by
+/// the application's id, its name, the folder's path or id, or a file inside, in binary, JSON and
+/// text, the answer is the same.
 #[test]
-fn the_code_folder_of_a_removed_application_still_on_disk_is_not_gone() {
-    let e = Estate::new("program-folder-left");
+fn an_application_that_went_while_its_code_folder_stayed_is_held_and_a_change_there_is_found() {
+    for how in ["removed", "moved"] {
+        let e = Estate::new(&format!("program-folder-left-{how}"));
+        e.app("Editor.app", "org.example.editor", "3.0");
+        e.put(
+            "home/Library/Application Support/Editor/main.js",
+            "start();\n",
+        );
+        e.run();
+        let bundle = e.0.join("system/Applications/Editor.app");
+        if how == "removed" {
+            std::fs::remove_dir_all(&bundle).unwrap();
+        } else {
+            std::fs::create_dir_all(e.home().join("Elsewhere")).unwrap();
+            std::fs::rename(&bundle, e.home().join("Elsewhere/Editor.app")).unwrap();
+        }
+        append(
+            &e,
+            "home/Library/Application Support/Editor/main.js",
+            "steal();\n",
+        );
+        e.run();
+        for what in EDITOR_ASKED {
+            let k = e.program(what);
+            assert_eq!(k.presence(), v1::Presence::Held, "{how} {what}");
+            assert_eq!(thing(&k), EDITOR, "{how} {what}");
+            assert!(has_fact(&k, EDITOR_FOLDER, "has_digest"), "{how} {what}");
+            assert!(!has_fact(&k, EDITOR, "installed_at"), "{how} {what}");
+            let rules: Vec<&str> = k
+                .findings
+                .iter()
+                .map(|f| f.rule.as_deref().unwrap_or_default())
+                .collect();
+            assert_eq!(rules, ["integrity.app-code-outside"], "{how} {what}");
+            let code = code_reading(&k);
+            assert_eq!(code.completeness(), v1::Completeness::Full, "{how} {what}");
+            assert!(
+                code.reason_text.as_deref().is_some_and(|r| r.contains(
+                    "though no application read now matches them: Library/Application Support/Editor"
+                )),
+                "{how} {what}: {:?}",
+                code.reason_text
+            );
+            let json = e.json("program", Some(what));
+            assert_eq!(json["presence"], "held", "{how} {what}");
+            assert_eq!(
+                json["findings"][0]["rule"], "integrity.app-code-outside",
+                "{how} {what}"
+            );
+            let text = e.ask("program", Some(what), &[]);
+            let text = String::from_utf8(text.stdout).unwrap();
+            assert!(
+                text.contains("is held") && text.contains("integrity.app-code-outside"),
+                "{how} {what}: {text}"
+            );
+        }
+    }
+}
+
+/// A folder of code that really went from the disk is retracted, and the application whose bundle
+/// went too is `gone`, by every way of asking for it, as before: a folder is held while it is
+/// there and no longer.
+#[test]
+fn an_application_whose_bundle_and_code_folder_both_went_is_gone() {
+    let e = Estate::new("program-folder-gone");
     e.app("Editor.app", "org.example.editor", "3.0");
     e.put(
         "home/Library/Application Support/Editor/main.js",
@@ -630,19 +731,104 @@ fn the_code_folder_of_a_removed_application_still_on_disk_is_not_gone() {
     e.run();
     std::fs::remove_dir_all(e.0.join("system/Applications/Editor.app")).unwrap();
     e.run();
+    assert_eq!(e.program(EDITOR).presence(), v1::Presence::Held);
+    std::fs::remove_dir_all(e.home().join("Library/Application Support/Editor")).unwrap();
+    e.run();
+    for what in EDITOR_ASKED {
+        let k = e.program(what);
+        assert_eq!(k.presence(), v1::Presence::Gone, "{what}");
+        assert_eq!(thing(&k), EDITOR, "{what}");
+        assert!(k.facts.is_empty(), "{what}");
+        assert!(
+            store_read(&k)
+                .iter()
+                .all(|c| c.completeness() == v1::Completeness::Full),
+            "{what}"
+        );
+    }
+}
+
+/// A folder of code held from an earlier reading that is now a link is there and is not opened:
+/// the reading is not full and says why, so the application is not answered `gone`.
+#[test]
+fn a_held_code_folder_replaced_by_a_link_is_not_taken_for_gone() {
+    let e = Estate::new("program-folder-link");
+    e.app("Editor.app", "org.example.editor", "3.0");
+    e.put("home/Elsewhere/Editor/main.js", "start();\n");
     e.put(
         "home/Library/Application Support/Editor/main.js",
-        "steal();\n",
+        "start();\n",
     );
     e.run();
-    for what in [
-        "~/Library/Application Support/Editor",
-        "~/Library/Application Support/Editor/main.js",
-        "file:machine:mac/Library/Application Support/Editor",
-    ] {
-        let k = e.program(what);
-        assert_ne!(k.presence(), v1::Presence::Gone, "{what}");
-        assert!(not_opened(&k), "{what}: {:?}", k.coverage);
+    std::fs::remove_dir_all(e.0.join("system/Applications/Editor.app")).unwrap();
+    std::fs::remove_dir_all(e.home().join("Library/Application Support/Editor")).unwrap();
+    std::os::unix::fs::symlink(
+        e.home().join("Elsewhere/Editor"),
+        e.home().join("Library/Application Support/Editor"),
+    )
+    .unwrap();
+    e.run();
+    let k = e.program("org.example.editor");
+    assert_ne!(k.presence(), v1::Presence::Gone);
+    let code = code_reading(&k);
+    assert_eq!(code.completeness(), v1::Completeness::Partial);
+    assert!(
+        code.reason_text.as_deref().is_some_and(
+            |r| r.contains("Editor (held from an earlier reading and no longer a folder")
+        ),
+        "{:?}",
+        code.reason_text
+    );
+}
+
+/// On an ordinary Mac nothing changes: an application installed, updated with its code, or
+/// removed with its folder reads exactly as before, with the reading of applications' code full,
+/// no folder named as held without a matching application, and no finding.
+#[test]
+fn an_application_installed_updated_or_removed_with_its_folder_reads_as_before() {
+    for case in ["installed", "updated", "removed"] {
+        let e = Estate::new(&format!("program-folder-ordinary-{case}"));
+        e.app("Editor.app", "org.example.editor", "3.0");
+        e.put(
+            "home/Library/Application Support/Editor/main.js",
+            "start();\n",
+        );
+        e.run();
+        match case {
+            "updated" => {
+                append(
+                    &e,
+                    "home/Library/Application Support/Editor/main.js",
+                    "more();\n",
+                );
+                e.app("Editor.app", "org.example.editor", "3.1");
+            }
+            "removed" => {
+                std::fs::remove_dir_all(e.0.join("system/Applications/Editor.app")).unwrap();
+                std::fs::remove_dir_all(e.home().join("Library/Application Support/Editor"))
+                    .unwrap();
+            }
+            _ => {}
+        }
+        e.run();
+        let k = e.program("org.example.editor");
+        let expected = if case == "removed" {
+            v1::Presence::Gone
+        } else {
+            v1::Presence::Held
+        };
+        assert_eq!(k.presence(), expected, "{case}");
+        assert!(k.findings.is_empty(), "{case}: {:?}", k.findings);
+        let code = code_reading(&k);
+        assert_eq!(code.completeness(), v1::Completeness::Full, "{case}");
+        assert!(
+            !code
+                .reason_text
+                .as_deref()
+                .is_some_and(|r| r.contains("still compared")),
+            "{case}: {:?}",
+            code.reason_text
+        );
     }
 }
 
@@ -1737,8 +1923,8 @@ fn a_file_inside_a_program_is_never_answered_with_every_reading_full() {
 /// The promise of presence, told in one place for every command: a program is held while any of
 /// its units is, and `gone` needs the latest reading of every reading that owns one of its units
 /// to be full. An application removed while the reading of applications' code was partial, its
-/// folder of code kept as it was, is held and comes with that partial reading; once that reading
-/// is full again, the application is gone.
+/// folder of code kept as it was, is held and comes with that partial reading; once the folder
+/// is gone too and that reading is full again, the application is gone.
 #[test]
 fn a_program_is_gone_only_when_every_reading_that_owns_one_of_its_units_was_full() {
     use std::os::unix::fs::PermissionsExt;
@@ -1777,6 +1963,8 @@ fn a_program_is_gone_only_when_every_reading_that_owns_one_of_its_units_was_full
             k.coverage
         );
     }
+    // The folder goes too, and the reading is full again: the application is gone.
+    std::fs::remove_dir_all(e.home().join("Library/Application Support/Editor")).unwrap();
     e.run();
     assert_eq!(e.program(editor).presence(), v1::Presence::Gone);
     // Gone, and then a reading that owns its folder of code is partial again: it cannot be told.

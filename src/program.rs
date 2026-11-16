@@ -292,9 +292,8 @@ fn kin(conn: &Connection, this: &str, id: &str) -> rusqlite::Result<BTreeSet<Str
     let mut one: BTreeSet<String> = BTreeSet::from([id.to_string()]);
     one.extend(
         folders
-            .keys()
-            .filter(|f| belongs(&programs, this, id, f))
-            .cloned(),
+            .into_iter()
+            .filter(|f| belongs(&programs, this, id, f)),
     );
     one.extend(
         programs
@@ -361,8 +360,8 @@ fn own_keg(programs: &BTreeMap<String, Program>, this: &str, formula: &str, keg:
 
 /// The units of programs on this Mac, each a folder as ids name paths with the programs it
 /// answers for: a program where it is installed or where its id names it, and a folder of code
-/// for the applications it belongs to. `now` takes folders where they are now; otherwise where
-/// programs were installed and are no longer.
+/// for the applications it belongs to. `now` takes programs where they are now; otherwise where
+/// they were installed and are no longer. A folder of code is in both.
 fn units(
     conn: &Connection,
     this: &str,
@@ -382,26 +381,23 @@ fn units(
                 .map(|f| (f.to_string(), vec![id.clone()])),
         );
     }
-    // A folder of code is a unit while its reading holds it: one it no longer holds may only no
-    // longer be opened, since the reading opens a folder only while its application is there.
-    if now {
-        for (folder, _) in code_folders(conn, this)?
-            .into_iter()
-            .filter(|(_, live)| *live)
-        {
-            let Some((_, path)) = known::place_of(&folder) else {
-                continue;
-            };
-            let mut apps: Vec<String> = programs
-                .keys()
-                .filter(|a| belongs(programs, this, a, &folder))
-                .cloned()
-                .collect();
-            if apps.is_empty() {
-                apps.push(folder.clone());
-            }
-            out.push((path.to_string(), apps));
+    // A folder of code is a unit whether its reading holds it or no longer does: the reading opens
+    // a folder it holds for as long as the folder is there, so one it no longer holds was looked
+    // for and was not there, and its application's presence says so. No folder of code lies in
+    // another unit or holds one, so it is the same unit now and before.
+    for folder in code_folders(conn, this)? {
+        let Some((_, path)) = known::place_of(&folder) else {
+            continue;
+        };
+        let mut apps: Vec<String> = programs
+            .keys()
+            .filter(|a| belongs(programs, this, a, &folder))
+            .cloned()
+            .collect();
+        if apps.is_empty() {
+            apps.push(folder.clone());
         }
+        out.push((path.to_string(), apps));
     }
     Ok(out)
 }
@@ -468,15 +464,14 @@ fn at_place(
 }
 
 /// The folders of code applications keep in `~/Library/Application Support` that the reading of
-/// them ever wrote about on this Mac, by id, each with whether that reading holds it now.
-fn code_folders(conn: &Connection, this: &str) -> rusqlite::Result<BTreeMap<String, bool>> {
+/// them ever wrote about on this Mac, by id, whether that reading holds them now or not.
+fn code_folders(conn: &Connection, this: &str) -> rusqlite::Result<BTreeSet<String>> {
     conn.prepare(
-        "SELECT subject, MAX(layer = 'live') FROM assertion
-         WHERE layer IN ('live', 'retracted') AND reader = ?1 AND scope = ?2 AND kind = ?3
-         GROUP BY subject",
+        "SELECT DISTINCT subject FROM assertion
+         WHERE layer IN ('live', 'retracted') AND reader = ?1 AND scope = ?2 AND kind = ?3",
     )?
     .query_map([integrity::READER, this, integrity::APP_SUPPORT], |r| {
-        Ok((r.get(0)?, r.get(1)?))
+        r.get(0)
     })?
     .collect()
 }
