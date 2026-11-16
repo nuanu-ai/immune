@@ -188,7 +188,7 @@ fn a_failure_read_as_any_answer_reads_format_zero() {
         operation: "project".to_string(),
         ok: false,
         errors: vec![v1::Error {
-            code: "spelled_otherwise".to_string(),
+            code: "several_programs".to_string(),
             message: "invented".to_string(),
             example: Some("immune project <id> --json".to_string()),
             detail_text: Some("invented detail".to_string()),

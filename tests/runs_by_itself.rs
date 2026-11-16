@@ -2468,6 +2468,127 @@ fn a_project_file_read_before_that_cannot_be_read_now_is_a_finding_with_why_and_
 }
 
 #[test]
+fn a_place_that_could_not_be_read_is_never_told_as_a_change_that_was_seen() {
+    // A watched place read before that cannot be read now stays a finding at its rule's level,
+    // since it can hide a change. Nothing was seen to change, so its words say that it could
+    // not be read, never that it was added, changed or removed: for a watched file and for a
+    // project's file alike, in the list and in the finding. A finding that saw a change before
+    // it lost sight of the place keeps the rule's words, since that change was seen.
+    let e = Estate::new("unread-words");
+    let zshrc = e.home().join(".zshrc");
+    put(&zshrc, "export A=1\n");
+    let shop = e.checkout("dev/shop");
+    package(&shop, "\"postinstall\": \"node setup.js\"");
+    let file = shop.join("package.json");
+    e.run();
+    let shut = |paths: &[&Path]| {
+        use std::os::unix::fs::PermissionsExt;
+        for p in paths {
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        e.run();
+        for p in paths {
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+    };
+    // The open finding of a rule: its words in the list and whole, and its severity.
+    let said = |rule: &str| -> (String, String, String) {
+        let listed = e.contract(&["findings"]);
+        let item = listed["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["finding"]["rule"] == rule && f["finding"]["state"] == "open")
+            .unwrap_or_else(|| panic!("no open {rule}: {listed:#}"))
+            .clone();
+        let one = e.contract(&["finding", item["finding"]["id"].as_str().unwrap()]);
+        assert_eq!(item["title"], one["title"], "{item:#}\n{one:#}");
+        let s = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
+        (
+            s(&one["title"]),
+            s(&one["meaning"]),
+            s(&one["finding"]["severity"]),
+        )
+    };
+    let level = |rule: &str| {
+        let rules = e.contract(&["rules"]);
+        let found = rules["catalogue"]["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == rule)
+            .unwrap_or_else(|| panic!("no rule {rule}"))
+            .clone();
+        let s = |k: &str| found[k].as_str().unwrap().to_string();
+        (s("severity"), s("title"))
+    };
+    shut(&[&zshrc, &file]);
+    for rule in ["watched.shell-profile", "autorun.package-install"] {
+        let (title, meaning, severity) = said(rule);
+        assert!(
+            title.contains("could not read") && title.contains("not known whether"),
+            "{rule}: {title}"
+        );
+        let (rule_severity, rule_title) = level(rule);
+        assert_ne!(title, rule_title);
+        assert!(meaning.contains("cannot read it now"), "{meaning}");
+        assert_eq!(severity, rule_severity, "{rule}");
+    }
+    // A suspicious verdict about such a finding names it in the same words.
+    let listed = e.contract(&["findings"]);
+    let profile = listed["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["finding"]["rule"] == "watched.shell-profile")
+        .unwrap()
+        .clone();
+    let verdict = serde_json::json!({
+        "format": 1,
+        "store_id": listed["store_id"],
+        "finding": { "id": profile["finding"]["id"] },
+        "kind": "suspicious",
+        "severity": "low",
+        "confidence": "low",
+        "reason_text": "invented: a reason",
+        "case_text": "case-1",
+    });
+    let mut child = Command::new(env!("CARGO_BIN_EXE_immune"))
+        .args(["verdict", "--json", "--store"])
+        .arg(e.store())
+        .arg("--system-root")
+        .arg(e.0.join("system"))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        use std::io::Write;
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(verdict.to_string().as_bytes()).unwrap();
+    }
+    assert!(child.wait_with_output().unwrap().status.success());
+    let status = e.contract(&["status"]);
+    let judged = status["needs_a_look"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["finding"]["finding"]["rule"] == "verdict.suspicious")
+        .unwrap_or_else(|| panic!("{status:#}"))
+        .clone();
+    assert_eq!(judged["value_text"], profile["title"], "{judged:#}");
+    // A change seen first, then the place lost sight of, in one open finding.
+    e.seen();
+    put(&zshrc, "export A=2\n");
+    e.run();
+    shut(&[&zshrc]);
+    assert_eq!(
+        said("watched.shell-profile").0,
+        "A file your terminal runs every time it starts was added, changed or removed."
+    );
+}
+
+#[test]
 fn what_is_removed_from_a_place_read_in_full_is_gone_while_another_place_of_its_kind_cannot_be_read()
  {
     // The reading of a kind is partial when one of its places cannot be read. What is gone

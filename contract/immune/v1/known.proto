@@ -21,13 +21,15 @@ message Known {
   string asked_text = 2;
   // When the answer was made.
   int64 answered_at = 3;
-  // Whether the store knows the thing at all.
+  // Whether the thing is there, by what the store holds of each of its ids (`Presence`).
   Presence presence = 4;
-  // The thing asked for. Absent when the presence is `unknown`. A path names the project or the
-  // program that holds it, the nearest one; an id names the thing with that id.
-  // A machine the store knows under several ids linked by `same_as` is one thing: its parts,
-  // facts, coverage and findings are those of every one of its ids, each fact under its own
-  // `subject_text`.
+  // The thing asked for. Absent when the store holds nothing by that name or at that place. A
+  // path names the project or the program that holds it, the nearest one; an id names the thing
+  // with that id.
+  // A thing the store knows under several ids is one thing: a machine under ids linked by
+  // `same_as`, a program under the ids of a formula and its kegs, or of an application and its
+  // code kept outside the bundle. Its parts, facts, coverage and findings are those of every one
+  // of its ids, each fact under its own `subject_text`.
   Entity thing = 5;
   // The things inside it: what is `part_of` or `located_on` it, and for a project the files whose
   // path lies in its folder. Only those with facts in force, and one level: in a project that is
@@ -47,18 +49,23 @@ message Known {
   //   `sweep visit`, completeness `none`;
   // - a machine the owner set aside as retired or not theirs: `servers`, `sweep of a machine set
   //   aside by the owner`, completeness `none`, the reason naming what the owner said and the day;
-  // - a path that no reading looking for things of its kind looks at, answered `unknown`:
-  //   `immune`, `places the readings that find projects look in` (or programs), completeness
-  //   `none`;
+  // - a path that is not judged on its own: `immune`, `places the readings that find projects
+  //   look in` (or programs), completeness `none`, the reason saying why: the path lies under no
+  //   thing of its kind the store holds, or is a folder that holds some and says how many, and
+  //   is answered `unknown`; or it lies strictly inside one, or names one only in another case
+  //   or Unicode form, and is answered for that one;
   // - a program the store never heard of (`immune program`, presence `unknown`): `immune`,
   //   `software of package managers this version does not look for`, completeness `none`, cause
   //   `no_reader`, the reason naming what this version does not read or find.
   repeated Coverage coverage = 8;
-  // The findings about the thing, about its parts whether what was read of them is in force or
-  // retracted, and for a project about anything whose id lies in its folder; in every state.
-  // `immune finding <id>` shows one.
+  // The findings about the thing under each of its ids, and about anything inside it at any depth,
+  // whether what was read of it is in force or retracted: what is `part_of` or `located_on` it or
+  // one of its parts, what its id names as on it, such as a file of a machine, and for a project
+  // anything whose id lies in its folder; in every state. A machine's include the packages of its
+  // projects, which `parts` does not list. `immune finding <id>` shows one.
   repeated FindingRef findings = 9;
-  // The other ids the store knows the thing by, such as a machine's names linked by `same_as`.
+  // The other ids the store knows the thing by, such as a machine's names linked by `same_as`, a
+  // Homebrew formula's kegs, or the folder of code an application keeps outside its bundle.
   // A fact whose subject is one of these is about the thing; any other subject is a part.
   repeated Entity same_as = 10;
   // Which question was asked, so that an `unknown` answer says of what kind.
@@ -86,11 +93,15 @@ enum Question {
 // as not known.
 enum Presence {
   PRESENCE_UNSPECIFIED = 0;
-  // The store has never heard of it. Which readings could have found it is in `coverage`.
+  // The store has never heard of it, or cannot tell: none of its ids is held, and the latest
+  // reading of one that wrote about them was not full, so what it did not read again may still
+  // be there. Which readings could have found it is in `coverage`.
   PRESENCE_UNKNOWN = 1;
-  // The store holds facts in force about it.
+  // The store holds facts in force about one of its ids, or about something on it. A reading
+  // that holds it and was not full is in `coverage`.
   PRESENCE_HELD = 2;
-  // It was known and no longer is: what was read of it is retracted.
+  // It was known and no longer is: what was read of every one of its ids is retracted, and the
+  // latest reading of each reading that wrote about them was full.
   PRESENCE_GONE = 3;
 }
 

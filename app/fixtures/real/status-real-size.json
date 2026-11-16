@@ -1125,6 +1125,10 @@
     "matched_this_store": true,
     "not_affected_known": 0,
     "not_affected_no_signs": null,
+    "places_not_read": 0,
+    "projects_compared": 0,
+    "projects_not_read": 0,
+    "projects_without_lockfile": 0,
     "unknown": 1,
     "unknown_by_reason": [
       {

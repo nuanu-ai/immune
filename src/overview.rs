@@ -1277,6 +1277,11 @@ fn counted(screen: &Screen, s: &v1::Status, f: &v1::FinishedCheck) -> Vec<(&'sta
                     count(v.unknown_packages, "package", "packages")
                 ));
             }
+            // Beside the count, how many projects were not wholly read, so it never reads as all.
+            matched.push_str(&crate::text::not_wholly_read(
+                v.projects_not_read,
+                v.projects_without_lockfile,
+            ));
         }
         parts.push(("OSV data", format!("{}{matched}", clauses.join("; "))));
     }
@@ -2571,6 +2576,42 @@ mod tests {
             l.state = v1::CollectorState::Failing as i32;
         }
         assert!(status(&s, &screen, false).contains("Event level"));
+    }
+
+    #[test]
+    fn the_osv_line_says_how_many_projects_were_not_wholly_read_beside_the_count() {
+        // Beside the count of known vulnerabilities, the labelled line says how many projects
+        // were not wholly read and how many have no lockfile, and leaves the headline alone.
+        let mut s = status_of("x");
+        let calm = status(&s, &Screen::pipe(), false);
+        if let Some(v) = s.vulnerabilities.as_mut() {
+            v.projects_not_read = 2;
+            v.projects_without_lockfile = 3;
+        }
+        let text = status(&s, &Screen::pipe(), true);
+        let line = text
+            .lines()
+            .find(|l| l.trim_start().starts_with("OSV data"))
+            .unwrap_or_default()
+            .to_string();
+        let mut joined = line.clone();
+        // The value may wrap; what follows the label line up to the next label is its value.
+        for l in text.lines().skip_while(|l| *l != line).skip(1) {
+            if !l.starts_with("    ") || l.trim().is_empty() {
+                break;
+            }
+            joined.push(' ');
+            joined.push_str(l.trim());
+        }
+        let said = joined.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            said.contains("and the lockfiles of 2 projects were not all read, and 3 projects have no lockfile this version reads"),
+            "{text}"
+        );
+        assert_eq!(
+            status(&s, &Screen::pipe(), false).lines().next(),
+            calm.lines().next()
+        );
     }
 
     #[test]

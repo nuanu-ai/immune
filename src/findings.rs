@@ -989,6 +989,10 @@ pub struct Found {
     pub detail: Option<Value>,
     /// What it carries of the response layer's verdicts (`verdict::attach`).
     pub verdicts: Option<crate::verdict::Summary>,
+    /// Its latest occurrence is a place that could not be read, and nothing it rests on is a
+    /// change that was seen: its words say so (`not_read_words`). For a `verdict.suspicious`
+    /// finding, whether that holds of the finding its opening verdict named (`judged_as_read`).
+    pub unread_only: bool,
 }
 
 /// The state of a finding at `now`. An `expected` mark hides the finding until it ends; at
@@ -1030,7 +1034,10 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Vec<Found>> {
                  ORDER BY j.seq DESC LIMIT 1),
                 via,
                 EXISTS (SELECT 1 FROM finding g WHERE g.rule = f.rule AND g.about = f.about
-                          AND g.occurrence > f.occurrence)
+                          AND g.occurrence > f.occurrence),
+                f.change = 'not read'
+                  AND NOT EXISTS (SELECT 1 FROM finding_basis b JOIN journal j ON j.seq = b.journal
+                                  WHERE b.finding = f.id AND j.entry != 'not_read')
          FROM finding f ORDER BY last_seen_at DESC, id",
     )?
     .query_map([], |r| {
@@ -1065,6 +1072,7 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Vec<Found>> {
             in_force: false,
             detail: None,
             verdicts: None,
+            unread_only: r.get::<_, Option<bool>>(16)?.unwrap_or(false),
         })
     })?
     .map(|f| {
@@ -1105,8 +1113,56 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Vec<Found>> {
     .collect::<rusqlite::Result<Vec<Found>>>()
     .and_then(|mut found| {
         crate::verdict::attach(conn, &mut found)?;
+        judged_as_read(&mut found);
         Ok(found)
     })
+}
+
+/// Marks each `verdict.suspicious` finding `unread_only` when the finding its verdicts judged is:
+/// what it is about is then said in that finding's own words, a place that could not be read,
+/// and a verdict about a change that was seen keeps the rule's words, whatever happened to the
+/// place since (`verdict_item`). A verdict may name a verdict finding, which itself judged
+/// another: the chain is followed to its end, the first finding that is not a verdict finding,
+/// each id looked at once. A verdict about a match judged an event, never a place that could not
+/// be read.
+fn judged_as_read(found: &mut [Found]) {
+    // Each finding as it was read: whether it is a verdict finding, the finding its opening
+    // verdict named, and whether it is of a place that could not be read.
+    let by_id: std::collections::HashMap<String, (bool, Option<String>, bool)> = found
+        .iter()
+        .map(|g| {
+            let named = g
+                .verdicts
+                .as_ref()
+                .and_then(|v| v.opening.as_ref())
+                .and_then(|o| o.named.clone());
+            (
+                g.id.clone(),
+                (
+                    g.rule.starts_with(crate::verdict::PREFIX),
+                    named,
+                    g.unread_only,
+                ),
+            )
+        })
+        .collect();
+    for f in found.iter_mut() {
+        if !f.rule.starts_with(crate::verdict::PREFIX) {
+            continue;
+        }
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut at = by_id.get(&f.id).and_then(|(_, named, _)| named.as_deref());
+        f.unread_only = loop {
+            let Some(id) = at.filter(|id| seen.insert(id)) else {
+                break false;
+            };
+            match by_id.get(id) {
+                Some((true, named, _)) => at = named.as_deref(),
+                Some((false, _, unread)) => break *unread,
+                None => break false,
+            }
+        };
+    }
 }
 
 /// One journal entry a finding rests on.
@@ -1833,7 +1889,16 @@ fn verdict_item(f: &Found, subject: &str) -> Item {
     // finding is the person's to close, and never goes when a build drops the rule.
     let value = match published(subject) {
         Some(l) => l.meta.as_ref().map(published_value),
-        None => rule(subject).map(|r| r.words.title.to_string()),
+        // What the judged finding says, the not-read words when it is of a place that could
+        // not be read (`judged_as_read`).
+        None => rule(subject).map(|r| {
+            if f.unread_only {
+                not_read_words(r.kind).title
+            } else {
+                r.words.title
+            }
+            .to_string()
+        }),
     }
     .unwrap_or_else(|| subject.to_string());
     let levels = f.verdicts.as_ref().and_then(|v| v.levels);
@@ -1899,6 +1964,38 @@ fn kept_item(f: &Found) -> Item {
     }
 }
 
+/// What a finding says when the place it is about could not be read and no change of it was
+/// seen: a rule's own words tell what changed, and here nothing is known to have changed. It
+/// stays a finding at the rule's levels, since a place that cannot be read can hide a change.
+/// `kind` is the rule's kind of place. Made once for each kind and kept while the program runs.
+pub fn not_read_words(kind: &'static str) -> Words {
+    type Made = std::collections::BTreeMap<&'static str, (&'static str, &'static str)>;
+    static MADE: std::sync::Mutex<Made> = std::sync::Mutex::new(Made::new());
+    let mut made = MADE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (title, short) = *made.entry(kind).or_insert_with(|| {
+        let title = format!(
+            "At the last check Immune could not read a watched {kind}, so it is not known whether it was added, changed or removed."
+        );
+        // The kind as a person reads it, so that each kind's short title is its own and fits.
+        let short = format!("Not read: {}", kind_title(kind));
+        (
+            &*Box::leak(title.into_boxed_str()),
+            &*Box::leak(short.into_boxed_str()),
+        )
+    });
+    Words {
+        title,
+        short,
+        meaning: NOT_READ_MEANING,
+        advice: NOT_READ_ADVICE,
+    }
+}
+
+const NOT_READ_MEANING: &str = "Immune read it at an earlier check and cannot read it now. This can happen when its permissions or owner change, for example in an update of macOS; something that wants to hide a change can also make a file unreadable.";
+const NOT_READ_ADVICE: &str = "The reason is named here. Find out what made the file unreadable, and look at it yourself until Immune can read it again.";
+
 /// A finding as an item, whatever its rule: one this build does not have is a `kept_item`.
 pub fn item(f: &Found) -> Item {
     if let Some(i) = published(&f.rule).and_then(|l| published_item(f, l)) {
@@ -1921,7 +2018,11 @@ pub fn item(f: &Found) -> Item {
         change: f.change.clone(),
         first_seen: Some(f.first_seen.0),
         last_seen: Some(f.last_seen.0),
-        words: r.words,
+        words: if f.unread_only {
+            not_read_words(r.kind)
+        } else {
+            r.words
+        },
         value: f.became.clone(),
         place: Some(f.place.clone()),
         thing: f.thing.clone(),
@@ -2126,6 +2227,7 @@ mod tests {
             thing: None,
             detail: None,
             verdicts: None,
+            unread_only: false,
         };
         let silent = super::item(&found(
             "elastic-behaviour:2ed9c6bf-025e-4edf-a9ec-1493d0bb4f81",
@@ -2171,6 +2273,7 @@ mod tests {
             thing: None,
             detail: None,
             verdicts: None,
+            unread_only: false,
         };
         let mut items = vec![
             super::item(&found("a-high-unsure", "lockfiles.malicious-name-removed")),
@@ -2213,6 +2316,7 @@ mod tests {
                 levels: Some((3, 2)),
                 ..Default::default()
             }),
+            unread_only: false,
         };
         let item = |rule: &str, about: &str| super::item(&found(rule, about));
         let padding = "sigma:95361ce5-c891-4b0a-87ca-e24607884a96";
@@ -2236,6 +2340,148 @@ mod tests {
         let nested = own("verdict.suspicious", "machine:a");
         assert!(!super::one_thing(&nested, &nested));
         assert!(!super::one_thing(&own(padding, "machine:a"), &nested));
+    }
+
+    #[test]
+    fn a_verdict_about_a_place_that_could_not_be_read_never_says_it_was_changed() {
+        // A suspicious verdict about a finding of a watched place that could not be read names
+        // what it judges in that finding's own words; one about a change that was seen keeps
+        // the rule's. Each follows the finding the verdict named, not the latest finding of
+        // that rule about the same thing.
+        let found = |id: &str, rule: &str, unread_only: bool| super::Found {
+            id: id.into(),
+            rule: rule.into(),
+            about: "file:machine:a//etc/pam.d".into(),
+            state: "open".into(),
+            change: Some(if unread_only { "not read" } else { "changed" }.into()),
+            first_seen: (1, "1".into()),
+            last_seen: (1, "1".into()),
+            answered_at: None,
+            reason: None,
+            until: None,
+            via: None,
+            superseded: false,
+            in_force: false,
+            place: "invented".into(),
+            became: None,
+            thing: None,
+            detail: None,
+            verdicts: None,
+            unread_only,
+        };
+        let rule = "watched.authentication";
+        let judged = format!("verdict.suspicious:{rule}");
+        // A verdict whose opening verdict named `named`.
+        let verdict = |named: &str| super::Found {
+            verdicts: Some(crate::verdict::Summary {
+                opening: Some(crate::verdict::Recorded {
+                    at: 1,
+                    kind: crate::verdict::Kind::Suspicious,
+                    named: Some(named.into()),
+                    position: None,
+                    rule: None,
+                    finding: Some("v".into()),
+                    raised: true,
+                    severity: Some("low".into()),
+                    confidence: Some("low".into()),
+                    reason: crate::secrets::Kept::Reason.read("invented"),
+                    case: crate::secrets::Kept::Case.read("case-1"),
+                    verdict_id: None,
+                    event_gone: false,
+                }),
+                ..Default::default()
+            }),
+            ..found("v", &judged, false)
+        };
+        let kind = super::rule(rule).unwrap().kind;
+        let value = |f: &super::Found| super::item(f).value.unwrap();
+        let not_read = super::not_read_words(kind).title;
+        let changed = super::rule(rule).unwrap().words.title;
+        // A seen change judged, then the place unreadable: the change's words stay.
+        let mut all = vec![
+            super::Found {
+                superseded: true,
+                ..found("f1", rule, false)
+            },
+            found("f2", rule, true),
+            verdict("f1"),
+        ];
+        super::judged_as_read(&mut all);
+        assert_eq!(value(&all[2]), changed);
+        // A place not read judged, then a change seen: the not-read words stay.
+        let mut all = vec![
+            super::Found {
+                superseded: true,
+                ..found("f1", rule, true)
+            },
+            found("f2", rule, false),
+            verdict("f1"),
+        ];
+        super::judged_as_read(&mut all);
+        assert_eq!(value(&all[2]), not_read);
+        // A verdict about a closed verdict finding takes the words of the first finding down
+        // the chain that is not a verdict finding, however long the chain.
+        for (unread, words) in [(true, not_read), (false, changed)] {
+            let mut all = vec![
+                found("f1", rule, unread),
+                super::Found {
+                    id: "v1".into(),
+                    state: "closed".into(),
+                    ..verdict("f1")
+                },
+                super::Found {
+                    id: "v2".into(),
+                    ..verdict("v1")
+                },
+                super::Found {
+                    id: "v3".into(),
+                    ..verdict("v2")
+                },
+            ];
+            super::judged_as_read(&mut all);
+            assert_eq!(value(&all[2]), words, "{unread}");
+            assert_eq!(value(&all[3]), words, "{unread}");
+        }
+        // A late verdict, raised with the words of an event it could not check, names a finding
+        // of a place not read: its value and a verdict about it still take the not-read words.
+        let late = |named: &str| {
+            let mut v = verdict(named);
+            if let Some(o) = v.verdicts.as_mut().and_then(|s| s.opening.as_mut()) {
+                o.event_gone = true;
+            }
+            v
+        };
+        let mut all = vec![
+            found("f1", rule, true),
+            super::Found {
+                id: "v1".into(),
+                ..late("f1")
+            },
+            super::Found {
+                id: "v2".into(),
+                ..verdict("v1")
+            },
+        ];
+        super::judged_as_read(&mut all);
+        assert_eq!(value(&all[1]), not_read);
+        assert_eq!(
+            super::item(&all[1]).words.short,
+            crate::verdict::WORDS_EVENT_GONE.short
+        );
+        assert_eq!(value(&all[2]), not_read);
+        // A chain that runs in a circle ends, with the rule's words.
+        let mut all = vec![
+            super::Found {
+                id: "v1".into(),
+                ..verdict("v2")
+            },
+            super::Found {
+                id: "v2".into(),
+                ..verdict("v1")
+            },
+        ];
+        super::judged_as_read(&mut all);
+        assert_eq!(value(&all[0]), changed);
     }
 
     #[test]
@@ -2341,6 +2587,11 @@ mod tests {
             crate::verdict::WORDS_EVENT_GONE,
             super::KEPT_WORDS,
         ]);
+        // A place of any kind that could not be read is listed under a name of its own.
+        let mut kinds: Vec<&'static str> = super::rules().iter().map(|r| r.kind).collect();
+        kinds.sort_unstable();
+        kinds.dedup();
+        all.extend(kinds.into_iter().map(super::not_read_words));
         let mut seen = std::collections::BTreeSet::new();
         for w in &all {
             let short = w.short;

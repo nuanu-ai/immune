@@ -55,6 +55,7 @@ mod servers;
 mod service;
 mod sha256;
 mod sigma;
+mod spelling;
 mod ssh_config;
 mod status;
 mod store;
@@ -3520,7 +3521,25 @@ fn read_lockfiles(
     let mut manifest = String::new();
     for checkout in found {
         let id = format!("checkout:{}/{}", run.machine, checkout.rel);
+        let reading = Reading {
+            reader: lockfiles::READER,
+            scope: &id,
+            kind: lockfiles::KIND,
+            run_id: &run_id,
+            at: run.at,
+            observed_at: run.at,
+        };
+        // A checkout opened with no lockfile in it is read in full with a note, so that it is
+        // told from one never opened, and what an earlier reading found in it goes.
         let Some(o) = lockfiles::read(checkout, &id) else {
+            run.apply(
+                &reading,
+                lockfiles::BASIS,
+                "full",
+                Some(lockfiles::NONE_FOUND_NOTE),
+                &Gap::default(),
+                &[],
+            )?;
             continue;
         };
         let commit = lockfiles::commit(&checkout.path, &homes).unwrap_or_else(|g| {
@@ -3530,14 +3549,6 @@ fn read_lockfiles(
         for (path, size) in &o.lockfiles {
             manifest.push_str(&format!("{path}\t{size}\t{commit}\n"));
         }
-        let reading = Reading {
-            reader: lockfiles::READER,
-            scope: &id,
-            kind: lockfiles::KIND,
-            run_id: &run_id,
-            at: run.at,
-            observed_at: run.at,
-        };
         run.apply(
             &reading,
             lockfiles::BASIS,
@@ -4929,6 +4940,11 @@ fn feeds_sentence(states: &[osv::State], run_id: &str, t: &vulnerabilities::Tota
             things(t.packages_unknown as i64, "package", "packages")
         ));
     }
+    let (without_lockfile, not_read) = vulnerabilities::project_counts(&t.unread_places);
+    matched.push_str(&text::not_wholly_read(
+        not_read as u64,
+        without_lockfile as u64,
+    ));
     format!(
         "Vulnerability data from OSV: {}; {matched}.",
         clauses.join("; ")
