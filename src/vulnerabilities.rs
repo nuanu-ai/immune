@@ -389,22 +389,34 @@ pub fn freshness(conn: &Connection, now: i64) -> rusqlite::Result<Vec<Fresh>> {
     Ok(out)
 }
 
-/// A checkout's lockfiles reading: its scope, completeness, reason and run.
-type LockfileReading = (String, String, Option<String>, String);
+/// A checkout's lockfiles reading: its scope, completeness, reason, run, and the names of what
+/// it says it did not read (`coverage_lack`), `None` for one without a name.
+type LockfileReading = (String, String, Option<String>, String, Vec<Option<String>>);
 
 /// The lockfiles reader's latest reading of each checkout that is still there.
 fn lockfile_readings(conn: &Connection) -> rusqlite::Result<Vec<LockfileReading>> {
-    conn.prepare(
-        "SELECT c.scope, c.completeness, c.reason, c.run_id FROM coverage c
-         WHERE c.reader = ?1
-           AND c.id = (SELECT MAX(l.id) FROM coverage l WHERE l.reader = c.reader AND l.scope = c.scope)
-           AND c.scope NOT IN (SELECT id FROM gone_entity)
-         ORDER BY c.scope",
-    )?
-    .query_map([crate::lockfiles::READER], |r| {
-        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-    })?
-    .collect()
+    let readings: Vec<(i64, String, String, Option<String>, String)> = conn
+        .prepare(
+            "SELECT c.id, c.scope, c.completeness, c.reason, c.run_id FROM coverage c
+             WHERE c.reader = ?1
+               AND c.id = (SELECT MAX(l.id) FROM coverage l WHERE l.reader = c.reader AND l.scope = c.scope)
+               AND c.scope NOT IN (SELECT id FROM gone_entity)
+             ORDER BY c.scope",
+        )?
+        .query_map([crate::lockfiles::READER], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut lacks = conn.prepare("SELECT name FROM coverage_lack WHERE coverage = ?1")?;
+    readings
+        .into_iter()
+        .map(|(id, scope, completeness, reason, run)| {
+            let names = lacks
+                .query_map([id], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            Ok((scope, completeness, reason, run, names))
+        })
+        .collect()
 }
 
 /// How the lockfiles of a checkout were read for one ecosystem: `full`, `partial` or
@@ -412,6 +424,7 @@ fn lockfile_readings(conn: &Connection) -> rusqlite::Result<Vec<LockfileReading>
 fn lockfiles_for(
     completeness: &str,
     reason: Option<&str>,
+    lacks: &[Option<String>],
     reading_run: &str,
     run_id: &str,
     ecosystem: &str,
@@ -424,7 +437,9 @@ fn lockfiles_for(
     }
     match completeness {
         "full" => ("full", None),
-        "partial" if !crate::lockfiles::partial_for(reason.unwrap_or_default(), ecosystem) => {
+        "partial"
+            if !crate::lockfiles::partial_for(reason.unwrap_or_default(), lacks, ecosystem) =>
+        {
             ("full", None)
         }
         "partial" => ("partial", reason.map(str::to_string)),
@@ -538,7 +553,7 @@ pub fn match_all(tx: &Transaction, run_id: &str, at: i64) -> rusqlite::Result<Ma
     tx.execute("DELETE FROM vulnerability_place", [])?;
     let mut places: HashMap<(String, &'static str), (&'static str, Option<String>)> =
         HashMap::new();
-    for (scope, completeness, reason, reading_run) in &readings {
+    for (scope, completeness, reason, reading_run, lacks) in &readings {
         // A checkout with no lockfile has no place: it is one counted item (`unread_places`),
         // never a place of every ecosystem that would read as compared.
         if reason.as_deref() == Some(crate::lockfiles::NONE_FOUND_NOTE) {
@@ -546,8 +561,14 @@ pub fn match_all(tx: &Transaction, run_id: &str, at: i64) -> rusqlite::Result<Ma
         }
         for f in &fresh {
             let eco = f.feed.ecosystem;
-            let (lockfiles, why) =
-                lockfiles_for(completeness, reason.as_deref(), reading_run, run_id, eco);
+            let (lockfiles, why) = lockfiles_for(
+                completeness,
+                reason.as_deref(),
+                lacks,
+                reading_run,
+                run_id,
+                eco,
+            );
             tx.execute(
                 "INSERT INTO vulnerability_place (checkout, ecosystem, lockfiles, lockfiles_why,
                      feed, feed_why, reading, read_at, run_id, at)
@@ -1635,8 +1656,10 @@ fn untold(places: &[UnreadPlace]) -> BTreeMap<String, String> {
 /// data is matched for, as checkout, ecosystem and the kinds by name, from each checkout's
 /// latest reading of lockfiles. Such a project was compared with nothing there, though every
 /// lockfile it has of a matched ecosystem was read. A kind of a matched ecosystem, such as
-/// `yarn.lock`, is not here: its place is `partial` (`vulnerability_place`). A kind of no known
-/// ecosystem is under `other`.
+/// `yarn.lock`, is not here: its place is `partial` (`vulnerability_place`). Nor is a kind of no
+/// ecosystem a record can be about. The store keeps only the ecosystem of a record's own feed,
+/// so a place of any other OSV ecosystem stands, through `untold`, between the project and
+/// every record, which may name that ecosystem too.
 fn no_reader_places(conn: &Connection) -> rusqlite::Result<Vec<(String, String, String)>> {
     let rows: Vec<(String, String)> = conn
         .prepare(
@@ -1653,12 +1676,17 @@ fn no_reader_places(conn: &Connection) -> rusqlite::Result<Vec<(String, String, 
         .collect::<rusqlite::Result<_>>()?;
     let mut places: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
     for (checkout, name) in rows {
-        let ecosystem = crate::lockfiles::ecosystem_of(&name);
-        if ecosystem.is_some_and(|e| FEEDS.iter().any(|f| f.ecosystem == e)) {
+        // A kind of no ecosystem a record can be about, such as `flake.lock`, stands between no
+        // record and the project: it is not a place, and the status names it among what this
+        // version does not read.
+        let Some(ecosystem) = crate::lockfiles::ecosystem_of(&name) else {
+            continue;
+        };
+        if FEEDS.iter().any(|f| f.ecosystem == ecosystem) {
             continue;
         }
         places
-            .entry((checkout, ecosystem.unwrap_or("other").to_string()))
+            .entry((checkout, ecosystem.to_string()))
             .or_default()
             .push(name);
     }
