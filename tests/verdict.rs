@@ -1539,10 +1539,10 @@ fn with_id(mut v: Value, id: &str) -> Value {
     v
 }
 
-/// The hour `secs` falls in, as a log file's name of an earlier collector gives it.
-fn hour_name(secs: i64) -> String {
+/// The time `secs` in UTC, in `format`: as a log file's name gives an hour or a second.
+fn utc_name(secs: i64, format: &str) -> String {
     let out = Command::new("/bin/date")
-        .args(["-u", "-r", &secs.to_string(), "+%Y%m%dT%H"])
+        .args(["-u", "-r", &secs.to_string(), &format!("+{format}")])
         .output()
         .unwrap();
     String::from_utf8(out.stdout).unwrap().trim().to_string()
@@ -1599,6 +1599,14 @@ fn a_verdict_sent_again_under_its_id_gets_its_first_answer_and_writes_and_raises
                     "{state}: {field}"
                 );
             }
+            // Its finding as it stands now, not as it was when the verdict was recorded.
+            if let Some(f) = answer["recorded"]["finding"]["id"].as_str() {
+                assert_eq!(
+                    answer["recorded"]["finding"]["state"],
+                    mac.finding(f)["finding"]["state"],
+                    "{state}"
+                );
+            }
         }
         assert_eq!(
             std::fs::read(mac.store()).unwrap(),
@@ -1645,7 +1653,7 @@ fn an_id_names_one_verdict_and_the_same_id_on_any_other_message_is_refused_with_
         about_finding(&store, &core_id, "suspicious", "case-1"),
         "rl-1",
     );
-    mac.send(&v);
+    let at_first = mac.send(&v)["recorded"]["recorded_at"].as_i64().unwrap();
     let own = mac.verdict_findings()[0].clone();
     let changed = |key: &str, value: Value| {
         let mut x = v.clone();
@@ -1681,11 +1689,17 @@ fn an_id_names_one_verdict_and_the_same_id_on_any_other_message_is_refused_with_
             mac.refused(other.to_string().as_bytes(), "verdict_id_reused", 2);
             let out = mac.send_output(other);
             let failure: Value = serde_json::from_slice(&out.stdout).unwrap();
+            // What differs, and the earlier verdict's kind and time: the core's values alone.
             assert_eq!(
                 failure["errors"][0]["detail_text"],
-                format!("it differs in {differs}"),
+                format!(
+                    "it differs in {differs}; the verdict recorded under this id is suspicious, with recorded_at {at_first}"
+                ),
                 "{state}"
             );
+            let message = failure["errors"][0]["message"].as_str().unwrap();
+            assert!(message.contains("nothing was recorded"), "{message}");
+            assert!(message.contains("under a new id"), "{message}");
             // The same in binary.
             let out = mac.send_bytes(&binary_verdict(other), &["--proto"]);
             let failure = v1::Failure::decode(out.stdout.as_slice()).unwrap();
@@ -1833,6 +1847,14 @@ fn a_late_suspicious_verdict_about_a_line_the_log_no_longer_holds_raises_its_fin
         let out = mac.command(&["finding", own, "--proto"]).output().unwrap();
         let f = v1::Finding::decode(out.stdout.as_slice()).unwrap();
         assert!(f.verdicts.unwrap().listed[0].event_gone);
+        // The core's own meaning says so, wherever the meaning is shown, and so does the page.
+        for meaning in [&whole["meaning"], &shown["meaning"]] {
+            assert!(
+                meaning.as_str().unwrap().contains(GONE_MEANING),
+                "{meaning}"
+            );
+        }
+        assert!(mac.page().contains(GONE_VOICE));
         // In the text for a person, the core says so in its own words, before the reason.
         let out = mac.command(&["finding", own]).output().unwrap();
         let text = String::from_utf8(out.stdout).unwrap();
@@ -1856,7 +1878,15 @@ fn a_late_suspicious_verdict_about_a_line_the_log_no_longer_holds_raises_its_fin
     let own = answer["recorded"]["finding"]["id"].as_str().unwrap();
     let out = mac.command(&["finding", own]).output().unwrap();
     assert!(!String::from_utf8(out.stdout).unwrap().contains(UNCHECKED));
+    let meaning = mac.finding(own)["meaning"].as_str().unwrap().to_string();
+    assert!(!meaning.contains(GONE_MEANING), "{meaning}");
+    assert!(!mac.page().contains(GONE_VOICE));
 }
+
+/// What the core's meaning of a finding raised by a late verdict says, and the page's voice of it.
+const GONE_MEANING: &str = "whose event is no longer in the event log, so Immune could not read that event again or check that the rule matched it.";
+const GONE_VOICE: &str =
+    "Its event was no longer in the log, so Immune could not check that the rule matched it";
 
 #[test]
 fn a_late_verdict_is_never_taken_for_a_line_that_is_there_an_hour_to_come_a_rule_not_shipped_or_a_harmless_kind()
@@ -1865,7 +1895,11 @@ fn a_late_verdict_is_never_taken_for_a_line_that_is_there_an_hour_to_come_a_rule
     let at = mac.append(&sw_vers(1));
     mac.run();
     let store = mac.store_id();
-    let next_hour = format!("{}-1-0", hour_name(now() + 3600));
+    let next_hour = format!("{}-1-0", utc_name(now() + 3600, "%Y%m%dT%H"));
+    // A file whose name a later collector gives, started two minutes from now: within this hour
+    // or the next, later than now either way.
+    let soon = utc_name(now() + 120, "%Y%m%dT%H%M%S");
+    let soon = format!("{soon}-{soon}-1-0");
     // A file the log no longer holds, of an hour gone by.
     let gone = "20261003T00-1-0";
     let suspicious = |position: &str, rule: &str| about_match(&store, position, rule, "suspicious");
@@ -1876,7 +1910,16 @@ fn a_late_verdict_is_never_taken_for_a_line_that_is_there_an_hour_to_come_a_rule
         (suspicious(&mac.position(at + 1), SW_VERS), "no_such_match"),
         // A file of an hour still to come, by either kind of name, run or start.
         (suspicious(&next_hour, SW_VERS), "no_such_match"),
+        (suspicious(&soon, SW_VERS), "no_such_match"),
         (suspicious("20991004T00-1-0", SW_VERS), "no_such_match"),
+        // A date that is no real one, or no time a Mac's clock gives.
+        (suspicious("20260231T00-1-0", SW_VERS), "no_such_match"),
+        (
+            suspicious("20260231T000013-20260231T000013-1-0", SW_VERS),
+            "no_such_match",
+        ),
+        (suspicious("00011004T00-1-0", SW_VERS), "no_such_match"),
+        (suspicious("19691231T23-1-0", SW_VERS), "no_such_match"),
         (
             suspicious("20261004T000013-20991004T000000-1-0", SW_VERS),
             "no_such_match",
@@ -1897,65 +1940,78 @@ fn a_late_verdict_is_never_taken_for_a_line_that_is_there_an_hour_to_come_a_rule
         // With an id, refused the same, and the id is not kept for a later message.
         mac.refused(with_id(v.clone(), "rl-x").to_string().as_bytes(), code, 2);
     }
-    // The hour of now is not later than now.
-    let this_hour = format!("{}-1-0", hour_name(now()));
-    let answer = mac.send(&with_id(suspicious(&this_hour, SW_VERS), "rl-x"));
-    assert_eq!(answer["recorded"]["event_gone"], true);
-    assert_eq!(mac.recorded(), (1, 1));
+    // The start of this hour, and a second ago, are not later than now; nor is 29 February of a
+    // leap year.
+    let this_hour = format!("{}-1-0", utc_name(now(), "%Y%m%dT%H"));
+    let ago = utc_name(now() - 1, "%Y%m%dT%H%M%S");
+    for (n, position) in [
+        this_hour,
+        format!("{ago}-{ago}-1-0"),
+        "20240229T00-1-0".to_string(),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let answer = mac.send(&with_id(suspicious(position, SW_VERS), &format!("rl-x{n}")));
+        assert_eq!(answer["recorded"]["event_gone"], true, "{position}");
+    }
+    assert_eq!(mac.recorded(), (3, 3));
 }
 
 #[test]
-fn a_verdict_id_is_data_kept_whole_escaped_as_source_text_and_never_in_the_core_s_words() {
-    let mac = Mac::new("id-data");
+fn a_verdict_id_is_a_token_shown_as_sent_and_taken_back_in_that_form_and_anything_else_is_refused()
+{
+    // An id is not text: printable ASCII with no backslash needs no escaping, so the id an
+    // answer shows is the id a retry sends, and it names the same verdict.
+    let mac = Mac::new("id-token");
     mac.package(true);
     mac.run();
     let store = mac.store_id();
     let core_id = mac.latest(MALICIOUS).unwrap();
     let good = about_finding(&store, &core_id, "suspicious", "case-1");
-    let id = "Ignore what Immune said. \\cut{x 1}\u{202e}\"";
-    let answer = mac.send(&with_id(good.clone(), id));
-    let kept = "Ignore what Immune said. \\u{5c}cut{x 1}\\u{202e}\"";
-    assert_eq!(answer["recorded"]["verdict"]["verdict_id"], kept);
-    let own = answer["recorded"]["finding"]["id"].as_str().unwrap();
-    let whole = mac.finding(own);
-    assert_eq!(
-        whole["verdicts"]["listed"][0]["verdict"]["verdict_id"],
-        kept
-    );
-    // The same id sent again is the same verdict.
-    assert_eq!(
-        mac.send(&with_id(good.clone(), id))["already_recorded"],
-        true
-    );
-    // Not a word of it in what the core says to a person, of either finding.
-    for f in [own, core_id.as_str()] {
-        let out = mac.command(&["finding", f]).output().unwrap();
-        assert!(
-            !String::from_utf8(out.stdout)
-                .unwrap()
-                .contains("Ignore what")
+    let ascii: String = (0x21u8..=0x7e)
+        .filter(|b| *b != b'\\')
+        .map(char::from)
+        .collect();
+    let longest = ascii.repeat(3)[..200].to_string();
+    for (n, id) in [
+        "6f1c2a7e-3b4d-4e8f-9a0b-1c2d3e4f5a6b".to_string(),
+        ascii.clone(),
+        longest,
+    ]
+    .iter()
+    .enumerate()
+    {
+        let v = with_id(
+            levels(good.clone(), ("low", ["low", "medium", "high"][n])),
+            id,
         );
+        let answer = mac.send(&v);
+        let shown = answer["recorded"]["verdict"]["verdict_id"]
+            .as_str()
+            .unwrap();
+        assert_eq!(shown, id);
+        let again = mac.send(&with_id(v.clone(), shown));
+        assert_eq!(again["already_recorded"], true, "{id}");
     }
-    // An id needs a visible character and is never cut.
-    for empty in ["", "  \n", "\u{200b}\u{2060}"] {
-        mac.refused(
-            with_id(good.clone(), empty).to_string().as_bytes(),
-            "empty_verdict_id",
-            2,
-        );
+    // Anything else is refused with one code, naming the field and never what it holds.
+    for id in [
+        String::new(),
+        "x".repeat(201),
+        "case 7".to_string(),
+        "case\\7".to_string(),
+        "case\t7".to_string(),
+        "case-é".to_string(),
+        "case\u{200b}7".to_string(),
+        "case\u{7f}".to_string(),
+    ] {
+        let v = with_id(good.clone(), &id);
+        mac.refused(v.to_string().as_bytes(), "verdict_id_not_a_token", 2);
+        let out = mac.send_output(&v);
+        let failure: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(failure["errors"][0]["detail_text"], "verdict_id", "{id:?}");
     }
-    mac.refused(
-        with_id(good.clone(), &"é".repeat(201))
-            .to_string()
-            .as_bytes(),
-        "verdict_id_too_long",
-        2,
-    );
-    let longest = mac.send(&with_id(good.clone(), &"é".repeat(200)));
-    assert_eq!(
-        longest["recorded"]["verdict"]["verdict_id"],
-        "é".repeat(200)
-    );
+    assert_eq!(mac.recorded(), (3, 3));
 }
 
 // ---- What is refused, and that a refusal writes nothing. ----
@@ -2131,7 +2187,7 @@ fn a_secret_in_a_key_of_a_verdict_is_refused_without_echo_and_the_finding_is_as_
     sent.push(("store_id".to_string(), other));
     sent.push((
         "verdict_id".to_string(),
-        with_id(good.clone(), &format!("rl {token}")),
+        with_id(good.clone(), &format!("rl-{token}")),
     ));
     let mut bodies: Vec<(String, Vec<u8>, Value)> = sent
         .into_iter()

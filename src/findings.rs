@@ -1817,7 +1817,7 @@ fn verdict_item(f: &Found, subject: &str) -> Item {
         change: f.change.clone(),
         first_seen: Some(f.first_seen.0),
         last_seen: Some(f.last_seen.0),
-        words: crate::verdict::WORDS,
+        words: crate::verdict::words(f.verdicts.as_ref()),
         value: Some(value),
         place: Some(f.place.clone()),
         thing: None,

@@ -19,9 +19,10 @@
 //! keeps about a day: a `suspicious` verdict about a line no longer in it is recorded all the same,
 //! marked `event_gone`, so a late decision is not lost (`checked_match`).
 //!
-//! A verdict may carry `verdict_id`, the response layer's name for it, as an idempotency key: a
-//! repeat with the same id gets the first answer and writes nothing, and the same id on another
-//! message is refused (`by_id`). Without an id, sameness is by content (`same`).
+//! A verdict may carry `verdict_id`, the response layer's id for it, a token (`token`), as an
+//! idempotency key: a repeat with the same id gets the first answer and writes nothing, and the
+//! same id on another message is refused (`by_id`). Without an id, sameness is by content
+//! (`same`).
 //!
 //! Text from the response layer is data: it read files an attacker may have written. Its reason
 //! and its case are shown only in `_text` fields, escaped as all such text is, and after the
@@ -52,8 +53,16 @@ pub const CAP: usize = 64 << 10;
 /// never cut: a reason cut short can say the opposite.
 pub const REASON_CHARS: usize = 1000;
 pub const CASE_CHARS: usize = 200;
-/// The most Unicode scalar values `verdict_id` may hold, as `case_text`.
+/// The most characters `verdict_id` may hold.
 pub const ID_CHARS: usize = 200;
+
+/// Whether an id is a token, as the IETF draft of the `Idempotency-Key` header takes one: 1 to
+/// `ID_CHARS` characters of printable ASCII, `!` to `~`, with no backslash. Such an id needs no
+/// escaping, so it is kept, shown and asked back exactly as it was sent.
+fn token(id: &str) -> bool {
+    (1..=ID_CHARS).contains(&id.len())
+        && id.bytes().all(|b| (0x21..=0x7e).contains(&b) && b != b'\\')
+}
 /// The most verdicts an answer lists after the first: the latest ones.
 pub const LISTED: i64 = 20;
 /// How the run id of a verdict begins, in the journal.
@@ -72,6 +81,20 @@ pub const WORDS: Words = Words {
     meaning: "Another program that runs Immune, the response layer, looked into what a rule found here and judged it suspicious. The rule and the thing are named with this finding; the reason is the response layer's own, quoted.",
     advice: "Read its reason and look at what it is about. Mark this finding seen once you have. Immune's own finding about the same thing, if there is one, keeps an answer of its own; one answer that names both answers both.",
 };
+/// The core's words for an occurrence raised by a verdict whose line had left the log
+/// (`event_gone`): the response layer names a match Immune could no longer check.
+pub const WORDS_EVENT_GONE: Words = Words {
+    meaning: "Another program that runs Immune, the response layer, judged suspicious a match of this rule whose event is no longer in the event log, so Immune could not read that event again or check that the rule matched it. The rule and the thing are named with this finding; the reason is the response layer's own, quoted.",
+    ..WORDS
+};
+
+/// The core's words for a finding of `RULE`, by the verdict that raised its occurrence.
+pub fn words(verdicts: Option<&Summary>) -> Words {
+    match verdicts.and_then(|v| v.opening.as_ref()) {
+        Some(opening) if opening.event_gone => WORDS_EVENT_GONE,
+        _ => WORDS,
+    }
+}
 
 /// Part of the store's schema (`store::schema`).
 pub const SCHEMA: &str = "
@@ -89,7 +112,7 @@ CREATE TABLE verdict (
     confidence TEXT,
     reason     TEXT NOT NULL,     -- text from the response layer
     case_ref   TEXT NOT NULL,     -- text from the response layer
-    verdict_id TEXT,              -- the response layer's name for it, kept as the case is; NULL when not given
+    verdict_id TEXT,              -- the response layer's id for it, a token kept as sent; NULL when not given
     event_gone INTEGER NOT NULL,  -- about a match whose line was no longer in the log: no event read
     CHECK ((named IS NULL) = (position IS NOT NULL AND rule IS NOT NULL))
 );
@@ -134,8 +157,9 @@ pub struct Recorded {
     /// The response layer's text, read cut (`secrets::Kept`), as every reader shows it.
     pub reason: Text,
     pub case: Text,
-    /// The response layer's name for it, kept as the case is; `None` when it gave none.
-    pub verdict_id: Option<Text>,
+    /// The response layer's id for it, a token kept and shown as sent (`token`); `None` when it
+    /// gave none.
+    pub verdict_id: Option<String>,
     /// About a match whose line was no longer in the log: the event was not read again.
     pub event_gone: bool,
 }
@@ -161,9 +185,7 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Recorded> {
         confidence: r.get(8)?,
         reason: Kept::Reason.read(&r.get::<_, String>(9)?),
         case: Kept::Case.read(&r.get::<_, String>(10)?),
-        verdict_id: r
-            .get::<_, Option<String>>(11)?
-            .map(|id| Kept::Case.read(&id)),
+        verdict_id: r.get(11)?,
         event_gone: r.get(12)?,
     })
 }
@@ -328,7 +350,7 @@ pub fn recorded(
             case_text: r.case.said(),
             severity: r.severity.as_deref().map(value_of::<v1::Level>),
             confidence: r.confidence.as_deref().map(value_of::<v1::Level>),
-            verdict_id: r.verdict_id.as_ref().map(Text::said),
+            verdict_id: r.verdict_id.clone(),
         }),
         recorded_at: r.at,
         finding,
@@ -474,7 +496,7 @@ struct Sent {
     case: String,
     severity: Option<&'static str>,
     confidence: Option<&'static str>,
-    /// The response layer's name for this verdict, as sent.
+    /// The response layer's id for this verdict, a token (`token`), kept as sent.
     verdict_id: Option<String>,
 }
 
@@ -486,14 +508,6 @@ impl Sent {
             Text::source(&self.reason).store(),
             Text::source(&self.case).store(),
         )
-    }
-
-    /// Its id as the store keeps it, as the case is kept: a key, so it holds no secret
-    /// (`secret_field`) and keeping it rewrites nothing but how a backslash is written.
-    fn kept_id(&self) -> Option<String> {
-        self.verdict_id
-            .as_deref()
-            .map(|id| Text::source(id).store())
     }
 
     /// What it names: a finding, or a match by its position and rule.
@@ -624,22 +638,12 @@ fn parsed(bytes: &[u8], json: bool) -> Result<Sent, Refusal> {
             ));
         }
     }
-    if let Some(id) = &v.verdict_id {
-        if blank(id) {
-            return Err(refused(
-                "empty_verdict_id",
-                "verdict_id, when given, needs a visible character; nothing was recorded",
-                "",
-            ));
-        }
-        let n = id.chars().count();
-        if n > ID_CHARS {
-            return Err(refused(
-                "verdict_id_too_long",
-                "verdict_id is longer than a verdict may carry, and it is never cut; nothing was recorded",
-                format!("{n} characters, and at most {ID_CHARS} are taken"),
-            ));
-        }
+    if v.verdict_id.as_deref().is_some_and(|id| !token(id)) {
+        return Err(refused(
+            "verdict_id_not_a_token",
+            "verdict_id, when given, is 1 to 200 characters of printable ASCII, from ! to ~, with no backslash; nothing was recorded",
+            "verdict_id",
+        ));
     }
     Ok(Sent {
         store_id: v.store_id,
@@ -806,7 +810,7 @@ fn take(args: &VerdictArgs) -> Result<v1::VerdictRecorded, Refusal> {
     let run_id = format!("{RUN_PREFIX}{now}-{nanos:09}");
     let (named, position, rule) = sent.named();
     let (reason, case) = sent.kept();
-    let verdict_id = sent.kept_id();
+    let verdict_id = sent.verdict_id.as_deref();
     let event_gone = matches!(line, Some(Line::Gone));
     tx.execute(
         "INSERT INTO journal (at, run_id, entry, kind, subject, new_value, text)
@@ -956,9 +960,9 @@ fn check(
 ///
 /// The log keeps about a day, and a decision can take longer. When the line is no longer in it,
 /// a `suspicious` verdict is not lost: it is taken with no event (`Line::Gone`), as long as the
-/// hour its position names is not later than now, since `immune matches` never printed a
-/// position of an hour still to come. A `harmless` one is refused: it is a record beside a
-/// match, and there is no match to keep it beside.
+/// time its position's file was started is a real one and not later than now, since
+/// `immune matches` never printed any other (`LineAt::start`). A `harmless` one is refused: it
+/// is a record beside a match, and there is no match to keep it beside.
 fn checked_match(
     args: &VerdictArgs,
     position: &str,
@@ -994,10 +998,10 @@ fn checked_match(
             ));
         }
         Ok(AtLine::Gone) => {
-            return match at.hour() {
-                Some(hour) if hour <= now => Ok(Line::Gone),
+            return match at.start() {
+                Some(start) if start <= now => Ok(Line::Gone),
                 _ => Err(no_match(format!(
-                    "{position} names a log file of an hour later than now"
+                    "{position} names a log file started later than now, or at no real time"
                 ))),
             };
         }
@@ -1021,9 +1025,10 @@ fn checked_match(
 /// The verdict recorded before under the same id, when this one carries an id: the same verdict
 /// sent again, whose first answer is given whatever the state of its finding. An id names one
 /// verdict, so the same id on a message that differs in what it names, its kind, its reason as
-/// kept, its case or a level is refused, saying which of them differ and never what they hold.
+/// kept, its case or a level is refused, saying which of them differ, and the earlier verdict's
+/// kind and when it was recorded, in the core's own values: never what either message holds.
 fn by_id(conn: &Connection, s: &Sent) -> Result<Option<i64>, Refusal> {
-    let Some(id) = s.kept_id() else {
+    let Some(id) = s.verdict_id.as_deref() else {
         return Ok(None);
     };
     let (named, position, rule) = s.named();
@@ -1031,7 +1036,7 @@ fn by_id(conn: &Connection, s: &Sent) -> Result<Option<i64>, Refusal> {
     let row = conn
         .query_row(
             "SELECT id, named IS ?2 AND position IS ?3 AND rule IS ?4, kind = ?5, reason = ?6,
-                    case_ref = ?7, severity IS ?8, confidence IS ?9
+                    case_ref = ?7, severity IS ?8, confidence IS ?9, kind, at
              FROM verdict WHERE verdict_id = ?1",
             params![
                 id,
@@ -1055,11 +1060,13 @@ fn by_id(conn: &Connection, s: &Sent) -> Result<Option<i64>, Refusal> {
                         r.get(5)?,
                         r.get(6)?,
                     ],
+                    r.get::<_, String>(7)?,
+                    r.get::<_, i64>(8)?,
                 ))
             },
         )
         .optional()?;
-    let Some((earlier, equal)) = row else {
+    let Some((earlier, equal, kind, at)) = row else {
         return Ok(None);
     };
     let differs: Vec<&str> = [
@@ -1078,10 +1085,14 @@ fn by_id(conn: &Connection, s: &Sent) -> Result<Option<i64>, Refusal> {
     if differs.is_empty() {
         return Ok(Some(earlier));
     }
+    // `kind` is the store's word, one of two, and `at` a number: no text of either message.
     Err(refused(
         "verdict_id_reused",
-        "a verdict with this verdict_id was recorded before and this one differs from it; an id names one verdict, so nothing was recorded",
-        format!("it differs in {}", differs.join(", ")),
+        "a verdict with this verdict_id was recorded before and this one differs from it; an id names one verdict, so nothing was recorded. A verdict that is a new decision is sent under a new id",
+        format!(
+            "it differs in {}; the verdict recorded under this id is {kind}, with recorded_at {at}",
+            differs.join(", ")
+        ),
     ))
 }
 
