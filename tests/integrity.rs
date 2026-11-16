@@ -1155,30 +1155,53 @@ fn package_managers_this_version_does_not_read_are_named_by_kind_as_a_limit_and_
         items.iter().all(|u| u["id"] != "not-understood"),
         "{items:#?}"
     );
-    // A person reads the names once, quoted as data after the sentence.
+    // A person reads the names once, each quoted as data on the line under the sentence, under
+    // what was not judged on this Mac.
     let said = Command::new(env!("CARGO_BIN_EXE_immune"))
-        .args(["status", "--store"])
+        .args(["status", "--coverage", "--store"])
         .arg(e.store())
         .output()
         .unwrap();
     let said = String::from_utf8(said.stdout).unwrap();
+    let sentence =
+        "Software installed with 5 package managers this version does not read is not checked";
+    let names = "\"MacPorts\"; \"Nix\"; \"pkgsrc\"; \"conda\"; \"npm packages installed globally under nvm\"";
+    let section = said
+        .split("\n\n")
+        .find(|s| s.trim_start().starts_with("Not judged on this Mac\n"))
+        .unwrap_or_else(|| panic!("{said}"));
+    let lines: Vec<&str> = section.lines().collect();
     assert!(
-        said.lines().any(|l| l
-            == "Not judged on this Mac: Software installed with 5 package managers this version does not read is not checked. (\"MacPorts\"; \"Nix\"; \"pkgsrc\"; \"conda\"; \"npm packages installed globally under nvm\")"),
+        lines
+            .windows(2)
+            .any(|w| w[0] == format!("    {sentence}") && w[1] == format!("      {names}")),
         "{said}"
     );
-    // Told once, under one heading, among what was not judged.
-    let headed = [
-        "You can fix: ",
-        "Limit of this version: ",
-        "Not judged on this Mac: ",
-    ];
+    // Told once, among what was not judged.
     assert_eq!(
         said.lines()
-            .filter(|l| headed.iter().any(|h| l.starts_with(h)) && l.contains("\"MacPorts\""))
+            .filter(|l| l.contains("\"MacPorts\"; \"Nix\""))
             .count(),
         1,
         "{said}"
+    );
+    // The status itself names them among what is not judged, and its next step is the command
+    // that says more.
+    let status = Command::new(env!("CARGO_BIN_EXE_immune"))
+        .args(["status", "--store"])
+        .arg(e.store())
+        .output()
+        .unwrap();
+    let status = String::from_utf8(status.stdout).unwrap();
+    assert!(
+        status
+            .lines()
+            .any(|l| l.trim_start().starts_with("Not judged")
+                && l.contains("MacPorts, Nix, pkgsrc, conda"))
+            && status
+                .lines()
+                .any(|l| l == "→ immune status --coverage   what was read and what was not"),
+        "{status}"
     );
     // An agent finds each one by name among what this build has no reader for.
     let out = Command::new(env!("CARGO_BIN_EXE_immune"))

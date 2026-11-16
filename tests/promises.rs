@@ -9418,9 +9418,15 @@ fn status_reads_a_store_in_a_folder_it_cannot_write_and_writes_nothing_anywhere(
         assert_eq!(r["store"]["exists"], true);
         assert!(r["last_run"]["finished_at"].is_i64(), "{r}");
         assert_eq!(r["watched"]["files"], 1);
-        let (code, text, stderr) = status_out(&store, &[]);
+        let (code, _, stderr) = status_out(&store, &[]);
         assert_eq!(code, Some(0), "{stderr}");
-        assert!(text.contains("Watched places: 1 file"), "{text}");
+        let (code, text, stderr) = status_out(&store, &["--coverage"]);
+        assert_eq!(code, Some(0), "{stderr}");
+        assert!(
+            text.lines()
+                .any(|l| l.trim_start().starts_with("Watched places") && l.contains(" 1 file,")),
+            "{text}"
+        );
     }
     assert_eq!(snapshot(w.home()), before);
 }
@@ -9806,8 +9812,14 @@ fn status_answers_while_a_run_is_in_progress_and_never_makes_it_fail() {
     assert_ne!(died["last_finished_run"]["check"]["id"], "died");
     let (_, text, _) = status_out(&w.store(), &[]);
     assert!(text.contains("has not finished: it died"), "{text}");
+    assert!(!text.contains('✓'), "{text}");
+    // What is counted is said to come from the run that finished.
+    let (_, text, _) = status_out(&w.store(), &["--coverage"]);
+    assert!(text.contains("has not finished: it died"), "{text}");
     assert!(
-        text.contains("The numbers below are what the run that finished"),
+        text.lines().any(
+            |l| l.trim_start().starts_with("Counted") && l.contains("by the run that finished")
+        ),
         "{text}"
     );
 }
@@ -9837,10 +9849,15 @@ fn a_status_whose_last_check_is_old_is_not_fresh_says_why_and_is_never_calm() {
         "{why}"
     );
     let (_, text, _) = status_out(&w.store(), &[]);
+    let line = text
+        .lines()
+        .find(|l| l.trim_start().starts_with("Not fresh"))
+        .unwrap_or_else(|| panic!("{text}"));
     assert!(
-        text.contains("Do not take it for calm until a check finishes."),
+        line.contains(why) && line.ends_with("do not take it for calm until a check finishes"),
         "{text}"
     );
+    assert!(!text.contains('✓'), "{text}");
     // A check dated ahead of this Mac's clock has no age, and is not fresh either.
     rewrite_journal(
         &w.store(),
@@ -10179,12 +10196,15 @@ fn a_lockfile_of_a_kind_without_a_reader_is_named_as_such_by_status_and_the_repo
             "not_given|events|program starts on this Mac, from Apple's eslogger|1",
         ]
     );
-    let (code, printed, _) = status_out(&store, &[]);
+    let (code, printed, _) = status_out(&store, &["--coverage"]);
     assert_eq!(code, Some(0));
+    let row = |which: &str| {
+        printed
+            .lines()
+            .any(|l| l.split_whitespace().collect::<Vec<_>>() == ["lockfile", "kind", which, "2"])
+    };
     assert!(
-        printed.contains("This build has no reader for:\n")
-            && printed.contains("lockfile kind  \"uv.lock\"    2\n")
-            && printed.contains("lockfile kind  \"yarn.lock\"  2\n"),
+        printed.contains("\n  No reader in this build for\n") && row("uv.lock") && row("yarn.lock"),
         "{printed}"
     );
     let pages = view_pages(&store);
@@ -10330,11 +10350,29 @@ fn a_machine_that_could_not_be_reached_is_named_once_and_what_it_leaves_unread_i
         ],
         "{c:#}"
     );
-    let (_, printed, _) = status_out(&h.store(), &[]);
-    // Once in the table of machines not reached; what needs a look names it as a person does.
-    assert_eq!(printed.matches("machine:db-1").count(), 1, "{printed}");
+    // Once in the table of machines not reached, by the name a person knows it by and never by
+    // the store's id, with since when and why.
+    let (_, printed, _) = status_out(&h.store(), &["--coverage"]);
+    assert!(!printed.contains("machine:"), "{printed}");
+    let rows: Vec<&str> = printed
+        .lines()
+        .filter(|l| l.trim_start().starts_with("db-1 "))
+        .collect();
+    assert_eq!(rows.len(), 1, "{printed}");
     assert!(
-        printed.contains("2026-01-03 04:00 UTC  Permission denied (publickey).\n"),
+        rows[0].ends_with("2026-01-03 04:00 UTC  Permission denied (publickey)."),
+        "{printed}"
+    );
+    // The status names it once, on its line of machines not reached.
+    let (_, printed, _) = status_out(&h.store(), &[]);
+    let line = printed
+        .lines()
+        .find(|l| l.trim_start().starts_with("Not reached"))
+        .unwrap_or_else(|| panic!("{printed}"));
+    assert!(
+        line.contains(
+            "db-1 since 2026-01-03 04:00 UTC: Permission denied (publickey)., and 2 more"
+        ),
         "{printed}"
     );
 }
@@ -10611,21 +10649,41 @@ fn status_without_json_is_a_short_summary_for_a_person() {
     assert_eq!(code, Some(0));
     assert!(!text.starts_with('{'));
     assert!(text.lines().count() <= 40, "{text}");
-    let from = line.find(", ").unwrap() + 2;
-    let to = line.find("CISA catalogue").unwrap();
-    assert!(text.contains(&line[from..to]), "{text}\n{line}");
+    // The run's own sentences and the latest changes are one command away, whole.
+    let (code, whole, _) = status_out(&w.store(), &["--coverage"]);
+    assert_eq!(code, Some(0));
+    let watched = line
+        .split("Watched places: ")
+        .nth(1)
+        .and_then(|rest| rest.split(". ").next())
+        .unwrap();
     assert!(
-        text.lines()
+        whole
+            .lines()
+            .any(|l| l.trim_start().starts_with("Watched places  ")
+                && l.trim_end().ends_with(watched.trim_end_matches('.'))),
+        "{whole}\n{line}"
+    );
+    assert!(
+        whole
+            .lines()
             .any(|l| l.split_whitespace().skip(3).collect::<Vec<_>>()
                 == ["changed", "shell", "profile", ".zshrc"]),
-        "{text}"
+        "{whole}"
     );
     // The limits of this version in the same words as the page and the app.
-    assert!(text.contains(
-        "\nLimit of this version: Known vulnerabilities are not yet compared with your installed software, your servers or projects of other kinds.\n"
-    ));
+    let limits = whole
+        .split("\n\n")
+        .find(|s| s.trim_start().starts_with("Limits of this version\n"))
+        .unwrap_or_else(|| panic!("{whole}"));
+    assert!(
+        limits.lines().any(|l| l.trim()
+            == "Known vulnerabilities are not yet compared with your installed software, your servers or projects of other kinds"),
+        "{whole}"
+    );
     // Processes and connections are sampled: the status no longer says they are not read.
     assert!(!text.contains("processes and connections are not read"));
+    assert!(!whole.contains("processes and connections are not read"));
 }
 
 // Findings: what a rule found, kept until the owner answers it.
@@ -11429,13 +11487,17 @@ fn a_change_in_a_watched_place_stays_open_through_quiet_runs_and_is_the_number_t
     );
 
     let (_, printed, _) = status_out(&w.store(), &[]);
-    assert!(printed.contains("Needs a look: 1.\n"), "{printed}");
+    assert!(
+        printed.starts_with("✗ 1 thing needs a look, none urgent"),
+        "{printed}"
+    );
     let listed = ok(immune_cmd(w.home())
         .arg("findings")
         .arg("--store")
         .arg(w.store()));
     assert!(
-        listed.starts_with("1 open finding.\n") && listed.contains(item["id"].as_str().unwrap()),
+        listed.starts_with("✗ 1 open finding, none urgent")
+            && listed.contains(item["id"].as_str().unwrap()),
         "{listed}"
     );
 
@@ -11572,8 +11634,45 @@ fn an_urgent_finding_is_never_cut_from_what_needs_a_look_while_one_that_is_not_i
     let listed = listed.as_array().unwrap();
     assert_eq!(listed[0]["id"], "f0000000000", "{n:#}");
     assert_eq!(listed[0]["urgent"], true);
+    // Counted by rule over every open finding, not only the fifty listed, the rule with an
+    // urgent finding first even with fewer findings.
+    let by_rule: Vec<(String, u64, u64)> = n["by_rule"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| {
+            (
+                g["rule"].as_str().unwrap().to_string(),
+                g["count"].as_u64().unwrap(),
+                g["urgent"].as_u64().unwrap(),
+            )
+        })
+        .filter(|(rule, ..)| rule.starts_with("integrity."))
+        .collect();
+    assert_eq!(
+        by_rule,
+        [
+            ("integrity.app-seal".to_string(), 1, 1),
+            ("integrity.app-signer".to_string(), 50, 0)
+        ],
+        "{n:#}"
+    );
+    assert!(listed.len() < 51, "{n:#}");
+    // The text counts the urgent one in its headline and gives its rule first, marked urgent.
     let (_, text, _) = status_out(&w.store(), &[]);
-    assert!(text.contains(" of them urgent."), "{text}");
+    assert!(
+        text.starts_with(&format!("✗ {} things need a look, 1 urgent", before + 51)),
+        "{text}"
+    );
+    let first = text
+        .lines()
+        .skip(1)
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or_else(|| panic!("{text}"));
+    assert!(
+        first.contains("App files changed after signing") && first.ends_with("1  urgent"),
+        "{text}"
+    );
     // `immune findings`, which cuts nothing, gives the urgent one first too.
     assert_eq!(
         findings_json(&w.store(), &[])["findings"][0]["finding"]["id"],
@@ -11849,10 +11948,15 @@ fn a_server_that_cannot_be_opened_is_one_thing_the_owner_can_fix_with_its_reason
         "{r:#}"
     );
     let (_, printed, _) = status_out(&h.store(), &[]);
+    // The name and its reason on the line under the cause, without quotes; among what failed,
+    // since a server that could not be opened is a failure, though the owner can fix it.
+    let cause = "\n    1 server could not be opened at the last server check\n      db-1: Permission denied (publickey).\n";
+    let at = printed.find(cause).unwrap_or_else(|| panic!("{printed}"));
+    let failed = printed[..=at]
+        .rfind("\n  Failed\n")
+        .unwrap_or_else(|| panic!("{printed}"));
     assert!(
-        printed.contains(
-            "\nYou can fix: 1 server could not be opened at the last server check. (\"db-1\": \"Permission denied (publickey).\")\n"
-        ),
+        !printed[failed..at].contains("\n  You can fix\n"),
         "{printed}"
     );
 
@@ -11966,11 +12070,13 @@ fn a_name_and_what_its_source_said_stay_apart_as_data_and_a_secret_in_what_it_sa
         ]),
         "{item:#}"
     );
-    // As text, each in its own quotation, the reason next to its name.
+    // As text, each name with its reason on a line of its own under the program's words; a
+    // colon in a name is written out, so the name never passes for a name and a reason.
     let (_, printed, _) = status_out(&h.store(), &[]);
+    let name = shown_name.replace(':', "\\u{3a}");
     assert!(
         printed.contains(&format!(
-            "You can fix: 2 servers could not be opened at the last server check. (\"db-1\": \"Connection refused\"; \"{shown_name}\": \"{shown_reason}\")\n"
+            "\n    2 servers could not be opened at the last server check\n      db-1: Connection refused\n      {name}: {shown_reason}\n"
         )),
         "{printed}"
     );
@@ -12458,11 +12564,14 @@ fn what_needs_a_look_is_listed_up_to_fifty_with_its_total() {
     let r = status_json(&w.store());
     assert_eq!(looks(&r).as_array().unwrap().len(), 50);
     assert_eq!(r["needs_a_look"]["total"], 51);
+    // A person reads the total and how many are urgent, the findings counted by rule.
     let (_, printed, _) = status_out(&w.store(), &[]);
     assert!(
-        printed.contains(
-            "\n41 more are not listed here, 0 of them urgent; `immune findings` lists every one.\n"
-        ),
+        printed.starts_with("✗ 51 things need a look, none urgent")
+            && printed
+                .lines()
+                .any(|l| l.contains("Program set to start by itself changed")
+                    && l.trim_end().ends_with("  51")),
         "{printed}"
     );
 }

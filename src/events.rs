@@ -2736,6 +2736,53 @@ impl LineAt {
         };
         (at.to_string() == text).then_some(at)
     }
+
+    /// When its file was started, by its name, in UTC seconds: the later of the run and the start
+    /// for a name of a later collector, the start of the hour for an earlier one's. `None` for a
+    /// name that is no real time since 1970, such as 31 February or the year 1. A position that
+    /// starts later than now, or at no real time, was never printed by `immune matches`.
+    pub fn start(&self) -> Option<i64> {
+        let key = key_of(&self.file)?;
+        utc_second(match key.run {
+            0 => key.at * 10_000,
+            run => run.max(key.at),
+        })
+    }
+}
+
+/// `YYYYMMDDHHMMSS` as UTC seconds, when it is a real time since 1970. The C library reads it
+/// (`timegm(3)`, through `instant`), and it is taken only when `gmtime_r(3)` gives the same date
+/// and time back, since `timegm` carries a 31 February into March.
+fn utc_second(n: u64) -> Option<i64> {
+    let fields = [
+        n / 10_000_000_000,
+        n / 100_000_000 % 100,
+        n / 1_000_000 % 100,
+        n / 10_000 % 100,
+        n / 100 % 100,
+        n % 100,
+    ];
+    let [year, month, day, hour, minute, second] = fields;
+    let (secs, _) = instant(&format!(
+        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z"
+    ))?;
+    // SAFETY: `tm` is a plain C structure that gmtime_r fills; both pointers outlive the call.
+    let back = unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::gmtime_r(&secs, &mut tm).is_null() {
+            return None;
+        }
+        tm
+    };
+    let given = [
+        back.tm_year as i64 + 1900,
+        back.tm_mon as i64 + 1,
+        back.tm_mday as i64,
+        back.tm_hour as i64,
+        back.tm_min as i64,
+        back.tm_sec as i64,
+    ];
+    (secs >= 0 && given.iter().zip(fields).all(|(g, f)| *g == f as i64)).then_some(secs)
 }
 
 /// What the log holds at a position, for a verdict about a match.

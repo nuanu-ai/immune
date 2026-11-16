@@ -504,10 +504,11 @@ fn the_list_carries_every_finding_in_every_state_whatever_all_says_and_a_person_
         assert_eq!(states, [&json!("seen")], "{args:?}");
     }
     let text = String::from_utf8(e.immune(&["findings"]).stdout).unwrap();
-    assert!(text.starts_with("0 open findings."), "{text}");
+    assert!(text.starts_with("✓ No open findings"), "{text}");
+    assert!(!text.contains(&id), "{text}");
     let text = String::from_utf8(e.immune(&["findings", "--all"]).stdout).unwrap();
     assert!(
-        text.starts_with("1 finding.") && text.contains(&id),
+        text.starts_with("✓ 1 finding, 0 open, none urgent") && text.contains(&id),
         "{text}"
     );
 }

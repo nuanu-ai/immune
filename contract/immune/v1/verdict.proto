@@ -29,11 +29,33 @@
 // verdict about a match, the finding keeps the event at that line, as a rule's finding keeps
 // events.
 //
+// The event log keeps about a day. A `suspicious` verdict about a match whose line is no longer in
+// the log (the file its position names is gone, or another file has its name now) is still
+// recorded and raises its finding, with no event kept, and `RecordedVerdict.event_gone` says so:
+// the core did not read the event again and did not check that the rule matched it, and the
+// meaning of the finding it raises says so. The rule must still be one this build ships, the
+// position one `immune matches` prints, and the time its file's name gives a real one, not later
+// than now; any other is refused with `no_such_match`. A `harmless` verdict about such a match is
+// refused with `match_gone`: there is no match to keep it beside.
+//
 // A `harmless` verdict is a record: kept, shown beside what it is about, and nothing else.
 //
-// The same message, equal in everything, is recorded once while the finding it went to is open.
-// After the person answered that finding, the same message raises the next occurrence, as a new
-// match would. A `harmless` message is recorded once.
+// A verdict may carry `verdict_id`, an id the response layer makes for it, as an idempotency key
+// works in payment and web APIs. A verdict whose id the store already holds, equal in everything
+// else (what it names, its kind, its reason as kept, its case and both levels), is answered with
+// the verdict recorded then and `already_recorded`, whatever the state of its finding and whether
+// or not the log still holds its line: nothing is written and nothing is raised. So a repeat sent
+// after the person answered the finding gets the earlier `recorded_at` and the finding as it
+// stands now, and raises nothing: a new decision needs a new id. The same id on a message that
+// differs in any of those is refused with `verdict_id_reused`, and nothing is recorded: a verdict
+// that is a real decision is sent again under a new id. The refusal's `detail_text` names the
+// fields that differ and the earlier verdict's kind and `recorded_at`, and nothing of the text of
+// either message. A verdict with a new id is a new decision, even when the rest of it repeats an
+// earlier one.
+//
+// Between verdicts that carry no id, the same message, equal in everything, is recorded once while
+// the finding it went to is open. After the person answered that finding, the same message raises
+// the next occurrence, as a new match would. A `harmless` message is recorded once.
 //
 // Anyone who can run `immune verdict` as the person can send a verdict, and the core cannot tell
 // the response layer from another program: verdicts are not signed. That is why a verdict never
@@ -44,15 +66,15 @@
 // such text is, and never inside the core's own words. `reason_text` is at most 1,000 Unicode
 // scalar values and `case_text` at most 200; longer is refused, never shortened, and every
 // answer carries them whole but for a secret cut out of the reason. Text with no visible
-// character is empty.
+// character is empty. `verdict_id` is not text: it is a token, kept and shown as it was sent.
 //
 // A secret the core recognises is cut out of `reason_text` where it is kept, as out of every text
 // the core keeps, and the verdict is recorded all the same: `RecordedVerdict.reason_cuts` says
 // what was cut. A mark the reason quotes from the core's output, `\cut{<kind> <length>}`, bare or
 // with its backslash doubled as JSON writes it, is a value already cut: it is kept as text and
-// cuts nothing. The values that are keys, `case_text`, `store_id` and what the verdict names, are
-// never rewritten: one that holds a secret is refused with `holds_secret`, naming the field and
-// never what it holds.
+// cuts nothing. The values that are keys, `case_text`, `verdict_id`, `store_id` and what the
+// verdict names, are never rewritten: one that holds a secret is refused with `holds_secret`,
+// naming the field and never what it holds.
 //
 // `immune verdict` reads the form it is told, `--proto` or `--json`, and answers in it. With no
 // form named it is refused as a misuse: a message is not typed as text.
@@ -99,6 +121,13 @@ message Verdict {
   // `harmless` one; a confidence is low, medium or high.
   optional Level severity = 8;
   optional Level confidence = 9;
+  // An id the response layer makes for this one verdict, so that sending it again after a
+  // failure is told from a new decision. Make one nobody can guess, such as a UUID. Optional. It
+  // is a token, not text: 1 to 200 characters of printable ASCII, `!` to `~`, with no backslash,
+  // as the IETF draft of the `Idempotency-Key` header takes one; any other is refused with
+  // `verdict_id_not_a_token`. It needs no escaping, so it is kept, shown and compared exactly as
+  // sent. A key: one that holds a secret is refused with `holds_secret`. Since 1.17.0.
+  optional string verdict_id = 10;
 }
 
 // A rule match, as `immune matches` names it: the position of the event's line and the rule's
@@ -143,6 +172,10 @@ message RecordedVerdict {
   // What was cut out of `verdict.reason_text` because it held a secret, in order, one entry for
   // each piece; `argument` is 0, the reason being one text. Empty when nothing was cut.
   repeated Cut reason_cuts = 5;
+  // A verdict about a match whose line was no longer in the log when the verdict came: the core
+  // did not read the event again and did not check that the rule matched it, and its finding
+  // keeps no event of it. Only a `suspicious` verdict is recorded so. Since 1.17.0.
+  bool event_gone = 6;
 }
 
 // The verdicts about a finding or a match, as an answer gives them.
@@ -173,7 +206,10 @@ message VerdictRecorded {
   optional string store_id = 3;
   // The verdict as recorded. When the same verdict was recorded before, the one recorded then.
   RecordedVerdict recorded = 4;
-  // The same message, equal in what it names, its kind, its reason, its case and both levels, was
-  // recorded before and its finding is still open, or it is `harmless`; nothing was recorded now.
+  // The same verdict was recorded before and nothing was recorded now: one with the same
+  // `verdict_id`, equal in everything else, whatever became of its finding since; or, with no
+  // id, the same message, equal in what it names, its kind, its reason, its case and both
+  // levels, whose finding is still open or which is `harmless`. `recorded` is that verdict, with
+  // its own `recorded_at` and its finding as it stands now.
   bool already_recorded = 5;
 }

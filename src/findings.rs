@@ -53,10 +53,17 @@ pub const CONFIDENCES: [&str; 3] = ["low", "medium", "high"];
 /// What every listing of findings says to an agent that reads it.
 pub const ANSWERS_NOTE: &str = "Answer a finding only after the owner has agreed in this conversation, having been told what it is and what the options are. Pass --via agent and the reason the owner agreed to. The app shows every answer given this way.";
 
-/// The three sentences for a person: what happened, when it is normal, what to do.
+/// The longest a rule's short title may be, in characters: what a list of findings gives its
+/// name (`Words::short`); a published rule's own title is cut to it where a list shows it.
+pub const SHORT_MAX: usize = 44;
+
+/// The three sentences for a person: what happened, when it is normal, what to do; and the
+/// first of them in a few words, for a list.
 #[derive(Clone, Copy)]
 pub struct Words {
     pub title: &'static str,
+    /// The title in a few words, at most `SHORT_MAX` characters, for a list.
+    pub short: &'static str,
     pub meaning: &'static str,
     pub advice: &'static str,
 }
@@ -108,6 +115,7 @@ fn autostart() -> Rule {
         finds: "event",
         words: Words {
             title: "A program set to start by itself on this Mac was added, changed or removed.",
+            short: "Program set to start by itself changed",
             meaning: "This is normal right after you install, update or remove an app that works in the background.",
             advice: "If you did not just do that, look at the file named here and find out which app it belongs to.",
         },
@@ -129,6 +137,7 @@ fn login_hook() -> Rule {
         finds: "event",
         words: Words {
             title: "A script that this Mac runs with full control every time someone logs in or out was added, changed or removed.",
+            short: "Script run at every login changed",
             meaning: "Apple replaced this way of running a script at login years ago, so apps rarely use it now; it is a known way for something unwanted to stay on a Mac.",
             advice: "If neither you nor whoever manages this Mac set it, find out which script it names before you next log out or restart.",
         },
@@ -147,6 +156,7 @@ fn shell_profile() -> Rule {
         finds: "event",
         words: Words {
             title: "A file your terminal runs every time it starts was added, changed or removed.",
+            short: "File your terminal runs at start changed",
             meaning: "This is normal when you or an installer just edited it; many tools add a line there.",
             advice: "If you did not, open the file and look at its last lines.",
         },
@@ -166,6 +176,7 @@ fn ssh_access() -> Rule {
         finds: "event",
         words: Words {
             title: "An SSH file that decides who can log in to this Mac, or how it connects to other machines, was added, changed or removed.",
+            short: "SSH file that decides who logs in changed",
             meaning: "This is normal when you just added a key, a server or a setting.",
             advice: "If you did not, look at the file now, before you next connect anywhere.",
         },
@@ -188,6 +199,7 @@ fn authentication() -> Rule {
         finds: "event",
         words: Words {
             title: "A file that decides how you log in to this Mac, or how your password is checked, was added, changed or removed.",
+            short: "File that decides how you log in changed",
             meaning: "This is normal after an update of macOS, after you turn on Touch ID for the terminal, or after you install software that changes how you log in; otherwise it can let someone in without your password or record it.",
             advice: "If none of those just happened, look at the file named here before you next type your password.",
         },
@@ -206,6 +218,7 @@ fn git_hook() -> Rule {
         finds: "event",
         words: Words {
             title: "A script that git runs by itself in one of your projects was added, changed or removed.",
+            short: "Script git runs by itself changed",
             meaning: "This is normal when you just set up a tool for that project, such as a formatter or a linter.",
             advice: "If you did not, read the script before your next commit in that project.",
         },
@@ -232,6 +245,7 @@ fn first_read_rule() -> Rule {
         finds: "event",
         words: Words {
             title: "Some places on this Mac were read for the first time, and what runs by itself in them was taken as their starting point.",
+            short: "Places read for the first time",
             meaning: "They could not be read before, or were not known, so a change in them before today would have gone unseen; this is normal after a permission was fixed, a folder was checked for the first time or a project was found later.",
             advice: "Look once at the places named here and what runs by itself in them; from now on only changes there are shown.",
         },
@@ -327,6 +341,7 @@ fn app_seal() -> Rule {
         finds: "event",
         words: Words {
             title: "An app's files were changed after its developer signed it, while its version stayed the same.",
+            short: "App files changed after signing",
             meaning: "This happens when something writes code into an app so that it runs whenever you open the app; some apps that update themselves in place cause it too.",
             advice: "If the app did not just update itself, do not open it; reinstall it from its developer and look for what else changed.",
         },
@@ -345,6 +360,7 @@ fn app_signer() -> Rule {
         finds: "event",
         words: Words {
             title: "An app is now signed by someone other than before, while its version stayed the same.",
+            short: "App now signed by someone else",
             meaning: "This is normal for an app you build yourself; otherwise it can mean that someone changed the app and signed it again to hide it.",
             advice: "If you did not just build or reinstall this app, reinstall it from its developer and look for what else changed.",
         },
@@ -362,6 +378,7 @@ fn package_files() -> Rule {
         finds: "event",
         words: Words {
             title: "Files of an installed command-line tool or package were changed in place, while its version stayed the same.",
+            short: "Program files changed in place",
             meaning: "Package managers put in a new version rather than change an installed one, so this is rare; it happens when something adds code to a tool you run.",
             advice: "If you did not edit it yourself, reinstall that package and look for what else changed.",
         },
@@ -379,6 +396,7 @@ fn app_code_outside() -> Rule {
         finds: "event",
         words: Words {
             title: "Code an app keeps in your Library folder, outside the app itself, changed while the app's version stayed the same.",
+            short: "App code in your Library folder changed",
             meaning: "Many apps download parts of themselves there and update them on their own, so this is often normal; it is also where code can be added so that it runs inside the app.",
             advice: "If this happens again without an update, reinstall the app and remove its folder named here.",
         },
@@ -404,6 +422,7 @@ fn folder_open_task() -> Rule {
         finds: "event",
         words: Words {
             title: "A project on this Mac now has a task that runs by itself when its folder is opened in the editor.",
+            short: "Project task that runs when it is opened",
             meaning: "Some projects use this to start a build or a server when you open them; it is also how code was planted in projects, so that it runs as soon as anyone opens the folder.",
             advice: "Do not open that folder in the editor until you have read the task file named here and know who added the task.",
         },
@@ -425,6 +444,7 @@ fn editor_open() -> Rule {
         finds: "event",
         words: Words {
             title: "A project on this Mac now tells your editor to run a program or a command by itself.",
+            short: "Project tells your editor to run a program",
             meaning: "Projects set this to use their own tools, such as a linter or a container; it is also how a project was made to run code as soon as it was opened in an editor.",
             advice: "Do not open that folder in the editor until you have read what the file named here sets and know who added it. If you did not add it and no tool you use did, ask your agent to look into it.",
         },
@@ -444,6 +464,7 @@ fn package_install() -> Rule {
         finds: "event",
         words: Words {
             title: "A project on this Mac now has a script that runs by itself when its packages are installed.",
+            short: "Project script that runs on package install",
             meaning: "Some projects need this to build themselves or to set up their tools; it is also how code was planted in projects, so that it runs as soon as anyone installs their packages.",
             advice: "Do not install that project's packages again until you have read the script named here. If you did not add it and no tool you use did, do not install them, and ask your agent to look into it.",
         },
@@ -463,6 +484,7 @@ fn agent_start() -> Rule {
         finds: "event",
         words: Words {
             title: "A project on this Mac now tells your coding agent to run a program or a tool by itself.",
+            short: "Project tells your agent to run a program",
             meaning: "Projects use this to give the agent tools and to run checks; it is also how a project was made to run code as soon as an agent was started in its folder.",
             advice: "Do not start your agent in that folder again until you have read what the file named here starts. If you did not add it and no tool you use did, do not start the agent there.",
         },
@@ -483,6 +505,7 @@ fn agent_settings() -> Rule {
         finds: "event",
         words: Words {
             title: "The settings of a coding agent on this Mac now tell it to run a program or a tool by itself.",
+            short: "Coding agent set to run a program",
             meaning: "You or a tool you installed may have added it; it is also how malware made agents run its code in every project, by adding its own tool to the agent's settings.",
             advice: "Read what was added in the file named here. If you did not add it, do not start that agent until the entry is removed, and ask an agent started in a clean folder to look into where it came from.",
         },
@@ -504,6 +527,7 @@ fn editor_extension() -> Rule {
         finds: "event",
         words: Words {
             title: "An extension was added to an editor on this Mac.",
+            short: "Editor extension added",
             meaning: "Extensions run with your access as soon as the editor starts; this is normal when you just installed one, and it is also how code was planted through extension stores.",
             advice: "If you did not install it, remove it in the editor and ask your agent to look into it.",
         },
@@ -522,6 +546,7 @@ fn indicator_match() -> Rule {
         finds: "event",
         words: Words {
             title: "Something on this Mac matches a sign of a known attack from the list you gave.",
+            short: "Matches a sign of attack from your list",
             meaning: "The list names files, sites and addresses that the attack is known to use, so a match is rarely chance; it is wrong only when the list itself is wrong.",
             advice: "Do not open or run what is named here; find out how it got there, and treat this Mac as affected until you know.",
         },
@@ -548,6 +573,7 @@ fn detached_inline_code() -> Rule {
         finds: "event",
         words: Words {
             title: "A program that runs scripts has been running code it was handed when it started, on its own in the background, for at least a minute.",
+            short: "Script running hidden in the background",
             meaning: "Tools and agents do this for a moment while they work; staying alive on its own, with no terminal or app it belongs to, is how some malware keeps hidden code running.",
             advice: "If you did not start something like this, ask your agent to find the process of the program named here and what started it, and stop it if nobody knows it.",
         },
@@ -581,6 +607,7 @@ fn malicious_package() -> Rule {
         finds: "state",
         words: Words {
             title: "A project on this Mac depends on a package that is known to be malicious.",
+            short: "Malicious package in a project",
             meaning: "The package, or this release of it, was reported as carrying harmful code. If the project's packages were installed on this Mac, that code may have run here.",
             advice: "Do not install or run that project again. Ask your agent to look into it; if its packages were installed here, treat the tokens and keys this Mac could reach as exposed.",
         },
@@ -598,6 +625,7 @@ fn malicious_name_removed() -> Rule {
         finds: "state",
         words: Words {
             title: "A project on this Mac depends on a package name that was removed from the registry as malicious.",
+            short: "Package name removed as malicious",
             meaning: "The registry now serves a harmless placeholder under that name, so installing it does nothing harmful today. But the project asks for a name that carried harmful code, often through a misspelt dependency.",
             advice: "Find how that name got into the project and remove it.",
         },
@@ -616,6 +644,7 @@ fn exploited_vulnerability() -> Rule {
         finds: "state",
         words: Words {
             title: "A project on this Mac depends on a package with a vulnerability that attackers are using.",
+            short: "Vulnerability that attackers are using",
             meaning: "The vulnerability is on the list of those known to be used in real attacks. Whether this project can be reached that way is not known.",
             advice: "Update the package to a release that fixes it; the finding names one where the record gives it.",
         },
@@ -1780,11 +1809,13 @@ pub fn published_words(source: &crate::sigma::Source) -> (Words, Words) {
     (
         Words {
             title: START_TITLE,
+            short: "Program start a published rule marks risky",
             meaning: starts,
             advice: START_ADVICE,
         },
         Words {
             title: FILE_TITLE,
+            short: "File a published rule marks as risky",
             meaning: files,
             advice: FILE_ADVICE,
         },
@@ -1882,7 +1913,7 @@ fn verdict_item(f: &Found, subject: &str) -> Item {
         change: f.change.clone(),
         first_seen: Some(f.first_seen.0),
         last_seen: Some(f.last_seen.0),
-        words: crate::verdict::WORDS,
+        words: crate::verdict::words(f.verdicts.as_ref()),
         value: Some(value),
         place: Some(f.place.clone()),
         thing: None,
@@ -1899,6 +1930,7 @@ pub const KEPT_KIND: &str = "finding of a rule not in this version";
 /// Immune's words for such a finding: nothing a rule would say, since the rule is not here.
 const KEPT_WORDS: Words = Words {
     title: "This finding was raised by a rule that is not in this version of Immune.",
+    short: "Raised by a rule not in this version",
     meaning: "The rule that raised it is not among those that raise findings in this version, so Immune can say no more about it than what it kept, and the finding stays until you answer it.",
     advice: "Look at where it is and at what it rests on; once you know what it was, mark it seen or expected.",
 };
@@ -1937,19 +1969,25 @@ fn kept_item(f: &Found) -> Item {
 /// stays a finding at the rule's levels, since a place that cannot be read can hide a change.
 /// `kind` is the rule's kind of place. Made once for each kind and kept while the program runs.
 pub fn not_read_words(kind: &'static str) -> Words {
-    type Made = std::collections::BTreeMap<&'static str, &'static str>;
+    type Made = std::collections::BTreeMap<&'static str, (&'static str, &'static str)>;
     static MADE: std::sync::Mutex<Made> = std::sync::Mutex::new(Made::new());
     let mut made = MADE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let title = *made.entry(kind).or_insert_with(|| {
+    let (title, short) = *made.entry(kind).or_insert_with(|| {
         let title = format!(
             "At the last check Immune could not read a watched {kind}, so it is not known whether it was added, changed or removed."
         );
-        &*Box::leak(title.into_boxed_str())
+        // The kind as a person reads it, so that each kind's short title is its own and fits.
+        let short = format!("Not read: {}", kind_title(kind));
+        (
+            &*Box::leak(title.into_boxed_str()),
+            &*Box::leak(short.into_boxed_str()),
+        )
     });
     Words {
         title,
+        short,
         meaning: NOT_READ_MEANING,
         advice: NOT_READ_ADVICE,
     }
@@ -2075,6 +2113,7 @@ pub fn catalogue() -> crate::contract::v1::Catalogue {
                 title: r.words.title.to_string(),
                 meaning: r.words.meaning.to_string(),
                 advice: r.words.advice.to_string(),
+                short_title: r.words.short.to_string(),
             })
             .collect(),
         // Every finding of a published rule says the same words; the rule is in its own field.
@@ -2109,11 +2148,13 @@ pub fn catalogue() -> crate::contract::v1::Catalogue {
             .collect(),
             finds: "event".to_string(),
             title: starts.title.to_string(),
+            short_title: starts.short.to_string(),
             meaning_by_set: meanings(false),
             advice: starts.advice.to_string(),
             for_file_events: Some(v1::FileEventWords {
                 kind: PUBLISHED_FILE_KIND.to_string(),
                 title: files.title.to_string(),
+                short_title: files.short.to_string(),
                 meaning_by_set: meanings(true),
                 advice: files.advice.to_string(),
             }),
@@ -2127,6 +2168,7 @@ pub fn catalogue() -> crate::contract::v1::Catalogue {
             confidence: "the highest a verdict of the occurrence gave".to_string(),
             finds: "event".to_string(),
             title: crate::verdict::WORDS.title.to_string(),
+            short_title: crate::verdict::WORDS.short.to_string(),
             meaning: crate::verdict::WORDS.meaning.to_string(),
             advice: crate::verdict::WORDS.advice.to_string(),
         }),
@@ -2344,6 +2386,8 @@ mod tests {
                     confidence: Some("low".into()),
                     reason: crate::secrets::Kept::Reason.read("invented"),
                     case: crate::secrets::Kept::Case.read("case-1"),
+                    verdict_id: None,
+                    event_gone: false,
                 }),
                 ..Default::default()
             }),
@@ -2398,6 +2442,33 @@ mod tests {
             assert_eq!(value(&all[2]), words, "{unread}");
             assert_eq!(value(&all[3]), words, "{unread}");
         }
+        // A late verdict, raised with the words of an event it could not check, names a finding
+        // of a place not read: its value and a verdict about it still take the not-read words.
+        let late = |named: &str| {
+            let mut v = verdict(named);
+            if let Some(o) = v.verdicts.as_mut().and_then(|s| s.opening.as_mut()) {
+                o.event_gone = true;
+            }
+            v
+        };
+        let mut all = vec![
+            found("f1", rule, true),
+            super::Found {
+                id: "v1".into(),
+                ..late("f1")
+            },
+            super::Found {
+                id: "v2".into(),
+                ..verdict("v1")
+            },
+        ];
+        super::judged_as_read(&mut all);
+        assert_eq!(value(&all[1]), not_read);
+        assert_eq!(
+            super::item(&all[1]).words.short,
+            crate::verdict::WORDS_EVENT_GONE.short
+        );
+        assert_eq!(value(&all[2]), not_read);
         // A chain that runs in a circle ends, with the rule's words.
         let mut all = vec![
             super::Found {
@@ -2499,6 +2570,40 @@ mod tests {
         assert_eq!(named("machine:mac"), Some("mac-2".to_string()));
         assert_eq!(named("machine:other"), None);
         assert!(This::of(&conn, None).unwrap().is_none());
+    }
+
+    #[test]
+    fn every_rule_has_a_short_title_a_list_can_show_whole_and_no_two_share_one() {
+        // A list names a finding by its rule's short title: at most 44 characters, a name in
+        // sentence case and not a sentence, and one name for one rule, so that two rules never
+        // read as one in a list.
+        let set = &crate::sigma::SOURCES[0];
+        let (starts, files) = super::published_words(set);
+        let mut all: Vec<super::Words> = super::rules().iter().map(|r| r.words).collect();
+        all.extend([
+            starts,
+            files,
+            crate::verdict::WORDS,
+            crate::verdict::WORDS_EVENT_GONE,
+            super::KEPT_WORDS,
+        ]);
+        // A place of any kind that could not be read is listed under a name of its own.
+        let mut kinds: Vec<&'static str> = super::rules().iter().map(|r| r.kind).collect();
+        kinds.sort_unstable();
+        kinds.dedup();
+        all.extend(kinds.into_iter().map(super::not_read_words));
+        let mut seen = std::collections::BTreeSet::new();
+        for w in &all {
+            let short = w.short;
+            assert!(
+                !short.is_empty() && short.chars().count() <= super::SHORT_MAX,
+                "{short:?} for {:?}",
+                w.title
+            );
+            let first = short.chars().next().unwrap();
+            assert!(first.is_uppercase() && !short.ends_with('.'), "{short:?}");
+            assert!(seen.insert(short), "{short:?} is given to two rules");
+        }
     }
 
     #[test]

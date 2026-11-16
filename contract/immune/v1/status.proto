@@ -406,6 +406,13 @@ message Uncovered {
   // The same things, one for each name of `examples_text` and in its order, each with what its
   // source said of it. Since 1.8.0.
   repeated UncoveredExample examples = 13;
+  // What kind of gap it is, as a reading's cause: `failed`, a reading or a download that was
+  // tried and did not succeed, such as a file that could not be read, a server that could not be
+  // opened or a list that could not be downloaded; `no_reader`, something this version does not
+  // read; `not_given`, something its source does not give, such as a tool not installed or
+  // switched off. It does not depend on `who`: a failure the person can fix is a failure.
+  // `unspecified`, or a value the reader does not know, is read as `failed`. Since 1.16.0.
+  Cause class = 14;
 }
 
 // One thing a cause of what is not covered is about.
@@ -718,6 +725,25 @@ message NeedsALook {
   // urgent ones listed means some urgent findings are not listed; `immune findings` lists every
   // finding.
   uint64 urgent_total = 3;
+  // Every rule that has a finding that needs a look, each counted over all of them and not over
+  // `items`: urgent ones first, then the most severe, a rule whose severity is not known taken as
+  // the most severe, then the most findings, then by rule. Since 1.16.0.
+  repeated RuleCount by_rule = 4;
+}
+
+// The findings of one rule that need a look, counted.
+message RuleCount {
+  // The rule, as `FindingRef.rule` names it.
+  string rule = 1;
+  // Its title in a few words, as `ListedFinding.short_title`.
+  string short_title = 2;
+  // For a published rule, its own title, whole, as `ListedFinding.rule_title_text`.
+  optional string rule_title_text = 3;
+  // The most severe of its findings. Absent when the severity of one of them is not known.
+  optional Level severity = 4;
+  // How many of its findings need a look, and how many of them are urgent.
+  uint64 count = 5;
+  uint64 urgent = 6;
 }
 
 // A finding that needs a look, as a person is shown it.

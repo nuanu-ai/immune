@@ -27,13 +27,14 @@ pub fn list(conn: &Connection, now: i64) -> rusqlite::Result<v1::Findings> {
     findings::order(&mut items);
     let store_id = Some(store::id(conn)?);
     let refs = refs(&items);
+    let packages = packages(conn)?;
     Ok(v1::Findings {
         format: FORMAT,
         answered_at: now,
         latest_run_at: status::latest_finished(conn)?.and_then(|r| r.finished_at),
         findings: items
             .iter()
-            .map(|i| listed(i, store_id.as_deref(), &refs))
+            .map(|i| listed(i, store_id.as_deref(), &refs, &packages))
             .collect(),
         store_id,
         answers_note: findings::ANSWERS_NOTE.to_string(),
@@ -124,6 +125,7 @@ pub fn of(
         answers_note: findings::ANSWERS_NOTE.to_string(),
         thing: i.thing.clone(),
         kind_title: findings::kind_title(i.kind).to_string(),
+        short_title: i.words.short.to_string(),
     }))
 }
 
@@ -135,12 +137,46 @@ pub fn refs(items: &[Item]) -> BTreeMap<String, v1::FindingRef> {
         .collect()
 }
 
+/// The package each finding about a package is about, by that entity's id: its name and the
+/// releases a record affects, as `package` gives them for one finding, each release once.
+pub struct Packages(BTreeMap<String, (String, BTreeSet<String>)>);
+
+/// Every package a record affects, read once for a whole list.
+pub fn packages(conn: &Connection) -> rusqlite::Result<Packages> {
+    let mut out: BTreeMap<String, (String, BTreeSet<String>)> = BTreeMap::new();
+    for a in vulnerabilities::affecting(conn)? {
+        let about = format!("component:{}/{}/{}", a.checkout, a.ecosystem, a.package);
+        let entry = out
+            .entry(about)
+            .or_insert_with(|| (a.package.clone(), BTreeSet::new()));
+        entry
+            .1
+            .extend(a.affected().into_iter().map(|(version, _)| version));
+    }
+    Ok(Packages(out))
+}
+
+/// A published rule's own title, whole, for a finding of one; `None` for any other.
+pub fn rule_title(rule: &str) -> Option<String> {
+    findings::published(rule)
+        .and_then(|l| l.meta.as_ref())
+        .map(|m| whole(&m.title))
+}
+
 pub fn listed(
     i: &Item,
     store_id: Option<&str>,
     refs: &BTreeMap<String, v1::FindingRef>,
+    packages: &Packages,
 ) -> v1::ListedFinding {
+    let package = packages.0.get(&i.about);
     v1::ListedFinding {
+        short_title: i.words.short.to_string(),
+        rule_title_text: rule_title(&i.rule),
+        package_text: package.map(|(name, _)| whole(name)),
+        releases_text: package
+            .map(|(_, releases)| releases.iter().map(|r| whole(r)).collect())
+            .unwrap_or_default(),
         // Counted, with only the verdict that raised a `verdict.suspicious` finding listed.
         verdicts: i.verdicts.as_ref().and_then(|s| {
             let opening = s.opening.iter().cloned().collect();

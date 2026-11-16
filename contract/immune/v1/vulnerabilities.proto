@@ -40,11 +40,11 @@ message Vulnerabilities {
   // Why there is nothing to count, in the core's words, when there is no store.
   repeated NotComputed not_computed = 8;
   // The packages for which it cannot be told whether a record affects them, the ones
-  // `totals.unknown_packages` counts. Absent when `totals` is. Since 1.16.0.
+  // `totals.unknown_packages` counts. Absent when `totals` is. Since 1.18.0.
   UnknownPackages unknown = 9;
   // The projects whose lockfiles of an ecosystem were not all read, the ones
   // `totals.places_not_read` counts, whether or not a package was read in them. Absent when
-  // `totals` is. Since 1.16.0.
+  // `totals` is. Since 1.18.0.
   UnreadPlaces unread = 10;
 }
 
@@ -132,16 +132,16 @@ message VulnerabilityTotals {
   uint64 informational_records = 15;
   // Places, a project's lockfiles of one ecosystem, that were not all read, and the projects
   // they are in. A project in which no lockfile was found is not among them: it is counted in
-  // `projects_without_lockfile`. Since 1.16.0.
+  // `projects_without_lockfile`. Since 1.18.0.
   uint64 places_not_read = 16;
   uint64 projects_not_read = 17;
   // Projects in which the latest check found no lockfile this version reads: what they declare
   // is not known, and no answer is given for them, so none is "does not affect". Each is in
-  // `unread` as `none_found`. Since 1.16.0.
+  // `unread` as `none_found`. Since 1.18.0.
   uint64 projects_without_lockfile = 18;
   // Projects with a place read in full and compared with data current at the check and now,
   // and no place not wholly read. With none, nothing was compared, and the text never says that
-  // no known vulnerability affects the projects. Since 1.16.0.
+  // no known vulnerability affects the projects. Since 1.18.0.
   uint64 projects_compared = 19;
 }
 

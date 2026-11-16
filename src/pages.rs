@@ -897,6 +897,11 @@ fn evidence(f: &v1::Finding, facts: &mut Vec<(&str, String)>, voices: &mut Vec<V
             if let Some(c) = verdict.confidence {
                 let _ = write!(said, ", how sure: {}", crate::text::word::<v1::Level>(c));
             }
+            if listed.event_gone {
+                said.push_str(
+                    ". Its event was no longer in the log, so Immune could not check that the rule matched it",
+                );
+            }
             voices.push(Voice {
                 name: "Response layer".to_string(),
                 said: esc(&said),

@@ -8,7 +8,7 @@
 
 use crate::status::{self, Catalogue, Problems};
 use crate::view::Latest;
-use crate::{autorun, findings, guarded, integrity, resolver, servers, watched};
+use crate::{autorun, findings, guarded, integrity, resolver, servers, store, watched};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -299,6 +299,11 @@ pub const NOTHING: &str = "nothing";
 pub struct Cause {
     pub id: &'static str,
     pub who: &'static str,
+    /// What kind of gap it is, as a reading's cause: a failure, a reading or a download that was
+    /// tried and did not succeed; something this version has no reader for; or something its
+    /// source does not give, such as a tool not installed. Apart from `who`: a failure the person
+    /// can fix is still a failure.
+    pub class: store::Cause,
     /// Where it is, unless the item says otherwise.
     pub scope: &'static str,
     /// What it is in a few words, for the report line.
@@ -326,6 +331,7 @@ pub enum NoneSaid {
 pub const SERVERS_NOT_CHECKED: Cause = Cause {
     id: "servers-not-checked",
     who: YOU,
+    class: store::Cause::Failed,
     scope: "servers",
     kind: "servers not checked last time",
     title: [
@@ -340,6 +346,7 @@ pub const SERVERS_NOT_CHECKED: Cause = Cause {
 pub const SERVERS_NOT_OPENED: Cause = Cause {
     id: "servers-not-opened",
     who: YOU,
+    class: store::Cause::Failed,
     scope: "servers",
     kind: "servers that could not be opened",
     title: [
@@ -354,6 +361,7 @@ pub const SERVERS_NOT_OPENED: Cause = Cause {
 pub const NOT_PERMITTED: Cause = Cause {
     id: "not-permitted",
     who: YOU,
+    class: store::Cause::Failed,
     scope: "this_mac",
     kind: "files their permissions keep closed",
     title: [
@@ -368,6 +376,7 @@ pub const NOT_PERMITTED: Cause = Cause {
 pub const READING_FAILED: Cause = Cause {
     id: "could-not-read",
     who: NOTHING,
+    class: store::Cause::Failed,
     scope: "this_mac",
     kind: "things that could not be read",
     title: [
@@ -382,6 +391,7 @@ pub const READING_FAILED: Cause = Cause {
 pub const TAILNET_OFF: Cause = Cause {
     id: "tailnet-switched-off",
     who: NOTHING,
+    class: store::Cause::NotGiven,
     scope: "servers",
     kind: "tailnet not looked at while Tailscale is switched off",
     title: [
@@ -396,6 +406,7 @@ pub const TAILNET_OFF: Cause = Cause {
 pub const TAILNET_NEEDS_YOU: Cause = Cause {
     id: "tailnet-not-connected",
     who: YOU,
+    class: store::Cause::NotGiven,
     scope: "servers",
     kind: "tailnet waits for you in Tailscale",
     title: [
@@ -410,6 +421,7 @@ pub const TAILNET_NEEDS_YOU: Cause = Cause {
 pub const GUARDED: Cause = Cause {
     id: "protected-folders",
     who: NOTHING,
+    class: store::Cause::NotGiven,
     scope: "projects",
     kind: "what is in folders macOS protects",
     title: [
@@ -424,6 +436,7 @@ pub const GUARDED: Cause = Cause {
 pub const NOT_UNDERSTOOD: Cause = Cause {
     id: "not-understood",
     who: NOTHING,
+    class: store::Cause::NoReader,
     scope: "projects",
     kind: "files this version does not understand yet",
     title: [
@@ -438,6 +451,7 @@ pub const NOT_UNDERSTOOD: Cause = Cause {
 pub const OTHER_MANAGERS: Cause = Cause {
     id: "package-managers-not-read",
     who: NOTHING,
+    class: store::Cause::NoReader,
     scope: "this_mac",
     kind: "software installed by package managers this version does not read",
     title: [
@@ -452,6 +466,7 @@ pub const OTHER_MANAGERS: Cause = Cause {
 pub const TOOL_LOST: Cause = Cause {
     id: "read-before-not-found",
     who: NOTHING,
+    class: store::Cause::NotGiven,
     scope: "this_mac",
     kind: "tools read before and not found now",
     title: [
@@ -466,6 +481,7 @@ pub const TOOL_LOST: Cause = Cause {
 pub const MANAGERS_ELSEWHERE: Cause = Cause {
     id: "package-managers-elsewhere-not-found",
     who: NOTHING,
+    class: store::Cause::NoReader,
     scope: "this_mac",
     kind: "software of other package managers, and tools installed at other places",
     title: [
@@ -480,6 +496,7 @@ pub const MANAGERS_ELSEWHERE: Cause = Cause {
 pub const PROJECT_AUTORUN: Cause = Cause {
     id: "project-autorun",
     who: NOTHING,
+    class: store::Cause::NoReader,
     scope: "projects",
     kind: "ways a project runs code by itself that are not read",
     title: [
@@ -497,6 +514,7 @@ pub const PROJECT_AUTORUN: Cause = Cause {
 pub const HOME_AUTORUN: Cause = Cause {
     id: "home-autorun",
     who: NOTHING,
+    class: store::Cause::NoReader,
     scope: "this_mac",
     kind: "places in the home folder where a tool's settings run code by itself that are not read",
     title: [
@@ -513,6 +531,7 @@ pub const HOME_AUTORUN: Cause = Cause {
 pub const THREATS_UNREAD: Cause = Cause {
     id: "vulnerability-list-not-downloaded",
     who: NOTHING,
+    class: store::Cause::Failed,
     scope: "threats",
     kind: "vulnerability list not downloaded",
     title: [
@@ -527,6 +546,7 @@ pub const THREATS_UNREAD: Cause = Cause {
 pub const THREATS_FIXABLE: Cause = Cause {
     id: "vulnerability-list-not-downloaded-fixable",
     who: YOU,
+    class: store::Cause::Failed,
     scope: "threats",
     kind: "vulnerability list blocked here",
     title: [
@@ -541,6 +561,7 @@ pub const THREATS_FIXABLE: Cause = Cause {
 pub const VULNERABILITIES_UNKNOWN: Cause = Cause {
     id: "vulnerabilities-unknown",
     who: NOTHING,
+    class: store::Cause::NoReader,
     scope: "projects",
     kind: "packages whose known vulnerabilities cannot be told",
     title: [
@@ -555,6 +576,7 @@ pub const VULNERABILITIES_UNKNOWN: Cause = Cause {
 pub const VULNERABILITY_DATA_OLD: Cause = Cause {
     id: "vulnerability-data-old",
     who: NOTHING,
+    class: store::Cause::Failed,
     scope: "threats",
     kind: "list of known vulnerabilities not current",
     title: [
@@ -569,6 +591,7 @@ pub const VULNERABILITY_DATA_OLD: Cause = Cause {
 pub const VULNERABILITY_DATA_FIXABLE: Cause = Cause {
     id: "vulnerability-data-not-updated-fixable",
     who: YOU,
+    class: store::Cause::Failed,
     scope: "threats",
     kind: "known vulnerabilities blocked here",
     title: [
@@ -583,6 +606,7 @@ pub const VULNERABILITY_DATA_FIXABLE: Cause = Cause {
 pub const NOT_COMPARED: Cause = Cause {
     id: "vulnerabilities-not-compared",
     who: NOTHING,
+    class: store::Cause::NoReader,
     scope: "threats",
     kind: "vulnerabilities not yet compared with installed software and servers",
     title: [
@@ -597,6 +621,7 @@ pub const NOT_COMPARED: Cause = Cause {
 pub const EVENTS_OFF: Cause = Cause {
     id: "program-starts-not-seen",
     who: YOU,
+    class: store::Cause::NotGiven,
     scope: "this_mac",
     kind: "program starts not seen",
     title: [
@@ -611,6 +636,7 @@ pub const EVENTS_OFF: Cause = Cause {
 pub const EVENTS_REFUSED: Cause = Cause {
     id: "eslogger-refused",
     who: YOU,
+    class: store::Cause::Failed,
     scope: "this_mac",
     kind: "eslogger refused Full Disk Access",
     title: [
@@ -625,6 +651,7 @@ pub const EVENTS_REFUSED: Cause = Cause {
 pub const EVENTS_FAILING: Cause = Cause {
     id: "event-level-failing",
     who: YOU,
+    class: store::Cause::Failed,
     scope: "this_mac",
     kind: "event level stopped with an error",
     title: [
@@ -639,6 +666,7 @@ pub const EVENTS_FAILING: Cause = Cause {
 pub const EVENTS_SILENT: Cause = Cause {
     id: "event-level-silent",
     who: YOU,
+    class: store::Cause::Failed,
     scope: "this_mac",
     kind: "event level silent",
     title: [
@@ -653,6 +681,7 @@ pub const EVENTS_SILENT: Cause = Cause {
 pub const FILES_NOT_COLLECTED: Cause = Cause {
     id: "file-events-not-seen",
     who: YOU,
+    class: store::Cause::NotGiven,
     scope: "this_mac",
     kind: "files created and renamed not seen",
     title: [
@@ -667,6 +696,7 @@ pub const FILES_NOT_COLLECTED: Cause = Cause {
 pub const PERSISTENCE_NOT_READ: Cause = Cause {
     id: "persistence-not-read",
     who: NOTHING,
+    class: store::Cause::NoReader,
     scope: "this_mac",
     kind: "places where something can be set to start by itself that are not read",
     title: [
@@ -683,6 +713,7 @@ pub const PERSISTENCE_NOT_READ: Cause = Cause {
 pub const NOT_CHECKED_ON_MACOS: Cause = Cause {
     id: "autorun-not-checked-on-this-macos",
     who: NOTHING,
+    class: store::Cause::NoReader,
     scope: "this_mac",
     kind: "places where code can be set to run by itself not checked on this version of macOS",
     title: [
@@ -1487,6 +1518,37 @@ pub fn clause(list: &[Uncovered]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reading_or_a_download_that_failed_is_a_failure_whoever_can_fix_it() {
+        // The causes raised when a reading or a download was tried and did not succeed; the
+        // status is calm only without them.
+        let failed = [
+            "servers-not-checked",
+            "servers-not-opened",
+            "not-permitted",
+            "could-not-read",
+            "eslogger-refused",
+            "event-level-failing",
+            "event-level-silent",
+            "vulnerability-list-not-downloaded",
+            "vulnerability-list-not-downloaded-fixable",
+            "vulnerability-data-old",
+            "vulnerability-data-not-updated-fixable",
+        ];
+        for c in CAUSES {
+            let is = c.class == store::Cause::Failed;
+            assert_eq!(is, failed.contains(&c.id), "{}", c.id);
+        }
+        // Among them, some the person can fix and some nobody can.
+        for who in [YOU, NOTHING] {
+            assert!(
+                CAUSES
+                    .iter()
+                    .any(|c| c.class == store::Cause::Failed && c.who == who)
+            );
+        }
+    }
 
     #[test]
     fn a_reading_kept_closed_by_permissions_is_told_from_one_that_failed_otherwise() {

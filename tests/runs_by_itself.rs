@@ -2986,18 +2986,29 @@ fn each_check_with_first_readings_raises_its_own_item_whatever_was_answered_abou
         "{text}"
     );
     assert!(text.contains("\nAbout: 1 project.\n"), "{text}");
-    // The text's rows say it too, before the title, in the list and in what needs a look.
-    let title = "1 project: Some places on this Mac were read for the first time";
-    for args in [&["findings"][..], &["status"][..]] {
+    // The list's row says it too, beside the short title; what needs a look counts the rule.
+    let said = |args: &[&str]| {
         let out = Command::new(env!("CARGO_BIN_EXE_immune"))
             .args(args)
             .arg("--store")
             .arg(e.store())
             .output()
             .unwrap();
-        let text = String::from_utf8(out.stdout).unwrap();
-        assert!(text.contains(title), "{args:?}: {text}");
-    }
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let list = said(&["findings"]);
+    assert!(
+        list.contains("\n  Places read for the first time   1\n")
+            && list
+                .lines()
+                .any(|l| l.starts_with("    f") && l.contains("  1 project on ")),
+        "{list}"
+    );
+    let status = said(&["status"]);
+    assert!(
+        status.contains("Places read for the first time"),
+        "{status}"
+    );
     let out = Command::new(env!("CARGO_BIN_EXE_immune"))
         .args([
             "finding",
@@ -3933,7 +3944,7 @@ fn a_plugin_watched_only_for_presence_is_said_so_in_status_and_in_its_finding() 
         };
         assert_eq!(place.presence_only, Some(expected));
     };
-    let status = text(&["status"]);
+    let status = text(&["status", "--coverage"]);
     assert!(
         status.contains(&format!("1 entry watched only for presence: {said}")),
         "{status}"

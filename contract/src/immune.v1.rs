@@ -537,6 +537,14 @@ pub struct Verdict {
         deserialize_with = "crate::optional_enum_from_name::<Level, _>"
     )]
     pub confidence: ::core::option::Option<i32>,
+    /// An id the response layer makes for this one verdict, so that sending it again after a
+    /// failure is told from a new decision. Make one nobody can guess, such as a UUID. Optional. It
+    /// is a token, not text: 1 to 200 characters of printable ASCII, `!` to `~`, with no backslash,
+    /// as the IETF draft of the `Idempotency-Key` header takes one; any other is refused with
+    /// `verdict_id_not_a_token`. It needs no escaping, so it is kept, shown and compared exactly as
+    /// sent. A key: one that holds a secret is refused with `holds_secret`. Since 1.17.0.
+    #[prost(string, optional, tag = "10")]
+    pub verdict_id: ::core::option::Option<::prost::alloc::string::String>,
     /// What it is about: a match or a finding. Required.
     #[prost(oneof = "verdict::About", tags = "3, 4")]
     #[serde(flatten)]
@@ -603,6 +611,11 @@ pub struct RecordedVerdict {
     /// each piece; `argument` is 0, the reason being one text. Empty when nothing was cut.
     #[prost(message, repeated, tag = "5")]
     pub reason_cuts: ::prost::alloc::vec::Vec<Cut>,
+    /// A verdict about a match whose line was no longer in the log when the verdict came: the core
+    /// did not read the event again and did not check that the rule matched it, and its finding
+    /// keeps no event of it. Only a `suspicious` verdict is recorded so. Since 1.17.0.
+    #[prost(bool, tag = "6")]
+    pub event_gone: bool,
 }
 /// The verdicts about a finding or a match, as an answer gives them.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -643,8 +656,11 @@ pub struct VerdictRecorded {
     /// The verdict as recorded. When the same verdict was recorded before, the one recorded then.
     #[prost(message, optional, tag = "4")]
     pub recorded: ::core::option::Option<RecordedVerdict>,
-    /// The same message, equal in what it names, its kind, its reason, its case and both levels, was
-    /// recorded before and its finding is still open, or it is `harmless`; nothing was recorded now.
+    /// The same verdict was recorded before and nothing was recorded now: one with the same
+    /// `verdict_id`, equal in everything else, whatever became of its finding since; or, with no
+    /// id, the same message, equal in what it names, its kind, its reason, its case and both
+    /// levels, whose finding is still open or which is `harmless`. `recorded` is that verdict, with
+    /// its own `recorded_at` and its finding as it stands now.
     #[prost(bool, tag = "5")]
     pub already_recorded: bool,
 }
@@ -1660,6 +1676,22 @@ pub struct ListedFinding {
     /// match on. A kind this build has no title for is given as `kind`. Since 1.8.0.
     #[prost(string, tag = "10")]
     pub kind_title: ::prost::alloc::string::String,
+    /// `title` in a few words, at most 44 characters, for a list: such as `Malicious package in a
+    /// project`. The core's words, the same for every finding of its rule. Since 1.16.0.
+    #[prost(string, tag = "11")]
+    pub short_title: ::prost::alloc::string::String,
+    /// For a finding of a published rule, the rule's own title as its set publishes it, whole: the
+    /// name a list shows for it, cut to 44 characters where it is longer. Absent for every other
+    /// finding. Since 1.16.0.
+    #[prost(string, optional, tag = "12")]
+    pub rule_title_text: ::core::option::Option<::prost::alloc::string::String>,
+    /// For a finding about a package a project depends on (`lockfiles.*`), the package's name and
+    /// the releases the project's lockfiles declare that a record affects, as `VulnerablePackage`
+    /// gives them. Absent, and empty, for every other finding. Since 1.16.0.
+    #[prost(string, optional, tag = "13")]
+    pub package_text: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, repeated, tag = "14")]
+    pub releases_text: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 /// The answer to `immune finding <id>`: one finding whole.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -1738,6 +1770,9 @@ pub struct Finding {
     /// `--via app`. `Findings` and `Status` carry it too. Since 1.9.0.
     #[prost(int64, tag = "21")]
     pub journal_seq: i64,
+    /// As in `ListedFinding`. Since 1.16.0.
+    #[prost(string, tag = "22")]
+    pub short_title: ::prost::alloc::string::String,
 }
 /// The person's answer to a finding.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -2322,12 +2357,12 @@ pub struct Vulnerabilities {
     #[prost(message, repeated, tag = "8")]
     pub not_computed: ::prost::alloc::vec::Vec<NotComputed>,
     /// The packages for which it cannot be told whether a record affects them, the ones
-    /// `totals.unknown_packages` counts. Absent when `totals` is. Since 1.16.0.
+    /// `totals.unknown_packages` counts. Absent when `totals` is. Since 1.18.0.
     #[prost(message, optional, tag = "9")]
     pub unknown: ::core::option::Option<UnknownPackages>,
     /// The projects whose lockfiles of an ecosystem were not all read, the ones
     /// `totals.places_not_read` counts, whether or not a package was read in them. Absent when
-    /// `totals` is. Since 1.16.0.
+    /// `totals` is. Since 1.18.0.
     #[prost(message, optional, tag = "10")]
     pub unread: ::core::option::Option<UnreadPlaces>,
 }
@@ -2457,19 +2492,19 @@ pub struct VulnerabilityTotals {
     pub informational_records: u64,
     /// Places, a project's lockfiles of one ecosystem, that were not all read, and the projects
     /// they are in. A project in which no lockfile was found is not among them: it is counted in
-    /// `projects_without_lockfile`. Since 1.16.0.
+    /// `projects_without_lockfile`. Since 1.18.0.
     #[prost(uint64, tag = "16")]
     pub places_not_read: u64,
     #[prost(uint64, tag = "17")]
     pub projects_not_read: u64,
     /// Projects in which the latest check found no lockfile this version reads: what they declare
     /// is not known, and no answer is given for them, so none is "does not affect". Each is in
-    /// `unread` as `none_found`. Since 1.16.0.
+    /// `unread` as `none_found`. Since 1.18.0.
     #[prost(uint64, tag = "18")]
     pub projects_without_lockfile: u64,
     /// Projects with a place read in full and compared with data current at the check and now,
     /// and no place not wholly read. With none, nothing was compared, and the text never says that
-    /// no known vulnerability affects the projects. Since 1.16.0.
+    /// no known vulnerability affects the projects. Since 1.18.0.
     #[prost(uint64, tag = "19")]
     pub projects_compared: u64,
 }
@@ -3279,6 +3314,18 @@ pub struct Uncovered {
     /// source said of it. Since 1.8.0.
     #[prost(message, repeated, tag = "13")]
     pub examples: ::prost::alloc::vec::Vec<UncoveredExample>,
+    /// What kind of gap it is, as a reading's cause: `failed`, a reading or a download that was
+    /// tried and did not succeed, such as a file that could not be read, a server that could not be
+    /// opened or a list that could not be downloaded; `no_reader`, something this version does not
+    /// read; `not_given`, something its source does not give, such as a tool not installed or
+    /// switched off. It does not depend on `who`: a failure the person can fix is a failure.
+    /// `unspecified`, or a value the reader does not know, is read as `failed`. Since 1.16.0.
+    #[prost(enumeration = "Cause", tag = "14")]
+    #[serde(
+        serialize_with = "crate::enum_name::<Cause, _>",
+        deserialize_with = "crate::enum_from_name::<Cause, _>"
+    )]
+    pub class: i32,
 }
 /// One thing a cause of what is not covered is about.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -3762,6 +3809,38 @@ pub struct NeedsALook {
     /// finding.
     #[prost(uint64, tag = "3")]
     pub urgent_total: u64,
+    /// Every rule that has a finding that needs a look, each counted over all of them and not over
+    /// `items`: urgent ones first, then the most severe, a rule whose severity is not known taken as
+    /// the most severe, then the most findings, then by rule. Since 1.16.0.
+    #[prost(message, repeated, tag = "4")]
+    pub by_rule: ::prost::alloc::vec::Vec<RuleCount>,
+}
+/// The findings of one rule that need a look, counted.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RuleCount {
+    /// The rule, as `FindingRef.rule` names it.
+    #[prost(string, tag = "1")]
+    pub rule: ::prost::alloc::string::String,
+    /// Its title in a few words, as `ListedFinding.short_title`.
+    #[prost(string, tag = "2")]
+    pub short_title: ::prost::alloc::string::String,
+    /// For a published rule, its own title, whole, as `ListedFinding.rule_title_text`.
+    #[prost(string, optional, tag = "3")]
+    pub rule_title_text: ::core::option::Option<::prost::alloc::string::String>,
+    /// The most severe of its findings. Absent when the severity of one of them is not known.
+    #[prost(enumeration = "Level", optional, tag = "4")]
+    #[serde(
+        serialize_with = "crate::optional_enum_name::<Level, _>",
+        deserialize_with = "crate::optional_enum_from_name::<Level, _>"
+    )]
+    pub severity: ::core::option::Option<i32>,
+    /// How many of its findings need a look, and how many of them are urgent.
+    #[prost(uint64, tag = "5")]
+    pub count: u64,
+    #[prost(uint64, tag = "6")]
+    pub urgent: u64,
 }
 /// A finding that needs a look, as a person is shown it.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -4407,6 +4486,10 @@ pub struct CoreRule {
     pub meaning: ::prost::alloc::string::String,
     #[prost(string, tag = "10")]
     pub advice: ::prost::alloc::string::String,
+    /// `title` in a few words, at most 44 characters, as `ListedFinding.short_title`. Since
+    /// 1.16.0.
+    #[prost(string, tag = "11")]
+    pub short_title: ::prost::alloc::string::String,
 }
 /// What a finding of a published rule says, for every set that raises findings.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -4442,6 +4525,10 @@ pub struct PublishedWords {
     /// A rule about file events raises a finding of its own kind and words.
     #[prost(message, optional, tag = "12")]
     pub for_file_events: ::core::option::Option<FileEventWords>,
+    /// `title` in a few words, as `CoreRule.short_title`. A list names a finding of a published
+    /// rule by the rule's own title (`ListedFinding.rule_title_text`). Since 1.16.0.
+    #[prost(string, tag = "13")]
+    pub short_title: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -4488,6 +4575,9 @@ pub struct FileEventWords {
     pub meaning_by_set: ::prost::alloc::vec::Vec<SetMeaning>,
     #[prost(string, tag = "4")]
     pub advice: ::prost::alloc::string::String,
+    /// As in `PublishedWords`. Since 1.16.0.
+    #[prost(string, tag = "5")]
+    pub short_title: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -4509,6 +4599,9 @@ pub struct VerdictWords {
     pub meaning: ::prost::alloc::string::String,
     #[prost(string, tag = "8")]
     pub advice: ::prost::alloc::string::String,
+    /// As in `CoreRule`. Since 1.16.0.
+    #[prost(string, tag = "9")]
+    pub short_title: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(default)]

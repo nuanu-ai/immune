@@ -2686,11 +2686,14 @@ mod tests {
             "{json}"
         );
         let proto = m.encode_to_vec();
-        let text = crate::text::status(&m);
+        let pipe = crate::screen::Screen::pipe();
+        let text = crate::overview::status(&m, &pipe, false);
+        let whole = crate::overview::status(&m, &pipe, true);
         for (form, bytes) in [
             ("json", json.as_bytes()),
             ("proto", &proto),
             ("text", text.as_bytes()),
+            ("coverage", whole.as_bytes()),
         ] {
             assert!(
                 !bytes.windows(token.len()).any(|w| w == token.as_bytes()),

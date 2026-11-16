@@ -608,6 +608,7 @@ fn the_panel_has_a_status_of_real_size_to_be_drawn_from() {
         "advice": "If you still use them, check that you can log in to them yourself and run the server check again. If one is no longer yours, mark it as retired.",
         "count": 4, "since_at": status["answered_at"], "value_text": null,
         "examples_text": names, "examples": examples, "holds_on": "this_mac",
+        "class": "failed",
     });
     let mut causes = vec![servers];
     causes.extend(not_covered);
