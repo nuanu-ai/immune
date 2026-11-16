@@ -3,10 +3,10 @@
 // printed and read, and the conventions for text, references, times and changes, are in
 // `common.proto`.
 //
-// `immune install` registers the core with launchd as a login job. A core this account can
-// replace, such as a build in a checkout, is copied to a place of its own and the job runs the
-// copy; a core it cannot replace, such as one a signed package put in a folder owned by root, is
-// run where it is and nothing is copied. `immune uninstall` stops the job and removes it, with the
+// `immune install` registers the core with launchd as a login job. A core only root can replace,
+// such as one a signed package put in a folder owned by root, is run where it is and nothing is
+// copied; any other, such as a build in a checkout, is copied to a place of its own and the job
+// runs the copy. `immune uninstall` stops the job and removes it, with the
 // copy when there is one; it never removes a core run where it is. Neither changes the store, so
 // this answer carries no `store_id`.
 
@@ -39,8 +39,8 @@ message Service {
   // uninstall where nothing was installed.
   bool replaced = 8;
   // Whether the job runs the core where it is, true, or a copy in the store's folder,
-  // `bin/immune`, false. True only when the account that ran `immune install` could not replace
-  // that core: it is not copied, and `immune uninstall` leaves it where it is. After `immune
+  // `bin/immune`, false. True only when the core and every folder above it are owned by root and
+  // nobody else may write them: it is not copied, and `immune uninstall` leaves it where it is. After `immune
   // uninstall`, what the job ran; absent when that cannot be told, as when nothing was installed.
   // Since 1.19.0.
   optional bool in_place = 9;

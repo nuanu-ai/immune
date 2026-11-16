@@ -76,12 +76,13 @@
 //!
 //! A new core. The watcher the login job runs, `--background`, looks at every turn of
 //! `--alive-every` whether the path it was started from still holds the file it started from, by
-//! device and inode. When an update replaced the file, or removed it, the watcher leaves by itself
+//! device and inode. When an update put another file there, the watcher leaves by itself
 //! with exit 0, between readings and never inside a write transaction: it says why on stderr and
 //! in its lock file, and launchd, which keeps the job alive, starts it again from the new file.
 //! The status reads that line once the lock is free and says the watcher is restarting on a new
-//! core, for `RESTARTING_FOR` at most. A watcher started without `--background`, by a person or
-//! by the app, is left running on the file it opened.
+//! core, for `RESTARTING_FOR` at most. A file removed with nothing in its place leaves the
+//! watcher running: nothing could start again. A watcher started without `--background` is left
+//! running on the file it opened.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -514,14 +515,11 @@ fn identity(m: &std::fs::Metadata) -> (u64, u64) {
     (m.dev(), m.ino())
 }
 
-/// Whether the path a watcher was started from no longer holds the file it started from, given
-/// what `stat` says of the path now: another file, or nothing. A path that cannot be looked at
-/// for another reason is not taken as replaced.
+/// Whether the path a watcher was started from holds another file than the one it started from,
+/// given what `stat` says of the path now. Nothing there, or a path that cannot be looked at, is
+/// not a new core: launchd would have nothing to start again.
 fn replaced(started: (u64, u64), now: std::io::Result<std::fs::Metadata>) -> bool {
-    match now {
-        Ok(m) => identity(&m) != started,
-        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
-    }
+    now.is_ok_and(|m| identity(&m) != started)
 }
 
 /// What a watcher's lock file says of it: it has not completed its first reading, it has and
@@ -1762,10 +1760,10 @@ mod tests {
     }
 
     /// The job's watcher leaves when the path it was started from holds another file, as after
-    /// an update that renamed a new core into place, or nothing; a file it cannot look at for
-    /// another reason does not make it leave.
+    /// an update that renamed a new core into place; nothing there, or a path it cannot look
+    /// at, does not make it leave.
     #[test]
-    fn a_watcher_s_file_is_replaced_when_its_path_holds_another_file_or_nothing() {
+    fn a_watcher_s_file_is_replaced_only_when_its_path_holds_another_file() {
         let dir = crate::common::Scratch::new("watch-core-replaced");
         let core = dir.join("immune");
         std::fs::write(&core, "invented core").unwrap();
@@ -1776,7 +1774,7 @@ mod tests {
         std::fs::rename(&new, &core).unwrap();
         assert!(replaced(started, std::fs::metadata(&core)));
         std::fs::remove_file(&core).unwrap();
-        assert!(replaced(started, std::fs::metadata(&core)));
+        assert!(!replaced(started, std::fs::metadata(&core)));
         let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
         assert!(!replaced(started, Err(denied)));
     }

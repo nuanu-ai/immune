@@ -4755,8 +4755,8 @@ pub struct Service {
     #[prost(bool, tag = "8")]
     pub replaced: bool,
     /// Whether the job runs the core where it is, true, or a copy in the store's folder,
-    /// `bin/immune`, false. True only when the account that ran `immune install` could not replace
-    /// that core: it is not copied, and `immune uninstall` leaves it where it is. After `immune
+    /// `bin/immune`, false. True only when the core and every folder above it are owned by root and
+    /// nobody else may write them: it is not copied, and `immune uninstall` leaves it where it is. After `immune
     /// uninstall`, what the job ran; absent when that cannot be told, as when nothing was installed.
     /// Since 1.19.0.
     #[prost(bool, optional, tag = "9")]

@@ -513,7 +513,7 @@ pub fn service(m: &v1::Service, screen: &Screen) -> String {
         }
         if in_place {
             said.push(
-                "The core is run where it was installed, which this account cannot change, so nothing was copied.",
+                "The core is run where it was installed, which only an administrator can change, so nothing was copied.",
             );
         }
         said.push(
@@ -557,12 +557,24 @@ pub fn service(m: &v1::Service, screen: &Screen) -> String {
             &[loaded, (true, "No property list", &plist, PLAIN), core],
         );
         out.push(String::new());
-        let said = if in_place {
-            "The core the job ran was not copied by immune install, so it stays where it is. The store and the optional event collector were kept."
-        } else {
-            "The store and the optional event collector were kept."
-        };
-        sentences(screen, &mut out, said);
+        sentences(
+            screen,
+            &mut out,
+            "The store and the optional event collector were kept.",
+        );
+        if in_place {
+            out.push(String::new());
+            sentences(
+                screen,
+                &mut out,
+                "The core is shared by every account of this Mac and is removed with an administrator's password:",
+            );
+            let word = crate::text::shell_word_or(&m.program_path_text, "<path of the core>");
+            out.push(format!(
+                "  {}",
+                screen.paint(PLAIN, &format!("sudo rm {word}"))
+            ));
+        }
         out.push(String::new());
         out.push(screen.next("immune install", "installs it again"));
     } else {
@@ -1579,10 +1591,28 @@ mod tests {
         let text = service(&removed, &Screen::pipe());
         assert!(
             text.contains("\n    Core left where it is   /usr/local/bin/immune\n")
-                && text.contains("so it stays where it is")
+                && text.contains(
+                    "removed with an administrator's password:\n  sudo rm /usr/local/bin/immune\n"
+                )
                 && !text.contains("No installed core"),
             "{text}"
         );
+        // A path is one word when pasted, and one that cannot be pasted exactly is not printed.
+        let spaced = v1::Service {
+            program_path_text: "/usr/local/bin/im mune; rm -rf ~".to_string(),
+            ..removed.clone()
+        };
+        let text = service(&spaced, &Screen::pipe());
+        assert!(
+            text.contains("  sudo rm '/usr/local/bin/im mune; rm -rf ~'\n"),
+            "{text}"
+        );
+        let hidden = v1::Service {
+            program_path_text: "/usr/local/bin/im\u{202e}mune".to_string(),
+            ..removed
+        };
+        let text = service(&hidden, &Screen::pipe());
+        assert!(text.contains("  sudo rm <path of the core>\n"), "{text}");
     }
 
     #[test]

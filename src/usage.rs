@@ -278,16 +278,15 @@ pub const COMMANDS: &[Command] = &[
         purpose: "keeps Immune checking in the background",
         forms: &[&[
             "immune install",
-            "[--launchctl <path> --home <dir> [--account-uid <n>]]",
+            "[--launchctl <path> --home <dir>]",
             "[--json | --proto]",
         ]],
         about: "Registers the core as your login job ai.nuanu.immune.watch, which runs immune \
-                watch --background, and says whether it is watching. A core your account can \
-                replace, such as a build, is copied to ~/Library/Application \
-                Support/ai.nuanu.immune/bin/immune and the job runs the copy; one it cannot \
-                replace is run where it is. Run it again from a new build to update. Run it as \
-                the user being watched, without sudo. --launchctl and --home are for tests and \
-                go together; --account-uid only with them.",
+                watch --background, and says whether it started. A core only root can replace \
+                is run where it is; any other, such as a build, is copied to \
+                ~/Library/Application Support/ai.nuanu.immune/bin/immune and the job runs the \
+                copy. Run it again from a new build to update. Run it as the user being \
+                watched, without sudo. --launchctl and --home are for tests and go together.",
         note: "",
     },
     Command {

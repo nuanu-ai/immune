@@ -1,15 +1,15 @@
 //! `immune install` and `immune uninstall`: the core as a login job of this user.
 //!
 //! Install registers the core with launchd as the job `ai.nuanu.immune.watch`, which runs
-//! `watch --background`. Which file the job runs depends on whether the account can replace the
-//! core install was run from (`replaceable`):
-//! - it can, as it can a build in a checkout: install copies the core to `bin/immune` in the
-//!   store's folder and the job runs the copy, so a rebuild, another branch or a removed checkout
-//!   does not touch the running core;
-//! - it cannot, as for a core a signed package put in a folder owned by root: the job runs it
+//! `watch --background`. Which file the job runs depends on who can replace the core install was
+//! run from (`root_only`):
+//! - only root, as for a core a signed package put in a folder owned by root: the job runs it
 //!   where it is and nothing is copied. A copy in the home folder would undo that protection, since
 //!   any program of the account could replace it, and an update of the package would never reach
-//!   the job. A copy an earlier install left is removed once the old job is stopped.
+//!   the job. A copy an earlier install left is removed once the old job is stopped;
+//! - anyone else as well, as for a build in a checkout: install copies the core to `bin/immune` in
+//!   the store's folder and the job runs the copy, so a rebuild, another branch or a removed
+//!   checkout does not touch the running core, and no other account chooses what the job runs.
 //!
 //! The watcher the job runs leaves by itself when the file it was started from is replaced, and
 //! launchd starts it again from the new one (`watch.rs`). Uninstall stops the job and removes its
@@ -42,9 +42,8 @@
 //! The property list is written by the system's `plutil`, never by hand, since a path can hold
 //! `&` or `<`. `launchctl` and `plutil` are run by absolute path. For tests, `--launchctl` gives
 //! a stand-in and `--home` another home folder; they go only together, so that a test that forgets
-//! one of the two is refused before anything runs. With them, and only with them, a test can name
-//! `--account-uid`, the account whose rights decide whether the core is run where it is, since no
-//! test can make a file its own account cannot replace.
+//! one of the two is refused before anything runs. No switch changes whether the core is run where
+//! it is: the unit tests give `install` that judgement directly.
 
 use crate::answer::{self, Form, Options};
 use crate::contract::v1;
@@ -114,9 +113,6 @@ pub struct ServiceArgs {
     pub launchctl: PathBuf,
     /// The home folder to act in instead of the account's; only with a stand-in launchctl.
     pub home: Option<PathBuf>,
-    /// The account whose rights decide whether the core can be replaced, with no groups, instead
-    /// of the one running; only with the two above.
-    pub account_uid: Option<u32>,
     pub form: Form,
 }
 
@@ -125,18 +121,11 @@ pub fn parse(
     it: impl Iterator<Item = String>,
     options: &mut Options,
 ) -> Result<ServiceArgs, String> {
-    let (mut launchctl, mut home, mut account_uid) = (None, None, None);
+    let (mut launchctl, mut home) = (None, None);
     options.read(it, |arg, it| {
         match arg.as_str() {
             "--launchctl" => launchctl = Some(PathBuf::from(crate::value(it, &arg)?)),
             "--home" => home = Some(PathBuf::from(crate::value(it, &arg)?)),
-            "--account-uid" => {
-                let value = crate::value(it, &arg)?;
-                let uid = value
-                    .parse()
-                    .map_err(|_| format!("--account-uid takes a number: {value}"))?;
-                account_uid = Some(uid);
-            }
             _ => return Err(format!("unexpected argument: {arg}")),
         }
         Ok(())
@@ -148,23 +137,16 @@ pub fn parse(
         ));
     }
     // A home of one's choosing with the real launchd, or a stand-in with the real home, would act
-    // on the real Mac: the two are for tests and go only together. Another account's rights
-    // would decide for the real Mac whether the core is copied, so they go only with the two.
+    // on the real Mac: the two are for tests and go only together.
     let launchctl = match (launchctl, &home) {
-        (None, None) if account_uid.is_none() => PathBuf::from(LAUNCHCTL),
+        (None, None) => PathBuf::from(LAUNCHCTL),
         (Some(launchctl), Some(_)) => launchctl,
-        _ => {
-            return Err(
-                "--home and --launchctl are for tests and go only together, and --account-uid only with them"
-                    .to_string(),
-            );
-        }
+        _ => return Err("--home and --launchctl are for tests and go only together".to_string()),
     };
     Ok(ServiceArgs {
         verb,
         launchctl,
         home,
-        account_uid,
         form: options.form(),
     })
 }
@@ -189,8 +171,6 @@ struct Places {
     /// The lock on the home folder that lets one of the two commands run at a time, held while
     /// this lives.
     _lock: File,
-    /// The account that runs the command.
-    uid: libc::uid_t,
     /// `gui/<uid>`, and the job in it.
     domain: String,
     job: String,
@@ -208,7 +188,7 @@ pub fn service_cmd(args: &ServiceArgs) -> ExitCode {
     let op = args.verb.op();
     let home = args.home.as_deref();
     let done = match args.verb {
-        Verb::Install => install(&args.launchctl, home, args.account_uid),
+        Verb::Install => install(&args.launchctl, home, root_only),
         Verb::Uninstall => uninstall(&args.launchctl, home),
     };
     match done {
@@ -232,12 +212,6 @@ pub fn service_cmd(args: &ServiceArgs) -> ExitCode {
 /// login, so `$HOME`, which any caller sets, is not where its files are. None when the account
 /// has no entry or no home.
 fn account_home(uid: libc::uid_t) -> Option<PathBuf> {
-    account_entry(uid).map(|(home, _, _)| home)
-}
-
-/// The account `uid`'s entry in the user database: its home folder, its name and its primary
-/// group. None when it has no entry, no home or no name.
-fn account_entry(uid: libc::uid_t) -> Option<(PathBuf, std::ffi::CString, libc::gid_t)> {
     let mut buffer = vec![0 as libc::c_char; 4096];
     loop {
         // SAFETY: an all-zero passwd is a valid value for getpwuid_r to fill in.
@@ -258,17 +232,12 @@ fn account_entry(uid: libc::uid_t) -> Option<(PathBuf, std::ffi::CString, libc::
             buffer.resize(buffer.len() * 2, 0);
             continue;
         }
-        if rc != 0 || found.is_null() || entry.pw_dir.is_null() || entry.pw_name.is_null() {
+        if rc != 0 || found.is_null() || entry.pw_dir.is_null() {
             return None;
         }
-        // SAFETY: getpwuid_r succeeded, so pw_dir and pw_name point to strings ending in NUL in
-        // `buffer`.
-        let (dir, name) = unsafe { (CStr::from_ptr(entry.pw_dir), CStr::from_ptr(entry.pw_name)) };
-        return Some((
-            PathBuf::from(OsStr::from_bytes(dir.to_bytes())),
-            name.to_owned(),
-            entry.pw_gid,
-        ));
+        // SAFETY: getpwuid_r succeeded, so pw_dir points to a string ending in NUL in `buffer`.
+        let dir = unsafe { CStr::from_ptr(entry.pw_dir) };
+        return Some(PathBuf::from(OsStr::from_bytes(dir.to_bytes())));
     }
 }
 
@@ -312,7 +281,6 @@ fn refusals(launchctl: &Path, home: Option<&Path>) -> Result<(Places, bool), Fai
     let store_folder = home.join(crate::STORE_FOLDER);
     let places = Places {
         _lock: lock,
-        uid,
         job: format!("{domain}/{LABEL}"),
         domain,
         agents: home.join("Library/LaunchAgents"),
@@ -623,133 +591,52 @@ fn source(program: &Path) -> Result<(PathBuf, bool), Failed> {
     Ok((exe, same))
 }
 
-/// What `lstat` gave of one part of a path: its owner, its group and its mode, with the bits of
-/// its kind.
+/// What `lstat` gave of one part of a path: its owner and its mode, with the bits of its kind.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Part {
     uid: u32,
-    gid: u32,
     mode: u32,
 }
 
-impl Part {
-    fn of(m: &fs::Metadata) -> Part {
-        Part {
-            uid: m.uid(),
-            gid: m.gid(),
-            mode: m.mode(),
-        }
-    }
-
-    fn is_link(&self) -> bool {
-        self.mode & libc::S_IFMT as u32 == libc::S_IFLNK as u32
-    }
-
-    fn sticky(&self) -> bool {
-        self.mode & libc::S_ISVTX as u32 != 0
-    }
-
-    /// Whether `account` can write it: root always; its owner always, since the owner can give
-    /// itself the right; a member of its group by the group's bit; anyone else by the other bit.
-    fn writable_by(&self, account: &Account) -> bool {
-        if account.uid == 0 || self.uid == account.uid {
-            return true;
-        }
-        if account.groups.contains(&self.gid) {
-            return self.mode & 0o020 != 0;
-        }
-        self.mode & 0o002 != 0
-    }
+/// Whether only root can replace the file whose path's parts, from `/` to the file itself, are
+/// `parts`, as `lstat` gave them for a path whose links were resolved: every part is owned by root
+/// and writable by neither its group nor anyone else. A sticky folder anyone may write is passed,
+/// since in it only root can replace a part root owns, which the part directly inside it must be
+/// like every part. Which account runs the command plays no part: a core another account or a
+/// group could replace would let them choose what the job runs as this user. A part that is a
+/// symbolic link means the path was not resolved. With no parts there is nothing to judge, and
+/// the core is copied, as it always was.
+fn root_only_parts(parts: &[Part]) -> bool {
+    let last = parts.len().saturating_sub(1);
+    !parts.is_empty()
+        && parts.iter().enumerate().all(|(i, part)| {
+            let kind = part.mode & libc::S_IFMT as u32;
+            let sticky = part.mode & libc::S_ISVTX as u32 != 0;
+            part.uid == 0
+                && kind != libc::S_IFLNK as u32
+                && (part.mode & 0o022 == 0 || (sticky && i < last))
+        })
 }
 
-/// An account: its uid and every group it is in, the primary one and the supplementary ones.
-struct Account {
-    uid: u32,
-    groups: Vec<u32>,
-}
-
-impl Account {
-    /// The account `uid` that runs this command, with the groups of this process and those the
-    /// user database gives its name. A group missed here can only make a core look like one the
-    /// account cannot replace; the job then runs it where it is, which is no less safe than a copy
-    /// the account can replace.
-    fn this(uid: libc::uid_t) -> Account {
-        // SAFETY: getegid has no preconditions and cannot fail.
-        let mut groups = vec![unsafe { libc::getegid() }];
-        // SAFETY: with a size of 0 getgroups writes nothing and returns how many there are.
-        let n = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
-        if n > 0 {
-            let mut list = vec![0 as libc::gid_t; n as usize];
-            // SAFETY: the buffer holds `n` gids.
-            let got = unsafe { libc::getgroups(n, list.as_mut_ptr()) };
-            list.truncate(got.max(0) as usize);
-            groups.extend(list);
-        }
-        if let Some((_, name, gid)) = account_entry(uid) {
-            let mut size: libc::c_int = 64;
-            loop {
-                let mut list = vec![0 as libc::c_int; size as usize];
-                let mut got = size;
-                // SAFETY: `list` holds `got` ints and `name` ends in NUL; getgrouplist writes at
-                // most `got` and sets it to how many it found.
-                let rc = unsafe {
-                    libc::getgrouplist(
-                        name.as_ptr(),
-                        gid as libc::c_int,
-                        list.as_mut_ptr(),
-                        &mut got,
-                    )
-                };
-                if rc == 0 {
-                    list.truncate(got.max(0) as usize);
-                    groups.extend(list.into_iter().map(|g| g as u32));
-                    break;
-                }
-                if size >= 1 << 16 {
-                    break;
-                }
-                size *= 4;
-            }
-        }
-        groups.sort_unstable();
-        groups.dedup();
-        Account { uid, groups }
-    }
-}
-
-/// Whether `account` can replace the file whose path's parts, from `/` to the file itself, are
-/// `parts`, as `lstat` gave them for a path whose links were resolved. It can when it can write the
-/// file, or when it can write a folder on the way, which lets it put another file or folder in
-/// place of the next part: a sticky folder lets it do that only to a part it owns, or in a folder
-/// it owns. A part that is a symbolic link means the path was not resolved, and is judged as one
-/// the account can replace: install then copies the core, as it always did. With no parts there is
-/// nothing to judge, and the same holds.
-fn replaceable(parts: &[Part], account: &Account) -> bool {
-    let Some(file) = parts.last() else {
-        return true;
+/// Whether the core at `path` is one only root can replace (`root_only_parts`). `path` is resolved
+/// first, so a link anywhere on the way is followed and each part it leads through is judged. A
+/// path whose parts cannot all be looked at is not.
+fn root_only(path: &Path) -> bool {
+    let Ok(resolved) = fs::canonicalize(path) else {
+        return false;
     };
-    if parts.iter().any(Part::is_link) || file.writable_by(account) {
-        return true;
-    }
-    // A part the account owns past a sticky folder it may write is one it can change anyway: the
-    // file by writing it, a folder by writing in it, which the next part is judged by.
-    let folders = &parts[..parts.len() - 1];
-    folders.iter().any(|folder| {
-        folder.writable_by(account) && (!folder.sticky() || folder.uid == account.uid)
-    })
-}
-
-/// The parts of `path` from `/` to the file, each as `lstat` gives it. `path` is resolved first,
-/// so a link anywhere on the way is followed and each part it leads through is judged. Returns
-/// the resolved path with them.
-fn parts(path: &Path) -> io::Result<(PathBuf, Vec<Part>)> {
-    let resolved = fs::canonicalize(path)?;
     let mut parts = Vec::new();
     for part in resolved.ancestors() {
-        parts.push(Part::of(&fs::symlink_metadata(part)?));
+        let Ok(m) = fs::symlink_metadata(part) else {
+            return false;
+        };
+        parts.push(Part {
+            uid: m.uid(),
+            mode: m.mode(),
+        });
     }
     parts.reverse();
-    Ok((resolved, parts))
+    root_only_parts(&parts)
 }
 
 fn answered_at() -> i64 {
@@ -827,25 +714,20 @@ fn remove_copy(places: &Places) -> Result<(), (&Path, io::Error)> {
     }
 }
 
+/// `immune install`. `root_only` judges the core it was run from (`root_only` above, for the
+/// command), so that a test can give the judgement.
 fn install(
     launchctl: &Path,
     home: Option<&Path>,
-    account_uid: Option<u32>,
+    root_only: impl Fn(&Path) -> bool,
 ) -> Result<v1::Service, Failed> {
     let (places, plist_there) = refusals(launchctl, home)?;
     let (exe, same) = source(&places.program)?;
     let program_there = places.program.is_file();
-    // A core the account cannot replace is run where it is: a copy under the home folder would
-    // be one any program of the account could replace. The installed copy itself is under the
-    // home folder, and a core whose parts cannot all be looked at is copied, as it always was.
-    let account = match account_uid {
-        Some(uid) => Account {
-            uid,
-            groups: Vec::new(),
-        },
-        None => Account::this(places.uid),
-    };
-    let in_place = !same && parts(&exe).is_ok_and(|(_, parts)| !replaceable(&parts, &account));
+    // A core only root can replace is run where it is: a copy under the home folder would be one
+    // any program of the account could replace. The installed copy itself is the account's, so
+    // it is never judged one and never removed as a copy an earlier install left.
+    let in_place = root_only(&exe);
     let runs = if in_place {
         exe.clone()
     } else {
@@ -1061,20 +943,6 @@ mod tests {
         assert_eq!(account_home(4_000_000_000), None);
     }
 
-    /// The account is in every group `id -G` names, the primary one and the supplementary
-    /// ones, so a folder one of them may write is never taken for one the account cannot.
-    #[test]
-    fn the_account_is_in_every_group_id_names() {
-        // SAFETY: geteuid has no preconditions and cannot fail.
-        let me = Account::this(unsafe { libc::geteuid() });
-        let out = Command::new("/usr/bin/id").arg("-G").output().unwrap();
-        let groups = String::from_utf8(out.stdout).unwrap();
-        for gid in groups.split_whitespace() {
-            let gid: u32 = gid.parse().unwrap();
-            assert!(me.groups.contains(&gid), "{gid} not in {:?}", me.groups);
-        }
-    }
-
     /// A stand-in launchctl with the account's real home would act on the real job's files.
     #[test]
     fn a_stand_in_launchctl_without_a_home_is_a_misuse() {
@@ -1088,151 +956,155 @@ mod tests {
         assert!(parsed(&["--home", "/Users/example"]).is_err());
     }
 
-    /// Another account's rights would decide for the real Mac whether the core is copied: they
-    /// are named only with the stand-in and the test's home.
-    #[test]
-    fn an_account_uid_is_taken_only_with_the_stand_in_and_the_home() {
-        let named = parsed(&[
-            "--launchctl",
-            "/invented/launchctl",
-            "--home",
-            "/Users/example",
-            "--account-uid",
-            "4000000000",
-        ])
+    /// A stand-in launchctl and a temporary home folder: the stand-in keeps whether the job is
+    /// loaded in a file beside itself, and runs nothing.
+    fn stand_in(dir: &Path) -> (PathBuf, PathBuf) {
+        let launchctl = dir.join("launchctl");
+        fs::write(
+            &launchctl,
+            r#"#!/bin/sh
+dir=$(dirname "$0")
+case "$1" in
+    print) case "$2" in */*/*) [ -f "$dir/loaded" ] ;; *) true ;; esac ;;
+    bootout) rm -f "$dir/loaded" ;;
+    enable) true ;;
+    bootstrap) cp "$3" "$dir/loaded" ;;
+    *) exit 2 ;;
+esac
+"#,
+        )
         .unwrap();
-        assert_eq!(named.account_uid, Some(4_000_000_000));
-        assert_eq!(parsed(&[]).unwrap().account_uid, None);
-        assert!(parsed(&["--account-uid", "4000000000"]).is_err());
-        assert!(
-            parsed(&[
-                "--launchctl",
-                "/invented/launchctl",
-                "--account-uid",
-                "4000000000"
-            ])
-            .is_err()
-        );
+        fs::set_permissions(&launchctl, fs::Permissions::from_mode(0o755)).unwrap();
+        let home = dir.join("home");
+        fs::create_dir(&home).unwrap();
+        (launchctl, home)
+    }
+
+    fn done(result: Result<v1::Service, Failed>) -> v1::Service {
+        match result {
+            Ok(m) => m,
+            Err(f) => panic!("{}: {} {}", f.code, f.message, f.detail),
+        }
+    }
+
+    /// Below the command line, with the judgement given: a core only root can replace is run
+    /// where it is, the copy an earlier install left goes, and uninstall leaves the core and says
+    /// where it is.
+    #[test]
+    fn a_core_only_root_can_replace_is_run_where_it_is_and_uninstall_leaves_it() {
+        use std::io::Write;
+        let dir = crate::common::Scratch::new("service-in-place");
+        let (launchctl, home) = stand_in(&dir);
+        // A watcher that watches the store, so that install answers at once.
+        let folder = home.join(crate::STORE_FOLDER);
+        fs::create_dir_all(&folder).unwrap();
+        crate::store::open_or_make(&folder.join(crate::STORE_FILE)).unwrap();
+        let mut lock = crate::store::lock_watch(&folder).unwrap().unwrap();
+        let since = crate::now_secs() - 1;
+        write!(lock, "{since}\nheartbeat\nready").unwrap();
+        let copy = folder.join(BIN).join(PROGRAM);
+        let plist = home.join(format!("Library/LaunchAgents/{LABEL}.plist"));
+
+        let m = done(install(&launchctl, Some(&home), |_| false));
+        assert_eq!((m.in_place, m.watching), (Some(false), Some(true)));
+        assert!(copy.is_file());
+        let core = fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
+        let m = done(install(&launchctl, Some(&home), |_| true));
+        assert_eq!((m.in_place, m.loaded), (Some(true), true));
+        assert_eq!(Path::new(&m.program_path_text), core);
+        let named = plist_string(&plist, "ProgramArguments.0").ok().unwrap();
+        assert_eq!(Path::new(&named), core);
+        assert!(!copy.exists() && !folder.join(BIN).exists());
+
+        let m = done(uninstall(&launchctl, Some(&home)));
+        assert_eq!((m.installed, m.in_place), (false, Some(true)));
+        assert_eq!(Path::new(&m.program_path_text), core);
+        assert!(core.is_file() && !plist.exists() && !dir.join("loaded").exists());
     }
 
     const DIR: u32 = libc::S_IFDIR as u32;
     const FILE: u32 = libc::S_IFREG as u32;
     const STICKY: u32 = libc::S_ISVTX as u32;
 
-    fn part(uid: u32, gid: u32, mode: u32) -> Part {
-        Part { uid, gid, mode }
-    }
-
-    /// An invented account, 501, in the groups 20 and 80.
-    fn account() -> Account {
-        Account {
-            uid: 501,
-            groups: vec![20, 80],
-        }
+    fn part(uid: u32, mode: u32) -> Part {
+        Part { uid, mode }
     }
 
     /// `/usr/local/bin/immune` as a package would leave it, owned by root all the way, with the
-    /// folder that holds the file given.
+    /// folder that holds the file and the file given.
     fn package(bin: Part, file: Part) -> Vec<Part> {
         vec![
-            part(0, 0, DIR | 0o755),
-            part(0, 0, DIR | 0o755),
-            part(0, 0, DIR | 0o755),
+            part(0, DIR | 0o755),
+            part(0, DIR | 0o755),
+            part(0, DIR | 0o755),
             bin,
             file,
         ]
     }
 
-    /// The job never runs a copy the account can replace when the core could not be replaced:
-    /// a core owned by root all the way is run where it is, and every way the account could put
-    /// another file in its place makes it one to copy.
+    /// The job runs a core where it is only when nobody but root can replace it; any other owner,
+    /// and any folder or file a group or anyone may write, make it one to copy, whoever runs the
+    /// command.
     #[test]
-    fn a_core_is_run_where_it_is_only_when_no_part_of_its_path_lets_the_account_replace_it() {
-        let a = account();
-        let root_file = part(0, 0, FILE | 0o755);
-        // Owned by root all the way.
-        assert!(!replaceable(
-            &package(part(0, 0, DIR | 0o755), root_file),
-            &a
-        ));
-        // A folder the account's group may write.
-        assert!(replaceable(
-            &package(part(0, 80, DIR | 0o775), root_file),
-            &a
-        ));
-        // The same folder, of a group the account is not in.
-        assert!(!replaceable(
-            &package(part(0, 81, DIR | 0o775), root_file),
-            &a
-        ));
-        // A member of the group is judged by the group's bit, not by the others'.
-        assert!(!replaceable(
-            &package(part(0, 80, DIR | 0o757), root_file),
-            &a
-        ));
-        // A folder anyone may write, sticky: a file of root's stays, one of the account's does
-        // not, and in a folder of the account's nothing does.
-        let tmp = part(0, 0, DIR | STICKY | 0o777);
-        assert!(!replaceable(&package(tmp, root_file), &a));
-        assert!(replaceable(&package(tmp, part(501, 20, FILE | 0o755)), &a));
-        assert!(replaceable(
-            &package(part(501, 0, DIR | STICKY | 0o777), root_file),
-            &a
-        ));
-        // Not sticky, anyone may replace what is in it.
-        assert!(replaceable(
-            &package(part(0, 0, DIR | 0o777), root_file),
-            &a
-        ));
-        // A file anyone may write, and a file of the account's that it may not write yet.
-        assert!(replaceable(
-            &package(part(0, 0, DIR | 0o755), part(0, 0, FILE | 0o757)),
-            &a
-        ));
-        assert!(replaceable(
-            &package(part(0, 0, DIR | 0o755), part(501, 20, FILE | 0o555)),
-            &a
-        ));
-        // A build in a folder of the account's, higher up than the file's own.
+    fn a_core_is_run_where_it_is_only_when_nobody_but_root_can_replace_it() {
+        let root_dir = part(0, DIR | 0o755);
+        let root_file = part(0, FILE | 0o755);
+        assert!(root_only_parts(&package(root_dir, root_file)));
+        // A folder its group may write, as `/Applications` is, root:admin 0775.
+        assert!(!root_only_parts(&package(part(0, DIR | 0o775), root_file)));
+        // Folders owned by another account than root, whatever their mode.
+        assert!(!root_only_parts(&package(
+            part(502, DIR | 0o755),
+            root_file
+        )));
         let build = vec![
-            part(0, 0, DIR | 0o755),
-            part(0, 80, DIR | 0o755),
-            part(501, 20, DIR | 0o700),
-            part(0, 0, DIR | 0o755),
+            root_dir,
+            root_dir,
+            part(502, DIR | 0o700),
+            root_dir,
             root_file,
         ];
-        assert!(replaceable(&build, &a));
-        // A link left on the way: the path was not resolved, so the core is copied.
-        let mut linked = package(part(0, 0, DIR | 0o755), root_file);
-        linked[3] = part(0, 0, libc::S_IFLNK as u32 | 0o755);
-        assert!(replaceable(&linked, &a));
-        assert!(replaceable(&[], &a));
-        // Root may replace anything.
-        assert!(replaceable(
-            &package(part(0, 0, DIR | 0o755), root_file),
-            &Account {
-                uid: 0,
-                groups: vec![0]
-            }
-        ));
+        assert!(!root_only_parts(&build));
+        // A file of another owner, and one its group or anyone may write.
+        assert!(!root_only_parts(&package(
+            root_dir,
+            part(501, FILE | 0o555)
+        )));
+        assert!(!root_only_parts(&package(root_dir, part(0, FILE | 0o775))));
+        assert!(!root_only_parts(&package(root_dir, part(0, FILE | 0o757))));
+        // A sticky folder anyone may write passes for a part of root's inside it; not sticky, it
+        // does not, and a sticky file is still a file anyone may write.
+        let tmp = part(0, DIR | STICKY | 0o777);
+        assert!(root_only_parts(&package(tmp, root_file)));
+        assert!(!root_only_parts(&package(tmp, part(501, FILE | 0o755))));
+        assert!(!root_only_parts(&package(
+            part(502, DIR | STICKY | 0o777),
+            root_file
+        )));
+        assert!(!root_only_parts(&package(part(0, DIR | 0o777), root_file)));
+        assert!(!root_only_parts(&package(
+            root_dir,
+            part(0, FILE | STICKY | 0o777)
+        )));
+        // A link left on the way: the path was not resolved. Nothing to judge: copied.
+        let mut linked = package(root_dir, root_file);
+        linked[3] = part(0, libc::S_IFLNK as u32 | 0o755);
+        assert!(!root_only_parts(&linked));
+        assert!(!root_only_parts(&[]));
     }
 
     /// A link on the way to the core is followed, and the parts it leads to are judged: a link in
-    /// a folder of the account's to a program of the system's is a core it cannot replace, and a
-    /// file in that folder is one it can.
+    /// a folder of the account's to a program of the system's is a core only root can replace,
+    /// and a file in that folder is not.
     #[test]
     fn a_link_on_the_way_is_followed_and_what_it_leads_to_is_judged() {
         let dir = crate::common::Scratch::new("service-link-to-core");
         let link = dir.join("core");
         std::os::unix::fs::symlink("/bin/sh", &link).unwrap();
-        // SAFETY: geteuid has no preconditions and cannot fail.
-        let me = Account::this(unsafe { libc::geteuid() });
-        let (resolved, through) = parts(&link).unwrap();
-        assert_eq!(resolved, Path::new("/bin/sh"));
-        assert_eq!(through.len(), 3);
-        assert!(!replaceable(&through, &me));
+        assert!(root_only(&link));
         let own = dir.join("own");
         fs::write(&own, "invented core").unwrap();
-        assert!(replaceable(&parts(&own).unwrap().1, &me));
+        assert!(!root_only(&own));
+        assert!(!root_only(&dir.join("absent")));
     }
 }

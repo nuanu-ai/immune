@@ -45,9 +45,6 @@ struct Login {
     watcher: Option<fs::File>,
 }
 
-/// The id no account has, whose rights decide in a test whether the core is run where it is.
-const NO_ACCOUNT: &str = "4000000000";
-
 impl Login {
     /// A login with a watcher that watches its store live.
     fn new(tag: &str) -> Self {
@@ -1009,68 +1006,13 @@ fn the_answer_is_the_message_service_in_three_forms_and_a_failure_is_failure() {
     );
 }
 
-/// The core as the account cannot replace it: no test can make such a file, so the account
-/// whose rights decide is one that owns nothing on the way to this build.
-fn in_place(login: &Login, args: &[&str]) -> Output {
-    let args: Vec<&str> = args
-        .iter()
-        .copied()
-        .chain(["--account-uid", NO_ACCOUNT])
-        .collect();
-    login.immune(Path::new(CORE), &args, &[])
-}
-
+/// A build in a test's folder is one more than root can replace: it is copied, and uninstall
+/// removes the copy and says the job ran a copy. The core run where it is is tested below the
+/// command line, in `src/service.rs`: no switch of the command can choose it.
 #[test]
-fn a_core_the_account_cannot_replace_is_run_where_it_is_and_uninstall_leaves_it() {
-    let login = Login::new("core-service-in-place");
-    let core = fs::canonicalize(CORE).unwrap();
-    // A copy an earlier install left goes in the install that runs the core where it is.
-    service(&login.run("install", &[]));
-    assert!(login.program.is_file());
-    let m = service(&in_place(&login, &["install", "--json"]));
-    assert_eq!(
-        (m.installed, m.loaded, m.replaced, m.in_place),
-        (true, true, true, Some(true))
-    );
-    assert_eq!(Path::new(&m.program_path_text), core);
-    let installed = plist(&login.plist);
-    assert_eq!(
-        installed["ProgramArguments"],
-        json!([core, "watch", "--background"])
-    );
-    assert!(!login.program.exists() && !login.bin.exists());
-    assert!(login.loaded());
-    let text = String::from_utf8(in_place(&login, &["install"]).stdout).unwrap();
-    assert!(
-        text.contains("Core run where it is") && text.contains("so nothing was copied"),
-        "{text}"
-    );
-
-    // Uninstall stops the job and removes its property list, and the core stays, named.
-    let m = service(&login.run("uninstall", &[]));
-    assert_eq!(
-        (m.installed, m.loaded, m.replaced, m.in_place),
-        (false, false, true, Some(true))
-    );
-    assert_eq!(Path::new(&m.program_path_text), core);
-    assert!(core.is_file() && !login.plist.exists() && !login.loaded());
-    service(&in_place(&login, &["install", "--json"]));
-    let text = login.immune(Path::new(CORE), &["uninstall"], &[]);
-    let text = String::from_utf8(text.stdout).unwrap();
-    assert!(
-        text.contains(&format!("Core left where it is   {}", core.display()))
-            && text.contains("so it stays where it is")
-            && !text.contains("No installed core"),
-        "{text}"
-    );
-    assert!(core.is_file());
-
-    // Uninstall after a copy removes the copy, and says what the job ran.
-    service(&login.run("install", &[]));
-    // Run from the installed copy, install never takes it for a core to run where it is: that
-    // would remove the file the job runs.
-    let args = ["install", "--json", "--account-uid", NO_ACCOUNT];
-    let m = service(&login.immune(&login.program, &args, &[]));
+fn a_build_is_copied_and_uninstall_removes_the_copy_and_says_so() {
+    let login = Login::new("core-service-copied");
+    let m = service(&login.run("install", &[]));
     assert_eq!(m.in_place, Some(false));
     assert!(login.program.is_file());
     let m = service(&login.run("uninstall", &[]));
