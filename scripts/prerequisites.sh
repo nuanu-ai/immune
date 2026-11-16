@@ -1,4 +1,4 @@
-# Sourced by build, app/build and check: the platform, then each part asks for its tools.
+# Sourced by build and check: the platform, then each part asks for its tools.
 # Each missing thing is said with how to install it, and the script exits 2; nothing is
 # installed and nothing is asked.
 
@@ -12,27 +12,6 @@ only="this program is built and tested only on Apple Silicon Macs with macOS 15 
 [ "$(uname -s)" = Darwin ] && [ "$(uname -m)" = arm64 ] || missing "$only."
 macos=$(sw_vers -productVersion)
 [ "${macos%%.*}" -ge 15 ] || missing "$only; this Mac has macOS $macos."
-
-swift_prerequisites() {
-  # Asking xcode-select where the tools are never raises the install dialog that
-  # running /usr/bin/swift without them would.
-  dev=$(xcode-select -p 2>/dev/null) || dev=
-  swift=
-  if [ -n "$dev" ]; then
-    for candidate in "$dev/usr/bin/swift" "$dev/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift"; do
-      if [ -x "$candidate" ]; then
-        swift=$candidate
-        break
-      fi
-    done
-  fi
-  [ -n "$swift" ] ||
-    missing "Apple's Command Line Tools with swift are missing; install them with: xcode-select --install"
-  # app/Package.swift is written for Swift 6.
-  swift_version=$("$swift" --version 2>&1 | sed -n 's/.*Apple Swift version \([0-9][0-9.]*\).*/\1/p' | head -n 1)
-  [ "${swift_version%%.*}" = 6 ] ||
-    missing "Swift 6 is needed and these tools have Swift ${swift_version:-of an unknown version}; update Apple's Command Line Tools in System Settings, General, Software Update, or install Xcode 16 or later"
-}
 
 rust_prerequisites() {
   rust_hint="install Rust from https://rustup.rs (the official page) or with: brew install rustup && rustup default stable"

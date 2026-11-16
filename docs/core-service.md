@@ -53,8 +53,6 @@ core=$(./build)
 
 The new copy replaces the old one by rename, and the job is restarted on it. Running `immune on` from the installed copy itself registers the job again and leaves the copy as it is. A core run where it is is updated by whatever put it there, such as a new package; the running watcher sees its file replaced and launchd starts the new one, with no `immune on`.
 
-The optional app is built against the installed copy's path, `app/build "$HOME/Library/Application Support/ai.nuanu.immune/bin/immune"`, so an update of the core does not need a new build of the app.
-
 ## Turn off
 
 ```sh
