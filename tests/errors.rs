@@ -132,6 +132,13 @@ fn no_command_or_an_unknown_one_lists_the_commands_one_line_each_and_points_to_t
         }
         assert!(said.contains("immune --help"), "{said}");
         assert!(said.lines().count() <= 22, "{said}");
+        // The word that is not a command is the one named, never `help`.
+        if let Some(word) = args.last() {
+            assert!(
+                said.starts_with(&format!("error: \"{word}\" is not a command of immune")),
+                "{said}"
+            );
+        }
     }
 }
 
@@ -226,15 +233,22 @@ fn a_failure_with_json_or_proto_is_the_same_message_byte_for_byte_as_before() {
         let mut json = args.to_vec();
         json.push("--json");
         let out = e.on(store, &json);
-        let printed = String::from_utf8(out.stdout)
+        let printed = String::from_utf8(out.stdout.clone())
             .unwrap()
             .replace(&dir, "<dir>");
         assert_eq!(printed, format!("{line}\n"), "{args:?}");
-        assert!(
-            out.stderr.is_empty(),
-            "{args:?}: {}",
-            stderr(&e.on(store, &json))
-        );
+        // A misuse says its usage is on stderr, and it is: what was wrong and the command's own
+        // help. Any other failure leaves stderr empty.
+        let said = stderr(&out);
+        if line.contains(r#""code":"usage""#) {
+            let help = format!("immune {}", args[0]);
+            assert!(
+                said.starts_with("error: ") && said.contains(&help),
+                "{args:?}: {said}"
+            );
+        } else {
+            assert!(said.is_empty(), "{args:?}: {said}");
+        }
         let mut proto = args.to_vec();
         proto.push("--proto");
         let binary = e.on(store, &proto);

@@ -2071,7 +2071,7 @@ fn only_plain_ssh_aliases_are_offered_for_the_sweep() {
         assert!(!script.contains(absent), "{absent} is in the sweep");
     }
     assert!(
-        printed.contains(&format!("sh '{}'", sweep.join("sweep.sh").display())),
+        printed.contains(&format!("sh {}", shell_word(&sweep.join("sweep.sh")))),
         "{printed}"
     );
     assert!(printed.contains("skip.txt"), "{printed}");
@@ -6439,7 +6439,7 @@ fn named_aliases_restrict_the_sweep_and_a_name_the_script_does_not_list_or_skips
     let printed = h.servers();
     let (sweep, bin) = (h.sweep(), h.dir.0.join("bin"));
     assert!(
-        printed.contains(&format!("\n→ sh '{}'\n", sweep.join("sweep.sh").display()))
+        printed.contains(&format!("\n→ sh {}\n", shell_word(&sweep.join("sweep.sh"))))
             && printed.contains("Name aliases after it to visit only those again"),
         "{printed}"
     );
@@ -8538,6 +8538,25 @@ fn a_watched_place_that_appears_after_the_first_reading_is_new_and_named() {
     );
 }
 
+/// A path as `immune servers` prints it in a command: as it is when it needs no quoting, else in
+/// single quotes.
+fn shell_word(path: &Path) -> String {
+    let p = path.display().to_string();
+    let safe = |c: char| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c);
+    if p.chars().all(safe) {
+        p
+    } else {
+        format!("'{}'", p.replace('\'', "'\\''"))
+    }
+}
+
+/// The value beside a label at the left of a person's text, whatever the column it starts in.
+fn labelled<'a>(text: &'a str, label: &str) -> Option<&'a str> {
+    text.lines()
+        .find_map(|l| l.strip_prefix(&format!("  {label} ")))
+        .map(str::trim_start)
+}
+
 #[test]
 fn what_a_run_prints_for_a_person_is_told_from_the_status_it_left_with_every_failure_named() {
     // The answer first, with the count the status gives and how many are urgent; what the check
@@ -8563,9 +8582,8 @@ fn what_a_run_prints_for_a_person_is_told_from_the_status_it_left_with_every_fai
     assert!(text.starts_with(&head), "{head}\n{text}");
     assert!(
         text.contains("\n  New\n    medium  ")
-            && text.contains(
-                "\n  Changed      1 change since the last check: 0 added, 1 changed, 0 removed"
-            ),
+            && labelled(&text, "Changed")
+                == Some("1 change since the last check: 0 added, 1 changed, 0 removed"),
         "{text}"
     );
     let failed: Vec<&str> = r["not_covered"]
@@ -10672,8 +10690,11 @@ fn exit_codes_and_errors_an_agent_can_act_on() {
     let store = dir.store();
     let (code, stdout, stderr) = status_out(&store, &["--json", "--bogus"]);
     assert_eq!(code, Some(2));
-    // With a form named, the failure is on stdout alone: never the usage on stderr.
-    assert!(stderr.is_empty(), "{stderr}");
+    // The message says the usage is on stderr, and it is: what was wrong and the command's help.
+    assert!(
+        stderr.starts_with("error: ") && stderr.contains("immune status [--coverage]"),
+        "{stderr}"
+    );
     let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(v["ok"], false);
     assert!(v.get("format").is_none(), "{v}");

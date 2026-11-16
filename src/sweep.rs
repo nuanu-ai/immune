@@ -202,11 +202,6 @@ pub fn write(dir: &Path, machines: &[Vec<String>]) -> std::io::Result<()> {
     Ok(())
 }
 
-/// A path as one word for the shell.
-pub fn quoted(path: &Path) -> String {
-    format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::{HOST_KEY, failed_visit};

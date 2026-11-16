@@ -604,7 +604,80 @@ pub fn unknown(asked: Option<&str>, screen: &Screen) -> String {
 /// (`right_form`). `args` are the words after the command; `said` is what the parser said.
 pub fn misuse(op: &str, args: &[String], said: &str, screen: &Screen) -> String {
     let (cause, form) = right_form(op, args, said);
-    screen.error(&cause, &[Step::Command(form)], &[])
+    screen.error(&cause, &form.steps(), &[])
+}
+
+/// A command Immune prints for a person to paste, made from what was typed: every word typed is
+/// either in it exactly as typed (`text::shell_word`) or, where it cannot be shown exactly, its
+/// placeholder; and then the sentence that says which were left out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pasted {
+    pub command: String,
+    pub left_out: Option<String>,
+}
+
+impl Pasted {
+    /// A command made only of Immune's own words.
+    pub fn own(command: &str) -> Pasted {
+        Pasted {
+            command: command.to_string(),
+            left_out: None,
+        }
+    }
+
+    /// The command, and the sentence about what was left out, as steps of an error.
+    pub fn steps(&self) -> Vec<Step> {
+        let mut steps = vec![Step::Command(self.command.clone())];
+        steps.extend(self.left_out.clone().map(Step::Words));
+        steps
+    }
+}
+
+/// The placeholder of the `n`th operand of `op`, from the first of its forms: `<id>`, `<path or
+/// id>`; `<value>` where the form names none.
+fn operand_placeholder(op: &str, n: usize) -> &'static str {
+    let Some(form) = COMMANDS
+        .iter()
+        .find(|c| c.name == op)
+        .map(|c| c.forms[0][0])
+    else {
+        return "<value>";
+    };
+    let mut rest = form;
+    let mut found = Vec::new();
+    while let Some(at) = rest.find('<') {
+        let end = rest[at..].find('>').map_or(rest.len(), |e| at + e + 1);
+        found.push(&rest[at..end]);
+        rest = &rest[end..];
+    }
+    found.get(n).copied().unwrap_or("<value>")
+}
+
+/// The flags a form of a command takes, as its help lists them: `--via` of `[--via app|agent]`.
+fn form_flags(op: &str, verb: Option<&str>) -> Vec<&'static str> {
+    let Some(c) = COMMANDS.iter().find(|c| c.name == op) else {
+        return Vec::new();
+    };
+    let form = c
+        .forms
+        .iter()
+        .find(|f| verb.is_none_or(|v| f[0].split(' ').skip(2).any(|w| w == v)))
+        .unwrap_or(&c.forms[0]);
+    form.iter()
+        .skip(1)
+        .flat_map(|part| part.trim_matches(['[', ']']).split(" | "))
+        .filter_map(|part| part.split(' ').next())
+        .filter(|w| w.starts_with("--"))
+        .collect()
+}
+
+/// What a word of a command line is to the parser: an operand, the `n`th; a flag; or the value
+/// of the flag named.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Role<'a> {
+    Operand(usize),
+    Flag,
+    Value(&'a str),
 }
 
 /// A word of a command line: as the person typed it, or a placeholder Immune put in.
@@ -735,63 +808,89 @@ impl Typed {
     /// The words in one fixed order, whatever order they were typed in: the command's own words
     /// (its operands), then its flags as typed, then `--store` and last the form, each flag with
     /// its value.
-    fn ordered(&self) -> Vec<&Word> {
+    fn ordered(&self) -> Vec<(&Word, Role<'_>)> {
         let text = |w: &Word| match w {
             Word::Typed(t) => t.clone(),
             Word::Placeholder(p) => p.to_string(),
         };
-        let mut operands: Vec<&Word> = Vec::new();
-        let mut flags: Vec<(u8, &[Word])> = Vec::new();
+        let mut operands: Vec<(&Word, Role)> = Vec::new();
+        let mut flags: Vec<(u8, Vec<(&Word, Role)>)> = Vec::new();
         let mut i = 0;
         while i < self.0.len() {
             let word = text(&self.0[i]);
-            let takes = matches!(&self.0[i], Word::Typed(w) if placeholder(w).is_some());
             if word.starts_with("--") {
-                let end = if takes {
-                    (i + 2).min(self.0.len())
-                } else {
-                    i + 1
-                };
+                let mut group = vec![(&self.0[i], Role::Flag)];
+                if let Word::Typed(flag) = &self.0[i]
+                    && placeholder(flag).is_some()
+                    && let Some(value) = self.0.get(i + 1)
+                {
+                    group.push((value, Role::Value(flag.as_str())));
+                }
+                i += group.len();
                 let rank = match word.as_str() {
                     "--store" => 1,
                     w if w.starts_with("--json") || w.starts_with("--proto") => 2,
                     _ => 0,
                 };
-                flags.push((rank, &self.0[i..end]));
-                i = end;
+                flags.push((rank, group));
             } else {
-                operands.push(&self.0[i]);
+                operands.push((&self.0[i], Role::Operand(operands.len())));
                 i += 1;
             }
         }
         flags.sort_by_key(|(rank, _)| *rank);
         operands
             .into_iter()
-            .chain(flags.into_iter().flat_map(|(_, f)| f.iter()))
+            .chain(flags.into_iter().flat_map(|(_, f)| f))
             .collect()
     }
 
-    /// The line, in the fixed order (`ordered`), each word typed cut of secrets and escaped,
-    /// and quoted where it holds a space or a quote, so that it reads as one word.
-    fn line(&self, op: &str) -> String {
+    /// The line, in the fixed order (`ordered`), each word typed as the shell reads it back
+    /// (`text::shell_word`); a word that cannot be shown exactly is never echoed in it: its
+    /// placeholder takes its place, and a sentence says what was left out.
+    fn line(&self, op: &str) -> Pasted {
         let mut out = format!("immune {op}");
-        for w in self.ordered() {
+        let mut left: Vec<String> = Vec::new();
+        for (w, role) in self.ordered() {
             out.push(' ');
             match w {
                 Word::Placeholder(p) => out.push_str(p),
-                Word::Typed(t) => {
-                    let said = crate::secrets::said(t);
-                    if said.is_empty() || said.contains([' ', '\'', '"']) {
-                        out.push('\'');
-                        out.push_str(&said.replace('\'', "'\\''"));
-                        out.push('\'');
-                    } else {
-                        out.push_str(&said);
+                Word::Typed(t) => match crate::text::shell_word(t) {
+                    Some(word) => out.push_str(&word),
+                    None => {
+                        let (shown, named) = match role {
+                            Role::Value(flag) => (
+                                placeholder(flag).unwrap_or("<value>"),
+                                format!("the value of {flag}"),
+                            ),
+                            Role::Operand(n) => {
+                                let p = operand_placeholder(op, n);
+                                (p, p.to_string())
+                            }
+                            Role::Flag => ("<flag>", "a flag".to_string()),
+                        };
+                        out.push_str(shown);
+                        left.push(named);
                     }
-                }
+                },
             }
         }
-        out
+        let left_out = match left.as_slice() {
+            [] => None,
+            [one] => Some(format!(
+                "What was typed for {one} cannot be shown here exactly, so it was left out; \
+                 type it in its place."
+            )),
+            [rest @ .., last] => Some(format!(
+                "What was typed for {} and {last} cannot be shown here exactly, so it was left \
+                 out; type each in its place.",
+                rest.join(", ")
+            )),
+        };
+        Pasted {
+            command: out,
+            left_out,
+        }
     }
 }
 
@@ -812,7 +911,7 @@ pub enum FindingNext {
 /// The command a refusal of `immune finding <id> <answer>` gives a person to run next. `args`
 /// are the words typed after `finding`; the id and `--store` are kept as typed, each word cut of
 /// secrets and escaped (`Typed::line`).
-pub fn finding_next(args: &[String], next: FindingNext) -> String {
+pub fn finding_next(args: &[String], next: FindingNext) -> Pasted {
     let typed = Typed(args.iter().cloned().map(Word::Typed).collect());
     let mut kept: Vec<Word> = vec![
         typed
@@ -820,18 +919,25 @@ pub fn finding_next(args: &[String], next: FindingNext) -> String {
             .first()
             .map_or(Word::Placeholder("<id>"), |&at| typed.0[at].clone()),
     ];
-    match next {
-        FindingNext::List => return "immune findings --all".to_string(),
+    let verb = match next {
+        FindingNext::List => return Pasted::own("immune findings --all"),
         FindingNext::OtherId => {
             let mut typed = typed;
             typed.value("--with");
             return typed.line("finding");
         }
-        FindingNext::Reopen => kept.push(Word::Typed("reopen".to_string())),
-        FindingNext::Read => {}
-    }
-    if let Some(at) = typed.flag("--store", 0) {
-        kept.extend(typed.0.iter().skip(at).take(2).cloned());
+        FindingNext::Reopen => {
+            kept.push(Word::Typed("reopen".to_string()));
+            Some("reopen")
+        }
+        FindingNext::Read => None,
+    };
+    // Every flag typed that the command given next takes, with its value, as typed.
+    for flag in form_flags("finding", verb) {
+        if let Some(at) = typed.flag(flag, 0) {
+            let takes = if placeholder(flag).is_some() { 2 } else { 1 };
+            kept.extend(typed.0.iter().skip(at).take(takes).cloned());
+        }
     }
     Typed(kept).line("finding")
 }
@@ -851,7 +957,7 @@ const HINTS: &[&str] = &[
 /// The cause of a misuse in Immune's words and the command as typed in its right form: the one
 /// thing wrong mended, every other word kept. Where the parser's words name no mending this
 /// knows, the command's own form.
-fn right_form(op: &str, args: &[String], said: &str) -> (String, String) {
+fn right_form(op: &str, args: &[String], said: &str) -> (String, Pasted) {
     let mut typed = Typed(args.iter().cloned().map(Word::Typed).collect());
     let quoted = |s: &str| crate::text::quoted(&crate::secrets::said(s));
     // What the parser said may repeat what was typed: cut and escaped as any such text.
@@ -1004,7 +1110,7 @@ fn right_form(op: &str, args: &[String], said: &str) -> (String, String) {
         cause = "immune verdict needs a form, --json or --proto".to_string();
         typed.0.push(Word::Placeholder("--json|--proto"));
     } else {
-        return (crate::secrets::said(said), fallback());
+        return (crate::secrets::said(said), Pasted::own(&fallback()));
     }
     (cause, typed.line(op))
 }
@@ -1095,7 +1201,7 @@ mod tests {
         ];
         for (op, args, said, form) in cases {
             let (_, shown) = right_form(op, &words(args), said);
-            assert_eq!(&shown, form, "{op} {args:?}");
+            assert_eq!(&shown.command, form, "{op} {args:?}");
         }
     }
 
@@ -1252,7 +1358,7 @@ mod tests {
         ];
         for (op, args, said, form) in cases {
             let (cause, shown) = right_form(op, &words(args), said);
-            assert_eq!(&shown, form, "{op} {args:?}");
+            assert_eq!(&shown.command, form, "{op} {args:?}");
             assert!(
                 !cause.contains(": --") && !cause.contains("as in:"),
                 "{cause}"
@@ -1280,7 +1386,10 @@ mod tests {
     fn a_misuse_this_does_not_know_shows_the_command_s_own_form() {
         let (cause, form) = right_form("finding", &words(&["f0", "seen"]), "something new");
         assert_eq!(cause, "something new");
-        assert!(form.starts_with("immune finding <id> seen"), "{form}");
+        assert!(
+            form.command.starts_with("immune finding <id> seen"),
+            "{form:?}"
+        );
     }
 
     #[test]
@@ -1316,7 +1425,8 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_answer_gives_the_command_to_run_next_made_from_the_one_typed() {
+    fn a_refused_answer_gives_the_command_to_run_next_made_from_the_one_typed_with_every_flag_it_takes()
+     {
         let typed = words(&[
             "f0123456789",
             "seen",
@@ -1324,6 +1434,8 @@ mod tests {
             "f7a76b7b86f",
             "--journal-seq",
             "4",
+            "--via",
+            "agent",
             "--store",
             "/x/s.db",
         ]);
@@ -1332,23 +1444,124 @@ mod tests {
                 FindingNext::Read,
                 "immune finding f0123456789 --store /x/s.db",
             ),
+            // Reopen takes --via, --with and --journal-seq: an agent's answer stays one.
             (
                 FindingNext::Reopen,
-                "immune finding f0123456789 reopen --store /x/s.db",
+                "immune finding f0123456789 reopen --via agent --with f7a76b7b86f --journal-seq 4 --store /x/s.db",
             ),
             (
                 FindingNext::OtherId,
-                "immune finding f0123456789 seen --with <id> --journal-seq 4 --store /x/s.db",
+                "immune finding f0123456789 seen --with <id> --journal-seq 4 --via agent --store /x/s.db",
             ),
             (FindingNext::List, "immune findings --all"),
         ] {
-            assert_eq!(finding_next(&typed, next), said, "{next:?}");
+            assert_eq!(finding_next(&typed, next).command, said, "{next:?}");
         }
         // Without an id typed, the place for one; without a store, none.
         assert_eq!(
-            finding_next(&words(&["--reason", "r"]), FindingNext::Reopen),
+            finding_next(&words(&["--reason", "r"]), FindingNext::Reopen).command,
             "immune finding <id> reopen"
         );
+    }
+
+    /// The words of a command line as a POSIX shell splits them: single quotes, double quotes
+    /// and backslashes, the three ways a word printed here may be written.
+    fn shell_split(line: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut word: Option<String> = None;
+        let mut chars = line.chars();
+        while let Some(c) = chars.next() {
+            match c {
+                ' ' => out.extend(word.take()),
+                '\'' => {
+                    let w = word.get_or_insert_with(String::new);
+                    for q in chars.by_ref() {
+                        if q == '\'' {
+                            break;
+                        }
+                        w.push(q);
+                    }
+                }
+                '\\' => {
+                    let w = word.get_or_insert_with(String::new);
+                    w.extend(chars.next());
+                }
+                c => word.get_or_insert_with(String::new).push(c),
+            }
+        }
+        out.extend(word);
+        out
+    }
+
+    #[test]
+    fn a_printed_command_names_exactly_what_was_typed_or_the_placeholder_and_says_so() {
+        let hostile = [
+            "store/a;touch${IFS}x",
+            "$(touch x)",
+            "`touch x`",
+            "~/s.db",
+            "#s",
+            "a&b",
+            "*.db",
+            "it's",
+            "my store",
+            "\"q\"",
+            "",
+            "a\\b",
+            "a\nb",
+            "a\u{1b}[31mb",
+            "a\u{202e}b",
+            "plain/path-1.db",
+        ];
+        for value in hostile {
+            let typed = words(&["f0", "seen", "--with", "", "--store", value]);
+            let (_, form) = right_form("finding", &typed, "--with needs a value that is not empty");
+            // As the screen shows it (`Step::Command`), and as the shell would read it back.
+            let split = shell_split(&crate::view::shown(&form.command));
+            let at = split.iter().position(|w| w == "--store").unwrap();
+            let shown = &split[at + 1];
+            if shown == "<path>" {
+                // Left out: never echoed, and said so under the command.
+                assert!(
+                    value.contains(['\\', '\n', '\u{1b}', '\u{202e}']),
+                    "{value:?} left out: {form:?}"
+                );
+                assert!(
+                    form.left_out
+                        .as_deref()
+                        .is_some_and(|l| l.contains("--store") && l.contains("left out")),
+                    "{form:?}"
+                );
+            } else {
+                assert_eq!(shown, value, "{form:?}");
+                assert_eq!(form.left_out, None, "{form:?}");
+                // Read back, the whole command is what was typed, in the fixed order.
+                assert_eq!(
+                    split,
+                    [
+                        "immune", "finding", "f0", "seen", "--with", "<id>", "--store", value
+                    ],
+                    "{form:?}"
+                );
+            }
+        }
+        // A word of the safe set is printed as it is; `~` is not of it.
+        assert_eq!(
+            crate::text::shell_word("plain/path-1.db").as_deref(),
+            Some("plain/path-1.db")
+        );
+        assert_eq!(
+            crate::text::shell_word("~/s.db").as_deref(),
+            Some("'~/s.db'")
+        );
+        // An operand that cannot be shown takes the operand's placeholder.
+        let (_, form) = right_form(
+            "finding",
+            &words(&["f0\u{7}", "seen", "--with", ""]),
+            "--with needs a value that is not empty",
+        );
+        assert_eq!(form.command, "immune finding <id> seen --with <id>");
+        assert!(form.left_out.is_some_and(|l| l.contains("<id>")));
     }
 
     #[test]

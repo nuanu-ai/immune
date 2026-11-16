@@ -711,7 +711,10 @@ pub fn known(k: &v1::Known, screen: &Screen) -> String {
     if let Some(first) = groups.first().and_then(|g| g.ids.first()) {
         out.push(String::new());
         out.push(screen.next(
-            &format!("immune finding {first}"),
+            &format!(
+                "immune finding {}",
+                crate::text::shell_word_or(first, "<id>")
+            ),
             "shows one and how to answer it",
         ));
     }
@@ -1011,21 +1014,64 @@ pub fn vulnerabilities(m: &v1::Vulnerabilities, screen: &Screen) -> String {
             ]
         })
         .collect();
-    // One table, so the columns of both groups line up. The project gives way first, then the
-    // fix, and the package only after both; the level and the id never.
-    let lines = screen.table(
-        4,
-        &[
-            Column::new(Cut::Never),
-            Column::new(Cut::Never),
-            Column::new(Cut::End),
-            Column::new(Cut::Middle).giving(2),
-            Column::new(Cut::End).giving(1),
-        ],
-        None,
-        &cells,
-    );
-    let (first, rest) = lines.split_at(attacks.len());
+    // One table, so the columns of both groups line up: a row a line where every row fits whole;
+    // else a row takes two lines, the level, the id and the package on the first, the project
+    // and the fix on the second under the package. The level and the id are never cut.
+    let width_of = |i: usize| {
+        cells
+            .iter()
+            .map(|r| screen::columns(&view::shown(&r[i].text)))
+            .max()
+            .unwrap_or(0)
+    };
+    let whole = 4 + (0..5).map(width_of).sum::<usize>() + 2 * 4;
+    let lines: Vec<String> = if screen.fits().is_none_or(|w| whole <= w) {
+        screen.table(
+            4,
+            &[
+                Column::new(Cut::Never),
+                Column::new(Cut::Never),
+                Column::new(Cut::End),
+                Column::new(Cut::Middle),
+                Column::new(Cut::End),
+            ],
+            None,
+            &cells,
+        )
+    } else {
+        let firsts: Vec<Vec<Cell>> = cells.iter().map(|r| r[..3].to_vec()).collect();
+        let seconds: Vec<Vec<Cell>> = cells.iter().map(|r| r[3..].to_vec()).collect();
+        let under = 4 + width_of(0) + 2 + width_of(1) + 2;
+        let firsts = screen.table(
+            4,
+            &[
+                Column::new(Cut::Never),
+                Column::new(Cut::Never),
+                Column::new(Cut::End),
+            ],
+            None,
+            &firsts,
+        );
+        let seconds = screen.table(
+            under,
+            &[Column::new(Cut::Middle), Column::new(Cut::End)],
+            None,
+            &seconds,
+        );
+        firsts
+            .into_iter()
+            .zip(seconds)
+            .flat_map(|(a, b)| [a, b])
+            .collect()
+    };
+    // A row's lines, one or two each.
+    let per_row = if cells.is_empty() {
+        1
+    } else {
+        lines.len() / cells.len()
+    };
+    let lines = &lines[..];
+    let (first, rest) = lines.split_at(attacks.len() * per_row);
     for ((head, style), rows) in heads.iter().zip([first, rest]) {
         if rows.is_empty() {
             continue;
@@ -1151,7 +1197,10 @@ pub fn vulnerabilities(m: &v1::Vulnerabilities, screen: &Screen) -> String {
     {
         out.push(String::new());
         out.push(screen.next(
-            &format!("immune vulnerability {}", view::shown(&r.id_text)),
+            &format!(
+                "immune vulnerability {}",
+                crate::text::shell_word_or(&r.id_text, "<id>")
+            ),
             "one record in every project",
         ));
     }
@@ -2541,7 +2590,7 @@ mod tests {
     }
 
     #[test]
-    fn at_eighty_columns_the_package_is_cut_only_after_the_project_and_the_fix_gave_way() {
+    fn a_row_that_does_not_fit_whole_takes_two_lines_and_the_id_and_package_stay_whole() {
         let m = v1::Vulnerabilities {
             totals: Some(v1::VulnerabilityTotals {
                 affected_records: 1,
@@ -2572,16 +2621,92 @@ mod tests {
             ..Default::default()
         };
         let text = vulnerabilities(&m, &Screen::terminal(80, false));
-        let row = text
+        let lines: Vec<&str> = text.lines().collect();
+        let at = lines
+            .iter()
+            .position(|l| l.contains("GHSA-fv66-9v8q-g76r"))
+            .unwrap_or_else(|| panic!("{text}"));
+        // The level, the id and the package with its version, whole, on the first line.
+        let first = lines[at];
+        assert!(
+            first
+                .trim_end()
+                .ends_with("GHSA-fv66-9v8q-g76r  react-server-dom-webpack 19.0.0"),
+            "{text}"
+        );
+        // The project and the fix on the second, under the package.
+        let second = lines[at + 1];
+        let under = first.find("react-server").unwrap();
+        assert_eq!(&second[..under], " ".repeat(under), "{text}");
+        // The project gives way, in its middle, only to what is left of the second line.
+        assert!(
+            second.contains("~/dev/a-project-") && second.contains("ong-name"),
+            "{text}"
+        );
+        assert!(second.contains("fixed in 19.0.1"), "{text}");
+        assert!(lines.iter().all(|l| screen::columns(l) <= 80), "{text}");
+        // Where the row fits whole, one line.
+        let wide = vulnerabilities(&m, &Screen::terminal(140, false));
+        let row = wide
             .lines()
             .find(|l| l.contains("GHSA-fv66-9v8q-g76r"))
-            .unwrap_or_else(|| panic!("{text}"));
-        // At 80 columns the id, the level and the package's whole name fit only
-        // once the project and the fix have given what they can.
-        assert!(row.contains("react-server-dom-webpack"), "{row}");
-        assert!(!row.contains("a-project-with-a-rather-long-name"), "{row}");
-        assert!(!row.contains("19.2.1"), "{row}");
-        assert!(screen::columns(row) <= 80, "{row}");
+            .unwrap();
+        assert!(
+            row.contains("a-project-with-a-rather-long-name") && row.contains("fixed in"),
+            "{wide}"
+        );
+    }
+
+    #[test]
+    fn rows_of_two_lines_stay_under_their_own_group_used_in_attacks_or_other() {
+        let item = |id: &str, exploited: bool| v1::AffectedPackage {
+            project_text: "~/dev/a-project-with-a-rather-long-name".to_string(),
+            ecosystem: "npm".to_string(),
+            package_text: "react-server-dom-webpack".to_string(),
+            releases: vec![v1::PackageRelease {
+                version_text: "19.0.0".to_string(),
+                at_text: "~/dev/x/package-lock.json".to_string(),
+            }],
+            record: Some(v1::PackageRecord {
+                id_text: id.to_string(),
+                label: "critical".to_string(),
+                exploited: Some(exploited),
+                fixed_text: vec!["19.0.1".into()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let m = v1::Vulnerabilities {
+            totals: Some(v1::VulnerabilityTotals {
+                affected_records: 2,
+                affected_packages: 1,
+                affected_projects: 1,
+                projects_compared: 1,
+                ..Default::default()
+            }),
+            affected: Some(v1::AffectedPackages {
+                items: vec![
+                    item("GHSA-aaaa-aaaa-aaaa", true),
+                    item("GHSA-bbbb-bbbb-bbbb", false),
+                ],
+                total: 2,
+            }),
+            ..Default::default()
+        };
+        let text = vulnerabilities(&m, &Screen::terminal(80, false));
+        let lines: Vec<&str> = text.lines().collect();
+        let at = |w: &str| lines.iter().position(|l| l.contains(w)).unwrap();
+        // Each group's head, its row's first line, then its second line.
+        assert_eq!(at("GHSA-aaaa"), at("Used in attacks") + 1, "{text}");
+        assert!(
+            lines[at("GHSA-aaaa") + 1].contains("fixed in 19.0.1"),
+            "{text}"
+        );
+        assert_eq!(at("GHSA-bbbb"), at("Other") + 1, "{text}");
+        assert!(
+            lines[at("GHSA-bbbb") + 1].contains("fixed in 19.0.1"),
+            "{text}"
+        );
     }
 
     #[test]

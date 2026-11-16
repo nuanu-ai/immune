@@ -18,6 +18,31 @@ pub fn quoted(s: &str) -> String {
     format!("\"{}\"", view::shown(&s.replace('"', "\\\"")))
 }
 
+/// One word of a command Immune prints for pasting, written for a POSIX shell so that the shell
+/// reads back exactly `word`: as it is when it is made only of `A-Z a-z 0-9 _ @ % + = : , . / -`
+/// (not `~`, which the shell would expand), else in single quotes, with a quote in it written
+/// `'\''`. `None` when the word cannot be shown exactly, so that a command holding it would name
+/// another value: a control character, a line break, anything the screen writes as an escape
+/// (`view::shown`), a backslash among them, or what reads as a secret (`secrets::said`). The
+/// caller puts the word's placeholder in its place. Every command printed with a word that is
+/// not Immune's own goes through this.
+pub fn shell_word(word: &str) -> Option<String> {
+    if view::shown(word) != word || crate::secrets::said(word) != word {
+        return None;
+    }
+    let safe = |c: char| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c);
+    if !word.is_empty() && word.chars().all(safe) {
+        Some(word.to_string())
+    } else {
+        Some(format!("'{}'", word.replace('\'', "'\\''")))
+    }
+}
+
+/// `shell_word`, or `placeholder` where the word cannot be shown exactly.
+pub fn shell_word_or(word: &str, placeholder: &str) -> String {
+    shell_word(word).unwrap_or_else(|| placeholder.to_string())
+}
+
 /// An enum's value as the JSON names it, the store's own word: `unspecified` for a value this
 /// build does not know.
 pub fn word<E: TryFrom<i32> + serde::Serialize>(value: i32) -> String {
@@ -121,7 +146,7 @@ pub fn failure(f: &v1::Failure, screen: &Screen) -> String {
 /// A refusal of a command the person typed, told as `error` tells it but with `next`, the
 /// command to run next made from what was typed (`usage::finding_next`), in place of the
 /// example the message carries for an agent.
-pub fn refusal(f: &v1::Failure, next: &str, screen: &Screen) -> String {
+pub fn refusal(f: &v1::Failure, next: &crate::usage::Pasted, screen: &Screen) -> String {
     f.errors
         .iter()
         .map(|e| told(e, Some(next), screen))
@@ -138,7 +163,7 @@ pub fn error(e: &v1::Error, screen: &Screen) -> String {
 }
 
 /// One error, with the command to run next when the caller made one from what was typed.
-fn told(e: &v1::Error, next: Option<&str>, screen: &Screen) -> String {
+fn told(e: &v1::Error, next: Option<&crate::usage::Pasted>, screen: &Screen) -> String {
     let detail = e.detail_text.as_deref().unwrap_or_default();
     let condition = match e.code.as_str() {
         // `immune owner` names the path alone, under a code of its own.
@@ -191,7 +216,7 @@ fn told(e: &v1::Error, next: Option<&str>, screen: &Screen) -> String {
     };
     // What failed to be read or done is not helped by running a command again.
     if let Some(next) = next {
-        steps.push(Step::Command(next.to_string()));
+        steps.extend(next.steps());
     } else if label != "Reason"
         && let Some(example) = e.example.as_deref().and_then(example_for_a_person)
     {
@@ -225,6 +250,28 @@ fn example_for_a_person(example: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refusal_says_under_its_command_what_was_typed_and_left_out() {
+        let f = v1::Failure {
+            operation: "finding".to_string(),
+            ok: false,
+            errors: vec![v1::Error {
+                code: "finding_closed".to_string(),
+                message: "the finding is already answered".to_string(),
+                ..Default::default()
+            }],
+        };
+        let next = crate::usage::Pasted {
+            command: "immune finding f0 reopen --store <path>".to_string(),
+            left_out: Some("What was typed for the value of --store cannot be shown".to_string()),
+        };
+        let said = refusal(&f, &next, &Screen::pipe());
+        assert!(
+            said.contains("\n  immune finding f0 reopen --store <path>\n  What was typed for the value of --store"),
+            "{said}"
+        );
+    }
 
     /// Every code a failure of the binary can carry, from the reference's tables and the source.
     const CODES: &[&str] = &[

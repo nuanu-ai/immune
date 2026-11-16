@@ -750,7 +750,6 @@ fn checked(screen: &Screen, s: &v1::Status) -> Option<String> {
 }
 
 fn default_text(s: &v1::Status, screen: &Screen, out: &mut Vec<String>) {
-    let now = s.answered_at;
     let fresh = s.this_mac.as_ref().is_some_and(|m| m.fresh);
     let right = checked(screen, s);
     let look = s.needs_a_look.as_ref();
@@ -840,9 +839,44 @@ fn default_text(s: &v1::Status, screen: &Screen, out: &mut Vec<String>) {
     }
     // Context: one labelled line each.
     out.push(String::new());
-    // Each value in parts, each part in its own style.
-    type Parts = Vec<(String, Style)>;
-    let mut lines: Vec<(&str, Parts, Option<&str>)> = Vec::new();
+    let whole = context(s, screen, Vec::new(), out);
+    // The next steps, each on its own line, only those that apply, at most three.
+    out.push(String::new());
+    let mut next: Vec<(&str, &str)> = Vec::new();
+    match look {
+        None => next.push(("immune run", "checks this Mac now")),
+        Some(n) if n.total > 0 => {
+            next.push(("immune findings", "lists every one, most urgent first"))
+        }
+        Some(_) => {}
+    }
+    if s.watching.is_none() {
+        next.push(("immune install", "keeps watching between checks"));
+    }
+    if !whole || next.is_empty() {
+        next.push(("immune status --coverage", "what was read and what was not"));
+    }
+    next.truncate(3);
+    out.extend(screen.nexts(&next));
+}
+
+/// A value in parts, each part in its own style.
+pub(crate) type Parts = Vec<(String, Style)>;
+
+/// What a screen about the store says after its headline and what needs a look, the same for
+/// `immune status` and `immune run`, so that a run never says less than the status of the same
+/// store: a run that did not finish, freshness, how this Mac is watched, the event level,
+/// coverage, machines not reached and downloads, one labelled line each, after the lines the
+/// command adds of its own (`own`, first); then every failure, what the person can fix, and what
+/// is not judged. True when nothing of it says that something was not read or not seen.
+pub(crate) fn context(
+    s: &v1::Status,
+    screen: &Screen,
+    own: Vec<(&'static str, Parts)>,
+    out: &mut Vec<String>,
+) -> bool {
+    let now = s.answered_at;
+    let mut lines: Vec<(&str, Parts)> = own;
     if let Some(l) = s.last_run.as_ref().filter(|l| l.finished_at.is_none()) {
         let (how, style) = if s.running {
             ("it is running", YELLOW)
@@ -858,7 +892,6 @@ fn default_text(s: &v1::Status, screen: &Screen, out: &mut Vec<String>) {
                 ),
                 style,
             )],
-            None,
         ));
     }
     if let Some(m) = s.this_mac.as_ref().filter(|m| !m.fresh) {
@@ -873,13 +906,12 @@ fn default_text(s: &v1::Status, screen: &Screen, out: &mut Vec<String>) {
                 ),
                 YELLOW,
             )],
-            None,
         ));
     }
-    lines.push(("Watching", clauses(watching_parts(s)), None));
+    lines.push(("Watching", clauses(watching_parts(s))));
     let event_level = s.event_level.as_ref().and_then(event_level_short);
     if let Some(parts) = event_level.clone() {
-        lines.push(("Event level", clauses(parts), None));
+        lines.push(("Event level", clauses(parts)));
     }
     // Whether coverage is whole: nothing failed, nothing this version does not read, nothing
     // its source does not give, no machine unreached.
@@ -888,33 +920,32 @@ fn default_text(s: &v1::Status, screen: &Screen, out: &mut Vec<String>) {
     });
     match &s.coverage {
         Some(c) => {
-            lines.push(("Coverage", coverage_parts(c), None));
+            lines.push(("Coverage", coverage_parts(c)));
             if let Some(said) = unreached_short(screen, c, now) {
-                lines.push(("Not reached", vec![(said, RED)], None));
+                lines.push(("Not reached", vec![(said, RED)]));
             }
         }
         None => lines.push((
             "Coverage",
             vec![("nothing has been read yet".to_string(), YELLOW)],
-            None,
         )),
     }
     let downloads = downloads_failed(s);
     if let Some(parts) = downloads.clone() {
-        lines.push(("Downloads", parts, None));
+        lines.push(("Downloads", parts));
     }
     let width = lines
         .iter()
-        .map(|(l, ..)| screen::columns(l))
+        .map(|(l, _)| screen::columns(l))
         .chain(std::iter::once(screen::columns("Not judged")))
         .max()
         .unwrap_or(0);
     // A value has the whole width after its label; the commands are the next steps at the end.
     let room = screen.fits().map(|w| w.saturating_sub(2 + width + 3));
     let not_judged = not_judged_line(screen, s, room);
-    for (label, parts, command) in &lines {
+    for (label, parts) in &lines {
         let parts: Vec<(&str, Style)> = parts.iter().map(|(t, st)| (t.as_str(), *st)).collect();
-        out.extend(screen.labelled_parts(2, width, label, &parts, *command, 0));
+        out.extend(screen.labelled_parts(2, width, label, &parts, None, 0));
     }
     // Every failure, whoever can fix it; what the person can fix that is not one.
     let failed: Vec<&v1::Uncovered> = s.not_covered.iter().filter(|u| is_failure(u)).collect();
@@ -927,30 +958,12 @@ fn default_text(s: &v1::Status, screen: &Screen, out: &mut Vec<String>) {
     if let Some(said) = &not_judged {
         out.extend(screen.labelled(2, width, "Not judged", said, PLAIN, None, 0));
     }
-    // The next steps, each on its own line, only those that apply, at most three.
-    out.push(String::new());
-    let mut next: Vec<(&str, &str)> = Vec::new();
-    match look {
-        None => next.push(("immune run", "checks this Mac now")),
-        Some(n) if n.total > 0 => {
-            next.push(("immune findings", "lists every one, most urgent first"))
-        }
-        Some(_) => {}
-    }
-    if s.watching.is_none() {
-        next.push(("immune install", "keeps watching between checks"));
-    }
-    let whole = coverage_whole
+    coverage_whole
         && event_level.is_none()
         && downloads.is_none()
         && failed.is_empty()
         && fixable.is_empty()
-        && not_judged.is_none();
-    if !whole || next.is_empty() {
-        next.push(("immune status --coverage", "what was read and what was not"));
-    }
-    next.truncate(3);
-    out.extend(screen.nexts(&next));
+        && not_judged.is_none()
 }
 
 /// What the latest check that finished counted, one labelled part each, in the words today's

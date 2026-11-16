@@ -116,6 +116,21 @@ impl Dir {
 
     /// A full run that reads nothing real but the event level under the temporary root.
     fn run(&self) -> String {
+        self.run_text();
+        // The run's line, as the journal keeps it and the page of changes shows it for each run;
+        // what a person reads after a run is told from the status (`after_run.rs`).
+        rusqlite::Connection::open(self.store())
+            .unwrap()
+            .query_row(
+                "SELECT text FROM journal WHERE entry = 'report' ORDER BY seq DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    /// The same run, and what it says to a person, in a pipe.
+    fn run_text(&self) -> String {
         let absent = self.0.join("absent");
         std::fs::write(self.0.join("brew.json"), r#"{"formulae": [], "casks": []}"#).unwrap();
         std::fs::create_dir_all(self.0.join("home")).unwrap();
@@ -143,16 +158,7 @@ impl Dir {
             "{}",
             String::from_utf8_lossy(&out.stderr)
         );
-        // The run's line, as the journal keeps it and the page of changes shows it for each run;
-        // what a person reads after a run is told from the status (`after_run.rs`).
-        rusqlite::Connection::open(self.store())
-            .unwrap()
-            .query_row(
-                "SELECT text FROM journal WHERE entry = 'report' ORDER BY seq DESC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap()
+        String::from_utf8_lossy(&out.stdout).into_owned()
     }
 
     /// A full run that starts in a later second than every reading before it, so that "since
@@ -1601,6 +1607,44 @@ fn not_installed_is_a_limit_the_owner_can_lift_and_never_a_failure_or_a_claim_of
     );
 }
 
+/// The lines a screen of the store says between what needs a look and the next steps.
+fn context_lines(text: &str) -> Vec<&str> {
+    let l: Vec<&str> = text.lines().collect();
+    let blanks: Vec<usize> = (0..l.len()).filter(|&i| l[i].is_empty()).collect();
+    let [.., from, to] = blanks[..] else {
+        panic!("{text}")
+    };
+    l[from + 1..to].to_vec()
+}
+
+#[test]
+fn a_run_says_all_that_the_status_of_the_same_store_says_of_what_was_not_seen() {
+    // The event level not installed, then installed with a collector that has not written.
+    let dir = Dir::new("same-as-status");
+    for install in [false, true] {
+        if install {
+            dir.install();
+        }
+        let ran = dir.run_text();
+        let status = dir.immune(&["status"]);
+        let said = context_lines(&ran);
+        for line in context_lines(&status) {
+            assert!(said.contains(&line), "{line:?}\n{ran}\n{status}");
+        }
+        assert!(
+            !ran.starts_with('✓') || status.starts_with('✓'),
+            "{ran}\n{status}"
+        );
+    }
+    // Not installed: what the person can fix is said after the run, as main's line said it.
+    let dir = Dir::new("same-as-status-absent");
+    let ran = dir.run_text();
+    assert!(
+        ran.contains("You can fix") && ran.contains("Event level"),
+        "{ran}"
+    );
+}
+
 #[test]
 fn whole_lines_are_read_once_through_rotation_and_deletion_and_losses_are_counted() {
     let dir = Dir::new("running");
@@ -2518,7 +2562,7 @@ fn a_medium_rule_s_match_is_counted_raises_nothing_and_keeps_no_argument() {
         .find(|l| l.starts_with("  Matched in the last day "))
         .unwrap_or_else(|| panic!("no line of what matched: {plain}"));
     assert!(
-        matched.ends_with("   System Information Discovery Using sw_vers 1"),
+        matched.ends_with("   1 match: System Information Discovery Using sw_vers 1"),
         "{plain}"
     );
     let all = dir.immune(&["rules", "--all"]);

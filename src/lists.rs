@@ -662,34 +662,46 @@ fn judged_said(r: &v1::RulesNow) -> Option<(&'static str, String)> {
     Some((label, said))
 }
 
-/// The rules that matched in the last day, the most first, by title and count; or why it is not
-/// known.
+/// The matches of the last day as the message counts them: how many, then the rules that matched,
+/// the most first, by title and count, a rule this build does not ship by its id and said so, and
+/// how many more rules matched than the message lists; or why it is not known. Every number is the
+/// message's own, never a sum over a part of it.
 fn matched_said(screen: &Screen, m: &v1::Rules) -> (String, Style) {
     let now = m.now.clone().unwrap_or_default();
-    if now.matches_last_day.is_none() {
+    let Some(matches) = now.matches_last_day else {
         let why = m
             .not_computed
             .iter()
             .find(|n| n.section == "matches")
             .map_or("no reading of the event level yet", |n| n.reason.as_str());
         return (format!("not known: {why}"), YELLOW);
-    }
-    let mut hit: Vec<(&v1::Rule, u64)> = m
-        .evaluated
-        .iter()
-        .chain(&m.in_part)
-        .filter_map(|r| Some((r.rule.as_ref()?, r.matches_last_day.filter(|n| *n > 0)?)))
-        .collect();
-    hit.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.title_text.cmp(&b.0.title_text)));
-    if hit.is_empty() {
+    };
+    if matches == 0 && now.matched_last_day.is_empty() {
         return ("nothing".to_string(), PLAIN);
     }
-    let among: Vec<&v1::Rule> = hit.iter().map(|(r, _)| *r).collect();
-    let said: Vec<String> = hit
+    let among: Vec<&v1::Rule> = now
+        .matched_last_day
         .iter()
-        .map(|(r, n)| format!("{} {}", title(screen, r, &among), grouped(*n)))
+        .filter_map(|r| r.rule.as_ref())
         .collect();
-    (said.join(", "), PLAIN)
+    let mut said: Vec<String> = now
+        .matched_last_day
+        .iter()
+        .map(|r| match &r.rule {
+            Some(rule) => format!("{} {}", title(screen, rule, &among), grouped(r.matches)),
+            None => format!("{} {}, not in this build", r.id_text, grouped(r.matches)),
+        })
+        .collect();
+    let rules = now
+        .matched_last_day_total
+        .unwrap_or(now.matched_last_day.len() as u64);
+    let more = rules.saturating_sub(now.matched_last_day.len() as u64);
+    if more > 0 {
+        let rules = if more == 1 { "rule" } else { "rules" };
+        said.push(format!("and {} more {rules}", grouped(more)));
+    }
+    let head = count(matches, "match", "matches");
+    (format!("{head}: {}", said.join(", ")), PLAIN)
 }
 
 /// The drill: how many of its invented program starts raise the rule it names.
@@ -1639,6 +1651,14 @@ mod tests {
             }),
             ..Default::default()
         };
+        let evaluated = vec![
+            shipped(
+                rule("e0", "Binary Padding - MacOS", v1::Level::High),
+                Some(4),
+            ),
+            shipped(rule("e1", odd, v1::Level::Medium), Some(1)),
+            shipped(rule("e2", "Quiet one", v1::Level::NotStated), Some(0)),
+        ];
         v1::Rules {
             format: 1,
             answered_at: NOW,
@@ -1652,15 +1672,6 @@ mod tests {
                 not_evaluated: 5,
                 ..Default::default()
             }),
-            evaluated: vec![
-                shipped(
-                    rule("e0", "Binary Padding - MacOS", v1::Level::High),
-                    Some(4),
-                ),
-                shipped(rule("e1", odd, v1::Level::Medium), Some(1)),
-                shipped(rule("e2", "Quiet one", v1::Level::NotStated), Some(0)),
-            ],
-            in_part: vec![part],
             not_evaluated: not,
             now: Some(v1::RulesNow {
                 watching: Some(true),
@@ -1672,8 +1683,26 @@ mod tests {
                 judged: v1::Judged::Part as i32,
                 judged_note: Some("Over the last day some program starts were lost.".into()),
                 matches_last_day: Some(7),
+                matched_last_day: [("e0", 4), ("p0", 2), ("e1", 1)]
+                    .into_iter()
+                    .map(|(id, n)| {
+                        let r = [&evaluated[..], &[part.clone()]]
+                            .concat()
+                            .into_iter()
+                            .find_map(|s| s.rule.filter(|r| r.id_text == id))
+                            .unwrap();
+                        v1::RuleMatches {
+                            id_text: r.id_text.clone(),
+                            rule: Some(r),
+                            matches: n,
+                        }
+                    })
+                    .collect(),
+                matched_last_day_total: Some(3),
                 ..Default::default()
             }),
+            evaluated,
+            in_part: vec![part],
             ..Default::default()
         }
     }
@@ -2242,6 +2271,57 @@ mod tests {
         }
         assert!(
             rules(&quiet, false, &Screen::pipe()).contains("Matched in the last day   nothing")
+        );
+    }
+
+    #[test]
+    fn rules_count_matches_as_the_message_does_and_name_a_matched_rule_this_build_does_not_ship() {
+        let mut m = rules_of("odd");
+        let now = m.now.as_mut().unwrap();
+        // A rule this build no longer ships matched, and more rules matched than are listed.
+        now.matches_last_day = Some(19);
+        now.matched_last_day.push(v1::RuleMatches {
+            id_text: "sigma:0000-gone".to_string(),
+            rule: None,
+            matches: 12,
+        });
+        now.matched_last_day_total = Some(6);
+        let text = rules(&m, false, &Screen::pipe());
+        let line = text
+            .lines()
+            .find(|l| l.starts_with("  Matched in the last day"))
+            .unwrap_or_else(|| panic!("{text}"));
+        assert!(
+            line.contains("19 matches: Binary Padding - MacOS 4"),
+            "{line}"
+        );
+        assert!(
+            line.contains("sigma:0000-gone 12, not in this build, and 2 more rules"),
+            "{line}"
+        );
+        // One more rule, in the singular.
+        m.now.as_mut().unwrap().matched_last_day_total = Some(5);
+        let text = rules(&m, false, &Screen::pipe());
+        assert!(text.contains(", and 1 more rule\n"), "{text}");
+        // Matches of rules none of which this build evaluates are never "nothing".
+        let mut gone = rules_of("odd");
+        let now = gone.now.as_mut().unwrap();
+        now.matches_last_day = Some(7);
+        now.matched_last_day = vec![v1::RuleMatches {
+            id_text: "sigma:0000-gone".to_string(),
+            rule: None,
+            matches: 7,
+        }];
+        now.matched_last_day_total = Some(1);
+        for r in gone.evaluated.iter_mut().chain(gone.in_part.iter_mut()) {
+            r.matches_last_day = Some(0);
+        }
+        let text = rules(&gone, false, &Screen::pipe());
+        assert!(
+            text.contains(
+                "Matched in the last day   7 matches: sigma:0000-gone 7, not in this build"
+            ),
+            "{text}"
         );
     }
 

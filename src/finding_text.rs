@@ -915,8 +915,8 @@ fn rule_line(s: &Screen, f: &v1::Finding) -> Vec<String> {
 
 /// The next commands, each after `→` in cyan with what it does beside it, the columns of what
 /// they do lined up. On a terminal where a command and what it does do not fit on one line,
-/// what it does goes on the line under it; a command wider than the terminal is broken at its
-/// spaces, never inside an id.
+/// what it does goes on the line under it; a command is one line whatever the width, never
+/// broken or cut, since its first line alone would be another command.
 fn next_lines(s: &Screen, steps: &[(String, &str)]) -> Vec<String> {
     let arrows: Vec<String> = steps.iter().map(|(c, _)| format!("→ {c}")).collect();
     let fits = |aw: usize, dw: usize| s.fits().is_none_or(|w| aw + 3 + dw <= w);
@@ -942,18 +942,8 @@ fn next_lines(s: &Screen, steps: &[(String, &str)]) -> Vec<String> {
                     " ".repeat(at - aw + 3)
                 ));
             }
-            Some(width) => {
-                if aw <= width {
-                    out.push(s.paint(CYAN, arrow));
-                } else {
-                    for (i, l) in screen::wrap(arrow, Some(width.saturating_sub(4)))
-                        .iter()
-                        .enumerate()
-                    {
-                        let indent = if i == 0 { "" } else { "    " };
-                        out.push(format!("{indent}{}", s.paint(CYAN, l)));
-                    }
-                }
+            Some(_) => {
+                out.push(s.paint(CYAN, arrow));
                 out.extend(para(s, 2, does, PLAIN));
             }
         }
@@ -964,7 +954,7 @@ fn next_lines(s: &Screen, steps: &[(String, &str)]) -> Vec<String> {
 /// The commands that apply to the finding's state: `seen` and `expected` for an open one,
 /// `reopen` for an answered one, each also with `--with` for a pair; none for a cleared one.
 fn steps(f: &v1::Finding) -> Vec<(String, &'static str)> {
-    let id = f.finding.as_ref().map_or("", |r| r.id.as_str());
+    let id = &crate::text::shell_word_or(f.finding.as_ref().map_or("", |r| r.id.as_str()), "<id>");
     let other = f.verdicts.as_ref().and_then(|v| v.verdict_finding.as_ref());
     let mut out = Vec::new();
     match state_of(f) {
@@ -975,7 +965,10 @@ fn steps(f: &v1::Finding) -> Vec<(String, &'static str)> {
             ));
             if let Some(o) = other {
                 out.push((
-                    format!("immune finding {id} reopen --with {}", o.id),
+                    format!(
+                        "immune finding {id} reopen --with {}",
+                        crate::text::shell_word_or(&o.id, "<id>")
+                    ),
                     "takes back this answer and the response layer's",
                 ));
             }
@@ -994,7 +987,8 @@ fn steps(f: &v1::Finding) -> Vec<(String, &'static str)> {
                 out.push((
                     format!(
                         "immune finding {id} seen --with {} --journal-seq {}",
-                        o.id, f.journal_seq
+                        crate::text::shell_word_or(&o.id, "<id>"),
+                        f.journal_seq
                     ),
                     "answers this and the response layer's finding together",
                 ));
@@ -1104,17 +1098,22 @@ pub fn answered(f: &v1::Finding, s: &Screen) -> String {
     if let Some(reason) = f.answer.as_ref().and_then(|a| a.reason_text.as_deref()) {
         top.extend(field(s, 2, 6, "Reason", &[(reason, PLAIN)]));
     }
+    // The id in a command as the shell reads it back.
+    let word = crate::text::shell_word_or(id, "<id>");
     let step = match (&f.answer, with) {
         (Some(_), Some(w)) => vec![(
-            format!("immune finding {id} reopen --with {}", w.id),
+            format!(
+                "immune finding {word} reopen --with {}",
+                crate::text::shell_word_or(&w.id, "<id>")
+            ),
             "takes both answers back",
         )],
         (Some(_), None) => vec![(
-            format!("immune finding {id} reopen"),
+            format!("immune finding {word} reopen"),
             "takes the answer back",
         )],
         (None, _) => vec![(
-            format!("immune finding {id}"),
+            format!("immune finding {word}"),
             "shows it and how to answer it",
         )],
     };
@@ -1467,18 +1466,29 @@ mod tests {
     }
 
     #[test]
-    fn no_line_is_wider_than_the_terminal_and_the_id_is_never_cut() {
+    fn no_line_but_a_command_is_wider_than_the_terminal_and_a_command_is_one_line() {
         for s in screens().into_iter().filter(|s| s.terminal) {
             let width = s.width.unwrap();
             for text in texts(&s, ODD) {
                 for line in text.lines().map(visible) {
                     // A mark wider than the room a narrow terminal leaves stands alone on its
-                    // line, whole, rather than be broken.
+                    // line, whole, rather than be broken; a command is one line whatever the
+                    // width, since its first line alone would be another command.
                     let lone_mark = line.trim() == MARK;
+                    let command = line.starts_with("→ immune ");
                     assert!(
-                        screen::columns(&line) <= width || lone_mark,
+                        screen::columns(&line) <= width || lone_mark || command,
                         "{width}: {line:?}\n{text}"
                     );
+                }
+                // A command an answer needs is whole on its line, never broken before its flags.
+                for line in text.lines().map(visible).filter(|l| l.starts_with("→ ")) {
+                    if line.contains(" seen") || line.contains(" expected") {
+                        assert!(
+                            line.contains("--reason <text>") || line.contains("--journal-seq 57"),
+                            "{width}: {line:?}\n{text}"
+                        );
+                    }
                 }
                 assert!(text.contains("f1e26d7c725"), "{width}\n{text}");
             }

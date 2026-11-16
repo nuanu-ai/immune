@@ -772,6 +772,19 @@ fn main() -> ExitCode {
         print!("{help}");
         return ExitCode::SUCCESS;
     }
+    // Help asked for a word that is not a command: that word is named, not `help`.
+    if let ["help", name] = args
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        eprint!(
+            "{}",
+            usage::unknown(Some(name), &screen::Screen::of_stderr())
+        );
+        return ExitCode::from(EXIT_USAGE);
+    }
     if args.first().is_some_and(|arg| arg == background::CHECK_ARG) {
         let [_, parent, op, ..] = args.as_slice() else {
             return ExitCode::from(EXIT_USAGE);
@@ -834,7 +847,17 @@ fn main() -> ExitCode {
                     example,
                     &e,
                 );
-                return answer::fail_as(op, options.form(), error, EXIT_USAGE, |_| text());
+                let form = options.form();
+                let exit = answer::fail_as(op, form, error, EXIT_USAGE, |_| text());
+                // In a machine form the message says the usage is on stderr, and it is: what was
+                // wrong with the command typed, then the command's own help.
+                if form != answer::Form::Text {
+                    eprint!("{}", text());
+                    if let Some(help) = usage::command_help(op, &screen) {
+                        eprint!("\n{help}");
+                    }
+                }
+                return exit;
             }
             // `immune watch` answers only in machine-readable lines.
             if op == "watch" {
@@ -2052,7 +2075,15 @@ fn servers_cmd(args: &ServersArgs) -> Result<(), Box<dyn Error>> {
         spare: s.machines.iter().map(|m| m.len() as u64 - 1).sum(),
         never_read: s.rows.iter().filter(|r| !r.read).count() as u64,
         folder: known::whole(&s.dir.display().to_string()),
-        sweep_command: format!("sh {}", sweep::quoted(&s.dir.join("sweep.sh"))),
+        // The script's path as the shell reads it back, or where it is when that cannot be shown.
+        sweep_command: format!(
+            "sh {}",
+            s.dir
+                .join("sweep.sh")
+                .to_str()
+                .and_then(text::shell_word)
+                .unwrap_or_else(|| "<folder>/sweep.sh".to_string())
+        ),
     };
     print!("{}", lists::servers(&shown, &screen::Screen::of_stdout()));
     Ok(())

@@ -2956,10 +2956,11 @@ fn a_folder_macos_asks_permission_for_does_not_lengthen_the_report_of_a_quiet_ma
     mac.run();
     let out = mac.run_cmd().output().unwrap();
     let line = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        line.contains("\n  Changed      nothing since the last check\n"),
-        "{line}"
-    );
+    let changed = line
+        .lines()
+        .find_map(|l| l.strip_prefix("  Changed "))
+        .map(str::trim_start);
+    assert_eq!(changed, Some("nothing since the last check"), "{line}");
     assert!(!line.contains("read nothing"), "{line}");
     let r = mac.status().clone();
     assert_eq!(r["last_finished_run"]["readings"]["failed"], 0, "{r:#}");

@@ -806,8 +806,9 @@ impl Screen {
 
 /// One line under an error, indented. `Words` are Immune's own words, where a span in backticks
 /// is a command, cyan on a terminal, the backticks dropped; never text from a source or from the
-/// command line. `Command` is a whole command line, which may hold what the person typed: it is
-/// escaped, cyan as a whole, and nothing in it is read as a mark.
+/// command line. `Command` is a whole command line, which may hold what the person typed, each
+/// such word as the shell reads it back (`text::shell_word`): one line, never broken or cut,
+/// cyan as a whole, and nothing in it is read as a mark.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Step {
     Words(String),
@@ -840,11 +841,11 @@ impl Screen {
                         out.push(format!("  {l}"));
                     }
                 }
+                // A command is one line whatever the width: broken, its first line alone would be
+                // a command that means something else. It is never cut either; it may be wider
+                // than the screen.
                 Step::Command(command) => {
-                    for (i, l) in wrap(&view::shown(command), room(4)).iter().enumerate() {
-                        let indent = if i == 0 { "  " } else { "    " };
-                        out.push(format!("{indent}{}", self.paint(CYAN, l)));
-                    }
+                    out.push(format!("  {}", self.paint(CYAN, &view::shown(command))));
                 }
             }
         }
@@ -1116,6 +1117,22 @@ mod tests {
         }
         assert!(words.contains(&path.replace(' ', "")), "{said}");
         assert!(words.contains("evaluatedatalltoday"), "{said}");
+    }
+
+    #[test]
+    fn a_command_under_an_error_is_one_line_at_any_width_never_broken_or_cut() {
+        let command = "immune finding f0123456789 seen --reason checked --via app \
+                       --journal-seq 3 --store /Users/example/.immune/store.db";
+        for width in [40, 60, 80] {
+            let said = Screen::terminal(width, false).error(
+                "a cause",
+                &[Step::Command(command.to_string())],
+                &[],
+            );
+            let lines: Vec<&str> = said.lines().collect();
+            assert_eq!(lines.len(), 2, "{width}: {said}");
+            assert_eq!(lines[1], format!("  {command}"), "{width}");
+        }
     }
 
     #[test]
