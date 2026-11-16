@@ -13,7 +13,7 @@ use prost_types::field_descriptor_proto::{Label, Type};
 use std::path::Path;
 
 /// The schema's files, relative to `contract/`.
-const SCHEMA: [&str; 10] = [
+const SCHEMA: [&str; 11] = [
     "immune/v1/common.proto",
     "immune/v1/event.proto",
     "immune/v1/verdict.proto",
@@ -24,6 +24,7 @@ const SCHEMA: [&str; 10] = [
     "immune/v1/vulnerabilities.proto",
     "immune/v1/status.proto",
     "immune/v1/rules.proto",
+    "immune/v1/service.proto",
 ];
 /// The generated file, relative to the repository.
 const GENERATED: &str = "contract/src/immune.v1.rs";
@@ -217,7 +218,8 @@ fn a_failure_read_as_any_answer_reads_format_zero() {
         v1::Vulnerability,
         v1::Statements,
         v1::StatementMade,
-        v1::Sample
+        v1::Sample,
+        v1::Service
     );
     assert_eq!(v1::Failure::decode(binary.as_slice()).unwrap(), failure);
 }
