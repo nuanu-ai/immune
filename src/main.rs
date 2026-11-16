@@ -50,6 +50,7 @@ mod project;
 mod resolver;
 mod secrets;
 mod servers;
+mod service;
 mod sha256;
 mod sigma;
 mod ssh_config;
@@ -173,6 +174,15 @@ const USAGE: &str = "usage: immune run [--store <path>] [--machine-name <name>] 
                     --standalone continues after its parent exits;
                     --background also runs a full check at start and every hour
                  exits 5 when another watcher has the store
+       immune install [--launchctl <path>] [--json | --proto]
+           copies this binary to
+           ~/Library/Application Support/ai.nuanu.immune/bin/immune and registers that
+           copy as this user's login job ai.nuanu.immune.watch, which runs
+           watch --background; run it again from a new build to update. Answers with
+           the message Service. Run it as the user being watched, without sudo
+       immune uninstall [--launchctl <path>] [--json | --proto]
+           stops the login job and removes it with the installed copy; keeps the
+           store and the event collector. Answers with the message Service
        immune --help | -h | help
            prints this usage on stdout and exits 0";
 
@@ -194,6 +204,7 @@ enum Cmd {
     Machine(machine::MachineArgs),
     Matches(matches::MatchesArgs),
     Verdict(verdict::VerdictArgs),
+    Service(service::ServiceArgs),
 }
 
 /// `immune rules`: the shipped rules with what the store says they did, or with `over_log` a
@@ -659,6 +670,8 @@ fn parse_args(
         "machine" => machine::parse(it, options).map(Cmd::Machine),
         "matches" => matches::parse(it, options).map(Cmd::Matches),
         "verdict" => verdict::parse(it, options).map(Cmd::Verdict),
+        "install" => service::parse(service::Verb::Install, it, options).map(Cmd::Service),
+        "uninstall" => service::parse(service::Verb::Uninstall, it, options).map(Cmd::Service),
         "rules" => {
             let (mut over_log, mut system_root) = (false, None);
             options.read(it, |arg, it| {
@@ -805,8 +818,7 @@ fn print_json(v: &serde_json::Value) {
 
 fn main() -> ExitCode {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
-    // Asked for alone, the usage is the answer: on stdout, with exit 0. The installer reads it
-    // to tell that this core can run in the background.
+    // Asked for alone, the usage is the answer: on stdout, with exit 0.
     if let [only] = args.as_slice()
         && matches!(only.as_str(), "--help" | "-h" | "help")
     {
@@ -855,6 +867,8 @@ fn main() -> ExitCode {
                 Some("vulnerability") => Some("immune vulnerability CVE-2023-4863 --json"),
                 Some("owner") => Some("immune owner --json"),
                 Some("sample") => Some("immune sample --json"),
+                Some("install") => Some("immune install --json"),
+                Some("uninstall") => Some("immune uninstall --json"),
                 _ => None,
             };
             if let (Some(op), Some(example)) = (op, contract) {
@@ -902,6 +916,7 @@ fn main() -> ExitCode {
         Cmd::Machine(args) => return machine::machine_cmd(&args),
         Cmd::Matches(args) => return matches::matches_cmd(&args),
         Cmd::Verdict(args) => return verdict::verdict_cmd(&args),
+        Cmd::Service(args) => return service::service_cmd(&args),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

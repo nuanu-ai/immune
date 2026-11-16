@@ -1,9 +1,9 @@
 // What every message of the contract shares: how it is read, its conventions, and the types
 // more than one answer uses. Version 1 of the contract between the core and a program that runs
 // it. The answers are in `known.proto`, `matches.proto`, `findings.proto`, `status.proto`,
-// `rules.proto`, `vulnerabilities.proto` and `owner.proto`; the events a rule matched are in
-// `event.proto`; the verdict the response layer gives back, and the answer to it, are in
-// `verdict.proto`. The failure that every command of the contract prints in place of an
+// `rules.proto`, `vulnerabilities.proto`, `owner.proto` and `service.proto`; the events a rule
+// matched are in `event.proto`; the verdict the response layer gives back, and the answer to it,
+// are in `verdict.proto`. The failure that every command of the contract prints in place of an
 // answer is `Failure`, below.
 //
 // How it is read. A command of the contract answers with one message, in the form it is asked
@@ -29,10 +29,10 @@
 // the unsafe case, which each enum's comment names. The generated types read an unknown word in
 // JSON as `UNSPECIFIED`, so a value added later does not break an older reader.
 //
-// Which store. Every answer carries `store_id`, the id of the store it was read from. A finding's
-// id is unique only within one store: a store deleted and made again can give the same id to
-// another finding. A reader that keeps anything by a finding's id, such as a verdict, keeps it
-// by the store's id and the finding's id together.
+// Which store. Every answer read from a store carries `store_id`, the id of that store;
+// `Service`, which reads none, does not. A finding's id is unique only within one store: a store
+// deleted and made again can give the same id to another finding. A reader that keeps anything
+// by a finding's id, such as a verdict, keeps it by the store's id and the finding's id together.
 //
 // Conventions.
 // - Text that is not the core's own words is returned in a field whose name ends in `_text`, and

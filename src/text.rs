@@ -2277,6 +2277,50 @@ pub fn statement_made(m: &v1::StatementMade) -> String {
     out
 }
 
+/// What `immune install` or `immune uninstall` left: where the core runs from and what to ask
+/// next, or what was removed and what was kept.
+pub fn service(m: &v1::Service) -> String {
+    let mut out = String::new();
+    if m.installed {
+        say(
+            &mut out,
+            &format!(
+                "The core now runs from {} as the login job {}.",
+                quoted(&m.program_path_text),
+                m.label
+            ),
+        );
+        if m.loaded {
+            say(
+                &mut out,
+                "It starts a full check now and every hour after that.",
+            );
+        }
+        say(&mut out, "immune status says what has been read.");
+    } else if m.replaced {
+        say(
+            &mut out,
+            &format!(
+                "The login job {} is stopped and removed, with its property list and the installed core.",
+                m.label
+            ),
+        );
+        say(
+            &mut out,
+            "The store and the optional event collector were kept.",
+        );
+    } else {
+        say(
+            &mut out,
+            &format!(
+                "Nothing was installed: no login job {}, property list or installed core was found.",
+                m.label
+            ),
+        );
+    }
+    out
+}
+
 /// A failure, as a person reads it on stderr: the core's words, what it quotes, the ids a
 /// question fits, and a call that would be right.
 pub fn failure(f: &v1::Failure) -> String {

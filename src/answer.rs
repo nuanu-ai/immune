@@ -76,6 +76,11 @@ impl Options {
     pub fn store(&self) -> Result<std::path::PathBuf, String> {
         self.store.clone().map_or_else(crate::default_store, Ok)
     }
+
+    /// Whether `--store` was given, for a command that reads no store and refuses it.
+    pub fn store_named(&self) -> bool {
+        self.store.is_some()
+    }
 }
 
 /// One reason a command did not answer. `detail` is what the failure quotes, escaped one to one

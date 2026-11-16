@@ -4510,3 +4510,36 @@ impl ReplayOutcome {
         }
     }
 }
+/// What the command left.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Service {
+    /// The version of this contract: 1. A reader that meets another number stops.
+    #[prost(uint32, tag = "1")]
+    pub format: u32,
+    #[prost(int64, tag = "2")]
+    pub answered_at: i64,
+    /// The job's label in launchd: `ai.nuanu.immune.watch`.
+    #[prost(string, tag = "3")]
+    pub label: ::prost::alloc::string::String,
+    /// The installed core the job runs, and the job's property list. Whole. After `immune
+    /// uninstall`, where they were.
+    #[prost(string, tag = "4")]
+    pub program_path_text: ::prost::alloc::string::String,
+    #[prost(string, tag = "5")]
+    pub plist_path_text: ::prost::alloc::string::String,
+    /// Whether the job, its property list and the installed core are in place: true after
+    /// `immune install`, false after `immune uninstall`.
+    #[prost(bool, tag = "6")]
+    pub installed: bool,
+    /// Whether launchd has the job loaded, as `launchctl print` said after it was registered.
+    /// Never true unless that last question succeeded; always false after `immune uninstall`.
+    #[prost(bool, tag = "7")]
+    pub loaded: bool,
+    /// Whether a job, its property list or an installed core was there before the command: an
+    /// update, or a removal that removed something. False for a first install and for an
+    /// uninstall where nothing was installed.
+    #[prost(bool, tag = "8")]
+    pub replaced: bool,
+}
