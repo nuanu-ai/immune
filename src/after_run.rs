@@ -449,24 +449,31 @@ pub fn service(m: &v1::Service, screen: &Screen) -> String {
     let mut out: Vec<String> = Vec::new();
     let in_place = m.in_place == Some(true);
     if m.installed {
-        // The calm mark only when a watcher was seen watching live; unknown is never said as no.
-        let headline = match (m.loaded, m.watching) {
-            (true, Some(true)) => screen.headline(
+        // The calm mark only when a watcher was seen watching live; a watcher that started and
+        // runs its first check is a plain success of the install; one that never started is a
+        // failure; unknown is never said as no.
+        let headline = match (m.loaded, m.started, m.watching) {
+            (true, _, Some(true)) => screen.headline(
                 "✓ Immune is installed and watching this Mac",
                 GREEN.bold(),
                 None,
             ),
-            (true, Some(false)) => screen.headline(
-                "Immune is installed, and its watcher does not watch live yet",
+            (true, Some(true), _) => screen.headline(
+                "Immune is installed and its watcher has started; watching follows its first check",
+                BOLD,
+                None,
+            ),
+            (true, Some(false), _) => screen.headline(
+                "Immune is installed, but its watcher has not started: check the job and install again",
+                RED.bold(),
+                None,
+            ),
+            (true, None, _) => screen.headline(
+                "Immune is installed; whether its watcher started is not known",
                 YELLOW.bold(),
                 None,
             ),
-            (true, None) => screen.headline(
-                "Immune is installed; whether its watcher watches is not known",
-                YELLOW.bold(),
-                None,
-            ),
-            (false, _) => screen.headline(
+            (false, ..) => screen.headline(
                 "Immune is installed, and launchd has not loaded its login job",
                 YELLOW.bold(),
                 None,
@@ -483,11 +490,18 @@ pub fn service(m: &v1::Service, screen: &Screen) -> String {
         if m.loaded {
             list.push((true, "Loaded by launchd", &m.label, PLAIN));
             let note = m.watcher_note.as_deref().unwrap_or("");
-            list.push(match m.watching {
-                Some(true) => (true, "Watching", "live", PLAIN),
-                Some(false) => (false, "Not watching yet", note, YELLOW),
-                None => (false, "Watching", "not known", YELLOW),
-            });
+            match (m.started, m.watching) {
+                (_, Some(true)) => {
+                    list.push((true, "Started", "the watcher holds the store", PLAIN));
+                    list.push((true, "Watching", "live", PLAIN));
+                }
+                (Some(true), _) => {
+                    list.push((true, "Started", "the watcher holds the store", PLAIN));
+                    list.push((false, "Not watching yet", note, PLAIN));
+                }
+                (Some(false), _) => list.push((false, "Not started", note, RED)),
+                (None, _) => list.push((false, "Started", "not known", YELLOW)),
+            }
         } else {
             list.push((false, "Not loaded", &m.label, YELLOW));
         }
@@ -505,14 +519,23 @@ pub fn service(m: &v1::Service, screen: &Screen) -> String {
         said.push(
             "The job is set to start a full check when the core starts and every hour after that.",
         );
+        let not_started = m.loaded && m.started == Some(false);
+        if not_started {
+            said.push(
+                "launchd loaded the job and no watcher took the store within 5 seconds. launchctl print gui/$(id -u)/ai.nuanu.immune.watch shows the job's state and its last exit.",
+            );
+        }
         sentences(screen, &mut out, &said.join(" "));
         out.push(String::new());
-        match (m.loaded, m.watching) {
-            (true, Some(true)) => {
+        match (m.loaded, m.started, m.watching) {
+            (true, _, Some(true)) => {
                 out.push(screen.next("immune status", "what has been read so far"));
             }
-            (true, _) => out.push(screen.next("immune status", "whether the watcher has started")),
-            (false, _) => out.push(screen.next("immune install", "registers the job again")),
+            (true, Some(true), _) => out.push(screen.next("immune status", "when watching begins")),
+            (true, None, _) => {
+                out.push(screen.next("immune status", "whether the watcher has started"));
+            }
+            _ => out.push(screen.next("immune install", "registers the job again")),
         }
     } else if m.replaced {
         out.extend(screen.headline("✓ Immune is uninstalled", GREEN.bold(), None));
@@ -1441,47 +1464,92 @@ mod tests {
             loaded: true,
             replaced: true,
             in_place: Some(false),
+            started: Some(true),
             watching: Some(true),
             ..Default::default()
         }
     }
 
-    /// The calm mark heads the text only when a watcher was seen watching live; a watcher not
-    /// seen yet is said with what the status says of it, and one that could not be told is said
-    /// as not known, never as not watching.
+    /// The calm mark heads the text only when a watcher was seen watching live.
     #[test]
-    fn install_is_calm_only_when_a_watcher_watches_and_unknown_is_never_no() {
+    fn install_is_calm_only_when_a_watcher_watches() {
         let text = service(&installed(), &Screen::pipe());
         assert!(
             text.starts_with("✓ Immune is installed and watching this Mac\n")
+                && text.contains("\n  ✓ Started             the watcher holds the store\n")
                 && text.contains("\n  ✓ Watching            live\n")
                 && text.ends_with("→ immune status   what has been read so far\n"),
             "{text}"
         );
-        let not_yet = v1::Service {
+    }
+
+    /// A watcher that started and runs its first check is a plain success of the install: not
+    /// the calm mark of a watched Mac, and not a warning; where to look next is said.
+    #[test]
+    fn a_started_watcher_on_its_first_check_is_a_plain_success_of_the_install() {
+        let first_check = v1::Service {
             watching: Some(false),
             watcher_note: Some(crate::watch::STARTING_WORDS.to_string()),
             ..installed()
         };
-        let text = service(&not_yet, &Screen::pipe());
+        let text = service(&first_check, &Screen::pipe());
         assert!(
-            text.starts_with("Immune is installed, and its watcher does not watch live yet\n")
-                && !text.starts_with('✓')
+            text.starts_with(
+                "Immune is installed and its watcher has started; watching follows its first check\n"
+            ) && text.contains("\n  ✓ Started             the watcher holds the store\n")
                 && text.contains(&format!(
                     "\n    Not watching yet    {}\n",
                     crate::watch::STARTING_WORDS
                 ))
-                && text.ends_with("→ immune status   whether the watcher has started\n"),
+                && text.ends_with("→ immune status   when watching begins\n"),
             "{text}"
         );
+        let coloured = service(&first_check, &Screen::terminal(200, true));
+        assert!(
+            coloured.starts_with("\u{1b}[1mImmune is installed and its watcher"),
+            "{coloured:?}"
+        );
+    }
+
+    /// A job launchd loaded whose watcher never started is said as a failure, in red, with what
+    /// to do; it is never said to have started.
+    #[test]
+    fn a_job_whose_watcher_never_started_is_a_failure_with_what_to_do() {
+        let never = v1::Service {
+            started: Some(false),
+            watching: Some(false),
+            watcher_note: Some("no watcher runs on the store now".to_string()),
+            ..installed()
+        };
+        let text = service(&never, &Screen::pipe());
+        assert!(
+            text.starts_with("Immune is installed, but its watcher has not started: check the job and install again\n")
+                && text.contains("\n    Not started         no watcher runs on the store now\n")
+                && !text.contains("Started ")
+                && text.contains("launchctl print gui/$(id -u)/ai.nuanu.immune.watch")
+                && text.ends_with("→ immune install   registers the job again\n"),
+            "{text}"
+        );
+        let coloured = service(&never, &Screen::terminal(200, true));
+        assert!(
+            coloured.starts_with("\u{1b}[1;31mImmune is installed, but"),
+            "{coloured:?}"
+        );
+    }
+
+    /// One that could not be told is said as not known, never as not started.
+    #[test]
+    fn install_says_unknown_as_not_known_and_never_as_no() {
         let unknown = v1::Service {
+            started: None,
             watching: None,
             ..installed()
         };
         let text = service(&unknown, &Screen::pipe());
         assert!(
-            text.starts_with("Immune is installed; whether its watcher watches is not known\n")
-                && text.contains("\n    Watching            not known\n")
+            text.starts_with("Immune is installed; whether its watcher started is not known\n")
+                && text.contains("\n    Started             not known\n")
+                && !text.contains("Not started")
                 && !text.contains("Not watching"),
             "{text}"
         );

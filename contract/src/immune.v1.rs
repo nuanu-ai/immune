@@ -4763,7 +4763,8 @@ pub struct Service {
     pub in_place: ::core::option::Option<bool>,
     /// Whether a watcher watches the job's store live, as `immune status` judges it
     /// (`ThisMac.live`), within a few seconds after launchd loaded the job. False when none did by
-    /// then: launchd may still start it, and `watcher_note` says what the status says of it. Absent
+    /// then, usually because the watcher's first check is still running (`started` true), and
+    /// `watcher_note` says what the status says of it. Absent
     /// when it could not be told, and after `immune uninstall`. Since 1.19.0.
     #[prost(bool, optional, tag = "10")]
     pub watching: ::core::option::Option<bool>,
@@ -4772,4 +4773,11 @@ pub struct Service {
     /// Since 1.19.0.
     #[prost(string, optional, tag = "11")]
     pub watcher_note: ::core::option::Option<::prost::alloc::string::String>,
+    /// Whether the job's process started and works, within the same few seconds: a watcher holds
+    /// the job's store and its heartbeat is fresh, as `immune status` takes a watcher to be there.
+    /// It comes before `watching`, which waits for the watcher's first check. False when launchd
+    /// loaded the job and no watcher took the store; `watcher_note` then says what the status says
+    /// of it. Absent when it could not be told, and after `immune uninstall`. Since 1.19.0.
+    #[prost(bool, optional, tag = "12")]
+    pub started: ::core::option::Option<bool>,
 }

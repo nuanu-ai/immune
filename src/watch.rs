@@ -1623,6 +1623,12 @@ pub fn failing_words(failed: &[&str]) -> String {
 }
 
 impl Seen {
+    /// Whether a watcher is there and working: it holds the store and its heartbeat is fresh
+    /// (`responsive`), whether or not its first check is done or something failed since.
+    pub fn started(&self) -> bool {
+        matches!(self, Seen::Live | Seen::Starting | Seen::Failing(_))
+    }
+
     /// What the status says of it, in the core's words.
     pub fn words(&self) -> String {
         match self {

@@ -32,7 +32,7 @@ Only one `install` or `uninstall` runs at a time; a second one fails with `busy`
 
 The store is kept in every case. `install` says the job is loaded only after `launchctl print` has found it.
 
-After launchd loaded the job, `install` waits up to 5 seconds for a watcher to watch the store live, by the same test `immune status` uses. Its answer says one of three things: watching; loaded and not watching yet, with what the status says of the watcher, such as that it has not completed its first reading; or that it cannot tell. The first line of the text carries the mark ✓ only in the first case.
+After launchd loaded the job, `install` waits up to 5 seconds and says one of four things. Watching: a watcher watches the store live, by the same test `immune status` uses. Started: the job's watcher holds the store and its heartbeat is fresh, its first check is running, and watching follows; `immune status` says when. Not started: launchd loaded the job and no watcher took the store, with what the status says of it and how to look at the job. Or it cannot tell. The first line of the text carries the mark ✓ only when watching, is a plain success when started, and is red when not started.
 
 The answer is the contract's `Service` message: the job's label, the paths of the core the job runs and of the property list, whether the job is installed, loaded and replaced something, whether the core is run where it is, and whether a watcher was watching. As text it says that in its first line, then each step with its path or the label, whether an earlier installation was replaced, and the command to run next. `uninstall` lists what is gone and says the store and the event collector were kept. Add `--json` or `--proto` for an agent or a program.
 

@@ -785,6 +785,7 @@ fn answer(places: &Places, left: Left) -> v1::Service {
         replaced: left.replaced,
         in_place: left.in_place,
         watching: left.seen.as_ref().map(|seen| *seen == Seen::Live),
+        started: left.seen.as_ref().map(Seen::started),
         watcher_note: left
             .seen
             .as_ref()

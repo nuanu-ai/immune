@@ -380,8 +380,8 @@ fn one_login_job_runs_the_installed_copy_and_removal_keeps_the_store_and_collect
     assert_eq!(m.program_path_text, login.program.to_str().unwrap());
     assert_eq!(m.plist_path_text, login.plist.to_str().unwrap());
     assert_eq!(
-        (m.in_place, m.watching, m.watcher_note.as_deref()),
-        (Some(false), Some(true), None)
+        (m.in_place, m.started, m.watching, m.watcher_note.as_deref()),
+        (Some(false), Some(true), Some(true), None)
     );
     let installed = plist(&login.plist);
     assert_eq!(installed["Label"], LABEL);
@@ -1104,24 +1104,43 @@ fn the_job_names_the_app_so_login_items_shows_it_under_the_app() {
 }
 
 #[test]
-fn install_never_says_it_is_watching_when_no_watcher_watches_the_store_live() {
-    // A watcher that has not completed its first reading.
+fn a_watcher_on_its_first_check_is_started_and_not_yet_watching() {
     let mut login = Login::new("core-service-starting");
     login.watcher = None;
     login.watcher = Some(login.hold_watcher(""));
     let m = service(&login.run("install", &[]));
-    assert_eq!(m.watching, Some(false));
+    assert_eq!((m.started, m.watching), (Some(true), Some(false)));
     assert_eq!(
         m.watcher_note.as_deref(),
         Some("a watcher runs and has not completed its first reading")
     );
-    // No watcher at all: the job is loaded, and the text is never calm.
+}
+
+#[test]
+fn a_job_whose_process_never_took_the_lock_is_never_reported_as_started() {
+    // launchd loaded the job and no watcher holds the store.
+    let mut login = Login::new("core-service-never");
     login.watcher = None;
+    let m = service(&login.run("install", &[]));
+    assert_eq!(
+        (m.loaded, m.started, m.watching, m.watcher_note.as_deref()),
+        (
+            true,
+            Some(false),
+            Some(false),
+            Some("no watcher runs on the store now")
+        )
+    );
+    // A lock held with no heartbeat in it is no watcher's either.
+    login.watcher = Some(login.hold_watcher(""));
+    let held = login.watcher.as_ref().unwrap();
+    held.set_len(0).unwrap();
+    std::os::unix::fs::FileExt::write_all_at(held, b"damaged", 0).unwrap();
     let text = String::from_utf8(login.immune(Path::new(CORE), &["install"], &[]).stdout).unwrap();
     assert!(
-        text.starts_with("Immune is installed, and its watcher does not watch live yet\n")
-            && text.contains("Not watching yet    no watcher runs on the store now\n")
-            && text.ends_with("→ immune status   whether the watcher has started\n"),
+        text.starts_with("Immune is installed, but its watcher has not started")
+            && text.contains("Not started")
+            && !text.contains("✓ Started"),
         "{text}"
     );
 }
@@ -1134,7 +1153,10 @@ fn install_says_it_cannot_tell_when_the_store_s_watcher_cannot_be_looked_at() {
     fs::write(&lock, "").unwrap();
     fs::set_permissions(&lock, fs::Permissions::from_mode(0o000)).unwrap();
     let m = service(&login.run("install", &[]));
-    assert_eq!((m.loaded, m.watching, m.watcher_note), (true, None, None));
+    assert_eq!(
+        (m.loaded, m.started, m.watching, m.watcher_note),
+        (true, None, None, None)
+    );
 }
 
 #[test]
