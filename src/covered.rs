@@ -1448,7 +1448,22 @@ fn plain_lack(what: &str, name: Option<&str>) -> String {
     let plain = match what {
         indicators::NO_MATCHER | indicators::NOT_AGAINST => "some kinds of indicator in your list",
         servers::PACKAGE_MANAGER => return format!("{} packages", name.unwrap_or("other")),
+        crate::lockfiles::DEEPER => {
+            return format!(
+                "{} deeper than four folders in a project",
+                name.unwrap_or("lockfiles")
+            );
+        }
+        crate::lockfiles::SET_ASIDE => {
+            return format!(
+                "{} in vendor or hidden folders",
+                name.unwrap_or("lockfiles")
+            );
+        }
         _ if name.is_some() => return name.unwrap_or_default().to_string(),
+        crate::lockfiles::NOT_LOOKED => {
+            "folders of very large projects not looked through for lockfiles"
+        }
         watched::HOOKS_ELSEWHERE => "git hooks of projects kept as separate working folders",
         watched::OVER_CAP => "files too large to read",
         ssh_config::MATCH => "Match blocks in your SSH settings",
@@ -1597,6 +1612,21 @@ mod tests {
                 "yarn.lock",
                 "apk packages",
                 "software inside containers on servers"
+            ]
+        );
+        // A lockfile not opened is a kind this version reads, so it is never named bare, as if
+        // the kind were not understood.
+        use crate::lockfiles::{DEEPER, NOT_LOOKED, SET_ASIDE};
+        assert_eq!(
+            [
+                plain_lack(DEEPER, Some("Cargo.lock")),
+                plain_lack(SET_ASIDE, Some("package-lock.json")),
+                plain_lack(NOT_LOOKED, None),
+            ],
+            [
+                "Cargo.lock deeper than four folders in a project",
+                "package-lock.json in vendor or hidden folders",
+                "folders of very large projects not looked through for lockfiles",
             ]
         );
     }
