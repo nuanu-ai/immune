@@ -12,11 +12,32 @@ Read binary output with `immune_contract::prost::Message`, as `v1::Known::decode
 
 [Artificial Immunity](https://immunity.bot) is a closed product from Nuanu AI Lab built on top of Immune. It decides what to do about a finding: triage with a model, response, handing work to an agent. It runs the `immune` binary unchanged and shares no code with it except these types. Immune does not stream every event out. Immune works on its own and does not need Artificial Immunity.
 
+## Events, matches and findings
+
+An event (`Event`) is something that happened on the Mac and that the collector recorded: a program start, or a file created or renamed. The core keeps no event; it reads them again from a log that lives about a day.
+
+A match (`RuleMatch`) is one rule that matched one event. On its own it claims nothing. There are many, and the app does not list them. `immune matches` gives every one, of every level, with its event, for a program that judges them.
+
+A finding is what the core decided a person should look at. There are few, and each stays open until the person answers it, except a finding about a state, such as a malicious package in a lockfile, which the core clears when the state goes. `immune findings` lists them.
+
+A match of a rule marked below high raises nothing, and its `raised` is `below_high`; so does a match of a rule whose set states no level, with `level_not_stated`. A match of a rule marked high or critical also raises that rule's finding or adds to the one it has, so it is in both answers. Its `raised` is `finding` once the core's own reading has read the line, and `findings` names the finding. Many findings rest on no event at all: a malicious package, or a shell startup file that changed. A `suspicious` verdict raises a finding of its own.
+
 ## What the contract covers
 
 The messages of the contract are the answers of `immune matches`, `immune findings`, `immune finding`, `immune project`, `immune program`, `immune machine`, `immune status`, `immune rules`, `immune vulnerabilities`, `immune owner` and `immune sample`, the `Verdict` a program sends to `immune verdict` and the `VerdictRecorded` it gets back, and `Failure`.
 
 Unknown is never zero and never false. A count, a total or a yes-or-no the core could not establish is an optional field that is absent (null in JSON), or it sits inside a message that is absent. A section the core could not give is absent and named in `not_computed` with the reason; a list that is there and empty means there is nothing in it. A reader that takes an absent number as 0 or an absent yes-or-no as `false` reads calm the core did not establish.
+
+## A client to start from
+
+[`examples/client.rs`](examples/client.rs) runs the loop below with the types of this crate and nothing else. It reads the matches page by page and prints each one, counts the open and urgent findings, and with `--judge-first` sends a `suspicious` verdict with a `verdict_id` about the first match. It then sends the same verdict again, which is answered with `already_recorded`, and a changed one under the same id, which is refused with `verdict_id_reused`. A verdict is written into the store, so point it at a store made for trying it:
+
+```sh
+cargo run -p immune-contract --example client -- --immune <path to immune> --store <path> \
+    [--after <place>] [--judge-first] [-- --system-root <dir>]
+```
+
+Without `--store` it stops, so it never writes to the default store. Arguments after `--` go to `immune matches` and `immune verdict`. The test [`tests/contract_client.rs`](../tests/contract_client.rs) runs it against the core as built.
 
 ## The loop of a program that runs the core
 

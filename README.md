@@ -15,6 +15,14 @@ The picture is drawn by the program from an invented Mac.
 
 Immune finds what you have on the Mac: projects and their dependencies, installed apps and packages, the places where persistence lives, the servers your SSH configuration knows. It matches dependencies against published vulnerability data from OSV and CISA, and checks program starts and new files against published rules for macOS from SigmaHQ and Elastic. Each finding says how bad it would be and how sure Immune is, as two separate values, and every answer says what Immune could not see. There is no model inside, and nothing about your Mac is sent anywhere.
 
+## Events, matches and findings
+
+- An event is something that happened on the Mac and that the optional collector recorded: a program started, or a file was created or renamed.
+- A match is one rule that matched one event. On its own it claims nothing. There are many, and the app does not list them; a program that judges them reads them with `immune matches`.
+- A finding is what Immune decided a person should look at. There are few, and each stays open until the person answers it. The one exception is a finding about a state, such as a malicious package in a lockfile, which Immune clears when the state goes.
+
+A match of a rule marked below high, or of a rule whose set states no level, stays a match. A match of a rule marked high or critical also raises that rule's finding, or adds to the one it has, so it shows up both in `immune matches` and in `immune findings`. Many findings rest on no event at all: a malicious package, or a shell startup file that changed.
+
 ## First run
 
 To build the core, you need an Apple Silicon Mac with macOS 15 or later, Apple's Command Line Tools (`xcode-select --install`) and Rust 1.89 or later. Building the optional menu-bar app also needs Swift 6 from those tools. An Apple developer account is unnecessary.
