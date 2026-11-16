@@ -21,7 +21,7 @@
 //!
 //! Its parts are one level: what is `part_of` or `located_on` the machine, such as its
 //! containers, packages, checkouts and watched files. Their own parts are not given; a project
-//! is asked about with `immune project`.
+//! is asked about with `immune project`. Its findings are of every depth (`known.rs`).
 
 use crate::contract::{self, v1};
 use crate::known::{self, Question, Refused};

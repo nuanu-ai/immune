@@ -710,9 +710,10 @@ pub struct Known {
     pub presence: i32,
     /// The thing asked for. Absent when the presence is `unknown`. A path names the project or the
     /// program that holds it, the nearest one; an id names the thing with that id.
-    /// A machine the store knows under several ids linked by `same_as` is one thing: its parts,
-    /// facts, coverage and findings are those of every one of its ids, each fact under its own
-    /// `subject_text`.
+    /// A thing the store knows under several ids is one thing: a machine under ids linked by
+    /// `same_as`, a program under the ids of a formula and its kegs, or of an application and its
+    /// code kept outside the bundle. Its parts, facts, coverage and findings are those of every one
+    /// of its ids, each fact under its own `subject_text`.
     #[prost(message, optional, tag = "5")]
     pub thing: ::core::option::Option<Entity>,
     /// The things inside it: what is `part_of` or `located_on` it, and for a project the files whose
@@ -743,12 +744,15 @@ pub struct Known {
     ///    `no_reader`, the reason naming what this version does not read or find.
     #[prost(message, repeated, tag = "8")]
     pub coverage: ::prost::alloc::vec::Vec<Coverage>,
-    /// The findings about the thing, about its parts whether what was read of them is in force or
-    /// retracted, and for a project about anything whose id lies in its folder; in every state.
-    /// `immune finding <id>` shows one.
+    /// The findings about the thing under each of its ids, and about anything inside it at any depth,
+    /// whether what was read of it is in force or retracted: what is `part_of` or `located_on` it or
+    /// one of its parts, what its id names as on it, such as a file of a machine, and for a project
+    /// anything whose id lies in its folder; in every state. A machine's include the packages of its
+    /// projects, which `parts` does not list. `immune finding <id>` shows one.
     #[prost(message, repeated, tag = "9")]
     pub findings: ::prost::alloc::vec::Vec<FindingRef>,
-    /// The other ids the store knows the thing by, such as a machine's names linked by `same_as`.
+    /// The other ids the store knows the thing by, such as a machine's names linked by `same_as`, a
+    /// Homebrew formula's kegs, or the folder of code an application keeps outside its bundle.
     /// A fact whose subject is one of these is about the thing; any other subject is a part.
     #[prost(message, repeated, tag = "10")]
     pub same_as: ::prost::alloc::vec::Vec<Entity>,
@@ -2310,6 +2314,39 @@ pub struct Vulnerabilities {
     /// Why there is nothing to count, in the core's words, when there is no store.
     #[prost(message, repeated, tag = "8")]
     pub not_computed: ::prost::alloc::vec::Vec<NotComputed>,
+    /// The packages for which it cannot be told whether a record affects them, the ones
+    /// `totals.unknown_packages` counts. Absent when `totals` is. Since 1.16.0.
+    #[prost(message, optional, tag = "9")]
+    pub unknown: ::core::option::Option<UnknownPackages>,
+}
+/// The packages of projects for which it cannot be told whether a record affects them.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UnknownPackages {
+    /// One per package in a project, each under the first of its reasons, at most 200, by project.
+    #[prost(message, repeated, tag = "1")]
+    pub items: ::prost::alloc::vec::Vec<UnknownPackage>,
+    /// How many there are.
+    #[prost(uint64, tag = "2")]
+    pub total: u64,
+}
+/// A package of a project for which it cannot be told whether a record affects it.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UnknownPackage {
+    /// The project, as a person recognises it; the package's ecosystem and its name. Whole.
+    #[prost(string, tag = "1")]
+    pub project_text: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub ecosystem: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub package_text: ::prost::alloc::string::String,
+    /// Why, the first of its reasons, as `unknown_packages_by_reason` counts it, such as
+    /// `version_cannot_be_compared`.
+    #[prost(string, tag = "4")]
+    pub reason: ::prost::alloc::string::String,
 }
 /// The packages of projects that a record affects.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -2451,7 +2488,9 @@ pub struct Vulnerability {
         deserialize_with = "crate::optional_enum_from_name::<RecordData, _>"
     )]
     pub data: ::core::option::Option<i32>,
-    /// When it holds none, what that means, in the core's words.
+    /// When it holds none, what that means, in the core's words. It is never calmer than any of
+    /// the `answers`: when one cannot be told, it says for how many projects and why before it says
+    /// which it does not affect.
     #[prost(string, optional, tag = "7")]
     pub said: ::core::option::Option<::prost::alloc::string::String>,
     /// When it holds none and the catalogue holds the id, the answer in each place from the

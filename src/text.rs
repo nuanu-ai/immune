@@ -1967,17 +1967,32 @@ pub fn vulnerabilities(m: &v1::Vulnerabilities) -> String {
             say(&mut out, &format!("Nothing is known yet: {why}."));
         }
         // Packages whose answer cannot be told are said in the first sentence, so that nothing
-        // reads as calm where the data it needs was not read.
+        // reads as calm where the data it needs was not read. Records, packages and the rows
+        // of the table are each counted as what they are.
         Some(t) => {
-            say(
-                &mut out,
-                &format!(
-                    "{} in packages your projects use; for {} whether one affects them cannot be told; {} known not to affect them.",
+            let affecting = if t.affected_records == 0 {
+                "No known vulnerability affects the packages your projects use".to_string()
+            } else {
+                format!(
+                    "{} {} {} in {}",
                     count(
                         t.affected_records,
                         "known vulnerability",
                         "known vulnerabilities"
                     ),
+                    if t.affected_records == 1 {
+                        "affects"
+                    } else {
+                        "affect"
+                    },
+                    count(t.affected_packages, "package", "packages"),
+                    count(t.affected_projects, "project", "projects")
+                )
+            };
+            say(
+                &mut out,
+                &format!(
+                    "{affecting}; for {} whether one affects them cannot be told; {} known not to affect them.",
                     count(t.unknown_packages, "package", "packages"),
                     grouped(t.not_affected_known)
                 ),
@@ -2013,26 +2028,71 @@ pub fn vulnerabilities(m: &v1::Vulnerabilities) -> String {
         })
         .collect();
     if !rows.is_empty() {
+        let total = m.affected.as_ref().map_or(0, |a| a.total);
+        let shown = if (rows.len() as u64) < total {
+            format!(", the first {} of them listed", grouped(rows.len() as u64))
+        } else {
+            String::new()
+        };
+        say(
+            &mut out,
+            &format!(
+                "A row for each package in a project and each vulnerability that affects it: {}{shown}.",
+                count(total, "row", "rows")
+            ),
+        );
         out.push_str(&table(
             &["Label", "Record", "Package", "Project", "Fixed in"],
             &rows,
         ));
     }
-    let reasons: Vec<String> = m
-        .totals
-        .iter()
-        .flat_map(|t| &t.unknown_by_reason)
-        .map(|c| format!("{} {}", c.name, c.count))
-        .collect();
-    if !reasons.is_empty() {
+    // The packages that cannot be told, by name, the first few when there are many.
+    if let Some(u) = m.unknown.as_ref().filter(|u| u.total > 0) {
         say(
             &mut out,
-            &format!("Cannot be told, by reason: {}.", reasons.join(", ")),
+            &format!(
+                "Whether a known vulnerability affects them cannot be told for {}:",
+                count(u.total, "package", "packages")
+            ),
         );
+        let rows: Vec<Vec<String>> = u
+            .items
+            .iter()
+            .take(UNKNOWN_SHOWN)
+            .map(|p| {
+                vec![
+                    p.project_text.clone(),
+                    format!("{} {}", p.ecosystem, p.package_text),
+                    p.reason.clone(),
+                ]
+            })
+            .collect();
+        out.push_str(&table(&["Project", "Package", "Why"], &rows));
+        let left = u.total.saturating_sub(rows.len() as u64);
+        if left > 0 {
+            let reasons: Vec<String> = m
+                .totals
+                .iter()
+                .flat_map(|t| &t.unknown_packages_by_reason)
+                .map(|c| format!("{} {}", c.name, c.count))
+                .collect();
+            say(
+                &mut out,
+                &format!(
+                    "{} more not listed here; all of them by reason: {}.",
+                    grouped(left),
+                    reasons.join(", ")
+                ),
+            );
+        }
     }
     say(&mut out, &m.declared_note);
     out
 }
+
+/// At most this many packages that cannot be told are named in the text of
+/// `immune vulnerabilities`; the total is always given.
+const UNKNOWN_SHOWN: usize = 10;
 
 /// `immune vulnerability <id>`: the answer in every place, record by record.
 pub fn vulnerability(m: &v1::Vulnerability) -> String {
@@ -2081,11 +2141,13 @@ pub fn vulnerability(m: &v1::Vulnerability) -> String {
     out
 }
 
-/// The answer in each place, a line for each package the record names, or one for the place.
+/// The answer in each place, a line for each package the record names, or one for the place. A
+/// place is a project's lockfiles of one ecosystem, so the ecosystem is named on each line: one
+/// project has a line for each.
 fn place_answers(out: &mut String, answers: &[v1::PlaceAnswer], indent: &str) {
     let answer = |a: Option<i32>| word::<v1::PackageAnswer>(a.unwrap_or_default());
     for a in answers {
-        let project = quoted(&a.project_text);
+        let project = format!("{} {}", quoted(&a.project_text), a.ecosystem);
         if a.packages.is_empty() {
             say(
                 out,
@@ -2428,6 +2490,7 @@ mod tests {
             in_catalogue: Some(true),
             answers: vec![v1::PlaceAnswer {
                 project_text: "~/dev/shop".to_string(),
+                ecosystem: "npm".to_string(),
                 answer: Some(v1::PackageAnswer::Unknown as i32),
                 ..Default::default()
             }],
@@ -2436,7 +2499,8 @@ mod tests {
         };
         let text = vulnerability(&m);
         assert!(text.contains("No record names it."), "{text}");
-        assert!(text.contains("\"~/dev/shop\": "), "{text}");
+        // A project has a line for each ecosystem, so each line names its ecosystem.
+        assert!(text.contains("\"~/dev/shop\" npm: unknown"), "{text}");
         assert!(
             text.contains("It is on the list of vulnerabilities attackers are using."),
             "{text}"
@@ -2445,6 +2509,67 @@ mod tests {
         // Without a store, what the catalogue says is not known, and never "not on it".
         let text = vulnerability(&v1::Vulnerability::default());
         assert!(text.contains("is not known"), "{text}");
+    }
+
+    #[test]
+    fn the_list_of_vulnerabilities_names_the_first_packages_that_cannot_be_told_and_counts_the_rest()
+     {
+        // Twelve packages cannot be told: the first ten are named, and the two left are counted
+        // with every reason, so none is hidden behind a number alone.
+        let unknown: Vec<v1::UnknownPackage> = (0..12)
+            .map(|i| v1::UnknownPackage {
+                project_text: "~/dev/shop".to_string(),
+                ecosystem: "npm".to_string(),
+                package_text: format!("pkg-{i:02}"),
+                reason: "version_cannot_be_compared".to_string(),
+            })
+            .collect();
+        let m = v1::Vulnerabilities {
+            totals: Some(v1::VulnerabilityTotals {
+                unknown_packages: 12,
+                unknown_packages_by_reason: vec![v1::Count {
+                    name: "version_cannot_be_compared".to_string(),
+                    count: 12,
+                }],
+                ..Default::default()
+            }),
+            unknown: Some(v1::UnknownPackages {
+                items: unknown,
+                total: 12,
+            }),
+            ..Default::default()
+        };
+        let text = vulnerabilities(&m);
+        assert!(text.contains("cannot be told for 12 packages:"), "{text}");
+        assert!(text.contains("npm pkg-09"), "{text}");
+        assert!(!text.contains("pkg-10"), "{text}");
+        assert!(
+            text.contains(
+                "2 more not listed here; all of them by reason: version_cannot_be_compared 12."
+            ),
+            "{text}"
+        );
+        // No known vulnerability: said so, never as a count of none.
+        assert!(
+            text.starts_with(
+                "No known vulnerability affects the packages your projects use; for 12 packages"
+            ),
+            "{text}"
+        );
+        // Rows the message does not carry are counted, never dropped from the count.
+        let m = v1::Vulnerabilities {
+            totals: Some(v1::VulnerabilityTotals::default()),
+            affected: Some(v1::AffectedPackages {
+                items: vec![v1::AffectedPackage::default()],
+                total: 3,
+            }),
+            ..Default::default()
+        };
+        let text = vulnerabilities(&m);
+        assert!(
+            text.contains("affects it: 3 rows, the first 1 of them listed."),
+            "{text}"
+        );
     }
 
     #[test]

@@ -376,6 +376,75 @@ fn a_bundle_a_file_inside_it_its_identifier_and_its_id_are_the_same_program() {
     assert_eq!(readings(&formula)[0].1, BREW);
 }
 
+/// The promise against false calm, for a program the store knows under several ids that no fact
+/// links: a finding about any of them is in the answer however the program is asked for. A
+/// Homebrew formula and its keg are one program, and so are an application and the folder of
+/// code it keeps outside its bundle; the answer names the others in `same_as`.
+#[test]
+fn a_finding_about_any_id_of_a_program_is_in_the_answer_however_the_program_is_named() {
+    let e = Estate::new("program-kin");
+    e.formula("tool", "1.0");
+    e.app("Editor.app", "org.example.editor", "3.0");
+    e.put(
+        "home/Library/Application Support/Editor/main.js",
+        "start();\n",
+    );
+    e.run();
+    // Files change in place while the versions stay.
+    let append = |rel: &str| {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(e.0.join(rel))
+            .unwrap();
+        f.write_all(b"steal();\n").unwrap();
+    };
+    append("system/opt/homebrew/Cellar/tool/1.0/bin/tool");
+    append("home/Library/Application Support/Editor/main.js");
+    e.run();
+    let rules = |k: &v1::Known| -> Vec<String> {
+        k.findings
+            .iter()
+            .map(|f| f.rule.clone().unwrap_or_default())
+            .collect()
+    };
+    let others =
+        |k: &v1::Known| -> Vec<String> { k.same_as.iter().map(|s| s.id_text.clone()).collect() };
+    let formula = "component:machine:mac/brew/tool";
+    for what in ["tool", formula, "/opt/homebrew/Cellar/tool/1.0", KEG] {
+        let k = e.program(what);
+        assert_eq!(rules(&k), ["integrity.package-files"], "{what}");
+        let mut ids = others(&k);
+        ids.push(thing(&k).to_string());
+        ids.sort();
+        assert_eq!(ids, [formula, KEG], "{what}");
+    }
+    let editor = "component:machine:mac/macos-app/org.example.editor";
+    let folder = "file:machine:mac/Library/Application Support/Editor";
+    for what in ["org.example.editor", "/Applications/Editor.app", editor] {
+        let k = e.program(what);
+        assert_eq!(thing(&k), editor, "{what}");
+        assert_eq!(rules(&k), ["integrity.app-code-outside"], "{what}");
+        assert_eq!(others(&k), [folder], "{what}");
+    }
+    // The application removed: the finding about its code stays in its answer.
+    std::fs::remove_dir_all(e.0.join("system/Applications/Editor.app")).unwrap();
+    e.run();
+    let gone = e.program("org.example.editor");
+    assert_eq!(gone.presence(), v1::Presence::Gone);
+    assert_eq!(rules(&gone), ["integrity.app-code-outside"]);
+    // A keg whose formula Homebrew does not name is found by the formula's name.
+    e.put(
+        "system/opt/homebrew/Cellar/loose/2.0/bin/loose",
+        "invented\n",
+    );
+    e.run();
+    assert_eq!(
+        thing(&e.program("loose")),
+        "file:machine:mac//opt/homebrew/Cellar/loose/2.0"
+    );
+}
+
 /// A name that fits more than one program is not answered for one of them: the command fails as
 /// a misuse and names every program it fits by id, and each id then answers for its program.
 #[test]
@@ -724,8 +793,9 @@ fn another_machine_answers_with_what_was_read_of_it_and_what_was_not() {
 }
 
 /// A machine's parts are one level: a project on this Mac is a part, and what is inside the
-/// project (its packages, its hooks, the finding about a hook) is not; the project's own
-/// question gives those. With no argument the question is about this Mac.
+/// project (its packages, its hooks) is not; the project's own question gives those. The
+/// finding about a hook is the machine's all the same. With no argument the question is about
+/// this Mac.
 #[test]
 fn a_machines_parts_are_one_level_and_a_project_on_it_is_a_part_without_its_own_parts() {
     let e = Estate::new("machine-level");
@@ -757,12 +827,104 @@ fn a_machines_parts_are_one_level_and_a_project_on_it_is_a_part_without_its_own_
         assert!(!parts.contains(&deeper), "{deeper}");
         assert!(mac.facts.iter().all(|f| f.subject_text != deeper));
     }
-    assert!(mac.findings.iter().all(|f| f.about_text != hook));
+    assert!(mac.findings.iter().any(|f| f.about_text == hook));
 
     let project = e.known("project", Some("~/dev/shop"));
     let inside: Vec<&str> = project.parts.iter().map(|p| p.id_text.as_str()).collect();
     assert!(inside.contains(&left_pad) && inside.contains(&hook));
     assert!(project.findings.iter().any(|f| f.about_text == hook));
+}
+
+/// The promise against false calm, for a machine: every finding the store holds about something
+/// on it is in its answer, at any depth. A hook inside a project on it is two levels down, and a
+/// place that could not be read is tied to it by no reading, only by its id; both are its.
+#[test]
+fn every_finding_about_something_on_a_machine_is_in_its_answer_at_any_depth() {
+    use std::os::unix::fs::PermissionsExt;
+    let e = Estate::new("machine-depth");
+    e.checkout("dev/shop");
+    let plugins = e.0.join("system/Library/Security/SecurityAgentPlugins");
+    std::fs::create_dir_all(&plugins).unwrap();
+    e.run();
+    e.put("home/dev/shop/.git/hooks/pre-commit", "#!/bin/sh\nexit 0\n");
+    std::fs::set_permissions(&plugins, std::fs::Permissions::from_mode(0o000)).unwrap();
+    e.run();
+    std::fs::set_permissions(&plugins, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let listed = e.json("findings", None);
+    let mut all: Vec<String> = listed["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["finding"]["id"].as_str().unwrap().to_string())
+        .collect();
+    all.sort();
+    let mac = e.machine(None);
+    let mut mine: Vec<String> = mac.findings.iter().map(|f| f.id.clone()).collect();
+    mine.sort();
+    assert_eq!(mine, all);
+    let about: Vec<&str> = mac.findings.iter().map(|f| f.about_text.as_str()).collect();
+    for deep in [
+        "file:machine:mac/dev/shop/.git/hooks/pre-commit",
+        "file:machine:mac//Library/Security/SecurityAgentPlugins",
+    ] {
+        assert!(about.contains(&deep), "{deep}: {about:?}");
+    }
+}
+
+/// A finding about a part a reading tied to the thing is in the thing's answer, however the
+/// part's id is made, and whether the link is in force or retracted: here parts of an invented
+/// type whose ids hold nothing of the machine's, one tied to it by a link since retracted, so it
+/// is no longer among its parts, and one tied to that one by a link in force.
+#[test]
+fn a_finding_about_a_part_a_reading_tied_to_a_machine_is_in_its_answer_whatever_its_id() {
+    let e = Estate::new("machine-links");
+    e.run();
+    let conn = rusqlite::Connection::open(e.store()).unwrap();
+    let pick = |sql: &str| -> String { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+    let kind = pick("SELECT name FROM coverage_kind ORDER BY name LIMIT 1");
+    let basis = pick("SELECT name FROM basis_kind ORDER BY strength LIMIT 1");
+    conn.execute_batch(
+        "INSERT INTO entity_type VALUES ('gadget', 'used'), ('widget', 'used');
+         INSERT INTO entity VALUES ('gadget:7f3a', 'gadget'), ('widget:b2', 'widget');",
+    )
+    .unwrap();
+    for (layer, subject, predicate, object, retracted) in [
+        (
+            "retracted",
+            "gadget:7f3a",
+            "part_of",
+            "machine:mac",
+            Some(2),
+        ),
+        ("live", "widget:b2", "located_on", "gadget:7f3a", None),
+    ] {
+        conn.execute(
+            "INSERT INTO assertion (layer, subject, predicate, object, reader, scope, kind,
+                                    source_ref, basis, observed_at, run_id, retracted_at,
+                                    retracted_by)
+             VALUES (?1, ?2, ?3, ?4, 'example', 'machine:mac', ?5, 'example', ?6, 1, 'r1', ?7,
+                     CASE WHEN ?7 IS NULL THEN NULL ELSE 'r2' END)",
+            rusqlite::params![layer, subject, predicate, object, kind, basis, retracted],
+        )
+        .unwrap();
+    }
+    for (id, about) in [("fgadget", "gadget:7f3a"), ("fwidget", "widget:b2")] {
+        conn.execute(
+            "INSERT INTO finding (id, rule, about, occurrence, state, change, first_seen_at,
+                                  first_seen_run, last_seen_at, last_seen_run)
+             VALUES (?1, 'watched.autostart', ?2, 1, 'open', 'new', 1, 'r1', 1, 'r1')",
+            [id, about],
+        )
+        .unwrap();
+    }
+    drop(conn);
+
+    let mac = e.machine(None);
+    let ids: Vec<&str> = mac.findings.iter().map(|f| f.id.as_str()).collect();
+    for id in ["fgadget", "fwidget"] {
+        assert!(ids.contains(&id), "{id}: {ids:?}");
+    }
 }
 
 /// The binary answer and the JSON answer are one message, for a program and for a machine, known

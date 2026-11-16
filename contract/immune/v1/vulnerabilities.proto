@@ -39,6 +39,28 @@ message Vulnerabilities {
   string declared_note = 7;
   // Why there is nothing to count, in the core's words, when there is no store.
   repeated NotComputed not_computed = 8;
+  // The packages for which it cannot be told whether a record affects them, the ones
+  // `totals.unknown_packages` counts. Absent when `totals` is. Since 1.16.0.
+  UnknownPackages unknown = 9;
+}
+
+// The packages of projects for which it cannot be told whether a record affects them.
+message UnknownPackages {
+  // One per package in a project, each under the first of its reasons, at most 200, by project.
+  repeated UnknownPackage items = 1;
+  // How many there are.
+  uint64 total = 2;
+}
+
+// A package of a project for which it cannot be told whether a record affects it.
+message UnknownPackage {
+  // The project, as a person recognises it; the package's ecosystem and its name. Whole.
+  string project_text = 1;
+  string ecosystem = 2;
+  string package_text = 3;
+  // Why, the first of its reasons, as `unknown_packages_by_reason` counts it, such as
+  // `version_cannot_be_compared`.
+  string reason = 4;
 }
 
 // The packages of projects that a record affects.
@@ -130,7 +152,9 @@ message Vulnerability {
   // Whether the data holds a record of it. Absent when there is no store; then `not_computed`
   // says so.
   optional RecordData data = 6;
-  // When it holds none, what that means, in the core's words.
+  // When it holds none, what that means, in the core's words. It is never calmer than any of
+  // the `answers`: when one cannot be told, it says for how many projects and why before it says
+  // which it does not affect.
   optional string said = 7;
   // When it holds none and the catalogue holds the id, the answer in each place from the
   // conditions of the place.

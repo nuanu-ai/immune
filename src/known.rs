@@ -17,6 +17,14 @@
 //! was not looked into, whatever was read in it before. A path that none of those readings looks
 //! at, answered `unknown`, carries a reading made by rule that says so, since "every reading
 //! full" would otherwise read as "looked, and not there".
+//!
+//! A thing answered with fewer findings than the store holds about it reads as safer than it is.
+//! So its findings are those about it under every id it is known by and about anything inside it
+//! at any depth, whatever was asked: a machine's include the packages of its projects, which its
+//! parts, one level, do not list. Inside is the union of two ways, each of which only adds: what a
+//! reading ever tied to it by `part_of` or `located_on`, in force or retracted, followed link by
+//! link; and what its id names as inside it, which covers what no reading tied, such as a place
+//! on a machine that could not be read.
 
 use crate::answer::{self, Form};
 use crate::contract::{self, v1, value_of};
@@ -228,9 +236,9 @@ pub fn known_of(
         None => None,
     };
     // The thing under each of its ids, and its parts, by id: whose facts are given and whose
-    // readings speak. Findings are those about these, and about what was ever inside the thing.
+    // readings speak. Findings are those about these, and about anything ever inside the thing.
     let mut subjects: BTreeMap<String, String> = BTreeMap::new();
-    let mut ever: BTreeSet<String> = BTreeSet::new();
+    let mut own_ids: BTreeSet<String> = BTreeSet::new();
     if let Some((id, ty)) = &thing {
         let mut own: Parts = Parts::new();
         own.insert(id.to_string(), ty.clone());
@@ -253,8 +261,8 @@ pub fn known_of(
                 )?;
             all.extend(inside);
             all.extend(in_folder);
-            ever.extend(ever_inside(conn, own_id)?);
         }
+        own_ids.extend(own.keys().cloned());
         known.presence = if held {
             v1::Presence::Held
         } else {
@@ -303,14 +311,77 @@ pub fn known_of(
             reason,
         );
     }
-    known.findings = finding_refs(conn, now, |about| {
-        subjects.contains_key(about)
-            || ever.contains(about)
+    // A finding is the thing's when what it is about, or anything a reading ever tied it to, at
+    // any depth, is the thing under one of its ids or a part of it, lies in its folder, or is
+    // named by its id as inside it. Each way can only add: the store's links are its own word, and
+    // the names add what no reading tied. A finding about a part that is gone stays the thing's,
+    // as it stays open until it is answered.
+    let links = links(conn)?;
+    let theirs = |at: &str| {
+        subjects.contains_key(at)
+            || own_ids.iter().any(|own| named_in(at, own))
             || q.folder.is_some_and(|(machine, rel)| {
-                place_of(about).is_some_and(|(m, at)| m == machine && within(at, rel))
+                place_of(at).is_some_and(|(m, path)| m == machine && within(path, rel))
             })
-    })?;
+    };
+    known.findings = finding_refs(conn, now, |about| held_by(about, &links, &theirs))?;
     Ok(known)
+}
+
+/// What each entity was ever `part_of` or `located_on`, in force or retracted, by its id.
+type Links = BTreeMap<String, Vec<String>>;
+
+/// Every link of a part to what holds it that the store ever held: one pass over the assertions,
+/// since the store has no index by object.
+fn links(conn: &Connection) -> rusqlite::Result<Links> {
+    let mut out = Links::new();
+    let mut q = conn.prepare(
+        "SELECT DISTINCT subject, object FROM assertion
+         WHERE layer IN ('live', 'retracted') AND predicate IN ('part_of', 'located_on')",
+    )?;
+    for row in q.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get(1)?)))? {
+        let (subject, object) = row?;
+        out.entry(subject).or_default().push(object);
+    }
+    Ok(out)
+}
+
+/// Whether `about`, or anything it is tied to through `links` at any depth, is one `theirs`
+/// takes. Each id is looked at once, so links that run in a circle end.
+fn held_by(about: &str, links: &Links, theirs: &impl Fn(&str) -> bool) -> bool {
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    let mut next = vec![about];
+    while let Some(at) = next.pop() {
+        if !seen.insert(at) {
+            continue;
+        }
+        if theirs(at) {
+            return true;
+        }
+        next.extend(links.get(at).into_iter().flatten().map(String::as_str));
+    }
+    false
+}
+
+/// Whether the id `at` names a thing inside the thing whose id is `own`, by how ids are made: a
+/// type, then the natural key, which for a thing in another begins with the other's id. So after
+/// one or two types it begins with `own` and a `/`: `file:<machine>/<path>`, `check:<machine>/…`
+/// and `checkout:<machine>/<path>` for a machine, `component:checkout:<machine>/<path>/…` for a
+/// machine and for that project. It sits beside the store's links (`held_by`) and adds what no
+/// reading tied to the thing, such as a program that ran on a machine or a place on it that
+/// could not be read; a part a reading tied is the thing's by the link, however its id is made.
+fn named_in(at: &str, own: &str) -> bool {
+    let mut rest = at;
+    for _ in 0..2 {
+        let Some((_, key)) = rest.split_once(':') else {
+            return false;
+        };
+        if key.strip_prefix(own).is_some_and(|r| r.starts_with('/')) {
+            return true;
+        }
+        rest = key;
+    }
+    false
 }
 
 /// The kind of the reading made by rule for a path no reading that finds things of the kind
@@ -414,18 +485,6 @@ fn parts(
         None => Parts::new(),
     };
     Ok((inside, in_folder))
-}
-
-/// What was ever `part_of` or `located_on` `id`, whether that is in force or retracted: a finding
-/// about a part stays the thing's after the part is gone, as it stays open until it is answered.
-fn ever_inside(conn: &Connection, id: &str) -> rusqlite::Result<BTreeSet<String>> {
-    conn.prepare(
-        "SELECT DISTINCT subject FROM assertion
-         WHERE layer IN ('live', 'retracted') AND predicate IN ('part_of', 'located_on')
-           AND object = ?1",
-    )?
-    .query_map([id], |r| r.get(0))?
-    .collect()
 }
 
 /// The machine and the path an id of a checkout or a file names.
@@ -605,5 +664,37 @@ pub fn finding_ref(i: &findings::Item) -> v1::FindingRef {
         severity: i.severity.map(value_of::<v1::Level>),
         confidence: i.confidence.map(value_of::<v1::Level>),
         urgent: i.urgent(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_thing_is_inside_another_only_when_its_id_names_that_whole_id_as_where_it_is() {
+        // What lies on a machine, or in a project, at any depth, is its; what lies on another
+        // machine or in another project whose name begins the same is not.
+        let mac = "machine:mac";
+        let shop = "checkout:machine:mac/dev/shop";
+        for at in [
+            "file:machine:mac//Library/Security/SecurityAgentPlugins",
+            "checkout:machine:mac/dev/shop",
+            "component:checkout:machine:mac/dev/shop/npm/left-pad",
+        ] {
+            assert!(super::named_in(at, mac), "{at}");
+        }
+        assert!(super::named_in(
+            "component:checkout:machine:mac/dev/shop/npm/left-pad",
+            shop
+        ));
+        for (at, own) in [
+            ("file:machine:mac-2/.zshrc", mac),
+            (
+                "component:checkout:machine:mac/dev/shop-old/npm/left-pad",
+                shop,
+            ),
+            ("machine:mac", mac),
+        ] {
+            assert!(!super::named_in(at, own), "{at} in {own}");
+        }
     }
 }

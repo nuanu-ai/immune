@@ -18,6 +18,13 @@
 //!   `component:<machine>/<ecosystem>/<name>`: a bundle identifier (or a bundle's folder name
 //!   where it has none), a formula's or cask's name as Homebrew gives it, a package's name.
 //!
+//!   A keg is also found by its formula's name, which Homebrew may not have given.
+//!
+//! One program can be known under several ids that no fact links: a Homebrew formula and its
+//! kegs, an application and the folder of code it keeps outside its bundle. Asked by any of them,
+//! the answer is about all of them (`kin`), so a finding about a keg is in the answer about its
+//! formula, however the program was named.
+//!
 //! A question that fits more than one program is refused, with their ids: the message holds one
 //! thing, and choosing one would hide the others. So is a path that fits programs only when case
 //! is ignored. A path that no reading of programs looks at, answered `unknown`, carries a reading
@@ -27,7 +34,7 @@ use crate::contract::{self, v1};
 use crate::known::{self, Question, Refused};
 use crate::{brew, covered, integrity};
 use rusqlite::Connection;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -94,10 +101,26 @@ pub fn program_cmd(args: &ProgramArgs) -> ExitCode {
                 Ok(found) => found,
                 Err(not) => return Ok(Err(not)),
             };
-            let id = match <[String; 1]>::try_from(found.ids) {
-                Ok([id]) => Some(id),
-                Err(ids) if ids.is_empty() => None,
-                Err(ids) => return Ok(Err(several(ids))),
+            // The program asked for, and every id the store knows it by: whichever of them was
+            // asked, the answer is about all of them, so no way of naming it hides a finding.
+            let (id, also) = match (found.ids.first(), &this) {
+                (Some(first), Some(this)) => {
+                    let one = kin(conn, this, first)?;
+                    if found.ids.iter().any(|i| !one.contains(i)) {
+                        // One id for each program the question fits.
+                        let (mut ids, mut named) = (Vec::new(), BTreeSet::new());
+                        for i in &found.ids {
+                            if !named.contains(i) {
+                                named.extend(kin(conn, this, i)?);
+                                ids.push(i.clone());
+                            }
+                        }
+                        return Ok(Err(several(ids)));
+                    }
+                    let also: Vec<String> = one.into_iter().filter(|i| i != first).collect();
+                    (Some(first.clone()), also)
+                }
+                _ => (None, Vec::new()),
             };
             let found_by = known::found_by(conn, id.as_deref(), &FOUND_BY)?;
             let place = found.place.as_deref();
@@ -105,7 +128,7 @@ pub fn program_cmd(args: &ProgramArgs) -> ExitCode {
                 question: v1::Question::Program,
                 asked: &args.asked,
                 id: id.as_deref(),
-                also: &[],
+                also: &also,
                 folder: None,
                 place,
                 unread: place.filter(|rel| !integrity::reads(rel)).map(|_| UNREAD),
@@ -190,6 +213,7 @@ fn find(
         return Ok(Err(not_a_program(asked)));
     }
     let prefix = format!("component:{this}/");
+    let files = format!("file:{this}/");
     Ok(Ok(Found {
         ids: programs
             .keys()
@@ -197,11 +221,80 @@ fn find(
                 id.strip_prefix(&prefix)
                     .and_then(|rest| rest.split_once('/'))
                     .is_some_and(|(_, name)| name == asked)
+                    // A keg by its formula's name, which Homebrew may not have named.
+                    || id.strip_prefix(&files).and_then(integrity::keg_formula) == Some(asked)
             })
             .cloned()
             .collect(),
         place: None,
     }))
+}
+
+/// The ids the store knows one program by, `id` among them. Two readings find one program under
+/// two ids, and nothing in the store links them: the reading of Homebrew names a formula, the
+/// reading of kegs names each keg by its path, and the reading of applications' code names the
+/// folder an application keeps outside its bundle by its path. Each is tied to the others by the
+/// name it is matched by: a keg to the formula by the formula's name, the last part of Homebrew's
+/// name for it, and a folder of code to the application by its identifier or its folder's name,
+/// as that reading matches them (`integrity::app_names`). Ids that share such a name are one
+/// program, followed name by name.
+fn kin(conn: &Connection, this: &str, id: &str) -> rusqlite::Result<BTreeSet<String>> {
+    let programs = programs(conn, this)?;
+    let formula = format!("component:{this}/brew/");
+    let app = format!("component:{this}/macos-app/");
+    let files = format!("file:{this}/");
+    // The names each id is matched by: every program, and every folder of applications' code.
+    let mut names: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (pid, p) in &programs {
+        let of = names.entry(pid.clone()).or_default();
+        if let Some(full) = pid.strip_prefix(&formula) {
+            of.push(format!(
+                "formula {}",
+                full.rsplit('/').next().unwrap_or(full)
+            ));
+        } else if pid.starts_with(&app) {
+            for at in p.at.iter().chain(&p.was_at) {
+                of.extend(
+                    integrity::app_names(pid, at)
+                        .into_iter()
+                        .map(|n| format!("application {n}")),
+                );
+            }
+        } else if let Some(n) = pid.strip_prefix(&files).and_then(integrity::keg_formula) {
+            of.push(format!("formula {n}"));
+        }
+    }
+    let mut q = conn.prepare(
+        "SELECT DISTINCT subject FROM assertion
+         WHERE layer IN ('live', 'retracted') AND reader = ?1 AND scope = ?2 AND kind = ?3",
+    )?;
+    let kept = q.query_map([integrity::READER, this, integrity::APP_SUPPORT], |r| {
+        r.get::<_, String>(0)
+    })?;
+    for folder in kept {
+        let folder = folder?;
+        if let Some(n) = folder
+            .strip_prefix(&files)
+            .and_then(integrity::app_support_name)
+        {
+            names
+                .entry(folder)
+                .or_default()
+                .push(format!("application {n}"));
+        }
+    }
+    let mut one: BTreeSet<String> = BTreeSet::from([id.to_string()]);
+    let mut next = vec![id.to_string()];
+    while let Some(at) = next.pop() {
+        let Some(mine) = names.get(&at) else { continue };
+        for (other, theirs) in &names {
+            if !one.contains(other) && theirs.iter().any(|n| mine.contains(n)) {
+                one.insert(other.clone());
+                next.push(other.clone());
+            }
+        }
+    }
+    Ok(one)
 }
 
 /// A program as the readings that find programs left it.

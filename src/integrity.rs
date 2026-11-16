@@ -316,13 +316,8 @@ fn app_support(roots: &Roots, machine: &str, bundles: &Kind) -> Kind {
             continue;
         }
         let version = fact("has_version").cloned();
-        let identifier = t.subject.rsplit_once("/macos-app/").map_or("", |(_, n)| n);
-        let folder = t.shown.rsplit('/').next().unwrap_or_default();
-        let stem = folder.strip_suffix(".app").unwrap_or(folder);
-        for name in [identifier, stem] {
-            names
-                .entry(name.to_lowercase())
-                .or_insert_with(|| version.clone());
+        for name in app_names(&t.subject, &t.shown) {
+            names.entry(name).or_insert_with(|| version.clone());
         }
     }
     // An application that could not be read is not matched: its folder must not look gone.
@@ -333,15 +328,15 @@ fn app_support(roots: &Roots, machine: &str, bundles: &Kind) -> Kind {
                 .to_string(),
         ));
     }
-    let base = roots.home.join("Library/Application Support");
-    if !reachable(&base, "Library/Application Support", roots, &mut kind) {
+    let base = roots.home.join(APP_SUPPORT_PLACE);
+    if !reachable(&base, APP_SUPPORT_PLACE, roots, &mut kind) {
         return kind;
     }
     let entries = match list(&base) {
         None => return kind,
         Some(Err(e)) => {
             kind.failed
-                .push(("Library/Application Support".to_string(), e.to_string()));
+                .push((APP_SUPPORT_PLACE.to_string(), e.to_string()));
             return kind;
         }
         Some(Ok(entries)) => entries,
@@ -358,7 +353,7 @@ fn app_support(roots: &Roots, machine: &str, bundles: &Kind) -> Kind {
         if !real_folder(&path) || own.as_ref() == Some(&same_place(&path)) {
             continue;
         }
-        let shown = format!("Library/Application Support/{text}");
+        let shown = format!("{APP_SUPPORT_PLACE}/{text}");
         matched += 1;
         let (mut records, mut count) = (Vec::new(), 0);
         match walk_code(&path, b"", 0, &mut records, &mut count) {
@@ -544,6 +539,38 @@ pub fn reads(rel: &str) -> bool {
                 .iter()
                 .any(|under| crate::known::within(rel, &format!("/{p}/{under}")))
         })
+}
+
+/// Where applications keep code outside their bundles, under the home folder.
+const APP_SUPPORT_PLACE: &str = "Library/Application Support";
+
+/// The names an application is matched by with the folder of code it keeps outside its bundle,
+/// lowercased: its bundle identifier, the last part of its id `subject`, and its folder's name
+/// without `.app`, the last part of where it is installed, `shown`.
+pub fn app_names(subject: &str, shown: &str) -> [String; 2] {
+    let identifier = subject.rsplit_once("/macos-app/").map_or("", |(_, n)| n);
+    let folder = shown.rsplit('/').next().unwrap_or_default();
+    let stem = folder.strip_suffix(".app").unwrap_or(folder);
+    [identifier.to_lowercase(), stem.to_lowercase()]
+}
+
+/// The name of the application a folder of code kept outside a bundle is matched by, lowercased,
+/// from the folder's path as ids name it (`app_support`); `None` for any other path.
+pub fn app_support_name(rel: &str) -> Option<String> {
+    rel.strip_prefix(APP_SUPPORT_PLACE)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .map(str::to_lowercase)
+}
+
+/// The formula a keg is of, from the keg's path as ids name it: `<name>` of
+/// `/<prefix>/Cellar/<name>/<version>` under one of Homebrew's prefixes; `None` for any other
+/// path. Homebrew names a formula's kegs by the last part of its name, whatever its tap.
+pub fn keg_formula(rel: &str) -> Option<&str> {
+    PREFIXES.iter().find_map(|p| {
+        rel.strip_prefix(&format!("/{p}/{CELLAR}/"))
+            .and_then(|rest| rest.split_once('/'))
+            .map(|(name, _)| name)
+    })
 }
 
 /// The bundles of both places, with the places that could not be listed.

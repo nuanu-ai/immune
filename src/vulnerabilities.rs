@@ -1075,6 +1075,8 @@ pub struct Totals {
     /// names it.
     pub packages_unknown: usize,
     pub packages_by_reason: Vec<(&'static str, usize)>,
+    /// Those packages, as checkout, ecosystem and name, each with that first reason, in order.
+    pub unknown_packages: Vec<(String, String, String, &'static str)>,
     /// Informational advisories held, which this version does not answer.
     pub informational: usize,
     /// Whether matching ever ran on this store.
@@ -1257,6 +1259,11 @@ pub fn totals(conn: &Connection, now: i64) -> rusqlite::Result<Totals> {
         .map(|(i, code)| (*code, first.values().filter(|r| **r == i).count()))
         .filter(|(_, n)| *n > 0)
         .collect();
+    // Every reason an answer is written with is one of `REASONS`.
+    t.unknown_packages = first
+        .into_iter()
+        .map(|((c, e, p), r)| (c, e, p, REASONS.get(r).copied().unwrap_or_default()))
+        .collect();
     t.informational = conn.query_row(
         "SELECT COUNT(*) FROM advisory
          WHERE kind = 'informational' AND withdrawn IS NULL AND gone_at IS NULL",
@@ -1348,13 +1355,17 @@ pub fn at_shown(at: &str) -> String {
 pub fn totals_message(
     conn: &Connection,
     now: i64,
-) -> rusqlite::Result<Option<crate::contract::v1::VulnerabilityTotals>> {
-    use crate::contract::v1;
+) -> rusqlite::Result<Option<v1::VulnerabilityTotals>> {
     // Matching runs in every check that finishes.
     if crate::status::latest_finished(conn)?.is_none() {
         return Ok(None);
     }
     let t = totals(conn, now)?;
+    totals_of(conn, now, &t).map(Some)
+}
+
+/// The totals `t` as the contract gives them.
+fn totals_of(conn: &Connection, now: i64, t: &Totals) -> rusqlite::Result<v1::VulnerabilityTotals> {
     let n = |x: usize| x as u64;
     let by = |list: &[(&'static str, usize)]| -> Vec<v1::Count> {
         list.iter()
@@ -1364,7 +1375,7 @@ pub fn totals_message(
             })
             .collect()
     };
-    Ok(Some(v1::VulnerabilityTotals {
+    Ok(v1::VulnerabilityTotals {
         affected: n(t.affected),
         unknown: n(t.unknown),
         not_affected_known: n(t.not_affected),
@@ -1390,7 +1401,7 @@ pub fn totals_message(
             })
             .collect(),
         informational_records: n(t.informational),
-    }))
+    })
 }
 
 /// Why the totals and the "affects" answers are absent from a store that has them not.
@@ -1474,8 +1485,8 @@ pub fn list(conn: Option<&Connection>, now: i64) -> rusqlite::Result<v1::Vulnera
     let all = affecting(conn)?;
     let listed = crate::threats::last_good(conn).unwrap_or(None).is_some();
     out.store_id = Some(crate::store::id(conn)?);
-    out.totals = totals_message(conn, now)?;
-    if out.totals.is_none() {
+    // Matching runs in every check that finishes.
+    if crate::status::latest_finished(conn)?.is_none() {
         for section in ["totals", "affected"] {
             out.not_computed.push(v1::NotComputed {
                 section: section.to_string(),
@@ -1484,6 +1495,24 @@ pub fn list(conn: Option<&Connection>, now: i64) -> rusqlite::Result<v1::Vulnera
         }
         return Ok(out);
     }
+    let t = totals(conn, now)?;
+    out.totals = Some(totals_of(conn, now, &t)?);
+    out.unknown = Some(v1::UnknownPackages {
+        items: t
+            .unknown_packages
+            .iter()
+            .take(SHOWN)
+            .map(
+                |(checkout, ecosystem, package, reason)| v1::UnknownPackage {
+                    project_text: whole(&crate::findings::place(checkout, this.as_ref())),
+                    ecosystem: ecosystem.clone(),
+                    package_text: whole(package),
+                    reason: reason.to_string(),
+                },
+            )
+            .collect(),
+        total: t.unknown_packages.len() as u64,
+    });
     out.affected = Some(v1::AffectedPackages {
         items: all
             .iter()
@@ -1632,21 +1661,13 @@ pub fn one(conn: Option<&Connection>, id: &str, now: i64) -> rusqlite::Result<v1
         a
     };
     if records.is_empty() {
-        let (known, said) = if in_catalogue {
-            (
-                v1::RecordData::NoRecord,
-                "The catalogue of exploited vulnerabilities holds this id, and no record of the npm or crates.io data names it: it does not affect any project's lockfiles, with no signs. The data does not claim to name every vulnerability a package may hold.",
-            )
-        } else {
-            (
-                v1::RecordData::UnknownId,
-                "The data held here has no record with this id or alias, so nothing can be said about it; this is not an answer that it does not affect you.",
-            )
-        };
-        out.data = Some(known as i32);
-        out.said = Some(said.to_string());
         if in_catalogue {
+            out.data = Some(v1::RecordData::NoRecord as i32);
             out.answers = places.iter().map(|p| derived(p, "no_signs")).collect();
+            out.said = Some(no_record_said(&out.answers));
+        } else {
+            out.data = Some(v1::RecordData::UnknownId as i32);
+            out.said = Some("The data held here has no record with this id or alias, so nothing can be said about it; this is not an answer that it does not affect you.".to_string());
         }
         return Ok(out);
     }
@@ -1773,6 +1794,58 @@ pub fn one(conn: Option<&Connection>, id: &str, now: i64) -> rusqlite::Result<v1
         out.records.push(v);
     }
     Ok(out)
+}
+
+/// What an id on the catalogue that no record names means for the projects, from `answers`, one
+/// per project and ecosystem. The projects for which it cannot be told come first, counted with
+/// why, so that the sentence is never calmer than any answer under it.
+fn no_record_said(answers: &[v1::PlaceAnswer]) -> String {
+    const HELD: &str = "The catalogue of exploited vulnerabilities holds this id, and no record of the npm or crates.io data names it";
+    const NOT_EVERY: &str =
+        "The data does not claim to name every vulnerability a package may hold.";
+    let not_affected = crate::contract::value_of::<v1::PackageAnswer>("not_affected");
+    let projects: BTreeSet<&str> = answers.iter().map(|a| a.project_text.as_str()).collect();
+    // Each project for which it cannot be told, under the first reason of its answers.
+    let mut unknown: BTreeMap<&str, &str> = BTreeMap::new();
+    for a in answers.iter().filter(|a| a.answer != Some(not_affected)) {
+        unknown
+            .entry(a.project_text.as_str())
+            .or_insert(a.reason.as_deref().unwrap_or_default());
+    }
+    if unknown.is_empty() {
+        return format!(
+            "{HELD}: it does not affect any project's lockfiles, with no signs. {NOT_EVERY}"
+        );
+    }
+    let projects_said = |n: usize| crate::things(n as i64, "project", "projects");
+    // A place's answer is derived from its lockfiles and its data: these are its only reasons.
+    let mut why: Vec<String> = Vec::new();
+    for (reason, said) in [
+        (PLACE_NOT_READ, "whose lockfiles were not all read"),
+        (
+            FEED_NOT_READ,
+            "whose vulnerability data was never read or is not current",
+        ),
+    ] {
+        let n = unknown.values().filter(|r| **r == reason).count();
+        if n > 0 {
+            why.push(format!("{} {said}", projects_said(n)));
+        }
+    }
+    let rest = projects.len() - unknown.len();
+    let mut said = format!(
+        "{HELD}. For {} of {} it cannot be told whether it affects their lockfiles: {}.",
+        unknown.len(),
+        projects_said(projects.len()),
+        why.join(", ")
+    );
+    if rest > 0 {
+        said.push_str(&format!(
+            " It does not affect the lockfiles of the other {}, with no signs.",
+            projects_said(rest)
+        ));
+    }
+    format!("{said} {NOT_EVERY}")
 }
 
 // ---- Findings: what they say of the thing they are about. ----

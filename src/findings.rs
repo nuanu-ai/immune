@@ -960,6 +960,9 @@ pub struct Found {
     pub detail: Option<Value>,
     /// What it carries of the response layer's verdicts (`verdict::attach`).
     pub verdicts: Option<crate::verdict::Summary>,
+    /// Its latest occurrence is a place that could not be read, and nothing it rests on is a
+    /// change that was seen: its words say so (`not_read_words`).
+    pub unread_only: bool,
 }
 
 /// The state of a finding at `now`. An `expected` mark hides the finding until it ends; at
@@ -1001,7 +1004,10 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Vec<Found>> {
                  ORDER BY j.seq DESC LIMIT 1),
                 via,
                 EXISTS (SELECT 1 FROM finding g WHERE g.rule = f.rule AND g.about = f.about
-                          AND g.occurrence > f.occurrence)
+                          AND g.occurrence > f.occurrence),
+                f.change = 'not read'
+                  AND NOT EXISTS (SELECT 1 FROM finding_basis b JOIN journal j ON j.seq = b.journal
+                                  WHERE b.finding = f.id AND j.entry != 'not_read')
          FROM finding f ORDER BY last_seen_at DESC, id",
     )?
     .query_map([], |r| {
@@ -1036,6 +1042,7 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Vec<Found>> {
             in_force: false,
             detail: None,
             verdicts: None,
+            unread_only: r.get::<_, Option<bool>>(16)?.unwrap_or(false),
         })
     })?
     .map(|f| {
@@ -1867,6 +1874,32 @@ fn kept_item(f: &Found) -> Item {
     }
 }
 
+/// What a finding says when the place it is about could not be read and no change of it was
+/// seen: a rule's own words tell what changed, and here nothing is known to have changed. It
+/// stays a finding at the rule's levels, since a place that cannot be read can hide a change.
+/// `kind` is the rule's kind of place. Made once for each kind and kept while the program runs.
+pub fn not_read_words(kind: &'static str) -> Words {
+    type Made = std::collections::BTreeMap<&'static str, &'static str>;
+    static MADE: std::sync::Mutex<Made> = std::sync::Mutex::new(Made::new());
+    let mut made = MADE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let title = *made.entry(kind).or_insert_with(|| {
+        let title = format!(
+            "At the last check Immune could not read a watched {kind}, so it is not known whether it was added, changed or removed."
+        );
+        &*Box::leak(title.into_boxed_str())
+    });
+    Words {
+        title,
+        meaning: NOT_READ_MEANING,
+        advice: NOT_READ_ADVICE,
+    }
+}
+
+const NOT_READ_MEANING: &str = "Immune read it at an earlier check and cannot read it now. This can happen when its permissions or owner change, for example in an update of macOS; something that wants to hide a change can also make a file unreadable.";
+const NOT_READ_ADVICE: &str = "The reason is named here. Find out what made the file unreadable, and look at it yourself until Immune can read it again.";
+
 /// A finding as an item, whatever its rule: one this build does not have is a `kept_item`.
 pub fn item(f: &Found) -> Item {
     if let Some(i) = published(&f.rule).and_then(|l| published_item(f, l)) {
@@ -1889,7 +1922,11 @@ pub fn item(f: &Found) -> Item {
         change: f.change.clone(),
         first_seen: Some(f.first_seen.0),
         last_seen: Some(f.last_seen.0),
-        words: r.words,
+        words: if f.unread_only {
+            not_read_words(r.kind)
+        } else {
+            r.words
+        },
         value: f.became.clone(),
         place: Some(f.place.clone()),
         thing: f.thing.clone(),
@@ -2090,6 +2127,7 @@ mod tests {
             thing: None,
             detail: None,
             verdicts: None,
+            unread_only: false,
         };
         let silent = super::item(&found(
             "elastic-behaviour:2ed9c6bf-025e-4edf-a9ec-1493d0bb4f81",
@@ -2135,6 +2173,7 @@ mod tests {
             thing: None,
             detail: None,
             verdicts: None,
+            unread_only: false,
         };
         let mut items = vec![
             super::item(&found("a-high-unsure", "lockfiles.malicious-name-removed")),
@@ -2177,6 +2216,7 @@ mod tests {
                 levels: Some((3, 2)),
                 ..Default::default()
             }),
+            unread_only: false,
         };
         let item = |rule: &str, about: &str| super::item(&found(rule, about));
         let padding = "sigma:95361ce5-c891-4b0a-87ca-e24607884a96";

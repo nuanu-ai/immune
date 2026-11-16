@@ -2468,6 +2468,84 @@ fn a_project_file_read_before_that_cannot_be_read_now_is_a_finding_with_why_and_
 }
 
 #[test]
+fn a_place_that_could_not_be_read_is_never_told_as_a_change_that_was_seen() {
+    // A watched place read before that cannot be read now stays a finding at its rule's level,
+    // since it can hide a change. Nothing was seen to change, so its words say that it could
+    // not be read, never that it was added, changed or removed: for a watched file and for a
+    // project's file alike, in the list and in the finding. A finding that saw a change before
+    // it lost sight of the place keeps the rule's words, since that change was seen.
+    let e = Estate::new("unread-words");
+    let zshrc = e.home().join(".zshrc");
+    put(&zshrc, "export A=1\n");
+    let shop = e.checkout("dev/shop");
+    package(&shop, "\"postinstall\": \"node setup.js\"");
+    let file = shop.join("package.json");
+    e.run();
+    let shut = |paths: &[&Path]| {
+        use std::os::unix::fs::PermissionsExt;
+        for p in paths {
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        e.run();
+        for p in paths {
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+    };
+    // The open finding of a rule: its words in the list and whole, and its severity.
+    let said = |rule: &str| -> (String, String, String) {
+        let listed = e.contract(&["findings"]);
+        let item = listed["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["finding"]["rule"] == rule && f["finding"]["state"] == "open")
+            .unwrap_or_else(|| panic!("no open {rule}: {listed:#}"))
+            .clone();
+        let one = e.contract(&["finding", item["finding"]["id"].as_str().unwrap()]);
+        assert_eq!(item["title"], one["title"], "{item:#}\n{one:#}");
+        let s = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
+        (
+            s(&one["title"]),
+            s(&one["meaning"]),
+            s(&one["finding"]["severity"]),
+        )
+    };
+    let level = |rule: &str| {
+        let rules = e.contract(&["rules"]);
+        let found = rules["catalogue"]["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == rule)
+            .unwrap_or_else(|| panic!("no rule {rule}"))
+            .clone();
+        let s = |k: &str| found[k].as_str().unwrap().to_string();
+        (s("severity"), s("title"))
+    };
+    shut(&[&zshrc, &file]);
+    for rule in ["watched.shell-profile", "autorun.package-install"] {
+        let (title, meaning, severity) = said(rule);
+        assert!(
+            title.contains("could not read") && title.contains("not known whether"),
+            "{rule}: {title}"
+        );
+        let (rule_severity, rule_title) = level(rule);
+        assert_ne!(title, rule_title);
+        assert!(meaning.contains("cannot read it now"), "{meaning}");
+        assert_eq!(severity, rule_severity, "{rule}");
+    }
+    // A change seen first, then the place lost sight of, in one open finding.
+    e.seen();
+    put(&zshrc, "export A=2\n");
+    e.run();
+    shut(&[&zshrc]);
+    assert_eq!(
+        said("watched.shell-profile").0,
+        "A file your terminal runs every time it starts was added, changed or removed."
+    );
+}
+
+#[test]
 fn what_is_removed_from_a_place_read_in_full_is_gone_while_another_place_of_its_kind_cannot_be_read()
  {
     // The reading of a kind is partial when one of its places cannot be read. What is gone
