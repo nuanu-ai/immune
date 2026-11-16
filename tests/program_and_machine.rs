@@ -698,6 +698,13 @@ fn an_application_that_went_while_its_code_folder_stayed_is_held_and_a_change_th
             let code = code_reading(&k);
             assert_eq!(code.completeness(), v1::Completeness::Full, "{how} {what}");
             assert!(
+                code.reason_text
+                    .as_deref()
+                    .is_some_and(|r| r.starts_with("0 folders matched an application")),
+                "{how} {what}: {:?}",
+                code.reason_text
+            );
+            assert!(
                 code.reason_text.as_deref().is_some_and(|r| r.contains(
                     "though no application read now matches them: Library/Application Support/Editor"
                 )),
@@ -798,21 +805,17 @@ fn rules_of(k: &v1::Known) -> Vec<&str> {
 }
 
 /// The promise against false calm, for a folder of code that missed a reading: it is opened
-/// again once it is back, compared with what it was when it went, and its application is never
-/// answered `gone` while it is on disk. A folder renamed aside for one run and back is held, and
-/// unchanged, so it raises nothing; a change to it after raises the finding. A folder removed
-/// with its application and made again is held, and is not the code it was, so it raises the
-/// finding; so does a change to it after.
+/// again once it is back, read as for the first time, and compared from then on, so its
+/// application is never answered `gone` while it is on disk and a change to it after its return
+/// raises the finding. A folder renamed aside for one run and back, and one removed with its
+/// application and made again, are each held on their return and raise nothing then.
 #[test]
-fn a_code_folder_that_comes_back_is_held_and_compared_with_what_it_was_when_it_went() {
+fn a_code_folder_that_comes_back_is_held_and_a_change_after_its_return_is_found() {
     for how in ["renamed aside", "made again"] {
         let e = Estate::new("program-folder-back");
         e.app("Editor.app", "org.example.editor", "3.0");
         let main = "home/Library/Application Support/Editor/main.js";
         e.put(main, "start();\n");
-        e.run();
-        // Updated once: the folder is compared at the version it went with, not an earlier one.
-        e.app("Editor.app", "org.example.editor", "3.1");
         e.run();
         let folder = e.home().join("Library/Application Support/Editor");
         let aside = e.home().join("Library/Application Support/Editor-aside");
@@ -833,12 +836,7 @@ fn a_code_folder_that_comes_back_is_held_and_compared_with_what_it_was_when_it_w
         e.run();
         let back = e.program(EDITOR);
         assert_eq!(back.presence(), v1::Presence::Held, "{how}");
-        let expected: &[&str] = if how == "renamed aside" {
-            &[]
-        } else {
-            &["integrity.app-code-outside"]
-        };
-        assert_eq!(rules_of(&back), expected, "{how}");
+        assert!(back.findings.is_empty(), "{how}: {:?}", back.findings);
         append(&e, main, "steal();\n");
         e.run();
         for what in EDITOR_ASKED {
@@ -850,6 +848,127 @@ fn a_code_folder_that_comes_back_is_held_and_compared_with_what_it_was_when_it_w
                 v1::Completeness::Full,
                 "{how} {what}"
             );
+        }
+    }
+}
+
+/// An application that deletes its folder of code and writes it again unchanged in content, as
+/// some do at every quit and start, raises nothing however many times it does so.
+#[test]
+fn a_code_folder_deleted_and_written_again_unchanged_raises_nothing() {
+    let e = Estate::new("program-folder-cycles");
+    e.app("Editor.app", "org.example.editor", "3.0");
+    let main = "home/Library/Application Support/Editor/main.js";
+    e.put(main, "start();\n");
+    e.run();
+    for cycle in 0..3 {
+        std::fs::remove_dir_all(e.home().join("Library/Application Support/Editor")).unwrap();
+        e.run();
+        e.put(main, "start();\n");
+        e.run();
+        let k = e.program(EDITOR);
+        assert_eq!(k.presence(), v1::Presence::Held, "{cycle}");
+        assert!(k.findings.is_empty(), "{cycle}: {:?}", k.findings);
+    }
+}
+
+/// The promise against false calm, for a store that holds one folder under two spellings of its
+/// name, as a build that named folders by their spelling on disk could leave: the spelling in
+/// force is kept, and with none in force the one retracted last, so the folder on disk is never
+/// retracted to be added again under a stale spelling, and a change to it is found.
+#[test]
+fn of_two_stored_spellings_of_a_folder_the_one_in_force_and_then_the_one_retracted_last_is_kept() {
+    let stale = "file:machine:mac/Library/Application Support/editor";
+    // A stale spelling, retracted at a time given here, copied from what the store holds of the
+    // folder now.
+    let copy = |e: &Estate, layer: &str, retracted_at: i64| {
+        let db = rusqlite::Connection::open(e.store()).unwrap();
+        db.execute(
+            "INSERT OR IGNORE INTO entity (id, type) VALUES (?1, 'file')",
+            [stale],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO assertion (layer, subject, predicate, object, reader, scope, kind,
+                                    source_ref, basis, observed_at, run_id, retracted_at,
+                                    retracted_by)
+             SELECT 'retracted', ?1, predicate,
+                    CASE predicate WHEN 'has_version' THEN '0.9' ELSE object END,
+                    reader, scope, kind, source_ref, basis, observed_at, run_id, ?3, run_id
+             FROM assertion WHERE subject = ?2 AND layer = ?4",
+            rusqlite::params![stale, EDITOR_FOLDER, retracted_at, layer],
+        )
+        .unwrap();
+    };
+    for case in ["one in force", "both retracted"] {
+        let e = Estate::new("program-folder-spellings");
+        e.app("Editor.app", "org.example.editor", "3.0");
+        let main = "home/Library/Application Support/Editor/main.js";
+        e.put(main, "start();\n");
+        e.run();
+        if case == "one in force" {
+            // Retracted later than anything in force was written, and with the id that sorts
+            // after the one in force.
+            copy(&e, "live", i64::from(i32::MAX));
+            append(&e, main, "steal();\n");
+            e.run();
+            assert_eq!(
+                rules_of(&e.program(EDITOR)),
+                ["integrity.app-code-outside"],
+                "{case}"
+            );
+        } else {
+            // Retracted before the spelling on disk was last retracted, and after one of its
+            // facts was: the last retraction counts, not the first.
+            copy(&e, "live", 500);
+            std::fs::remove_dir_all(e.home().join("Library/Application Support/Editor")).unwrap();
+            e.run();
+            rusqlite::Connection::open(e.store())
+                .unwrap()
+                .execute(
+                    "UPDATE assertion SET retracted_at = 100
+                     WHERE subject = ?1 AND predicate = 'located_on'",
+                    [EDITOR_FOLDER],
+                )
+                .unwrap();
+            e.put(main, "start();\n");
+            e.run();
+        }
+        let k = e.program(EDITOR);
+        assert!(has_fact(&k, EDITOR_FOLDER, "has_digest"), "{case}");
+        assert!(!has_fact(&k, stale, "has_digest"), "{case}");
+    }
+}
+
+/// A folder of code with no code left in it once its application was removed is let go, as an
+/// uninstaller that leaves a settings file behind leaves it: no finding, and the application is
+/// `gone`. While the application is installed, code removed from its folder is a change, as
+/// before.
+#[test]
+fn a_code_folder_with_no_code_left_after_its_application_went_is_let_go() {
+    for removed in [true, false] {
+        let e = Estate::new("program-folder-no-code");
+        e.app("Editor.app", "org.example.editor", "3.0");
+        let main = "home/Library/Application Support/Editor/main.js";
+        e.put(main, "start();\n");
+        e.put(
+            "home/Library/Application Support/Editor/settings.json",
+            "{}\n",
+        );
+        e.run();
+        if removed {
+            std::fs::remove_dir_all(e.0.join("system/Applications/Editor.app")).unwrap();
+        }
+        std::fs::remove_file(e.0.join(main)).unwrap();
+        e.run();
+        let k = e.program(EDITOR);
+        assert_eq!(code_reading(&k).completeness(), v1::Completeness::Full);
+        if removed {
+            assert_eq!(k.presence(), v1::Presence::Gone);
+            assert!(k.findings.is_empty(), "{:?}", k.findings);
+        } else {
+            assert_eq!(k.presence(), v1::Presence::Held);
+            assert_eq!(rules_of(&k), ["integrity.app-code-outside"]);
         }
     }
 }

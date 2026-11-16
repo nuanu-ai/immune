@@ -314,9 +314,11 @@ fn walk_code(
 /// full, and the lifecycle would retract it as looked for and not found: code that is still on
 /// disk, and may still be run, would read as gone, and a change to it as nothing. Such a folder
 /// keeps the version its application last had, since nothing says it has another, and the
-/// reading's note names it. So a folder is retracted only while it is not there. One that comes
-/// back is compared with the digest it had when it went (`changed_in_place`). Folders are
-/// matched by the key a Mac's volumes compare names by (`spelling::key`).
+/// reading's note names it. So a folder is retracted only while it is not there, or while no
+/// application read now matches it and it holds no code file this reading compares: what an
+/// uninstaller leaves, such as a settings file, is not code to hold. One that comes back is read
+/// as for the first time, and compared from then on. Folders are matched by the key a Mac's
+/// volumes compare names by (`spelling::key`).
 fn app_support(
     roots: &Roots,
     machine: &str,
@@ -389,16 +391,19 @@ fn app_support(
         // same folder, so a change to it is a change and not one folder gone and another new.
         let spelled = before.map_or_else(|| text.clone(), |h| h.name.clone());
         let shown = format!("{APP_SUPPORT_PLACE}/{spelled}");
-        if unmatched {
-            kept.push(shown.clone());
-        } else {
+        if !unmatched {
             matched += 1;
         }
         let (mut records, mut count) = (Vec::new(), 0);
         match walk_code(&path, b"", 0, &mut records, &mut count) {
             Err(e) => kind.failed.push((shown, e.to_string())),
             Ok(Walked::Capped(cap)) => kind.capped.push((shown, cap)),
+            // No application read now matches it and no code is left in it: nothing to hold.
+            Ok(Walked::Done) if unmatched && count == 0 => {}
             Ok(Walked::Done) => {
+                if unmatched {
+                    kept.push(shown.clone());
+                }
                 files += count;
                 let mut facts = vec![("located_on", machine.to_string())];
                 facts.extend(versions.into_iter().map(|v| ("has_version", v)));
@@ -435,23 +440,26 @@ const KEPT: &str = "still compared, since an earlier reading held them and they 
 struct Held {
     /// Its name as the store spells it in its id.
     name: String,
-    /// The versions it was held at: those in force, or for a folder the store no longer holds,
-    /// those retracted with it.
+    /// The versions in force for it; none for a folder the store no longer holds.
     versions: Vec<String>,
 }
 
 /// Every folder of code the store holds or held on this Mac, by the name it is matched by
-/// (`app_support_name`). Two spellings of one name, which only a volume that tells case or
-/// Unicode form apart could give, are one: the one whose id sorts last. A folder the store no longer holds is opened again once it is back:
+/// (`app_support_name`). A folder the store no longer holds is opened again once it is back:
 /// otherwise a folder that missed one reading, renamed aside for a run or removed and made
 /// again, would never be compared again while it is on disk.
+///
+/// The store can hold one name under two spellings, in case or Unicode form: a build that named
+/// a folder by the spelling on disk wrote one for each, and a volume that tells them apart gives
+/// two. The one in force is taken, and with none in force the one retracted last, so that a
+/// folder on disk is never retracted to be added again under a stale spelling.
 fn held_folders(conn: &Connection, machine: &str) -> rusqlite::Result<BTreeMap<String, Held>> {
     let mut stmt = conn.prepare(
-        "SELECT subject, predicate, object, layer = 'live', retracted_by FROM assertion
+        "SELECT subject, predicate, object, layer = 'live', retracted_at FROM assertion
          WHERE layer IN ('live', 'retracted') AND reader = ?1 AND scope = ?2 AND kind = ?3
          ORDER BY id",
     )?;
-    type Row = (String, String, String, bool, Option<String>);
+    type Row = (String, String, String, bool, Option<i64>);
     let mut by_subject: BTreeMap<String, Vec<Row>> = BTreeMap::new();
     for row in stmt.query_map(params![READER, machine, APP_SUPPORT], |r| {
         Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
@@ -460,27 +468,26 @@ fn held_folders(conn: &Connection, machine: &str) -> rusqlite::Result<BTreeMap<S
         by_subject.entry(row.0.clone()).or_default().push(row);
     }
     let prefix = format!("file:{machine}/");
-    let mut out: BTreeMap<String, Held> = BTreeMap::new();
-    for (subject, rows) in by_subject {
+    // Each spelling, with whether it is in force and when it was last retracted, in the order
+    // in which a later one is preferred.
+    let mut spellings = Vec::new();
+    for (subject, rows) in &by_subject {
         let Some(name) = subject.strip_prefix(&prefix).and_then(app_support_folder) else {
             continue;
         };
         let live = rows.iter().any(|r| r.3);
-        // What went with the folder when it was last retracted: the run that retracted its
-        // latest assertion.
-        let gone_by = rows.last().and_then(|r| r.4.clone());
+        let retracted = rows.iter().filter_map(|r| r.4).max();
         let versions = rows
             .iter()
-            .filter(|r| r.1 == "has_version" && if live { r.3 } else { r.4 == gone_by })
+            .filter(|r| r.1 == "has_version" && r.3)
             .map(|r| r.2.clone())
             .collect();
-        out.insert(
-            crate::spelling::key(name),
-            Held {
-                name: name.to_string(),
-                versions,
-            },
-        );
+        spellings.push((live, retracted, name.to_string(), versions));
+    }
+    spellings.sort_by_key(|(live, retracted, _, _)| (*live, *retracted));
+    let mut out: BTreeMap<String, Held> = BTreeMap::new();
+    for (_, _, name, versions) in spellings {
+        out.insert(crate::spelling::key(&name), Held { name, versions });
     }
     Ok(out)
 }
@@ -1036,41 +1043,18 @@ pub type InPlace = (String, String, String, Option<String>);
 /// version stayed. Each is a `changed` event of this reader on `has_seal` or `signed_by` of a
 /// bundle, or on `has_digest` of a keg, a global package or a folder of code, whose subject has
 /// no `has_version` event in the same run. A first reading has no `changed` events, so it adds
-/// nothing here. A folder of code that comes back after it was retracted is `added`: it is one
-/// when its digest is not the one it had when it went and its versions are the ones it went with,
-/// so code changed while it was away, or while it was renamed aside, is not taken for new.
-/// Returns kind, subject, predicate and new value, in the order of the journal.
+/// nothing here, and neither does a folder of code read again after it was retracted: it is read
+/// as for the first time. Returns kind, subject, predicate and new value, in the order of the
+/// journal.
 pub fn changed_in_place(conn: &Connection, run_id: &str) -> rusqlite::Result<Vec<InPlace>> {
     conn.prepare(
         "SELECT j.kind, j.subject, j.predicate, j.new_value FROM journal j
-         WHERE j.run_id = ?1 AND j.reader = ?2
-           AND ((j.entry = 'changed'
-                 AND ((j.kind = ?3 AND j.predicate IN ('has_seal', 'signed_by'))
-                      OR (j.kind IN (?4, ?5, ?6) AND j.predicate = 'has_digest'))
-                 AND NOT EXISTS (SELECT 1 FROM journal v
-                                 WHERE v.run_id = j.run_id AND v.reader = j.reader
-                                   AND v.subject = j.subject AND v.predicate = 'has_version'))
-                OR (j.entry = 'added' AND j.kind = ?6 AND j.predicate = 'has_digest'
-                    AND j.new_value != (SELECT r.object FROM assertion r
-                                        WHERE r.subject = j.subject AND r.reader = j.reader
-                                          AND r.kind = j.kind AND r.predicate = 'has_digest'
-                                          AND r.layer = 'retracted'
-                                        ORDER BY r.id DESC LIMIT 1)
-                    AND (SELECT v.new_value FROM journal v
-                         WHERE v.run_id = j.run_id AND v.reader = j.reader
-                           AND v.subject = j.subject AND v.predicate = 'has_version')
-                        IS (SELECT group_concat(object, ', ') FROM (
-                              SELECT DISTINCT r.object FROM assertion r
-                              WHERE r.subject = j.subject AND r.reader = j.reader
-                                AND r.kind = j.kind AND r.predicate = 'has_version'
-                                AND r.layer = 'retracted'
-                                AND r.retracted_by = (SELECT g.retracted_by FROM assertion g
-                                                      WHERE g.subject = j.subject
-                                                        AND g.reader = j.reader
-                                                        AND g.kind = j.kind
-                                                        AND g.layer = 'retracted'
-                                                      ORDER BY g.id DESC LIMIT 1)
-                              ORDER BY r.object))))
+         WHERE j.run_id = ?1 AND j.reader = ?2 AND j.entry = 'changed'
+           AND ((j.kind = ?3 AND j.predicate IN ('has_seal', 'signed_by'))
+                OR (j.kind IN (?4, ?5, ?6) AND j.predicate = 'has_digest'))
+           AND NOT EXISTS (SELECT 1 FROM journal v
+                           WHERE v.run_id = j.run_id AND v.reader = j.reader
+                             AND v.subject = j.subject AND v.predicate = 'has_version')
          ORDER BY j.seq",
     )?
     .query_map(
