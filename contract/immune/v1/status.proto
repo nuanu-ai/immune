@@ -98,7 +98,7 @@ message Status {
   // as in `Finding`: an answer to a finding listed here passes it as `--journal-seq`. Absent when
   // there is no store. Since 1.9.0.
   optional int64 journal_seq = 27;
-  // Whether the core's login job, the one `immune install` writes, has its property list in this
+  // Whether the core's login job, the one `immune on` writes, has its property list in this
   // account's `~/Library/LaunchAgents`, read from the file's presence alone: launchd is not asked,
   // so with no watcher on the store it reads as installed and not running. Absent when this store
   // is not the one the job watches, the default one, and when the place cannot be read.

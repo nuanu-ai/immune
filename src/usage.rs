@@ -274,14 +274,15 @@ pub const COMMANDS: &[Command] = &[
         note: "",
     },
     Command {
-        name: "install",
+        name: "on",
         purpose: "keeps Immune checking in the background",
         forms: &[&[
-            "immune install",
+            "immune on",
             "[--launchctl <path> --home <dir>]",
             "[--json | --proto]",
         ]],
-        about: "Registers the core as your login job ai.nuanu.immune.watch, which runs immune \
+        about: "Turn Immune on for your account: the background check starts and keeps \
+                running. Registers the core as your login job ai.nuanu.immune.watch, which runs immune \
                 watch --background, and says whether it started. A core only root can replace \
                 is run where it is; any other, such as a build, is copied to \
                 ~/Library/Application Support/ai.nuanu.immune/bin/immune and the job runs the \
@@ -290,15 +291,16 @@ pub const COMMANDS: &[Command] = &[
         note: "",
     },
     Command {
-        name: "uninstall",
+        name: "off",
         purpose: "stops that; keeps the store",
         forms: &[&[
-            "immune uninstall",
+            "immune off",
             "[--launchctl <path> --home <dir>]",
             "[--json | --proto]",
         ]],
-        about: "Stops the login job and removes it with the installed copy; a core the job \
-                ran where it is stays. Keeps the store and the event collector.",
+        about: "Turn Immune off for your account. The store, findings and answers are kept. \
+                Stops the login job and removes it with the copy of the core; a core run where \
+                it is stays. The event collector is kept too.",
         note: "",
     },
     Command {
@@ -461,8 +463,8 @@ const GROUPS: &[(&str, &[Entry])] = &[
     (
         "Setup",
         &[
-            ("immune install", "keeps Immune checking in the background"),
-            ("immune uninstall", "stops that; keeps the store"),
+            ("immune on", "keeps Immune checking in the background"),
+            ("immune off", "stops that; keeps the store"),
             ("immune run", "one full check now"),
             ("immune sample", "one sample of processes and connections"),
             (
@@ -486,7 +488,7 @@ pub fn help(screen: &Screen) -> String {
         None,
     ));
     out.extend(screen.marked(
-        "Start with `immune install`, then `immune status` and `immune findings`.",
+        "Start with `immune on`, then `immune status` and `immune findings`.",
         None,
     ));
     for (label, entries) in GROUPS {
@@ -1339,16 +1341,16 @@ mod tests {
                 "immune matches --limit 2",
             ),
             (
-                "install",
+                "on",
                 &["--store", "x"],
-                "immune install takes no --store: the job runs with the store in its usual place",
-                "immune install",
+                "immune on takes no --store: the job runs with the store in its usual place",
+                "immune on",
             ),
             (
-                "install",
+                "on",
                 &["--home", "/h"],
                 "--home and --launchctl are for tests and go only together",
-                "immune install --home /h --launchctl <path>",
+                "immune on --home /h --launchctl <path>",
             ),
             (
                 "verdict",
@@ -1423,6 +1425,23 @@ mod tests {
             &mut false,
         );
         assert!(matches!(parsed, Err(e) if e == "unknown command: frobnicate"));
+    }
+
+    /// `immune on` and `immune off` took the place of the earlier words, with no alias: those
+    /// get what any word that is not a command gets. Below the command line, so a test never
+    /// runs the real thing the day this broke.
+    #[test]
+    fn the_old_words_install_and_uninstall_are_not_commands() {
+        for word in ["install", "uninstall"] {
+            let parsed = crate::parse_args(
+                Some(word),
+                std::iter::empty(),
+                &mut crate::answer::Options::default(),
+                &mut false,
+            );
+            assert!(matches!(parsed, Err(e) if e == format!("unknown command: {word}")));
+            assert!(command_help(word, &Screen::pipe()).is_none());
+        }
     }
 
     #[test]
@@ -1626,7 +1645,7 @@ mod tests {
     #[test]
     fn the_help_on_a_terminal_marks_commands_and_labels_and_in_a_pipe_nothing() {
         let painted = help(&Screen::terminal(80, true));
-        assert!(painted.contains("\u{1b}[36mimmune install\u{1b}[0m"));
+        assert!(painted.contains("\u{1b}[36mimmune on\u{1b}[0m"));
         assert!(painted.contains("\u{1b}[1mAnswer a finding\u{1b}[0m"));
         assert!(!help(&Screen::pipe()).contains('\u{1b}'));
     }

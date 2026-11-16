@@ -859,8 +859,8 @@ fn default_text(s: &v1::Status, screen: &Screen, out: &mut Vec<String>) {
     // loaded again by the same command.
     if s.watching.is_none() && s.watcher_restarting_since_at.is_none() {
         next.push(match s.login_job_installed {
-            Some(true) => ("immune install", "loads the login job again"),
-            _ => ("immune install", "keeps watching between checks"),
+            Some(true) => ("immune on", "loads the login job again"),
+            _ => ("immune on", "keeps watching between checks"),
         });
     }
     if !whole || next.is_empty() {
@@ -3051,10 +3051,8 @@ mod tests {
             "  Watching      in part: authentication module and some program starts not watched in full; no watcher runs now: changes are seen at each check",
         );
         assert!(
-            visible(&text)
-                .lines()
-                .any(|l| l.starts_with("→ immune install ")
-                    && l.ends_with("   keeps watching between checks")),
+            visible(&text).lines().any(|l| l.starts_with("→ immune on ")
+                && l.ends_with("   keeps watching between checks")),
             "{text}"
         );
         // Watched in full with no watcher: the watcher clause alone.
@@ -3084,8 +3082,9 @@ mod tests {
             "  Watching      installed, not running: the login job is in place and no watcher runs now, so changes are seen at each check"
         );
         assert!(
-            text.lines().any(|l| l.starts_with("→ immune install ")
-                && l.ends_with("   loads the login job again")),
+            text.lines()
+                .any(|l| l.starts_with("→ immune on ")
+                    && l.ends_with("   loads the login job again")),
             "{text}"
         );
         let (not_installed, text) = watching_with(Some(false), None);
@@ -3099,7 +3098,7 @@ mod tests {
             restarting,
             "  Watching      the watcher is restarting on a new core"
         );
-        assert!(!text.contains("immune install"), "{text}");
+        assert!(!text.contains("immune on "), "{text}");
         // A live watcher on a Mac watched in full: one word, no command.
         s.watching = Some(v1::Watcher::default());
         if let Some(m) = s.this_mac.as_mut() {
@@ -3111,7 +3110,7 @@ mod tests {
             visible(&line(&text, "Watching")).trim_end(),
             "  Watching      live"
         );
-        assert!(!text.contains("immune install"), "{text}");
+        assert!(!text.contains("immune on "), "{text}");
         // The event level: its state, then what is wrong in yellow.
         let event = line(&text, "Event level");
         assert!(
@@ -3197,7 +3196,7 @@ mod tests {
                 .collect()
         };
         let findings_step = "→ immune findings   lists every one, most urgent first";
-        let install_step = "→ immune install   keeps watching between checks";
+        let install_step = "→ immune on   keeps watching between checks";
         let coverage_step = "→ immune status --coverage   what was read and what was not";
         // Something needs a look, no watcher runs, and coverage is not whole: all three, in order.
         let mut s = status_of("x");

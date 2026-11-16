@@ -1,32 +1,33 @@
-//! `immune install` and `immune uninstall`: the core as a login job of this user.
+//! `immune on` and `immune off`: the core as a login job of this user.
 //!
-//! Install registers the core with launchd as the job `ai.nuanu.immune.watch`, which runs
-//! `watch --background`. Which file the job runs depends on who can replace the core install was
+//! `on` registers the core with launchd as the job `ai.nuanu.immune.watch`, which runs
+//! `watch --background`. Which file the job runs depends on who can replace the core `on` was
 //! run from (`root_only`):
 //! - only root, as for a core a signed package put in a folder owned by root: the job runs it
 //!   where it is and nothing is copied. A copy in the home folder would undo that protection, since
 //!   any program of the account could replace it, and an update of the package would never reach
-//!   the job. A copy an earlier install left is removed once the old job is stopped;
-//! - anyone else as well, as for a build in a checkout: install copies the core to `bin/immune` in
+//!   the job. A copy an earlier `on` left is removed once the old job is stopped;
+//! - anyone else as well, as for a build in a checkout: `on` copies the core to `bin/immune` in
 //!   the store's folder and the job runs the copy, so a rebuild, another branch or a removed
 //!   checkout does not touch the running core, and no other account chooses what the job runs.
 //!
 //! The watcher the job runs leaves by itself when the file it was started from is replaced, and
-//! launchd starts it again from the new one (`watch.rs`). Uninstall stops the job and removes its
-//! property list and the copy, never a core the job ran where it is, and keeps the store and the
-//! event collector. After the job is loaded, install waits a few seconds for a watcher to watch
+//! launchd starts it again from the new one (`watch.rs`). `off` stops the job and removes its
+//! property list and the copy, never a core run where it is, and keeps the store and the event
+//! collector. It takes no path from the property list, which any program of the account can
+//! write, and tells nobody to remove a file. After the job is loaded, `on` waits a few seconds for a watcher to watch
 //! the store live, and says whether one did.
 //!
 //! The home folder is the account's own, from the user database, and never `$HOME`: the job
 //! belongs to `gui/<uid>`, and launchd loads that user's `LaunchAgents` at login, so files found
 //! through another home would not be the job's.
 //!
-//! These commands act, so their order is the point. Install:
+//! These commands act, so their order is the point. `on`:
 //! - every refusal comes first, with nothing changed; one of the two commands runs at a time;
 //! - then the property list and the copy are staged under temporary names beside their places;
 //! - then the copy and then the property list are renamed into place, under the running job: the
 //!   process keeps the old binary's inode and launchd the configuration it loaded, so the job is
-//!   not stopped, and a file that cannot be replaced fails the install before anything is. The
+//!   not stopped, and a file that cannot be replaced fails the command before anything is. The
 //!   full checks the watcher starts, and a restart of the job, run the new copy from then on.
 //!   The copy goes first, so a property list never names a core that is not there;
 //! - then a loaded job is stopped and waited for until launchd no longer has it;
@@ -43,7 +44,7 @@
 //! `&` or `<`. `launchctl` and `plutil` are run by absolute path. For tests, `--launchctl` gives
 //! a stand-in and `--home` another home folder; they go only together, so that a test that forgets
 //! one of the two is refused before anything runs. No switch changes whether the core is run where
-//! it is: the unit tests give `install` that judgement directly.
+//! it is: the unit tests give `on` and `off` that judgement directly.
 
 use crate::answer::{self, Form, Options};
 use crate::contract::v1;
@@ -68,7 +69,7 @@ const PROGRAM: &str = "immune";
 /// Every failure of these commands exits with this code; the failure's `code` says which.
 const EXIT_FAILED: u8 = 1;
 /// What a failure after the stop adds, so a person and an agent know how to recover.
-const RECOVER: &str = "; the core job may be stopped. The store was kept. The core and its property list are in place. Run immune install again to recover";
+const RECOVER: &str = "; the core job may be stopped. The store was kept. The core and its property list are in place. Run immune on again to recover";
 /// At most this many characters of another job's label are quoted in a failure.
 const LABEL_QUOTED: usize = 200;
 /// The menu-bar app's bundle identifier, the `CFBundleIdentifier` of its `Info.plist`, which is
@@ -93,20 +94,20 @@ const ASKED_EVERY: Duration = Duration::from_millis(100);
 /// Which of the two.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verb {
-    Install,
-    Uninstall,
+    On,
+    Off,
 }
 
 impl Verb {
     fn op(self) -> &'static str {
         match self {
-            Verb::Install => "install",
-            Verb::Uninstall => "uninstall",
+            Verb::On => "on",
+            Verb::Off => "off",
         }
     }
 }
 
-/// `immune install` or `immune uninstall`.
+/// `immune on` or `immune off`.
 pub struct ServiceArgs {
     pub verb: Verb,
     /// The launchctl to run instead of the system's.
@@ -183,13 +184,13 @@ struct Places {
     store: PathBuf,
 }
 
-/// Answers `immune install` or `immune uninstall` with `Service`, or fails with `Failure`.
+/// Answers `immune on` or `immune off` with `Service`, or fails with `Failure`.
 pub fn service_cmd(args: &ServiceArgs) -> ExitCode {
     let op = args.verb.op();
     let home = args.home.as_deref();
     let done = match args.verb {
-        Verb::Install => install(&args.launchctl, home, root_only),
-        Verb::Uninstall => uninstall(&args.launchctl, home),
+        Verb::On => on(&args.launchctl, home, root_only),
+        Verb::Off => off(&args.launchctl, home, root_only),
     };
     match done {
         Ok(m) => answer::print(op, args.form, &m, |m| {
@@ -271,7 +272,7 @@ fn refusals(launchctl: &Path, home: Option<&Path>) -> Result<(Places, bool), Fai
         Err(TryLockError::WouldBlock) => {
             return Err(failed(
                 "busy",
-                "another immune install or uninstall is running; nothing was changed",
+                "another immune on or off is running; nothing was changed",
                 "",
             ));
         }
@@ -655,7 +656,7 @@ struct Left {
     program: PathBuf,
     in_place: Option<bool>,
     /// What the status said of the store's watcher after the job was loaded; `None` when it could
-    /// not be told, and after uninstall.
+    /// not be told, and after `off`.
     seen: Option<crate::watch::Seen>,
 }
 
@@ -714,9 +715,9 @@ fn remove_copy(places: &Places) -> Result<(), (&Path, io::Error)> {
     }
 }
 
-/// `immune install`. `root_only` judges the core it was run from (`root_only` above, for the
+/// `immune on`. `root_only` judges the core it was run from (`root_only` above, for the
 /// command), so that a test can give the judgement.
-fn install(
+fn on(
     launchctl: &Path,
     home: Option<&Path>,
     root_only: impl Fn(&Path) -> bool,
@@ -726,7 +727,7 @@ fn install(
     let program_there = places.program.is_file();
     // A core only root can replace is run where it is: a copy under the home folder would be one
     // any program of the account could replace. The installed copy itself is the account's, so
-    // it is never judged one and never removed as a copy an earlier install left.
+    // it is never judged one and never removed as a copy an earlier `on` left.
     let in_place = root_only(&exe);
     let runs = if in_place {
         exe.clone()
@@ -789,7 +790,7 @@ fn install(
         failed(
             "not_installed",
             format!(
-                "could not put the core job's property list in place; {core} the property list and the job launchd has were not touched. Run immune install again"
+                "could not put the core job's property list in place; {core} the property list and the job launchd has were not touched. Run immune on again"
             ),
             format!("{}: {e}", places.plist.display()),
         )
@@ -800,7 +801,7 @@ fn install(
     if loaded_before && let Err(said) = stop(launchctl, &places.job) {
         return Err(failed(
             "stop_failed",
-            "could not see the core job stop in time: the core and its property list are in place, and launchd still has the previous job, which it was told to stop. Run immune install again",
+            "could not see the core job stop in time: the core and its property list are in place, and launchd still has the previous job, which it was told to stop. Run immune on again",
             said,
         ));
     }
@@ -810,13 +811,13 @@ fn install(
     let after = |code: &'static str, what: &str, detail: String| {
         failed(code, format!("could not {what}{RECOVER}"), detail)
     };
-    // A copy an earlier install left goes once no job runs it: the property list in place names
+    // A copy an earlier `on` left goes once no job runs it: the property list in place names
     // the core where it is.
     if in_place {
         remove_copy(&places).map_err(|(path, e)| {
             after(
                 "not_removed",
-                "remove the copy of the core an earlier install left",
+                "remove the copy of the core an earlier immune on left",
                 format!("{}: {e}", path.display()),
             )
         })?;
@@ -842,19 +843,17 @@ fn install(
     ))
 }
 
-fn uninstall(launchctl: &Path, home: Option<&Path>) -> Result<v1::Service, Failed> {
+/// `immune off`. `root_only` judges the core running the command, as `immune on` judges it; the
+/// property list, which any program of the account can write, is never read for a path.
+fn off(
+    launchctl: &Path,
+    home: Option<&Path>,
+    root_only: impl Fn(&Path) -> bool,
+) -> Result<v1::Service, Failed> {
     let (places, plist_there) = refusals(launchctl, home)?;
     let program_there = places.program.is_file();
-    // What the job runs, as its property list names it: the copy, which goes, or a core run where
-    // it is, which this command never removes.
-    let runs = plist_there
-        .then(|| plist_string(&places.plist, "ProgramArguments.0").ok())
-        .flatten()
-        .map(PathBuf::from);
-    let in_place = match &runs {
-        Some(runs) => Some(*runs != places.program),
-        None => program_there.then_some(false),
-    };
+    let exe = std::env::current_exe().and_then(fs::canonicalize).ok();
+    let in_place = exe.as_deref().filter(|exe| root_only(exe));
     let loaded_before = launchctl_run(launchctl, &["print", &places.job]).is_ok();
     if loaded_before && let Err(said) = stop(launchctl, &places.job) {
         return Err(failed(
@@ -866,7 +865,7 @@ fn uninstall(launchctl: &Path, home: Option<&Path>) -> Result<v1::Service, Faile
     let removed = |what: &Path, e: io::Error| {
         failed(
             "not_removed",
-            "the core job is stopped, and its property list or the installed core could not be removed and is still there; the store was kept. Run immune uninstall again",
+            "the core job is stopped, and its property list or the installed core could not be removed and is still there; the store was kept. Run immune off again",
             format!("{}: {e}", what.display()),
         )
     };
@@ -874,21 +873,17 @@ fn uninstall(launchctl: &Path, home: Option<&Path>) -> Result<v1::Service, Faile
         Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(removed(&places.plist, e)),
         _ => {}
     }
-    // The copy in `bin` is always install's own, whatever the job ran; `bin` goes only when
+    // The copy in `bin` is always `on`'s own, whatever the job ran; `bin` goes only when
     // nothing else is in it.
     remove_copy(&places).map_err(|(path, e)| removed(path, e))?;
-    let program = match (in_place, runs) {
-        (Some(true), Some(runs)) => runs,
-        _ => places.program.clone(),
-    };
     Ok(answer(
         &places,
         Left {
             installed: false,
             loaded: false,
             replaced: loaded_before || plist_there || program_there,
-            program,
-            in_place,
+            program: in_place.map_or_else(|| places.program.clone(), Path::to_path_buf),
+            in_place: Some(in_place.is_some()),
             seen: None,
         },
     ))
@@ -900,11 +895,7 @@ mod tests {
 
     fn parsed(args: &[&str]) -> Result<ServiceArgs, String> {
         let mut options = Options::default();
-        parse(
-            Verb::Install,
-            args.iter().map(|a| a.to_string()),
-            &mut options,
-        )
+        parse(Verb::On, args.iter().map(|a| a.to_string()), &mut options)
     }
 
     /// The stand-in and the home named are the ones used, and only without both is it the
@@ -988,14 +979,14 @@ esac
     }
 
     /// Below the command line, with the judgement given: a core only root can replace is run
-    /// where it is, the copy an earlier install left goes, and uninstall leaves the core and says
-    /// where it is.
+    /// where it is, the copy an earlier `on` left goes, and `off` leaves the core and says where
+    /// it is.
     #[test]
-    fn a_core_only_root_can_replace_is_run_where_it_is_and_uninstall_leaves_it() {
+    fn a_core_only_root_can_replace_is_run_where_it_is_and_off_leaves_it() {
         use std::io::Write;
         let dir = crate::common::Scratch::new("service-in-place");
         let (launchctl, home) = stand_in(&dir);
-        // A watcher that watches the store, so that install answers at once.
+        // A watcher that watches the store, so that `on` answers at once.
         let folder = home.join(crate::STORE_FOLDER);
         fs::create_dir_all(&folder).unwrap();
         crate::store::open_or_make(&folder.join(crate::STORE_FILE)).unwrap();
@@ -1005,21 +996,54 @@ esac
         let copy = folder.join(BIN).join(PROGRAM);
         let plist = home.join(format!("Library/LaunchAgents/{LABEL}.plist"));
 
-        let m = done(install(&launchctl, Some(&home), |_| false));
+        let m = done(on(&launchctl, Some(&home), |_| false));
         assert_eq!((m.in_place, m.watching), (Some(false), Some(true)));
         assert!(copy.is_file());
         let core = fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
-        let m = done(install(&launchctl, Some(&home), |_| true));
+        let m = done(on(&launchctl, Some(&home), |_| true));
         assert_eq!((m.in_place, m.loaded), (Some(true), true));
         assert_eq!(Path::new(&m.program_path_text), core);
         let named = plist_string(&plist, "ProgramArguments.0").ok().unwrap();
         assert_eq!(Path::new(&named), core);
         assert!(!copy.exists() && !folder.join(BIN).exists());
 
-        let m = done(uninstall(&launchctl, Some(&home)));
+        let m = done(off(&launchctl, Some(&home), |_| true));
         assert_eq!((m.installed, m.in_place), (false, Some(true)));
         assert_eq!(Path::new(&m.program_path_text), core);
         assert!(core.is_file() && !plist.exists() && !dir.join("loaded").exists());
+    }
+
+    /// Any program of the account can write the property list, so `off` takes no path from it:
+    /// a property list naming another file changes nothing the command prints or returns about
+    /// what to remove, and that file stays.
+    #[test]
+    fn a_property_list_naming_another_file_changes_nothing_off_says_about_what_to_remove() {
+        let dir = crate::common::Scratch::new("service-plist-names-another");
+        let (launchctl, home) = stand_in(&dir);
+        let copy = home.join(crate::STORE_FOLDER).join(BIN).join(PROGRAM);
+        let plist = home.join(format!("Library/LaunchAgents/{LABEL}.plist"));
+        let other = dir.join("other");
+        fs::write(&other, "not the core").unwrap();
+        let core = fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
+        for (in_place, program) in [(false, copy.clone()), (true, core)] {
+            let _ = on(&launchctl, Some(&home), |_| in_place);
+            let named = other.to_str().unwrap();
+            plutil(
+                &["-replace", "ProgramArguments.0", "-string", named],
+                &plist,
+            )
+            .unwrap();
+
+            let m = done(off(&launchctl, Some(&home), |_| in_place));
+            assert_eq!(
+                (m.in_place, Path::new(&m.program_path_text)),
+                (Some(in_place), &*program)
+            );
+            assert!(!format!("{m:?}").contains(named));
+            let said = crate::after_run::service(&m, &crate::screen::Screen::pipe());
+            assert!(!said.contains(named) && !said.contains("rm "), "{said}");
+            assert!(other.is_file() && !copy.exists() && !plist.exists());
+        }
     }
 
     const DIR: u32 = libc::S_IFDIR as u32;

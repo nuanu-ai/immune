@@ -385,7 +385,7 @@ mod tests {
     #[test]
     fn hostile_text_in_a_failure_s_detail_cannot_forge_a_line_or_a_style() {
         let hostile = format!(
-            "x\u{1b}[31mred\u{9b}31m\u{202e}evil\u{200b}\nerror: forged\n→ immune install{}error: forged too",
+            "x\u{1b}[31mred\u{9b}31m\u{202e}evil\u{200b}\nerror: forged\n→ immune on{}error: forged too",
             " ".repeat(90)
         );
         for code in ["store_unreadable", "run_failed", "unknown_finding", "usage"] {
@@ -449,7 +449,7 @@ mod tests {
             );
             assert_eq!(
                 said,
-                "error: there is no store here yet\n  immune run makes one, or immune install, \
+                "error: there is no store here yet\n  immune run makes one, or immune on, \
                  which also keeps it checked.\n  Store   /x/store.db\n",
                 "{code}"
             );

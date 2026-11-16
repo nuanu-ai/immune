@@ -1061,14 +1061,14 @@ mod tests {
         let s = Screen::terminal(40, false);
         let value =
             "a watcher runs, but its latest write to the store failed, so it does not watch live";
-        let lines = s.labelled(2, 8, "Watching", value, RED, Some("immune install"), 30);
+        let lines = s.labelled(2, 8, "Watching", value, RED, Some("immune on"), 30);
         for l in &lines {
             assert!(columns(l) <= 40, "{l}");
         }
         let joined: Vec<&str> = lines.iter().map(|l| l.trim()).collect();
         let joined = joined.join(" ");
         assert!(joined.contains("does not watch live"), "{joined}");
-        assert!(joined.contains("immune install"), "{joined}");
+        assert!(joined.contains("immune on"), "{joined}");
     }
 
     #[test]

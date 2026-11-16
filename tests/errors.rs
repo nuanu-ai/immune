@@ -121,9 +121,7 @@ fn no_command_or_an_unknown_one_lists_the_commands_one_line_each_and_points_to_t
         let out = e.immune(&args);
         assert_eq!(out.status.code(), Some(2), "{args:?}");
         let said = one_error(&out, &format!("{args:?}"));
-        for command in [
-            "status", "findings", "finding", "install", "verdict", "view",
-        ] {
+        for command in ["status", "findings", "finding", "on", "verdict", "view"] {
             assert!(
                 said.lines()
                     .any(|l| l.starts_with(&format!("  immune {command} "))),
@@ -260,7 +258,7 @@ fn a_failure_with_json_or_proto_is_the_same_message_byte_for_byte_as_before() {
 
 /// The one wording, as the text for a person shows it in a pipe.
 const NO_STORE: &str = "there is no store here yet";
-const NO_STORE_FIX: &str = "immune run makes one, or immune install, which also keeps it checked.";
+const NO_STORE_FIX: &str = "immune run makes one, or immune on, which also keeps it checked.";
 const OTHER_FORMAT: &str = "error: this store was made by another build of Immune";
 const OTHER_FORMAT_FIX: &str = "  It was left unchanged. Move it aside or pass another --store; \
                                 the next check starts one from the beginning.";
@@ -330,7 +328,7 @@ fn the_help_is_on_stdout_with_exit_0_within_eighty_columns_and_one_command_s_has
         assert!(out.stderr.is_empty());
         let help = String::from_utf8(out.stdout).unwrap();
         assert!(help.starts_with("Immune "), "{help}");
-        assert!(help.contains("immune install"), "{help}");
+        assert!(help.contains("immune on"), "{help}");
         assert!(!help.contains('\u{1b}'));
         for line in help.lines() {
             assert!(line.chars().count() <= 80, "{line}");
@@ -348,7 +346,7 @@ fn the_help_is_on_stdout_with_exit_0_within_eighty_columns_and_one_command_s_has
 #[test]
 fn an_argument_made_to_look_like_immune_s_own_words_cannot_forge_a_line() {
     let e = Estate::new("hostile");
-    let hostile = "\u{1b}[31mx\u{9b}\u{202e}\u{200b}\nerror: forged\n→ immune install";
+    let hostile = "\u{1b}[31mx\u{9b}\u{202e}\u{200b}\nerror: forged\n→ immune on";
     for args in [
         vec!["findings", hostile],
         vec!["finding", hostile, "seen", "--days", "3"],

@@ -601,8 +601,8 @@ fn parse_args(
         "machine" => machine::parse(it, options).map(Cmd::Machine),
         "matches" => matches::parse(it, options).map(Cmd::Matches),
         "verdict" => verdict::parse(it, options).map(Cmd::Verdict),
-        "install" => service::parse(service::Verb::Install, it, options).map(Cmd::Service),
-        "uninstall" => service::parse(service::Verb::Uninstall, it, options).map(Cmd::Service),
+        "on" => service::parse(service::Verb::On, it, options).map(Cmd::Service),
+        "off" => service::parse(service::Verb::Off, it, options).map(Cmd::Service),
         "rules" => {
             let (mut over_log, mut system_root, mut all) = (false, None, false);
             options.read(it, |arg, it| {
@@ -829,8 +829,8 @@ fn main() -> ExitCode {
                 Some("vulnerability") => Some("immune vulnerability CVE-2023-4863 --json"),
                 Some("owner") => Some("immune owner --json"),
                 Some("sample") => Some("immune sample --json"),
-                Some("install") => Some("immune install --json"),
-                Some("uninstall") => Some("immune uninstall --json"),
+                Some("on") => Some("immune on --json"),
+                Some("off") => Some("immune off --json"),
                 _ => None,
             };
             // For a person, the cause and the command as typed in its right form, never the whole

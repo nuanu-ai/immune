@@ -37,10 +37,10 @@ core=$(./build)
 
 `./build` prints the core binary's absolute path and gives installation instructions for any missing prerequisites. The first build takes a minute or two. Run `"$core" run` whenever you want a full check by hand.
 
-For continuous watching and automatic full checks while you are logged in, install the optional user service. If you are upgrading from the app that bundled the core, quit that app first to stop its watcher.
+For continuous watching and automatic full checks while you are logged in, turn on the optional user service. If you are upgrading from the app that bundled the core, quit that app first to stop its watcher.
 
 ```sh
-"$core" install
+"$core" on
 ```
 
 This copies the core to `~/Library/Application Support/ai.nuanu.immune/bin/immune` and runs that copy as a login job, so you can rebuild or remove the checkout without touching the running core. The core starts a full check when it starts and every hour after that. [Background service](docs/core-service.md) explains updates and removal.
