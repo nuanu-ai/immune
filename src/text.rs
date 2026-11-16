@@ -643,8 +643,15 @@ fn verdict_line(r: &v1::RecordedVerdict) -> String {
         ),
         _ => String::new(),
     };
+    // The core's own words come before the response layer's text, never after it.
+    let gone = if r.event_gone {
+        " The line of the match it names was no longer in the event log when it came, so Immune \
+         did not read that event again or check that the rule matched it."
+    } else {
+        ""
+    };
     format!(
-        "A {} verdict of the response layer, {}{levels}. Its reason: {}. Its case: {}.",
+        "A {} verdict of the response layer, {}{levels}.{gone} Its reason: {}. Its case: {}.",
         word::<v1::VerdictKind>(v.kind),
         view::utc(r.recorded_at),
         quoted(&v.reason_text),

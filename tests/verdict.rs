@@ -1531,6 +1531,433 @@ fn an_answer_lists_the_first_verdict_and_the_latest_twenty_with_the_total() {
     assert_eq!(listed[20]["verdict"]["case_text"], "case-24");
 }
 
+// ---- A verdict the response layer names, and one that comes after its line left the log. ----
+
+/// A verdict with the response layer's own name for it.
+fn with_id(mut v: Value, id: &str) -> Value {
+    v["verdict_id"] = json!(id);
+    v
+}
+
+/// The hour `secs` falls in, as a log file's name of an earlier collector gives it.
+fn hour_name(secs: i64) -> String {
+    let out = Command::new("/bin/date")
+        .args(["-u", "-r", &secs.to_string(), "+%Y%m%dT%H"])
+        .output()
+        .unwrap();
+    String::from_utf8(out.stdout).unwrap().trim().to_string()
+}
+
+#[test]
+fn a_verdict_sent_again_under_its_id_gets_its_first_answer_and_writes_and_raises_nothing_in_every_state()
+ {
+    // A retry after a failure is the same verdict under the same id. Whatever became of its
+    // finding since, or of the line it named, it is answered with the verdict recorded then, and
+    // the store is left byte for byte as it was: no row, no journal entry, no occurrence raised.
+    let mac = Mac::new("by-id");
+    mac.package(true);
+    let at = mac.append(&sw_vers(1));
+    mac.run();
+    let store = mac.store_id();
+    let core_id = mac.latest(MALICIOUS).unwrap();
+    let position = mac.position(at);
+    let sent = [
+        with_id(
+            about_finding(&store, &core_id, "suspicious", "case-1"),
+            "rl-1",
+        ),
+        with_id(
+            about_finding(&store, &core_id, "harmless", "case-2"),
+            "rl-2",
+        ),
+        with_id(
+            about_match(&store, &position, SW_VERS, "suspicious"),
+            "rl-3",
+        ),
+        with_id(about_match(&store, &position, SW_VERS, "harmless"), "rl-4"),
+    ];
+    let first: Vec<Value> = sent.iter().map(|v| mac.send(v)).collect();
+    for f in &first {
+        assert_eq!(f["already_recorded"], false, "{f:#}");
+        assert_eq!(
+            f["recorded"]["verdict"]["verdict_id"]
+                .as_str()
+                .map(|s| &s[..3]),
+            Some("rl-")
+        );
+    }
+    let own = mac.verdict_findings();
+    assert_eq!(own.len(), 2);
+    let again = |state: &str| {
+        let before = std::fs::read(mac.store()).unwrap();
+        for (v, first) in sent.iter().zip(&first) {
+            let answer = mac.send(v);
+            assert_eq!(answer["already_recorded"], true, "{state}: {answer:#}");
+            for field in ["verdict", "recorded_at", "raised", "event_gone"] {
+                assert_eq!(
+                    answer["recorded"][field], first["recorded"][field],
+                    "{state}: {field}"
+                );
+            }
+        }
+        assert_eq!(
+            std::fs::read(mac.store()).unwrap(),
+            before,
+            "{state}: nothing is written"
+        );
+        assert_eq!(mac.recorded(), (4, 4), "{state}");
+    };
+    again("open");
+    let answer_all = |act: &[&str]| {
+        for id in own.iter().chain([&core_id]) {
+            let out = mac.answer(id, act);
+            assert!(
+                out.status.success(),
+                "{act:?}: {}",
+                String::from_utf8_lossy(&out.stdout)
+            );
+        }
+    };
+    answer_all(&["seen"]);
+    again("seen");
+    answer_all(&["reopen"]);
+    again("reopened");
+    answer_all(&["expected", "--days", "1", "--reason", "invented"]);
+    again("expected");
+    // Its line has left the log: still the answer recorded then, not `match_gone`.
+    std::fs::remove_file(mac.log().join(H00)).unwrap();
+    again("line gone");
+    assert_eq!(mac.verdict_findings(), own, "no occurrence was raised");
+}
+
+#[test]
+fn an_id_names_one_verdict_and_the_same_id_on_any_other_message_is_refused_with_nothing_written() {
+    // An id never ties two different messages: a difference in what it names, its kind, its
+    // reason, its case or a level is refused before anything else is checked, and the refusal
+    // writes nothing. It names what differs, never what any of it holds.
+    let mac = Mac::new("id-reused");
+    mac.package(true);
+    let at = mac.append(&sw_vers(1));
+    mac.run();
+    let store = mac.store_id();
+    let core_id = mac.latest(MALICIOUS).unwrap();
+    let v = with_id(
+        about_finding(&store, &core_id, "suspicious", "case-1"),
+        "rl-1",
+    );
+    mac.send(&v);
+    let own = mac.verdict_findings()[0].clone();
+    let changed = |key: &str, value: Value| {
+        let mut x = v.clone();
+        x[key] = value;
+        x
+    };
+    let mut harmless = changed("kind", json!("harmless"));
+    harmless.as_object_mut().unwrap().remove("severity");
+    harmless.as_object_mut().unwrap().remove("confidence");
+    let mut a_match = v.clone();
+    a_match.as_object_mut().unwrap().remove("finding");
+    a_match["match"] = json!({ "position": mac.position(at), "rule": SW_VERS });
+    let cases = [
+        (changed("finding", json!({ "id": own })), "what it is about"),
+        // Refused for the id before the store is asked about the finding it names.
+        (
+            changed("finding", json!({ "id": "f0000000000" })),
+            "what it is about",
+        ),
+        (a_match, "what it is about"),
+        (harmless, "kind, severity, confidence"),
+        (
+            changed("reason_text", json!("invented: another reason")),
+            "reason_text",
+        ),
+        (changed("case_text", json!("case-2")), "case_text"),
+        (changed("severity", json!("high")), "severity"),
+        (changed("confidence", json!("high")), "confidence"),
+    ];
+    let check = |state: &str| {
+        for (other, differs) in &cases {
+            let before = std::fs::read(mac.store()).unwrap();
+            mac.refused(other.to_string().as_bytes(), "verdict_id_reused", 2);
+            let out = mac.send_output(other);
+            let failure: Value = serde_json::from_slice(&out.stdout).unwrap();
+            assert_eq!(
+                failure["errors"][0]["detail_text"],
+                format!("it differs in {differs}"),
+                "{state}"
+            );
+            // The same in binary.
+            let out = mac.send_bytes(&binary_verdict(other), &["--proto"]);
+            let failure = v1::Failure::decode(out.stdout.as_slice()).unwrap();
+            assert_eq!(failure.errors[0].code, "verdict_id_reused", "{state}");
+            assert_eq!(
+                std::fs::read(mac.store()).unwrap(),
+                before,
+                "{state}: {differs}"
+            );
+        }
+    };
+    check("open");
+    assert!(mac.answer(&own, &["seen"]).status.success());
+    check("seen");
+    // A new id is a new decision, even when the rest repeats an earlier one, and sameness by
+    // content never ties a verdict without an id to one with an id.
+    assert!(mac.answer(&own, &["reopen"]).status.success());
+    assert_eq!(
+        mac.send(&with_id(v.clone(), "rl-2"))["already_recorded"],
+        false
+    );
+    let mut no_id = v.clone();
+    no_id.as_object_mut().unwrap().remove("verdict_id");
+    assert_eq!(mac.send(&no_id)["already_recorded"], false);
+    assert_eq!(mac.send(&no_id)["already_recorded"], true);
+    assert_eq!(mac.recorded(), (3, 3));
+}
+
+#[test]
+fn two_processes_that_send_the_same_id_at_once_record_it_once_and_both_answer_with_it() {
+    // Both read the store before either writes: the run lock is held until both wait for it,
+    // so the one that writes second decides under the write lock. The store's unique index on
+    // the id backs it.
+    let mac = Mac::new("id-race");
+    mac.package(true);
+    mac.run();
+    let store = mac.store_id();
+    let core_id = mac.latest(MALICIOUS).unwrap();
+    let v = with_id(
+        about_finding(&store, &core_id, "suspicious", "case-1"),
+        "rl-race",
+    );
+    let folder = std::fs::File::open(mac.store().parent().unwrap()).unwrap();
+    folder.lock().unwrap();
+    let children: Vec<_> = (0..2)
+        .map(|_| {
+            let mut child = mac
+                .command(&["verdict", "--json", "--system-root"])
+                .arg(mac.root())
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(v.to_string().as_bytes())
+                .unwrap();
+            child
+        })
+        .collect();
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    drop(folder);
+    let answers: Vec<Value> = children
+        .into_iter()
+        .map(|c| {
+            let out = c.wait_with_output().unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stdout)
+            );
+            serde_json::from_slice(&out.stdout).unwrap()
+        })
+        .collect();
+    let mut already: Vec<bool> = answers
+        .iter()
+        .map(|a| a["already_recorded"].as_bool().unwrap())
+        .collect();
+    already.sort();
+    assert_eq!(already, [false, true]);
+    assert_eq!(answers[0]["recorded"], answers[1]["recorded"]);
+    assert_eq!(mac.recorded(), (1, 1));
+    let db = rusqlite::Connection::open(mac.store()).unwrap();
+    let twice = db.execute(
+        "INSERT INTO verdict (at, journal, kind, named, finding, raised, severity, confidence,
+                              reason, case_ref, verdict_id, event_gone)
+         SELECT at, journal, kind, named, finding, raised, severity, confidence, reason,
+                case_ref, verdict_id, event_gone FROM verdict",
+        [],
+    );
+    assert!(twice.is_err(), "the store keeps one verdict for an id");
+}
+
+#[test]
+fn a_late_suspicious_verdict_about_a_line_the_log_no_longer_holds_raises_its_finding_and_says_the_event_was_not_checked()
+ {
+    // The log keeps about a day, and a decision can take longer. A suspicious verdict about a
+    // line no longer in it is not lost: it is recorded, raises its finding as usual and needs a
+    // look, with no event kept, and every answer says the core did not read the event again.
+    const UNCHECKED: &str = "did not read that event again or check that the rule matched it.";
+    for replaced in [false, true] {
+        let mac = Mac::new(if replaced {
+            "late-replaced"
+        } else {
+            "late-removed"
+        });
+        let at = mac.append(&sw_vers(1));
+        mac.run();
+        let store = mac.store_id();
+        let position = mac.position(at);
+        let path = mac.log().join(H00);
+        if replaced {
+            // Another file has its name now: made while the first is there, so its inode differs.
+            let other = mac.log().join("other");
+            std::fs::write(&other, dd(2)).unwrap();
+            std::fs::rename(&other, &path).unwrap();
+        } else {
+            std::fs::remove_file(&path).unwrap();
+        }
+        let answer = mac.send(&levels(
+            about_match(&store, &position, SW_VERS, "suspicious"),
+            ("high", "medium"),
+        ));
+        assert_eq!(answer["already_recorded"], false);
+        let r = &answer["recorded"];
+        assert_eq!(
+            (&r["event_gone"], &r["raised"]),
+            (&json!(true), &json!(true))
+        );
+        let own = r["finding"]["id"].as_str().unwrap();
+        let shown = mac.shown(own).expect("it needs a look");
+        assert_eq!(shown["severity"], "high");
+        let whole = mac.finding(own);
+        assert_eq!(whole["finding"]["state"], "open");
+        let evidence = &whole["evidence"]["verdict_given"];
+        assert_eq!(evidence["rule"], SW_VERS);
+        assert!(
+            evidence["events"].as_array().is_none_or(Vec::is_empty),
+            "{whole:#}"
+        );
+        assert_eq!(whole["verdicts"]["listed"][0]["event_gone"], true);
+        let out = mac.command(&["finding", own, "--proto"]).output().unwrap();
+        let f = v1::Finding::decode(out.stdout.as_slice()).unwrap();
+        assert!(f.verdicts.unwrap().listed[0].event_gone);
+        // In the text for a person, the core says so in its own words, before the reason.
+        let out = mac.command(&["finding", own]).output().unwrap();
+        let text = String::from_utf8(out.stdout).unwrap();
+        let line = text
+            .lines()
+            .find(|l| l.contains(UNCHECKED))
+            .unwrap_or_else(|| panic!("{text}"));
+        assert!(line.find(UNCHECKED) < line.find("Its reason:"), "{line}");
+    }
+    // A verdict about a line that is there is read again and not marked.
+    let mac = Mac::new("late-not");
+    let at = mac.append(&sw_vers(1));
+    mac.run();
+    let answer = mac.send(&about_match(
+        &mac.store_id(),
+        &mac.position(at),
+        SW_VERS,
+        "suspicious",
+    ));
+    assert_eq!(answer["recorded"]["event_gone"], false);
+    let own = answer["recorded"]["finding"]["id"].as_str().unwrap();
+    let out = mac.command(&["finding", own]).output().unwrap();
+    assert!(!String::from_utf8(out.stdout).unwrap().contains(UNCHECKED));
+}
+
+#[test]
+fn a_late_verdict_is_never_taken_for_a_line_that_is_there_an_hour_to_come_a_rule_not_shipped_or_a_harmless_kind()
+ {
+    let mac = Mac::new("late-refused");
+    let at = mac.append(&sw_vers(1));
+    mac.run();
+    let store = mac.store_id();
+    let next_hour = format!("{}-1-0", hour_name(now() + 3600));
+    // A file the log no longer holds, of an hour gone by.
+    let gone = "20261003T00-1-0";
+    let suspicious = |position: &str, rule: &str| about_match(&store, position, rule, "suspicious");
+    let refusals = [
+        // A line that is there and did not match the rule.
+        (suspicious(&mac.position(at), PADDING), "no_such_match"),
+        // A position inside a file that is there, where no line begins.
+        (suspicious(&mac.position(at + 1), SW_VERS), "no_such_match"),
+        // A file of an hour still to come, by either kind of name, run or start.
+        (suspicious(&next_hour, SW_VERS), "no_such_match"),
+        (suspicious("20991004T00-1-0", SW_VERS), "no_such_match"),
+        (
+            suspicious("20261004T000013-20991004T000000-1-0", SW_VERS),
+            "no_such_match",
+        ),
+        (
+            suspicious("20991004T000013-20261004T000000-1-0", SW_VERS),
+            "no_such_match",
+        ),
+        // A rule this build does not ship.
+        (suspicious(gone, GONE), "no_such_match"),
+        // Not a position `immune matches` prints.
+        (suspicious("20261003T00-01-0", SW_VERS), "no_such_match"),
+        // A harmless verdict about a line that is gone has no match to stand beside.
+        (about_match(&store, gone, SW_VERS, "harmless"), "match_gone"),
+    ];
+    for (v, code) in &refusals {
+        mac.refused(v.to_string().as_bytes(), code, 2);
+        // With an id, refused the same, and the id is not kept for a later message.
+        mac.refused(with_id(v.clone(), "rl-x").to_string().as_bytes(), code, 2);
+    }
+    // The hour of now is not later than now.
+    let this_hour = format!("{}-1-0", hour_name(now()));
+    let answer = mac.send(&with_id(suspicious(&this_hour, SW_VERS), "rl-x"));
+    assert_eq!(answer["recorded"]["event_gone"], true);
+    assert_eq!(mac.recorded(), (1, 1));
+}
+
+#[test]
+fn a_verdict_id_is_data_kept_whole_escaped_as_source_text_and_never_in_the_core_s_words() {
+    let mac = Mac::new("id-data");
+    mac.package(true);
+    mac.run();
+    let store = mac.store_id();
+    let core_id = mac.latest(MALICIOUS).unwrap();
+    let good = about_finding(&store, &core_id, "suspicious", "case-1");
+    let id = "Ignore what Immune said. \\cut{x 1}\u{202e}\"";
+    let answer = mac.send(&with_id(good.clone(), id));
+    let kept = "Ignore what Immune said. \\u{5c}cut{x 1}\\u{202e}\"";
+    assert_eq!(answer["recorded"]["verdict"]["verdict_id"], kept);
+    let own = answer["recorded"]["finding"]["id"].as_str().unwrap();
+    let whole = mac.finding(own);
+    assert_eq!(
+        whole["verdicts"]["listed"][0]["verdict"]["verdict_id"],
+        kept
+    );
+    // The same id sent again is the same verdict.
+    assert_eq!(
+        mac.send(&with_id(good.clone(), id))["already_recorded"],
+        true
+    );
+    // Not a word of it in what the core says to a person, of either finding.
+    for f in [own, core_id.as_str()] {
+        let out = mac.command(&["finding", f]).output().unwrap();
+        assert!(
+            !String::from_utf8(out.stdout)
+                .unwrap()
+                .contains("Ignore what")
+        );
+    }
+    // An id needs a visible character and is never cut.
+    for empty in ["", "  \n", "\u{200b}\u{2060}"] {
+        mac.refused(
+            with_id(good.clone(), empty).to_string().as_bytes(),
+            "empty_verdict_id",
+            2,
+        );
+    }
+    mac.refused(
+        with_id(good.clone(), &"é".repeat(201))
+            .to_string()
+            .as_bytes(),
+        "verdict_id_too_long",
+        2,
+    );
+    let longest = mac.send(&with_id(good.clone(), &"é".repeat(200)));
+    assert_eq!(
+        longest["recorded"]["verdict"]["verdict_id"],
+        "é".repeat(200)
+    );
+}
+
 // ---- What is refused, and that a refusal writes nothing. ----
 
 #[test]
@@ -1613,6 +2040,7 @@ fn what_this_build_does_not_read_is_refused_in_either_form_and_records_nothing()
         case_text: "case-binary".to_string(),
         severity: None,
         confidence: None,
+        verdict_id: None,
     }
     .encode_to_vec();
     let both = {
@@ -1701,6 +2129,10 @@ fn a_secret_in_a_key_of_a_verdict_is_refused_without_echo_and_the_finding_is_as_
     let mut other = good.clone();
     other["store_id"] = json!(token);
     sent.push(("store_id".to_string(), other));
+    sent.push((
+        "verdict_id".to_string(),
+        with_id(good.clone(), &format!("rl {token}")),
+    ));
     let mut bodies: Vec<(String, Vec<u8>, Value)> = sent
         .into_iter()
         .map(|(field, v)| (field, v.to_string().into_bytes(), v))
@@ -2467,11 +2899,11 @@ fn a_store_of_another_format_is_refused_by_every_command_and_left_unchanged() {
     // refusals reads as an answer with nothing in it.
     let r = Refusable::new("format");
     for (version, said, what_to_do) in [
+        ("6", "is from an older format (6)", START_OVER),
         ("5", "is from an older format (5)", START_OVER),
-        ("4", "is from an older format (4)", START_OVER),
         (
-            "7",
-            "is from a newer format (7)",
+            "8",
+            "is from a newer format (8)",
             "Use the version of Immune that made it",
         ),
         (
@@ -2752,15 +3184,15 @@ fn a_store_whose_id_or_format_has_another_form_is_refused() {
              CREATE TABLE meta (key TEXT, value TEXT NOT NULL);
              INSERT INTO meta SELECT * FROM old_meta;
              DROP TABLE old_meta;
-             INSERT INTO meta VALUES ('format_version', '7');",
+             INSERT INTO meta VALUES ('format_version', '8');",
             "does not name exactly one format",
         ),
         (
-            "UPDATE meta SET value = '06' WHERE key = 'format_version'",
+            "UPDATE meta SET value = '07' WHERE key = 'format_version'",
             "names a format this version does not know",
         ),
         (
-            "UPDATE meta SET value = ' 6' WHERE key = 'format_version'",
+            "UPDATE meta SET value = ' 7' WHERE key = 'format_version'",
             "names a format this version does not know",
         ),
     ] {

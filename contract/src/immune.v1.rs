@@ -537,6 +537,12 @@ pub struct Verdict {
         deserialize_with = "crate::optional_enum_from_name::<Level, _>"
     )]
     pub confidence: ::core::option::Option<i32>,
+    /// The response layer's own name for this one verdict, so that sending it again after a failure
+    /// is told from a new decision. Optional; when given, at most 200 Unicode scalar values with a
+    /// visible character. A key like `case_text`: never rewritten, refused with `holds_secret` when it
+    /// holds a secret, and returned as kept. Since 1.16.0.
+    #[prost(string, optional, tag = "10")]
+    pub verdict_id: ::core::option::Option<::prost::alloc::string::String>,
     /// What it is about: a match or a finding. Required.
     #[prost(oneof = "verdict::About", tags = "3, 4")]
     #[serde(flatten)]
@@ -603,6 +609,11 @@ pub struct RecordedVerdict {
     /// each piece; `argument` is 0, the reason being one text. Empty when nothing was cut.
     #[prost(message, repeated, tag = "5")]
     pub reason_cuts: ::prost::alloc::vec::Vec<Cut>,
+    /// A verdict about a match whose line was no longer in the log when the verdict came: the core
+    /// did not read the event again and did not check that the rule matched it, and its finding
+    /// keeps no event of it. Only a `suspicious` verdict is recorded so. Since 1.16.0.
+    #[prost(bool, tag = "6")]
+    pub event_gone: bool,
 }
 /// The verdicts about a finding or a match, as an answer gives them.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -643,8 +654,10 @@ pub struct VerdictRecorded {
     /// The verdict as recorded. When the same verdict was recorded before, the one recorded then.
     #[prost(message, optional, tag = "4")]
     pub recorded: ::core::option::Option<RecordedVerdict>,
-    /// The same message, equal in what it names, its kind, its reason, its case and both levels, was
-    /// recorded before and its finding is still open, or it is `harmless`; nothing was recorded now.
+    /// The same verdict was recorded before and nothing was recorded now: one with the same
+    /// `verdict_id`, equal in everything else; or, with no id, the same message, equal in what it
+    /// names, its kind, its reason, its case and both levels, whose finding is still open or which is
+    /// `harmless`.
     #[prost(bool, tag = "5")]
     pub already_recorded: bool,
 }

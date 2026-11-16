@@ -15,7 +15,13 @@
 //!
 //! A match is named by the position `immune matches` printed and its rule's name. The core reads
 //! the one line at that position from the collector's log again and evaluates it at the one place
-//! an event is evaluated (`events::at_line`), so a verdict is about what the core matched.
+//! an event is evaluated (`events::at_line`), so a verdict is about what the core matched. The log
+//! keeps about a day: a `suspicious` verdict about a line no longer in it is recorded all the same,
+//! marked `event_gone`, so a late decision is not lost (`checked_match`).
+//!
+//! A verdict may carry `verdict_id`, the response layer's name for it, as an idempotency key: a
+//! repeat with the same id gets the first answer and writes nothing, and the same id on another
+//! message is refused (`by_id`). Without an id, sameness is by content (`same`).
 //!
 //! Text from the response layer is data: it read files an attacker may have written. Its reason
 //! and its case are shown only in `_text` fields, escaped as all such text is, and after the
@@ -46,6 +52,8 @@ pub const CAP: usize = 64 << 10;
 /// never cut: a reason cut short can say the opposite.
 pub const REASON_CHARS: usize = 1000;
 pub const CASE_CHARS: usize = 200;
+/// The most Unicode scalar values `verdict_id` may hold, as `case_text`.
+pub const ID_CHARS: usize = 200;
 /// The most verdicts an answer lists after the first: the latest ones.
 pub const LISTED: i64 = 20;
 /// How the run id of a verdict begins, in the journal.
@@ -81,11 +89,14 @@ CREATE TABLE verdict (
     confidence TEXT,
     reason     TEXT NOT NULL,     -- text from the response layer
     case_ref   TEXT NOT NULL,     -- text from the response layer
+    verdict_id TEXT,              -- the response layer's name for it, kept as the case is; NULL when not given
+    event_gone INTEGER NOT NULL,  -- about a match whose line was no longer in the log: no event read
     CHECK ((named IS NULL) = (position IS NOT NULL AND rule IS NOT NULL))
 );
 CREATE INDEX verdict_named ON verdict (named);
 CREATE INDEX verdict_finding ON verdict (finding);
 CREATE INDEX verdict_match ON verdict (position, rule);
+CREATE UNIQUE INDEX verdict_by_id ON verdict (verdict_id) WHERE verdict_id IS NOT NULL;
 ";
 
 /// What the response layer concluded.
@@ -123,10 +134,13 @@ pub struct Recorded {
     /// The response layer's text, read cut (`secrets::Kept`), as every reader shows it.
     pub reason: Text,
     pub case: Text,
+    /// The response layer's name for it, kept as the case is; `None` when it gave none.
+    pub verdict_id: Option<Text>,
+    /// About a match whose line was no longer in the log: the event was not read again.
+    pub event_gone: bool,
 }
 
-const COLUMNS: &str =
-    "at, kind, named, position, rule, finding, raised, severity, confidence, reason, case_ref";
+const COLUMNS: &str = "at, kind, named, position, rule, finding, raised, severity, confidence, reason, case_ref, verdict_id, event_gone";
 
 /// A verdict's row.
 fn row(r: &rusqlite::Row) -> rusqlite::Result<Recorded> {
@@ -147,6 +161,10 @@ fn row(r: &rusqlite::Row) -> rusqlite::Result<Recorded> {
         confidence: r.get(8)?,
         reason: Kept::Reason.read(&r.get::<_, String>(9)?),
         case: Kept::Case.read(&r.get::<_, String>(10)?),
+        verdict_id: r
+            .get::<_, Option<String>>(11)?
+            .map(|id| Kept::Case.read(&id)),
+        event_gone: r.get(12)?,
     })
 }
 
@@ -310,11 +328,13 @@ pub fn recorded(
             case_text: r.case.said(),
             severity: r.severity.as_deref().map(value_of::<v1::Level>),
             confidence: r.confidence.as_deref().map(value_of::<v1::Level>),
+            verdict_id: r.verdict_id.as_ref().map(Text::said),
         }),
         recorded_at: r.at,
         finding,
         raised: r.raised,
         reason_cuts: crate::answer::reason_cuts(&r.reason),
+        event_gone: r.event_gone,
     }
 }
 
@@ -454,6 +474,8 @@ struct Sent {
     case: String,
     severity: Option<&'static str>,
     confidence: Option<&'static str>,
+    /// The response layer's name for this verdict, as sent.
+    verdict_id: Option<String>,
 }
 
 impl Sent {
@@ -464,6 +486,22 @@ impl Sent {
             Text::source(&self.reason).store(),
             Text::source(&self.case).store(),
         )
+    }
+
+    /// Its id as the store keeps it, as the case is kept: a key, so it holds no secret
+    /// (`secret_field`) and keeping it rewrites nothing but how a backslash is written.
+    fn kept_id(&self) -> Option<String> {
+        self.verdict_id
+            .as_deref()
+            .map(|id| Text::source(id).store())
+    }
+
+    /// What it names: a finding, or a match by its position and rule.
+    fn named(&self) -> (Option<&str>, Option<&str>, Option<&str>) {
+        match &self.about {
+            About::Finding(id) => (Some(id.as_str()), None, None),
+            About::Match { position, rule } => (None, Some(position.as_str()), Some(rule.as_str())),
+        }
     }
 }
 
@@ -586,6 +624,23 @@ fn parsed(bytes: &[u8], json: bool) -> Result<Sent, Refusal> {
             ));
         }
     }
+    if let Some(id) = &v.verdict_id {
+        if blank(id) {
+            return Err(refused(
+                "empty_verdict_id",
+                "verdict_id, when given, needs a visible character; nothing was recorded",
+                "",
+            ));
+        }
+        let n = id.chars().count();
+        if n > ID_CHARS {
+            return Err(refused(
+                "verdict_id_too_long",
+                "verdict_id is longer than a verdict may carry, and it is never cut; nothing was recorded",
+                format!("{n} characters, and at most {ID_CHARS} are taken"),
+            ));
+        }
+    }
     Ok(Sent {
         store_id: v.store_id,
         about,
@@ -594,6 +649,7 @@ fn parsed(bytes: &[u8], json: bool) -> Result<Sent, Refusal> {
         case: v.case_text,
         severity,
         confidence,
+        verdict_id: v.verdict_id,
     })
 }
 
@@ -622,14 +678,12 @@ fn unchecked(holds: Result<bool, &'static str>) -> Result<bool, Refusal> {
 /// The first key of a verdict that holds a secret, as read, so a JSON escape hides nothing. Of
 /// the message's fields, `reason_text` is prose and is cut where it is kept; `format`, `kind`,
 /// `severity` and `confidence` are numbers of a closed list; every other text is a key: the
-/// case, the store and what the verdict names.
+/// case, the verdict's id, the store and what the verdict names.
 fn secret_field(s: &Sent) -> Result<Option<&'static str>, Refusal> {
-    let (named, position, rule) = match &s.about {
-        About::Finding(id) => (Some(id.as_str()), None, None),
-        About::Match { position, rule } => (None, Some(position.as_str()), Some(rule.as_str())),
-    };
+    let (named, position, rule) = s.named();
     for (field, text) in [
         ("case_text", Some(s.case.as_str())),
+        ("verdict_id", s.verdict_id.as_deref()),
         ("store_id", Some(s.store_id.as_str())),
         ("finding.id", named),
         ("match.position", position),
@@ -724,26 +778,36 @@ fn take(args: &VerdictArgs) -> Result<v1::VerdictRecorded, Refusal> {
     // Everything that can refuse is checked first against the store opened for reading only, so
     // a refused verdict writes nothing: it makes no store of a file, migrates none and gives none
     // an id.
-    let event = check(
-        &store::open_read_only(&args.store).map_err(failed)?,
-        args,
-        &sent,
-        now,
-    )?;
+    let line = {
+        let read = store::open_read_only(&args.store).map_err(failed)?;
+        this_store(&read, &sent)?;
+        // A verdict sent again under its id gets its first answer before anything else can
+        // refuse it: its line may have left the log since, or its finding been answered. Nothing
+        // is written.
+        if let Some(earlier) = by_id(&read, &sent)? {
+            return answer(&read, earlier, true, now);
+        }
+        check(&read, args, &sent, now)?
+    };
     let (_lock, mut conn) = writing(&args.store)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    if let Some(earlier) = same(&tx, &sent)? {
+    // Decided again under the write lock: another process may have recorded the same verdict
+    // since it was read. The unique index on the id backs this.
+    let earlier = match sent.verdict_id {
+        Some(_) => by_id(&tx, &sent)?,
+        None => same(&tx, &sent)?,
+    };
+    if let Some(earlier) = earlier {
         return answer(&tx, earlier, true, now);
     }
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.subsec_nanos());
     let run_id = format!("{RUN_PREFIX}{now}-{nanos:09}");
-    let (named, position, rule) = match &sent.about {
-        About::Finding(id) => (Some(id.as_str()), None, None),
-        About::Match { position, rule } => (None, Some(position.as_str()), Some(rule.as_str())),
-    };
+    let (named, position, rule) = sent.named();
     let (reason, case) = sent.kept();
+    let verdict_id = sent.kept_id();
+    let event_gone = matches!(line, Some(Line::Gone));
     tx.execute(
         "INSERT INTO journal (at, run_id, entry, kind, subject, new_value, text)
          VALUES (?1, ?2, 'verdict', ?3, ?4, ?5, ?6)",
@@ -756,6 +820,7 @@ fn take(args: &VerdictArgs) -> Result<v1::VerdictRecorded, Refusal> {
             json!({
                 "named": named, "position": position, "rule": rule,
                 "severity": sent.severity, "confidence": sent.confidence,
+                "verdict_id": verdict_id, "event_gone": event_gone,
                 crate::secrets::VERDICT_ENTRY_TEXT[0]: reason,
                 crate::secrets::VERDICT_ENTRY_TEXT[1]: case,
             })
@@ -798,16 +863,17 @@ fn take(args: &VerdictArgs) -> Result<v1::VerdictRecorded, Refusal> {
                     params![finding, journal],
                 )?;
             }
-            if let Some(e) = event {
-                events::keep(&tx, &finding, now, 1, &VecDeque::from([e]))?;
+            // A line no longer in the log gives no event to keep.
+            if let Some(Line::Read(e)) = line {
+                events::keep(&tx, &finding, now, 1, &VecDeque::from([*e]))?;
             }
             (Some(finding), raised)
         }
     };
     tx.execute(
         &format!(
-            "INSERT INTO verdict (at, journal, {}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            "kind, named, position, rule, finding, raised, severity, confidence, reason, case_ref"
+            "INSERT INTO verdict (at, journal, {}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            "kind, named, position, rule, finding, raised, severity, confidence, reason, case_ref, verdict_id, event_gone"
         ),
         params![
             now,
@@ -821,7 +887,9 @@ fn take(args: &VerdictArgs) -> Result<v1::VerdictRecorded, Refusal> {
             sent.severity,
             sent.confidence,
             reason,
-            case
+            case,
+            verdict_id,
+            event_gone
         ],
     )?;
     let out = answer(&tx, tx.last_insert_rowid(), false, now)?;
@@ -829,14 +897,9 @@ fn take(args: &VerdictArgs) -> Result<v1::VerdictRecorded, Refusal> {
     Ok(out)
 }
 
-/// What can refuse a verdict once the store is open: another store's, a finding the store does
-/// not hold, a match the log does not hold. It writes nothing. A match gives back its event.
-fn check(
-    conn: &Connection,
-    args: &VerdictArgs,
-    sent: &Sent,
-    now: i64,
-) -> Result<Option<events::Evidence>, Refusal> {
+/// A verdict names the store it was judged from: another store's is refused, since a finding's
+/// id is unique only within one store. It writes nothing.
+fn this_store(conn: &Connection, sent: &Sent) -> Result<(), Refusal> {
     let id = store::id(conn)?;
     if id != sent.store_id {
         return Err(refused(
@@ -848,6 +911,27 @@ fn check(
             ),
         ));
     }
+    Ok(())
+}
+
+/// What the log gave of the match a verdict names.
+enum Line {
+    /// The event on the line, read again: it matched the rule.
+    Read(Box<events::Evidence>),
+    /// The line is no longer in the log and the verdict is `suspicious`: it is recorded with no
+    /// event, and the rule was not checked against one.
+    Gone,
+}
+
+/// What can refuse a verdict once the store is open and the verdict is not one recorded under
+/// its id: a finding the store does not hold, a match the log does not hold. It writes nothing.
+/// A match gives back what the log holds of it; a finding, nothing.
+fn check(
+    conn: &Connection,
+    args: &VerdictArgs,
+    sent: &Sent,
+    now: i64,
+) -> Result<Option<Line>, Refusal> {
     match &sent.about {
         About::Finding(id) => {
             let known = findings::all(conn, now)?.iter().any(|f| f.id == *id);
@@ -860,18 +944,28 @@ fn check(
             }
             Ok(None)
         }
-        About::Match { position, rule } => checked_match(args, position, rule).map(Some),
+        About::Match { position, rule } => {
+            checked_match(args, position, rule, sent.kind, now).map(Some)
+        }
     }
 }
 
 /// A match a verdict names, checked against the log: the rule is one this build ships, the
 /// position is one `immune matches` prints, and the event on the line there, read again and
 /// evaluated at the one place the core evaluates an event, matched the rule.
+///
+/// The log keeps about a day, and a decision can take longer. When the line is no longer in it,
+/// a `suspicious` verdict is not lost: it is taken with no event (`Line::Gone`), as long as the
+/// hour its position names is not later than now, since `immune matches` never printed a
+/// position of an hour still to come. A `harmless` one is refused: it is a record beside a
+/// match, and there is no match to keep it beside.
 fn checked_match(
     args: &VerdictArgs,
     position: &str,
     rule: &str,
-) -> Result<events::Evidence, Refusal> {
+    kind: Kind,
+    now: i64,
+) -> Result<Line, Refusal> {
     let no_match = |detail: String| {
         refused(
             "no_such_match",
@@ -887,17 +981,25 @@ fn checked_match(
             "{position} is not a position immune matches printed"
         )));
     };
-    let hit = match events::at_line(&args.system_root, &at, crate::now_secs()) {
+    let hit = match events::at_line(&args.system_root, &at, now) {
         Ok(AtLine::Event(hit)) => hit,
         Ok(AtLine::NoLine) => {
             return Err(no_match(format!("no event's line begins at {position}")));
         }
-        Ok(AtLine::Gone) => {
+        Ok(AtLine::Gone) if kind == Kind::Harmless => {
             return Err(refused(
                 "match_gone",
                 "the log holds no line at that position: the file it names is not in the log, or another file has its name now; nothing was recorded",
                 position,
             ));
+        }
+        Ok(AtLine::Gone) => {
+            return match at.hour() {
+                Some(hour) if hour <= now => Ok(Line::Gone),
+                _ => Err(no_match(format!(
+                    "{position} names a log file of an hour later than now"
+                ))),
+            };
         }
         Err(why) => {
             return Err(Refusal {
@@ -913,23 +1015,88 @@ fn checked_match(
             "the event at {position} did not match {rule}"
         )));
     }
-    Ok(hit.event)
+    Ok(Line::Read(Box::new(hit.event)))
+}
+
+/// The verdict recorded before under the same id, when this one carries an id: the same verdict
+/// sent again, whose first answer is given whatever the state of its finding. An id names one
+/// verdict, so the same id on a message that differs in what it names, its kind, its reason as
+/// kept, its case or a level is refused, saying which of them differ and never what they hold.
+fn by_id(conn: &Connection, s: &Sent) -> Result<Option<i64>, Refusal> {
+    let Some(id) = s.kept_id() else {
+        return Ok(None);
+    };
+    let (named, position, rule) = s.named();
+    let (reason, case) = s.kept();
+    let row = conn
+        .query_row(
+            "SELECT id, named IS ?2 AND position IS ?3 AND rule IS ?4, kind = ?5, reason = ?6,
+                    case_ref = ?7, severity IS ?8, confidence IS ?9
+             FROM verdict WHERE verdict_id = ?1",
+            params![
+                id,
+                named,
+                position,
+                rule,
+                s.kind.word(),
+                reason,
+                case,
+                s.severity,
+                s.confidence
+            ],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    [
+                        r.get::<_, bool>(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                    ],
+                ))
+            },
+        )
+        .optional()?;
+    let Some((earlier, equal)) = row else {
+        return Ok(None);
+    };
+    let differs: Vec<&str> = [
+        "what it is about",
+        "kind",
+        "reason_text",
+        "case_text",
+        "severity",
+        "confidence",
+    ]
+    .into_iter()
+    .zip(equal)
+    .filter(|(_, equal)| !equal)
+    .map(|(field, _)| field)
+    .collect();
+    if differs.is_empty() {
+        return Ok(Some(earlier));
+    }
+    Err(refused(
+        "verdict_id_reused",
+        "a verdict with this verdict_id was recorded before and this one differs from it; an id names one verdict, so nothing was recorded",
+        format!("it differs in {}", differs.join(", ")),
+    ))
 }
 
 /// The verdict recorded before that is the same message, while it means the same: a `harmless`
 /// one, or a `suspicious` one whose finding is still open. After the person answered that
-/// finding, the same message is the response layer saying it again.
+/// finding, the same message is the response layer saying it again. Only between verdicts that
+/// carry no id: one with an id is told apart by it (`by_id`).
 fn same(tx: &Transaction, s: &Sent) -> rusqlite::Result<Option<i64>> {
-    let (named, position, rule) = match &s.about {
-        About::Finding(id) => (Some(id.as_str()), None, None),
-        About::Match { position, rule } => (None, Some(position.as_str()), Some(rule.as_str())),
-    };
+    let (named, position, rule) = s.named();
     let (reason, case) = s.kept();
     tx.query_row(
         "SELECT v.id FROM verdict v LEFT JOIN finding f ON f.id = v.finding
          WHERE v.named IS ?1 AND v.position IS ?2 AND v.rule IS ?3 AND v.kind = ?4
            AND v.case_ref = ?5 AND v.reason = ?6 AND v.severity IS ?7 AND v.confidence IS ?8
-           AND (v.finding IS NULL OR f.state = 'open')
+           AND v.verdict_id IS NULL AND (v.finding IS NULL OR f.state = 'open')
          ORDER BY v.id LIMIT 1",
         params![
             named,
@@ -948,19 +1115,19 @@ fn same(tx: &Transaction, s: &Sent) -> rusqlite::Result<Option<i64>> {
 
 /// What was recorded, as the contract's answer: the verdict, and its finding by reference.
 fn answer(
-    tx: &Transaction,
+    conn: &Connection,
     id: i64,
     already: bool,
     now: i64,
 ) -> Result<v1::VerdictRecorded, Refusal> {
-    let store_id = Some(store::id(tx)?);
-    let r = tx.query_row(
+    let store_id = Some(store::id(conn)?);
+    let r = conn.query_row(
         &format!("SELECT {COLUMNS} FROM verdict WHERE id = ?1"),
         [id],
         row,
     )?;
     let finding = match &r.finding {
-        Some(f) => findings::all(tx, now)?
+        Some(f) => findings::all(conn, now)?
             .iter()
             .find(|x| &x.id == f)
             .map(|f| known::finding_ref(&findings::item(f))),

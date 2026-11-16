@@ -9,9 +9,9 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 /// The store's format. A store of any other format is refused and left as it is: this build
-/// reads only what a build of format 6 wrote, with every table and column this build reads and
+/// reads only what a build of format 7 wrote, with every table and column this build reads and
 /// text from a source kept cut, in the store's form (see `secrets`).
-pub const FORMAT_VERSION: &str = "6";
+pub const FORMAT_VERSION: &str = "7";
 
 const SCHEMA: &str = "
 CREATE TABLE meta (

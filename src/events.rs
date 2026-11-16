@@ -2736,6 +2736,25 @@ impl LineAt {
         };
         (at.to_string() == text).then_some(at)
     }
+
+    /// The start of the hour its file's name gives, in UTC seconds: the later of the run and the
+    /// start for a name of a later collector, the hour for an earlier one's. `None` for a name no
+    /// collector gives. A position whose hour is later than now was never printed by
+    /// `immune matches`.
+    pub fn hour(&self) -> Option<i64> {
+        let key = key_of(&self.file)?;
+        let hour = match key.run {
+            0 => key.at,
+            run => run.max(key.at) / 10_000,
+        };
+        let (year, month, day, h) = (
+            hour / 1_000_000,
+            hour / 10_000 % 100,
+            hour / 100 % 100,
+            hour % 100,
+        );
+        instant(&format!("{year:04}-{month:02}-{day:02}T{h:02}:00:00Z")).map(|(secs, _)| secs)
+    }
 }
 
 /// What the log holds at a position, for a verdict about a match.
