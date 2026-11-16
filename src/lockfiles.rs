@@ -27,18 +27,99 @@ pub const NONE_FOUND_NOTE: &str = "no lockfile this version knows of was found i
 /// What this build has no reader for among lockfiles, in its own words: a kind, by name.
 pub const LOCKFILE_KIND: &str = "lockfile kind";
 
+/// What this build reads of a lockfile below the folders it opens: its kind, by name. The
+/// lockfile is there and was not opened.
+pub const DEEPER: &str = "lockfile below the folders read";
+/// What this build reads of a lockfile in a folder it sets aside, `vendor` or a hidden one: its
+/// kind, by name. The lockfile is there and was not opened.
+pub const SET_ASIDE: &str = "lockfile in a folder set aside";
+/// Folders past `LOOK_LIMIT` that the walk did not look through: what they hold is not known.
+pub const NOT_LOOKED: &str = "folders not looked through for lockfiles";
+/// What this build reads of a lockfile that is a symbolic link: its kind, by name. Links are not
+/// followed, so it was not opened.
+pub const LINKED: &str = "lockfile that is a link";
+/// How a partial reading's reason begins a clause for what its lacks name (`Gap::lacks`): the
+/// kinds with no reader and the lockfiles not opened. The lacks decide what such a clause
+/// leaves unknown; the words are for a person.
+const NOT_SUPPORTED_SAID: &str = "not supported yet: ";
+const NOT_OPENED_SAID: &str = "not opened: ";
+
+/// Lockfiles are opened in the project's folder and in folders at most this deep below it.
+/// Below, the walk only looks for them by name, so that one it does not open is said and never
+/// taken as absent.
 const MAX_DEPTH: usize = 4;
-const PRUNED: [&str; 4] = ["node_modules", "target", "vendor", ".git"];
+/// How many folders the walk lists, besides those whose lockfiles it opens, only to look for
+/// lockfiles it does not open: below `MAX_DEPTH` and in folders set aside. Listing a folder is
+/// one call to the system, about 0.1 s for 9,000 folders on a debug build, and ordinary build
+/// trees (`android/app/build/intermediates`, a large Java package tree) hold several thousand.
+/// Past this the reading is partial for every ecosystem, since what lies there is not known.
+const LOOK_LIMIT: usize = 50_000;
+/// Folders never entered, at any depth, since none holds what the project itself declares:
+/// `.git` is git's own database, never a working file; `node_modules` holds installed copies of
+/// packages, which the project's lockfile beside it declares, and a lockfile inside one is a
+/// published package's own, about how that package was built; `target` is build output, made
+/// from the project's own files. Every other hidden folder, and `vendor`, can hold code of the
+/// project's own with its own lockfile, a CI action or a vendored app: they are set aside,
+/// looked through for lockfiles that are then not opened (`SET_ASIDE`).
+const NEVER_ENTERED: [&str; 3] = [".git", "node_modules", "target"];
+const SET_ASIDE_FOLDER: &str = "vendor";
+/// What marks a folder, or part of one, as holding nothing of the project's own. Marks only
+/// bound the look for names below `MAX_DEPTH` and in folders set aside: where lockfiles are
+/// opened, every one is opened whatever marks are there. What a marked folder holds is not the
+/// project's and is not looked at.
+/// - `pyvenv.cfg` marks a Python virtual environment (PEP 405). People make one in place in a
+///   project's folder, so only the subfolders of an environment's own layout, as `venv` makes
+///   them on POSIX and on Windows, are not looked into; the folder's own files and its other
+///   subfolders are looked at as any other.
+/// - `conda-meta` marks a conda environment, a folder of its own by construction.
+/// - `CACHEDIR.TAG` beginning with its signature marks a cache (the Cache Directory Tagging
+///   Specification, bford.info/cachedir).
+/// - `.git`, a folder or a file (a worktree, a submodule, a nested repository), below the
+///   project's own folder marks another project.
+const ENVIRONMENT_MARK: &str = "pyvenv.cfg";
+const ENVIRONMENT_LAYOUT: [&str; 8] = [
+    "lib", "lib64", "bin", "include", "share", "Scripts", "Lib", "Include",
+];
+const CONDA_MARK: &str = "conda-meta";
+const CACHE_MARK: &str = "CACHEDIR.TAG";
+const CACHE_SIGNATURE: &[u8] = b"Signature: 8a477f597d28d172789f06886806bc55";
+const CHECKOUT_MARK: &str = ".git";
+
 const SUPPORTED: [&str; 3] = ["package-lock.json", "pnpm-lock.yaml", "Cargo.lock"];
-const NOT_SUPPORTED: [&str; 8] = [
-    "yarn.lock",
-    "uv.lock",
-    "poetry.lock",
-    "composer.lock",
-    "go.sum",
-    "requirements.txt",
-    "Package.resolved",
-    "bun.lock",
+/// Lockfiles this build has no reader for, by name, with the ecosystem whose packages each
+/// declares, as OSV names it. Data, from OSV-Scanner's list of supported lockfiles
+/// (google.github.io/osv-scanner, "Supported languages and lockfiles", read on 16 November
+/// 2026), with `go.sum` for Go, npm's own `npm-shrinkwrap.json`, Swift's `Package.resolved`, and
+/// CocoaPods' `Podfile.lock` and Nix's `flake.lock`, whose ecosystems OSV does not name. The
+/// manifests that page lists beside the lockfiles (`go.mod`, `pom.xml`, `deps.json` and the
+/// like) are not lockfiles and are not here. A lockfile of a name on no list is not known to be
+/// one and cannot be said (docs/reference.md).
+const NOT_SUPPORTED: [(&str, Option<&str>); 25] = [
+    ("yarn.lock", Some("npm")),
+    ("bun.lock", Some("npm")),
+    ("npm-shrinkwrap.json", Some("npm")),
+    ("uv.lock", Some("PyPI")),
+    ("poetry.lock", Some("PyPI")),
+    ("Pipfile.lock", Some("PyPI")),
+    ("pdm.lock", Some("PyPI")),
+    ("pylock.toml", Some("PyPI")),
+    ("requirements.txt", Some("PyPI")),
+    ("composer.lock", Some("Packagist")),
+    ("go.sum", Some("Go")),
+    ("Package.resolved", Some("SwiftURL")),
+    ("Gemfile.lock", Some("RubyGems")),
+    ("gems.locked", Some("RubyGems")),
+    ("mix.lock", Some("Hex")),
+    ("pubspec.lock", Some("Pub")),
+    ("renv.lock", Some("CRAN")),
+    ("gradle.lockfile", Some("Maven")),
+    ("buildscript-gradle.lockfile", Some("Maven")),
+    ("packages.lock.json", Some("NuGet")),
+    ("conan.lock", Some("ConanCenter")),
+    ("cabal.project.freeze", Some("Hackage")),
+    ("stack.yaml.lock", Some("Hackage")),
+    ("Podfile.lock", None),
+    ("flake.lock", None),
 ];
 
 /// Where a lockfile entry comes from. A closed set: only `Registry`, the ecosystem's public
@@ -86,39 +167,39 @@ pub fn split_name(name: &str) -> (&str, Option<&'static str>) {
 /// it; `None` for one not known here.
 pub fn ecosystem_of(kind: &str) -> Option<&'static str> {
     match kind {
-        "package-lock.json" | "pnpm-lock.yaml" | "yarn.lock" | "bun.lock" => Some("npm"),
+        "package-lock.json" | "pnpm-lock.yaml" => Some("npm"),
         k if k.starts_with("package-lock.json version") => Some("npm"),
         k if k.starts_with("pnpm-lock.yaml version") => Some("npm"),
         "Cargo.lock" => Some("crates.io"),
-        "uv.lock" | "poetry.lock" | "requirements.txt" => Some("PyPI"),
-        "composer.lock" => Some("Packagist"),
-        "go.sum" => Some("Go"),
-        "Package.resolved" => Some("SwiftURL"),
-        _ => None,
+        _ => NOT_SUPPORTED
+            .iter()
+            .find(|(name, _)| *name == kind)
+            .and_then(|(_, ecosystem)| *ecosystem),
     }
 }
 
-/// Whether a partial reading, by the reason `read` gives it, leaves the dependencies of one
-/// ecosystem in part unknown: a lockfile of that ecosystem not read or not parsed, an entry not
-/// told, a folder not listed. A clause this does not recognise counts for every ecosystem, so
-/// that nothing reads as fully known that is not.
-pub fn partial_for(reason: &str, ecosystem: &str) -> bool {
-    let names_it = |names: &str| {
-        names
-            .split(", ")
-            .any(|n| ecosystem_of(n).is_none_or(|e| e == ecosystem))
-    };
-    reason.split("; ").any(|clause| {
-        if let Some(names) = clause.strip_prefix("not supported yet: ") {
-            names_it(names)
-        } else if let Some(names) = clause.strip_prefix("could not be read: ") {
-            names_it(names)
-        } else if clause.starts_with("the package of ") {
-            ecosystem == "npm"
-        } else {
-            true
-        }
-    })
+/// Whether a partial reading leaves the dependencies of one ecosystem in part unknown. What the
+/// reading names it did not read, `lacks` by their names (a kind with no reader, a lockfile not
+/// opened), leaves the ecosystem of each name unknown and no other: a name of no ecosystem a
+/// record can be about, such as `flake.lock`, leaves none. A lack with no name, folders not
+/// looked through, counts for every ecosystem. The reason's clauses for the lacks are only words
+/// for a person. The reason decides the rest: a lockfile of that ecosystem not parsed, an entry
+/// not told, a folder not listed. A clause this does not recognise counts for every ecosystem,
+/// so that nothing reads as fully known that is not.
+pub fn partial_for(reason: &str, lacks: &[Option<String>], ecosystem: &str) -> bool {
+    let of_it = |name: &str| ecosystem_of(name) == Some(ecosystem);
+    lacks.iter().any(|name| name.as_deref().is_none_or(of_it))
+        || reason.split("; ").any(|clause| {
+            if clause.starts_with(NOT_SUPPORTED_SAID) || clause.starts_with(NOT_OPENED_SAID) {
+                false
+            } else if let Some(names) = clause.strip_prefix("could not be read: ") {
+                names.split(", ").any(of_it)
+            } else if clause.starts_with("the package of ") {
+                ecosystem == "npm"
+            } else {
+                true
+            }
+        })
 }
 
 /// What reading one checkout found.
@@ -132,64 +213,156 @@ pub struct Outcome {
     pub lockfiles: Vec<(String, u64)>,
 }
 
-fn pruned(name: &str) -> bool {
-    name.starts_with('.') || PRUNED.contains(&name)
+/// The kind of lockfile a file's name says, as this build names the kind; `None` for a name of
+/// no lockfile. Names are matched ignoring case: macOS volumes ignore case by default, so
+/// `Package-Lock.json` is the same file to its tool.
+fn lockfile_kind(name: &str) -> Option<&'static str> {
+    SUPPORTED
+        .iter()
+        .copied()
+        .chain(NOT_SUPPORTED.iter().map(|(n, _)| *n))
+        .find(|kind| kind.eq_ignore_ascii_case(name))
 }
 
-/// Lockfiles of known kinds inside a checkout, relative to it, and whether every
-/// folder could be listed.
-fn lockfiles(checkout: &Path) -> (Vec<String>, bool) {
-    let mut out = Vec::new();
-    let mut listed = true;
-    let mut stack = vec![(String::new(), checkout.to_path_buf(), 0)];
-    while let Some((rel, dir, depth)) = stack.pop() {
+/// Where the walk found a lockfile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Where {
+    /// Where lockfiles are opened.
+    Opened,
+    /// Below `MAX_DEPTH`.
+    Deeper,
+    /// In a folder set aside, at any depth.
+    SetAside,
+    /// A symbolic link, anywhere: not followed, so not opened.
+    Linked,
+}
+
+/// What the walk of a checkout found: lockfiles relative to it, each with its kind and where.
+struct Walk {
+    lockfiles: Vec<(String, &'static str, Where)>,
+    /// Whether every folder could be listed.
+    listed: bool,
+    /// Whether folders were left that the look limit kept it from looking through.
+    stopped: bool,
+}
+
+/// Whether a file is a cache's tag: `CACHE_MARK` beginning with its signature.
+fn cache_tag(name: &str, path: &Path) -> bool {
+    use std::io::Read;
+    let mut head = [0u8; CACHE_SIGNATURE.len()];
+    name == CACHE_MARK
+        && std::fs::File::open(path)
+            .and_then(|mut f| f.read_exact(&mut head))
+            .is_ok()
+        && head == CACHE_SIGNATURE
+}
+
+/// Walks a checkout for lockfiles: opened down to `MAX_DEPTH`, as they always were, and below
+/// it and in folders set aside looked for by name only, at most `limit` folders. Links are not
+/// followed. A folder a mark says is not the project's is not looked at by that look; where
+/// lockfiles are opened, marks change nothing.
+fn walk(checkout: &Path, limit: usize) -> Walk {
+    let mut out = Walk {
+        lockfiles: Vec::new(),
+        listed: true,
+        stopped: false,
+    };
+    let mut looked = 0;
+    // Each folder with where it is and whether a mark above it says it is not the project's.
+    let mut stack = vec![(
+        String::new(),
+        checkout.to_path_buf(),
+        0,
+        Where::Opened,
+        false,
+    )];
+    while let Some((rel, dir, depth, at, not_own)) = stack.pop() {
+        if at != Where::Opened {
+            if looked == limit {
+                out.stopped = true;
+                continue;
+            }
+            looked += 1;
+        }
         let Ok(entries) = std::fs::read_dir(&dir) else {
-            listed = false;
+            out.listed = false;
             continue;
         };
+        let (mut files, mut folders) = (Vec::new(), Vec::new());
+        let (mut environment, mut whole) = (false, not_own);
         for entry in entries {
             let Ok(entry) = entry else {
-                listed = false;
+                out.listed = false;
                 continue;
             };
             let name = entry.file_name().to_string_lossy().into_owned();
             let Ok(file_type) = entry.file_type() else {
-                listed = false;
+                out.listed = false;
                 continue;
             };
-            let path = format!("{rel}{name}");
-            if file_type.is_file()
-                && (SUPPORTED.contains(&name.as_str()) || NOT_SUPPORTED.contains(&name.as_str()))
-            {
-                out.push(path);
-            } else if file_type.is_dir() && depth < MAX_DEPTH && !pruned(&name) {
-                stack.push((format!("{path}/"), entry.path(), depth + 1));
+            environment |= file_type.is_file() && name == ENVIRONMENT_MARK;
+            whole |= depth > 0
+                && (name == CHECKOUT_MARK
+                    || (file_type.is_dir() && name == CONDA_MARK)
+                    || (file_type.is_file() && cache_tag(&name, &entry.path())));
+            if file_type.is_dir() {
+                if !NEVER_ENTERED.contains(&name.as_str()) {
+                    folders.push((name, entry.path()));
+                }
+            } else if let Some(kind) = lockfile_kind(&name) {
+                if file_type.is_symlink() {
+                    files.push((name, kind, Where::Linked));
+                } else if file_type.is_file() {
+                    files.push((name, kind, at));
+                }
             }
         }
+        // The look for names does not look at what a mark says is not the project's.
+        if at != Where::Opened && whole {
+            continue;
+        }
+        out.lockfiles.extend(
+            files
+                .into_iter()
+                .map(|(name, kind, at)| (format!("{rel}{name}"), kind, at)),
+        );
+        for (name, path) in folders {
+            let next = match at {
+                Where::Opened if name.starts_with('.') || name == SET_ASIDE_FOLDER => {
+                    Where::SetAside
+                }
+                Where::Opened if depth == MAX_DEPTH => Where::Deeper,
+                other => other,
+            };
+            let not_own = whole || (environment && ENVIRONMENT_LAYOUT.contains(&name.as_str()));
+            stack.push((format!("{rel}{name}/"), path, depth + 1, next, not_own));
+        }
     }
-    out.sort();
-    (out, listed)
+    out.lockfiles.sort();
+    out
 }
 
 /// The lockfiles inside a checkout that this reader opens as text, relative to it, for the
 /// indicators reader to look for strings in.
 pub fn read_as_text(checkout: &Path) -> Vec<String> {
-    lockfiles(checkout)
-        .0
+    walk(checkout, LOOK_LIMIT)
+        .lockfiles
         .into_iter()
-        .filter(|p| SUPPORTED.contains(&file_name(p)))
+        .filter(|(_, kind, at)| *at == Where::Opened && SUPPORTED.contains(kind))
+        .map(|(p, _, _)| p)
         .collect()
-}
-
-fn file_name(path: &str) -> &str {
-    path.rsplit('/').next().unwrap_or(path)
 }
 
 /// Reads one checkout. `None` when it holds no lockfile at all: then there is nothing
 /// to cover. Where the checkout is, is said by the `checkouts` reader.
 pub fn read(checkout: &Checkout, id: &str) -> Option<Outcome> {
-    let (found, listed) = lockfiles(&checkout.path);
-    if found.is_empty() && listed {
+    read_within(checkout, id, LOOK_LIMIT)
+}
+
+/// `read`, with the look for names below the folders opened stopping after `limit` folders.
+fn read_within(checkout: &Checkout, id: &str, limit: usize) -> Option<Outcome> {
+    let walked = walk(&checkout.path, limit);
+    if walked.lockfiles.is_empty() && walked.listed && !walked.stopped {
         return None;
     }
     let prefix = if checkout.rel == "." {
@@ -201,14 +374,34 @@ pub fn read(checkout: &Checkout, id: &str) -> Option<Outcome> {
     let mut not_parsed: BTreeSet<&str> = BTreeSet::new();
     // Entries whose package cannot be told, as `<lockfile>#<key>`.
     let mut not_told: Vec<String> = Vec::new();
+    // Lockfiles of a kind read here that were not opened, by where, and their kinds.
+    let mut not_opened: BTreeMap<&'static str, Vec<String>> = BTreeMap::new();
+    let mut lacks: BTreeSet<(&'static str, &str)> = BTreeSet::new();
     let mut lockfiles = Vec::new();
     // (ecosystem, name with its source) -> where it was first read, and version -> where
     // that version was first read.
     let mut deps: BTreeMap<(&str, String), Found> = BTreeMap::new();
 
-    for rel in &found {
+    for (rel, kind, at) in &walked.lockfiles {
         let source = format!("{prefix}{rel}");
-        let name = file_name(rel);
+        let name: &str = kind;
+        // A kind with no reader is that wherever it is; one read here is not opened where the
+        // walk does not open lockfiles, or when it is a link, and is named as such.
+        let unopened = match at {
+            Where::Opened => None,
+            Where::Deeper => Some(DEEPER),
+            Where::SetAside => Some(SET_ASIDE),
+            Where::Linked => Some(LINKED),
+        };
+        if let Some(what) = unopened {
+            if SUPPORTED.contains(&name) {
+                not_opened.entry(what).or_default().push(source);
+                lacks.insert((what, name));
+            } else {
+                not_supported.insert(name.to_string());
+            }
+            continue;
+        }
         let path = checkout.path.join(rel);
         let text = std::fs::read(&path).ok();
         lockfiles.push((source.clone(), text.as_ref().map_or(0, |t| t.len() as u64)));
@@ -272,7 +465,36 @@ pub fn read(checkout: &Checkout, id: &str) -> Option<Outcome> {
     let mut reasons = Vec::new();
     if !not_supported.is_empty() {
         let names: Vec<&str> = not_supported.iter().map(String::as_str).collect();
-        reasons.push(format!("not supported yet: {}", names.join(", ")));
+        reasons.push(format!("{NOT_SUPPORTED_SAID}{}", names.join(", ")));
+    }
+    for (what, paths) in &not_opened {
+        let shown: Vec<&str> = paths.iter().take(3).map(String::as_str).collect();
+        let more = if paths.len() > shown.len() {
+            ", …"
+        } else {
+            ""
+        };
+        let place = match *what {
+            DEEPER => format!("deeper than {MAX_DEPTH} folders"),
+            LINKED if paths.len() == 1 => "that is a link".to_string(),
+            LINKED => "that are links".to_string(),
+            _ => "in vendor or hidden folders".to_string(),
+        };
+        reasons.push(format!(
+            "{NOT_OPENED_SAID}{} {place}: {}{more}",
+            if paths.len() == 1 {
+                "1 lockfile".to_string()
+            } else {
+                format!("{} lockfiles", paths.len())
+            },
+            shown.join(", ")
+        ));
+    }
+    if walked.stopped {
+        reasons.push(format!(
+            "{NOT_OPENED_SAID}what lies past the first {limit} folders looked through \
+             for lockfiles below {MAX_DEPTH} folders or in vendor and hidden folders"
+        ));
     }
     if !not_parsed.is_empty() {
         let names: Vec<&str> = not_parsed.iter().copied().collect();
@@ -297,27 +519,32 @@ pub fn read(checkout: &Checkout, id: &str) -> Option<Outcome> {
             shown.join(", ")
         ));
     }
-    if !listed {
+    if !walked.listed {
         reasons.push("a folder could not be listed".to_string());
     }
     // A lockfile that could not be read or a folder that could not be listed failed; a kind
-    // of lockfile without a reader is no reader; an entry the lockfile does not say enough
-    // about is not given. The reading takes the worst.
+    // of lockfile without a reader, a lockfile not opened where it is and folders not looked
+    // through are no reader; an entry the lockfile does not say enough about is not given.
+    // The reading takes the worst.
     let mut causes = Vec::new();
-    if !not_parsed.is_empty() || !listed {
+    if !not_parsed.is_empty() || !walked.listed {
         causes.push(Cause::Failed);
     }
-    if !not_supported.is_empty() {
+    if !not_supported.is_empty() || !lacks.is_empty() || walked.stopped {
         causes.push(Cause::NoReader);
     }
     if !not_told.is_empty() {
         causes.push(Cause::NotGiven);
     }
+    // What was not read, each by name where it has one, so that what it leaves unknown is
+    // decided from these and never from the reason's words (`partial_for`).
     let gap = Gap {
         cause: Cause::worst(causes),
         lacks: not_supported
             .iter()
             .map(|name| Lack::new(LOCKFILE_KIND, Some(name)))
+            .chain(lacks.iter().map(|(what, name)| Lack::new(what, Some(name))))
+            .chain(walked.stopped.then(|| Lack::new(NOT_LOOKED, None)))
             .collect(),
     };
     Some(Outcome {
@@ -890,7 +1117,14 @@ fn is_hash(s: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Checkout, read};
+    use super::{
+        CACHE_SIGNATURE, Checkout, DEEPER, LINKED, LOCKFILE_KIND, NOT_LOOKED, SET_ASIDE,
+        ecosystem_of, partial_for, read, read_as_text, read_within,
+    };
+
+    fn file_name(path: &str) -> &str {
+        path.rsplit('/').next().unwrap_or(path)
+    }
     use crate::store::Cause;
     use std::path::PathBuf;
 
@@ -2053,8 +2287,9 @@ snapshots:
             assert_eq!(o.gap.lacks[0].name.as_deref(), Some(name.as_str()));
             let reason = o.reason.unwrap();
             assert_eq!(reason, format!("not supported yet: {name}"));
-            assert!(super::partial_for(&reason, "npm"));
-            assert!(!super::partial_for(&reason, "crates.io"));
+            let lacks: Vec<Option<String>> = o.gap.lacks.iter().map(|l| l.name.clone()).collect();
+            assert!(super::partial_for(&reason, &lacks, "npm"));
+            assert!(!super::partial_for(&reason, &lacks, "crates.io"));
         }
     }
 
@@ -2132,5 +2367,366 @@ snapshots:
             ["dev/shop/package-lock.json", "dev/shop/web/pnpm-lock.yaml"]
         );
         assert_eq!(o.completeness, "full");
+    }
+
+    /// The lacks of a reading by what and name, as `what name`.
+    fn lacks(o: &super::Outcome) -> Vec<String> {
+        o.gap
+            .lacks
+            .iter()
+            .map(|l| format!("{} {}", l.what, l.name.as_deref().unwrap_or("-")))
+            .collect()
+    }
+
+    /// Whether the reading leaves each of npm and crates.io in part unknown.
+    fn unknown_for(o: &super::Outcome) -> [bool; 2] {
+        let names: Vec<Option<String>> = o.gap.lacks.iter().map(|l| l.name.clone()).collect();
+        let reason = o.reason.as_deref().unwrap_or_default();
+        ["npm", "crates.io"].map(|e| o.completeness == "partial" && partial_for(reason, &names, e))
+    }
+
+    #[test]
+    fn a_lockfile_the_walk_does_not_open_makes_the_reading_partial_for_its_ecosystem_by_its_kind() {
+        // No false calm. A lockfile below the folders the reader opens, or in `vendor` or a
+        // hidden folder, is named by its kind in a lack of its own, and leaves its ecosystem
+        // unknown: never a reading in full beside a `Cargo.lock` at the root.
+        for (tag, path, what, eco) in [
+            (
+                "deep",
+                "apps/web/client/ui/desk/package-lock.json",
+                DEEPER,
+                [true, false],
+            ),
+            (
+                "vendor",
+                "vendor/app/package-lock.json",
+                SET_ASIDE,
+                [true, false],
+            ),
+            (
+                "hidden",
+                ".github/actions/deploy/package-lock.json",
+                SET_ASIDE,
+                [true, false],
+            ),
+            (
+                "deep-cargo",
+                "a/b/c/d/tool/Cargo.lock",
+                DEEPER,
+                [false, true],
+            ),
+            (
+                "vendor-deep",
+                "vendor/a/b/c/d/e/pnpm-lock.yaml",
+                SET_ASIDE,
+                [true, false],
+            ),
+        ] {
+            let dir = Dir::new(tag, &[("Cargo.lock", CARGO), (path, NPM)]);
+            let (o, said) = dir.read();
+            assert!(!said.iter().any(|s| s.contains("npm/")), "{tag}: {said:?}");
+            assert_eq!(o.completeness, "partial", "{tag}");
+            assert_eq!(o.gap.cause, Some(Cause::NoReader), "{tag}");
+            let kind = file_name(path);
+            assert_eq!(lacks(&o), [format!("{what} {kind}")], "{tag}");
+            assert!(
+                o.reason
+                    .as_deref()
+                    .unwrap()
+                    .contains(&format!("dev/shop/{path}")),
+                "{tag}"
+            );
+            assert_eq!(unknown_for(&o), eco, "{tag}");
+            // Not opened, so neither in the copy of what was read nor read as text.
+            assert_eq!(o.lockfiles.len(), 1, "{tag}");
+            assert_eq!(read_as_text(&dir.0), ["Cargo.lock"], "{tag}");
+        }
+    }
+
+    #[test]
+    fn a_lockfile_of_an_ecosystem_with_no_reader_is_named_as_a_kind_wherever_it_is() {
+        // `Pipfile.lock`, `Gemfile.lock` and the rest of the published list are lockfiles: one
+        // beside a `Cargo.lock` is a kind with no reader, by name, whether at the root, deep or
+        // set aside. It leaves its own ecosystem unknown and no other: a deep `uv.lock` makes
+        // PyPI partial and not npm, and a name of no ecosystem a record can be about leaves none.
+        for (tag, path, eco) in [
+            ("uv-deep", "a/b/c/d/e/uv.lock", Some("PyPI")),
+            ("pipfile", "Pipfile.lock", Some("PyPI")),
+            ("gemfile", "api/Gemfile.lock", Some("RubyGems")),
+            (
+                "composer-deep",
+                "a/b/c/d/e/composer.lock",
+                Some("Packagist"),
+            ),
+            ("mix-vendor", "vendor/x/mix.lock", Some("Hex")),
+            ("pubspec", "app/pubspec.lock", Some("Pub")),
+            ("swift", "Package.resolved", Some("SwiftURL")),
+            ("flake", "flake.lock", None),
+        ] {
+            let dir = Dir::new(tag, &[("Cargo.lock", CARGO), (path, "{}\n")]);
+            let (o, _) = dir.read();
+            let kind = file_name(path);
+            assert_eq!(lacks(&o), [format!("{LOCKFILE_KIND} {kind}")], "{tag}");
+            assert_eq!(ecosystem_of(kind), eco, "{tag}");
+            assert_eq!(o.completeness, "partial", "{tag}");
+            assert_eq!(unknown_for(&o), [false, false], "{tag}");
+            let names: Vec<Option<String>> = o.gap.lacks.iter().map(|l| l.name.clone()).collect();
+            if let Some(eco) = eco {
+                assert!(
+                    partial_for(o.reason.as_deref().unwrap(), &names, eco),
+                    "{tag}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_folder_of_installed_copies_build_output_an_environment_or_a_cache_holds_no_lockfile_of_the_project()
+     {
+        // A project read in full stays full. What `node_modules`, `target`, `.git`, a Python
+        // environment's own folders, a conda environment, a tagged cache and another checkout
+        // hold is not what the project declares, so a lockfile the look for names finds inside
+        // one leaves nothing unknown. A `CACHEDIR.TAG` without its signature marks nothing.
+        let tag = std::str::from_utf8(CACHE_SIGNATURE).unwrap();
+        let dir = Dir::new(
+            "set-aside-not",
+            &[
+                ("Cargo.lock", CARGO),
+                ("node_modules/left-pad/package-lock.json", NPM),
+                ("web/node_modules/x/yarn.lock", ""),
+                ("target/package/app-0.1.0/Cargo.lock", CARGO),
+                (".git/modules/x/package-lock.json", NPM),
+                (".venv/pyvenv.cfg", "home = /usr/bin\n"),
+                (
+                    ".venv/lib/python3.12/site-packages/lab/staging/yarn.lock",
+                    "",
+                ),
+                ("env/pyvenv.cfg", "home = /usr/bin\n"),
+                ("env/lib/python3.12/site-packages/lab/staging/yarn.lock", ""),
+                (".conda/conda-meta/history", ""),
+                (".conda/pkgs/x/package-lock.json", NPM),
+                ("envs/py/conda-meta/history", ""),
+                ("envs/py/share/a/b/package-lock.json", NPM),
+                (".cache/CACHEDIR.TAG", &format!("{tag}\n# a cache\n")),
+                (".cache/x/package-lock.json", NPM),
+                ("src/a/b/c/d/e/f/main.rs", ""),
+            ],
+        );
+        let (o, _) = dir.read();
+        assert_eq!((o.completeness, o.reason.as_deref()), ("full", None));
+        assert!(o.gap.lacks.is_empty());
+        let read: Vec<&str> = o.lockfiles.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(read, ["dev/shop/Cargo.lock"]);
+        let dir = Dir::new(
+            "unsigned-tag",
+            &[
+                ("Cargo.lock", CARGO),
+                (
+                    ".cache/CACHEDIR.TAG",
+                    "Signature: 0000000000000000000000000000000\n",
+                ),
+                (".cache/x/package-lock.json", NPM),
+            ],
+        );
+        assert_eq!(
+            lacks(&dir.read().0),
+            [format!("{SET_ASIDE} package-lock.json")]
+        );
+        // A project's own folder holding such a file is still the project's.
+        let dir = Dir::new(
+            "marked-root",
+            &[("Cargo.lock", CARGO), ("pyvenv.cfg", "home = /usr/bin\n")],
+        );
+        assert!(!dir.read().1.is_empty());
+    }
+
+    #[test]
+    fn a_mark_never_changes_which_lockfiles_are_opened() {
+        // No false calm. A folder within the four the reader opens is opened as it always was,
+        // whatever marks it holds: a `package-lock.json` beside a `pyvenv.cfg`, a signed
+        // `CACHEDIR.TAG`, a `conda-meta` or a `.git` is read, and read as text.
+        let tag = format!("{}\n", std::str::from_utf8(CACHE_SIGNATURE).unwrap());
+        for (mark, text) in [
+            ("pyvenv.cfg", "home = /usr/bin\n"),
+            ("CACHEDIR.TAG", tag.as_str()),
+            ("conda-meta/history", ""),
+            (".git", "gitdir: ../.git/worktrees/web\n"),
+            (".git/HEAD", "ref: refs/heads/main\n"),
+        ] {
+            let dir = Dir::new(
+                "marked-opened",
+                &[
+                    (&format!("web/{mark}") as &str, text),
+                    ("web/package-lock.json", NPM),
+                    ("web/a/b/package-lock.json", NPM),
+                ],
+            );
+            let (o, said) = dir.read();
+            assert!(
+                said.iter().any(|s| s.contains("npm/string-width")),
+                "{mark}"
+            );
+            assert_eq!(
+                (o.completeness, o.reason.as_deref()),
+                ("full", None),
+                "{mark}"
+            );
+            assert_eq!(
+                read_as_text(&dir.0),
+                ["web/a/b/package-lock.json", "web/package-lock.json"],
+                "{mark}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_lockfile_beside_an_environment_made_in_place_is_still_looked_for() {
+        // People make a Python environment in a project's own folder: only the environment's
+        // own folders are not looked into, so a lockfile deep beside them is told.
+        let dir = Dir::new(
+            "venv-in-place",
+            &[
+                ("Cargo.lock", CARGO),
+                ("svc/pyvenv.cfg", "home = /usr/bin\n"),
+                (
+                    "svc/lib/python3.12/site-packages/x/a/package-lock.json",
+                    NPM,
+                ),
+                ("svc/bin/a/b/c/package-lock.json", NPM),
+                ("svc/web/client/ui/desk/package-lock.json", NPM),
+            ],
+        );
+        let (o, _) = dir.read();
+        assert_eq!(lacks(&o), [format!("{DEEPER} package-lock.json")]);
+        assert!(
+            o.reason
+                .as_deref()
+                .unwrap()
+                .ends_with(": dev/shop/svc/web/client/ui/desk/package-lock.json")
+        );
+    }
+
+    #[test]
+    fn another_checkout_inside_a_project_is_not_looked_into() {
+        // A worktree an agent made, a submodule or a nested repository is a project of its own:
+        // the look for names stops at its `.git`, a file or a folder, and the project stays full.
+        let dir = Dir::new(
+            "nested-checkout",
+            &[
+                ("Cargo.lock", CARGO),
+                (
+                    ".claude/worktrees/x/.git",
+                    "gitdir: ../../../.git/worktrees/x\n",
+                ),
+                (".claude/worktrees/x/package-lock.json", NPM),
+                ("vendor/dep/.git/HEAD", "ref: refs/heads/main\n"),
+                ("vendor/dep/yarn.lock", ""),
+                ("libs/sub/.git", "gitdir: ../../.git/modules/sub\n"),
+                ("libs/sub/a/b/c/package-lock.json", NPM),
+            ],
+        );
+        let (o, _) = dir.read();
+        assert_eq!((o.completeness, o.reason.as_deref()), ("full", None));
+    }
+
+    #[test]
+    fn a_lockfile_that_is_a_link_leaves_its_ecosystem_unknown() {
+        // A link is not followed, so the lockfile it names is not opened: it is named by its
+        // kind and leaves npm unknown, and not crates.io.
+        let dir = Dir::new("linked", &[("Cargo.lock", CARGO), ("web/real.json", NPM)]);
+        std::os::unix::fs::symlink("real.json", dir.0.join("web/package-lock.json")).unwrap();
+        let (o, said) = dir.read();
+        assert!(!said.iter().any(|s| s.contains("npm/")));
+        assert_eq!(lacks(&o), [format!("{LINKED} package-lock.json")]);
+        assert_eq!(unknown_for(&o), [true, false]);
+    }
+
+    #[test]
+    fn a_lockfile_named_in_another_case_is_read_as_its_kind() {
+        // macOS volumes ignore case by default, so npm reads `Package-Lock.json` as its lockfile.
+        let dir = Dir::new(
+            "case",
+            &[("Package-Lock.json", NPM), ("api/CARGO.LOCK", CARGO)],
+        );
+        let (o, said) = dir.read();
+        assert!(said.iter().any(|s| s.contains("npm/string-width")));
+        assert!(said.iter().any(|s| s.contains("crates.io/serde")));
+        assert_eq!(o.completeness, "full");
+    }
+
+    #[test]
+    fn ordinary_projects_whose_lockfiles_are_all_opened_stay_read_in_full() {
+        // No new partial reading for an ordinary project: lockfiles within four folders,
+        // deep source trees, CI configuration and a vendored folder without a lockfile.
+        let shapes: [&[(&str, &str)]; 5] = [
+            &[("Cargo.lock", CARGO), ("src/a/b/c/d/e/f/g/lib.rs", "")],
+            &[("package-lock.json", NPM), (".github/workflows/ci.yml", "")],
+            &[
+                ("pnpm-lock.yaml", PNPM_9),
+                ("apps/web/client/ui/package-lock.json", NPM),
+                ("packages/ui/src/a/b/c/d/index.ts", ""),
+            ],
+            &[("Cargo.lock", CARGO), ("vendor/lib/src/a.c", "")],
+            &[
+                ("app/package-lock.json", NPM),
+                (".vscode/settings.json", "{}"),
+            ],
+        ];
+        for (i, files) in shapes.iter().enumerate() {
+            let dir = Dir::new(&format!("ordinary-{i}"), files);
+            let (o, said) = dir.read();
+            assert_eq!((o.completeness, o.reason.as_deref()), ("full", None), "{i}");
+            assert!(!said.is_empty(), "{i}");
+        }
+    }
+
+    #[test]
+    fn folders_past_the_look_through_limit_leave_every_ecosystem_unknown() {
+        // The walk below the folders it opens is bounded; what it did not look through is not
+        // known to hold no lockfile, so it is a lack with no name, for every ecosystem.
+        // `vendor` and the folders in it, as many as the walk looks through.
+        let dir = Dir::new(
+            "look-limit",
+            &[
+                ("Cargo.lock", CARGO),
+                ("vendor/1/a", ""),
+                ("vendor/2/a", ""),
+            ],
+        );
+        let checkout = Checkout {
+            rel: "dev/shop".to_string(),
+            path: dir.0.clone(),
+        };
+        let within = |limit| read_within(&checkout, "checkout:machine:mac/dev/shop", limit);
+        let o = within(3).unwrap();
+        assert_eq!((o.completeness, o.reason), ("full", None));
+        let o = within(2).unwrap();
+        assert_eq!(lacks(&o), [format!("{NOT_LOOKED} -")]);
+        assert_eq!(o.gap.cause, Some(Cause::NoReader));
+        assert_eq!(unknown_for(&o), [true, true]);
+        // Without a lockfile where it opens them, such a project is still not one with none.
+        std::fs::remove_file(dir.0.join("Cargo.lock")).unwrap();
+        assert_eq!(within(2).unwrap().completeness, "partial");
+    }
+
+    #[test]
+    fn what_a_reading_did_not_open_is_decided_from_its_lacks_and_never_from_its_words() {
+        // The words of a reason are for a person: a clause about a lockfile not opened or a
+        // kind with no reader decides nothing, its lack does.
+        let said = "not opened: 1 lockfile deeper than 4 folders: a/b/c/d/e/Cargo.lock; \
+                    not supported yet: yarn.lock";
+        for eco in ["npm", "crates.io"] {
+            assert!(!partial_for(said, &[], eco), "{eco}");
+        }
+        let npm = [Some("package-lock.json".to_string())];
+        assert!(partial_for(said, &npm, "npm"));
+        assert!(!partial_for(said, &npm, "crates.io"));
+        for eco in ["npm", "crates.io"] {
+            assert!(partial_for(said, &[None], eco), "{eco}");
+            assert!(
+                !partial_for(said, &[Some("flake.lock".to_string())], eco),
+                "{eco}"
+            );
+        }
     }
 }
