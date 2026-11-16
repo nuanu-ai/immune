@@ -8,9 +8,11 @@
 // copied; any other, such as a build in a checkout, is copied to a place of its own and the job
 // runs the copy. `immune off` stops the job and removes it, with the copy when there is one;
 // it never removes a core run where it is and takes no path from the job's property list.
-// Each records that it turned Immune on or off in the journal of the job's store, the default
-// one, when a store of this build's format is there, with the time alone; neither makes a store,
-// fails for want of one or changes anything else in it, so this answer carries no `store_id`.
+// `immune off` records that it turned Immune off in the journal of the job's store, the default
+// one, when a store of this build's format is there, with the time alone. `immune on` writes
+// nothing: the job's watcher records that Immune is on, at its first reading. Neither makes a
+// store, fails for want of one or changes anything else in it, so this answer carries no
+// `store_id`.
 
 syntax = "proto3";
 
@@ -62,13 +64,13 @@ message Service {
   // loaded the job and no watcher took the store; `watcher_note` then says what the status says
   // of it. Absent when it could not be told, and after `immune off`. Since 1.19.0.
   optional bool started = 12;
-  // When the command turned Immune on or off and the store's journal does not say so, why. Absent
-  // when it was recorded, and when `immune off` found no job and no property list to turn off.
-  // The command succeeded all the same. Since 1.20.0.
+  // When `immune off` turned Immune off and the store's journal does not say so, why. Absent
+  // when it was recorded, when `immune off` found no job and no property list to turn off, and
+  // always after `immune on`. The command succeeded all the same. Since 1.20.0.
   optional NotRecorded not_recorded = 13;
 }
 
-// Why turning Immune on or off was not recorded in the store's journal. A value a reader does not
+// Why turning Immune off was not recorded in the store's journal. A value a reader does not
 // know, and `unspecified`, is read as not recorded for a reason not named.
 enum NotRecorded {
   NOT_RECORDED_UNSPECIFIED = 0;

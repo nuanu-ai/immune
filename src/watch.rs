@@ -1186,6 +1186,11 @@ fn read_held(
             [at],
         )?;
     }
+    // The job's watcher is what knows Immune is on: its reading says so in the journal, once for
+    // each turning on (`service::note_on`). Not being able to say it fails nothing.
+    if args.background {
+        let _ = crate::service::note_on(&tx, at);
+    }
     tx.commit()?;
     let count = |change: &str| rows.iter().filter(|r| r[0] == change).count();
     Ok(json!({

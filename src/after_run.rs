@@ -437,7 +437,7 @@ fn step(
     lines
 }
 
-/// That turning Immune on or off was not recorded in the store, and why, from the closed set the
+/// That turning Immune off was not recorded in the store, and why, from the closed set the
 /// message gives it in; `None` when it was, or there was nothing to record.
 fn not_recorded(m: &v1::Service) -> Option<String> {
     use v1::NotRecorded::*;
@@ -447,9 +447,8 @@ fn not_recorded(m: &v1::Service) -> Option<String> {
         Ok(Busy) => "a check held the store",
         _ => "the core does not say why",
     };
-    let what = if m.installed { "on" } else { "off" };
     Some(format!(
-        "The store does not record that this turned Immune {what}: {why}."
+        "The store does not record that this turned Immune off: {why}."
     ))
 }
 
@@ -539,8 +538,6 @@ pub fn service(m: &v1::Service, screen: &Screen) -> String {
                 "launchd loaded the job and no watcher took the store within 5 seconds. launchctl print gui/$(id -u)/ai.nuanu.immune.watch shows the job's state and its last exit.",
             );
         }
-        let unrecorded = not_recorded(m);
-        said.extend(unrecorded.as_deref());
         sentences(screen, &mut out, &said.join(" "));
         out.push(String::new());
         match (m.loaded, m.started, m.watching) {
@@ -1485,14 +1482,14 @@ mod tests {
         }
     }
 
-    /// Turning on or off that the store does not record says so, with why, in its own words for
-    /// each reason; recorded, nothing is said of it.
+    /// Turning off that the store does not record says so, with why, in its own words for each
+    /// reason; recorded, nothing is said of it.
     #[test]
-    fn on_or_off_not_recorded_says_so_and_why() {
+    fn off_not_recorded_says_so_and_why() {
         use v1::NotRecorded::*;
-        let said = |on: bool, not_recorded: Option<v1::NotRecorded>| {
+        let said = |not_recorded: Option<v1::NotRecorded>| {
             let m = v1::Service {
-                installed: on,
+                installed: false,
                 not_recorded: not_recorded.map(|n| n as i32),
                 ..installed()
             };
@@ -1507,16 +1504,11 @@ mod tests {
             (Busy, "a check held the store"),
             (Unspecified, "the core does not say why"),
         ] {
-            for (installed, what) in [(true, "on"), (false, "off")] {
-                let text = said(installed, Some(code));
-                let words =
-                    format!("The store does not record that this turned Immune {what}: {why}.");
-                assert!(text.contains(&words), "{text}");
-            }
+            let text = said(Some(code));
+            let words = format!("The store does not record that this turned Immune off: {why}.");
+            assert!(text.contains(&words), "{text}");
         }
-        for installed in [true, false] {
-            assert!(!said(installed, None).contains("does not record"));
-        }
+        assert!(!said(None).contains("does not record"));
     }
 
     /// The calm mark heads the text only when a watcher was seen watching live.

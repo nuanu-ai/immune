@@ -2907,8 +2907,9 @@ pub struct Status {
     /// once a few minutes have passed without a new one. Since 1.19.0.
     #[prost(int64, optional, tag = "29")]
     pub watcher_restarting_since_at: ::core::option::Option<i64>,
-    /// When `immune on` last turned Immune on, and when `immune off` last turned it off, as the
-    /// store's journal records them; absent when it records none. Since 1.20.0.
+    /// When Immune was last turned on, as the job's watcher records it at its first reading after
+    /// `immune on`, and when `immune off` last turned it off, as the store's journal records them;
+    /// absent when it records none. Since 1.20.0.
     #[prost(int64, optional, tag = "30")]
     pub turned_on_at: ::core::option::Option<i64>,
     #[prost(int64, optional, tag = "31")]
@@ -4792,9 +4793,9 @@ pub struct Service {
     /// of it. Absent when it could not be told, and after `immune off`. Since 1.19.0.
     #[prost(bool, optional, tag = "12")]
     pub started: ::core::option::Option<bool>,
-    /// When the command turned Immune on or off and the store's journal does not say so, why. Absent
-    /// when it was recorded, and when `immune off` found no job and no property list to turn off.
-    /// The command succeeded all the same. Since 1.20.0.
+    /// When `immune off` turned Immune off and the store's journal does not say so, why. Absent
+    /// when it was recorded, when `immune off` found no job and no property list to turn off, and
+    /// always after `immune on`. The command succeeded all the same. Since 1.20.0.
     #[prost(enumeration = "NotRecorded", optional, tag = "13")]
     #[serde(
         serialize_with = "crate::optional_enum_name::<NotRecorded, _>",
@@ -4802,7 +4803,7 @@ pub struct Service {
     )]
     pub not_recorded: ::core::option::Option<i32>,
 }
-/// Why turning Immune on or off was not recorded in the store's journal. A value a reader does not
+/// Why turning Immune off was not recorded in the store's journal. A value a reader does not
 /// know, and `unspecified`, is read as not recorded for a reason not named.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]

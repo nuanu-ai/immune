@@ -1181,36 +1181,41 @@ fn held(store: &Path) -> Vec<String> {
         .collect()
 }
 
+/// A `turned_on` or `turned_off` as it is written: the time alone, with no path, no argument and
+/// no text from outside the program.
+fn entry(e: &str) -> Vec<Option<String>> {
+    let mut row = vec![Some(e.to_string()), Some("service".to_string())];
+    row.extend([None, None, None, None, None, None, None]);
+    row.push(Some(String::new()));
+    row
+}
+
 #[test]
 fn off_that_stopped_a_job_leaves_one_turned_off_entry_and_one_that_found_nothing_none() {
     let login = Login::new("core-service-journal");
+    // `on` writes nothing, so another handle holding the run lock changes nothing it says.
+    let held = fs::File::open(&login.store).unwrap();
+    held.try_lock().unwrap();
     assert_eq!(service(&login.run("on", &[])).not_recorded, None);
+    assert_eq!(turned(&login), Vec::<Vec<Option<String>>>::new());
+    // A check that holds the store: `off` still succeeds, and says it was not recorded and why.
+    let m = service(&login.run("off", &[]));
+    assert_eq!(m.not_recorded, Some(v1::NotRecorded::Busy as i32));
+    drop(held);
     // A job launchd has with its property list gone is turned off all the same.
+    service(&login.run("on", &[]));
     fs::remove_file(&login.plist).unwrap();
     for _ in 0..2 {
         assert_eq!(service(&login.run("off", &[])).not_recorded, None);
     }
-    // The time alone: no path, no argument, no text from outside the program.
-    let entry = |e: &str| {
-        let mut row = vec![Some(e.to_string()), Some("service".to_string())];
-        row.extend([None, None, None, None, None, None, None]);
-        row.push(Some(String::new()));
-        row
-    };
-    assert_eq!(turned(&login), [entry("turned_on"), entry("turned_off")]);
-
-    // A check that holds the store, and a store's folder that cannot be opened: turning on still
-    // succeeds, and says it was not recorded and why.
-    let held = fs::File::open(&login.store).unwrap();
-    held.try_lock().unwrap();
-    let m = service(&login.run("on", &[]));
-    assert_eq!(m.not_recorded, Some(v1::NotRecorded::Busy as i32));
-    drop(held);
+    assert_eq!(turned(&login), [entry("turned_off")]);
+    // A store's folder that cannot be opened.
+    service(&login.run("on", &[]));
     fs::set_permissions(&login.store, fs::Permissions::from_mode(0o300)).unwrap();
-    let m = service(&login.run("on", &[]));
+    let m = service(&login.run("off", &[]));
     fs::set_permissions(&login.store, fs::Permissions::from_mode(0o700)).unwrap();
     assert_eq!(m.not_recorded, Some(v1::NotRecorded::StoreRefused as i32));
-    assert_eq!(turned(&login).len(), 2);
+    assert_eq!(turned(&login).len(), 1);
 }
 
 #[test]
@@ -1244,18 +1249,73 @@ fn off_succeeds_and_says_not_recorded_with_no_store_or_one_of_another_format_and
     assert_eq!(names(&login.store), ["store.db"]);
 }
 
+/// A watcher on this login's store until its first reading, then stopped: the job's, with
+/// `--background` as the job runs it, or one started by hand. The full check the job's starts finds
+/// the downloads' lock held, as in the tests of the background watcher in `tests/watch.rs`, and
+/// leaves the store and the network alone.
+fn first_reading(login: &Login, background: bool) {
+    use std::io::BufRead;
+    let feeds = login.store.join("feeds");
+    fs::create_dir_all(&feeds).unwrap();
+    let fetch = fs::File::options()
+        .create(true)
+        .append(true)
+        .open(feeds.join("fetch.lock"))
+        .unwrap();
+    fetch.lock().unwrap();
+    let sample = login.scratch.join("sample.json");
+    fs::write(&sample, r#"{"at": 1800000000, "processes": []}"#).unwrap();
+    let mut watcher = Command::new(CORE)
+        .args(["watch", "--store"])
+        .arg(login.store.join("store.db"))
+        .arg("--system-root")
+        .arg(login.scratch.join("system"))
+        .arg("--sample-input")
+        .arg(&sample)
+        .args(["--sample-every", "3600", "--events-every", "3600"])
+        .args(background.then_some("--background"))
+        .current_dir(&*login.scratch)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", &login.home)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let lines = std::io::BufReader::new(watcher.stdout.take().unwrap()).lines();
+    let read = lines
+        .map(Result::unwrap)
+        .any(|l| l.contains(r#""event":"read""#));
+    // SAFETY: a signal to the watcher this test started, which has not been reaped.
+    unsafe { libc::kill(watcher.id() as i32, libc::SIGTERM) };
+    watcher.wait().unwrap();
+    assert!(read, "the watcher left before its first reading");
+}
+
 #[test]
-fn a_job_gone_without_immune_off_is_said_as_off_and_not_by_immune_off_and_never_calm() {
+fn after_off_then_on_the_job_s_watcher_says_on_once_and_a_job_gone_after_is_not_by_immune_off() {
     let mut login = Login::new("core-service-gone");
-    service(&login.run("on", &[]));
+    for verb in ["on", "off", "on"] {
+        service(&login.run(verb, &[]));
+    }
+    login.watcher = None;
+    // A run or a watcher by hand says nothing of it.
+    login.make_store();
+    first_reading(&login, false);
+    assert_eq!(turned(&login), [entry("turned_off")]);
+    // The job's watcher says it at its first reading, and at a later start not again.
+    for _ in 0..2 {
+        first_reading(&login, true);
+        assert_eq!(turned(&login), [entry("turned_off"), entry("turned_on")]);
+    }
     // A program of the account removes the property list; the watcher is gone with the job.
     fs::remove_file(&login.plist).unwrap();
-    login.watcher = None;
     let v: Value = serde_json::from_slice(&login.status(&["--json"]).stdout).unwrap();
     let on = v["turned_on_at"].as_i64().unwrap();
     assert_eq!(
-        (&v["turned_off_at"], &v["login_job_installed"]),
-        (&Value::Null, &json!(false))
+        (&v["turned_on_latest"], &v["login_job_installed"]),
+        (&json!(true), &json!(false))
     );
     let text = String::from_utf8(login.status(&[]).stdout).unwrap();
     let gone = format!(
