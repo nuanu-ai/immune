@@ -2,7 +2,7 @@
   "advice": "If you did not start something like this, ask your agent to find the process of the program named here and what started it, and stop it if nobody knows it.",
   "answer": {
     "given": "expected",
-    "given_at": 1794663569,
+    "given_at": 1794814080,
     "in_force": true,
     "reason_cuts": [
       {
@@ -12,16 +12,16 @@
       }
     ],
     "reason_text": "invented: my own tool, started as tool --password=\\cut{immune:flag-value 18}",
-    "until_at": 1797255569,
+    "until_at": 1797406080,
     "via": "agent"
   },
-  "answered_at": 1794663570,
+  "answered_at": 1794814080,
   "answered_with": null,
   "answers_note": "Answer a finding only after the owner has agreed in this conversation, having been told what it is and what the options are. Pass --via agent and the reason the owner agreed to. The app shows every answer given this way.",
   "evidence": {
     "detached_process": {
       "pid": 4242,
-      "start_micros": 1794659969123456
+      "start_micros": 1794810480123456
     }
   },
   "finding": {
@@ -33,12 +33,12 @@
     "state": "expected",
     "urgent": true
   },
-  "first_seen_at": 1794663509,
+  "first_seen_at": 1794814020,
   "format": 1,
   "journal_seq": 36,
   "kind": "interpreter running code from its command line, detached",
   "kind_title": "Script running in the background",
-  "last_seen_at": 1794663509,
+  "last_seen_at": 1794814020,
   "meaning": "Tools and agents do this for a moment while they work; staying alive on its own, with no terminal or app it belongs to, is how some malware keeps hidden code running.",
   "rests_on": [
     {
@@ -48,13 +48,14 @@
       "old_value_text": null,
       "predicate": null,
       "reader": "processes",
-      "recorded_at": 1794663509,
-      "run_id": "sample-1794663569-395878000",
+      "recorded_at": 1794814020,
+      "run_id": "sample-1794814080-112094000",
       "seq": 32,
       "subject_text": "file:machine:mac//opt/tools/bin/node"
     }
   ],
-  "store_id": "8a49f083d86200c02003ad5bac434835",
+  "short_title": "Script running hidden in the background",
+  "store_id": "f45b16e12ac9e1611c06a8d8b343d817",
   "technique_text": "T1059",
   "thing": null,
   "title": "A program that runs scripts has been running code it was handed when it started, on its own in the background, for at least a minute.",

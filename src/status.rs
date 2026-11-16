@@ -1036,6 +1036,7 @@ pub fn message(
     let found = findings::all(conn, now)?;
     let items: Vec<findings::Item> = found.iter().map(findings::item).collect();
     let refs = crate::finding_answer::refs(&items);
+    let packages = crate::finding_answer::packages(conn)?;
     let store_id = out.store_id.clone();
     let all = &st.needs.items;
     // The cut is taken per source, in the one order, urgent first: up to `NEEDS_SHOWN` of
@@ -1056,7 +1057,12 @@ pub fn message(
     for i in kept {
         let f = found.iter().find(|f| f.id == i.id);
         shown.push(v1::LookFinding {
-            finding: Some(crate::finding_answer::listed(i, store_id.as_deref(), &refs)),
+            finding: Some(crate::finding_answer::listed(
+                i,
+                store_id.as_deref(),
+                &refs,
+                &packages,
+            )),
             meaning: i.words.meaning.to_string(),
             advice: i.words.advice.to_string(),
             value_text: i.value.as_deref().map(whole),
@@ -1073,6 +1079,7 @@ pub fn message(
         items: shown,
         total: n(all.len()),
         urgent_total: n(all.iter().filter(|i| i.urgent()).count()),
+        by_rule: by_rule(all),
     });
     let outside: Vec<&findings::Item> = st
         .answered
@@ -1084,7 +1091,7 @@ pub fn message(
         items: outside
             .iter()
             .take(NEEDS_SHOWN)
-            .map(|i| crate::finding_answer::listed(i, store_id.as_deref(), &refs))
+            .map(|i| crate::finding_answer::listed(i, store_id.as_deref(), &refs, &packages))
             .collect(),
     });
     out.statements_outside_app = Some(crate::owner::outside_app(&st.standing, NEEDS_SHOWN));
@@ -1100,6 +1107,64 @@ fn mark(r: &RunMark) -> crate::contract::v1::CheckMark {
         started_at: r.started_at,
         finished_at: r.finished_at,
     }
+}
+
+/// The findings that need a look, counted by rule over all of them: urgent ones first, then the
+/// most severe, a severity not known taken as the most severe as `findings::order` takes it,
+/// then the most findings, then by rule.
+fn by_rule(all: &[findings::Item]) -> Vec<crate::contract::v1::RuleCount> {
+    use crate::contract::{v1, value_of};
+    // The rank of a severity, `None` above every level.
+    let rank = |s: Option<&str>| {
+        s.map_or(findings::SEVERITIES.len(), |s| {
+            findings::SEVERITIES
+                .iter()
+                .position(|x| *x == s)
+                .unwrap_or(findings::SEVERITIES.len())
+        })
+    };
+    struct Group<'a> {
+        first: &'a findings::Item,
+        worst: Option<&'static str>,
+        count: usize,
+        urgent: usize,
+    }
+    let mut groups: Vec<Group> = Vec::new();
+    for i in all {
+        match groups.iter_mut().find(|g| g.first.rule == i.rule) {
+            Some(g) => {
+                if rank(i.severity) > rank(g.worst) {
+                    g.worst = i.severity;
+                }
+                g.count += 1;
+                g.urgent += usize::from(i.urgent());
+            }
+            None => groups.push(Group {
+                first: i,
+                worst: i.severity,
+                count: 1,
+                urgent: usize::from(i.urgent()),
+            }),
+        }
+    }
+    groups.sort_by(|a, b| {
+        (b.urgent > 0)
+            .cmp(&(a.urgent > 0))
+            .then_with(|| rank(b.worst).cmp(&rank(a.worst)))
+            .then_with(|| b.count.cmp(&a.count))
+            .then_with(|| a.first.rule.cmp(&b.first.rule))
+    });
+    groups
+        .iter()
+        .map(|g| v1::RuleCount {
+            rule: g.first.rule.clone(),
+            short_title: g.first.words.short.to_string(),
+            rule_title_text: crate::finding_answer::rule_title(&g.first.rule),
+            severity: g.worst.map(value_of::<v1::Level>),
+            count: n(g.count),
+            urgent: n(g.urgent),
+        })
+        .collect()
 }
 
 /// `this_mac`, with whether what the status says is fresh: the latest full check finished
@@ -1142,11 +1207,21 @@ fn this_mac_message(m: &crate::covered::ThisMac, now: i64) -> crate::contract::v
     }
 }
 
+/// The class of a cause of what is not covered, as the contract says it.
+pub(crate) fn cause_class(c: crate::store::Cause) -> crate::contract::v1::Cause {
+    match c {
+        crate::store::Cause::Failed => crate::contract::v1::Cause::Failed,
+        crate::store::Cause::NoReader => crate::contract::v1::Cause::NoReader,
+        crate::store::Cause::NotGiven => crate::contract::v1::Cause::NotGiven,
+    }
+}
+
 fn uncovered_message(u: &crate::covered::Uncovered) -> crate::contract::v1::Uncovered {
     use crate::known::whole;
     crate::contract::v1::Uncovered {
         id: u.cause.id.to_string(),
         who: u.cause.who.to_string(),
+        class: cause_class(u.cause.class) as i32,
         scope: u.scope.to_string(),
         kind: u.cause.kind.to_string(),
         title: u.title(),

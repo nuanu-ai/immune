@@ -80,6 +80,18 @@ message ListedFinding {
   // for `shell profile`, the same wherever the core shows the kind. `kind` is the stable name to
   // match on. A kind this build has no title for is given as `kind`. Since 1.8.0.
   string kind_title = 10;
+  // `title` in a few words, at most 44 characters, for a list: such as `Malicious package in a
+  // project`. The core's words, the same for every finding of its rule. Since 1.16.0.
+  string short_title = 11;
+  // For a finding of a published rule, the rule's own title as its set publishes it, whole: the
+  // name a list shows for it, cut to 44 characters where it is longer. Absent for every other
+  // finding. Since 1.16.0.
+  optional string rule_title_text = 12;
+  // For a finding about a package a project depends on (`lockfiles.*`), the package's name and
+  // the releases the project's lockfiles declare that a record affects, as `VulnerablePackage`
+  // gives them. Absent, and empty, for every other finding. Since 1.16.0.
+  optional string package_text = 13;
+  repeated string releases_text = 14;
 }
 
 // The answer to `immune finding <id>`: one finding whole.
@@ -137,6 +149,8 @@ message Finding {
   // the two. Required with `--with` and, on `seen` and `expected`, with `--via agent` and
   // `--via app`. `Findings` and `Status` carry it too. Since 1.9.0.
   int64 journal_seq = 21;
+  // As in `ListedFinding`. Since 1.16.0.
+  string short_title = 22;
 }
 
 // The person's answer to a finding.
