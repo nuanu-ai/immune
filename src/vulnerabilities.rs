@@ -1656,8 +1656,10 @@ fn untold(places: &[UnreadPlace]) -> BTreeMap<String, String> {
 /// data is matched for, as checkout, ecosystem and the kinds by name, from each checkout's
 /// latest reading of lockfiles. Such a project was compared with nothing there, though every
 /// lockfile it has of a matched ecosystem was read. A kind of a matched ecosystem, such as
-/// `yarn.lock`, is not here: its place is `partial` (`vulnerability_place`). A kind of no known
-/// ecosystem is under `other`.
+/// `yarn.lock`, is not here: its place is `partial` (`vulnerability_place`). Nor is a kind of no
+/// ecosystem a record can be about. The store keeps only the ecosystem of a record's own feed,
+/// so a place of any other OSV ecosystem stands, through `untold`, between the project and
+/// every record, which may name that ecosystem too.
 fn no_reader_places(conn: &Connection) -> rusqlite::Result<Vec<(String, String, String)>> {
     let rows: Vec<(String, String)> = conn
         .prepare(
@@ -1674,12 +1676,17 @@ fn no_reader_places(conn: &Connection) -> rusqlite::Result<Vec<(String, String, 
         .collect::<rusqlite::Result<_>>()?;
     let mut places: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
     for (checkout, name) in rows {
-        let ecosystem = crate::lockfiles::ecosystem_of(&name);
-        if ecosystem.is_some_and(|e| FEEDS.iter().any(|f| f.ecosystem == e)) {
+        // A kind of no ecosystem a record can be about, such as `flake.lock`, stands between no
+        // record and the project: it is not a place, and the status names it among what this
+        // version does not read.
+        let Some(ecosystem) = crate::lockfiles::ecosystem_of(&name) else {
+            continue;
+        };
+        if FEEDS.iter().any(|f| f.ecosystem == ecosystem) {
             continue;
         }
         places
-            .entry((checkout, ecosystem.unwrap_or("other").to_string()))
+            .entry((checkout, ecosystem.to_string()))
             .or_default()
             .push(name);
     }
