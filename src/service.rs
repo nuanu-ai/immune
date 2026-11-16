@@ -13,21 +13,23 @@
 //! These commands act, so their order is the point. Install:
 //! - every refusal comes first, with nothing changed; one of the two commands runs at a time;
 //! - then the property list and the copy are staged under temporary names beside their places;
-//! - then the property list and then the copy are renamed into place, under the running job: it
+//! - then the copy and then the property list are renamed into place, under the running job: it
 //!   keeps the old binary's inode and the configuration launchd loaded, so it is not disturbed,
-//!   and a file that cannot be replaced fails the install before anything is stopped;
+//!   and a file that cannot be replaced fails the install before anything is stopped. The copy
+//!   goes first, so a property list never names a core that is not there;
 //! - then a loaded job is stopped and waited for until launchd no longer has it;
 //! - then the job is registered again and confirmed.
 //!
 //! The installed file is never written in place, since a running job has it open: a new copy
 //! replaces it by rename. What was staged under a temporary name is removed on every way out.
-//! Every failure says what it left, and the answer says the job is loaded only when `launchctl
-//! print` said so after it was registered.
+//! A failure says what the command did and did not touch and what launchd answered, never what
+//! the job does next: the command does not know what launchd will do. The answer says the job
+//! is loaded only when `launchctl print` said so after it was registered.
 //!
 //! The property list is written by the system's `plutil`, never by hand, since a path can hold
 //! `&` or `<`. `launchctl` and `plutil` are run by absolute path. For tests, `--launchctl` gives
-//! a stand-in and `--home` another home folder; they go only together, so that neither the real
-//! launchd with a home of one's choosing nor a stand-in with the real home is ever run.
+//! a stand-in and `--home` another home folder; they go only together, so that a test that forgets
+//! one of the two is refused before anything runs.
 
 use crate::answer::{self, Form, Options};
 use crate::contract::v1;
@@ -52,7 +54,7 @@ const PROGRAM: &str = "immune";
 /// Every failure of these commands exits with this code; the failure's `code` says which.
 const EXIT_FAILED: u8 = 1;
 /// What a failure after the stop adds, so a person and an agent know how to recover.
-const RECOVER: &str = "; the core job may be stopped. The store was kept. The new core is in place and loads at the next login. Run immune install again to recover";
+const RECOVER: &str = "; the core job may be stopped. The store was kept. The new core and its property list are in place. Run immune install again to recover";
 /// At most this many characters of another job's label are quoted in a failure.
 const LABEL_QUOTED: usize = 200;
 
@@ -335,7 +337,9 @@ fn unreadable(path: &Path, said: &str) -> Failed {
 /// The `Label` of the property list at `path`, read by the system's plutil.
 fn plist_label(path: &Path) -> Result<String, Failed> {
     let out = Command::new(crate::integrity::PLUTIL)
-        .args(["-extract", "Label", "raw", "-o", "-"])
+        .args([
+            "-extract", "Label", "raw", "-expect", "string", "-n", "-o", "-",
+        ])
         .arg(path)
         .stdin(Stdio::null())
         .output()
@@ -343,9 +347,9 @@ fn plist_label(path: &Path) -> Result<String, Failed> {
     if !out.status.success() {
         return Err(unreadable(path, &said(&out)));
     }
-    // plutil ends what it prints with one line feed; anything else is the label's own.
-    let label = out.stdout.strip_suffix(b"\n").unwrap_or(&out.stdout);
-    Ok(String::from_utf8_lossy(label).into_owned())
+    // With `-n` plutil adds no line feed, so every byte is the label's own. `-expect string`
+    // refuses a label that is not a string: of a dictionary plutil would print the keys.
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// What a tool said when it failed, stderr first.
@@ -610,32 +614,40 @@ fn install(launchctl: &Path, home: Option<&Path>) -> Result<v1::Service, Failed>
         staged.copy = Some(copy);
     }
 
-    // Put the property list and then the copy in place under the running job, which keeps the
+    // Put the copy and then the property list in place under the running job, which keeps the
     // binary it opened and the configuration launchd loaded. A file that cannot be replaced
-    // fails here, before anything is stopped. What was staged goes with `staged`.
-    fs::rename(&new_plist, &places.plist).map_err(|e| {
-        failed(
-            "not_installed",
-            "could not put the core job's property list in place; nothing was changed and the core job still runs as before",
-            format!("{}: {e}", places.plist.display()),
-        )
-    })?;
+    // fails here, before anything is stopped. The copy goes first, so a property list never
+    // names a core that is not there. What was staged goes with `staged`.
     if let Some(copy) = &staged.copy {
         fs::rename(copy, &places.program).map_err(|e| {
             failed(
                 "not_installed",
-                "could not put the new core in place, so it is not installed; the core job still runs as before. Run immune install again",
+                "could not put the new core in place; the installed core, the property list and the job launchd has were not touched",
                 format!("{}: {e}", places.program.display()),
             )
         })?;
     }
+    fs::rename(&new_plist, &places.plist).map_err(|e| {
+        let core = if same {
+            "the installed core,"
+        } else {
+            "the new core is in place, and"
+        };
+        failed(
+            "not_installed",
+            format!(
+                "could not put the core job's property list in place; {core} the property list and the job launchd has were not touched. Run immune install again"
+            ),
+            format!("{}: {e}", places.plist.display()),
+        )
+    })?;
 
     // Stop the job that runs and wait until launchd no longer has it.
     let loaded_before = launchctl_run(launchctl, &["print", &places.job]).is_ok();
     if loaded_before && let Err(said) = stop(launchctl, &places.job) {
         return Err(failed(
             "stop_failed",
-            "could not stop the core job in time: the new core and its property list are in place, and the job launchd has is still the previous one. It runs the new core when it next starts, and at the next login in any case. Run immune install again",
+            "could not see the core job stop in time: the new core and its property list are in place, and launchd still has the previous job, which it was told to stop. Run immune install again",
             said,
         ));
     }

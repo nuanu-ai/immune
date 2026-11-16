@@ -16,12 +16,12 @@ Run `install` as the user being watched, without `sudo`. It copies the binary it
 
 Only one `install` or `uninstall` runs at a time; a second one fails with `busy` and changes nothing. Before it changes anything, `install` refuses when it runs as root, when the account has no home folder with an absolute path, when launchd has no login session for the user, when a symbolic link stands at the property list, at `bin` or at `bin/immune`, and when the property list there belongs to another job.
 
-`install` then prepares the new property list and the new copy under temporary names and renames them into place, the property list first, while the old job keeps running. A running job keeps the binary it opened and the configuration launchd loaded, so this does not disturb it, and the installed file is never written in place. Only then does `install` stop the old job, wait until launchd no longer has it, and load the new one. Each failure says what it left:
+`install` then prepares the new property list and the new copy under temporary names and renames them into place, the copy first, while the old job is left alone. A running job keeps the binary it opened and the configuration launchd loaded, so this does not disturb it, and the installed file is never written in place. Only then does `install` stop the old job, wait until launchd no longer has it, and load the new one. Each failure says what `install` did and did not touch, and what launchd answered:
 
-- The property list cannot be put in place: nothing was changed, and the old job still runs.
-- The copy cannot be put in place: the old job still runs and the new core is not installed. Run `install` again.
-- The old job does not stop within 30 seconds: the new files are in place and launchd still has the old job, which runs the new core when it next starts, and at the next login in any case. Run `install` again.
-- Loading the new job fails: the job may be stopped. The new core is in place and loads at the next login, and running `install` again recovers it.
+- The copy cannot be put in place: the installed core, the property list and the job launchd has were not touched.
+- The property list cannot be put in place: the new core is in place, and the property list and the job were not touched. Run `install` again.
+- launchd still has the old job 30 seconds after it was told to stop: the new core and its property list are in place. Run `install` again.
+- Loading the new job fails: the job may be stopped, and the new core and its property list are in place. Run `install` again.
 
 The store is kept in every case. `install` says the job is loaded only after `launchctl print` has found it.
 

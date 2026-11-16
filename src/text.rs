@@ -2285,7 +2285,7 @@ pub fn service(m: &v1::Service) -> String {
         say(
             &mut out,
             &format!(
-                "The core now runs from {} as the login job {}.",
+                "The core is installed at {}, and launchd has loaded its login job {}.",
                 quoted(&m.program_path_text),
                 m.label
             ),
@@ -2293,7 +2293,7 @@ pub fn service(m: &v1::Service) -> String {
         if m.loaded {
             say(
                 &mut out,
-                "It starts a full check now and every hour after that.",
+                "The core runs a full check when it starts and every hour after that.",
             );
         }
         say(&mut out, "immune status says what has been read.");

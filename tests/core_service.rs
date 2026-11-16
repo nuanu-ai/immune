@@ -18,6 +18,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::process::{Command, Output};
+use std::time::{Duration, Instant};
 
 const LABEL: &str = "ai.nuanu.immune.watch";
 /// The binary this repository builds, which install copies.
@@ -107,9 +108,16 @@ esac"#
     /// The same with `--home <home>`, which is the test's home or a relative path, so that it can
     /// only point inside the test's folder.
     fn immune_in(&self, exe: &Path, home: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
+        self.command_in(exe, home, args, env).output().unwrap()
+    }
+
+    /// The command `immune_in` runs, not yet started: the one place a run of the two commands
+    /// is put together, always with the stand-in and a home inside the test's folder.
+    fn command_in(&self, exe: &Path, home: &Path, args: &[&str], env: &[(&str, &str)]) -> Command {
         assert!(home == self.home || home.is_relative());
         assert!(env.iter().all(|(key, _)| *key != "HOME"));
-        Command::new(exe)
+        let mut command = Command::new(exe);
+        command
             .args(args)
             .arg("--launchctl")
             .arg(self.scratch.join("tools/launchctl"))
@@ -120,9 +128,8 @@ esac"#
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", &self.home)
             .env("TEST_LOGIN", &*self.scratch)
-            .envs(env.iter().copied())
-            .output()
-            .unwrap()
+            .envs(env.iter().copied());
+        command
     }
 
     /// `immune <verb> --json` from the binary this repository builds.
@@ -489,6 +496,37 @@ fn one_of_the_two_commands_runs_at_a_time() {
     assert!(service(&login.run("install", &[])).loaded);
 }
 
+#[test]
+fn the_lock_is_held_until_the_command_ends() {
+    let login = Login::new("core-service-held");
+    service(&login.run("install", &[]));
+    let calls = login.calls().len();
+    // The job leaves after twenty more questions, about two seconds: time to look.
+    let child = login
+        .command_in(
+            Path::new(CORE),
+            &login.home,
+            &["install", "--json"],
+            &[("JOB_LEAVES_AFTER", "20")],
+        )
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let until = Instant::now() + Duration::from_secs(30);
+    while !login.calls()[calls..]
+        .iter()
+        .any(|call| call[0] == "bootout")
+    {
+        assert!(Instant::now() < until, "install never stopped the job");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let home = fs::File::open(&login.home).unwrap();
+    assert!(matches!(home.try_lock(), Err(fs::TryLockError::WouldBlock)));
+    assert!(service(&child.wait_with_output().unwrap()).loaded);
+    home.try_lock().unwrap();
+}
+
 /// Makes a file immutable until this is dropped, even when the test panics, so that the test's
 /// folder can be removed.
 struct Immutable(PathBuf);
@@ -521,12 +559,15 @@ fn a_property_list_that_cannot_be_replaced_stops_install_before_the_job_is_stopp
     let login = Login::new("core-service-immutable");
     service(&login.run("install", &[]));
     let calls = login.calls().len();
+    fs::write(&login.program, "invented earlier core").unwrap();
     let _locked = Immutable::new(&login.plist);
     let before = login.snapshot();
     let (code, message) = failure(&login.run("install", &[]), "install");
     assert_eq!(code, "not_installed");
     assert!(
-        message.contains("the core job still runs as before"),
+        message.contains(
+            "the new core is in place, and the property list and the job launchd has were not touched"
+        ),
         "{message}"
     );
     assert!(login.loaded());
@@ -535,7 +576,57 @@ fn a_property_list_that_cannot_be_replaced_stops_install_before_the_job_is_stopp
             .iter()
             .all(|call| call[0] != "bootout")
     );
+    // The copy went in first; the property list, the job and the folders are as they were.
+    let after = login.snapshot();
+    assert_eq!(fs::read(&login.program).unwrap(), fs::read(CORE).unwrap());
+    assert_eq!(
+        (&after.plist, &after.loaded, &after.agents, &after.bin),
+        (&before.plist, &before.loaded, &before.agents, &before.bin)
+    );
+}
+
+#[test]
+fn a_core_that_cannot_be_replaced_stops_install_with_nothing_touched() {
+    let login = Login::new("core-service-immutable-core");
+    service(&login.run("install", &[]));
+    fs::write(&login.program, "invented earlier core").unwrap();
+    let calls = login.calls().len();
+    let _locked = Immutable::new(&login.program);
+    let before = login.snapshot();
+    let plist_inode = fs::metadata(&login.plist).unwrap().ino();
+    let (code, message) = failure(&login.run("install", &[]), "install");
+    assert_eq!(code, "not_installed");
+    assert!(
+        message.contains(
+            "the installed core, the property list and the job launchd has were not touched"
+        ),
+        "{message}"
+    );
+    assert!(
+        login.calls()[calls..]
+            .iter()
+            .all(|call| call[0] != "bootout")
+    );
     assert_eq!(login.snapshot(), before);
+    assert_eq!(fs::metadata(&login.plist).unwrap().ino(), plist_inode);
+}
+
+#[test]
+fn a_label_that_is_not_a_string_is_not_the_core_s() {
+    let login = Login::new("core-service-label-kind");
+    fs::create_dir_all(&login.agents).unwrap();
+    // Of a dictionary plutil prints the keys, so this one would print the core's label.
+    let other = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>Label</key><dict><key>{LABEL}</key><string>invented</string></dict></dict></plist>
+"#
+    );
+    fs::write(&login.plist, &other).unwrap();
+    for verb in ["install", "uninstall"] {
+        let (code, _) = failure(&login.run(verb, &[]), verb);
+        assert_eq!(code, "unreadable", "{verb}");
+        assert_eq!(fs::read_to_string(&login.plist).unwrap(), other, "{verb}");
+    }
 }
 
 #[test]
@@ -550,8 +641,7 @@ fn a_job_that_does_not_leave_in_time_keeps_running_with_the_new_files_in_place()
     assert_eq!(code, "stop_failed");
     for words in [
         "the new core and its property list are in place",
-        "the job launchd has is still the previous one",
-        "It runs the new core when it next starts, and at the next login in any case",
+        "launchd still has the previous job, which it was told to stop",
         "Run immune install again",
     ] {
         assert!(message.contains(words), "{message}");
@@ -576,7 +666,7 @@ fn a_failed_stop_keeps_everything_and_a_failure_after_the_stop_says_how_to_recov
     assert!(message.contains("were kept"), "{message}");
     assert_eq!(login.snapshot(), before);
 
-    const RECOVER: &str = "the core job may be stopped. The store was kept. The new core is in place and loads at the next login. Run immune install again to recover";
+    const RECOVER: &str = "the core job may be stopped. The store was kept. The new core and its property list are in place. Run immune install again to recover";
     let (code, message) = failure(
         &login.run("install", &[("FAIL_LAUNCHCTL", "bootstrap")]),
         "install",
