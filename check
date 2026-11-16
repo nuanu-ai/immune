@@ -13,7 +13,8 @@ cd "$(dirname "$0")"
 lint() {
   rust_prerequisites
   cargo fmt --check
-  cargo clippy --all-targets -- -D warnings
+  # The workspace: the core and the contract's crate with its example.
+  cargo clippy --workspace --all-targets -- -D warnings
 }
 
 # The menu-bar app: Swift on Apple's Command Line Tools.
