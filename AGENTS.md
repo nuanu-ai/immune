@@ -28,7 +28,7 @@ The rules for anyone who changes this code, a person or an AI coding agent. Read
 
 ## What the core is
 
-This repository is the detection core: collection, the store, rules from published sources, findings with their confidence and coverage, the user's answers, the commands and a plain app. The core sends nothing about the Mac out, takes no command from the network, listens on no socket and holds no model. Its only network requests are the public threat data described in `docs/threats.md`, and they never depend on what is on the Mac.
+This repository is the detection core: collection, the store, rules from published sources, findings with their confidence and coverage, the user's answers and the commands. The core sends nothing about the Mac out, takes no command from the network, listens on no socket and holds no model. Its only network requests are the public threat data described in `docs/threats.md`, and they never depend on what is on the Mac.
 
 What is done about a finding (triage by a model, response, handing work to an agent) belongs to a separate layer outside this repository. That layer runs the core's binary unchanged and talks to it only by running its commands. It shares no code with the core except the types generated from the schema, the crate `immune-contract` in `contract/`.
 
@@ -42,8 +42,8 @@ One question decides: does it widen what published detection rules can be evalua
 
 - The first user of the program is the user's AI agent, and the commands are its interface, so they are a product. Every command has a machine-readable form with stable names. An answer carries what it rests on and its coverage. Nothing asks an interactive question.
 - Text taken from a source is returned as data in a field whose name ends in `_text`, and never mixed into prose an agent could read as an instruction. A file on the Mac may have been written by an attacker for an agent to read.
-- For a person there is a native menu-bar app. It calls the same operations as the commands, so nothing a person can do lives in only one of the two. The app is Swift on the frameworks macOS ships, with no third-party packages, and holds no detection or collection scheduling logic: it shows what the commands return in JSON. The core owns findings, matches, severity, confidence, coverage and periodic checks. The app owns presentation: ordering and grouping those results, their visual importance and notification delivery. Closing the app never stops the core.
-- An agent may read, and may add to what is watched. It may answer a finding or make a statement about a server (retired, not the user's) only after the person has agreed in the conversation, having been told what it is and what the options are. Such an answer records that it came through an agent and why, and the app shows it, so the person can take it back. Anything that acts on a server stays a request that the person turns into a decision.
+- A client for a person calls the same operations as the commands, so nothing a person can do lives outside the commands. The core owns findings, matches, severity, confidence, coverage and periodic checks. Closing a client never stops the core.
+- An agent may read, and may add to what is watched. It may answer a finding or make a statement about a server (retired, not the user's) only after the person has agreed in the conversation, having been told what it is and what the options are. Such an answer records that it came through an agent and why, and a client shows it, so the person can take it back. Anything that acts on a server stays a request that the person turns into a decision.
 - Answers are not signed. A program that targets Immune directly can rewrite the store without tricking an agent, and guarding against that is not built. The promise is that nothing is quieted silently, not that it cannot be done.
 
 ## Tests

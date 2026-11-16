@@ -7,12 +7,11 @@ The rules a change has to keep (dependencies, where our own code ends, nothing t
 ## Build and check
 
 ```sh
-./check                    # formatting, linter and tests for the core and the app
-core=$(./build)             # build the release core and print its absolute path
-app/build "$core"           # build the optional app in target/app
+./check            # formatting, linter and tests
+core=$(./build)     # build the release core and print its absolute path
 ```
 
-`./check` runs `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings` (the core, and the contract's crate with its example) and `cargo test`, then `swift format lint --strict` over the app's sources, and the app's tests through `app/test`. Every commit has to pass it. The core uses Rust, and the app builds and tests with Swift 6. A part can be run by name: `./check lint`, `./check tests`, `./check app`, or one half of the test binaries with `./check tests 1/2` or `./check tests 2/2`. The check on GitHub runs `lint app` and the two halves side by side.
+`./check` runs `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings` (the core, and the contract's crate with its example) and `cargo test`. Every commit has to pass it. A part can be run by name: `./check lint`, `./check tests`, or one half of the test binaries with `./check tests 1/2` or `./check tests 2/2`. The check on GitHub runs `lint` and the two halves side by side.
 
 To try a debug build of the program on its own, run `cargo build` and call `./target/debug/immune` with `--store <path>`, so that it does not touch the installed core's store. Tests run the real binary over a temporary home folder and a temporary system root (`--system-root`), so nothing real is read; `tests/event_level.rs` is a good example to start from.
 
@@ -24,7 +23,7 @@ The Sigma rules in `rules/sigma/` are SigmaHQ's rules for macOS, copied byte for
 
 Open an issue first for a new reader, a new collector or a new dependency, so it can be weighed against the rules in AGENTS.md before code is written. Commit messages follow [Conventional Commits](https://www.conventionalcommits.org) and are in English.
 
-A change arrives as a pull request, and `./check` runs on it on a macOS runner. A pull request that changes `check`, `app/test` or anything under `.github/` is read by a maintainer before its result counts: a passing check on a change to the check itself shows nothing.
+A change arrives as a pull request, and `./check` runs on it on a macOS runner. A pull request that changes `check` or anything under `.github/` is read by a maintainer before its result counts: a passing check on a change to the check itself shows nothing.
 
 Contributions are under the [MIT licence](LICENSE) of the repository.
 

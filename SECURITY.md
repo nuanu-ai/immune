@@ -12,7 +12,7 @@ There are no releases yet, so reports are taken against the latest commit on the
 
 ## What counts
 
-Anything in this repository: the `immune` program, the menu-bar app, and the collector scripts in `scripts/event-level/`. These matter most:
+Anything in this repository: the `immune` program and the collector scripts in `scripts/event-level/`. These matter most:
 
 - Immune says a Mac is quiet, or answers "does not affect me", when it did not read what that answer needs.
 - Text from a file on the Mac, a vulnerability feed or an indicator list ends up run as a command, used as a path, or returned outside the fields ending in `_text`.

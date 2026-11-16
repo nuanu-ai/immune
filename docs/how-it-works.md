@@ -1,6 +1,6 @@
 # How Immune works
 
-Immune is one Rust program, `immune`, with SQLite compiled in, a menu-bar app that shows what the program returns, and an optional collector made of programs that macOS ships. This page describes how the parts fit: what Immune keeps, how a reading becomes a finding, and what a finding, a gap in coverage and an answer mean. [reference.md](reference.md) lists every reader, [threats.md](threats.md) covers vulnerabilities and indicators, and [event-level.md](event-level.md) covers the collector.
+Immune is one Rust program, `immune`, with SQLite compiled in, and an optional collector made of programs that macOS ships. A menu-bar app that shows what the program returns is built outside this repository. This page describes how the parts fit: what Immune keeps, how a reading becomes a finding, and what a finding, a gap in coverage and an answer mean. [reference.md](reference.md) lists every reader, [threats.md](threats.md) covers vulnerabilities and indicators, and [event-level.md](event-level.md) covers the collector.
 
 ## The parts
 

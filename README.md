@@ -2,7 +2,7 @@
 
 Immune watches one Mac for signs of attack and tells you, or your AI coding agent, what it found and what it could not see. It is for a person who builds software with AI agents on their own Mac and has no security team behind them.
 
-Immune is the detection core of [Artificial Immunity](https://immunity.bot), a project of [Nuanu AI Lab](https://nuanu.ai).
+Immune is the detection core of [Artificial Immunity](https://immunity.bot), a project of [Nuanu AI Lab](https://nuanu.ai). This repository holds the core and its commands; a menu-bar app for a person is built outside it, on the same commands.
 
 <p align="center">
   <picture>
@@ -25,7 +25,7 @@ A match of a rule marked below high, or of a rule whose set states no level, sta
 
 ## First run
 
-To build the core, you need an Apple Silicon Mac with macOS 15 or later, Apple's Command Line Tools (`xcode-select --install`) and Rust 1.89 or later. Building the optional menu-bar app also needs Swift 6 from those tools. An Apple developer account is unnecessary.
+To build the core, you need an Apple Silicon Mac with macOS 15 or later, Apple's Command Line Tools (`xcode-select --install`) and Rust 1.89 or later. An Apple developer account is unnecessary.
 
 ```sh
 git clone https://github.com/nuanu-ai/immune
@@ -44,15 +44,6 @@ For continuous watching and automatic full checks while you are logged in, turn 
 ```
 
 This copies the core to `~/Library/Application Support/ai.nuanu.immune/bin/immune` and runs that copy as a login job, so you can rebuild or remove the checkout without touching the running core. The core starts a full check when it starts and every hour after that. [Background service](docs/core-service.md) explains updates and removal.
-
-Build and open the optional menu-bar app separately.
-
-```sh
-app/build "$HOME/Library/Application Support/ai.nuanu.immune/bin/immune"
-open target/app/Immune.app
-```
-
-The panel shows findings, evidence and your answers. Open report shows everything Immune knows in your browser. The installed user service keeps watching while the app is closed. The build records the core's absolute path in the app bundle; without the service, give it `"$core"` instead.
 
 An optional collector lets published rules judge every program start and every file created or renamed. It is made only of programs macOS ships and needs an administrator password:
 
@@ -84,7 +75,7 @@ Detection rules come from SigmaHQ and from Elastic's detection and behaviour rul
 
 ## Status
 
-Immune is early, and so far it has been built and verified on one Mac. It is built and tested only on Apple Silicon with macOS. `app/build` signs the app ad hoc on the Mac that builds it, so there is no download yet. The collector rests on `eslogger`, which Apple does not promise as an interface; when a macOS update breaks it, [the status says so](docs/event-level.md#eslogger-is-not-a-promised-interface).
+Immune is early, and so far it has been built and verified on one Mac. It is built and tested only on Apple Silicon with macOS, and there is no download yet. The collector rests on `eslogger`, which Apple does not promise as an interface; when a macOS update breaks it, [the status says so](docs/event-level.md#eslogger-is-not-a-promised-interface).
 
 Not built yet:
 

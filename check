@@ -1,10 +1,10 @@
 #!/bin/sh
-# All checks, in order: formatting, linter, tests, then the app.
+# All checks, in order: formatting, linter, then tests.
 #
 # With no argument it runs every part. A part can be asked for by name, and several in one
-# call: `lint` (formatting and linter), `tests` (all of cargo test), `tests N/M` (share N of M
-# of the test binaries, as scripts/test-half.sh splits them) and `app` (the app's lint and
-# tests). The check on GitHub runs the parts side by side, so it runs what this file runs.
+# call: `lint` (formatting and linter), `tests` (all of cargo test) and `tests N/M` (share N
+# of M of the test binaries, as scripts/test-half.sh splits them). The check on GitHub runs
+# the parts side by side, so it runs what this file runs.
 set -e
 cd "$(dirname "$0")"
 . ./scripts/rust-path.sh
@@ -17,18 +17,10 @@ lint() {
   cargo clippy --workspace --all-targets -- -D warnings
 }
 
-# The menu-bar app: Swift on Apple's Command Line Tools.
-app() {
-  swift_prerequisites
-  swift format lint --strict -r app/Package.swift app/Sources app/Tests
-  app/test
-}
-
-[ $# -gt 0 ] || set -- lint tests app
+[ $# -gt 0 ] || set -- lint tests
 while [ $# -gt 0 ]; do
   case "$1" in
     lint) lint ;;
-    app) app ;;
     tests)
       rust_prerequisites
       case "${2-}" in
@@ -42,8 +34,11 @@ while [ $# -gt 0 ]; do
         *) cargo test ;;
       esac
       ;;
+    # The workflow on GitHub still names this part, which held the menu-bar app's checks until
+    # the app left the repository. It goes with the workflow's next edit.
+    app) ;;
     *)
-      echo "usage: $0 [lint] [tests [N/M]] [app]; with no argument, all of them" >&2
+      echo "usage: $0 [lint] [tests [N/M]]; with no argument, all of them" >&2
       exit 2
       ;;
   esac
