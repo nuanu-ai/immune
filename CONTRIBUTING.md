@@ -12,7 +12,7 @@ core=$(./build)             # build the release core and print its absolute path
 app/build "$core"           # build the optional app in target/app
 ```
 
-`./check` runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test`, then `swift format lint --strict` over the app's sources, and the app's tests through `app/test`. Every commit has to pass it. The core uses Rust, and the app builds and tests with Swift 6. A part can be run by name: `./check lint`, `./check tests`, `./check app`, or one half of the test binaries with `./check tests 1/2` or `./check tests 2/2`. The check on GitHub runs `lint app` and the two halves side by side.
+`./check` runs `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings` (the core, and the contract's crate with its example) and `cargo test`, then `swift format lint --strict` over the app's sources, and the app's tests through `app/test`. Every commit has to pass it. The core uses Rust, and the app builds and tests with Swift 6. A part can be run by name: `./check lint`, `./check tests`, `./check app`, or one half of the test binaries with `./check tests 1/2` or `./check tests 2/2`. The check on GitHub runs `lint app` and the two halves side by side.
 
 To try a debug build of the program on its own, run `cargo build` and call `./target/debug/immune` with `--store <path>`, so that it does not touch the installed core's store. Tests run the real binary over a temporary home folder and a temporary system root (`--system-root`), so nothing real is read; `tests/event_level.rs` is a good example to start from.
 
