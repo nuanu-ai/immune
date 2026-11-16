@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- pkgbuild's settings for the one bundle in the package, given to it with --component-plist.
+     Not relocatable: a developer's own build of the app has the same bundle identifier, and
+     Installer would otherwise replace that build wherever it is in place of /Applications.
+     Not version checked and upgrade: the package always places exactly the app it holds, beside
+     the core it holds, and removes files the new version no longer has. No script of any kind. -->
+<plist version="1.0">
+<array>
+	<dict>
+		<key>RootRelativeBundlePath</key>
+		<string>Applications/Immune.app</string>
+		<key>BundleHasStrictIdentifier</key>
+		<true/>
+		<key>BundleIsRelocatable</key>
+		<false/>
+		<key>BundleIsVersionChecked</key>
+		<false/>
+		<key>BundleOverwriteAction</key>
+		<string>upgrade</string>
+	</dict>
+</array>
+</plist>

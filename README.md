@@ -102,6 +102,7 @@ Not built yet:
 - [Writing a rule](docs/rules.md): when Immune has a Sigma rule of its own, where it goes, its two samples and the fields it can read.
 - [Attack simulations](docs/atomic.md): how much of Atomic Red Team's tests for macOS Immune notices, run by run.
 - [The contract](contract/README.md): the Rust types a program that runs Immune reads and writes.
+- [Making a release](docs/release.md): the installer package, how it is signed and notarised, and how to check, update and remove what it installs.
 
 ## Contributing, security and licence
 

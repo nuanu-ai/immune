@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What Installer shows and checks for Immune's package; ./release builds it with productbuild,
+     which fills in the component's version and size. docs/release.md explains each setting.
+     arm64 alone: Installer evaluates a distribution without it under Rosetta.
+     The minimum macOS is the app's LSMinimumSystemVersion in app/Info.plist.
+     No JavaScript and no script of any kind runs: the package only places files. -->
+<installer-gui-script minSpecVersion="2">
+    <title>Immune</title>
+    <welcome file="welcome.html" mime-type="text/html"/>
+    <conclusion file="conclusion.html" mime-type="text/html"/>
+    <options customize="never" require-scripts="false" hostArchitectures="arm64"/>
+    <domains enable_localSystem="true" enable_currentUserHome="false" enable_anywhere="false"/>
+    <volume-check>
+        <allowed-os-versions>
+            <os-version min="15.0"/>
+        </allowed-os-versions>
+    </volume-check>
+    <choices-outline>
+        <line choice="default">
+            <line choice="ai.nuanu.immune.pkg"/>
+        </line>
+    </choices-outline>
+    <choice id="default"/>
+    <choice id="ai.nuanu.immune.pkg" visible="false">
+        <pkg-ref id="ai.nuanu.immune.pkg"/>
+    </choice>
+    <pkg-ref id="ai.nuanu.immune.pkg" onConclusion="none">immune.pkg</pkg-ref>
+</installer-gui-script>
