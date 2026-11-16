@@ -2,6 +2,16 @@
 
 What Immune reads on a Mac, where it looks, what it records and when; the vocabulary of facts; the commands and the contract; and the files it keeps. [how-it-works.md](how-it-works.md) explains the terms used here.
 
+## Events, matches and findings
+
+An event is something that happened on the Mac and that the collector recorded in its log: a program start, or a file created or renamed. The store keeps no event.
+
+A match is one rule that matched one event. On its own it claims nothing. There are many, and the app does not list them; [`immune matches`](#immune-matches) gives every one, of every level, for a program that judges them.
+
+A finding is what Immune decided a person should look at. There are few, and each stays open until the person answers it, except a finding about a state, which Immune clears when the state goes. [`immune findings`](#immune-findings-and-immune-finding-id) lists them.
+
+A match of a rule marked below high, or of a rule whose set states no level, raises nothing. A match of a rule marked high or critical also raises that rule's finding or adds to the one it has, so it is in both answers. Many findings rest on no event at all, such as one about a malicious package in a lockfile or a shell startup file that changed.
+
 ## What is watched
 
 | What | How | When |
