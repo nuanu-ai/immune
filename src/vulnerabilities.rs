@@ -1801,7 +1801,7 @@ pub fn exploited(on_list: bool, list_read: bool) -> Option<bool> {
 fn no_store(section: &str) -> v1::NotComputed {
     v1::NotComputed {
         section: section.to_string(),
-        reason: "there is no store yet; `immune run` makes it".to_string(),
+        reason: crate::store::NO_STORE_REASON.to_string(),
     }
 }
 

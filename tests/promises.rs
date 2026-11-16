@@ -243,15 +243,44 @@ fn immune_run_curl(home: &Path, store: &Path, curl: &Path) -> Command {
     cmd
 }
 
-/// Runs a command that must succeed and returns what it printed.
+/// Runs a command that must succeed and returns what it printed; for `immune run` for a person,
+/// the run's line as the journal keeps it and the page of changes shows it for each run. What a
+/// person reads after a run is told from the status (`after_run.rs`), and pinned there.
 fn ok(cmd: &mut Command) -> String {
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
     let out = cmd.output().unwrap();
     assert!(
         out.status.success(),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    String::from_utf8(out.stdout).unwrap().trim().to_string()
+    let for_a_person = !args.iter().any(|a| a == "--json" || a == "--proto");
+    // The store named, or the default one in the home folder the command is given.
+    let home = cmd
+        .get_envs()
+        .find(|(k, _)| *k == "HOME")
+        .and_then(|(_, v)| v.map(PathBuf::from));
+    let store = match args.iter().position(|a| a == "--store") {
+        Some(i) => args.get(i + 1).map(PathBuf::from),
+        None => home.map(|h| h.join("Library/Application Support/ai.nuanu.immune/store.db")),
+    };
+    match (args.first().map(String::as_str), store) {
+        (Some("run"), Some(store)) if for_a_person => {
+            let store = match cmd.get_current_dir() {
+                Some(dir) => dir.join(store),
+                None => store,
+            };
+            rows(
+                &store,
+                "SELECT text FROM journal WHERE entry = 'report' ORDER BY seq DESC LIMIT 1",
+            )
+            .concat()
+        }
+        _ => String::from_utf8(out.stdout).unwrap().trim().to_string(),
+    }
 }
 
 /// Runs `immune view` without opening a browser and returns the pages it wrote, joined.
@@ -1465,7 +1494,7 @@ fn store_from_an_older_format_is_refused_with_a_message_and_left_untouched() {
     for (out, code) in [(run, 3), (view, 1)] {
         assert_eq!(out.status.code(), Some(code));
         let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(stderr.contains("older format"), "{stderr}");
+        assert!(stderr.contains("made by another build"), "{stderr}");
         assert!(stderr.contains("--store"), "{stderr}");
     }
     assert!(
@@ -2042,7 +2071,7 @@ fn only_plain_ssh_aliases_are_offered_for_the_sweep() {
         assert!(!script.contains(absent), "{absent} is in the sweep");
     }
     assert!(
-        printed.contains(&format!("sh '{}'", sweep.join("sweep.sh").display())),
+        printed.contains(&format!("sh {}", shell_word(&sweep.join("sweep.sh")))),
         "{printed}"
     );
     assert!(printed.contains("skip.txt"), "{printed}");
@@ -2139,10 +2168,7 @@ fn a_machine_known_under_two_aliases_is_visited_once_through_its_first_alias() {
     let sweep = h.dir.0.join("store").join("sweep");
     let script = std::fs::read_to_string(sweep.join("sweep.sh")).unwrap();
     assert_eq!(listed(&script), ["db-1", "web-new,web-1"]);
-    assert!(
-        printed.contains("visits web-new; same machine, not visited: web-1"),
-        "{printed}"
-    );
+    assert!(printed.contains("visited; not again as web-1"), "{printed}");
     assert!(
         printed.contains("1 alias of the same machine is not visited."),
         "{printed}"
@@ -2234,7 +2260,7 @@ fn only_a_literal_alias_of_a_host_line_as_openssh_reads_it_is_ever_visited() {
         ["build", "cache-1", "db-1", "web"]
     );
     assert!(
-        printed.contains("Ssh configuration: 5 servers, 1 left out as code hosting.\n"),
+        printed.contains("SSH configuration: 5 servers, 1 left out as code hosting.\n"),
         "{printed}"
     );
 }
@@ -2383,7 +2409,7 @@ fn a_configuration_ssh_refuses_is_never_read_as_full() {
     }
     let printed = h.servers();
     assert!(
-        printed.contains("Ssh configuration: 17 servers.\n"),
+        printed.contains("SSH configuration: 17 servers.\n"),
         "{printed}"
     );
 
@@ -2391,7 +2417,7 @@ fn a_configuration_ssh_refuses_is_never_read_as_full() {
     let printed = h.servers();
     assert!(
         printed.contains(
-            "Ssh configuration: 17 servers, c16:1 includes c17 too deep, so ssh refuses the \
+            "SSH configuration: 17 servers, c16:1 includes c17 too deep, so ssh refuses the \
              configuration.\n"
         ),
         "{printed}"
@@ -2406,7 +2432,7 @@ fn a_configuration_ssh_refuses_is_never_read_as_full() {
     let printed = h.servers();
     assert!(
         printed.contains(
-            "Ssh configuration: 17 servers, c3:2 has an unclosed quote, so ssh refuses the \
+            "SSH configuration: 17 servers, c3:2 has an unclosed quote, so ssh refuses the \
              configuration.\n"
         ),
         "{printed}"
@@ -2731,7 +2757,7 @@ fn immune_servers_and_immune_run_count_the_same_servers() {
         .arg(&tailscale));
     let report = h.run(&sweep, &tailscale);
 
-    assert!(printed.contains("\n7 servers known,"), "{printed}");
+    assert!(printed.contains("\n  7 servers known,"), "{printed}");
     assert!(report.contains(" 7 servers known,"), "{report}");
     let old = printed
         .lines()
@@ -2842,7 +2868,7 @@ fn another_users_device_known_only_from_the_tailnet_is_not_a_server_and_never_of
     );
     assert!(
         printed.contains(
-            "\n4 servers known, 1 of them under several names, 1 offered for the sweep, \
+            "\n  4 servers known, 1 of them under several names, 1 offered for the sweep, \
              0 left out as code hosting, 0 as your other devices, 3 as other users' devices, \
              4 known and never read."
         ),
@@ -2915,7 +2941,7 @@ fn another_users_device_also_known_from_the_ssh_configuration_known_hosts_or_a_s
         .find(|l| l.starts_with("  shared "))
         .unwrap_or_else(|| panic!("shared is not listed as a server: {printed}"));
     assert!(
-        shared.contains("visits shared") && shared.contains("shared-box"),
+        shared.contains("visited") && shared.contains("shared-box"),
         "{shared}"
     );
     for server in ["  lab-box ", "  old-laptop "] {
@@ -2925,7 +2951,7 @@ fn another_users_device_also_known_from_the_ssh_configuration_known_hosts_or_a_s
         );
     }
     assert!(
-        printed.contains("\n6 servers known,") && printed.contains(" 1 as other users' devices,"),
+        printed.contains("\n  6 servers known,") && printed.contains(" 1 as other users' devices,"),
         "{printed}"
     );
     assert_eq!(
@@ -5164,7 +5190,7 @@ fn a_statement_about_one_name_covers_the_machine_under_all_its_names() {
         "Replaced",
     ]);
     assert!(
-        said.contains("Said: \"build\" is retired,")
+        said.contains("Said: \"build\" is retired\n")
             && said.contains("under every name: \"build\", \"build-box\"."),
         "{said}"
     );
@@ -5223,9 +5249,9 @@ fn a_retired_machine_is_not_counted_as_known_and_never_read_and_is_listed_with_i
     );
     assert!(
         printed.contains(
-            "\n1 server known, 0 of them under several names, 1 offered for the sweep, \
+            "\n  1 server known, 0 of them under several names, 1 offered for the sweep, \
              0 left out as code hosting, 0 as your other devices, 0 as other users' devices, \
-             1 known and never read.\n\
+             1 known and never read.\n  \
              The owner's word: 1 machine retired or disowned.\n"
         ),
         "{printed}"
@@ -5380,7 +5406,7 @@ fn a_machine_swept_after_the_statement_is_shown_as_contradicted_counted_again_an
     );
     let listing = h.owner(&[]);
     assert!(
-        listing.contains("contradicted: ") && listing.contains("servers read containers on web-1"),
+        listing.contains("Contradicted ") && listing.contains("servers read containers on web-1"),
         "{listing}"
     );
 
@@ -5395,7 +5421,7 @@ fn a_machine_swept_after_the_statement_is_shown_as_contradicted_counted_again_an
         "{row}"
     );
     assert!(
-        printed.contains("\n2 servers known,")
+        printed.contains("\n  2 servers known,")
             && printed.contains("seen alive after it and counted again: web-1."),
         "{printed}"
     );
@@ -5445,9 +5471,11 @@ fn a_new_trace_after_the_statement_contradicts_it_and_a_later_statement_clears_i
                  (SELECT MAX(observed_at) FROM assertion WHERE subject = 'machine:web-1')",
         )
         .unwrap();
+    let listing = h.owner(&[]);
     assert!(
-        h.owner(&[])
-            .contains("Moved to a new host  10.0.0.5, web-new  nothing")
+        listing.contains("Moved to a new host  10.0.0.5, web-new\n")
+            && !listing.contains("Contradicted"),
+        "{listing}"
     );
     two_hours_earlier(&h.store());
 
@@ -5462,7 +5490,7 @@ fn a_new_trace_after_the_statement_contradicts_it_and_a_later_statement_clears_i
         "{report}"
     );
     assert!(
-        h.owner(&[]).contains("contradicted: ")
+        h.owner(&[]).contains("Contradicted ")
             && h.owner(&[])
                 .contains("known-hosts saw 10.0.0.5 known_as 10.0.0.5"),
         "{}",
@@ -5473,11 +5501,10 @@ fn a_new_trace_after_the_statement_contradicts_it_and_a_later_statement_clears_i
     assert!(said.contains("It replaces the statement"), "{said}");
     let listing = h.owner(&[]);
     assert!(
-        listing.contains("The owner's word: 1 statement stands.")
+        listing.contains("1 statement stands; 1 was withdrawn and kept")
             && listing.contains("not mine")
             && listing.contains("Handed over to a client")
-            && !listing.contains("contradicted")
-            && listing.contains("1 statement was withdrawn and kept."),
+            && !listing.contains("Contradicted"),
         "{listing}"
     );
     let report = h.run(&h.absent(), &h.none());
@@ -5835,8 +5862,7 @@ fn a_withdrawn_statement_restores_the_machine_and_stays_in_the_journal() {
     );
     let listing = h.owner(&[]);
     assert!(
-        listing.contains("The owner's word: 0 statements stand.")
-            && listing.contains("1 statement was withdrawn and kept."),
+        listing.starts_with("No statement stands; 1 was withdrawn and kept\n"),
         "{listing}"
     );
     // The owner's word is not a run, and is not shown as one that did not finish.
@@ -5898,26 +5924,26 @@ fn an_unknown_or_ambiguous_name_is_an_error_that_changes_nothing() {
     for (words, says) in [
         (
             &["ubuntu", "retired", "--reason", "Gone"][..],
-            "fits several machines that are not known to be one; name one of them; nothing was said: \"ubuntu fits: a; b\"",
+            "\n  Given   ubuntu fits: a; b\n",
         ),
         (
             &["db-9", "retired", "--reason", "Gone"],
-            "the store knows no machine by the name asked; nothing was said: \"db-9\"",
+            "\n  Given   db-9\n",
         ),
         (&["a", "retired"], "a statement needs a reason"),
         (
             &["a", "retired", "--reason", "  "],
             "a statement needs a reason",
         ),
-        (
-            &["a", "withdraw"],
-            "no statement stands about the machine asked; nothing was withdrawn: \"a\"",
-        ),
+        (&["a", "withdraw"], "\n  Given   a\n"),
         (
             &["a", "withdraw", "--reason", "Back"],
             "a withdrawal takes no reason",
         ),
-        (&["a", "gone", "--reason", "Gone"], "not gone"),
+        (
+            &["a", "gone", "--reason", "Gone"],
+            "\"gone\" is not a statement",
+        ),
     ] {
         let out = h.owner_out(words);
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -6413,10 +6439,8 @@ fn named_aliases_restrict_the_sweep_and_a_name_the_script_does_not_list_or_skips
     let printed = h.servers();
     let (sweep, bin) = (h.sweep(), h.dir.0.join("bin"));
     assert!(
-        printed.contains(&format!(
-            "name their aliases: sh '{}' <alias>...",
-            sweep.join("sweep.sh").display()
-        )),
+        printed.contains(&format!("\n→ sh {}\n", shell_word(&sweep.join("sweep.sh"))))
+            && printed.contains("Name aliases after it to visit only those again"),
         "{printed}"
     );
 
@@ -7829,20 +7853,58 @@ impl Drop for ListOnly {
     }
 }
 
-/// The rows the run printed under "Watched places:", as their cells.
-fn watched_rows(printed: &str) -> Vec<Vec<String>> {
-    printed
-        .lines()
-        .skip_while(|l| *l != "Watched places:")
-        .skip(2)
-        .map(|l| {
-            l.split("  ")
-                .map(str::trim)
-                .filter(|c| !c.is_empty())
-                .map(str::to_string)
-                .collect()
+/// What the latest check found in the watched places, each named as `immune status --json`
+/// names it: the change, the kind of place and its path, sorted. The run's text counts them;
+/// the status, its pages and the findings name them.
+fn watched_rows(store: &Path) -> Vec<Vec<String>> {
+    let r = status_json(store);
+    let check = &r["last_finished_run"]["check"]["id"];
+    let mut rows: Vec<Vec<String>> = r["watched"]["changes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| &c["run_id"] == check)
+        .map(|c| {
+            vec![
+                c["change"].as_str().unwrap().replace('_', " "),
+                c["kind"].as_str().unwrap().to_string(),
+                c["path_text"].as_str().unwrap().to_string(),
+            ]
         })
-        .collect()
+        .collect();
+    rows.sort();
+    rows
+}
+
+/// The places the latest check read for the first time, as the journal names them for the
+/// finding that tells them: a checkout or a file by its path, sorted.
+fn first_read_places(store: &Path) -> Vec<String> {
+    let mut places: Vec<String> = rows(
+        store,
+        "SELECT subject FROM journal WHERE entry = 'place_first_read'
+           AND run_id = (SELECT run_id FROM journal WHERE entry = 'report'
+                         ORDER BY seq DESC LIMIT 1)",
+    )
+    .into_iter()
+    .map(|s| {
+        let id = s
+            .strip_prefix("checkout:machine:mac/")
+            .or(s.strip_prefix("file:machine:mac/"));
+        id.unwrap_or(&s).to_string()
+    })
+    .collect();
+    places.sort();
+    places
+}
+
+/// Rows as `watched_rows` gives them, sorted.
+fn sorted(rows: &[&[&str]]) -> Vec<Vec<String>> {
+    let mut rows: Vec<Vec<String>> = rows
+        .iter()
+        .map(|r| r.iter().map(|c| c.to_string()).collect())
+        .collect();
+    rows.sort();
+    rows
 }
 
 /// Runs a command that must finish within the time given and succeed; returns its output.
@@ -7922,28 +7984,28 @@ fn a_changed_watched_file_is_one_changed_event_and_new_changed_and_gone_files_ar
             ),
         "{printed}"
     );
-    // Paths are text from the machine: named in their own column, never in the sentence,
+    // Paths are text from the machine: named in a field of their own, never in the sentence,
     // and with hidden characters shown escaped.
     assert!(
         !line.contains(".zshrc") && !line.contains("LaunchAgents"),
         "{line}"
     );
     assert_eq!(
-        watched_rows(&printed),
-        [
-            [
+        watched_rows(&w.store()),
+        sorted(&[
+            &[
                 "gone",
                 "autostart item",
                 "Library/LaunchAgents/com.example.old.plist"
             ],
-            [
+            &[
                 "new",
                 "autostart item",
                 "Library/LaunchAgents/com.example.\\u{202e}tsilp.plist"
             ],
-            ["changed", "shell profile", ".zshrc"],
-            ["changed", "shell profile", ".profile"],
-        ],
+            &["changed", "shell profile", ".zshrc"],
+            &["changed", "shell profile", ".profile"],
+        ]),
         "{printed}"
     );
     assert!(!printed.contains('\u{202e}'));
@@ -8032,23 +8094,17 @@ fn a_watched_folder_that_cannot_be_listed_retracts_nothing_and_reports_no_change
         printed.contains("0 new, 0 changed, 0 gone since the last reading; not read in full: launch agents and daemons (partial)."),
         "{printed}"
     );
-    assert_eq!(
-        watched_rows(&printed),
-        [
-            [
-                "not read",
-                "autostart item",
-                "Library/LaunchAgents/com.example.a.plist",
-                denied
-            ],
-            [
-                "not read",
-                "autostart item",
-                "/Library/LaunchDaemons",
-                denied
-            ]
-        ]
-    );
+    // Each place not read is named with why where a failure is said: under "Failed", in the
+    // status and in what the run prints, which the same section makes.
+    let (_, text, _) = status_out(&w.store(), &[]);
+    let failed = &text[text.find("\n  Failed\n").expect(&text)..];
+    for place in [
+        "Library/LaunchAgents/com.example.a.plist",
+        "/Library/LaunchDaemons",
+    ] {
+        assert!(failed.contains(&format!("{place} ({denied})")), "{text}");
+    }
+    assert!(watched_rows(&w.store()).is_empty(), "{printed}");
 
     // Nothing of a kind could be read: the reading read nothing.
     let ssh = Locked::new(w.home().join(".ssh"));
@@ -8151,10 +8207,7 @@ fn a_watched_file_that_cannot_be_read_is_never_unchanged_and_never_gone() {
 
     // Still not read: nothing is named as read for the first time.
     let printed = w.run();
-    assert!(
-        !watched_rows(&printed).iter().any(|r| r[0] == "first read"),
-        "{printed}"
-    );
+    assert!(first_read_places(&w.store()).is_empty(), "{printed}");
 
     // Readable again: the change made while it could not be read is seen, and a file never
     // read before is not taken for a change, and is named as read for the first time.
@@ -8164,16 +8217,7 @@ fn a_watched_file_that_cannot_be_read_is_never_unchanged_and_never_gone() {
         printed.contains("5 files, 0 new, 1 changed, 0 gone"),
         "{printed}"
     );
-    let named = watched_rows(&printed);
-    assert!(
-        named
-            .iter()
-            .any(|r| r[..3] == ["first read", "shell profile", ".zlogout"])
-            && !named
-                .iter()
-                .any(|r| r[0] == "first read" && r[2] != ".zlogout"),
-        "{printed}"
-    );
+    assert_eq!(first_read_places(&w.store()), [".zlogout"], "{printed}");
 }
 
 #[test]
@@ -8397,28 +8441,10 @@ fn the_first_reading_of_watched_places_counts_nothing_as_new() {
     assert_agrees(&printed, &w.store());
     // Nothing is counted as new, and what was read for the first time is said.
     assert_eq!(
-        watched_rows(&printed),
-        [
-            [
-                "first read",
-                "ssh access file",
-                ".ssh/config",
-                "1 thing kept as the baseline"
-            ],
-            [
-                "first read",
-                "shell profile",
-                ".zprofile",
-                "1 thing kept as the baseline"
-            ],
-            [
-                "first read",
-                "git hook",
-                "dev/app",
-                "1 thing kept as the baseline"
-            ],
-        ]
+        first_read_places(&w.store()),
+        [".ssh/config", ".zprofile", "dev/app"]
     );
+    assert!(watched_rows(&w.store()).is_empty(), "{printed}");
     assert!(
         printed.contains(
             "Since last run: no changes. Watched places: 3 files, first reading, kept as the baseline."
@@ -8460,11 +8486,11 @@ fn the_first_hook_planted_in_a_checkout_the_store_already_held_is_new_and_named(
         "{printed}"
     );
     assert_eq!(
-        watched_rows(&printed),
-        [
-            ["new", "git hook", "dev/app/.git/hooks/post-checkout"],
-            ["new", "git hook", "dev/fresh/.git/hooks/pre-commit"]
-        ]
+        watched_rows(&w.store()),
+        sorted(&[
+            &["new", "git hook", "dev/app/.git/hooks/post-checkout"],
+            &["new", "git hook", "dev/fresh/.git/hooks/pre-commit"]
+        ])
     );
 
     let again = w.run();
@@ -8499,16 +8525,88 @@ fn a_watched_place_that_appears_after_the_first_reading_is_new_and_named() {
         "{printed}"
     );
     assert_eq!(
-        watched_rows(&printed),
-        [
-            [
+        watched_rows(&w.store()),
+        sorted(&[
+            &[
                 "new",
                 "autostart item",
                 "Library/LaunchAgents/com.example.a.plist"
             ],
-            ["new", "shell profile", ".zshenv"],
-            ["new", "ssh access file", ".ssh/rc"],
-        ]
+            &["new", "shell profile", ".zshenv"],
+            &["new", "ssh access file", ".ssh/rc"],
+        ])
+    );
+}
+
+/// A path as `immune servers` prints it in a command: as it is when it needs no quoting, else in
+/// single quotes.
+fn shell_word(path: &Path) -> String {
+    let p = path.display().to_string();
+    let safe = |c: char| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c);
+    if p.chars().all(safe) {
+        p
+    } else {
+        format!("'{}'", p.replace('\'', "'\\''"))
+    }
+}
+
+/// The value beside a label at the left of a person's text, whatever the column it starts in.
+fn labelled<'a>(text: &'a str, label: &str) -> Option<&'a str> {
+    text.lines()
+        .find_map(|l| l.strip_prefix(&format!("  {label} ")))
+        .map(str::trim_start)
+}
+
+#[test]
+fn what_a_run_prints_for_a_person_is_told_from_the_status_it_left_with_every_failure_named() {
+    // The answer first, with the count the status gives and how many are urgent; what the check
+    // raised; the changes counted; every failure by its title; the next commands last. In a pipe
+    // no style is written.
+    let w = Watch::new("run-text");
+    put(w.home(), ".zshrc", "bindkey -e\n");
+    w.run();
+    put(w.home(), ".zshrc", "bindkey -v\n");
+    let out = w.cmd().output().unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    let r = status_json(&w.store());
+    let n = &r["needs_a_look"];
+    let urgent = match n["urgent_total"].as_u64().unwrap() {
+        0 => "none urgent".to_string(),
+        u => format!("{u} urgent"),
+    };
+    let head = format!(
+        "✗ {}, {urgent} · 1 new in this check   took ",
+        counted(&n["total"], "thing needs a look", "things need a look")
+    );
+    assert!(text.starts_with(&head), "{head}\n{text}");
+    assert!(
+        text.contains("\n  New\n    medium  ")
+            && labelled(&text, "Changed")
+                == Some("1 change since the last check: 0 added, 1 changed, 0 removed"),
+        "{text}"
+    );
+    let failed: Vec<&str> = r["not_covered"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|u| u["class"] == "failed")
+        .map(|u| u["title"].as_str().unwrap().trim_end_matches('.'))
+        .collect();
+    assert!(!failed.is_empty(), "{r:#}");
+    let section = &text[text.find("\n  Failed\n").expect(&text)..];
+    for title in failed {
+        assert!(
+            section.contains(&format!("\n    {title}\n")),
+            "{title}\n{text}"
+        );
+    }
+    assert!(!text.contains('\u{1b}'), "{text:?}");
+    assert!(
+        text.ends_with(
+            "\n→ immune findings   lists every one, most urgent first\n→ immune status     what is watched and what was not read\n"
+        ),
+        "{text}"
     );
 }
 
@@ -9766,7 +9864,10 @@ fn status_answers_while_a_run_is_in_progress_and_never_makes_it_fail() {
     assert_eq!(said["ok"], false);
     assert_eq!(said["errors"][0]["code"], "run_in_progress");
     assert_eq!(second_said.status.code(), Some(4));
-    assert!(String::from_utf8_lossy(&second_said.stderr).contains("another run is in progress"));
+    assert!(
+        String::from_utf8_lossy(&second_said.stderr)
+            .contains("another check is running on this store")
+    );
     // Every status answered while the run was held in progress, so none waited for it to end,
     // with no clock: one that had waited for the run's write would have given up after SQLite's
     // busy timeout and failed, as one that had waited for the run lock would have seen the run
@@ -10589,7 +10690,11 @@ fn exit_codes_and_errors_an_agent_can_act_on() {
     let store = dir.store();
     let (code, stdout, stderr) = status_out(&store, &["--json", "--bogus"]);
     assert_eq!(code, Some(2));
-    assert!(stderr.contains("usage:"));
+    // The message says the usage is on stderr, and it is: what was wrong and the command's help.
+    assert!(
+        stderr.starts_with("error: ") && stderr.contains("immune status [--coverage]"),
+        "{stderr}"
+    );
     let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(v["ok"], false);
     assert!(v.get("format").is_none(), "{v}");
@@ -11526,13 +11631,15 @@ fn a_change_in_a_watched_place_stays_open_through_quiet_runs_and_is_the_number_t
     assert_eq!(shown["answer"], serde_json::Value::Null);
     let (_, text, _) = finding_out(&w.store(), &[id]);
     for said in [
+        "● medium  ",
         rule["title"].as_str().unwrap(),
-        r#"rule watched.autostart, severity medium, confidence low, ATT&CK "T1543"."#,
-        "State: open.",
-        "Rests on 3 journal entries:",
+        "\n  rule watched.autostart · confidence low · ATT&CK T1543\n",
+        "   open, first seen ",
     ] {
         assert!(text.contains(said), "{said}\n{text}");
     }
+    // What it rests on is in the machine form; the text holds no journal entries.
+    assert!(!text.contains("journal"), "{text}");
     assert_eq!(shown["answers_note"], r["answers_note"]);
 
     // A severe one first however old; of two as severe, the newer first; `immune findings`
@@ -12158,20 +12265,36 @@ fn an_answer_is_the_owners_and_a_wrong_id_says_how_to_find_the_right_one() {
     assert!(stderr.is_empty());
     let (code, _, stderr) = finding_out(&w.store(), &["f0000000000"]);
     assert_eq!(code, Some(2));
-    assert!(
-        stderr.contains("immune findings --all lists every finding"),
-        "{stderr}"
+    assert_eq!(
+        stderr,
+        "error: the store has no finding with this id\n  immune findings --all\n"
     );
+    // An answer to what is not the shape of an id says so, read or answered.
+    for args in [&["hello"][..], &["hello", "seen"]] {
+        let (code, _, stderr) = finding_out(&w.store(), args);
+        assert_eq!(code, Some(2));
+        assert!(
+            stderr.starts_with(
+                "error: this is not a finding's id: an id is f and ten hexadecimal digits"
+            ),
+            "{stderr}"
+        );
+    }
+    // An answer to it says too that nothing was changed.
+    let (code, _, stderr) = finding_out(&w.store(), &["f0000000000", "seen"]);
+    assert_eq!(code, Some(2));
+    assert_eq!(
+        stderr,
+        "error: the store has no finding with this id\n  Nothing was changed.\n  immune findings --all\n"
+    );
+    // A misuse is said with the right form of the command, and nothing else.
     let (code, _, stderr) = finding_out(&w.store(), &["f0000000000", "expected"]);
     assert_eq!(code, Some(2));
     assert!(
-        stderr.contains("expected needs a reason: --reason <text>"),
+        stderr.contains("error: expected needs a reason\n  immune finding f0000000000 expected"),
         "{stderr}"
     );
-    assert!(
-        stderr.contains("expected and seen are the owner's answers"),
-        "{stderr}"
-    );
+    assert!(stderr.contains("--reason <text>"), "{stderr}");
     for (args, said) in [
         (
             &["f0000000000", "expected", "--reason", "x", "--days", "0"][..],
@@ -12192,7 +12315,7 @@ fn an_answer_is_the_owners_and_a_wrong_id_says_how_to_find_the_right_one() {
         ),
         (
             &["f0000000000", "ignored"][..],
-            "the owner can answer expected or seen",
+            "\"ignored\" is not an answer: expected, seen or reopen",
         ),
     ] {
         let (code, _, stderr) = finding_out(&w.store(), args);
@@ -12210,7 +12333,11 @@ fn an_answer_is_the_owners_and_a_wrong_id_says_how_to_find_the_right_one() {
     let note = "Answer a finding only after the owner has agreed in this conversation, having been told what it is and what the options are. Pass --via agent and the reason the owner agreed to. The app shows every answer given this way.";
     assert_eq!(findings_json(&w.store(), &[])["answers_note"], note);
     assert_eq!(status_json(&w.store())["answers_note"], note);
-    let (_, _, usage) = finding_out(&w.store(), &["f0000000000", "ignored"]);
+    let usage = immune_cmd(w.home())
+        .args(["help", "finding"])
+        .output()
+        .unwrap();
+    let usage = String::from_utf8_lossy(&usage.stdout);
     let usage = usage.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(usage.contains(note), "{usage}");
 }
@@ -12320,11 +12447,16 @@ fn an_answer_says_who_gave_it_in_the_app_through_an_agent_or_from_the_command_li
         "{journaled:?}"
     );
     let (_, text, _) = finding_out(&w.store(), &[&ssh]);
+    let answer = text
+        .lines()
+        .find(|l| l.starts_with("  Your answer  "))
+        .unwrap();
+    assert!(answer.contains("  expected until "), "{text}");
+    assert!(answer.ends_with(" through your agent"), "{text}");
     assert!(
-        text.contains(" through your agent, expected until "),
+        text.contains("\n  Reason        they added a server\n"),
         "{text}"
     );
-    assert!(text.contains(r#": "they added a server"."#), "{text}");
 }
 
 #[test]
@@ -12471,7 +12603,7 @@ fn an_answer_whose_giver_this_build_does_not_know_is_not_shown_as_given_outside_
         .unwrap();
     assert_eq!(f["answer"]["via"], "unknown");
     let (_, text, _) = finding_out(&w.store(), &[&profile]);
-    assert!(text.contains(" how it came is not recorded."), "{text}");
+    assert!(text.contains(", how it came is not recorded\n"), "{text}");
     let page = view(&w.store());
     let row = answered_row(&page, &profile);
     assert!(row.contains(" how it came is not recorded</span>"), "{row}");

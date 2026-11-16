@@ -817,19 +817,45 @@ fn the_answer_is_the_message_service_in_three_forms_and_a_failure_is_failure() {
         }
     );
 
-    let quoted = format!("\"{}\"", json.program_path_text.replace('"', "\\\""));
+    // For a person, in a pipe: the steps the message says were done, the paths under the home
+    // written from `~`, what the job is set to do and never what it does, then the next command.
     let text = login.immune(Path::new(CORE), &["install"], &[]);
     assert!(text.status.success());
     let text = String::from_utf8(text.stdout).unwrap();
-    assert!(text.contains(&quoted), "{text}");
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(
+        lines[0], "✓ Immune is installed, and launchd has loaded its login job",
+        "{text}"
+    );
+    for (label, value) in [
+        (
+            "Core in place",
+            "~/Library/Application Support/ai.nuanu.immune/bin/immune",
+        ),
+        (
+            "Login job written",
+            "~/Library/LaunchAgents/ai.nuanu.immune.watch.plist",
+        ),
+        ("Loaded by launchd", LABEL),
+    ] {
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with(&format!("  ✓ {label} ")) && l.ends_with(value)),
+            "{label}: {text}"
+        );
+    }
     assert!(
-        text.contains("launchd has loaded its login job")
+        text.contains("An earlier installation was there, and this one replaced it.")
             && text.contains("is set to start a full check when the core starts and every hour"),
         "{text}"
     );
-    assert!(!text.contains("runs"), "{text}");
-    assert!(text.contains("immune status"), "{text}");
-    // Only the job is left, and the words say what is left, not what was found.
+    assert!(!text.contains("runs") && !text.contains('\u{1b}'), "{text}");
+    assert_eq!(
+        lines.last(),
+        Some(&"→ immune status   what has been read so far")
+    );
+    // Only the job is left, and the words say what is left, not what was found or removed.
     fs::remove_file(&login.plist).unwrap();
     fs::remove_file(&login.program).unwrap();
     let text = login.immune(Path::new(CORE), &["uninstall"], &[]);
@@ -837,9 +863,22 @@ fn the_answer_is_the_message_service_in_three_forms_and_a_failure_is_failure() {
     assert_eq!(
         text,
         format!(
-            "The login job {LABEL} is not loaded, and no property list or installed core of it is left.\n\
-             The store and the optional event collector were kept.\n"
+            "✓ Immune is uninstalled\n\
+             \n  ✓ Job not loaded      {LABEL}\
+             \n  ✓ No property list    ~/Library/LaunchAgents/{LABEL}.plist\
+             \n  ✓ No installed core   ~/Library/Application Support/ai.nuanu.immune/bin/immune\n\
+             \n  The store and the optional event collector were kept.\n\
+             \n→ immune install   installs it again\n"
         )
+    );
+    // Nothing installed: nothing is said to be removed.
+    let text = login.immune(Path::new(CORE), &["uninstall"], &[]);
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(
+        text.starts_with("Nothing was installed, so nothing was removed\n")
+            && !text.contains('✓')
+            && !text.contains("kept"),
+        "{text}"
     );
 
     let (code, _) = failure(

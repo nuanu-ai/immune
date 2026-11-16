@@ -910,7 +910,7 @@ pub fn message(
     };
     let (Some(conn), Some(st)) = (conn, state) else {
         for section in SECTIONS {
-            absent(section, "there is no store yet; `immune run` makes it");
+            absent(section, crate::store::NO_STORE_REASON);
         }
         out.this_mac = Some(this_mac_message(
             &crate::covered::ThisMac::unchecked(false),

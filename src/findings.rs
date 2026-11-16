@@ -797,6 +797,16 @@ fn short_id(prefix: char, parts: &[&str]) -> String {
     format!("{prefix}{}", &hex[..10])
 }
 
+/// Whether a text is the shape of a finding's id as `short_id` makes one: `f` and ten lowercase
+/// hexadecimal digits.
+pub fn is_finding_id(s: &str) -> bool {
+    s.len() == 11
+        && s.starts_with('f')
+        && s[1..]
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 /// Looks at what a run saw and raises what the rules find. Marks of `expected` that ended
 /// while the thing happened again during them open their findings again first. Returns how
 /// many findings were opened by this run.

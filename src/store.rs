@@ -552,11 +552,7 @@ fn make(path: &Path) -> Res<()> {
 /// reader.
 pub fn open(path: &Path) -> Res<Connection> {
     if !exists(path)? {
-        return Err(format!(
-            "there is no store at {}; `immune run` makes it",
-            path.display()
-        )
-        .into());
+        return Err(absent(path).into());
     }
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     conn.pragma_update(None, "cache_spill", false)?;
@@ -666,6 +662,69 @@ fn writable(folder: &Path) -> bool {
     unsafe { libc::access(c.as_ptr(), libc::W_OK) == 0 }
 }
 
+/// What a failure says when there is no store at the path, as every command of the contract
+/// gives it in `detail_text`: the same words wherever it is found that there is none.
+pub fn absent(path: &Path) -> String {
+    format!("{ABSENT_BEFORE}{}{ABSENT_AFTER}", path.display())
+}
+
+const ABSENT_BEFORE: &str = "there is no store at ";
+const ABSENT_AFTER: &str = "; `immune run` makes it";
+
+/// Why a part of an answer was not computed when there is no store (`not_computed`), as every
+/// message of the contract gives it.
+pub const NO_STORE_REASON: &str = "there is no store yet; `immune run` makes it";
+
+/// What every command tells a person when there is no store at the path, in one wording: the
+/// headline or the cause, and what makes one. A span in backticks is a command.
+pub const NO_STORE: &str = "there is no store here yet";
+pub const NO_STORE_FIX: &str =
+    "`immune run` makes one, or `immune install`, which also keeps it checked.";
+
+/// What every command tells a person about a store another build made, in one wording.
+pub const OTHER_FORMAT: &str = "this store was made by another build of Immune";
+pub const OTHER_FORMAT_FIX: &str = "It was left unchanged. Move it aside or pass another --store; \
+                                    the next check starts one from the beginning.";
+
+/// The two conditions of a store that every command words the same way for a person, told from
+/// the words this module wrote into a failure's detail, and the path the detail names.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Condition<'a> {
+    /// No store at the path.
+    Absent(&'a str),
+    /// A store of an older or a newer format than this build's.
+    OtherFormat(&'a str),
+    /// Anything else: the detail is shown as it is.
+    Other,
+}
+
+/// What a failure's detail says of the store, as `absent` and `check` worded it, behind the words
+/// a caller may have put before it (`Stop`'s "the store cannot be read: "). The path is the text
+/// between the fixed words, as the detail holds it.
+pub fn condition(detail: &str) -> Condition<'_> {
+    let detail = detail
+        .strip_prefix("the store cannot be read: ")
+        .unwrap_or(detail);
+    if let Some(path) = detail
+        .strip_prefix(ABSENT_BEFORE)
+        .and_then(|rest| rest.strip_suffix(ABSENT_AFTER))
+    {
+        return Condition::Absent(path);
+    }
+    if let Some(rest) = detail.strip_prefix(STORE_AT) {
+        for words in [OLDER, NEWER] {
+            if let Some(at) = rest.rfind(words) {
+                return Condition::OtherFormat(&rest[..at]);
+            }
+        }
+    }
+    Condition::Other
+}
+
+const STORE_AT: &str = "the store at ";
+const OLDER: &str = " is from an older format (";
+const NEWER: &str = " is from a newer format (";
+
 /// What every refusal of a store ends with: what was done to it and what to do.
 const START_OVER: &str = "Nothing was changed. Move the old store aside or pass another --store; \
                           the next run starts a store from the beginning.";
@@ -746,14 +805,14 @@ fn check(conn: &Connection, path: &Path) -> Res<()> {
         }
         Some(found) if found < ours => {
             return Err(format!(
-                "the store at {at} is from an older format ({found}); this version uses format \
+                "{STORE_AT}{at}{OLDER}{found}); this version uses format \
                  {ours} and does not convert old stores. {START_OVER}"
             )
             .into());
         }
         Some(found) if found > ours => {
             return Err(format!(
-                "the store at {at} is from a newer format ({found}) than this version knows \
+                "{STORE_AT}{at}{NEWER}{found}) than this version knows \
                  ({ours}). Nothing was changed. Use the version of Immune that made it, or pass \
                  another --store."
             )

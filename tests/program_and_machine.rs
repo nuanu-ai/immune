@@ -720,7 +720,9 @@ fn an_application_that_went_while_its_code_folder_stayed_is_held_and_a_change_th
             let text = e.ask("program", Some(what), &[]);
             let text = String::from_utf8(text.stdout).unwrap();
             assert!(
-                text.contains("is held") && text.contains("integrity.app-code-outside"),
+                text.contains("App code in your Library folder changed")
+                    && !text.contains("Gone:")
+                    && !text.contains("has not"),
                 "{how} {what}: {text}"
             );
         }

@@ -167,7 +167,9 @@ pub fn service_cmd(args: &ServiceArgs) -> ExitCode {
         Verb::Uninstall => uninstall(&args.launchctl, home),
     };
     match done {
-        Ok(m) => answer::print(op, args.form, &m, crate::text::service),
+        Ok(m) => answer::print(op, args.form, &m, |m| {
+            crate::after_run::service(m, &crate::screen::Screen::of_stdout())
+        }),
         Err(f) => {
             let example = format!("immune {op} --json");
             answer::fail(

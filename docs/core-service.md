@@ -25,7 +25,7 @@ Only one `install` or `uninstall` runs at a time; a second one fails with `busy`
 
 The store is kept in every case. `install` says the job is loaded only after `launchctl print` has found it.
 
-The answer is the contract's `Service` message: the job's label, the paths of the installed core and of the property list, and whether the job is installed, loaded and replaced something. Add `--json` or `--proto` for an agent or a program.
+The answer is the contract's `Service` message: the job's label, the paths of the installed core and of the property list, and whether the job is installed, loaded and replaced something. As text it says that in its first line, then each step with its path or the label, whether an earlier installation was replaced, and the command to run next. `uninstall` lists what is gone and says the store and the event collector were kept. Add `--json` or `--proto` for an agent or a program.
 
 The core starts watching at login. It schedules a full check when it starts and every hour after that. After sleep it starts one overdue check. Two full checks cannot use the same store at once. A background full check can run for up to 30 minutes. A watcher that makes no progress for three minutes exits so launchd can restart it. Status drops live coverage when the last heartbeat is too old.
 

@@ -9,8 +9,10 @@
 //! are the threat list and the vulnerability data of npm and crates.io, each fetched whole
 //! with the system curl.
 
+mod after_run;
 mod agent_folders;
 mod answer;
+mod answers_text;
 mod autorun;
 mod background;
 mod baseline;
@@ -22,6 +24,7 @@ mod contract;
 mod covered;
 mod events;
 mod finding_answer;
+mod finding_text;
 mod findings;
 mod fsevents;
 mod guarded;
@@ -34,6 +37,7 @@ mod jsonc;
 mod known;
 mod known_hosts;
 mod lifecycle;
+mod lists;
 mod lockfiles;
 mod look;
 mod machine;
@@ -65,6 +69,7 @@ mod text;
 mod threats;
 mod tools;
 mod traces;
+mod usage;
 mod verdict;
 mod view;
 mod vulnerabilities;
@@ -88,110 +93,6 @@ use store::{Cause, Event, Gap, Lack, Reading, Statement};
 
 /// The store's folder inside the home folder, where every default path points.
 const STORE_FOLDER: &str = "Library/Application Support/ai.nuanu.immune";
-const USAGE: &str = "usage: immune run [--store <path>] [--machine-name <name>] [--brew <path>]
-                  [--brew-input <file>] [--servers-input <dir>] [--checkouts-root <dir>]
-                  [--sessions-root <dir>] [--tailscale <path>]
-                  [--threats-input <file>] [--osv-crates-input <file>]
-                  [--osv-npm-input <file>] [--curl <path>] [--system-root <dir>]
-                  [--indicators <file>] [--json | --proto]
-       immune status [--coverage] [--store <path>] [--json | --proto]
-           what the last finished run left, read-only, as the message Status; run
-           answers with the same message once its check finished. For a person,
-           --coverage shows what was read and what was not, whole
-       immune findings [--all] [--store <path>] [--json | --proto]
-           every finding, in every state, as one message: text for a person, which
-           lists the open ones or every one with --all, binary protobuf with --proto,
-           or the same as JSON with --json. Every command but servers, view and
-           watch answers with one message of the contract in these three forms, and
-           fails with the message Failure in the same form
-       immune finding <id> [--store <path>] [--json | --proto]
-           one finding whole: its words, evidence, journal entries and answer
-       immune finding <id> expected --reason <text> [--days <n>] [--via app|agent]
-                      [--with <id>] [--journal-seq <n>] [--store <path>]
-                      [--json | --proto]
-       immune finding <id> seen [--reason <text>] [--via app|agent] [--with <id>]
-                      [--journal-seq <n>] [--store <path>] [--json | --proto]
-       immune finding <id> reopen [--via app|agent] [--with <id>] [--journal-seq <n>]
-                      [--store <path>] [--json | --proto]
-           expected and seen are the owner's answers: they hide the finding from him.
-           reopen takes an answer back; each answers with the finding as it left it.
-           --with names the other finding of a pair, a finding of a rule and the
-           response layer's verdict.suspicious finding of that rule about the same
-           thing, and gives it the same answer in one transaction, or refuses both.
-           --journal-seq is the journal_seq of the answer the findings were read in;
-           the answer is refused if anything joined them since. seen and expected
-           with --with, --via agent or --via app need it.
-           --via says who gave it; without it, the command
-           line. Answer a finding only after the owner has agreed in this conversation,
-           having been told what it is and what the options are. Pass --via agent and
-           the reason the owner agreed to. The app shows every answer given this way.
-           An agent also passes --journal-seq, the journal_seq of the answer in which
-           the owner was shown the finding.
-       immune servers [--store <path>] [--tailscale <path>]
-       immune view [--store <path>] [--no-open] [--if-stale]
-           writes every page and prints their paths, the summary first; with
-           --if-stale, writes only when something they show changed since they were
-           made, or they are an hour old, and prints the same paths
-       immune owner [<name> retired|not-mine --reason <text> | <name> withdraw]
-                    [--via app|agent] [--store <path>] [--tailscale <path>]
-                    [--json | --proto]
-           retired and not-mine set a machine aside: it is no longer checked. --via says
-           who gave it; without it, the command line. An agent gives one only after the
-           owner has said so in this conversation, with --via agent and their reason.
-       immune vulnerabilities [--store <path>] [--json | --proto]
-           known vulnerabilities that affect packages the projects' lockfiles declare
-       immune vulnerability <record id or CVE id> [--store <path>] [--json | --proto]
-           the answer for one vulnerability in every project, with what it rests on
-       immune project <path or checkout id> [--store <path>] [--json | --proto]
-           what the store knows of one project: its facts, what was read and what was
-           not, its findings
-       immune program <path, name or id> [--store <path>] [--json | --proto]
-           the same for one program installed on this Mac: an application, a Homebrew
-           package or keg, a global npm package
-       immune machine [<name or id>] [--store <path>] [--json | --proto]
-           the same for this Mac, or for another machine the store knows; its parts
-           one level deep
-       immune rules [--store <path>] [--json | --proto]
-           the shipped Sigma rules for macOS: which are evaluated on every program
-           start, which in part, and which not, with the reason; whether they watch
-           and how many times each matched in the last day and week
-       immune rules --over-log [--system-root <dir>] [--json | --proto]
-           evaluates the rules over the event log on disk now, without the store, and
-           prints per rule that matched its level and count, never a command line
-       immune matches [--after <place>] [--limit <n>] [--store <path>]
-                      [--system-root <dir>] [--json | --proto]
-           every rule match over the event log, of every level, each with the event
-           it matched, command lines whole; what was read, lost and not evaluated; and
-           the position to read on from
-       immune verdict [--store <path>] [--system-root <dir>] (--json | --proto)
-           records the response layer's verdict about a match or a finding: one Verdict
-           message on standard input, binary with --proto or JSON with --json, and
-           answers with what was recorded in the same form; without a form it is
-           refused. A verdict never closes or quiets a finding
-       immune sample [--store <path>] [--sample-input <file>] [--json | --proto]
-       immune watch [--store <path>] [--system-root <dir>] [--sample-input <file>]
-                    [--sample-every <seconds>] [--events-every <seconds>]
-                    [--alive-every <seconds>] [--standalone | --background]
-                    one JSON line per event: watching, read, sample, program_starts,
-                    alive, problem; a problem's code and detail_text sit beside event, flat;
-                    program starts are read every 10 seconds by default;
-                    --standalone continues after its parent exits;
-                    --background also runs a full check at start and every hour
-                 exits 5 when another watcher has the store
-       immune install [--launchctl <path> --home <dir>] [--json | --proto]
-           copies this binary to
-           ~/Library/Application Support/ai.nuanu.immune/bin/immune and registers that
-           copy as this user's login job ai.nuanu.immune.watch, which runs
-           watch --background; run it again from a new build to update. Answers with
-           the message Service. Run it as the user being watched, without sudo
-       immune uninstall [--launchctl <path> --home <dir>] [--json | --proto]
-           stops the login job and removes it with the installed copy; keeps the
-           store and the event collector. Answers with the message Service.
-           Both act in the account's own home folder, never $HOME, one at a time.
-           --launchctl and --home are for tests and are given together or not at
-           all: another launchctl, and another home folder
-       immune --help | -h | help
-           prints this usage on stdout and exits 0";
 
 enum Cmd {
     Run(Box<Args>),
@@ -220,6 +121,8 @@ struct RulesArgs {
     store: PathBuf,
     form: answer::Form,
     over_log: Option<PathBuf>,
+    /// Every rule one per line in the text for a person, in place of the summary.
+    all: bool,
 }
 
 /// `immune vulnerabilities`, and `immune vulnerability <id>` with the id.
@@ -251,6 +154,9 @@ struct FindingArgs {
     /// The `journal_seq` of the answer the findings were read in, `--journal-seq`: the answer is
     /// refused when anything joined them after it (`findings::unchanged`).
     journal_seq: Option<i64>,
+    /// The words typed after `finding`, for the command a refusal gives a person to run next
+    /// (`usage::finding_next`).
+    typed: Vec<String>,
 }
 
 enum FindingVerb {
@@ -353,6 +259,10 @@ fn parse_args(
     finding_write: &mut bool,
 ) -> Result<Cmd, String> {
     let cmd = cmd.ok_or("no command given")?;
+    // The commands are those the help lists, so none can be added without its line there.
+    if !usage::is_command(cmd) {
+        return Err(format!("unknown command: {cmd}"));
+    }
     let mut store = None;
     match cmd {
         "run" => {
@@ -521,9 +431,10 @@ fn parse_args(
             }))
         }
         "finding" => {
+            let typed: Vec<String> = it.collect();
             let (mut reason, mut days, mut via, mut words) = (None, None, None, Vec::new());
             let (mut with, mut seq) = (None, None);
-            let parsed = options.read(it, |arg, it| {
+            let parsed = options.read(typed.clone().into_iter(), |arg, it| {
                 match arg.as_str() {
                     "--reason" => reason = Some(value(it, &arg)?),
                     "--days" => days = Some(value(it, &arg)?),
@@ -651,6 +562,7 @@ fn parse_args(
                 via: via.unwrap_or(findings::Via::Command),
                 with,
                 journal_seq,
+                typed,
             }))
         }
         "vulnerabilities" | "vulnerability" => {
@@ -690,10 +602,11 @@ fn parse_args(
         "install" => service::parse(service::Verb::Install, it, options).map(Cmd::Service),
         "uninstall" => service::parse(service::Verb::Uninstall, it, options).map(Cmd::Service),
         "rules" => {
-            let (mut over_log, mut system_root) = (false, None);
+            let (mut over_log, mut system_root, mut all) = (false, None, false);
             options.read(it, |arg, it| {
                 match arg.as_str() {
                     "--over-log" => over_log = true,
+                    "--all" => all = true,
                     "--system-root" => system_root = Some(value(it, &arg)?.into()),
                     _ => return Err(format!("unexpected argument: {arg}")),
                 }
@@ -702,10 +615,16 @@ fn parse_args(
             if system_root.is_some() && !over_log {
                 return Err("--system-root is for immune rules --over-log".to_string());
             }
+            if all && over_log {
+                return Err(
+                    "--all lists the shipped rules and does not go with --over-log".to_string(),
+                );
+            }
             Ok(Cmd::Rules(RulesArgs {
                 store: options.store()?,
                 form: options.form(),
                 over_log: over_log.then(|| system_root.unwrap_or_else(|| PathBuf::from("/"))),
+                all,
             }))
         }
         "sample" => {
@@ -835,12 +754,36 @@ fn print_json(v: &serde_json::Value) {
 
 fn main() -> ExitCode {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
-    // Asked for alone, the usage is the answer: on stdout, with exit 0.
-    if let [only] = args.as_slice()
-        && matches!(only.as_str(), "--help" | "-h" | "help")
+    // Asked for, the help is the answer: on stdout, with exit 0. The whole of it alone, or one
+    // command's as `immune help <command>` or `immune <command> --help`.
+    let help = match args
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
     {
-        println!("{USAGE}");
+        ["--help" | "-h" | "help"] => Some(usage::help(&screen::Screen::of_stdout())),
+        ["help", name] | [name, "--help" | "-h"] => {
+            usage::command_help(name, &screen::Screen::of_stdout())
+        }
+        _ => None,
+    };
+    if let Some(help) = help {
+        print!("{help}");
         return ExitCode::SUCCESS;
+    }
+    // Help asked for a word that is not a command: that word is named, not `help`.
+    if let ["help", name] = args
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        eprint!(
+            "{}",
+            usage::unknown(Some(name), &screen::Screen::of_stderr())
+        );
+        return ExitCode::from(EXIT_USAGE);
     }
     if args.first().is_some_and(|arg| arg == background::CHECK_ARG) {
         let [_, parent, op, ..] = args.as_slice() else {
@@ -888,29 +831,45 @@ fn main() -> ExitCode {
                 Some("uninstall") => Some("immune uninstall --json"),
                 _ => None,
             };
-            if let (Some(op), Some(example)) = (op, contract) {
-                let form = options.form();
+            // For a person, the cause and the command as typed in its right form, never the whole
+            // usage; no command, or a word that is none, also lists the commands in one line each.
+            let screen = screen::Screen::of_stderr();
+            let Some(op) = op.filter(|op| usage::is_command(op)) else {
+                eprint!("{}", usage::unknown(op, &screen));
+                return ExitCode::from(EXIT_USAGE);
+            };
+            let typed = &args[1..];
+            let text = || usage::misuse(op, typed, &e, &screen);
+            if let Some(example) = contract {
                 let error = answer::error(
                     "usage",
                     "the command line is not one Immune understands; the usage is on stderr",
                     example,
                     &e,
                 );
-                let exit = answer::fail(op, form, error, EXIT_USAGE);
-                eprintln!("{USAGE}");
+                let form = options.form();
+                let exit = answer::fail_as(op, form, error, EXIT_USAGE, |_| text());
+                // In a machine form the message says the usage is on stderr, and it is: what was
+                // wrong with the command typed, then the command's own help.
+                if form != answer::Form::Text {
+                    eprint!("{}", text());
+                    if let Some(help) = usage::command_help(op, &screen) {
+                        eprint!("\n{help}");
+                    }
+                }
                 return exit;
             }
             // `immune watch` answers only in machine-readable lines.
-            if op == Some("watch") {
+            if op == "watch" {
                 print_json(&status::failure(
-                    op,
+                    Some(op),
                     "usage",
                     "the command line is not one Immune understands; the usage is on stderr",
                     "immune watch",
                     &e,
                 ));
             }
-            eprintln!("immune: {}\n{USAGE}", secrets::said(&e));
+            eprint!("{}", text());
             return ExitCode::from(EXIT_USAGE);
         }
     };
@@ -938,8 +897,16 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            // What a failure repeats of what it was given is cut.
-            eprintln!("immune: {}", secrets::said(&e.to_string()));
+            // `immune servers` and `immune view` fail in the one form of an error, the store's
+            // two conditions in the one wording every command gives them; what the failure
+            // repeats of what it was given is cut.
+            let error = contract::v1::Error {
+                code: "command_failed".to_string(),
+                message: format!("immune {} could not finish", op.unwrap_or_default()),
+                detail_text: Some(secrets::said(&e.to_string())),
+                ..Default::default()
+            };
+            eprint!("{}", text::error(&error, &screen::Screen::of_stderr()));
             ExitCode::FAILURE
         }
     }
@@ -1023,7 +990,9 @@ fn sample_cmd(args: &SampleArgs) -> ExitCode {
             m.store_id = store::open_read_only(&args.store)
                 .ok()
                 .and_then(|c| store::id(&c).ok());
-            answer::print("sample", args.form, &m, text::sample)
+            answer::print("sample", args.form, &m, |m| {
+                after_run::sample(m, &screen::Screen::of_stdout())
+            })
         }
         Err(e) => {
             let (error, exit) = match e.downcast_ref::<Stop>() {
@@ -1139,7 +1108,7 @@ fn rules_cmd(args: &RulesArgs) -> ExitCode {
         let reason = if args.store.exists() {
             "program starts have not been looked for yet; the next check does"
         } else {
-            "there is no store yet; `immune run` makes it"
+            store::NO_STORE_REASON
         };
         m.not_computed.push(contract::v1::NotComputed {
             section: "matches".to_string(),
@@ -1149,7 +1118,9 @@ fn rules_cmd(args: &RulesArgs) -> ExitCode {
     // Every rule of the core's own and every cause of what is not covered, with its words, for an
     // agent to learn what each can say.
     m.catalogue = Some(findings::catalogue());
-    answer::print("rules", args.form, &m, text::rules)
+    answer::print("rules", args.form, &m, |m| {
+        lists::rules(m, args.all, &screen::Screen::of_stdout())
+    })
 }
 
 /// `immune rules --over-log`: the rules evaluated over the event log on disk now, from the start
@@ -1216,7 +1187,9 @@ fn replay_cmd(root: &Path, form: answer::Form) -> ExitCode {
                 .collect();
         }
     }
-    answer::print("rules", form, &m, text::replay)
+    answer::print("rules", form, &m, |m| {
+        lists::replay(m, &screen::Screen::of_stdout())
+    })
 }
 
 // ---- End of `immune rules`. ----
@@ -1271,18 +1244,25 @@ fn status_cmd(op: &str, store: &Path, form: answer::Form, coverage: bool) -> Exi
     }
 }
 
-/// `immune run`: the check, then for a program the same answer as `immune status`, read back
-/// from the store it committed, so the two cannot differ; for a person the run's report line and
-/// the watched places it found changed.
+/// `immune run`: the check, then the same answer as `immune status`, read back from the store it
+/// committed, so the two cannot differ; for a person that answer told as the run's
+/// (`after_run::run`), with a line on standard error while the check runs.
 fn run_cmd(args: &Args) -> ExitCode {
-    match run(args) {
-        Ok(_) if args.form != answer::Form::Text => {
-            status_cmd("run", &args.store, args.form, false)
-        }
-        Ok((line, watched)) => {
-            print!("{}", run_said(&line, &watched));
-            ExitCode::SUCCESS
-        }
+    let text = args.form == answer::Form::Text;
+    let running = text.then(|| after_run::Running::start(&screen::Screen::of_stdout()));
+    let done = run(args);
+    drop(running);
+    match done {
+        Ok(_) if !text => status_cmd("run", &args.store, args.form, false),
+        Ok(_) => match status_answer(&args.store, now_secs()) {
+            Ok(m) => answer::print("run", args.form, &m, |m| {
+                after_run::run(m, &screen::Screen::of_stdout())
+            }),
+            Err(e) => {
+                let (error, exit) = answer::stopped(&e, "immune run --json");
+                answer::fail("run", args.form, error, exit)
+            }
+        },
         Err(e) => match e.downcast_ref::<Stop>() {
             Some(stop) => {
                 let (error, exit) = answer::stopped(stop, "immune run --json");
@@ -1301,36 +1281,6 @@ fn run_cmd(args: &Args) -> ExitCode {
             ),
         },
     }
-}
-
-/// What `immune run` prints for a person: its line, then the watched places it found changed or
-/// could not read. What the readers' sources said in the line and in a row's why, such as why a
-/// server could not be opened or a file read, was cut where each was put together (`report`,
-/// `read_watched`); nothing is cut here, so a source's text never takes the core's words with it.
-fn run_said(line: &str, watched: &Rows) -> String {
-    let mut out = format!("{}\n", view::shown(line));
-    if !watched.is_empty() {
-        // The path is a name: shown here, the one place this table writes one.
-        let rows: Rows = watched
-            .iter()
-            .map(|row| {
-                let mut row = row.clone();
-                if let Some(path) = row.get_mut(2) {
-                    *path = known::whole(path);
-                }
-                row
-            })
-            .collect();
-        out.push_str("Watched places:\n");
-        out.push_str(&text::table(&["Change", "Kind", "Path", "Why"], &rows));
-    }
-    out
-}
-
-/// Prints one line. Text from a source never reaches the terminal raw: it could reorder or
-/// hide the text around it.
-fn say(line: &str) {
-    println!("{}", view::shown(line));
 }
 
 /// The store's folder: raw input and the view live next to the store.
@@ -1376,11 +1326,15 @@ fn vulnerabilities_cmd(args: &VulnerabilityArgs) -> ExitCode {
     };
     match &args.id {
         None => match vulnerabilities::list(conn.as_ref(), now) {
-            Ok(m) => answer::print(op, args.form, &m, text::vulnerabilities),
+            Ok(m) => answer::print(op, args.form, &m, |m| {
+                answers_text::vulnerabilities(m, &screen::Screen::of_stdout())
+            }),
             Err(e) => failed(e.to_string()),
         },
         Some(id) => match vulnerabilities::one(conn.as_ref(), id, now) {
-            Ok(m) => answer::print(op, args.form, &m, text::vulnerability),
+            Ok(m) => answer::print(op, args.form, &m, |m| {
+                answers_text::vulnerability(m, &screen::Screen::of_stdout())
+            }),
             Err(e) => failed(e.to_string()),
         },
     }
@@ -1389,40 +1343,42 @@ fn vulnerabilities_cmd(args: &VulnerabilityArgs) -> ExitCode {
 /// `immune finding <id>`: one finding with what it rests on; after the owner's answer to it, the
 /// same finding as it stands then. A refusal and a failure are the contract's `Failure`.
 fn finding_cmd(args: &FindingArgs) -> ExitCode {
+    // An id the store has no finding for that is not the shape of one is told as such, and not
+    // only as one the store lacks. It is checked after the store, so that every finding the
+    // store holds is read and answered whatever its id.
+    const NOT_AN_ID: &str = "this is not a finding's id: an id is f and ten hexadecimal digits, as immune findings lists them";
+    let not_an_id = !findings::is_finding_id(&args.id);
     let read = || {
-        known::command(
+        let next = usage::finding_next(&args.typed, usage::FindingNext::List);
+        known::command_told(
             "finding",
             &args.store,
             args.form,
-            |conn, now| finding_answer::one(conn, &args.id, None, now),
-            text::finding,
+            |conn, now| {
+                finding_answer::one(conn, &args.id, None, now).map(|one| {
+                    one.map_err(|refused| match not_an_id {
+                        true => known::Refused {
+                            message: NOT_AN_ID,
+                            ..refused
+                        },
+                        false => refused,
+                    })
+                })
+            },
+            |m| finding_text::finding(m, &screen::Screen::of_stdout()),
+            |f| text::refusal(f, &next, &screen::Screen::of_stderr()),
         )
     };
     let Some(act) = &args.act else {
         return read();
     };
-    let refuse = |code: &str, message: &str, example: &str, exit: u8| {
-        answer::fail(
-            "finding",
-            args.form,
-            answer::error(code, message, example, ""),
-            exit,
-        )
-    };
-    let unknown = || {
-        refuse(
-            "unknown_finding",
-            "the store has no finding with this id; nothing was changed",
-            "immune findings --all lists every finding with its id; then: immune finding <id> seen",
-            EXIT_USAGE,
-        )
-    };
     let store_failed = |e: &Stop| {
         let (error, exit) = answer::stopped(e, "immune finding <id> seen");
         answer::fail("finding", args.form, error, exit)
     };
+    // No store is told as every command of the contract tells it, with exit code 3.
     if !args.store.is_file() {
-        return unknown();
+        return store_failed(&Stop::Store(store::absent(&args.store)));
     }
     let now = now_secs();
     let nanos = SystemTime::now()
@@ -1479,43 +1435,83 @@ fn finding_cmd(args: &FindingArgs) -> ExitCode {
     // A refusal about the finding named by `--with` quotes its id, and has the code it would
     // have about the finding the answer is for.
     let refusal = |r: findings::Refused| {
-        let message = format!("{r}; nothing was changed");
+        let message = match r {
+            findings::Refused::Unknown if not_an_id => NOT_AN_ID.to_string(),
+            _ => format!("{r}; nothing was changed"),
+        };
         let (about, detail) = match &r {
             findings::Refused::With(about) => (&**about, args.with.as_deref()),
             findings::Refused::NotPair => (&r, args.with.as_deref()),
             findings::Refused::ChangedSinceRead(id) => (&r, Some(id.as_str())),
             _ => (&r, None),
         };
-        let (code, example) = match about {
+        // For a person, the command to run next is the one typed in its right form: the
+        // finding read again where what changed has to be seen first, the answer taken back
+        // where it was given, and the other finding left for the person to name where that one
+        // was refused (`usage::finding_next`).
+        use usage::FindingNext as Next;
+        let with_refused = matches!(r, findings::Refused::With(_) | findings::Refused::NotPair);
+        let (code, example, next) = match about {
             findings::Refused::ChangedSinceRead(_) => (
                 "changed_since_read",
                 "immune finding <id> --json, then answer with its journal_seq: immune finding <id> seen --with <other id> --journal-seq <n>",
+                Next::Read,
             ),
             findings::Refused::ReadAhead => (
                 "journal_seq_ahead",
                 "immune finding <id> --json gives the journal_seq to answer with",
+                Next::Read,
             ),
             findings::Refused::Unknown => (
                 "unknown_finding",
                 "immune findings --all lists every finding with its id; then: immune finding <id> seen",
+                if with_refused {
+                    Next::OtherId
+                } else {
+                    Next::List
+                },
             ),
             findings::Refused::NotPair => (
                 "not_the_pair",
                 "immune finding <id> --json names the response layer's finding about the same rule and thing in verdicts.verdict_finding",
+                Next::OtherId,
             ),
             findings::Refused::NotAnswered(_) => (
                 "finding_not_answered",
                 "immune findings --all lists every finding with its state",
+                if with_refused {
+                    Next::OtherId
+                } else {
+                    Next::Read
+                },
             ),
-            _ => ("finding_closed", "immune findings lists the open findings"),
+            findings::Refused::Closed(state) => (
+                "finding_closed",
+                "immune findings lists the open findings",
+                match state.as_str() {
+                    _ if with_refused => Next::OtherId,
+                    "seen" => Next::Reopen,
+                    _ => Next::Read,
+                },
+            ),
+            _ => (
+                "finding_closed",
+                "immune findings lists the open findings",
+                Next::Read,
+            ),
         };
         let error = answer::error(code, &message, example, detail.unwrap_or_default());
-        answer::fail("finding", args.form, error, EXIT_USAGE)
+        let next = usage::finding_next(&args.typed, next);
+        answer::fail_as("finding", args.form, error, EXIT_USAGE, |f| {
+            text::refusal(f, &next, &screen::Screen::of_stderr())
+        })
     };
     drop(conn);
     drop(lock);
     match answered {
-        Ok(Ok(m)) => answer::print("finding", args.form, &m, text::finding),
+        Ok(Ok(m)) => answer::print("finding", args.form, &m, |m| {
+            finding_text::answered(m, &screen::Screen::of_stdout())
+        }),
         Ok(Err(refused)) => answer::fail("finding", args.form, refused.error(), EXIT_USAGE),
         Err(e) => match e.downcast::<findings::RefusedError>() {
             Ok(r) => refusal(r.0),
@@ -1535,7 +1531,7 @@ fn finding_cmd(args: &FindingArgs) -> ExitCode {
 
 fn view(args: &ViewArgs) -> Result<(), Box<dyn Error>> {
     if !args.store.is_file() {
-        return Err(format!("no store at {}", args.store.display()).into());
+        return Err(store::absent(&args.store).into());
     }
     let written = if args.if_stale {
         match current_view(&args.store, now_secs())? {
@@ -1926,9 +1922,10 @@ fn survey(args: &ServersArgs) -> Result<Survey, Box<dyn Error>> {
                     None => known::whole(a),
                 })
                 .collect();
-            let mut sweep = format!("visits {}", known::whole(first));
+            // The alias visited is the server's name in the row, so it is not said again.
+            let mut sweep = "visited".to_string();
             if !rest.is_empty() {
-                sweep.push_str(&format!("; same machine, not visited: {}", rest.join(", ")));
+                sweep.push_str(&format!("; not again as {}", rest.join(", ")));
             }
             sweep
         } else if let Some(alias) = with_alias.first() {
@@ -2024,137 +2021,72 @@ fn survey(args: &ServersArgs) -> Result<Survey, Box<dyn Error>> {
 /// ssh.
 fn servers_cmd(args: &ServersArgs) -> Result<(), Box<dyn Error>> {
     let s = survey(args)?;
+    sweep::write(&s.dir, &s.machines)?;
     let (offered, rest): (Vec<&ServerRow>, Vec<&ServerRow>) =
         s.rows.iter().partition(|r| !r.offered.is_empty());
-    let table = |title: String, rows: &[&ServerRow]| {
-        say(&title);
-        let cells: Vec<Vec<String>> = rows
-            .iter()
-            .map(|r| {
-                // The sweep and the last file are put together with names and cut reasons
-                // already shown (`survey`, `last_file`); a name alone is shown here.
-                vec![
-                    known::whole(&r.name),
-                    r.traces.join(", "),
-                    r.sweep.clone(),
-                    r.file.clone(),
-                    known::whole(&r.others.join(", ")),
-                ]
+    // The sweep and the last file are put together with names and cut reasons already shown
+    // (`survey`, `last_file`); a name alone is shown here.
+    let listed = |rows: &[&ServerRow]| -> Vec<lists::Server> {
+        rows.iter()
+            .map(|r| lists::Server {
+                name: known::whole(&r.name),
+                known_from: r.traces.join(", "),
+                sweep: r.sweep.clone(),
+                last_file: r.file.clone(),
+                others: known::whole(&r.others.join(", ")),
             })
-            .collect();
-        print_table(
-            &[
-                "Server",
-                "Known from",
-                "Sweep",
-                "Last file",
-                "Also known as",
-            ],
-            &cells,
-        );
-        println!();
+            .collect()
     };
-    table(
-        format!(
-            "Offered for the sweep: {}",
-            things(offered.len() as i64, "server", "servers")
+    let shown = lists::Servers {
+        offered: listed(&offered),
+        rest: listed(&rest),
+        set_aside: s
+            .standing
+            .iter()
+            .filter(|w| w.seen.is_none())
+            .map(|w| lists::SetAside {
+                machine: known::whole(w.name()),
+                said: w.word.said.clone(),
+                at: w.word.made_at,
+                reason: w.word.reason.said(),
+                others: known::whole(&w.names[1..].join(", ")),
+            })
+            .collect(),
+        own: names(&s.own)
+            .into_iter()
+            .map(|r| [r[0].clone(), r[1].clone(), r[2].clone()])
+            .collect(),
+        theirs: names(&s.theirs)
+            .into_iter()
+            .map(|r| [r[0].clone(), r[1].clone()])
+            .collect(),
+        said: s.said.clone(),
+        summary: format!(
+            "{} known, {} of them under several names, {} offered for the sweep, {} left out as code hosting, {} as your other devices, {} as other users' devices, {} known and never read.",
+            things(s.rows.len() as i64, "server", "servers"),
+            s.several_names,
+            offered.len(),
+            s.third_party,
+            s.own.len(),
+            s.theirs.len(),
+            s.rows.iter().filter(|r| !r.read).count()
         ),
-        &offered,
-    );
-    table(
-        format!(
-            "Known and not offered: {}",
-            things(rest.len() as i64, "server", "servers")
+        owner_word: word_line(&s.standing),
+        spare: s.machines.iter().map(|m| m.len() as u64 - 1).sum(),
+        never_read: s.rows.iter().filter(|r| !r.read).count() as u64,
+        folder: known::whole(&s.dir.display().to_string()),
+        // The script's path as the shell reads it back, or where it is when that cannot be shown.
+        sweep_command: format!(
+            "sh {}",
+            s.dir
+                .join("sweep.sh")
+                .to_str()
+                .and_then(text::shell_word)
+                .unwrap_or_else(|| "<folder>/sweep.sh".to_string())
         ),
-        &rest,
-    );
-    let set_aside: Vec<&owner::Standing> = s.standing.iter().filter(|w| w.seen.is_none()).collect();
-    if !set_aside.is_empty() {
-        say(&format!(
-            "Retired or disowned by the owner, not counted as servers: {}",
-            things(set_aside.len() as i64, "machine", "machines")
-        ));
-        print_table(&WORD_HEAD, &word_rows(&set_aside));
-        println!();
-    }
-    // Shown with a count, so that nothing the tailnet holds disappears silently.
-    say(&format!(
-        "Your other devices on the tailnet, not counted as servers: {}",
-        things(s.own.len() as i64, "device", "devices")
-    ));
-    print_table(&["Device", "System", "Also known as"], &names(&s.own));
-    println!();
-    say(&format!(
-        "Other users' devices on the tailnet, not counted as servers: {}",
-        things(s.theirs.len() as i64, "device", "devices")
-    ));
-    print_table(&["Device", "Also known as"], &names(&s.theirs));
-    println!();
-
-    sweep::write(&s.dir, &s.machines)?;
-    for line in &s.said {
-        say(&format!("{}{}.", line[..1].to_uppercase(), &line[1..]));
-    }
-    say(&format!(
-        "{} known, {} of them under several names, {} offered for the sweep, {} left out as code hosting, {} as your other devices, {} as other users' devices, {} known and never read.",
-        things(s.rows.len() as i64, "server", "servers"),
-        s.several_names,
-        offered.len(),
-        s.third_party,
-        s.own.len(),
-        s.theirs.len(),
-        s.rows.iter().filter(|r| !r.read).count()
-    ));
-    if let Some(line) = word_line(&s.standing) {
-        say(&line);
-    }
-    let spare: usize = s.machines.iter().map(|m| m.len() - 1).sum();
-    if spare > 0 {
-        say(&format!(
-            "The sweep visits each offered server once, through one alias; {} not visited.",
-            things(
-                spare as i64,
-                "alias of the same machine is",
-                "aliases of the same machines are"
-            )
-        ));
-    }
-    say(&format!(
-        "Wrote probe.sh and sweep.sh to {}. Nothing was run.",
-        s.dir.display()
-    ));
-    say("To read the offered servers, run:");
-    say(&format!("  sh {}", sweep::quoted(&s.dir.join("sweep.sh"))));
-    say(
-        "To say a server is retired or not yours, run `immune owner <name> retired --reason <text>`.",
-    );
-    say(&format!(
-        "To visit only some of them again, such as those that failed, name their aliases: sh {} <alias>...",
-        sweep::quoted(&s.dir.join("sweep.sh"))
-    ));
-    say(&format!(
-        "To choose which alias the sweep uses, add the others to {}, one per line. Then run `immune run`.",
-        s.dir.join(sweep::SKIP).display()
-    ));
+    };
+    print!("{}", lists::servers(&shown, &screen::Screen::of_stdout()));
     Ok(())
-}
-
-/// The columns of a statement as `immune servers` and `immune owner` print it.
-const WORD_HEAD: [&str; 5] = ["Machine", "Said", "Since", "Reason", "Also known as"];
-
-fn word_rows(words: &[&owner::Standing]) -> Vec<Vec<String>> {
-    words
-        .iter()
-        .map(|w| {
-            vec![
-                known::whole(w.name()),
-                w.word.said.clone(),
-                view::utc(w.word.made_at),
-                w.word.reason.said(),
-                known::whole(&w.names[1..].join(", ")),
-            ]
-        })
-        .collect()
 }
 
 /// Rows of names alone, as every surface shows a name: a backslash written `\u{5c}`, so none
@@ -2240,7 +2172,9 @@ fn owner_cmd(args: &OwnerArgs) -> ExitCode {
             statements: standing.iter().map(owner::statement).collect(),
             withdrawn: withdrawn.max(0) as u64,
         };
-        return answer::print("owner", args.form, &m, text::statements);
+        return answer::print("owner", args.form, &m, |m| {
+            lists::statements(m, &screen::Screen::of_stdout())
+        });
     };
     let run_id = format!("owner-{}-{:09}", now.as_secs(), now.subsec_nanos());
     let mut conn = match store::open(store_path) {
@@ -2344,7 +2278,9 @@ fn owner_cmd(args: &OwnerArgs) -> ExitCode {
     // The word is kept either way; a sweep script that could not be written again is a failure
     // a person is told on stderr as well, after what was done.
     let problem = m.sweep.as_ref().and_then(|s| s.problem_text.clone());
-    let exit = answer::print("owner", args.form, &m, text::statement_made);
+    let exit = answer::print("owner", args.form, &m, |m| {
+        lists::statement_made(m, &screen::Screen::of_stdout())
+    });
     if let Some(problem) = problem.filter(|_| args.form == answer::Form::Text) {
         eprintln!("immune: {problem}");
         return ExitCode::FAILURE;
@@ -2419,11 +2355,6 @@ fn last_reading(dir: &Path, names: &[&str]) -> (String, bool) {
         );
     }
     seen.unwrap_or(("never read".to_string(), false))
-}
-
-/// A plain text table with columns as wide as their widest cell, as the cells are shown.
-fn print_table(head: &[&str], rows: &[Vec<String>]) {
-    print!("{}", text::table(head, rows));
 }
 
 /// Runs every reader and returns the report line, and the watched places that changed or
@@ -2886,9 +2817,8 @@ fn not_read_note(what: &str, reason: &str) -> String {
     format!("{what} could not be read: {}.", secrets::said(reason))
 }
 
-/// A row under the run's line for a watched place not read: why is what the reader's source
-/// said, cut here, where it is put beside the core's words (`prefix`); the run prints the rows
-/// as they are (`run_said`).
+/// A row of the watched places read for a place not read: why is what the reader's source said,
+/// cut here, where it is put beside the core's words (`prefix`).
 fn not_read_row(watched_as: &str, path: &str, prefix: &str, why: &str) -> Vec<String> {
     vec![
         "not read".to_string(),
@@ -5397,7 +5327,6 @@ mod tests {
             assert!(line.contains(&words), "{words}\n{line}");
         }
         assert!(needs.contains("2 things need a look"), "{needs}");
-        assert_eq!(run_said(&line, &Vec::new()), format!("{line}\n"));
         assert_eq!(
             trace_failed("ssh known hosts", "it's down, password: x"),
             format!(
@@ -5410,10 +5339,9 @@ mod tests {
     }
 
     #[test]
-    fn the_rows_under_the_run_s_line_are_printed_as_they_were_put_together() {
-        // A row's why is cut where it is put beside the core's words (`read_watched`); printing
-        // cuts nothing again, so a mark the core made stays its own and a source's backslash
-        // stays written as a source's.
+    fn a_row_s_why_is_cut_where_it_is_put_beside_the_core_s_words() {
+        // A row's why is cut where it is put beside the core's words (`read_watched`), so a mark
+        // the core made stays its own and a source's backslash stays written as a source's.
         let token = format!(
             "{}{}",
             ["gh", "p_"].concat(),
@@ -5431,11 +5359,6 @@ mod tests {
             secrets::mark("gitleaks:github-pat", 40)
         );
         assert_eq!(row[3], why);
-        let printed = run_said("1 reader.", &vec![row]);
-        assert!(
-            printed.starts_with("1 reader.\nWatched places:\n") && printed.contains(&why),
-            "{printed}"
-        );
     }
 
     #[test]
@@ -5491,22 +5414,11 @@ mod tests {
     }
 
     #[test]
-    fn a_name_never_reads_as_a_mark_in_what_the_run_and_the_server_list_print() {
-        // A name is never cut, and its backslash is written as a source's: the path of a watched
-        // place under the run's line, and a server's names in `immune servers`.
+    fn a_name_never_reads_as_a_mark_in_what_the_server_list_prints() {
+        // A name is never cut, and its backslash is written as a source's: a server's names in
+        // `immune servers`.
         let forged = "/Users/example/\\cut{gitleaks:github-pat 40}";
         let shown = "/Users/example/\\u{5c}cut{gitleaks:github-pat 40}";
-        let rows: Rows = vec![vec![
-            "new".to_string(),
-            "shell profile".to_string(),
-            forged.to_string(),
-            String::new(),
-        ]];
-        let printed = run_said("1 reader.", &rows);
-        assert!(
-            printed.contains(shown) && !printed.contains("/\\cut{"),
-            "{printed}"
-        );
         assert_eq!(
             names(&[vec![forged.to_string(), "linux".to_string()]]),
             [[shown.to_string(), "linux".to_string()]]

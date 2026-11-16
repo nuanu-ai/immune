@@ -29,12 +29,12 @@ const FINDINGS_SHOWN: usize = 200;
 
 /// At most this many rules are listed in the text of `immune status`; the rest are counted in
 /// one line.
-const GROUPS_SHOWN: usize = 6;
+pub(crate) const GROUPS_SHOWN: usize = 6;
 
 /// Whether a cause of what is not covered is a failure, as its class says: a reading or a
 /// download that was tried and did not succeed, whoever can fix it. A class this build does not
 /// know, or none, is read as a failure, as the schema says.
-fn is_failure(u: &v1::Uncovered) -> bool {
+pub(crate) fn is_failure(u: &v1::Uncovered) -> bool {
     !matches!(
         v1::Cause::try_from(u.class),
         Ok(v1::Cause::NoReader | v1::Cause::NotGiven)
@@ -42,27 +42,27 @@ fn is_failure(u: &v1::Uncovered) -> bool {
 }
 
 /// `n one` or `n many`, with thousands grouped.
-fn count(n: u64, one: &str, many: &str) -> String {
+pub(crate) fn count(n: u64, one: &str, many: &str) -> String {
     crate::things(i64::try_from(n).unwrap_or(i64::MAX), one, many)
 }
 
 /// `n` with thousands grouped.
-fn grouped(n: u64) -> String {
+pub(crate) fn grouped(n: u64) -> String {
     count(n, "", "").trim_end().to_string()
 }
 
 /// A text without the period that ends it, for a cell or a value beside a label.
-fn unstopped(s: &str) -> &str {
+pub(crate) fn unstopped(s: &str) -> &str {
     s.strip_suffix('.').unwrap_or(s)
 }
 
 /// An enum's value in words: the JSON's name with spaces for underscores.
-fn words<E: TryFrom<i32> + serde::Serialize>(value: i32) -> String {
+pub(crate) fn words<E: TryFrom<i32> + serde::Serialize>(value: i32) -> String {
     word::<E>(value).replace('_', " ")
 }
 
 /// The lines of a text, each ended.
-fn joined(lines: &[String]) -> String {
+pub(crate) fn joined(lines: &[String]) -> String {
     let mut out = String::new();
     for l in lines {
         out.push_str(l);
@@ -73,7 +73,7 @@ fn joined(lines: &[String]) -> String {
 
 /// How bad, in the order of `findings::order`: a severity that is absent or that this build
 /// does not know first, as the most severe.
-fn rank(severity: Option<i32>) -> u8 {
+pub(crate) fn rank(severity: Option<i32>) -> u8 {
     match severity.and_then(|s| v1::Level::try_from(s).ok()) {
         Some(v1::Level::Critical) => 5,
         Some(v1::Level::High) => 4,
@@ -85,7 +85,7 @@ fn rank(severity: Option<i32>) -> u8 {
 }
 
 /// A level as a person reads it, and its style: critical red, high yellow, the others plain.
-fn level(severity: Option<i32>) -> (String, Style) {
+pub(crate) fn level(severity: Option<i32>) -> (String, Style) {
     match severity.map(|s| (s, v1::Level::try_from(s))) {
         None => ("not known".to_string(), PLAIN),
         Some((_, Ok(v1::Level::Critical))) => ("critical".to_string(), RED),
@@ -96,7 +96,12 @@ fn level(severity: Option<i32>) -> (String, Style) {
 
 /// A rule's name in a list: a published rule's own title, cut on a terminal to the length of a
 /// short title, or the core's short title; the long title from a core that gives no short one.
-fn short_title(screen: &Screen, rule_title: Option<&str>, short: &str, title: &str) -> String {
+pub(crate) fn short_title(
+    screen: &Screen,
+    rule_title: Option<&str>,
+    short: &str,
+    title: &str,
+) -> String {
     match rule_title {
         Some(t) if screen.terminal => screen::cut_end(&view::shown(t), SHORT_MAX),
         Some(t) => t.to_string(),
@@ -106,7 +111,7 @@ fn short_title(screen: &Screen, rule_title: Option<&str>, short: &str, title: &s
 }
 
 /// The urgent ones of a count, in a cell: `urgent` when all are, how many when some are.
-fn urgent_cell(count: u64, urgent: u64) -> String {
+pub(crate) fn urgent_cell(count: u64, urgent: u64) -> String {
     match urgent {
         0 => String::new(),
         u if u >= count => "urgent".to_string(),
@@ -115,7 +120,7 @@ fn urgent_cell(count: u64, urgent: u64) -> String {
 }
 
 /// How many need a look, never without how many of them are urgent.
-fn needing(total: u64, urgent: u64) -> String {
+pub(crate) fn needing(total: u64, urgent: u64) -> String {
     let (needs, need) = ("thing needs a look", "things need a look");
     format!(
         "{}, {}",
@@ -172,7 +177,7 @@ fn causes<'a>(s: &'a v1::Status, who: &'a str, every_mac: Option<bool>) -> Vec<&
 
 /// How a section of causes is set.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Causes {
+pub(crate) enum Causes {
     /// The status: each title whole, and under it what it is about without quotes: plain names
     /// joined with commas, or one name and its reason a line, at most `PAIRS_SHOWN`.
     Listed,
@@ -225,7 +230,7 @@ fn about_lines(u: &v1::Uncovered) -> (Vec<String>, u64) {
 
 /// A section of causes: its label bold on a line, then each cause's title and the things it is
 /// about. A failed reading or download is red wherever it is listed.
-fn cause_section(
+pub(crate) fn cause_section(
     screen: &Screen,
     out: &mut Vec<String>,
     label: &str,
@@ -307,7 +312,7 @@ fn watching(s: &v1::Status) -> (String, Style) {
 
 /// How this Mac is watched, one clause each, in its own style: whether a watcher runs, and only
 /// when it applies, that some places are not watched or nothing was checked yet.
-fn watching_parts(s: &v1::Status) -> Vec<(String, Style)> {
+pub(crate) fn watching_parts(s: &v1::Status) -> Vec<(String, Style)> {
     let Some(m) = &s.this_mac else {
         return vec![("whether it is watched is not said".to_string(), YELLOW)];
     };
@@ -389,7 +394,7 @@ fn in_part(s: &v1::Status) -> String {
 }
 
 /// Clauses joined with "; ", each in its own style.
-fn clauses(parts: Vec<(String, Style)>) -> Vec<(String, Style)> {
+pub(crate) fn clauses(parts: Vec<(String, Style)>) -> Vec<(String, Style)> {
     let mut out = Vec::new();
     for (i, (text, style)) in parts.into_iter().enumerate() {
         if i > 0 {
@@ -403,7 +408,7 @@ fn clauses(parts: Vec<(String, Style)>) -> Vec<(String, Style)> {
 /// Whether the status holds a failure: a reading or a download that failed, a watcher that
 /// failed, an event level that is neither running nor simply not installed, a machine not
 /// reached, or a run that died. A status with one is never calm, whatever it found.
-fn failing(s: &v1::Status) -> bool {
+pub(crate) fn failing(s: &v1::Status) -> bool {
     let failed_cause = s.not_covered.iter().any(is_failure);
     let watcher = s.watching.as_ref().is_some_and(|w| !w.failed.is_empty());
     let level = s.event_level.as_ref().is_some_and(|l| {
@@ -427,7 +432,7 @@ fn failing(s: &v1::Status) -> bool {
 /// calm because the data kept is current, since every failure the status holds is said there. The
 /// reasons are in `--coverage`. An outcome this build does not know is read as failed, as the
 /// schema says.
-fn downloads_failed(s: &v1::Status) -> Option<Vec<(String, Style)>> {
+pub(crate) fn downloads_failed(s: &v1::Status) -> Option<Vec<(String, Style)>> {
     let failed = |outcome: i32| {
         !matches!(
             v1::FeedOutcome::try_from(outcome),
@@ -493,7 +498,7 @@ fn downloads_failed(s: &v1::Status) -> Option<Vec<(String, Style)>> {
 /// The event level when it is not as it should be (running with nothing lost), in two clauses:
 /// its state, and what is wrong, which is yellow, or red for a collector that does not run;
 /// `None` when it is as it should be. The detail is in `--coverage`.
-fn event_level_short(l: &v1::EventLevel) -> Option<Vec<(String, Style)>> {
+pub(crate) fn event_level_short(l: &v1::EventLevel) -> Option<Vec<(String, Style)>> {
     let words = l.in_words.clone().unwrap_or_default();
     let running = l.state == v1::CollectorState::Running as i32;
     if running && words.notes.is_empty() {
@@ -557,7 +562,7 @@ fn event_level_short(l: &v1::EventLevel) -> Option<Vec<(String, Style)>> {
 
 /// What the latest check did not read, by kind, a failure yellow; when it read all that this
 /// version reads here, that. Readings with nothing to read are not held against the Mac.
-fn coverage_parts(c: &v1::CoverageSummary) -> Vec<(String, Style)> {
+pub(crate) fn coverage_parts(c: &v1::CoverageSummary) -> Vec<(String, Style)> {
     let mut parts: Vec<(String, Style)> = Vec::new();
     if c.failed > 0 {
         parts.push((count(c.failed, "reading failed", "readings failed"), YELLOW));
@@ -628,7 +633,11 @@ fn event_level_long(l: &v1::EventLevel) -> String {
 
 /// The machines not reached in one line: the first by name, since when and why, and how many
 /// more.
-fn unreached_short(screen: &Screen, c: &v1::CoverageSummary, now: i64) -> Option<String> {
+pub(crate) fn unreached_short(
+    screen: &Screen,
+    c: &v1::CoverageSummary,
+    now: i64,
+) -> Option<String> {
     let first = c.unreached.first()?;
     let mut said = format!(
         "{} {}",
@@ -647,7 +656,11 @@ fn unreached_short(screen: &Screen, c: &v1::CoverageSummary, now: i64) -> Option
 
 /// What is not judged on this Mac in one line: the places by name, as many as fit, and how many
 /// more causes there are; what nobody can fix and is not a failure.
-fn not_judged_line(screen: &Screen, s: &v1::Status, room: Option<usize>) -> Option<String> {
+pub(crate) fn not_judged_line(
+    screen: &Screen,
+    s: &v1::Status,
+    room: Option<usize>,
+) -> Option<String> {
     let mut names: Vec<String> = Vec::new();
     let mut unnamed = 0u64;
     let failed = is_failure;
@@ -713,7 +726,7 @@ pub fn status(s: &v1::Status, screen: &Screen, coverage: bool) -> String {
     let store = s.store.clone().unwrap_or_default();
     let mut out: Vec<String> = Vec::new();
     if !store.exists {
-        out.extend(screen.headline("There is no store yet", BOLD, None));
+        out.extend(crate::text::no_store(screen));
         out.push(String::new());
         out.extend(screen.labelled(2, 5, "Store", &store.path_text, PLAIN, None, 0));
         out.push(String::new());
@@ -737,7 +750,6 @@ fn checked(screen: &Screen, s: &v1::Status) -> Option<String> {
 }
 
 fn default_text(s: &v1::Status, screen: &Screen, out: &mut Vec<String>) {
-    let now = s.answered_at;
     let fresh = s.this_mac.as_ref().is_some_and(|m| m.fresh);
     let right = checked(screen, s);
     let look = s.needs_a_look.as_ref();
@@ -827,9 +839,44 @@ fn default_text(s: &v1::Status, screen: &Screen, out: &mut Vec<String>) {
     }
     // Context: one labelled line each.
     out.push(String::new());
-    // Each value in parts, each part in its own style.
-    type Parts = Vec<(String, Style)>;
-    let mut lines: Vec<(&str, Parts, Option<&str>)> = Vec::new();
+    let whole = context(s, screen, Vec::new(), out);
+    // The next steps, each on its own line, only those that apply, at most three.
+    out.push(String::new());
+    let mut next: Vec<(&str, &str)> = Vec::new();
+    match look {
+        None => next.push(("immune run", "checks this Mac now")),
+        Some(n) if n.total > 0 => {
+            next.push(("immune findings", "lists every one, most urgent first"))
+        }
+        Some(_) => {}
+    }
+    if s.watching.is_none() {
+        next.push(("immune install", "keeps watching between checks"));
+    }
+    if !whole || next.is_empty() {
+        next.push(("immune status --coverage", "what was read and what was not"));
+    }
+    next.truncate(3);
+    out.extend(screen.nexts(&next));
+}
+
+/// A value in parts, each part in its own style.
+pub(crate) type Parts = Vec<(String, Style)>;
+
+/// What a screen about the store says after its headline and what needs a look, the same for
+/// `immune status` and `immune run`, so that a run never says less than the status of the same
+/// store: a run that did not finish, freshness, how this Mac is watched, the event level,
+/// coverage, machines not reached and downloads, one labelled line each, after the lines the
+/// command adds of its own (`own`, first); then every failure, what the person can fix, and what
+/// is not judged. True when nothing of it says that something was not read or not seen.
+pub(crate) fn context(
+    s: &v1::Status,
+    screen: &Screen,
+    own: Vec<(&'static str, Parts)>,
+    out: &mut Vec<String>,
+) -> bool {
+    let now = s.answered_at;
+    let mut lines: Vec<(&str, Parts)> = own;
     if let Some(l) = s.last_run.as_ref().filter(|l| l.finished_at.is_none()) {
         let (how, style) = if s.running {
             ("it is running", YELLOW)
@@ -845,7 +892,6 @@ fn default_text(s: &v1::Status, screen: &Screen, out: &mut Vec<String>) {
                 ),
                 style,
             )],
-            None,
         ));
     }
     if let Some(m) = s.this_mac.as_ref().filter(|m| !m.fresh) {
@@ -860,13 +906,12 @@ fn default_text(s: &v1::Status, screen: &Screen, out: &mut Vec<String>) {
                 ),
                 YELLOW,
             )],
-            None,
         ));
     }
-    lines.push(("Watching", clauses(watching_parts(s)), None));
+    lines.push(("Watching", clauses(watching_parts(s))));
     let event_level = s.event_level.as_ref().and_then(event_level_short);
     if let Some(parts) = event_level.clone() {
-        lines.push(("Event level", clauses(parts), None));
+        lines.push(("Event level", clauses(parts)));
     }
     // Whether coverage is whole: nothing failed, nothing this version does not read, nothing
     // its source does not give, no machine unreached.
@@ -875,33 +920,32 @@ fn default_text(s: &v1::Status, screen: &Screen, out: &mut Vec<String>) {
     });
     match &s.coverage {
         Some(c) => {
-            lines.push(("Coverage", coverage_parts(c), None));
+            lines.push(("Coverage", coverage_parts(c)));
             if let Some(said) = unreached_short(screen, c, now) {
-                lines.push(("Not reached", vec![(said, RED)], None));
+                lines.push(("Not reached", vec![(said, RED)]));
             }
         }
         None => lines.push((
             "Coverage",
             vec![("nothing has been read yet".to_string(), YELLOW)],
-            None,
         )),
     }
     let downloads = downloads_failed(s);
     if let Some(parts) = downloads.clone() {
-        lines.push(("Downloads", parts, None));
+        lines.push(("Downloads", parts));
     }
     let width = lines
         .iter()
-        .map(|(l, ..)| screen::columns(l))
+        .map(|(l, _)| screen::columns(l))
         .chain(std::iter::once(screen::columns("Not judged")))
         .max()
         .unwrap_or(0);
     // A value has the whole width after its label; the commands are the next steps at the end.
     let room = screen.fits().map(|w| w.saturating_sub(2 + width + 3));
     let not_judged = not_judged_line(screen, s, room);
-    for (label, parts, command) in &lines {
+    for (label, parts) in &lines {
         let parts: Vec<(&str, Style)> = parts.iter().map(|(t, st)| (t.as_str(), *st)).collect();
-        out.extend(screen.labelled_parts(2, width, label, &parts, *command, 0));
+        out.extend(screen.labelled_parts(2, width, label, &parts, None, 0));
     }
     // Every failure, whoever can fix it; what the person can fix that is not one.
     let failed: Vec<&v1::Uncovered> = s.not_covered.iter().filter(|u| is_failure(u)).collect();
@@ -914,31 +958,12 @@ fn default_text(s: &v1::Status, screen: &Screen, out: &mut Vec<String>) {
     if let Some(said) = &not_judged {
         out.extend(screen.labelled(2, width, "Not judged", said, PLAIN, None, 0));
     }
-    // The next steps, each on its own line, only those that apply, at most three.
-    out.push(String::new());
-    let mut next: Vec<(&str, &str)> = Vec::new();
-    match look {
-        None => next.push(("immune run", "checks this Mac now")),
-        Some(n) if n.total > 0 => {
-            next.push(("immune findings", "lists every one, most urgent first"))
-        }
-        Some(_) => {}
-    }
-    if s.watching.is_none() {
-        next.push(("immune install", "keeps watching between checks"));
-    }
-    let whole = coverage_whole
+    coverage_whole
         && event_level.is_none()
         && downloads.is_none()
         && failed.is_empty()
         && fixable.is_empty()
-        && not_judged.is_none();
-    if !whole || next.is_empty() {
-        next.push(("immune status --coverage", "what was read and what was not"));
-    }
-    for (command, does) in next.into_iter().take(3) {
-        out.push(screen.next(command, does));
-    }
+        && not_judged.is_none()
 }
 
 /// What the latest check that finished counted, one labelled part each, in the words today's
@@ -3016,7 +3041,10 @@ mod tests {
             "  Watching      in part: authentication module and some program starts not watched in full; no watcher runs now: changes are seen at each check",
         );
         assert!(
-            visible(&text).contains("\n→ immune install   keeps watching between checks\n"),
+            visible(&text)
+                .lines()
+                .any(|l| l.starts_with("→ immune install ")
+                    && l.ends_with("   keeps watching between checks")),
             "{text}"
         );
         // Watched in full with no watcher: the watcher clause alone.
@@ -3113,10 +3141,15 @@ mod tests {
 
     #[test]
     fn the_next_steps_are_at_the_end_each_on_its_own_line_only_when_they_apply() {
+        // Each step with the room before what it does as `next` gives it alone: the column they
+        // are lined up in is pinned below.
         let ends = |text: &str| -> Vec<String> {
             text.lines()
                 .filter(|l| l.starts_with('→'))
-                .map(str::to_string)
+                .map(|l| match l.split_once("   ") {
+                    Some((command, does)) => format!("{command}   {}", does.trim_start()),
+                    None => l.to_string(),
+                })
                 .collect()
         };
         let findings_step = "→ immune findings   lists every one, most urgent first";
@@ -3132,6 +3165,18 @@ mod tests {
                 [findings_step, install_step, coverage_step],
                 "{text}"
             );
+            // What they do starts in one column.
+            let at: Vec<usize> = text
+                .lines()
+                .filter(|l| l.starts_with('→'))
+                .map(|l| {
+                    l.find(" what")
+                        .or(l.find(" lists"))
+                        .or(l.find(" keeps"))
+                        .unwrap()
+                })
+                .collect();
+            assert!(at.windows(2).all(|w| w[0] == w[1]), "{text}");
             // No context line carries a command beside its value.
             for l in text.lines().filter(|l| {
                 [

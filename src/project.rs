@@ -185,7 +185,7 @@ pub fn project_cmd(args: &ProjectArgs) -> ExitCode {
             );
             known::known_of(conn, &q, &args.home, now).map(Ok)
         },
-        crate::text::known,
+        |k| crate::answers_text::known(k, &crate::screen::Screen::of_stdout()),
     )
 }
 

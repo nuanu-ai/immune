@@ -842,8 +842,6 @@ fn a_suspicious_verdict_raises_one_finding_of_its_rule_and_thing_that_only_the_p
     );
     assert_eq!(item["verdicts"]["listed"], json!([]));
     // It rests on the verdict that raised it, as a finding rests on what raised it.
-    let text = mac.command(&["finding", &own]).output().unwrap();
-    let text = String::from_utf8_lossy(&text.stdout);
     let raising: i64 = rusqlite::Connection::open(mac.store())
         .unwrap()
         .query_row(
@@ -852,10 +850,13 @@ fn a_suspicious_verdict_raises_one_finding_of_its_rule_and_thing_that_only_the_p
             |r| r.get(0),
         )
         .unwrap();
-    assert!(
-        text.contains(&format!("Rests on 1 journal entry: {raising}.")),
-        "{text}"
-    );
+    let rests: Vec<i64> = mac.finding(&own)["rests_on"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["seq"].as_i64().unwrap())
+        .collect();
+    assert_eq!(rests, [raising]);
     // Once the person saw it, the core's finding no longer names it, and the next suspicious
     // verdict raises its next occurrence, which the core's finding names.
     assert!(mac.answer(&own, &["seen"]).status.success());
@@ -1338,14 +1339,14 @@ fn a_verdict_finding_keeps_the_event_it_is_about_and_a_match_s_raised_stays_what
     let out = mac.command(&["finding", own]).output().unwrap();
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
-    assert!(
-        text.contains(&format!("Rule the verdict is about: {SW_VERS}.")),
-        "{text}"
-    );
-    assert!(
-        text.contains(r#""/usr/bin/sw_vers": "sw_vers" "-productVersion""#),
-        "{text}"
-    );
+    // The rule and the event, each field beside its label.
+    let labelled = |label: &str, value: &str| {
+        text.lines()
+            .any(|l| l.trim_start().strip_prefix(label).map(str::trim) == Some(value))
+    };
+    assert!(labelled("About rule", SW_VERS), "{text}");
+    assert!(labelled("Program", "/usr/bin/sw_vers"), "{text}");
+    assert!(labelled("Command", "sw_vers -productVersion"), "{text}");
     let evidence = &whole["evidence"]["verdict_given"];
     assert_eq!(evidence["rule"], SW_VERS);
     assert_eq!(evidence["events"].as_array().unwrap().len(), 1);
@@ -1900,11 +1901,16 @@ fn a_late_suspicious_verdict_about_a_line_the_log_no_longer_holds_raises_its_fin
         // In the text for a person, the core says so in its own words, before the reason.
         let out = mac.command(&["finding", own]).output().unwrap();
         let text = String::from_utf8(out.stdout).unwrap();
-        let line = text
-            .lines()
-            .find(|l| l.contains(UNCHECKED))
+        let lines: Vec<&str> = text.lines().collect();
+        let said = lines
+            .iter()
+            .position(|l| l.contains(UNCHECKED))
             .unwrap_or_else(|| panic!("{text}"));
-        assert!(line.find(UNCHECKED) < line.find("Its reason:"), "{line}");
+        let reason = lines
+            .iter()
+            .position(|l| l.trim_start().starts_with("Reason "))
+            .unwrap_or_else(|| panic!("{text}"));
+        assert!(said < reason, "{text}");
     }
     // A verdict about a line that is there is read again and not marked.
     let mac = Mac::new("late-not");
@@ -2665,7 +2671,9 @@ fn every_quote_of_the_core_s_cut_output_in_a_verdict_s_reason_lands_and_keeps_th
     // to what follows it in its word, and that is cut as it would be after a real value; the
     // marks it quoted stay as they were, and `reason_cuts` says what was cut.
     let (mac, store, first, quotes) = quoting("quotes");
-    assert!(quotes.len() >= 140, "{}", quotes.len());
+    // The text of `immune matches` names the program and not its arguments, so the lines a
+    // person quotes come from the findings.
+    assert!(quotes.len() >= 120, "{}", quotes.len());
     let mut tally: std::collections::BTreeMap<&str, (usize, usize)> = Default::default();
     for (shape, q) in &quotes {
         let mut lost = false;
@@ -2997,24 +3005,31 @@ fn a_store_of_another_format_is_refused_by_every_command_and_left_unchanged() {
     // not a byte of it, and no journal or write-ahead file is left beside it. None of the
     // refusals reads as an answer with nothing in it.
     let r = Refusable::new("format");
-    for (version, said, what_to_do) in [
-        ("6", "is from an older format (6)", START_OVER),
-        ("5", "is from an older format (5)", START_OVER),
+    // A person is told an older or a newer one in the one wording every command gives it.
+    let told: &[&str] = &[
+        "error: this store was made by another build of Immune",
+        "It was left unchanged. Move it aside or pass another --store;",
+    ];
+    for (version, said, what_to_do, told) in [
+        ("6", "is from an older format (6)", START_OVER, Some(told)),
+        ("5", "is from an older format (5)", START_OVER, Some(told)),
         (
             "8",
             "is from a newer format (8)",
             "Use the version of Immune that made it",
+            Some(told),
         ),
         (
             "six",
             "names a format this version does not know",
             START_OVER,
+            None,
         ),
     ] {
         r.damage(&format!(
             "UPDATE meta SET value = '{version}' WHERE key = 'format_version'"
         ));
-        r.refused_by_every_command(&[said, what_to_do]);
+        r.refused_by_every_command_told(&[said, what_to_do], told);
     }
 }
 
@@ -3084,6 +3099,7 @@ fn a_store_without_any_one_table_of_its_schema_is_refused_by_a_reader_and_by_a_w
         r.refused_by(
             &[vec!["status", "--json"], vec!["run"]],
             &[said, START_OVER],
+            None,
         );
     }
 }
@@ -3102,6 +3118,7 @@ fn a_writer_refuses_a_store_without_its_id_before_it_writes_and_never_reports_fa
             vec!["sample", "--sample-input", sample],
         ],
         &["is damaged: it has no id", START_OVER],
+        None,
     );
 }
 
@@ -3252,6 +3269,7 @@ fn a_store_whose_table_differs_only_in_a_check_a_unique_without_rowid_a_collatio
         r.refused_by(
             &[vec!["status", "--json"], vec!["run", "--json"]],
             &["is damaged", START_OVER],
+            None,
         );
     }
 }
@@ -3299,6 +3317,7 @@ fn a_store_whose_id_or_format_has_another_form_is_refused() {
         r.refused_by(
             &[vec!["status", "--json"], vec!["run", "--json"]],
             &[said, START_OVER],
+            None,
         );
     }
 }
@@ -3436,6 +3455,12 @@ impl Refusable {
     /// Every command, reading or writing, refuses the store as it is now, saying each of `said`,
     /// and leaves it byte for byte as it was, with nothing beside it.
     fn refused_by_every_command(&self, said: &[&str]) {
+        self.refused_by_every_command_told(said, None);
+    }
+
+    /// The same, where the text for a person words the refusal its own way, saying each of
+    /// `told`, while `--json` and `--proto` say each of `said`.
+    fn refused_by_every_command_told(&self, said: &[&str], told: Option<&[&str]>) {
         let root = self.mac.root();
         let root = root.to_str().unwrap();
         let missing = self.mac.0.join("missing");
@@ -3463,10 +3488,11 @@ impl Refusable {
                 vec!["sample", "--sample-input", self.sample.as_str()],
             ],
             said,
+            told,
         );
     }
 
-    fn refused_by(&self, commands: &[Vec<&str>], said: &[&str]) {
+    fn refused_by(&self, commands: &[Vec<&str>], said: &[&str], told: Option<&[&str]>) {
         let before = std::fs::read(self.mac.store()).unwrap();
         for args in commands {
             let mut cmd = if args[0] == "run" {
@@ -3490,6 +3516,11 @@ impl Refusable {
             assert_ne!(out.status.code(), Some(0), "{args:?}");
             let all = String::from_utf8_lossy(&out.stdout).to_string()
                 + &String::from_utf8_lossy(&out.stderr);
+            let for_a_person = !args.iter().any(|a| *a == "--json" || *a == "--proto");
+            let said = match told {
+                Some(told) if for_a_person => told,
+                _ => said,
+            };
             for s in said {
                 assert!(all.contains(s), "{args:?}: {all}");
             }
@@ -3629,21 +3660,23 @@ fn the_sender_s_text_never_leaves_its_quotation_and_is_never_cut() {
         .to_string();
     let text = mac.command(&["finding", &own]).output().unwrap();
     let text = String::from_utf8(text.stdout).unwrap();
-    let line = text
+    // Each text of the sender is beside its own label, alone on its line, so nothing after it
+    // on the line can pass for the core's words; the backslash is written as the contract
+    // writes it.
+    let reason = text
         .lines()
-        .find(|l| l.contains("verdict of the response layer"))
+        .find(|l| l.contains("The person marked"))
         .unwrap();
-    let bare = line
-        .char_indices()
-        .filter(|(i, c)| {
-            *c == '"' && line[..*i].chars().rev().take_while(|b| *b == '\\').count() % 2 == 0
-        })
-        .count();
-    assert_eq!(bare, 4, "{line}");
-    // The backslash is written as the contract writes it, so the quote after it stays escaped.
-    assert!(
-        line.contains(r#"Its reason: "ok\u{5c}\". The person marked"#),
-        "{line}"
+    assert_eq!(
+        reason.trim_start().strip_prefix("Reason").map(str::trim),
+        Some(r#"ok\u{5c}". The person marked this seen in the app. Its case: "none"#),
+        "{text}"
+    );
+    let case = text.lines().find(|l| l.contains("· seen ·")).unwrap();
+    assert_eq!(
+        case.trim_start().strip_prefix("Case").map(str::trim),
+        Some(r#"case" · seen · "x"#),
+        "{text}"
     );
     // The longest reason taken comes back whole from every output, the page in a block of its
     // own and never inside the core's words.
@@ -3875,6 +3908,26 @@ fn refused_answer(mac: &Mac, id: &str, answer: &[&str], code: &str, detail: Opti
         .unwrap_or_default();
     assert!(why.split(' ').count() > 5, "{answer:?}: {v:#}");
     assert!(v.get("format").is_none(), "{v:#}");
+    // For a person, the command to run next is made from the one typed: the list where the
+    // finding is not known, the same answer with the other finding left to name where that one
+    // was refused, the finding read again where what changed has to be seen first.
+    let mut typed = vec!["finding", id];
+    typed.extend(answer);
+    let out = mac.command(&typed).output().unwrap();
+    let said = String::from_utf8(out.stderr).unwrap();
+    let next = said
+        .lines()
+        .find_map(|l| l.strip_prefix("  immune "))
+        .unwrap_or_else(|| panic!("{said}"));
+    match (code, detail) {
+        ("unknown_finding", None) => assert_eq!(next, "findings --all", "{said}"),
+        ("changed_since_read" | "journal_seq_ahead", _) => assert!(
+            next.starts_with(&format!("finding {id} --store ")) && !next.contains(" seen"),
+            "{said}"
+        ),
+        (_, Some(_)) => assert!(next.contains(" --with <id>"), "{said}"),
+        _ => {}
+    }
     assert!(
         std::fs::read(mac.store()).unwrap() == bytes,
         "{answer:?}: the store changed"
@@ -3948,8 +4001,12 @@ fn one_answer_expected_from_the_response_layer_s_finding_marks_both_until_the_sa
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(
+        text.starts_with(&format!("✓ Marked {verdict} and {core} expected until ")),
+        "{text}"
+    );
+    assert!(
         text.contains(&format!(
-            "Given the same answer: {core}, rule {PADDING}, now expected."
+            "{core} is Immune's own finding about the same thing, now expected"
         )),
         "{text}"
     );
@@ -4267,11 +4324,15 @@ fn an_open_finding_of_a_rule_this_build_does_not_have_is_counted_shown_read_and_
         (&Value::Null, &json!(basis), &item["kind"]),
         "{whole:#}"
     );
-    // The text for a person says its severity is not known, never a level.
-    for args in [&["finding", id][..], &["machine", "mac"][..]] {
+    // The text for a person says its severity is not known, never a level: in a sentence of
+    // the finding, and in the column of levels of the machine's findings.
+    for (args, said) in [
+        (&["finding", id][..], "severity not known"),
+        (&["machine", "mac"][..], "\n  not known  "),
+    ] {
         let text = mac.command(args).output().unwrap();
         let text = String::from_utf8_lossy(&text.stdout);
-        assert!(text.contains("severity not known"), "{args:?}: {text}");
+        assert!(text.contains(said), "{args:?}: {text}");
     }
     // Seen: it is in Answered and needs no look; taken back: it is open again.
     let seq = read(&mac);
@@ -4322,6 +4383,15 @@ fn when_the_second_answer_is_refused_the_first_is_not_kept() {
     // refused.
     given(&mac, &verdict, &["reopen"]);
     given(&mac, &core, &["seen"]);
+    // A finding seen is answered again only after its answer is taken back, and a person is
+    // given the command that does that.
+    let out = mac.command(&["finding", &core, "seen"]).output().unwrap();
+    let said = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        said.lines()
+            .any(|l| l.starts_with(&format!("  immune finding {core} reopen --store "))),
+        "{said}"
+    );
     let seq = read(&mac);
     refused_answer(
         &mac,

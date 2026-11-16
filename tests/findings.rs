@@ -326,7 +326,11 @@ fn software_changed_in_place_says_what_its_seal_became_and_what_it_was() {
     );
     let text =
         String::from_utf8(e.immune(&["finding", item["id"].as_str().unwrap()]).stdout).unwrap();
-    assert!(text.contains("What it became: \"does not verify"), "{text}");
+    assert!(
+        text.lines()
+            .any(|l| l.trim_start().starts_with("Became       does not verify")),
+        "{text}"
+    );
     // What it was is in the journal entry it rests on.
     let seal = whole["rests_on"]
         .as_array()
@@ -378,7 +382,7 @@ fn an_indicator_match_names_the_indicators_it_matched_as_the_list_gives_them() {
         String::from_utf8(e.immune(&["finding", item["id"].as_str().unwrap()]).stdout).unwrap();
     assert!(
         text.contains(&format!(
-            "Matched indicators: \"[file:hashes.'SHA-256' = '{hash}']\"."
+            "    Matched      [file:hashes.'SHA-256' = '{hash}']\n"
         )),
         "{text}"
     );
