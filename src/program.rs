@@ -187,7 +187,7 @@ pub fn program_cmd(args: &ProgramArgs) -> ExitCode {
             }
             Ok(Ok(known))
         },
-        crate::text::known,
+        |k| crate::answers_text::known(k, &crate::screen::Screen::of_stdout()),
     )
 }
 

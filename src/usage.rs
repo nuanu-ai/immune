@@ -732,11 +732,50 @@ impl Typed {
         }
     }
 
-    /// The line, each word typed cut of secrets and escaped, and quoted where it holds a space
-    /// or a quote, so that it reads as one word.
+    /// The words in one fixed order, whatever order they were typed in: the command's own words
+    /// (its operands), then its flags as typed, then `--store` and last the form, each flag with
+    /// its value.
+    fn ordered(&self) -> Vec<&Word> {
+        let text = |w: &Word| match w {
+            Word::Typed(t) => t.clone(),
+            Word::Placeholder(p) => p.to_string(),
+        };
+        let mut operands: Vec<&Word> = Vec::new();
+        let mut flags: Vec<(u8, &[Word])> = Vec::new();
+        let mut i = 0;
+        while i < self.0.len() {
+            let word = text(&self.0[i]);
+            let takes = matches!(&self.0[i], Word::Typed(w) if placeholder(w).is_some());
+            if word.starts_with("--") {
+                let end = if takes {
+                    (i + 2).min(self.0.len())
+                } else {
+                    i + 1
+                };
+                let rank = match word.as_str() {
+                    "--store" => 1,
+                    w if w.starts_with("--json") || w.starts_with("--proto") => 2,
+                    _ => 0,
+                };
+                flags.push((rank, &self.0[i..end]));
+                i = end;
+            } else {
+                operands.push(&self.0[i]);
+                i += 1;
+            }
+        }
+        flags.sort_by_key(|(rank, _)| *rank);
+        operands
+            .into_iter()
+            .chain(flags.into_iter().flat_map(|(_, f)| f.iter()))
+            .collect()
+    }
+
+    /// The line, in the fixed order (`ordered`), each word typed cut of secrets and escaped,
+    /// and quoted where it holds a space or a quote, so that it reads as one word.
     fn line(&self, op: &str) -> String {
         let mut out = format!("immune {op}");
-        for w in &self.0 {
+        for w in self.ordered() {
             out.push(' ');
             match w {
                 Word::Placeholder(p) => out.push_str(p),
@@ -1081,6 +1120,14 @@ mod tests {
                 "--machine-name needs a name",
                 "immune run --machine-name <name>",
             ),
+            // Whatever order they were typed in, the command's own words come first, then its
+            // flags, then the store, then the form.
+            (
+                "finding",
+                &["--json", "--store", "/s", "f0", "--with", "", "seen"],
+                "--with needs a value that is not empty",
+                "immune finding f0 seen --with <id> --store /s --json",
+            ),
             (
                 "finding",
                 &["f0", "seen", "--journal-seq", "x"],
@@ -1140,7 +1187,7 @@ mod tests {
                 "owner",
                 &["--reason", "r", "box"],
                 "immune owner takes a name and what the owner says",
-                "immune owner --reason r box retired|not-mine|withdraw",
+                "immune owner box retired|not-mine|withdraw --reason r",
             ),
             (
                 "vulnerability",

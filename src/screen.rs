@@ -754,20 +754,52 @@ impl Screen {
 
     /// The last line: the next command after `→`, cyan, and what it does.
     pub fn next(&self, command: &str, does: &str) -> String {
+        self.next_in(command, does, columns(command))
+    }
+
+    /// Next commands, each as `next` gives it, with what they do lined up over the commands
+    /// whose line fits the screen; one that would not fit lined up keeps its own column.
+    pub fn nexts(&self, steps: &[(&str, &str)]) -> Vec<String> {
+        let fits = |command: usize, does: usize| {
+            self.fits()
+                .is_none_or(|width| 2 + command + 3 + does <= width)
+        };
+        let sizes: Vec<(usize, usize)> = steps
+            .iter()
+            .map(|(c, d)| (columns(c), columns(&view::shown(d))))
+            .collect();
+        let column = sizes
+            .iter()
+            .filter(|(c, d)| fits(*c, *d))
+            .map(|(c, _)| *c)
+            .max()
+            .unwrap_or(0);
+        steps
+            .iter()
+            .zip(&sizes)
+            .map(|((c, does), (_, d))| {
+                self.next_in(c, does, if fits(column, *d) { column } else { 0 })
+            })
+            .collect()
+    }
+
+    /// One next command, what it does starting three columns after a column of `column`.
+    fn next_in(&self, command: &str, does: &str, column: usize) -> String {
         let does = &view::shown(does);
-        let line = format!("→ {command}   {does}");
+        let gap = " ".repeat(column.saturating_sub(columns(command)) + 3);
+        let line = format!("→ {command}{gap}{does}");
         match self.fits() {
             Some(width) if columns(&line) > width => {
-                let room = width.saturating_sub(columns(command) + 5);
+                let room = width.saturating_sub(columns(command) + 2 + gap.len());
                 format!(
-                    "{}   {}",
+                    "{}{gap}{}",
                     self.paint(CYAN, &format!("→ {command}")),
                     cut_end(does, room)
                 )
                 .trim_end()
                 .to_string()
             }
-            _ => format!("{}   {does}", self.paint(CYAN, &format!("→ {command}"))),
+            _ => format!("{}{gap}{does}", self.paint(CYAN, &format!("→ {command}"))),
         }
     }
 }

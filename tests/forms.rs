@@ -232,21 +232,25 @@ fn every_command_of_the_contract_gives_one_message_in_its_three_forms() {
         let text = String::from_utf8(text.stdout).unwrap();
         let mut said: Vec<String> = Vec::new();
         match args[0] {
-            "project" | "machine" => {
-                said.push(format!(
-                    "\"{}\"",
-                    json["thing"]["id_text"].as_str().unwrap()
-                ));
-                said.push(format!("is {}", json["presence"].as_str().unwrap()));
+            // Each finding that needs a look by its id, and whether the thing is there in words;
+            // never the store's id of the thing.
+            "project" | "machine" | "program" => {
                 for f in json["findings"].as_array().unwrap() {
-                    said.push(format!(
-                        "{}  {}",
-                        f["id"].as_str().unwrap(),
-                        f["state"].as_str().unwrap()
-                    ));
+                    if f["state"] == "open" {
+                        said.push(f["id"].as_str().unwrap().to_string());
+                    }
+                }
+                let presence = match json["presence"].as_str().unwrap() {
+                    "gone" => "\nGone: ",
+                    "unknown" if json["thing"].is_null() => "\nNot known: ",
+                    "unknown" => "\nCannot tell whether it is there now",
+                    _ => "\n",
+                };
+                said.push(presence.to_string());
+                if let Some(id) = json["thing"]["id_text"].as_str() {
+                    assert!(!text.contains(id), "{args:?}: {id}\n{text}");
                 }
             }
-            "program" => said.push(format!("is {}", json["presence"].as_str().unwrap())),
             "matches" => said.push(format!(
                 "  Collector    {}",
                 json["collector"]["state"]
@@ -408,16 +412,16 @@ fn a_failure_of_every_command_of_the_contract_is_failure_in_the_form_named_with_
 #[test]
 fn text_from_a_source_in_the_text_of_an_answer_cannot_pose_as_the_program_s_words() {
     // A path asked about is text from outside; one made to read as the next line of the answer
-    // stays inside its quotation, with the line break written out.
+    // stays on the line Immune's own word opens, with the line break written out.
     let (e, _) = a_task_run_on_opening("posing");
-    let posing = "The project \"~/dev/shop\" is unknown: the store has never heard of it.";
+    let posing = "✓ Nothing needs a look in what was read";
     let asked = format!("~/dev/x\n{posing}");
     let out = e.immune(&["project", &asked]);
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
-    assert!(!text.lines().any(|l| l == posing), "{text}");
+    assert!(!text.lines().any(|l| l.starts_with('✓')), "{text}");
     assert!(
-        text.starts_with(r#"The project "~/dev/x\u{a}The project \"~/dev/shop\" is unknown"#),
+        text.starts_with(&format!(r"Project  ~/dev/x\u{{a}}{posing}   checked ")),
         "{text}"
     );
 }

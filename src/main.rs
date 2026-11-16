@@ -9,8 +9,10 @@
 //! are the threat list and the vulnerability data of npm and crates.io, each fetched whole
 //! with the system curl.
 
+mod after_run;
 mod agent_folders;
 mod answer;
+mod answers_text;
 mod autorun;
 mod background;
 mod baseline;
@@ -965,7 +967,9 @@ fn sample_cmd(args: &SampleArgs) -> ExitCode {
             m.store_id = store::open_read_only(&args.store)
                 .ok()
                 .and_then(|c| store::id(&c).ok());
-            answer::print("sample", args.form, &m, text::sample)
+            answer::print("sample", args.form, &m, |m| {
+                after_run::sample(m, &screen::Screen::of_stdout())
+            })
         }
         Err(e) => {
             let (error, exit) = match e.downcast_ref::<Stop>() {
@@ -1217,18 +1221,25 @@ fn status_cmd(op: &str, store: &Path, form: answer::Form, coverage: bool) -> Exi
     }
 }
 
-/// `immune run`: the check, then for a program the same answer as `immune status`, read back
-/// from the store it committed, so the two cannot differ; for a person the run's report line and
-/// the watched places it found changed.
+/// `immune run`: the check, then the same answer as `immune status`, read back from the store it
+/// committed, so the two cannot differ; for a person that answer told as the run's
+/// (`after_run::run`), with a line on standard error while the check runs.
 fn run_cmd(args: &Args) -> ExitCode {
-    match run(args) {
-        Ok(_) if args.form != answer::Form::Text => {
-            status_cmd("run", &args.store, args.form, false)
-        }
-        Ok((line, watched)) => {
-            print!("{}", run_said(&line, &watched));
-            ExitCode::SUCCESS
-        }
+    let text = args.form == answer::Form::Text;
+    let running = text.then(|| after_run::Running::start(&screen::Screen::of_stdout()));
+    let done = run(args);
+    drop(running);
+    match done {
+        Ok(_) if !text => status_cmd("run", &args.store, args.form, false),
+        Ok(_) => match status_answer(&args.store, now_secs()) {
+            Ok(m) => answer::print("run", args.form, &m, |m| {
+                after_run::run(m, &screen::Screen::of_stdout())
+            }),
+            Err(e) => {
+                let (error, exit) = answer::stopped(&e, "immune run --json");
+                answer::fail("run", args.form, error, exit)
+            }
+        },
         Err(e) => match e.downcast_ref::<Stop>() {
             Some(stop) => {
                 let (error, exit) = answer::stopped(stop, "immune run --json");
@@ -1247,30 +1258,6 @@ fn run_cmd(args: &Args) -> ExitCode {
             ),
         },
     }
-}
-
-/// What `immune run` prints for a person: its line, then the watched places it found changed or
-/// could not read. What the readers' sources said in the line and in a row's why, such as why a
-/// server could not be opened or a file read, was cut where each was put together (`report`,
-/// `read_watched`); nothing is cut here, so a source's text never takes the core's words with it.
-fn run_said(line: &str, watched: &Rows) -> String {
-    let mut out = format!("{}\n", view::shown(line));
-    if !watched.is_empty() {
-        // The path is a name: shown here, the one place this table writes one.
-        let rows: Rows = watched
-            .iter()
-            .map(|row| {
-                let mut row = row.clone();
-                if let Some(path) = row.get_mut(2) {
-                    *path = known::whole(path);
-                }
-                row
-            })
-            .collect();
-        out.push_str("Watched places:\n");
-        out.push_str(&text::table(&["Change", "Kind", "Path", "Why"], &rows));
-    }
-    out
 }
 
 /// The store's folder: raw input and the view live next to the store.
@@ -1316,11 +1303,15 @@ fn vulnerabilities_cmd(args: &VulnerabilityArgs) -> ExitCode {
     };
     match &args.id {
         None => match vulnerabilities::list(conn.as_ref(), now) {
-            Ok(m) => answer::print(op, args.form, &m, text::vulnerabilities),
+            Ok(m) => answer::print(op, args.form, &m, |m| {
+                answers_text::vulnerabilities(m, &screen::Screen::of_stdout())
+            }),
             Err(e) => failed(e.to_string()),
         },
         Some(id) => match vulnerabilities::one(conn.as_ref(), id, now) {
-            Ok(m) => answer::print(op, args.form, &m, text::vulnerability),
+            Ok(m) => answer::print(op, args.form, &m, |m| {
+                answers_text::vulnerability(m, &screen::Screen::of_stdout())
+            }),
             Err(e) => failed(e.to_string()),
         },
     }
@@ -2795,9 +2786,8 @@ fn not_read_note(what: &str, reason: &str) -> String {
     format!("{what} could not be read: {}.", secrets::said(reason))
 }
 
-/// A row under the run's line for a watched place not read: why is what the reader's source
-/// said, cut here, where it is put beside the core's words (`prefix`); the run prints the rows
-/// as they are (`run_said`).
+/// A row of the watched places read for a place not read: why is what the reader's source said,
+/// cut here, where it is put beside the core's words (`prefix`).
 fn not_read_row(watched_as: &str, path: &str, prefix: &str, why: &str) -> Vec<String> {
     vec![
         "not read".to_string(),
@@ -5306,7 +5296,6 @@ mod tests {
             assert!(line.contains(&words), "{words}\n{line}");
         }
         assert!(needs.contains("2 things need a look"), "{needs}");
-        assert_eq!(run_said(&line, &Vec::new()), format!("{line}\n"));
         assert_eq!(
             trace_failed("ssh known hosts", "it's down, password: x"),
             format!(
@@ -5319,10 +5308,9 @@ mod tests {
     }
 
     #[test]
-    fn the_rows_under_the_run_s_line_are_printed_as_they_were_put_together() {
-        // A row's why is cut where it is put beside the core's words (`read_watched`); printing
-        // cuts nothing again, so a mark the core made stays its own and a source's backslash
-        // stays written as a source's.
+    fn a_row_s_why_is_cut_where_it_is_put_beside_the_core_s_words() {
+        // A row's why is cut where it is put beside the core's words (`read_watched`), so a mark
+        // the core made stays its own and a source's backslash stays written as a source's.
         let token = format!(
             "{}{}",
             ["gh", "p_"].concat(),
@@ -5340,11 +5328,6 @@ mod tests {
             secrets::mark("gitleaks:github-pat", 40)
         );
         assert_eq!(row[3], why);
-        let printed = run_said("1 reader.", &vec![row]);
-        assert!(
-            printed.starts_with("1 reader.\nWatched places:\n") && printed.contains(&why),
-            "{printed}"
-        );
     }
 
     #[test]
@@ -5400,22 +5383,11 @@ mod tests {
     }
 
     #[test]
-    fn a_name_never_reads_as_a_mark_in_what_the_run_and_the_server_list_print() {
-        // A name is never cut, and its backslash is written as a source's: the path of a watched
-        // place under the run's line, and a server's names in `immune servers`.
+    fn a_name_never_reads_as_a_mark_in_what_the_server_list_prints() {
+        // A name is never cut, and its backslash is written as a source's: a server's names in
+        // `immune servers`.
         let forged = "/Users/example/\\cut{gitleaks:github-pat 40}";
         let shown = "/Users/example/\\u{5c}cut{gitleaks:github-pat 40}";
-        let rows: Rows = vec![vec![
-            "new".to_string(),
-            "shell profile".to_string(),
-            forged.to_string(),
-            String::new(),
-        ]];
-        let printed = run_said("1 reader.", &rows);
-        assert!(
-            printed.contains(shown) && !printed.contains("/\\cut{"),
-            "{printed}"
-        );
         assert_eq!(
             names(&[vec![forged.to_string(), "linux".to_string()]]),
             [[shown.to_string(), "linux".to_string()]]

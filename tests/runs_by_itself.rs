@@ -112,6 +112,8 @@ impl Estate {
         self.go(None, &self.0.join("empty"))
     }
 
+    /// A run, and its line as the journal keeps it and the page of changes shows it for each
+    /// run. What a person reads after a run is told from the status (`after_run.rs`).
     fn go(&self, root: Option<&Path>, sessions: &Path) -> String {
         let out = self.command(root, sessions).output().unwrap();
         assert!(
@@ -119,7 +121,8 @@ impl Estate {
             "{}",
             String::from_utf8_lossy(&out.stderr)
         );
-        String::from_utf8(out.stdout).unwrap()
+        self.rows("SELECT text FROM journal WHERE entry = 'report' ORDER BY seq DESC LIMIT 1")
+            .concat()
     }
 
     /// The command of a run, not started.
@@ -1587,7 +1590,7 @@ fn a_worktree_of_a_known_project_with_the_same_agent_settings_raises_nothing_and
     );
     let tree = worktree(&e, &shop, "dev/shop-feature");
     agent(&tree, HOOK);
-    let said = e.run();
+    e.run();
     assert_eq!(
         e.found(),
         [pair(
@@ -1601,7 +1604,6 @@ fn a_worktree_of_a_known_project_with_the_same_agent_settings_raises_nothing_and
             "file:machine:mac/dev/shop-feature/.claude/settings.json#/hooks|checkout:machine:mac/dev/shop"
         ]
     );
-    assert!(said.contains("the same as in dev/shop"), "{said}");
     // Recorded as any place is, with the part that counts the journal says is the same.
     let content = |like: &str| {
         e.rows(&format!(
@@ -2630,10 +2632,16 @@ fn what_is_removed_from_a_place_read_in_full_is_gone_while_another_place_of_its_
         "{:?}",
         e.found()
     );
+    let removed = e.rows(
+        "SELECT subject FROM journal WHERE entry = 'removed' AND predicate = 'watched_as'
+           AND run_id = (SELECT run_id FROM journal WHERE entry = 'report'
+                         ORDER BY seq DESC LIMIT 1)",
+    );
     assert!(
-        report.lines().any(|l| l.trim_start().starts_with("gone ")
-            && l.ends_with("dev/shop/package.json#/scripts/postinstall")),
-        "{report}"
+        removed
+            .iter()
+            .any(|s| s.ends_with("dev/shop/package.json#/scripts/postinstall")),
+        "{removed:?}\n{report}"
     );
 }
 

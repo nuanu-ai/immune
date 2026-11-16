@@ -4324,11 +4324,15 @@ fn an_open_finding_of_a_rule_this_build_does_not_have_is_counted_shown_read_and_
         (&Value::Null, &json!(basis), &item["kind"]),
         "{whole:#}"
     );
-    // The text for a person says its severity is not known, never a level.
-    for args in [&["finding", id][..], &["machine", "mac"][..]] {
+    // The text for a person says its severity is not known, never a level: in a sentence of
+    // the finding, and in the column of levels of the machine's findings.
+    for (args, said) in [
+        (&["finding", id][..], "severity not known"),
+        (&["machine", "mac"][..], "\n  not known  "),
+    ] {
         let text = mac.command(args).output().unwrap();
         let text = String::from_utf8_lossy(&text.stdout);
-        assert!(text.contains("severity not known"), "{args:?}: {text}");
+        assert!(text.contains(said), "{args:?}: {text}");
     }
     // Seen: it is in Answered and needs no look; taken back: it is open again.
     let seq = read(&mac);

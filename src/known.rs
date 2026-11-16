@@ -489,7 +489,7 @@ fn named_in(at: &str, own: &str) -> bool {
 
 /// The kind of the reading made by rule for a path no reading that finds things of the kind
 /// looks at.
-fn unread_kind(question: v1::Question) -> &'static str {
+pub fn unread_kind(question: v1::Question) -> &'static str {
     match question {
         v1::Question::Program => "places the readings that find programs look in",
         _ => "places the readings that find projects look in",

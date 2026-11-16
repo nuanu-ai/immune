@@ -444,7 +444,7 @@ fn every_sample_names_its_level_of_access_and_what_it_cannot_see() {
     let text = String::from_utf8_lossy(&text.stdout);
     assert!(text.contains("7 of other users not read"), "{text}");
     assert!(
-        text.contains("A sample cannot see: the arguments"),
+        text.contains("\n  Cannot see     the arguments and connections of other users"),
         "{text}"
     );
 }

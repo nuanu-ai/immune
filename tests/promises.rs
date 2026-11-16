@@ -243,15 +243,44 @@ fn immune_run_curl(home: &Path, store: &Path, curl: &Path) -> Command {
     cmd
 }
 
-/// Runs a command that must succeed and returns what it printed.
+/// Runs a command that must succeed and returns what it printed; for `immune run` for a person,
+/// the run's line as the journal keeps it and the page of changes shows it for each run. What a
+/// person reads after a run is told from the status (`after_run.rs`), and pinned there.
 fn ok(cmd: &mut Command) -> String {
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
     let out = cmd.output().unwrap();
     assert!(
         out.status.success(),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    String::from_utf8(out.stdout).unwrap().trim().to_string()
+    let for_a_person = !args.iter().any(|a| a == "--json" || a == "--proto");
+    // The store named, or the default one in the home folder the command is given.
+    let home = cmd
+        .get_envs()
+        .find(|(k, _)| *k == "HOME")
+        .and_then(|(_, v)| v.map(PathBuf::from));
+    let store = match args.iter().position(|a| a == "--store") {
+        Some(i) => args.get(i + 1).map(PathBuf::from),
+        None => home.map(|h| h.join("Library/Application Support/ai.nuanu.immune/store.db")),
+    };
+    match (args.first().map(String::as_str), store) {
+        (Some("run"), Some(store)) if for_a_person => {
+            let store = match cmd.get_current_dir() {
+                Some(dir) => dir.join(store),
+                None => store,
+            };
+            rows(
+                &store,
+                "SELECT text FROM journal WHERE entry = 'report' ORDER BY seq DESC LIMIT 1",
+            )
+            .concat()
+        }
+        _ => String::from_utf8(out.stdout).unwrap().trim().to_string(),
+    }
 }
 
 /// Runs `immune view` without opening a browser and returns the pages it wrote, joined.
@@ -7824,20 +7853,58 @@ impl Drop for ListOnly {
     }
 }
 
-/// The rows the run printed under "Watched places:", as their cells.
-fn watched_rows(printed: &str) -> Vec<Vec<String>> {
-    printed
-        .lines()
-        .skip_while(|l| *l != "Watched places:")
-        .skip(2)
-        .map(|l| {
-            l.split("  ")
-                .map(str::trim)
-                .filter(|c| !c.is_empty())
-                .map(str::to_string)
-                .collect()
+/// What the latest check found in the watched places, each named as `immune status --json`
+/// names it: the change, the kind of place and its path, sorted. The run's text counts them;
+/// the status, its pages and the findings name them.
+fn watched_rows(store: &Path) -> Vec<Vec<String>> {
+    let r = status_json(store);
+    let check = &r["last_finished_run"]["check"]["id"];
+    let mut rows: Vec<Vec<String>> = r["watched"]["changes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|c| &c["run_id"] == check)
+        .map(|c| {
+            vec![
+                c["change"].as_str().unwrap().replace('_', " "),
+                c["kind"].as_str().unwrap().to_string(),
+                c["path_text"].as_str().unwrap().to_string(),
+            ]
         })
-        .collect()
+        .collect();
+    rows.sort();
+    rows
+}
+
+/// The places the latest check read for the first time, as the journal names them for the
+/// finding that tells them: a checkout or a file by its path, sorted.
+fn first_read_places(store: &Path) -> Vec<String> {
+    let mut places: Vec<String> = rows(
+        store,
+        "SELECT subject FROM journal WHERE entry = 'place_first_read'
+           AND run_id = (SELECT run_id FROM journal WHERE entry = 'report'
+                         ORDER BY seq DESC LIMIT 1)",
+    )
+    .into_iter()
+    .map(|s| {
+        let id = s
+            .strip_prefix("checkout:machine:mac/")
+            .or(s.strip_prefix("file:machine:mac/"));
+        id.unwrap_or(&s).to_string()
+    })
+    .collect();
+    places.sort();
+    places
+}
+
+/// Rows as `watched_rows` gives them, sorted.
+fn sorted(rows: &[&[&str]]) -> Vec<Vec<String>> {
+    let mut rows: Vec<Vec<String>> = rows
+        .iter()
+        .map(|r| r.iter().map(|c| c.to_string()).collect())
+        .collect();
+    rows.sort();
+    rows
 }
 
 /// Runs a command that must finish within the time given and succeed; returns its output.
@@ -7917,28 +7984,28 @@ fn a_changed_watched_file_is_one_changed_event_and_new_changed_and_gone_files_ar
             ),
         "{printed}"
     );
-    // Paths are text from the machine: named in their own column, never in the sentence,
+    // Paths are text from the machine: named in a field of their own, never in the sentence,
     // and with hidden characters shown escaped.
     assert!(
         !line.contains(".zshrc") && !line.contains("LaunchAgents"),
         "{line}"
     );
     assert_eq!(
-        watched_rows(&printed),
-        [
-            [
+        watched_rows(&w.store()),
+        sorted(&[
+            &[
                 "gone",
                 "autostart item",
                 "Library/LaunchAgents/com.example.old.plist"
             ],
-            [
+            &[
                 "new",
                 "autostart item",
                 "Library/LaunchAgents/com.example.\\u{202e}tsilp.plist"
             ],
-            ["changed", "shell profile", ".zshrc"],
-            ["changed", "shell profile", ".profile"],
-        ],
+            &["changed", "shell profile", ".zshrc"],
+            &["changed", "shell profile", ".profile"],
+        ]),
         "{printed}"
     );
     assert!(!printed.contains('\u{202e}'));
@@ -8027,23 +8094,17 @@ fn a_watched_folder_that_cannot_be_listed_retracts_nothing_and_reports_no_change
         printed.contains("0 new, 0 changed, 0 gone since the last reading; not read in full: launch agents and daemons (partial)."),
         "{printed}"
     );
-    assert_eq!(
-        watched_rows(&printed),
-        [
-            [
-                "not read",
-                "autostart item",
-                "Library/LaunchAgents/com.example.a.plist",
-                denied
-            ],
-            [
-                "not read",
-                "autostart item",
-                "/Library/LaunchDaemons",
-                denied
-            ]
-        ]
-    );
+    // Each place not read is named with why where a failure is said: under "Failed", in the
+    // status and in what the run prints, which the same section makes.
+    let (_, text, _) = status_out(&w.store(), &[]);
+    let failed = &text[text.find("\n  Failed\n").expect(&text)..];
+    for place in [
+        "Library/LaunchAgents/com.example.a.plist",
+        "/Library/LaunchDaemons",
+    ] {
+        assert!(failed.contains(&format!("{place} ({denied})")), "{text}");
+    }
+    assert!(watched_rows(&w.store()).is_empty(), "{printed}");
 
     // Nothing of a kind could be read: the reading read nothing.
     let ssh = Locked::new(w.home().join(".ssh"));
@@ -8146,10 +8207,7 @@ fn a_watched_file_that_cannot_be_read_is_never_unchanged_and_never_gone() {
 
     // Still not read: nothing is named as read for the first time.
     let printed = w.run();
-    assert!(
-        !watched_rows(&printed).iter().any(|r| r[0] == "first read"),
-        "{printed}"
-    );
+    assert!(first_read_places(&w.store()).is_empty(), "{printed}");
 
     // Readable again: the change made while it could not be read is seen, and a file never
     // read before is not taken for a change, and is named as read for the first time.
@@ -8159,16 +8217,7 @@ fn a_watched_file_that_cannot_be_read_is_never_unchanged_and_never_gone() {
         printed.contains("5 files, 0 new, 1 changed, 0 gone"),
         "{printed}"
     );
-    let named = watched_rows(&printed);
-    assert!(
-        named
-            .iter()
-            .any(|r| r[..3] == ["first read", "shell profile", ".zlogout"])
-            && !named
-                .iter()
-                .any(|r| r[0] == "first read" && r[2] != ".zlogout"),
-        "{printed}"
-    );
+    assert_eq!(first_read_places(&w.store()), [".zlogout"], "{printed}");
 }
 
 #[test]
@@ -8392,28 +8441,10 @@ fn the_first_reading_of_watched_places_counts_nothing_as_new() {
     assert_agrees(&printed, &w.store());
     // Nothing is counted as new, and what was read for the first time is said.
     assert_eq!(
-        watched_rows(&printed),
-        [
-            [
-                "first read",
-                "ssh access file",
-                ".ssh/config",
-                "1 thing kept as the baseline"
-            ],
-            [
-                "first read",
-                "shell profile",
-                ".zprofile",
-                "1 thing kept as the baseline"
-            ],
-            [
-                "first read",
-                "git hook",
-                "dev/app",
-                "1 thing kept as the baseline"
-            ],
-        ]
+        first_read_places(&w.store()),
+        [".ssh/config", ".zprofile", "dev/app"]
     );
+    assert!(watched_rows(&w.store()).is_empty(), "{printed}");
     assert!(
         printed.contains(
             "Since last run: no changes. Watched places: 3 files, first reading, kept as the baseline."
@@ -8455,11 +8486,11 @@ fn the_first_hook_planted_in_a_checkout_the_store_already_held_is_new_and_named(
         "{printed}"
     );
     assert_eq!(
-        watched_rows(&printed),
-        [
-            ["new", "git hook", "dev/app/.git/hooks/post-checkout"],
-            ["new", "git hook", "dev/fresh/.git/hooks/pre-commit"]
-        ]
+        watched_rows(&w.store()),
+        sorted(&[
+            &["new", "git hook", "dev/app/.git/hooks/post-checkout"],
+            &["new", "git hook", "dev/fresh/.git/hooks/pre-commit"]
+        ])
     );
 
     let again = w.run();
@@ -8494,16 +8525,70 @@ fn a_watched_place_that_appears_after_the_first_reading_is_new_and_named() {
         "{printed}"
     );
     assert_eq!(
-        watched_rows(&printed),
-        [
-            [
+        watched_rows(&w.store()),
+        sorted(&[
+            &[
                 "new",
                 "autostart item",
                 "Library/LaunchAgents/com.example.a.plist"
             ],
-            ["new", "shell profile", ".zshenv"],
-            ["new", "ssh access file", ".ssh/rc"],
-        ]
+            &["new", "shell profile", ".zshenv"],
+            &["new", "ssh access file", ".ssh/rc"],
+        ])
+    );
+}
+
+#[test]
+fn what_a_run_prints_for_a_person_is_told_from_the_status_it_left_with_every_failure_named() {
+    // The answer first, with the count the status gives and how many are urgent; what the check
+    // raised; the changes counted; every failure by its title; the next commands last. In a pipe
+    // no style is written.
+    let w = Watch::new("run-text");
+    put(w.home(), ".zshrc", "bindkey -e\n");
+    w.run();
+    put(w.home(), ".zshrc", "bindkey -v\n");
+    let out = w.cmd().output().unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    let r = status_json(&w.store());
+    let n = &r["needs_a_look"];
+    let urgent = match n["urgent_total"].as_u64().unwrap() {
+        0 => "none urgent".to_string(),
+        u => format!("{u} urgent"),
+    };
+    let head = format!(
+        "✗ {}, {urgent} · 1 new in this check   took ",
+        counted(&n["total"], "thing needs a look", "things need a look")
+    );
+    assert!(text.starts_with(&head), "{head}\n{text}");
+    assert!(
+        text.contains("\n  New\n    medium  ")
+            && text.contains(
+                "\n  Changed      1 change since the last check: 0 added, 1 changed, 0 removed"
+            ),
+        "{text}"
+    );
+    let failed: Vec<&str> = r["not_covered"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|u| u["class"] == "failed")
+        .map(|u| u["title"].as_str().unwrap().trim_end_matches('.'))
+        .collect();
+    assert!(!failed.is_empty(), "{r:#}");
+    let section = &text[text.find("\n  Failed\n").expect(&text)..];
+    for title in failed {
+        assert!(
+            section.contains(&format!("\n    {title}\n")),
+            "{title}\n{text}"
+        );
+    }
+    assert!(!text.contains('\u{1b}'), "{text:?}");
+    assert!(
+        text.ends_with(
+            "\n→ immune findings   lists every one, most urgent first\n→ immune status     what is watched and what was not read\n"
+        ),
+        "{text}"
     );
 }
 

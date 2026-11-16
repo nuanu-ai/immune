@@ -143,7 +143,16 @@ impl Dir {
             "{}",
             String::from_utf8_lossy(&out.stderr)
         );
-        String::from_utf8_lossy(&out.stdout).into_owned()
+        // The run's line, as the journal keeps it and the page of changes shows it for each run;
+        // what a person reads after a run is told from the status (`after_run.rs`).
+        rusqlite::Connection::open(self.store())
+            .unwrap()
+            .query_row(
+                "SELECT text FROM journal WHERE entry = 'report' ORDER BY seq DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
     }
 
     /// A full run that starts in a later second than every reading before it, so that "since
@@ -2537,7 +2546,13 @@ fn rules_judge_only_what_was_read_and_say_so_and_none_watches_while_the_level_is
     );
     let note = "Over the last day some program starts were lost, could not be read or were deleted before they were read, so the rules judged only those that were read.";
     assert_eq!(rules["judged_note"], note);
-    assert!(dir.immune(&["rules"]).contains(note));
+    // The text says it whole on a line of its own, as a value beside its label.
+    let text = dir.immune(&["rules"]);
+    assert!(
+        text.lines()
+            .any(|l| l.trim_start().starts_with("Lost ") && l.ends_with(&note[1..note.len() - 1])),
+        "{text}"
+    );
     assert_eq!(files_readings(&dir), 1);
 
     let hour_ago = SystemTime::now() - Duration::from_secs(3600);

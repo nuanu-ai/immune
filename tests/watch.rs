@@ -2367,9 +2367,8 @@ fn a_quiet_mac_needs_no_look_whatever_is_not_covered_and_a_planted_change_does()
     assert!(out.status.success());
     let line = String::from_utf8_lossy(&out.stdout);
     assert!(
-        line.contains(
-            " 1 thing needs a look, 1 new in this run. You can fix: servers not checked last time, program starts not seen. Limits of this version: "
-        ),
+        line.starts_with("✗ 1 thing needs a look, none urgent · 1 new in this check")
+            && line.contains("\n  New\n    medium  Program set to start by itself changed  1\n"),
         "{line}"
     );
     assert_eq!(answered(&mac.status()).0, 1);
@@ -2957,7 +2956,10 @@ fn a_folder_macos_asks_permission_for_does_not_lengthen_the_report_of_a_quiet_ma
     mac.run();
     let out = mac.run_cmd().output().unwrap();
     let line = String::from_utf8_lossy(&out.stdout);
-    assert!(line.contains("Since last run: no changes."), "{line}");
+    assert!(
+        line.contains("\n  Changed      nothing since the last check\n"),
+        "{line}"
+    );
     assert!(!line.contains("read nothing"), "{line}");
     let r = mac.status().clone();
     assert_eq!(r["last_finished_run"]["readings"]["failed"], 0, "{r:#}");
@@ -3516,8 +3518,7 @@ fn what_a_watcher_set_aside_as_no_longer_read_before_a_run_is_said_once_by_that_
         String::from_utf8(out.stdout).unwrap()
     };
     let set_aside = || mac.status()["last_finished_run"]["set_aside"].clone();
-    let note = "No longer read by this version: what no row of its table of autorun points \
-                names, 3 facts set aside and not counted as removed.";
+    let note = "3 facts set aside as no longer read by this version, not counted as removed";
     for subject in ["file:machine:mac/.zfoo", "file:machine:mac/.zbar"] {
         earlier(subject);
         let before = set_aside();
@@ -3544,7 +3545,7 @@ fn what_a_watcher_set_aside_as_no_longer_read_before_a_run_is_said_once_by_that_
         );
     }
     let again = said();
-    assert!(!again.contains("No longer read by this version"), "{again}");
+    assert!(!again.contains("no longer read by this version"), "{again}");
     assert_eq!(set_aside(), 0);
     assert!(!status_text().contains("as no longer read by this version"));
 }

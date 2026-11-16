@@ -29,12 +29,12 @@ const FINDINGS_SHOWN: usize = 200;
 
 /// At most this many rules are listed in the text of `immune status`; the rest are counted in
 /// one line.
-const GROUPS_SHOWN: usize = 6;
+pub(crate) const GROUPS_SHOWN: usize = 6;
 
 /// Whether a cause of what is not covered is a failure, as its class says: a reading or a
 /// download that was tried and did not succeed, whoever can fix it. A class this build does not
 /// know, or none, is read as a failure, as the schema says.
-fn is_failure(u: &v1::Uncovered) -> bool {
+pub(crate) fn is_failure(u: &v1::Uncovered) -> bool {
     !matches!(
         v1::Cause::try_from(u.class),
         Ok(v1::Cause::NoReader | v1::Cause::NotGiven)
@@ -47,7 +47,7 @@ pub(crate) fn count(n: u64, one: &str, many: &str) -> String {
 }
 
 /// `n` with thousands grouped.
-fn grouped(n: u64) -> String {
+pub(crate) fn grouped(n: u64) -> String {
     count(n, "", "").trim_end().to_string()
 }
 
@@ -73,7 +73,7 @@ pub(crate) fn joined(lines: &[String]) -> String {
 
 /// How bad, in the order of `findings::order`: a severity that is absent or that this build
 /// does not know first, as the most severe.
-fn rank(severity: Option<i32>) -> u8 {
+pub(crate) fn rank(severity: Option<i32>) -> u8 {
     match severity.and_then(|s| v1::Level::try_from(s).ok()) {
         Some(v1::Level::Critical) => 5,
         Some(v1::Level::High) => 4,
@@ -96,7 +96,12 @@ pub(crate) fn level(severity: Option<i32>) -> (String, Style) {
 
 /// A rule's name in a list: a published rule's own title, cut on a terminal to the length of a
 /// short title, or the core's short title; the long title from a core that gives no short one.
-fn short_title(screen: &Screen, rule_title: Option<&str>, short: &str, title: &str) -> String {
+pub(crate) fn short_title(
+    screen: &Screen,
+    rule_title: Option<&str>,
+    short: &str,
+    title: &str,
+) -> String {
     match rule_title {
         Some(t) if screen.terminal => screen::cut_end(&view::shown(t), SHORT_MAX),
         Some(t) => t.to_string(),
@@ -106,7 +111,7 @@ fn short_title(screen: &Screen, rule_title: Option<&str>, short: &str, title: &s
 }
 
 /// The urgent ones of a count, in a cell: `urgent` when all are, how many when some are.
-fn urgent_cell(count: u64, urgent: u64) -> String {
+pub(crate) fn urgent_cell(count: u64, urgent: u64) -> String {
     match urgent {
         0 => String::new(),
         u if u >= count => "urgent".to_string(),
@@ -115,7 +120,7 @@ fn urgent_cell(count: u64, urgent: u64) -> String {
 }
 
 /// How many need a look, never without how many of them are urgent.
-fn needing(total: u64, urgent: u64) -> String {
+pub(crate) fn needing(total: u64, urgent: u64) -> String {
     let (needs, need) = ("thing needs a look", "things need a look");
     format!(
         "{}, {}",
@@ -172,7 +177,7 @@ fn causes<'a>(s: &'a v1::Status, who: &'a str, every_mac: Option<bool>) -> Vec<&
 
 /// How a section of causes is set.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Causes {
+pub(crate) enum Causes {
     /// The status: each title whole, and under it what it is about without quotes: plain names
     /// joined with commas, or one name and its reason a line, at most `PAIRS_SHOWN`.
     Listed,
@@ -225,7 +230,7 @@ fn about_lines(u: &v1::Uncovered) -> (Vec<String>, u64) {
 
 /// A section of causes: its label bold on a line, then each cause's title and the things it is
 /// about. A failed reading or download is red wherever it is listed.
-fn cause_section(
+pub(crate) fn cause_section(
     screen: &Screen,
     out: &mut Vec<String>,
     label: &str,
@@ -307,7 +312,7 @@ fn watching(s: &v1::Status) -> (String, Style) {
 
 /// How this Mac is watched, one clause each, in its own style: whether a watcher runs, and only
 /// when it applies, that some places are not watched or nothing was checked yet.
-fn watching_parts(s: &v1::Status) -> Vec<(String, Style)> {
+pub(crate) fn watching_parts(s: &v1::Status) -> Vec<(String, Style)> {
     let Some(m) = &s.this_mac else {
         return vec![("whether it is watched is not said".to_string(), YELLOW)];
     };
@@ -389,7 +394,7 @@ fn in_part(s: &v1::Status) -> String {
 }
 
 /// Clauses joined with "; ", each in its own style.
-fn clauses(parts: Vec<(String, Style)>) -> Vec<(String, Style)> {
+pub(crate) fn clauses(parts: Vec<(String, Style)>) -> Vec<(String, Style)> {
     let mut out = Vec::new();
     for (i, (text, style)) in parts.into_iter().enumerate() {
         if i > 0 {
@@ -403,7 +408,7 @@ fn clauses(parts: Vec<(String, Style)>) -> Vec<(String, Style)> {
 /// Whether the status holds a failure: a reading or a download that failed, a watcher that
 /// failed, an event level that is neither running nor simply not installed, a machine not
 /// reached, or a run that died. A status with one is never calm, whatever it found.
-fn failing(s: &v1::Status) -> bool {
+pub(crate) fn failing(s: &v1::Status) -> bool {
     let failed_cause = s.not_covered.iter().any(is_failure);
     let watcher = s.watching.as_ref().is_some_and(|w| !w.failed.is_empty());
     let level = s.event_level.as_ref().is_some_and(|l| {
@@ -427,7 +432,7 @@ fn failing(s: &v1::Status) -> bool {
 /// calm because the data kept is current, since every failure the status holds is said there. The
 /// reasons are in `--coverage`. An outcome this build does not know is read as failed, as the
 /// schema says.
-fn downloads_failed(s: &v1::Status) -> Option<Vec<(String, Style)>> {
+pub(crate) fn downloads_failed(s: &v1::Status) -> Option<Vec<(String, Style)>> {
     let failed = |outcome: i32| {
         !matches!(
             v1::FeedOutcome::try_from(outcome),
@@ -493,7 +498,7 @@ fn downloads_failed(s: &v1::Status) -> Option<Vec<(String, Style)>> {
 /// The event level when it is not as it should be (running with nothing lost), in two clauses:
 /// its state, and what is wrong, which is yellow, or red for a collector that does not run;
 /// `None` when it is as it should be. The detail is in `--coverage`.
-fn event_level_short(l: &v1::EventLevel) -> Option<Vec<(String, Style)>> {
+pub(crate) fn event_level_short(l: &v1::EventLevel) -> Option<Vec<(String, Style)>> {
     let words = l.in_words.clone().unwrap_or_default();
     let running = l.state == v1::CollectorState::Running as i32;
     if running && words.notes.is_empty() {
@@ -557,7 +562,7 @@ fn event_level_short(l: &v1::EventLevel) -> Option<Vec<(String, Style)>> {
 
 /// What the latest check did not read, by kind, a failure yellow; when it read all that this
 /// version reads here, that. Readings with nothing to read are not held against the Mac.
-fn coverage_parts(c: &v1::CoverageSummary) -> Vec<(String, Style)> {
+pub(crate) fn coverage_parts(c: &v1::CoverageSummary) -> Vec<(String, Style)> {
     let mut parts: Vec<(String, Style)> = Vec::new();
     if c.failed > 0 {
         parts.push((count(c.failed, "reading failed", "readings failed"), YELLOW));
@@ -628,7 +633,11 @@ fn event_level_long(l: &v1::EventLevel) -> String {
 
 /// The machines not reached in one line: the first by name, since when and why, and how many
 /// more.
-fn unreached_short(screen: &Screen, c: &v1::CoverageSummary, now: i64) -> Option<String> {
+pub(crate) fn unreached_short(
+    screen: &Screen,
+    c: &v1::CoverageSummary,
+    now: i64,
+) -> Option<String> {
     let first = c.unreached.first()?;
     let mut said = format!(
         "{} {}",
@@ -647,7 +656,11 @@ fn unreached_short(screen: &Screen, c: &v1::CoverageSummary, now: i64) -> Option
 
 /// What is not judged on this Mac in one line: the places by name, as many as fit, and how many
 /// more causes there are; what nobody can fix and is not a failure.
-fn not_judged_line(screen: &Screen, s: &v1::Status, room: Option<usize>) -> Option<String> {
+pub(crate) fn not_judged_line(
+    screen: &Screen,
+    s: &v1::Status,
+    room: Option<usize>,
+) -> Option<String> {
     let mut names: Vec<String> = Vec::new();
     let mut unnamed = 0u64;
     let failed = is_failure;
@@ -936,9 +949,8 @@ fn default_text(s: &v1::Status, screen: &Screen, out: &mut Vec<String>) {
     if !whole || next.is_empty() {
         next.push(("immune status --coverage", "what was read and what was not"));
     }
-    for (command, does) in next.into_iter().take(3) {
-        out.push(screen.next(command, does));
-    }
+    next.truncate(3);
+    out.extend(screen.nexts(&next));
 }
 
 /// What the latest check that finished counted, one labelled part each, in the words today's
@@ -3016,7 +3028,10 @@ mod tests {
             "  Watching      in part: authentication module and some program starts not watched in full; no watcher runs now: changes are seen at each check",
         );
         assert!(
-            visible(&text).contains("\n→ immune install   keeps watching between checks\n"),
+            visible(&text)
+                .lines()
+                .any(|l| l.starts_with("→ immune install ")
+                    && l.ends_with("   keeps watching between checks")),
             "{text}"
         );
         // Watched in full with no watcher: the watcher clause alone.
@@ -3113,10 +3128,15 @@ mod tests {
 
     #[test]
     fn the_next_steps_are_at_the_end_each_on_its_own_line_only_when_they_apply() {
+        // Each step with the room before what it does as `next` gives it alone: the column they
+        // are lined up in is pinned below.
         let ends = |text: &str| -> Vec<String> {
             text.lines()
                 .filter(|l| l.starts_with('→'))
-                .map(str::to_string)
+                .map(|l| match l.split_once("   ") {
+                    Some((command, does)) => format!("{command}   {}", does.trim_start()),
+                    None => l.to_string(),
+                })
                 .collect()
         };
         let findings_step = "→ immune findings   lists every one, most urgent first";
@@ -3132,6 +3152,18 @@ mod tests {
                 [findings_step, install_step, coverage_step],
                 "{text}"
             );
+            // What they do starts in one column.
+            let at: Vec<usize> = text
+                .lines()
+                .filter(|l| l.starts_with('→'))
+                .map(|l| {
+                    l.find(" what")
+                        .or(l.find(" lists"))
+                        .or(l.find(" keeps"))
+                        .unwrap()
+                })
+                .collect();
+            assert!(at.windows(2).all(|w| w[0] == w[1]), "{text}");
             // No context line carries a command beside its value.
             for l in text.lines().filter(|l| {
                 [

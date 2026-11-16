@@ -493,22 +493,17 @@ pub fn matches(m: &v1::Matches, single: bool, screen: &Screen) -> String {
             grouped(in_part),
             said.join(", ")
         );
-        out.extend(screen.labelled(
-            2,
-            label,
-            "Not judged",
-            &value,
-            PLAIN,
-            Some("immune rules"),
-            // As wide as the screen leaves it; in a pipe the command follows the value.
-            screen.fits().unwrap_or(0),
-        ));
+        out.extend(screen.labelled(2, label, "Not judged", &value, PLAIN, None, 0));
     }
     out.push(String::new());
-    out.push(screen.next(
+    let mut next = vec![(
         "immune matches --json",
         "every match with its event, for a program",
-    ));
+    )];
+    if !m.unevaluated.is_empty() {
+        next.push(("immune rules", "every reason a rule is not evaluated"));
+    }
+    out.extend(screen.nexts(&next));
     joined(&out)
 }
 
@@ -619,7 +614,7 @@ fn rules_answer(m: &v1::Rules) -> String {
 
 /// What the rules do on this Mac now, in words, and its style.
 fn watching_said(r: &v1::RulesNow) -> (String, Style) {
-    let mut said = match (r.watching, r.watching_rules) {
+    match (r.watching, r.watching_rules) {
         (None, _) => (
             "whether the event level is on is not known yet: it has not been read, so no rule is known to watch".to_string(),
             YELLOW,
@@ -645,13 +640,26 @@ fn watching_said(r: &v1::RulesNow) -> (String, Style) {
             "the event level is not on, so no rule is watching".to_string(),
             YELLOW,
         ),
-    };
-    if let Some(note) = &r.judged_note {
-        said.0.push_str(". ");
-        said.0.push_str(note);
-        said.1 = YELLOW;
     }
-    said
+}
+
+/// What the rules could not judge over the last day, as the core says it (`judged_note`), on a
+/// line of its own beside its label, in the colour of a warning: `Lost` when some events were
+/// not read, `Not running` when the event level is not running. None when everything was judged.
+fn judged_said(r: &v1::RulesNow) -> Option<(&'static str, String)> {
+    let note = r.judged_note.as_deref()?;
+    let label = if r.judged == v1::Judged::Part as i32 {
+        "Lost"
+    } else {
+        "Not running"
+    };
+    // A value beside a label, as the others: no capital, no full stop.
+    let mut said = note.trim_end_matches('.').to_string();
+    if let Some(first) = said.get(..1) {
+        let lower = first.to_lowercase();
+        said.replace_range(..1, &lower);
+    }
+    Some((label, said))
 }
 
 /// The rules that matched in the last day, the most first, by title and count; or why it is not
@@ -824,6 +832,9 @@ pub fn rules(m: &v1::Rules, all: bool, screen: &Screen) -> String {
     let now = m.now.clone().unwrap_or_default();
     let (watching, style) = watching_said(&now);
     out.extend(screen.labelled(2, label, "Watching", &watching, style, None, 0));
+    if let Some((what, said)) = judged_said(&now) {
+        out.extend(screen.labelled(2, label, what, &said, YELLOW, None, 0));
+    }
     let (matched, style) = matched_said(screen, m);
     out.extend(screen.labelled(
         2,
@@ -872,8 +883,10 @@ pub fn rules(m: &v1::Rules, all: bool, screen: &Screen) -> String {
         ));
     }
     out.push(String::new());
-    out.push(screen.next("immune rules --all", "every rule, one per line"));
-    out.push(screen.next("immune rules --over-log", "what matched in the event log"));
+    out.extend(screen.nexts(&[
+        ("immune rules --all", "every rule, one per line"),
+        ("immune rules --over-log", "what matched in the event log"),
+    ]));
     joined(&out)
 }
 
@@ -1100,13 +1113,15 @@ pub fn statements(m: &v1::Statements, screen: &Screen) -> String {
         }
     }
     out.push(String::new());
+    let mut next = Vec::new();
     if n > 0 {
-        out.push(screen.next("immune owner <name> withdraw", "takes a statement back"));
+        next.push(("immune owner <name> withdraw", "takes a statement back"));
     }
-    out.push(screen.next(
+    next.push((
         "immune owner <name> retired --reason <text>",
         "sets a machine aside",
     ));
+    out.extend(screen.nexts(&next));
     joined(&out)
 }
 
@@ -1654,6 +1669,7 @@ mod tests {
                 file_rules: 1,
                 in_part: 1,
                 file_events_collected: Some(false),
+                judged: v1::Judged::Part as i32,
                 judged_note: Some("Over the last day some program starts were lost.".into()),
                 matches_last_day: Some(7),
                 ..Default::default()
@@ -2113,7 +2129,9 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("records program starts only. Over the last day"),
+            text.contains(
+                "Lost                      over the last day some program starts were lost\n"
+            ),
             "{text}"
         );
         assert!(text.contains("Behaviour odd state no level"), "{text}");
@@ -2156,16 +2174,28 @@ mod tests {
     }
 
     #[test]
-    fn rules_judged_only_in_part_are_said_in_the_colour_of_a_warning() {
+    fn rules_judged_only_in_part_say_what_was_lost_on_a_line_of_its_own_in_the_colour_of_a_warning()
+    {
+        // The count of the rules that watch is plain; what was lost is its own line, yellow.
         let text = rules(&rules_of("odd"), false, &Screen::terminal(200, true));
         let watching = text.lines().find(|l| l.contains("Watching")).unwrap();
-        assert!(watching.contains("\u{1b}[33m3 rules watch"), "{watching:?}");
+        assert!(!watching.contains("\u{1b}[33m"), "{watching:?}");
+        let lost = text.lines().find(|l| l.contains("Lost")).unwrap();
+        assert!(
+            lost.contains("\u{1b}[33mover the last day some program starts were lost\u{1b}[0m"),
+            "{lost:?}"
+        );
+        // Not running is said under its own word.
+        let mut m = rules_of("odd");
+        m.now.as_mut().unwrap().judged = v1::Judged::None as i32;
+        let text = rules(&m, false, &Screen::pipe());
+        assert!(text.contains("\n  Not running   "), "{text}");
+        // Nothing lost, no such line.
         let mut m = rules_of("odd");
         m.now.as_mut().unwrap().judged_note = None;
         m.now.as_mut().unwrap().file_events_collected = Some(true);
         let text = rules(&m, false, &Screen::terminal(200, true));
-        let watching = text.lines().find(|l| l.contains("Watching")).unwrap();
-        assert!(!watching.contains("\u{1b}[33m"), "{watching:?}");
+        assert!(!text.contains("Lost"), "{text}");
     }
 
     #[test]
