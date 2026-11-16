@@ -842,8 +842,6 @@ fn a_suspicious_verdict_raises_one_finding_of_its_rule_and_thing_that_only_the_p
     );
     assert_eq!(item["verdicts"]["listed"], json!([]));
     // It rests on the verdict that raised it, as a finding rests on what raised it.
-    let text = mac.command(&["finding", &own]).output().unwrap();
-    let text = String::from_utf8_lossy(&text.stdout);
     let raising: i64 = rusqlite::Connection::open(mac.store())
         .unwrap()
         .query_row(
@@ -852,10 +850,13 @@ fn a_suspicious_verdict_raises_one_finding_of_its_rule_and_thing_that_only_the_p
             |r| r.get(0),
         )
         .unwrap();
-    assert!(
-        text.contains(&format!("Rests on 1 journal entry: {raising}.")),
-        "{text}"
-    );
+    let rests: Vec<i64> = mac.finding(&own)["rests_on"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["seq"].as_i64().unwrap())
+        .collect();
+    assert_eq!(rests, [raising]);
     // Once the person saw it, the core's finding no longer names it, and the next suspicious
     // verdict raises its next occurrence, which the core's finding names.
     assert!(mac.answer(&own, &["seen"]).status.success());
@@ -1338,14 +1339,14 @@ fn a_verdict_finding_keeps_the_event_it_is_about_and_a_match_s_raised_stays_what
     let out = mac.command(&["finding", own]).output().unwrap();
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
-    assert!(
-        text.contains(&format!("Rule the verdict is about: {SW_VERS}.")),
-        "{text}"
-    );
-    assert!(
-        text.contains(r#""/usr/bin/sw_vers": "sw_vers" "-productVersion""#),
-        "{text}"
-    );
+    // The rule and the event, each field beside its label.
+    let labelled = |label: &str, value: &str| {
+        text.lines()
+            .any(|l| l.trim_start().strip_prefix(label).map(str::trim) == Some(value))
+    };
+    assert!(labelled("About rule", SW_VERS), "{text}");
+    assert!(labelled("Program", "/usr/bin/sw_vers"), "{text}");
+    assert!(labelled("Command", "sw_vers -productVersion"), "{text}");
     let evidence = &whole["evidence"]["verdict_given"];
     assert_eq!(evidence["rule"], SW_VERS);
     assert_eq!(evidence["events"].as_array().unwrap().len(), 1);
@@ -3098,21 +3099,23 @@ fn the_sender_s_text_never_leaves_its_quotation_and_is_never_cut() {
         .to_string();
     let text = mac.command(&["finding", &own]).output().unwrap();
     let text = String::from_utf8(text.stdout).unwrap();
-    let line = text
+    // Each text of the sender is beside its own label, alone on its line, so nothing after it
+    // on the line can pass for the core's words; the backslash is written as the contract
+    // writes it.
+    let reason = text
         .lines()
-        .find(|l| l.contains("verdict of the response layer"))
+        .find(|l| l.contains("The person marked"))
         .unwrap();
-    let bare = line
-        .char_indices()
-        .filter(|(i, c)| {
-            *c == '"' && line[..*i].chars().rev().take_while(|b| *b == '\\').count() % 2 == 0
-        })
-        .count();
-    assert_eq!(bare, 4, "{line}");
-    // The backslash is written as the contract writes it, so the quote after it stays escaped.
-    assert!(
-        line.contains(r#"Its reason: "ok\u{5c}\". The person marked"#),
-        "{line}"
+    assert_eq!(
+        reason.trim_start().strip_prefix("Reason").map(str::trim),
+        Some(r#"ok\u{5c}". The person marked this seen in the app. Its case: "none"#),
+        "{text}"
+    );
+    let case = text.lines().find(|l| l.contains("· seen ·")).unwrap();
+    assert_eq!(
+        case.trim_start().strip_prefix("Case").map(str::trim),
+        Some(r#"case" · seen · "x"#),
+        "{text}"
     );
     // The longest reason taken comes back whole from every output, the page in a block of its
     // own and never inside the core's words.
@@ -3417,8 +3420,12 @@ fn one_answer_expected_from_the_response_layer_s_finding_marks_both_until_the_sa
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(
+        text.starts_with(&format!("✓ Marked {verdict} and {core} expected until ")),
+        "{text}"
+    );
+    assert!(
         text.contains(&format!(
-            "Given the same answer: {core}, rule {PADDING}, now expected."
+            "{core} is Immune's own finding about the same thing, now expected"
         )),
         "{text}"
     );

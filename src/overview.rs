@@ -42,7 +42,7 @@ fn is_failure(u: &v1::Uncovered) -> bool {
 }
 
 /// `n one` or `n many`, with thousands grouped.
-fn count(n: u64, one: &str, many: &str) -> String {
+pub(crate) fn count(n: u64, one: &str, many: &str) -> String {
     crate::things(i64::try_from(n).unwrap_or(i64::MAX), one, many)
 }
 
@@ -52,17 +52,17 @@ fn grouped(n: u64) -> String {
 }
 
 /// A text without the period that ends it, for a cell or a value beside a label.
-fn unstopped(s: &str) -> &str {
+pub(crate) fn unstopped(s: &str) -> &str {
     s.strip_suffix('.').unwrap_or(s)
 }
 
 /// An enum's value in words: the JSON's name with spaces for underscores.
-fn words<E: TryFrom<i32> + serde::Serialize>(value: i32) -> String {
+pub(crate) fn words<E: TryFrom<i32> + serde::Serialize>(value: i32) -> String {
     word::<E>(value).replace('_', " ")
 }
 
 /// The lines of a text, each ended.
-fn joined(lines: &[String]) -> String {
+pub(crate) fn joined(lines: &[String]) -> String {
     let mut out = String::new();
     for l in lines {
         out.push_str(l);
@@ -85,7 +85,7 @@ fn rank(severity: Option<i32>) -> u8 {
 }
 
 /// A level as a person reads it, and its style: critical red, high yellow, the others plain.
-fn level(severity: Option<i32>) -> (String, Style) {
+pub(crate) fn level(severity: Option<i32>) -> (String, Style) {
     match severity.map(|s| (s, v1::Level::try_from(s))) {
         None => ("not known".to_string(), PLAIN),
         Some((_, Ok(v1::Level::Critical))) => ("critical".to_string(), RED),

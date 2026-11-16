@@ -176,6 +176,12 @@ pub fn fail(op: &str, form: Form, mut error: v1::Error, exit: u8) -> ExitCode {
                 println!("{line}");
             }
         }
+        // `immune finding` speaks the language of its text form (`finding_text.rs`); the other
+        // commands' refusals keep theirs until their turn.
+        Form::Text if op == "finding" => eprint!(
+            "{}",
+            crate::finding_text::failure(&failure, &crate::screen::Screen::of_stderr())
+        ),
         Form::Text => eprint!("{}", text::failure(&failure)),
     }
     ExitCode::from(exit)

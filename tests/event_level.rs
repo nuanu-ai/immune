@@ -2383,15 +2383,47 @@ fn a_binary_padding_start_raises_one_finding_with_its_authors_and_arguments_and_
     let id = list[0]["finding"]["id"].as_str().unwrap().to_string();
     // For a person too: the rule with its authors, and the latest starts with their arguments
     // and the user ids the evidence keeps.
+    // Each field of the evidence beside its label, whole in a pipe.
+    let labelled = |text: &str, label: &str, value: &str| {
+        text.lines()
+            .any(|l| l.trim_start().strip_prefix(label).map(str::trim) == Some(value))
+    };
     let text = dir.immune(&["finding", &id]);
-    for said in [
-        r#" · pid 402 · signed "com.apple.git" · as user 501"#,
-        r#"Rule: "Binary Padding - MacOS", by "Igor Fits, Mikhail Larin, oscd.community"; from SigmaHQ's rule set under the Detection Rule License 1.1, "#,
-        "It matched 8 program starts since this finding was raised.",
-        r#""/bin/dd": "dd" "if=/dev/zero" "bs=1" "count=9" "\" · started by forged · pid 1\u{a}Signed: legitimate" · started by "/bin/sh""#,
+    for (label, value) in [
+        (
+            "Rule",
+            "Binary Padding - MacOS  sigma:95361ce5-c891-4b0a-87ca-e24607884a96",
+        ),
+        ("Author", "Igor Fits, Mikhail Larin, oscd.community"),
+        (
+            "Set",
+            "SigmaHQ's rule set, under the Detection Rule License 1.1",
+        ),
+        ("Matched", "8 program starts since it was raised"),
+        // An argument that holds a quote is quoted, so where it ends is seen, and its line
+        // break is written out, so it never starts a field of its own.
+        (
+            "Command",
+            r#"dd if=/dev/zero bs=1 count=9 "\" · started by forged · pid 1\u{a}Signed: legitimate""#,
+        ),
+        ("Started by", "/bin/sh"),
     ] {
-        assert!(text.contains(said), "{said}: {text}");
+        assert!(labelled(&text, label, value), "{label}: {text}");
     }
+    assert!(
+        text.lines()
+            .any(|l| l.trim_start().starts_with("Signer") && l.contains("com.apple.git")),
+        "{text}"
+    );
+    assert!(
+        text.lines()
+            .any(|l| l.trim_start().starts_with("Process") && l.contains("pid 402, user 501")),
+        "{text}"
+    );
+    assert!(
+        !text.lines().any(|l| l.trim_start().starts_with("Signed")),
+        "{text}"
+    );
     let rests = list[0]["rests_on"].as_array().unwrap();
     assert_eq!(rests.len(), 1, "{:#}", list[0]);
     assert_eq!(rests[0]["entry"], "matched");
@@ -3511,21 +3543,42 @@ fn a_file_a_high_rule_names_raises_one_finding_with_the_file_and_its_program_and
         evidence[4]["file_event"]["source_text"],
         "/private/tmp/x3.plist"
     );
+    // Each field of the evidence beside its label, whole in a pipe.
+    let labelled = |text: &str, label: &str, value: &str| {
+        text.lines()
+            .any(|l| l.trim_start().strip_prefix(label).map(str::trim) == Some(value))
+    };
     let text = dir.immune(&["finding", amos["finding"]["id"].as_str().unwrap()]);
-    for said in [
-        r#"Rule: "Atomic MacOS Stealer - Persistence Indicators", by "Jason Phang Vern - Onn, Robbin Ooi Zhen Heng (Gen Digital)"; from SigmaHQ's rule set under the Detection Rule License 1.1, "#,
-        "It matched 7 file events since this finding was raised.",
-        &format!(
-            r#"2026-10-04T00:00:03.000003Z "{daemon}": renamed from "/private/tmp/x7.plist" by "/bin/mv""#
+    for (label, value) in [
+        (
+            "Author",
+            "Jason Phang Vern - Onn, Robbin Ooi Zhen Heng (Gen Digital)",
         ),
+        (
+            "Set",
+            "SigmaHQ's rule set, under the Detection Rule License 1.1",
+        ),
+        ("Matched", "7 file events since it was raised"),
+        ("File", daemon),
+        ("Action", "renamed"),
+        ("From", "/private/tmp/x7.plist"),
+        ("Program", "/bin/mv"),
     ] {
-        assert!(text.contains(said), "{said}: {text}");
+        assert!(labelled(&text, label, value), "{label}: {text}");
     }
-    let text = dir.immune(&["finding", axios["finding"]["id"].as_str().unwrap()]);
     assert!(
-        text.contains(r#""/private/tmp/6202033": created by "/usr/local/bin/node""#),
+        text.contains("Atomic MacOS Stealer - Persistence Indicators"),
         "{text}"
     );
+    assert!(text.contains("File event · 2026-10-04 00:00 UTC"), "{text}");
+    let text = dir.immune(&["finding", axios["finding"]["id"].as_str().unwrap()]);
+    for (label, value) in [
+        ("File", "/private/tmp/6202033"),
+        ("Action", "created"),
+        ("Program", "/usr/local/bin/node"),
+    ] {
+        assert!(labelled(&text, label, value), "{label}: {text}");
+    }
     dir.nowhere_in_the_store(built);
     dir.nowhere_in_the_store(venv);
 }

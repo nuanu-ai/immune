@@ -2088,8 +2088,24 @@ fn a_high_translated_rule_raises_a_finding_named_elastic_and_its_match_is_handed
     );
     let out = dir.command(&["finding", finding], &[]).output().unwrap();
     let text = String::from_utf8(out.stdout).unwrap();
-    let said = r#"; from Elastic's detection rules under the Elastic License 2.0, "macos/collection_pbpaste_execution_via_unusual_parent.yml"."#;
-    assert!(text.contains(said), "{text}");
+    let labelled = |label: &str, value: &str| {
+        text.lines()
+            .any(|l| l.trim_start().strip_prefix(label).map(str::trim) == Some(value))
+    };
+    assert!(
+        labelled(
+            "Set",
+            "Elastic's detection rules, under the Elastic License 2.0"
+        ),
+        "{text}"
+    );
+    assert!(
+        labelled(
+            "File",
+            "macos/collection_pbpaste_execution_via_unusual_parent.yml"
+        ),
+        "{text}"
+    );
 }
 
 #[test]

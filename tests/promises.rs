@@ -11526,13 +11526,15 @@ fn a_change_in_a_watched_place_stays_open_through_quiet_runs_and_is_the_number_t
     assert_eq!(shown["answer"], serde_json::Value::Null);
     let (_, text, _) = finding_out(&w.store(), &[id]);
     for said in [
+        "● medium  ",
         rule["title"].as_str().unwrap(),
-        r#"rule watched.autostart, severity medium, confidence low, ATT&CK "T1543"."#,
-        "State: open.",
-        "Rests on 3 journal entries:",
+        "\n  rule watched.autostart · confidence low · ATT&CK T1543\n",
+        "   open, first seen ",
     ] {
         assert!(text.contains(said), "{said}\n{text}");
     }
+    // What it rests on is in the machine form; the text holds no journal entries.
+    assert!(!text.contains("journal"), "{text}");
     assert_eq!(shown["answers_note"], r["answers_note"]);
 
     // A severe one first however old; of two as severe, the newer first; `immune findings`
@@ -12151,26 +12153,20 @@ fn an_answer_is_the_owners_and_a_wrong_id_says_how_to_find_the_right_one() {
     assert_eq!(code, Some(2));
     let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(v["errors"][0]["code"], "unknown_finding");
-    assert_eq!(
-        v["errors"][0]["example"],
-        "immune findings --all lists every finding with its id; then: immune finding <id> seen"
-    );
+    assert_eq!(v["errors"][0]["example"], "immune findings --all");
     assert!(stderr.is_empty());
     let (code, _, stderr) = finding_out(&w.store(), &["f0000000000"]);
     assert_eq!(code, Some(2));
-    assert!(
-        stderr.contains("immune findings --all lists every finding"),
-        "{stderr}"
+    assert_eq!(
+        stderr,
+        "error: the store has no finding with this id\n  immune findings --all\n"
     );
+    // A misuse is said with the right form of the command, and nothing else.
     let (code, _, stderr) = finding_out(&w.store(), &["f0000000000", "expected"]);
     assert_eq!(code, Some(2));
-    assert!(
-        stderr.contains("expected needs a reason: --reason <text>"),
-        "{stderr}"
-    );
-    assert!(
-        stderr.contains("expected and seen are the owner's answers"),
-        "{stderr}"
+    assert_eq!(
+        stderr,
+        "error: expected needs a reason: --reason <text>\n  immune finding f0000000000 expected --reason <text>\n"
     );
     for (args, said) in [
         (
@@ -12210,9 +12206,14 @@ fn an_answer_is_the_owners_and_a_wrong_id_says_how_to_find_the_right_one() {
     let note = "Answer a finding only after the owner has agreed in this conversation, having been told what it is and what the options are. Pass --via agent and the reason the owner agreed to. The app shows every answer given this way.";
     assert_eq!(findings_json(&w.store(), &[])["answers_note"], note);
     assert_eq!(status_json(&w.store())["answers_note"], note);
-    let (_, _, usage) = finding_out(&w.store(), &["f0000000000", "ignored"]);
+    let out = immune_cmd(w.home()).arg("--help").output().unwrap();
+    let usage = String::from_utf8_lossy(&out.stdout);
     let usage = usage.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(usage.contains(note), "{usage}");
+    assert!(
+        usage.contains("expected and seen are the owner's answers"),
+        "{usage}"
+    );
 }
 
 /// Three findings on three files, one each: the shell profile, the SSH configuration and a
@@ -12320,11 +12321,16 @@ fn an_answer_says_who_gave_it_in_the_app_through_an_agent_or_from_the_command_li
         "{journaled:?}"
     );
     let (_, text, _) = finding_out(&w.store(), &[&ssh]);
+    let answer = text
+        .lines()
+        .find(|l| l.starts_with("  Your answer  "))
+        .unwrap();
+    assert!(answer.contains("  expected until "), "{text}");
+    assert!(answer.ends_with(" through your agent"), "{text}");
     assert!(
-        text.contains(" through your agent, expected until "),
+        text.contains("\n  Reason          they added a server\n"),
         "{text}"
     );
-    assert!(text.contains(r#": "they added a server"."#), "{text}");
 }
 
 #[test]
@@ -12471,7 +12477,7 @@ fn an_answer_whose_giver_this_build_does_not_know_is_not_shown_as_given_outside_
         .unwrap();
     assert_eq!(f["answer"]["via"], "unknown");
     let (_, text, _) = finding_out(&w.store(), &[&profile]);
-    assert!(text.contains(" how it came is not recorded."), "{text}");
+    assert!(text.contains(", how it came is not recorded\n"), "{text}");
     let page = view(&w.store());
     let row = answered_row(&page, &profile);
     assert!(row.contains(" how it came is not recorded</span>"), "{row}");

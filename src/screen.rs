@@ -40,7 +40,26 @@ impl Screen {
             terminal,
             std::env::var_os("NO_COLOR"),
             std::env::var_os("TERM"),
-            if terminal { asked_width() } else { None },
+            if terminal {
+                asked_width(libc::STDOUT_FILENO)
+            } else {
+                None
+            },
+        )
+    }
+
+    /// The screen of this process's standard error, where a refusal goes, and environment.
+    pub fn of_stderr() -> Screen {
+        let terminal = std::io::stderr().is_terminal();
+        Screen::decide(
+            terminal,
+            std::env::var_os("NO_COLOR"),
+            std::env::var_os("TERM"),
+            if terminal {
+                asked_width(libc::STDERR_FILENO)
+            } else {
+                None
+            },
         )
     }
 
@@ -148,12 +167,12 @@ impl Screen {
     }
 }
 
-/// The terminal's columns as the system gives them (`ioctl(TIOCGWINSZ)`); `None` when it does
-/// not say.
-fn asked_width() -> Option<usize> {
+/// The columns of the terminal on `fd` as the system gives them (`ioctl(TIOCGWINSZ)`); `None`
+/// when it does not say.
+fn asked_width(fd: libc::c_int) -> Option<usize> {
     // SAFETY: `ioctl` with `TIOCGWINSZ` writes only into `ws`, which lives through the call.
     let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-    let asked = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) };
+    let asked = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) };
     (asked == 0 && ws.ws_col > 0).then(|| usize::from(ws.ws_col))
 }
 
@@ -245,21 +264,29 @@ pub fn columns(s: &str) -> usize {
     s.chars().map(crate::icu::columns).sum()
 }
 
-/// The pieces a cut may fall between: one character, or a whole escape `\u{…}` as `view::shown`
-/// and `known::whole` write a hidden character, so a cut never leaves half of one.
+/// The pieces a cut or a line break may fall between: one character, a whole escape `\u{…}` as
+/// `view::shown` and `known::whole` write a hidden character, or a whole mark `\cut{<kind>
+/// <length>}` where a secret was cut out (`secrets::marks`), so neither is ever left in halves.
 fn units(s: &str) -> Vec<&str> {
+    // In the order they begin. Each begins where a unit does: a backslash is only ever the
+    // first character of a unit.
+    let mut marks = crate::secrets::marks(s).into_iter().peekable();
     let mut out = Vec::new();
-    let mut rest = s;
-    while let Some(c) = rest.chars().next() {
+    let mut at = 0;
+    while let Some(c) = s[at..].chars().next() {
+        let rest = &s[at..];
         let escape = rest.strip_prefix("\\u{").and_then(|after| {
             let close = after.find('}')?;
             let hex = &after[..close];
             (!hex.is_empty() && hex.len() <= 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
                 .then_some(3 + close + 1)
         });
-        let len = escape.unwrap_or(c.len_utf8());
-        out.push(&rest[..len]);
-        rest = &rest[len..];
+        let mark = marks
+            .next_if(|(start, ..)| *start == at)
+            .map(|(start, end, ..)| end - start);
+        let len = mark.or(escape).unwrap_or(c.len_utf8());
+        out.push(&s[at..at + len]);
+        at += len;
     }
     out
 }
@@ -342,15 +369,26 @@ pub fn cut_middle(s: &str, width: usize) -> String {
 }
 
 /// A text broken into lines of at most `width` columns, at spaces; a word longer than a line is
-/// broken where it reaches the end. Without a width, one line.
+/// broken where it reaches the end, between two units, so an escape or a mark is never broken:
+/// one wider than a whole line stands alone on its line. Without a width, one line.
 pub fn wrap(s: &str, width: Option<usize>) -> Vec<String> {
     let Some(width) = width.map(|w| w.max(1)) else {
         return vec![s.to_string()];
     };
+    // The words, split at the spaces between units: the space inside a mark splits nothing.
+    let mut words: Vec<Vec<&str>> = vec![Vec::new()];
+    for u in units(s) {
+        match (u, words.last_mut()) {
+            (" ", _) => words.push(Vec::new()),
+            (_, Some(word)) => word.push(u),
+            (_, None) => {}
+        }
+    }
     let mut lines = Vec::new();
     let mut line = String::new();
-    for word in s.split(' ') {
-        let need = columns(&line) + usize::from(!line.is_empty()) + columns(word);
+    for word in words {
+        let wide: usize = word.iter().map(|u| columns(u)).sum();
+        let need = columns(&line) + usize::from(!line.is_empty()) + wide;
         if !line.is_empty() && need > width {
             lines.push(std::mem::take(&mut line));
         }
@@ -358,7 +396,7 @@ pub fn wrap(s: &str, width: Option<usize>) -> Vec<String> {
             line.push(' ');
         }
         // A word wider than a whole line goes in pieces.
-        for u in units(word) {
+        for u in word {
             if columns(&line) + columns(u) > width && !line.is_empty() {
                 lines.push(std::mem::take(&mut line));
             }
@@ -819,6 +857,23 @@ mod tests {
         assert_eq!(cut_end(s, 9), r"ab\u{1b}…");
         let t = cut_middle(r"\u{202e}abcdefghij\u{202e}", 12);
         assert!(!t.contains(r"\u{20") || t.contains(r"\u{202e}"), "{t}");
+    }
+
+    #[test]
+    fn a_line_break_or_a_cut_never_falls_inside_a_mark_where_a_secret_was_cut() {
+        let mark = r"\cut{gitleaks:github-pat 40}";
+        let text = format!("token {mark} end");
+        // The space inside the mark is not a place to break a line.
+        for width in [10, 20, 30] {
+            let lines = wrap(&text, Some(width));
+            assert!(lines.iter().any(|l| l.contains(mark)), "{width}: {lines:?}");
+        }
+        assert_eq!(
+            wrap(&text, Some(31)),
+            ["token", mark, "end"].map(String::from)
+        );
+        // A cut takes the whole mark or none of it.
+        assert_eq!(cut_end(&text, 12), "token …");
     }
 
     #[test]

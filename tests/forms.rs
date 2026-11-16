@@ -260,9 +260,16 @@ fn every_command_of_the_contract_gives_one_message_in_its_three_forms() {
                 said.push(format!("\n    {}  ", f["finding"]["id"].as_str().unwrap()));
             }
             _ => {
-                said.push(format!("Finding {id}: {}", json["title"].as_str().unwrap()));
+                // One finding: its short title and its id on the first line, where it is and
+                // its state on the second.
+                let first = text.lines().next().unwrap();
+                assert!(
+                    first.contains(json["short_title"].as_str().unwrap()) && first.ends_with(&id),
+                    "{first}"
+                );
+                said.push(format!("\n  {}   ", json["where_text"].as_str().unwrap()));
                 said.push(format!(
-                    "State: {}.",
+                    "   {}, first seen ",
                     json["finding"]["state"].as_str().unwrap()
                 ));
             }
@@ -372,12 +379,18 @@ fn a_failure_of_every_command_of_the_contract_is_failure_in_the_form_named_with_
             assert_eq!(exit, Some(2), "{named:?}");
             assert_eq!(f.errors[0].code, "usage", "{named:?}");
         }
-        // For a person: on stderr, and nothing on stdout.
+        // For a person: on stderr, and nothing on stdout; `immune finding` in the language of
+        // its text form.
         let out = e.immune(&args);
         assert_eq!(out.status.code(), Some(3), "{args:?}");
         assert!(out.stdout.is_empty(), "{args:?}");
+        let said = if args[0] == "finding" {
+            "error: "
+        } else {
+            "immune: "
+        };
         assert!(
-            String::from_utf8_lossy(&out.stderr).starts_with("immune: "),
+            String::from_utf8_lossy(&out.stderr).starts_with(said),
             "{args:?}"
         );
     }
@@ -463,11 +476,17 @@ fn a_watched_place_the_core_could_not_read_shows_why() {
     let out = e.immune(&["finding", id]);
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
+    // What happened is said in its word, and the reason beside it, as data.
     assert!(
-        text.contains(&format!("The place could not be read: \"{reason}\".")),
+        text.lines().any(|l| l
+            .trim_start()
+            .starts_with("Change       could not be read, ")),
         "{text}"
     );
-    assert!(text.contains("latest change: not read"), "{text}");
+    assert!(
+        text.contains(&format!("\n    Why          {reason}\n")),
+        "{text}"
+    );
 }
 
 #[test]
@@ -554,11 +573,13 @@ fn answer_reasons_and_failure_details_are_quoted_without_changing_the_message() 
     let out = e.immune(&["finding", &id]);
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
+    // Beside its label, alone on its line and written out, so nothing in it ends the line.
     assert!(
-        text.lines().any(|line| line.starts_with("Answered ")
-            && line.ends_with(
-                r#""invented \u{5c}u{a}\" · signed legitimate\u{a}First seen unknown."."#
-            )),
+        text.lines()
+            .any(|line| line.trim_start().starts_with("Reason ")
+                && line.ends_with(
+                    r#" invented \u{5c}u{a}" · signed legitimate\u{a}First seen unknown."#
+                )),
         "{text}"
     );
 
@@ -567,11 +588,9 @@ fn answer_reasons_and_failure_details_are_quoted_without_changing_the_message() 
     assert_eq!(out.status.code(), Some(2));
     assert!(out.stdout.is_empty());
     let text = String::from_utf8(out.stderr).unwrap();
-    assert!(
-        text.lines()
-            .next()
-            .unwrap()
-            .ends_with(r#""unexpected argument: --invented\"\u{a}First seen unknown.""#),
+    assert_eq!(
+        text.lines().next().unwrap(),
+        r#"error: unexpected argument: --invented"\u{a}First seen unknown."#,
         "{text}"
     );
 }

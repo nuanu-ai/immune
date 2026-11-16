@@ -60,7 +60,7 @@ pub fn one(
     Ok(one.ok_or(Refused {
         code: "unknown_finding",
         message: "the store has no finding with this id",
-        example: "immune findings --all lists every finding with its id; with --json, every one in every state",
+        example: "immune findings --all",
         ids: Vec::new(),
     }))
 }

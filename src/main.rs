@@ -22,6 +22,7 @@ mod contract;
 mod covered;
 mod events;
 mod finding_answer;
+mod finding_text;
 mod findings;
 mod fsevents;
 mod guarded;
@@ -250,6 +251,8 @@ struct FindingArgs {
     /// The `journal_seq` of the answer the findings were read in, `--journal-seq`: the answer is
     /// refused when anything joined them after it (`findings::unchanged`).
     journal_seq: Option<i64>,
+    /// What was typed, for the right form of the command a refusal gives.
+    typed: finding_text::Typed,
 }
 
 enum FindingVerb {
@@ -349,7 +352,6 @@ fn parse_args(
     cmd: Option<&str>,
     mut it: impl Iterator<Item = String>,
     options: &mut answer::Options,
-    finding_write: &mut bool,
 ) -> Result<Cmd, String> {
     let cmd = cmd.ok_or("no command given")?;
     let mut store = None;
@@ -520,9 +522,11 @@ fn parse_args(
             }))
         }
         "finding" => {
+            let given: Vec<String> = it.collect();
+            let typed = finding_text::Typed::read(&given);
             let (mut reason, mut days, mut via, mut words) = (None, None, None, Vec::new());
             let (mut with, mut seq) = (None, None);
-            let parsed = options.read(it, |arg, it| {
+            let parsed = options.read(given.into_iter(), |arg, it| {
                 match arg.as_str() {
                     "--reason" => reason = Some(value(it, &arg)?),
                     "--days" => days = Some(value(it, &arg)?),
@@ -545,7 +549,6 @@ fn parse_args(
                 Some("reopen") => Some(FindingVerb::Reopen),
                 _ => None,
             };
-            *finding_write = verb.is_some();
             parsed?;
             let verb = match words.as_slice() {
                 [_] => None,
@@ -650,6 +653,7 @@ fn parse_args(
                 via: via.unwrap_or(findings::Via::Command),
                 with,
                 journal_seq,
+                typed,
             }))
         }
         "vulnerabilities" | "vulnerability" => {
@@ -856,13 +860,7 @@ fn main() -> ExitCode {
     }
     let op = args.first().map(String::as_str);
     let mut options = answer::Options::default();
-    let mut finding_write = false;
-    let cmd = match parse_args(
-        op,
-        args.iter().skip(1).cloned(),
-        &mut options,
-        &mut finding_write,
-    ) {
+    let cmd = match parse_args(op, args.iter().skip(1).cloned(), &mut options) {
         Ok(cmd) => cmd,
         Err(e) => {
             // Every command but `immune servers`, `immune view` and `immune watch` answers with a
@@ -873,8 +871,8 @@ fn main() -> ExitCode {
                 Some("machine") => Some("immune machine --json"),
                 Some("matches") => Some("immune matches --json"),
                 Some("findings") => Some("immune findings --json"),
-                Some("finding") if !finding_write => Some("immune finding f0123456789 --json"),
-                Some("finding") => Some("immune finding f0123456789 seen --json"),
+                // Made from what was typed, below.
+                Some("finding") => Some(""),
                 Some("verdict") => Some("immune verdict --json < verdict.json"),
                 Some("status") => Some("immune status --json"),
                 Some("run") => Some("immune run --json"),
@@ -889,14 +887,23 @@ fn main() -> ExitCode {
             };
             if let (Some(op), Some(example)) = (op, contract) {
                 let form = options.form();
+                // A misuse of `immune finding` gives the right form of what was typed, and for a
+                // person nothing else: no usage (`finding_text::failure`).
+                let finding = op == "finding";
+                let example = match finding {
+                    true => finding_text::Typed::read(&args[1..]).right(),
+                    false => example.to_string(),
+                };
                 let error = answer::error(
                     "usage",
                     "the command line is not one Immune understands; the usage is on stderr",
-                    example,
+                    &example,
                     &e,
                 );
                 let exit = answer::fail(op, form, error, EXIT_USAGE);
-                eprintln!("{USAGE}");
+                if !(finding && form == answer::Form::Text) {
+                    eprintln!("{USAGE}");
+                }
                 return exit;
             }
             // `immune watch` answers only in machine-readable lines.
@@ -1388,36 +1395,52 @@ fn vulnerabilities_cmd(args: &VulnerabilityArgs) -> ExitCode {
 /// `immune finding <id>`: one finding with what it rests on; after the owner's answer to it, the
 /// same finding as it stands then. A refusal and a failure are the contract's `Failure`.
 fn finding_cmd(args: &FindingArgs) -> ExitCode {
+    // An id the store has no finding for that is not the shape of one is told as such, and not
+    // only as one the store lacks. It is checked after the store, so that every finding the
+    // store holds is read and answered whatever its id.
+    const NOT_AN_ID: &str = "this is not a finding's id: an id is f and ten hexadecimal digits, as immune findings lists them";
+    let not_an_id = !findings::is_finding_id(&args.id);
     let read = || {
         known::command(
             "finding",
             &args.store,
             args.form,
-            |conn, now| finding_answer::one(conn, &args.id, None, now),
-            text::finding,
+            |conn, now| {
+                finding_answer::one(conn, &args.id, None, now).map(|one| {
+                    one.map_err(|refused| match not_an_id {
+                        true => known::Refused {
+                            message: NOT_AN_ID,
+                            ..refused
+                        },
+                        false => refused,
+                    })
+                })
+            },
+            |m| finding_text::finding(m, &screen::Screen::of_stdout()),
         )
     };
     let Some(act) = &args.act else {
         return read();
     };
-    let refuse = |code: &str, message: &str, example: &str, exit: u8| {
+    let unknown_message = match not_an_id {
+        true => NOT_AN_ID,
+        false => "the store has no finding with this id; nothing was changed",
+    };
+    let unknown = || {
         answer::fail(
             "finding",
             args.form,
-            answer::error(code, message, example, ""),
-            exit,
-        )
-    };
-    let unknown = || {
-        refuse(
-            "unknown_finding",
-            "the store has no finding with this id; nothing was changed",
-            "immune findings --all lists every finding with its id; then: immune finding <id> seen",
+            answer::error(
+                "unknown_finding",
+                unknown_message,
+                "immune findings --all",
+                "",
+            ),
             EXIT_USAGE,
         )
     };
     let store_failed = |e: &Stop| {
-        let (error, exit) = answer::stopped(e, "immune finding <id> seen");
+        let (error, exit) = answer::stopped(e, &args.typed.right());
         answer::fail("finding", args.form, error, exit)
     };
     if !args.store.is_file() {
@@ -1431,7 +1454,7 @@ fn finding_cmd(args: &FindingArgs) -> ExitCode {
     // It writes as `immune verdict` does: under the run lock, with the write lock from the
     // start of its transaction, and a store another writer holds is asked again.
     let busy = |r: verdict::Refusal| {
-        let error = answer::error(r.code, r.message, "immune finding <id> seen", &r.detail);
+        let error = answer::error(r.code, r.message, &args.typed.right(), &r.detail);
         answer::fail("finding", args.form, error, r.exit)
     };
     let (lock, mut conn) = match verdict::writing(&args.store) {
@@ -1478,43 +1501,49 @@ fn finding_cmd(args: &FindingArgs) -> ExitCode {
     // A refusal about the finding named by `--with` quotes its id, and has the code it would
     // have about the finding the answer is for.
     let refusal = |r: findings::Refused| {
-        let message = format!("{r}; nothing was changed");
+        let message = match r {
+            findings::Refused::Unknown => unknown_message.to_string(),
+            _ => format!("{r}; nothing was changed"),
+        };
         let (about, detail) = match &r {
             findings::Refused::With(about) => (&**about, args.with.as_deref()),
             findings::Refused::NotPair => (&r, args.with.as_deref()),
             findings::Refused::ChangedSinceRead(id) => (&r, Some(id.as_str())),
             _ => (&r, None),
         };
+        // The right form of the command: what was typed, made right where the refusal says how;
+        // the finding read again where what changed has to be seen first.
+        let typed = &args.typed;
+        let with_refused = matches!(r, findings::Refused::With(_) | findings::Refused::NotPair);
         let (code, example) = match about {
-            findings::Refused::ChangedSinceRead(_) => (
-                "changed_since_read",
-                "immune finding <id> --json, then answer with its journal_seq: immune finding <id> seen --with <other id> --journal-seq <n>",
-            ),
-            findings::Refused::ReadAhead => (
-                "journal_seq_ahead",
-                "immune finding <id> --json gives the journal_seq to answer with",
-            ),
-            findings::Refused::Unknown => (
-                "unknown_finding",
-                "immune findings --all lists every finding with its id; then: immune finding <id> seen",
-            ),
-            findings::Refused::NotPair => (
-                "not_the_pair",
-                "immune finding <id> --json names the response layer's finding about the same rule and thing in verdicts.verdict_finding",
-            ),
-            findings::Refused::NotAnswered(_) => (
-                "finding_not_answered",
-                "immune findings --all lists every finding with its state",
-            ),
-            _ => ("finding_closed", "immune findings lists the open findings"),
+            findings::Refused::ChangedSinceRead(_) => ("changed_since_read", typed.reading()),
+            findings::Refused::ReadAhead => ("journal_seq_ahead", typed.reading()),
+            findings::Refused::Unknown if with_refused => {
+                ("unknown_finding", typed.other_unknown())
+            }
+            findings::Refused::Unknown => ("unknown_finding", "immune findings --all".to_string()),
+            findings::Refused::NotPair => ("not_the_pair", typed.other_unknown()),
+            findings::Refused::NotAnswered(_) if with_refused => {
+                ("finding_not_answered", typed.other_unknown())
+            }
+            findings::Refused::NotAnswered(_) => ("finding_not_answered", typed.reading()),
+            findings::Refused::Closed(_) if with_refused => {
+                ("finding_closed", typed.other_unknown())
+            }
+            findings::Refused::Closed(state) if state == "seen" => {
+                ("finding_closed", typed.reopening())
+            }
+            _ => ("finding_closed", typed.reading()),
         };
-        let error = answer::error(code, &message, example, detail.unwrap_or_default());
+        let error = answer::error(code, &message, &example, detail.unwrap_or_default());
         answer::fail("finding", args.form, error, EXIT_USAGE)
     };
     drop(conn);
     drop(lock);
     match answered {
-        Ok(Ok(m)) => answer::print("finding", args.form, &m, text::finding),
+        Ok(Ok(m)) => answer::print("finding", args.form, &m, |m| {
+            finding_text::answered(m, &screen::Screen::of_stdout())
+        }),
         Ok(Err(refused)) => answer::fail("finding", args.form, refused.error(), EXIT_USAGE),
         Err(e) => match e.downcast::<findings::RefusedError>() {
             Ok(r) => refusal(r.0),

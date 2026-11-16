@@ -374,7 +374,7 @@ fn parse(s: &str) -> Vec<Piece> {
 /// holds only what a set's name and a pattern's id hold, and a length only digits. Linear in the
 /// length of `s`: reading a mark stops at the first byte a mark cannot hold, and the backslash
 /// that begins the next one is such a byte.
-fn marks(s: &str) -> Vec<(usize, usize, String, usize)> {
+pub(crate) fn marks(s: &str) -> Vec<(usize, usize, String, usize)> {
     let bytes = s.as_bytes();
     let run = |from: usize, ok: fn(u8) -> bool| {
         from + bytes[from..].iter().take_while(|b| ok(**b)).count()

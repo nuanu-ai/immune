@@ -381,13 +381,15 @@ fn a_keg_or_package_changed_in_place_is_one_changed_event_and_a_new_version_is_n
         .unwrap();
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
+    // The two digests are not shown; that the files changed is, beside its label.
     assert!(
-        text.contains(&format!(
-            "Digest: {} became {}.",
-            change["old_value_text"], change["new_value_text"]
-        )),
+        text.lines().any(|l| l.trim_start().starts_with("Files")
+            && l.contains("changed while the version stayed the same")),
         "{text}"
     );
+    for digest in [&change["old_value_text"], &change["new_value_text"]] {
+        assert!(!text.contains(digest.as_str().unwrap()), "{text}");
+    }
     let mut found = e.findings();
     found.sort();
     assert_eq!(
