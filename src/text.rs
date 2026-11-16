@@ -2290,12 +2290,10 @@ pub fn service(m: &v1::Service) -> String {
                 m.label
             ),
         );
-        if m.loaded {
-            say(
-                &mut out,
-                "The core runs a full check when it starts and every hour after that.",
-            );
-        }
+        say(
+            &mut out,
+            "The job is set to start a full check when the core starts and every hour after that.",
+        );
         say(&mut out, "immune status says what has been read.");
     } else if m.replaced {
         say(

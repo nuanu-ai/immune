@@ -13,15 +13,17 @@
 //! These commands act, so their order is the point. Install:
 //! - every refusal comes first, with nothing changed; one of the two commands runs at a time;
 //! - then the property list and the copy are staged under temporary names beside their places;
-//! - then the copy and then the property list are renamed into place, under the running job: it
-//!   keeps the old binary's inode and the configuration launchd loaded, so it is not disturbed,
-//!   and a file that cannot be replaced fails the install before anything is stopped. The copy
-//!   goes first, so a property list never names a core that is not there;
+//! - then the copy and then the property list are renamed into place, under the running job: the
+//!   process keeps the old binary's inode and launchd the configuration it loaded, so the job is
+//!   not stopped, and a file that cannot be replaced fails the install before anything is. The
+//!   full checks the watcher starts, and a restart of the job, run the new copy from then on.
+//!   The copy goes first, so a property list never names a core that is not there;
 //! - then a loaded job is stopped and waited for until launchd no longer has it;
 //! - then the job is registered again and confirmed.
 //!
 //! The installed file is never written in place, since a running job has it open: a new copy
-//! replaces it by rename. What was staged under a temporary name is removed on every way out.
+//! replaces it by rename. What was staged under a temporary name is removed on every way out
+//! but a kill, which leaves it.
 //! A failure says what the command did and did not touch and what launchd answered, never what
 //! the job does next: the command does not know what launchd will do. The answer says the job
 //! is loaded only when `launchctl print` said so after it was registered.
@@ -54,7 +56,7 @@ const PROGRAM: &str = "immune";
 /// Every failure of these commands exits with this code; the failure's `code` says which.
 const EXIT_FAILED: u8 = 1;
 /// What a failure after the stop adds, so a person and an agent know how to recover.
-const RECOVER: &str = "; the core job may be stopped. The store was kept. The new core and its property list are in place. Run immune install again to recover";
+const RECOVER: &str = "; the core job may be stopped. The store was kept. The core and its property list are in place. Run immune install again to recover";
 /// At most this many characters of another job's label are quoted in a failure.
 const LABEL_QUOTED: usize = 200;
 
@@ -647,7 +649,7 @@ fn install(launchctl: &Path, home: Option<&Path>) -> Result<v1::Service, Failed>
     if loaded_before && let Err(said) = stop(launchctl, &places.job) {
         return Err(failed(
             "stop_failed",
-            "could not see the core job stop in time: the new core and its property list are in place, and launchd still has the previous job, which it was told to stop. Run immune install again",
+            "could not see the core job stop in time: the core and its property list are in place, and launchd still has the previous job, which it was told to stop. Run immune install again",
             said,
         ));
     }
@@ -681,7 +683,7 @@ fn uninstall(launchctl: &Path, home: Option<&Path>) -> Result<v1::Service, Faile
     let removed = |what: &Path, e: io::Error| {
         failed(
             "not_removed",
-            "the core job is stopped, and one of its files could not be removed; the store was kept. Run immune uninstall again",
+            "the core job is stopped, and its property list or the installed core could not be removed and is still there; the store was kept. Run immune uninstall again",
             format!("{}: {e}", what.display()),
         )
     };

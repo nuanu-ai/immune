@@ -640,7 +640,8 @@ fn a_job_that_does_not_leave_in_time_keeps_running_with_the_new_files_in_place()
     let (code, message) = failure(&login.run("install", &stays), "install");
     assert_eq!(code, "stop_failed");
     for words in [
-        "the new core and its property list are in place",
+        "could not see the core job stop in time",
+        "the core and its property list are in place",
         "launchd still has the previous job, which it was told to stop",
         "Run immune install again",
     ] {
@@ -663,10 +664,13 @@ fn a_failed_stop_keeps_everything_and_a_failure_after_the_stop_says_how_to_recov
         "uninstall",
     );
     assert_eq!(code, "stop_failed");
-    assert!(message.contains("were kept"), "{message}");
+    assert!(
+        message.starts_with("could not stop the core job") && message.contains("were kept"),
+        "{message}"
+    );
     assert_eq!(login.snapshot(), before);
 
-    const RECOVER: &str = "the core job may be stopped. The store was kept. The new core and its property list are in place. Run immune install again to recover";
+    const RECOVER: &str = "the core job may be stopped. The store was kept. The core and its property list are in place. Run immune install again to recover";
     let (code, message) = failure(
         &login.run("install", &[("FAIL_LAUNCHCTL", "bootstrap")]),
         "install",
@@ -818,7 +822,12 @@ fn the_answer_is_the_message_service_in_three_forms_and_a_failure_is_failure() {
     assert!(text.status.success());
     let text = String::from_utf8(text.stdout).unwrap();
     assert!(text.contains(&quoted), "{text}");
-    assert!(text.contains("every hour"), "{text}");
+    assert!(
+        text.contains("launchd has loaded its login job")
+            && text.contains("is set to start a full check when the core starts and every hour"),
+        "{text}"
+    );
+    assert!(!text.contains("runs"), "{text}");
     assert!(text.contains("immune status"), "{text}");
     // Only the job is left, and the words say what is left, not what was found.
     fs::remove_file(&login.plist).unwrap();

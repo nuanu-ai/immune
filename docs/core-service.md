@@ -16,11 +16,11 @@ Run `install` as the user being watched, without `sudo`. It copies the binary it
 
 Only one `install` or `uninstall` runs at a time; a second one fails with `busy` and changes nothing. Before it changes anything, `install` refuses when it runs as root, when the account has no home folder with an absolute path, when launchd has no login session for the user, when a symbolic link stands at the property list, at `bin` or at `bin/immune`, and when the property list there belongs to another job.
 
-`install` then prepares the new property list and the new copy under temporary names and renames them into place, the copy first, while the old job is left alone. A running job keeps the binary it opened and the configuration launchd loaded, so this does not disturb it, and the installed file is never written in place. Only then does `install` stop the old job, wait until launchd no longer has it, and load the new one. Each failure says what `install` did and did not touch, and what launchd answered:
+`install` then prepares the new property list and the new copy under temporary names and renames them into place, the copy first, while the old job is left alone. The running process keeps the binary it opened and launchd keeps the configuration it loaded, so the job is not stopped; the full checks it starts, and a restart, run the new copy from then on. The installed file is never written in place. Only then does `install` stop the old job, wait until launchd no longer has it, and load the new one. Each failure says what `install` did and did not touch, and what launchd answered:
 
 - The copy cannot be put in place: the installed core, the property list and the job launchd has were not touched.
-- The property list cannot be put in place: the new core is in place, and the property list and the job were not touched. Run `install` again.
-- launchd still has the old job 30 seconds after it was told to stop: the new core and its property list are in place. Run `install` again.
+- The property list cannot be put in place: the property list and the job were not touched; the new core is in place unless `install` was run from the installed copy. Run `install` again.
+- launchd still has the old job after the wait, 30 seconds when it took the stop and 2 when it refused it: the core and its property list are in place. Run `install` again.
 - Loading the new job fails: the job may be stopped, and the new core and its property list are in place. Run `install` again.
 
 The store is kept in every case. `install` says the job is loaded only after `launchctl print` has found it.
@@ -50,4 +50,4 @@ The optional app is built against the installed copy's path, `app/build "$HOME/L
 "$HOME/Library/Application Support/ai.nuanu.immune/bin/immune" uninstall
 ```
 
-Any build of the core can run `uninstall`, the installed copy included. It stops the job, removes its property list and the installed copy, and removes `bin` when nothing else is in it. It keeps the store and everything else in the store's folder, the optional app and the optional event collector. If the stop fails, the property list and the copy are kept. Run where nothing is installed, it changes nothing and says so. To check the Mac once without the service, run `immune run` from a build. To restore continuous coverage, install the service again. Logging out stops the login job until your next login.
+Any build of the core can run `uninstall`, the installed copy included. It stops the job, removes its property list and the installed copy, and removes `bin` when nothing else is in it. It keeps the store and everything else in the store's folder, the optional app and the optional event collector. If the stop fails, the property list and the copy are kept. Run where nothing is installed, it says so. To check the Mac once without the service, run `immune run` from a build. To restore continuous coverage, install the service again. Logging out stops the login job until your next login.
