@@ -3014,8 +3014,8 @@ fn a_store_of_another_format_is_refused_by_every_command_and_left_unchanged() {
         ("6", "is from an older format (6)", START_OVER, Some(told)),
         ("5", "is from an older format (5)", START_OVER, Some(told)),
         (
-            "8",
-            "is from a newer format (8)",
+            "9",
+            "is from a newer format (9)",
             "Use the version of Immune that made it",
             Some(told),
         ),

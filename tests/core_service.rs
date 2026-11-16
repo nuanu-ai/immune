@@ -362,7 +362,7 @@ fn mode(path: &Path) -> u32 {
 fn one_login_job_runs_the_installed_copy_and_removal_keeps_the_store_and_collector() {
     let login = Login::new("core-service-lifecycle");
     let store = login.store.join("store.db");
-    let store_before = fs::read(&store).unwrap();
+    let store_before = held(&store);
     let collector = login
         .scratch
         .join("system/Library/LaunchDaemons/ai.nuanu.immune.event-filter.plist");
@@ -413,7 +413,7 @@ fn one_login_job_runs_the_installed_copy_and_removal_keeps_the_store_and_collect
         (nothing.installed, nothing.loaded, nothing.replaced),
         (false, false, false)
     );
-    assert_eq!(fs::read(&store).unwrap(), store_before);
+    assert_eq!(held(&store), store_before);
     assert_eq!(
         fs::read_to_string(&collector).unwrap(),
         "invented collector"
@@ -869,7 +869,7 @@ fn on_and_off_run_from_the_installed_copy_itself() {
 fn off_removes_only_the_job_its_plist_and_the_copy() {
     let login = Login::new("core-service-only-its-own");
     fs::create_dir_all(login.store.join("pages")).unwrap();
-    let store = fs::read(login.store.join("store.db")).unwrap();
+    let store = held(&login.store.join("store.db"));
     fs::write(login.store.join("pages/index.html"), "invented page").unwrap();
     service(&login.run("on", &[]));
     let before = names(&login.store);
@@ -881,7 +881,7 @@ fn off_removes_only_the_job_its_plist_and_the_copy() {
     assert_eq!(names(&login.bin), ["notes.txt"]);
     assert_eq!(names(&login.agents), ["com.example.other.plist"]);
     assert_eq!(names(&login.store), before);
-    assert_eq!(fs::read(login.store.join("store.db")).unwrap(), store);
+    assert_eq!(held(&login.store.join("store.db")), store);
     assert_eq!(
         fs::read_to_string(login.store.join("pages/index.html")).unwrap(),
         "invented page"
@@ -1111,8 +1111,12 @@ fn the_status_tells_a_job_installed_and_not_running_from_one_not_installed() {
     service(&login.run("off", &[]));
     let (installed, text) = said(&login);
     assert_eq!(installed, json!(false));
+    // Turned off by its own command, said with its time.
+    let v: Value = serde_json::from_slice(&login.status(&["--json"]).stdout).unwrap();
+    let at = v["turned_off_at"].as_i64().unwrap();
+    let when = format!("Immune is off: turned off {} with immune off", utc(at));
     assert!(
-        text.contains("not installed: no watcher runs now") && !text.contains("not running"),
+        text.contains(&when) && !text.contains("not running") && !text.contains("did not"),
         "{text}"
     );
     // Something other than a file at the property list's place is neither.
@@ -1130,4 +1134,160 @@ fn the_status_tells_a_job_installed_and_not_running_from_one_not_installed() {
     let out = login.status(&["--json", "--store", other.to_str().unwrap()]);
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert!(v["login_job_installed"].is_null(), "{v}");
+}
+
+/// UTC seconds as the text for a person writes them in a pipe.
+fn utc(at: i64) -> String {
+    let out = Command::new("/bin/date")
+        .args(["-u", "-r", &at.to_string(), "+%Y-%m-%d %H:%M UTC"])
+        .output()
+        .unwrap();
+    String::from_utf8(out.stdout)
+        .unwrap()
+        .trim_end()
+        .to_string()
+}
+
+/// The entries `on` and `off` wrote in the store's journal, in order, each with every column but
+/// its time and sequence.
+fn turned(login: &Login) -> Vec<Vec<Option<String>>> {
+    let conn = rusqlite::Connection::open(login.store.join("store.db")).unwrap();
+    let mut rows = conn
+        .prepare(
+            "SELECT entry, run_id, reader, scope, kind, subject, predicate, old_value, new_value,
+                    text FROM journal WHERE entry IN ('turned_on', 'turned_off') ORDER BY seq",
+        )
+        .unwrap();
+    rows.query_map([], |r| (0..10).map(|i| r.get(i)).collect())
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// What a store holds that `on` and `off` never change: its `meta` and every journal entry but
+/// their own.
+fn held(store: &Path) -> Vec<String> {
+    let conn = rusqlite::Connection::open(store).unwrap();
+    let mut rows = conn
+        .prepare(
+            "SELECT key || '=' || value FROM meta
+             UNION ALL SELECT seq || ' ' || entry FROM journal
+                       WHERE entry NOT IN ('turned_on', 'turned_off')",
+        )
+        .unwrap();
+    rows.query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+#[test]
+fn off_that_stopped_a_job_leaves_one_turned_off_entry_and_one_that_found_nothing_none() {
+    let login = Login::new("core-service-journal");
+    assert_eq!(service(&login.run("on", &[])).not_recorded, None);
+    // A job launchd has with its property list gone is turned off all the same.
+    fs::remove_file(&login.plist).unwrap();
+    for _ in 0..2 {
+        assert_eq!(service(&login.run("off", &[])).not_recorded, None);
+    }
+    // The time alone: no path, no argument, no text from outside the program.
+    let entry = |e: &str| {
+        let mut row = vec![Some(e.to_string()), Some("service".to_string())];
+        row.extend([None, None, None, None, None, None, None]);
+        row.push(Some(String::new()));
+        row
+    };
+    assert_eq!(turned(&login), [entry("turned_on"), entry("turned_off")]);
+
+    // A check that holds the store, and a store's folder that cannot be opened: turning on still
+    // succeeds, and says it was not recorded and why.
+    let held = fs::File::open(&login.store).unwrap();
+    held.try_lock().unwrap();
+    let m = service(&login.run("on", &[]));
+    assert_eq!(m.not_recorded, Some(v1::NotRecorded::Busy as i32));
+    drop(held);
+    fs::set_permissions(&login.store, fs::Permissions::from_mode(0o300)).unwrap();
+    let m = service(&login.run("on", &[]));
+    fs::set_permissions(&login.store, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(m.not_recorded, Some(v1::NotRecorded::StoreRefused as i32));
+    assert_eq!(turned(&login).len(), 2);
+}
+
+#[test]
+fn off_succeeds_and_says_not_recorded_with_no_store_or_one_of_another_format_and_leaves_it() {
+    let login = Login::without_watcher("core-service-unrecorded");
+    fs::create_dir_all(&login.agents).unwrap();
+    foreign_plist(&login.plist, LABEL);
+    let m = service(&login.run("off", &[]));
+    assert_eq!(m.not_recorded, Some(v1::NotRecorded::NoStore as i32));
+    assert!(!login.plist.exists() && !login.store.exists());
+
+    fs::create_dir_all(&login.store).unwrap();
+    let older = rusqlite::Connection::open(login.store.join("store.db")).unwrap();
+    older
+        .execute_batch(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO meta VALUES ('format_version', '7');",
+        )
+        .unwrap();
+    drop(older);
+    let before = fs::read(login.store.join("store.db")).unwrap();
+    foreign_plist(&login.plist, LABEL);
+    let out = login.immune(Path::new(CORE), &["off"], &[]);
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(out.status.success() && !login.plist.exists(), "{text}");
+    assert!(
+        text.contains("The store does not record that this turned Immune off: the store was made by another build of Immune or cannot be written."),
+        "{text}"
+    );
+    assert_eq!(fs::read(login.store.join("store.db")).unwrap(), before);
+    assert_eq!(names(&login.store), ["store.db"]);
+}
+
+#[test]
+fn a_job_gone_without_immune_off_is_said_as_off_and_not_by_immune_off_and_never_calm() {
+    let mut login = Login::new("core-service-gone");
+    service(&login.run("on", &[]));
+    // A program of the account removes the property list; the watcher is gone with the job.
+    fs::remove_file(&login.plist).unwrap();
+    login.watcher = None;
+    let v: Value = serde_json::from_slice(&login.status(&["--json"]).stdout).unwrap();
+    let on = v["turned_on_at"].as_i64().unwrap();
+    assert_eq!(
+        (&v["turned_off_at"], &v["login_job_installed"]),
+        (&Value::Null, &json!(false))
+    );
+    let text = String::from_utf8(login.status(&[]).stdout).unwrap();
+    let gone = format!(
+        "Immune is off, and immune off did not turn it off. It was turned on {}; its job is gone. Turn it on with: immune on",
+        utc(on)
+    );
+    assert!(
+        text.contains(&gone) && !text.contains("✓ Nothing needs a look"),
+        "{text}"
+    );
+    // Of several, the latest is given.
+    let conn = rusqlite::Connection::open(login.store.join("store.db")).unwrap();
+    conn.execute(
+        "INSERT INTO journal (at, run_id, entry, text) VALUES (?1, 'service', 'turned_on', '')",
+        [on + 3600],
+    )
+    .unwrap();
+    let v: Value = serde_json::from_slice(&login.status(&["--json"]).stdout).unwrap();
+    assert_eq!(v["turned_on_at"], json!(on + 3600));
+    assert_eq!(v["turned_on_latest"], json!(true));
+    // Which came last is the journal's order: a turning off written after it, at a time the clock
+    // set back gave, is the latest.
+    conn.execute(
+        "INSERT INTO journal (at, run_id, entry, text) VALUES (?1, 'service', 'turned_off', '')",
+        [on - 3600],
+    )
+    .unwrap();
+    let v: Value = serde_json::from_slice(&login.status(&["--json"]).stdout).unwrap();
+    assert_eq!(v["turned_on_latest"], json!(false));
+    let text = String::from_utf8(login.status(&[]).stdout).unwrap();
+    assert!(
+        text.contains(&format!("turned off {} with immune off", utc(on - 3600))),
+        "{text}"
+    );
 }

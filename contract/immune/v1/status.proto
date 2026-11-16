@@ -109,6 +109,15 @@ message Status {
   // Absent while a watcher holds the store, when the latest one left for another reason, and
   // once a few minutes have passed without a new one. Since 1.19.0.
   optional int64 watcher_restarting_since_at = 29;
+  // When `immune on` last turned Immune on, and when `immune off` last turned it off, as the
+  // store's journal records them; absent when it records none. Since 1.20.0.
+  optional int64 turned_on_at = 30;
+  optional int64 turned_off_at = 31;
+  // Whether the latest of the two in the journal's order, not by their times, is `turned_on`;
+  // absent when there is neither. With no watcher on the store and `login_job_installed` false, it
+  // says how Immune went off: false, by `immune off`; true, by something else, since the job
+  // `immune on` loaded is gone. Since 1.20.0.
+  optional bool turned_on_latest = 32;
 }
 
 // The store's file.

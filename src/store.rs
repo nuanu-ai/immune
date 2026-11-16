@@ -9,9 +9,9 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 /// The store's format. A store of any other format is refused and left as it is: this build
-/// reads only what a build of format 7 wrote, with every table and column this build reads and
+/// reads only what a build of format 8 wrote, with every table and column this build reads and
 /// text from a source kept cut, in the store's form (see `secrets`).
-pub const FORMAT_VERSION: &str = "7";
+pub const FORMAT_VERSION: &str = "8";
 
 const SCHEMA: &str = "
 CREATE TABLE meta (
@@ -107,7 +107,7 @@ CREATE TABLE raw_input (
 
 /// What the journal records. The list is part of the format: a new kind of entry is a new word
 /// here and a new format.
-const JOURNAL_ENTRIES: [&str; 24] = [
+const JOURNAL_ENTRIES: [&str; 26] = [
     "run_started",
     "added",
     "changed",
@@ -145,6 +145,10 @@ const JOURNAL_ENTRIES: [&str; 24] = [
     "retired",
     // A verdict of the response layer about a match or a finding, see `verdict.rs`.
     "verdict",
+    // `immune on` loaded the login job, and `immune off` stopped it or removed its property
+    // list: the time alone, see `service.rs`.
+    "turned_on",
+    "turned_off",
 ];
 
 /// The journal. It cannot be rebuilt from raw input, so it only grows. Its entries are the

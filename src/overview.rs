@@ -279,7 +279,7 @@ pub(crate) fn cause_section(
 
 /// The state of this Mac and of its watcher, in words, with the style it is shown in: a watcher
 /// that failed red, watched in part or not checked yellow.
-fn watching(s: &v1::Status) -> (String, Style) {
+fn watching(s: &v1::Status, screen: &Screen) -> (String, Style) {
     let Some(m) = &s.this_mac else {
         return ("whether it is watched is not said".to_string(), YELLOW);
     };
@@ -298,7 +298,7 @@ fn watching(s: &v1::Status) -> (String, Style) {
                 .collect()
         })
         .unwrap_or_default();
-    let parts = watching_parts(s);
+    let parts = watching_parts(s, screen);
     let text: Vec<&str> = parts.iter().map(|(t, _)| t.as_str()).collect();
     let style = if !failed.is_empty() {
         RED
@@ -312,7 +312,7 @@ fn watching(s: &v1::Status) -> (String, Style) {
 
 /// How this Mac is watched, one clause each, in its own style: whether a watcher runs, and only
 /// when it applies, that some places are not watched or nothing was checked yet.
-pub(crate) fn watching_parts(s: &v1::Status) -> Vec<(String, Style)> {
+pub(crate) fn watching_parts(s: &v1::Status, screen: &Screen) -> Vec<(String, Style)> {
     let Some(m) = &s.this_mac else {
         return vec![("whether it is watched is not said".to_string(), YELLOW)];
     };
@@ -336,6 +336,25 @@ pub(crate) fn watching_parts(s: &v1::Status) -> Vec<(String, Style)> {
         (crate::watch::STARTING_WORDS.to_string(), YELLOW)
     } else if s.watcher_restarting_since_at.is_some() {
         (crate::watch::RESTARTING_WORDS.to_string(), YELLOW)
+    } else if let Some(on) = off_not_by_command(s) {
+        (
+            format!(
+                "Immune is off, and immune off did not turn it off. It was turned on {}; its job is gone. Turn it on with: immune on",
+                screen.time(on, s.answered_at)
+            ),
+            RED,
+        )
+    } else if let Some(off) = s
+        .turned_off_at
+        .filter(|_| s.login_job_installed == Some(false))
+    {
+        (
+            format!(
+                "Immune is off: turned off {} with immune off",
+                screen.time(off, s.answered_at)
+            ),
+            PLAIN,
+        )
     } else {
         match s.login_job_installed {
             // Read from the property list alone: whether launchd has the job is not asked.
@@ -410,9 +429,21 @@ pub(crate) fn clauses(parts: Vec<(String, Style)>) -> Vec<(String, Style)> {
     out
 }
 
+/// When Immune was last turned on, if it went off since by something other than `immune off`: no
+/// watcher holds the store or is restarting, the login job's property list is not there, and the
+/// journal's latest entry of the two, by its order and not by the clock, is `turned_on`.
+pub(crate) fn off_not_by_command(s: &v1::Status) -> Option<i64> {
+    let on = s.turned_on_at?;
+    let gone = s.watching.is_none()
+        && s.watcher_restarting_since_at.is_none()
+        && s.login_job_installed == Some(false);
+    (gone && s.turned_on_latest == Some(true)).then_some(on)
+}
+
 /// Whether the status holds a failure: a reading or a download that failed, a watcher that
 /// failed, an event level that is neither running nor simply not installed, a machine not
-/// reached, or a run that died. A status with one is never calm, whatever it found.
+/// reached, a run that died, or Immune turned off by something other than `immune off`. A status
+/// with one is never calm, whatever it found.
 pub(crate) fn failing(s: &v1::Status) -> bool {
     let failed_cause = s.not_covered.iter().any(is_failure);
     let watcher = s.watching.as_ref().is_some_and(|w| !w.failed.is_empty());
@@ -428,7 +459,7 @@ pub(crate) fn failing(s: &v1::Status) -> bool {
         .last_run
         .as_ref()
         .is_some_and(|l| l.finished_at.is_none() && !s.running);
-    failed_cause || watcher || level || readings || died
+    failed_cause || watcher || level || readings || died || off_not_by_command(s).is_some()
 }
 
 /// The downloads of public threat data that failed at the last check: one clause for those whose
@@ -918,7 +949,7 @@ pub(crate) fn context(
             )],
         ));
     }
-    lines.push(("Watching", clauses(watching_parts(s))));
+    lines.push(("Watching", clauses(watching_parts(s, screen))));
     let event_level = s.event_level.as_ref().and_then(event_level_short);
     if let Some(parts) = event_level.clone() {
         lines.push(("Event level", clauses(parts)));
@@ -1429,7 +1460,7 @@ fn coverage_text(s: &v1::Status, screen: &Screen, out: &mut Vec<String>) {
             YELLOW,
         )),
         Some(m) => {
-            let (state, style) = watching(s);
+            let (state, style) = watching(s, screen);
             let state = match state.split_once("; ") {
                 Some(("yes", rest)) => format!("watched; {rest}"),
                 Some(("in part", rest)) => format!("watched in part; {rest}"),
@@ -3301,6 +3332,73 @@ mod tests {
             c.unreached.clear();
         }
         s
+    }
+
+    /// A job gone while the journal's latest word is `immune on` is said as off and not by
+    /// `immune off`, under no calm headline, in the status and in the run; gone with `immune off`
+    /// the latest word, or in the same second, it is said as turned off with its time.
+    #[test]
+    fn a_job_gone_after_immune_on_is_off_not_by_immune_off_and_never_calm() {
+        let screen = Screen::pipe();
+        let green = "✓ Nothing needs a look";
+        // The latest of the two is the journal's word, `turned_on_latest`, never the clock's.
+        let said = |on: Option<i64>, off: Option<i64>, latest: Option<bool>, job: Option<bool>| {
+            let mut s = calm_status();
+            s.watching = None;
+            (s.turned_on_at, s.turned_off_at) = (on, off);
+            (s.turned_on_latest, s.login_job_installed) = (latest, job);
+            (
+                status(&s, &screen, false),
+                crate::after_run::run(&s, &screen),
+            )
+        };
+        let (on_at, earlier) = (1_800_000_000, 1_799_999_000);
+        let (calm, calm_run) = said(None, None, None, Some(false));
+        assert!(
+            calm.starts_with(green) && calm_run.starts_with(green),
+            "{calm_run}"
+        );
+        let gone = "Immune is off, and immune off did not turn it off. It was turned on 2027-01-15 08:00 UTC; its job is gone. Turn it on with: immune on";
+        // Turned on last, though the clock gives the turning off a later time.
+        for (status, run) in [
+            said(Some(on_at), None, Some(true), Some(false)),
+            said(Some(on_at), Some(on_at + 1), Some(true), Some(false)),
+        ] {
+            assert!(
+                status.contains(gone) && !status.starts_with(green),
+                "{status}"
+            );
+            assert!(!run.starts_with(green), "{run}");
+        }
+        // Turned off last, though the clock gives it an earlier time or the same second.
+        for turned_off in [earlier, on_at] {
+            let (status, _) = said(Some(on_at), Some(turned_off), Some(false), Some(false));
+            assert!(
+                status.starts_with(green) && !status.contains("did not"),
+                "{status}"
+            );
+            let when = view::utc(turned_off);
+            assert!(
+                status.contains(&format!("Immune is off: turned off {when} with immune off")),
+                "{status}"
+            );
+        }
+        // The job there, or not known: today's words, and calm.
+        for installed in [Some(true), None] {
+            let (status, _) = said(Some(on_at), Some(earlier), Some(true), installed);
+            assert!(
+                status.starts_with(green) && !status.contains("Immune is off"),
+                "{status}"
+            );
+        }
+        // A watcher that holds the store, or is restarting on a new core, is not off.
+        let mut s = calm_status();
+        (s.turned_on_at, s.login_job_installed) = (Some(on_at), Some(false));
+        s.turned_on_latest = Some(true);
+        assert!(status(&s, &screen, false).starts_with(green));
+        s.watching = None;
+        s.watcher_restarting_since_at = Some(on_at);
+        assert!(status(&s, &screen, false).starts_with(green));
     }
 
     #[test]

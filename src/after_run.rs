@@ -437,6 +437,22 @@ fn step(
     lines
 }
 
+/// That turning Immune on or off was not recorded in the store, and why, from the closed set the
+/// message gives it in; `None` when it was, or there was nothing to record.
+fn not_recorded(m: &v1::Service) -> Option<String> {
+    use v1::NotRecorded::*;
+    let why = match v1::NotRecorded::try_from(m.not_recorded?) {
+        Ok(NoStore) => "there is no store yet",
+        Ok(StoreRefused) => "the store was made by another build of Immune or cannot be written",
+        Ok(Busy) => "a check held the store",
+        _ => "the core does not say why",
+    };
+    let what = if m.installed { "on" } else { "off" };
+    Some(format!(
+        "The store does not record that this turned Immune {what}: {why}."
+    ))
+}
+
 /// `immune on` and `immune off` for a person: what the command left, as steps,
 /// each only as the message says it.
 pub fn service(m: &v1::Service, screen: &Screen) -> String {
@@ -523,6 +539,8 @@ pub fn service(m: &v1::Service, screen: &Screen) -> String {
                 "launchd loaded the job and no watcher took the store within 5 seconds. launchctl print gui/$(id -u)/ai.nuanu.immune.watch shows the job's state and its last exit.",
             );
         }
+        let unrecorded = not_recorded(m);
+        said.extend(unrecorded.as_deref());
         sentences(screen, &mut out, &said.join(" "));
         out.push(String::new());
         match (m.loaded, m.started, m.watching) {
@@ -555,11 +573,11 @@ pub fn service(m: &v1::Service, screen: &Screen) -> String {
             &[loaded, (true, "No property list", &plist, PLAIN), core],
         );
         out.push(String::new());
-        sentences(
-            screen,
-            &mut out,
-            "The store and the optional event collector were kept.",
-        );
+        let kept = "The store and the optional event collector were kept.";
+        let said: Vec<String> = std::iter::once(kept.to_string())
+            .chain(not_recorded(m))
+            .collect();
+        sentences(screen, &mut out, &said.join(" "));
         out.push(String::new());
         out.push(screen.next("immune on", "turns it on again"));
     } else {
@@ -1464,6 +1482,40 @@ mod tests {
             started: Some(true),
             watching: Some(true),
             ..Default::default()
+        }
+    }
+
+    /// Turning on or off that the store does not record says so, with why, in its own words for
+    /// each reason; recorded, nothing is said of it.
+    #[test]
+    fn on_or_off_not_recorded_says_so_and_why() {
+        use v1::NotRecorded::*;
+        let said = |on: bool, not_recorded: Option<v1::NotRecorded>| {
+            let m = v1::Service {
+                installed: on,
+                not_recorded: not_recorded.map(|n| n as i32),
+                ..installed()
+            };
+            service(&m, &Screen::pipe())
+        };
+        for (code, why) in [
+            (NoStore, "there is no store yet"),
+            (
+                StoreRefused,
+                "the store was made by another build of Immune or cannot be written",
+            ),
+            (Busy, "a check held the store"),
+            (Unspecified, "the core does not say why"),
+        ] {
+            for (installed, what) in [(true, "on"), (false, "off")] {
+                let text = said(installed, Some(code));
+                let words =
+                    format!("The store does not record that this turned Immune {what}: {why}.");
+                assert!(text.contains(&words), "{text}");
+            }
+        }
+        for installed in [true, false] {
+            assert!(!said(installed, None).contains("does not record"));
         }
     }
 

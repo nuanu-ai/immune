@@ -22,6 +22,14 @@
 //! belongs to `gui/<uid>`, and launchd loads that user's `LaunchAgents` at login, so files found
 //! through another home would not be the job's.
 //!
+//! Each records that it turned Immune on or off in the journal of the job's store: `turned_on`
+//! once launchd has the job and the wait for its watcher is over, so that on a first run the store
+//! the watcher made is there, and `turned_off` once the job is stopped and its property list gone,
+//! with the time alone. What turned it off otherwise, a program of the account that ran
+//! `launchctl` or removed the property list, leaves no entry, and `immune status` says so. The
+//! entry is written only into a store of this build's format that is there, under the run lock,
+//! and is never a reason to fail: the answer says why it was not recorded (`not_recorded`).
+//!
 //! These commands act, so their order is the point. `on`:
 //! - every refusal comes first, with nothing changed; one of the two commands runs at a time;
 //! - then the property list and the copy are staged under temporary names beside their places;
@@ -647,6 +655,36 @@ fn answered_at() -> i64 {
         .as_secs() as i64
 }
 
+/// The run of every journal entry these commands write: one id, so that the latest entry of
+/// each kind is one look-up of the journal's index by run (`status`).
+pub const JOURNAL_RUN: &str = "service";
+
+/// Writes `entry`, `turned_on` or `turned_off`, with the time alone into the job's store, under
+/// the run lock as every writer beside the watcher takes it. A store that is not there, or is not
+/// one of this build's format, is left as it is (`store::open` makes nothing and refuses before it
+/// writes). Why it was not written, or `None` when it was.
+fn record(places: &Places, entry: &str) -> Option<v1::NotRecorded> {
+    use v1::NotRecorded::*;
+    if !places.store.exists() {
+        return Some(NoStore);
+    }
+    let _lock = match crate::store::lock_run(&crate::home(&places.store)) {
+        Ok(Some(lock)) => lock,
+        Ok(None) => return Some(Busy),
+        Err(_) => return Some(StoreRefused),
+    };
+    let written = crate::store::open(&places.store).and_then(|conn| {
+        Ok(crate::store::journal_note(
+            &conn,
+            answered_at(),
+            JOURNAL_RUN,
+            entry,
+            "",
+        )?)
+    });
+    written.err().map(|_| StoreRefused)
+}
+
 /// What the command left, for the answer.
 struct Left {
     installed: bool,
@@ -658,6 +696,7 @@ struct Left {
     /// What the status said of the store's watcher after the job was loaded; `None` when it could
     /// not be told, and after `off`.
     seen: Option<crate::watch::Seen>,
+    not_recorded: Option<v1::NotRecorded>,
 }
 
 fn answer(places: &Places, left: Left) -> v1::Service {
@@ -679,6 +718,7 @@ fn answer(places: &Places, left: Left) -> v1::Service {
             .as_ref()
             .filter(|seen| **seen != Seen::Live)
             .map(Seen::words),
+        not_recorded: left.not_recorded.map(|n| n as i32),
     }
 }
 
@@ -829,7 +869,9 @@ fn on(
         .map_err(|said| after("not_loaded", "load the core job", said))?;
     launchctl_run(launchctl, &["print", &places.job])
         .map_err(|said| after("not_loaded", "find the core job loaded", said))?;
+    // Recorded after the wait, so that on a first run the store the job's watcher made is there.
     let seen = watcher_after_load(&places.store);
+    let not_recorded = record(&places, "turned_on");
     Ok(answer(
         &places,
         Left {
@@ -839,6 +881,7 @@ fn on(
             program: runs,
             in_place: Some(in_place),
             seen,
+            not_recorded,
         },
     ))
 }
@@ -876,6 +919,8 @@ fn off(
     // The copy in `bin` is always `on`'s own, whatever the job ran; `bin` goes only when
     // nothing else is in it.
     remove_copy(&places).map_err(|(path, e)| removed(path, e))?;
+    let turned_off = loaded_before || plist_there;
+    let not_recorded = turned_off.then(|| record(&places, "turned_off")).flatten();
     Ok(answer(
         &places,
         Left {
@@ -885,6 +930,7 @@ fn off(
             program: in_place.map_or_else(|| places.program.clone(), Path::to_path_buf),
             in_place: Some(in_place.is_some()),
             seen: None,
+            not_recorded,
         },
     ))
 }
@@ -1011,6 +1057,44 @@ esac
         assert_eq!((m.installed, m.in_place), (false, Some(true)));
         assert_eq!(Path::new(&m.program_path_text), core);
         assert!(core.is_file() && !plist.exists() && !dir.join("loaded").exists());
+    }
+
+    /// On a first run there is no store until the job's watcher makes it: turning on where the
+    /// watcher makes the store during the wait leaves one `turned_on` entry.
+    #[test]
+    fn turning_on_where_the_watcher_makes_the_store_during_the_wait_leaves_one_entry() {
+        use std::io::Write;
+        let dir = crate::common::Scratch::new("service-first-run");
+        let (launchctl, home) = stand_in(&dir);
+        let folder = home.join(crate::STORE_FOLDER);
+        let store = folder.join(crate::STORE_FILE);
+        // The watcher launchd starts: once the job is loaded, it makes the store and is ready.
+        let loaded = dir.join("loaded");
+        let watcher = std::thread::spawn({
+            let (folder, store) = (folder.clone(), store.clone());
+            move || {
+                let until = Instant::now() + Duration::from_secs(30);
+                while !loaded.exists() && Instant::now() < until {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                crate::store::open_or_make(&store).unwrap();
+                let mut lock = crate::store::lock_watch(&folder).unwrap().unwrap();
+                write!(lock, "{}\nheartbeat\nready", crate::now_secs() - 1).unwrap();
+                lock
+            }
+        });
+        let m = done(on(&launchctl, Some(&home), |_| false));
+        let _lock = watcher.join().unwrap();
+        assert_eq!((m.watching, m.not_recorded), (Some(true), None));
+        let conn = crate::store::open_read_only(&store).unwrap();
+        let entries: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM journal WHERE entry = 'turned_on'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(entries, 1);
     }
 
     /// Any program of the account can write the property list, so `off` takes no path from it:

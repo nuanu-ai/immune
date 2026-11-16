@@ -2907,6 +2907,18 @@ pub struct Status {
     /// once a few minutes have passed without a new one. Since 1.19.0.
     #[prost(int64, optional, tag = "29")]
     pub watcher_restarting_since_at: ::core::option::Option<i64>,
+    /// When `immune on` last turned Immune on, and when `immune off` last turned it off, as the
+    /// store's journal records them; absent when it records none. Since 1.20.0.
+    #[prost(int64, optional, tag = "30")]
+    pub turned_on_at: ::core::option::Option<i64>,
+    #[prost(int64, optional, tag = "31")]
+    pub turned_off_at: ::core::option::Option<i64>,
+    /// Whether the latest of the two in the journal's order, not by their times, is `turned_on`;
+    /// absent when there is neither. With no watcher on the store and `login_job_installed` false, it
+    /// says how Immune went off: false, by `immune off`; true, by something else, since the job
+    /// `immune on` loaded is gone. Since 1.20.0.
+    #[prost(bool, optional, tag = "32")]
+    pub turned_on_latest: ::core::option::Option<bool>,
 }
 /// The store's file.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -4780,4 +4792,56 @@ pub struct Service {
     /// of it. Absent when it could not be told, and after `immune off`. Since 1.19.0.
     #[prost(bool, optional, tag = "12")]
     pub started: ::core::option::Option<bool>,
+    /// When the command turned Immune on or off and the store's journal does not say so, why. Absent
+    /// when it was recorded, and when `immune off` found no job and no property list to turn off.
+    /// The command succeeded all the same. Since 1.20.0.
+    #[prost(enumeration = "NotRecorded", optional, tag = "13")]
+    #[serde(
+        serialize_with = "crate::optional_enum_name::<NotRecorded, _>",
+        deserialize_with = "crate::optional_enum_from_name::<NotRecorded, _>"
+    )]
+    pub not_recorded: ::core::option::Option<i32>,
+}
+/// Why turning Immune on or off was not recorded in the store's journal. A value a reader does not
+/// know, and `unspecified`, is read as not recorded for a reason not named.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum NotRecorded {
+    #[serde(rename = "unspecified")]
+    Unspecified = 0,
+    /// There is no store at the default place yet.
+    #[serde(rename = "no_store")]
+    NoStore = 1,
+    /// The file there is not a store of this build's format (another format, a damaged store or not
+    /// a store), or it could not be opened or written. It was left as it is.
+    #[serde(rename = "store_refused")]
+    StoreRefused = 2,
+    /// A check held the store and did not let it go within a few seconds.
+    #[serde(rename = "busy")]
+    Busy = 3,
+}
+impl NotRecorded {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "NOT_RECORDED_UNSPECIFIED",
+            Self::NoStore => "NOT_RECORDED_NO_STORE",
+            Self::StoreRefused => "NOT_RECORDED_STORE_REFUSED",
+            Self::Busy => "NOT_RECORDED_BUSY",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "NOT_RECORDED_UNSPECIFIED" => Some(Self::Unspecified),
+            "NOT_RECORDED_NO_STORE" => Some(Self::NoStore),
+            "NOT_RECORDED_STORE_REFUSED" => Some(Self::StoreRefused),
+            "NOT_RECORDED_BUSY" => Some(Self::Busy),
+            _ => None,
+        }
+    }
 }

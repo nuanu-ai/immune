@@ -194,7 +194,7 @@ fn a_failure_with_json_or_proto_is_the_same_message_byte_for_byte_as_before() {
         (
             &["status"],
             &older,
-            r#"{"operation":"status","ok":false,"errors":[{"code":"store_unreadable","message":"the store cannot be read; nothing was changed","example":"immune status --json --store <file>","detail_text":"the store at <dir>/older.db is from an older format (5); this version uses format 7 and does not convert old stores. Nothing was changed. Move the old store aside or pass another --store; the next run starts a store from the beginning.","ids_text":[]}]}"#,
+            r#"{"operation":"status","ok":false,"errors":[{"code":"store_unreadable","message":"the store cannot be read; nothing was changed","example":"immune status --json --store <file>","detail_text":"the store at <dir>/older.db is from an older format (5); this version uses format 8 and does not convert old stores. Nothing was changed. Move the old store aside or pass another --store; the next run starts a store from the beginning.","ids_text":[]}]}"#,
         ),
         (
             &["findings", "--frob"],

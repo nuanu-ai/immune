@@ -8,7 +8,9 @@
 // copied; any other, such as a build in a checkout, is copied to a place of its own and the job
 // runs the copy. `immune off` stops the job and removes it, with the copy when there is one;
 // it never removes a core run where it is and takes no path from the job's property list.
-// Neither changes the store, so this answer carries no `store_id`.
+// Each records that it turned Immune on or off in the journal of the job's store, the default
+// one, when a store of this build's format is there, with the time alone; neither makes a store,
+// fails for want of one or changes anything else in it, so this answer carries no `store_id`.
 
 syntax = "proto3";
 
@@ -60,4 +62,21 @@ message Service {
   // loaded the job and no watcher took the store; `watcher_note` then says what the status says
   // of it. Absent when it could not be told, and after `immune off`. Since 1.19.0.
   optional bool started = 12;
+  // When the command turned Immune on or off and the store's journal does not say so, why. Absent
+  // when it was recorded, and when `immune off` found no job and no property list to turn off.
+  // The command succeeded all the same. Since 1.20.0.
+  optional NotRecorded not_recorded = 13;
+}
+
+// Why turning Immune on or off was not recorded in the store's journal. A value a reader does not
+// know, and `unspecified`, is read as not recorded for a reason not named.
+enum NotRecorded {
+  NOT_RECORDED_UNSPECIFIED = 0;
+  // There is no store at the default place yet.
+  NOT_RECORDED_NO_STORE = 1;
+  // The file there is not a store of this build's format (another format, a damaged store or not
+  // a store), or it could not be opened or written. It was left as it is.
+  NOT_RECORDED_STORE_REFUSED = 2;
+  // A check held the store and did not let it go within a few seconds.
+  NOT_RECORDED_BUSY = 3;
 }
