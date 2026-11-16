@@ -44,7 +44,7 @@
 
 use crate::contract::{self, v1};
 use crate::known::{self, Question, Refused};
-use crate::{brew, covered, integrity};
+use crate::{brew, covered, integrity, spelling};
 use rusqlite::Connection;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -137,7 +137,27 @@ pub fn program_cmd(args: &ProgramArgs) -> ExitCode {
             };
             let found_by = known::found_by(conn, id.as_deref(), &FOUND_BY)?;
             let place = found.place.as_deref();
+            // The folders of every unit of the program, now and before: asked by its name, its
+            // id or a path, the answer holds the findings about anything in them.
+            let places: Vec<String> = match (&id, &this) {
+                (Some(first), Some(this)) => {
+                    let ids: BTreeSet<&String> = std::iter::once(first).chain(&also).collect();
+                    let programs = programs(conn, this)?;
+                    ids.iter()
+                        .flat_map(|i| {
+                            let p = programs.get(*i);
+                            p.into_iter()
+                                .flat_map(|p| p.at.iter().chain(&p.was_at).cloned())
+                                .chain(known::place_of(i).map(|(_, rel)| rel.to_string()))
+                        })
+                        .collect::<BTreeSet<_>>()
+                        .into_iter()
+                        .collect()
+                }
+                _ => Vec::new(),
+            };
             let q = Question {
+                places: &places,
                 question: v1::Question::Program,
                 asked: &args.asked,
                 id: id.as_deref(),
@@ -200,26 +220,60 @@ fn find(
             ..Found::default()
         }));
     }
-    if let Some(rel) = known::place_asked(asked, Some(this), home) {
-        return at_place(conn, this, &programs, rel);
+    if let Some((rel, spelled)) = known::place_spelled(asked, Some(this), home) {
+        return at_place(conn, this, &programs, rel, spelled);
+    }
+    // An id of a program spelled otherwise is that program, and says so.
+    let key = spelling::key(asked);
+    let ids: Vec<String> = programs
+        .keys()
+        .filter(|id| spelling::key(id) == key)
+        .cloned()
+        .collect();
+    if !ids.is_empty() {
+        return Ok(Ok(Found {
+            ids,
+            unread: Some(known::NAME_SPELLED.to_string()),
+            ..Found::default()
+        }));
     }
     if known::exists(conn, asked)? {
         return Ok(Err(not_a_program(asked)));
     }
     let prefix = format!("component:{this}/");
     let files = format!("file:{this}/");
-    Ok(Ok(Found {
-        ids: programs
-            .keys()
-            .filter(|id| {
-                id.strip_prefix(&prefix)
-                    .and_then(|rest| rest.split_once('/'))
-                    .is_some_and(|(_, name)| name == asked)
-                    // A keg by its formula's name, which Homebrew may not have named.
-                    || id.strip_prefix(&files).and_then(integrity::keg_formula) == Some(asked)
+    // The name a program is known by: the last part of its id, or for a keg its formula's name,
+    // which Homebrew may not have named.
+    let name = |id: &str| -> Option<String> {
+        id.strip_prefix(&prefix)
+            .and_then(|rest| rest.split_once('/'))
+            .map(|(_, name)| name.to_string())
+            .or_else(|| {
+                id.strip_prefix(&files)
+                    .and_then(integrity::keg_formula)
+                    .map(str::to_string)
             })
+    };
+    // As written first; only then by the key, which is said.
+    let named = |fits: &dyn Fn(&str) -> bool| -> Vec<String> {
+        programs
+            .keys()
+            .filter(|id| name(id).is_some_and(|n| fits(&n)))
             .cloned()
-            .collect(),
+            .collect()
+    };
+    let exact = named(&|n| n == asked);
+    if !exact.is_empty() {
+        return Ok(Ok(Found {
+            ids: exact,
+            ..Found::default()
+        }));
+    }
+    let ids = named(&|n| spelling::key(n) == key);
+    let unread = (!ids.is_empty()).then(|| known::NAME_SPELLED.to_string());
+    Ok(Ok(Found {
+        ids,
+        unread,
         ..Found::default()
     }))
 }
@@ -361,6 +415,7 @@ fn at_place(
     this: &str,
     programs: &BTreeMap<String, Program>,
     rel: String,
+    machine_spelled: bool,
 ) -> rusqlite::Result<Result<Found, Refused>> {
     let now = units(conn, this, programs, true)?;
     let was = units(conn, this, programs, false)?;
@@ -373,11 +428,11 @@ fn at_place(
         }
     };
     // As written first; only then as a Mac's volumes compare names, which is said.
-    let mut spelled = false;
+    let mut spelled = machine_spelled;
     let mut held = holding(&|f| known::within(&rel, f));
     if held.is_empty() {
         held = holding(&|f| known::same_place(&rel, f));
-        spelled = !held.is_empty();
+        spelled = spelled || !held.is_empty();
     }
     if !held.is_empty() {
         let mut ids: Vec<String> = held.iter().flat_map(|(_, ids)| ids.clone()).collect();

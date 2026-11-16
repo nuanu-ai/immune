@@ -113,6 +113,7 @@ pub fn machine_cmd(args: &MachineArgs) -> ExitCode {
             };
             let found_by = known::found_by(conn, id.as_deref(), &FOUND_BY)?;
             let q = Question {
+                places: &[],
                 question: v1::Question::Machine,
                 asked: args.asked.as_deref().unwrap_or_default(),
                 id: id.as_deref(),

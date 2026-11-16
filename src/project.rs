@@ -108,14 +108,19 @@ pub fn project_cmd(args: &ProjectArgs) -> ExitCode {
                 let file = id
                     .strip_prefix("checkout:")
                     .map(|rest| format!("file:{rest}"));
-                known::place_asked(file.as_deref().unwrap_or(id), Some(&this), &args.home)
+                known::place_spelled(file.as_deref().unwrap_or(id), Some(&this), &args.home)
             };
+            // Whether the id named this Mac only when compared by the key: said in the answer.
+            let mut id_spelled = false;
             let what = match &args.what {
                 What::Path(rel) => What::Path(rel.clone()),
                 What::Id(id) => match (known::type_of(conn, id)?.as_deref(), path(id)) {
                     // A project the store knows is answered for as it is named.
                     (Some(checkouts::TYPE), _) => What::Id(id.clone()),
-                    (Some("file") | None, Some(rel)) => What::Path(rel),
+                    (Some("file") | None, Some((rel, spelled))) => {
+                        id_spelled = spelled;
+                        What::Path(rel)
+                    }
                     // A project of another machine, which the store never heard of.
                     (None, None) if id.starts_with("checkout:") => What::Id(id.clone()),
                     (Some(_), _) => return Ok(Err(not_a_project(id))),
@@ -132,13 +137,15 @@ pub fn project_cmd(args: &ProjectArgs) -> ExitCode {
                         (
                             Some(id),
                             Some(rel.clone()),
-                            known::not_judged(false, inside.then_some(INSIDE)),
+                            known::not_judged(id_spelled, inside.then_some(INSIDE)),
                         )
                     }
                     None => match through_link(conn, &this, rel, &args.home)? {
-                        Some(Found::At(id)) => {
-                            (Some(id), Some(rel.clone()), Some(INSIDE.to_string()))
-                        }
+                        Some(Found::At(id)) => (
+                            Some(id),
+                            Some(rel.clone()),
+                            known::not_judged(id_spelled, Some(INSIDE)),
+                        ),
                         Some(Found::Guarded(folder)) => {
                             (None, Some(folder), Some(GUARDED.to_string()))
                         }
@@ -192,6 +199,7 @@ fn question<'a>(
     inside: &'a [(&'a str, String)],
 ) -> Question<'a> {
     Question {
+        places: &[],
         question: v1::Question::Project,
         asked,
         id,

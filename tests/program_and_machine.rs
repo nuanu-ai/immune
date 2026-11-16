@@ -1793,3 +1793,158 @@ fn a_program_is_gone_only_when_every_reading_that_owns_one_of_its_units_was_full
         k.coverage
     );
 }
+
+/// Writes an open finding about `about`, a file of this Mac the store may never have held.
+fn finding_about(e: &Estate, id: &str, about: &str) {
+    let conn = rusqlite::Connection::open(e.store()).unwrap();
+    conn.execute(
+        "INSERT OR IGNORE INTO entity (id, type) VALUES (?1, 'file')",
+        [about],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO finding (id, rule, about, occurrence, state, change, first_seen_at,
+                              first_seen_run, last_seen_at, last_seen_run)
+         VALUES (?1, 'watched.autostart', ?2, 1, 'open', 'new', 1, 'r1', 1, 'r1')",
+        [id, about],
+    )
+    .unwrap();
+}
+
+/// The reason of the reading made by rule for what was asked, if any.
+fn rule_reason(k: &v1::Known) -> String {
+    unread(k)
+        .and_then(|c| c.reason_text.clone())
+        .unwrap_or_default()
+}
+
+/// The promise of the one form at its edges: a slash after `~/` never leaves the home folder,
+/// and the root and the home folder are folders that hold units, so asking about them says how
+/// many lie inside and holds the findings about them.
+#[test]
+fn the_root_and_the_home_folder_hold_their_units_and_a_slash_after_home_never_leaves_it() {
+    let e = Estate::new("edges");
+    e.app("Tiny.app", "org.example.tiny", "2.0");
+    e.checkout("dev/b");
+    e.checkout("dev/c");
+    e.run();
+    finding_about(
+        &e,
+        "fapp",
+        "file:machine:mac//Applications/Tiny.app/Contents/MacOS/Tiny",
+    );
+    finding_about(&e, "fproject", "file:machine:mac/dev/b/.vscode/tasks.json");
+    let b = e.known("project", Some("~/dev/b"));
+    for what in ["~//dev/b", "~///dev//b/"] {
+        let k = e.known("project", Some(what));
+        assert_eq!(k.thing, b.thing, "{what}");
+    }
+    let home = e.known("project", Some("~/"));
+    assert_eq!(home.presence(), v1::Presence::Unknown);
+    assert!(
+        rule_reason(&home).contains("it holds 2 projects"),
+        "{:?}",
+        home.coverage
+    );
+    assert_eq!(finding_ids(&home), ["fproject"]);
+    let root = e.program("/");
+    assert_eq!(root.presence(), v1::Presence::Unknown);
+    assert!(
+        rule_reason(&root).contains("it holds 1 program"),
+        "{:?}",
+        root.coverage
+    );
+    assert_eq!(finding_ids(&root), ["fapp", "fproject"]);
+}
+
+/// The promise that a name and the machine an id names are compared by the key too: a program
+/// asked by its name in another case, a machine asked by its id in another case, and a file or
+/// a project of this Mac named under its machine in another case answer for what the store
+/// holds, with its findings, and a match by the key alone says so.
+#[test]
+fn a_name_and_the_machine_of_an_id_spelled_otherwise_answer_for_what_the_store_holds() {
+    let e = Estate::new("names-key");
+    e.formula("tool", "1.0");
+    e.app("Editor.app", "org.example.editor", "3.0");
+    e.checkout("dev/b");
+    e.put("home/.ssh/config", "Host example-host\n");
+    e.run();
+    finding_about(&e, "fkeg", KEG);
+    finding_about(
+        &e,
+        "feditor",
+        "file:machine:mac//Applications/Editor.app/Contents/Info.plist",
+    );
+    for (asked, written) in [
+        ("TOOL", "tool"),
+        ("ORG.EXAMPLE.EDITOR", "org.example.editor"),
+        (
+            "COMPONENT:machine:mac/macos-app/org.example.editor",
+            "org.example.editor",
+        ),
+        (
+            "file:machine:MAC//Applications/Editor.app",
+            "org.example.editor",
+        ),
+    ] {
+        let k = e.program(asked);
+        let first = e.program(written);
+        assert_eq!(k.thing, first.thing, "{asked}");
+        assert!(!finding_ids(&k).is_empty(), "{asked}");
+        assert_eq!(finding_ids(&k), finding_ids(&first), "{asked}");
+        assert!(
+            rule_reason(&k).contains("spelled otherwise"),
+            "{asked}: {:?}",
+            k.coverage
+        );
+        assert!(!all_full(&k), "{asked}");
+    }
+    let project = e.known("project", Some("checkout:machine:MAC/dev/b"));
+    assert_eq!(thing(&project), "checkout:machine:mac/dev/b");
+    assert!(rule_reason(&project).contains("spelled otherwise"));
+    let host = e.machine(Some("machine:EXAMPLE-HOST"));
+    assert_eq!(thing(&host), "machine:example-host");
+}
+
+/// The promise that an answer by name, by id and by path holds the same findings: those about
+/// anything in a folder the program is or was installed at, whatever form it was asked in.
+#[test]
+fn a_program_asked_by_name_by_id_or_by_path_holds_the_same_findings() {
+    let e = Estate::new("findings-any-form");
+    e.formula("tool", "1.0");
+    e.app("Editor.app", "org.example.editor", "3.0");
+    e.run();
+    finding_about(
+        &e,
+        "fbundle",
+        "file:machine:mac//Applications/Editor.app/Contents/MacOS/Editor",
+    );
+    finding_about(&e, "fkeg", KEG);
+    finding_about(
+        &e,
+        "fbin",
+        "file:machine:mac//opt/homebrew/Cellar/tool/1.0/bin/tool",
+    );
+    for (forms, expected) in [
+        (
+            [
+                "org.example.editor",
+                "component:machine:mac/macos-app/org.example.editor",
+                "/Applications/Editor.app",
+            ],
+            vec!["fbundle"],
+        ),
+        (
+            [
+                "tool",
+                "component:machine:mac/brew/tool",
+                "/opt/homebrew/Cellar/tool/1.0",
+            ],
+            vec!["fbin", "fkeg"],
+        ),
+    ] {
+        for what in forms {
+            assert_eq!(finding_ids(&e.program(what)), expected, "{what}");
+        }
+    }
+}

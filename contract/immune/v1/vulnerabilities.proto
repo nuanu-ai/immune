@@ -62,12 +62,13 @@ message UnreadPlace {
   // The project, as a person recognises it, and the ecosystem. Whole.
   string project_text = 1;
   string ecosystem = 2;
-  // `partial`, some of them read; `not_read`; `no_reader`, lockfiles of a kind this version has
-  // no reader for, such as `go.sum`, in an ecosystem no data is matched for, so the project was
-  // compared with nothing there; or `none_found`, no lockfile this version knows of was found in
-  // the project, with the ecosystem `any`. A project with any such place is never answered
-  // "does not affect" for any record, since the store does not keep every ecosystem a record
-  // names.
+  // `partial`, some of them read; `not_read`, with the ecosystem `any` for a project the
+  // reading of lockfiles did not open; `no_reader`, lockfiles of a kind this version has no
+  // reader for, such as `go.sum`, in an ecosystem no data is matched for, so the project was
+  // compared with nothing there; or `none_found`, the project was opened and no lockfile this
+  // version knows of was found in it, with the ecosystem `any`. A project with any such place
+  // is never answered "does not affect" for any record, since the store does not keep every
+  // ecosystem a record names. One with `none_found` is counted, never answered for a record.
   string lockfiles = 3;
   // Why, as the reading of lockfiles gave it, or for `no_reader` the kinds by name. Whole.
   optional string why_text = 4;
@@ -130,9 +131,18 @@ message VulnerabilityTotals {
   // answer.
   uint64 informational_records = 15;
   // Places, a project's lockfiles of one ecosystem, that were not all read, and the projects
-  // they are in. Since 1.16.0.
+  // they are in. A project in which no lockfile was found is not among them: it is counted in
+  // `projects_without_lockfile`. Since 1.16.0.
   uint64 places_not_read = 16;
   uint64 projects_not_read = 17;
+  // Projects in which the latest check found no lockfile this version reads: what they declare
+  // is not known, and no answer is given for them, so none is "does not affect". Each is in
+  // `unread` as `none_found`. Since 1.16.0.
+  uint64 projects_without_lockfile = 18;
+  // Projects with a place read in full and compared with data current at the check and now,
+  // and no place not wholly read. With none, nothing was compared, and the text never says that
+  // no known vulnerability affects the projects. Since 1.16.0.
+  uint64 projects_compared = 19;
 }
 
 // Whether a feed's data is current now.

@@ -56,6 +56,9 @@ pub struct Question<'a> {
     /// The path asked about, as ids name paths, when the question was a path on this Mac: a
     /// folder macOS asks permission for that holds it speaks for the answer.
     pub place: Option<&'a str>,
+    /// The folders of the thing's units, those it has and those it had, as ids name paths on
+    /// `machine`: a finding about anything in one is the thing's, whatever form it was asked in.
+    pub places: &'a [String],
     /// When the question was a path that is not judged on its own, such as one inside a thing or
     /// one under no thing the store holds: why, in the core's words. The answer carries a reading
     /// made by rule with it, of completeness `none`.
@@ -87,6 +90,9 @@ pub struct Refused {
 /// answered for that thing: on a volume that ignores both, as a Mac's do by default, it is the
 /// same place, and answering `unknown` would leave out what is known of it.
 const SPELLED: &str = "the path is spelled otherwise than the store holds it, in case or Unicode form: on a volume that ignores both, as a Mac's do by default, it is the same place, and the answer is about what the store holds there; on one that does not, it may be another place";
+
+/// Why a name or an id is answered for a thing the store holds under another spelling of it.
+pub const NAME_SPELLED: &str = "what was asked is spelled otherwise than the store holds it, in case or Unicode form: the answer is about what the store holds by that spelling";
 
 /// Why a path asked about is not judged on its own, if it is not: found only when spelled
 /// otherwise (`same_place`), and `inside`, the words for a path strictly inside a thing.
@@ -132,20 +138,30 @@ pub fn path_of(asked: &str, home: &Path) -> Option<String> {
 
 /// What a caller gives as a place on this Mac, `this`, in the one form ids name paths in: a path,
 /// absolute or beginning with `~/`, or the id of a file of this Mac, which names its path after
-/// the machine (`immune project` gives a checkout's id as a file's). `..`, `.`, doubled and trailing slashes are resolved by the words
-/// alone, in an id as in a path: nothing on the disk is looked at and no link is followed. Every
-/// command that takes a path or such an id puts it through here, so two spellings of one place
-/// are one question. Case and Unicode form are kept: they are compared only by `same_place`.
-/// `None` for anything else.
+/// the machine (`immune project` gives a checkout's id as a file's). `..`, `.`, doubled and
+/// trailing slashes are resolved by the words alone, in an id as in a path: nothing on the disk
+/// is looked at and no link is followed. Every command that takes a path or such an id puts it
+/// through here, so two spellings of one place are one question. Case and Unicode form are kept:
+/// they are compared only by `same_place`. `None` for anything else.
 pub fn place_asked(asked: &str, this: Option<&str>, home: &Path) -> Option<String> {
+    place_spelled(asked, this, home).map(|(rel, _)| rel)
+}
+
+/// The same, with whether the machine an id names is this Mac only when the two are compared by
+/// the key (`spelling::key`): a match by the key alone is said, as for a path.
+pub fn place_spelled(asked: &str, this: Option<&str>, home: &Path) -> Option<(String, bool)> {
+    let mut spelled = false;
     let in_id = this.and_then(|machine| {
-        asked
-            .strip_prefix("file:")?
-            .strip_prefix(machine)?
-            .strip_prefix('/')
+        let (named, rest) = asked.strip_prefix("file:")?.split_once('/')?;
+        if named != machine {
+            (crate::spelling::key(named) == crate::spelling::key(machine)).then_some(())?;
+            spelled = true;
+        }
+        Some(rest)
     });
     let path = match (asked.strip_prefix("~/"), in_id) {
-        (Some(rest), _) => home.join(rest),
+        // Only what follows the home folder: a slash after `~/` never leaves it.
+        (Some(rest), _) => home.join(rest.trim_start_matches('/')),
         (None, _) if asked.starts_with('/') => PathBuf::from(asked),
         // An id names a path inside the home folder relative to it.
         (None, Some(rest)) if rest.starts_with('/') => PathBuf::from(rest),
@@ -160,7 +176,7 @@ pub fn place_asked(asked: &str, this: Option<&str>, home: &Path) -> Option<Strin
             plain.push(part);
         }
     }
-    Some(checkouts::rel(home, &plain))
+    Some((checkouts::rel(home, &plain), spelled))
 }
 
 /// Answers a command of the contract in the form asked (`answer::print`), with `text` the text
@@ -342,6 +358,8 @@ pub fn known_of(
             || q.place
                 .zip(q.machine)
                 .is_some_and(|(rel, machine)| at_place(at, machine, rel))
+            || q.machine
+                .is_some_and(|machine| q.places.iter().any(|rel| at_place(at, machine, rel)))
     };
     known.findings = finding_refs(conn, now, |about| held_by(about, &links, &theirs))?;
     Ok(known)
@@ -502,10 +520,17 @@ pub fn type_of(conn: &Connection, id: &str) -> rusqlite::Result<Option<String>> 
         .optional()
 }
 
-/// Whether the path `rel` is the folder `folder` or lies in it, as ids name paths.
+/// Whether the path `rel` is the folder `folder` or lies in it, as ids name paths. The root, `/`,
+/// holds every path, the home folder's among them; the home folder, `.`, holds every path ids
+/// name relative to it.
 pub fn within(rel: &str, folder: &str) -> bool {
-    rel.strip_prefix(folder)
-        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    match folder {
+        "/" => true,
+        "." => !rel.starts_with('/'),
+        _ => rel
+            .strip_prefix(folder)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/')),
+    }
 }
 
 /// Text from the Mac as the contract gives it: hidden characters and the backslash escaped, so

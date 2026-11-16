@@ -21,6 +21,9 @@ use std::path::{Path, PathBuf};
 pub const READER: &str = "lockfiles";
 pub const KIND: &str = "lockfile dependencies";
 pub const BASIS: &str = "declared";
+/// The note of a full reading of a checkout in which no lockfile this version knows was found:
+/// it was opened, and there was nothing to read. A checkout with no reading was never opened.
+pub const NONE_FOUND_NOTE: &str = "no lockfile this version knows of was found in it";
 /// What this build has no reader for among lockfiles, in its own words: a kind, by name.
 pub const LOCKFILE_KIND: &str = "lockfile kind";
 

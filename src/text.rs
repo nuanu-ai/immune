@@ -1278,6 +1278,10 @@ fn counted_sentences(s: &v1::Status, f: &v1::FinishedCheck) -> String {
                     count(v.unknown_packages, "package", "packages")
                 ));
             }
+            matched.push_str(&not_wholly_read(
+                v.projects_not_read,
+                v.projects_without_lockfile,
+            ));
         }
         line.push_str(&format!(
             " Vulnerability data from OSV: {}{matched}.",
@@ -1958,6 +1962,34 @@ pub fn replay(m: &v1::Replay) -> String {
     out
 }
 
+/// How many projects have no lockfile this version reads, as one counted item.
+fn without_lockfile(n: u64) -> String {
+    format!(
+        "{} no lockfile this version reads",
+        if n == 1 {
+            "1 project has".to_string()
+        } else {
+            format!("{} projects have", grouped(n))
+        }
+    )
+}
+
+/// What the line about known vulnerabilities adds when not every project was wholly read: how
+/// many were not, beside the count of known vulnerabilities, so that it never reads as all.
+pub fn not_wholly_read(not_read: u64, no_lockfile: u64) -> String {
+    let mut out = String::new();
+    if not_read > 0 {
+        out.push_str(&format!(
+            ", and the lockfiles of {} were not all read",
+            count(not_read, "project", "projects")
+        ));
+    }
+    if no_lockfile > 0 {
+        out.push_str(&format!(", and {}", without_lockfile(no_lockfile)));
+    }
+    out
+}
+
 /// `immune vulnerabilities`: what cannot be told first, then the "affects" answers.
 pub fn vulnerabilities(m: &v1::Vulnerabilities) -> String {
     let mut out = String::new();
@@ -1972,10 +2004,11 @@ pub fn vulnerabilities(m: &v1::Vulnerabilities) -> String {
             say(&mut out, &format!("Nothing is known yet: {why}."));
         }
         // What cannot be told opens the first sentence: the projects whose lockfiles were not
-        // all read, then the packages whose answer cannot be told. Only then what is known, so
-        // nothing reads as calm where the data it needs was not read; "no known vulnerability"
-        // opens it only when nothing at all could not be told. Records, packages and the rows
-        // of the table are each counted as what they are.
+        // all read, those with no lockfile this version reads, then the packages whose answer
+        // cannot be told. Only then what is known, so nothing reads as calm where the data it
+        // needs was not read; "no known vulnerability" opens it only when at least one project
+        // was compared and nothing at all could not be told. Records, packages and the rows of
+        // the table are each counted as what they are.
         Some(t) => {
             let mut not_told: Vec<String> = Vec::new();
             if t.projects_not_read > 0 {
@@ -1983,6 +2016,9 @@ pub fn vulnerabilities(m: &v1::Vulnerabilities) -> String {
                     "The lockfiles of {} were not all read",
                     count(t.projects_not_read, "project", "projects")
                 ));
+            }
+            if t.projects_without_lockfile > 0 {
+                not_told.push(without_lockfile(t.projects_without_lockfile));
             }
             if t.unknown_packages > 0 {
                 not_told.push(format!(
@@ -2006,6 +2042,8 @@ pub fn vulnerabilities(m: &v1::Vulnerabilities) -> String {
                     count(t.affected_packages, "package", "packages"),
                     count(t.affected_projects, "project", "projects")
                 )
+            } else if t.projects_compared == 0 {
+                "no project's lockfiles were compared in full with current vulnerability data, so none is known to be affected or not".to_string()
             } else if not_told.is_empty() {
                 "No known vulnerability affects the packages your projects use".to_string()
             } else {
@@ -2018,13 +2056,16 @@ pub fn vulnerabilities(m: &v1::Vulnerabilities) -> String {
                 .next()
                 .map(|c| c.to_uppercase().chain(letters).collect())
                 .unwrap_or_default();
-            say(
-                &mut out,
-                &format!(
-                    "{first}; {} known not to affect them.",
+            // "Known not to affect" is said only of what was compared.
+            let known = if t.projects_compared > 0 || t.not_affected_known > 0 {
+                format!(
+                    "; {} known not to affect them",
                     grouped(t.not_affected_known)
-                ),
-            );
+                )
+            } else {
+                String::new()
+            };
+            say(&mut out, &format!("{first}{known}."));
             for f in &t.feeds {
                 if let Some(why) = &f.not_current_why {
                     say(
@@ -2079,12 +2120,16 @@ pub fn vulnerabilities(m: &v1::Vulnerabilities) -> String {
         say(
             &mut out,
             &format!(
-                "Not every lockfile was read in {}, so what they declare is not all known; a row for each project and ecosystem, {} in all:",
+                "Not every lockfile was read in {}{}, so what they declare is not all known; a row for each project and ecosystem, {} in all:",
                 count(
                     m.totals.as_ref().map_or(0, |t| t.projects_not_read),
                     "project",
                     "projects"
                 ),
+                match m.totals.as_ref().map_or(0, |t| t.projects_without_lockfile) {
+                    0 => String::new(),
+                    n => format!(", and {}", without_lockfile(n)),
+                },
                 grouped(u.total)
             ),
         );
@@ -2642,16 +2687,34 @@ mod tests {
                 .unwrap_or_default()
                 .to_string()
         };
-        // Nothing that cannot be told: the calm sentence.
+        // Nothing that cannot be told, and a project compared: the calm sentence.
         assert_eq!(
-            first(v1::VulnerabilityTotals::default()),
+            first(v1::VulnerabilityTotals {
+                projects_compared: 1,
+                ..Default::default()
+            }),
             "No known vulnerability affects the packages your projects use; 0 known not to affect them."
         );
-        // Packages that cannot be told, lockfiles not all read: each first, and never the calm
-        // sentence after them.
+        // Nothing compared: never calm, and nothing said to be known not to affect.
+        let nothing = "No project's lockfiles were compared in full with current vulnerability data, so none is known to be affected or not.";
+        assert_eq!(first(v1::VulnerabilityTotals::default()), nothing);
+        assert_eq!(
+            first(v1::VulnerabilityTotals {
+                projects_not_read: 1,
+                places_not_read: 1,
+                ..Default::default()
+            }),
+            format!(
+                "The lockfiles of 1 project were not all read; n{}",
+                &nothing[1..]
+            )
+        );
+        // Packages that cannot be told, lockfiles not all read, projects with no lockfile: each
+        // first, one counted item each, and never the calm sentence after them.
         assert_eq!(
             first(v1::VulnerabilityTotals {
                 unknown_packages: 12,
+                projects_compared: 3,
                 ..Default::default()
             }),
             "For 12 packages whether a known vulnerability affects them cannot be told; none is known to affect the others; 0 known not to affect them."
@@ -2660,9 +2723,12 @@ mod tests {
             first(v1::VulnerabilityTotals {
                 projects_not_read: 1,
                 places_not_read: 1,
+                projects_without_lockfile: 40,
+                projects_compared: 2,
+                not_affected_known: 7,
                 ..Default::default()
             }),
-            "The lockfiles of 1 project were not all read; none is known to affect the others; 0 known not to affect them."
+            "The lockfiles of 1 project were not all read; 40 projects have no lockfile this version reads; none is known to affect the others; 7 known not to affect them."
         );
         // What affects them comes after what cannot be told.
         assert!(

@@ -2354,12 +2354,13 @@ pub struct UnreadPlace {
     pub project_text: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub ecosystem: ::prost::alloc::string::String,
-    /// `partial`, some of them read; `not_read`; `no_reader`, lockfiles of a kind this version has
-    /// no reader for, such as `go.sum`, in an ecosystem no data is matched for, so the project was
-    /// compared with nothing there; or `none_found`, no lockfile this version knows of was found in
-    /// the project, with the ecosystem `any`. A project with any such place is never answered
-    /// "does not affect" for any record, since the store does not keep every ecosystem a record
-    /// names.
+    /// `partial`, some of them read; `not_read`, with the ecosystem `any` for a project the
+    /// reading of lockfiles did not open; `no_reader`, lockfiles of a kind this version has no
+    /// reader for, such as `go.sum`, in an ecosystem no data is matched for, so the project was
+    /// compared with nothing there; or `none_found`, the project was opened and no lockfile this
+    /// version knows of was found in it, with the ecosystem `any`. A project with any such place
+    /// is never answered "does not affect" for any record, since the store does not keep every
+    /// ecosystem a record names. One with `none_found` is counted, never answered for a record.
     #[prost(string, tag = "3")]
     pub lockfiles: ::prost::alloc::string::String,
     /// Why, as the reading of lockfiles gave it, or for `no_reader` the kinds by name. Whole.
@@ -2455,11 +2456,22 @@ pub struct VulnerabilityTotals {
     #[prost(uint64, tag = "15")]
     pub informational_records: u64,
     /// Places, a project's lockfiles of one ecosystem, that were not all read, and the projects
-    /// they are in. Since 1.16.0.
+    /// they are in. A project in which no lockfile was found is not among them: it is counted in
+    /// `projects_without_lockfile`. Since 1.16.0.
     #[prost(uint64, tag = "16")]
     pub places_not_read: u64,
     #[prost(uint64, tag = "17")]
     pub projects_not_read: u64,
+    /// Projects in which the latest check found no lockfile this version reads: what they declare
+    /// is not known, and no answer is given for them, so none is "does not affect". Each is in
+    /// `unread` as `none_found`. Since 1.16.0.
+    #[prost(uint64, tag = "18")]
+    pub projects_without_lockfile: u64,
+    /// Projects with a place read in full and compared with data current at the check and now,
+    /// and no place not wholly read. With none, nothing was compared, and the text never says that
+    /// no known vulnerability affects the projects. Since 1.16.0.
+    #[prost(uint64, tag = "19")]
+    pub projects_compared: u64,
 }
 /// Whether a feed's data is current now.
 #[derive(serde::Serialize, serde::Deserialize)]
