@@ -53,6 +53,8 @@ pub struct MatchesArgs {
     /// The place given with `--after`, as given, and as read.
     pub after: Option<(String, Place)>,
     pub limit: usize,
+    /// `--limit` was given: the text for a person lists every match one row each.
+    pub single: bool,
     /// The folder `/Library` is resolved under: `/` unless a test gives another.
     pub system_root: PathBuf,
 }
@@ -62,7 +64,7 @@ pub fn parse(
     it: impl Iterator<Item = String>,
     options: &mut answer::Options,
 ) -> Result<MatchesArgs, String> {
-    let (mut after, mut limit, mut root) = (None, LIMIT, None);
+    let (mut after, mut limit, mut root, mut single) = (None, LIMIT, None, false);
     options.read(it, |arg, it| {
         match arg.as_str() {
             "--system-root" => root = Some(crate::value(it, &arg)?.into()),
@@ -72,6 +74,7 @@ pub fn parse(
                 after = Some((p, place));
             }
             "--limit" => {
+                single = true;
                 limit = crate::value(it, &arg)?
                     .parse::<usize>()
                     .ok()
@@ -87,6 +90,7 @@ pub fn parse(
         form: options.form(),
         after,
         limit,
+        single,
         system_root: root.unwrap_or_else(|| PathBuf::from("/")),
     })
 }
@@ -101,7 +105,11 @@ enum Failure {
 /// with the exit codes the report commands use.
 pub fn matches_cmd(args: &MatchesArgs) -> ExitCode {
     let (code, message, why, exit) = match read(args, crate::now_secs()) {
-        Ok(m) => return answer::print("matches", args.form, &m, crate::text::matches),
+        Ok(m) => {
+            return answer::print("matches", args.form, &m, |m| {
+                crate::lists::matches(m, args.single, &crate::screen::Screen::of_stdout())
+            });
+        }
         Err(Failure::Store(why)) => (
             "store_unreadable",
             "the store cannot be read, so what became of a match cannot be told; nothing was evaluated",
@@ -138,10 +146,7 @@ fn read(args: &MatchesArgs, now: i64) -> Result<v1::Matches, Failure> {
 /// `read`, naming in `unevaluated` these rules. Matching itself is the shipped rules'.
 fn read_with(rules: &Rules, args: &MatchesArgs, now: i64) -> Result<v1::Matches, Failure> {
     if !args.store.is_file() {
-        return Err(Failure::Store(format!(
-            "there is no store at {}; `immune run` makes it",
-            args.store.display()
-        )));
+        return Err(Failure::Store(crate::store::absent(&args.store)));
     }
     let unreadable = |e: &dyn std::fmt::Display| Failure::Store(e.to_string());
     let conn = store::open_read_only(&args.store).map_err(|e| unreadable(&e))?;
@@ -697,6 +702,7 @@ mod tests {
                     form: answer::Form::Json,
                     after: after.take(),
                     limit: 1,
+                    single: true,
                     system_root: root.clone(),
                 };
                 let answer = read_with(&rules, &args, 1_791_090_000).ok().unwrap();
@@ -755,6 +761,7 @@ mod tests {
             form: answer::Form::Json,
             after: after.map(|p| (p.to_string(), Place::parse(p).unwrap())),
             limit: LIMIT,
+            single: false,
             system_root: root.to_path_buf(),
         };
         read_with(rules, &args, 1_791_090_000).ok().unwrap()
@@ -1040,6 +1047,7 @@ mod tests {
             form: answer::Form::Json,
             after: None,
             limit: LIMIT,
+            single: false,
             system_root: root.clone(),
         };
         let rules = crate::sigma::testing::process_kept();
@@ -1108,6 +1116,7 @@ mod tests {
                 form: answer::Form::Json,
                 after: Some((place.clone(), Place::parse(&place).unwrap())),
                 limit: LIMIT,
+                single: false,
                 system_root: root.clone(),
             },
             1_791_000_000,

@@ -9,7 +9,8 @@
 //! program's own words. Words without the suffix are the core's own vocabulary.
 
 use crate::contract::v1;
-use crate::{findings, sigma, verdict, view};
+use crate::screen::{Screen, Step};
+use crate::{store, view};
 use std::fmt::Write;
 
 /// Text from a source as data: in double quotes, a quote inside escaped, and anything hidden
@@ -26,11 +27,6 @@ pub fn word<E: TryFrom<i32> + serde::Serialize>(value: i32) -> String {
         .and_then(|e| serde_json::to_value(e).ok())
         .and_then(|v| v.as_str().map(str::to_string))
         .unwrap_or_else(|| "unspecified".to_string())
-}
-
-/// A finding's severity as a word; said as not known when it is absent, never as a level.
-fn severity(s: Option<i32>) -> String {
-    s.map_or_else(|| "not known".to_string(), word::<v1::Level>)
 }
 
 /// `n one` or `n many`, with thousands grouped.
@@ -77,20 +73,6 @@ fn say(out: &mut String, line: &str) {
 /// A time of seconds since the epoch, or the word given when there is none.
 fn when(at: Option<i64>, none: &str) -> String {
     view::utc_or(at, none)
-}
-
-/// An event's time to the fraction of a second the log gives: microseconds when it gives no
-/// finer, as `eslogger` writes them.
-fn instant(at: Option<i64>, nanos: Option<u32>) -> String {
-    let Some(at) = at else {
-        return "unknown".to_string();
-    };
-    let whole = view::iso(at);
-    let base = whole.trim_end_matches('Z');
-    match nanos.unwrap_or(0) {
-        n if n % 1000 == 0 => format!("{base}.{:06}Z", n / 1000),
-        n => format!("{base}.{n:09}Z"),
-    }
 }
 
 /// A finding by reference, in one line: its id, state, severity and rule, and what it is about.
@@ -247,838 +229,9 @@ pub fn known(k: &v1::Known) -> String {
     out
 }
 
-/// A quoted value, or the core's word when the message does not give one.
-fn quoted_or_unknown(s: Option<&str>) -> String {
-    s.map(quoted).unwrap_or_else(|| "unknown".to_string())
-}
-
-fn executable(p: Option<&v1::Process>) -> String {
-    quoted_or_unknown(p.map(|p| p.executable_text.as_str()))
-}
-
-/// The user and group ids of a process, those the message gives, in a few words.
-fn ids(p: Option<&v1::Process>) -> Option<String> {
-    let p = p?;
-    let said: Vec<String> = [
-        ("user", p.user_id),
-        ("real user", p.real_user_id),
-        ("group", p.group_id),
-        ("real group", p.real_group_id),
-    ]
-    .into_iter()
-    .filter_map(|(word, id)| id.map(|id| format!("{word} {id}")))
-    .collect();
-    (!said.is_empty()).then(|| said.join(", "))
-}
-
-/// What a program start says of who its processes are beyond the program, each part only when
-/// the message gives it: the users and groups of the process started, its process group, the
-/// process responsible for it, and the users and groups of the process before the `exec`.
-fn who(s: &v1::ProgramStart) -> String {
-    let mut out = String::new();
-    if let Some(ids) = ids(s.process.as_ref()) {
-        let _ = write!(out, " · as {ids}");
-    }
-    if let Some(group) = s.process_group_id {
-        let _ = write!(out, " · process group {group}");
-    }
-    if let Some(r) = &s.responsible {
-        let said: Vec<String> = [("pid", r.pid), ("version", r.pid_version)]
-            .into_iter()
-            .filter_map(|(word, n)| n.map(|n| format!(" {word} {n}")))
-            .collect();
-        let _ = write!(out, " · responsible{}", said.concat());
-    }
-    if let Some(ids) = ids(s.instigator.as_ref()) {
-        let _ = write!(out, " · before the exec as {ids}");
-    }
-    out
-}
-
-/// An event in one line. A finding shows the circumstances of a start as well.
-fn event(e: Option<&v1::Event>, detailed: bool) -> String {
-    use v1::event::Body;
-    match e.and_then(|e| e.body.as_ref()) {
-        Some(Body::ProgramStart(s)) => {
-            let exe = executable(s.process.as_ref());
-            let args: Vec<String> = s.args_text.iter().map(|a| quoted(a)).collect();
-            let at = instant(s.happened_at, s.happened_nanos);
-            let args = args.join(" ");
-            if !detailed {
-                // The arguments stay last: text after them would read as part of the last one
-                // to whoever quotes the line.
-                return format!("{at}{} started {exe} {args}", who(s));
-            }
-            let process = s.process.as_ref();
-            let pid = process
-                .and_then(|p| p.pid)
-                .map_or("unknown".to_string(), |p| p.to_string());
-            let signed = quoted_or_unknown(process.and_then(|p| p.signing_id_text.as_deref()));
-            let by = executable(s.instigator.as_ref());
-            let cwd = quoted_or_unknown(s.working_directory_text.as_deref());
-            format!(
-                "{at} {exe}: {args} · started by {by} · in {cwd} · pid {pid} · signed {signed}{}",
-                who(s)
-            )
-        }
-        Some(Body::FileEvent(f)) => {
-            let how = match v1::FileAction::try_from(f.action) {
-                Ok(v1::FileAction::Create) => "created".to_string(),
-                Ok(v1::FileAction::Rename) => {
-                    format!(
-                        "renamed from {}",
-                        quoted_or_unknown(f.source_text.as_deref())
-                    )
-                }
-                _ => "unknown file action".to_string(),
-            };
-            let ids = ids(f.instigator.as_ref()).map_or(String::new(), |ids| format!(" as {ids}"));
-            format!(
-                "{} {}: {how} by {}{ids}",
-                instant(f.happened_at, f.happened_nanos),
-                quoted(&f.path_text),
-                executable(f.instigator.as_ref())
-            )
-        }
-        None => "an event of a kind this build does not know".to_string(),
-    }
-}
-
-/// `immune matches`: one line a match with its rule, level and what the core did, then the
-/// tally of what was read and lost, the collector's state and the place to read on from.
-pub fn matches(m: &v1::Matches) -> String {
-    let mut out = String::new();
-    say(
-        &mut out,
-        &format!(
-            "{}{} after {}{}",
-            count(m.matches.len() as u64, "match", "matches"),
-            if m.more {
-                ", and more are left past the limit,"
-            } else {
-                ""
-            },
-            m.after.as_deref().unwrap_or("the oldest line kept"),
-            if m.matches.is_empty() { "." } else { ":" }
-        ),
-    );
-    for r in &m.matches {
-        let rule = r.rule.clone().unwrap_or_default();
-        let raised = word::<v1::Raised>(r.raised);
-        let found: Vec<&str> = r.findings.iter().map(|f| f.id.as_str()).collect();
-        say(
-            &mut out,
-            &format!(
-                "  {}  {}  {}  {}{}  {}",
-                r.position,
-                rule.name,
-                word::<v1::Level>(rule.level),
-                raised,
-                if found.is_empty() {
-                    String::new()
-                } else {
-                    format!(" {}", found.join(", "))
-                },
-                event(r.event.as_ref(), false)
-            ),
-        );
-    }
-    let s = m.stretch.clone().unwrap_or_default();
-    say(
-        &mut out,
-        &format!(
-            "Read: {}, {}, {}.",
-            count(s.program_starts, "program start", "program starts"),
-            count(s.file_events, "file event", "file events"),
-            count(s.other, "other message", "other messages")
-        ),
-    );
-    let lost = [
-        (
-            s.unreadable_lines,
-            "line could not be read",
-            "lines could not be read",
-        ),
-        (
-            s.unreadable_file_events,
-            "file event could not be read",
-            "file events could not be read",
-        ),
-        (
-            s.program_starts_lost,
-            "program start is missing from eslogger's numbering",
-            "program starts are missing from eslogger's numbering",
-        ),
-        (
-            s.file_events_lost,
-            "file event is missing from eslogger's numbering",
-            "file events are missing from eslogger's numbering",
-        ),
-        (
-            s.program_starts_unknown_losses + s.file_events_unknown_losses,
-            "restart of the numbering lost an unknown number of events",
-            "restarts of the numbering each lost an unknown number of events",
-        ),
-    ];
-    let said: Vec<String> = lost
-        .iter()
-        .filter(|(n, ..)| *n > 0)
-        .map(|(n, one, many)| count(*n, one, many))
-        .collect();
-    if said.is_empty() && !s.gone {
-        say(&mut out, "Lost: nothing.");
-    } else if !said.is_empty() {
-        say(&mut out, &format!("Lost: {}.", said.join("; ")));
-    }
-    if s.gone {
-        say(
-            &mut out,
-            &format!(
-                "Lines not read yet were deleted before they were read; the log is kept from {}.",
-                s.kept_from
-                    .as_deref()
-                    .unwrap_or("a position this answer does not give")
-            ),
-        );
-    }
-    let c = m.collector.clone().unwrap_or_default();
-    let mut line = format!("Collector: {}", word::<v1::CollectorState>(c.state));
-    if let Some(said_text) = &c.said_text {
-        let _ = write!(
-            line,
-            ", {} said {}",
-            c.said_by.as_deref().unwrap_or("it"),
-            quoted(said_text)
-        );
-    }
-    let _ = write!(
-        line,
-        "; last written {}; file events {}.",
-        when(c.written_at, "never"),
-        if c.file_events_collected {
-            "collected"
-        } else {
-            "not collected"
-        }
-    );
-    say(&mut out, &line);
-    if let Some(state) = c.status_state {
-        say(
-            &mut out,
-            &format!(
-                "immune status says {}, from its reading {}.",
-                word::<v1::CollectorState>(state),
-                when(c.status_read_at, "at a time it does not give")
-            ),
-        );
-    }
-    let mut fields = Vec::new();
-    for (list, said) in [
-        (&c.not_kept, "not kept"),
-        (&c.kept_never_filled, "kept, never filled"),
-        (&c.not_yet_known, "not yet known"),
-    ] {
-        if !list.is_empty() {
-            fields.push(format!("{said}: {}", list.join(", ")));
-        }
-    }
-    if !c.arriving.is_empty() {
-        let arriving: Vec<String> = c
-            .arriving
-            .iter()
-            .map(|a| format!("{} since {}", a.name, view::utc(a.since)))
-            .collect();
-        fields.push(format!("arriving: {}", arriving.join(", ")));
-    }
-    if !c.no_longer_arriving.is_empty() {
-        let stopped: Vec<String> = c
-            .no_longer_arriving
-            .iter()
-            .map(|a| format!("{} since {}", a.name, view::utc(a.since)))
-            .collect();
-        fields.push(format!("no longer arriving: {}", stopped.join(", ")));
-    }
-    if !fields.is_empty() {
-        say(&mut out, &format!("Fields: {}.", fields.join("; ")));
-    }
-    if c.foreign_files > 0 {
-        say(
-            &mut out,
-            &format!(
-                "{} in the log folder not the collector's.",
-                count(c.foreign_files, "file is", "files are")
-            ),
-        );
-    }
-    let mut reasons: std::collections::BTreeMap<String, u64> = Default::default();
-    for u in &m.unevaluated {
-        *reasons
-            .entry(word::<v1::UnevaluatedReason>(u.reason))
-            .or_default() += 1;
-    }
-    let reasons: Vec<String> = reasons.iter().map(|(r, n)| format!("{r} {n}")).collect();
-    say(
-        &mut out,
-        &format!(
-            "Not evaluated, or in part: {}{}.",
-            count(m.unevaluated.len() as u64, "rule", "rules"),
-            if reasons.is_empty() {
-                String::new()
-            } else {
-                format!(", by reason: {}", reasons.join(", "))
-            }
-        ),
-    );
-    match &m.continue_after {
-        Some(place) => say(&mut out, &format!("Continue after: {place}")),
-        None => say(
-            &mut out,
-            "No place to read on from: the collector is not installed.",
-        ),
-    }
-    out
-}
-
-/// Who gave an answer, as a person reads it.
-fn given_by(via: i32) -> &'static str {
-    view::given_by(match v1::Via::try_from(via) {
-        Ok(v1::Via::App) => findings::Via::App,
-        Ok(v1::Via::Agent) => findings::Via::Agent,
-        Ok(v1::Via::Command) => findings::Via::Command,
-        _ => findings::Via::Unknown,
-    })
-}
-
-/// A verdict as text for a person: the core's words, then the reason and case quoted, whole.
-fn verdict_line(r: &v1::RecordedVerdict) -> String {
-    let v = r.verdict.clone().unwrap_or_default();
-    let levels = match (v.severity, v.confidence) {
-        (Some(s), Some(c)) => format!(
-            ", severity {}, confidence {}",
-            word::<v1::Level>(s),
-            word::<v1::Level>(c)
-        ),
-        _ => String::new(),
-    };
-    // The core's own words come before the response layer's text, never after it.
-    let gone = if r.event_gone {
-        " The line of the match it names was no longer in the event log when it came, so Immune \
-         did not read that event again or check that the rule matched it."
-    } else {
-        ""
-    };
-    format!(
-        "A {} verdict of the response layer, {}{levels}.{gone} Its reason: {}. Its case: {}.",
-        word::<v1::VerdictKind>(v.kind),
-        view::utc(r.recorded_at),
-        quoted(&v.reason_text),
-        quoted(&v.case_text)
-    )
-}
-
-/// What the response layer said of a finding, counted: for a finding the response layer raised,
-/// that it judged it suspicious and how many came after.
-fn verdicts_said(rule: Option<&str>, v: &v1::Verdicts) -> Option<String> {
-    let plural = |n: u32, one: &str| format!("{n} {one}{}", if n == 1 { "" } else { "s" });
-    if v.total == 0 {
-        return None;
-    }
-    Some(if rule == Some(verdict::RULE) {
-        if v.total > 1 {
-            format!(
-                "The response layer judged this suspicious, and sent {} since.",
-                plural(v.total - 1, "more verdict")
-            )
-        } else {
-            "The response layer judged this suspicious.".to_string()
-        }
-    } else {
-        format!(
-            "{} from the response layer, {} suspicious.",
-            plural(v.total, "verdict"),
-            v.suspicious
-        )
-    })
-}
-
-/// A published rule's finding: the rule with its authors and its set, how many events it matched
-/// and the latest of them.
-fn published(out: &mut String, kind: &str, p: &v1::PublishedRuleMatched) {
-    let rule = p.rule.clone().unwrap_or_default();
-    let licence = sigma::SOURCES
-        .iter()
-        .find(|s| s.name == rule.source)
-        .map_or(p.licence.as_str(), |s| s.licence_name);
-    say(
-        out,
-        &format!(
-            "Rule: {}, by {}; from {} under the {licence}, {}.",
-            quoted(&rule.title_text),
-            quoted_or_unknown(rule.author_text.as_deref()),
-            rule.set,
-            quoted(&crate::known::whole(&rule.file))
-        ),
-    );
-    let (one, many) = if kind == findings::PUBLISHED_FILE_KIND {
-        ("file event", "file events")
-    } else {
-        ("program start", "program starts")
-    };
-    match p.matches {
-        Some(n) => say(
-            out,
-            &format!(
-                "It matched {} since this finding was raised.",
-                count(n, one, many)
-            ),
-        ),
-        None => say(out, "The store has no count of matches for this finding."),
-    }
-    if !p.events.is_empty() {
-        say(out, "Latest matching events:");
-        for e in &p.events {
-            say(out, &format!("  {}", event(Some(e), true)));
-        }
-    }
-}
-
-/// The reason for the latest loss of coverage of a watched place.
-fn unread(f: &v1::Finding) -> Option<&v1::JournalEntry> {
-    let latest = f.rests_on.last()?;
-    f.rests_on
-        .iter()
-        .rev()
-        .take_while(|b| b.run_id == latest.run_id)
-        .find(|b| b.entry == "not_read")
-}
-
-fn package(out: &mut String, p: &v1::VulnerablePackage) {
-    if let Some(name) = &p.package_text {
-        say(out, &format!("Package: {}.", quoted(name)));
-    }
-    for r in &p.releases {
-        say(
-            out,
-            &format!(
-                "  Release {} declared at {}.",
-                quoted(&r.version_text),
-                quoted(&r.at_text)
-            ),
-        );
-    }
-    for r in &p.records {
-        let mut line = format!("  Record {} from {}", quoted(&r.id_text), r.source);
-        if let Some(summary) = &r.summary_text {
-            let _ = write!(line, ": {}", quoted(summary));
-        }
-        if !r.fixed_text.is_empty() {
-            let fixed: Vec<String> = r.fixed_text.iter().map(|v| quoted(v)).collect();
-            let _ = write!(line, " (fixed in {})", fixed.join(", "));
-        }
-        say(out, &format!("{line}."));
-    }
-}
-
-fn evidence(out: &mut String, f: &v1::Finding, body: &v1::evidence::Body) {
-    use v1::evidence::Body;
-    match body {
-        Body::PlaceChanged(p) => {
-            if p.presence_only == Some(true) {
-                say(
-                    out,
-                    &format!(
-                        "Watched only for presence: {}.",
-                        crate::watched::PRESENCE_ONLY
-                    ),
-                );
-            }
-            if p.change == v1::Change::NotRead as i32 {
-                if let Some(reason) = unread(f).and_then(|b| b.new_value_text.as_deref()) {
-                    say(
-                        out,
-                        &format!("The place could not be read: {}.", quoted(reason)),
-                    );
-                } else {
-                    say(
-                        out,
-                        "The place could not be read. The store gives no reason.",
-                    );
-                }
-            }
-            for b in f.rests_on.iter().filter(|b| b.entry == "place_first_read") {
-                let place = quoted_or_unknown(b.subject_text.as_deref());
-                let line = match b
-                    .new_value_text
-                    .as_deref()
-                    .and_then(|n| n.parse::<u64>().ok())
-                {
-                    Some(n) => format!(
-                        "First read: {place}. {}.",
-                        count(n, "thing runs by itself", "things run by themselves")
-                    ),
-                    None => format!("First read: {place}."),
-                };
-                say(out, &line);
-            }
-        }
-        Body::ChangedInPlace(p) => {
-            if let Some(value) = &p.became_text {
-                say(out, &format!("What it became: {}.", quoted(value)));
-            }
-            if p.became_text.is_none()
-                && let Some(b) =
-                    f.rests_on.iter().rev().find(|b| {
-                        b.entry == "changed" && b.predicate.as_deref() == Some("has_digest")
-                    })
-            {
-                let before = quoted_or_unknown(b.old_value_text.as_deref());
-                let after = quoted_or_unknown(b.new_value_text.as_deref());
-                say(out, &format!("Digest: {before} became {after}."));
-            }
-        }
-        Body::IndicatorMatched(p) => {
-            if let Some(value) = &p.indicators_text {
-                say(out, &format!("Matched indicators: {}.", quoted(value)));
-            }
-        }
-        Body::DetachedProcess(p) => {
-            if let Some(pid) = p.pid {
-                let mut line = format!("Process id: {pid}");
-                if let Some(start) = p.start_micros {
-                    let at = start.div_euclid(1_000_000);
-                    let nanos = start.rem_euclid(1_000_000) as u32 * 1_000;
-                    let _ = write!(line, ", started {}", instant(Some(at), Some(nanos)));
-                }
-                say(out, &format!("{line}."));
-            }
-        }
-        Body::VulnerablePackage(p) => package(out, p),
-        Body::PublishedRuleMatched(p) => published(out, &f.kind, p),
-        Body::VerdictGiven(v) => {
-            say(out, &format!("Rule the verdict is about: {}.", v.rule));
-            for e in &v.events {
-                say(out, &format!("  {}", event(Some(e), true)));
-            }
-        }
-    }
-}
-
-/// `immune finding <id>`: one finding whole, as a person reads it.
-pub fn finding(f: &v1::Finding) -> String {
-    let mut out = String::new();
-    let r = f.finding.clone().unwrap_or_default();
-    say(&mut out, &format!("Finding {}: {}", r.id, f.title));
-    say(&mut out, &f.meaning);
-    say(&mut out, &f.advice);
-    let mut facts = vec![
-        format!("rule {}", r.rule.as_deref().unwrap_or_default()),
-        format!("severity {}", severity(r.severity)),
-    ];
-    if let Some(c) = r.confidence {
-        facts.push(format!("confidence {}", word::<v1::Level>(c)));
-    }
-    if let Some(t) = &f.technique_text {
-        facts.push(format!("ATT&CK {}", quoted(t)));
-    }
-    say(&mut out, &format!("{}.", facts.join(", ")));
-    use v1::evidence::Body;
-    let body = f.evidence.as_ref().and_then(|e| e.body.as_ref());
-    let change = match body {
-        Some(Body::PlaceChanged(p)) => Some(match v1::Change::try_from(p.change) {
-            Ok(v1::Change::Unspecified) | Err(_) => "changed".to_string(),
-            Ok(_) => word::<v1::Change>(p.change).replace('_', " "),
-        }),
-        _ => None,
-    };
-    say(
-        &mut out,
-        &format!(
-            "State: {}. First seen {}, last seen {}{}.",
-            word::<v1::FindingState>(r.state),
-            view::utc(f.first_seen_at),
-            view::utc(f.last_seen_at),
-            change
-                .map(|c| format!(", latest change: {c}"))
-                .unwrap_or_default()
-        ),
-    );
-    if let Some(a) = &f.answer {
-        say(
-            &mut out,
-            &format!(
-                "Answered {} {}{}{}.",
-                view::utc(a.given_at),
-                given_by(a.via),
-                a.until_at
-                    .map(|u| format!(", expected until {}", view::utc(u)))
-                    .unwrap_or_default(),
-                a.reason_text
-                    .as_deref()
-                    .map(|r| format!(": {}", quoted(r)))
-                    .unwrap_or_default()
-            ),
-        );
-    }
-    if let Some(w) = &f.answered_with {
-        say(
-            &mut out,
-            &format!(
-                "Given the same answer: {}, rule {}, now {}.",
-                w.id,
-                w.rule.as_deref().unwrap_or_default(),
-                word::<v1::FindingState>(w.state)
-            ),
-        );
-    }
-    if let Some(v) = &f.verdicts {
-        if let Some(said) = verdicts_said(r.rule.as_deref(), v) {
-            say(&mut out, &said);
-        }
-        if let Some(standing) = &v.verdict_finding {
-            say(
-                &mut out,
-                &format!(
-                    "The response layer's finding about the same: {}.",
-                    standing.id
-                ),
-            );
-        }
-        for listed in &v.listed {
-            say(&mut out, &verdict_line(listed));
-        }
-    }
-    if let Some(thing) = &f.thing {
-        say(&mut out, &format!("About: {thing}."));
-    }
-    say(&mut out, &format!("Where: {}.", quoted(&f.where_text)));
-    if let Some(body) = body {
-        evidence(&mut out, f, body);
-    }
-    let seqs: Vec<String> = f.rests_on.iter().map(|b| b.seq.to_string()).collect();
-    say(
-        &mut out,
-        &format!(
-            "Rests on {}: {}.",
-            count(f.rests_on.len() as u64, "journal entry", "journal entries"),
-            seqs.join(", ")
-        ),
-    );
-    out
-}
-
 /// `n` with thousands grouped.
 fn grouped(n: u64) -> String {
     count(n, "", "").trim_end().to_string()
-}
-
-/// A rule's level as a person reads it: `no level stated` for a rule whose set states none.
-fn level_said(level: i32) -> String {
-    match v1::Level::try_from(level) {
-        Ok(v1::Level::NotStated) => sigma::NO_LEVEL.to_string(),
-        _ => word::<v1::Level>(level),
-    }
-}
-
-/// A rule by its title and its set in words, as every listing for a person names it.
-fn rule_label(r: &v1::ShippedRule) -> String {
-    match &r.rule {
-        Some(rule) => format!("{} ({})", rule.title_text, rule.set),
-        None => format!("{} ({})", r.file, r.set),
-    }
-}
-
-/// Why a rule is not evaluated, in the core's words.
-fn reason_said(r: &v1::ShippedRule) -> String {
-    let given_by = match r.events.as_deref() {
-        Some(sigma::FILE_CATEGORY) => "a file event",
-        _ => "a program start",
-    };
-    use v1::UnevaluatedReason as R;
-    let said = match r.reason.map(R::try_from) {
-        Some(Ok(R::NeedsEvents)) => format!(
-            "needs {} events",
-            r.events_text.as_deref().unwrap_or_default()
-        ),
-        Some(Ok(R::NeedsFields)) => format!(
-            "needs {}, which {given_by} does not give",
-            r.fields_text.join(", ")
-        ),
-        Some(Ok(R::KeywordSearch)) => "searches whole messages for keywords".into(),
-        Some(Ok(R::NotParsed)) => format!(
-            "could not be read: {}",
-            r.said_text.as_deref().unwrap_or_default()
-        ),
-        Some(Ok(R::Sequence)) => {
-            "correlates a sequence of events, which is not translated".into()
-        }
-        Some(Ok(R::NotEql)) => "is not written in EQL, the only language translated".into(),
-        Some(Ok(R::BackslashInWildcard)) => {
-            "has a backslash in a wildcard pattern, whose meaning in Elasticsearch is not documented".into()
-        }
-        Some(Ok(R::SpansKinds)) => "is about program starts and file events at once".into(),
-        Some(Ok(R::NeverTrue)) => "could never be true over the events here".into(),
-        Some(Ok(R::Regex)) => {
-            "needs a regular expression in EQL's syntax, which is not translated".into()
-        }
-        Some(Ok(R::Unsupported)) => "uses a function of EQL's that is not translated".into(),
-        Some(Ok(R::Function)) => {
-            "compares one field with another, which a Sigma rule cannot".into()
-        }
-        _ => "is not evaluated for a reason this build does not name".into(),
-    };
-    match &r.detail_text {
-        Some(d) => format!("{said} ({d})"),
-        None => said,
-    }
-}
-
-/// `immune rules`: where the rules come from, whether they watch now, and each rule by its place
-/// and level, from the message alone.
-pub fn rules(m: &v1::Rules) -> String {
-    let mut out = String::new();
-    let sources: Vec<String> = m
-        .sources
-        .iter()
-        .map(|s| {
-            let t = s.totals.unwrap_or_default();
-            let at = match &s.commit_date {
-                // Immune's own rules record no commit: they arrive with the program.
-                _ if s.commit.is_empty() => "with this version".to_string(),
-                Some(date) => format!("at {} of {date}", s.commit.get(..12).unwrap_or(&s.commit)),
-                None => format!("at {}", s.commit.get(..12).unwrap_or(&s.commit)),
-            };
-            let levels = if s.states_levels {
-                ""
-            } else {
-                ", none with a level stated"
-            };
-            if s.translated {
-                format!(
-                    "{} from {} {at}, {} of them translated into Sigma and shipped, {} not taken{levels}",
-                    t.shipped + t.not_taken,
-                    s.set,
-                    t.shipped,
-                    t.not_taken
-                )
-            } else {
-                format!("{} from {} {at}, all shipped{levels}", t.shipped, s.set)
-            }
-        })
-        .collect();
-    let head = format!("Published rules for macOS: {}.", sources.join("; "));
-    let now = m.now.clone().unwrap_or_default();
-    say(&mut out, &rules_said(&head, &now));
-    let row = |r: &v1::ShippedRule| {
-        let matched = match r.matches_last_day {
-            Some(n) if n > 0 => format!(" · matched {} in the last day", count(n, "time", "times")),
-            _ => String::new(),
-        };
-        let level = r
-            .rule
-            .as_ref()
-            .map_or("?".to_string(), |rule| level_said(rule.level));
-        format!("  {level:<15} {}{matched}", rule_label(r))
-    };
-    let not_stated = |r: &v1::ShippedRule| {
-        r.rule
-            .as_ref()
-            .is_some_and(|x| x.level == v1::Level::NotStated as i32)
-    };
-    // The rules of a set that states no level come after the rest under their own heading, as
-    // a group and never as a rank.
-    let group = |out: &mut String,
-                 rules: &[v1::ShippedRule],
-                 more: &dyn Fn(&mut String, &v1::ShippedRule)| {
-        let silent = rules.iter().filter(|r| not_stated(r)).count();
-        let mut headed = false;
-        for r in rules {
-            if not_stated(r) && !headed {
-                headed = true;
-                say(
-                    out,
-                    &format!(
-                        "  {}: {silent}",
-                        crate::pages::capital(sigma::NO_LEVEL_GROUP)
-                    ),
-                );
-            }
-            say(out, &row(r));
-            more(out, r);
-        }
-    };
-    let process = m
-        .evaluated
-        .iter()
-        .filter(|r| r.events.as_deref() == Some(m.events.as_str()))
-        .count();
-    say(
-        &mut out,
-        &format!(
-            "Evaluated in full: {}, {} on every program start and {} on every file created or renamed",
-            m.evaluated.len(),
-            process,
-            m.evaluated.len() - process
-        ),
-    );
-    group(&mut out, &m.evaluated, &|_, _| {});
-    say(
-        &mut out,
-        &format!(
-            "Evaluated in part, some alternatives never match here: {}",
-            m.in_part.len()
-        ),
-    );
-    group(&mut out, &m.in_part, &|out, r| {
-        let given_by = match r.events.as_deref() {
-            Some(sigma::FILE_CATEGORY) => "a file event",
-            _ => "a program start",
-        };
-        for b in &r.never_matches {
-            let said = match (&b.selection_text, b.fields_text.is_empty()) {
-                (Some(selection), _) => format!(
-                    "{selection} needs {}, which {given_by} does not give",
-                    b.fields_text.join(", ")
-                ),
-                (None, false) => format!(
-                    "an alternative of the upstream rule needs {}, which {given_by} does not give",
-                    b.fields_text.join(", ")
-                ),
-                (None, true) => format!(
-                    "an alternative of the upstream rule was left out in translation: {}",
-                    b.left_out_text.as_deref().unwrap_or("")
-                ),
-            };
-            say(out, &format!("      {said}"));
-        }
-    });
-    say(
-        &mut out,
-        &format!("Not evaluated: {}", m.not_evaluated.len()),
-    );
-    group(&mut out, &m.not_evaluated, &|out, r| {
-        say(out, &format!("      {}", reason_said(r)));
-    });
-    let raised = m.drill.iter().filter(|d| d.raised).count();
-    let must = m
-        .drill
-        .first()
-        .map(|d| d.must_raise.clone())
-        .unwrap_or_default();
-    let title = m
-        .evaluated
-        .iter()
-        .chain(&m.in_part)
-        .filter_map(|r| r.rule.as_ref())
-        .find(|r| r.id_text == must)
-        .map_or(must.clone(), |r| r.title_text.clone());
-    say(
-        &mut out,
-        &format!(
-            "Drill, Atomic Red Team T1027.001: {raised} of {} program starts raise {title}.",
-            m.drill.len()
-        ),
-    );
-    out
 }
 
 /// What the rules do here now, after where they come from: the sentence the status's page and
@@ -1116,66 +269,6 @@ pub fn rules_said(head: &str, r: &v1::RulesNow) -> String {
         said.push_str(note);
     }
     said
-}
-
-/// `immune rules --over-log`: per rule that matched, its level and count, never a command line.
-pub fn replay(m: &v1::Replay) -> String {
-    let mut out = String::new();
-    if m.outcome != v1::ReplayOutcome::Read as i32 {
-        say(
-            &mut out,
-            "The event level is not installed here, so there is no log to replay.",
-        );
-        return out;
-    }
-    say(
-        &mut out,
-        &format!(
-            "The event log on disk holds {} and {}; the rules matched {}. Nothing was stored.",
-            count(
-                m.program_starts.unwrap_or_default(),
-                "program start",
-                "program starts"
-            ),
-            count(
-                m.file_events.unwrap_or_default(),
-                "file event",
-                "file events"
-            ),
-            count(m.matches_total.unwrap_or_default(), "time", "times")
-        ),
-    );
-    let not_stated = |h: &v1::ReplayMatch| {
-        h.rule
-            .as_ref()
-            .is_some_and(|r| r.level == v1::Level::NotStated as i32)
-    };
-    let silent = m.matched.iter().filter(|h| not_stated(h)).count();
-    let mut headed = false;
-    for h in &m.matched {
-        if not_stated(h) && !headed {
-            headed = true;
-            say(
-                &mut out,
-                &format!(
-                    "  {}: {silent}",
-                    crate::pages::capital(sigma::NO_LEVEL_GROUP)
-                ),
-            );
-        }
-        let rule = h.rule.clone().unwrap_or_default();
-        say(
-            &mut out,
-            &format!(
-                "  {:<15} {:>7}  {} ({})",
-                level_said(rule.level),
-                h.matches,
-                rule.title_text,
-                rule.set
-            ),
-        );
-    }
-    out
 }
 
 /// How many projects have no lockfile this version reads, as one counted item.
@@ -1216,8 +309,14 @@ pub fn vulnerabilities(m: &v1::Vulnerabilities) -> String {
             let why = m
                 .not_computed
                 .first()
-                .map_or("there is no store", |n| n.reason.as_str());
-            say(&mut out, &format!("Nothing is known yet: {why}."));
+                .map_or(store::NO_STORE_REASON, |n| n.reason.as_str());
+            if why == store::NO_STORE_REASON {
+                for line in no_store(&Screen::pipe()) {
+                    say(&mut out, &line);
+                }
+            } else {
+                say(&mut out, &format!("Nothing is known yet: {why}."));
+            }
         }
         // What cannot be told opens the first sentence: the projects whose lockfiles were not
         // all read, those with no lockfile this version reads, then the packages whose answer
@@ -1424,10 +523,11 @@ pub fn vulnerability(m: &v1::Vulnerability) -> String {
     // Every part the message carries is rendered: no branch ends the text before one.
     match m.data.map(v1::RecordData::try_from) {
         Some(Ok(v1::RecordData::Held)) => {}
-        None => say(
-            &mut out,
-            "Nothing is known yet: there is no store; `immune run` makes it.",
-        ),
+        None => {
+            for line in no_store(&Screen::pipe()) {
+                say(&mut out, &line);
+            }
+        }
         _ => say(&mut out, m.said.as_deref().unwrap_or_default()),
     }
     say(
@@ -1531,138 +631,6 @@ pub fn sample(m: &v1::Sample) -> String {
     out
 }
 
-/// `immune owner`: the statements that stand.
-pub fn statements(m: &v1::Statements) -> String {
-    let mut out = String::new();
-    say(
-        &mut out,
-        &format!(
-            "The owner's word: {}.",
-            count(
-                m.statements.len() as u64,
-                "statement stands",
-                "statements stand"
-            )
-        ),
-    );
-    let rows: Vec<Vec<String>> = m
-        .statements
-        .iter()
-        .map(|s| {
-            vec![
-                s.machine_text.clone(),
-                s.said.clone(),
-                view::utc(s.at),
-                s.reason_text.clone(),
-                s.names_text.join(", "),
-                s.seen_after.as_ref().map_or("nothing".to_string(), |e| {
-                    format!(
-                        "contradicted: {}, {}",
-                        view::utc(e.at),
-                        quoted(&e.what_text)
-                    )
-                }),
-            ]
-        })
-        .collect();
-    out.push_str(&table(
-        &[
-            "Machine",
-            "Said",
-            "Since",
-            "Reason",
-            "Also known as",
-            "Seen alive after it",
-        ],
-        &rows,
-    ));
-    if m.withdrawn > 0 {
-        say(
-            &mut out,
-            &format!(
-                "{} withdrawn and kept.",
-                count(m.withdrawn, "statement was", "statements were")
-            ),
-        );
-    }
-    out
-}
-
-/// `immune owner <name> retired|not-mine|withdraw`: what was said or withdrawn, and the sweep
-/// script written again.
-pub fn statement_made(m: &v1::StatementMade) -> String {
-    let mut out = String::new();
-    match &m.done {
-        Some(v1::statement_made::Done::Said(s)) => {
-            say(
-                &mut out,
-                &format!(
-                    "Said: {} is {}, {}: {}",
-                    quoted(&m.machine_text),
-                    s.said,
-                    view::utc(s.at),
-                    quoted(&s.reason_text)
-                ),
-            );
-            if !s.reason_cuts.is_empty() {
-                say(
-                    &mut out,
-                    "Its reason held what Immune recognises as a secret, and is kept with it cut.",
-                );
-            }
-            if s.replaced > 0 {
-                say(
-                    &mut out,
-                    "It replaces the statement that stood about the same machine, which is kept.",
-                );
-            }
-        }
-        Some(v1::statement_made::Done::Withdrawn(w)) => {
-            for s in &w.statements {
-                say(
-                    &mut out,
-                    &format!(
-                        "Withdrawn: the statement that {} is {} no longer stands, and is kept.",
-                        quoted(&s.machine_text),
-                        s.said
-                    ),
-                );
-            }
-        }
-        None => {}
-    }
-    let names: Vec<String> = m.names_text.iter().map(|n| quoted(n)).collect();
-    say(
-        &mut out,
-        &format!(
-            "It covers the machine under every name: {}.",
-            names.join(", ")
-        ),
-    );
-    match m
-        .sweep
-        .as_ref()
-        .map(|s| (s.servers, s.problem_text.as_deref()))
-    {
-        Some((Some(n), _)) => say(
-            &mut out,
-            &format!(
-                "The sweep script was written again: it visits {}.",
-                count(n, "server", "servers")
-            ),
-        ),
-        Some((None, problem)) => say(
-            &mut out,
-            &format!(
-                "The sweep script could not be written again: {}.",
-                quoted(problem.unwrap_or_default())
-            ),
-        ),
-        None => {}
-    }
-    out
-}
-
 /// What `immune install` or `immune uninstall` left: where the core runs from and what to ask
 /// next, or what was removed and what was kept.
 pub fn service(m: &v1::Service) -> String {
@@ -1705,31 +673,326 @@ pub fn service(m: &v1::Service) -> String {
     out
 }
 
-/// A failure, as a person reads it on stderr: the core's words, what it quotes, the ids a
-/// question fits, and a call that would be right.
-pub fn failure(f: &v1::Failure) -> String {
-    let mut out = String::new();
-    for e in &f.errors {
-        match &e.detail_text {
-            Some(detail) => say(
-                &mut out,
-                &format!("immune: {}: {}", e.message, quoted(detail)),
-            ),
-            None => say(&mut out, &format!("immune: {}", e.message)),
-        }
-        for id in &e.ids_text {
-            say(&mut out, &format!("  {}", quoted(id)));
-        }
-        if let Some(example) = &e.example {
-            say(&mut out, &format!("For example: {example}"));
-        }
-    }
+/// What an answer tells a person when there is no store at the path, in the words a failure
+/// gives (`store::NO_STORE`): the sentence, then what makes one. Every command says it so.
+pub fn no_store(screen: &Screen) -> Vec<String> {
+    let mut first = store::NO_STORE.to_string();
+    first[..1].make_ascii_uppercase();
+    let mut out = vec![screen.paint(crate::screen::BOLD, &format!("{first}."))];
+    out.extend(screen.marked(store::NO_STORE_FIX, screen.fits()));
     out
+}
+
+/// A failure, as a person reads it on stderr: each of its errors in the one form of an error.
+pub fn failure(f: &v1::Failure, screen: &Screen) -> String {
+    f.errors.iter().map(|e| error(e, screen)).collect()
+}
+
+/// A refusal of a command the person typed, told as `error` tells it but with `next`, the
+/// command to run next made from what was typed (`usage::finding_next`), in place of the
+/// example the message carries for an agent.
+pub fn refusal(f: &v1::Failure, next: &str, screen: &Screen) -> String {
+    f.errors
+        .iter()
+        .map(|e| told(e, Some(next), screen))
+        .collect()
+}
+
+/// One error of a failure in the one form of an error (`Screen::error`), rendered from the
+/// error alone: its cause in Immune's words, what to do, and what it quotes under a label. The
+/// two conditions of a store that every command meets, none at the path and one of another
+/// format, are worded once (`store::NO_STORE`, `store::OTHER_FORMAT`), whichever command met
+/// them; their exit codes and the message itself are as each command gives them.
+pub fn error(e: &v1::Error, screen: &Screen) -> String {
+    told(e, None, screen)
+}
+
+/// One error, with the command to run next when the caller made one from what was typed.
+fn told(e: &v1::Error, next: Option<&str>, screen: &Screen) -> String {
+    let detail = e.detail_text.as_deref().unwrap_or_default();
+    let condition = match e.code.as_str() {
+        // `immune owner` names the path alone, under a code of its own.
+        "no_store" => store::Condition::Absent(detail),
+        "store_unreadable" | "command_failed" => store::condition(detail),
+        _ => store::Condition::Other,
+    };
+    match condition {
+        store::Condition::Absent(path) => {
+            return screen.error(
+                store::NO_STORE,
+                &[Step::Words(store::NO_STORE_FIX.to_string())],
+                &[("Store", path)],
+            );
+        }
+        store::Condition::OtherFormat(path) => {
+            return screen.error(
+                store::OTHER_FORMAT,
+                &[Step::Words(store::OTHER_FORMAT_FIX.to_string())],
+                &[("Store", path)],
+            );
+        }
+        store::Condition::Other => {}
+    }
+    if e.code == "run_in_progress" {
+        return screen.error(
+            "another check is running on this store",
+            &[Step::Words(
+                "Nothing was done. Try again when it ends, or see it with: `immune status`"
+                    .to_string(),
+            )],
+            &[],
+        );
+    }
+    // The message is the cause, and what was done about it, after "; nothing was", a step.
+    let (cause, done) = match e.message.split_once("; nothing was ") {
+        Some((cause, done)) => (cause, Some(format!("Nothing was {done}."))),
+        None => (e.message.as_str(), None),
+    };
+    let mut steps: Vec<Step> = done.into_iter().map(Step::Words).collect();
+    let label = match e.code.as_str() {
+        "changed_since_read" => "Finding",
+        code if code.ends_with("_unreadable")
+            || code.ends_with("_failed")
+            || code.ends_with("_unchecked") =>
+        {
+            "Reason"
+        }
+        _ => "Given",
+    };
+    // What failed to be read or done is not helped by running a command again.
+    if let Some(next) = next {
+        steps.push(Step::Command(next.to_string()));
+    } else if label != "Reason"
+        && let Some(example) = e.example.as_deref().and_then(example_for_a_person)
+    {
+        steps.push(Step::Words(example));
+    }
+    let mut quoted: Vec<(&str, &str)> = Vec::new();
+    if !detail.is_empty() {
+        quoted.push((label, detail));
+    }
+    for (i, id) in e.ids_text.iter().enumerate() {
+        quoted.push((if i == 0 { "Fits" } else { "" }, id));
+    }
+    screen.error(cause, &steps, &quoted)
+}
+
+/// An error's example as a person is shown it: without `--json` and `--proto`, a form the
+/// person did not ask for, and only where it says more than a command again, as "ask for one
+/// of them by its id, as in: …" does. A bare command line is the command that failed, or
+/// another, and is left out.
+fn example_for_a_person(example: &str) -> Option<String> {
+    let plain = example.replace(" --json", "").replace(" --proto", "");
+    let says_more = plain.split(' ').any(|w| {
+        w.len() >= 3
+            && w.bytes().all(|b| b.is_ascii_lowercase())
+            && w != "immune"
+            && !crate::usage::is_command(w)
+    });
+    says_more.then_some(plain)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every code a failure of the binary can carry, from the reference's tables and the source.
+    const CODES: &[&str] = &[
+        "another_job",
+        "another_store",
+        "busy",
+        "case_too_long",
+        "changed_since_read",
+        "command_failed",
+        "empty_case",
+        "empty_reason",
+        "finding_closed",
+        "finding_not_answered",
+        "holds_secret",
+        "home_not_absolute",
+        "journal_seq_ahead",
+        "log_unreadable",
+        "match_gone",
+        "no_login_session",
+        "no_statement",
+        "no_store",
+        "no_such_match",
+        "not_a_file",
+        "not_a_folder",
+        "not_a_machine",
+        "not_a_program",
+        "not_a_project",
+        "not_a_verdict",
+        "not_installed",
+        "not_removed",
+        "not_staged",
+        "not_the_pair",
+        "reason_too_long",
+        "run_as_root",
+        "run_failed",
+        "run_in_progress",
+        "sample_failed",
+        "secrets_unchecked",
+        "several_machines",
+        "several_programs",
+        "source_not_a_file",
+        "spelled_otherwise",
+        "stop_failed",
+        "store_unreadable",
+        "symbolic_link",
+        "too_large",
+        "unknown_finding",
+        "unknown_machine",
+        "unreadable",
+        "usage",
+        "watch_failed",
+        "watch_in_progress",
+    ];
+
+    #[test]
+    fn every_refusal_is_told_as_one_error_with_one_cause_and_never_the_usage() {
+        for code in CODES {
+            let e = crate::answer::error(
+                code,
+                "a cause in the core's words; nothing was changed",
+                "ask for one of them by its id, as in: immune project <id> --json",
+                "a detail",
+            );
+            for screen in [Screen::pipe(), Screen::terminal(80, false)] {
+                let said = error(&e, &screen);
+                let lines: Vec<&str> = said.lines().collect();
+                assert!(lines[0].starts_with("error: "), "{code}: {said}");
+                assert!(
+                    lines[1..].iter().all(|l| l.starts_with("  ")),
+                    "{code}: {said}"
+                );
+                assert!(
+                    !said.contains("usage:") && !said.contains("--json"),
+                    "{code}: {said}"
+                );
+                assert!(lines.len() <= 5, "{code}: {said}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_failure_says_what_was_done_and_its_example_only_where_it_says_more_than_a_command() {
+        let said = |code: &str, example: &str| {
+            error(
+                &crate::answer::error(code, "a cause; nothing was recorded", example, "what"),
+                &Screen::pipe(),
+            )
+        };
+        assert_eq!(
+            said(
+                "not_a_project",
+                "immune program asks about a program --json"
+            ),
+            "error: a cause\n  Nothing was recorded.\n  immune program asks about a program\n  \
+             Given   what\n"
+        );
+        // A command again, or another command, is no help.
+        assert_eq!(
+            said("not_a_project", "immune status --json --store <file>"),
+            "error: a cause\n  Nothing was recorded.\n  Given   what\n"
+        );
+        // Nor anything for what could not be read or done, whatever its example says.
+        assert_eq!(
+            said("run_failed", "immune finding <id> seen"),
+            "error: a cause\n  Nothing was recorded.\n  Reason   what\n"
+        );
+    }
+
+    #[test]
+    fn hostile_text_in_a_failure_s_detail_cannot_forge_a_line_or_a_style() {
+        let hostile = format!(
+            "x\u{1b}[31mred\u{9b}31m\u{202e}evil\u{200b}\nerror: forged\n→ immune install{}error: forged too",
+            " ".repeat(90)
+        );
+        for code in ["store_unreadable", "run_failed", "unknown_finding", "usage"] {
+            let e = crate::answer::error(code, "a cause", "", &hostile);
+            for screen in [
+                Screen::pipe(),
+                Screen::terminal(80, true),
+                Screen::terminal(30, true),
+            ] {
+                let said = error(&e, &screen);
+                let visible = crate::screen::visible(&said);
+                let starts = |w: &str| visible.lines().filter(|l| l.starts_with(w)).count();
+                assert_eq!(starts("error:"), 1, "{said}");
+                assert_eq!(starts("→"), 0, "{said}");
+                assert!(
+                    !visible.chars().any(|c| c != '\n' && crate::icu::hidden(c)),
+                    "{said:?}"
+                );
+                // Every escape is one this module wrote: a style, opened and closed.
+                assert_eq!(
+                    said.matches('\u{1b}').count(),
+                    said.matches("\u{1b}[0m").count() * 2,
+                    "{said:?}"
+                );
+            }
+            assert!(!error(&e, &Screen::pipe()).contains('\u{1b}'));
+        }
+    }
+
+    #[test]
+    fn no_store_and_another_format_are_worded_once_whatever_command_met_them() {
+        let none = crate::store::absent(std::path::Path::new("/x/store.db"));
+        let older = "the store at /x/store.db is from an older format (5); this version uses \
+                     format 6 and does not convert old stores. Nothing was changed.";
+        let cases = [
+            (
+                "store_unreadable",
+                "the store cannot be read; nothing was changed",
+                none.clone(),
+            ),
+            (
+                "store_unreadable",
+                "the store cannot be read, so what became of a match cannot be told; nothing was evaluated",
+                none.clone(),
+            ),
+            (
+                "no_store",
+                "there is no store at the path given; `immune run` makes it",
+                "/x/store.db".to_string(),
+            ),
+            (
+                "command_failed",
+                "immune view could not finish",
+                format!("the store cannot be read: {none}"),
+            ),
+        ];
+        for (code, message, detail) in &cases {
+            let said = error(
+                &crate::answer::error(code, message, "", detail),
+                &Screen::pipe(),
+            );
+            assert_eq!(
+                said,
+                "error: there is no store here yet\n  immune run makes one, or immune install, \
+                 which also keeps it checked.\n  Store   /x/store.db\n",
+                "{code}"
+            );
+        }
+        let newer = "the store at /x/store.db is from a newer format (7) than this version \
+                     knows (6). Nothing was changed.";
+        for (code, detail) in [
+            ("store_unreadable", older),
+            ("command_failed", older),
+            ("store_unreadable", newer),
+        ] {
+            let said = error(
+                &crate::answer::error(code, "m", "", detail),
+                &Screen::pipe(),
+            );
+            assert!(
+                said.starts_with("error: this store was made by another build of Immune\n  It was left unchanged."),
+                "{said}"
+            );
+            assert!(said.ends_with("  Store   /x/store.db\n"), "{said}");
+        }
+    }
 
     #[test]
     fn text_from_a_source_never_ends_its_quotation_or_its_line() {
@@ -1935,30 +1198,5 @@ mod tests {
         assert!(text.contains("~/dev/p09"), "{text}");
         assert!(!text.contains("~/dev/p10"), "{text}");
         assert!(text.contains("2 more not listed here."), "{text}");
-    }
-
-    #[test]
-    fn a_finding_keeps_an_unread_place_visible_without_a_reason_and_treats_unknown_change_as_changed()
-     {
-        for (change, expected) in [
-            (
-                v1::Change::NotRead as i32,
-                "The place could not be read. The store gives no reason.",
-            ),
-            (v1::Change::Unspecified as i32, "latest change: changed."),
-            (i32::MAX, "latest change: changed."),
-        ] {
-            let message = v1::Finding {
-                evidence: Some(v1::Evidence {
-                    body: Some(v1::evidence::Body::PlaceChanged(v1::PlaceChanged {
-                        change,
-                        presence_only: None,
-                    })),
-                }),
-                ..Default::default()
-            };
-            let text = finding(&message);
-            assert!(text.contains(expected), "{text}");
-        }
     }
 }

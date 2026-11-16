@@ -40,7 +40,27 @@ impl Screen {
             terminal,
             std::env::var_os("NO_COLOR"),
             std::env::var_os("TERM"),
-            if terminal { asked_width() } else { None },
+            if terminal {
+                asked_width(libc::STDOUT_FILENO)
+            } else {
+                None
+            },
+        )
+    }
+
+    /// The screen of this process's standard error, where a refusal or a failure is told to a
+    /// person: the same rules, asked of standard error.
+    pub fn of_stderr() -> Screen {
+        let terminal = std::io::stderr().is_terminal();
+        Screen::decide(
+            terminal,
+            std::env::var_os("NO_COLOR"),
+            std::env::var_os("TERM"),
+            if terminal {
+                asked_width(libc::STDERR_FILENO)
+            } else {
+                None
+            },
         )
     }
 
@@ -148,12 +168,12 @@ impl Screen {
     }
 }
 
-/// The terminal's columns as the system gives them (`ioctl(TIOCGWINSZ)`); `None` when it does
-/// not say.
-fn asked_width() -> Option<usize> {
+/// The columns of the terminal on `fd` as the system gives them (`ioctl(TIOCGWINSZ)`); `None`
+/// when it does not say.
+fn asked_width(fd: libc::c_int) -> Option<usize> {
     // SAFETY: `ioctl` with `TIOCGWINSZ` writes only into `ws`, which lives through the call.
     let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-    let asked = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) };
+    let asked = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) };
     (asked == 0 && ws.ws_col > 0).then(|| usize::from(ws.ws_col))
 }
 
@@ -245,21 +265,29 @@ pub fn columns(s: &str) -> usize {
     s.chars().map(crate::icu::columns).sum()
 }
 
-/// The pieces a cut may fall between: one character, or a whole escape `\u{…}` as `view::shown`
-/// and `known::whole` write a hidden character, so a cut never leaves half of one.
+/// The pieces a cut or a line break may fall between: one character, a whole escape `\u{…}` as
+/// `view::shown` and `known::whole` write a hidden character, or a whole mark `\cut{<kind>
+/// <length>}` where a secret was cut out (`secrets::marks`), so neither is ever left in halves.
 fn units(s: &str) -> Vec<&str> {
+    // In the order they begin. Each begins where a unit does: a backslash is only ever the
+    // first character of a unit.
+    let mut marks = crate::secrets::marks(s).into_iter().peekable();
     let mut out = Vec::new();
-    let mut rest = s;
-    while let Some(c) = rest.chars().next() {
+    let mut at = 0;
+    while let Some(c) = s[at..].chars().next() {
+        let rest = &s[at..];
         let escape = rest.strip_prefix("\\u{").and_then(|after| {
             let close = after.find('}')?;
             let hex = &after[..close];
             (!hex.is_empty() && hex.len() <= 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
                 .then_some(3 + close + 1)
         });
-        let len = escape.unwrap_or(c.len_utf8());
-        out.push(&rest[..len]);
-        rest = &rest[len..];
+        let mark = marks
+            .next_if(|(start, ..)| *start == at)
+            .map(|(start, end, ..)| end - start);
+        let len = mark.or(escape).unwrap_or(c.len_utf8());
+        out.push(&s[at..at + len]);
+        at += len;
     }
     out
 }
@@ -342,15 +370,26 @@ pub fn cut_middle(s: &str, width: usize) -> String {
 }
 
 /// A text broken into lines of at most `width` columns, at spaces; a word longer than a line is
-/// broken where it reaches the end. Without a width, one line.
+/// broken where it reaches the end, between two units, so an escape or a mark is never broken:
+/// one wider than a whole line stands alone on its line. Without a width, one line.
 pub fn wrap(s: &str, width: Option<usize>) -> Vec<String> {
     let Some(width) = width.map(|w| w.max(1)) else {
         return vec![s.to_string()];
     };
+    // The words, split at the spaces between units: the space inside a mark splits nothing.
+    let mut words: Vec<Vec<&str>> = vec![Vec::new()];
+    for u in units(s) {
+        match (u, words.last_mut()) {
+            (" ", _) => words.push(Vec::new()),
+            (_, Some(word)) => word.push(u),
+            (_, None) => {}
+        }
+    }
     let mut lines = Vec::new();
     let mut line = String::new();
-    for word in s.split(' ') {
-        let need = columns(&line) + usize::from(!line.is_empty()) + columns(word);
+    for word in words {
+        let wide: usize = word.iter().map(|u| columns(u)).sum();
+        let need = columns(&line) + usize::from(!line.is_empty()) + wide;
         if !line.is_empty() && need > width {
             lines.push(std::mem::take(&mut line));
         }
@@ -358,7 +397,7 @@ pub fn wrap(s: &str, width: Option<usize>) -> Vec<String> {
             line.push(' ');
         }
         // A word wider than a whole line goes in pieces.
-        for u in units(word) {
+        for u in word {
             if columns(&line) + columns(u) > width && !line.is_empty() {
                 lines.push(std::mem::take(&mut line));
             }
@@ -733,6 +772,119 @@ impl Screen {
     }
 }
 
+/// One line under an error, indented. `Words` are Immune's own words, where a span in backticks
+/// is a command, cyan on a terminal, the backticks dropped; never text from a source or from the
+/// command line. `Command` is a whole command line, which may hold what the person typed: it is
+/// escaped, cyan as a whole, and nothing in it is read as a mark.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Step {
+    Words(String),
+    Command(String),
+}
+
+/// The column the cause of an error starts in, after `error: `.
+const CAUSE_AT: usize = 7;
+
+impl Screen {
+    /// A refusal or a failure as a person reads it on standard error, the one form every
+    /// command gives one in: `error:` red and bold and the cause in Immune's words; then,
+    /// indented, what to do (`steps`); then what the failure quotes from a source or from what
+    /// it was given, each under its label, escaped and never inside Immune's words. Nothing
+    /// else: no usage. On a terminal every part is broken into lines that fit, never cut, and a
+    /// line that goes on is indented, so nothing but the first line starts at the left edge.
+    pub fn error(&self, cause: &str, steps: &[Step], detail: &[(&str, &str)]) -> String {
+        let room = |indent: usize| self.fits().map(|w| w.saturating_sub(indent).max(1));
+        let mut out = Vec::new();
+        for (i, l) in wrap(&view::shown(cause), room(CAUSE_AT)).iter().enumerate() {
+            out.push(match i {
+                0 => format!("{} {l}", self.paint(RED.bold(), "error:")),
+                _ => format!("{}{l}", " ".repeat(CAUSE_AT)),
+            });
+        }
+        for step in steps {
+            match step {
+                Step::Words(words) => {
+                    for l in self.marked(words, room(2)) {
+                        out.push(format!("  {l}"));
+                    }
+                }
+                Step::Command(command) => {
+                    for (i, l) in wrap(&view::shown(command), room(4)).iter().enumerate() {
+                        let indent = if i == 0 { "  " } else { "    " };
+                        out.push(format!("{indent}{}", self.paint(CYAN, l)));
+                    }
+                }
+            }
+        }
+        let label_width = detail.iter().map(|(l, _)| columns(l)).max().unwrap_or(0);
+        for (label, value) in detail {
+            out.extend(self.labelled(2, label_width, label, value, PLAIN, None, 0));
+        }
+        out.iter()
+            .map(|l| format!("{}\n", l.trim_end_matches(' ')))
+            .collect()
+    }
+
+    /// Immune's own words broken into lines of `room`, each span in backticks a command in cyan
+    /// with the backticks dropped. A word joined to a command, such as a comma after it, stays
+    /// on its line.
+    pub fn marked(&self, words: &str, room: Option<usize>) -> Vec<String> {
+        // Words as the spaces part them, each in pieces of one style.
+        let mut tokens: Vec<Vec<(String, Style)>> = Vec::new();
+        let mut parted = true;
+        for (i, segment) in view::shown(words).split('`').enumerate() {
+            let style = if i % 2 == 1 { CYAN } else { PLAIN };
+            for (j, piece) in segment.split(' ').enumerate() {
+                parted |= j > 0;
+                if piece.is_empty() {
+                    continue;
+                }
+                match tokens.last_mut() {
+                    Some(token) if !parted => token.push((piece.to_string(), style)),
+                    _ => tokens.push(vec![(piece.to_string(), style)]),
+                }
+                parted = false;
+            }
+        }
+        let width = |t: &[(String, Style)]| t.iter().map(|(p, _)| columns(p)).sum::<usize>();
+        let mut lines: Vec<Vec<&[(String, Style)]>> = vec![Vec::new()];
+        let mut taken = 0;
+        for token in &tokens {
+            let line = lines.last_mut().expect("a line");
+            let need = width(token) + usize::from(!line.is_empty());
+            if room.is_some_and(|r| !line.is_empty() && taken + need > r) {
+                lines.push(vec![token]);
+                taken = width(token);
+            } else {
+                line.push(token);
+                taken += need;
+            }
+        }
+        lines
+            .iter()
+            .map(|line| {
+                // Runs of one style; the space between two words is plain unless both are commands.
+                let mut runs: Vec<(String, Style)> = Vec::new();
+                for (k, token) in line.iter().enumerate() {
+                    for (n, (piece, style)) in token.iter().enumerate() {
+                        if k > 0 && n == 0 {
+                            match runs.last_mut() {
+                                Some((run, s)) if *s == PLAIN || s == style => run.push(' '),
+                                _ => runs.push((" ".to_string(), PLAIN)),
+                            }
+                        }
+                        match runs.last_mut() {
+                            Some((run, s)) if s == style => run.push_str(piece),
+                            _ => runs.push((piece.clone(), *style)),
+                        }
+                    }
+                }
+                runs.iter().map(|(r, s)| self.paint(*s, r)).collect()
+            })
+            .collect()
+    }
+}
+
 /// What a line shows on a terminal, without the style sequences this module writes, for tests.
 #[cfg(test)]
 pub fn visible(line: &str) -> String {
@@ -822,6 +974,23 @@ mod tests {
     }
 
     #[test]
+    fn a_line_break_or_a_cut_never_falls_inside_a_mark_where_a_secret_was_cut() {
+        let mark = r"\cut{gitleaks:github-pat 40}";
+        let text = format!("token {mark} end");
+        // The space inside the mark is not a place to break a line.
+        for width in [10, 20, 30] {
+            let lines = wrap(&text, Some(width));
+            assert!(lines.iter().any(|l| l.contains(mark)), "{width}: {lines:?}");
+        }
+        assert_eq!(
+            wrap(&text, Some(31)),
+            ["token", mark, "end"].map(String::from)
+        );
+        // A cut takes the whole mark or none of it.
+        assert_eq!(cut_end(&text, 12), "token …");
+    }
+
+    #[test]
     fn wide_characters_take_two_columns_and_marks_none() {
         assert_eq!(columns("日本"), 4);
         assert_eq!(columns("e\u{301}"), 1);
@@ -867,6 +1036,64 @@ mod tests {
         let joined = joined.join(" ");
         assert!(joined.contains("does not watch live"), "{joined}");
         assert!(joined.contains("immune install"), "{joined}");
+    }
+
+    #[test]
+    fn an_error_is_its_cause_then_what_to_do_then_what_it_quotes_and_nothing_else() {
+        let steps = [
+            Step::Words("Nothing was done. See it with: `immune status`".to_string()),
+            Step::Command("immune finding f0123456789 expected --reason <text>".to_string()),
+        ];
+        let said = Screen::pipe().error("a cause", &steps, &[("Store", "/x/store.db")]);
+        assert_eq!(
+            said,
+            "error: a cause\n  Nothing was done. See it with: immune status\n  \
+             immune finding f0123456789 expected --reason <text>\n  Store   /x/store.db\n"
+        );
+        let painted = Screen::terminal(80, true).error("a cause", &steps, &[]);
+        let lines: Vec<&str> = painted.lines().collect();
+        assert_eq!(lines[0], "\u{1b}[1;31merror:\u{1b}[0m a cause");
+        assert_eq!(
+            lines[1],
+            "  Nothing was done. See it with: \u{1b}[36mimmune status\u{1b}[0m"
+        );
+        assert!(
+            lines[2].starts_with("  \u{1b}[36mimmune finding"),
+            "{painted}"
+        );
+    }
+
+    #[test]
+    fn an_error_on_a_narrow_terminal_is_broken_into_lines_that_fit_and_never_cut() {
+        let cause = "the event log could not be read, so nothing was evaluated at all today";
+        let path = "/Users/example/Library/Application Support/ai.nuanu.immune/a-very-long-folder/store.db";
+        let s = Screen::terminal(40, false);
+        let said = s.error(
+            cause,
+            &[Step::Words(
+                "It was left unchanged. Move it aside or pass another --store.".to_string(),
+            )],
+            &[("Store", path)],
+        );
+        let mut words = String::new();
+        for (i, l) in said.lines().enumerate() {
+            assert!(columns(l) <= 40, "{l}");
+            // Only the first line starts at the left edge.
+            assert_eq!(l.starts_with(' '), i > 0, "{said}");
+            words.push_str(&l.replace(' ', ""));
+        }
+        assert!(words.contains(&path.replace(' ', "")), "{said}");
+        assert!(words.contains("evaluatedatalltoday"), "{said}");
+    }
+
+    #[test]
+    fn a_word_joined_to_a_command_stays_on_its_line_and_takes_no_colour() {
+        let lines = Screen::terminal(80, true).marked("Run `immune run`, then wait.", None);
+        assert_eq!(lines, ["Run \u{1b}[36mimmune run\u{1b}[0m, then wait."]);
+        assert_eq!(
+            Screen::pipe().marked("Run `immune run`, then wait.", Some(12)),
+            ["Run immune", "run, then", "wait."]
+        );
     }
 
     #[test]

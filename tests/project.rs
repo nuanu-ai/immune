@@ -506,7 +506,7 @@ fn a_failure_to_answer_is_never_taken_for_an_answer() {
     let out = h.project("~/dev/shop", &[]);
     assert_eq!(out.status.code(), Some(3));
     assert!(out.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("`immune run` makes it"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("immune run makes one"));
     let out = h.project("~/dev/shop", &["--json"]);
     assert_eq!(out.status.code(), Some(3));
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();

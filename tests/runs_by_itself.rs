@@ -2979,13 +2979,12 @@ fn each_check_with_first_readings_raises_its_own_item_whatever_was_answered_abou
         .unwrap();
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
+    // The place by the name a person knows it by, never its entity id.
     assert!(
-        text.contains(
-            r#"First read: "checkout:machine:mac/.tools/helper". 1 thing runs by itself."#
-        ),
+        text.contains("\n    First read   ~/.tools/helper, 1 thing runs by itself\n"),
         "{text}"
     );
-    assert!(text.contains("\nAbout: 1 project.\n"), "{text}");
+    assert!(text.contains("\n  1 project on mac   "), "{text}");
     // The list's row says it too, beside the short title; what needs a look counts the rule.
     let said = |args: &[&str]| {
         let out = Command::new(env!("CARGO_BIN_EXE_immune"))
@@ -3956,7 +3955,7 @@ fn a_plugin_watched_only_for_presence_is_said_so_in_status_and_in_its_finding() 
     presence(id, true);
     let finding = text(&["finding", id]);
     assert!(
-        finding.contains(&format!("Watched only for presence: {said}.")),
+        finding.contains(&format!("\n    Watched      {said}\n")),
         "{finding}"
     );
     // A file whose content is compared says nothing of the kind.
@@ -3977,7 +3976,7 @@ fn a_plugin_watched_only_for_presence_is_said_so_in_status_and_in_its_finding() 
         .unwrap()
         .to_string();
     presence(&id, false);
-    assert!(!text(&["finding", &id]).contains("Watched only for presence"));
+    assert!(!text(&["finding", &id]).contains("\n    Watched "));
 
     // The finding of a plugin that went still says how it was watched.
     e.seen();

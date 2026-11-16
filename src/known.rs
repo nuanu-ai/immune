@@ -190,9 +190,24 @@ pub fn command<M: Message + serde::Serialize>(
     ask: impl FnOnce(&Connection, i64) -> rusqlite::Result<Result<M, Refused>>,
     text: impl FnOnce(&M) -> String,
 ) -> ExitCode {
+    command_told(op, store, form, ask, text, |f| {
+        crate::text::failure(f, &crate::screen::Screen::of_stderr())
+    })
+}
+
+/// The same, with `refused` the text for a person of a refusal: for a command whose refusal
+/// gives the command to run next made from what was typed (`text::refusal`).
+pub fn command_told<M: Message + serde::Serialize>(
+    op: &str,
+    store: &Path,
+    form: Form,
+    ask: impl FnOnce(&Connection, i64) -> rusqlite::Result<Result<M, Refused>>,
+    text: impl FnOnce(&M) -> String,
+    refused: impl FnOnce(&v1::Failure) -> String,
+) -> ExitCode {
     match read(store, |conn| ask(conn, crate::now_secs())) {
         Ok(Ok(m)) => answer::print(op, form, &m, text),
-        Ok(Err(refused)) => answer::fail(op, form, refused.error(), crate::EXIT_USAGE),
+        Ok(Err(r)) => answer::fail_as(op, form, r.error(), crate::EXIT_USAGE, refused),
         Err(e) => {
             let (error, exit) = answer::stopped(&e, "immune status --json --store <file>");
             answer::fail(op, form, error, exit)
@@ -202,10 +217,7 @@ pub fn command<M: Message + serde::Serialize>(
 
 fn read<T>(store: &Path, ask: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T, Stop> {
     if !store.is_file() {
-        return Err(Stop::Store(format!(
-            "there is no store at {}; `immune run` makes it",
-            store.display()
-        )));
+        return Err(Stop::Store(store::absent(store)));
     }
     let unreadable = |e: Box<dyn std::error::Error>| Stop::Store(e.to_string());
     let conn = store::open_read_only(store).map_err(unreadable)?;

@@ -10,6 +10,7 @@
 //! reader checks it first. Every failure of the seven commands goes through `fail`.
 
 use crate::contract::v1;
+use crate::screen::Screen;
 use crate::{EXIT_RUN_IN_PROGRESS, EXIT_STORE, Stop, known, text};
 use prost::Message;
 use std::io::Write;
@@ -156,7 +157,21 @@ pub fn print<M: Message + serde::Serialize>(
 /// or for a person on stderr with nothing on stdout; and the exit code given, which says which
 /// kind of failure it is. What its detail repeats of what it was given, an argument, a key or a
 /// value a caller sent, is cut here, as it is printed, in every form (`secrets::Text`).
-pub fn fail(op: &str, form: Form, mut error: v1::Error, exit: u8) -> ExitCode {
+pub fn fail(op: &str, form: Form, error: v1::Error, exit: u8) -> ExitCode {
+    fail_as(op, form, error, exit, |failure| {
+        text::failure(failure, &Screen::of_stderr())
+    })
+}
+
+/// The same, with the text for a person made by `text`: for a misuse, whose right form is made
+/// from the command line as typed (`usage::misuse`), which the message does not hold.
+pub fn fail_as(
+    op: &str,
+    form: Form,
+    mut error: v1::Error,
+    exit: u8,
+    text: impl FnOnce(&v1::Failure) -> String,
+) -> ExitCode {
     error.detail_text = error
         .detail_text
         .as_deref()
@@ -176,7 +191,7 @@ pub fn fail(op: &str, form: Form, mut error: v1::Error, exit: u8) -> ExitCode {
                 println!("{line}");
             }
         }
-        Form::Text => eprint!("{}", text::failure(&failure)),
+        Form::Text => eprint!("{}", text(&failure)),
     }
     ExitCode::from(exit)
 }

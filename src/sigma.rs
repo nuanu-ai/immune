@@ -3403,9 +3403,15 @@ mod tests {
         }
         s.now = Some(crate::status::rules_now(None));
         assert!(
-            crate::text::rules(&s)
+            crate::lists::rules(&s, false, &crate::screen::Screen::pipe())
                 .lines()
-                .any(|l| l == "Drill, Atomic Red Team T1027.001: 4 of 4 program starts raise Binary Padding - MacOS.")
+                .any(|l| {
+                    l
+                .starts_with("  Drill ")
+                && l.ends_with(
+                    " Atomic Red Team T1027.001: 4 of 4 program starts raise Binary Padding - MacOS"
+                )
+                })
         );
         let truncate = drill_start("/usr/bin/truncate", DRILL[3].2);
         assert_eq!(
@@ -4411,35 +4417,50 @@ mod tests {
                 &json!("high")
             )
         );
-        let text = crate::text::rules(&m);
+        let pipe = crate::screen::Screen::pipe();
+        let text = crate::lists::rules(&m, false, &pipe);
         let lines: Vec<&str> = text.lines().collect();
-        assert!(
-            lines[0].starts_with("Published rules for macOS: 75 from SigmaHQ's rule set at d7c9da10c170 of 2026-11-10, all shipped; 185 from Elastic's detection rules at 032ac5ecb0b4, 66 of them translated into Sigma and shipped, 119 not taken; 278 from Elastic's behaviour rules at a87715d87a2b, 57 of them translated into Sigma and shipped, 221 not taken, none with a level stated."),
-            "{}",
-            lines[0]
+        assert_eq!(
+            lines[..6],
+            [
+                "Immune evaluates 175 published rules in full and 23 in part; 340 it cannot yet",
+                "",
+                "  Source                     In full  In part  Not evaluated",
+                "  SigmaHQ's rule set              74        1              0",
+                "  Elastic's detection rules       54       12            119",
+                "  Elastic's behaviour rules       47       10            221",
+            ],
+            "{text}"
         );
+        let text = crate::lists::rules(&m, true, &pipe);
+        let lines: Vec<&str> = text.lines().collect();
         assert!(
             lines
                 .iter()
                 .any(|l| l.contains("selection_meshagent needs OriginalFileName"))
         );
-        assert!(lines.contains(
-            &"Evaluated in full: 175, 162 on every program start and 13 on every file created or renamed"
-        ));
-        // A person reads that a rule states no level, in the level's column, and its set beside
-        // its title; the rules of such a set come after the rest under their own heading.
-        let at = |line: &str| lines.iter().position(|l| *l == line);
-        let heading = at("  Of a set that states no level: 47").expect("the group's heading");
-        let ditto =
-            at("  no level stated Sensitive File Copy via Ditto (Elastic's behaviour rules)");
-        assert!(ditto.is_some_and(|d| d > heading), "{lines:?}");
+        // A person reads that a rule states no level, in the level's column; the rules of such a
+        // set come after the rest of their part.
+        let full: Vec<Vec<&str>> = lines
+            .iter()
+            .map(|l| {
+                l.split("  ")
+                    .map(str::trim)
+                    .filter(|c| !c.is_empty())
+                    .collect::<Vec<_>>()
+            })
+            .filter(|r| r.contains(&"in full"))
+            .collect();
+        assert_eq!(full.len(), 175);
+        let first_silent = full
+            .iter()
+            .position(|r| r[0] == "not stated")
+            .expect("rules of a set that states no level");
+        assert_eq!(full.len() - first_silent, 47);
+        assert!(full[first_silent..].iter().all(|r| r[0] == "not stated"));
         assert!(
-            lines
-                [heading..at("Evaluated in part, some alternatives never match here: 23").unwrap()]
-                .iter()
-                .skip(1)
-                .all(|l| l.starts_with("  no level stated ")),
-            "{lines:?}"
+            full.iter()
+                .any(|r| r[1] == "Sensitive File Copy via Ditto" && r[0] == "not stated")
         );
     }
 
@@ -5253,8 +5274,13 @@ mod tests {
             "{}",
             rules.sources_said()
         );
-        let text = crate::text::rules(&rules.message(None));
-        assert!(text.contains(listed), "{text}");
+        let text = crate::lists::rules(&rules.message(None), false, &crate::screen::Screen::pipe());
+        assert!(
+            text.starts_with("Immune evaluates 1 rule in full")
+                && text.contains("\n  Immune's own rules ")
+                && text.contains("Not evaluated"),
+            "{text}"
+        );
 
         // What the check refuses, each made from the fixture by one change.
         let with = |name: &str, text: Option<&str>| {

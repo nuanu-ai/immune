@@ -775,10 +775,7 @@ fn take(args: &VerdictArgs) -> Result<v1::VerdictRecorded, Refusal> {
         .map_err(|e| not_a_verdict(format!("standard input could not be read: {e}")))?;
     let sent = read(&bytes, args.form == answer::Form::Json)?;
     if !args.store.is_file() {
-        return Err(store_unreadable(format!(
-            "there is no store at {}; `immune run` makes it",
-            args.store.display()
-        )));
+        return Err(store_unreadable(crate::store::absent(&args.store)));
     }
     let now = crate::now_secs();
     // Everything that can refuse is checked first against the store opened for reading only, so
@@ -1193,13 +1190,13 @@ mod tests {
                 assert_eq!(error.detail_text.as_deref(), Some(detail.as_str()));
                 assert!(!error.message.contains("extra"));
             }
-            let text = crate::text::failure(&failure);
-            let quoted = detail.replace('"', "\\\"");
+            // For a person, the detail whole on a line of its own under its label.
+            let text = crate::text::failure(&failure, &crate::screen::Screen::pipe());
             assert!(
-                text.lines()
-                    .next()
-                    .unwrap()
-                    .ends_with(&format!(": \"{quoted}\"")),
+                text.lines().any(
+                    |l| l.trim_start().strip_prefix("Given").map(str::trim_start)
+                        == Some(detail.as_str())
+                ),
                 "{text}"
             );
         }

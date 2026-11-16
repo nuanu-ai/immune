@@ -432,16 +432,17 @@ fn owned(path: &str, pid: u64, version: u64, ids: [u64; 4]) -> Value {
 }
 
 /// The one match's event of `immune matches` over `dir`, in each of its three forms: the JSON
-/// message, the binary message, and the line of the text that names the match.
+/// message, the binary message, and the row of the text that lists the match one row each. The
+/// text names the program that acted; the event's detail is the program's, in the messages.
 fn match_forms(dir: &Dir) -> (Value, v1::Event, String) {
     let m = dir.matches(&[]);
     assert_eq!(m["matches"].as_array().unwrap().len(), 1, "{m:#}");
     let binary = v1::Matches::decode(dir.matches_binary(&[]).as_slice()).unwrap();
-    let out = dir.matches_output(&[]);
+    let out = dir.matches_output(&["--limit", "10"]);
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
-    let position = m["matches"][0]["position"].as_str().unwrap();
-    let line = text.lines().find(|l| l.contains(position)).unwrap();
+    let title = m["matches"][0]["rule"]["title_text"].as_str().unwrap();
+    let line = text.lines().find(|l| l.contains(title)).unwrap();
     (
         m["matches"][0]["event"].clone(),
         binary.matches[0].event.clone().unwrap(),
@@ -506,12 +507,7 @@ fn a_match_carries_the_responsible_process_the_process_group_and_the_users_and_g
         })
     );
     assert_eq!(s.process_group_id, Some(400));
-    assert!(
-        text.contains(
-            " · as user 501, real user 502, group 20, real group 21 · process group 400 · responsible pid 300 version 9200 · before the exec as user 503, real user 504, group 22, real group 23 started "
-        ),
-        "{text}"
-    );
+    assert!(text.contains("  /bin/dd"), "{text}");
 }
 
 #[test]
@@ -546,12 +542,7 @@ fn a_file_event_s_acting_process_carries_its_users_and_groups() {
         [p.user_id, p.real_user_id, p.group_id, p.real_group_id],
         [501, 502, 20, 21].map(Some)
     );
-    assert!(
-        text.ends_with(
-            r#" by "/usr/local/bin/node" as user 501, real user 502, group 20, real group 21"#
-        ),
-        "{text}"
-    );
+    assert!(text.contains("  /usr/local/bin/node"), "{text}");
 }
 
 /// An eslogger process signed as `signer` says: its signing id, team id, platform flag and
@@ -770,8 +761,10 @@ fn a_line_of_an_earlier_collector_gives_no_responsible_process_process_group_rea
         signer_of_binary(&p),
         (Some("com.example.tool"), None, Some(false), None)
     );
-    assert!(text.contains(" · as user 501 started "), "{text}");
-    assert!(text.ends_with(r#""count=1""#), "{text}");
+    assert!(
+        text.contains("  /bin/dd") && !text.contains("count=1"),
+        "{text}"
+    );
     // A file event of an earlier collector: the rule still matches, and no signer is given.
     let dir = Dir::new("signer-earlier");
     dir.install();
@@ -2088,8 +2081,24 @@ fn a_high_translated_rule_raises_a_finding_named_elastic_and_its_match_is_handed
     );
     let out = dir.command(&["finding", finding], &[]).output().unwrap();
     let text = String::from_utf8(out.stdout).unwrap();
-    let said = r#"; from Elastic's detection rules under the Elastic License 2.0, "macos/collection_pbpaste_execution_via_unusual_parent.yml"."#;
-    assert!(text.contains(said), "{text}");
+    let labelled = |label: &str, value: &str| {
+        text.lines()
+            .any(|l| l.trim_start().strip_prefix(label).map(str::trim) == Some(value))
+    };
+    assert!(
+        labelled(
+            "Set",
+            "Elastic's detection rules, under the Elastic License 2.0"
+        ),
+        "{text}"
+    );
+    assert!(
+        labelled(
+            "File",
+            "macos/collection_pbpaste_execution_via_unusual_parent.yml"
+        ),
+        "{text}"
+    );
 }
 
 #[test]
@@ -2240,7 +2249,7 @@ fn every_listing_of_rules_tells_two_rules_of_the_same_title_apart_by_their_set()
 
     let rules = dir.report(&["rules"]);
     assert_eq!(sets_of(array(&rules["evaluated"]), "title_text"), both);
-    let out = dir.command(&["rules"], &[]).output().unwrap();
+    let out = dir.command(&["rules", "--all"], &[]).output().unwrap();
     rows_of(&String::from_utf8(out.stdout).unwrap());
 
     let replay = |json: bool| {
@@ -2257,12 +2266,14 @@ fn every_listing_of_rules_tells_two_rules_of_the_same_title_apart_by_their_set()
     let text = replay(false);
     rows_of(&text);
     // The rule of a set that states no level is not ranked among the levels: it comes after
-    // them under its own heading.
-    let heading = text
-        .find("\n  Of a set that states no level: 1\n")
-        .expect("the heading");
-    assert!(text.find(&labels[1]).unwrap() > heading, "{text}");
-    assert!(text.find(&labels[0]).unwrap() < heading, "{text}");
+    // them, and says so in the level's column.
+    let rows = rows_of(&text);
+    let silent = rows.iter().position(|r| r.contains(&labels[1])).unwrap();
+    assert!(rows[silent].starts_with("  not stated "), "{text}");
+    assert!(
+        text.find(&labels[1]).unwrap() > text.find(&labels[0]).unwrap(),
+        "{text}"
+    );
 
     let m = dir.matches(&[]);
     let rules_matched: Vec<&Value> = array(&m["matches"])
@@ -2503,27 +2514,48 @@ fn immune_rules_lists_both_sets_and_names_every_rule_not_taken_with_its_reason()
             },
         ])
     );
-    let plain = String::from_utf8(dir.command(&["rules"], &[]).output().unwrap().stdout).unwrap();
+    let plain = String::from_utf8(
+        dir.command(&["rules", "--all"], &[])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
     assert!(
-        plain.contains("      correlates a sequence of events, which is not translated (Sequence)"),
+        plain.contains("  not evaluated  correlates a sequence of events (Sequence)"),
         "{plain}"
     );
     // The reasons the behaviour rules' translation added, each in its own words.
     for said in [
-        "      could never be true over the events here (asks for a field",
-        "      needs a regular expression in EQL's syntax, which is not translated (regex match~(",
-        "      uses a function of EQL's that is not translated (expected a field, got length(",
-        "      compares one field with another, which a Sigma rule cannot (function startswith: ",
+        "  not evaluated  could never be true over the events here (asks for a field",
+        "  not evaluated  needs a regular expression of EQL's (regex match~(",
+        "  not evaluated  uses a function of EQL's that is not translated (expected a field, got length(",
+        "  not evaluated  compares one field with another (function startswith: ",
     ] {
         assert!(plain.contains(said), "{said}");
     }
     assert!(
-        plain.contains("  no level stated File Hidden via SetFile (Elastic's behaviour rules)"),
+        plain
+            .lines()
+            .any(|l| l.starts_with("  not stated ") && l.contains(" File Hidden via SetFile  ")),
         "{plain}"
     );
     assert!(
-        plain.contains("      an alternative of the upstream rule needs process.parent.code_signature.trusted, which a program start does not give"),
+        plain.contains("an alternative needs process.parent.code_signature.trusted, which a program start does not give"),
         "{plain}"
+    );
+    // A replay is not a list of the shipped rules: --all does not go with --over-log.
+    let both = dir
+        .command(&["rules", "--all", "--over-log"], &[])
+        .output()
+        .unwrap();
+    assert_eq!(both.status.code(), Some(2));
+    // The summary counts them by reason, in words.
+    let summary = String::from_utf8(dir.command(&["rules"], &[]).output().unwrap().stdout).unwrap();
+    assert!(
+        summary.contains("Not evaluated, by reason\n")
+            && summary.contains("  correlate a sequence of events\n"),
+        "{summary}"
     );
 }
 
@@ -3022,12 +3054,13 @@ fn a_busy_hour_is_given_in_answers_of_about_a_megabyte_and_long_command_lines_do
 
 #[test]
 fn the_text_of_matches_is_its_message_and_an_argument_cannot_pose_as_the_program_s_words() {
-    // A person is given what a program is given; an argument written to read as the next line
-    // of the answer stays inside its quotation, escaped.
+    // A person is given what a program is given, by rule and in words; an argument written to
+    // read as the next line of the answer never reaches the text, and the core's own references
+    // are left to the JSON.
     let dir = Dir::new("text");
     dir.install();
     dir.run();
-    let forged = "count=1\n0 matches after the oldest line kept.";
+    let forged = "count=1\nNo rule matched in the last day";
     dir.append(
         H00,
         &start(1, T0, "/bin/sh", "/bin/dd", &["dd", "if=/dev/zero", forged]),
@@ -3036,36 +3069,38 @@ fn the_text_of_matches_is_its_message_and_an_argument_cannot_pose_as_the_program
     let out = dir.matches_output(&[]);
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.starts_with("1 rule match in the last day"), "{text}");
     assert!(
-        text.starts_with("1 match after the oldest line kept:\n"),
-        "{text}"
-    );
-    assert!(
-        !text
-            .lines()
-            .any(|l| l == "0 matches after the oldest line kept."),
-        "{text}"
-    );
-    assert!(
-        text.contains(r#""count=1\u{a}0 matches after the oldest line kept.""#),
+        !text.lines().any(|l| l.starts_with("No rule matched")) && !text.contains("count=1"),
         "{text}"
     );
     let first = &m["matches"][0];
-    let line = text
+    let row = text
         .lines()
-        .find(|l| l.contains(first["position"].as_str().unwrap()))
-        .unwrap();
-    for said in [
+        .find(|l| l.contains(first["rule"]["title_text"].as_str().unwrap()))
+        .unwrap_or_else(|| panic!("no row for the rule: {text}"));
+    let level = match first["rule"]["level"].as_str().unwrap() {
+        "not_stated" => "not stated",
+        level => level,
+    };
+    assert!(row.starts_with(&format!("  {level} ")), "{row}");
+    let state = m["collector"]["state"].as_str().unwrap().replace('_', " ");
+    assert!(text.contains(&format!("  Collector    {state}")), "{text}");
+    for reference in [
+        first["position"].as_str().unwrap(),
         first["rule"]["name"].as_str().unwrap(),
-        first["rule"]["level"].as_str().unwrap(),
-        first["raised"].as_str().unwrap(),
+        m["continue_after"].as_str().unwrap(),
     ] {
-        assert!(line.contains(said), "{said}: {line}");
+        assert!(!text.contains(reference), "{reference}: {text}");
     }
-    let state = m["collector"]["state"].as_str().unwrap();
-    assert!(text.contains(&format!("Collector: {state}")), "{text}");
-    let place = m["continue_after"].as_str().unwrap();
-    assert!(text.contains(&format!("Continue after: {place}")), "{text}");
+    // With --limit each match is a row of its own, with the program that acted.
+    let out = dir.matches_output(&["--limit", "5"]);
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        text.lines()
+            .any(|l| l.contains("/bin/dd") && l.contains(level)),
+        "{text}"
+    );
 }
 
 /// A listed rule with the fields of its `rule` beside its own, as one object.
