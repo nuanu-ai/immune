@@ -962,7 +962,7 @@ pub struct Found {
     pub verdicts: Option<crate::verdict::Summary>,
     /// Its latest occurrence is a place that could not be read, and nothing it rests on is a
     /// change that was seen: its words say so (`not_read_words`). For a `verdict.suspicious`
-    /// finding, whether that holds of the finding it judges (`judged_as_read`).
+    /// finding, whether that holds of the finding its opening verdict named (`judged_as_read`).
     pub unread_only: bool,
 }
 
@@ -1089,18 +1089,25 @@ pub fn all(conn: &Connection, now: i64) -> rusqlite::Result<Vec<Found>> {
     })
 }
 
-/// Marks each `verdict.suspicious` finding `unread_only` when the latest finding of the rule it
-/// judges, about the same thing, is: what it is about is then said in that finding's own words,
-/// a place that could not be read, never the rule's words of a change (`verdict_item`).
+/// Marks each `verdict.suspicious` finding `unread_only` when the finding named by the verdict
+/// that raised it is: what it is about is then said in that finding's own words, a place that
+/// could not be read, and a verdict about a change that was seen keeps the rule's words, whatever
+/// happened to the place since (`verdict_item`). A verdict about a match judged an event, never
+/// a place that could not be read.
 fn judged_as_read(found: &mut [Found]) {
-    let unread: std::collections::HashSet<(String, String)> = found
+    let unread: std::collections::HashSet<String> = found
         .iter()
-        .filter(|g| g.unread_only && !g.superseded)
-        .map(|g| (g.rule.clone(), g.about.clone()))
+        .filter(|g| g.unread_only)
+        .map(|g| g.id.clone())
         .collect();
     for f in found.iter_mut() {
-        if let Some(subject) = f.rule.strip_prefix(crate::verdict::PREFIX) {
-            f.unread_only = unread.contains(&(subject.to_string(), f.about.clone()));
+        if f.rule.starts_with(crate::verdict::PREFIX) {
+            f.unread_only = f
+                .verdicts
+                .as_ref()
+                .and_then(|v| v.opening.as_ref())
+                .and_then(|o| o.named.as_ref())
+                .is_some_and(|named| unread.contains(named));
         }
     }
 }
@@ -2273,11 +2280,12 @@ mod tests {
     fn a_verdict_about_a_place_that_could_not_be_read_never_says_it_was_changed() {
         // A suspicious verdict about a finding of a watched place that could not be read names
         // what it judges in that finding's own words; one about a change that was seen keeps
-        // the rule's, though an earlier occurrence was of a place not read.
-        let found = |rule: &str, about: &str, unread_only: bool| super::Found {
-            id: format!("{rule} {about}"),
+        // the rule's. Each follows the finding the verdict named, not the latest finding of
+        // that rule about the same thing.
+        let found = |id: &str, rule: &str, unread_only: bool| super::Found {
+            id: id.into(),
             rule: rule.into(),
-            about: about.into(),
+            about: "file:machine:a//etc/pam.d".into(),
             state: "open".into(),
             change: Some(if unread_only { "not read" } else { "changed" }.into()),
             first_seen: (1, "1".into()),
@@ -2297,22 +2305,52 @@ mod tests {
         };
         let rule = "watched.authentication";
         let judged = format!("verdict.suspicious:{rule}");
-        let earlier = super::Found {
-            superseded: true,
-            ..found(rule, "file:machine:a//etc/sudoers", true)
+        // A verdict whose opening verdict named `named`.
+        let verdict = |named: &str| super::Found {
+            verdicts: Some(crate::verdict::Summary {
+                opening: Some(crate::verdict::Recorded {
+                    at: 1,
+                    kind: crate::verdict::Kind::Suspicious,
+                    named: Some(named.into()),
+                    position: None,
+                    rule: None,
+                    finding: Some("v".into()),
+                    raised: true,
+                    severity: Some("low".into()),
+                    confidence: Some("low".into()),
+                    reason: crate::secrets::Kept::Reason.read("invented"),
+                    case: crate::secrets::Kept::Case.read("case-1"),
+                }),
+                ..Default::default()
+            }),
+            ..found("v", &judged, false)
         };
-        let mut all = vec![
-            found(rule, "file:machine:a//etc/pam.d", true),
-            found(&judged, "file:machine:a//etc/pam.d", false),
-            earlier,
-            found(rule, "file:machine:a//etc/sudoers", false),
-            found(&judged, "file:machine:a//etc/sudoers", false),
-        ];
-        super::judged_as_read(&mut all);
         let kind = super::rule(rule).unwrap().kind;
         let value = |f: &super::Found| super::item(f).value.unwrap();
-        assert_eq!(value(&all[1]), super::not_read_words(kind).title);
-        assert_eq!(value(&all[4]), super::rule(rule).unwrap().words.title);
+        let not_read = super::not_read_words(kind).title;
+        let changed = super::rule(rule).unwrap().words.title;
+        // A seen change judged, then the place unreadable: the change's words stay.
+        let mut all = vec![
+            super::Found {
+                superseded: true,
+                ..found("f1", rule, false)
+            },
+            found("f2", rule, true),
+            verdict("f1"),
+        ];
+        super::judged_as_read(&mut all);
+        assert_eq!(value(&all[2]), changed);
+        // A place not read judged, then a change seen: the not-read words stay.
+        let mut all = vec![
+            super::Found {
+                superseded: true,
+                ..found("f1", rule, true)
+            },
+            found("f2", rule, false),
+            verdict("f1"),
+        ];
+        super::judged_as_read(&mut all);
+        assert_eq!(value(&all[2]), not_read);
     }
 
     #[test]

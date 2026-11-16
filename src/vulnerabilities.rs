@@ -1077,10 +1077,10 @@ pub struct Totals {
     pub packages_by_reason: Vec<(&'static str, usize)>,
     /// Those packages, as checkout, ecosystem and name, each with that first reason, in order.
     pub unknown_packages: Vec<(String, String, String, &'static str)>,
-    /// The places whose lockfiles were not all read, as checkout, ecosystem, `partial` or
-    /// `not_read`, and why, in order: what they declare is not all known, whether or not a
-    /// package was read there, so no answer about them is "not affected".
-    pub unread_places: Vec<(String, String, String, Option<String>)>,
+    /// The places whose lockfiles were not all read, as checkout, ecosystem, `partial`,
+    /// `not_read` or `no_reader`, and why, in order: what they declare is not all known, whether
+    /// or not a package was read there, so no answer about them is "not affected".
+    pub unread_places: Vec<UnreadPlace>,
     /// Informational advisories held, which this version does not answer.
     pub informational: usize,
     /// Whether matching ever ran on this store.
@@ -1275,6 +1275,12 @@ pub fn totals(conn: &Connection, now: i64) -> rusqlite::Result<Totals> {
         )?
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
         .collect::<rusqlite::Result<_>>()?;
+    t.unread_places.extend(
+        no_reader_places(conn)?
+            .into_iter()
+            .map(|(c, e, names)| (c, e, NO_READER.to_string(), Some(no_reader_said(&names)))),
+    );
+    t.unread_places.sort();
     t.informational = conn.query_row(
         "SELECT COUNT(*) FROM advisory
          WHERE kind = 'informational' AND withdrawn IS NULL AND gone_at IS NULL",
@@ -1469,6 +1475,71 @@ fn held_records(conn: &Connection, id: &str) -> rusqlite::Result<Vec<Held>> {
         .collect())
 }
 
+/// A place whose lockfiles were not all read: checkout, ecosystem, how they were read and why.
+pub type UnreadPlace = (String, String, String, Option<String>);
+
+/// How the lockfiles of a place were read when this version has no reader for their kind.
+pub const NO_READER: &str = "no_reader";
+
+/// The places whose lockfiles are of a kind this version has no reader for, in an ecosystem no
+/// data is matched for, as checkout, ecosystem and the kinds by name, from each checkout's
+/// latest reading of lockfiles. Such a project was compared with nothing there, though every
+/// lockfile it has of a matched ecosystem was read. A kind of a matched ecosystem, such as
+/// `yarn.lock`, is not here: its place is `partial` (`vulnerability_place`). A kind of no known
+/// ecosystem is under `other`.
+fn no_reader_places(conn: &Connection) -> rusqlite::Result<Vec<(String, String, String)>> {
+    let rows: Vec<(String, String)> = conn
+        .prepare(
+            "SELECT c.scope, l.name FROM coverage c JOIN coverage_lack l ON l.coverage = c.id
+             WHERE c.reader = ?1 AND l.what = ?2 AND l.name IS NOT NULL
+               AND c.id = (SELECT MAX(o.id) FROM coverage o WHERE o.reader = c.reader AND o.scope = c.scope)
+               AND c.scope NOT IN (SELECT id FROM gone_entity)
+             ORDER BY c.scope, l.name",
+        )?
+        .query_map(
+            [crate::lockfiles::READER, crate::lockfiles::LOCKFILE_KIND],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut places: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+    for (checkout, name) in rows {
+        let ecosystem = crate::lockfiles::ecosystem_of(&name);
+        if ecosystem.is_some_and(|e| FEEDS.iter().any(|f| f.ecosystem == e)) {
+            continue;
+        }
+        places
+            .entry((checkout, ecosystem.unwrap_or("other").to_string()))
+            .or_default()
+            .push(name);
+    }
+    Ok(places
+        .into_iter()
+        .map(|((c, e), names)| (c, e, names.join(", ")))
+        .collect())
+}
+
+/// Why the lockfiles of a place of `no_reader_places` were not read: these kinds, by name.
+fn no_reader_said(names: &str) -> String {
+    format!("this version has no reader for {names}")
+}
+
+/// The places whose lockfiles were not all read as the contract gives them, at most `SHOWN`.
+fn unread_of(places: &[UnreadPlace], this: Option<&crate::findings::This>) -> v1::UnreadPlaces {
+    v1::UnreadPlaces {
+        items: places
+            .iter()
+            .take(SHOWN)
+            .map(|(checkout, ecosystem, lockfiles, why)| v1::UnreadPlace {
+                project_text: whole(&crate::findings::place(checkout, this)),
+                ecosystem: ecosystem.clone(),
+                lockfiles: lockfiles.clone(),
+                why_text: why.as_deref().map(whole),
+            })
+            .collect(),
+        total: places.len() as u64,
+    }
+}
+
 /// A place's row: checkout, ecosystem, lockfiles, why, feed, why, when the data was read.
 type Place = (
     String,
@@ -1531,20 +1602,7 @@ pub fn list(conn: Option<&Connection>, now: i64) -> rusqlite::Result<v1::Vulnera
             .collect(),
         total: t.unknown_packages.len() as u64,
     });
-    out.unread = Some(v1::UnreadPlaces {
-        items: t
-            .unread_places
-            .iter()
-            .take(SHOWN)
-            .map(|(checkout, ecosystem, lockfiles, why)| v1::UnreadPlace {
-                project_text: whole(&crate::findings::place(checkout, this.as_ref())),
-                ecosystem: ecosystem.clone(),
-                lockfiles: lockfiles.clone(),
-                why_text: why.as_deref().map(whole),
-            })
-            .collect(),
-        total: t.unread_places.len() as u64,
-    });
+    out.unread = Some(unread_of(&t.unread_places, this.as_ref()));
     out.affected = Some(v1::AffectedPackages {
         items: all
             .iter()
@@ -1696,6 +1754,21 @@ pub fn one(conn: Option<&Connection>, id: &str, now: i64) -> rusqlite::Result<v1
         if in_catalogue {
             out.data = Some(v1::RecordData::NoRecord as i32);
             out.answers = places.iter().map(|p| derived(p, "no_signs")).collect();
+            // A project with lockfiles of a kind no reader reads was compared with nothing
+            // there: it cannot be told for it, whatever its other lockfiles say.
+            for (checkout, ecosystem, names) in no_reader_places(conn)? {
+                out.answers.push(v1::PlaceAnswer {
+                    project_text: place_of(&checkout),
+                    ecosystem,
+                    answer: Some(answer("unknown")),
+                    reason: Some(PLACE_NOT_READ.to_string()),
+                    detail_text: Some(whole(&no_reader_said(&names))),
+                    ..Default::default()
+                });
+            }
+            out.answers.sort_by(|a, b| {
+                (&a.project_text, &a.ecosystem).cmp(&(&b.project_text, &b.ecosystem))
+            });
             out.said = Some(no_record_said(&out.answers));
         } else {
             out.data = Some(v1::RecordData::UnknownId as i32);
@@ -1948,6 +2021,24 @@ pub fn finding_detail(list: &[Affecting], about: &str) -> Option<(String, String
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_places_not_all_read_are_listed_up_to_a_limit_and_always_counted_whole() {
+        // More places than the message lists: the first `SHOWN` are listed, the total is all.
+        let places: Vec<super::UnreadPlace> = (0..super::SHOWN + 1)
+            .map(|i| {
+                (
+                    format!("checkout:machine:mac/dev/p{i:03}"),
+                    "npm".to_string(),
+                    "partial".to_string(),
+                    None,
+                )
+            })
+            .collect();
+        let m = super::unread_of(&places, None);
+        assert_eq!(m.items.len(), super::SHOWN);
+        assert_eq!(m.total, super::SHOWN as u64 + 1);
+    }
+
     use super::*;
 
     fn v(s: &str) -> Version {

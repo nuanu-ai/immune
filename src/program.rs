@@ -3,16 +3,23 @@
 //! particular to a program is how the question names it and which readings find programs.
 //!
 //! A program is a thing a reading of installed programs wrote about (`FOUND_BY`): an application
-//! bundle, the folder of code an application keeps outside it, a Homebrew formula or cask, a
-//! Homebrew keg, a global npm package. Which entities are programs is taken from those readings'
-//! assertions, so no product is named here.
+//! bundle, a Homebrew formula or cask, a Homebrew keg, a global npm package. Which entities are
+//! programs is taken from those readings' assertions, so no product is named here. The folder of
+//! code an application keeps in `~/Library/Application Support` is not a program: it is a part of
+//! its application.
 //!
 //! What was asked becomes the program's entity from the store alone, and no path is looked at:
 //! - A path, absolute or beginning with `~/`, leads to the program whose folder holds it. A
 //!   program's folder is where the store says it is installed (`installed_at`), or the path of a
-//!   program the store names by its path, as it names a keg or a folder of code (a `file`). So a
-//!   bundle, a keg, a folder of code and a file inside any of them each lead to their program. Where no program is now,
-//!   a program that was installed there and moved, or one copy of it that went, is the program.
+//!   program the store names by its path, as it names a keg (a `file`). So a bundle, a keg and a
+//!   file inside either lead to their program. Where no program is now, a program that was
+//!   installed there and moved, or one copy of it that went, is the program.
+//! - A path at or inside a folder of code the store holds in force, or that folder's id, leads to
+//!   the application it belongs to. Any other path in `~/Library/Application Support` is a place
+//!   no reading opened: the reading of applications' code opens there only the folders named
+//!   after an installed application that Apple did not sign. It is answered `unknown` with a
+//!   reading made by rule that says so, never as looked at. So is a place inside a folder of code
+//!   that its reading passes over, such as a cache, though it leads to the application.
 //! - A program's id is that program. A `file:` id of this Mac that is not a program is the path
 //!   it names; any other id the store holds is not a program, and is refused.
 //! - Anything else is a name, matched against the last part of a program's id,
@@ -24,7 +31,9 @@
 //! One program can be known under several ids that no fact links: a Homebrew formula and its
 //! kegs, an application and the folder of code it keeps outside its bundle. Asked by any of them,
 //! the answer is about all of them (`kin`), so a finding about a keg is in the answer about its
-//! formula, however the program was named.
+//! formula, however the program was named. The tie runs between a program and its own parts and
+//! never on from them: two applications that match one folder are not one program, nor are two
+//! formulas of one short name.
 //!
 //! A question that fits more than one program is refused, with their ids: the message holds one
 //! thing, and choosing one would hide the others. So is a path that fits programs only when case
@@ -39,13 +48,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-/// The readings that find programs on a Mac, or a part of one under an id of its own, as reader
-/// and kind. Their latest reading of this Mac speaks for every program the store never heard of.
-/// The last finds none: it says which package managers no reader reads, so a program one of them
-/// installed is never answered as absent on the others alone.
-const FOUND_BY: [(&str, &str); 6] = [
+/// The readings that find programs on a Mac, as reader and kind. Their latest reading of this
+/// Mac speaks for every program the store never heard of. The last finds none: it says which
+/// package managers no reader reads, so a program one of them installed is never answered as
+/// absent on the others alone.
+const FOUND_BY: [(&str, &str); 5] = [
     (integrity::READER, integrity::BUNDLES),
-    (integrity::READER, integrity::APP_SUPPORT),
     (integrity::READER, integrity::KEGS),
     (integrity::READER, integrity::NPM),
     (brew::READER, brew::KIND),
@@ -83,7 +91,14 @@ pub fn parse(
 /// Why an answer about a path that no reading in `FOUND_BY` looks at is not "looked, and not
 /// there": the readings of installed programs read their own places, and the reading of
 /// Homebrew asks Homebrew by name.
-const UNREAD: &str = "no reading that finds programs looks at this place: they read the applications folders, the code applications keep in ~/Library/Application Support, Homebrew's kegs and the global npm packages, and ask Homebrew by name";
+const UNREAD: &str = "no reading that finds programs looks at this place: they read the applications folders, Homebrew's kegs and the global npm packages, and ask Homebrew by name";
+
+/// Why a path in `~/Library/Application Support` outside every folder of code read now is not
+/// "looked, and not there".
+const NOT_OPENED: &str = "Immune opens in ~/Library/Application Support only the folders named after an installed application that Apple did not sign, so it has not looked into this one";
+
+/// Why a place inside a folder of code that its reading passes over is not read.
+const NOT_WALKED: &str = "Immune does not compare caches, web storage, crash reports and logs inside an application's folder of code, so this place in it was not looked at";
 
 /// Answers `immune program`.
 pub fn program_cmd(args: &ProgramArgs) -> ExitCode {
@@ -133,12 +148,23 @@ pub fn program_cmd(args: &ProgramArgs) -> ExitCode {
                 also: &also,
                 folder: None,
                 place,
-                unread: place.filter(|rel| !integrity::reads(rel)).map(|_| UNREAD),
+                unread: found.unread,
                 machine: this.as_deref(),
                 found_by: &found_by,
                 inside: &[],
             };
             let mut known = known::known_of(conn, &q, &args.home, now)?;
+            // A program is held while a reading of programs holds it: a folder of code it shares
+            // with another application still installed holds that one, not this.
+            if known.presence == v1::Presence::Held as i32 {
+                let mut held = false;
+                for one in id.iter().chain(&also) {
+                    held = held || held_as_program(conn, one)?;
+                }
+                if !held {
+                    known.presence = v1::Presence::Gone as i32;
+                }
+            }
             // A program the store never heard of may be one a package manager this version does
             // not read installed: the answer says so, whatever the table of managers found.
             if let (true, Some(machine)) = (
@@ -165,11 +191,13 @@ const OTHER_MANAGERS_KIND: &str = "software of package managers this version doe
 /// Its reason: the standing limit, in the words of what this version cannot judge.
 const OTHER_MANAGERS_LIMIT: &str = crate::status::OTHER_MANAGERS;
 
-/// The programs a question names, and the path it asked about, as ids name paths, when it was one.
+/// The programs a question names, the path it asked about, as ids name paths, when it was one,
+/// and why no reading looked at that path, when none did.
 #[derive(Default)]
 struct Found {
     ids: Vec<String>,
     place: Option<String>,
+    unread: Option<&'static str>,
 }
 
 /// The programs `asked` names on this Mac, `this`, or the refusal of an id that is not one or
@@ -184,7 +212,7 @@ fn find(
     if programs.contains_key(asked) {
         return Ok(Ok(Found {
             ids: vec![asked.to_string()],
-            place: None,
+            ..Found::default()
         }));
     }
     let file = asked
@@ -195,6 +223,39 @@ fn find(
         .map(str::to_string)
         .or_else(|| known::path_of(asked, home))
     {
+        // A folder of code read now, and a place in it, are its application's; a place in it
+        // the reading passes over is not read.
+        let folders = code_folders(conn, this)?;
+        let live = folders
+            .iter()
+            .filter(|(_, live)| **live)
+            .find_map(|(id, _)| {
+                known::place_of(id)
+                    .filter(|(_, f)| known::within(&rel, f))
+                    .map(|(_, f)| (id, f))
+            });
+        if let Some((folder, path)) = live {
+            let ids: Vec<String> = programs
+                .keys()
+                .filter(|a| belongs(&programs, this, a, folder))
+                .cloned()
+                .collect();
+            if !ids.is_empty() {
+                let rest = rel[path.len()..].trim_start_matches('/');
+                return Ok(Ok(Found {
+                    ids,
+                    unread: integrity::not_walked(rest).then_some(NOT_WALKED),
+                    place: Some(rel),
+                }));
+            }
+        }
+        if integrity::in_app_support(&rel) {
+            return Ok(Ok(Found {
+                ids: Vec::new(),
+                place: Some(rel),
+                unread: Some(NOT_OPENED),
+            }));
+        }
         let ids = at(&programs, |f| known::within(&rel, f));
         if ids.is_empty() {
             let wanted = rel.to_lowercase();
@@ -208,6 +269,7 @@ fn find(
         }
         return Ok(Ok(Found {
             ids,
+            unread: (!integrity::reads(&rel)).then_some(UNREAD),
             place: Some(rel),
         }));
     }
@@ -228,57 +290,118 @@ fn find(
             })
             .cloned()
             .collect(),
-        place: None,
+        ..Found::default()
     }))
 }
 
 /// The ids the store knows one program by, `id` among them. Two readings find one program under
 /// two ids, and nothing in the store links them: the reading of Homebrew names a formula, the
 /// reading of kegs names each keg by its path, and the reading of applications' code names the
-/// folder an application keeps outside its bundle by its path. Each is tied to the others by the
-/// name it is matched by: a keg to the formula by the formula's name, the last part of Homebrew's
-/// name for it, and a folder of code to the application by its identifier or its folder's name,
-/// as that reading matches them (`integrity::app_names`). Ids that share such a name are one
-/// program, followed name by name.
+/// folder an application keeps outside its bundle by its path. A program is tied to its own
+/// parts and the tie goes no further: an application to the folders of code that match it
+/// (`belongs`), a formula to its own kegs and a keg to its formulas (`own_keg`). So two
+/// applications that match one folder, or two formulas of one short name, stay two programs. A
+/// folder is never asked for itself: `find` takes it to its application.
 fn kin(conn: &Connection, this: &str, id: &str) -> rusqlite::Result<BTreeSet<String>> {
     let programs = programs(conn, this)?;
-    let formula = format!("component:{this}/brew/");
-    let app = format!("component:{this}/macos-app/");
-    let files = format!("file:{this}/");
-    // The names each id is matched by, for every program, folders of applications' code among them.
-    let mut names: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for (pid, p) in &programs {
-        let of = names.entry(pid.clone()).or_default();
-        if let Some(full) = pid.strip_prefix(&formula) {
-            of.push(format!(
-                "formula {}",
-                full.rsplit('/').next().unwrap_or(full)
-            ));
-        } else if pid.starts_with(&app) {
-            for at in p.at.iter().chain(&p.was_at) {
-                of.extend(
-                    integrity::app_names(pid, at)
-                        .into_iter()
-                        .map(|n| format!("application {n}")),
-                );
-            }
-        } else if let Some(rel) = pid.strip_prefix(&files) {
-            of.extend(integrity::keg_formula(rel).map(|n| format!("formula {n}")));
-            of.extend(integrity::app_support_name(rel).map(|n| format!("application {n}")));
-        }
-    }
+    let folders = code_folders(conn, this)?;
     let mut one: BTreeSet<String> = BTreeSet::from([id.to_string()]);
-    let mut next = vec![id.to_string()];
-    while let Some(at) = next.pop() {
-        let Some(mine) = names.get(&at) else { continue };
-        for (other, theirs) in &names {
-            if !one.contains(other) && theirs.iter().any(|n| mine.contains(n)) {
-                one.insert(other.clone());
-                next.push(other.clone());
-            }
+    one.extend(
+        folders
+            .keys()
+            .filter(|f| belongs(&programs, this, id, f))
+            .cloned(),
+    );
+    one.extend(
+        programs
+            .keys()
+            .filter(|other| {
+                own_keg(&programs, this, id, other) || own_keg(&programs, this, other, id)
+            })
+            .cloned(),
+    );
+    Ok(one)
+}
+
+/// Whether the folder of code `folder` is the application `app`'s: its name is the application's
+/// identifier or its folder's name, as the reading of applications' code matches them
+/// (`integrity::app_names`), wherever the application is or was installed.
+fn belongs(programs: &BTreeMap<String, Program>, this: &str, app: &str, folder: &str) -> bool {
+    let Some(p) = programs.get(app) else {
+        return false;
+    };
+    if !app.starts_with(&format!("component:{this}/macos-app/")) {
+        return false;
+    }
+    let Some(name) = folder
+        .strip_prefix(&format!("file:{this}/"))
+        .and_then(integrity::app_support_name)
+    else {
+        return false;
+    };
+    p.at.iter()
+        .chain(&p.was_at)
+        .any(|at| integrity::app_names(app, at).contains(&name))
+}
+
+/// Whether `keg` is a keg of the formula `formula`. Homebrew names a keg's folder by the last
+/// part of the formula's full name, and gives each formula's installed versions: a keg is the
+/// formula's when the names match and its version is one Homebrew gave for that formula. A keg
+/// whose version Homebrew gave for no formula of that name is tied to each of them, so that no
+/// finding about it is left out of an answer.
+fn own_keg(programs: &BTreeMap<String, Program>, this: &str, formula: &str, keg: &str) -> bool {
+    let brew = format!("component:{this}/brew/");
+    let short = |id: &str| {
+        id.strip_prefix(&brew)
+            .map(|full| full.rsplit('/').next().unwrap_or(full).to_string())
+    };
+    let Some((name, version)) = keg
+        .strip_prefix(&format!("file:{this}/"))
+        .and_then(integrity::keg_of)
+    else {
+        return false;
+    };
+    if short(formula).as_deref() != Some(name) {
+        return false;
+    }
+    let gave = |f: &str| {
+        programs
+            .get(f)
+            .is_some_and(|p| p.versions.iter().any(|v| v == version))
+    };
+    gave(formula)
+        || !programs
+            .keys()
+            .any(|f| short(f).as_deref() == Some(name) && gave(f))
+}
+
+/// Whether a reading that finds programs holds `id` now: an assertion in force about it by one
+/// of `FOUND_BY`.
+fn held_as_program(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
+    let mut q = conn.prepare(
+        "SELECT EXISTS (SELECT 1 FROM assertion
+                        WHERE layer = 'live' AND subject = ?1 AND reader = ?2 AND kind = ?3)",
+    )?;
+    for (reader, kind) in FOUND_BY {
+        if q.query_row([id, reader, kind], |r| r.get::<_, bool>(0))? {
+            return Ok(true);
         }
     }
-    Ok(one)
+    Ok(false)
+}
+
+/// The folders of code applications keep in `~/Library/Application Support` that the reading of
+/// them ever wrote about on this Mac, by id, each with whether that reading holds it now.
+fn code_folders(conn: &Connection, this: &str) -> rusqlite::Result<BTreeMap<String, bool>> {
+    conn.prepare(
+        "SELECT subject, MAX(layer = 'live') FROM assertion
+         WHERE layer IN ('live', 'retracted') AND reader = ?1 AND scope = ?2 AND kind = ?3
+         GROUP BY subject",
+    )?
+    .query_map([integrity::READER, this, integrity::APP_SUPPORT], |r| {
+        Ok((r.get(0)?, r.get(1)?))
+    })?
+    .collect()
 }
 
 /// A program as the readings that find programs left it.
@@ -288,6 +411,8 @@ struct Program {
     at: Vec<String>,
     /// Where it was installed, from retracted `installed_at`.
     was_at: Vec<String>,
+    /// The versions it was given, in force or retracted (`has_version`).
+    versions: Vec<String>,
 }
 
 impl Program {
@@ -306,7 +431,8 @@ impl Program {
 fn programs(conn: &Connection, this: &str) -> rusqlite::Result<BTreeMap<String, Program>> {
     let mut q = conn.prepare(
         "SELECT DISTINCT subject, layer = 'live',
-                CASE WHEN predicate = 'installed_at' THEN object END
+                CASE WHEN predicate = 'installed_at' THEN object END,
+                CASE WHEN predicate = 'has_version' THEN object END
          FROM assertion
          WHERE layer IN ('live', 'retracted') AND reader = ?1 AND scope = ?2 AND kind = ?3",
     )?;
@@ -317,16 +443,18 @@ fn programs(conn: &Connection, this: &str) -> rusqlite::Result<BTreeMap<String, 
                 r.get::<_, String>(0)?,
                 r.get::<_, bool>(1)?,
                 r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<String>>(3)?,
             ))
         })?;
         for row in rows {
-            let (id, live, at) = row?;
+            let (id, live, at, version) = row?;
             let p = out.entry(id).or_default();
             match (at, live) {
                 (Some(at), true) => p.at.push(at),
                 (Some(at), false) => p.was_at.push(at),
                 (None, _) => {}
             }
+            p.versions.extend(version);
         }
     }
     Ok(out)

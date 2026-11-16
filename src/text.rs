@@ -2687,6 +2687,25 @@ mod tests {
         };
         let text = vulnerabilities(&m);
         assert!(text.contains("~/dev/yarn-only"), "{text}");
+        // Twelve places: the first ten are named and the rest counted.
+        let m = v1::Vulnerabilities {
+            unread: Some(v1::UnreadPlaces {
+                items: (0..12)
+                    .map(|i| v1::UnreadPlace {
+                        project_text: format!("~/dev/p{i:02}"),
+                        ecosystem: "npm".to_string(),
+                        lockfiles: "partial".to_string(),
+                        why_text: None,
+                    })
+                    .collect(),
+                total: 12,
+            }),
+            ..Default::default()
+        };
+        let text = vulnerabilities(&m);
+        assert!(text.contains("~/dev/p09"), "{text}");
+        assert!(!text.contains("~/dev/p10"), "{text}");
+        assert!(text.contains("2 more not listed here."), "{text}");
     }
 
     #[test]

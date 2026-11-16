@@ -226,8 +226,6 @@ fn has_fact(k: &v1::Known, subject: &str, predicate: &str) -> bool {
 const BUNDLES: &str = "application bundles in /Applications and ~/Applications";
 const KEGS: &str = "Homebrew kegs";
 const NPM: &str = "global npm packages";
-const APP_CODE: &str =
-    "code kept by applications not signed by Apple under ~/Library/Application Support";
 const BREW: &str = "brew packages";
 const MANAGERS: &str = "software of package managers this version does not read";
 const TINY: &str = "component:machine:mac/macos-app/org.example.tiny";
@@ -284,7 +282,6 @@ fn unknown_known_and_read_in_full_and_known_but_not_read_are_three_different_pro
             ("immune", LIMIT),
             ("integrity", KEGS),
             ("integrity", BUNDLES),
-            ("integrity", APP_CODE),
             ("integrity", NPM),
             ("integrity", MANAGERS)
         ]
@@ -450,8 +447,8 @@ fn a_finding_about_any_id_of_a_program_is_in_the_answer_however_the_program_is_n
 
 /// Every id an answer gives for a program, and every path inside what the store holds of it, asks
 /// back the same program with the same findings and the same readings: none of them is a program
-/// the store never heard of, and none is a place no reading looks at. Nor is a path in a folder
-/// the reading of applications' code looks in, where it found nothing.
+/// the store never heard of, and none is a place no reading looks at. A folder of code an
+/// application keeps outside its bundle, its id and a file in it answer for that application.
 #[test]
 fn every_id_and_path_of_a_program_answers_for_that_program_with_its_findings() {
     let e = Estate::new("program-every-id");
@@ -514,9 +511,164 @@ fn every_id_and_path_of_a_program_answers_for_that_program_with_its_findings() {
             assert!(unread(&k).is_none(), "{what}");
         }
     }
-    let nothing = e.program("~/Library/Application Support/Nothing/main.js");
-    assert_eq!(nothing.presence(), v1::Presence::Unknown);
-    assert!(unread(&nothing).is_none(), "{nothing:?}");
+}
+
+/// The reading made by rule that no reading opened the place asked about.
+fn not_opened(k: &v1::Known) -> bool {
+    unread(k).is_some_and(|c| {
+        c.completeness() == v1::Completeness::None
+            && c.reason_text
+                .as_deref()
+                .is_some_and(|r| r.contains("has not looked into this one"))
+    })
+}
+
+/// A place in `~/Library/Application Support` that no reader opened is never answered as read:
+/// a folder no application matched, a file in it, a helper application kept there, the folder
+/// the core is installed in, and `Application Support` itself are each `unknown` with a reading
+/// that is not full and says why. A place inside a folder of code that its reading passes over,
+/// a cache, answers for the application and is said not to be looked at.
+#[test]
+fn a_folder_under_application_support_no_reader_opened_is_never_answered_as_read() {
+    let e = Estate::new("program-not-opened");
+    e.app("Editor.app", "org.example.editor", "3.0");
+    e.put(
+        "home/Library/Application Support/Editor/main.js",
+        "start();\n",
+    );
+    e.put(
+        "home/Library/Application Support/Editor/Cache/chunk.js",
+        "cached();\n",
+    );
+    e.put(
+        "home/Library/Application Support/Evil/payload.js",
+        "steal();\n",
+    );
+    e.put(
+        "home/Library/Application Support/Tools/Helper.app/Contents/MacOS/Helper",
+        "invented\n",
+    );
+    e.put(
+        "home/Library/Application Support/ai.nuanu.immune/bin/immune",
+        "invented\n",
+    );
+    e.run();
+    for what in [
+        "~/Library/Application Support/Evil/payload.js",
+        "~/Library/Application Support/Evil",
+        "~/Library/Application Support/Tools/Helper.app",
+        "~/Library/Application Support/ai.nuanu.immune/bin/immune",
+        "~/Library/Application Support",
+        "file:machine:mac/Library/Application Support/Evil",
+    ] {
+        let k = e.program(what);
+        assert_eq!(k.presence(), v1::Presence::Unknown, "{what}");
+        assert!(not_opened(&k), "{what}: {:?}", k.coverage);
+        assert!(!all_full(&k), "{what}");
+    }
+    let cache = e.program("~/Library/Application Support/Editor/Cache/chunk.js");
+    assert_eq!(
+        thing(&cache),
+        "component:machine:mac/macos-app/org.example.editor"
+    );
+    assert!(
+        unread(&cache).is_some_and(|c| c.completeness() == v1::Completeness::None
+            && c.reason_text
+                .as_deref()
+                .is_some_and(|r| r.contains("caches"))),
+        "{:?}",
+        cache.coverage
+    );
+}
+
+/// The folder of code of an application that was removed, still on disk and changing, is not
+/// `gone`: the reading stopped looking into it when the application went, so it is a place no
+/// reader opens now.
+#[test]
+fn the_code_folder_of_a_removed_application_still_on_disk_is_not_gone() {
+    let e = Estate::new("program-folder-left");
+    e.app("Editor.app", "org.example.editor", "3.0");
+    e.put(
+        "home/Library/Application Support/Editor/main.js",
+        "start();\n",
+    );
+    e.run();
+    std::fs::remove_dir_all(e.0.join("system/Applications/Editor.app")).unwrap();
+    e.run();
+    e.put(
+        "home/Library/Application Support/Editor/main.js",
+        "steal();\n",
+    );
+    e.run();
+    for what in [
+        "~/Library/Application Support/Editor",
+        "~/Library/Application Support/Editor/main.js",
+        "file:machine:mac/Library/Application Support/Editor",
+    ] {
+        let k = e.program(what);
+        assert_ne!(k.presence(), v1::Presence::Gone, "{what}");
+        assert!(not_opened(&k), "{what}: {:?}", k.coverage);
+    }
+}
+
+/// Two applications whose bundles share a folder name, and so match one folder of code, are two
+/// programs: neither is in the other's answer, a finding about one is not the other's, and the
+/// one removed is gone though the other still holds the folder. A formula of a tap and the core
+/// formula of the same short name are two programs too: a keg is its own formula's, and one whose
+/// version Homebrew gave for no formula of its name stays tied to that name.
+#[test]
+fn a_program_is_tied_to_its_own_parts_and_never_through_them_to_another_program() {
+    let e = Estate::new("program-own-parts");
+    e.app("Editor.app", "org.example.editor", "3.0");
+    e.app_in(
+        "home/Applications",
+        "Editor.app",
+        "org.example.other",
+        "1.0",
+    );
+    e.put(
+        "home/Library/Application Support/Editor/main.js",
+        "start();\n",
+    );
+    e.formula("tool", "1.0");
+    e.put("system/opt/homebrew/Cellar/odd/3.0/bin/odd", "invented\n");
+    e.put(
+        "brew.json",
+        r#"{"formulae": [{"full_name": "tool", "tap": "homebrew/core", "installed": [{"version": "1.0"}]}, {"full_name": "example/tap/tool", "tap": "example/tap", "installed": [{"version": "2.0"}]}, {"full_name": "odd", "tap": "homebrew/core", "installed": [{"version": "2.0"}]}], "casks": []}"#,
+    );
+    e.run();
+    {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(e.0.join("system/opt/homebrew/Cellar/tool/1.0/bin/tool"))
+            .unwrap();
+        f.write_all(b"steal();\n").unwrap();
+    }
+    e.run();
+    let folder = "file:machine:mac/Library/Application Support/Editor";
+    let one = "component:machine:mac/macos-app/org.example.editor";
+    let other = "component:machine:mac/macos-app/org.example.other";
+    let ids =
+        |k: &v1::Known| -> Vec<String> { k.same_as.iter().map(|s| s.id_text.clone()).collect() };
+    assert_eq!(ids(&e.program(one)), [folder]);
+    assert_eq!(ids(&e.program(other)), [folder]);
+    // The other removed: gone, while the first still holds the folder.
+    std::fs::remove_dir_all(e.0.join("home/Applications/Editor.app")).unwrap();
+    e.run();
+    assert_eq!(e.program(other).presence(), v1::Presence::Gone);
+    assert_eq!(e.program(one).presence(), v1::Presence::Held);
+    // The keg of version 1.0 is the core formula's, not the tap's.
+    let core = e.program("component:machine:mac/brew/tool");
+    assert_eq!(ids(&core), [KEG]);
+    assert_eq!(core.findings.len(), 1, "{:?}", core.findings);
+    let tap = e.program("component:machine:mac/brew/example/tap/tool");
+    assert!(ids(&tap).is_empty(), "{:?}", ids(&tap));
+    assert!(tap.findings.is_empty(), "{:?}", tap.findings);
+    assert_eq!(
+        ids(&e.program("component:machine:mac/brew/odd")),
+        ["file:machine:mac//opt/homebrew/Cellar/odd/3.0"]
+    );
 }
 
 /// A name that fits more than one program is not answered for one of them: the command fails as

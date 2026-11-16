@@ -81,7 +81,7 @@ pub fn split_name(name: &str) -> (&str, Option<&'static str>) {
 
 /// The ecosystem whose dependencies a kind of lockfile declares, by its name as `read` names
 /// it; `None` for one not known here.
-fn ecosystem_of(kind: &str) -> Option<&'static str> {
+pub fn ecosystem_of(kind: &str) -> Option<&'static str> {
     match kind {
         "package-lock.json" | "pnpm-lock.yaml" | "yarn.lock" | "bun.lock" => Some("npm"),
         k if k.starts_with("package-lock.json version") => Some("npm"),

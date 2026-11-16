@@ -2347,10 +2347,12 @@ pub struct UnreadPlace {
     pub project_text: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
     pub ecosystem: ::prost::alloc::string::String,
-    /// `partial`, some of them read, or `not_read`.
+    /// `partial`, some of them read; `not_read`; or `no_reader`, lockfiles of a kind this version
+    /// has no reader for, such as `go.sum`, in an ecosystem no data is matched for, so the project
+    /// was compared with nothing there.
     #[prost(string, tag = "3")]
     pub lockfiles: ::prost::alloc::string::String,
-    /// Why, as the reading of lockfiles gave it. Whole.
+    /// Why, as the reading of lockfiles gave it, or for `no_reader` the kinds by name. Whole.
     #[prost(string, optional, tag = "4")]
     pub why_text: ::core::option::Option<::prost::alloc::string::String>,
 }
