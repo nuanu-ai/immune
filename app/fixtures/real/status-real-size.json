@@ -1,5 +1,5 @@
 {
-  "answered_at": 1794825847,
+  "answered_at": 1794814080,
   "answered_outside_app": {
     "items": [],
     "total": 0
@@ -459,7 +459,7 @@
         0,
         2
       ],
-      "ends_at": 1794825847,
+      "ends_at": 1794814080,
       "step_seconds": 3600
     },
     "program_starts_by_minute": {
@@ -525,10 +525,10 @@
         0,
         2
       ],
-      "ends_at": 1794825847,
+      "ends_at": 1794814080,
       "step_seconds": 60
     },
-    "read_at": 1794825847,
+    "read_at": 1794814079,
     "reason_text": null,
     "said_by": null,
     "said_text": null,
@@ -542,7 +542,7 @@
       "last_day": 0,
       "since_check": 0
     },
-    "written_at": 1794825847
+    "written_at": 1794814079
   },
   "format": 1,
   "integrity": {
@@ -588,9 +588,9 @@
   "journal_seq": 41,
   "last_finished_run": {
     "check": {
-      "finished_at": 1794825847,
-      "id": "1794825847-645254000",
-      "started_at": 1794825847
+      "finished_at": 1794814080,
+      "id": "1794814079-944111000",
+      "started_at": 1794814079
     },
     "first_run": false,
     "readings": {
@@ -611,9 +611,9 @@
     ]
   },
   "last_run": {
-    "finished_at": 1794825847,
-    "id": "1794825847-645254000",
-    "started_at": 1794825847
+    "finished_at": 1794814080,
+    "id": "1794814079-944111000",
+    "started_at": 1794814079
   },
   "needs_a_look": {
     "items": [
@@ -637,10 +637,14 @@
             "state": "open",
             "urgent": false
           },
-          "first_seen_at": 1794825847,
+          "first_seen_at": 1794814079,
           "kind": "shell profile",
           "kind_title": "Shell startup file",
-          "last_seen_at": 1794825847,
+          "last_seen_at": 1794814079,
+          "package_text": null,
+          "releases_text": [],
+          "rule_title_text": null,
+          "short_title": "File your terminal runs at start changed",
           "thing": null,
           "title": "A file your terminal runs every time it starts was added, changed or removed.",
           "verdicts": null,
@@ -662,18 +666,22 @@
         "finding": {
           "answer": null,
           "finding": {
-            "about_text": "check:machine:mac/1794825847-645254000",
+            "about_text": "check:machine:mac/1794814079-944111000",
             "confidence": "low",
-            "id": "fb1ad4e7bd9",
+            "id": "f585e712cc9",
             "rule": "watched.first-read",
             "severity": "informational",
             "state": "open",
             "urgent": false
           },
-          "first_seen_at": 1794825847,
+          "first_seen_at": 1794814079,
           "kind": "places read for the first time",
           "kind_title": "Read for the first time",
-          "last_seen_at": 1794825847,
+          "last_seen_at": 1794814079,
+          "package_text": null,
+          "releases_text": [],
+          "rule_title_text": null,
+          "short_title": "Places read for the first time",
           "thing": "1 place",
           "title": "Some places on this Mac were read for the first time, and what runs by itself in them was taken as their starting point.",
           "verdicts": null,
@@ -694,6 +702,7 @@
   "not_covered": [
     {
       "advice": "If you still use them, check that you can log in to them yourself and run the server check again. If one is no longer yours, mark it as retired.",
+      "class": "failed",
       "count": 4,
       "examples": [
         {
@@ -719,13 +728,14 @@
       "kind": "servers that could not be opened",
       "meaning": "A server that refuses or does not answer cannot be checked; the reason is listed with each one.",
       "scope": "servers",
-      "since_at": 1794825847,
+      "since_at": 1794814080,
       "title": "4 servers could not be opened at the last server check.",
       "value_text": null,
       "who": "you"
     },
     {
       "advice": "If they are yours, make them readable for your user account again; your agent can tell you how.",
+      "class": "failed",
       "count": 4,
       "examples": [
         {
@@ -751,13 +761,14 @@
       "kind": "files their permissions keep closed",
       "meaning": "Their permissions do not let this program open them, so a change in them goes unseen. Where they are and the reason are listed with them.",
       "scope": "this_mac",
-      "since_at": 1794825847,
+      "since_at": 1794814079,
       "title": "4 files could not be opened because of their permissions.",
       "value_text": null,
       "who": "you"
     },
     {
       "advice": "Nothing to do. A change in these is left out of the answer for your projects; the page lists every way and whether it is read.",
+      "class": "no_reader",
       "count": 0,
       "examples": [],
       "examples_text": [],
@@ -766,13 +777,14 @@
       "kind": "ways a project runs code by itself that are not read",
       "meaning": "None of the others is present in the projects that were looked at. Not every folder was looked at, so of the projects in the rest this says nothing.",
       "scope": "projects",
-      "since_at": 1794825847,
+      "since_at": 1794814079,
       "title": "This version reads 13 of the 41 known ways a project can make code run by itself.",
       "value_text": null,
       "who": "nothing"
     },
     {
       "advice": "Nothing to do. A change in these is left out of the answer on this Mac; the page lists every place and whether it is read.",
+      "class": "no_reader",
       "count": 0,
       "examples": [],
       "examples_text": [],
@@ -781,13 +793,14 @@
       "kind": "places in the home folder where a tool's settings run code by itself that are not read",
       "meaning": "None of the others is present on this Mac now.",
       "scope": "this_mac",
-      "since_at": 1794825847,
+      "since_at": 1794814079,
       "title": "This version reads 7 of the 11 known places where a developer tool's own settings can make code run by itself.",
       "value_text": null,
       "who": "nothing"
     },
     {
       "advice": "Nothing to do if this Mac was offline: it is tried again at every check. If it stays while the Mac is online, ask your agent to look at why.",
+      "class": "failed",
       "count": 1,
       "examples": [],
       "examples_text": [],
@@ -803,6 +816,7 @@
     },
     {
       "advice": "Nothing to do if this Mac was offline. If it stays while the Mac is online, ask your agent to look at why.",
+      "class": "failed",
       "count": 1,
       "examples": [],
       "examples_text": [],
@@ -811,13 +825,14 @@
       "kind": "list of known vulnerabilities not current",
       "meaning": "Why: crates.io: the download failed; what failed is listed with this; npm: its newest record changed 2025-09-12T01:13:34Z, more than 7 days before this check. It is downloaded again at every check. Until it is, a vulnerability published after that date is not known here. The download uses a proxy only when the environment names one; it does not read the macOS proxy settings.",
       "scope": "threats",
-      "since_at": 1794825847,
-      "title": "The list of known vulnerabilities could not be updated since 2026-11-16 10:44 UTC.",
+      "since_at": 1794814079,
+      "title": "The list of known vulnerabilities could not be updated since 2026-11-16 07:27 UTC.",
       "value_text": "crates.io: cannot read none: No such file or directory (os error 2)",
       "who": "nothing"
     },
     {
       "advice": "Nothing to do. These packages are left out of the answer about known vulnerabilities.",
+      "class": "no_reader",
       "count": 1,
       "examples": [],
       "examples_text": [],
@@ -833,13 +848,14 @@
     },
     {
       "advice": "Nothing to do. This is a limit of this version.",
+      "class": "no_reader",
       "count": 87,
       "examples": [],
       "examples_text": [],
       "holds_on": "every_mac",
       "id": "autorun-not-checked-on-this-macos",
       "kind": "places where code can be set to run by itself not checked on this version of macOS",
-      "meaning": "This Mac runs macOS 27, and no record says these were checked on it. Apple moves and drops such places between versions, so one moved or dropped in this version may be read where it no longer is, or not read where it now is.",
+      "meaning": "This Mac runs macOS 26, and no record says these were checked on it. Apple moves and drops such places between versions, so one moved or dropped in this version may be read where it no longer is, or not read where it now is.",
       "scope": "this_mac",
       "since_at": null,
       "title": "87 places where code can be set to run by itself were not checked on this version of macOS.",
@@ -848,6 +864,7 @@
     },
     {
       "advice": "Nothing to do. This is a limit of this version.",
+      "class": "no_reader",
       "count": 1,
       "examples": [],
       "examples_text": [],
@@ -863,6 +880,7 @@
     },
     {
       "advice": "Nothing to do. This comes in a later version.",
+      "class": "no_reader",
       "count": 1,
       "examples": [],
       "examples_text": [],
@@ -878,6 +896,7 @@
     },
     {
       "advice": "Nothing to do. This is a limit of this version.",
+      "class": "no_reader",
       "count": 1,
       "examples": [],
       "examples_text": [],
@@ -963,9 +982,9 @@
       }
     ]
   },
-  "store_id": "55510de4e16b1bfa598c5501df6d485e",
+  "store_id": "2127f07af990a5bb1eb701c55fdb8f38",
   "this_mac": {
-    "checked_at": 1794825847,
+    "checked_at": 1794814080,
     "fresh": true,
     "fresh_for_seconds": 7200,
     "live": true,
@@ -1056,7 +1075,7 @@
     ]
   },
   "threats": {
-    "checked_at": 1794825847,
+    "checked_at": 1794814079,
     "entries": null,
     "first_reading": null,
     "gone": null,
@@ -1098,7 +1117,7 @@
         "ecosystem": "npm",
         "matched": true,
         "not_current_why": "its newest record changed 2025-09-12T01:13:34Z, more than 7 days before this check",
-        "read_at": 1794825847,
+        "read_at": 1794814079,
         "source": "osv-npm"
       }
     ],
@@ -1126,7 +1145,7 @@
       {
         "asked_this_run": true,
         "changed_at": null,
-        "checked_at": 1794825847,
+        "checked_at": 1794814079,
         "ecosystem": "crates.io",
         "first_reading": null,
         "malicious_records": null,
@@ -1141,14 +1160,14 @@
       },
       {
         "asked_this_run": true,
-        "changed_at": 1794825847,
-        "checked_at": 1794825847,
+        "changed_at": 1794814079,
+        "checked_at": 1794814079,
         "ecosystem": "npm",
         "first_reading": null,
         "malicious_records": 1,
         "matched": true,
         "outcome": "unchanged",
-        "read_at": 1794825847,
+        "read_at": 1794814079,
         "reason_text": null,
         "records": 1,
         "since_last_reading": null,
@@ -1161,11 +1180,11 @@
   "watched": {
     "changes": [
       {
-        "at": 1794825847,
+        "at": 1794814079,
         "change": "changed",
         "kind": "shell profile",
         "path_text": ".zshrc",
-        "run_id": "1794825847-645254000"
+        "run_id": "1794814079-944111000"
       }
     ],
     "changes_total": 1,

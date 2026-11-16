@@ -78,12 +78,14 @@ pub const KIND: &str = "verdict of the response layer";
 /// and the thing.
 pub const WORDS: Words = Words {
     title: "The response layer judged something on this Mac suspicious.",
+    short: "Judged suspicious by the response layer",
     meaning: "Another program that runs Immune, the response layer, looked into what a rule found here and judged it suspicious. The rule and the thing are named with this finding; the reason is the response layer's own, quoted.",
     advice: "Read its reason and look at what it is about. Mark this finding seen once you have. Immune's own finding about the same thing, if there is one, keeps an answer of its own; one answer that names both answers both.",
 };
 /// The core's words for an occurrence raised by a verdict whose line had left the log
 /// (`event_gone`): the response layer names a match Immune could no longer check.
 pub const WORDS_EVENT_GONE: Words = Words {
+    short: "Judged suspicious, event not checked",
     meaning: "Another program that runs Immune, the response layer, judged suspicious a match of this rule whose event is no longer in the event log, so Immune could not read that event again or check that the rule matched it. The rule and the thing are named with this finding; the reason is the response layer's own, quoted.",
     ..WORDS
 };

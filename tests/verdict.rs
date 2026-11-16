@@ -1855,6 +1855,48 @@ fn a_late_suspicious_verdict_about_a_line_the_log_no_longer_holds_raises_its_fin
             );
         }
         assert!(mac.page().contains(GONE_VOICE));
+        // In both lists it is named by its own short title.
+        let verdict_groups = |mac: &Mac| -> Vec<Value> {
+            let status = mac.status();
+            status["needs_a_look"]["by_rule"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|g| g["rule"] == VERDICT_RULE)
+                .cloned()
+                .collect()
+        };
+        assert_eq!(verdict_groups(&mac)[0]["short_title"], GONE_SHORT);
+        for list in ["findings", "status"] {
+            let out = mac.command(&[list]).output().unwrap();
+            let text = String::from_utf8(out.stdout).unwrap();
+            assert!(text.contains(GONE_SHORT), "{list}: {text}");
+        }
+        if replaced {
+            // A finding of another rule raised by a verdict whose event was read: a count of the
+            // two by rule says only what holds for both, and each row keeps its own name.
+            let answer = mac.send(&about_match(
+                &store,
+                &mac.position(0),
+                PADDING,
+                "suspicious",
+            ));
+            assert_eq!(answer["recorded"]["event_gone"], false);
+            let groups = verdict_groups(&mac);
+            assert_eq!(groups.len(), 1);
+            assert_eq!(groups[0]["count"], 2);
+            assert_eq!(
+                groups[0]["short_title"],
+                "Judged suspicious by the response layer"
+            );
+            let out = mac.command(&["findings"]).output().unwrap();
+            let text = String::from_utf8(out.stdout).unwrap();
+            assert!(text.contains(GONE_SHORT), "{text}");
+            assert!(
+                text.contains("Judged suspicious by the response layer"),
+                "{text}"
+            );
+        }
         // In the text for a person, the core says so in its own words, before the reason.
         let out = mac.command(&["finding", own]).output().unwrap();
         let text = String::from_utf8(out.stdout).unwrap();
@@ -1885,6 +1927,7 @@ fn a_late_suspicious_verdict_about_a_line_the_log_no_longer_holds_raises_its_fin
 
 /// What the core's meaning of a finding raised by a late verdict says, and the page's voice of it.
 const GONE_MEANING: &str = "whose event is no longer in the event log, so Immune could not read that event again or check that the rule matched it.";
+const GONE_SHORT: &str = "Judged suspicious, event not checked";
 const GONE_VOICE: &str =
     "Its event was no longer in the log, so Immune could not check that the rule matched it";
 

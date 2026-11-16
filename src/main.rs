@@ -41,6 +41,7 @@ mod managers;
 mod map;
 mod matches;
 mod osv;
+mod overview;
 mod owner;
 mod pages;
 mod plist;
@@ -48,6 +49,7 @@ mod processes;
 mod program;
 mod project;
 mod resolver;
+mod screen;
 mod secrets;
 mod servers;
 mod service;
@@ -91,9 +93,10 @@ const USAGE: &str = "usage: immune run [--store <path>] [--machine-name <name>] 
                   [--threats-input <file>] [--osv-crates-input <file>]
                   [--osv-npm-input <file>] [--curl <path>] [--system-root <dir>]
                   [--indicators <file>] [--json | --proto]
-       immune status [--store <path>] [--json | --proto]
+       immune status [--coverage] [--store <path>] [--json | --proto]
            what the last finished run left, read-only, as the message Status; run
-           answers with the same message once its check finished
+           answers with the same message once its check finished. For a person,
+           --coverage shows what was read and what was not, whole
        immune findings [--all] [--store <path>] [--json | --proto]
            every finding, in every state, as one message: text for a person, which
            lists the open ones or every one with --all, binary protobuf with --proto,
@@ -298,6 +301,8 @@ struct Args {
 struct StatusArgs {
     store: PathBuf,
     form: answer::Form,
+    /// For a person, what was read and what was not, whole; a message is the same with it.
+    coverage: bool,
 }
 
 struct ServersArgs {
@@ -397,10 +402,18 @@ fn parse_args(
             })))
         }
         "status" => {
-            options.read(it, |arg, _| Err(format!("unexpected argument: {arg}")))?;
+            let mut coverage = false;
+            options.read(it, |arg, _| match arg.as_str() {
+                "--coverage" => {
+                    coverage = true;
+                    Ok(())
+                }
+                _ => Err(format!("unexpected argument: {arg}")),
+            })?;
             Ok(Cmd::Status(StatusArgs {
                 store: options.store()?,
                 form: options.form(),
+                coverage,
             }))
         }
         "servers" => {
@@ -902,7 +915,7 @@ fn main() -> ExitCode {
     };
     let result = match cmd {
         Cmd::Run(args) => return run_cmd(&args),
-        Cmd::Status(args) => return status_cmd("status", &args.store, args.form),
+        Cmd::Status(args) => return status_cmd("status", &args.store, args.form, args.coverage),
         Cmd::Watch(args) => return watch::watch(&args),
         Cmd::Servers(args) => servers_cmd(&args),
         Cmd::View(args) => view(&args),
@@ -1245,9 +1258,11 @@ fn status_read(store: &Path, now: i64) -> Result<(status::State, contract::v1::S
 
 /// `immune status`, and `immune run` once its check finished: the contract's `Status` in the
 /// form asked.
-fn status_cmd(op: &str, store: &Path, form: answer::Form) -> ExitCode {
+fn status_cmd(op: &str, store: &Path, form: answer::Form, coverage: bool) -> ExitCode {
     match status_answer(store, now_secs()) {
-        Ok(m) => answer::print(op, form, &m, text::status),
+        Ok(m) => answer::print(op, form, &m, |m| {
+            overview::status(m, &screen::Screen::of_stdout(), coverage)
+        }),
         Err(e) => {
             let (error, exit) = answer::stopped(&e, "immune status --json --store <file>");
             answer::fail(op, form, error, exit)
@@ -1260,7 +1275,9 @@ fn status_cmd(op: &str, store: &Path, form: answer::Form) -> ExitCode {
 /// the watched places it found changed.
 fn run_cmd(args: &Args) -> ExitCode {
     match run(args) {
-        Ok(_) if args.form != answer::Form::Text => status_cmd("run", &args.store, args.form),
+        Ok(_) if args.form != answer::Form::Text => {
+            status_cmd("run", &args.store, args.form, false)
+        }
         Ok((line, watched)) => {
             print!("{}", run_said(&line, &watched));
             ExitCode::SUCCESS
@@ -1331,7 +1348,7 @@ fn findings_cmd(args: &FindingsArgs) -> ExitCode {
         &args.store,
         args.form,
         |conn, now| finding_answer::list(conn, now).map(Ok),
-        |m| text::findings(m, args.all),
+        |m| overview::findings(m, args.all, &screen::Screen::of_stdout()),
     )
 }
 

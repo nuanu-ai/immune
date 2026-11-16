@@ -164,6 +164,9 @@ message CoreRule {
   string title = 8;
   string meaning = 9;
   string advice = 10;
+  // `title` in a few words, at most 44 characters, as `ListedFinding.short_title`. Since
+  // 1.16.0.
+  string short_title = 11;
 }
 
 // What a finding of a published rule says, for every set that raises findings.
@@ -185,6 +188,9 @@ message PublishedWords {
   string advice = 11;
   // A rule about file events raises a finding of its own kind and words.
   FileEventWords for_file_events = 12;
+  // `title` in a few words, as `CoreRule.short_title`. A list names a finding of a published
+  // rule by the rule's own title (`ListedFinding.rule_title_text`). Since 1.16.0.
+  string short_title = 13;
 }
 
 message SilentSet {
@@ -208,6 +214,8 @@ message FileEventWords {
   string title = 2;
   repeated SetMeaning meaning_by_set = 3;
   string advice = 4;
+  // As in `PublishedWords`. Since 1.16.0.
+  string short_title = 5;
 }
 
 message VerdictWords {
@@ -219,6 +227,8 @@ message VerdictWords {
   string title = 6;
   string meaning = 7;
   string advice = 8;
+  // As in `CoreRule`. Since 1.16.0.
+  string short_title = 9;
 }
 
 message CauseWords {

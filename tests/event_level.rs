@@ -153,20 +153,23 @@ impl Dir {
         self.run()
     }
 
-    /// The line about the level in `immune status` for a person.
+    /// What `immune status --coverage` says of the level to a person, in a pipe, where a value
+    /// beside its label is one line: `Event level: ` and the value, with its period.
     fn words(&self) -> String {
         let out = Command::new(env!("CARGO_BIN_EXE_immune"))
             .env("HOME", self.0.join("home"))
-            .args(["status", "--store"])
+            .args(["status", "--coverage", "--store"])
             .arg(self.store())
             .output()
             .unwrap();
         assert!(out.status.success());
-        String::from_utf8_lossy(&out.stdout)
+        let value = String::from_utf8_lossy(&out.stdout)
             .lines()
-            .find(|l| l.starts_with("Event level: "))
+            .find_map(|l| l.trim_start().strip_prefix("Event level  "))
             .unwrap()
-            .to_string()
+            .trim()
+            .to_string();
+        format!("Event level: {value}.")
     }
 
     fn status(&self) -> Value {

@@ -126,7 +126,7 @@ message Verdict {
   // is a token, not text: 1 to 200 characters of printable ASCII, `!` to `~`, with no backslash,
   // as the IETF draft of the `Idempotency-Key` header takes one; any other is refused with
   // `verdict_id_not_a_token`. It needs no escaping, so it is kept, shown and compared exactly as
-  // sent. A key: one that holds a secret is refused with `holds_secret`. Since 1.16.0.
+  // sent. A key: one that holds a secret is refused with `holds_secret`. Since 1.17.0.
   optional string verdict_id = 10;
 }
 
@@ -174,7 +174,7 @@ message RecordedVerdict {
   repeated Cut reason_cuts = 5;
   // A verdict about a match whose line was no longer in the log when the verdict came: the core
   // did not read the event again and did not check that the rule matched it, and its finding
-  // keeps no event of it. Only a `suspicious` verdict is recorded so. Since 1.16.0.
+  // keeps no event of it. Only a `suspicious` verdict is recorded so. Since 1.17.0.
   bool event_gone = 6;
 }
 

@@ -298,6 +298,9 @@ Where the industry has a proven name, format or rule set, Immune takes it. Its o
 | What a secret is | gitleaks's published patterns and its semantics: keywords, secret group, entropy, allowlists; Datadog Agent's word list for the names of flags whose value is a secret; detect-secrets' pattern for a password in a URL |
 | The report page | GitHub's security overview: alerts as a table with open and closed tabs, and coverage by area beside them |
 | What replaces a secret | the kind of the pattern that found it, as Tetragon's `redact_str` and Elasticsearch's `<NAME>` give it, with a count of what was cut, as OpenTelemetry's `redaction.masked.count` gives it |
+| The text a person reads in a terminal | what mature command-line tools share (clig.dev, gh, cargo, uv, Homebrew, git, docker, osv-scanner, Trivy, npm audit): the answer on the first line, the next step as a command, colour only on a terminal and never the only sign of what it marks, `NO_COLOR`, columns that fit the terminal and stay whole in a pipe, and relative times on a terminal with exact ones in a pipe |
+
+The text form of `immune status` and `immune findings` follows those tools. Only the eight basic colours and bold and dim are used, so the terminal's own palette picks the shade. A rule's title is a sentence, too long for a list, so each of Immune's own rules also has a short title of at most 44 characters for lists, and a published rule is listed by its own title. Text from a source is escaped before it is measured, cut or coloured, as in every other form.
 
 The background service follows how self-installing daemons on macOS are set up. The program installs itself with a command of its own, `immune install`, and runs from a copy in a fixed place, `bin/immune` in the store's folder, so the job never runs a binary a build may replace. The job is a per-user launch agent, the way macOS keeps a program running in a login session. None of this is Immune's own.
 
