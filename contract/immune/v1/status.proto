@@ -406,6 +406,13 @@ message Uncovered {
   // The same things, one for each name of `examples_text` and in its order, each with what its
   // source said of it. Since 1.8.0.
   repeated UncoveredExample examples = 13;
+  // What kind of gap it is, as a reading's cause: `failed`, a reading or a download that was
+  // tried and did not succeed, such as a file that could not be read, a server that could not be
+  // opened or a list that could not be downloaded; `no_reader`, something this version does not
+  // read; `not_given`, something its source does not give, such as a tool not installed or
+  // switched off. It does not depend on `who`: a failure the person can fix is a failure.
+  // `unspecified`, or a value the reader does not know, is read as `failed`. Since 1.16.0.
+  Cause class = 14;
 }
 
 // One thing a cause of what is not covered is about.

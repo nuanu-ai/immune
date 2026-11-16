@@ -3193,6 +3193,18 @@ pub struct Uncovered {
     /// source said of it. Since 1.8.0.
     #[prost(message, repeated, tag = "13")]
     pub examples: ::prost::alloc::vec::Vec<UncoveredExample>,
+    /// What kind of gap it is, as a reading's cause: `failed`, a reading or a download that was
+    /// tried and did not succeed, such as a file that could not be read, a server that could not be
+    /// opened or a list that could not be downloaded; `no_reader`, something this version does not
+    /// read; `not_given`, something its source does not give, such as a tool not installed or
+    /// switched off. It does not depend on `who`: a failure the person can fix is a failure.
+    /// `unspecified`, or a value the reader does not know, is read as `failed`. Since 1.16.0.
+    #[prost(enumeration = "Cause", tag = "14")]
+    #[serde(
+        serialize_with = "crate::enum_name::<Cause, _>",
+        deserialize_with = "crate::enum_from_name::<Cause, _>"
+    )]
+    pub class: i32,
 }
 /// One thing a cause of what is not covered is about.
 #[derive(serde::Serialize, serde::Deserialize)]

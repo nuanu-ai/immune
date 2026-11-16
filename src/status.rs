@@ -1207,11 +1207,21 @@ fn this_mac_message(m: &crate::covered::ThisMac, now: i64) -> crate::contract::v
     }
 }
 
+/// The class of a cause of what is not covered, as the contract says it.
+pub(crate) fn cause_class(c: crate::store::Cause) -> crate::contract::v1::Cause {
+    match c {
+        crate::store::Cause::Failed => crate::contract::v1::Cause::Failed,
+        crate::store::Cause::NoReader => crate::contract::v1::Cause::NoReader,
+        crate::store::Cause::NotGiven => crate::contract::v1::Cause::NotGiven,
+    }
+}
+
 fn uncovered_message(u: &crate::covered::Uncovered) -> crate::contract::v1::Uncovered {
     use crate::known::whole;
     crate::contract::v1::Uncovered {
         id: u.cause.id.to_string(),
         who: u.cause.who.to_string(),
+        class: cause_class(u.cause.class) as i32,
         scope: u.scope.to_string(),
         kind: u.cause.kind.to_string(),
         title: u.title(),

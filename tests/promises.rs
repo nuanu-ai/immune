@@ -11948,11 +11948,15 @@ fn a_server_that_cannot_be_opened_is_one_thing_the_owner_can_fix_with_its_reason
         "{r:#}"
     );
     let (_, printed, _) = status_out(&h.store(), &[]);
-    // The name and its reason on the line under the cause, without quotes.
+    // The name and its reason on the line under the cause, without quotes; among what failed,
+    // since a server that could not be opened is a failure, though the owner can fix it.
+    let cause = "\n    1 server could not be opened at the last server check\n      db-1: Permission denied (publickey).\n";
+    let at = printed.find(cause).unwrap_or_else(|| panic!("{printed}"));
+    let failed = printed[..=at]
+        .rfind("\n  Failed\n")
+        .unwrap_or_else(|| panic!("{printed}"));
     assert!(
-        printed.contains(
-            "\n  You can fix\n    1 server could not be opened at the last server check\n      db-1: Permission denied (publickey).\n"
-        ),
+        !printed[failed..at].contains("\n  You can fix\n"),
         "{printed}"
     );
 

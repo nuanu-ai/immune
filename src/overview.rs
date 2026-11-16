@@ -31,13 +31,15 @@ const FINDINGS_SHOWN: usize = 200;
 /// one line.
 const GROUPS_SHOWN: usize = 6;
 
-/// The causes of what is not covered that are a reading or a download that failed, which nobody
-/// can fix: the default status lists them with the failures, not among what is not judged.
-const FAILED_CAUSES: [&str; 3] = [
-    "could-not-read",
-    "vulnerability-list-not-downloaded",
-    "vulnerability-data-old",
-];
+/// Whether a cause of what is not covered is a failure, as its class says: a reading or a
+/// download that was tried and did not succeed, whoever can fix it. A class this build does not
+/// know, or none, is read as a failure, as the schema says.
+fn is_failure(u: &v1::Uncovered) -> bool {
+    !matches!(
+        v1::Cause::try_from(u.class),
+        Ok(v1::Cause::NoReader | v1::Cause::NotGiven)
+    )
+}
 
 /// `n one` or `n many`, with thousands grouped.
 fn count(n: u64, one: &str, many: &str) -> String {
@@ -234,11 +236,7 @@ fn cause_section(
         return;
     }
     let style = |u: &v1::Uncovered| {
-        if FAILED_CAUSES.contains(&u.id.as_str()) {
-            RED
-        } else {
-            PLAIN
-        }
+        if is_failure(u) { RED } else { PLAIN }
     };
     out.push(format!("  {}", screen.paint(BOLD, label)));
     let room = screen.fits().map(|w| w.saturating_sub(6));
@@ -406,9 +404,7 @@ fn clauses(parts: Vec<(String, Style)>) -> Vec<(String, Style)> {
 /// failed, an event level that is neither running nor simply not installed, a machine not
 /// reached, or a run that died. A status with one is never calm, whatever it found.
 fn failing(s: &v1::Status) -> bool {
-    let failed_cause = causes(s, "nothing", None)
-        .iter()
-        .any(|u| FAILED_CAUSES.contains(&u.id.as_str()));
+    let failed_cause = s.not_covered.iter().any(is_failure);
     let watcher = s.watching.as_ref().is_some_and(|w| !w.failed.is_empty());
     let level = s.event_level.as_ref().is_some_and(|l| {
         l.state != v1::CollectorState::Running as i32
@@ -423,6 +419,75 @@ fn failing(s: &v1::Status) -> bool {
         .as_ref()
         .is_some_and(|l| l.finished_at.is_none() && !s.running);
     failed_cause || watcher || level || readings || died
+}
+
+/// The downloads of public threat data that failed at the last check: one clause for those whose
+/// data read before stays in force, yellow, and one for those of which nothing is known yet, red;
+/// `None` when none failed. A line of its own in the default status even while the headline stays
+/// calm because the data kept is current, since every failure the status holds is said there. The
+/// reasons are in `--coverage`. An outcome this build does not know is read as failed, as the
+/// schema says.
+fn downloads_failed(s: &v1::Status) -> Option<Vec<(String, Style)>> {
+    let failed = |outcome: i32| {
+        !matches!(
+            v1::FeedOutcome::try_from(outcome),
+            Ok(v1::FeedOutcome::Read | v1::FeedOutcome::Unchanged | v1::FeedOutcome::NeverRead)
+        )
+    };
+    // What failed, in two groups: the catalogue, and the ecosystems of the OSV data.
+    let mut kept = (false, Vec::new());
+    let mut none = (false, Vec::new());
+    if let Some(t) = s.threats.as_ref().filter(|t| failed(t.outcome)) {
+        let group = if t.entries.is_some() || t.read_at.is_some() {
+            &mut kept
+        } else {
+            &mut none
+        };
+        group.0 = true;
+    }
+    for f in s
+        .vulnerability_data
+        .iter()
+        .flat_map(|d| &d.feeds)
+        .filter(|f| failed(f.outcome))
+    {
+        let group = if f.read_at.is_some() {
+            &mut kept
+        } else {
+            &mut none
+        };
+        group.1.push(f.ecosystem.as_str());
+    }
+    let named = |(catalogue, ecosystems): &(bool, Vec<&str>)| {
+        let mut names = Vec::new();
+        if *catalogue {
+            names.push("CISA catalogue".to_string());
+        }
+        if !ecosystems.is_empty() {
+            names.push(format!("OSV data for {}", ecosystems.join(", ")));
+        }
+        names.join(" and ")
+    };
+    let mut parts = Vec::new();
+    if kept.0 || !kept.1.is_empty() {
+        parts.push((
+            format!(
+                "{} not downloaded at the last check, the data read before stays in force",
+                named(&kept)
+            ),
+            YELLOW,
+        ));
+    }
+    if none.0 || !none.1.is_empty() {
+        parts.push((
+            format!(
+                "{} not downloaded, nothing of it is known yet",
+                named(&none)
+            ),
+            RED,
+        ));
+    }
+    (!parts.is_empty()).then(|| clauses(parts))
 }
 
 /// The event level when it is not as it should be (running with nothing lost), in two clauses:
@@ -585,7 +650,7 @@ fn unreached_short(screen: &Screen, c: &v1::CoverageSummary, now: i64) -> Option
 fn not_judged_line(screen: &Screen, s: &v1::Status, room: Option<usize>) -> Option<String> {
     let mut names: Vec<String> = Vec::new();
     let mut unnamed = 0u64;
-    let failed = |u: &v1::Uncovered| FAILED_CAUSES.contains(&u.id.as_str());
+    let failed = is_failure;
     for u in causes(s, "nothing", None)
         .into_iter()
         .filter(|u| !failed(u))
@@ -622,12 +687,21 @@ fn not_judged_line(screen: &Screen, s: &v1::Status, room: Option<usize>) -> Opti
     };
     match (screen.fits(), room) {
         (Some(_), Some(room)) => {
-            // As many names as fit; at least one, cut if it must be.
+            // As many names as fit; at least one, cut if it must be. The count of the rest is
+            // never cut: room is kept for it, and only the names give way, to `…` at the least.
             let mut shown = names.len();
             while shown > 1 && screen::columns(&said(shown)) > room {
                 shown -= 1;
             }
-            Some(screen::cut_end(&said(shown), room))
+            let rest = match more(shown) {
+                0 => String::new(),
+                n => format!(" +{}", grouped(n)),
+            };
+            let left = room.saturating_sub(screen::columns(&rest)).max(1);
+            Some(format!(
+                "{}{rest}",
+                screen::cut_end(&names[..shown].join(", "), left)
+            ))
         }
         _ => Some(said(names.len())),
     }
@@ -812,6 +886,10 @@ fn default_text(s: &v1::Status, screen: &Screen, out: &mut Vec<String>) {
             None,
         )),
     }
+    let downloads = downloads_failed(s);
+    if let Some(parts) = downloads.clone() {
+        lines.push(("Downloads", parts, None));
+    }
     let width = lines
         .iter()
         .map(|(l, ..)| screen::columns(l))
@@ -825,11 +903,12 @@ fn default_text(s: &v1::Status, screen: &Screen, out: &mut Vec<String>) {
         let parts: Vec<(&str, Style)> = parts.iter().map(|(t, st)| (t.as_str(), *st)).collect();
         out.extend(screen.labelled_parts(2, width, label, &parts, *command, 0));
     }
-    let failed: Vec<&v1::Uncovered> = causes(s, "nothing", None)
+    // Every failure, whoever can fix it; what the person can fix that is not one.
+    let failed: Vec<&v1::Uncovered> = s.not_covered.iter().filter(|u| is_failure(u)).collect();
+    let fixable: Vec<&v1::Uncovered> = causes(s, "you", None)
         .into_iter()
-        .filter(|u| FAILED_CAUSES.contains(&u.id.as_str()))
+        .filter(|u| !is_failure(u))
         .collect();
-    let fixable = causes(s, "you", None);
     cause_section(screen, out, "Failed", &failed, Causes::Listed);
     cause_section(screen, out, "You can fix", &fixable, Causes::Listed);
     if let Some(said) = &not_judged {
@@ -850,6 +929,7 @@ fn default_text(s: &v1::Status, screen: &Screen, out: &mut Vec<String>) {
     }
     let whole = coverage_whole
         && event_level.is_none()
+        && downloads.is_none()
         && failed.is_empty()
         && fixable.is_empty()
         && not_judged.is_none();
@@ -1823,6 +1903,15 @@ mod tests {
         out
     }
 
+    /// The class the core gives the cause with this id.
+    fn class_of(id: &str) -> v1::Cause {
+        let cause = crate::covered::CAUSES
+            .iter()
+            .find(|c| c.id == id)
+            .unwrap_or_else(|| panic!("no cause {id}"));
+        crate::status::cause_class(cause.class)
+    }
+
     fn uncovered(
         id: &str,
         who: &str,
@@ -1833,6 +1922,7 @@ mod tests {
         v1::Uncovered {
             id: id.to_string(),
             who: who.to_string(),
+            class: class_of(id) as i32,
             title: title.to_string(),
             holds_on: if every_mac {
                 v1::HoldsOn::EveryMac as i32
@@ -2357,8 +2447,7 @@ mod tests {
         let clear = |s: &mut v1::Status| {
             s.watching = None;
             s.event_level = None;
-            s.not_covered
-                .retain(|u| !FAILED_CAUSES.contains(&u.id.as_str()));
+            s.not_covered.retain(|u| !is_failure(u));
             if let Some(c) = s.coverage.as_mut() {
                 c.failed = 0;
                 c.unreached_total = 0;
@@ -2406,8 +2495,9 @@ mod tests {
         clear(&mut feed);
         feed.this_mac.as_mut().unwrap().fresh = true;
         feed.not_covered.push(v1::Uncovered {
-            id: FAILED_CAUSES[1].to_string(),
-            who: "nothing".to_string(),
+            id: "vulnerability-list-not-downloaded-fixable".to_string(),
+            who: "you".to_string(),
+            class: v1::Cause::Failed as i32,
             ..Default::default()
         });
         assert!(!status(&feed, &screen, false).contains("✓"));
@@ -2452,8 +2542,9 @@ mod tests {
         // On a narrow terminal a failure keeps every word of its title, broken into lines.
         let mut s = status_of("x");
         s.not_covered.push(v1::Uncovered {
-            id: FAILED_CAUSES[1].to_string(),
+            id: "vulnerability-list-not-downloaded".to_string(),
             who: "nothing".to_string(),
+            class: v1::Cause::Failed as i32,
             title: "The list of vulnerabilities attackers are using could not be downloaded since the first check.".to_string(),
             value_text: Some(format!("cannot read {LONG}")),
             ..Default::default()
@@ -2464,11 +2555,7 @@ mod tests {
             .map(|l| visible(l).trim().to_string())
             .collect();
         let words = words.join(" ");
-        for u in s
-            .not_covered
-            .iter()
-            .filter(|u| FAILED_CAUSES.contains(&u.id.as_str()))
-        {
+        for u in s.not_covered.iter().filter(|u| is_failure(u)) {
             assert!(words.contains(unstopped(&u.title)), "{}\n{narrow}", u.title);
         }
         // The event level as it should be has no line; a failed one has.
@@ -2535,6 +2622,7 @@ mod tests {
         s.not_covered.push(v1::Uncovered {
             id: "not-understood".to_string(),
             who: "nothing".to_string(),
+            class: v1::Cause::NoReader as i32,
             holds_on: v1::HoldsOn::ThisMac as i32,
             title: "Some files and packages are not understood by this version yet.".to_string(),
             examples_text: (0..5)
@@ -2759,6 +2847,7 @@ mod tests {
         let names = v1::Uncovered {
             id: "servers-not-swept".to_string(),
             who: "you".to_string(),
+            class: v1::Cause::NotGiven as i32,
             title: "2 of your servers were not checked last time.".to_string(),
             count: 4,
             examples_text: vec!["staging-api".into(), "old-mail".into(), "a, b".into()],
@@ -2767,6 +2856,7 @@ mod tests {
         let pairs = v1::Uncovered {
             id: "servers-not-opened".to_string(),
             who: "you".to_string(),
+            class: v1::Cause::NotGiven as i32,
             title: "5 servers could not be opened at the last server check.".to_string(),
             count: 5,
             examples_text: vec![
@@ -2796,6 +2886,7 @@ mod tests {
         let alone = v1::Uncovered {
             id: "event-level-not-installed".to_string(),
             who: "you".to_string(),
+            class: v1::Cause::NotGiven as i32,
             title: "Program starts on this Mac are not seen.".to_string(),
             count: 1,
             ..Default::default()
@@ -2842,6 +2933,7 @@ mod tests {
         long.not_covered.push(v1::Uncovered {
             id: "file-permissions".to_string(),
             who: "you".to_string(),
+            class: v1::Cause::NotGiven as i32,
             title: "1 file could not be opened because of its permissions.".to_string(),
             count: 1,
             examples_text: vec!["example-host".into()],
@@ -3020,6 +3112,9 @@ mod tests {
         calm.watching = Some(v1::Watcher::default());
         calm.event_level = None;
         calm.not_covered.clear();
+        if let Some(t) = calm.threats.as_mut() {
+            t.outcome = v1::FeedOutcome::Unchanged as i32;
+        }
         if let Some(c) = calm.coverage.as_mut() {
             c.failed = 0;
             c.no_reader = 0;
@@ -3039,6 +3134,7 @@ mod tests {
         calm.not_covered.push(v1::Uncovered {
             id: "not-understood".to_string(),
             who: "nothing".to_string(),
+            class: v1::Cause::NoReader as i32,
             holds_on: v1::HoldsOn::ThisMac as i32,
             title: "Some files are not understood by this version yet.".to_string(),
             examples_text: vec!["poetry.lock".to_string()],
@@ -3053,5 +3149,209 @@ mod tests {
             ends(&status(&calm, &Screen::pipe(), false)),
             [install_step, coverage_step]
         );
+    }
+
+    /// A status with nothing found, after a fresh check, with a watcher, nothing failed and
+    /// every download current: the one the green headline is for.
+    fn calm_status() -> v1::Status {
+        let mut s = status_of("x");
+        s.needs_a_look = Some(v1::NeedsALook::default());
+        s.last_run = None;
+        s.watching = Some(v1::Watcher::default());
+        s.event_level = None;
+        s.not_covered.clear();
+        if let Some(m) = s.this_mac.as_mut() {
+            m.fresh = true;
+        }
+        if let Some(t) = s.threats.as_mut() {
+            t.outcome = v1::FeedOutcome::Unchanged as i32;
+        }
+        if let Some(c) = s.coverage.as_mut() {
+            c.failed = 0;
+            c.unreached_total = 0;
+            c.unreached.clear();
+        }
+        s
+    }
+
+    #[test]
+    fn the_calm_headline_shows_only_when_no_cause_is_a_failure_whoever_can_fix_it() {
+        let screen = Screen::terminal(400, true);
+        let green = "\u{1b}[1;32m✓ Nothing needs a look";
+        assert!(status(&calm_status(), &screen, false).starts_with(green));
+        // Every cause the core can raise, alone in that status, as the core gives it.
+        for cause in crate::covered::CAUSES {
+            let class = crate::status::cause_class(cause.class);
+            let title = format!("What the cause {} says.", cause.id);
+            let mut s = calm_status();
+            s.not_covered.push(v1::Uncovered {
+                id: cause.id.to_string(),
+                who: cause.who.to_string(),
+                class: class as i32,
+                holds_on: v1::HoldsOn::ThisMac as i32,
+                title: title.clone(),
+                examples_text: vec!["example-host".to_string()],
+                ..Default::default()
+            });
+            let text = status(&s, &screen, false);
+            let failure = cause.class == crate::store::Cause::Failed;
+            assert_eq!(!text.starts_with(green), failure, "{}\n{text}", cause.id);
+            if failure {
+                // Its line is in the default status, red or yellow, never plain and never dim.
+                let line = text
+                    .lines()
+                    .find(|l| visible(l).contains(unstopped(&title)))
+                    .unwrap_or_else(|| panic!("{}\n{text}", cause.id));
+                assert!(
+                    (line.contains("\u{1b}[31m") || line.contains("\u{1b}[33m"))
+                        && !line.contains("\u{1b}[2m"),
+                    "{line:?}"
+                );
+            }
+        }
+        // Each class is given in the contract's word for it.
+        for (store, word) in [
+            (crate::store::Cause::Failed, "failed"),
+            (crate::store::Cause::NoReader, "no_reader"),
+            (crate::store::Cause::NotGiven, "not_given"),
+        ] {
+            let said = serde_json::to_value(v1::Uncovered {
+                class: crate::status::cause_class(store) as i32,
+                ..Default::default()
+            })
+            .unwrap();
+            assert_eq!(said["class"], word);
+        }
+        // A class this build does not know, or none, is a failure.
+        for class in [0, 99] {
+            let mut s = calm_status();
+            s.not_covered.push(v1::Uncovered {
+                id: "a-cause-of-a-later-core".to_string(),
+                who: "you".to_string(),
+                class,
+                title: "Something a later core says.".to_string(),
+                ..Default::default()
+            });
+            assert!(!status(&s, &screen, false).starts_with(green), "{class}");
+        }
+    }
+
+    #[test]
+    fn a_failed_download_is_said_by_default_even_when_the_data_kept_is_current() {
+        let screen = Screen::terminal(400, true);
+        let downloads = |s: &v1::Status| -> Option<String> {
+            status(s, &screen, false)
+                .lines()
+                .find(|l| visible(l).trim_start().starts_with("Downloads"))
+                .map(str::to_string)
+        };
+        let mut s = calm_status();
+        assert_eq!(downloads(&s), None);
+        // One ecosystem's data could not be downloaded; what was read before is current, so the
+        // core raises no cause and the headline may stay calm, but the failure has its line.
+        s.vulnerability_data
+            .as_mut()
+            .unwrap()
+            .feeds
+            .push(v1::FeedState {
+                ecosystem: "PyPI".to_string(),
+                outcome: v1::FeedOutcome::Failed as i32,
+                read_at: Some(CHECKED - 3600),
+                reason_text: Some("curl: (28) timed out".to_string()),
+                ..Default::default()
+            });
+        let line = downloads(&s).unwrap_or_else(|| panic!("{}", status(&s, &screen, false)));
+        assert_eq!(
+            visible(&line).trim(),
+            "Downloads    OSV data for PyPI not downloaded at the last check, the data read before stays in force"
+        );
+        assert!(
+            line.contains("\u{1b}[33m") && !line.contains("\u{1b}[2m"),
+            "{line:?}"
+        );
+        // The catalogue too, and an ecosystem never read whole, red; an outcome this build does
+        // not know is a failure.
+        s.threats.as_mut().unwrap().outcome = 99;
+        s.vulnerability_data
+            .as_mut()
+            .unwrap()
+            .feeds
+            .push(v1::FeedState {
+                ecosystem: "crates.io".to_string(),
+                outcome: v1::FeedOutcome::Unspecified as i32,
+                ..Default::default()
+            });
+        let line = downloads(&s).unwrap();
+        assert!(
+            visible(&line).contains(
+                "CISA catalogue and OSV data for PyPI not downloaded at the last check, the data read before stays in force; OSV data for crates.io not downloaded, nothing of it is known yet"
+            ),
+            "{line}"
+        );
+        assert!(line.contains("\u{1b}[31m"), "{line:?}");
+        // And what was read whole, or never asked for, is no failure.
+        let mut s = calm_status();
+        s.vulnerability_data
+            .as_mut()
+            .unwrap()
+            .feeds
+            .push(v1::FeedState {
+                ecosystem: "PyPI".to_string(),
+                outcome: v1::FeedOutcome::NeverRead as i32,
+                ..Default::default()
+            });
+        assert_eq!(downloads(&s), None);
+        // The line keeps the detail as a next step, as every line of what was not read: with
+        // coverage whole and only installing a watcher to do, it is the one that adds it.
+        s.watching = None;
+        if let Some(c) = s.coverage.as_mut() {
+            c.no_reader = 0;
+            c.not_given = 0;
+        }
+        let step = "→ immune status --coverage   what was read and what was not";
+        assert!(!status(&s, &Screen::pipe(), false).contains(step));
+        s.threats.as_mut().unwrap().outcome = v1::FeedOutcome::Failed as i32;
+        assert!(status(&s, &Screen::pipe(), false).contains(step));
+    }
+
+    #[test]
+    fn the_count_of_what_is_not_judged_is_never_cut() {
+        let mut s = calm_status();
+        s.not_covered.push(v1::Uncovered {
+            id: "not-understood".to_string(),
+            who: "nothing".to_string(),
+            class: v1::Cause::NoReader as i32,
+            holds_on: v1::HoldsOn::ThisMac as i32,
+            title: "Some files are not understood by this version yet.".to_string(),
+            examples_text: vec![format!("{LONG}/poetry.lock"), "yarn.lock".to_string()],
+            ..Default::default()
+        });
+        s.not_covered.push(v1::Uncovered {
+            id: "persistence-not-read".to_string(),
+            who: "nothing".to_string(),
+            class: v1::Cause::NoReader as i32,
+            holds_on: v1::HoldsOn::EveryMac as i32,
+            title: "Some places are not checked.".to_string(),
+            ..Default::default()
+        });
+        // The value has the width less 15 columns, for the label: from 2 columns up.
+        for width in [17, 19, 20, 26, 40, 80] {
+            let text = status(&s, &Screen::terminal(width, false), false);
+            let line = text
+                .lines()
+                .find(|l| l.trim_start().starts_with("Not judged"))
+                .unwrap_or_else(|| panic!("{width}\n{text}"));
+            // The long name gives way, to `…` at the least; the count of the rest stays whole,
+            // on the line where there is room for it and broken onto the next where there is not.
+            if width >= 19 {
+                assert!(line.ends_with("… +2"), "{width}: {line:?}");
+            } else {
+                let words: Vec<&str> = text.split_whitespace().collect();
+                assert!(
+                    words.join(" ").contains("Not judged … +2"),
+                    "{width}\n{text}"
+                );
+            }
+        }
     }
 }

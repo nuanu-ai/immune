@@ -1155,6 +1155,7 @@
   "not_covered": [
     {
       "advice": "Nothing to do. What these files say was not judged on this Mac. Support for them comes in later versions.",
+      "class": "no_reader",
       "count": 1,
       "examples": [
         {
@@ -1177,6 +1178,7 @@
     },
     {
       "advice": "Nothing to do. A change in these is left out of the answer for your projects; the page lists every way and whether it is read.",
+      "class": "no_reader",
       "count": 0,
       "examples": [],
       "examples_text": [],
@@ -1192,6 +1194,7 @@
     },
     {
       "advice": "Nothing to do. A change in these is left out of the answer on this Mac; the page lists every place and whether it is read.",
+      "class": "no_reader",
       "count": 0,
       "examples": [],
       "examples_text": [],
@@ -1207,6 +1210,7 @@
     },
     {
       "advice": "Nothing to do if this Mac was offline: it is tried again at every check. If it stays while the Mac is online, ask your agent to look at why.",
+      "class": "failed",
       "count": 1,
       "examples": [],
       "examples_text": [],
@@ -1222,6 +1226,7 @@
     },
     {
       "advice": "Nothing to do if this Mac was offline. If it stays while the Mac is online, ask your agent to look at why.",
+      "class": "failed",
       "count": 1,
       "examples": [],
       "examples_text": [],
@@ -1237,6 +1242,7 @@
     },
     {
       "advice": "Nothing to do. These packages are left out of the answer about known vulnerabilities.",
+      "class": "no_reader",
       "count": 1,
       "examples": [],
       "examples_text": [],
@@ -1252,6 +1258,7 @@
     },
     {
       "advice": "Nothing to do. This is a limit of this version.",
+      "class": "no_reader",
       "count": 87,
       "examples": [],
       "examples_text": [],
@@ -1267,6 +1274,7 @@
     },
     {
       "advice": "Nothing to do. This is a limit of this version.",
+      "class": "no_reader",
       "count": 1,
       "examples": [],
       "examples_text": [],
@@ -1282,6 +1290,7 @@
     },
     {
       "advice": "Nothing to do. This comes in a later version.",
+      "class": "no_reader",
       "count": 1,
       "examples": [],
       "examples_text": [],
@@ -1297,6 +1306,7 @@
     },
     {
       "advice": "Nothing to do. This is a limit of this version.",
+      "class": "no_reader",
       "count": 1,
       "examples": [],
       "examples_text": [],
