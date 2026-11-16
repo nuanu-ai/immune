@@ -252,12 +252,12 @@ fn every_command_of_the_contract_gives_one_message_in_its_three_forms() {
                 json["collector"]["state"].as_str().unwrap()
             )),
             "findings" => {
-                let f = &json["findings"][0]["finding"];
-                said.push(format!(
-                    "{}  {}",
-                    f["id"].as_str().unwrap(),
-                    f["state"].as_str().unwrap()
-                ));
+                // An open finding's rule is named once by its short title, with how many are
+                // listed under it; the finding is a row of its own, by its id. Its state is a
+                // column only when some row is not open.
+                let f = &json["findings"][0];
+                said.push(format!("\n  {}   1\n", f["short_title"].as_str().unwrap()));
+                said.push(format!("\n    {}  ", f["finding"]["id"].as_str().unwrap()));
             }
             _ => {
                 said.push(format!("Finding {id}: {}", json["title"].as_str().unwrap()));
@@ -805,7 +805,7 @@ fn sampled(e: &Estate) {
 }
 
 #[test]
-fn the_text_of_a_status_renders_every_finding_its_message_lists_with_its_urgency() {
+fn the_text_of_a_status_renders_every_rule_its_message_counts_with_its_urgency() {
     // The text of a message renders every part the message carries: no branch ends it before a
     // part that is there. A store where only the watcher's samples ran (the first check still
     // running, failed or stopped) holds findings and no finished run.
@@ -832,32 +832,41 @@ fn the_text_of_a_status_renders_every_finding_its_message_lists_with_its_urgency
         assert!(out.status.success());
         let text = String::from_utf8(out.stdout).unwrap();
         let look = &v["needs_a_look"];
-        if let Some(total) = look["total"].as_u64() {
-            assert!(text.contains(&format!("Needs a look: {total}")), "{text}");
-        }
-        let items = look["items"].as_array().cloned().unwrap_or_default();
-        // The rows a person is shown; the rest is counted, with how many of them are urgent.
-        for i in items.iter().take(10) {
-            let r = &i["finding"]["finding"];
-            let urgent = r["urgent"] == true;
-            urgent_seen += usize::from(urgent);
-            let level = format!(
-                "{}{}",
-                r["severity"].as_str().unwrap(),
-                if urgent { ", urgent" } else { "" }
-            );
-            let id = r["id"].as_str().unwrap();
+        // What needs a look is never counted without how many of them are urgent.
+        if let (Some(total), Some(urgent)) = (look["total"].as_u64(), look["urgent_total"].as_u64())
+            && total > 0
+        {
+            let first = text.lines().next().unwrap();
+            let urgent = match urgent {
+                0 => "none urgent".to_string(),
+                u => format!("{u} urgent"),
+            };
             assert!(
-                text.lines()
-                    .any(|l| l.contains(id) && l.contains(&format!("  {level}  "))),
-                "{id} {level}\n{text}"
+                first.contains(&format!(" {total} th")) && first.contains(&urgent),
+                "{text}"
+            );
+        }
+        // The rules a person is shown, each with its level, its count and its urgency.
+        let groups = look["by_rule"].as_array().cloned().unwrap_or_default();
+        for g in groups.iter().take(6) {
+            let urgent = g["urgent"].as_u64().unwrap();
+            urgent_seen += usize::from(urgent > 0);
+            let level = g["severity"].as_str().unwrap();
+            let title = g["short_title"].as_str().unwrap();
+            let count = g["count"].as_u64().unwrap();
+            assert!(
+                text.lines().any(|l| l.contains(&format!("  {level}  "))
+                    && l.contains(title)
+                    && l.contains(&format!("  {count}"))
+                    && (urgent == 0) != l.trim_end().ends_with("urgent")),
+                "{title} {level}\n{text}"
             );
         }
     }
     assert!(at(&only_sampled.json(&["status"]), &["last_finished_run"]).is_null());
     assert!(
-        urgent_seen >= 2,
-        "no urgent finding was listed: the test proves nothing"
+        urgent_seen >= 1,
+        "no urgent rule was listed: the test proves nothing"
     );
 }
 
@@ -1127,11 +1136,21 @@ fn words_taken_from_the_mac_never_enter_a_field_that_is_not_text_nor_a_sentence(
             assert!(fits(w, s), "title: {w}\n{s}");
         }
     }
-    // As text, a name is printed only inside a quotation, apart from the program's words.
-    let out = e.immune(&["status"]);
-    let text = String::from_utf8(out.stdout).unwrap();
-    assert!(text.contains(MARKER), "{text}");
-    for line in text.lines() {
-        assert!(!unquoted(line).contains("Note to the agent"), "{line}");
+    // As text, a name is printed apart from the program's words: inside a quotation within a
+    // sentence, or as a cell of data, never in the cell that holds a label or a sentence of the
+    // program's own; columns are two spaces or more apart.
+    for args in [&["status"][..], &["status", "--coverage"][..]] {
+        let out = e.immune(args);
+        let text = String::from_utf8(out.stdout).unwrap();
+        assert!(text.contains(MARKER), "{text}");
+        for line in text.lines() {
+            let unquoted = unquoted(line);
+            let first = unquoted
+                .split("  ")
+                .map(str::trim)
+                .find(|c| !c.is_empty())
+                .unwrap_or_default();
+            assert!(!first.contains("Note to the agent"), "{args:?}: {line}");
+        }
     }
 }

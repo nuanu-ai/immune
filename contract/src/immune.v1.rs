@@ -1649,6 +1649,22 @@ pub struct ListedFinding {
     /// match on. A kind this build has no title for is given as `kind`. Since 1.8.0.
     #[prost(string, tag = "10")]
     pub kind_title: ::prost::alloc::string::String,
+    /// `title` in a few words, at most 44 characters, for a list: such as `Malicious package in a
+    /// project`. The core's words, the same for every finding of its rule. Since 1.16.0.
+    #[prost(string, tag = "11")]
+    pub short_title: ::prost::alloc::string::String,
+    /// For a finding of a published rule, the rule's own title as its set publishes it, whole: the
+    /// name a list shows for it, cut to 44 characters where it is longer. Absent for every other
+    /// finding. Since 1.16.0.
+    #[prost(string, optional, tag = "12")]
+    pub rule_title_text: ::core::option::Option<::prost::alloc::string::String>,
+    /// For a finding about a package a project depends on (`lockfiles.*`), the package's name and
+    /// the releases the project's lockfiles declare that a record affects, as `VulnerablePackage`
+    /// gives them. Absent, and empty, for every other finding. Since 1.16.0.
+    #[prost(string, optional, tag = "13")]
+    pub package_text: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, repeated, tag = "14")]
+    pub releases_text: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 /// The answer to `immune finding <id>`: one finding whole.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -1727,6 +1743,9 @@ pub struct Finding {
     /// `--via app`. `Findings` and `Status` carry it too. Since 1.9.0.
     #[prost(int64, tag = "21")]
     pub journal_seq: i64,
+    /// As in `ListedFinding`. Since 1.16.0.
+    #[prost(string, tag = "22")]
+    pub short_title: ::prost::alloc::string::String,
 }
 /// The person's answer to a finding.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -3657,6 +3676,38 @@ pub struct NeedsALook {
     /// finding.
     #[prost(uint64, tag = "3")]
     pub urgent_total: u64,
+    /// Every rule that has a finding that needs a look, each counted over all of them and not over
+    /// `items`: urgent ones first, then the most severe, a rule whose severity is not known taken as
+    /// the most severe, then the most findings, then by rule. Since 1.16.0.
+    #[prost(message, repeated, tag = "4")]
+    pub by_rule: ::prost::alloc::vec::Vec<RuleCount>,
+}
+/// The findings of one rule that need a look, counted.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RuleCount {
+    /// The rule, as `FindingRef.rule` names it.
+    #[prost(string, tag = "1")]
+    pub rule: ::prost::alloc::string::String,
+    /// Its title in a few words, as `ListedFinding.short_title`.
+    #[prost(string, tag = "2")]
+    pub short_title: ::prost::alloc::string::String,
+    /// For a published rule, its own title, whole, as `ListedFinding.rule_title_text`.
+    #[prost(string, optional, tag = "3")]
+    pub rule_title_text: ::core::option::Option<::prost::alloc::string::String>,
+    /// The most severe of its findings. Absent when the severity of one of them is not known.
+    #[prost(enumeration = "Level", optional, tag = "4")]
+    #[serde(
+        serialize_with = "crate::optional_enum_name::<Level, _>",
+        deserialize_with = "crate::optional_enum_from_name::<Level, _>"
+    )]
+    pub severity: ::core::option::Option<i32>,
+    /// How many of its findings need a look, and how many of them are urgent.
+    #[prost(uint64, tag = "5")]
+    pub count: u64,
+    #[prost(uint64, tag = "6")]
+    pub urgent: u64,
 }
 /// A finding that needs a look, as a person is shown it.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -4302,6 +4353,10 @@ pub struct CoreRule {
     pub meaning: ::prost::alloc::string::String,
     #[prost(string, tag = "10")]
     pub advice: ::prost::alloc::string::String,
+    /// `title` in a few words, at most 44 characters, as `ListedFinding.short_title`. Since
+    /// 1.16.0.
+    #[prost(string, tag = "11")]
+    pub short_title: ::prost::alloc::string::String,
 }
 /// What a finding of a published rule says, for every set that raises findings.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -4337,6 +4392,10 @@ pub struct PublishedWords {
     /// A rule about file events raises a finding of its own kind and words.
     #[prost(message, optional, tag = "12")]
     pub for_file_events: ::core::option::Option<FileEventWords>,
+    /// `title` in a few words, as `CoreRule.short_title`. A list names a finding of a published
+    /// rule by the rule's own title (`ListedFinding.rule_title_text`). Since 1.16.0.
+    #[prost(string, tag = "13")]
+    pub short_title: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -4383,6 +4442,9 @@ pub struct FileEventWords {
     pub meaning_by_set: ::prost::alloc::vec::Vec<SetMeaning>,
     #[prost(string, tag = "4")]
     pub advice: ::prost::alloc::string::String,
+    /// As in `PublishedWords`. Since 1.16.0.
+    #[prost(string, tag = "5")]
+    pub short_title: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -4404,6 +4466,9 @@ pub struct VerdictWords {
     pub meaning: ::prost::alloc::string::String,
     #[prost(string, tag = "8")]
     pub advice: ::prost::alloc::string::String,
+    /// As in `CoreRule`. Since 1.16.0.
+    #[prost(string, tag = "9")]
+    pub short_title: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(default)]

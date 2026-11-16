@@ -718,6 +718,25 @@ message NeedsALook {
   // urgent ones listed means some urgent findings are not listed; `immune findings` lists every
   // finding.
   uint64 urgent_total = 3;
+  // Every rule that has a finding that needs a look, each counted over all of them and not over
+  // `items`: urgent ones first, then the most severe, a rule whose severity is not known taken as
+  // the most severe, then the most findings, then by rule. Since 1.16.0.
+  repeated RuleCount by_rule = 4;
+}
+
+// The findings of one rule that need a look, counted.
+message RuleCount {
+  // The rule, as `FindingRef.rule` names it.
+  string rule = 1;
+  // Its title in a few words, as `ListedFinding.short_title`.
+  string short_title = 2;
+  // For a published rule, its own title, whole, as `ListedFinding.rule_title_text`.
+  optional string rule_title_text = 3;
+  // The most severe of its findings. Absent when the severity of one of them is not known.
+  optional Level severity = 4;
+  // How many of its findings need a look, and how many of them are urgent.
+  uint64 count = 5;
+  uint64 urgent = 6;
 }
 
 // A finding that needs a look, as a person is shown it.

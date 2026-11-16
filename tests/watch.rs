@@ -3509,7 +3509,7 @@ fn what_a_watcher_set_aside_as_no_longer_read_before_a_run_is_said_once_by_that_
     let status_text = || {
         let out = mac
             .immune()
-            .args(["status", "--store"])
+            .args(["status", "--coverage", "--store"])
             .arg(mac.store())
             .output()
             .unwrap();
@@ -3538,12 +3538,13 @@ fn what_a_watcher_set_aside_as_no_longer_read_before_a_run_is_said_once_by_that_
         assert_eq!(set_aside(), 3);
         let text = status_text();
         assert!(
-            text.contains("3 facts set aside as no longer read by this version"),
+            text.lines().any(|l| l.trim_start().starts_with("Set aside")
+                && l.contains("3 facts as no longer read by this version")),
             "{text}"
         );
     }
     let again = said();
     assert!(!again.contains("No longer read by this version"), "{again}");
     assert_eq!(set_aside(), 0);
-    assert!(!status_text().contains("set aside as no longer read"));
+    assert!(!status_text().contains("as no longer read by this version"));
 }
