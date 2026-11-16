@@ -80,7 +80,7 @@
         ],
         "kind": "code kept by applications not signed by Apple under ~/Library/Application Support",
         "reader": "integrity",
-        "reason_text": "none of these places is on this machine; compared by the metadata of code files between readings; only a folder named like an application read here that Apple did not sign is looked into, so code kept under another name is not compared; caches, web storage, crash reports and logs are not compared"
+        "reason_text": "none of these places is on this machine; compared by the metadata of code files between readings; only a folder named like an application read here that Apple did not sign is looked into, and one an earlier reading held for as long as it is there, so code kept under another name is not compared; caches, web storage, crash reports and logs are not compared"
       },
       {
         "class": "read_nothing",
@@ -574,7 +574,7 @@
       {
         "completeness": "full",
         "kind": "code kept by applications not signed by Apple under ~/Library/Application Support",
-        "reason_text": "none of these places is on this machine; compared by the metadata of code files between readings; only a folder named like an application read here that Apple did not sign is looked into, so code kept under another name is not compared; caches, web storage, crash reports and logs are not compared"
+        "reason_text": "none of these places is on this machine; compared by the metadata of code files between readings; only a folder named like an application read here that Apple did not sign is looked into, and one an earlier reading held for as long as it is there, so code kept under another name is not compared; caches, web storage, crash reports and logs are not compared"
       },
       {
         "completeness": "full",
