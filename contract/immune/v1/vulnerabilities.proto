@@ -39,6 +39,58 @@ message Vulnerabilities {
   string declared_note = 7;
   // Why there is nothing to count, in the core's words, when there is no store.
   repeated NotComputed not_computed = 8;
+  // The packages for which it cannot be told whether a record affects them, the ones
+  // `totals.unknown_packages` counts. Absent when `totals` is. Since 1.18.0.
+  UnknownPackages unknown = 9;
+  // The projects whose lockfiles of an ecosystem were not all read, the ones
+  // `totals.places_not_read` counts, whether or not a package was read in them. Absent when
+  // `totals` is. Since 1.18.0.
+  UnreadPlaces unread = 10;
+}
+
+// The places, a project's lockfiles of one ecosystem, that were not all read: what they declare
+// is not all known, so no answer about them is "does not affect".
+message UnreadPlaces {
+  // One per project and ecosystem, at most 200, by project.
+  repeated UnreadPlace items = 1;
+  // How many there are.
+  uint64 total = 2;
+}
+
+// A project's lockfiles of one ecosystem that were not all read.
+message UnreadPlace {
+  // The project, as a person recognises it, and the ecosystem. Whole.
+  string project_text = 1;
+  string ecosystem = 2;
+  // `partial`, some of them read; `not_read`, with the ecosystem `any` for a project the
+  // reading of lockfiles did not open; `no_reader`, lockfiles of a kind this version has no
+  // reader for, such as `go.sum`, in an ecosystem no data is matched for, so the project was
+  // compared with nothing there; or `none_found`, the project was opened and no lockfile this
+  // version knows of was found in it, with the ecosystem `any`. A project with any such place
+  // is never answered "does not affect" for any record, since the store does not keep every
+  // ecosystem a record names. One with `none_found` is counted, never answered for a record.
+  string lockfiles = 3;
+  // Why, as the reading of lockfiles gave it, or for `no_reader` the kinds by name. Whole.
+  optional string why_text = 4;
+}
+
+// The packages of projects for which it cannot be told whether a record affects them.
+message UnknownPackages {
+  // One per package in a project, each under the first of its reasons, at most 200, by project.
+  repeated UnknownPackage items = 1;
+  // How many there are.
+  uint64 total = 2;
+}
+
+// A package of a project for which it cannot be told whether a record affects it.
+message UnknownPackage {
+  // The project, as a person recognises it; the package's ecosystem and its name. Whole.
+  string project_text = 1;
+  string ecosystem = 2;
+  string package_text = 3;
+  // Why, the first of its reasons, as `unknown_packages_by_reason` counts it, such as
+  // `version_cannot_be_compared`.
+  string reason = 4;
 }
 
 // The packages of projects that a record affects.
@@ -78,6 +130,19 @@ message VulnerabilityTotals {
   // Informational advisories held, such as an unmaintained crate, which this version does not
   // answer.
   uint64 informational_records = 15;
+  // Places, a project's lockfiles of one ecosystem, that were not all read, and the projects
+  // they are in. A project in which no lockfile was found is not among them: it is counted in
+  // `projects_without_lockfile`. Since 1.18.0.
+  uint64 places_not_read = 16;
+  uint64 projects_not_read = 17;
+  // Projects in which the latest check found no lockfile this version reads: what they declare
+  // is not known, and no answer is given for them, so none is "does not affect". Each is in
+  // `unread` as `none_found`. Since 1.18.0.
+  uint64 projects_without_lockfile = 18;
+  // Projects with a place read in full and compared with data current at the check and now,
+  // and no place not wholly read. With none, nothing was compared, and the text never says that
+  // no known vulnerability affects the projects. Since 1.18.0.
+  uint64 projects_compared = 19;
 }
 
 // Whether a feed's data is current now.
@@ -130,7 +195,9 @@ message Vulnerability {
   // Whether the data holds a record of it. Absent when there is no store; then `not_computed`
   // says so.
   optional RecordData data = 6;
-  // When it holds none, what that means, in the core's words.
+  // When it holds none, what that means, in the core's words. It is never calmer than any of
+  // the `answers`: when one cannot be told, it says for how many projects and why before it says
+  // which it does not affect, and with no answer at all it says that it cannot be told.
   optional string said = 7;
   // When it holds none and the catalogue holds the id, the answer in each place from the
   // conditions of the place.
@@ -163,8 +230,9 @@ message RecordAnswers {
   string modified_text = 5;
   string kind = 6;
   optional string summary_text = 7;
-  // Whether it is answered: a withdrawn record, one that left the data, and an informational one
-  // are not, and `said` says why in the core's words.
+  // Whether it is answered: a withdrawn record, one that left the data, an informational one,
+  // and one the store knows no project to compare with are not, and `said` says why in the
+  // core's words.
   bool answered = 8;
   optional string said = 9;
   repeated PlaceAnswer answers = 10;

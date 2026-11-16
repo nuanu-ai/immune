@@ -111,20 +111,6 @@ pub fn rel(home: &Path, path: &Path) -> String {
     }
 }
 
-/// Whether a walk of the home folder looks at the folder `rel`, a path as ids name it, for a
-/// checkout: it is inside the home folder, no deeper than the walk goes, and not pruned. Two
-/// things the walk does not enter are left to the caller: a folder macOS asks permission for,
-/// and a folder inside a checkout.
-pub fn reaches(rel: &str) -> bool {
-    let names: Vec<&str> = rel.split('/').collect();
-    !rel.starts_with('/')
-        && names.len() <= MAX_DEPTH
-        && !PRUNED_IN_HOME.contains(&names[0])
-        && names
-            .iter()
-            .all(|n| !n.starts_with('.') && !PRUNED.contains(n))
-}
-
 /// What one folder holds: the folders to descend into, every folder in it, and whether every
 /// entry could be read.
 struct Listed {

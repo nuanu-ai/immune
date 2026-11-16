@@ -213,7 +213,8 @@ pub fn find(conn: &Connection, name: &str) -> rusqlite::Result<Found> {
         return Ok(Found::One(name.to_string(), g.clone()));
     }
     let norm = |v: &str| resolver::key(v).unwrap_or_else(|| v.trim().to_string());
-    let wanted = norm(name);
+    // A machine's id is compared as its bare name is, so `machine:<name>` fits as `<name>` does.
+    let wanted = norm(bare(name));
     let mut hits: Vec<String> = Vec::new();
     for m in groups.iter().flatten() {
         if norm(bare(m)) == wanted {

@@ -717,18 +717,20 @@ pub struct Known {
     /// When the answer was made.
     #[prost(int64, tag = "3")]
     pub answered_at: i64,
-    /// Whether the store knows the thing at all.
+    /// Whether the thing is there, by what the store holds of each of its ids (`Presence`).
     #[prost(enumeration = "Presence", tag = "4")]
     #[serde(
         serialize_with = "crate::enum_name::<Presence, _>",
         deserialize_with = "crate::enum_from_name::<Presence, _>"
     )]
     pub presence: i32,
-    /// The thing asked for. Absent when the presence is `unknown`. A path names the project or the
-    /// program that holds it, the nearest one; an id names the thing with that id.
-    /// A machine the store knows under several ids linked by `same_as` is one thing: its parts,
-    /// facts, coverage and findings are those of every one of its ids, each fact under its own
-    /// `subject_text`.
+    /// The thing asked for. Absent when the store holds nothing by that name or at that place. A
+    /// path names the project or the program that holds it, the nearest one; an id names the thing
+    /// with that id.
+    /// A thing the store knows under several ids is one thing: a machine under ids linked by
+    /// `same_as`, a program under the ids of a formula and its kegs, or of an application and its
+    /// code kept outside the bundle. Its parts, facts, coverage and findings are those of every one
+    /// of its ids, each fact under its own `subject_text`.
     #[prost(message, optional, tag = "5")]
     pub thing: ::core::option::Option<Entity>,
     /// The things inside it: what is `part_of` or `located_on` it, and for a project the files whose
@@ -751,20 +753,25 @@ pub struct Known {
     ///    `sweep visit`, completeness `none`;
     /// - a machine the owner set aside as retired or not theirs: `servers`, `sweep of a machine set
     ///    aside by the owner`, completeness `none`, the reason naming what the owner said and the day;
-    /// - a path that no reading looking for things of its kind looks at, answered `unknown`:
-    ///    `immune`, `places the readings that find projects look in` (or programs), completeness
-    ///    `none`;
+    /// - a path that is not judged on its own: `immune`, `places the readings that find projects
+    ///    look in` (or programs), completeness `none`, the reason saying why: the path lies under no
+    ///    thing of its kind the store holds, or is a folder that holds some and says how many, and
+    ///    is answered `unknown`; or it lies strictly inside one, or names one only in another case
+    ///    or Unicode form, and is answered for that one;
     /// - a program the store never heard of (`immune program`, presence `unknown`): `immune`,
     ///    `software of package managers this version does not look for`, completeness `none`, cause
     ///    `no_reader`, the reason naming what this version does not read or find.
     #[prost(message, repeated, tag = "8")]
     pub coverage: ::prost::alloc::vec::Vec<Coverage>,
-    /// The findings about the thing, about its parts whether what was read of them is in force or
-    /// retracted, and for a project about anything whose id lies in its folder; in every state.
-    /// `immune finding <id>` shows one.
+    /// The findings about the thing under each of its ids, and about anything inside it at any depth,
+    /// whether what was read of it is in force or retracted: what is `part_of` or `located_on` it or
+    /// one of its parts, what its id names as on it, such as a file of a machine, and for a project
+    /// anything whose id lies in its folder; in every state. A machine's include the packages of its
+    /// projects, which `parts` does not list. `immune finding <id>` shows one.
     #[prost(message, repeated, tag = "9")]
     pub findings: ::prost::alloc::vec::Vec<FindingRef>,
-    /// The other ids the store knows the thing by, such as a machine's names linked by `same_as`.
+    /// The other ids the store knows the thing by, such as a machine's names linked by `same_as`, a
+    /// Homebrew formula's kegs, or the folder of code an application keeps outside its bundle.
     /// A fact whose subject is one of these is about the thing; any other subject is a part.
     #[prost(message, repeated, tag = "10")]
     pub same_as: ::prost::alloc::vec::Vec<Entity>,
@@ -936,13 +943,17 @@ impl Question {
 pub enum Presence {
     #[serde(rename = "unspecified")]
     Unspecified = 0,
-    /// The store has never heard of it. Which readings could have found it is in `coverage`.
+    /// The store has never heard of it, or cannot tell: none of its ids is held, and the latest
+    /// reading of one that wrote about them was not full, so what it did not read again may still
+    /// be there. Which readings could have found it is in `coverage`.
     #[serde(rename = "unknown")]
     Unknown = 1,
-    /// The store holds facts in force about it.
+    /// The store holds facts in force about one of its ids, or about something on it. A reading
+    /// that holds it and was not full is in `coverage`.
     #[serde(rename = "held")]
     Held = 2,
-    /// It was known and no longer is: what was read of it is retracted.
+    /// It was known and no longer is: what was read of every one of its ids is retracted, and the
+    /// latest reading of each reading that wrote about them was full.
     #[serde(rename = "gone")]
     Gone = 3,
 }
@@ -2345,6 +2356,80 @@ pub struct Vulnerabilities {
     /// Why there is nothing to count, in the core's words, when there is no store.
     #[prost(message, repeated, tag = "8")]
     pub not_computed: ::prost::alloc::vec::Vec<NotComputed>,
+    /// The packages for which it cannot be told whether a record affects them, the ones
+    /// `totals.unknown_packages` counts. Absent when `totals` is. Since 1.18.0.
+    #[prost(message, optional, tag = "9")]
+    pub unknown: ::core::option::Option<UnknownPackages>,
+    /// The projects whose lockfiles of an ecosystem were not all read, the ones
+    /// `totals.places_not_read` counts, whether or not a package was read in them. Absent when
+    /// `totals` is. Since 1.18.0.
+    #[prost(message, optional, tag = "10")]
+    pub unread: ::core::option::Option<UnreadPlaces>,
+}
+/// The places, a project's lockfiles of one ecosystem, that were not all read: what they declare
+/// is not all known, so no answer about them is "does not affect".
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UnreadPlaces {
+    /// One per project and ecosystem, at most 200, by project.
+    #[prost(message, repeated, tag = "1")]
+    pub items: ::prost::alloc::vec::Vec<UnreadPlace>,
+    /// How many there are.
+    #[prost(uint64, tag = "2")]
+    pub total: u64,
+}
+/// A project's lockfiles of one ecosystem that were not all read.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UnreadPlace {
+    /// The project, as a person recognises it, and the ecosystem. Whole.
+    #[prost(string, tag = "1")]
+    pub project_text: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub ecosystem: ::prost::alloc::string::String,
+    /// `partial`, some of them read; `not_read`, with the ecosystem `any` for a project the
+    /// reading of lockfiles did not open; `no_reader`, lockfiles of a kind this version has no
+    /// reader for, such as `go.sum`, in an ecosystem no data is matched for, so the project was
+    /// compared with nothing there; or `none_found`, the project was opened and no lockfile this
+    /// version knows of was found in it, with the ecosystem `any`. A project with any such place
+    /// is never answered "does not affect" for any record, since the store does not keep every
+    /// ecosystem a record names. One with `none_found` is counted, never answered for a record.
+    #[prost(string, tag = "3")]
+    pub lockfiles: ::prost::alloc::string::String,
+    /// Why, as the reading of lockfiles gave it, or for `no_reader` the kinds by name. Whole.
+    #[prost(string, optional, tag = "4")]
+    pub why_text: ::core::option::Option<::prost::alloc::string::String>,
+}
+/// The packages of projects for which it cannot be told whether a record affects them.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct UnknownPackages {
+    /// One per package in a project, each under the first of its reasons, at most 200, by project.
+    #[prost(message, repeated, tag = "1")]
+    pub items: ::prost::alloc::vec::Vec<UnknownPackage>,
+    /// How many there are.
+    #[prost(uint64, tag = "2")]
+    pub total: u64,
+}
+/// A package of a project for which it cannot be told whether a record affects it.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UnknownPackage {
+    /// The project, as a person recognises it; the package's ecosystem and its name. Whole.
+    #[prost(string, tag = "1")]
+    pub project_text: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub ecosystem: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub package_text: ::prost::alloc::string::String,
+    /// Why, the first of its reasons, as `unknown_packages_by_reason` counts it, such as
+    /// `version_cannot_be_compared`.
+    #[prost(string, tag = "4")]
+    pub reason: ::prost::alloc::string::String,
 }
 /// The packages of projects that a record affects.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -2405,6 +2490,23 @@ pub struct VulnerabilityTotals {
     /// answer.
     #[prost(uint64, tag = "15")]
     pub informational_records: u64,
+    /// Places, a project's lockfiles of one ecosystem, that were not all read, and the projects
+    /// they are in. A project in which no lockfile was found is not among them: it is counted in
+    /// `projects_without_lockfile`. Since 1.18.0.
+    #[prost(uint64, tag = "16")]
+    pub places_not_read: u64,
+    #[prost(uint64, tag = "17")]
+    pub projects_not_read: u64,
+    /// Projects in which the latest check found no lockfile this version reads: what they declare
+    /// is not known, and no answer is given for them, so none is "does not affect". Each is in
+    /// `unread` as `none_found`. Since 1.18.0.
+    #[prost(uint64, tag = "18")]
+    pub projects_without_lockfile: u64,
+    /// Projects with a place read in full and compared with data current at the check and now,
+    /// and no place not wholly read. With none, nothing was compared, and the text never says that
+    /// no known vulnerability affects the projects. Since 1.18.0.
+    #[prost(uint64, tag = "19")]
+    pub projects_compared: u64,
 }
 /// Whether a feed's data is current now.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -2486,7 +2588,9 @@ pub struct Vulnerability {
         deserialize_with = "crate::optional_enum_from_name::<RecordData, _>"
     )]
     pub data: ::core::option::Option<i32>,
-    /// When it holds none, what that means, in the core's words.
+    /// When it holds none, what that means, in the core's words. It is never calmer than any of
+    /// the `answers`: when one cannot be told, it says for how many projects and why before it says
+    /// which it does not affect, and with no answer at all it says that it cannot be told.
     #[prost(string, optional, tag = "7")]
     pub said: ::core::option::Option<::prost::alloc::string::String>,
     /// When it holds none and the catalogue holds the id, the answer in each place from the
@@ -2522,8 +2626,9 @@ pub struct RecordAnswers {
     pub kind: ::prost::alloc::string::String,
     #[prost(string, optional, tag = "7")]
     pub summary_text: ::core::option::Option<::prost::alloc::string::String>,
-    /// Whether it is answered: a withdrawn record, one that left the data, and an informational one
-    /// are not, and `said` says why in the core's words.
+    /// Whether it is answered: a withdrawn record, one that left the data, an informational one,
+    /// and one the store knows no project to compare with are not, and `said` says why in the
+    /// core's words.
     #[prost(bool, tag = "8")]
     pub answered: bool,
     #[prost(string, optional, tag = "9")]

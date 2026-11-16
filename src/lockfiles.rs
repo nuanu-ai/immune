@@ -21,6 +21,9 @@ use std::path::{Path, PathBuf};
 pub const READER: &str = "lockfiles";
 pub const KIND: &str = "lockfile dependencies";
 pub const BASIS: &str = "declared";
+/// The note of a full reading of a checkout in which no lockfile this version knows was found:
+/// it was opened, and there was nothing to read. A checkout with no reading was never opened.
+pub const NONE_FOUND_NOTE: &str = "no lockfile this version knows of was found in it";
 /// What this build has no reader for among lockfiles, in its own words: a kind, by name.
 pub const LOCKFILE_KIND: &str = "lockfile kind";
 
@@ -81,7 +84,7 @@ pub fn split_name(name: &str) -> (&str, Option<&'static str>) {
 
 /// The ecosystem whose dependencies a kind of lockfile declares, by its name as `read` names
 /// it; `None` for one not known here.
-fn ecosystem_of(kind: &str) -> Option<&'static str> {
+pub fn ecosystem_of(kind: &str) -> Option<&'static str> {
     match kind {
         "package-lock.json" | "pnpm-lock.yaml" | "yarn.lock" | "bun.lock" => Some("npm"),
         k if k.starts_with("package-lock.json version") => Some("npm"),

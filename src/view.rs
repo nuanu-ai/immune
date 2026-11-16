@@ -620,11 +620,13 @@ fn coverage(conn: &Connection, out: &mut String, rows: &[Latest], now: i64) -> O
         )?;
     }
     // The content of each watched file and the hooks of each checkout are readings of their
-    // own; those read in full are shown under watched places, not here.
+    // own; those read in full are shown under watched places, not here. A checkout in which the
+    // reading of lockfiles found none is named under machines, as a checkout without a lockfile.
     let per_thing = [crate::watched::CONTENT, crate::watched::HOOK_KIND];
     let rows: Vec<&Latest> = rows
         .iter()
         .filter(|r| !per_thing.contains(&r.kind.as_str()) || r.completeness != "full")
+        .filter(|r| r.reason.as_deref() != Some(crate::lockfiles::NONE_FOUND_NOTE))
         .collect();
     if rows.is_empty() {
         out.push_str("<p class=\"alert\">Nothing has been read yet.</p>\n</section>\n");
@@ -1274,11 +1276,13 @@ fn machine_body<'a>(
         out.push_str("</details>\n");
     }
 
-    // The hooks of a checkout are shown under watched places.
+    // The hooks of a checkout are shown under watched places, and a reading of lockfiles that
+    // found none is a checkout without a lockfile.
     let (with, without): (Vec<&String>, Vec<&String>) = mine.iter().partition(|c| {
-        coverage_of(c)
-            .iter()
-            .any(|r| r.reader != crate::watched::READER)
+        coverage_of(c).iter().any(|r| {
+            r.reader != crate::watched::READER
+                && r.reason.as_deref() != Some(crate::lockfiles::NONE_FOUND_NOTE)
+        })
     });
     if !mine.is_empty() {
         out.push_str("<h3>Checkouts</h3>\n");

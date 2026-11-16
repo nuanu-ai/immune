@@ -687,8 +687,8 @@ fn a_path_inside_a_known_project_answers_for_the_nearest_project_that_holds_it()
 }
 
 /// The promise against false calm for the same folder spelled another way: on a volume that
-/// ignores case `~/dev/shop` may be `~/dev/Shop`, so it is refused with the id the store knows,
-/// never answered `unknown`; a link to the project answers for the project; and a link into a
+/// ignores case `~/dev/shop` is `~/dev/Shop`, so it answers for the project the store knows, with
+/// a reading made by rule that says it is spelled otherwise, never `unknown`; a link to the project answers for the project; and a link into a
 /// folder macOS asks permission for carries the reading that says it was not looked into.
 #[test]
 fn the_same_folder_spelled_another_way_is_never_unknown_with_every_reading_full() {
@@ -702,11 +702,20 @@ fn the_same_folder_spelled_another_way_is_never_unknown_with_every_reading_full(
     link("Documents/notes", "notes-link");
     h.run(&[]);
     for asked in ["~/dev/shop", "~/DEV/SHOP/src"] {
-        let error = h.refused(asked);
-        assert_eq!(error["code"], "spelled_otherwise", "{asked}");
+        let k = h.known(asked);
         assert_eq!(
-            error["ids_text"],
-            serde_json::json!(["checkout:machine:mac/dev/Shop"])
+            k.thing.as_ref().unwrap().id_text,
+            "checkout:machine:mac/dev/Shop",
+            "{asked}"
+        );
+        let rule = unread(&k).unwrap();
+        assert_eq!(rule.completeness(), v1::Completeness::None, "{asked}");
+        assert!(
+            rule.reason_text
+                .as_deref()
+                .unwrap()
+                .starts_with("the path is spelled otherwise"),
+            "{asked}"
         );
     }
     for asked in ["~/shop-link", "~/shop-link/src"] {
@@ -734,7 +743,7 @@ fn the_same_folder_spelled_another_way_is_never_unknown_with_every_reading_full(
 /// The promise against false calm for a place no reading looks at: a path outside the home
 /// folder, on another volume, in a hidden folder, deeper than the walk goes or in a folder the
 /// walk skips answers `unknown` with a reading made by rule that is not full, never with every
-/// reading full. A path the walk does look at has no such reading.
+/// reading full. So does a path the walk would look at: the store does not keep where it looked.
 #[test]
 fn a_path_no_reading_looks_at_is_never_unknown_with_every_reading_full() {
     let h = Home::new("unread");
@@ -747,6 +756,7 @@ fn a_path_no_reading_looks_at_is_never_unknown_with_every_reading_full() {
         "~/a/b/c/d/e/proj",
         "~/Library/proj",
         "~/dev/node_modules/proj",
+        "~/dev/ghost",
     ] {
         let k = h.known(asked);
         assert_eq!(standing(&k), (v1::Presence::Unknown, false), "{asked}");
@@ -768,17 +778,14 @@ fn a_path_no_reading_looks_at_is_never_unknown_with_every_reading_full() {
             ),
             "{asked}"
         );
+        // No reading opened it, or a link on the way leads into a folder macOS guards.
+        let reason = rule.reason_text.as_deref().unwrap();
         assert!(
+            reason.starts_with("no reading") || reason.starts_with("the path leads through a link"),
+            "{asked}: {:?}",
             rule.reason_text
-                .as_deref()
-                .unwrap()
-                .starts_with("no reading")
         );
     }
-    let looked = h.known("~/dev/ghost");
-    assert_eq!(standing(&looked), (v1::Presence::Unknown, true));
-    assert!(unread(&looked).is_none());
-    assert!(looked.coverage.iter().all(|c| c.observed_at.is_some()));
 }
 
 /// The promise that a project's answer carries the readings that read inside every project: a
