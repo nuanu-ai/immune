@@ -2,7 +2,7 @@
 
 The Rust types of Immune's contract, package `immune.v1`: the messages the commands of the contract print, in binary protobuf and in Immune's own JSON. It carries the repository's MIT licence.
 
-The schema in `immune/v1/` is the source. `src/immune.v1.rs` is generated from it and committed, so a build needs no `protoc`. The major version is the contract's `format`; see [the reference](../docs/reference.md#the-contract).
+The schema in `immune/v1/` is the source. `src/immune.v1.rs` is generated from it and committed, so a build needs no `protoc`. `samples/` holds real answers of the core, a status and a finding of every kind of evidence made on an invented Mac, for a client to test its decoding on; `tests/contract_samples.rs` makes them again and fails when they no longer have the shape the core gives. The major version is the contract's `format`; see [the reference](../docs/reference.md#the-contract).
 
 Depend on it by a git path at a commit: `immune-contract = { git = "https://github.com/nuanu-ai/immune", rev = "<commit>" }`.
 

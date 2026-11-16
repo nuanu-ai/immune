@@ -1,13 +1,13 @@
-//! Real answers for the app's tests: a status and a `Finding` of every kind of evidence the core
-//! can emit, made by the real binary on an invented Mac, with values of real magnitude (times in
-//! seconds and in microseconds since the epoch, pids, digests). The app's own tests decode them
-//! (`app/Tests/ImmuneCoreTests`), so a field the app reads with a kind other than its schema's
-//! fails there, as one of real size would on a person's Mac.
+//! Real answers of the core for a client of the contract to test its decoding on: a status and a
+//! `Finding` of every kind of evidence the core can emit, made by the real binary on an invented
+//! Mac, with values of real magnitude (times in seconds and in microseconds since the epoch, pids,
+//! digests). A client that reads a field with a kind other than its schema's fails on them, as it
+//! would on a person's Mac.
 //!
-//! The answers are committed in `app/fixtures/real/`, with the invented Mac's folder written as
+//! The answers are committed in `contract/samples/`, with the invented Mac's folder written as
 //! `/Users/example`. This test makes them again and fails when what is committed no longer has
-//! the shape they have now; to write them again: `IMMUNE_WRITE_APP_SAMPLES=1 cargo test --test
-//! app_samples`.
+//! the shape they have now; to write them again: `IMMUNE_WRITE_CONTRACT_SAMPLES=1 cargo test
+//! --test contract_samples`.
 
 mod common;
 
@@ -24,7 +24,7 @@ const TIDY: &str = "Library/LaunchDaemons/ai.nuanu.immune.event-tidy.plist";
 const LOG: &str = "Library/Application Support/ai.nuanu.immune/event-level/log";
 const COLLECTS: &str = "Library/Application Support/ai.nuanu.immune/event-level/collects";
 /// Where the samples are committed, from the repository.
-const OUT: &str = "app/fixtures/real";
+const OUT: &str = "contract/samples";
 /// Every kind of evidence the core can emit, by its key in `Evidence`.
 const KINDS: [&str; 7] = [
     "place_changed",
@@ -47,7 +47,7 @@ impl Mac {
         // The clock alone can give two tests of this file the same folder: they start together.
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!("immune-app-samples-{nanos}-{n}"));
+        let root = std::env::temp_dir().join(format!("immune-contract-samples-{nanos}-{n}"));
         for dir in ["home", "system", "empty"] {
             std::fs::create_dir_all(root.join(dir)).unwrap();
         }
@@ -290,7 +290,7 @@ fn prepare(mac: &Mac) -> String {
 /// there: each must still have the shape it has now.
 fn committed(answers: &BTreeMap<String, Value>) {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(OUT);
-    if std::env::var_os("IMMUNE_WRITE_APP_SAMPLES").is_some() {
+    if std::env::var_os("IMMUNE_WRITE_CONTRACT_SAMPLES").is_some() {
         std::fs::create_dir_all(&dir).unwrap();
         for (name, v) in answers {
             let text = serde_json::to_string_pretty(v).unwrap() + "\n";
@@ -313,7 +313,7 @@ fn committed(answers: &BTreeMap<String, Value>) {
 }
 
 #[test]
-fn the_app_reads_real_answers_of_every_kind_of_evidence_with_values_of_real_size() {
+fn a_client_reads_real_answers_of_every_kind_of_evidence_with_values_of_real_size() {
     let mac = Mac::new();
     // The first check: the baseline.
     let log = prepare(&mac);
@@ -467,14 +467,14 @@ fn mode(mac: &Mac, rel: &str, mode: u32) {
     std::fs::set_permissions(mac.0.join(rel), std::fs::Permissions::from_mode(mode)).unwrap();
 }
 
-/// What a person's Mac shows the panel after some weeks: every kind of place Immune watches,
+/// What a person's Mac shows a client after some weeks: every kind of place Immune watches,
 /// counts of up to seven digits, two findings, one of them a place read for the first time, two
 /// causes the person can fix with four things each, one of them long, and causes of this Mac
 /// nothing can fix. The real binary makes what an invented store can show: the findings, the
 /// files their permissions keep closed, the causes nothing can fix. What a store this small
 /// cannot reach is put in after, each part said below, in the core's own words.
 #[test]
-fn the_panel_has_a_status_of_real_size_to_be_drawn_from() {
+fn a_client_has_a_status_of_real_size_to_be_drawn_from() {
     let mac = Mac::new();
     let log = prepare(&mac);
     // Watched files their permissions keep closed, one of them with a long name; and the SSH
