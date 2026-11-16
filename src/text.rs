@@ -30,7 +30,9 @@ pub fn shell_word(word: &str) -> Option<String> {
     if view::shown(word) != word || crate::secrets::said(word) != word {
         return None;
     }
-    let safe = |c: char| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c);
+    // `=` is not of the set: zsh, the default shell of macOS, reads a word that starts with it as
+    // the path of that command.
+    let safe = |c: char| c.is_ascii_alphanumeric() || "_@%+:,./-".contains(c);
     if !word.is_empty() && word.chars().all(safe) {
         Some(word.to_string())
     } else {

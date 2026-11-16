@@ -1554,6 +1554,7 @@ mod tests {
             crate::text::shell_word("~/s.db").as_deref(),
             Some("'~/s.db'")
         );
+        assert_eq!(crate::text::shell_word("=ls").as_deref(), Some("'=ls'"));
         // An operand that cannot be shown takes the operand's placeholder.
         let (_, form) = right_form(
             "finding",
