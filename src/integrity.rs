@@ -91,7 +91,7 @@ const MAX_FILES: usize = 20_000;
 /// What a reading's note says the reader cannot judge, kind by kind.
 const BUNDLES_CANNOT: &str = "not covered: extended attributes, which no seal covers; a bundle changed and signed again shows only as another signer at the same version; an application that updates itself in place shows as a change of its digest";
 const KEGS_CANNOT: &str = "compared by files' metadata between readings, since Homebrew keeps no record of a keg's files to verify against; __pycache__ folders are not compared";
-const APP_SUPPORT_CANNOT: &str = "compared by the metadata of code files between readings; only a folder named like an application read here that Apple did not sign is looked into, so code kept under another name is not compared; caches, web storage, crash reports and logs are not compared";
+const APP_SUPPORT_CANNOT: &str = "compared by the metadata of code files between readings; only a folder named like an application read here that Apple did not sign is looked into, and one an earlier reading held for as long as it is there, so code kept under another name is not compared; caches, web storage, crash reports and logs are not compared";
 const NPM_CANNOT: &str = "compared by files' metadata between readings, since npm keeps no record of a global package's files to verify against; a global folder set in npm's configuration or by a version manager is not looked for, and a linked package is not read";
 
 /// Where places are resolved: the home folder, and the root of the system, `/` unless a test
@@ -230,7 +230,8 @@ impl Kind {
 /// did not move; `machine` is this machine's id.
 pub fn read(conn: &Connection, roots: &Roots, machine: &str) -> rusqlite::Result<Vec<Kind>> {
     let bundles = bundles(conn, roots, machine)?;
-    let app_support = app_support(roots, machine, &bundles);
+    let held = held_folders(conn, machine)?;
+    let app_support = app_support(roots, machine, &bundles, &held);
     Ok(vec![
         bundles,
         kegs(roots, machine),
@@ -306,9 +307,26 @@ fn walk_code(
 /// It holds the program's own output: pages rewritten every few seconds and the scripts it
 /// writes for the owner, so a change there says nothing about an application. And whoever can
 /// write there can rewrite the store itself, which is not guarded against yet (`AGENTS.md`).
-fn app_support(roots: &Roots, machine: &str, bundles: &Kind) -> Kind {
+///
+/// A folder the store holds or held, `held`, is opened whenever it is there, whether or not an
+/// application read now matches it. Otherwise removing an application, or moving it out of the
+/// places bundles are looked for, would stop the folder being opened while this reading stayed
+/// full, and the lifecycle would retract it as looked for and not found: code that is still on
+/// disk, and may still be run, would read as gone, and a change to it as nothing. Such a folder
+/// keeps the version its application last had, since nothing says it has another, and the
+/// reading's note names it. So a folder is retracted only while it is not there, or while no
+/// application read now matches it and it holds no code file this reading compares: what an
+/// uninstaller leaves, such as a settings file, is not code to hold. One that comes back is read
+/// as for the first time, and compared from then on. Folders are matched by the key a Mac's
+/// volumes compare names by (`spelling::key`).
+fn app_support(
+    roots: &Roots,
+    machine: &str,
+    bundles: &Kind,
+    held: &BTreeMap<String, Held>,
+) -> Kind {
     let mut kind = Kind::new(APP_SUPPORT, APP_SUPPORT_CANNOT);
-    // Each name of an application not signed by Apple, lowercased, with its version.
+    // Each name of an application not signed by Apple, by its key, with its version.
     let mut names: BTreeMap<String, Option<String>> = BTreeMap::new();
     for t in &bundles.things {
         let fact = |p: &str| t.facts.iter().find(|(q, _)| *q == p).map(|(_, o)| o);
@@ -343,26 +361,52 @@ fn app_support(roots: &Roots, machine: &str, bundles: &Kind) -> Kind {
     };
     let own = roots.store.parent().map(same_place);
     kind.present += 1;
-    let (mut matched, mut files) = (0, 0);
+    let (mut matched, mut files, mut kept) = (0, 0, Vec::new());
     for entry in entries {
         let text = entry.to_string_lossy().into_owned();
-        let Some(version) = names.get(&text.to_lowercase()) else {
-            continue;
+        let key = crate::spelling::key(&text);
+        let before = held.get(&key);
+        let (versions, unmatched): (Vec<String>, bool) = match (names.get(&key), before) {
+            (Some(version), _) => (version.iter().cloned().collect(), false),
+            (None, Some(h)) => (h.versions.clone(), true),
+            (None, None) => continue,
         };
         let path = base.join(&entry);
-        if !real_folder(&path) || own.as_ref() == Some(&same_place(&path)) {
+        // A folder held before that is now a link or a file is there and is not opened: never
+        // taken for a folder that went. Asked before anything that follows a link.
+        if !real_folder(&path) {
+            if before.is_some() {
+                kind.failed.push((
+                    format!("{APP_SUPPORT_PLACE}/{text}"),
+                    NOT_A_FOLDER.to_string(),
+                ));
+            }
             continue;
         }
-        let shown = format!("{APP_SUPPORT_PLACE}/{text}");
-        matched += 1;
+        if own.as_ref() == Some(&same_place(&path)) {
+            continue;
+        }
+        // A folder the store holds under another spelling of its name, in case or Unicode form,
+        // keeps the store's: on a volume that ignores both, as a Mac's do by default, it is the
+        // same folder, so a change to it is a change and not one folder gone and another new.
+        let spelled = before.map_or_else(|| text.clone(), |h| h.name.clone());
+        let shown = format!("{APP_SUPPORT_PLACE}/{spelled}");
+        if !unmatched {
+            matched += 1;
+        }
         let (mut records, mut count) = (Vec::new(), 0);
         match walk_code(&path, b"", 0, &mut records, &mut count) {
             Err(e) => kind.failed.push((shown, e.to_string())),
             Ok(Walked::Capped(cap)) => kind.capped.push((shown, cap)),
+            // No application read now matches it and no code is left in it: nothing to hold.
+            Ok(Walked::Done) if unmatched && count == 0 => {}
             Ok(Walked::Done) => {
+                if unmatched {
+                    kept.push(shown.clone());
+                }
                 files += count;
                 let mut facts = vec![("located_on", machine.to_string())];
-                facts.extend(version.clone().map(|v| ("has_version", v)));
+                facts.extend(versions.into_iter().map(|v| ("has_version", v)));
                 facts.push((
                     "has_digest",
                     format!("stat:{}", crate::sha256::hex(&records)),
@@ -379,7 +423,73 @@ fn app_support(roots: &Roots, machine: &str, bundles: &Kind) -> Kind {
     kind.notes.push(format!(
         "{matched} folders matched an application, {files} code files compared"
     ));
+    if !kept.is_empty() {
+        kind.notes.push(format!("{KEPT}{}", kept.join("; ")));
+    }
     kind
+}
+
+/// Why a folder an earlier reading held is not opened when something else is at its path now.
+const NOT_A_FOLDER: &str =
+    "held from an earlier reading and no longer a folder; a link is not followed";
+
+/// How the note begins that names the folders opened because an earlier reading held them.
+const KEPT: &str = "still compared, since an earlier reading held them and they are there, though no application read now matches them: ";
+
+/// A folder of code the store holds, or held, on this Mac.
+struct Held {
+    /// Its name as the store spells it in its id.
+    name: String,
+    /// The versions in force for it; none for a folder the store no longer holds.
+    versions: Vec<String>,
+}
+
+/// Every folder of code the store holds or held on this Mac, by the name it is matched by
+/// (`app_support_name`). A folder the store no longer holds is opened again once it is back:
+/// otherwise a folder that missed one reading, renamed aside for a run or removed and made
+/// again, would never be compared again while it is on disk.
+///
+/// The store can hold one name under two spellings, in case or Unicode form: a build that named
+/// a folder by the spelling on disk wrote one for each, and a volume that tells them apart gives
+/// two. The one in force is taken, and with none in force the one retracted last, so that a
+/// folder on disk is never retracted to be added again under a stale spelling.
+fn held_folders(conn: &Connection, machine: &str) -> rusqlite::Result<BTreeMap<String, Held>> {
+    let mut stmt = conn.prepare(
+        "SELECT subject, predicate, object, layer = 'live', retracted_at FROM assertion
+         WHERE layer IN ('live', 'retracted') AND reader = ?1 AND scope = ?2 AND kind = ?3
+         ORDER BY id",
+    )?;
+    type Row = (String, String, String, bool, Option<i64>);
+    let mut by_subject: BTreeMap<String, Vec<Row>> = BTreeMap::new();
+    for row in stmt.query_map(params![READER, machine, APP_SUPPORT], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+    })? {
+        let row: Row = row?;
+        by_subject.entry(row.0.clone()).or_default().push(row);
+    }
+    let prefix = format!("file:{machine}/");
+    // Each spelling, with whether it is in force and when it was last retracted, in the order
+    // in which a later one is preferred.
+    let mut spellings = Vec::new();
+    for (subject, rows) in &by_subject {
+        let Some(name) = subject.strip_prefix(&prefix).and_then(app_support_folder) else {
+            continue;
+        };
+        let live = rows.iter().any(|r| r.3);
+        let retracted = rows.iter().filter_map(|r| r.4).max();
+        let versions = rows
+            .iter()
+            .filter(|r| r.1 == "has_version" && r.3)
+            .map(|r| r.2.clone())
+            .collect();
+        spellings.push((live, retracted, name.to_string(), versions));
+    }
+    spellings.sort_by_key(|(live, retracted, _, _)| (*live, *retracted));
+    let mut out: BTreeMap<String, Held> = BTreeMap::new();
+    for (_, _, name, versions) in spellings {
+        out.insert(crate::spelling::key(&name), Held { name, versions });
+    }
+    Ok(out)
 }
 
 /// The raw copy: kind, path, entity and facts, one line per thing; and each kind's line
@@ -524,25 +634,28 @@ const BUNDLE_PLACES: [&str; 2] = ["/Applications", "Applications"];
 const APP_SUPPORT_PLACE: &str = "Library/Application Support";
 
 /// The names an application is matched by with the folder of code it keeps outside its bundle,
-/// lowercased: its bundle identifier, the last part of its id `subject`, and its folder's name
-/// without `.app`, the last part of where it is installed, `shown`.
+/// each by the key a Mac's volumes compare names by (`spelling::key`), so that a folder named in
+/// another case or Unicode form is still its folder: its bundle identifier, the last part of its
+/// id `subject`, and its folder's name without `.app`, the last part of where it is installed,
+/// `shown`.
 pub fn app_names(subject: &str, shown: &str) -> [String; 2] {
     let identifier = subject.rsplit_once("/macos-app/").map_or("", |(_, n)| n);
     let folder = shown.rsplit('/').next().unwrap_or_default();
     let stem = folder.strip_suffix(".app").unwrap_or(folder);
-    [identifier.to_lowercase(), stem.to_lowercase()]
+    [crate::spelling::key(identifier), crate::spelling::key(stem)]
 }
 
-/// The name of the application a folder of code kept outside a bundle is matched by, lowercased,
-/// from the folder's path as ids name it (`app_support`); `None` for any other path.
-pub fn app_support_name(rel: &str) -> Option<String> {
+/// The name of a folder of code kept outside a bundle, from the folder's path as ids name it
+/// (`app_support`), as written; `None` for any other path.
+fn app_support_folder(rel: &str) -> Option<&str> {
     let inside = rel.strip_prefix(APP_SUPPORT_PLACE)?.strip_prefix('/')?;
-    Some(
-        inside
-            .split_once('/')
-            .map_or(inside, |(name, _)| name)
-            .to_lowercase(),
-    )
+    Some(inside.split_once('/').map_or(inside, |(name, _)| name))
+}
+
+/// The name an application is matched by with a folder of code kept outside a bundle, by the
+/// key `app_names` gives, from the folder's path as ids name it; `None` for any other path.
+pub fn app_support_name(rel: &str) -> Option<String> {
+    app_support_folder(rel).map(crate::spelling::key)
 }
 
 /// The formula a keg is of, from the keg's path as ids name it: `<name>` of
@@ -928,9 +1041,11 @@ pub type InPlace = (String, String, String, Option<String>);
 
 /// The changes of one run that a finding rule looks for: content that changed while the
 /// version stayed. Each is a `changed` event of this reader on `has_seal` or `signed_by` of a
-/// bundle, or on `has_digest` of a keg or a global package, whose subject has no `has_version`
-/// event in the same run. A first reading has no `changed` events, so it adds nothing here.
-/// Returns kind, subject, predicate and new value, in the order of the journal.
+/// bundle, or on `has_digest` of a keg, a global package or a folder of code, whose subject has
+/// no `has_version` event in the same run. A first reading has no `changed` events, so it adds
+/// nothing here, and neither does a folder of code read again after it was retracted: it is read
+/// as for the first time. Returns kind, subject, predicate and new value, in the order of the
+/// journal.
 pub fn changed_in_place(conn: &Connection, run_id: &str) -> rusqlite::Result<Vec<InPlace>> {
     conn.prepare(
         "SELECT j.kind, j.subject, j.predicate, j.new_value FROM journal j
