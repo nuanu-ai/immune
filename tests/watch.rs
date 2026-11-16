@@ -2034,6 +2034,84 @@ fn a_background_watcher_reports_live_only_after_its_first_read_and_while_its_hea
     assert_eq!(watcher.stop().code(), Some(0));
 }
 
+/// The job's watcher, started from a core an update then replaces: it keeps running while its
+/// file is the one it started from, leaves by itself once another file is in its place, and the
+/// status says it is restarting on a new core, not that it failed.
+#[test]
+fn the_job_s_watcher_leaves_when_its_core_is_replaced_and_the_status_says_it_is_restarting() {
+    let mac = Mac::new("core-replaced");
+    mac.app_run();
+    let folder = mac.root.join("store");
+    // As above: the scheduled check leaves the fetch alone, so this test never asks the network.
+    let fetch = std::fs::File::open(folder.join("feeds/fetch.lock")).unwrap();
+    fetch.lock().unwrap();
+    let core = mac.root.join("bin/immune");
+    std::fs::create_dir_all(core.parent().unwrap()).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_immune"), &core).unwrap();
+    mac.sample(now(), &[]);
+    let mut cmd = Command::new(&core);
+    cmd.env("HOME", mac.home())
+        .current_dir(mac.home())
+        .args(["watch", "--store"])
+        .arg(mac.store())
+        .arg("--system-root")
+        .arg(mac.sys())
+        .arg("--sample-input")
+        .arg(mac.root.join("sample.json"))
+        .args(["--background", "--alive-every", "1"])
+        .args(["--sample-every", "3600", "--events-every", "3600"]);
+    let mut watcher = Watcher::start(cmd).started();
+    // Its file unchanged, it goes on past several looks at it.
+    for _ in 0..3 {
+        watcher.next("alive");
+    }
+    assert!(watcher.child.try_wait().unwrap().is_none());
+
+    // An update renames a new core into place.
+    let new = mac.root.join("bin/immune.new");
+    std::fs::copy(env!("CARGO_BIN_EXE_immune"), &new).unwrap();
+    std::fs::rename(&new, &core).unwrap();
+    assert_eq!(watcher.exit().code(), Some(0));
+    let mut said = String::new();
+    std::io::Read::read_to_string(&mut watcher.child.stderr.take().unwrap(), &mut said).unwrap();
+    assert!(said.contains("was replaced"), "{said}");
+
+    let status = mac.status();
+    assert!(
+        status["watcher_restarting_since_at"].is_i64() && status["watching"].is_null(),
+        "{status}"
+    );
+    assert_eq!(status["this_mac"]["live"], false, "{status}");
+    let text = within(mac.immune().args(["status", "--store"]).arg(mac.store()));
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(
+        text.contains("the watcher is restarting on a new core")
+            && !text.contains("a watcher runs, but"),
+        "{text}"
+    );
+
+    // A watcher started by hand, not the job's, is left running on the file it opened.
+    let mut cmd = Command::new(&core);
+    cmd.env("HOME", mac.home())
+        .current_dir(mac.home())
+        .args(["watch", "--store"])
+        .arg(mac.store())
+        .arg("--system-root")
+        .arg(mac.sys())
+        .arg("--sample-input")
+        .arg(mac.root.join("sample.json"))
+        .args(["--alive-every", "1", "--sample-every", "3600"])
+        .args(["--events-every", "3600"]);
+    let mut by_hand = Watcher::start(cmd).started();
+    std::fs::copy(env!("CARGO_BIN_EXE_immune"), &new).unwrap();
+    std::fs::rename(&new, &core).unwrap();
+    for _ in 0..3 {
+        by_hand.next("alive");
+    }
+    assert!(by_hand.child.try_wait().unwrap().is_none());
+    assert_eq!(by_hand.stop().code(), Some(0));
+}
+
 #[test]
 fn a_watcher_started_without_background_writes_the_heartbeat_so_a_stalled_one_is_not_live() {
     let mac = Mac::new("plain-heartbeat");

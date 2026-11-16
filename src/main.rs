@@ -93,6 +93,8 @@ use store::{Cause, Event, Gap, Lack, Reading, Statement};
 
 /// The store's folder inside the home folder, where every default path points.
 const STORE_FOLDER: &str = "Library/Application Support/ai.nuanu.immune";
+/// The default store's name in `STORE_FOLDER`.
+const STORE_FILE: &str = "store.db";
 
 enum Cmd {
     Run(Box<Args>),
@@ -249,7 +251,7 @@ fn user_home() -> Result<PathBuf, String> {
 }
 
 fn default_store() -> Result<PathBuf, String> {
-    Ok(user_home()?.join(STORE_FOLDER).join("store.db"))
+    Ok(user_home()?.join(STORE_FOLDER).join(STORE_FILE))
 }
 
 fn parse_args(

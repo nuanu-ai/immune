@@ -3,9 +3,12 @@
 // printed and read, and the conventions for text, references, times and changes, are in
 // `common.proto`.
 //
-// `immune install` copies the binary it is run from to a place of its own and registers that
-// copy with launchd as a login job; `immune uninstall` stops the job and removes it with the copy.
-// Neither reads or changes the store, so this answer carries no `store_id`.
+// `immune install` registers the core with launchd as a login job. A core this account can
+// replace, such as a build in a checkout, is copied to a place of its own and the job runs the
+// copy; a core it cannot replace, such as one a signed package put in a folder owned by root, is
+// run where it is and nothing is copied. `immune uninstall` stops the job and removes it, with the
+// copy when there is one; it never removes a core run where it is. Neither changes the store, so
+// this answer carries no `store_id`.
 
 syntax = "proto3";
 
@@ -20,11 +23,12 @@ message Service {
   int64 answered_at = 2;
   // The job's label in launchd: `ai.nuanu.immune.watch`.
   string label = 3;
-  // The installed core the job runs, and the job's property list. Whole. After `immune
-  // uninstall`, where they were.
+  // The core the job runs, and the job's property list. Whole. After `immune uninstall`, where
+  // they were: the copy that was removed, or the core run where it is, which is still there
+  // (`in_place`).
   string program_path_text = 4;
   string plist_path_text = 5;
-  // Whether the job, its property list and the installed core are in place: true after
+  // Whether the job, its property list and the core it runs are in place: true after
   // `immune install`, false after `immune uninstall`.
   bool installed = 6;
   // Whether launchd has the job loaded, as `launchctl print` said after it was registered.
@@ -34,4 +38,19 @@ message Service {
   // update, or a removal that removed something. False for a first install and for an
   // uninstall where nothing was installed.
   bool replaced = 8;
+  // Whether the job runs the core where it is, true, or a copy in the store's folder,
+  // `bin/immune`, false. True only when the account that ran `immune install` could not replace
+  // that core: it is not copied, and `immune uninstall` leaves it where it is. After `immune
+  // uninstall`, what the job ran; absent when that cannot be told, as when nothing was installed.
+  // Since 1.19.0.
+  optional bool in_place = 9;
+  // Whether a watcher watches the job's store live, as `immune status` judges it
+  // (`ThisMac.live`), within a few seconds after launchd loaded the job. False when none did by
+  // then: launchd may still start it, and `watcher_note` says what the status says of it. Absent
+  // when it could not be told, and after `immune uninstall`. Since 1.19.0.
+  optional bool watching = 10;
+  // While `watching` is false, what the status says of the store's watcher, in the core's words,
+  // such as that a watcher runs and has not completed its first reading. Absent otherwise.
+  // Since 1.19.0.
+  optional string watcher_note = 11;
 }

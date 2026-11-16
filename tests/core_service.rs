@@ -5,6 +5,11 @@
 //! so no test reaches the real launchd or the real home folder. That neither flag is accepted
 //! without the other is pinned by unit tests on the parser in `src/service.rs`, never here: a
 //! test here of that refusal would run the real thing the day the refusal broke.
+//!
+//! After launchd loaded the job, install waits a few seconds for a watcher to watch the store
+//! live. The stand-in starts no watcher, so a login holds the store's watcher lock itself, as a
+//! watcher that completed its first reading holds it, on a store a run made; a test that needs no
+//! watcher lets it go.
 
 mod common;
 
@@ -36,10 +41,101 @@ struct Login {
     program: PathBuf,
     domain: String,
     job: String,
+    /// The store's watcher lock, held as a watcher that is ready holds it; `None` once let go.
+    watcher: Option<fs::File>,
 }
 
+/// The id no account has, whose rights decide in a test whether the core is run where it is.
+const NO_ACCOUNT: &str = "4000000000";
+
 impl Login {
+    /// A login with a watcher that watches its store live.
     fn new(tag: &str) -> Self {
+        let mut login = Self::without_watcher(tag);
+        login.make_store();
+        login.watcher = Some(login.hold_watcher("ready"));
+        login
+    }
+
+    /// A store a full run made, as a watcher makes one at its start.
+    fn make_store(&self) {
+        let absent = self.scratch.join("absent");
+        let brew = self.scratch.join("brew.json");
+        fs::write(&brew, r#"{"formulae": [], "casks": []}"#).unwrap();
+        fs::create_dir_all(self.scratch.join("system")).unwrap();
+        fs::create_dir_all(&self.store).unwrap();
+        let mut run = Command::new(CORE);
+        run.args(["run", "--machine-name", "mac", "--store"])
+            .arg(self.store.join("store.db"))
+            .arg("--brew-input")
+            .arg(&brew)
+            .arg("--system-root")
+            .arg(self.scratch.join("system"));
+        // Nothing outside the invented Mac is asked.
+        for input in [
+            "--servers-input",
+            "--tailscale",
+            "--threats-input",
+            "--osv-crates-input",
+            "--osv-npm-input",
+        ] {
+            run.arg(input).arg(&absent);
+        }
+        let out = run
+            .current_dir(&*self.scratch)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", &self.home)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// Takes the store's watcher lock and writes what a watcher in this state writes in it: its
+    /// start a moment ago, `heartbeat`, and the state on a third line, none while it starts.
+    fn hold_watcher(&self, state: &str) -> fs::File {
+        fs::create_dir_all(&self.store).unwrap();
+        let lock = fs::File::options()
+            .create(true)
+            .append(true)
+            .open(self.store.join("watch.lock"))
+            .unwrap();
+        lock.try_lock().unwrap();
+        let since = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            - 1;
+        let text = if state.is_empty() {
+            format!("{since}\nheartbeat")
+        } else {
+            format!("{since}\nheartbeat\n{state}")
+        };
+        lock.set_len(0).unwrap();
+        std::os::unix::fs::FileExt::write_all_at(&lock, text.as_bytes(), 0).unwrap();
+        lock
+    }
+
+    /// `immune status` with this login's home and the store in its default place, as a person
+    /// runs it.
+    fn status(&self, args: &[&str]) -> Output {
+        Command::new(CORE)
+            .arg("status")
+            .args(args)
+            .current_dir(&*self.scratch)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", &self.home)
+            .output()
+            .unwrap()
+    }
+
+    /// A login with no watcher on its store.
+    fn without_watcher(tag: &str) -> Self {
         let scratch = Scratch::new(tag);
         let home = scratch.join("home 'quoted' & \"double\"");
         fs::create_dir(&home).unwrap();
@@ -96,6 +192,7 @@ esac"#
             bin,
             domain,
             job,
+            watcher: None,
         }
     }
 
@@ -267,9 +364,8 @@ fn mode(path: &Path) -> u32 {
 #[test]
 fn one_login_job_runs_the_installed_copy_and_removal_keeps_the_store_and_collector() {
     let login = Login::new("core-service-lifecycle");
-    fs::create_dir_all(&login.store).unwrap();
     let store = login.store.join("store.db");
-    fs::write(&store, "invented store").unwrap();
+    let store_before = fs::read(&store).unwrap();
     let collector = login
         .scratch
         .join("system/Library/LaunchDaemons/ai.nuanu.immune.event-filter.plist");
@@ -283,6 +379,10 @@ fn one_login_job_runs_the_installed_copy_and_removal_keeps_the_store_and_collect
     );
     assert_eq!(m.program_path_text, login.program.to_str().unwrap());
     assert_eq!(m.plist_path_text, login.plist.to_str().unwrap());
+    assert_eq!(
+        (m.in_place, m.watching, m.watcher_note.as_deref()),
+        (Some(false), Some(true), None)
+    );
     let installed = plist(&login.plist);
     assert_eq!(installed["Label"], LABEL);
     assert_eq!(
@@ -290,11 +390,12 @@ fn one_login_job_runs_the_installed_copy_and_removal_keeps_the_store_and_collect
         json!([login.program, "watch", "--background"])
     );
     assert_eq!(installed["EnvironmentVariables"]["HOME"], json!(login.home));
+    // launchd starts the job again whenever it ends, as when its watcher left for a new core.
     assert_eq!(installed["KeepAlive"], true);
     assert_eq!(installed["ThrottleInterval"], 30);
     assert_eq!(installed["StandardOutPath"], "/dev/null");
     assert_eq!(installed["StandardErrorPath"], "/dev/null");
-    assert_eq!(installed.as_object().unwrap().len(), 7);
+    assert_eq!(installed.as_object().unwrap().len(), 8);
     assert_eq!(plist(&login.scratch.join("loaded")), installed);
     assert_eq!(fs::read(&login.program).unwrap(), fs::read(CORE).unwrap());
     assert_eq!((mode(&login.program), mode(&login.bin)), (0o755, 0o700));
@@ -315,7 +416,7 @@ fn one_login_job_runs_the_installed_copy_and_removal_keeps_the_store_and_collect
         (nothing.installed, nothing.loaded, nothing.replaced),
         (false, false, false)
     );
-    assert_eq!(fs::read_to_string(&store).unwrap(), "invented store");
+    assert_eq!(fs::read(&store).unwrap(), store_before);
     assert_eq!(
         fs::read_to_string(&collector).unwrap(),
         "invented collector"
@@ -780,9 +881,10 @@ fn install_and_uninstall_run_from_the_installed_copy_itself() {
 fn uninstall_removes_only_the_job_its_plist_and_the_copy() {
     let login = Login::new("core-service-only-its-own");
     fs::create_dir_all(login.store.join("pages")).unwrap();
-    fs::write(login.store.join("store.db"), "invented store").unwrap();
+    let store = fs::read(login.store.join("store.db")).unwrap();
     fs::write(login.store.join("pages/index.html"), "invented page").unwrap();
     service(&login.run("install", &[]));
+    let before = names(&login.store);
     fs::write(login.bin.join("notes.txt"), "invented note").unwrap();
     let other = login.agents.join("com.example.other.plist");
     fs::write(&other, "invented other job").unwrap();
@@ -790,11 +892,8 @@ fn uninstall_removes_only_the_job_its_plist_and_the_copy() {
     service(&login.run("uninstall", &[]));
     assert_eq!(names(&login.bin), ["notes.txt"]);
     assert_eq!(names(&login.agents), ["com.example.other.plist"]);
-    assert_eq!(names(&login.store), ["bin", "pages", "store.db"]);
-    assert_eq!(
-        fs::read_to_string(login.store.join("store.db")).unwrap(),
-        "invented store"
-    );
+    assert_eq!(names(&login.store), before);
+    assert_eq!(fs::read(login.store.join("store.db")).unwrap(), store);
     assert_eq!(
         fs::read_to_string(login.store.join("pages/index.html")).unwrap(),
         "invented page"
@@ -824,7 +923,7 @@ fn the_answer_is_the_message_service_in_three_forms_and_a_failure_is_failure() {
     let text = String::from_utf8(text.stdout).unwrap();
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(
-        lines[0], "✓ Immune is installed, and launchd has loaded its login job",
+        lines[0], "✓ Immune is installed and watching this Mac",
         "{text}"
     );
     for (label, value) in [
@@ -837,6 +936,7 @@ fn the_answer_is_the_message_service_in_three_forms_and_a_failure_is_failure() {
             "~/Library/LaunchAgents/ai.nuanu.immune.watch.plist",
         ),
         ("Loaded by launchd", LABEL),
+        ("Watching", "live"),
     ] {
         assert!(
             lines
@@ -907,4 +1007,182 @@ fn the_answer_is_the_message_service_in_three_forms_and_a_failure_is_failure() {
         (f.operation.as_str(), f.errors[0].code.as_str()),
         ("uninstall", "usage")
     );
+}
+
+/// The core as the account cannot replace it: no test can make such a file, so the account
+/// whose rights decide is one that owns nothing on the way to this build.
+fn in_place(login: &Login, args: &[&str]) -> Output {
+    let args: Vec<&str> = args
+        .iter()
+        .copied()
+        .chain(["--account-uid", NO_ACCOUNT])
+        .collect();
+    login.immune(Path::new(CORE), &args, &[])
+}
+
+#[test]
+fn a_core_the_account_cannot_replace_is_run_where_it_is_and_uninstall_leaves_it() {
+    let login = Login::new("core-service-in-place");
+    let core = fs::canonicalize(CORE).unwrap();
+    // A copy an earlier install left goes in the install that runs the core where it is.
+    service(&login.run("install", &[]));
+    assert!(login.program.is_file());
+    let m = service(&in_place(&login, &["install", "--json"]));
+    assert_eq!(
+        (m.installed, m.loaded, m.replaced, m.in_place),
+        (true, true, true, Some(true))
+    );
+    assert_eq!(Path::new(&m.program_path_text), core);
+    let installed = plist(&login.plist);
+    assert_eq!(
+        installed["ProgramArguments"],
+        json!([core, "watch", "--background"])
+    );
+    assert!(!login.program.exists() && !login.bin.exists());
+    assert!(login.loaded());
+    let text = String::from_utf8(in_place(&login, &["install"]).stdout).unwrap();
+    assert!(
+        text.contains("Core run where it is") && text.contains("so nothing was copied"),
+        "{text}"
+    );
+
+    // Uninstall stops the job and removes its property list, and the core stays, named.
+    let m = service(&login.run("uninstall", &[]));
+    assert_eq!(
+        (m.installed, m.loaded, m.replaced, m.in_place),
+        (false, false, true, Some(true))
+    );
+    assert_eq!(Path::new(&m.program_path_text), core);
+    assert!(core.is_file() && !login.plist.exists() && !login.loaded());
+    service(&in_place(&login, &["install", "--json"]));
+    let text = login.immune(Path::new(CORE), &["uninstall"], &[]);
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(
+        text.contains(&format!("Core left where it is   {}", core.display()))
+            && text.contains("so it stays where it is")
+            && !text.contains("No installed core"),
+        "{text}"
+    );
+    assert!(core.is_file());
+
+    // Uninstall after a copy removes the copy, and says what the job ran.
+    service(&login.run("install", &[]));
+    // Run from the installed copy, install never takes it for a core to run where it is: that
+    // would remove the file the job runs.
+    let args = ["install", "--json", "--account-uid", NO_ACCOUNT];
+    let m = service(&login.immune(&login.program, &args, &[]));
+    assert_eq!(m.in_place, Some(false));
+    assert!(login.program.is_file());
+    let m = service(&login.run("uninstall", &[]));
+    assert_eq!(m.in_place, Some(false));
+    assert!(!login.program.exists() && !login.bin.exists());
+    // Nothing installed: what the job ran is not known, never said to be a copy.
+    assert_eq!(service(&login.run("uninstall", &[])).in_place, None);
+}
+
+#[test]
+fn install_answers_at_once_when_a_watcher_already_watches() {
+    let login = Login::new("core-service-at-once");
+    let started = Instant::now();
+    assert_eq!(service(&login.run("install", &[])).watching, Some(true));
+    // The whole wait is 5 seconds.
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn the_job_names_the_app_so_login_items_shows_it_under_the_app() {
+    let login = Login::new("core-service-app");
+    service(&login.run("install", &[]));
+    assert_eq!(
+        plist(&login.plist)["AssociatedBundleIdentifiers"],
+        json!(["ai.nuanu.immune"])
+    );
+}
+
+#[test]
+fn install_never_says_it_is_watching_when_no_watcher_watches_the_store_live() {
+    // A watcher that has not completed its first reading.
+    let mut login = Login::new("core-service-starting");
+    login.watcher = None;
+    login.watcher = Some(login.hold_watcher(""));
+    let m = service(&login.run("install", &[]));
+    assert_eq!(m.watching, Some(false));
+    assert_eq!(
+        m.watcher_note.as_deref(),
+        Some("a watcher runs and has not completed its first reading")
+    );
+    // No watcher at all: the job is loaded, and the text is never calm.
+    login.watcher = None;
+    let text = String::from_utf8(login.immune(Path::new(CORE), &["install"], &[]).stdout).unwrap();
+    assert!(
+        text.starts_with("Immune is installed, and its watcher does not watch live yet\n")
+            && text.contains("Not watching yet    no watcher runs on the store now\n")
+            && text.ends_with("→ immune status   whether the watcher has started\n"),
+        "{text}"
+    );
+}
+
+#[test]
+fn install_says_it_cannot_tell_when_the_store_s_watcher_cannot_be_looked_at() {
+    let login = Login::without_watcher("core-service-unknown");
+    fs::create_dir_all(&login.store).unwrap();
+    let lock = login.store.join("watch.lock");
+    fs::write(&lock, "").unwrap();
+    fs::set_permissions(&lock, fs::Permissions::from_mode(0o000)).unwrap();
+    let m = service(&login.run("install", &[]));
+    assert_eq!((m.loaded, m.watching, m.watcher_note), (true, None, None));
+}
+
+#[test]
+fn the_status_tells_a_job_installed_and_not_running_from_one_not_installed() {
+    let mut login = Login::new("core-service-status");
+    let said = |login: &Login| {
+        let out = login.status(&["--json"]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let text = String::from_utf8(login.status(&[]).stdout).unwrap();
+        (v["login_job_installed"].clone(), text)
+    };
+    service(&login.run("install", &[]));
+    // While a watcher watches, the job's presence changes nothing the status says.
+    let (installed, text) = said(&login);
+    assert_eq!(installed, json!(true));
+    assert!(!text.contains("not running"), "{text}");
+    login.watcher = None;
+    let (installed, text) = said(&login);
+    assert_eq!(installed, json!(true));
+    assert!(
+        text.contains("installed, not running") && text.contains("loads the login job again"),
+        "{text}"
+    );
+    service(&login.run("uninstall", &[]));
+    let (installed, text) = said(&login);
+    assert_eq!(installed, json!(false));
+    assert!(
+        text.contains("not installed: no watcher runs now") && !text.contains("not running"),
+        "{text}"
+    );
+    // Something other than a file at the property list's place is neither.
+    fs::create_dir(&login.plist).unwrap();
+    let (installed, _) = said(&login);
+    assert!(installed.is_null(), "{installed}");
+    fs::remove_dir(&login.plist).unwrap();
+    // A place that cannot be looked at is not known, never not installed.
+    fs::set_permissions(&login.agents, fs::Permissions::from_mode(0o000)).unwrap();
+    let (installed, _) = said(&login);
+    fs::set_permissions(&login.agents, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(installed.is_null(), "{installed}");
+    // Another store than the job's: the job says nothing of it.
+    let other = login.scratch.join("other.db");
+    let out = login.status(&["--json", "--store", other.to_str().unwrap()]);
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(v["login_job_installed"].is_null(), "{v}");
 }

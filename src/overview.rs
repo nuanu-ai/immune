@@ -331,23 +331,28 @@ pub(crate) fn watching_parts(s: &v1::Status) -> Vec<(String, Style)> {
     } else if m.live {
         (format!("live, with a failed {}", failed.join(" and ")), RED)
     } else if !failed.is_empty() {
-        (
-            format!(
-                "a watcher runs, but its latest {} failed, so it does not watch live",
-                failed.join(" and ")
-            ),
-            RED,
-        )
+        (crate::watch::failing_words(&failed), RED)
     } else if s.watching.is_some() {
-        (
-            "a watcher runs and has not completed its first reading".to_string(),
-            YELLOW,
-        )
+        (crate::watch::STARTING_WORDS.to_string(), YELLOW)
+    } else if s.watcher_restarting_since_at.is_some() {
+        (crate::watch::RESTARTING_WORDS.to_string(), YELLOW)
     } else {
-        (
-            "no watcher runs now: changes are seen at each check".to_string(),
-            PLAIN,
-        )
+        match s.login_job_installed {
+            // Read from the property list alone: whether launchd has the job is not asked.
+            Some(true) => (
+                "installed, not running: the login job is in place and no watcher runs now, so changes are seen at each check".to_string(),
+                YELLOW,
+            ),
+            Some(false) => (
+                "not installed: no watcher runs now, so changes are seen at each check"
+                    .to_string(),
+                PLAIN,
+            ),
+            None => (
+                "no watcher runs now: changes are seen at each check".to_string(),
+                PLAIN,
+            ),
+        }
     }];
     // What is watched leads, then the watcher.
     match v1::ThisMacState::try_from(m.state) {
@@ -850,8 +855,13 @@ fn default_text(s: &v1::Status, screen: &Screen, out: &mut Vec<String>) {
         }
         Some(_) => {}
     }
-    if s.watching.is_none() {
-        next.push(("immune install", "keeps watching between checks"));
+    // A watcher restarting on a new core comes back by itself; a job installed and not running is
+    // loaded again by the same command.
+    if s.watching.is_none() && s.watcher_restarting_since_at.is_none() {
+        next.push(match s.login_job_installed {
+            Some(true) => ("immune install", "loads the login job again"),
+            _ => ("immune install", "keeps watching between checks"),
+        });
     }
     if !whole || next.is_empty() {
         next.push(("immune status --coverage", "what was read and what was not"));
@@ -3056,6 +3066,40 @@ mod tests {
             visible(&line(&text, "Watching")).trim_end(),
             "  Watching      no watcher runs now: changes are seen at each check"
         );
+        // The login job's property list in place, or not, read from the file alone; a watcher
+        // that left for a new core comes back by itself and is never a failure, nor a step.
+        let watching_with = |installed: Option<bool>, restarting: Option<i64>| {
+            let mut s = s.clone();
+            s.login_job_installed = installed;
+            s.watcher_restarting_since_at = restarting;
+            let text = visible(&status(&s, &screen, false));
+            (
+                visible(&line(&text, "Watching")).trim_end().to_string(),
+                text,
+            )
+        };
+        let (installed, text) = watching_with(Some(true), None);
+        assert_eq!(
+            installed,
+            "  Watching      installed, not running: the login job is in place and no watcher runs now, so changes are seen at each check"
+        );
+        assert!(
+            text.lines().any(|l| l.starts_with("→ immune install ")
+                && l.ends_with("   loads the login job again")),
+            "{text}"
+        );
+        let (not_installed, text) = watching_with(Some(false), None);
+        assert_eq!(
+            not_installed,
+            "  Watching      not installed: no watcher runs now, so changes are seen at each check"
+        );
+        assert!(text.contains("keeps watching between checks"), "{text}");
+        let (restarting, text) = watching_with(Some(true), Some(1_800_000_000));
+        assert_eq!(
+            restarting,
+            "  Watching      the watcher is restarting on a new core"
+        );
+        assert!(!text.contains("immune install"), "{text}");
         // A live watcher on a Mac watched in full: one word, no command.
         s.watching = Some(v1::Watcher::default());
         if let Some(m) = s.this_mac.as_mut() {

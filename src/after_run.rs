@@ -447,50 +447,72 @@ pub fn service(m: &v1::Service, screen: &Screen) -> String {
     let program = tilde(&m.program_path_text, home);
     let plist = tilde(&m.plist_path_text, home);
     let mut out: Vec<String> = Vec::new();
+    let in_place = m.in_place == Some(true);
     if m.installed {
-        let headline = if m.loaded {
-            screen.headline(
-                "✓ Immune is installed, and launchd has loaded its login job",
+        // The calm mark only when a watcher was seen watching live; unknown is never said as no.
+        let headline = match (m.loaded, m.watching) {
+            (true, Some(true)) => screen.headline(
+                "✓ Immune is installed and watching this Mac",
                 GREEN.bold(),
                 None,
-            )
-        } else {
-            screen.headline(
+            ),
+            (true, Some(false)) => screen.headline(
+                "Immune is installed, and its watcher does not watch live yet",
+                YELLOW.bold(),
+                None,
+            ),
+            (true, None) => screen.headline(
+                "Immune is installed; whether its watcher watches is not known",
+                YELLOW.bold(),
+                None,
+            ),
+            (false, _) => screen.headline(
                 "Immune is installed, and launchd has not loaded its login job",
                 YELLOW.bold(),
                 None,
-            )
+            ),
         };
         out.extend(headline);
         out.push(String::new());
-        let loaded: Step = if m.loaded {
-            (true, "Loaded by launchd", &m.label, PLAIN)
+        let core: Step = if in_place {
+            (true, "Core run where it is", &program, PLAIN)
         } else {
-            (false, "Not loaded", &m.label, YELLOW)
+            (true, "Core in place", &program, PLAIN)
         };
-        steps(
-            screen,
-            &mut out,
-            &[
-                (true, "Core in place", &program, PLAIN),
-                (true, "Login job written", &plist, PLAIN),
-                loaded,
-            ],
-        );
+        let mut list = vec![core, (true, "Login job written", &plist, PLAIN)];
+        if m.loaded {
+            list.push((true, "Loaded by launchd", &m.label, PLAIN));
+            let note = m.watcher_note.as_deref().unwrap_or("");
+            list.push(match m.watching {
+                Some(true) => (true, "Watching", "live", PLAIN),
+                Some(false) => (false, "Not watching yet", note, YELLOW),
+                None => (false, "Watching", "not known", YELLOW),
+            });
+        } else {
+            list.push((false, "Not loaded", &m.label, YELLOW));
+        }
+        steps(screen, &mut out, &list);
         out.push(String::new());
         let mut said = Vec::new();
         if m.replaced {
             said.push("An earlier installation was there, and this one replaced it.");
+        }
+        if in_place {
+            said.push(
+                "The core is run where it was installed, which this account cannot change, so nothing was copied.",
+            );
         }
         said.push(
             "The job is set to start a full check when the core starts and every hour after that.",
         );
         sentences(screen, &mut out, &said.join(" "));
         out.push(String::new());
-        if m.loaded {
-            out.push(screen.next("immune status", "what has been read so far"));
-        } else {
-            out.push(screen.next("immune install", "registers the job again"));
+        match (m.loaded, m.watching) {
+            (true, Some(true)) => {
+                out.push(screen.next("immune status", "what has been read so far"));
+            }
+            (true, _) => out.push(screen.next("immune status", "whether the watcher has started")),
+            (false, _) => out.push(screen.next("immune install", "registers the job again")),
         }
     } else if m.replaced {
         out.extend(screen.headline("✓ Immune is uninstalled", GREEN.bold(), None));
@@ -500,21 +522,24 @@ pub fn service(m: &v1::Service, screen: &Screen) -> String {
         } else {
             (true, "Job not loaded", &m.label, PLAIN)
         };
+        // A core the job ran where it is was not put there by install, and stays.
+        let core: Step = if in_place {
+            (false, "Core left where it is", &program, PLAIN)
+        } else {
+            (true, "No installed core", &program, PLAIN)
+        };
         steps(
             screen,
             &mut out,
-            &[
-                loaded,
-                (true, "No property list", &plist, PLAIN),
-                (true, "No installed core", &program, PLAIN),
-            ],
+            &[loaded, (true, "No property list", &plist, PLAIN), core],
         );
         out.push(String::new());
-        sentences(
-            screen,
-            &mut out,
-            "The store and the optional event collector were kept.",
-        );
+        let said = if in_place {
+            "The core the job ran was not copied by immune install, so it stays where it is. The store and the optional event collector were kept."
+        } else {
+            "The store and the optional event collector were kept."
+        };
+        sentences(screen, &mut out, said);
         out.push(String::new());
         out.push(screen.next("immune install", "installs it again"));
     } else {
@@ -1415,8 +1440,81 @@ mod tests {
             installed: true,
             loaded: true,
             replaced: true,
+            in_place: Some(false),
+            watching: Some(true),
             ..Default::default()
         }
+    }
+
+    /// The calm mark heads the text only when a watcher was seen watching live; a watcher not
+    /// seen yet is said with what the status says of it, and one that could not be told is said
+    /// as not known, never as not watching.
+    #[test]
+    fn install_is_calm_only_when_a_watcher_watches_and_unknown_is_never_no() {
+        let text = service(&installed(), &Screen::pipe());
+        assert!(
+            text.starts_with("✓ Immune is installed and watching this Mac\n")
+                && text.contains("\n  ✓ Watching            live\n")
+                && text.ends_with("→ immune status   what has been read so far\n"),
+            "{text}"
+        );
+        let not_yet = v1::Service {
+            watching: Some(false),
+            watcher_note: Some(crate::watch::STARTING_WORDS.to_string()),
+            ..installed()
+        };
+        let text = service(&not_yet, &Screen::pipe());
+        assert!(
+            text.starts_with("Immune is installed, and its watcher does not watch live yet\n")
+                && !text.starts_with('✓')
+                && text.contains(&format!(
+                    "\n    Not watching yet    {}\n",
+                    crate::watch::STARTING_WORDS
+                ))
+                && text.ends_with("→ immune status   whether the watcher has started\n"),
+            "{text}"
+        );
+        let unknown = v1::Service {
+            watching: None,
+            ..installed()
+        };
+        let text = service(&unknown, &Screen::pipe());
+        assert!(
+            text.starts_with("Immune is installed; whether its watcher watches is not known\n")
+                && text.contains("\n    Watching            not known\n")
+                && !text.contains("Not watching"),
+            "{text}"
+        );
+    }
+
+    /// A core run where it is is named as such after install, and after uninstall it is said to
+    /// stay where it is, never to be gone.
+    #[test]
+    fn a_core_run_where_it_is_is_named_and_uninstall_says_it_stays() {
+        let in_place = v1::Service {
+            program_path_text: "/usr/local/bin/immune".to_string(),
+            in_place: Some(true),
+            ..installed()
+        };
+        let text = service(&in_place, &Screen::pipe());
+        assert!(
+            text.contains("\n  ✓ Core run where it is   /usr/local/bin/immune\n")
+                && text.contains("so nothing was copied"),
+            "{text}"
+        );
+        let removed = v1::Service {
+            installed: false,
+            loaded: false,
+            watching: None,
+            ..in_place
+        };
+        let text = service(&removed, &Screen::pipe());
+        assert!(
+            text.contains("\n    Core left where it is   /usr/local/bin/immune\n")
+                && text.contains("so it stays where it is")
+                && !text.contains("No installed core"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -1494,7 +1592,7 @@ mod tests {
         assert_eq!(
             lines(&text)[..5],
             [
-                "✓ Immune is installed, and launchd has loaded its login job",
+                "✓ Immune is installed and watching this Mac",
                 "",
                 "  ✓ Core in place       ~/Library/Application Support/ai.nuanu.immune/bin/immune",
                 "  ✓ Login job written   ~/Library/LaunchAgents/ai.nuanu.immune.watch.plist",

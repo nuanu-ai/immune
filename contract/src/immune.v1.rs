@@ -2894,6 +2894,19 @@ pub struct Status {
     /// there is no store. Since 1.9.0.
     #[prost(int64, optional, tag = "27")]
     pub journal_seq: ::core::option::Option<i64>,
+    /// Whether the core's login job, the one `immune install` writes, has its property list in this
+    /// account's `~/Library/LaunchAgents`, read from the file's presence alone: launchd is not asked,
+    /// so with no watcher on the store it reads as installed and not running. Absent when this store
+    /// is not the one the job watches, the default one, and when the place cannot be read.
+    /// Since 1.19.0.
+    #[prost(bool, optional, tag = "28")]
+    pub login_job_installed: ::core::option::Option<bool>,
+    /// When the latest watcher of this store left by itself because the file it was started from had
+    /// been replaced, as an update replaces it: launchd starts the job again from the new file.
+    /// Absent while a watcher holds the store, when the latest one left for another reason, and
+    /// once a few minutes have passed without a new one. Since 1.19.0.
+    #[prost(int64, optional, tag = "29")]
+    pub watcher_restarting_since_at: ::core::option::Option<i64>,
 }
 /// The store's file.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -4721,13 +4734,14 @@ pub struct Service {
     /// The job's label in launchd: `ai.nuanu.immune.watch`.
     #[prost(string, tag = "3")]
     pub label: ::prost::alloc::string::String,
-    /// The installed core the job runs, and the job's property list. Whole. After `immune
-    /// uninstall`, where they were.
+    /// The core the job runs, and the job's property list. Whole. After `immune uninstall`, where
+    /// they were: the copy that was removed, or the core run where it is, which is still there
+    /// (`in_place`).
     #[prost(string, tag = "4")]
     pub program_path_text: ::prost::alloc::string::String,
     #[prost(string, tag = "5")]
     pub plist_path_text: ::prost::alloc::string::String,
-    /// Whether the job, its property list and the installed core are in place: true after
+    /// Whether the job, its property list and the core it runs are in place: true after
     /// `immune install`, false after `immune uninstall`.
     #[prost(bool, tag = "6")]
     pub installed: bool,
@@ -4740,4 +4754,22 @@ pub struct Service {
     /// uninstall where nothing was installed.
     #[prost(bool, tag = "8")]
     pub replaced: bool,
+    /// Whether the job runs the core where it is, true, or a copy in the store's folder,
+    /// `bin/immune`, false. True only when the account that ran `immune install` could not replace
+    /// that core: it is not copied, and `immune uninstall` leaves it where it is. After `immune
+    /// uninstall`, what the job ran; absent when that cannot be told, as when nothing was installed.
+    /// Since 1.19.0.
+    #[prost(bool, optional, tag = "9")]
+    pub in_place: ::core::option::Option<bool>,
+    /// Whether a watcher watches the job's store live, as `immune status` judges it
+    /// (`ThisMac.live`), within a few seconds after launchd loaded the job. False when none did by
+    /// then: launchd may still start it, and `watcher_note` says what the status says of it. Absent
+    /// when it could not be told, and after `immune uninstall`. Since 1.19.0.
+    #[prost(bool, optional, tag = "10")]
+    pub watching: ::core::option::Option<bool>,
+    /// While `watching` is false, what the status says of the store's watcher, in the core's words,
+    /// such as that a watcher runs and has not completed its first reading. Absent otherwise.
+    /// Since 1.19.0.
+    #[prost(string, optional, tag = "11")]
+    pub watcher_note: ::core::option::Option<::prost::alloc::string::String>,
 }
